@@ -1028,8 +1028,18 @@ def main() -> None:
     start_scheduler()
 
     print(f"Starting Cili Agent web server on http://{args.host}:{args.port}")
-    print(f"Open http://localhost:{args.port} in your browser")
     print("Press Ctrl+C to stop")
+
+    # Auto-open browser after server starts
+    import webbrowser
+    import threading
+
+    def _open_browser():
+        """等待 2 秒后自动打开浏览器（让服务器有时间就绪）"""
+        time.sleep(2)
+        webbrowser.open(f"http://localhost:{args.port}")
+
+    threading.Thread(target=_open_browser, daemon=True).start()
 
     import uvicorn
     try:
