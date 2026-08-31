@@ -101,6 +101,9 @@ function setupEventListeners() {
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
     document.getElementById('settings-test-btn').addEventListener('click', testSettings);
 
+    // Upgrade
+    document.getElementById('upgrade-check-btn').addEventListener('click', runUpgrade);
+
     // Workspace settings
     document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
     document.getElementById('workspace-delete-btn').addEventListener('click', deleteWorkspaceConfig);
@@ -3029,5 +3032,56 @@ function closeFileBrowser() {
     const modal = document.getElementById('file-browser-modal');
     if (modal) {
         modal.style.display = 'none';
+    }
+}
+
+// ─ 升级功能 ──
+
+async function runUpgrade() {
+    const btn = document.getElementById('upgrade-check-btn');
+    const statusEl = document.getElementById('upgrade-status');
+    const mirrorSelect = document.getElementById('upgrade-mirror');
+
+    // 禁用按钮，显示进度
+    btn.disabled = true;
+    btn.textContent = '升级中...';
+    statusEl.textContent = '正在拉取最新代码...';
+    statusEl.style.color = 'var(--text-secondary)';
+
+    try {
+        const response = await fetch('/api/upgrade', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mirror: mirrorSelect.value })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusEl.textContent = data.message;
+            statusEl.style.color = '#27ae60';
+
+            if (data.merge_conflict) {
+                statusEl.textContent += '（存在合并冲突，请手动解决）';
+                statusEl.style.color = '#f39c12';
+            }
+
+            // 2 秒后提示重启
+            setTimeout(() => {
+                if (confirm('升级完成！是否现在重启服务以应用更新？')) {
+                    // 刷新页面
+                    location.reload();
+                }
+            }, 1000);
+        } else {
+            statusEl.textContent = '失败：' + data.error;
+            statusEl.style.color = 'var(--error-color)';
+        }
+    } catch (error) {
+        statusEl.textContent = '升级失败：' + error.message;
+        statusEl.style.color = 'var(--error-color)';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '检查并升级';
     }
 }

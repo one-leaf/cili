@@ -1814,6 +1814,113 @@ async def list_files(workspace_uuid: str, path: str = ""):
     }
 
 
+# ----- Upgrade -----
+
+class UpgradeRequest(BaseModel):
+    """Request model for upgrade."""
+    mirror: str = "github"  # "github" or "ghproxy"
+
+
+@app.post("/api/upgrade")
+async def upgrade(request: UpgradeRequest):
+    """自动升级：拉取最新代码并返回结果。
+
+    Args:
+        mirror: 镜像源 ("github" 或 "ghproxy")
+
+    Returns:
+        升级结果 {"success": bool, "message": str}
+    """
+    import subprocess
+
+    # 检测 git 路径
+    git_cmd = shutil.which("git")
+    if not git_cmd:
+        # 检查 data/deps/git/
+        deps_git = PROJECT_ROOT / "data" / "deps" / "git" / "cmd" / "git.exe"
+        if deps_git.exists():
+            git_cmd = str(deps_git)
+        else:
+            return {"success": False, "error": "未检测到 git，请先安装或运行 start.cmd 自动下载"}
+
+    # 选择镜像源
+    if request.mirror == "ghproxy":
+        remote_url = "https://ghproxy.com/https://github.com/one-leaf/cili.git"
+    else:
+        remote_url = "https://github.com/one-leaf/cili.git"
+
+    # 初始化仓库（如果不存在）
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        try:
+            subprocess.run([git_cmd, "init"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+            subprocess.run([git_cmd, "remote", "add", "origin", remote_url],
+                          cwd=PROJECT_ROOT, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            return {"success": False, "error": f"初始化仓库失败：{e.stderr.decode('utf-8', errors='replace')}"}
+
+    # 保存本地修改（如果有）
+    has_local_changes = False
+    try:
+        result = subprocess.run([git_cmd, "diff", "--quiet"],
+                               cwd=PROJECT_ROOT, capture_output=True)
+        has_local_changes = result.returncode != 0
+        if has_local_changes:
+            subprocess.run([git_cmd, "stash"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "error": f"暂存修改失败：{e.stderr.decode('utf-8', errors='replace')}"}
+
+    # 拉取最新代码
+    try:
+        result = subprocess.run(
+            [git_cmd, "fetch", "origin", "main"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            # 恢复本地修改
+            if has_local_changes:
+                subprocess.run([git_cmd, "stash", "pop"], cwd=PROJECT_ROOT, capture_output=True)
+            return {
+                "success": False,
+                "error": "拉取失败，请检查网络连接或使用 ghproxy 镜像",
+                "detail": result.stderr
+            }
+
+        # 更新到最新版本
+        result = subprocess.run(
+            [git_cmd, "checkout", "-B", "main", "origin/main"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            if has_local_changes:
+                subprocess.run([git_cmd, "stash", "pop"], cwd=PROJECT_ROOT, capture_output=True)
+            return {
+                "success": False,
+                "error": "更新失败",
+                "detail": result.stderr
+            }
+
+        # 恢复本地修改
+        merge_conflict = False
+        if has_local_changes:
+            result = subprocess.run([git_cmd, "stash", "pop"],
+                                   cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if result.returncode != 0:
+                merge_conflict = True
+
+        return {
+            "success": True,
+            "message": "升级完成，请重启服务以应用更新",
+            "merge_conflict": merge_conflict,
+            "needs_restart": True
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "拉取超时，请检查网络连接"}
+    except Exception as e:
+        return {"success": False, "error": f"升级失败：{str(e)}"}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

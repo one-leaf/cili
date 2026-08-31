@@ -101,6 +101,7 @@
                 <button class="settings-tab active" data-tab="root">Agent 模型</button>
                 <button class="settings-tab" data-tab="llm">LLM 模型</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
+                <button class="settings-tab" data-tab="upgrade">升级</button>
             </div>
             <div class="modal-body">
                 <!-- RootAgent Model Tab (Multi-turn conversation) -->
@@ -248,6 +249,33 @@
                         <label>允许访问IP:</label>
                         <input type="text" id="system-allowed-ips" placeholder="192.168.1.100, 10.0.0.5">
                         <small class="form-hint">逗号分隔的IP白名单，留空则仅允许本机访问</small>
+                    </div>
+                </div>
+
+                <!-- Upgrade Tab -->
+                <div class="tab-content" id="tab-upgrade">
+                    <div class="model-description">
+                        <strong>软件升级</strong> — 从 GitHub 拉取最新代码并更新本地版本。
+                    </div>
+                    <div class="form-group">
+                        <label>镜像源:</label>
+                        <select id="upgrade-mirror">
+                            <option value="github">GitHub 直连</option>
+                            <option value="ghproxy">ghproxy 镜像（推荐国内使用）</option>
+                        </select>
+                        <small class="form-hint">如果 GitHub 访问较慢，请选择 ghproxy 镜像</small>
+                    </div>
+                    <div class="form-group">
+                        <button id="upgrade-check-btn" class="btn btn-primary">检查并升级</button>
+                        <small class="form-hint" id="upgrade-status" style="margin-left: 10px;"></small>
+                    </div>
+                    <div class="form-group">
+                        <label>手动升级:</label>
+                        <p style="margin: 5px 0; color: var(--text-secondary);">如果自动升级失败，可在项目目录运行：</p>
+                        <code style="display: block; background: var(--bg-secondary); padding: 8px; border-radius: 4px; margin: 5px 0;">
+                            scripts\upgrade.cmd
+                        </code>
+                        <small class="form-hint">或使用 PowerShell: <code>.\scripts\upgrade.ps1</code></small>
                     </div>
                 </div>
 
