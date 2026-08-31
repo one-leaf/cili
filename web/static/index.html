@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>草履虫</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/libs/marked.min.js"></script>
+    <script>
+        // MathJax configuration
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Left Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-title-group">
+                    <div class="title-path-wrap">
+                        <h1>工作区</h1>
+                    </div>
+                    <button id="settings-btn" class="btn btn-small" title="全局设置">&#9881;</button>
+                </div>
+                <div id="workspace-path" class="workspace-path">工作区路径</div>
+                <div class="workspace-controls">
+                    <select id="workspace-select">
+                        <option value="">选择工作区...</option>
+                    </select>
+                    <button id="workspace-settings-btn" class="btn btn-small" title="工作区设置" disabled>&#9881;</button>
+                    <button id="new-workspace-btn" class="btn btn-small" title="新建工作区">+</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-header">
+                    <button id="session-menu-btn" class="btn-icon-flat" title="会话菜单">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+                    </button>
+                    <h3>会话</h3>
+                    <button id="new-session-btn" class="btn btn-small">+ 新建</button>
+                </div>
+                <div id="sessions-list" class="sessions-list">
+                    <div class="empty-state">选择一个工作区</div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="footer-content" id="footer-content">
+                    <!-- Loaded dynamically from footer.json -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <div id="chat-messages" class="chat-messages">
+                <div class="welcome-message">
+                    <h2>欢迎使用 草履虫 AI 助手</h2>
+                    <p>选择工作区并创建会话开始使用</p>
+                </div>
+            </div>
+
+            <div class="chat-input-area">
+                <div class="chat-input-wrap">
+                    <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行)" rows="3"></textarea>
+                    <button id="insert-file-btn" class="btn-icon-floating" title="插入文件名">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                    </button>
+                </div>
+                <button id="send-btn" class="btn btn-primary">发送</button>
+            </div>
+        </main>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="settings-modal"></div>
+        <div class="modal-content settings-modal_content">
+            <div class="modal-header">
+                <h2>全局模型设置</h2>
+                <button class="modal-close" data-modal="settings-modal">&times;</button>
+            </div>
+            <div class="settings-tabs">
+                <button class="settings-tab active" data-tab="root">Agent 模型</button>
+                <button class="settings-tab" data-tab="llm">LLM 模型</button>
+                <button class="settings-tab" data-tab="system">系统参数</button>
+            </div>
+            <div class="modal-body">
+                <!-- RootAgent Model Tab (Multi-turn conversation) -->
+                <div class="tab-content active" id="tab-root">
+                    <div class="model-description">
+                        <strong>多轮对话模型</strong> — 用于日常对话和任务执行，支持上下文记忆和多轮交互。RootAgent 和 SubAgent 均使用此模型。
+                    </div>
+                    <div class="form-group">
+                        <label>接口类型:</label>
+                        <select id="setting-interface-type">
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="openai">OpenAI (GPT)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key:</label>
+                        <div>
+                            <div class="input-with-icon">
+                                <input type="password" id="setting-api-key" placeholder="sk-...">
+                                <button type="button" class="toggle-password" data-target="setting-api-key">
+                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small id="setting-api-key-masked" class="form-hint"></small>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>API Base URL:</label>
+                        <input type="text" id="setting-base-url" placeholder="https://api.anthropic.com">
+                    </div>
+                    <div class="form-group">
+                        <label>模型名称:</label>
+                        <input type="text" id="setting-model" placeholder="claude-sonnet-4-6">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Tokens:</label>
+                        <input type="number" id="setting-max-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Context Tokens:</label>
+                        <input type="number" id="setting-max-context-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="setting-multimodal"> 支持多模态 (图片输入)</label>
+                    </div>
+                    <div class="form-group">
+                        <label>性格 (温度): <span id="setting-temperature-value">0.2</span></label>
+                        <div class="temperature-slider">
+                            <span class="temp-label">古板</span>
+                            <input type="range" id="setting-temperature" min="0.1" max="1.0" step="0.1" value="0.2">
+                            <span class="temp-label">跳脱</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LLM Model Tab (Single-turn processing) -->
+                <div class="tab-content" id="tab-llm">
+                    <div class="model-description">
+                        <strong>单轮处理模型</strong> — 用于翻译、摘要、提取等单次调用任务，无上下文。若不配置，<code>llm</code> 工具将不可用。可与 Agent 模型使用相同或不同的 API。
+                    </div>
+                    <div class="form-group">
+                        <label>接口类型:</label>
+                        <select id="llm-interface-type">
+                            <option value="">（未配置）</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="openai">OpenAI (GPT)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key:</label>
+                        <div>
+                            <div class="input-with-icon">
+                                <input type="password" id="llm-api-key" placeholder="sk-...（留空使用 RootAgent 模型的 Key）">
+                                <button type="button" class="toggle-password" data-target="llm-api-key">
+                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small id="llm-api-key-masked" class="form-hint"></small>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>API Base URL:</label>
+                        <input type="text" id="llm-base-url" placeholder="https://api.anthropic.com">
+                    </div>
+                    <div class="form-group">
+                        <label>模型名称:</label>
+                        <input type="text" id="llm-model" placeholder="claude-sonnet-4-6">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Tokens:</label>
+                        <input type="number" id="llm-max-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Context Tokens:</label>
+                        <input type="number" id="llm-max-context-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="llm-multimodal"> 支持多模态 (图片输入)</label>
+                    </div>
+                    <div class="form-group">
+                        <label>性格 (温度): <span id="llm-temperature-value">0.2</span></label>
+                        <div class="temperature-slider">
+                            <span class="temp-label">古板</span>
+                            <input type="range" id="llm-temperature" min="0.1" max="1.0" step="0.1" value="0.2">
+                            <span class="temp-label">跳脱</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Parameters Tab -->
+                <div class="tab-content" id="tab-system">
+                    <div class="model-description">
+                        <strong>系统级参数</strong> — 影响 Python 环境、包安装等底层行为。
+                    </div>
+                    <div class="form-group">
+                        <label>Pip 镜像地址:</label>
+                        <input type="text" id="system-pip-mirror" placeholder="https://mirrors.aliyun.com/pypi/simple/">
+                        <small class="form-hint">用于 Python 包安装，默认使用阿里云镜像</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Git Bash 路径:</label>
+                        <input type="text" id="system-bash-path" placeholder="C:\Program Files\Git\bin\bash.exe">
+                        <small class="form-hint">Git Bash 可执行文件路径，留空则自动检测</small>
+                    </div>
+                    <div class="form-group">
+                        <label>浏览器路径:</label>
+                        <input type="text" id="system-browser-path" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe">
+                        <small class="form-hint">浏览器可执行文件路径，留空则自动检测（优先 Edge，其次 Chrome）。修改后需重启服务生效</small>
+                    </div>
+                    <div class="form-group">
+                        <label>网页搜索引擎:</label>
+                        <select id="system-search-engine">
+                            <option value="bing">Bing（默认）</option>
+                            <option value="google">Google</option>
+                        </select>
+                        <small class="form-hint">web_search 工具使用的搜索引擎</small>
+                    </div>
+                    <div class="form-group">
+                        <label>允许访问IP:</label>
+                        <input type="text" id="system-allowed-ips" placeholder="192.168.1.100, 10.0.0.5">
+                        <small class="form-hint">逗号分隔的IP白名单，留空则仅允许本机访问</small>
+                    </div>
+                </div>
+
+                <div id="settings-status" class="settings-status"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="settings-test-btn" class="btn">测试连接</button>
+                <button id="settings-save-btn" class="btn btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Workspace Settings Modal -->
+    <div id="workspace-settings-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="workspace-settings-modal"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>工作区设置</h2>
+                <button class="modal-close" data-modal="workspace-settings-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>工作区名称:</label>
+                    <input type="text" id="ws-setting-name" placeholder="输入工作区名称">
+                    <small class="form-hint">最多50个字符</small>
+                </div>
+                <div class="form-group">
+                    <label>工作目录:</label>
+                    <div class="input-with-button">
+                        <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
+                        <button type="button" id="ws-browse-dir-btn" class="btn btn-small">浏览...</button>
+                    </div>
+                    <small class="form-hint">Agent 在此目录下执行操作</small>
+                </div>
+                <div id="workspace-settings-status" class="settings-status"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="workspace-delete-btn" class="btn btn-danger" style="margin-right:auto;">删除配置</button>
+                <button id="workspace-settings-save-btn" class="btn btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Workspace Modal -->
+    <div id="new-workspace-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="new-workspace-modal"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>新建工作区</h2>
+                <button class="modal-close" data-modal="new-workspace-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>工作区名称:</label>
+                    <input type="text" id="new-ws-name" placeholder="输入工作区名称">
+                    <small class="form-hint">最多50个字符</small>
+                </div>
+                <div class="form-group">
+                    <label>工作目录:</label>
+                    <div class="input-with-button">
+                        <input type="text" id="new-ws-directory" placeholder="留空则使用默认路径">
+                        <button type="button" id="new-ws-browse-dir-btn" class="btn btn-small">浏览...</button>
+                    </div>
+                    <small class="form-hint">Agent 在此目录下执行操作</small>
+                </div>
+                <div id="new-workspace-status" class="settings-status"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="new-workspace-cancel-btn" class="btn">取消</button>
+                <button id="new-workspace-create-btn" class="btn btn-primary">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

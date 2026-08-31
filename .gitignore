@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+build/
+develop-eggs/
+dist/
+downloads/
+data/
+eggs/
+.eggs/
+.claude/
+CLAUDE.md
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+nul
+
+# Cili Agent specific
+workspace/
+data/*
+.tmp/
+.test_tmp/
+*.log
+
+# Reference code (third-party, not tracked)
+reference/

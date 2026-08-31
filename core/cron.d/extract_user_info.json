@@ -1,0 +1,24 @@
+{
+  "name": "extract-user-info",
+  "description": "每天扫描工作区，提取用户信息到 user-profile.json",
+  "enabled": true,
+  "schedule": {
+    "type": "cron",
+    "expr": "0 2 * * *"
+  },
+  "config": {
+    "max_iterations": 50
+  },
+  "content": {
+    "task": "扫描 data/agents/ 下的所有工作区（排除 system），检查是否需要更新用户画像。\n\n对每个工作区：\n1. 检查 data/agents/{uuid}/user-profile.json 是否存在\n2. 如果存在，读取其中的 updated_at 时间\n3. 扫描 data/agents/{uuid}/sessions/ 下的所有 index.json，找到最新的 metadata.updated_at\n4. 如果 session 的更新时间 > profile 的更新时间，则执行提取\n5. 如果 profile 不存在或 session 更新，则执行提取\n\n提取步骤：\n1. 读取工作区下所有 session 的 index.json\n2. 提取 role='user' 且 content 为字符串的消息（用户直接输入的文本）\n3. 分析用户文本，识别以下类别：\n   - reply_style: 回复风格\n   - expression_traits: 表达特征\n   - user_profile: 用户画像（结构化字段：age, gender, occupation, family, nickname）\n   - work_habits: 工作习惯\n   - project_preferences: 项目偏好\n   - common_location: 常驻地点\n4. 合并到现有 profile（同类别列表去重追加，总数不超过 10 条；结构化字段覆盖更新）\n5. 写入 data/agents/{uuid}/user-profile.json，更新 updated_at 字段\n\n注意：\n- 跳过 system 工作区\n- 每个工作区独立处理\n- 如果工作区没有近期更新，可以跳过",
+    "plan": [
+      "列出 data/agents/ 下的所有目录",
+      "对每个目录（排除 system）：",
+      "  1. 检查 user-profile.json 的 updated_at",
+      "  2. 扫描 sessions/ 下最新的 updated_at",
+      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 分析 → 写入 profile",
+      "  4. 如果不需要更新：跳过",
+      "完成后报告处理的工作区数量"
+    ]
+  }
+}
