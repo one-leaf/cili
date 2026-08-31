@@ -26,14 +26,14 @@
 - **双模型架构** — RootAgent 负责多轮对话，LLM 模型处理单轮摘要压缩，各司其职
 - **浏览器自动化** — Playwright + Chrome CDP，全局单例管理，支持网页搜索与内容抓取
 - **中文原生** — UI、日志、工具输出均为中文，系统提示词为英文（最优 LLM 性能）
-- **Windows 优先** — Git Bash 执行 Shell，自动检测 / 下载环境依赖，双击即可运行
+- **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，自动检测 / 下载环境依赖，双击即可运行
 - **可移植** — `start.cmd` 自动检测环境，缺失的 Python / Git Bash 自动下载到 `data/deps/`
 
 ## 快速开始
 
 ### 前置条件
 
-- Windows 10/11（推荐）或 Linux/macOS
+- **Windows 10/11**（目前仅支持 Windows）
 - 无需手动安装 Python 或 Git Bash — 启动脚本自动处理
 
 ### 启动
@@ -65,6 +65,34 @@ python main.py --port 8080 --host 0.0.0.0
 | `llm_model.name` | 压缩/摘要模型（可选） | `claude-haiku-4-5` |
 
 支持环境变量覆盖：`ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`。
+
+## 自动升级
+
+### Web UI 升级（推荐）
+
+1. 打开设置页面（点击左上角 ⚙ 按钮）
+2. 切换到「升级」标签页
+3. 选择镜像源：
+   - **GitHub 直连** — 默认，适合海外用户
+   - **ghproxy 镜像** — 推荐国内用户使用
+4. 点击「检查并升级」
+5. 升级完成后重启服务
+
+### 命令行升级
+
+```batch
+# 批处理版本
+scripts\upgrade.cmd
+
+# PowerShell 版本
+.\scripts\upgrade.ps1
+```
+
+升级脚本会自动：
+- 检测 Git 路径（系统 PATH 或 `data/deps/git/`）
+- 测试多个镜像源，选择最快的
+- 暂存本地修改 → 拉取最新代码 → 恢复本地修改
+- 处理合并冲突提示
 
 ## 核心能力
 
@@ -161,8 +189,11 @@ Markdown + YAML frontmatter 格式，渐进式加载：
 
 ```
 cili/
-── start.cmd / start.ps1    # 启动入口（自动环境检测）
-├── main.py                   # Python 入口（uvicorn web server）
+├── start.cmd / start.ps1       # 启动入口（自动环境检测）
+├── main.py                     # Python 入口（uvicorn web server）
+── scripts/
+│   ├── upgrade.cmd             # Windows 批处理升级脚本
+│   ── upgrade.ps1             # PowerShell 升级脚本
 ├── core/
 │   ├── base_agent.py         # Agent 基类（消息管理、压缩、LLM 调用）
 │   ├── root_agent.py         # RootAgent（流式输出、用户交互）
