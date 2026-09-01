@@ -129,17 +129,29 @@ class OpenAIAdapter(Adapter):
                 openai_messages.append(msg_dict)
 
             # Tool results: each becomes a separate role=tool message
+            # Images from tool results are collected and added to a user message
+            # (OpenAI API doesn't support images in role=tool messages)
+            images_from_tools: list[dict[str, Any]] = []
+
             for tr in tool_results:
                 tc = tr.get("content", "")
                 if isinstance(tc, list):
-                    # Extract text from nested blocks
+                    # Extract text and images separately
                     text_parts_tool = []
                     for item in tc:
                         if isinstance(item, dict):
                             if item.get("type") == "text":
                                 text_parts_tool.append(item.get("text", ""))
                             elif item.get("type") == "image":
-                                text_parts_tool.append("[image content]")
+                                # Collect image for user message
+                                source = item.get("source", {})
+                                if source.get("type") == "base64":
+                                    images_from_tools.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{source.get('media_type', 'image/png')};base64,{source.get('data', '')}"
+                                        }
+                                    })
                             else:
                                 text_parts_tool.append(str(item))
                         else:
@@ -154,8 +166,21 @@ class OpenAIAdapter(Adapter):
                     "content": tc,
                 })
 
+            # If there are images from tool results, add a user message with them
+            if images_from_tools:
+                user_content: list[dict[str, Any]] = []
+                # Include any text from the original message
+                if text_parts:
+                    user_content.append({"type": "text", "text": "\n".join(text_parts)})
+                user_content.extend(images_from_tools)
+
+                openai_messages.append({
+                    "role": "user",
+                    "content": user_content,
+                })
+
             # User message with only text (no tool calls or results)
-            if not tool_calls and not tool_results and text_parts and role != "assistant":
+            elif not tool_calls and not tool_results and text_parts and role != "assistant":
                 openai_messages.append({"role": role, "content": "\n".join(text_parts)})
 
         return openai_messages

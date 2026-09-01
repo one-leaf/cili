@@ -1829,7 +1829,7 @@ class UpgradeRequest(BaseModel):
 
 @app.post("/api/upgrade")
 async def upgrade(request: UpgradeRequest):
-    """自动升级：拉取最新代码并返回结果。
+    """自动升级：下载最新代码并覆盖。
 
     Args:
         mirror: 镜像源 ("github" 或 "ghproxy")
@@ -1837,94 +1837,73 @@ async def upgrade(request: UpgradeRequest):
     Returns:
         升级结果 {"success": bool, "message": str}
     """
-    import subprocess
+    import zipfile
+    import tempfile
 
-    # 检测 git 路径
-    git_cmd = shutil.which("git")
-    if not git_cmd:
-        # 检查 data/deps/git/
-        deps_git = PROJECT_ROOT / "data" / "deps" / "git" / "cmd" / "git.exe"
-        if deps_git.exists():
-            git_cmd = str(deps_git)
-        else:
-            return {"success": False, "error": "未检测到 git，请先安装或运行 start.cmd 自动下载"}
-
-    # 选择镜像源
+    # 选择下载地址
     if request.mirror == "ghproxy":
-        remote_url = "https://ghproxy.com/https://github.com/one-leaf/cili.git"
+        zip_url = "https://ghproxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip"
     else:
-        remote_url = "https://github.com/one-leaf/cili.git"
+        zip_url = "https://github.com/one-leaf/cili/archive/refs/heads/main.zip"
 
-    # 初始化仓库（如果不存在）
-    git_dir = PROJECT_ROOT / ".git"
-    if not git_dir.exists():
+    # 创建临时目录
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_zip = os.path.join(temp_dir, "cili-main.zip")
+        temp_extract = os.path.join(temp_dir, "extract")
+
+        # 下载
         try:
-            subprocess.run([git_cmd, "init"], cwd=PROJECT_ROOT, check=True, capture_output=True)
-            subprocess.run([git_cmd, "remote", "add", "origin", remote_url],
-                          cwd=PROJECT_ROOT, check=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
-            return {"success": False, "error": f"初始化仓库失败：{e.stderr.decode('utf-8', errors='replace')}"}
+            import httpx
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(zip_url, follow_redirects=True)
+                resp.raise_for_status()
+                with open(temp_zip, "wb") as f:
+                    f.write(resp.content)
+        except Exception as e:
+            return {"success": False, "error": f"下载失败：{str(e)}"}
 
-    # 保存本地修改（如果有）
-    has_local_changes = False
-    try:
-        result = subprocess.run([git_cmd, "diff", "--quiet"],
-                               cwd=PROJECT_ROOT, capture_output=True)
-        has_local_changes = result.returncode != 0
-        if has_local_changes:
-            subprocess.run([git_cmd, "stash"], cwd=PROJECT_ROOT, check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        return {"success": False, "error": f"暂存修改失败：{e.stderr.decode('utf-8', errors='replace')}"}
+        # 解压
+        try:
+            os.makedirs(temp_extract, exist_ok=True)
+            with zipfile.ZipFile(temp_zip, "r") as zf:
+                zf.extractall(temp_extract)
+        except Exception as e:
+            return {"success": False, "error": f"解压失败：{str(e)}"}
 
-    # 拉取最新代码
-    try:
-        result = subprocess.run(
-            [git_cmd, "fetch", "origin", "main"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            # 恢复本地修改
-            if has_local_changes:
-                subprocess.run([git_cmd, "stash", "pop"], cwd=PROJECT_ROOT, capture_output=True)
-            return {
-                "success": False,
-                "error": "拉取失败，请检查网络连接或使用 ghproxy 镜像",
-                "detail": result.stderr
-            }
+        # 查找解压目录
+        extracted_dir = None
+        for name in os.listdir(temp_extract):
+            if name.startswith("cili-main"):
+                extracted_dir = os.path.join(temp_extract, name)
+                break
 
-        # 更新到最新版本
-        result = subprocess.run(
-            [git_cmd, "checkout", "-B", "main", "origin/main"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            if has_local_changes:
-                subprocess.run([git_cmd, "stash", "pop"], cwd=PROJECT_ROOT, capture_output=True)
-            return {
-                "success": False,
-                "error": "更新失败",
-                "detail": result.stderr
-            }
+        if not extracted_dir:
+            return {"success": False, "error": "解压目录未找到"}
 
-        # 恢复本地修改
-        merge_conflict = False
-        if has_local_changes:
-            result = subprocess.run([git_cmd, "stash", "pop"],
-                                   cwd=PROJECT_ROOT, capture_output=True, text=True)
-            if result.returncode != 0:
-                merge_conflict = True
+        # 复制文件，排除 data/, workspace/, .git/
+        def copy_tree(src, dst, exclude_dirs):
+            for item in os.listdir(src):
+                s = os.path.join(src, item)
+                d = os.path.join(dst, item)
+                if item in exclude_dirs:
+                    continue
+                if os.path.isdir(s):
+                    os.makedirs(d, exist_ok=True)
+                    copy_tree(s, d, exclude_dirs)
+                else:
+                    shutil.copy2(s, d)
 
-        return {
-            "success": True,
-            "message": "升级完成，请重启服务以应用更新",
-            "merge_conflict": merge_conflict,
-            "needs_restart": True
-        }
+        try:
+            exclude = {"data", "workspace", ".git"}
+            copy_tree(extracted_dir, str(PROJECT_ROOT), exclude)
+        except Exception as e:
+            return {"success": False, "error": f"复制文件失败：{str(e)}"}
 
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "拉取超时，请检查网络连接"}
-    except Exception as e:
-        return {"success": False, "error": f"升级失败：{str(e)}"}
+    return {
+        "success": True,
+        "message": "升级完成，请重启服务以应用更新",
+        "needs_restart": True
+    }
 
 
 if __name__ == "__main__":

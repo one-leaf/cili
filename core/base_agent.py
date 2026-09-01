@@ -281,7 +281,9 @@ class BaseAgent:
         except Exception as e:
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:
-            tool.save_output_to_file(result.output)
+            tool.save_output_to_file(result)
+            # 更新 _output_path 为实际保存的文件路径（可能是 .json）
+            output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
             tool.output_file = None
 
         elapsed = time.perf_counter() - start_time
@@ -323,7 +325,11 @@ class BaseAgent:
         """Read tool output from external files before sending to LLM.
 
         Session only stores metadata. This method reads actual content
-        from {session_dir}/{tool_use_id}.txt files.
+        from {session_dir}/{tool_use_id}.txt or .json files.
+
+        支持两种格式：
+        - .txt: 纯文本
+        - .json: 多模态内容（包含图片和文本块）
         """
         for msg in messages:
             if msg.get("role") != "user":
@@ -342,8 +348,8 @@ class BaseAgent:
                 if block.get("_compacted"):
                     output_filename = block.get("_output_path", "")
                     if output_filename:
-                        # Extract tool_use_id from filename (remove .txt extension)
-                        tool_use_id = output_filename.replace(".txt", "")
+                        # Extract tool_use_id from filename (remove extension)
+                        tool_use_id = output_filename.replace(".txt", "").replace(".json", "")
                         block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
                     else:
                         block["content"] = "[Compacted: tool_use_id unknown]"
@@ -361,29 +367,55 @@ class BaseAgent:
                     continue
 
                 try:
-                    file_content = file_path.read_text(encoding='utf-8', errors='replace')
+                    # 检查是否是 json 文件（多模态内容）
+                    if str(file_path).endswith(".json"):
+                        import json as json_module
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json_module.load(f)
+
+                        if data.get("type") == "multimodal":
+                            # 多模态内容：返回 content blocks 列表
+                            from core.llm.types import block_from_dict
+                            content_blocks = []
+                            for block_data in data.get("blocks", []):
+                                try:
+                                    content_blocks.append(block_from_dict(block_data))
+                                except Exception:
+                                    # 无法解析的块，跳过
+                                    pass
+                            # 将 content blocks 转为 dict 列表
+                            block["content"] = [
+                                cb.to_dict() if hasattr(cb, 'to_dict') else cb
+                                for cb in content_blocks
+                            ]
+                        else:
+                            block["content"] = "[工具输出格式错误]"
+                    else:
+                        # 纯文本文件
+                        file_content = file_path.read_text(encoding='utf-8', errors='replace')
+
+                        # Empty file = tool still running
+                        if not file_content:
+                            block["content"] = "[工具正在执行中...]"
+                            continue
+
+                        # Truncate + guide
+                        if block.get("_truncated"):
+                            truncated = Tool.truncate_middle(file_content, 8000)
+                            file_size = block.get('_file_size', len(file_content))
+                            guide = (
+                                f"\n\n---\n"
+                                f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
+                                f"完整输出保存在文件: {output_path}。"
+                                f"如需查看完整内容，请使用 read 工具分批读取该文件。"
+                            )
+                            block["content"] = truncated + guide
+                        else:
+                            block["content"] = Tool.truncate_result(file_content, Tool.MAX_TOOL_RESULT_SIZE_CHARS)
+
                 except Exception as e:
                     block["content"] = f"[读取工具输出失败: {e}]"
                     continue
-
-                # Empty file = tool still running
-                if not file_content:
-                    block["content"] = "[工具正在执行中...]"
-                    continue
-
-                # Truncate + guide
-                if block.get("_truncated"):
-                    truncated = Tool.truncate_middle(file_content, 8000)
-                    file_size = block.get('_file_size', len(file_content))
-                    guide = (
-                        f"\n\n---\n"
-                        f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
-                        f"完整输出保存在文件: {output_path}。"
-                        f"如需查看完整内容，请使用 read 工具分批读取该文件。"
-                    )
-                    block["content"] = truncated + guide
-                else:
-                    block["content"] = Tool.truncate_result(file_content, Tool.MAX_TOOL_RESULT_SIZE_CHARS)
 
         return messages
 

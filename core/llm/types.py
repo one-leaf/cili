@@ -171,7 +171,7 @@ class ToolResultBlock:
     """
 
     tool_call_id: str = ""
-    content: str = ""
+    content: str | list[dict] = ""  # str for plain text, list[dict] for multimodal (text + image blocks)
     is_error: bool = False
 
     # SubAgent extension fields (optional)
@@ -203,20 +203,8 @@ class ToolResultBlock:
     def from_dict(cls, data: dict[str, Any]) -> ToolResultBlock:
         """Create from dict."""
         content = data.get("content", "")
-        # Handle list content (legacy format)
-        if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                    elif block.get("type") == "image":
-                        text_parts.append("[image content]")
-                    else:
-                        text_parts.append(str(block))
-                else:
-                    text_parts.append(str(block))
-            content = "\n".join(text_parts)
+        # Keep list content as-is for multimodal support (text + image blocks)
+        # Adapter layer handles conversion to provider-specific format
 
         return cls(
             tool_call_id=data.get("tool_call_id", data.get("tool_use_id", "")),

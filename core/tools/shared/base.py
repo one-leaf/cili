@@ -150,12 +150,16 @@ class ToolResult:
         # Convert old interface to new interface
         if blocks is not None:
             self.blocks = blocks
-        elif output:
-            from core.llm.types import TextBlock
-            self.blocks = [TextBlock(text=output)]
         elif content:
             from core.llm.types import block_from_dict
             self.blocks = [block_from_dict(b) for b in content if isinstance(b, dict)]
+            # If output also provided (old-style multimodal), prepend as text description
+            if output:
+                from core.llm.types import TextBlock
+                self.blocks.insert(0, TextBlock(text=output))
+        elif output:
+            from core.llm.types import TextBlock
+            self.blocks = [TextBlock(text=output)]
         else:
             self.blocks = []
 
@@ -297,15 +301,19 @@ class Tool:
             path = os.path.join(self.cwd, path)
         return os.path.abspath(path)
 
-    def save_output_to_file(self, output: str) -> None:
+    def save_output_to_file(self, result: ToolResult) -> None:
         """统一保存工具输出到外部文件。
 
         由 agent 的 _execute_tool() 在工具执行后统一调用。
         如果文件已存在且有内容（_run_bash 实时写入过），则跳过避免覆盖。
-        如果文件不存在或为空（其他工具），则创建并写入。
+
+        支持两种格式：
+        - 纯文本：保存为 .txt（现有格式）
+        - 多模态：保存为 .json（包含图片和文本块）
         """
         if not self.output_file:
             return
+
         # 检查文件是否已有内容（_run_bash 实时写入）
         if os.path.exists(self.output_file):
             try:
@@ -313,9 +321,44 @@ class Tool:
                     return  # _run_bash 已实时写入，不覆盖
             except Exception:
                 pass
+
         try:
-            with open(self.output_file, "w", encoding="utf-8") as f:
-                f.write(output)
+            from core.llm.types import ImageBlock
+
+            # 检查是否有图片块
+            has_images = any(isinstance(block, ImageBlock) for block in result.blocks)
+
+            if has_images:
+                # 多模态内容：保存为 json（替换 .txt 后缀为 .json）
+                if self.output_file.endswith(".txt"):
+                    json_path = self.output_file[:-4] + ".json"
+                else:
+                    json_path = self.output_file + ".json"
+                data = {
+                    "type": "multimodal",
+                    "blocks": []
+                }
+                for block in result.blocks:
+                    if hasattr(block, 'to_dict'):
+                        data["blocks"].append(block.to_dict())
+                    elif hasattr(block, '__dict__'):
+                        # 简单转换
+                        block_dict = {}
+                        for k, v in block.__dict__.items():
+                            if not k.startswith('_'):
+                                block_dict[k] = v
+                        data["blocks"].append({"type": block.__class__.__name__.lower().replace('block', ''), **block_dict})
+
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                # 更新 _output_path 为 json 文件（供 agent 知道实际文件路径）
+                # 通过修改 output_file 属性实现
+                self.output_file = json_path
+            else:
+                # 纯文本：保持 txt
+                with open(self.output_file, "w", encoding="utf-8") as f:
+                    f.write(result.output)
         except Exception:
             pass  # 写入失败不影响工具执行
 

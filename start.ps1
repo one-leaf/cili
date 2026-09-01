@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Cili Agent startup script
 # Auto-detect and download Git Bash, Python, and LaTeX compiler
 
@@ -29,6 +29,8 @@ $GitUrl = @(
 )
 $TectonicUrl = @(
     "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
+    "https://ghproxy.net/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
+    "https://ghfast.top/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
     "https://gh-proxy.com/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip"
 )
 
@@ -117,32 +119,31 @@ function Download-File {
         [string]$OutputPath
     )
 
-    # Ensure TLS 1.2+ is enabled (required for HTTPS mirrors on Win10)
+    # Ensure TLS 1.2+ is enabled
     try {
         $secProtocol = [System.Net.ServicePointManager]::SecurityProtocol
         [System.Net.ServicePointManager]::SecurityProtocol = $secProtocol -bor [System.Net.SecurityProtocolType]::Tls12
     } catch { }
+
+    Import-Module BitsTransfer -ErrorAction SilentlyContinue
 
     foreach ($currentUrl in $Url) {
         try {
             Write-Status "Downloading: $currentUrl" "Yellow"
             Write-Status "To: $OutputPath" "Yellow"
 
-            Write-Status "Using certutil..."
-            & certutil -urlcache -split -f $currentUrl $OutputPath 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0 -and (Test-Path $OutputPath)) {
+            Start-BitsTransfer -Source $currentUrl -Destination $OutputPath -DisplayName "Downloading" -ErrorAction Stop
+            if ((Test-Path $OutputPath) -and ((Get-Item $OutputPath).Length -gt 0)) {
                 $fileSize = (Get-Item $OutputPath).Length
-                if ($fileSize -gt 0) {
-                    Write-Status "Download complete ($([math]::Round($fileSize / 1MB, 2)) MB)" "Green"
-                    return
-                }
+                Write-Status "Download complete ($([math]::Round($fileSize / 1MB, 2)) MB)" "Green"
+                return
             }
-            Write-Status "certutil failed (exit $LASTEXITCODE), trying next mirror..." "Yellow"
+            Write-Status "Download failed (empty file), trying next mirror..." "Yellow"
             Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Status "Download error: $($_.Exception.Message)" "Yellow"
+            Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue
     }
 
     throw "All download mirrors failed"
@@ -238,9 +239,10 @@ function Install-Python {
     Write-Status "Installing pip..."
     $getPipPath = Join-Path $PythonDir "get-pip.py"
     try {
-        # 使用阿里云镜像下载 get-pip.py
+        # Download get-pip.py using BITS
+        Import-Module BitsTransfer -ErrorAction SilentlyContinue
         $getPipUrl = "https://mirrors.aliyun.com/pypi/get-pip.py"
-        & certutil -urlcache -split -f $getPipUrl $getPipPath 2>&1 | Out-Null
+        Start-BitsTransfer -Source $getPipUrl -Destination $getPipPath -DisplayName "Downloading get-pip.py" -ErrorAction Stop
 
         if (Test-Path $getPipPath) {
             # 使用阿里云源安装 pip

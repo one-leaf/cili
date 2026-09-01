@@ -1,4 +1,4 @@
-# Cili Agent 升级工具
+﻿# Cili Agent 升级工具
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -7,121 +7,104 @@ Write-Host "  Cili Agent 升级工具" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ==================== Check Git in deps ====================
+# ==================== Switch to project root ====================
 
-$depsGit = Join-Path $PSScriptRoot "..\data\deps\git\cmd\git.exe"
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location $projectRoot
+Write-Host "[INFO] 工作目录: $(Get-Location)" -ForegroundColor Gray
+Write-Host ""
 
-if (Test-Path $depsGit) {
-    $gitCmd = $depsGit
-    Write-Host "[OK] 找到 Git: $depsGit" -ForegroundColor Green
-} else {
-    Write-Host "[ERROR] deps 目录中未找到 git" -ForegroundColor Red
+# ==================== Download latest code ====================
+
+Write-Host "[DOWNLOAD] 正在下载最新代码..." -ForegroundColor Cyan
+
+$tempZip = Join-Path $env:TEMP "cili-main.zip"
+$tempExtract = Join-Path $env:TEMP "cili-main-extract"
+
+# Clean temp files
+if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+
+# Download using BITS (has progress bar)
+Import-Module BitsTransfer -ErrorAction SilentlyContinue
+
+$urls = @(
+    'https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
+    'https://ghproxy.net/https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
+    'https://ghfast.top/https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
+    'https://gh-proxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip'
+)
+
+$downloaded = $false
+foreach ($url in $urls) {
+    try {
+        Write-Host "  Trying: $url" -ForegroundColor Cyan
+        Start-BitsTransfer -Source $url -Destination $tempZip -DisplayName 'Downloading' -ErrorAction Stop
+        if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0)) {
+            Write-Host "  OK! Size: $([math]::Round((Get-Item $tempZip).Length/1KB)) KB" -ForegroundColor Green
+            $downloaded = $true
+            break
+        }
+    } catch {
+        Write-Host "  Failed: $_" -ForegroundColor Yellow
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+    }
+}
+
+if (-not $downloaded) {
+    Write-Host "[ERROR] 下载失败" -ForegroundColor Red
     Write-Host ""
-    Write-Host "请先运行 start.cmd 下载 Git" -ForegroundColor Yellow
+    Write-Host "请检查网络连接或使用 VPN" -ForegroundColor Yellow
     Write-Host ""
     Read-Host "按回车键退出"
     exit 1
 }
 
-Write-Host ""
+# ==================== Extract ====================
 
-# ==================== Initialize Git repo ====================
+Write-Host "[EXTRACT] 正在解压..." -ForegroundColor Cyan
 
-if (-not (Test-Path ".git")) {
-    Write-Host "[INIT] 初始化本地仓库..." -ForegroundColor Yellow
-    & $gitCmd init
-    & $gitCmd remote add origin https://github.com/one-leaf/cili.git
-    Write-Host ""
+try {
+    Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+} catch {
+    Write-Host "[ERROR] 解压失败" -ForegroundColor Red
+    Read-Host "按回车键退出"
+    exit 1
 }
 
-# ==================== Test mirrors ====================
+# Find extracted folder
+$extractedDir = Get-ChildItem -Path $tempExtract -Directory -Filter "cili-main*" | Select-Object -First 1
 
-Write-Host "[NET] 测试镜像源..." -ForegroundColor Cyan
+if (-not $extractedDir) {
+    Write-Host "[ERROR] 未找到解压目录" -ForegroundColor Red
+    Read-Host "按回车键退出"
+    exit 1
+}
 
-# Test GitHub direct
-Write-Host "  测试 GitHub 直连..." -ForegroundColor Gray
-$testResult = & $gitCmd ls-remote --heads https://github.com/one-leaf/cili.git 2>&1
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "    [OK] GitHub 直连可用" -ForegroundColor Green
-    $remoteUrl = "https://github.com/one-leaf/cili.git"
-} else {
-    # Test ghproxy mirror
-    Write-Host "  测试 ghproxy 镜像..." -ForegroundColor Gray
-    $testResult = & $gitCmd ls-remote --heads https://ghproxy.com/https://github.com/one-leaf/cili.git 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "    [OK] ghproxy 镜像可用" -ForegroundColor Green
-        $remoteUrl = "https://ghproxy.com/https://github.com/one-leaf/cili.git"
+Write-Host "[OK] 已解压到 $($extractedDir.FullName)" -ForegroundColor Green
+
+# ==================== Copy files ====================
+
+Write-Host "[UPDATE] 正在更新文件..." -ForegroundColor Cyan
+
+# Copy files, excluding data/, workspace/, .git/, scripts/ (copy scripts/ last)
+$excludeDirs = @('data', 'workspace', '.git', 'scripts')
+Get-ChildItem -Path $extractedDir.FullName | Where-Object { $_.Name -notin $excludeDirs } | ForEach-Object {
+    $target = Join-Path $projectRoot $_.Name
+    if ($_.PSIsContainer) {
+        Copy-Item $_.FullName $target -Recurse -Force
     } else {
-        Write-Host "[ERROR] 所有镜像源均不可用" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "请检查网络连接或使用 VPN" -ForegroundColor Yellow
-        Write-Host ""
-        Read-Host "按回车键退出"
-        exit 1
+        Copy-Item $_.FullName $target -Force
     }
 }
 
-Write-Host ""
+# Copy scripts/ last (after all other files) to avoid overwriting running script
+Copy-Item -Path (Join-Path $extractedDir.FullName 'scripts') -Destination (Join-Path $projectRoot 'scripts') -Recurse -Force
 
-# ==================== Save local changes ====================
+# ==================== Cleanup ====================
 
-$hasStash = $false
-& $gitCmd diff --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[SAVE] 检测到本地修改，正在暂存..." -ForegroundColor Yellow
-    & $gitCmd stash
-    $hasStash = $true
-}
-
-# ==================== Fetch latest ====================
-
-Write-Host "[FETCH] 正在拉取最新代码..." -ForegroundColor Cyan
-& $gitCmd fetch origin main
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] 拉取失败" -ForegroundColor Red
-    Write-Host ""
-    if ($hasStash) {
-        Write-Host "  恢复本地修改..." -ForegroundColor Yellow
-        & $gitCmd stash pop
-    }
-    Write-Host ""
-    Write-Host "建议：" -ForegroundColor Yellow
-    Write-Host "  1. 检查网络连接"
-    Write-Host "  2. 使用 VPN 或代理"
-    Write-Host "  3. 手动下载：https://github.com/one-leaf/cili"
-    Write-Host ""
-    Read-Host "按回车键退出"
-    exit 1
-}
-
-# ==================== Update to latest ====================
-
-& $gitCmd checkout -B main origin/main
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] 更新失败" -ForegroundColor Red
-    if ($hasStash) {
-        Write-Host "  恢复本地修改..." -ForegroundColor Yellow
-        & $gitCmd stash pop
-    }
-    Read-Host "按回车键退出"
-    exit 1
-}
-
-# ==================== Restore local changes ====================
-
-if ($hasStash) {
-    Write-Host "[RESTORE] 恢复本地修改..." -ForegroundColor Yellow
-    & $gitCmd stash pop
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[WARN] 合并冲突，请手动解决" -ForegroundColor Yellow
-        Write-Host "  冲突文件："
-        & $gitCmd diff --name-only
-        Write-Host ""
-    }
-}
+if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
 
 # ==================== Done ====================
 
@@ -132,6 +115,6 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "提示：" -ForegroundColor Cyan
 Write-Host "  - 重新启动服务以应用更新"
-Write-Host "  - 如有冲突，请手动解决后重新提交"
+Write-Host "  - data/ 和 workspace/ 已保留"
 Write-Host ""
 Read-Host "按回车键退出"
