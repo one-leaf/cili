@@ -1843,7 +1843,7 @@ async def list_files(workspace_uuid: str, path: str = ""):
 
 class UpgradeRequest(BaseModel):
     """Request model for upgrade."""
-    mirror: str = "github"  # "github" or "ghproxy"
+    mirror: str = "github"  # "github" | "ghproxy" | "ghfast" | "gh-proxy"
 
 
 @app.post("/api/upgrade")
@@ -1851,7 +1851,7 @@ async def upgrade(request: UpgradeRequest):
     """自动升级：下载最新代码并覆盖。
 
     Args:
-        mirror: 镜像源 ("github" 或 "ghproxy")
+        mirror: 镜像源 ("github" | "ghproxy" | "ghfast" | "gh-proxy")
 
     Returns:
         升级结果 {"success": bool, "message": str}
@@ -1859,25 +1859,43 @@ async def upgrade(request: UpgradeRequest):
     import zipfile
     import tempfile
 
-    # 选择下载地址
-    if request.mirror == "ghproxy":
-        zip_url = "https://ghproxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip"
-    else:
-        zip_url = "https://github.com/one-leaf/cili/archive/refs/heads/main.zip"
+    # 镜像地址列表（与 scripts/upgrade.ps1 一致）
+    MIRROR_URLS = {
+        "github": "https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
+        "ghproxy": "https://ghproxy.net/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
+        "ghfast": "https://ghfast.top/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
+        "gh-proxy": "https://gh-proxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
+    }
+    primary_url = MIRROR_URLS.get(request.mirror, MIRROR_URLS["github"])
+    # 构建尝试顺序：首选镜像优先，其余作为 fallback
+    fallback_urls = [v for k, v in MIRROR_URLS.items() if k != request.mirror]
+    download_urls = [primary_url] + fallback_urls
 
     # 创建临时目录
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_zip = os.path.join(temp_dir, "cili-main.zip")
         temp_extract = os.path.join(temp_dir, "extract")
 
-        # 下载
+        # 下载（依次尝试各镜像，失败自动切换）
         try:
             import httpx
+            downloaded = False
+            last_error = ""
             async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.get(zip_url, follow_redirects=True)
-                resp.raise_for_status()
-                with open(temp_zip, "wb") as f:
-                    f.write(resp.content)
+                for url in download_urls:
+                    try:
+                        resp = await client.get(url, follow_redirects=True)
+                        resp.raise_for_status()
+                        if resp.content:
+                            with open(temp_zip, "wb") as f:
+                                f.write(resp.content)
+                            downloaded = True
+                            break
+                    except Exception as e:
+                        last_error = str(e)
+                        continue
+            if not downloaded:
+                return {"success": False, "error": f"所有镜像均下载失败：{last_error}"}
         except Exception as e:
             return {"success": False, "error": f"下载失败：{str(e)}"}
 
