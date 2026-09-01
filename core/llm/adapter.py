@@ -121,12 +121,13 @@ class Adapter(ABC):
             transport: HttpTransport instance for making the detection request
         """
         try:
-            status, _, data = transport.post(
+            # /openapi.json is a standard REST endpoint, must use GET
+            resp = transport.client.get(
                 f"{self.base_url}/openapi.json",
-                headers={"content-type": "application/json"},
-                body={},
+                timeout=10,
             )
-            if status == 200:
+            if resp.status_code == 200:
+                data = resp.json()
                 info = data.get("info", {})
                 if "litellm" in info.get("title", "").lower():
                     self._is_litellm_proxy = True
