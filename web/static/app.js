@@ -2513,7 +2513,6 @@ async function openSettings() {
         // ── System parameters ──
         const systemCfg = cfg.system || {};
         document.getElementById('system-pip-mirror').value = systemCfg.pip_mirror || '';
-        document.getElementById('system-bash-path').value = systemCfg.bash_path || '';
         document.getElementById('system-browser-path').value = systemCfg.browser_path || '';
         document.getElementById('system-search-engine').value = systemCfg.search_engine || 'bing';
         document.getElementById('system-allowed-ips').value = (systemCfg.allowed_ips || []).join(', ');
@@ -2586,14 +2585,12 @@ async function saveSettings() {
 
     // ── System parameters ──
     const pipMirror = document.getElementById('system-pip-mirror').value.trim();
-    const bashPath = document.getElementById('system-bash-path').value.trim();
     const browserPath = document.getElementById('system-browser-path').value.trim();
     const searchEngine = document.getElementById('system-search-engine').value;
     const allowedIpsStr = document.getElementById('system-allowed-ips').value.trim();
     const allowedIps = allowedIpsStr ? allowedIpsStr.split(',').map(ip => ip.trim()).filter(Boolean) : [];
     payload.system = {
         pip_mirror: pipMirror,
-        bash_path: bashPath,
         browser_path: browserPath,
         search_engine: searchEngine,
         allowed_ips: allowedIps

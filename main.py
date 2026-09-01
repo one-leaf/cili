@@ -104,21 +104,14 @@ _CILI_DIR = os.path.join(_PROJECT_ROOT, "data", "cili")
 _DEPS_DIR = os.path.join(_PROJECT_ROOT, "data", "deps")
 _DEPS_GIT_BASH = os.path.join(_DEPS_DIR, "git", "bin", "bash.exe")
 
-# Runtime Python directory (always use data/deps/python)
-_VENV_DIR = os.path.join(_DEPS_DIR, "python")
-_VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
-# _VENV_PYTHON is determined dynamically based on venv vs embeddable mode
-# venv mode: Scripts/python.exe, embeddable mode: python.exe at root
+# Runtime Python directory (always use data/deps/python, embeddable mode)
+_DEPS_PYTHON_DIR = os.path.join(_DEPS_DIR, "python")
+_DEPS_PYTHON_SCRIPTS = os.path.join(_DEPS_PYTHON_DIR, "Scripts")
 
 
-def _get_venv_python() -> str:
-    """Get the correct Python executable path based on venv vs embeddable mode."""
-    # Check if it's a venv (has Scripts directory with python.exe)
-    venv_python = os.path.join(_VENV_SCRIPTS, "python.exe")
-    if os.path.exists(venv_python):
-        return venv_python
-    # Otherwise it's embeddable mode (python.exe at root)
-    return os.path.join(_VENV_DIR, "python.exe")
+def _get_deps_python() -> str:
+    """Get the deps Python executable path."""
+    return os.path.join(_DEPS_PYTHON_DIR, "python.exe")
 
 _SETTING_FILE = os.path.join(_CILI_DIR, "setting.json")
 
@@ -133,11 +126,6 @@ _DEFAULT_MODEL = {
     "temperature": 0.2,
 }
 
-
-def _in_venv() -> bool:
-    """Check if running inside the agent venv (or deps Python in _pth mode)."""
-    # Check if running from deps Python (embeddable mode or venv)
-    return os.path.abspath(sys.prefix) == os.path.abspath(_VENV_DIR)
 
 
 def _setup_logging() -> None:
@@ -200,7 +188,6 @@ def _create_example_config() -> None:
         "system": {
             "_comment": "系统参数配置",
             "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/",  # Python 包镜像源，留空使用官方源
-            "bash_path": "",  # Git Bash 路径，留空自动检测
             "browser_path": "",  # 浏览器可执行文件路径，留空自动检测（Edge→Chrome）
             "allowed_ips": [],  # IP 白名单，留空仅允许本机访问。示例: ["192.168.1.100", "10.0.0.5"]
         }
@@ -316,12 +303,12 @@ def _init_settings() -> None:
         print(f"[setup] Warning: failed to create settings: {e}")
 
 
-def _check_venv_healthy() -> bool:
-    """Check if existing venv is functional (pip works)."""
-    venv_python = os.path.join(_VENV_SCRIPTS, "python.exe")
-    if not os.path.exists(venv_python):
+def _check_deps_python_healthy() -> bool:
+    """Check if existing deps Python is functional (pip works)."""
+    python_exe = _get_deps_python()
+    if not os.path.exists(python_exe):
         return False
-    pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
+    pip_exe = os.path.join(_DEPS_PYTHON_SCRIPTS, "pip.exe")
     if not os.path.exists(pip_exe):
         return False
     try:
@@ -336,78 +323,34 @@ def _check_venv_healthy() -> bool:
         return False
 
 
-def _create_venv() -> bool:
-    """Create virtual environment in data/deps/python.
-
-    Strategy:
-    - If deps Python already exists and works, use it directly
-    - If system Python 3.10+ exists, create venv using python -m venv
-    - Otherwise, download embeddable Python to deps and configure _pth
-    """
-    # Check if deps Python already exists and works
-    if os.path.exists(_VENV_DIR):
-        # Check if it's a working venv
-        if _check_venv_healthy():
-            print(f"[setup] Using existing deps venv: {_VENV_DIR}")
+def _ensure_deps_python() -> bool:
+    """Ensure deps Python exists and is functional."""
+    if os.path.exists(_DEPS_PYTHON_DIR):
+        if _check_deps_python_healthy():
+            print(f"[setup] Using existing deps Python: {_DEPS_PYTHON_DIR}")
             return True
-
-        # Check if it's embeddable Python (has _pth file, no venv structure)
-        pth_files = [f for f in os.listdir(_VENV_DIR) if f.endswith("._pth")]
-        embed_python = os.path.join(_VENV_DIR, "python.exe")
-        if pth_files and os.path.exists(embed_python):
-            # Verify pip is installed (required for package management)
-            pip_exe = os.path.join(_VENV_DIR, "Scripts", "pip.exe")
-            if not os.path.exists(pip_exe):
-                print(f"[setup] Embeddable Python missing pip, reinstalling...")
-                import shutil
-                shutil.rmtree(_VENV_DIR, ignore_errors=True)
-                # Fall through to download embeddable Python
-            else:
-                print(f"[setup] Using existing embeddable Python: {_VENV_DIR}")
-                return True
-
         # Broken installation, recreate
-        print(f"[setup] Deps Python is broken, recreating: {_VENV_DIR}")
+        print(f"[setup] Deps Python is broken, recreating: {_DEPS_PYTHON_DIR}")
         import shutil
-        shutil.rmtree(_VENV_DIR, ignore_errors=True)
+        shutil.rmtree(_DEPS_PYTHON_DIR, ignore_errors=True)
 
-    # Try to create venv using system Python
-    if sys.version_info >= (3, 10):
-        print(f"[setup] Creating venv in: {_VENV_DIR} ...")
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "venv", _VENV_DIR],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.returncode == 0:
-                print("[setup] Venv created.")
-                return True
-            print(f"[setup] Error: venv creation failed: {result.stderr.strip()[:200]}")
-            # Fall through to download embeddable Python
-        except Exception as e:
-            print(f"[setup] Error: venv creation failed: {e}")
-            # Fall through to download embeddable Python
-
-    # System Python too old or venv creation failed, download embeddable Python
-    return _download_embeddable_python()
+    return _install_deps_python()
 
 
-def _download_embeddable_python() -> bool:
+def _install_deps_python() -> bool:
     """Download and configure embeddable Python to data/deps/python."""
     import shutil
     import zipfile
 
-    # Embeddable Python has python.exe at root (not in Scripts/)
-    embed_python = os.path.join(_VENV_DIR, "python.exe")
+    # Embeddable Python has python.exe at root
+    embed_python = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
 
     print("[setup] Downloading embeddable Python 3.11.9...")
 
     # Clean up existing directory
-    if os.path.exists(_VENV_DIR):
-        shutil.rmtree(_VENV_DIR, ignore_errors=True)
-    os.makedirs(_VENV_DIR, exist_ok=True)
+    if os.path.exists(_DEPS_PYTHON_DIR):
+        shutil.rmtree(_DEPS_PYTHON_DIR, ignore_errors=True)
+    os.makedirs(_DEPS_PYTHON_DIR, exist_ok=True)
 
     # Download embeddable Python
     python_version = "3.11.9"
@@ -432,7 +375,7 @@ def _download_embeddable_python() -> bool:
     print("[setup] Extracting Python...")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(_VENV_DIR)
+            zf.extractall(_DEPS_PYTHON_DIR)
     except Exception as e:
         print(f"[setup] Error: extraction failed: {e}")
         return False
@@ -441,12 +384,12 @@ def _download_embeddable_python() -> bool:
             os.remove(zip_path)
 
     # Configure _pth file
-    pth_files = [f for f in os.listdir(_VENV_DIR) if f.endswith("._pth")]
+    pth_files = [f for f in os.listdir(_DEPS_PYTHON_DIR) if f.endswith("._pth")]
     if not pth_files:
         print("[setup] Error: _pth file not found")
         return False
 
-    pth_path = os.path.join(_VENV_DIR, pth_files[0])
+    pth_path = os.path.join(_DEPS_PYTHON_DIR, pth_files[0])
     print(f"[setup] Configuring _pth file: {pth_path}")
 
     try:
@@ -479,7 +422,7 @@ def _download_embeddable_python() -> bool:
 
     # Install pip
     print("[setup] Installing pip...")
-    get_pip_path = os.path.join(_VENV_DIR, "get-pip.py")
+    get_pip_path = os.path.join(_DEPS_PYTHON_DIR, "get-pip.py")
     try:
         # 使用阿里云镜像下载 get-pip.py
         result = subprocess.run(
@@ -514,129 +457,12 @@ def _download_embeddable_python() -> bool:
     return True
 
 
-def _ensure_pth_config() -> bool:
-    """Ensure _pth file is correctly configured for embeddable Python.
-
-    Returns True if config was modified (requires restart), False if already correct.
-    """
-    # Find _pth file
-    pth_files = [f for f in os.listdir(_VENV_DIR) if f.endswith("._pth")]
-    if not pth_files:
-        return False
-
-    pth_path = os.path.join(_VENV_DIR, pth_files[0])
-
-    try:
-        with open(pth_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        modified = False
-        new_lines = []
-        has_site_import = False
-        has_site_packages = False
-
-        for line in lines:
-            line_stripped = line.strip()
-            # Uncomment "import site" if commented
-            if line_stripped == '#import site':
-                new_lines.append('import site\n')
-                has_site_import = True
-                modified = True
-            elif line_stripped == 'import site':
-                new_lines.append(line)
-                has_site_import = True
-            # Check for Lib\site-packages
-            elif line_stripped == 'Lib\\site-packages':
-                new_lines.append(line)
-                has_site_packages = True
-            else:
-                new_lines.append(line)
-
-        # Add import site if missing
-        if not has_site_import:
-            new_lines.append('import site\n')
-            modified = True
-
-        # Add Lib\site-packages if missing
-        if not has_site_packages:
-            new_lines.append('Lib\\site-packages\n')
-            modified = True
-
-        # Write back if modified
-        if modified:
-            with open(pth_path, 'w', encoding='utf-8') as f:
-                f.writelines(new_lines)
-            return True
-
-        return False
-    except Exception as e:
-        print(f"[setup] Warning: failed to check _pth config: {e}")
-        return False
-
-
-def _ensure_pip() -> bool:
-    """Ensure pip is installed in the venv (for embeddable Python).
-
-    Returns (success, needs_restart) tuple.
-    """
-    pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
-    needs_restart = False
-
-    # Check and fix _pth config first
-    if _ensure_pth_config():
-        print("[setup] Updated Python _pth configuration")
-        needs_restart = True
-
-    if os.path.exists(pip_exe):
-        return True, needs_restart
-
-    print("[setup] Installing pip...")
-    embed_python = _get_venv_python()
-    if not os.path.exists(embed_python):
-        print(f"[setup] Error: Python not found at {embed_python}")
-        return False, needs_restart
-
-    get_pip_path = os.path.join(_VENV_DIR, "get-pip.py")
-    try:
-        # 使用阿里云镜像下载 get-pip.py
-        result = subprocess.run(
-            ["certutil", "-urlcache", "-split", "-f",
-             "https://mirrors.aliyun.com/pypi/get-pip.py", get_pip_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0 or not os.path.exists(get_pip_path):
-            print(f"[setup] Error: pip download failed")
-            return False, needs_restart
-
-        # 使用阿里云源安装 pip
-        result = subprocess.run(
-            [embed_python, get_pip_path, "-i", "https://mirrors.aliyun.com/pypi/simple/", "--no-warn-script-location"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            print(f"[setup] Error: pip installation failed: {result.stderr.strip()[:200]}")
-            return False, needs_restart
-    except Exception as e:
-        print(f"[setup] Error: pip installation failed: {e}")
-        return False, needs_restart
-    finally:
-        if os.path.exists(get_pip_path):
-            os.remove(get_pip_path)
-
-    print("[setup] pip installed successfully.")
-    return True, True  # 安装了新包，需要重启
-
-
 def _check_installed_packages() -> dict[str, str]:
-    """Check which packages are installed in the venv and return {name: version}."""
+    """Check which packages are installed in deps Python and return {name: version}."""
     import subprocess
     try:
-        # Use venv Python to check installed packages
-        python_exe = _get_venv_python()
+        # Use deps Python to check installed packages
+        python_exe = _get_deps_python()
         result = subprocess.run(
             [python_exe, "-c", """
 import importlib.metadata
@@ -687,7 +513,7 @@ def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
         "pytest",
     ]
 
-    pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
+    pip_exe = os.path.join(_DEPS_PYTHON_SCRIPTS, "pip.exe")
     installed = _check_installed_packages()
 
     # Find missing packages
@@ -764,155 +590,21 @@ def _get_pip_mirror() -> str:
     return _load_settings_cached().get("system", {}).get("pip_mirror", default)
 
 
-def _setup_environment() -> bool:
-    """Setup complete environment: directories, settings, Git Bash, venv, packages."""
-    _setup_directories()
-    _init_settings()
-    if not _init_git_bash():
-        return False
-
-    # Always use data/deps/python as the runtime
-    if not _create_venv():
-        return False
-
-    pip_mirror = _get_pip_mirror()
-    pkg_success, _ = _install_packages(pip_mirror)
-    if not pkg_success:
-        return False
-
-    print("[setup] Environment ready.")
-    return True
-
-
 def _init_git_bash() -> bool:
-    """Find Git Bash and export path via environment variable for tools.
-
-    Priority:
-    1. Config file (system.bash_path)
-    2. Environment variable GIT_BASH_PATH
-    3. Search via PATH environment variable (preferred, more reliable)
-    4. Auto-detect common installation paths
+    """Check if Git Bash exists in deps directory.
 
     Returns True if bash found, False otherwise (triggers exit).
     """
-    # 1. Check config file first
-    config_bash = ""
-    try:
-        config_bash = _load_settings_cached().get("system", {}).get("bash_path", "")
-    except Exception:
-        pass
-
-    if config_bash and os.path.isfile(config_bash):
-        os.environ["GIT_BASH_PATH"] = config_bash
-        print(f"[setup] Git Bash from config: {config_bash}")
-        return True
-    elif config_bash:
-        print(f"[setup] Error: configured bash_path not found: {config_bash}")
-
-    # 2. Environment variable (user override)
-    env_bash = os.environ.get("GIT_BASH_PATH", "")
-    if env_bash and os.path.isfile(env_bash):
-        print(f"[setup] Git Bash from env: {env_bash}")
-        return True
-
-    # 2.5. Check deps directory
+    # Check deps directory
     if os.path.isfile(_DEPS_GIT_BASH):
         os.environ["GIT_BASH_PATH"] = _DEPS_GIT_BASH
         print(f"[setup] Git Bash from deps: {_DEPS_GIT_BASH}")
         return True
 
-    # 3. Search via PATH environment variable (most reliable)
-    bash_path = None
-
-    # 3a. Find Git root from PATH, then use bin/bash.exe if available
-    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-    git_root = None
-
-    for path_dir in path_dirs:
-        # Check if this is a Git subdirectory
-        if "Git" in path_dir:
-            # Try to find Git root by checking parent directories
-            test_path = path_dir
-            for _ in range(3):  # Check up to 3 levels up
-                if os.path.isfile(os.path.join(test_path, "cmd", "git.exe")):
-                    git_root = test_path
-                    break
-                parent = os.path.dirname(test_path)
-                if parent == test_path:
-                    break
-                test_path = parent
-            if git_root:
-                break
-
-    # If we found Git root, prefer bin/bash.exe (launcher)
-    if git_root:
-        launcher = os.path.join(git_root, "bin", "bash.exe")
-        if os.path.isfile(launcher):
-            bash_path = launcher
-
-    # 3b. Fallback: use where command to find bash in PATH
-    if not bash_path:
-        try:
-            result = subprocess.run(
-                ["where", "bash"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split("\n"):
-                    line = line.strip()
-                    if "Git" in line and line.endswith("bash.exe"):
-                        bash_path = line
-                        break
-        except Exception:
-            pass
-
-    # 3c. Check common Git installation paths directly
-    if not bash_path:
-        candidates = [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files\Git\usr\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\usr\bin\bash.exe"),
-        ]
-
-        for path in candidates:
-            if os.path.isfile(path):
-                bash_path = path
-                break
-
-    if bash_path:
-        os.environ["GIT_BASH_PATH"] = bash_path
-        print(f"[setup] Git Bash found: {bash_path}")
-        return True
-
-    # Not found - fatal error
-    print("[setup] FATAL: Git Bash not found!")
-    print("[setup] Please install Git for Windows from https://git-scm.com/download/win")
-    print("[setup] Or configure bash_path in data/setting.json under system section:")
-    print('[setup]   "system": { "bash_path": "C:/Program Files/Git/bin/bash.exe" }')
+    # Not found - fatal error (should have been downloaded by start.ps1)
+    print("[setup] FATAL: Git Bash not found in deps directory!")
+    print("[setup] Please use start.cmd to start Cili Agent, which will auto-download Git Bash.")
     return False
-
-
-def _relaunch_in_venv(args: list[str]) -> int:
-    """Relaunch the script using the venv's Python."""
-    script_path = os.path.abspath(__file__)
-    python_exe = _get_venv_python()
-    cmd = [python_exe, script_path] + args
-    print(f"[setup] Relaunching: {' '.join(cmd)}")
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=_PROJECT_ROOT,
-        )
-        return result.returncode
-    except KeyboardInterrupt:
-        # Ctrl+C: wait for child to exit, then return cleanly
-        return 0
-    except Exception as e:
-        print(f"[setup] Error: failed to relaunch: {e}")
-        return 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -980,31 +672,23 @@ def main() -> None:
         except Exception:
             pass
 
-    # 配置日志系统（在 venv 检查之前，确保日志从一开始就工作）
+    # 配置日志系统
     _setup_logging()
     logger = logging.getLogger(__name__)
     logger.info("日志系统已初始化")
 
-    # Check if we need to set up venv and relaunch
-    if not _in_venv():
-        print("[setup] Not running in venv, setting up environment...")
+    # Setup directories and settings
+    _setup_directories()
+    _init_settings()
 
-        # Setup environment
-        if not _setup_environment():
-            print("[setup] Error: environment setup failed", file=sys.stderr)
-            sys.exit(1)
+    # Check Git Bash in deps
+    if not _init_git_bash():
+        print("[setup] Error: Git Bash not found", file=sys.stderr)
+        sys.exit(1)
 
-        # Relaunch in venv
-        returncode = _relaunch_in_venv(sys.argv[1:])
-        sys.exit(returncode)
-
-    # We're in the venv now, proceed directly to web UI mode
-    print(f"[setup] Running in venv: {sys.prefix}")
-
-    # Ensure pip is installed (for embeddable Python)
-    pip_success, pip_needs_restart = _ensure_pip()
-    if not pip_success:
-        print("[setup] Error: failed to install pip", file=sys.stderr)
+    # Ensure deps Python exists and is healthy
+    if not _ensure_deps_python():
+        print("[setup] Error: deps Python setup failed", file=sys.stderr)
         sys.exit(1)
 
     # Ensure all required packages are installed
@@ -1014,8 +698,8 @@ def main() -> None:
         print("[setup] Error: failed to install required packages", file=sys.stderr)
         sys.exit(1)
 
-    # If pip or packages were newly installed, need to restart for imports to work
-    if pip_needs_restart or pkg_installed:
+    # If packages were newly installed, need to restart for imports to work
+    if pkg_installed:
         print("[setup] New packages installed, restarting service...")
         # Re-execute the same script with same arguments
         os.execv(sys.executable, [sys.executable] + sys.argv)

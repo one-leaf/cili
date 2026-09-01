@@ -16,7 +16,6 @@ $DepsDir = Join-Path $DataDir "deps"
 $GitDir = Join-Path $DepsDir "git"
 $PythonDir = Join-Path $DepsDir "python"
 $TectonicDir = Join-Path $DepsDir "tectonic"
-$SettingFile = Join-Path $DataDir "setting.json"
 
 # Download URLs
 $PythonVersion = "3.11.9"
@@ -40,89 +39,22 @@ function Write-Status {
 }
 
 function Test-GitBash {
-    # 1. Check deps directory
+    # Only check deps directory
     $depsBash = Join-Path $GitDir "bin\bash.exe"
     if (Test-Path $depsBash) {
         Write-Status "Git Bash found in deps: $depsBash"
         return $depsBash
     }
-
-    # 2. Check environment variables
-    $envBash = $env:GIT_BASH_PATH
-    if ($envBash -and (Test-Path $envBash)) {
-        Write-Status "Git Bash from env: $envBash"
-        return $envBash
-    }
-
-    # 3. Check PATH
-    $oldErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $whereResult = where.exe bash 2>$null
-    $ErrorActionPreference = $oldErrorAction
-    if ($whereResult) {
-        foreach ($line in $whereResult -split "`n") {
-            $line = $line.Trim()
-            if ($line -like "*Git*" -and $line -like "*bash.exe") {
-                Write-Status "Git Bash from PATH: $line"
-                return $line
-            }
-        }
-    }
-
-    # 4. Check common installation paths
-    $candidates = @(
-        "$env:ProgramFiles\Git\bin\bash.exe",
-        "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
-        "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe"
-    )
-    foreach ($path in $candidates) {
-        if (Test-Path $path) {
-            Write-Status "Git Bash found: $path"
-            return $path
-        }
-    }
-
     return $null
 }
 
 function Test-Python {
-    # 1. Check deps directory
+    # Only check deps directory
     $depsPython = Join-Path $PythonDir "python.exe"
     if (Test-Path $depsPython) {
         Write-Status "Python found in deps: $depsPython"
         return $depsPython
     }
-
-    # 2. Check system Python
-    $systemPython = $null
-    $oldErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $whereResult = where.exe python 2>$null
-    $ErrorActionPreference = $oldErrorAction
-    if ($whereResult) {
-        $systemPython = ($whereResult -split "`n")[0].Trim()
-    }
-
-    if ($systemPython -and (Test-Path $systemPython)) {
-        # Check Python version (require 3.10+)
-        # Temporarily allow stderr (some Python versions output version info to stderr)
-        $oldErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $versionOutput = & $systemPython --version 2>&1
-        $ErrorActionPreference = $oldErrorAction
-        if ($versionOutput -match "Python (\d+)\.(\d+)") {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            if ($major -ge 3 -and $minor -ge 10) {
-                Write-Status "System Python: $systemPython (version $major.$minor)"
-                return $systemPython
-            } else {
-                Write-Status "System Python version too low: $major.$minor (need 3.10+)" "Yellow"
-                return $null
-            }
-        }
-    }
-
     return $null
 }
 
@@ -356,26 +288,6 @@ function Install-Tectonic {
     return $tectonicExe
 }
 
-function Update-SettingJson {
-    param([string]$BashPath)
-
-    if (-not (Test-Path $SettingFile)) {
-        return
-    }
-
-    try {
-        $settings = Get-Content $SettingFile -Raw | ConvertFrom-Json
-        if (-not $settings.system) {
-            $settings | Add-Member -NotePropertyName "system" -NotePropertyValue @{}
-        }
-        $settings.system.bash_path = $BashPath
-        $settings | ConvertTo-Json -Depth 10 | Set-Content $SettingFile -Encoding UTF8
-        Write-Status "Updated setting.json with bash_path"
-    } catch {
-        Write-Status "Warning: failed to update setting.json" "Yellow"
-    }
-}
-
 # ═══════════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════════
@@ -391,11 +303,9 @@ New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
 # 1. 检查/安装 Git Bash
 $gitBashPath = Test-GitBash
-$usingDepsGit = $false
 if (-not $gitBashPath) {
     Write-Status "Git Bash not found, downloading..." "Yellow"
     $gitBashPath = Install-GitBash
-    $usingDepsGit = $true
 }
 
 # 2. 检查/安装 Python
@@ -425,10 +335,7 @@ if (-not $tectonicPath) {
 }
 
 # 4. 设置环境变量
-if ($usingDepsGit) {
-    $env:GIT_BASH_PATH = $gitBashPath
-    Update-SettingJson -BashPath $gitBashPath
-}
+$env:GIT_BASH_PATH = $gitBashPath
 
 # 将 Tectonic 添加到 PATH（如果安装在 deps 目录）
 if ($tectonicPath -and $tectonicPath.StartsWith($DepsDir)) {

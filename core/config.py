@@ -102,7 +102,6 @@ class ModelConfig:
 class SystemConfig:
     """System-level configuration (pip mirror, env paths, etc.)."""
     pip_mirror: str = "https://mirrors.aliyun.com/pypi/simple/"
-    bash_path: str = ""  # Git Bash executable path (auto-detected if empty)
     allowed_ips: list[str] = field(default_factory=list)  # IP whitelist; empty = localhost only
     browser_path: str = ""  # Browser executable path (auto-detected if empty or invalid)
     search_engine: str = "bing"  # Web search engine: "bing" or "google"
@@ -112,7 +111,6 @@ class SystemConfig:
         """Parse SystemConfig from a dict."""
         return cls(
             pip_mirror=data.get("pip_mirror", "https://mirrors.aliyun.com/pypi/simple/"),
-            bash_path=data.get("bash_path", ""),
             allowed_ips=data.get("allowed_ips", []),
             browser_path=data.get("browser_path", ""),
             search_engine=data.get("search_engine", "bing"),
@@ -122,7 +120,6 @@ class SystemConfig:
         """Convert to a serializable dict."""
         return {
             "pip_mirror": self.pip_mirror,
-            "bash_path": self.bash_path,
             "allowed_ips": self.allowed_ips,
             "browser_path": self.browser_path,
             "search_engine": self.search_engine,

@@ -2,7 +2,7 @@
 
 ## 概述
 
-Cili Agent 自动管理 Python 运行环境，确保在 `data/deps/python/` 目录下有可用的 Python 3.10+ 环境。根据系统环境自动选择最佳方案：创建 venv 或下载 embeddable Python。
+Cili Agent 自动管理 Python 运行环境，强制使用 `data/deps/python/` 目录下的 embeddable Python 3.11.9。不依赖系统环境中的 Python 或 Bash，所有运行时均自动下载到 `data/deps/` 目录。
 
 ## 目录结构
 
@@ -13,12 +13,12 @@ data/
 │   └── cron.d/          # Cron 定时任务数据
 ├── agents/              # 每个 agent 的完整状态
 └── deps/
-    ├── python/          # Python 运行环境（venv 或 embeddable）
+    ├── python/          # Python 运行环境（embeddable 模式）
     │   ├── python.exe   # Python 解释器
-    │   ├── Scripts/     # pip 和其他工具（venv 模式）
-    │   ├── python311._pth  # 路径配置（embeddable 模式）
+    │   ├── Scripts/     # pip 和其他工具
+    │   ├── python311._pth  # 路径配置
     │   └── Lib/         # 标准库和第三方包
-    ├── git/             # Git Bash（可选，自动下载）
+    ├── git/             # Git Bash（自动下载）
     │   └── bin/bash.exe
     └── browser/         # Chrome profile 数据
 ```
@@ -27,69 +27,43 @@ data/
 
 ### 1. 启动脚本 (`start.ps1`)
 
-**职责**：确保有可用的 Python 3.10+ 和 Git Bash，然后启动 main.py
+**职责**：确保有可用的 Python 和 Git Bash（均从 deps 目录），然后启动 main.py
 
 **流程**：
 ```
-1. 检查系统 Python 版本（要求 3.10+）
-2. 如果版本不够：
-   - 检查 data/deps/python/ 是否已有合适的 Python
-   - 如果没有，下载 embeddable Python 3.11.9
-   - 配置 _pth 文件（添加项目根目录、启用 site-packages）
-3. 检查 Git Bash（类似逻辑）
-4. 使用找到的 Python 运行 main.py
+1. 检查 data/deps/python/python.exe 是否存在
+2. 如果不存在，下载 embeddable Python 3.11.9
+3. 检查 data/deps/git/bin/bash.exe 是否存在
+4. 如果不存在，下载 PortableGit
+5. 设置 GIT_BASH_PATH 环境变量
+6. 使用 deps Python 运行 main.py
 ```
 
 **关键函数**：
-- `Test-Python`: 检查系统 Python 版本
+- `Test-Python`: 检查 deps 目录中的 Python
 - `Install-Python`: 下载和配置 embeddable Python
-- `Test-GitBash`: 检查 Git Bash
+- `Test-GitBash`: 检查 deps 目录中的 Git Bash
 - `Install-GitBash`: 下载 Git for Windows
 
 ### 2. 主程序 (`main.py`)
 
-**职责**：初始化完整运行环境，安装依赖包，启动服务
+**职责**：初始化运行环境，安装依赖包，启动服务
 
 **流程**：
 ```
-1. 检查是否在 venv 中运行（_in_venv）
-2. 如果不在，调用 _setup_environment()
-3. _setup_environment():
-   a. 创建目录结构
-   b. 初始化配置文件
-   c. 查找/配置 Git Bash
-   d. 创建/验证 Python 环境（_create_venv）
-   e. 安装依赖包（_install_packages）
-4. 在 venv 中重新启动 main.py
+1. 创建目录结构和配置文件
+2. 检查 Git Bash 是否存在于 deps 目录
+3. 确保 deps Python 存在且健康（pip 可用）
+4. 安装依赖包（_install_packages）
 5. 启动 Web 服务
 ```
 
 **关键函数**：
-- `_in_venv()`: 检查是否在 data/deps/python 中运行
-- `_create_venv()`: 创建 Python 环境
-- `_download_embeddable_python()`: 下载 embeddable Python
+- `_ensure_deps_python()`: 确保 deps Python 可用
+- `_install_deps_python()`: 下载 embeddable Python
 - `_install_packages()`: 安装依赖
 
-## 两种运行模式
-
-### 模式 1: Venv 模式（优先）
-
-**触发条件**：系统有 Python 3.10+ 且能成功创建 venv
-
-**特点**：
-- 使用 `python -m venv data/deps/python` 创建真正的虚拟环境
-- 完整的 venv 结构（Scripts/, Lib/, pyvenv.cfg）
-- pip 自动安装到 Scripts/
-- 标准 Python 环境，兼容性最好
-
-**适用场景**：
-- 系统有 Python 3.10+
-- 有足够权限创建 venv
-- 网络可以访问 PyPI
-
-### 模式 2: Embeddable 模式（降级）
-
-**触发条件**：系统 Python 版本太低，或 venv 创建失败
+## Embeddable Python 模式
 
 **特点**：
 - 下载 Python embeddable package（约 11MB）
@@ -101,37 +75,24 @@ data/
 - 通过 get-pip.py 安装 pip
 - pip 使用 `--only-binary=:all:` 避免编译
 
-**适用场景**：
-- 系统 Python 版本 < 3.10
-- 没有权限创建 venv
-- 需要便携部署
+**优势**：
+- 不依赖系统 Python 版本
+- 无需创建 venv
+- 完全便携部署
 
 ## Python 环境检测逻辑
 
 ```python
-def _create_venv() -> bool:
+def _ensure_deps_python() -> bool:
     # 1. 检查 data/deps/python 是否已存在且可用
-    if os.path.exists(_VENV_DIR) and os.path.exists(_VENV_PYTHON):
-        # 检查是否是正常的 venv
-        if _check_venv_healthy():
-            return True
-        # 检查是否是 embeddable Python（有 _pth 文件）
-        pth_files = [f for f in os.listdir(_VENV_DIR) if f.endswith("._pth")]
-        if pth_files:
+    if os.path.exists(_DEPS_PYTHON_DIR):
+        if _check_deps_python_healthy():
             return True
         # 损坏的安装，删除重建
-        shutil.rmtree(_VENV_DIR)
+        shutil.rmtree(_DEPS_PYTHON_DIR)
 
-    # 2. 尝试使用系统 Python 创建 venv
-    if sys.version_info >= (3, 10):
-        result = subprocess.run(
-            [sys.executable, "-m", "venv", _VENV_DIR]
-        )
-        if result.returncode == 0:
-            return True
-
-    # 3. 降级：下载 embeddable Python
-    return _download_embeddable_python()
+    # 2. 下载 embeddable Python
+    return _install_deps_python()
 ```
 
 ## 依赖包安装
@@ -159,39 +120,35 @@ pip install --only-binary=:all: <package>
 
 ## 环境变量
 
-**main.py 设置的变量**：
-- `GIT_BASH_PATH`: Git Bash 可执行文件路径
-- `PATH`: 自动添加 data/deps/python/Scripts 到开头
-
 **start.ps1 设置的变量**：
-- `GIT_BASH_PATH`: 如果使用下载的 Git
-- 其他环境变量保持系统默认
+- `GIT_BASH_PATH`: 始终设置为 data/deps/git/bin/bash.exe
+
+**main.py 使用的变量**：
+- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 start.ps1 设置）
 
 ## 常见问题
 
-### 1. 系统 Python 版本太低
+### 1. deps Python 损坏
 
 **症状**：
 ```
-[cili] System Python version too low: 3.9 (need 3.10+)
-[cili] Python not found or version too low, downloading...
+[setup] Deps Python is broken, recreating: data/deps/python
 ```
 
 **解决**：
-- start.ps1 会自动下载 embeddable Python 3.11.9
+- 自动删除并重新下载
 - 无需手动干预
 
-### 2. Venv 创建失败
+### 2. Git Bash 未找到
 
-**可能原因**：
-- 权限不足
-- 磁盘空间不足
-- 杀毒软件拦截
+**症状**：
+```
+[setup] FATAL: Git Bash not found in deps directory!
+```
 
 **解决**：
-- main.py 会自动降级到 embeddable Python 模式
-- 检查磁盘空间和权限
-- 临时关闭杀毒软件
+- 确保使用 start.cmd 启动
+- start.ps1 会自动下载 Git Bash 到 data/deps/git/
 
 ### 3. 包安装失败
 

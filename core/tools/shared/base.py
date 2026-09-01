@@ -189,25 +189,19 @@ _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
 def _find_git_bash() -> str:
     """Find Git Bash executable path.
 
-    main.py sets GIT_BASH_PATH during startup. Falls back to searching if not set.
+    Uses the deps directory path directly (set by start.ps1/main.py).
     """
-    # Prefer the path set by main.py
+    # Prefer the path set by main.py via environment variable
     env_path = os.environ.get("GIT_BASH_PATH")
     if env_path and os.path.isfile(env_path):
         return env_path
 
-    # Common Git installation paths on Windows (fallback)
-    git_paths = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
-    ]
+    # Fallback: use deps directory path directly
+    deps_bash = os.path.join(_PROJECT_ROOT, "data", "deps", "git", "bin", "bash.exe")
+    if os.path.isfile(deps_bash):
+        return deps_bash
 
-    for path in git_paths:
-        if os.path.exists(path):
-            return path
-
-    # Fallback: assume bash is in PATH
+    # Final fallback: assume bash is in PATH
     return "bash"
 
 

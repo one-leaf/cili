@@ -405,8 +405,7 @@ GET /api/config
       ...
     },
     "system": {
-      "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/",
-      "bash_path": ""
+      "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/"
     }
   },
   "config_path": "/path/to/setting.json"
@@ -666,7 +665,7 @@ except asyncio.CancelledError:
 - RootAgent 模型配置
 - LLM 模型配置（可选）
 - 测试连接按钮
-- 系统配置（pip 镜像、Git Bash 路径）
+- 系统配置（pip 镜像、浏览器路径等）
 
 ### 6.3 SSE 事件处理
 

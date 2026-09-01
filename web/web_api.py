@@ -1646,6 +1646,12 @@ async def get_workspace_file_short(file_path: str, workspace_uuid: str = ""):
     return FileResponse(str(file_full_path))
 
 
+@app.get("/api/workspace/{file_path:path}")
+async def get_workspace_file_compat(file_path: str, workspace_uuid: str = ""):
+    """Compatibility route: /api/workspace/{file} also works."""
+    return await get_workspace_file_short(file_path, workspace_uuid)
+
+
 @app.get("/api/workspaces/{workspace_uuid}/files/{file_path:path}")
 async def get_workspace_file(workspace_uuid: str, file_path: str):
     """Serve a file from the workspace directory (for images, etc.)."""
