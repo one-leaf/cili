@@ -1230,29 +1230,58 @@ function renderMessages(messages) {
         const content = msg.content;
         const blocks = normalizeContent(content);
 
-        // For user messages, group text + image blocks together
+        // For user messages, separate user content from tool results
         if (role === 'user') {
             const textParts = [];
             const imageParts = [];
+            const toolResultBlocks = [];
+
             blocks.forEach(block => {
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
+                else if (block.kind === 'tool_result') toolResultBlocks.push(block);
             });
+
+            // Only create user bubble if there's actual user content
             const combinedText = textParts.join('\n');
-            const div = addMessage('user', combinedText);
-            if (imageParts.length > 0) {
-                const contentDiv = div.querySelector('.message-content');
-                const imgContainer = document.createElement('div');
-                imgContainer.className = 'user-images';
-                imageParts.forEach(img => {
-                    const imgEl = document.createElement('img');
-                    imgEl.src = `data:${img.media_type};base64,${img.data}`;
-                    imgEl.alt = '用户图片';
-                    imgContainer.appendChild(imgEl);
-                });
-                contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+            if (combinedText || imageParts.length > 0) {
+                const div = addMessage('user', combinedText);
+                if (imageParts.length > 0) {
+                    const contentDiv = div.querySelector('.message-content');
+                    const imgContainer = document.createElement('div');
+                    imgContainer.className = 'user-images';
+                    imageParts.forEach(img => {
+                        const imgEl = document.createElement('img');
+                        imgEl.src = `data:${img.media_type};base64,${img.data}`;
+                        imgEl.alt = '用户图片';
+                        imgContainer.appendChild(imgEl);
+                    });
+                    contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                }
             }
-            return;  // Skip the generic block iteration below
+
+            // Render tool results as separate tool bubbles
+            toolResultBlocks.forEach(block => {
+                if (block._wait_for_user) return;
+                const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
+                const div = addMessage('assistant', '');
+                div.classList.add('tool');
+                if (block.is_error) {
+                    div.classList.add('tool-error');
+                } else {
+                    div.classList.add('tool-result');
+                }
+                const contentDiv = div.querySelector('.message-content');
+                const resultTitle = document.createElement('div');
+                resultTitle.className = 'tool-title';
+                resultTitle.textContent = '[工具结果]';
+                contentDiv.appendChild(resultTitle);
+                const pre = document.createElement('pre');
+                pre.textContent = text.length > 2000 ? text.substring(0, 2000) + '\n... (内容过长已截断)' : text;
+                contentDiv.appendChild(pre);
+            });
+
+            return;
         }
 
         blocks.forEach(block => {
