@@ -6,6 +6,7 @@ let isSending = false;
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
+let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
 
 // ── localStorage 位置持久化 ──
 const POSITION_KEY = 'cili_last_position';
@@ -95,6 +96,29 @@ function setupEventListeners() {
             sendMessage();
         }
     });
+    // Paste image support
+    chatInput.addEventListener('paste', (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (!file) continue;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const dataUrl = ev.target.result;  // data:image/png;base64,xxx
+                    const commaIdx = dataUrl.indexOf(',');
+                    const data = dataUrl.substring(commaIdx + 1);
+                    const mediaType = file.type || 'image/png';
+                    pendingImages.push({ data, media_type: mediaType, preview_url: dataUrl });
+                    renderImagePreviews();
+                };
+                reader.readAsDataURL(file);
+                break;  // Only take the first image
+            }
+        }
+    });
 
     // Global settings
     document.getElementById('settings-btn').addEventListener('click', openSettings);
@@ -169,6 +193,38 @@ function setupEventListeners() {
             if (modalId === 'settings-modal' || modalId === 'workspace-settings-modal') return;
             document.getElementById(modalId).style.display = 'none';
         });
+    });
+}
+
+// Render image preview thumbnails in the input area
+function renderImagePreviews() {
+    const area = document.getElementById('image-preview-area');
+    if (!area) return;
+    area.innerHTML = '';
+    if (pendingImages.length === 0) {
+        area.classList.remove('visible');
+        return;
+    }
+    area.classList.add('visible');
+    pendingImages.forEach((img, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'image-preview-thumb';
+
+        const imgEl = document.createElement('img');
+        imgEl.src = img.preview_url;
+        imgEl.alt = '待发送图片';
+        wrapper.appendChild(imgEl);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'image-preview-remove';
+        removeBtn.textContent = '×';
+        removeBtn.title = '移除图片';
+        removeBtn.onclick = () => {
+            pendingImages.splice(idx, 1);
+            renderImagePreviews();
+        };
+        wrapper.appendChild(removeBtn);
+        area.appendChild(wrapper);
     });
 }
 
@@ -1174,9 +1230,43 @@ function renderMessages(messages) {
         const content = msg.content;
         const blocks = normalizeContent(content);
 
+        // For user messages, group text + image blocks together
+        if (role === 'user') {
+            const textParts = [];
+            const imageParts = [];
+            blocks.forEach(block => {
+                if (block.kind === 'text' && block.text) textParts.push(block.text);
+                else if (block.kind === 'image') imageParts.push(block);
+            });
+            const combinedText = textParts.join('\n');
+            const div = addMessage('user', combinedText);
+            if (imageParts.length > 0) {
+                const contentDiv = div.querySelector('.message-content');
+                const imgContainer = document.createElement('div');
+                imgContainer.className = 'user-images';
+                imageParts.forEach(img => {
+                    const imgEl = document.createElement('img');
+                    imgEl.src = `data:${img.media_type};base64,${img.data}`;
+                    imgEl.alt = '用户图片';
+                    imgContainer.appendChild(imgEl);
+                });
+                contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+            }
+            return;  // Skip the generic block iteration below
+        }
+
         blocks.forEach(block => {
             if (block.kind === 'text' && block.text) {
                 addMessage(role, block.text);
+            } else if (block.kind === 'image') {
+                // Image blocks in non-user messages (shouldn't normally happen)
+                // Render as an assistant message with the image
+                const div = addMessage('assistant', '');
+                const contentDiv = div.querySelector('.message-content');
+                const imgEl = document.createElement('img');
+                imgEl.src = `data:${block.media_type};base64,${block.data}`;
+                imgEl.alt = '图片';
+                contentDiv.appendChild(imgEl);
             } else if (block.kind === 'thinking' && block.text) {
                 // Render thinking block
                 const div = addMessage('assistant', '');
@@ -1876,6 +1966,9 @@ function normalizeContent(content) {
         content.forEach(block => {
             if (block.type === 'text') {
                 blocks.push({ kind: 'text', text: block.text || '' });
+            } else if (block.type === 'image') {
+                const source = block.source || {};
+                blocks.push({ kind: 'image', data: source.data || '', media_type: source.media_type || 'image/png' });
             } else if (block.type === 'thinking' || block.type === 'reasoning') {
                 blocks.push({ kind: 'thinking', text: block.thinking || block.text || '' });
             } else if (block.type === 'tool_use' || block.type === 'tool_call') {
@@ -1978,7 +2071,8 @@ async function stopAgent() {
 // Send message
 async function sendMessage() {
     const message = chatInput.value.trim();
-    if (!message) return;
+    const hasImages = pendingImages.length > 0;
+    if (!message && !hasImages) return;
 
     if (!currentWorkspace || !currentSession) {
         alert('请先选择工作区并创建会话');
@@ -1992,15 +2086,35 @@ async function sendMessage() {
 
     console.log('Sending message to session:', currentSession.session_id);
 
+    // Capture images before clearing
+    const imagesToSend = hasImages ? pendingImages.map(img => ({
+        data: img.data,
+        media_type: img.media_type,
+    })) : null;
+
     // Clear input and change button to stop
     chatInput.value = '';
+    pendingImages = [];
+    renderImagePreviews();
     isSending = true;
     sendBtn.textContent = '停止';
     sendBtn.classList.remove('btn-primary');
     sendBtn.classList.add('btn-danger');
 
-    // Add user message to UI
-    addMessage('user', message);
+    // Add user message to UI (with images if any)
+    const userDiv = addMessage('user', message);
+    if (imagesToSend) {
+        const contentDiv = userDiv.querySelector('.message-content');
+        const imgContainer = document.createElement('div');
+        imgContainer.className = 'user-images';
+        imagesToSend.forEach(img => {
+            const imgEl = document.createElement('img');
+            imgEl.src = `data:${img.media_type};base64,${img.data}`;
+            imgEl.alt = '用户图片';
+            imgContainer.appendChild(imgEl);
+        });
+        contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+    }
 
     // Create placeholder for assistant response
     let assistantDiv = null;
@@ -2021,12 +2135,16 @@ async function sendMessage() {
     }
 
     try {
+        const requestBody = { content: message };
+        if (imagesToSend) {
+            requestBody.images = imagesToSend;
+        }
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/messages`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: message })
+                body: JSON.stringify(requestBody)
             }
         );
 

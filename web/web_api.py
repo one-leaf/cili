@@ -356,6 +356,7 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="stati
 
 class SendMessageRequest(BaseModel):
     content: str
+    images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
 
 
 class CreateSessionRequest(BaseModel):
@@ -1194,8 +1195,26 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
         def run_agent():
             try:
+                # Build user_input: str or list[dict] for multimodal
+                user_input = request.content
+                if request.images:
+                    content_blocks: list[dict] = [
+                        {"type": "text", "text": request.content, "_valid": True}
+                    ]
+                    for img in request.images:
+                        content_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.get("media_type", "image/png"),
+                                "data": img.get("data", ""),
+                            },
+                            "_valid": True,
+                        })
+                    user_input = content_blocks
+
                 agent.run(
-                    user_input=request.content,
+                    user_input=user_input,
                     on_text=on_text,
                     on_thinking=on_thinking,
                     on_tool_call=on_tool_call,

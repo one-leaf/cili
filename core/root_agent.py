@@ -117,7 +117,7 @@ class RootAgent(BaseAgent):
 
     def run(
         self,
-        user_input: str,
+        user_input: str | list[dict],
         on_text: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,

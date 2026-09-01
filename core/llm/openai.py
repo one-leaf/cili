@@ -85,6 +85,7 @@ class OpenAIAdapter(Adapter):
             reasoning_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             tool_results: list[dict[str, Any]] = []
+            images: list[dict[str, Any]] = []  # image_url blocks for user messages
 
             for block in content:
                 block_dict = block_to_dict(block)
@@ -95,6 +96,17 @@ class OpenAIAdapter(Adapter):
 
                 elif btype == "reasoning":
                     reasoning_parts.append(block_dict.get("text", ""))
+
+                elif btype == "image":
+                    # Convert ImageBlock to OpenAI image_url format
+                    source = block_dict.get("source", {})
+                    if source.get("type") == "base64":
+                        images.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{source.get('media_type', 'image/png')};base64,{source.get('data', '')}"
+                            },
+                        })
 
                 elif btype == "tool_call":
                     # Convert to OpenAI format
@@ -178,6 +190,14 @@ class OpenAIAdapter(Adapter):
                     "role": "user",
                     "content": user_content,
                 })
+
+            # User message with images (from paste) — multimodal content
+            elif images and role == "user":
+                user_content = []
+                if text_parts:
+                    user_content.append({"type": "text", "text": "\n".join(text_parts)})
+                user_content.extend(images)
+                openai_messages.append({"role": "user", "content": user_content})
 
             # User message with only text (no tool calls or results)
             elif not tool_calls and not tool_results and text_parts and role != "assistant":
