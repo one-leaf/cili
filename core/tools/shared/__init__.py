@@ -21,15 +21,21 @@ from core.tools.shared.message_bus_tool import MessageBusTool
 from core.tools.shared.cron_tool import CronTool
 from core.tools.shared.read_tool_result import ReadToolResultTool
 from core.tools.shared.temp import TempTool
+from core.tools.shared.loop import LoopTool
 
 
 def create_shared_tools(
-    cwd: str = ".", workspace_uuid: str = "", session_manager=None, config: Config | None = None
+    cwd: str = ".",
+    workspace_uuid: str = "",
+    session_manager=None,
+    config: Config | None = None,
+    cron_task_id: str = "",
 ) -> list[Tool]:
     """Create tools available to both main agent and sub-agent.
 
     Args:
         config: Global config. If llm_model is None, LLMTool is excluded.
+        cron_task_id: Cron task ID if triggered by cron (for loop tool).
     """
     tools = [
         ReadTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
@@ -48,6 +54,7 @@ def create_shared_tools(
         CronTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         ReadToolResultTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         TempTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
+        LoopTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, cron_task_id=cron_task_id),
     ]
     # Only include LLMTool if llm_model is configured
     if config is None or config.llm_model is not None:

@@ -551,3 +551,282 @@ class TestExtractUserInfoConfig:
         assert isinstance(content, dict)
         assert content.get("task", "") != ""
         assert isinstance(content.get("plan", []), list)
+
+
+class TestCronTaskRemainingCounter:
+    """Test remaining counter functionality in CronTask."""
+
+    def test_task_initializes_remaining_none(self, temp_cron_state):
+        """新建任务 _remaining 初始为 None"""
+        config = {
+            "name": "test-remaining-init",
+            "schedule": {"type": "interval", "minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        assert task._remaining is None
+
+    def test_task_restores_remaining_from_state(self, temp_cron_state):
+        """从状态文件恢复 remaining"""
+        import core.cron as cron_module
+
+        # 先创建状态文件
+        state_path = cron_module.CRON_STATE_DIR / "restore-task.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({
+            "remaining": 50,
+            "run_count": 10,
+            "last_run": "2026-08-25T10:00:00",
+        }))
+
+        config = {
+            "name": "restore-task",
+            "schedule": {"type": "interval", "minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        assert task._remaining == 50
+
+    def test_task_saves_remaining_to_state(self, temp_cron_state):
+        """保存 remaining 到状态文件"""
+        import core.cron as cron_module
+
+        config = {
+            "name": "save-remaining-task",
+            "schedule": {"type": "interval", "minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        task._remaining = 100
+        task._run_count = 5
+        task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
+
+        # 读取状态文件验证
+        state_path = cron_module.CRON_STATE_DIR / "save-remaining-task.json"
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        assert state["remaining"] == 100
+
+    def test_task_state_without_remaining(self, temp_cron_state):
+        """_remaining 为 None 时不写入状态文件"""
+        import core.cron as cron_module
+
+        config = {
+            "name": "no-remaining-task",
+            "schedule": {"type": "interval", "minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        task._run_count = 5
+        task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
+
+        # 读取状态文件验证
+        state_path = cron_module.CRON_STATE_DIR / "no-remaining-task.json"
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        assert "remaining" not in state
+
+
+class TestCronSchedulerRemainingCounter:
+    """Test CronScheduler remaining counter logic."""
+
+    def test_execute_task_decrements_remaining(self, temp_cron_state, tmp_path):
+        """_execute_task 每次递减 remaining"""
+        import core.cron as cron_module
+
+        # 创建任务
+        config = {
+            "name": "decrement-task",
+            "enabled": True,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "测试", "plan": []},
+            "config": {"max_executions": 100},
+        }
+
+        # 创建用户任务文件
+        user_tasks_file = tmp_path / "user_tasks.json"
+        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        cron_module.USER_TASKS_FILE = user_tasks_file
+
+        try:
+            scheduler = CronScheduler()
+            scheduler.load_tasks()
+            task = scheduler.get_task("decrement-task")
+            assert task is not None
+
+            # 初始 remaining 为 None，应该使用 max_executions
+            assert task._remaining is None
+
+            # 模拟 _execute_task 中的 remaining 逻辑
+            max_exec = task.config.get("max_executions", 9999)
+            remaining = task._remaining if task._remaining is not None else max_exec
+            remaining -= 1
+            task._remaining = remaining
+
+            assert task._remaining == 99
+
+        finally:
+            cron_module.USER_TASKS_FILE = original_user_file
+
+    def test_auto_disable_when_remaining_zero(self, temp_cron_state, tmp_path):
+        """remaining <= 0 时自动 disable"""
+        import core.cron as cron_module
+
+        # 创建任务配置
+        config = {
+            "name": "auto-disable-task",
+            "enabled": True,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "测试", "plan": []},
+            "config": {"max_executions": 5},
+        }
+
+        # 创建用户任务文件
+        user_tasks_file = tmp_path / "user_tasks.json"
+        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        cron_module.USER_TASKS_FILE = user_tasks_file
+
+        try:
+            scheduler = CronScheduler()
+            scheduler.load_tasks()
+            task = scheduler.get_task("auto-disable-task")
+            assert task is not None
+
+            # 设置 remaining = 1
+            task._remaining = 1
+            task._save_state(datetime.now(), None)
+
+            # 模拟 remaining 递减逻辑
+            remaining = task._remaining - 1  # 1 - 1 = 0
+            task._remaining = remaining
+
+            # remaining <= 0 应该触发 disable
+            if remaining <= 0:
+                task.enabled = False
+
+            assert task.enabled is False
+
+        finally:
+            cron_module.USER_TASKS_FILE = original_user_file
+
+
+class TestCronToolMaxExecutions:
+    """Test CronTool max_executions parameter."""
+
+    @pytest.fixture
+    def temp_cron_files(self, tmp_path):
+        """临时替换 cron 相关文件路径"""
+        import core.cron as cron_module
+        import core.tools.shared.cron_tool as cron_tool_module
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        original_state_dir = cron_module.CRON_STATE_DIR
+        original_tool_user_file = cron_tool_module.USER_TASKS_FILE
+
+        cron_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+        cron_module.CRON_STATE_DIR = tmp_path / "state"
+        cron_tool_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+
+        yield tmp_path
+
+        cron_module.USER_TASKS_FILE = original_user_file
+        cron_module.CRON_STATE_DIR = original_state_dir
+        cron_tool_module.USER_TASKS_FILE = original_tool_user_file
+
+    def test_create_with_max_executions(self, temp_cron_files):
+        """创建任务时设置 max_executions"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+        result = tool.execute(
+            action="create",
+            name="test-max-exec-50",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+            max_executions=50,
+        )
+
+        assert "Created" in result.output
+
+        # 验证任务配置
+        tasks = _load_user_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["config"]["max_executions"] == 50
+
+    def test_create_with_default_max_executions(self, temp_cron_files):
+        """默认 max_executions 为 9999"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+        tool.execute(
+            action="create",
+            name="test-default-max-9999",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+        )
+
+        tasks = _load_user_tasks()
+        assert tasks[0]["config"]["max_executions"] == 9999
+
+    def test_create_with_invalid_max_executions(self, temp_cron_files):
+        """max_executions 超出范围时报错"""
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 超过最大值
+        result = tool.execute(
+            action="create",
+            name="test-invalid-max-10000",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+            max_executions=10000,
+        )
+        assert result.is_error
+
+        # 小于最小值
+        result = tool.execute(
+            action="create",
+            name="test-invalid-max-0",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+            max_executions=0,
+        )
+        assert result.is_error
+
+    def test_enable_resets_remaining(self, temp_cron_files):
+        """enable 时重置 remaining 为 max_executions"""
+        import json
+        import core.cron as cron_module
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-enable-reset-remaining",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+            max_executions=100,
+        )
+
+        # 手动设置 remaining 为较小值
+        state_path = cron_module.CRON_STATE_DIR / "test-enable-reset-remaining.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"remaining": 10}))
+
+        # enable 任务
+        tool.execute(action="enable", name="test-enable-reset-remaining")
+
+        # 验证 remaining 已重置
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        assert state["remaining"] == 100

@@ -26,7 +26,7 @@
 ```
 core/tools/
 ├── __init__.py              # 顶层注册表：create_tools(), get_tool_by_name()
-├── shared/                  # 共用工具（15~16 个）
+├── shared/                  # 共用工具（17~18 个）
 │   ├── __init__.py          # create_shared_tools()
 │   ├── base.py              # Tool 基类 + ToolResult + BackgroundTaskManager
 │   ├── read.py              # 读取文件
@@ -45,7 +45,8 @@ core/tools/
 │   ├── message_bus_tool.py  # 跨会话消息传递
 │   ├── cron_tool.py         # 用户级定时任务管理
 │   ├── read_tool_result.py  # 检索压缩的工具结果
-│   └── temp.py              # 临时文件/目录管理
+│   ├── temp.py              # 临时文件/目录管理
+│   ├── loop.py              # 循环任务进度追踪（配合 cron 使用）
 │   └── skill.py             # 技能工具（共用逻辑，RootAgent/SubAgent 各自实例化）
 ├── root/                    # RootAgent 专属（3 个）
 │   ├── __init__.py          # create_root_tools()
@@ -56,11 +57,11 @@ core/tools/
 ```
 
 **工厂函数**：
-- `create_shared_tools(**kwargs, config=None)` → 16 个固定工具 + LLMTool（条件加载）= 16~17 个共用工具
+- `create_shared_tools(**kwargs, config=None, cron_task_id="")` → 17 个固定工具 + LLMTool（条件加载）= 17~18 个共用工具
 - `create_root_tools(**kwargs)` → 3 个 RootAgent 专属工具（SkillTool + SubAgentTool + AskUserTool）
-- `create_sub_tools(**kwargs, config=None)` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
-- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（19~20 个）
-- SubAgent 的工具集 = `create_sub_tools()` → 17~18 个工具
+- `create_sub_tools(**kwargs, config=None, cron_task_id="")` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
+- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（20~21 个）
+- SubAgent 的工具集 = `create_sub_tools()` → 18~19 个工具
 
 **工具分配**：
 
@@ -232,6 +233,7 @@ content = [
 | cron | cron_tool.py | 用户级定时任务管理（创建/列出/删除/执行任务） |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） |
 | temp | temp.py | 临时文件和目录管理（按 session 隔离） |
+| loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） |
 
 ### 4.2 RootAgent 专属工具（root/）
 
@@ -487,6 +489,70 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 ---
 
 ## 八、关键工具详解
+
+### 8.0 loop — 循环任务进度追踪
+
+`loop` 工具用于跟踪跨多次调度周期的迭代任务进度。每个项（文件、记录等）具有三种状态：`"pending"`、`"done"`、`"failed:{reason}"`。
+
+**核心特性**：
+- **5 个 Action**：sync（同步项列表）、next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
+- **幂等同步**：`sync` 只追加新增项，已完成项不重复处理
+- **cron 集成**：检测到 `cron_task_id` 时，自动同步 cron 的 `remaining` 计数器
+- **自动终止**：配合 cron 的 `remaining` 计数器，所有项完成时任务自动 disable
+
+**调用方式**：
+```python
+# 同步文件列表（幂等，只追加新项）
+loop(action="sync", items=["file1.md", "file2.md", "file3.md"])
+# → {"added": 3, "total": 3, "pending": 3, "done": 0, "failed": 0}
+
+# 获取下一个待处理项
+loop(action="next")
+# → {"item": "file1.md"} 或 {"item": null}
+
+# 标记完成
+loop(action="done", item="file1.md")
+# → {"done": 1, "pending": 2, "failed": 0}
+
+# 标记失败
+loop(action="fail", item="file2.md", error="encoding error")
+# → {"done": 1, "pending": 1, "failed": 1}
+
+# 查看进度
+loop(action="status")
+# → {"total": 3, "done": 1, "pending": 1, "failed": 1}
+```
+
+**状态文件**：`data/cili/tools/loop/{task_id}.json`
+
+```json
+{
+  "file1.md": "done",
+  "file2.md": "failed:encoding error",
+  "file3.md": "pending"
+}
+```
+
+**与 cron 集成**：
+当 LoopTool 由 cron 触发时（`cron_task_id` 不为空），`sync` action 会自动同步 cron 的 `remaining` 计数器：
+
+```
+1. Cron 执行前：remaining = 9999（默认值）
+2. SubAgent 调用 loop(sync, items=[10005个文件])
+   → loop 检测到 cron_task_id → 更新 cron.remaining = 10005 (pending_count + 1)
+3. SubAgent 处理 1 个文件
+4. Cron 下次执行：remaining = 10005 - 1 = 10004
+5. ... 重复直到 remaining = 0 → 自动 disable
+```
+
+**参数**：
+- `action`: sync | next | done | fail | status
+- `task_id`: 任务标识（默认使用 cron_task_id）
+- `items`: 项列表（sync action 使用）
+- `item`: 项标识（done/fail action 使用）
+- `error`: 失败原因（fail action 使用）
+
+**实现**：`core/tools/shared/loop.py`
 
 ### 8.1 llm — 单轮 LLM 调用
 
@@ -746,7 +812,7 @@ def create_shared_tools(**kwargs) -> list[Tool]:
 
 ---
 
-**文档版本**: v1.3  
+**文档版本**: v1.4  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-08-29（新增后台任务执行功能：BackgroundTaskManager、run_in_background、read_task、kill_task、write_stdin、list_tasks）  
+**更新时间**: 2026-09-01（新增 loop 工具：循环任务进度追踪，配合 cron 实现自循环任务）  
 **状态**: 已实现

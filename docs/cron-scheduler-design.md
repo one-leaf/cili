@@ -15,6 +15,7 @@ Cron 调度器为 Cili Agent 提供周期性的后台任务执行能力，用于
 - **System workspace**：专用于系统维护任务（UUID: `system`，cwd: `data/`）
 - 后台线程每 60 秒检查任务到期时间，per-workspace lock 串行化
 - **last_run 持久化**：任务执行后自动保存到状态文件，重启后恢复
+- **remaining 计数器**：通用执行次数限制，配合 loop 工具实现自循环任务自动终止
 - 全局单例，随应用启动/关闭
 
 ---
@@ -162,7 +163,8 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
     "expr": "0 2 * * *"
   },
   "config": {
-    "max_iterations": 50
+    "max_iterations": 50,
+    "max_executions": 9999
   },
   "content": {
     "task": "扫描工作区，提取用户信息到 user-profile.json",
@@ -184,7 +186,9 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 | `schedule.type` | string | 是 | `interval` 或 `cron` |
 | `schedule.minutes` | int | interval | 执行间隔（分钟） |
 | `schedule.expr` | string | cron | 标准 5 字段 cron 表达式 |
-| `config` | object | 否 | 额外配置（如 `max_iterations`） |
+| `config` | object | 否 | 额外配置 |
+| `config.max_iterations` | int | 否 | SubAgent 最大迭代次数（默认 30） |
+| `config.max_executions` | int | 否 | 最大执行次数（1-9999，默认 9999） |
 
 ### 4.2 调度类型
 
@@ -315,12 +319,14 @@ data/agents/system/
 {
   "last_run": "2026-08-25T22:40:32.128806",
   "run_count": 5,
-  "session_id": "431ea12b"
+  "session_id": "431ea12b",
+  "remaining": 9994
 }
 ```
 
 - `last_run`、`run_count`：重启后恢复调度（计算 next_run）
 - `session_id`：关联的 session UUID，避免每次按名称查找
+- `remaining`：剩余执行次数（配合 loop 工具使用，详见"自循环任务"章节）
 
 **启动流程**：
 1. 加载任务配置（`core/cron.d/*.json` + `user_tasks.json`）
@@ -379,7 +385,8 @@ CronTask.execute():
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
 │   │   ├─ 加载 SessionManager，添加 user message + _subagent_ref
 │   │   ├─ 生成 exec_id，创建 SubAgent 日志目录
-│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id)
+│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id, cron_task_id)
+│   │   │   └─ cron_task_id=self.name（传递任务名给 loop 工具）
 │   │   ├─ subagent.run() — 非流式自主执行
 │   │   ├─ 更新 _subagent_ref 状态 + 添加 assistant message
 │   │   ├─ 保存 SubAgent 执行日志
@@ -390,6 +397,68 @@ CronTask.execute():
     ├─ 全部成功 → {"status": "completed"}
     └─ 部分失败 → {"status": "partial"}
 ```
+
+### 6.3 自循环任务（remaining 计数器）
+
+CronScheduler 维护通用的 `remaining` 计数器，每次执行递减，到 0 自动 disable。配合 `loop` 工具可实现跨调度周期的自循环任务。
+
+**执行流程**：
+
+```
+CronScheduler._execute_task(task):
+│
+├─ 读取 remaining（从 state 或 config.max_executions 初始化）
+│   └─ remaining = state.get("remaining", config.get("max_executions", 9999))
+│
+├─ 递减 remaining
+│   └─ remaining -= 1
+│
+├─ 检查终止条件
+│   ├─ remaining <= 0 → 自动 disable → 不执行
+│   └─ remaining > 0 → 继续执行 SubAgent
+│
+├─ task.execute()
+│
+└─ mark_executed() → 保存状态
+```
+
+**与 loop 工具集成**：
+
+当 SubAgent 调用 `loop(action="sync", items=[...])` 时，LoopTool 自动同步 cron 的 `remaining` 计数器：
+
+```
+示例：导入 10005 个文件
+
+初始状态：
+  config.max_executions: 9999
+  state.remaining: 9999
+
+第 1 次执行：
+  1. CronScheduler: remaining = 9999 - 1 = 9998
+  2. SubAgent 调用 loop(sync, items=10005个文件)
+     → loop 检测到 cron_task_id → 更新 state.remaining = 10005 (pending=10005)
+  3. SubAgent 处理 1 个文件
+  4. 结束
+
+第 2 次执行：
+  1. CronScheduler: remaining = 10005 - 1 = 10004
+  2. SubAgent 调用 loop(sync, items=10005个文件)
+     → 发现 1 个已 done → pending = 10004
+     → 更新 state.remaining = 10004
+  3. SubAgent 处理 1 个文件
+  4. 结束
+
+...
+
+第 N 次执行：
+  1. CronScheduler: remaining = 1 - 1 = 0
+  2. remaining <= 0 → 自动 disable → 不执行
+  → 任务自动终止 ✓
+```
+
+**重新激活**：
+
+用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，loop(sync) 会发现并继续处理。
 
 ### 6.3 Cron Message 格式
 
@@ -450,11 +519,12 @@ class CronTask:
     enabled: bool                 # 是否启用
     workspace_uuid: str           # 目标 workspace（空=System）
     schedule: dict                # 调度配置
-    config: dict                  # 额外配置
+    config: dict                  # 额外配置（含 max_executions）
     task_id: str                  # 任务 ID
     _next_run: datetime           # 下次运行时间
     _last_run: datetime           # 上次运行时间
     _run_count: int               # 运行计数
+    _remaining: int | None        # 剩余执行次数（配合 loop 工具）
     _task_fn: Callable            # 任务函数（可选）
 ```
 
@@ -536,18 +606,20 @@ result = scheduler.run_task_now("extract-user-info") -> dict
 
 | 文件 | 职责 |
 |------|------|
-| `core/cron.py` | CronScheduler + CronTask + cron 表达式解析 |
+| `core/cron.py` | CronScheduler + CronTask + cron 表达式解析 + remaining 计数器 |
 | `core/cron.d/*.json` | 系统级任务配置 |
-| `core/tools/shared/cron_tool.py` | 用户级 cron 管理工具 |
+| `core/tools/shared/cron_tool.py` | 用户级 cron 管理工具（含 max_executions 参数） |
+| `core/tools/shared/loop.py` | 循环任务进度追踪（配合 cron 实现自循环任务） |
 | `data/cili/cron.d/user_tasks.json` | 用户级任务配置 |
-| `data/cili/cron.d/task/` | 任务状态追踪 |
+| `data/cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
+| `data/cili/tools/loop/` | loop 工具状态文件 |
 | `data/agents/system/` | System workspace |
 | `main.py` | 启动调度器，创建 System workspace |
 | `web/web_api.py` | 停止调度器，System workspace 保护 |
 
 ---
 
-**文档版本**: v2.0
+**文档版本**: v2.1
 **创建时间**: 2026-08-25
-**更新时间**: 2026-08-30
-**状态**: 已实现（SubAgent 直接执行、System workspace、cron 表达式支持）
+**更新时间**: 2026-09-01
+**状态**: 已实现（SubAgent 直接执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）

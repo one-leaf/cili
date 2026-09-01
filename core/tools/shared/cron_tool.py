@@ -179,6 +179,17 @@ class CronTool(Tool):
                     ),
                     "default": True,
                 },
+                "max_executions": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum execution count (1-9999). Default: 9999. "
+                        "Used with remaining counter for auto-disable. "
+                        "Ignored if one_time=true."
+                    ),
+                    "minimum": 1,
+                    "maximum": 9999,
+                    "default": 9999,
+                },
             },
             "required": ["action"],
         }
@@ -194,10 +205,11 @@ class CronTool(Tool):
         max_iterations: int = 30,
         workspace_uuid: str | None = None,
         one_time: bool = True,
+        max_executions: int = 9999,
     ) -> ToolResult:
         """Execute cron action."""
         if action == "create":
-            return self._create(name, description, schedule, task, plan, max_iterations, workspace_uuid, one_time)
+            return self._create(name, description, schedule, task, plan, max_iterations, workspace_uuid, one_time, max_executions)
         elif action == "list":
             return self._list()
         elif action == "delete":
@@ -221,6 +233,7 @@ class CronTool(Tool):
         max_iterations: int,
         workspace_uuid: str | None = None,
         one_time: bool = True,
+        max_executions: int = 9999,
     ) -> ToolResult:
         """Create a new scheduled task."""
         if not name:
@@ -247,6 +260,10 @@ class CronTool(Tool):
         else:
             return ToolResult("Error: schedule type must be 'interval' or 'cron'", error=True)
 
+        # Validate max_executions
+        if max_executions < 1 or max_executions > 9999:
+            return ToolResult("Error: 'max_executions' must be between 1 and 9999", error=True)
+
         # Load existing tasks
         tasks = _load_user_tasks()
 
@@ -265,6 +282,7 @@ class CronTool(Tool):
             "one_time": one_time,
             "config": {
                 "max_iterations": max_iterations,
+                "max_executions": max_executions,
             },
             "content": {
                 "task": task,
@@ -362,9 +380,11 @@ class CronTool(Tool):
 
         tasks = _load_user_tasks()
         found = False
+        task_config = None
         for t in tasks:
             if t["name"] == name:
                 t["enabled"] = enabled
+                task_config = t
                 found = True
                 break
 
@@ -373,6 +393,33 @@ class CronTool(Tool):
 
         _save_user_tasks(tasks)
         self._reload_scheduler()
+
+        # If enabling, reset remaining counter
+        if enabled and task_config:
+            from core.cron import CRON_STATE_DIR
+            import json
+
+            max_executions = task_config.get("config", {}).get("max_executions", 9999)
+            state_path = CRON_STATE_DIR / f"{name}.json"
+
+            try:
+                # Load existing state or create new
+                if state_path.exists():
+                    with open(state_path, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                else:
+                    state = {}
+
+                # Reset remaining counter
+                state["remaining"] = max_executions
+
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=2, ensure_ascii=False)
+
+                logger.info(f"[cron_tool] Reset remaining={max_executions} for task '{name}'")
+            except Exception as e:
+                logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
 
         status = "enabled" if enabled else "disabled"
         return ToolResult(f"Task '{name}' {status}.")

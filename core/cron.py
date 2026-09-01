@@ -133,6 +133,7 @@ class CronTask:
         self._last_run: datetime | None = None
         self._run_count: int = 0
         self._session_id: str = ""  # 关联的 session UUID
+        self._remaining: int | None = None  # Remaining execution counter
         self._task_fn = task_fn  # Function that returns (task, plan) or (None, None) to skip
 
         # 从状态文件恢复 last_run
@@ -155,6 +156,7 @@ class CronTask:
                 state = json.load(f)
 
             self._session_id = state.get("session_id", "")
+            self._remaining = state.get("remaining")  # May be None for old tasks
             saved_last_run = state.get("last_run")
             if saved_last_run:
                 self._last_run = datetime.fromisoformat(saved_last_run)
@@ -163,7 +165,7 @@ class CronTask:
                 self._calculate_next_run(self._last_run)
                 logger.debug(f"[cron] Task {self.name}: restored last_run={saved_last_run}, "
                             f"run_count={self._run_count}, next_run={self._next_run}, "
-                            f"session_id={self._session_id}")
+                            f"session_id={self._session_id}, remaining={self._remaining}")
         except Exception as e:
             logger.warning(f"[cron] Task {self.name}: failed to restore state: {e}")
 
@@ -245,7 +247,8 @@ class CronTask:
         {
             "last_run": "2026-08-25T22:40:32.128806",
             "run_count": 5,
-            "session_id": "431ea12b"
+            "session_id": "431ea12b",
+            "remaining": 9994
         }
         """
         try:
@@ -256,6 +259,8 @@ class CronTask:
             }
             if self._session_id:
                 state["session_id"] = self._session_id
+            if self._remaining is not None:
+                state["remaining"] = self._remaining
 
             with open(state_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, ensure_ascii=False)
@@ -362,6 +367,7 @@ class CronTask:
             max_iterations=max_iterations,
             session_dir=exec_dir,
             exec_id=exec_id,
+            cron_task_id=self.name,  # Pass cron task_id for loop tool
         )
 
         try:
@@ -735,12 +741,29 @@ class CronScheduler:
             return
 
         try:
+            # Check and decrement remaining counter
+            max_exec = task.config.get("max_executions", 9999)
+            remaining = task._remaining if task._remaining is not None else max_exec
+
+            remaining -= 1
+            task._remaining = remaining
+
+            # Check if should auto-disable
+            if remaining <= 0:
+                task.enabled = False
+                logger.info(f"[cron] Task {task.name}: remaining=0, auto-disabled")
+                # Save state with enabled=False
+                task._save_state(now, None)
+                # Update user_tasks.json to reflect disabled state
+                self._update_task_enabled(task.name, False)
+                return
+
             result = task.execute()
             task.mark_executed(now, result)
 
             # Log result
             if result.get("status") == "completed":
-                logger.info(f"[cron] Task {task.name} completed successfully")
+                logger.info(f"[cron] Task {task.name} completed successfully (remaining={remaining})")
             elif result.get("status") == "skipped":
                 logger.info(f"[cron] Task {task.name} skipped: {result.get('message')}")
             else:
@@ -753,6 +776,20 @@ class CronScheduler:
             logger.error(f"[cron] Task {task.name} error: {e}")
         finally:
             ws_lock.release()
+
+    def _update_task_enabled(self, name: str, enabled: bool) -> None:
+        """Update task enabled state in user_tasks.json."""
+        from core.tools.shared.cron_tool import _load_user_tasks, _save_user_tasks
+
+        try:
+            tasks = _load_user_tasks()
+            for t in tasks:
+                if t["name"] == name:
+                    t["enabled"] = enabled
+                    break
+            _save_user_tasks(tasks)
+        except Exception as e:
+            logger.warning(f"[cron] Failed to update task enabled state: {e}")
 
     def _delete_one_time_task(self, name: str) -> None:
         """Remove a one-time task from config and state files."""

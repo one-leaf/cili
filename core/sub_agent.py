@@ -58,6 +58,7 @@ class SubAgent(BaseAgent):
         session_dir: Path | None = None,
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
+        cron_task_id: str = "",
     ):
         """Initialize SubAgent.
 
@@ -71,10 +72,12 @@ class SubAgent(BaseAgent):
             session_dir: Directory for saving messages
             stop_check: Callable that returns True when parent stopped
             exec_id: Pre-assigned execution ID
+            cron_task_id: Cron task ID if triggered by cron (for loop tool)
         """
         self.task = task
         self.plan = plan
         self._exec_id = exec_id
+        self._cron_task_id = cron_task_id
 
         # Load config
         config = load_config()
@@ -103,6 +106,7 @@ class SubAgent(BaseAgent):
             workspace_uuid=self.workspace_uuid,
             session_manager=self._session_ref,
             config=config,
+            cron_task_id=cron_task_id,
         )
         self.tool_schemas = [t.to_schema() for t in self.tools]
 
