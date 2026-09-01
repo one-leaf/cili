@@ -111,7 +111,7 @@ RootAgent (主对话，流式输出)
 
 | 层级 | 工具数 | 说明 |
 |------|--------|------|
-| **shared** | 19 | RootAgent 与 SubAgent 共用（读写、Shell、浏览器、搜索、Python、记忆等） |
+| **shared** | 18-19 | RootAgent 与 SubAgent 共用（读写、Shell、浏览器、搜索、Python、记忆、loop 进度追踪等） |
 | **root** | 3 | RootAgent 专属（技能系统、SubAgent 委派、用户提问） |
 | **sub** | 1 | SubAgent 专属（技能系统） |
 
@@ -164,11 +164,38 @@ cron(action="create", schedule={"type": "interval", "minutes": 60}, task="检查
 
 # Cron 表达式
 cron(action="create", schedule={"type": "cron", "expr": "0 9 * * *"}, task="每日晨报")
+
+# 限制执行次数（配合 loop 工具实现自循环任务）
+cron(action="create", schedule={"type": "interval", "minutes": 5}, task="导入文件", max_executions=100)
 ```
 
 - 系统级任务（`core/cron.d/`）+ 用户级任务（对话创建）
 - 状态持久化，重启后自动恢复调度
 - 同一 workspace 串行执行，避免并发冲突
+- **remaining 计数器**：每次执行自动递减，到 0 时任务自动 disable（硬保证）
+- **max_executions 参数**：创建任务时可设置最大执行次数（1-9999，默认 9999）
+
+#### 自循环任务（Loop 工具）
+
+配合 loop 工具可实现跨调度周期的渐进式任务，所有项处理完毕后自动停止：
+
+```python
+# 示例：渐进式导入大量文件到记忆系统
+# 1. 创建定时任务（每 5 分钟执行一次）
+cron(action="create", schedule={"type": "interval", "minutes": 5}, 
+     task="将 E:/documents/ 下的 markdown 文件导入记忆系统", max_executions=9999)
+
+# 2. SubAgent 每次执行时：
+#    - 扫描文件列表
+#    - loop(action="sync", items=文件列表)  # 同步项，自动更新 cron remaining
+#    - loop(action="next")  # 获取下一个待处理文件
+#    - 读取并处理文件
+#    - loop(action="done", item=当前文件)  # 标记完成
+```
+
+- **自动终止**：loop 工具检测到 cron 触发时，自动同步 remaining = pending_count + 1
+- **崩溃恢复**：当前项仍为 pending，下次执行自动重试
+- **动态新增**：源目录新增文件会被 sync 自动发现并加入处理队列
 
 ### 技能系统
 
@@ -214,7 +241,7 @@ cili/
 │   │   ├── assembler.py      # 流式数据块累积
 │   │   └── client.py         # 统一 API（chat / chat_stream）
 │   ├── tools/                # 工具层
-│   │   ├── shared/           # 共用工具（19 个）
+│   │   ├── shared/           # 共用工具（18-19 个，含 loop 进度追踪）
 │   │   ├── root/             # RootAgent 专属（3 个）
 │   │   └── sub/              # SubAgent 专属（1 个）
 │   └── skills/               # 技能层
