@@ -10,8 +10,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Pass control to PowerShell script
-powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0upgrade.ps1" %*
+:: Pass control to PowerShell script, passing project root as argument
+powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0upgrade.ps1" -ProjectRoot "%~dp0.." %*
 
 :: Pause on error
 if %errorlevel% neq 0 (

@@ -1,5 +1,9 @@
 ﻿# Cili Agent 升级工具
 
+param(
+    [string]$ProjectRoot = ""
+)
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -9,8 +13,12 @@ Write-Host ""
 
 # ==================== Switch to project root ====================
 
-$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Set-Location $projectRoot
+if (-not $ProjectRoot) {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+} else {
+    $ProjectRoot = (Resolve-Path $ProjectRoot).Path
+}
+Set-Location $ProjectRoot
 Write-Host "[INFO] 工作目录: $(Get-Location)" -ForegroundColor Gray
 Write-Host ""
 
@@ -89,17 +97,63 @@ Write-Host "[UPDATE] 正在更新文件..." -ForegroundColor Cyan
 
 # Copy files, excluding data/, workspace/, .git/, scripts/ (copy scripts/ last)
 $excludeDirs = @('data', 'workspace', '.git', 'scripts')
-Get-ChildItem -Path $extractedDir.FullName | Where-Object { $_.Name -notin $excludeDirs } | ForEach-Object {
-    $target = Join-Path $projectRoot $_.Name
-    if ($_.PSIsContainer) {
-        Copy-Item $_.FullName $target -Recurse -Force
+$newCount = 0
+$updateCount = 0
+$skipCount = 0
+
+function Copy-WithLog($srcFile, $ProjectRoot, $relativePath) {
+    $target = Join-Path $ProjectRoot $relativePath
+    $targetDir = Split-Path $target -Parent
+    if (-not (Test-Path $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    }
+
+    $isNew = -not (Test-Path $target)
+    $isChanged = $true
+    if (-not $isNew) {
+        $srcHash = (Get-FileHash $srcFile.FullName -Algorithm MD5).Hash
+        $dstHash = (Get-FileHash $target -Algorithm MD5).Hash
+        $isChanged = $srcHash -ne $dstHash
+    }
+
+    if ($isNew) {
+        Copy-Item $srcFile.FullName $target -Force
+        Write-Host "  [+] $relativePath" -ForegroundColor Green
+        return 'new'
+    } elseif ($isChanged) {
+        Copy-Item $srcFile.FullName $target -Force
+        Write-Host "  [~] $relativePath" -ForegroundColor Yellow
+        return 'updated'
     } else {
-        Copy-Item $_.FullName $target -Force
+        return 'skipped'
     }
 }
 
-# Copy scripts/ last (after all other files) to avoid overwriting running script
-Copy-Item -Path (Join-Path $extractedDir.FullName 'scripts') -Destination (Join-Path $projectRoot 'scripts') -Recurse -Force
+Get-ChildItem -Path $extractedDir.FullName -Recurse -File |
+    Where-Object {
+        $relativePath = $_.FullName.Substring($extractedDir.FullName.Length + 1)
+        $topDir = $relativePath.Split('\')[0]
+        $topDir -notin $excludeDirs -and $topDir -ne 'scripts'
+    } | ForEach-Object {
+        $relativePath = $_.FullName.Substring($extractedDir.FullName.Length + 1)
+        $result = Copy-WithLog $_ $ProjectRoot $relativePath
+        switch ($result) { 'new' { $newCount++ } 'updated' { $updateCount++ } default { $skipCount++ } }
+    }
+
+# Copy scripts/ last
+$scriptsDir = Join-Path $extractedDir.FullName 'scripts'
+if (Test-Path $scriptsDir) {
+    Get-ChildItem -Path $scriptsDir -Recurse -File | ForEach-Object {
+        $subPath = $_.FullName.Substring($scriptsDir.Length + 1)
+        $relativePath = "scripts\$subPath"
+        $result = Copy-WithLog $_ $ProjectRoot $relativePath
+        switch ($result) { 'new' { $newCount++ } 'updated' { $updateCount++ } default { $skipCount++ } }
+    }
+}
+
+Write-Host ""
+Write-Host "[INFO] 文件统计：新增 $newCount 个，修改 $updateCount 个，未变 $skipCount 个" -ForegroundColor Gray
+Write-Host "  [+] 新增  [~] 已更新" -ForegroundColor Gray
 
 # ==================== Cleanup ====================
 
