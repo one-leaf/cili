@@ -99,7 +99,8 @@ function setupEventListeners() {
     // Global settings
     document.getElementById('settings-btn').addEventListener('click', openSettings);
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
-    document.getElementById('settings-test-btn').addEventListener('click', testSettings);
+    document.getElementById('model-test-btn').addEventListener('click', () => testSettings('model'));
+    document.getElementById('llm-test-btn').addEventListener('click', () => testSettings('llm'));
 
     // Upgrade
     document.getElementById('upgrade-check-btn').addEventListener('click', runUpgrade);
@@ -2617,13 +2618,11 @@ async function saveSettings() {
     }
 }
 
-async function testSettings() {
+async function testSettings(which = 'model') {
     const statusEl = document.getElementById('settings-status');
     statusEl.textContent = '测试连接中...';
 
-    // Determine which tab is active and build the test config accordingly
-    const activeTab = document.querySelector('.settings-tab.active');
-    const isLlmTab = activeTab && activeTab.dataset.tab === 'llm';
+    const isLlmTab = which === 'llm';
 
     let payload = {};
     if (isLlmTab) {
@@ -2646,8 +2645,27 @@ async function testSettings() {
         };
         if (llmBaseUrl) payload.config.base_url = llmBaseUrl;
         if (llmApiKey) payload.config.api_key = llmApiKey;
+    } else {
+        // Test Agent model config
+        const model = document.getElementById('setting-model').value.trim();
+        const interfaceType = document.getElementById('setting-interface-type').value;
+        const baseUrl = document.getElementById('setting-base-url').value.trim();
+        const apiKey = document.getElementById('setting-api-key').value.trim();
+
+        if (!model) {
+            statusEl.textContent = '✗ 请先填写模型名称';
+            return;
+        }
+
+        payload = {
+            config: {
+                name: model,
+                interface_type: interfaceType || 'anthropic',
+            }
+        };
+        if (baseUrl) payload.config.base_url = baseUrl;
+        if (apiKey) payload.config.api_key = apiKey;
     }
-    // For agent tab, use saved config (empty payload)
 
     try {
         const response = await fetch('/api/config/test', {
@@ -2660,7 +2678,7 @@ async function testSettings() {
         if (data.success) {
             const interfaceInfo = data.interface_type === 'anthropic' ? ' (Anthropic API)' :
                                  data.interface_type === 'openai' ? ' (OpenAI API)' : '';
-            const modelLabel = isLlmTab ? 'LLM 模型' : 'RootAgent 模型';
+            const modelLabel = isLlmTab ? 'LLM 模型' : 'Agent 模型';
             statusEl.textContent = `✓ ${modelLabel}连接成功${interfaceInfo}`;
         } else {
             statusEl.textContent = `✗ 连接失败: ${data.message}`;

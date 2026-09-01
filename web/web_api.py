@@ -1558,7 +1558,7 @@ async def test_config(request: TestConfigRequest = TestConfigRequest()):
         from core.llm import create_llm_client
         client = create_llm_client(model_cfg)
         success, message = client.test_connection()
-        interface_type = client.interface_type
+        interface_type = model_cfg.interface_type
         client.close()
 
         return {
