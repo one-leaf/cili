@@ -510,6 +510,9 @@ def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
         "pyyaml",
         "toml",
         "Pillow",
+        "openpyxl",
+        "python-docx",
+        "python-pptx",
         "pytest",
     ]
 
