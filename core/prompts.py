@@ -17,7 +17,7 @@ import os
 from datetime import datetime
 
 from core.config import PROJECT_ROOT, get_user_profile_path
-from core.tools.shared.base import _VENV_SCRIPTS
+from core.tools.shared.base import _VENV_DIR, _VENV_SCRIPTS
 
 logger = logging.getLogger(__name__)
 
@@ -462,9 +462,10 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Python Environment",
         "",
-        f"Virtual environment Scripts directory: `{_VENV_SCRIPTS}`",
+        f"Python directory: `{_VENV_DIR}`",
+        f"Pip directory: `{_VENV_SCRIPTS}`",
         "",
-        "The virtual environment is automatically activated for both `python` tool and `bash` tool. "
+        "The Python environment is automatically activated for both `python` tool and `bash` tool. "
         "`python`, `pip`, and all pre-installed packages are directly available in bash without any setup.",
         "",
         "## Memory",
@@ -536,10 +537,11 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         f"Workspace: `{workspace_uuid}`",
         f"Working Directory: `{cwd}`",
         f"Operating System: `{platform.system()} {platform.release()}`",
-        f"Python venv Scripts: `{_VENV_SCRIPTS}`",
+        f"Python directory: `{_VENV_DIR}`",
+        f"Pip directory: `{_VENV_SCRIPTS}`",
         "",
         "**This directory is the CWD for all tool executions.** All relative paths resolve against this directory.",
-        "The Python virtual environment is automatically activated in both `python` tool and `bash` tool.",
+        "The Python environment is automatically activated in both `python` tool and `bash` tool.",
         "",
         f"**Current Date: {current_date}**",
         "",

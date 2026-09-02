@@ -188,7 +188,8 @@ Workspace directory (CWD): `{cwd}`
 This directory is the CWD for all tool executions.
 
 ## Python Environment
-Virtual environment Scripts directory: `{_VENV_SCRIPTS}`
+Python directory: `{_VENV_DIR}`
+Pip directory: `{_VENV_SCRIPTS}`
 ...
 
 ## Memory
@@ -218,7 +219,8 @@ Context received. Please confirm briefly and await my task.
 Workspace: `{workspace_uuid}`
 Working Directory: `{cwd}`
 Operating System: `{os_info}`
-Python venv Scripts: `{_VENV_SCRIPTS}`
+Python directory: `{_VENV_DIR}`
+Pip directory: `{_VENV_SCRIPTS}`
 
 **Current Date: {current_date}**
 

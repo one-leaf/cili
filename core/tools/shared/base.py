@@ -190,6 +190,22 @@ _VENV_DIR = os.path.join(_PROJECT_ROOT, "data", "deps", "python")
 _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
 
 
+def _to_bash_path(path: str) -> str:
+    """Convert Windows path to Git Bash format.
+
+    E.g., 'E:\\AI\\cili' -> '/e/AI/cili'
+    """
+    if not path:
+        return path
+    # Replace backslashes with forward slashes
+    result = path.replace("\\", "/")
+    # Convert drive letter: E:/ -> /e/
+    if len(result) >= 2 and result[1] == ":":
+        drive = result[0].lower()
+        result = "/" + drive + result[2:]
+    return result
+
+
 def _find_git_bash() -> str:
     """Find Git Bash executable path.
 
@@ -453,9 +469,9 @@ class Tool:
             # Add both _VENV_DIR (python.exe) and _VENV_SCRIPTS (pip.exe) to PATH
             paths = []
             if _VENV_DIR:
-                paths.append(_VENV_DIR.replace("\\", "/"))
+                paths.append(_to_bash_path(_VENV_DIR))
             if _VENV_SCRIPTS:
-                paths.append(_VENV_SCRIPTS.replace("\\", "/"))
+                paths.append(_to_bash_path(_VENV_SCRIPTS))
 
             if paths:
                 path_str = ":".join(paths)

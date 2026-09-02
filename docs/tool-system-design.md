@@ -191,7 +191,7 @@ content = [
 
 | 方法 | 说明 |
 |------|------|
-| `_run_bash(command, timeout, stdin, max_chars, output_file)` | 通过 Git Bash 执行命令，自动激活 Python venv |
+| `_run_bash(command, timeout, stdin, max_chars, output_file)` | 通过 Git Bash 执行命令，自动激活 Python 环境 |
 | `_start_background_task(command, shell_path, env_prefix)` | 启动后台任务，返回 task_id |
 | `_read_background_task(task_id)` | 非阻塞读取后台任务累积输出 |
 | `_kill_background_task(task_id)` | 终止后台任务 |
@@ -199,7 +199,7 @@ content = [
 | `_list_background_tasks()` | 列出所有后台任务及状态 |
 
 **_run_bash 特性**：
-- 自动将 Python venv Scripts 目录添加到 PATH
+- 自动将 Python 环境目录（`_VENV_DIR` 和 `_VENV_SCRIPTS`）添加到 PATH
 - 支持超时控制（默认 30s）
 - **合并 stderr 到 stdout**（`stderr=subprocess.STDOUT`，确保实时输出可见）
 - 字符数截断（硬上限 30,000，默认 30,000；`BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限）

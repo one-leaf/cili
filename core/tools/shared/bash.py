@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS
+from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS, _to_bash_path
 
 
 class BashTool(Tool):
@@ -140,9 +140,9 @@ class BashTool(Tool):
                 # Add both _VENV_DIR (python.exe) and _VENV_SCRIPTS (pip.exe) to PATH
                 paths = []
                 if _VENV_DIR:
-                    paths.append(_VENV_DIR.replace("\\", "/"))
+                    paths.append(_to_bash_path(_VENV_DIR))
                 if _VENV_SCRIPTS:
-                    paths.append(_VENV_SCRIPTS.replace("\\", "/"))
+                    paths.append(_to_bash_path(_VENV_SCRIPTS))
                 path_str = ":".join(paths)
                 env_prefix = f"export PATH=\"{path_str}:$PATH\""
 
