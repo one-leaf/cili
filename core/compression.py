@@ -65,9 +65,13 @@ def microcompact_tool_results(
             if block.get("_compacted"):
                 continue
 
+            # 跳过小于 200 字符的工具结果（保留原文，不压缩）
+            file_size = block.get("_file_size", 0)
+            if file_size > 0 and file_size < 200:
+                continue
+
             # 只标记，不替换内容（内容已保存在外部文件）
             # 估算节省的字节数（基于 _file_size 或外部文件大小）
-            file_size = block.get("_file_size", 0)
             if file_size > 0:
                 saved += file_size
             block["_compacted"] = True

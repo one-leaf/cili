@@ -277,7 +277,11 @@ class BaseAgent:
 
         try:
             input_data = tool.coerce_input(input_data)
-            result = tool.execute(**input_data)
+            # coerce_input 可能返回 ToolResult（参数校验失败）
+            if isinstance(input_data, ToolResult):
+                result = input_data
+            else:
+                result = tool.execute(**input_data)
         except Exception as e:
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:

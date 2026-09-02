@@ -49,6 +49,7 @@ def _save_user_tasks(tasks: list[dict]) -> None:
 class CronTool(Tool):
     name = "cron"
     description = (
+        "**action is REQUIRED.** Always include action in parameters.\n\n"
         "**User-level scheduled task management.**\n"
         "Create, list, update, delete, and manage scheduled tasks through conversation.\n\n"
         "## Actions:\n"
@@ -124,7 +125,7 @@ class CronTool(Tool):
                 "action": {
                     "type": "string",
                     "enum": ["create", "list", "update", "delete", "run", "enable", "disable"],
-                    "description": "Action to perform.",
+                    "description": "Action to perform. REQUIRED - must be explicitly specified.",
                 },
                 "name": {
                     "type": "string",
@@ -206,7 +207,7 @@ class CronTool(Tool):
 
     def execute(
         self,
-        action: str = "list",
+        action: str | None = None,
         name: str | None = None,
         description: str | None = None,
         schedule: dict | None = None,
@@ -218,6 +219,18 @@ class CronTool(Tool):
         max_executions: int | None = None,
     ) -> ToolResult:
         """Execute cron action."""
+        # 参数校验：action 缺失时智能推断
+        if action is None:
+            # 如果传了 create 专属参数，自动推断为 create
+            if schedule is not None or task is not None:
+                action = "create"
+                logger.warning("[cron_tool] action 参数缺失，根据 schedule/task 参数自动推断为 'create'")
+            else:
+                return ToolResult(
+                    "Error: 'action' 参数是必需的。可用值: create, list, update, delete, run, enable, disable",
+                    error=True
+                )
+
         if action == "create":
             # create 使用默认值
             return self._create(

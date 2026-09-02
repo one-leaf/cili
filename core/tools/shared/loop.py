@@ -216,7 +216,7 @@ class LoopTool(Tool):
             "pending": pending,
             "done": done,
             "failed": failed,
-        }))
+        }, ensure_ascii=False))
 
     def _next(self, task_id: str) -> ToolResult:
         """Get next pending item."""
@@ -225,10 +225,10 @@ class LoopTool(Tool):
         # Find first pending item
         for item, status in state.items():
             if status == "pending":
-                return ToolResult(json.dumps({"item": item}))
+                return ToolResult(json.dumps({"item": item}, ensure_ascii=False))
 
         # No pending items
-        return ToolResult(json.dumps({"item": None}))
+        return ToolResult(json.dumps({"item": None}, ensure_ascii=False))
 
     def _done(self, task_id: str, item: str | None) -> ToolResult:
         """Mark item as completed."""
@@ -252,7 +252,7 @@ class LoopTool(Tool):
             "done": done,
             "pending": pending,
             "failed": failed,
-        }))
+        }, ensure_ascii=False))
 
     def _fail(self, task_id: str, item: str | None, error: str | None) -> ToolResult:
         """Mark item as failed with reason."""
@@ -278,7 +278,7 @@ class LoopTool(Tool):
             "done": done,
             "pending": pending,
             "failed": failed,
-        }))
+        }, ensure_ascii=False))
 
     def _status(self, task_id: str) -> ToolResult:
         """Get progress statistics."""
@@ -294,4 +294,4 @@ class LoopTool(Tool):
             "done": done,
             "pending": pending,
             "failed": failed,
-        }))
+        }, ensure_ascii=False))

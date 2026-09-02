@@ -143,7 +143,7 @@ class AnthropicAdapter(Adapter):
             elif block_type == "tool_use":
                 # Store arguments as raw JSON string
                 input_data = block.get("input", {})
-                arguments = json.dumps(input_data) if input_data else ""
+                arguments = json.dumps(input_data, ensure_ascii=False) if input_data else ""
                 content_blocks.append(ToolCallBlock(
                     id=block.get("id", ""),
                     name=block.get("name", ""),

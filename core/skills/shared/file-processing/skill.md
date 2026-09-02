@@ -1006,3 +1006,70 @@ When multiple libraries are suitable, choose the one that provides the best comb
 6. maintainability
 
 Only use a fallback when the preferred solution genuinely cannot be used.
+
+---
+
+# 22. 长文档转 Memory（完整内容存储）
+
+当用户要求将文档/文件内容存入 memory（知识库）时，必须确保内容完整，不能只存储截断的部分。
+
+## 问题
+
+文档超过工具输出限制（read 工具约 10,000 tokens，python/bash 工具约 30,000 字符）时，工具会截断输出。如果直接将截断的内容存入 memory，会导致知识库不完整。
+
+## 正确流程
+
+```
+用户要求"把这个文件存入 memory"
+    ↓
+1. 先用 read 工具读取文件
+    ↓
+2. 检查输出是否被截断？
+   - 看到 "... more lines" → 被截断
+   - 看到 "… N tokens truncated …" → 被截断
+    ↓
+   是 → 3. 分多次读取（见下方方法）
+   否 → 4. 直接 memory(action='store')
+    ↓
+3. 拼接所有分段内容
+    ↓
+4. 一次性 memory(action='store', content=完整内容)
+```
+
+## 分次读取方法
+
+```python
+# 第一次：读前 2000 行
+read(file_path="文档.pdf", offset=1, limit=2000)
+# → 看到 "(2000 more lines). Use offset=2001 to continue reading."
+
+# 第二次：继续读
+read(file_path="文档.pdf", offset=2001, limit=2000)
+# → 看到 "(2000 more lines). Use offset=4001 to continue reading."
+
+# 重复直到读完所有行
+```
+
+对于 python 工具解析的文档（如 PDF），可以：
+1. 先用 python 提取完整文本并保存为临时文件
+2. 然后用 read 工具分次读取该临时文件
+
+```python
+# python 工具：提取完整文本
+import fitz
+doc = fitz.open("长文档.pdf")
+full_text = ""
+for page in doc:
+    full_text += page.get_text()
+with open("/tmp/extracted.txt", "w", encoding="utf-8") as f:
+    f.write(full_text)
+print(f"提取完成，共 {len(full_text)} 字符")
+```
+
+然后分次读取 `/tmp/extracted.txt`。
+
+## 超长内容的处理
+
+如果拼接后内容超过 50,000 字符，考虑：
+- 按章节/主题分成多个 memory 文件
+- 使用不同的 `topic` 和 `filename` 区分

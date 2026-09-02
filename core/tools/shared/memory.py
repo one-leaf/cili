@@ -60,7 +60,10 @@ class MemoryTool(Tool):
             },
             "content": {
                 "type": "string",
-                "description": "Content body (knowledge) or skill body (Markdown). Required for store/update."
+                "description": "Content body (knowledge) or skill body (Markdown). Required for store/update. "
+                               "IMPORTANT: Content must be complete. If source document is long and was truncated "
+                               "by read/python tool, use offset/limit to fetch remaining parts before storing. "
+                               "Do NOT store partial content with placeholder like '内容已截取'."
             },
             "source": {
                 "type": "string",

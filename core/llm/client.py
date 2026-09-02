@@ -118,7 +118,7 @@ class LLMClient:
             if status >= 400:
                 # Raise for retry logic
                 resp = httpx.Response(status_code=status, request=httpx.Request("POST", url))
-                resp._content = json.dumps(data).encode("utf-8")
+                resp._content = json.dumps(data, ensure_ascii=False).encode("utf-8")
                 resp.headers.update(resp_headers)
                 raise httpx.HTTPStatusError(
                     f"HTTP {status}", request=resp.request, response=resp

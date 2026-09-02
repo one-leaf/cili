@@ -134,7 +134,7 @@ class ToolCallBlock:
             elif isinstance(inp, str):
                 arguments = inp
             else:
-                arguments = json.dumps(inp) if inp else ""
+                arguments = json.dumps(inp, ensure_ascii=False) if inp else ""
         if not isinstance(arguments, str):
             arguments = json.dumps(arguments, ensure_ascii=False) if arguments else ""
 

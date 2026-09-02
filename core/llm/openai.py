@@ -115,7 +115,7 @@ class OpenAIAdapter(Adapter):
                     # Convert to OpenAI format
                     arguments = block_dict.get("arguments", "")
                     if not isinstance(arguments, str):
-                        arguments = json.dumps(arguments)
+                        arguments = json.dumps(arguments, ensure_ascii=False)
 
                     tool_calls.append({
                         "id": block_dict.get("id", ""),

@@ -390,20 +390,101 @@ class Tool:
             "input_schema": self.parameters,
         }
 
-    def coerce_input(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """根据 parameters schema 修正 LLM 传入的参数类型。
+    def validate_input(self, kwargs: dict[str, Any]) -> ToolResult | None:
+        """校验 LLM 传入的参数是否符合 parameters schema。
 
-        LLM 有时会将 integer 参数传为字符串（如 max_results: "5"），
-        此方法在调用 execute 前统一转换，避免运行时类型错误。
+        检查项：
+        - required 字段是否存在
+        - enum 值是否合法
+        - 基本类型约束（string/integer/number/boolean/array/object）
+
+        注意：此方法应在 coerce_input 完成类型转换后调用。
+
+        Returns:
+            None: 校验通过
+            ToolResult(error=True): 校验失败，错误信息已格式化
         """
-        if not self.parameters or not kwargs:
+        if not self.parameters:
+            return None
+
+        props = self.parameters.get("properties", {})
+        required = set(self.parameters.get("required", []))
+
+        # 1. 检查必填字段
+        missing = required - set(kwargs.keys())
+        if missing:
+            return ToolResult(
+                f"Error: 缺少必填参数: {', '.join(sorted(missing))}",
+                error=True,
+            )
+
+        # 2. 逐字段校验（只校验 LLM 实际传了的字段）
+        for key, value in kwargs.items():
+            if key not in props:
+                continue
+            prop_schema = props[key]
+            prop_type = prop_schema.get("type", "")
+
+            # enum 校验
+            if "enum" in prop_schema and value not in prop_schema["enum"]:
+                allowed = prop_schema["enum"]
+                return ToolResult(
+                    f"Error: 参数 '{key}' 值无效。允许值: {allowed}",
+                    error=True,
+                )
+
+            # 类型校验（跳过 None 值，让默认值生效）
+            if value is None:
+                continue
+
+            if prop_type == "string" and not isinstance(value, str):
+                return ToolResult(
+                    f"Error: 参数 '{key}' 应为 string 类型，实际为 {type(value).__name__}",
+                    error=True,
+                )
+            elif prop_type in ("integer", "number") and not isinstance(value, (int, float)):
+                return ToolResult(
+                    f"Error: 参数 '{key}' 应为 {prop_type} 类型，实际为 {type(value).__name__}",
+                    error=True,
+                )
+            elif prop_type == "boolean" and not isinstance(value, bool):
+                return ToolResult(
+                    f"Error: 参数 '{key}' 应为 boolean 类型，实际为 {type(value).__name__}",
+                    error=True,
+                )
+            elif prop_type == "array" and not isinstance(value, list):
+                return ToolResult(
+                    f"Error: 参数 '{key}' 应为 array 类型，实际为 {type(value).__name__}",
+                    error=True,
+                )
+            elif prop_type == "object" and not isinstance(value, dict):
+                return ToolResult(
+                    f"Error: 参数 '{key}' 应为 object 类型，实际为 {type(value).__name__}",
+                    error=True,
+                )
+
+        return None
+
+    def coerce_input(self, kwargs: dict[str, Any]) -> dict[str, Any] | ToolResult:
+        """根据 parameters schema 校验并修正 LLM 传入的参数。
+
+        流程：
+        1. 类型转换 — integer/boolean 等类型修正（LLM 常将数字传为字符串）
+        2. validate_input() — 参数合法性校验
+
+        Returns:
+            dict: 校验并转换后的参数
+            ToolResult(error=True): 校验失败
+        """
+        if not self.parameters:
             return kwargs
 
+        # 第一步：类型转换（在 validate_input 之前，因为 LLM 常把数字传为字符串）
         props = self.parameters.get("properties", {})
         required = set(self.parameters.get("required", []))
         coerced = {}
 
-        for key, value in kwargs.items():
+        for key, value in (kwargs or {}).items():
             prop_schema = props.get(key, {})
             prop_type = prop_schema.get("type", "")
 
@@ -412,7 +493,7 @@ class Tool:
                 try:
                     value = int(value) if prop_type == "integer" else float(value)
                 except (ValueError, TypeError):
-                    pass  # 无法转换则保留原值，让工具自身处理
+                    pass  # 无法转换则保留原值，让 validate_input 报错
 
             # 布尔类型转换（"true"/"false" 字符串 → bool）
             elif prop_type == "boolean" and isinstance(value, str):
@@ -426,6 +507,11 @@ class Tool:
                 continue
 
             coerced[key] = value
+
+        # 第二步：参数校验（在类型转换之后）
+        validation_error = self.validate_input(coerced)
+        if validation_error is not None:
+            return validation_error
 
         return coerced
 

@@ -1151,29 +1151,29 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     def on_text(text: str) -> None:
         # Sentinel: 413 retry needs frontend to clear already-streamed text
         if text == "\x00RETRY_CLEAR\x00":
-            event = json.dumps({"type": "retry_clear"})
+            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
             event_queue.put(f"data: {event}\n\n")
             return
-        event = json.dumps({"type": "text", "content": text})
+        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text})
+        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id})
+        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id})
+        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
         # Check for todo_write tool and push todo update event
         if tool_name == "todo_write" and not is_error and agent.session_manager:
             todos = agent.session_manager.metadata.get("todos")
             if todos is not None:
-                todo_event = json.dumps({"type": "todo_update", "todos": todos})
+                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
     def on_subagent_start(exec_id: str, task_summary: str) -> None:
@@ -1186,7 +1186,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent.session_manager.save()
 
         # Send SSE event for real-time UI update
-        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary})
+        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1223,7 +1223,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 )
             except Exception as e:
                 logger.error(f"RootAgent error: {e}")
-                err_event = json.dumps({"type": "error", "content": str(e)})
+                err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
                 event_queue.put(None)  # sentinel: done
@@ -1250,7 +1250,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             return
 
         # Send done signal
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -1366,29 +1366,29 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     def on_text(text: str) -> None:
         if text == "\x00RETRY_CLEAR\x00":
-            event = json.dumps({"type": "retry_clear"})
+            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
             event_queue.put(f"data: {event}\n\n")
             return
-        event = json.dumps({"type": "text", "content": text})
+        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text})
+        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id})
+        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id})
+        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
         # Check for todo_write tool and push todo update event
         if tool_name == "todo_write" and not is_error and agent.session_manager:
             todos = agent.session_manager.metadata.get("todos")
             if todos is not None:
-                todo_event = json.dumps({"type": "todo_update", "todos": todos})
+                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
     def on_subagent_start(exec_id: str, task_summary: str) -> None:
@@ -1398,7 +1398,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
             status="running",
         )
         agent.session_manager.save()
-        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary})
+        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1415,7 +1415,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 )
             except Exception as e:
                 logger.error(f"RootAgent error: {e}")
-                err_event = json.dumps({"type": "error", "content": str(e)})
+                err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
                 event_queue.put(None)  # sentinel: done
@@ -1429,7 +1429,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 except Exception:
                     continue
                 if event is None:
-                    done_event = json.dumps({"type": "done"})
+                    done_event = json.dumps({"type": "done"}, ensure_ascii=False)
                     yield f"data: {done_event}\n\n"
                     break
                 yield event
@@ -1636,8 +1636,8 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
 async def _sse_stream(*events: dict):
     """Yield SSE events followed by a done event."""
     for event in events:
-        yield f"data: {json.dumps(event)}\n\n"
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/workspace/files/{file_path:path}")
