@@ -506,6 +506,7 @@ def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
         "lxml",
         "numpy",
         "pandas",
+        "scipy",
         "matplotlib",
         "pyyaml",
         "toml",
