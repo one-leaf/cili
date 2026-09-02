@@ -190,12 +190,9 @@ class RootAgent(BaseAgent):
                     # Parse arguments from raw JSON string to dict at execution time
                     input_data = block.parse_arguments()
                     result = self._execute_tool(block.name, input_data, block.id)
-                    # Check if we need to wait for user input (in _meta)
+                    # Check if we need to wait for user input (block-level _meta.wait_for_user)
                     if result.get("_meta", {}).get("wait_for_user"):
                         wait_for_user = True
-                    # Remove wait_for_user from _meta before saving (runtime only)
-                    if "wait_for_user" in result.get("_meta", {}):
-                        del result["_meta"]["wait_for_user"]
                     # Add tool result to messages
                     self.add_message("user", [result])
                     # Sync to session manager
@@ -289,12 +286,9 @@ class RootAgent(BaseAgent):
                         break
                     input_data = block.parse_arguments()
                     result = self._execute_tool(block.name, input_data, block.id)
-                    # Check if we need to wait for user input (in _meta)
+                    # Check if we need to wait for user input (block-level _meta.wait_for_user)
                     if result.get("_meta", {}).get("wait_for_user"):
                         wait_for_user = True
-                    # Remove wait_for_user from _meta before saving (runtime only)
-                    if "wait_for_user" in result.get("_meta", {}):
-                        del result["_meta"]["wait_for_user"]
                     self.add_message("user", [result])
                     self._sync_to_session_manager()
                     self.session_manager.save()

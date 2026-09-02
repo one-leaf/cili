@@ -1262,7 +1262,7 @@ function renderMessages(messages) {
 
             // Render tool results as separate tool bubbles
             toolResultBlocks.forEach(block => {
-                if (block._wait_for_user) return;
+                if (block._meta && block._meta.wait_for_user) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '');
                 div.classList.add('tool');
@@ -1327,7 +1327,7 @@ function renderMessages(messages) {
                 }
             } else if (block.kind === 'tool_result') {
                 // Skip placeholder tool_result for ask_user
-                if (block._wait_for_user) return;
+                if (block._meta && block._meta.wait_for_user) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '');
                 div.classList.add('tool');
@@ -2012,7 +2012,7 @@ function normalizeContent(content) {
                 }
                 blocks.push({ kind: 'tool_call', name: block.name, input: input, id: block.id, _answered: block._answered || false });
             } else if (block.type === 'tool_result') {
-                blocks.push({ kind: 'tool_result', content: block.content, is_error: block.is_error || false, _wait_for_user: block._wait_for_user || false, tool_use_id: block.tool_use_id || block.tool_call_id });
+                blocks.push({ kind: 'tool_result', content: block.content, is_error: block.is_error || false, _meta: block._meta || null, tool_use_id: block.tool_use_id || block.tool_call_id });
             }
         });
     }

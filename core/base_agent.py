@@ -236,10 +236,10 @@ class BaseAgent:
 
         logger.debug(f"[工具调用] {name}")
 
-        # Setup output file path
+        # Setup output file path (skip for ask_user - placeholder goes directly in content)
         output_filename = f"{tool_use_id}.txt" if tool_use_id else ""
         output_file_path = ""
-        if self.session_dir and output_filename:
+        if self.session_dir and output_filename and name != "ask_user":
             output_file_path = str(self.session_dir / output_filename)
             tool.output_file = output_file_path
 
@@ -268,7 +268,9 @@ class BaseAgent:
         except Exception as e:
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:
-            tool.save_output_to_file(result)
+            # ask_user 工具不创建外部文件，占位符直接放 content
+            if name != "ask_user":
+                tool.save_output_to_file(result)
             # 更新 _output_path 为实际保存的文件路径（可能是 .json）
             output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
             tool.output_file = None
@@ -295,14 +297,11 @@ class BaseAgent:
 
         meta = {
             "tool_name": name,
-            "file_size": file_size,
         }
         if needs_external_file:
             meta["output_path"] = output_filename
+            meta["file_size"] = file_size
             meta["truncated"] = truncated
-        # Add wait_for_user flag if present (for ask_user tool)
-        if getattr(result, 'wait_for_user', False):
-            meta["wait_for_user"] = True
         # Add any extra meta from tool result
         if result.meta:
             meta.update(result.meta)
@@ -313,8 +312,19 @@ class BaseAgent:
             "tool_use_id": tool_use_id,
             "content": result.output if not truncated else None,
             "is_error": result.error,
-            "_meta": meta,
         }
+
+        # Add wait_for_user to block-level _meta (for ask_user tool)
+        if getattr(result, 'wait_for_user', False):
+            if "_meta" not in result_dict:
+                result_dict["_meta"] = {}
+            result_dict["_meta"]["wait_for_user"] = True
+
+        # Add _meta if it has content
+        if meta:
+            if "_meta" not in result_dict:
+                result_dict["_meta"] = {}
+            result_dict["_meta"].update(meta)
 
         return result_dict
 

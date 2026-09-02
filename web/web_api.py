@@ -630,9 +630,8 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
         if not isinstance(content, list):
             continue
         for block in content:
-            # 已回答 = _wait_for_user 且有实际 content（用户已提交答案）
-            if block.get("type") == "tool_result" and block.get("_wait_for_user") and block.get("content"):
-                # 同时检查两种字段名
+            # 已回答 = wait_for_user == false（用户已提交答案）
+            if block.get("type") == "tool_result" and block.get("_meta", {}).get("wait_for_user") is False:
                 tool_use_id = block.get("tool_use_id") or block.get("tool_call_id")
                 if tool_use_id:
                     answered_ask_user_ids.add(tool_use_id)
@@ -1323,6 +1322,10 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 block["content"] = request.answer
                 found_placeholder = True
                 logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
+                # 设置 wait_for_user = False（用户已回答）
+                if "_meta" in block and "wait_for_user" in block["_meta"]:
+                    block["_meta"]["wait_for_user"] = False
+                    logger.info(f"[ask-user] 已设置 _meta.wait_for_user=false")
                 # 同步更新外部文件，保持与其他工具一致
                 output_path = block.get("_output_path", "")
                 if output_path:
