@@ -2364,11 +2364,9 @@ function createQuoteButton(messageDiv) {
         const raw = contentDiv ? contentDiv.textContent.trim() : '';
         if (!raw) return;
 
-        const isUser = messageDiv.classList.contains('user');
-        const roleLabel = isUser ? '用户' : 'AI';
         const text = raw.length > 500 ? raw.substring(0, 500) + '...' : raw;
 
-        const quoteText = `[引用${roleLabel}的消息]\n> ${text.replace(/\n/g, '\n> ')}\n[/引用]\n\n`;
+        const quoteText = `<referenced_context>${text}</referenced_context>\n\n`;
 
         // Insert at cursor position if input is focused, else append
         const start = chatInput.selectionStart ?? chatInput.value.length;
