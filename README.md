@@ -102,7 +102,7 @@ scripts\upgrade.cmd
 
 ```
 RootAgent (主对话，流式输出)
-  ├── 20+ 工具：读写文件、执行 Shell、Python、浏览器、搜索、记忆、定时任务...
+  ├── 22 工具：读写文件、执行 Shell、Python、浏览器、搜索、记忆、定时任务、PDF转换...
   ├── 内置技能：代码审查、任务委派、研究、学习、技能创建...
   └── SubAgent (后台委派，非流式)
         ├── 独立消息历史（最多 20 轮迭代）
@@ -113,7 +113,7 @@ RootAgent (主对话，流式输出)
 
 | 层级 | 工具数 | 说明 |
 |------|--------|------|
-| **shared** | 18-19 | RootAgent 与 SubAgent 共用（读写、Shell、浏览器、搜索、Python、记忆、loop 进度追踪等） |
+| **shared** | 19~20 | RootAgent 与 SubAgent 共用（读写、Shell、浏览器、搜索、Python、记忆、PDF转换、loop 进度追踪等） |
 | **root** | 3 | RootAgent 专属（技能系统、SubAgent 委派、用户提问） |
 | **sub** | 1 | SubAgent 专属（技能系统） |
 
@@ -129,7 +129,7 @@ Message → Adapter.serialize() → HTTP (httpx) → API → Adapter.parse() →
                            BlockAssembler (流式累积)
 ```
 
-- **统一流式协议**：7 种 StreamChunk 类型，所有 Provider 通过 Adapter 翻译
+- **统一流式协议**：8 种 StreamChunk 类型，所有 Provider 通过 Adapter 翻译
 - **自动重试**：429/5xx 指数退避 + 抖动，支持 `Retry-After` 头
 - **LiteLLM 代理自动检测**：通过 `/openapi.json` 端点识别，自动附加 `litellm_session_id`
 - **延迟解析**：`ToolCallBlock.arguments` 保留原始 JSON，执行时才解析
@@ -243,7 +243,7 @@ cili/
 │   │   ├── assembler.py      # 流式数据块累积
 │   │   └── client.py         # 统一 API（chat / chat_stream）
 │   ├── tools/                # 工具层
-│   │   ├── shared/           # 共用工具（18-19 个，含 loop 进度追踪）
+│   │   ├── shared/           # 共用工具（19~20 个，含 pdf2markdown、loop 进度追踪）
 │   │   ├── root/             # RootAgent 专属（3 个）
 │   │   └── sub/              # SubAgent 专属（1 个）
 │   └── skills/               # 技能层
@@ -256,7 +256,7 @@ cili/
 │       ├── index.html        # 单页应用
 │       ├── app.js            # 前端逻辑
 │       └── style.css         # 样式
-├── docs/                     # 设计文档（13 篇）
+├── docs/                     # 设计文档（14 篇）
 ── test/                     # 测试（30+ 文件）
 └── workspace/                # 默认工作目录
 ```
@@ -290,7 +290,11 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | [cron-scheduler-design.md](docs/cron-scheduler-design.md) | Cron 调度器、任务配置、执行机制 |
 | [memory-system-design.md](docs/memory-system-design.md) | 长期记忆：知识存储与技能复用 |
 | [web-api-design.md](docs/web-api-design.md) | REST API、SSE 流式、前端架构 |
-| [compression-design](docs/session-management-design.md) | 三级压缩策略详解 |
+| [user-profile-design.md](docs/user-profile-design.md) | 用户画像：5 维度、Markdown 格式、Cron 提取 |
+| [todo-write-design.md](docs/todo-write-design.md) | TodoWrite 任务规划：整表替换、三态状态 |
+| [system-prompt-design.md](docs/system-prompt-design.md) | 系统提示词构建逻辑 |
+| [environment-setup-design.md](docs/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
+| [llm-api-reference.md](docs/llm-api-reference.md) | LLM API 参考文档 |
 
 ## 技术栈
 

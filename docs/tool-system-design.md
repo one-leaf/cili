@@ -26,7 +26,7 @@
 ```
 core/tools/
 ├── __init__.py              # 顶层注册表：create_tools(), get_tool_by_name()
-├── shared/                  # 共用工具（17~18 个）
+├── shared/                  # 共用工具（18~19 个）
 │   ├── __init__.py          # create_shared_tools()
 │   ├── base.py              # Tool 基类 + ToolResult + BackgroundTaskManager
 │   ├── read.py              # 读取文件
@@ -39,6 +39,7 @@ core/tools/
 │   ├── web_search.py        # 网络搜索
 │   ├── memory.py            # 长期记忆
 │   ├── python_tool.py       # Python 执行（共用）
+│   ├── pdf2markdown.py      # PDF 转 Markdown（MinerU API）
 │   ├── llm_tool.py          # 单轮 LLM 调用（条件加载，需配置 llm_model）
 │   ├── todo.py              # 任务规划（TodoWrite）
 │   ├── latex.py             # LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex）
@@ -57,20 +58,20 @@ core/tools/
 ```
 
 **工厂函数**：
-- `create_shared_tools(**kwargs, config=None, cron_task_id="")` → 17 个固定工具 + LLMTool（条件加载）= 17~18 个共用工具
+- `create_shared_tools(**kwargs, config=None, cron_task_id="")` → 18 个固定工具 + LLMTool（条件加载）= 18~19 个共用工具
 - `create_root_tools(**kwargs)` → 3 个 RootAgent 专属工具（SkillTool + SubAgentTool + AskUserTool）
 - `create_sub_tools(**kwargs, config=None, cron_task_id="")` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
-- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（20~21 个）
-- SubAgent 的工具集 = `create_sub_tools()` → 18~19 个工具
+- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（21~22 个）
+- SubAgent 的工具集 = `create_sub_tools()` → 19~20 个工具
 
 **工具分配**：
 
 | Agent 类型 | 工具集 | 数量 |
 |-----------|--------|------|
-| RootAgent | shared + root | 19~20 个 |
-| SubAgent | shared + sub (SkillTool) | 17~18 个 |
+| RootAgent | shared + root | 20~21 个 |
+| SubAgent | shared + sub (SkillTool) | 18~19 个 |
 
-**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 16 而非 17）。
+**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 17 而非 18）。
 
 ### 2.2 工具注册表
 
@@ -226,6 +227,7 @@ content = [
 | web_search | web_search.py | Bing 中国搜索（委托给 browser） |
 | memory | memory.py | 长期记忆（knowledge + skill） |
 | python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 |
+| pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） |
 | llm | llm_tool.py | 单轮 LLM 调用（翻译/摘要/提取） |
 | todo_write | todo.py | 任务规划（整表替换，三态状态） |
 | latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） |

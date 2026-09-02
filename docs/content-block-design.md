@@ -17,7 +17,7 @@ LLMClient (client.py)
 核心类型 (types.py)
   ├── ContentBlock: TextBlock | ReasoningBlock | ToolCallBlock | ImageBlock | ToolResultBlock
   ├── Message — Provider 无关的统一消息格式
-  ├── StreamChunk — 统一流式协议（7 种事件类型）
+  ├── StreamChunk — 统一流式协议（8 种事件类型）
   ├── UsageData — Token 用量（provider 无关）
   └── LLMResponse — 非流式响应
 ```
@@ -98,13 +98,14 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 
 ### StreamChunk — 统一流式协议
 
-7 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
+8 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
 
 | type | data 字段 | 说明 |
 |------|-----------|------|
 | `block_start` | `block_type` | 新内容块开始 |
 | `text_delta` | `text` | 文本内容增量 |
 | `reasoning_delta` | `text` | 推理内容增量 |
+| `signature_delta` | `signature` | 思考块签名增量（Anthropic 多轮重放） |
 | `tool_call_delta` | `id?`, `name?`, `arguments?` | 工具调用增量 |
 | `block_end` | — | 内容块结束 |
 | `usage` | `usage: UsageData` | Token 用量更新 |
