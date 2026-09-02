@@ -118,7 +118,7 @@ class TestExecuteToolMetadata:
     """_execute_tool() 生成的 dict 结构测试"""
 
     def test_execute_tool_returns_wait_for_user_flag(self, agent):
-        """_execute_tool() 返回的 dict 包含 _wait_for_user=True"""
+        """_execute_tool() 返回的 dict 包含 _meta.wait_for_user=True（新格式）"""
         ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
         questions = make_test_questions()
         tool_use_id = "test_toolu_001"
@@ -126,12 +126,13 @@ class TestExecuteToolMetadata:
         result_dict = agent._execute_tool("ask_user", {"questions": questions}, tool_use_id)
 
         assert result_dict["type"] == "tool_result"
-        assert result_dict["tool_call_id"] == tool_use_id
-        assert result_dict["tool_name"] == "ask_user"
-        assert result_dict["_wait_for_user"] is True
-        assert result_dict["_meta"] is not None
+        # 新格式：使用 tool_use_id（Anthropic 格式）
+        assert result_dict["tool_use_id"] == tool_use_id
+        # 新格式：tool_name 在 _meta 中
+        assert result_dict["_meta"]["tool_name"] == "ask_user"
+        # 新格式：wait_for_user 在 _meta 中
+        assert result_dict["_meta"]["wait_for_user"] is True
         assert result_dict["_meta"]["questions"] == questions
-        assert result_dict["_completed"] is True
 
     def test_execute_tool_saves_output_file(self, agent):
         """_execute_tool() 保存输出到外部文件"""

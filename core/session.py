@@ -38,10 +38,12 @@ class SessionManager:
     - 压缩逻辑
     - 使用量追踪
     - SubAgent 执行日志管理
+
+    Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
     """
 
-    # Internal fields stripped before sending to API
-    _INTERNAL_FIELDS = frozenset({"_valid", "_compacted", "_content"})
+    # _meta 中的内部字段（发送到 API 前剥离）
+    _INTERNAL_META_FIELDS = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal"})
 
     def __init__(self, session_id: str, sessions_dir: Path):
         self.session_id = session_id
@@ -74,10 +76,11 @@ class SessionManager:
 
     # ========== 消息管理 ==========
 
-    def add_message(self, role: str, content: Any, *, flush: bool = True, extra: dict | None = None) -> None:
+    def add_message(self, role: str, content: Any, *, flush: bool = True, extra: dict | None = None,
+                    _meta: dict | None = None) -> None:
         """添加消息到会话。
 
-        自动为 content blocks 添加 _valid 字段。
+        内部字段统一放入 message 级别的 _meta 字段。
         flush 参数保留以兼容旧接口，但 SessionManager 不会自动保存，
         需要显式调用 save() 来持久化。
 
@@ -85,17 +88,32 @@ class SessionManager:
             role: 消息角色
             content: 消息内容
             flush: 是否立即保存（保留兼容）
-            extra: 额外字段（如 _valid 等），合并到消息 dict
+            extra: 额外字段（如旧的 _valid 等），会自动迁移到 _meta
+            _meta: 直接指定 _meta 字段（新格式）
         """
-        # 为 content blocks 添加 _valid 字段
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and "_valid" not in block:
-                    block["_valid"] = True
-
         message = {"role": role, "content": content}
-        if extra:
+
+        # 处理 _meta 字段
+        if _meta:
+            message["_meta"] = _meta
+        elif extra:
+            # 向后兼容：将旧格式的 _valid, _compacted 等迁移到 _meta
+            meta = {}
+            if "_valid" in extra:
+                meta["valid"] = extra.pop("_valid")
+            if "_compacted" in extra:
+                meta["compacted"] = extra.pop("_compacted")
+            if "_output_path" in extra:
+                meta["output_path"] = extra.pop("_output_path")
+            if "_file_size" in extra:
+                meta["file_size"] = extra.pop("_file_size")
+            if "_truncated" in extra:
+                meta["truncated"] = extra.pop("_truncated")
+            if meta:
+                message["_meta"] = meta
+            # 其他 extra 字段直接合并
             message.update(extra)
+
         self.messages.append(message)
         self._messages_dirty = True
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -112,24 +130,26 @@ class SessionManager:
         return True
 
     def get_valid_messages(self) -> list[dict]:
-        """获取有效的消息（递归过滤 _valid=False 的 blocks）。
+        """获取有效的消息（递归过滤 _meta.valid=False 的消息和 blocks）。
 
         用于 API 请求前过滤。支持嵌套过滤：
-        - 顶层 block 标记 _valid=False 会被移除
-        - tool_result 内的子 block 标记 _valid=False 也会被移除
+        - 顶层 _meta.valid=False 的消息会被移除
         - 跳过 _subagent_ref 角色（SubAgent 引用，仅用于 UI 显示）
-        - 清理内部字段：_valid, _compacted, old_content（不发送给 API）
+        - 剥离 _meta 中的内部字段（不发送给 API）
+        - 向后兼容：检测旧格式的 _valid 字段并自动处理
 
         使用脏标记缓存：仅在消息变更时重建。
         """
         if not self._messages_dirty and self._valid_messages_cache is not None:
             return self._valid_messages_cache
 
-        INTERNAL = self._INTERNAL_FIELDS
+        INTERNAL_META = self._INTERNAL_META_FIELDS
         result = []
         for msg in self.messages:
-            # 跳过整条消息级别标记为无效的消息
-            if msg.get("_valid") is False:
+            # 检查消息级别的 validity（支持新格式 _meta.valid 和旧格式 _valid）
+            meta = msg.get("_meta", {})
+            msg_valid = meta.get("valid", msg.get("_valid", True))
+            if msg_valid is False:
                 continue
             if not self._is_real_user_message(msg):
                 continue
@@ -139,34 +159,27 @@ class SessionManager:
 
             # 字符串内容直接保留
             if not isinstance(content, list):
-                result.append({"role": role, "content": content})
+                clean_msg = {"role": role, "content": content}
+                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
+                if meta:
+                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
+                    if stripped_meta:
+                        clean_msg["_meta"] = stripped_meta
+                result.append(clean_msg)
                 continue
 
-            # 列表内容过滤无效 blocks（递归）
-            valid_blocks = []
-            for block in content:
-                if not block.get("_valid", True):
-                    continue  # 跳过顶层无效 block
+            # 列表内容：直接保留所有 blocks（不再递归过滤 block 级别的 _valid）
+            # 注意：新格式中 _valid 在 message 级别，不在 block 级别
+            clean_blocks = list(content)
 
-                # 对 tool_result 递归过滤子块中的无效标记
-                if block.get("type") == "tool_result":
-                    rc = block.get("content", "")
-                    if isinstance(rc, list):
-                        filtered_sub = [s for s in rc if s.get("_valid", True)]
-                        if not filtered_sub:
-                            continue  # 所有子块都无效，跳过整个 tool_result
-                        clean_sub = [{k: v for k, v in s.items() if k not in INTERNAL} for s in filtered_sub]
-                        clean_block = {k: v for k, v in block.items() if k not in INTERNAL}
-                        clean_block["content"] = clean_sub
-                        valid_blocks.append(clean_block)
-                        continue
-
-                # 清理内部字段
-                clean_block = {k: v for k, v in block.items() if k not in INTERNAL}
-                valid_blocks.append(clean_block)
-
-            if valid_blocks:
-                result.append({"role": role, "content": valid_blocks})
+            if clean_blocks:
+                clean_msg = {"role": role, "content": clean_blocks}
+                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
+                if meta:
+                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
+                    if stripped_meta:
+                        clean_msg["_meta"] = stripped_meta
+                result.append(clean_msg)
 
         self._valid_messages_cache = result
         self._messages_dirty = False
@@ -186,12 +199,14 @@ class SessionManager:
         """获取消息数量。"""
         return len(self.messages)
 
-    def update_tool_result(self, tool_call_id: str, updates: dict) -> None:
-        """更新指定 tool_call_id 的 tool_result。
+    def update_tool_result(self, tool_use_id: str, updates: dict) -> None:
+        """更新指定 tool_use_id 的 tool_result。
+
+        支持新格式 (tool_use_id) 和旧格式 (tool_call_id)。
 
         Args:
-            tool_call_id: 工具调用 ID
-            updates: 要更新的字段（如 _completed, _file_size, _is_error 等）
+            tool_use_id: 工具调用 ID
+            updates: 要更新的字段
         """
         for msg in self.messages:
             if msg.get("role") != "user":
@@ -201,9 +216,9 @@ class SessionManager:
                 continue
             for block in content:
                 if block.get("type") == "tool_result":
-                    # Support both new format (tool_call_id) and old format (tool_use_id)
-                    block_id = block.get("tool_call_id") or block.get("tool_use_id", "")
-                    if block_id == tool_call_id:
+                    # 支持新格式 (tool_use_id) 和旧格式 (tool_call_id)
+                    block_id = block.get("tool_use_id") or block.get("tool_call_id", "")
+                    if block_id == tool_use_id:
                         block.update(updates)
                         self._messages_dirty = True
                         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -492,12 +507,15 @@ class SessionManager:
     MICROCOMPACT_PLACEHOLDER = "[Old tool result content cleared]"
 
     def microcompact_tool_results(self, keep_recent: int = 6) -> int:
-        """Microcompact：将旧的工具结果正文替换为占位符，原内容保留在 old_content。
+        """Microcompact：将旧的工具结果正文替换为占位符。
 
         轻量压缩，不调用 LLM，每轮模型调用前自动运行。
         保留最近 keep_recent 条工具结果消息（user 消息），更早的：
+        - 设置 _meta.compacted = True
         - content 替换为占位符（发送给 API）
-        - old_content 保留原始内容（UI 可展开查看历史）
+        - 原内容保留在外部文件（_meta.output_path）
+
+        向后兼容：检测旧格式的 _compacted 字段并自动迁移。
 
         Returns:
             节省的字节数（估算）
@@ -528,9 +546,22 @@ class SessionManager:
         for idx in indices_to_compact:
             msg = self.messages[idx]
             content = msg["content"]
+
+            # 检查是否已经压缩过（支持新格式 _meta.compacted 和旧格式 block._compacted）
+            meta = msg.get("_meta", {})
+            if meta.get("compacted"):
+                continue
+            # 检查旧格式：任意 block 有 _compacted
+            if any(b.get("_compacted") for b in content):
+                # 迁移旧格式到新格式
+                msg["_meta"] = {"compacted": True}
+                continue
+
             for block in content:
                 if block.get("type") != "tool_result":
                     continue
+
+                # 跳过已压缩的（旧格式）
                 if block.get("_compacted"):
                     continue
 
@@ -539,26 +570,25 @@ class SessionManager:
                 if isinstance(original, str):
                     if original and original != PLACEHOLDER:
                         saved += len(original.encode('utf-8', errors='replace'))
-                        # 保留原始内容到 _content，content 改为占位符
-                        block["_content"] = original
                         block["content"] = PLACEHOLDER
-                        block["_compacted"] = True
                 elif isinstance(original, list):
-                    # 多模态内容（图片 + 文本）：同样保留到 _content
+                    # 多模态内容（图片 + 文本）
                     has_content = any(
                         (sub.get("type") == "text" and sub.get("text", "") and sub["text"] != PLACEHOLDER)
                         for sub in original
                     )
                     if has_content:
                         for sub in original:
-                            if sub.get("type") == "text" and not sub.get("_compacted"):
+                            if sub.get("type") == "text":
                                 text = sub.get("text", "")
                                 if text and text != PLACEHOLDER:
                                     saved += len(text.encode('utf-8', errors='replace'))
-                        # 保留原始列表到 _content，content 改为占位符列表
-                        block["_content"] = original
                         block["content"] = [{"type": "text", "text": PLACEHOLDER}]
-                        block["_compacted"] = True
+
+            # 设置消息级别的 _meta.compacted
+            if "_meta" not in msg:
+                msg["_meta"] = {}
+            msg["_meta"]["compacted"] = True
 
         if saved > 0:
             self._messages_dirty = True
@@ -567,7 +597,7 @@ class SessionManager:
     def mark_old_tool_calls_invalid(self, keep_recent_rounds: int = 5) -> int:
         """标记旧的工具调用为无效。
 
-        保留最近 keep_recent_rounds 轮的工具调用，更早的标记为 _valid=False。
+        保留最近 keep_recent_rounds 轮的工具调用，更早的标记 _meta.valid=False。
         轮次按 assistant 消息计数（每个 assistant 消息 = 1 轮）。
         返回节省的字节数。
         """
@@ -619,13 +649,27 @@ class SessionManager:
 
         for call in tool_calls:
             if call["round"] <= round_number - keep_recent_rounds:
+                msg_idx = call["msg_idx"]
+                msg = self.messages[msg_idx]
+
+                # 检查消息是否已经标记为无效
+                meta = msg.get("_meta", {})
+                if meta.get("valid") is False:
+                    continue
+                # 向后兼容：检查旧格式
+                if msg.get("_valid") is False:
+                    continue
+
+                # 估算大小
                 block = call["block"]
-                if "_valid" not in block or block["_valid"]:
-                    # 估算大小
-                    content = block.get("input", {}) if call["type"] == "use" else block.get("content", "")
-                    size = len(str(content))
-                    block["_valid"] = False
-                    saved += size
+                content = block.get("input", {}) if call["type"] == "use" else block.get("content", "")
+                size = len(str(content))
+
+                # 标记消息级别的 _meta.valid = False
+                if "_meta" not in msg:
+                    msg["_meta"] = {}
+                msg["_meta"]["valid"] = False
+                saved += size
 
         if saved > 0:
             self._messages_dirty = True
@@ -634,7 +678,7 @@ class SessionManager:
     def mark_old_images_invalid(self, keep_recent: int = 5) -> int:
         """标记旧的图片为无效。
 
-        保留最近 keep_recent 条消息中的图片，更早的标记为 _valid=False。
+        保留最近 keep_recent 条消息中的图片，更早的标记 _meta.valid=False。
         返回节省的字节数。
         """
         saved = 0
@@ -667,10 +711,17 @@ class SessionManager:
 
         to_strip = image_messages[:-keep_recent]
         for msg_idx, block_idx, sub_idx, data_len in to_strip:
-            # 标记为无效
-            block = self.messages[msg_idx]["content"][block_idx]
-            sub = block["content"][sub_idx]
-            sub["_valid"] = False
+            msg = self.messages[msg_idx]
+
+            # 检查消息是否已经标记为无效
+            meta = msg.get("_meta", {})
+            if meta.get("valid") is False:
+                continue
+
+            # 标记消息级别的 _meta.valid = False
+            if "_meta" not in msg:
+                msg["_meta"] = {}
+            msg["_meta"]["valid"] = False
             saved += data_len
 
         if saved > 0:

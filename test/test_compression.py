@@ -95,16 +95,20 @@ class TestMicrocompactToolResults:
     """microcompact_tool_results() 保留最近 N 条，标记更早的为已压缩。"""
 
     def _make_tool_result_msg(self, content: str, file_size: int = 0) -> dict:
-        """创建工具结果消息。file_size 模拟外部文件大小。"""
+        """创建工具结果消息。file_size 模拟外部文件大小。
+
+        使用新格式：_meta.file_size, _meta.compacted（消息级别）
+        """
         return {
             "role": "user",
             "content": [{
                 "type": "tool_result",
                 "tool_use_id": "x",
-                "_file_size": file_size,
-                "_compacted": False,
-                # 新架构中 content 不保存，但测试保留以验证不被修改
             }],
+            "_meta": {
+                "file_size": file_size,
+                "compacted": False,
+            }
         }
 
     def _make_text_msg(self, role: str, text: str) -> dict:
@@ -119,8 +123,8 @@ class TestMicrocompactToolResults:
         ]
         saved = microcompact_tool_results(messages, keep_recent=6)
         assert saved == 0
-        # 内容未被标记为压缩
-        assert not messages[1]["content"][0].get("_compacted")
+        # 内容未被标记为压缩（新格式：_meta.compacted）
+        assert not messages[1].get("_meta", {}).get("compacted")
 
     def test_compresses_old_results(self):
         """超过 keep_recent 的旧工具结果被标记为已压缩。"""
@@ -131,11 +135,11 @@ class TestMicrocompactToolResults:
             self._make_tool_result_msg("recent output"),  # 保留
         ]
         saved = microcompact_tool_results(messages, keep_recent=1)
-        assert saved == 200  # 基于 _file_size
-        # 旧的被标记为已压缩（不替换内容）
-        assert messages[1]["content"][0]["_compacted"] is True
+        assert saved == 200  # 基于 _meta.file_size
+        # 旧的被标记为已压缩（新格式：_meta.compacted）
+        assert messages[1]["_meta"]["compacted"] is True
         # 最近的不被压缩
-        assert not messages[3]["content"][0].get("_compacted")
+        assert not messages[3].get("_meta", {}).get("compacted")
 
     def test_already_compacted_skipped(self):
         """已压缩的消息不重复压缩。"""

@@ -42,24 +42,35 @@ class TextBlock:
 
 @dataclass
 class ReasoningBlock:
-    """Model reasoning/thinking content, distinct from visible text."""
+    """Model reasoning/thinking content, distinct from visible text.
+
+    Uses Anthropic format (type: "thinking") for session storage.
+    """
 
     text: str = ""
     # Optional: opaque provider-specific replay metadata (e.g., Anthropic signature)
     signature: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for serialization."""
-        result: dict[str, Any] = {"type": "reasoning", "text": self.text}
+        """Convert to dict for serialization (Anthropic format)."""
+        result: dict[str, Any] = {"type": "thinking", "thinking": self.text}
         if self.signature:
             result["signature"] = self.signature
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReasoningBlock:
-        """Create from dict."""
+        """Create from dict.
+
+        Supports both Anthropic format ("thinking") and legacy format ("reasoning").
+        """
+        # Anthropic format: {"type": "thinking", "thinking": "..."}
+        text = data.get("thinking", "")
+        if not text:
+            # Legacy format: {"type": "reasoning", "text": "..."}
+            text = data.get("text", "")
         return cls(
-            text=data.get("text", ""),
+            text=text,
             signature=data.get("signature"),
         )
 
@@ -100,43 +111,49 @@ class ImageBlock:
 class ToolCallBlock:
     """A tool invocation requested by the model.
 
-    IMPORTANT: arguments is RAW JSON STRING, not parsed dict.
-    Parsing happens at tool execution layer via parse_arguments().
-    This preserves fidelity and avoids parse errors during streaming.
+    Uses Anthropic format (type: "tool_use", input: dict) for session storage.
+    IMPORTANT: internally stored as JSON string for streaming compatibility,
+    but serialized as dict for session storage.
     """
 
     id: str = ""
     name: str = ""
-    arguments: str = ""  # Raw JSON string
+    arguments: str = ""  # Raw JSON string internally
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for serialization."""
+        """Convert to dict for serialization (Anthropic format)."""
+        # Parse arguments to dict for Anthropic format
+        try:
+            input_data = json.loads(self.arguments) if self.arguments else {}
+        except json.JSONDecodeError:
+            input_data = {"_raw": self.arguments}
         return {
-            "type": "tool_call",
+            "type": "tool_use",
             "id": self.id,
             "name": self.name,
-            "arguments": self.arguments,
+            "input": input_data,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolCallBlock:
         """Create from dict.
 
-        Supports both new format (arguments: str) and stored format (input: dict).
+        Supports both Anthropic format (tool_use, input: dict) and legacy format (tool_call, arguments: str).
         """
-        # New format: arguments is a string
-        arguments = data.get("arguments", "")
-        # Stored format: input is a dict (Anthropic API format)
-        if not arguments and "input" in data:
-            inp = data["input"]
-            if isinstance(inp, dict):
-                arguments = json.dumps(inp, ensure_ascii=False)
-            elif isinstance(inp, str):
-                arguments = inp
+        # Anthropic format: input is a dict
+        input_data = data.get("input")
+        if input_data is not None:
+            if isinstance(input_data, dict):
+                arguments = json.dumps(input_data, ensure_ascii=False)
+            elif isinstance(input_data, str):
+                arguments = input_data
             else:
-                arguments = json.dumps(inp, ensure_ascii=False) if inp else ""
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments, ensure_ascii=False) if arguments else ""
+                arguments = json.dumps(input_data, ensure_ascii=False) if input_data else ""
+        else:
+            # Legacy format: arguments is a string
+            arguments = data.get("arguments", "")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False) if arguments else ""
 
         return cls(
             id=data.get("id", "") or data.get("tool_use_id", ""),
@@ -161,6 +178,7 @@ class ToolCallBlock:
 class ToolResultBlock:
     """The result of a tool invocation.
 
+    Uses Anthropic format (tool_use_id) for session storage.
     This is both a content block AND the content of a tool result message.
 
     Extended fields for SubAgent tracking:
@@ -170,7 +188,7 @@ class ToolResultBlock:
     - duration_seconds: execution duration
     """
 
-    tool_call_id: str = ""
+    tool_use_id: str = ""
     content: str | list[dict] = ""  # str for plain text, list[dict] for multimodal (text + image blocks)
     is_error: bool = False
 
@@ -181,10 +199,10 @@ class ToolResultBlock:
     duration_seconds: float = 0
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for serialization."""
+        """Convert to dict for serialization (Anthropic format)."""
         result: dict[str, Any] = {
             "type": "tool_result",
-            "tool_call_id": self.tool_call_id,
+            "tool_use_id": self.tool_use_id,
             "content": self.content,
             "is_error": self.is_error,
         }
@@ -201,13 +219,16 @@ class ToolResultBlock:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolResultBlock:
-        """Create from dict."""
+        """Create from dict.
+
+        Supports both Anthropic format (tool_use_id) and legacy format (tool_call_id).
+        """
         content = data.get("content", "")
         # Keep list content as-is for multimodal support (text + image blocks)
         # Adapter layer handles conversion to provider-specific format
 
         return cls(
-            tool_call_id=data.get("tool_call_id", data.get("tool_use_id", "")),
+            tool_use_id=data.get("tool_use_id", data.get("tool_call_id", "")),
             content=content,
             is_error=data.get("is_error", False),
             exec_id=data.get("exec_id", ""),
@@ -233,16 +254,16 @@ def block_from_dict(data: dict[str, Any]) -> ContentBlock:
     """Create content block from dict.
 
     Dispatches based on 'type' field.
-    Supports both new format (tool_call) and legacy (tool_use).
+    Supports both Anthropic format (thinking/tool_use) and legacy format (reasoning/tool_call).
     """
     block_type = data.get("type", "")
     if block_type == "text":
         return TextBlock.from_dict(data)
-    elif block_type == "reasoning":
+    elif block_type in ("thinking", "reasoning"):  # Both Anthropic and legacy formats
         return ReasoningBlock.from_dict(data)
     elif block_type == "image":
         return ImageBlock.from_dict(data)
-    elif block_type in ("tool_use", "tool_call"):
+    elif block_type in ("tool_use", "tool_call"):  # Both Anthropic and legacy formats
         return ToolCallBlock.from_dict(data)
     elif block_type == "tool_result":
         return ToolResultBlock.from_dict(data)

@@ -24,8 +24,10 @@ def microcompact_tool_results(
     """标记旧的工具结果为已压缩。
 
     轻量压缩，不调用 LLM。保留最近 keep_recent 条工具结果消息，更早的：
-    - 标记 _compacted = True（不替换内容，内容已保存在外部文件）
+    - 标记 _meta.compacted = True（消息级别）
     - 发送 LLM 时由 _resolve_tool_results() 注入占位符
+
+    向后兼容：检测旧格式的 block._compacted 并自动迁移。
 
     Args:
         messages: 消息列表（会被原地修改）
@@ -59,22 +61,39 @@ def microcompact_tool_results(
     for idx in indices_to_compact:
         msg = messages[idx]
         content = msg["content"]
+
+        # 检查是否已经压缩过（新格式 _meta.compacted 或旧格式 block._compacted）
+        meta = msg.get("_meta", {})
+        if meta.get("compacted"):
+            continue
+        # 检查旧格式：任意 block 有 _compacted
+        if any(b.get("_compacted") for b in content):
+            # 迁移旧格式到新格式
+            msg["_meta"] = {"compacted": True}
+            continue
+
         for block in content:
             if block.get("type") != "tool_result":
                 continue
+            # 跳过已压缩的（旧格式）
             if block.get("_compacted"):
                 continue
 
             # 跳过小于 200 字符的工具结果（保留原文，不压缩）
-            file_size = block.get("_file_size", 0)
+            # 新格式从 _meta.file_size 读取，旧格式从 block._file_size 读取
+            file_size = meta.get("file_size", block.get("_file_size", 0))
             if file_size > 0 and file_size < 200:
                 continue
 
             # 只标记，不替换内容（内容已保存在外部文件）
-            # 估算节省的字节数（基于 _file_size 或外部文件大小）
+            # 估算节省的字节数（基于 file_size）
             if file_size > 0:
                 saved += file_size
-            block["_compacted"] = True
+
+        # 设置消息级别的 _meta.compacted
+        if "_meta" not in msg:
+            msg["_meta"] = {}
+        msg["_meta"]["compacted"] = True
 
     return saved
 

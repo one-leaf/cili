@@ -5,11 +5,15 @@ Key design decisions:
 2. Three-state status: pending / in_progress / completed
 3. Single owner: belongs to the agent session that created it
 4. Parallel control: configurable allow_parallel_in_progress
-5. Storage: stored in session metadata, persisted to index.json
+5. Storage: stored in data/cili/tools/todo/{session_id}.json (per-session isolation)
 """
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from core.tools.shared.base import Tool, ToolResult
@@ -17,6 +21,38 @@ from core.tools.shared.base import Tool, ToolResult
 
 # Valid status values
 VALID_STATUSES = {"pending", "in_progress", "completed"}
+
+# Todo storage directory
+TODO_DIR = Path("data/cili/tools/todo")
+
+
+def get_todo_file_path(session_id: str) -> Path:
+    """Get the path to the todo file for a given session."""
+    return TODO_DIR / f"{session_id}.json"
+
+
+def read_todos(session_id: str) -> list[dict]:
+    """Read todos from the session's todo file."""
+    todo_file = get_todo_file_path(session_id)
+    if not todo_file.exists():
+        return []
+    try:
+        data = json.loads(todo_file.read_text(encoding="utf-8"))
+        return data.get("todos", [])
+    except Exception:
+        return []
+
+
+def write_todos(session_id: str, todos: list[dict]) -> None:
+    """Write todos to the session's todo file."""
+    TODO_DIR.mkdir(parents=True, exist_ok=True)
+    todo_file = get_todo_file_path(session_id)
+    data = {
+        "session_id": session_id,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "todos": todos,
+    }
+    todo_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class TodoWriteTool(Tool):
@@ -111,10 +147,15 @@ class TodoWriteTool(Tool):
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the todo_write tool.
 
-        Validates the todo list, stores it in session metadata, and returns
-        the new counts. The list replaces any previous list entirely.
+        Validates the todo list, stores it in the session's todo file,
+        and returns the new counts. The list replaces any previous list entirely.
         """
         todos = kwargs.get("todos", [])
+
+        # Get session_id for storage
+        session_id = ""
+        if self.session_manager and hasattr(self.session_manager, 'session_id'):
+            session_id = self.session_manager.session_id
 
         # Validate input
         if not isinstance(todos, list):
@@ -180,43 +221,44 @@ class TodoWriteTool(Tool):
                 error=True
             )
 
-        # Store in session metadata
-        if self.session_manager and hasattr(self.session_manager, 'metadata'):
-            old_todos = self.session_manager.metadata.get("todos", [])
-            self.session_manager.metadata["todos"] = validated_todos
+        # Read old todos for verification nudge check
+        old_todos = read_todos(session_id) if session_id else []
 
-            # Calculate counts for response
-            counts = self._calculate_counts(validated_todos)
+        # Store in independent file (per-session isolation)
+        if session_id:
+            write_todos(session_id, validated_todos)
 
-            # Check for verification nudge
-            verification_nudge = self._check_verification_nudge(old_todos, validated_todos)
+            # Migrate from session metadata if it exists (backward compatibility)
+            if self.session_manager and hasattr(self.session_manager, 'metadata'):
+                if "todos" in self.session_manager.metadata:
+                    # Remove old todos from session metadata
+                    del self.session_manager.metadata["todos"]
 
-            # Build response message
-            response = (
-                f"Todos have been updated successfully.\n"
-                f"Progress: {counts['completed']}/{counts['total']} completed"
+        # Calculate counts for response
+        counts = self._calculate_counts(validated_todos)
+
+        # Check for verification nudge
+        verification_nudge = self._check_verification_nudge(old_todos, validated_todos)
+
+        # Build response message
+        response = (
+            f"Todos have been updated successfully.\n"
+            f"Progress: {counts['completed']}/{counts['total']} completed"
+        )
+        if verification_nudge:
+            response += (
+                "\n\nNOTE: You just completed 3+ tasks without any verification step. "
+                "Consider running tests or verifying your changes before reporting completion."
             )
-            if verification_nudge:
-                response += (
-                    "\n\nNOTE: You just completed 3+ tasks without any verification step. "
-                    "Consider running tests or verifying your changes before reporting completion."
-                )
 
-            return ToolResult(
-                output=response,
-                meta={
-                    "todos": validated_todos,
-                    "counts": counts,
-                    "verification_nudge": verification_nudge,
-                }
-            )
-        else:
-            # No session manager - just return the counts
-            counts = self._calculate_counts(validated_todos)
-            return ToolResult(
-                output=f"Todo list updated: {counts['completed']}/{counts['total']} completed",
-                meta={"todos": validated_todos, "counts": counts}
-            )
+        return ToolResult(
+            output=response,
+            meta={
+                "todos": validated_todos,
+                "counts": counts,
+                "verification_nudge": verification_nudge,
+            }
+        )
 
     def _calculate_counts(self, todos: list[dict]) -> dict:
         """Calculate todo counts for the response."""
@@ -265,10 +307,31 @@ class TodoWriteTool(Tool):
 
 
 def get_todos_from_session(session_manager: SessionManager | None) -> list[dict] | None:
-    """Helper to get current todos from session metadata."""
-    if session_manager is None or not hasattr(session_manager, 'metadata'):
+    """Helper to get current todos from session's todo file.
+
+    Supports new format (independent file) and old format (session metadata).
+    """
+    if session_manager is None:
         return None
-    return session_manager.metadata.get("todos")
+
+    # Try new format: independent todo file
+    session_id = getattr(session_manager, 'session_id', None)
+    if session_id:
+        todos = read_todos(session_id)
+        if todos:
+            return todos
+
+    # Fall back to old format: session metadata (for backward compatibility)
+    if hasattr(session_manager, 'metadata'):
+        old_todos = session_manager.metadata.get("todos")
+        if old_todos:
+            # Migrate to new format
+            write_todos(session_id, old_todos)
+            # Remove from session metadata
+            del session_manager.metadata["todos"]
+            return old_todos
+
+    return None
 
 
 # Type hint for session manager (avoid circular import)

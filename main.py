@@ -16,6 +16,7 @@ import os
 import subprocess
 import time
 from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 
 class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -684,6 +685,13 @@ def main() -> None:
     # Setup directories and settings
     _setup_directories()
     _init_settings()
+
+    # Migrate old session format to new format
+    from core.migration import migrate_all_sessions
+    agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
+    migrated = migrate_all_sessions(Path(agents_dir))
+    if migrated > 0:
+        print(f"[migration] Migrated {migrated} session(s) to new format")
 
     # Check Git Bash in deps
     if not _init_git_bash():

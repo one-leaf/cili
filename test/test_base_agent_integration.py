@@ -345,7 +345,7 @@ class TestBaseAgentUnitTests:
     """BaseAgent 单元测试：纯逻辑，不调用 LLM。"""
 
     def test_add_message_with_valid_flag(self):
-        """add_message 为 content block 添加 _valid 标记。"""
+        """add_message 不再添加 block 级别的 _valid（新格式使用 message 级别的 _meta.valid）。"""
         from core.base_agent import BaseAgent
 
         config = make_dgx_config("anthropic")
@@ -354,19 +354,20 @@ class TestBaseAgentUnitTests:
 
         assert len(agent.messages) == 1
         assert agent.messages[0]["role"] == "user"
-        for block in agent.messages[0]["content"]:
-            assert "_valid" in block
+        # 新格式：不再自动添加 block 级别的 _valid
+        # 消息级别的 _meta.valid 由其他逻辑设置
 
     def test_get_valid_messages_filters_invalid(self):
-        """get_valid_messages 过滤无效 block。"""
+        """get_valid_messages 过滤无效消息（使用新格式 _meta.valid）。"""
         from core.base_agent import BaseAgent
 
         config = make_dgx_config("anthropic")
         agent = BaseAgent(config=config)
         agent.messages = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": [{"type": "text", "text": "hi", "_valid": True}]},
-            {"role": "assistant", "content": [{"type": "thinking", "thinking": "test", "_valid": False}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            # 使用新格式：消息级别的 _meta.valid = False
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "test"}], "_meta": {"valid": False}},
         ]
 
         valid = agent.get_valid_messages()

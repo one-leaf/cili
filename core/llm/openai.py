@@ -97,8 +97,12 @@ class OpenAIAdapter(Adapter):
                 if btype == "text":
                     text_parts.append(block_dict.get("text", ""))
 
-                elif btype == "reasoning":
-                    reasoning_parts.append(block_dict.get("text", ""))
+                # Support both Anthropic format ("thinking") and legacy format ("reasoning")
+                elif btype in ("reasoning", "thinking"):
+                    # Anthropic: {"type": "thinking", "thinking": "..."}
+                    # Legacy: {"type": "reasoning", "text": "..."}
+                    text = block_dict.get("thinking", "") or block_dict.get("text", "")
+                    reasoning_parts.append(text)
 
                 elif btype == "image":
                     # Convert ImageBlock to OpenAI image_url format
@@ -111,11 +115,20 @@ class OpenAIAdapter(Adapter):
                             },
                         })
 
-                elif btype == "tool_call":
-                    # Convert to OpenAI format
-                    arguments = block_dict.get("arguments", "")
-                    if not isinstance(arguments, str):
-                        arguments = json.dumps(arguments, ensure_ascii=False)
+                # Support both Anthropic format ("tool_use") and legacy format ("tool_call")
+                elif btype in ("tool_call", "tool_use"):
+                    # Anthropic: {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+                    # Legacy: {"type": "tool_call", "id": "...", "name": "...", "arguments": "..."}
+                    input_data = block_dict.get("input")
+                    if input_data is not None:
+                        if isinstance(input_data, dict):
+                            arguments = json.dumps(input_data, ensure_ascii=False)
+                        else:
+                            arguments = str(input_data) if input_data else ""
+                    else:
+                        arguments = block_dict.get("arguments", "")
+                        if not isinstance(arguments, str):
+                            arguments = json.dumps(arguments, ensure_ascii=False)
 
                     tool_calls.append({
                         "id": block_dict.get("id", ""),
