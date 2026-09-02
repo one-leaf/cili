@@ -2366,7 +2366,7 @@ function createQuoteButton(messageDiv) {
 
         const text = raw.length > 500 ? raw.substring(0, 500) + '...' : raw;
 
-        const quoteText = `<referenced_context>${text}</referenced_context>\n\n`;
+        const quoteText = text.split('\n').map(line => '> ' + line).join('\n') + '\n\n';
 
         // Insert at cursor position if input is focused, else append
         const start = chatInput.selectionStart ?? chatInput.value.length;
