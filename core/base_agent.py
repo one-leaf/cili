@@ -33,7 +33,7 @@ _CHINESE_RE = re.compile(r'[一-鿿]')
 
 # Compression constants
 KEEP_USER_MESSAGES = 3
-_LARGE_OUTPUT_THRESHOLD = 30_000
+_LARGE_OUTPUT_THRESHOLD = 10_000
 _MAX_ITERATIONS = 50
 
 
@@ -288,12 +288,18 @@ class BaseAgent:
 
         # Build _meta with internal fields
         file_size = len(result.output.encode('utf-8', errors='replace'))
+        truncated = file_size > _LARGE_OUTPUT_THRESHOLD
+        # Only set output_path for large outputs or multimodal content (saved as .json)
+        is_multimodal = output_filename.endswith(".json")
+        needs_external_file = truncated or is_multimodal
+
         meta = {
             "tool_name": name,
-            "output_path": output_filename,
             "file_size": file_size,
-            "truncated": file_size > _LARGE_OUTPUT_THRESHOLD,
         }
+        if needs_external_file:
+            meta["output_path"] = output_filename
+            meta["truncated"] = truncated
         # Add wait_for_user flag if present (for ask_user tool)
         if getattr(result, 'wait_for_user', False):
             meta["wait_for_user"] = True
@@ -305,7 +311,7 @@ class BaseAgent:
         result_dict = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
-            "content": result.output if file_size <= _LARGE_OUTPUT_THRESHOLD else None,
+            "content": result.output if not truncated else None,
             "is_error": result.error,
             "_meta": meta,
         }
