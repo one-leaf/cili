@@ -108,6 +108,7 @@ class LLMClient:
             model=self.model_name,
             max_tokens=max_tokens,
             stream=False,
+            session_id=session_id,
         )
         headers = self.adapter.build_headers()
         url = self.adapter.api_url

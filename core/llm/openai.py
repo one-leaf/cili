@@ -8,6 +8,7 @@ SSE events: choices[0].delta with finish_reason
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Iterable
 
 from core.config import ModelConfig
@@ -22,6 +23,8 @@ from core.llm.types import (
     UsageData,
     block_to_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIAdapter(Adapter):
@@ -238,6 +241,8 @@ class OpenAIAdapter(Adapter):
         # LiteLLM proxy support
         if self._is_litellm_proxy and session_id:
             body["litellm_session_id"] = session_id
+        elif self._is_litellm_proxy and not session_id:
+            logger.debug(f"[OpenAI] LiteLLM proxy detected but no session_id provided")
 
         if tools:
             body["tools"] = self._convert_tools(tools)

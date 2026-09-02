@@ -830,3 +830,260 @@ class TestCronToolMaxExecutions:
             state = json.load(f)
 
         assert state["remaining"] == 100
+
+
+class TestCronToolUpdate:
+    """Test CronTool update action."""
+
+    @pytest.fixture
+    def temp_cron_files(self, tmp_path):
+        """临时替换 cron 相关文件路径"""
+        import core.cron as cron_module
+        import core.tools.shared.cron_tool as cron_tool_module
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        original_state_dir = cron_module.CRON_STATE_DIR
+        original_tool_user_file = cron_tool_module.USER_TASKS_FILE
+
+        cron_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+        cron_module.CRON_STATE_DIR = tmp_path / "state"
+        cron_tool_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+
+        yield tmp_path
+
+        cron_module.USER_TASKS_FILE = original_user_file
+        cron_module.CRON_STATE_DIR = original_state_dir
+        cron_tool_module.USER_TASKS_FILE = original_tool_user_file
+
+    def test_update_task_description(self, temp_cron_files):
+        """更新任务描述"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-desc",
+            schedule={"type": "interval", "minutes": 60},
+            task="原始任务",
+            description="原始描述",
+        )
+
+        # 更新描述
+        result = tool.execute(
+            action="update",
+            name="test-update-desc",
+            description="新描述",
+        )
+
+        assert "Updated" in result.output
+        assert "description" in result.output
+
+        # 验证更新
+        tasks = _load_user_tasks()
+        assert tasks[0]["description"] == "新描述"
+        # 其他字段保持不变
+        assert tasks[0]["content"]["task"] == "原始任务"
+
+    def test_update_task_content(self, temp_cron_files):
+        """更新任务内容"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-task",
+            schedule={"type": "interval", "minutes": 60},
+            task="原始任务",
+        )
+
+        # 更新任务内容
+        result = tool.execute(
+            action="update",
+            name="test-update-task",
+            task="新任务内容",
+            plan=["步骤一", "步骤二"],
+        )
+
+        assert "Updated" in result.output
+        assert "task" in result.output
+        assert "plan" in result.output
+
+        # 验证更新
+        tasks = _load_user_tasks()
+        assert tasks[0]["content"]["task"] == "新任务内容"
+        assert tasks[0]["content"]["plan"] == ["步骤一", "步骤二"]
+
+    def test_update_schedule(self, temp_cron_files):
+        """更新调度配置"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-schedule",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+        )
+
+        # 更新调度
+        result = tool.execute(
+            action="update",
+            name="test-update-schedule",
+            schedule={"type": "cron", "expr": "0 9 * * *"},
+        )
+
+        assert "Updated" in result.output
+        assert "schedule" in result.output
+
+        # 验证更新
+        tasks = _load_user_tasks()
+        assert tasks[0]["schedule"]["type"] == "cron"
+        assert tasks[0]["schedule"]["expr"] == "0 9 * * *"
+
+    def test_update_max_executions(self, temp_cron_files):
+        """更新 max_executions 时重置 remaining"""
+        import json
+        import core.cron as cron_module
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-max-exec",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+            max_executions=100,
+        )
+
+        # 模拟执行几次，remaining 递减
+        state_path = cron_module.CRON_STATE_DIR / "test-update-max-exec.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"remaining": 50}))
+
+        # 更新 max_executions
+        result = tool.execute(
+            action="update",
+            name="test-update-max-exec",
+            max_executions=200,
+        )
+
+        assert "Updated" in result.output
+        assert "max_executions" in result.output
+
+        # 验证 remaining 已重置为新的 max_executions
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        assert state["remaining"] == 200
+
+    def test_update_nonexistent_task(self, temp_cron_files):
+        """更新不存在的任务时报错"""
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        result = tool.execute(
+            action="update",
+            name="nonexistent-task",
+            description="新描述",
+        )
+
+        assert result.is_error
+        assert "not found" in result.output
+
+    def test_update_without_name(self, temp_cron_files):
+        """没有 name 时报错"""
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        result = tool.execute(
+            action="update",
+            description="新描述",
+        )
+
+        assert result.is_error
+        assert "required" in result.output
+
+    def test_update_without_fields(self, temp_cron_files):
+        """没有任何要更新的字段时报错"""
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-empty",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+        )
+
+        # 不提供任何更新字段
+        result = tool.execute(
+            action="update",
+            name="test-update-empty",
+        )
+
+        assert result.is_error
+        assert "No fields to update" in result.output
+
+    def test_update_invalid_schedule(self, temp_cron_files):
+        """无效调度配置时报错"""
+        from core.tools.shared.cron_tool import CronTool
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-invalid-schedule",
+            schedule={"type": "interval", "minutes": 60},
+            task="测试任务",
+        )
+
+        # 无效调度类型
+        result = tool.execute(
+            action="update",
+            name="test-update-invalid-schedule",
+            schedule={"type": "invalid"},
+        )
+
+        assert result.is_error
+
+    def test_update_partial_fields(self, temp_cron_files):
+        """只更新部分字段，其他保持不变"""
+        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+
+        tool = CronTool(cwd=".", workspace_uuid="test")
+
+        # 创建任务
+        tool.execute(
+            action="create",
+            name="test-update-partial",
+            schedule={"type": "interval", "minutes": 60},
+            task="原始任务",
+            description="原始描述",
+            plan=["原始步骤"],
+        )
+
+        # 只更新 task，不更新 description 和 plan
+        tool.execute(
+            action="update",
+            name="test-update-partial",
+            task="新任务",
+        )
+
+        # 验证只更新了 task
+        tasks = _load_user_tasks()
+        assert tasks[0]["content"]["task"] == "新任务"
+        assert tasks[0]["description"] == "原始描述"
+        assert tasks[0]["content"]["plan"] == ["原始步骤"]

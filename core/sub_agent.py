@@ -93,11 +93,13 @@ class SubAgent(BaseAgent):
         )
 
         self._session_id = exec_id
+        logger.debug(f"[SubAgent] Session ID set to: {exec_id}")
 
         # 创建 session 引用，供工具获取 session_id
         self._session_ref = _SessionIdRef(exec_id)
 
         # Create LLM client
+        logger.debug(f"[SubAgent] Creating LLM client for task: {task[:50]}...")
         self.client = create_llm_client(config.model)
 
         # Create sub tool set (pass session_ref for temp tool etc.)

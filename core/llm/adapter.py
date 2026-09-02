@@ -120,16 +120,27 @@ class Adapter(ABC):
         Args:
             transport: HttpTransport instance for making the detection request
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
             # /openapi.json is a standard REST endpoint, must use GET
-            resp = transport.client.get(
-                f"{self.base_url}/openapi.json",
-                timeout=10,
-            )
+            url = f"{self.base_url}/openapi.json"
+            logger.debug(f"[LiteLLM] Detecting proxy at {url}")
+
+            resp = transport.client.get(url, timeout=10)
+            logger.debug(f"[LiteLLM] Response status: {resp.status_code}")
+
             if resp.status_code == 200:
                 data = resp.json()
                 info = data.get("info", {})
-                if "litellm" in info.get("title", "").lower():
+                title = info.get("title", "")
+                logger.debug(f"[LiteLLM] API title: {title}")
+
+                if "litellm" in title.lower():
                     self._is_litellm_proxy = True
-        except Exception:
-            pass
+                    logger.info(f"[LiteLLM] Detected LiteLLM proxy: {self.base_url}")
+                else:
+                    logger.debug(f"[LiteLLM] Not a LiteLLM proxy: {self.base_url}")
+        except Exception as e:
+            logger.warning(f"[LiteLLM] Detection failed for {self.base_url}: {e}")

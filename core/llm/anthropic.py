@@ -8,6 +8,7 @@ SSE events: message_start, content_block_start/delta/stop, message_delta
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Iterable
 
 from core.config import ModelConfig
@@ -23,6 +24,8 @@ from core.llm.types import (
     block_to_dict,
     blocks_to_dicts,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicAdapter(Adapter):
@@ -112,6 +115,8 @@ class AnthropicAdapter(Adapter):
         # LiteLLM proxy support
         if self._is_litellm_proxy and session_id:
             body["litellm_session_id"] = session_id
+        elif self._is_litellm_proxy and not session_id:
+            logger.debug(f"[Anthropic] LiteLLM proxy detected but no session_id provided")
 
         if system:
             body["system"] = system

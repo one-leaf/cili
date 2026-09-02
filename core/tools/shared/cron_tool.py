@@ -50,10 +50,11 @@ class CronTool(Tool):
     name = "cron"
     description = (
         "**User-level scheduled task management.**\n"
-        "Create, list, delete, and manage scheduled tasks through conversation.\n\n"
+        "Create, list, update, delete, and manage scheduled tasks through conversation.\n\n"
         "## Actions:\n"
         "- **create**: Create a new scheduled task\n"
         "- **list**: List all scheduled tasks\n"
+        "- **update**: Update an existing task's configuration\n"
         "- **delete**: Delete a scheduled task\n"
         "- **run**: Immediately execute a task\n"
         "- **enable**: Enable a disabled task\n"
@@ -80,6 +81,14 @@ class CronTool(Tool):
         "     schedule={\"type\": \"cron\", \"expr\": \"0 9 * * *\"},\n"
         "     task=\"Generate daily status report and save to reports/\")\n"
         "\n"
+        "# Update a task's schedule and task content\n"
+        "cron(action=\"update\", name=\"daily-report\",\n"
+        "     schedule={\"type\": \"cron\", \"expr\": \"0 10 * * *\"},\n"
+        "     task=\"Generate daily report at 10am\")\n"
+        "\n"
+        "# Update only the task description\n"
+        "cron(action=\"update\", name=\"daily-report\", task=\"New task content\")\n"
+        "\n"
         "# Create a system maintenance task\n"
         "cron(action=\"create\", name=\"cleanup\",\n"
         "     schedule={\"type\": \"cron\", \"expr\": \"0 3 * * *\"},\n"
@@ -100,6 +109,7 @@ class CronTool(Tool):
         "```\n\n"
         "## Notes:\n"
         "- **Default to one-time execution**: Unless the user explicitly mentions recurring schedules (e.g., \"every day\", \"every hour\", \"每X分钟/小时/天\"), create tasks as one-time execution. For one-time tasks, set a schedule with large interval or use action=\"run\" to execute immediately, then delete the task after completion.\n"
+        "- **Update**: Only specified fields are updated, others remain unchanged\n"
         "- Tasks are persisted and survive server restarts\n"
         "- Tasks run through RootAgent in a 'Cron Tasks' session\n"
         "- Results are visible in the workspace UI\n"
@@ -113,21 +123,21 @@ class CronTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "delete", "run", "enable", "disable"],
+                    "enum": ["create", "list", "update", "delete", "run", "enable", "disable"],
                     "description": "Action to perform.",
                 },
                 "name": {
                     "type": "string",
-                    "description": "Task name (required for create/delete/run/enable/disable).",
+                    "description": "Task name (required for create/update/delete/run/enable/disable).",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Human-readable task description (for create).",
+                    "description": "Human-readable task description (for create/update).",
                 },
                 "schedule": {
                     "type": "object",
                     "description": (
-                        "When to run the task. Required for create. "
+                        "When to run the task. Required for create. Optional for update. "
                         "Either {\"type\": \"interval\", \"minutes\": N} or "
                         "{\"type\": \"cron\", \"expr\": \"minute hour day month weekday\"}."
                     ),
@@ -150,22 +160,22 @@ class CronTool(Tool):
                 },
                 "task": {
                     "type": "string",
-                    "description": "Task description for SubAgent (required for create).",
+                    "description": "Task description for SubAgent (required for create, optional for update).",
                 },
                 "plan": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Execution steps (optional, for create).",
+                    "description": "Execution steps (optional, for create/update).",
                 },
                 "max_iterations": {
                     "type": "integer",
-                    "description": "Maximum iterations (default: 30, for create).",
+                    "description": "Maximum iterations (default: 30, for create/update).",
                     "default": 30,
                 },
                 "workspace_uuid": {
                     "type": "string",
                     "description": (
-                        "Target workspace for task execution (for create). "
+                        "Target workspace for task execution (for create/update). "
                         "Defaults to current workspace. "
                         "Use \"system\" for system maintenance tasks (cwd: data/)."
                     ),
@@ -202,16 +212,25 @@ class CronTool(Tool):
         schedule: dict | None = None,
         task: str | None = None,
         plan: list[str] | None = None,
-        max_iterations: int = 30,
+        max_iterations: int | None = None,
         workspace_uuid: str | None = None,
-        one_time: bool = True,
-        max_executions: int = 9999,
+        one_time: bool | None = None,
+        max_executions: int | None = None,
     ) -> ToolResult:
         """Execute cron action."""
         if action == "create":
-            return self._create(name, description, schedule, task, plan, max_iterations, workspace_uuid, one_time, max_executions)
+            # create 使用默认值
+            return self._create(
+                name, description, schedule, task, plan,
+                max_iterations if max_iterations is not None else 30,
+                workspace_uuid,
+                one_time if one_time is not None else True,
+                max_executions if max_executions is not None else 9999,
+            )
         elif action == "list":
             return self._list()
+        elif action == "update":
+            return self._update(name, description, schedule, task, plan, max_iterations, workspace_uuid, one_time, max_executions)
         elif action == "delete":
             return self._delete(name)
         elif action == "run":
@@ -339,6 +358,121 @@ class CronTool(Tool):
             lines.append("")
 
         return ToolResult("\n".join(lines))
+
+    def _update(
+        self,
+        name: str | None,
+        description: str | None,
+        schedule: dict | None,
+        task: str | None,
+        plan: list[str] | None,
+        max_iterations: int | None,
+        workspace_uuid: str | None,
+        one_time: bool | None,
+        max_executions: int | None,
+    ) -> ToolResult:
+        """Update an existing scheduled task. Only updates provided fields."""
+        if not name:
+            return ToolResult("Error: 'name' is required for update action", error=True)
+
+        # Load existing tasks
+        tasks = _load_user_tasks()
+        task_config = None
+        for t in tasks:
+            if t["name"] == name:
+                task_config = t
+                break
+
+        if not task_config:
+            return ToolResult(f"Error: task '{name}' not found", error=True)
+
+        # Validate schedule if provided
+        if schedule:
+            schedule_type = schedule.get("type")
+            if schedule_type == "interval":
+                minutes = schedule.get("minutes")
+                if not minutes or minutes <= 0:
+                    return ToolResult("Error: 'minutes' must be positive for interval schedule", error=True)
+            elif schedule_type == "cron":
+                expr = schedule.get("expr")
+                if not expr:
+                    return ToolResult("Error: 'expr' is required for cron schedule", error=True)
+                parts = expr.split()
+                if len(parts) != 5:
+                    return ToolResult("Error: cron expression must have 5 fields (minute hour day month weekday)", error=True)
+            else:
+                return ToolResult("Error: schedule type must be 'interval' or 'cron'", error=True)
+
+        # Validate max_executions if provided
+        if max_executions is not None and (max_executions < 1 or max_executions > 9999):
+            return ToolResult("Error: 'max_executions' must be between 1 and 9999", error=True)
+
+        # Update fields that are provided
+        updated_fields = []
+
+        if description is not None:
+            task_config["description"] = description
+            updated_fields.append("description")
+
+        if schedule is not None:
+            task_config["schedule"] = schedule
+            updated_fields.append("schedule")
+
+        if task is not None:
+            if "content" not in task_config:
+                task_config["content"] = {}
+            task_config["content"]["task"] = task
+            updated_fields.append("task")
+
+        if plan is not None:
+            if "content" not in task_config:
+                task_config["content"] = {}
+            task_config["content"]["plan"] = plan
+            updated_fields.append("plan")
+
+        if max_iterations is not None:
+            if "config" not in task_config:
+                task_config["config"] = {}
+            task_config["config"]["max_iterations"] = max_iterations
+            updated_fields.append("max_iterations")
+
+        if workspace_uuid is not None:
+            task_config["workspace_uuid"] = workspace_uuid
+            updated_fields.append("workspace_uuid")
+
+        if one_time is not None:
+            task_config["one_time"] = one_time
+            updated_fields.append("one_time")
+
+        if max_executions is not None:
+            if "config" not in task_config:
+                task_config["config"] = {}
+            task_config["config"]["max_executions"] = max_executions
+            # Also reset remaining counter in state
+            from core.cron import CRON_STATE_DIR
+            import json
+            state_path = CRON_STATE_DIR / f"{name}.json"
+            try:
+                if state_path.exists():
+                    with open(state_path, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                else:
+                    state = {}
+                state["remaining"] = max_executions
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
+            updated_fields.append("max_executions")
+
+        if not updated_fields:
+            return ToolResult("Error: No fields to update. Specify at least one field to update.", error=True)
+
+        _save_user_tasks(tasks)
+        self._reload_scheduler()
+
+        return ToolResult(f"Updated task '{name}': {', '.join(updated_fields)}")
 
     def _delete(self, name: str | None) -> ToolResult:
         """Delete a scheduled task."""
