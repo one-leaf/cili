@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime
@@ -481,32 +480,33 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "```",
     ]
 
-    # User Profile（自动从 user-profile.json 加载）
+    # User Profile（自动从 user-profile.md 加载）
     profile_path = get_user_profile_path(workspace_uuid)
     if profile_path.exists():
         try:
             with open(profile_path, "r", encoding="utf-8") as f:
-                profile_data = json.load(f)
-            if profile_data:
+                content = f.read()
+
+            # 解析 YAML frontmatter（如果有）
+            if content.startswith("---"):
+                parts_end = content.find("---", 3)
+                if parts_end != -1:
+                    # 跳过 frontmatter，只取 body
+                    content = content[parts_end + 3:].strip()
+
+            if content:
                 parts.extend([
                     "",
                     "## User Profile",
                     "",
-                    "The following was inferred from the user's past conversations. "
-                    "Use it naturally to personalize your tone — never recite, "
-                    "echo, or explicitly reference these items unless the user raises them first.",
+                    "The following describes the person you are currently chatting with, "
+                    "inferred from their past conversations. "
+                    "Use these insights naturally to personalize your responses — "
+                    "match their communication style, anticipate their needs, and adapt to their preferences. "
+                    "Never recite, echo, or explicitly mention these observations unless they bring it up first.",
                     "",
+                    content,
                 ])
-                for category, items in profile_data.items():
-                    parts.append(f"**{category}**:")
-                    if isinstance(items, dict):
-                        for k, v in items.items():
-                            if v:
-                                parts.append(f"- {k}: {v}")
-                    elif isinstance(items, list):
-                        for item in items:
-                            parts.append(f"- {item}")
-                    parts.append("")
         except Exception:
             pass  # Silently skip if file is corrupted
 

@@ -1,22 +1,22 @@
-# 用户属性系统设计文档
+# 用户画像系统设计文档
 
 ## 概述
 
-用户属性（User Profile）系统独立于记忆系统（Memory），专门用于存储和管理用户的个人偏好、习惯和特征。这些信息在每次对话开始时自动加载到 Agent 上下文中，使 Agent 能够个性化地回应用户。
+用户画像（User Profile）系统独立于记忆系统（Memory），用于存储和管理用户的个人特征、表达风格和行为模式。这些信息在每次对话开始时自动加载到 Agent 上下文中，使 Agent 能够个性化地回应用户。
 
 ## 与记忆系统的关系
 
-用户属性和记忆系统是两个独立的持久化系统，各司其职：
+用户画像和记忆系统是两个独立的持久化系统，各司其职：
 
-| 特性 | 用户属性 | 记忆系统 |
+| 特性 | 用户画像 | 记忆系统 |
 |------|---------|---------|
 | 职责 | 描述"谁在使用" | 记录"做了什么" |
-| 存储位置 | `data/agents/{uuid}/user-profile.json` | `data/agents/{uuid}/memory/` |
+| 存储位置 | `data/agents/{uuid}/user-profile.md` | `data/agents/{uuid}/memory/` |
 | 文件数量 | 单文件 | 多文件（按类型/主题组织） |
-| 格式 | JSON | Markdown |
+| 格式 | Markdown（带 YAML frontmatter） | Markdown |
 | 加载方式 | 每次对话自动加载到上下文 | 按需检索 |
 | 更新方式 | cron 任务自动提取 | Agent 主动存储 |
-| 类型 | 6 个预定义类别 | knowledge、skill |
+| 维度 | 5 个（身份、表达风格、决策、边界、压力行为） | knowledge、skill |
 
 ## 存储设计
 
@@ -25,66 +25,68 @@
 ```
 data/agents/{uuid}/
 ├── setting.json            # 工作区配置
-├── user-profile.json       # 用户属性（本系统设计对象）
+├── user-profile.md         # 用户画像（本系统设计对象）
 ├── sessions/               # 会话存储
 └── memory/                 # 记忆系统（knowledge、skill）
 ```
 
-### JSON 格式
+### Markdown 格式
 
-```json
-{
-  "user_profile": {
-    "age": "30",
-    "gender": "男",
-    "occupation": "后端开发工程师",
-    "family": "",
-    "nickname": "老王"
-  },
-  "reply_style": [
-    "偏好简洁回复，不要过多解释",
-    "模仿用户的表达风格"
-  ],
-  "expression_traits": [
-    "提问简洁，喜欢用短句",
-    "常用技术术语，不解释基础概念",
-    "喜欢用列表/要点形式"
-  ],
-  "work_habits": [
-    "变量命名用 snake_case",
-    "提交信息用中文"
-  ],
-  "project_preferences": [
-    "后端端口 8000",
-    "数据库用 PostgreSQL"
-  ],
-  "common_location": [
-    "上海"
-  ]
-}
+```markdown
+---
+updated_at: "2026-09-02 04:30:00"
+---
+
+## 身份
+- **花名**: OneLeaf
+- **基本信息**: 学生 后端工程师 男
+- **性格**: INTJ 摩羯座 甩锅高手
+- **地点**: 深圳
+
+## 表达风格
+- **语气**: 直接简洁的指令式表达
+- **口头禅**: 查一下, 帮我看看
+- **句式**: 短句为主，开门见山
+- **Emoji**: 不用 emoji
+- **正式程度**: 非常口语化
+
+## 决策与判断
+效率优先，果断，直接否定不认可的方案
+
+## 边界与雷区
+- 不喜欢过度封装
+- 拒绝照搬外部材料
+
+## 压力下行为
+deadline 前会抱怨但执行力强
 ```
 
-### 6 个预定义类别
+### 5 个提取维度
 
-| 类别 | 说明 | 存储格式 |
-|------|------|---------|
-| `user_profile` | 用户画像（称呼、年龄、性别、职业等） | 结构化 dict（字段：nickname, age, gender, occupation, family） |
-| `reply_style` | Agent 回复风格 | 字符串列表（≤10 条） |
-| `expression_traits` | 用户表达特征（用于模仿） | 字符串列表（≤10 条） |
-| `work_habits` | 工作习惯 | 字符串列表（≤10 条） |
-| `project_preferences` | 项目偏好配置 | 字符串列表（≤10 条） |
-| `common_location` | 常驻地点 | 字符串列表（≤10 条） |
+| 维度 | 说明 | 格式 |
+|------|------|------|
+| `身份` | 花名、基本信息、性格、地点 | 结构化列表 |
+| `表达风格` | 语气、口头禅、句式、emoji、正式程度 | 结构化列表 |
+| `决策与判断` | 优先考量、果断程度、拒绝方式 | 一句话概括 |
+| `边界与雷区` | 明确拒绝的场景、抵触的方案、回避的话题 | 列表 |
+| `压力下行为` | 被催时的反应、焦虑表达方式 | 一句话概括 |
+
+### 设计要点
+
+- **被动识别**：从对话中捕捉，不主动询问
+- **无信息不写**：如果某维度在对话中完全没有信息，不写该维度
+- **全量扫描**：每次 cron 执行时全量扫描所有对话，直接生成最新结果
 
 ## 自动提取机制
 
 ### Cron 任务配置
 
-用户属性由 cron 任务自动从会话记录中提取，配置位于 `core/cron.d/extract_user_info.json`：
+用户画像由 cron 任务自动从会话记录中提取，配置位于 `core/cron.d/extract_user_info.json`：
 
 ```json
 {
   "name": "extract-user-info",
-  "description": "每天扫描工作区，提取用户信息到 user-profile.json",
+  "description": "每天扫描工作区，从对话中提取用户画像到 user-profile.md",
   "enabled": true,
   "schedule": {
     "type": "cron",
@@ -94,13 +96,13 @@ data/agents/{uuid}/
     "max_iterations": 50
   },
   "content": {
-    "task": "扫描 data/agents/ 下的所有工作区（排除 system），检查是否需要更新用户画像...",
+    "task": "扫描 data/agents/ 下的所有工作区（排除 system）...",
     "plan": [
       "列出 data/agents/ 下的所有目录",
       "对每个目录（排除 system）：",
-      "  1. 检查 user-profile.json 的 updated_at",
+      "  1. 检查 user-profile.md 的 updated_at",
       "  2. 扫描 sessions/ 下最新的 updated_at",
-      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 分析 → 写入 profile",
+      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 生成 markdown → 写入 profile",
       "  4. 如果不需要更新：跳过",
       "完成后报告处理的工作区数量"
     ]
@@ -110,10 +112,9 @@ data/agents/{uuid}/
 
 **特点**：
 - 每天凌晨 2 点执行（cron 表达式 `0 2 * * *`）
+- 全量扫描所有对话，直接生成最新结果，无需合并历史
 - 通过 RootAgent 执行（在 System workspace 的 "[Cron] 任务描述" session 中）
-- RootAgent 自主决定执行策略，可能委派 SubAgent
-- 内联 task/plan，不依赖 Python 脚本
-- 比较 session 更新时间 vs profile 更新时间，按需提取
+- 结果保存在 System workspace 的 session 中（UI 可见）
 
 ### 提取流程
 
@@ -122,25 +123,19 @@ data/agents/{uuid}/
 2. RootAgent 在 System workspace 执行任务
 3. RootAgent 扫描工作区（排除 system）
 4. 对每个工作区：
-   a. 比较 session 的 metadata.updated_at vs user-profile.json 的 updated_at
-   b. 如果 session 更新 → 提取用户消息 → 分析 6 个类别 → 合并写入 profile
+   a. 比较 session 的 metadata.updated_at vs user-profile.md 的 updated_at
+   b. 如果 session 更新 → 提取用户消息 → 分析 5 个维度 → 生成 markdown
    c. 如果无更新 → 跳过
 5. 结果保存在 System workspace 的 "[Cron] 任务描述" session（UI 可见）
 ```
 
-> **更新判断**：直接比较 session 的 `metadata.updated_at` 和 profile 的 `updated_at`，无需额外变量。
-
-### 合并策略
-
-- **列表类型**（reply_style 等）：去重追加新条目
-- **结构化类型**（user_profile）：按字段覆盖更新
-- **空值处理**：跳过空字符串和空列表
+> **更新判断**：直接比较 session 的 `metadata.updated_at` 和 profile 的 `updated_at`。
 
 ## 上下文加载
 
 ### 自动加载流程
 
-用户属性在 `build_root_context()` 中自动加载，注入到每次对话的上下文中：
+用户画像在 `build_root_context()` 中自动加载，注入到每次对话的上下文中：
 
 ```python
 # core/prompts.py
@@ -148,32 +143,32 @@ data/agents/{uuid}/
 def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
     # ... Workspace 和 Memory 部分 ...
 
-    # User Profile（自动从 user-profile.json 加载）
+    # User Profile（自动从 user-profile.md 加载）
     profile_path = get_user_profile_path(workspace_uuid)
     if profile_path.exists():
         try:
             with open(profile_path, "r", encoding="utf-8") as f:
-                profile_data = json.load(f)
-            if profile_data:
+                content = f.read()
+
+            # 解析 YAML frontmatter（如果有）
+            if content.startswith("---"):
+                parts_end = content.find("---", 3)
+                if parts_end != -1:
+                    content = content[parts_end + 3:].strip()
+
+            if content:
                 parts.extend([
                     "",
                     "## User Profile",
                     "",
-                    "The following was inferred from the user's past conversations. "
-                    "Use it naturally to personalize your tone — never recite, "
-                    "echo, or explicitly reference these items unless the user raises them first.",
+                    "The following describes the person you are currently chatting with, "
+                    "inferred from their past conversations. "
+                    "Use these insights naturally to personalize your responses — "
+                    "match their communication style, anticipate their needs, and adapt to their preferences. "
+                    "Never recite, echo, or explicitly mention these observations unless they bring it up first.",
                     "",
+                    content,
                 ])
-                for category, items in profile_data.items():
-                    parts.append(f"**{category}**:")
-                    if isinstance(items, dict):
-                        for k, v in items.items():
-                            if v:
-                                parts.append(f"- {k}: {v}")
-                    elif isinstance(items, list):
-                        for item in items:
-                            parts.append(f"- {item}")
-                    parts.append("")
         except Exception:
             pass  # 文件损坏时静默跳过
 
@@ -187,24 +182,30 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
 ```markdown
 ## User Profile
 
-The following was inferred from the user's past conversations. Use it naturally to personalize your tone — never recite, echo, or explicitly reference these items unless the user raises them first.
+The following describes the person you are currently chatting with, inferred from their past conversations. Use these insights naturally to personalize your responses — match their communication style, anticipate their needs, and adapt to their preferences. Never recite, echo, or explicitly mention these observations unless they bring it up first.
 
-**user_profile**:
-- age: 30
-- gender: 男
-- occupation: 后端开发工程师
-- nickname: 老王
+## 身份
+- **花名**: OneLeaf
+- **基本信息**: 学生 后端工程师 男
+- **性格**: INTJ 摩羯座 甩锅高手
+- **地点**: 深圳
 
-**reply_style**:
-- 偏好简洁回复，不要过多解释
-- 模仿用户的表达风格
+## 表达风格
+- **语气**: 直接简洁的指令式表达
+- **口头禅**: 查一下, 帮我看看
+- **句式**: 短句为主，开门见山
+- **Emoji**: 不用 emoji
+- **正式程度**: 非常口语化
 
-**expression_traits**:
-- 提问简洁，喜欢用短句
-- 常用技术术语，不解释基础概念
+## 决策与判断
+效率优先，果断，直接否定不认可的方案
 
-**work_habits**:
-- 变量命名用 snake_case
+## 边界与雷区
+- 不喜欢过度封装
+- 拒绝照搬外部材料
+
+## 压力下行为
+deadline 前会抱怨但执行力强
 ```
 
 ## 路径工具函数
@@ -213,29 +214,36 @@ The following was inferred from the user's past conversations. Use it naturally 
 
 ```python
 def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/agents/{uuid}/user-profile.json or workspace/user-profile.json if empty."""
-    from core.config import get_workspace_data_dir
-    return get_workspace_data_dir(workspace_uuid) / "user-profile.json"
+    """Get the user profile path: data/agents/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
+    if not workspace_uuid:
+        return PROJECT_ROOT / "workspace" / "user-profile.md"
+    return AGENTS_DIR / workspace_uuid / "user-profile.md"
 ```
 
 ## 设计原则
 
+### Markdown 格式
+
+- 人类可直接阅读和编辑
+- prompts.py 无需渲染逻辑，直接读取内容插入上下文
+- cron 任务的 LLM 直接生成 markdown，无需转换为 JSON
+
 ### 不在提示词中强调保存
 
-用户属性的保存完全由 cron 任务自动处理，不需要在系统提示词中强调特定关键词来触发保存。这与记忆系统不同：
+用户画像的保存完全由 cron 任务自动处理，不需要在系统提示词中强调特定关键词来触发保存。这与记忆系统不同：
 
 - **记忆系统**：Agent 根据用户指令（"记住这个"）或自主判断主动存储
-- **用户属性**：由后台 cron 任务定期从会话记录中自动提取
+- **用户画像**：由后台 cron 任务定期从会话记录中自动提取
 
 ### 轻量级设计
 
 - 单文件存储，无需复杂的目录结构
-- 6 个预定义类别，每个类别最多保留 10 条
+- 5 个提取维度，按需写入（无信息的维度不写）
 - 文件控制在 500 字以内（约 200-300 token）
 
 ### 静默失败
 
-- 文件不存在时不报错（从空对象开始）
+- 文件不存在时不报错（跳过 User Profile 部分）
 - 文件损坏时静默跳过（不中断对话）
 
 ## 相关文件
@@ -243,9 +251,9 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 | 文件 | 职责 |
 |------|------|
 | `core/config.py` | 提供 `get_user_profile_path()` 路径函数 |
-| `core/prompts.py` | `build_root_context()` 自动加载用户属性 |
+| `core/prompts.py` | `build_root_context()` 自动加载用户画像 |
 | `core/cron.d/extract_user_info.json` | Cron 任务配置（内联 task/plan，cron 表达式每天 2 点） |
-| `core/tools/shared/memory.py` | 仅处理 knowledge 和 skill（不涉及用户属性） |
+| `core/tools/shared/memory.py` | 仅处理 knowledge 和 skill（不涉及用户画像） |
 
 ## 参考文档
 
@@ -254,5 +262,5 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 
 ---
 
-*文档版本: v1.3*
-*最后更新: 2026-08-30*
+*文档版本: v2.0*
+*最后更新: 2026-09-02*

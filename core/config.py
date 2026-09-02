@@ -242,10 +242,10 @@ def get_workspace_config_path(workspace_uuid: str) -> Path:
 
 
 def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/agents/{uuid}/user-profile.json or workspace/user-profile.json if empty."""
+    """Get the user profile path: data/agents/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
     if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / "user-profile.json"
-    return AGENTS_DIR / workspace_uuid / "user-profile.json"
+        return PROJECT_ROOT / "workspace" / "user-profile.md"
+    return AGENTS_DIR / workspace_uuid / "user-profile.md"
 
 
 def load_global_config() -> dict:

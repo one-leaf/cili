@@ -1,6 +1,6 @@
 {
   "name": "extract-user-info",
-  "description": "每天扫描工作区，提取用户信息到 user-profile.json",
+  "description": "每天扫描工作区，从对话中提取用户画像到 user-profile.md",
   "enabled": true,
   "schedule": {
     "type": "cron",
@@ -10,13 +10,13 @@
     "max_iterations": 50
   },
   "content": {
-    "task": "扫描 data/agents/ 下的所有工作区（排除 system），检查是否需要更新用户画像。\n\n对每个工作区：\n1. 检查 data/agents/{uuid}/user-profile.json 是否存在\n2. 如果存在，读取其中的 updated_at 时间\n3. 扫描 data/agents/{uuid}/sessions/ 下的所有 index.json，找到最新的 metadata.updated_at\n4. 如果 session 的更新时间 > profile 的更新时间，则执行提取\n5. 如果 profile 不存在或 session 更新，则执行提取\n\n提取步骤：\n1. 读取工作区下所有 session 的 index.json\n2. 提取 role='user' 且 content 为字符串的消息（用户直接输入的文本）\n3. 分析用户文本，识别以下类别：\n   - reply_style: 回复风格\n   - expression_traits: 表达特征\n   - user_profile: 用户画像（结构化字段：age, gender, occupation, family, nickname）\n   - work_habits: 工作习惯\n   - project_preferences: 项目偏好\n   - common_location: 常驻地点\n4. 合并到现有 profile（同类别列表去重追加，总数不超过 10 条；结构化字段覆盖更新）\n5. 写入 data/agents/{uuid}/user-profile.json，更新 updated_at 字段\n\n注意：\n- 跳过 system 工作区\n- 每个工作区独立处理\n- 如果工作区没有近期更新，可以跳过",
+    "task": "扫描 data/agents/ 下的所有工作区（排除 system），检查是否需要更新用户画像。\n\n对每个工作区：\n1. 检查 data/agents/{uuid}/user-profile.md 是否存在\n2. 如果存在，读取 frontmatter 中的 updated_at\n3. 扫描 data/agents/{uuid}/sessions/ 下的所有 index.json，找到最新的 metadata.updated_at\n4. 如果 session 的更新时间 > profile 的更新时间，则执行提取\n5. 如果 profile 不存在或 session 更新，则执行提取\n\n提取步骤：\n1. 读取工作区下所有 session 的 index.json\n2. 提取 role='user' 且 content 为字符串的消息（用户直接输入的文本）\n3. 从对话中被动识别以下维度（不是主动询问，而是从聊天内容中捕捉）：\n\n【身份】\n- 花名/代号/昵称/自称（如\"我是xx\"、\"叫我xx\"）\n- 基本信息：公司、职级、职位、性别（一句话概括，如\"字节 2-1 后端工程师 男\"）\n- 性格：MBTI、星座、个性标签、企业文化烙印（一句话概括）\n- 常驻地点\n\n【表达风格】\n- 语气：回复的整体风格（如\"直接简洁\"、\"礼貌委婉\"）\n- 口头禅：高频词汇、固定搭配（如\"查一下\"、\"帮我看看\"）\n- 句式：句子长短、是否爱用列表、结论位置、转折词习惯\n- Emoji：使用频率和偏好\n- 正式程度：口语化 vs 正式\n\n【决策与判断】\n从技术选型、方案讨论中捕捉：\n- 优先考量：效率/规范/数据/直觉\n- 是否果断，还是反复横跳\n- 如何表达\"不同意\"：直接否定/提问质疑/转移话题\n- 面对不确定性：承认/模糊带过/推给别人\n用一句话概括，如\"效率优先，果断，直接否定不认可的方案\"\n\n【边界与雷区】\n从用户明确拒绝、抵触的场景中捕捉：\n- 用户说过\"不要这样\"、\"我不喜欢\"、\"换个方法\"的场景\n- 对某些方案或方式的明显抵触\n- 回避的话题\n输出为列表\n\n【压力下行为】\n从用户提到 deadline、抱怨、焦虑时捕捉：\n- 被催/遇到问题时的反应方式\n- 表达焦虑或压力的方式\n用一句话概括，如\"deadline 前会抱怨但执行力强\"\n\n4. 生成 markdown 文件，格式如下：\n\n```markdown\n---\nupdated_at: \"2026-09-02 04:30:00\"\n---\n\n## 身份\n- **花名**: xxx\n- **基本信息**: xxx\n- **性格**: xxx\n- **地点**: xxx\n\n## 表达风格\n- **语气**: xxx\n- **口头禅**: xxx, xxx\n- **句式**: xxx\n- **Emoji**: xxx\n- **正式程度**: xxx\n\n## 决策与判断\nxxx\n\n## 边界与雷区\n- xxx\n- xxx\n\n## 压力下行为\nxxx\n```\n\n注意：\n- 每次全量扫描所有对话，直接生成最新结果，无需合并历史\n- 如果某个维度在对话中完全没有信息，不写该维度\n- 跳过 system 工作区\n- 提取结果要简洁精炼，不要编造",
     "plan": [
       "列出 data/agents/ 下的所有目录",
       "对每个目录（排除 system）：",
-      "  1. 检查 user-profile.json 的 updated_at",
+      "  1. 检查 user-profile.md 的 updated_at",
       "  2. 扫描 sessions/ 下最新的 updated_at",
-      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 分析 → 写入 profile",
+      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 生成 markdown → 写入 profile",
       "  4. 如果不需要更新：跳过",
       "完成后报告处理的工作区数量"
     ]
