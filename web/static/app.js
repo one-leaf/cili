@@ -1313,7 +1313,7 @@ function renderMessages(messages) {
                 const div = addMessage('assistant', '');
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
-                if (block.name === 'ask_user' && !block._answered) {
+                if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) {
                     // Render interactive question card only if unanswered
                     renderAskUserQuestions(contentDiv, block.input, block.id);
                 } else {
@@ -2010,7 +2010,7 @@ function normalizeContent(content) {
                         input = { _raw: block.arguments };
                     }
                 }
-                blocks.push({ kind: 'tool_call', name: block.name, input: input, id: block.id, _answered: block._answered || false });
+                blocks.push({ kind: 'tool_call', name: block.name, input: input, id: block.id, _meta: block._meta || null });
             } else if (block.type === 'tool_result') {
                 blocks.push({ kind: 'tool_result', content: block.content, is_error: block.is_error || false, _meta: block._meta || null, tool_use_id: block.tool_use_id || block.tool_call_id });
             }

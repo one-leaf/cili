@@ -617,7 +617,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 
     用于前端渲染历史会话。Session 中只存元信息，内容保存在外部文件。
     此函数从文件读取内容并注入到消息中，供前端渲染。
-    同时给已回答的 ask_user tool_use 块添加 _answered 标记。
+    同时给已回答的 ask_user tool_use 块添加 _meta.answered 标记。
     """
     from core.tools.shared.base import Tool
 
@@ -647,7 +647,9 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
             for block in content:
                 # 同时检查 tool_use 和 tool_call 两种类型
                 if block.get("type") in ("tool_use", "tool_call") and block.get("id") in answered_ask_user_ids:
-                    block["_answered"] = True
+                    if "_meta" not in block:
+                        block["_meta"] = {}
+                    block["_meta"]["answered"] = True
 
         # 处理工具结果
         if msg.get("role") == "user":
@@ -1355,9 +1357,11 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         for block in content:
             # 同时检查 tool_use 和 tool_call 两种类型
             if block.get("type") in ("tool_use", "tool_call") and block.get("id") == ask_user_tool_use_id:
-                block["_answered"] = True
+                if "_meta" not in block:
+                    block["_meta"] = {}
+                block["_meta"]["answered"] = True
                 found_tool_use = True
-                logger.info(f"[ask-user] 在 {block.get('type')} 上添加 _answered=true: id={ask_user_tool_use_id}")
+                logger.info(f"[ask-user] 在 {block.get('type')} 上添加 _meta.answered=true: id={ask_user_tool_use_id}")
                 break
 
     if not found_tool_use:

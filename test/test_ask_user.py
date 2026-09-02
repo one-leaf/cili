@@ -4,7 +4,7 @@
 1. AskUserTool.execute() 返回 wait_for_user=True 的 ToolResult
 2. _execute_tool() 生成带 _meta.wait_for_user=True 标记的 dict
 3. Agent loop 检测到 _meta.wait_for_user 后退出（content 为占位符文本）
-4. 用户提交答案 → 后端设置 _meta.wait_for_user=False，注入 tool_result content，标记 _answered=True
+4. 用户提交答案 → 后端设置 _meta.wait_for_user=False，注入 tool_result content，标记 _meta.answered=True
 5. resume_after_ask_user() 继续 agent loop
 """
 
@@ -208,10 +208,10 @@ class TestAgentLoopWaitForUser:
         assert tool_result_block is not None, "应找到 ask_user 的 tool_result"
         assert tool_result_block["_meta"]["wait_for_user"] is True
 
-        # 关键验证：tool_call 块没有 _answered 标记（用户还没回答）
+        # 关键验证：tool_call 块没有 _meta.answered 标记（用户还没回答）
         for b in last_assistant["content"]:
             if b.get("type") in ("tool_call", "tool_use") and b.get("id") == tool_use_id:
-                assert b.get("_answered") is not True, "用户未回答前不应有 _answered 标记"
+                assert b.get("_meta", {}).get("answered") is not True, "用户未回答前不应有 _meta.answered 标记"
 
     def test_tool_result_has_placeholder_content(self, agent):
         """ask_user 的 tool_result 直接包含占位符内容"""
@@ -317,7 +317,7 @@ class TestAnswerAskUserEndpointLogic:
                     assert block["content"] == user_answer
 
     def test_answer_marks_tool_call_as_answered(self, agent):
-        """模拟端点：在 tool_call 块上标记 _answered=True"""
+        """模拟端点：在 tool_call 块上标记 _meta.answered=True"""
         tool_use_id = self._setup_ask_user_state(agent)
         user_answer = "蓝色"
 
@@ -334,7 +334,7 @@ class TestAnswerAskUserEndpointLogic:
                     block["content"] = user_answer
                     break
 
-        # Phase B: 标记 tool_call 为 _answered
+        # Phase B: 标记 tool_call 为 _meta.answered
         found_tool_call = False
         for msg in agent.messages:
             if msg["role"] != "assistant":
@@ -344,13 +344,15 @@ class TestAnswerAskUserEndpointLogic:
                 continue
             for block in content:
                 if block.get("type") in ("tool_use", "tool_call") and block.get("id") == tool_use_id:
-                    block["_answered"] = True
+                    if "_meta" not in block:
+                        block["_meta"] = {}
+                    block["_meta"]["answered"] = True
                     found_tool_call = True
                     break
 
         assert found_tool_call, "应找到对应的 tool_call 块"
 
-        # 验证 _answered 标记
+        # 验证 _meta.answered 标记
         for msg in agent.messages:
             if msg["role"] != "assistant":
                 continue
@@ -359,7 +361,7 @@ class TestAnswerAskUserEndpointLogic:
                 continue
             for block in content:
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
-                    assert block["_answered"] is True, "tool_call 应被标记为 _answered"
+                    assert block["_meta"]["answered"] is True, "tool_call 应被标记为 _meta.answered"
 
     def test_wrong_tool_use_id_not_found(self, agent):
         """错误的 tool_use_id 应找不到占位符"""
@@ -423,7 +425,7 @@ class TestResumeAfterAskUser:
                     block["content"] = "红色"
                     break
 
-        # 标记 _answered
+        # 标记 _meta.answered
         for msg in agent.messages:
             if msg["role"] != "assistant":
                 continue
@@ -432,7 +434,9 @@ class TestResumeAfterAskUser:
                 continue
             for block in content:
                 if block.get("type") in ("tool_use", "tool_call") and block.get("id") == tool_use_id:
-                    block["_answered"] = True
+                    if "_meta" not in block:
+                        block["_meta"] = {}
+                    block["_meta"]["answered"] = True
                     break
 
         # 第二次 LLM 调用：返回纯文本回复（不再有 tool_call）
@@ -518,13 +522,13 @@ class TestResumeAfterAskUser:
         assert not has_tool_calls, "最后一条 assistant 消息不应有 tool_call"
 
 
-# ── 测试 6: _resolve_tool_results_for_session 标记 _answered ──
+# ── 测试 6: _resolve_tool_results_for_session 标记 _meta.answered ──
 
 class TestResolveToolResultsForSession:
-    """web_api.py 中 _resolve_tool_results_for_session 的 _answered 标记逻辑
+    """web_api.py 中 _resolve_tool_results_for_session 的 _meta.answered 标记逻辑
 
     预扫描逻辑：当 tool_result 的 _meta.wait_for_user == False（用户已提交答案）时，
-    才将对应 tool_call 标记为 _answered=True。
+    才将对应 tool_call 标记为 _meta.answered=True。
     如果 _meta.wait_for_user == True（占位符状态，content 是 "Waiting for user input..."），则不标记。
     """
 
@@ -555,7 +559,9 @@ class TestResolveToolResultsForSession:
                 continue
             for block in content:
                 if block.get("type") in ("tool_use", "tool_call") and block.get("id") in answered_ids:
-                    block["_answered"] = True
+                    if "_meta" not in block:
+                        block["_meta"] = {}
+                    block["_meta"]["answered"] = True
 
     def test_pre_scan_marks_answered_when_wait_for_user_false(self, agent):
         """预扫描：_meta.wait_for_user=False 且有 content → 对应 tool_call 标记 _answered"""
@@ -601,13 +607,13 @@ class TestResolveToolResultsForSession:
         # 执行标记
         self._simulate_mark_answered(agent.messages, answered_ids)
 
-        # 验证 tool_call 被标记 _answered=True
+        # 验证 tool_call 被标记 _meta.answered=True
         for msg in agent.messages:
             if msg.get("role") != "assistant":
                 continue
             for block in msg.get("content", []):
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
-                    assert block["_answered"] is True, "已回答的 tool_call 应标记 _answered=True"
+                    assert block["_meta"]["answered"] is True, "已回答的 tool_call 应标记 _meta.answered=True"
 
     def test_pre_scan_does_not_mark_when_wait_for_user_true(self, agent):
         """预扫描：_meta.wait_for_user=True（占位符状态）→ 不标记 _answered"""
@@ -636,14 +642,14 @@ class TestResolveToolResultsForSession:
         assert tool_use_id not in answered_ids, \
             f"wait_for_user=True（占位符）不应被收集。收集到: {answered_ids}"
 
-        # 验证 tool_call 没有被标记 _answered
+        # 验证 tool_call 没有被标记 _meta.answered
         for msg in agent.messages:
             if msg.get("role") != "assistant":
                 continue
             for block in msg.get("content", []):
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
-                    assert not block.get("_answered"), \
-                        "未回答的 tool_call 不应标记 _answered"
+                    assert not block.get("_meta", {}).get("answered"), \
+                        "未回答的 tool_call 不应标记 _meta.answered"
 
     def test_frontend_will_render_interactive_card_when_unanswered(self, agent):
         """前端逻辑：未回答时（_answered 非 true），应渲染交互式问题卡片"""
@@ -670,7 +676,6 @@ class TestResolveToolResultsForSession:
                 continue
             for block in msg.get("content", []):
                 if block.get("type") in ("tool_call", "tool_use") and block.get("name") == "ask_user":
-                    # 前端逻辑：block._answered 为 falsy 时渲染交互式卡片
-                    # block._answered || false → 如果 block 没有 _answered 字段，返回 false
-                    answered = block.get("_answered", False)
-                    assert not answered, "未回答时 _answered 应为 false/undefined，前端应渲染交互卡片"
+                    # 前端逻辑：block._meta.answered 为 falsy 时渲染交互式卡片
+                    answered = block.get("_meta", {}).get("answered", False)
+                    assert not answered, "未回答时 _meta.answered 应为 false/undefined，前端应渲染交互卡片"
