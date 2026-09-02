@@ -114,15 +114,27 @@ process file
 
 ## 3.1 PDF
 
-### Primary library: PyMuPDF
+### 推荐方案：pdf2markdown 工具
 
-Python package:
+对于需要高质量提取 PDF 内容（尤其是包含表格、公式、复杂排版的文档），**优先使用 `pdf2markdown` 工具**：
 
-```text
-PyMuPDF
+```
+pdf2markdown(file_path="document.pdf")
 ```
 
-Import:
+优势：
+- 使用 MinerU OCR API，支持表格、公式识别
+- 自动处理扫描件和图片型 PDF
+- 输出结构化的 Markdown 格式
+- 支持 PDF、图片、DOCX、PPTX、XLSX、HTML
+
+两种 API 模式：
+- Agent API：免费无需密钥，≤10MB/≤20页
+- Precision API：需配置 `system.mineru_api_key`，≤200MB/≤200页
+
+### 备用方案：PyMuPDF
+
+当 `pdf2markdown` 不可用或需要本地处理时，使用 PyMuPDF：
 
 ```python
 import fitz
@@ -1013,6 +1025,21 @@ Only use a fallback when the preferred solution genuinely cannot be used.
 
 当用户要求将文档/文件内容存入 memory（知识库）时，必须确保内容完整，不能只存储截断的部分。
 
+## 推荐流程：使用 pdf2markdown 工具
+
+对于 PDF、图片、DOCX、PPTX、XLSX 等文档，**优先使用 `pdf2markdown` 工具转换为 Markdown**：
+
+```
+1. pdf2markdown(file_path="document.pdf")  → 输出 document.md
+2. read(file_path="document.md")            → 读取 Markdown 内容
+3. memory(action='store', content=完整内容) → 存入知识库
+```
+
+优势：
+- 自动处理表格、公式、复杂排版
+- 扫描件也能 OCR 识别
+- 输出结构化的 Markdown，便于后续检索和使用
+
 ## 问题
 
 文档超过工具输出限制（read 工具约 10,000 tokens，python/bash 工具约 30,000 字符）时，工具会截断输出。如果直接将截断的内容存入 memory，会导致知识库不完整。
@@ -1073,3 +1100,55 @@ print(f"提取完成，共 {len(full_text)} 字符")
 如果拼接后内容超过 50,000 字符，考虑：
 - 按章节/主题分成多个 memory 文件
 - 使用不同的 `topic` 和 `filename` 区分
+
+---
+
+# 23. PDF 转 Word 工作流
+
+当用户要求将 PDF 转换为 Word（DOCX）格式时，推荐以下流程：
+
+## 推荐方案
+
+```
+PDF
+ ↓
+pdf2markdown(file_path="document.pdf")  → 输出 document.md
+ ↓
+read(file_path="document.md")           → 读取 Markdown 内容
+ ↓
+python 工具：将 Markdown 转为 DOCX
+```
+
+## 实现示例
+
+```python
+from docx import Document
+import re
+
+# 读取 Markdown 内容
+with open("document.md", "r", encoding="utf-8") as f:
+    md_content = f.read()
+
+# 创建 Word 文档
+doc = Document()
+
+# 简单的 Markdown → DOCX 转换
+lines = md_content.split('\n')
+for line in lines:
+    if line.startswith('# '):
+        doc.add_heading(line[2:], level=1)
+    elif line.startswith('## '):
+        doc.add_heading(line[3:], level=2)
+    elif line.startswith('### '):
+        doc.add_heading(line[4:], level=3)
+    elif line.strip():
+        doc.add_paragraph(line)
+
+doc.save("output.docx")
+```
+
+## 注意事项
+
+- Markdown 中的表格可以用 `python-docx` 的 `add_table()` 方法转换
+- 图片需要单独处理（先下载/提取，再插入 Word）
+- 复杂格式（如公式）可能需要额外处理
