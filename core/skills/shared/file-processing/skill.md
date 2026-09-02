@@ -114,27 +114,27 @@ process file
 
 ## 3.1 PDF
 
-### 推荐方案：pdf2markdown 工具
+### Recommended: pdf2markdown Tool
 
-对于需要高质量提取 PDF 内容（尤其是包含表格、公式、复杂排版的文档），**优先使用 `pdf2markdown` 工具**：
+For high-quality PDF content extraction (especially documents with tables, formulas, complex layouts), **use the `pdf2markdown` tool first**:
 
 ```
 pdf2markdown(file_path="document.pdf")
 ```
 
-优势：
-- 使用 MinerU OCR API，支持表格、公式识别
-- 自动处理扫描件和图片型 PDF
-- 输出结构化的 Markdown 格式
-- 支持 PDF、图片、DOCX、PPTX、XLSX、HTML
+Advantages:
+- Uses MinerU OCR API, supports table and formula recognition
+- Automatically handles scanned and image-based PDFs
+- Outputs structured Markdown format
+- Supports PDF, images, DOCX, PPTX, XLSX, HTML
 
-两种 API 模式：
-- Agent API：免费无需密钥，≤10MB/≤20页
-- Precision API：需配置 `system.mineru_api_key`，≤200MB/≤200页
+Two API modes:
+- Agent API: Free, no key required, ≤10MB/≤20 pages
+- Precision API: Requires `system.mineru_api_key`, ≤200MB/≤200 pages
 
-### 备用方案：PyMuPDF
+### Fallback: PyMuPDF
 
-当 `pdf2markdown` 不可用或需要本地处理时，使用 PyMuPDF：
+When `pdf2markdown` is unavailable or local processing is needed, use PyMuPDF:
 
 ```python
 import fitz
@@ -1021,118 +1021,118 @@ Only use a fallback when the preferred solution genuinely cannot be used.
 
 ---
 
-# 22. 长文档转 Memory（完整内容存储）
+# 22. Long Document to Memory (Complete Content Storage)
 
-当用户要求将文档/文件内容存入 memory（知识库）时，必须确保内容完整，不能只存储截断的部分。
+When the user requests storing document/file content into memory (knowledge base), ensure the content is complete — never store truncated portions.
 
-## 推荐流程：使用 pdf2markdown 工具
+## Recommended Workflow: Use pdf2markdown Tool
 
-对于 PDF、图片、DOCX、PPTX、XLSX 等文档，**优先使用 `pdf2markdown` 工具转换为 Markdown**：
-
-```
-1. pdf2markdown(file_path="document.pdf")  → 输出 document.md
-2. read(file_path="document.md")            → 读取 Markdown 内容
-3. memory(action='store', content=完整内容) → 存入知识库
-```
-
-优势：
-- 自动处理表格、公式、复杂排版
-- 扫描件也能 OCR 识别
-- 输出结构化的 Markdown，便于后续检索和使用
-
-## 问题
-
-文档超过工具输出限制（read 工具约 10,000 tokens，python/bash 工具约 30,000 字符）时，工具会截断输出。如果直接将截断的内容存入 memory，会导致知识库不完整。
-
-## 正确流程
+For PDF, image, DOCX, PPTX, XLSX and other document types, **use the `pdf2markdown` tool to convert to Markdown first**:
 
 ```
-用户要求"把这个文件存入 memory"
-    ↓
-1. 先用 read 工具读取文件
-    ↓
-2. 检查输出是否被截断？
-   - 看到 "... more lines" → 被截断
-   - 看到 "… N tokens truncated …" → 被截断
-    ↓
-   是 → 3. 分多次读取（见下方方法）
-   否 → 4. 直接 memory(action='store')
-    ↓
-3. 拼接所有分段内容
-    ↓
-4. 一次性 memory(action='store', content=完整内容)
+1. pdf2markdown(file_path="document.pdf")  → outputs document.md
+2. read(file_path="document.md")            → read Markdown content
+3. memory(action='store', content=full)     → store into knowledge base
 ```
 
-## 分次读取方法
+Advantages:
+- Automatically handles tables, formulas, complex layouts
+- OCR recognition for scanned documents
+- Structured Markdown output for easy retrieval and reuse
+
+## Problem
+
+When documents exceed tool output limits (read tool: ~10,000 tokens, python/bash: ~30,000 characters), output is truncated. Storing truncated content directly into memory results in an incomplete knowledge base.
+
+## Correct Workflow
+
+```
+User requests "store this file in memory"
+    ↓
+1. Read file with read tool first
+    ↓
+2. Check if output was truncated?
+   - See "... more lines" → truncated
+   - See "… N tokens truncated …" → truncated
+    ↓
+   Yes → 3. Read in segments (see method below)
+   No  → 4. Direct memory(action='store')
+    ↓
+3. Concatenate all segments
+    ↓
+4. Single memory(action='store', content=complete)
+```
+
+## Segmented Reading Method
 
 ```python
-# 第一次：读前 2000 行
-read(file_path="文档.pdf", offset=1, limit=2000)
-# → 看到 "(2000 more lines). Use offset=2001 to continue reading."
+# First read: first 2000 lines
+read(file_path="document.pdf", offset=1, limit=2000)
+# → See "(2000 more lines). Use offset=2001 to continue reading."
 
-# 第二次：继续读
-read(file_path="文档.pdf", offset=2001, limit=2000)
-# → 看到 "(2000 more lines). Use offset=4001 to continue reading."
+# Second read: continue
+read(file_path="document.pdf", offset=2001, limit=2000)
+# → See "(2000 more lines). Use offset=4001 to continue reading."
 
-# 重复直到读完所有行
+# Repeat until all lines are read
 ```
 
-对于 python 工具解析的文档（如 PDF），可以：
-1. 先用 python 提取完整文本并保存为临时文件
-2. 然后用 read 工具分次读取该临时文件
+For documents parsed with python tool (e.g., PDF):
+1. First use python to extract full text and save as temp file
+2. Then use read tool to read the temp file in segments
 
 ```python
-# python 工具：提取完整文本
+# python tool: extract full text
 import fitz
-doc = fitz.open("长文档.pdf")
+doc = fitz.open("long_document.pdf")
 full_text = ""
 for page in doc:
     full_text += page.get_text()
 with open("/tmp/extracted.txt", "w", encoding="utf-8") as f:
     f.write(full_text)
-print(f"提取完成，共 {len(full_text)} 字符")
+print(f"Extraction complete, {len(full_text)} characters")
 ```
 
-然后分次读取 `/tmp/extracted.txt`。
+Then read `/tmp/extracted.txt` in segments.
 
-## 超长内容的处理
+## Handling Very Long Content
 
-如果拼接后内容超过 50,000 字符，考虑：
-- 按章节/主题分成多个 memory 文件
-- 使用不同的 `topic` 和 `filename` 区分
+If concatenated content exceeds 50,000 characters, consider:
+- Splitting into multiple memory files by chapter/topic
+- Using different `topic` and `filename` values to distinguish
 
 ---
 
-# 23. PDF 转 Word 工作流
+# 23. PDF to Word Workflow
 
-当用户要求将 PDF 转换为 Word（DOCX）格式时，推荐以下流程：
+When the user requests converting PDF to Word (DOCX) format, use the following workflow:
 
-## 推荐方案
+## Recommended Approach
 
 ```
 PDF
  ↓
-pdf2markdown(file_path="document.pdf")  → 输出 document.md
+pdf2markdown(file_path="document.pdf")  → outputs document.md
  ↓
-read(file_path="document.md")           → 读取 Markdown 内容
+read(file_path="document.md")           → read Markdown content
  ↓
-python 工具：将 Markdown 转为 DOCX
+python tool: convert Markdown to DOCX
 ```
 
-## 实现示例
+## Implementation Example
 
 ```python
 from docx import Document
 import re
 
-# 读取 Markdown 内容
+# Read Markdown content
 with open("document.md", "r", encoding="utf-8") as f:
     md_content = f.read()
 
-# 创建 Word 文档
+# Create Word document
 doc = Document()
 
-# 简单的 Markdown → DOCX 转换
+# Simple Markdown → DOCX conversion
 lines = md_content.split('\n')
 for line in lines:
     if line.startswith('# '):
@@ -1147,8 +1147,8 @@ for line in lines:
 doc.save("output.docx")
 ```
 
-## 注意事项
+## Notes
 
-- Markdown 中的表格可以用 `python-docx` 的 `add_table()` 方法转换
-- 图片需要单独处理（先下载/提取，再插入 Word）
-- 复杂格式（如公式）可能需要额外处理
+- Tables in Markdown can be converted using `python-docx`'s `add_table()` method
+- Images need separate handling (download/extract first, then insert into Word)
+- Complex formatting (e.g., formulas) may require additional processing

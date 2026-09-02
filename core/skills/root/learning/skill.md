@@ -283,27 +283,6 @@ description: 结构化学习助手。当用户想学习某个主题时使用。�
 现在，请再试一次...
 ```
 
-## Learning from Documents
-
-When the user wants to learn from a specific document (PDF, slides, research paper, etc.), use the `pdf2markdown` tool first to extract the content into readable markdown format before starting any learning mode.
-
-**Workflow:**
-1. User provides a PDF file path (or a directory of learning materials)
-2. Use `pdf2markdown(file_path="...")` to convert the PDF to markdown
-3. Read the resulting markdown file
-4. Use the extracted content as the basis for whichever learning mode the user chose
-
-**Examples:**
-- "Help me learn this paper" → `pdf2markdown` → read result → apply learning mode
-- "I want to study these lecture slides" → `pdf2markdown` → extract key concepts → build learning ladder
-- "Quiz me on this document" → `pdf2markdown` → generate quiz questions from content
-
-**Tips:**
-- For large PDFs (>20 pages), use `model_version="vlm"` for better accuracy
-- If Agent API fails (free tier limits), the tool automatically falls back to Precision API (requires `mineru_api_key` in config)
-- The converted markdown preserves headings, tables, and formulas — ideal for structured learning
-- If the user wants to save the extracted knowledge long-term, use `memory(action="store")` after conversion
-
 ## 使用流程
 
 ### 初次使用
