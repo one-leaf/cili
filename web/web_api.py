@@ -1466,6 +1466,14 @@ def _mask_api_key(config: dict) -> dict:
     for key in ("model", "llm_model"):
         if key in result and isinstance(result[key], dict):
             result[key] = _mask_single_model(result[key])
+    # Mask MinerU API key in system config
+    if "system" in result and isinstance(result["system"], dict):
+        sys_copy = result["system"].copy()
+        mineru_key = sys_copy.get("mineru_api_key", "")
+        if mineru_key:
+            sys_copy["mineru_api_key_masked"] = mineru_key[:4] + "..." + mineru_key[-4:] if len(mineru_key) > 8 else "***"
+        sys_copy.pop("mineru_api_key", None)
+        result["system"] = sys_copy
     return result
 
 

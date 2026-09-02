@@ -2715,7 +2715,16 @@ async function openSettings() {
         document.getElementById('system-pip-mirror').value = systemCfg.pip_mirror || '';
         document.getElementById('system-browser-path').value = systemCfg.browser_path || '';
         document.getElementById('system-search-engine').value = systemCfg.search_engine || 'bing';
+        document.getElementById('system-mineru-api-key').value = '';
         document.getElementById('system-allowed-ips').value = (systemCfg.allowed_ips || []).join(', ');
+
+        // Show MinerU masked key in placeholder
+        const mineruInput = document.getElementById('system-mineru-api-key');
+        if (systemCfg.mineru_api_key_masked) {
+            mineruInput.placeholder = `当前: ${systemCfg.mineru_api_key_masked}（留空保持不变，清空请填写none）`;
+        } else {
+            mineruInput.placeholder = '留空则使用免费 Agent API（≤10MB/≤20页）';
+        }
 
         document.getElementById('settings-status').textContent = `配置文件: ${data.config_path}`;
     } catch (error) {
@@ -2787,6 +2796,7 @@ async function saveSettings() {
     const pipMirror = document.getElementById('system-pip-mirror').value.trim();
     const browserPath = document.getElementById('system-browser-path').value.trim();
     const searchEngine = document.getElementById('system-search-engine').value;
+    const mineruApiKey = document.getElementById('system-mineru-api-key').value.trim();
     const allowedIpsStr = document.getElementById('system-allowed-ips').value.trim();
     const allowedIps = allowedIpsStr ? allowedIpsStr.split(',').map(ip => ip.trim()).filter(Boolean) : [];
     payload.system = {
@@ -2795,6 +2805,10 @@ async function saveSettings() {
         search_engine: searchEngine,
         allowed_ips: allowedIps
     };
+    // Only include mineru_api_key if user typed a new value; empty means "don't change"
+    if (mineruApiKey) {
+        payload.system.mineru_api_key = mineruApiKey;
+    }
 
     try {
         const response = await fetch('/api/config', {

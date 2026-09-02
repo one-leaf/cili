@@ -250,6 +250,21 @@
                         <small class="form-hint">web_search 工具使用的搜索引擎</small>
                     </div>
                     <div class="form-group">
+                        <label>MinerU API Key:</label>
+                        <div>
+                            <div class="input-with-icon">
+                                <input type="password" id="system-mineru-api-key" placeholder="留空则使用免费 Agent API（≤10MB/≤20页）">
+                                <button type="button" class="toggle-password" data-target="system-mineru-api-key">
+                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small class="form-hint">pdf2markdown 工具使用的 MinerU API Key。未配置时仅支持免费 Agent API（≤10MB、≤20页）；配置后可使用 Precision API（≤200MB、≤200页）。可在 mineru.net 申请</small>
+                        </div>
+                    </div>
+                    <div class="form-group">
                         <label>允许访问IP:</label>
                         <input type="text" id="system-allowed-ips" placeholder="192.168.1.100, 10.0.0.5">
                         <small class="form-hint">逗号分隔的IP白名单，留空则仅允许本机访问</small>
