@@ -1351,6 +1351,8 @@ mjx-container {
     max-height: 100px;
     overflow: hidden;
     position: relative;
+    width: fit-content;
+    max-width: 100%;
 }
 
 .message-quote-block::after {
@@ -1360,7 +1362,7 @@ mjx-container {
     left: 0;
     right: 0;
     height: 20px;
-    background: linear-gradient(transparent, rgba(168, 230, 161, 0.5));
+    background: linear-gradient(transparent, rgba(74, 158, 255, 0.08));
     pointer-events: none;
 }
 
