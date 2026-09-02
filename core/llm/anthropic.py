@@ -188,6 +188,9 @@ class AnthropicAdapter(Adapter):
                     )
                 elif block_type == "thinking":
                     yield StreamChunk.block_start(current_block_index, "reasoning")
+                    signature = block.get("signature", "")
+                    if signature:
+                        yield StreamChunk.signature_delta(current_block_index, signature)
 
             elif evt_type == "content_block_delta":
                 delta = event.get("delta", {})

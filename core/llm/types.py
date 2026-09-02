@@ -474,6 +474,11 @@ class StreamChunk:
         return cls(type="tool_call_delta", index=index, data=data)
 
     @classmethod
+    def signature_delta(cls, index: int, signature: str) -> StreamChunk:
+        """Create signature_delta chunk (for Anthropic thinking block replay)."""
+        return cls(type="signature_delta", index=index, data={"signature": signature})
+
+    @classmethod
     def block_end(cls, index: int) -> StreamChunk:
         """Create block_end chunk."""
         return cls(type="block_end", index=index)

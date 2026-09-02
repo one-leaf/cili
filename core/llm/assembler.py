@@ -70,6 +70,11 @@ class BlockAssembler:
             if isinstance(block, ReasoningBlock):
                 block.text += chunk.data.get("text", "")
 
+        elif ctype == "signature_delta":
+            block = self._block_map.get(chunk.index)
+            if isinstance(block, ReasoningBlock):
+                block.signature = chunk.data.get("signature", "")
+
         elif ctype == "tool_call_delta":
             block = self._block_map.get(chunk.index)
             if isinstance(block, ToolCallBlock):
