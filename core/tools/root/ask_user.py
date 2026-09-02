@@ -82,5 +82,4 @@ class AskUserTool(Tool):
         return ToolResult(
             output="Waiting for user input...",
             wait_for_user=True,
-            meta={"questions": questions},
         )
