@@ -76,6 +76,7 @@
 
             <div class="chat-input-area">
                 <div class="chat-input-wrap">
+                    <div id="quote-preview-area" class="quote-preview-area"></div>
                     <div id="image-preview-area" class="image-preview-area"></div>
                     <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行, Ctrl+V 粘贴图片)" rows="3"></textarea>
                     <button id="insert-file-btn" class="btn-icon-floating" title="插入文件名">
@@ -233,8 +234,8 @@
                     </div>
                     <div class="form-group">
                         <label>Pip 镜像地址:</label>
-                        <input type="text" id="system-pip-mirror" placeholder="https://mirrors.aliyun.com/pypi/simple/">
-                        <small class="form-hint">用于 Python 包安装，默认使用阿里云镜像</small>
+                        <input type="text" id="system-pip-mirror" placeholder="https://repo.huaweicloud.com/repository/pypi/simple/">
+                        <small class="form-hint">用于 Python 包安装，默认使用华为云镜像</small>
                     </div>
                     <div class="form-group">
                         <label>浏览器路径:</label>

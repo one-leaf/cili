@@ -1274,6 +1274,108 @@ mjx-container {
     background: rgba(220, 53, 69, 0.9);
 }
 
+/* Quote preview area (above input) */
+.quote-preview-area {
+    display: none;
+    padding: 8px 8px 0 8px;
+}
+
+.quote-preview-area.visible {
+    display: block;
+}
+
+.quote-preview-card {
+    position: relative;
+    background: #f0f7ff;
+    border: 1px solid #c8ddf0;
+    border-left: 3px solid #4a9eff;
+    border-radius: 6px;
+    padding: 8px 30px 8px 10px;
+    font-size: 13px;
+    color: #555;
+    max-height: 80px;
+    overflow: hidden;
+}
+
+.quote-preview-label {
+    font-size: 11px;
+    color: #4a9eff;
+    font-weight: 600;
+    margin-bottom: 3px;
+}
+
+.quote-preview-text {
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+.quote-preview-remove {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 20px;
+    height: 20px;
+    background: none;
+    border: 1px solid transparent;
+    color: #999;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.quote-preview-remove:hover {
+    color: #e74c3c;
+    background: rgba(231, 76, 60, 0.08);
+    border-color: rgba(231, 76, 60, 0.2);
+}
+
+/* Quoted content in user messages */
+.message-quote-block {
+    background: rgba(74, 158, 255, 0.08);
+    border-left: 3px solid #4a9eff;
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #666;
+    max-height: 100px;
+    overflow: hidden;
+    position: relative;
+}
+
+.message-quote-block::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 20px;
+    background: linear-gradient(transparent, rgba(168, 230, 161, 0.5));
+    pointer-events: none;
+}
+
+.message-quote-block .quote-role {
+    font-size: 11px;
+    color: #4a9eff;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.message-quote-block .quote-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* User message images */
 .user-images {
     display: flex;

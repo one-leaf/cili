@@ -49,11 +49,11 @@ class BashTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute.",
+                    "description": "The shell command to execute. Do NOT include 'timeout' in the command — use the timeout parameter instead.",
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 120, max: 600).",
+                    "description": "Timeout in seconds (default: 120, max: 600). Set this as a SEPARATE parameter, do not embed in command.",
                 },
                 "run_in_background": {
                     "type": "boolean",
