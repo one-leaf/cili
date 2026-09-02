@@ -22,6 +22,7 @@ from core.tools.shared.cron_tool import CronTool
 from core.tools.shared.read_tool_result import ReadToolResultTool
 from core.tools.shared.temp import TempTool
 from core.tools.shared.loop import LoopTool
+from core.tools.shared.pdf2markdown import PDF2MarkdownTool
 
 
 def create_shared_tools(
@@ -55,6 +56,7 @@ def create_shared_tools(
         ReadToolResultTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         TempTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         LoopTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, cron_task_id=cron_task_id),
+        PDF2MarkdownTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, config=config),
     ]
     # Only include LLMTool if llm_model is configured
     if config is None or config.llm_model is not None:
