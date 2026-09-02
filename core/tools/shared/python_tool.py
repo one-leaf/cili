@@ -241,7 +241,7 @@ class PythonTool(Tool):
         quoted = " ".join(f'"{p}"' for p in packages.split())
         mirror = self._get_pip_mirror()
         mirror_arg = f'-i {mirror} ' if mirror else ''
-        return self._run_pip(f'install {mirror_arg}{quoted}')
+        return self._run_pip(f'install {mirror_arg}{quoted}', timeout=600)
 
     def _uninstall_packages(self, packages: str) -> ToolResult:
         """Uninstall Python packages."""

@@ -101,7 +101,7 @@ class ModelConfig:
 @dataclass
 class SystemConfig:
     """System-level configuration (pip mirror, env paths, etc.)."""
-    pip_mirror: str = "https://mirrors.aliyun.com/pypi/simple/"
+    pip_mirror: str = "https://repo.huaweicloud.com/repository/pypi/simple/"
     allowed_ips: list[str] = field(default_factory=list)  # IP whitelist; empty = localhost only
     browser_path: str = ""  # Browser executable path (auto-detected if empty or invalid)
     search_engine: str = "bing"  # Web search engine: "bing" or "google"
@@ -110,7 +110,7 @@ class SystemConfig:
     def from_dict(cls, data: dict) -> "SystemConfig":
         """Parse SystemConfig from a dict."""
         return cls(
-            pip_mirror=data.get("pip_mirror", "https://mirrors.aliyun.com/pypi/simple/"),
+            pip_mirror=data.get("pip_mirror", "https://repo.huaweicloud.com/repository/pypi/simple/"),
             allowed_ips=data.get("allowed_ips", []),
             browser_path=data.get("browser_path", ""),
             search_engine=data.get("search_engine", "bing"),

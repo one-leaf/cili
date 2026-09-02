@@ -405,7 +405,7 @@ GET /api/config
       ...
     },
     "system": {
-      "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/"
+      "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
     }
   },
   "config_path": "/path/to/setting.json"

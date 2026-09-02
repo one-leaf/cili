@@ -187,7 +187,7 @@ def _create_example_config() -> None:
         },
         "system": {
             "_comment": "系统参数配置",
-            "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/",  # Python 包镜像源，留空使用官方源
+            "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/",  # Python 包镜像源，留空使用官方源
             "browser_path": "",  # 浏览器可执行文件路径，留空自动检测（Edge→Chrome）
             "allowed_ips": [],  # IP 白名单，留空仅允许本机访问。示例: ["192.168.1.100", "10.0.0.5"]
         }
@@ -589,7 +589,7 @@ def _load_settings_cached() -> dict:
 
 def _get_pip_mirror() -> str:
     """Read pip mirror URL from global config, return default if not configured."""
-    default = "https://mirrors.aliyun.com/pypi/simple/"
+    default = "https://repo.huaweicloud.com/repository/pypi/simple/"
     return _load_settings_cached().get("system", {}).get("pip_mirror", default)
 
 
