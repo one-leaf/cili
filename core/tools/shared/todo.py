@@ -181,7 +181,7 @@ class TodoWriteTool(Tool):
             )
 
         # Store in session metadata
-        if self.session_manager:
+        if self.session_manager and hasattr(self.session_manager, 'metadata'):
             old_todos = self.session_manager.metadata.get("todos", [])
             self.session_manager.metadata["todos"] = validated_todos
 
@@ -266,7 +266,7 @@ class TodoWriteTool(Tool):
 
 def get_todos_from_session(session_manager: SessionManager | None) -> list[dict] | None:
     """Helper to get current todos from session metadata."""
-    if session_manager is None:
+    if session_manager is None or not hasattr(session_manager, 'metadata'):
         return None
     return session_manager.metadata.get("todos")
 
