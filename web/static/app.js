@@ -2678,6 +2678,9 @@ async function openSettings() {
         document.getElementById('setting-temperature').value = tempVal;
         document.getElementById('setting-temperature-value').textContent = tempVal;
 
+        // Reasoning effort
+        document.getElementById('setting-reasoning-effort').value = modelCfg.reasoning_effort || '';
+
         // Show masked key
         const maskedHint = document.getElementById('setting-api-key-masked');
         if (modelCfg.api_key_masked) {
@@ -2699,6 +2702,9 @@ async function openSettings() {
         const llmTempVal = llmModelCfg.temperature != null ? llmModelCfg.temperature : 0.2;
         document.getElementById('llm-temperature').value = llmTempVal;
         document.getElementById('llm-temperature-value').textContent = llmTempVal;
+
+        // LLM Reasoning effort
+        document.getElementById('llm-reasoning-effort').value = llmModelCfg.reasoning_effort || '';
 
         // Show LLM masked key
         const llmMaskedHint = document.getElementById('llm-api-key-masked');
@@ -2762,6 +2768,7 @@ async function saveSettings() {
 
     payload.model.multimodal = document.getElementById('setting-multimodal').checked;
     payload.model.temperature = parseFloat(document.getElementById('setting-temperature').value);
+    payload.model.reasoning_effort = document.getElementById('setting-reasoning-effort').value;
 
     // ── LLM model settings ──
     const llmApiKey = document.getElementById('llm-api-key').value.trim();
@@ -2786,6 +2793,7 @@ async function saveSettings() {
 
     payload.llm_model.multimodal = document.getElementById('llm-multimodal').checked;
     payload.llm_model.temperature = parseFloat(document.getElementById('llm-temperature').value);
+    payload.llm_model.reasoning_effort = document.getElementById('llm-reasoning-effort').value;
 
     // If LLM model has no name, clear it (unconfigured)
     if (!payload.llm_model.name) {

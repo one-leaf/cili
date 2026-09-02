@@ -69,6 +69,7 @@ class ModelConfig:
     max_context_tokens: int = 256000
     multimodal: bool = True  # Whether this model supports image input
     temperature: float = 0.2  # 0.1(古板) ~ 1.0(跳脱)
+    reasoning_effort: str = ""  # Reasoning effort for reasoning models: "low" | "medium" | "high" (empty = API default)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -82,6 +83,7 @@ class ModelConfig:
             max_context_tokens=int(data.get("max_context_tokens", 256000)),
             multimodal=bool(data.get("multimodal", True)),
             temperature=float(data.get("temperature", 0.2)),
+            reasoning_effort=data.get("reasoning_effort", ""),
         )
 
     def to_dict(self) -> dict:
@@ -95,6 +97,7 @@ class ModelConfig:
             "max_context_tokens": self.max_context_tokens,
             "multimodal": self.multimodal,
             "temperature": self.temperature,
+            "reasoning_effort": self.reasoning_effort,
         }
 
 

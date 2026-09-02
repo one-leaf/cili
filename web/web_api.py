@@ -1267,6 +1267,7 @@ class ModelConfigRequest(BaseModel):
     max_context_tokens: int | None = None
     multimodal: bool | None = None
     temperature: float | None = None
+    reasoning_effort: str | None = None
 
 
 class UpdateConfigRequest(BaseModel):

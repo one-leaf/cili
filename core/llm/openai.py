@@ -226,14 +226,19 @@ class OpenAIAdapter(Adapter):
             "messages": self._convert_messages(messages, system),
         }
 
-        # Reasoning effort for reasoning models (o1, o3, o4, o5)
-        model_lower = model.lower()
-        is_reasoning_model = any(
-            model_lower.startswith(prefix)
-            for prefix in ("o1", "o3", "o4", "o5")
-        )
-        if is_reasoning_model:
-            body["reasoning_effort"] = "medium"
+        # Reasoning effort for reasoning models
+        # Priority: config > auto-detect > none
+        reasoning_effort = self.config.reasoning_effort
+        if not reasoning_effort:
+            model_lower = model.lower()
+            is_reasoning_model = any(
+                model_lower.startswith(prefix)
+                for prefix in ("o1", "o3", "o4", "o5", "qwen3", "qwq", "deepseek-r1")
+            )
+            if is_reasoning_model:
+                reasoning_effort = "medium"
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
         else:
             if temperature is not None:
                 body["temperature"] = temperature
