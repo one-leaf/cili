@@ -17,7 +17,7 @@ import os
 from datetime import datetime
 
 from core.config import PROJECT_ROOT, get_user_profile_path
-from core.tools.shared.base import _VENV_DIR, _VENV_SCRIPTS
+from core.tools.shared.base import _GIT_BASH_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -460,13 +460,22 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
         "",
+        "## Shell Environment",
+        "",
+        "All shell commands run in **Git Bash** (MSYS2 environment).",
+        "",
+        "**Path format conversion**: Windows paths must be converted for bash:",
+        "- `E:\\path\\to\\file` → `/e/path/to/file`",
+        "- `C:\\Users\\name` → `/c/Users/name`",
+        "",
+        "**Example**: To run Python script at `D:\\scripts\\test.py`:",
+        "```bash",
+        "python /d/scripts/test.py",
+        "```",
+        "",
         "## Python Environment",
         "",
-        f"Python directory: `{_VENV_DIR}`",
-        f"Pip directory: `{_VENV_SCRIPTS}`",
-        "",
-        "The Python environment is automatically activated for both `python` tool and `bash` tool. "
-        "`python`, `pip`, and all pre-installed packages are directly available in bash without any setup.",
+        "`python` and `pip` are pre-configured in PATH, available directly in bash.",
         "",
         "## Memory",
         "",
@@ -537,11 +546,12 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         f"Workspace: `{workspace_uuid}`",
         f"Working Directory: `{cwd}`",
         f"Operating System: `{platform.system()} {platform.release()}`",
-        f"Python directory: `{_VENV_DIR}`",
-        f"Pip directory: `{_VENV_SCRIPTS}`",
+        "",
+        "**Shell**: Git Bash (MSYS2). Convert Windows paths: `E:\\path` → `/e/path`",
+        "",
+        "`python` and `pip` are pre-configured in PATH.",
         "",
         "**This directory is the CWD for all tool executions.** All relative paths resolve against this directory.",
-        "The Python environment is automatically activated in both `python` tool and `bash` tool.",
         "",
         f"**Current Date: {current_date}**",
         "",

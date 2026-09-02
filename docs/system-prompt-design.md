@@ -187,10 +187,15 @@ You are not managing the user's conversation — you are executing a specific ta
 Workspace directory (CWD): `{cwd}`
 This directory is the CWD for all tool executions.
 
+## Shell Environment
+All shell commands run in **Git Bash** (MSYS2 environment).
+
+**Path format conversion**: Windows paths must be converted for bash:
+- `E:\path\to\file` → `/e/path/to/file`
+- `C:\Users\name` → `/c/Users/name`
+
 ## Python Environment
-Python directory: `{_VENV_DIR}`
-Pip directory: `{_VENV_SCRIPTS}`
-...
+`python` and `pip` are pre-configured in PATH, available directly in bash.
 
 ## Memory
 Memory directory: `{memory_dir}`
@@ -219,8 +224,10 @@ Context received. Please confirm briefly and await my task.
 Workspace: `{workspace_uuid}`
 Working Directory: `{cwd}`
 Operating System: `{os_info}`
-Python directory: `{_VENV_DIR}`
-Pip directory: `{_VENV_SCRIPTS}`
+
+**Shell**: Git Bash (MSYS2). Convert Windows paths: `E:\path` → `/e/path`
+
+`python` and `pip` are pre-configured in PATH.
 
 **Current Date: {current_date}**
 
