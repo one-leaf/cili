@@ -245,8 +245,8 @@ function Install-Python {
         Start-BitsTransfer -Source $getPipUrl -Destination $getPipPath -DisplayName "Downloading get-pip.py" -ErrorAction Stop
 
         if (Test-Path $getPipPath) {
-            # 使用阿里云源安装 pip
-            $pipResult = & $pythonExe $getPipPath -i "https://mirrors.aliyun.com/pypi/simple/" --no-warn-script-location 2>&1
+            # 使用华为云源安装 pip
+            $pipResult = & $pythonExe $getPipPath -i "https://repo.huaweicloud.com/repository/pypi/simple/" --no-warn-script-location 2>&1
             if ($LASTEXITCODE -eq 0) {
                 Write-Status "pip installed successfully." "Green"
             } else {

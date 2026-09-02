@@ -429,7 +429,7 @@ Content-Type: application/json
     "name": "claude-haiku-4-5"
   },
   "system": {
-    "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/"
+    "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
   }
 }
 ```

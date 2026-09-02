@@ -354,16 +354,9 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="stati
 
 # ---------- Models ----------
 
-class QuoteData(BaseModel):
-    msg_index: int
-    role: str
-    text: str
-
-
 class SendMessageRequest(BaseModel):
     content: str
     images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
-    quote: QuoteData | None = None    # 引用消息数据
 
 
 class CreateSessionRequest(BaseModel):
@@ -1204,34 +1197,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             try:
                 # Build user_input: str or list[dict] for multimodal
                 user_input = request.content
-
-                # Build quote context for LLM if present
-                quote_context = ""
-                quote_meta = None
-                if request.quote:
-                    role_label = "用户" if request.quote.role == "user" else "AI"
-                    quote_context = (
-                        f"[引用{role_label}的消息]\n"
-                        f"> {request.quote.text}\n"
-                        f"[/引用]\n\n"
-                    )
-                    quote_meta = {
-                        "msg_index": request.quote.msg_index,
-                        "role": request.quote.role,
-                        "text": request.quote.text,
-                    }
-
-                # Prepend quote context to user content
-                if quote_context:
-                    if isinstance(user_input, str):
-                        user_input = quote_context + user_input
-                    else:
-                        # list[dict] — prepend to first text block
-                        user_input = [{"type": "text", "text": quote_context + request.content, "_valid": True}] + user_input[1:]
-
                 if request.images:
                     content_blocks: list[dict] = [
-                        {"type": "text", "text": request.content if not quote_context else quote_context + request.content, "_valid": True}
+                        {"type": "text", "text": request.content, "_valid": True}
                     ]
                     for img in request.images:
                         content_blocks.append({
@@ -1245,9 +1213,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                         })
                     user_input = content_blocks
 
-                # Record message index for quote metadata
-                user_msg_idx = len(agent.messages)
-
                 agent.run(
                     user_input=user_input,
                     on_text=on_text,
@@ -1256,12 +1221,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     on_tool_result=on_tool_result,
                     on_subagent_start=on_subagent_start,
                 )
-
-                # Persist quote metadata on the user message for UI rendering
-                if quote_meta and user_msg_idx < len(agent.messages):
-                    agent.messages[user_msg_idx]["_quote"] = quote_meta
-                    agent.session_manager._messages_dirty = True
-                    agent.session_manager.save()
             except Exception as e:
                 logger.error(f"RootAgent error: {e}")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)

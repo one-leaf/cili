@@ -115,7 +115,7 @@ pip install --only-binary=:all: <package>
 - pytest
 
 **镜像源**：
-- 默认：https://mirrors.aliyun.com/pypi/simple/
+- 默认：https://repo.huaweicloud.com/repository/pypi/simple/
 - 可在 data/cili/setting.json 中配置
 
 ## 环境变量

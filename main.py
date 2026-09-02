@@ -436,9 +436,9 @@ def _install_deps_python() -> bool:
             print(f"[setup] Error: pip download failed")
             return False
 
-        # 使用阿里云源安装 pip
+        # 使用华为云源安装 pip
         result = subprocess.run(
-            [embed_python, get_pip_path, "-i", "https://mirrors.aliyun.com/pypi/simple/", "--no-warn-script-location"],
+            [embed_python, get_pip_path, "-i", "https://repo.huaweicloud.com/repository/pypi/simple/", "--no-warn-script-location"],
             capture_output=True,
             text=True,
             timeout=120,

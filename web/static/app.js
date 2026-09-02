@@ -7,7 +7,6 @@ let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
 let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
-let pendingQuote = null;  // { msgIndex: number, role: string, text: string, timestamp?: string }
 
 // ── localStorage 位置持久化 ──
 const POSITION_KEY = 'cili_last_position';
@@ -1247,21 +1246,6 @@ function renderMessages(messages) {
             const combinedText = textParts.join('\n');
             if (combinedText || imageParts.length > 0) {
                 const div = addMessage('user', combinedText);
-                div.dataset.msgIndex = idx;
-
-                // Render quote block if present
-                if (msg._quote) {
-                    const contentDiv = div.querySelector('.message-content');
-                    const quoteBlock = document.createElement('div');
-                    quoteBlock.className = 'message-quote-block';
-                    const roleLabel = msg._quote.role === 'user' ? '你的消息' : 'AI 回复';
-                    quoteBlock.innerHTML = `
-                        <div class="quote-role">${escapeHtml(roleLabel)}</div>
-                        <div class="quote-text">${escapeHtml(msg._quote.text || '')}</div>
-                    `;
-                    contentDiv.insertBefore(quoteBlock, contentDiv.firstChild);
-                }
-
                 if (imageParts.length > 0) {
                     const contentDiv = div.querySelector('.message-content');
                     const imgContainer = document.createElement('div');
@@ -1302,13 +1286,11 @@ function renderMessages(messages) {
 
         blocks.forEach(block => {
             if (block.kind === 'text' && block.text) {
-                const div = addMessage(role, block.text);
-                div.dataset.msgIndex = idx;
+                addMessage(role, block.text);
             } else if (block.kind === 'image') {
                 // Image blocks in non-user messages (shouldn't normally happen)
                 // Render as an assistant message with the image
                 const div = addMessage('assistant', '');
-                div.dataset.msgIndex = idx;
                 const contentDiv = div.querySelector('.message-content');
                 const imgEl = document.createElement('img');
                 imgEl.src = `data:${block.media_type};base64,${block.data}`;
@@ -1317,7 +1299,6 @@ function renderMessages(messages) {
             } else if (block.kind === 'thinking' && block.text) {
                 // Render thinking block
                 const div = addMessage('assistant', '');
-                div.dataset.msgIndex = idx;
                 div.classList.add('thinking');
                 const contentDiv = div.querySelector('.message-content');
                 const thinkTitle = document.createElement('div');
@@ -1330,7 +1311,6 @@ function renderMessages(messages) {
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
                 const div = addMessage('assistant', '');
-                div.dataset.msgIndex = idx;
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
                 if (block.name === 'ask_user' && !block._answered) {
@@ -2141,15 +2121,10 @@ async function sendMessage() {
         media_type: img.media_type,
     })) : null;
 
-    // Capture quote before clearing
-    const quoteToSend = pendingQuote;
-
     // Clear input and change button to stop
     chatInput.value = '';
     pendingImages = [];
-    pendingQuote = null;
     renderImagePreviews();
-    renderQuotePreview();
     isSending = true;
     sendBtn.textContent = '停止';
     sendBtn.classList.remove('btn-primary');
@@ -2157,17 +2132,6 @@ async function sendMessage() {
 
     // Add user message to UI (with images if any)
     const userDiv = addMessage('user', message);
-    if (quoteToSend) {
-        const contentDiv = userDiv.querySelector('.message-content');
-        const quoteBlock = document.createElement('div');
-        quoteBlock.className = 'message-quote-block';
-        const roleLabel = quoteToSend.role === 'user' ? '你的消息' : 'AI 回复';
-        quoteBlock.innerHTML = `
-            <div class="quote-role">${escapeHtml(roleLabel)}</div>
-            <div class="quote-text">${escapeHtml(quoteToSend.text || '')}</div>
-        `;
-        contentDiv.insertBefore(quoteBlock, contentDiv.firstChild);
-    }
     if (imagesToSend) {
         const contentDiv = userDiv.querySelector('.message-content');
         const imgContainer = document.createElement('div');
@@ -2203,13 +2167,6 @@ async function sendMessage() {
         const requestBody = { content: message };
         if (imagesToSend) {
             requestBody.images = imagesToSend;
-        }
-        if (quoteToSend) {
-            requestBody.quote = {
-                msg_index: quoteToSend.msgIndex,
-                role: quoteToSend.role,
-                text: quoteToSend.text,
-            };
         }
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/messages`,
@@ -2389,7 +2346,11 @@ async function sendMessage() {
 
 /**
  * Create a quote button for a message element.
- * The button reads data-msg-index from the message div to identify which message to quote.
+ * Clicking it inserts the message text (truncated to 500 chars) into the
+ * input box as a quoted block, e.g.:
+ *   [引用AI的消息]
+ *   > ...
+ * [/引用]
  */
 function createQuoteButton(messageDiv) {
     const quoteBtn = document.createElement('button');
@@ -2397,56 +2358,29 @@ function createQuoteButton(messageDiv) {
     quoteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
     quoteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const msgIndex = parseInt(messageDiv.dataset.msgIndex, 10);
-        if (isNaN(msgIndex)) return;
 
         // Extract text content from the message
         const contentDiv = messageDiv.querySelector('.message-content');
-        const text = contentDiv ? contentDiv.textContent.trim() : '';
-        if (!text) return;
+        const raw = contentDiv ? contentDiv.textContent.trim() : '';
+        if (!raw) return;
 
-        const role = messageDiv.classList.contains('user') ? 'user' : 'assistant';
+        const isUser = messageDiv.classList.contains('user');
+        const roleLabel = isUser ? '用户' : 'AI';
+        const text = raw.length > 500 ? raw.substring(0, 500) + '...' : raw;
 
-        pendingQuote = {
-            msgIndex: msgIndex,
-            role: role,
-            text: text.length > 500 ? text.substring(0, 500) + '...' : text,
-        };
-        renderQuotePreview();
+        const quoteText = `[引用${roleLabel}的消息]\n> ${text.replace(/\n/g, '\n> ')}\n[/引用]\n\n`;
+
+        // Insert at cursor position if input is focused, else append
+        const start = chatInput.selectionStart ?? chatInput.value.length;
+        const end = chatInput.selectionEnd ?? chatInput.value.length;
+        chatInput.value = chatInput.value.substring(0, start) + quoteText + chatInput.value.substring(end);
         chatInput.focus();
+
+        // Move cursor to end of inserted text
+        const newPos = start + quoteText.length;
+        chatInput.setSelectionRange(newPos, newPos);
     });
     return quoteBtn;
-}
-
-/**
- * Render the quote preview card above the input area.
- */
-function renderQuotePreview() {
-    const area = document.getElementById('quote-preview-area');
-    if (!pendingQuote) {
-        area.classList.remove('visible');
-        area.innerHTML = '';
-        return;
-    }
-
-    const roleLabel = pendingQuote.role === 'user' ? '你的消息' : 'AI 回复';
-    area.innerHTML = `
-        <div class="quote-preview-card">
-            <div class="quote-preview-label">引用 ${roleLabel}</div>
-            <div class="quote-preview-text">${escapeHtml(pendingQuote.text)}</div>
-            <button class="quote-preview-remove" title="取消引用">&times;</button>
-        </div>
-    `;
-    area.classList.add('visible');
-
-    area.querySelector('.quote-preview-remove').addEventListener('click', () => {
-        clearQuote();
-    });
-}
-
-function clearQuote() {
-    pendingQuote = null;
-    renderQuotePreview();
 }
 
 // Add message to UI
