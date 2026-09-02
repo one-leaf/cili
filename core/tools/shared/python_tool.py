@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _VENV_SCRIPTS
+from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
 
 
 class PythonTool(Tool):
@@ -175,7 +175,7 @@ class PythonTool(Tool):
 
     def _execute_file(self, file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
         """Execute a Python script file."""
-        python_exe = os.path.join(_VENV_SCRIPTS, "python.exe")
+        python_exe = os.path.join(_VENV_DIR, "python.exe")
         path = self._resolve_path(file)
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {file}", error=True)
@@ -190,7 +190,7 @@ class PythonTool(Tool):
 
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
         """Execute Python code (no LLM injection — main agent is the LLM itself)."""
-        python_exe = os.path.join(_VENV_SCRIPTS, "python.exe")
+        python_exe = os.path.join(_VENV_DIR, "python.exe")
 
         if run_in_background:
             # For background execution, write code to temp file and execute
@@ -257,7 +257,7 @@ class PythonTool(Tool):
 
     def _check_packages(self, packages: str) -> ToolResult:
         """Check if packages are installed and show their versions."""
-        python_exe = os.path.join(_VENV_SCRIPTS, "python.exe")
+        python_exe = os.path.join(_VENV_DIR, "python.exe")
         pkg_list = packages.split()
         check_names = ', '.join(f'"{p}"' for p in pkg_list)
         code = f"""
@@ -275,7 +275,7 @@ for name in targets:
 
     def _show_info(self) -> ToolResult:
         """Show Python environment information."""
-        python_exe = os.path.join(_VENV_SCRIPTS, "python.exe")
+        python_exe = os.path.join(_VENV_DIR, "python.exe")
 
         # Get Python version and installed packages
         code = """

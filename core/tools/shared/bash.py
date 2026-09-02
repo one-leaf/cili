@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_SCRIPTS
+from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS
 
 
 class BashTool(Tool):
@@ -136,9 +136,15 @@ class BashTool(Tool):
         if run_in_background:
             # Build environment prefix for venv
             env_prefix = ""
-            if _VENV_SCRIPTS:
-                bash_venv = _VENV_SCRIPTS.replace("\\", "/")
-                env_prefix = f"export PATH=\"{bash_venv}:$PATH\""
+            if _VENV_DIR or _VENV_SCRIPTS:
+                # Add both _VENV_DIR (python.exe) and _VENV_SCRIPTS (pip.exe) to PATH
+                paths = []
+                if _VENV_DIR:
+                    paths.append(_VENV_DIR.replace("\\", "/"))
+                if _VENV_SCRIPTS:
+                    paths.append(_VENV_SCRIPTS.replace("\\", "/"))
+                path_str = ":".join(paths)
+                env_prefix = f"export PATH=\"{path_str}:$PATH\""
 
             return self._start_background_task(
                 command,

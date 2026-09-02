@@ -450,11 +450,16 @@ class Tool:
         proc = None
         try:
             # Build PATH prefix for the command
-            venv_scripts = _VENV_SCRIPTS
-            if venv_scripts:
-                # Convert Windows path to Git Bash format for PATH
-                bash_venv = venv_scripts.replace("\\", "/")
-                full_command = f"export PATH=\"{bash_venv}:$PATH\" && {command}"
+            # Add both _VENV_DIR (python.exe) and _VENV_SCRIPTS (pip.exe) to PATH
+            paths = []
+            if _VENV_DIR:
+                paths.append(_VENV_DIR.replace("\\", "/"))
+            if _VENV_SCRIPTS:
+                paths.append(_VENV_SCRIPTS.replace("\\", "/"))
+
+            if paths:
+                path_str = ":".join(paths)
+                full_command = f"export PATH=\"{path_str}:$PATH\" && {command}"
             else:
                 full_command = command
 
