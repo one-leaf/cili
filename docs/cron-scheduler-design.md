@@ -165,7 +165,6 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
     "expr": "0 2 * * *"
   },
   "config": {
-    "max_iterations": 50,
     "max_executions": 9999
   },
   "content": {
@@ -189,7 +188,6 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 | `schedule.minutes` | int | interval | 执行间隔（分钟） |
 | `schedule.expr` | string | cron | 标准 5 字段 cron 表达式 |
 | `config` | object | 否 | 额外配置 |
-| `config.max_iterations` | int | 否 | SubAgent 最大迭代次数（默认 30） |
 | `config.max_executions` | int | 否 | 最大执行次数（1-9999，默认 9999） |
 
 ### 4.2 调度类型
@@ -281,7 +279,6 @@ def get_tasks() -> list[dict]:
     "description": "查询深圳天气",
     "enabled": true,
     "schedule": {"type": "interval", "minutes": 10},
-    "config": {"max_iterations": 30},
     "content": {"task": "...", "plan": []}
   }
 ]
@@ -387,7 +384,7 @@ CronTask.execute():
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
 │   │   ├─ 加载 SessionManager，添加 user message + assistant message（tool_use: subagent）
 │   │   ├─ 生成 exec_id，创建 SubAgent 日志目录
-│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id)
+│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, session_dir, exec_id)
 │   │   ├─ subagent.run() — 非流式自主执行
 │   │   ├─ 添加 user message（tool_result: 含 exec_id）+ assistant message（摘要）
 │   │   ├─ 保存 SubAgent 执行日志

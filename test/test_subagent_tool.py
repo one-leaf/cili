@@ -31,39 +31,6 @@ class TestSubAgentToolExecute:
         result = subagent_tool.execute(task="   \n  ")
         assert result.error is True
 
-    def test_max_iterations_capped_at_100(self, subagent_tool):
-        """max_iterations is capped at 100."""
-        mock_subagent = MagicMock()
-        mock_subagent.run.return_value = {
-            "status": "completed",
-            "summary": "done",
-            "iterations": 5,
-            "usage": {},
-        }
-        mock_subagent.close.return_value = None
-
-        with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
-            result = subagent_tool.execute(task="test", max_iterations=200)
-
-        # Should not raise; max_iterations capped internally
-        assert result.error is False
-
-    def test_max_iterations_minimum_1(self, subagent_tool):
-        """max_iterations is at least 1."""
-        mock_subagent = MagicMock()
-        mock_subagent.run.return_value = {
-            "status": "completed",
-            "summary": "done",
-            "iterations": 1,
-            "usage": {},
-        }
-        mock_subagent.close.return_value = None
-
-        with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
-            result = subagent_tool.execute(task="test", max_iterations=0)
-
-        assert result.error is False
-
     def test_returns_placeholder_and_starts_thread(self, subagent_tool):
         """Returns placeholder ToolResult and starts background thread."""
         mock_subagent = MagicMock()
@@ -261,12 +228,7 @@ class TestSubAgentToolParameters:
         tool = SubAgentTool()
         props = tool.parameters["properties"]
         assert "plan" in props
-        assert "max_iterations" in props
         assert "run_in_background" in props
         assert "read_task" in props
         assert "kill_task" in props
         assert "list_tasks" in props
-
-    def test_max_iterations_default(self):
-        tool = SubAgentTool()
-        assert tool.parameters["properties"]["max_iterations"]["default"] == 50

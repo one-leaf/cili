@@ -50,8 +50,7 @@ class SubAgentTool(Tool):
         "- `list_tasks()`: List all background tasks (shell + SubAgent)\n\n"
         "## Input:\n"
         "- **task**: Clear, self-contained description of what to accomplish. Include context, constraints, and expected output format.\n"
-        "- **plan**: Ordered list of concrete, actionable steps. Include file paths and verification criteria.\n"
-        "- **max_iterations**: Maximum tool-use iterations (default 50, max 100)\n\n"
+        "- **plan**: Ordered list of concrete, actionable steps. Include file paths and verification criteria.\n\n"
         "## Output:\n"
         "- Synchronous: Returns JSON: {\"status\": \"completed\"/\"error\"/\"timeout\"/\"failed\", \"summary\": \"...\", \"iterations\": N}\n"
         "- Background: Returns task_id for later status checks\n\n"
@@ -66,7 +65,7 @@ class SubAgentTool(Tool):
         self.stop_check = None  # Set by RootAgent after tool creation
         self.on_subagent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_subagent_complete = None  # Callback(exec_id) fired when sub-agent finishes
-        # Pending synchronous subagents: exec_id -> {thread, event, result, exec_id, subagent, task, max_iterations}
+        # Pending synchronous subagents: exec_id -> {thread, event, result, exec_id, subagent, task}
         self._pending_subagents: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
@@ -93,11 +92,6 @@ class SubAgentTool(Tool):
                         "Each step should be actionable and self-explanatory. "
                         "Include file paths, expected outputs, or verification criteria where relevant."
                     ),
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum tool-use iterations (default 50, max 100).",
-                    "default": 50,
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -129,7 +123,6 @@ class SubAgentTool(Tool):
         self,
         task: str | None = None,
         plan: list[str] | None = None,
-        max_iterations: int = 50,
         run_in_background: bool | None = None,
         read_task: str | None = None,
         kill_task: str | None = None,
@@ -161,9 +154,6 @@ class SubAgentTool(Tool):
         if not task or not task.strip():
             return ToolResult("Error: 'task' is required and cannot be empty", error=True)
 
-        # Cap max_iterations at 100
-        max_iterations = min(max(1, max_iterations), 100)
-
         # Deferred import to avoid circular dependency
         from core.sub_agent import SubAgent
 
@@ -192,7 +182,6 @@ class SubAgentTool(Tool):
             plan=plan,
             workspace_uuid=self.workspace_uuid,
             cwd=self.cwd,
-            max_iterations=max_iterations,
             stop_check=self.stop_check,
             session_dir=exec_dir,
             exec_id=exec_id,
@@ -231,7 +220,6 @@ class SubAgentTool(Tool):
                                 "duration_seconds": subagent._elapsed_seconds(),
                                 "status": final_status,
                                 "iterations": result.get("iterations", 0),
-                                "max_iterations": max_iterations,
                             },
                             summary=result.get("summary", ""),
                         )

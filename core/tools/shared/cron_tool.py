@@ -168,11 +168,6 @@ class CronTool(Tool):
                     "items": {"type": "string"},
                     "description": "Execution steps (optional, for create/update).",
                 },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum iterations (default: 30, for create/update).",
-                    "default": 30,
-                },
                 "workspace_uuid": {
                     "type": "string",
                     "description": (
@@ -213,7 +208,6 @@ class CronTool(Tool):
         schedule: dict | None = None,
         task: str | None = None,
         plan: list[str] | None = None,
-        max_iterations: int | None = None,
         workspace_uuid: str | None = None,
         one_time: bool | None = None,
         max_executions: int | None = None,
@@ -235,7 +229,6 @@ class CronTool(Tool):
             # create 使用默认值
             return self._create(
                 name, description, schedule, task, plan,
-                max_iterations if max_iterations is not None else 30,
                 workspace_uuid,
                 one_time if one_time is not None else True,
                 max_executions if max_executions is not None else 9999,
@@ -243,7 +236,7 @@ class CronTool(Tool):
         elif action == "list":
             return self._list()
         elif action == "update":
-            return self._update(name, description, schedule, task, plan, max_iterations, workspace_uuid, one_time, max_executions)
+            return self._update(name, description, schedule, task, plan, workspace_uuid, one_time, max_executions)
         elif action == "delete":
             return self._delete(name)
         elif action == "run":
@@ -262,7 +255,6 @@ class CronTool(Tool):
         schedule: dict | None,
         task: str | None,
         plan: list[str] | None,
-        max_iterations: int,
         workspace_uuid: str | None = None,
         one_time: bool = True,
         max_executions: int = 9999,
@@ -313,7 +305,6 @@ class CronTool(Tool):
             "schedule": schedule,
             "one_time": one_time,
             "config": {
-                "max_iterations": max_iterations,
                 "max_executions": max_executions,
             },
             "content": {
@@ -379,7 +370,6 @@ class CronTool(Tool):
         schedule: dict | None,
         task: str | None,
         plan: list[str] | None,
-        max_iterations: int | None,
         workspace_uuid: str | None,
         one_time: bool | None,
         max_executions: int | None,
@@ -442,12 +432,6 @@ class CronTool(Tool):
                 task_config["content"] = {}
             task_config["content"]["plan"] = plan
             updated_fields.append("plan")
-
-        if max_iterations is not None:
-            if "config" not in task_config:
-                task_config["config"] = {}
-            task_config["config"]["max_iterations"] = max_iterations
-            updated_fields.append("max_iterations")
 
         if workspace_uuid is not None:
             task_config["workspace_uuid"] = workspace_uuid

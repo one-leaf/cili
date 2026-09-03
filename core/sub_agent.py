@@ -53,7 +53,6 @@ class SubAgent(BaseAgent):
         plan: list[str] | None = None,
         workspace_uuid: str = "",
         cwd: str = "",
-        max_iterations: int = 200,
         max_consecutive_failures: int = 5,
         session_dir: Path | None = None,
         stop_check: Callable[[], bool] | None = None,
@@ -66,7 +65,6 @@ class SubAgent(BaseAgent):
             plan: Optional execution plan (list of steps)
             workspace_uuid: Workspace UUID
             cwd: Working directory
-            max_iterations: Maximum iterations
             max_consecutive_failures: Maximum consecutive tool failures before abort
             session_dir: Directory for saving messages
             stop_check: Callable that returns True when parent stopped
@@ -86,7 +84,7 @@ class SubAgent(BaseAgent):
             cwd=cwd or os.getcwd(),
             session_dir=session_dir,
             stop_check=stop_check,
-            max_iterations=max_iterations,
+            max_iterations=200,  # Fixed value
         )
 
         self._session_id = exec_id

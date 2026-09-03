@@ -122,7 +122,7 @@ class CronTask:
         self.description: str = config.get("description", "")
         self.enabled: bool = config.get("enabled", True)
         self.schedule: dict = config["schedule"]  # {"type": "interval", "minutes": 60}
-        self.config: dict = config.get("config", {})  # Extra config (max_iterations, etc.)
+        self.config: dict = config.get("config", {})  # Extra config (max_executions, etc.)
         self.workspace_uuid: str = config.get("workspace_uuid", "")  # Empty = System workspace
         self.one_time: bool = config.get("one_time", False)  # Delete after first execution
 
@@ -336,9 +336,6 @@ class CronTask:
         # 4. 构造任务信息
         task_desc = task_item.get("task", "")
         plan = task_item.get("plan", [])
-        # 不主动限制 max_iterations，使用 SubAgent 的默认值（200）
-        # 除非用户在任务配置中明确指定
-        max_iterations = self.config.get("max_iterations", 200)
 
         # 5. 生成 exec_id 和 SubAgent 日志目录
         exec_id = session_mgr._generate_exec_id()
@@ -371,7 +368,6 @@ class CronTask:
             plan=plan,
             workspace_uuid=ws_uuid,
             cwd=ws_dir,
-            max_iterations=max_iterations,
             session_dir=exec_dir,
             exec_id=exec_id,
         )
@@ -420,7 +416,6 @@ class CronTask:
                     "duration_seconds": (ended_at - started_at).total_seconds(),
                     "status": status,
                     "iterations": iterations,
-                    "max_iterations": max_iterations,
                     "message_count": len(subagent.messages),
                 },
                 summary=summary,

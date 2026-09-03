@@ -259,7 +259,6 @@ class SubAgent(BaseAgent):
         plan: list[str] | None = None,
         workspace_uuid: str = "",
         cwd: str = "",
-        max_iterations: int = 20,
         session_dir: Path | None = None,  # 外部传入保存路径
         max_consecutive_failures: int = 5,
     ):
@@ -319,8 +318,7 @@ SubAgent session_dir/index.json:
       "ended_at": "2026-08-25 10:05:00",
       "duration_seconds": 300,
       "status": "completed",
-      "iterations": 15,
-      "max_iterations": 20
+      "iterations": 15
     }
   }
 ```

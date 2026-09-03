@@ -22,13 +22,13 @@ class TestCronTask:
             "enabled": True,
             "schedule": {"type": "interval", "minutes": 30},
             "content": "test.py",
-            "config": {"max_iterations": 10},
+            "config": {"max_executions": 10},
         }
         task = CronTask(config)
         assert task.name == "test-task"
         assert task.description == "测试任务"
         assert task.enabled is True
-        assert task.config == {"max_iterations": 10}
+        assert task.config == {"max_executions": 10}
         assert task._next_run is None
         assert task._last_run is None
         assert task._run_count == 0
@@ -544,7 +544,6 @@ class TestExtractUserInfoConfig:
         assert config["enabled"] is True
         assert config["schedule"]["type"] == "cron"
         assert config["schedule"]["expr"] == "0 2 * * *"
-        assert config.get("config", {}).get("max_iterations", 0) > 0
 
         # 验证 content 为 dict，包含 task 和 plan
         content = config["content"]

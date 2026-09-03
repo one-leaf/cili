@@ -92,9 +92,6 @@ deadline 前会抱怨但执行力强
     "type": "cron",
     "expr": "0 2 * * *"
   },
-  "config": {
-    "max_iterations": 50
-  },
   "content": {
     "task": "扫描 data/agents/ 下的所有工作区（排除 system）...",
     "plan": [

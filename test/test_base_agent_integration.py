@@ -236,7 +236,7 @@ class TestSubAgentIntegration:
     同时覆盖 anthropic / openai 两种协议。
     """
 
-    def _run_subagent(self, task, test_workspace_dir, protocol, max_iterations=5, exec_id=None):
+    def _run_subagent(self, task, test_workspace_dir, protocol, exec_id=None):
         """创建并运行 SubAgent（mock load_config 注入 DGX 配置）。"""
         from core.sub_agent import SubAgent
 
@@ -247,7 +247,6 @@ class TestSubAgentIntegration:
         kwargs = {
             "task": task,
             "cwd": str(test_workspace_dir),
-            "max_iterations": max_iterations,
             "session_dir": session_dir,
         }
         if exec_id:
@@ -309,7 +308,6 @@ class TestSubAgentIntegration:
             subagent = SubAgent(
                 task="Run 'echo Cron Test' and report the output.",
                 cwd=str(test_workspace_dir),
-                max_iterations=3,
                 session_dir=session_dir,
                 exec_id=exec_id,
             )

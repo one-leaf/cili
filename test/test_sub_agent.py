@@ -45,7 +45,6 @@ class TestSubAgentConstruction:
             agent = SubAgent(
                 task="complex task",
                 plan=["step 1", "step 2"],
-                max_iterations=100,
                 max_consecutive_failures=10,
                 workspace_uuid="test-ws",
                 cwd="/tmp",
@@ -53,7 +52,7 @@ class TestSubAgentConstruction:
 
             assert agent.task == "complex task"
             assert agent.plan == ["step 1", "step 2"]
-            assert agent.max_iterations == 100
+            assert agent.max_iterations == 200  # fixed value
             assert agent.max_consecutive_failures == 10
             assert agent.workspace_uuid == "test-ws"
             assert agent.cwd == "/tmp"

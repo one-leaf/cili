@@ -590,8 +590,7 @@ loop(action="status", source_file="data/files.txt")
 # 同步模式（阻塞直到完成）
 subagent(
     task="Read input.txt, translate to Chinese, write to output.txt",
-    plan=["Read input.txt", "Translate content", "Write result"],
-    max_iterations=50
+    plan=["Read input.txt", "Translate content", "Write result"]
 )
 
 # 后台模式（立即返回 task_id）
@@ -613,7 +612,6 @@ subagent(list_tasks=True)
 **参数**：
 - `task`: 任务目标描述
 - `plan`: 执行计划（有序步骤列表）
-- `max_iterations`: 最大迭代次数（默认 50，最大 100）
 - `run_in_background`: 后台执行模式（立即返回 task_id）
 - `read_task`: 读取后台 SubAgent 状态
 - `kill_task`: 终止后台 SubAgent

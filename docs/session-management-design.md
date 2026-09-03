@@ -181,8 +181,7 @@ SubAgent 执行日志独立存储在子目录中：
     "ended_at": "2026-08-25 10:32:00",
     "duration_seconds": 120,
     "status": "completed",
-    "iterations": 5,
-    "max_iterations": 50
+    "iterations": 5
   },
   "messages": [
     // SubAgent 的完整消息历史
@@ -415,8 +414,7 @@ session.save_subagent_log(
         "ended_at": "2026-08-25 10:32:00",
         "duration_seconds": 120,
         "status": "completed",
-        "iterations": 5,
-        "max_iterations": 50
+        "iterations": 5
     },
     summary="已完成性能优化"
 )
