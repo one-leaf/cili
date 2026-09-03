@@ -630,18 +630,22 @@ class Tool:
                 stdin=subprocess.PIPE if stdin else None,
             )
 
-            # 在独立线程中逐行读取 stdout（主线程用 queue.get(timeout) 实现超时控制）
-            stdout_lines: list[str] = []
-            line_queue: queue.Queue[str | None] = queue.Queue()
+            # 在独立线程中按块读取 stdout（主线程用 queue.get(timeout) 实现超时控制）
+            chunk_queue: queue.Queue[str | None] = queue.Queue()
 
             def _reader_thread():
                 try:
-                    for line in proc.stdout:
-                        line_queue.put(line)
+                    # 使用 read(1) 逐字符读取，确保实时流式显示
+                    # 这比 read(1024) 更能保证实时性，即使输出没有换行符
+                    while True:
+                        char = proc.stdout.read(1)
+                        if not char:
+                            break
+                        chunk_queue.put(char)
                 except Exception:
                     pass
                 finally:
-                    line_queue.put(None)  # sentinel: EOF
+                    chunk_queue.put(None)  # sentinel: EOF
 
             reader_thread = threading.Thread(target=_reader_thread, daemon=True)
             reader_thread.start()
@@ -654,12 +658,12 @@ class Tool:
                 except Exception:
                     pass
 
-            # 逐行收集输出，同时写入流文件
+            # 收集输出，同时写入流文件
             output_parts: list[str] = []
             start_time = time.monotonic()
             timed_out = False
 
-            # 打开流文件（如有）：append 模式，UTF-8，逐行写入+flush
+            # 打开流文件（如有）：append 模式，UTF-8，逐块写入+flush
             f_out = None
             if output_file:
                 try:
@@ -670,7 +674,7 @@ class Tool:
             try:
                 while True:
                     try:
-                        line = line_queue.get(timeout=0.5)
+                        chunk = chunk_queue.get(timeout=0.5)
                     except queue.Empty:
                         elapsed = time.monotonic() - start_time
                         if elapsed > timeout:
@@ -678,12 +682,12 @@ class Tool:
                             self._kill_process_tree(proc)
                             break
                         continue
-                    if line is None:
+                    if chunk is None:
                         break  # EOF
-                    output_parts.append(line)
+                    output_parts.append(chunk)
                     if f_out:
                         try:
-                            f_out.write(line)
+                            f_out.write(chunk)
                             f_out.flush()
                         except Exception:
                             pass
