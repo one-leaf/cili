@@ -56,8 +56,8 @@ LLMClient (client.py)
     mime_type: str = ""
 
 @dataclass ToolResultBlock:
-    tool_call_id: str = ""
-    content: str = ""
+    tool_use_id: str = ""
+    content: str | list[dict] = ""    # str 纯文本，list[dict] 多模态（text + image blocks）
     is_error: bool = False
     # SubAgent 扩展字段
     exec_id: str = ""
@@ -89,7 +89,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 ### UsageData
 
 ```python
-@dataclass(frozen=True) UsageData:
+@dataclass UsageData:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -98,6 +98,13 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 
 ### StreamChunk — 统一流式协议
 
+```python
+@dataclass StreamChunk:
+    type: str  # chunk 类型
+    index: int = 0  # 块索引
+    data: dict[str, Any] = field(default_factory=dict)
+```
+
 8 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
 
 | type | data 字段 | 说明 |
@@ -105,7 +112,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 | `block_start` | `block_type` | 新内容块开始 |
 | `text_delta` | `text` | 文本内容增量 |
 | `reasoning_delta` | `text` | 推理内容增量 |
-| `signature_delta` | `signature` | 思考块签名增量（Anthropic 多轮重放） |
+| `signature_delta` | `signature` | 思考块签名（赋值替换，非累积；Anthropic 多轮重放） |
 | `tool_call_delta` | `id?`, `name?`, `arguments?` | 工具调用增量 |
 | `block_end` | — | 内容块结束 |
 | `usage` | `usage: UsageData` | Token 用量更新 |
@@ -118,7 +125,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
     content: list[ContentBlock]
     stop_reason: str = ""
     usage: UsageData = UsageData()
-    headers: dict = {}
+    headers: dict[str, str] = field(default_factory=dict)
 
     def get_text(self) -> str
     def get_tool_calls(self) -> list[ToolCallBlock]
@@ -145,16 +152,16 @@ class Adapter(ABC):
 ### AnthropicAdapter
 
 - **API**: `/v1/messages`，`x-api-key` 认证
-- **工具调用**: 内部 `tool_call` ↔ API `tool_use`（`arguments` str ↔ `input` dict）
+- **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
 - **推理内容**: `thinking` block with `signature`
-- **扩展思考**: 非流式请求自动启用
+- **扩展思考**: 非流式请求自动启用，`budget_tokens` 按 `reasoning_effort` 映射：low→1024, medium→4096, high→10000
 
 ### OpenAIAdapter
 
 - **API**: `/v1/chat/completions`，`Bearer` 认证
 - **工具调用**: 内部 `tool_call` ↔ API `function` calling（`arguments` 保持 str）
 - **消息转换**: system 消息前置，tool_result → role=tool 消息
-- **推理模型**: o1/o3/o4/o5 自动设置 `reasoning_effort`
+- **推理模型**: o1/o3/o4/o5/qwen3/qwq/deepseek-r1 自动设置 `reasoning_effort`
 
 ---
 
@@ -208,7 +215,7 @@ response = self._call_llm(streaming=True, ...)
 
 # 2. 存储 assistant 消息（转为 dict）
 self.add_message("assistant", response.content_as_dicts())
-# → {"type": "tool_call", "id": "...", "name": "...", "arguments": "{...}"}
+# → {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
 
 # 3. 工具执行时解析 JSON
 for block in response.get_tool_calls():
@@ -225,7 +232,7 @@ for block in response.get_tool_calls():
   "role": "assistant",
   "content": [
     {"type": "text", "text": "..."},
-    {"type": "tool_call", "id": "...", "name": "...", "arguments": "{\"key\": \"value\"}"}
+    {"type": "tool_use", "id": "...", "name": "...", "input": {"key": "value"}}
   ]
 }
 ```
@@ -241,7 +248,7 @@ for block in response.get_tool_calls():
 | 层面 | 格式 |
 |------|------|
 | 内部类型 | `ToolCallBlock(id, name, arguments: str)` |
-| 存储格式 | `{"type": "tool_call", "id", "name", "arguments": str}` |
+| 存储格式 | `{"type": "tool_use", "id", "name", "input": dict}` |
 | Anthropic API | `{"type": "tool_use", "id", "name", "input": dict}` |
 | OpenAI API | `{"type": "function", "function": {"name", "arguments": str}}` |
 
@@ -249,8 +256,8 @@ for block in response.get_tool_calls():
 
 | 层面 | 格式 |
 |------|------|
-| 内部类型 | `ToolResultBlock(tool_call_id, content, is_error)` |
-| 存储格式 | `{"type": "tool_result", "tool_call_id", "content", "is_error"}` |
+| 内部类型 | `ToolResultBlock(tool_use_id, content, is_error)` |
+| 存储格式 | `{"type": "tool_result", "tool_use_id", "content", "is_error"}` |
 | Anthropic API | 嵌在 user 消息中，`tool_use_id` |
 | OpenAI API | 独立 `role: "tool"` 消息，`tool_call_id` |
 
