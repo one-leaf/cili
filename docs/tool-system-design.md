@@ -68,10 +68,10 @@ core/tools/
 
 | Agent 类型 | 工具集 | 数量 |
 |-----------|--------|------|
-| RootAgent | shared + root | 20~21 个 |
-| SubAgent | shared + sub (SkillTool) | 18~19 个 |
+| RootAgent | shared + root | 21~22 个 |
+| SubAgent | shared + sub (SkillTool) | 19~20 个 |
 
-**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 17 而非 18）。
+**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 18 而非 19）。
 
 ### 2.2 工具注册表
 
@@ -128,8 +128,8 @@ class Tool:
     def coerce_input(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """根据 parameters schema 修正 LLM 传入的参数类型（如 str→int）。"""
 
-    def save_output_to_file(self, output: str) -> None:
-        """统一保存工具输出到外部文件（由 _execute_tool 在 finally 中调用）。"""
+    def save_output_to_file(self, result: ToolResult) -> None:
+        """统一保存工具输出到外部文件（由 agent 的 _execute_tool() 在工具执行后统一调用）。"""
 
     # 静态工具方法
     @staticmethod
@@ -143,12 +143,38 @@ class Tool:
 ### 3.2 ToolResult 数据类
 
 ```python
-@dataclass
 class ToolResult:
-    output: str                          # 工具输出文本
-    error: bool = False                  # 是否出错
-    content: list[dict] | None = None    # 多模态内容（如图片）
+    """Result of a tool execution.
+
+    New interface (recommended):
+        blocks: list[ContentBlock] - typed content blocks
+        is_error: bool - whether this is an error result
+        meta: dict - optional structured metadata for UI
+        completed: bool | None - placeholder lifecycle
+
+    Old interface (backward compat):
+        output: str - plain text output (converted to [TextBlock(text=output)])
+        error: bool - alias for is_error
+        content: list[dict] - legacy multimodal content (deprecated)
+        wait_for_user: bool - deprecated alias for completed=False
+    """
+
+    def __init__(
+        self,
+        output: str = "",
+        error: bool = False,
+        content: list[dict] | None = None,
+        # New interface
+        blocks: list | None = None,
+        is_error: bool = False,
+        meta: dict | None = None,
+        completed: bool | None = None,
+        # Deprecated alias (backward compat)
+        wait_for_user: bool = False,
+    ):
 ```
+
+`output`、`error`、`content`、`wait_for_user` 均为向后兼容属性（property），内部统一使用 `blocks`/`is_error`/`meta`/`completed` 存储。
 
 **多模态内容格式**：
 ```python
@@ -172,7 +198,7 @@ content = [
 
 | 方法 | 说明 |
 |------|------|
-| `save_output_to_file(output)` | 统一保存工具输出到外部文件（由 `_execute_tool` 在 finally 中调用） |
+| `save_output_to_file(result)` | 统一保存工具输出到外部文件（由 agent 的 `_execute_tool()` 在工具执行后统一调用） |
 
 **参数类型修正**：
 
@@ -201,7 +227,7 @@ content = [
 
 **_run_bash 特性**：
 - 自动将 Python 环境目录（`_VENV_DIR` 和 `_VENV_SCRIPTS`）添加到 PATH
-- 支持超时控制（默认 30s）
+- 支持超时控制（默认 120s）
 - **合并 stderr 到 stdout**（`stderr=subprocess.STDOUT`，确保实时输出可见）
 - 字符数截断（硬上限 30,000，默认 30,000；`BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限）
 - 行数截断（最多 2000 行）
@@ -224,7 +250,7 @@ content = [
 | grep | grep.py | 正则搜索（支持 glob/type 过滤） |
 | find | find.py | 文件查找（glob 模式） |
 | browser | browser.py | Chrome 自动化（Playwright + CDP） |
-| web_search | web_search.py | Bing 中国搜索（委托给 browser） |
+| web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 browser） |
 | memory | memory.py | 长期记忆（knowledge + skill） |
 | python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） |
@@ -273,7 +299,7 @@ LLM 响应
 │   ├─ tool.output_file = {session_dir}/{tool_use_id}.txt  # 设置输出文件
 │   ├─ input_data = tool.coerce_input(input_data)          # 修正参数类型
 │   ├─ result = tool.execute(**input_data) → ToolResult
-│   ├─ tool.save_output_to_file(result.output)             # 保存输出到外部文件
+│   ├─ tool.save_output_to_file(result)                  # 保存输出到外部文件
 │   └─ 构建 tool_result 元信息（不存内容）
 │       {"type": "tool_result", "tool_use_id": "toolu_123", "tool_name": "bash",
 │        "_file_size": 1234, "_truncated": false, "_output_path": "toolu_123.txt"}
@@ -307,7 +333,7 @@ tool_schemas = [tool.to_schema() for tool in tools]
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "..."},
-                "timeout": {"type": "integer", "default": 30}
+                "timeout": {"type": "integer", "default": 120}
             },
             "required": ["command"]
         }
@@ -324,7 +350,7 @@ tool_schemas = [tool.to_schema() for tool in tools]
 
 | 工具 | 硬上限 | 默认值 | 约束 |
 |------|--------|--------|------|
-| Bash | 30,000 字符 | 10,000 字符 | `BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限 |
+| Bash | 30,000 字符 | 30,000 字符 | `BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限 |
 | Read | 10,000 tokens | 2000 行 | 单行最长 2000 字符，offset/limit 分片读取，`CILI_FILE_READ_MAX_OUTPUT_TOKENS` 环境变量可调 |
 | Grep | 20,000 字符 | 250 匹配行 | 最多 100 个文件，超过自动截断 |
 | Find | 100 条路径 | 100 条 | 超过由 `head -n` 截断 |
@@ -433,8 +459,8 @@ subagent(kill_task="subagent-1")
 # 列出所有后台任务
 subagent(list_tasks=True)
 # → 2 background task(s):
-#   bg-1 (shell): sleep 100 [running]
-#   subagent-1 (subagent): Complex task... [running]
+#   bg-1: [shell][running] sleep 100
+#   subagent-1: [subagent][running] Complex task...
 ```
 
 ### 7.5 MessageBus 跨会话消息传递
@@ -547,8 +573,7 @@ loop(action="status", source_file="data/files.txt")
 `llm` 是共享工具（文件：`llm_tool.py`），用于单轮 LLM 调用（翻译、摘要、提取等）。**需要配置 LLM 模型**（`llm_model`），否则返回"不可用"。
 
 **输入方式**：
-- `input_text`: 直接文本输入
-- `input_file`: 从文件读取
+- `input_file`（必填）: 从文件读取
 
 **输出方式**：
 - 默认：返回文本结果
@@ -559,18 +584,15 @@ loop(action="status", source_file="data/files.txt")
 
 **示例**：
 ```json
-// 翻译
-{"input_text": "Translate to Chinese: Hello world"}
-
-// 文件处理
-{"input_file": "article.txt", "output_file": "article_zh.txt"}
+// 翻译文件
+{"prompt": "Translate to Chinese", "input_file": "article.txt", "output_file": "article_zh.txt"}
 
 // 结构化提取
-{"input_text": "Extract dates from: meeting on 2026-08-24", 
- "output_schema": {"type": "object", "properties": {"dates": {"type": "array"}}}}
+{"input_file": "logs.txt",
+ "output_schema": {"type": "object", "properties": {"errors": {"type": "array"}}}}
 ```
 
-**实现**：`shared/llm_tool.py`，使用 `chat()` 或 `chat_structured()` 调用 LLM API。
+**实现**：`shared/llm_tool.py`，使用 `chat()` 调用 LLM API。
 
 **与 subagent 工具的区别**：
 
@@ -651,18 +673,18 @@ subagent(list_tasks=True)
 
 **回调链路**：
 ```
-web_api.py 注入 on_subagent_start 回调
-  → RootAgent._on_subagent_start
-    → SubAgentTool.on_subagent_start
-      → 推送 SSE 事件
-        → 前端渲染卡片
+web_api.py 注入 on_subagent_start / on_subagent_complete 回调
+  → RootAgent._on_subagent_start / _on_subagent_complete
+    → SubAgentTool.on_subagent_start / on_subagent_complete
+      → 推送 SSE 事件（subagent_start / subagent_complete）
+        → 前端渲染卡片 / 更新状态
 ```
 
 **实现**：`core/sub_agent.py` 中的 `SubAgent` 类，`core/tools/root/subagent_tool.py` 提供工具接口。
 
 ### 8.3 temp — 临时文件/目录管理
 
-`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `data/agents/{uuid}/.cili/tmp/{session_id}/`（或 `workspace/.cili/tmp/{session_id}/` 当 workspace_uuid 为空时）。
+`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `data/tmp/{session_id}/`（由 `CILI_TMP` 环境变量控制，默认为 `data/tmp/`；workspace_uuid 为空时 fallback 到 `workspace/.cili/tmp/{session_id}/`）。
 
 **Actions**：
 
