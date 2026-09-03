@@ -226,7 +226,10 @@ class BaseAgent:
     def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
         """Execute a tool and return result metadata.
 
-        Tool output is saved to external file {session_dir}/{tool_use_id}.txt.
+        Tool output is saved to external file {session_dir}/{tool_use_id}.txt only when needed:
+        - Streaming tools (bash, python) for real-time frontend polling
+        - Large outputs (exceeds threshold, will be truncated)
+        - Multimodal content (images, saved as .json)
         Returns result dict with _meta containing internal fields.
         Uses Anthropic format: tool_use_id (not tool_call_id), is_error (not _is_error).
         """
@@ -243,21 +246,25 @@ class BaseAgent:
 
         logger.debug(f"[工具调用] {name}")
 
-        # Setup output file path (skip for ask_user/subagent - placeholder goes directly in content)
+        # Tools that need external file for streaming (frontend polling)
+        _STREAMING_TOOLS = {"bash", "python"}
+        # Placeholder tools: output goes directly in content, no external file
+        _PLACEHOLDER_TOOLS = {"ask_user", "subagent"}
+
+        # Setup output file path
         output_filename = f"{tool_use_id}.txt" if tool_use_id else ""
         output_file_path = ""
-        # Placeholder tools: output is temporary, no external file needed
-        _PLACEHOLDER_TOOLS = {"ask_user", "subagent"}
         if self.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
             output_file_path = str(self.session_dir / output_filename)
             tool.output_file = output_file_path
 
-            # Create empty file (signals tool is running)
-            try:
-                with open(output_file_path, "w", encoding="utf-8") as f:
-                    f.write("")
-            except Exception:
-                pass
+            # Create empty file only for streaming tools (signals tool is running)
+            if name in _STREAMING_TOOLS:
+                try:
+                    with open(output_file_path, "w", encoding="utf-8") as f:
+                        f.write("")
+                except Exception:
+                    pass
 
         # Notify callback
         if self._on_tool_call:
@@ -277,8 +284,9 @@ class BaseAgent:
         except Exception as e:
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:
-            # ask_user/subagent 工具不创建外部文件，占位符直接放 content
-            if name not in _PLACEHOLDER_TOOLS:
+            # Only save external file for streaming tools
+            # Non-streaming tools save lazily based on output size (see below)
+            if name in _STREAMING_TOOLS:
                 tool.save_output_to_file(result)
             # 更新 _output_path 为实际保存的文件路径（可能是 .json）
             output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
@@ -300,9 +308,21 @@ class BaseAgent:
         # Build _meta with internal fields
         file_size = len(result.output.encode('utf-8', errors='replace'))
         truncated = file_size > _LARGE_OUTPUT_THRESHOLD
-        # Only set output_path for large outputs or multimodal content (saved as .json)
-        is_multimodal = output_filename.endswith(".json")
+
+        # Check if multimodal (has image blocks)
+        from core.llm.types import ImageBlock
+        is_multimodal = any(isinstance(block, ImageBlock) for block in result.blocks)
+
+        # Only save external file when needed (streaming already saved, skip)
         needs_external_file = truncated or is_multimodal
+        if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
+            # Set output_file for save_output_to_file
+            tool.output_file = str(self.session_dir / output_filename) if self.session_dir else None
+            if tool.output_file:
+                tool.save_output_to_file(result)
+                # Update filename if changed to .json (multimodal)
+                output_filename = os.path.basename(tool.output_file)
+                tool.output_file = None
 
         meta = {
             "tool_name": name,
