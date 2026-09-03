@@ -24,7 +24,7 @@
 │   token > 80% 阈值时，LLM 摘要旧消息                     │  │     │
 │                                                          │  │     │
 │   Layer 3: Emergency  ───────────────────────────────┐  │  │     │
-│   body > 3MB 时，标记旧工具调用/图片为 _valid=False    │  │  │     │
+│   body > 3MB 时，标记旧工具调用/图片为 valid=False    │  │  │     │
 │                                                       │  │  │     │
 └───────────────────────────────────────────────────────┴──┴──┴─────┘
                               │
@@ -86,7 +86,7 @@
 1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 4`）
 2. 更早的消息由 LLM 生成摘要
 3. 摘要作为新的 user+assistant 消息对插入
-4. 旧消息标记为 `_valid=False`（从消息列表过滤）
+4. 旧消息标记为 `_meta.valid=False`（从消息列表过滤）
 
 **摘要 Prompt**：
 ```
@@ -116,8 +116,8 @@
 **实现位置**：`core/base_agent.py::_mark_old_tool_calls_invalid()`、`_mark_old_images_invalid()`
 
 **策略**：
-1. 优先标记旧工具调用（`tool_use`）为 `_valid=False`，保留最近 3 轮
-2. 若仍超限，标记旧图片为 `_valid=False`，保留最近 3 张
+1. 优先标记旧工具调用（`tool_use`）为 `_meta.valid=False`，保留最近 3 轮
+2. 若仍超限，标记旧图片为 `_meta.valid=False`，保留最近 3 张
 
 **标记字段**：
 ```json
