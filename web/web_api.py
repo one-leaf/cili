@@ -1066,6 +1066,8 @@ def _write_back_subagent_result(agent: RootAgent, exec_id: str) -> dict | None:
                     and block.get("_meta", {}).get("completed") is False):
                 block["content"] = result_json
                 block["_meta"]["completed"] = True
+                block["_meta"]["iterations"] = result.get("iterations", 0)
+                block["_meta"]["message_count"] = result.get("message_count", 0)
                 break
         else:
             continue
