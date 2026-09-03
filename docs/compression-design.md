@@ -124,7 +124,7 @@
 {
   "type": "tool_use",
   "id": "call_xyz",
-  "_meta": {"_valid": false}
+  "_meta": {"valid": false}
 }
 ```
 
