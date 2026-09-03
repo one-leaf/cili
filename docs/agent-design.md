@@ -97,15 +97,9 @@ class BaseAgent:
     def _call_llm(streaming, system_prompt) -> LLMResponse
 ```
 
-### 2.3 3 层压缩
+### 2.3 消息压缩
 
-BaseAgent 在每次 LLM 调用前自动执行压缩：
-
-| 层级 | 名称 | 触发条件 | 操作 |
-|------|------|----------|------|
-| 1 | Microcompact | 每轮都运行 | 标记旧工具结果为已压缩 |
-| 2 | Full Compact | token > 80% 阈值 | LLM 生成摘要 |
-| 3 | 紧急 Body Size | JSON > 3MB | 标记旧工具调用/图片为无效 |
+BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/compression-design.md`](./compression-design.md)。
 
 ### 2.4 执行循环
 

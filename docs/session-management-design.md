@@ -528,139 +528,14 @@ usage = session.get_usage()
 
 ---
 
-## 八、自动压缩机制
+---
 
-三层压缩机制，防止超出 token 限制：
+## 八、相关文档
 
-### 8.0 压缩架构
-
-压缩逻辑分为两层：
-- **`core/compression.py`**：独立压缩模块，提供共享压缩函数（SubAgent 直接使用）
-- **`core/session.py`**：SessionManager 内置压缩方法（RootAgent 使用，额外管理脏标记）
-
-| 压缩函数 | 位置 | 使用者 |
-|---------|------|--------|
-| `microcompact_tool_results()` | compression.py | 两者共用（通过 BaseAgent） |
-| `count_tokens_approx()` | compression.py | 两者共用 |
-| `count_messages_tokens()` | compression.py | 两者共用 |
-| `compact_messages_with_summary()` | compression.py | 两者共用 |
-| `mark_old_tool_calls_invalid()` | base_agent.py | RootAgent 专属 |
-| `mark_old_images_invalid()` | base_agent.py | RootAgent 专属 |
-
-**注意**：`session.py` 中也有 `microcompact_tool_results()` 方法，但目前未被使用。RootAgent 和 SubAgent 都通过 `BaseAgent._check_and_compress()` 调用 `compression.py` 的版本，行为完全一致。
-
-### 8.1 第一层：Microcompact（轻量压缩）
-
-**触发时机**：每轮 LLM 调用前自动运行
-
-**实现位置**：`core/compression.py` 的 `microcompact_tool_results()`
-
-**压缩策略**：
-- 保留最近 6 条工具结果消息
-- 更早的工具结果仅设置 `_compacted = True` 标记
-- 工具结果内容已保存在外部文件（`{tool_use_id}.txt`）
-- 发送 LLM 时由 `_resolve_tool_results()` 检测 `_compacted=True` 后注入占位符
-
-```python
-from core.compression import microcompact_tool_results
-saved_bytes = microcompact_tool_results(messages, keep_recent=6)
-```
-
-**示例**：
-
-```python
-# 压缩前：Session 中存储的元信息
-{
-    "type": "tool_result",
-    "tool_use_id": "toolu_123",
-    "tool_name": "bash",
-    "_file_size": 10240,
-    "_truncated": false,
-    "_compacted": false,
-    "_output_path": "toolu_123.txt"
-}
-
-# 压缩后：仅设置标记，不修改内容
-{
-    "type": "tool_result",
-    "tool_use_id": "toolu_123",
-    "tool_name": "bash",
-    "_file_size": 10240,
-    "_truncated": false,
-    "_compacted": true,  # 仅添加此标记
-    "_output_path": "toolu_123.txt"
-}
-
-# 发送 LLM 时：_resolve_tool_results() 检测到 _compacted=True
-# 自动将 content 替换为占位符 "[旧工具结果已压缩，内容可从外部文件读取]"
-```
-
-**优势**：
-- 不调用 LLM，速度快
-- 原始内容保留在外部文件，LLM 可通过 `read` 工具按需重读
-- RootAgent 和 SubAgent 行为完全一致，工具结果都保存在外部文件
-
-### 8.2 第二层：Full Auto Compact（完整压缩）
-
-**触发时机**：token 数 > max_context_tokens × 0.80
-
-**压缩策略**：
-- 调用 LLM 生成结构化摘要
-- 用摘要替换早期对话
-- 保留最后 6 条消息
-
-```python
-# 在 compression.py compact_messages_with_summary() 中实现
-def compact_messages_with_summary(messages, llm_client, keep_recent_count=6):
-    # 1. 分离要压缩和要保留的消息
-    to_compact = messages[:-keep_recent_count]
-    to_keep = messages[-keep_recent_count:]
-    
-    # 2. 调用 LLM 生成摘要
-    summary = summarize_messages_for_compact(to_compact, llm_client)
-    
-    # 3. 替换早期消息为摘要
-    messages.clear()
-    messages.append({"role": "user", "content": f"[上下文压缩] 以下是之前对话的摘要：\n\n{summary}"})
-    messages.append({"role": "assistant", "content": f"好的，我已经理解了之前的对话内容..."})
-    messages.extend(to_keep)
-```
-
-**优势**：
-- 大幅减少上下文（可能减少 50%+）
-- 保留关键信息（摘要）
-- 保留最近对话（最后 3 条）
-
-### 8.3 第三层：紧急 Body Size 压缩
-
-**触发时机**：请求体大小接近 3MB（代理限制）
-
-**压缩策略**：
-
-#### 标记旧工具调用为无效
-
-```python
-saved_bytes = session.mark_old_tool_calls_invalid(keep_recent_rounds=5)
-```
-
-- 保留最近 5 轮（5 个 assistant 消息）的工具调用
-- 更早的标记为 `_valid=False`
-- 轮次按 assistant 消息计数
-
-#### 标记旧图片为无效
-
-```python
-saved_bytes = session.mark_old_images_invalid(keep_recent=5)
-```
-
-- 保留最近 5 条消息中的图片
-- 更早的图片标记为 `_valid=False`
-- 图片数据很大，优先压缩
-
-**效果**：
-- 标记为 `_valid=False` 的内容仍保留在消息列表中
-- `get_valid_messages()` 会自动过滤掉这些内容
-- UI 仍可显示历史记录，但 API 请求不包含
+- **消息压缩机制**：详见 [`docs/compression-design.md`](./compression-design.md)
+  - 三层压缩（Microcompact、Full Compact、Emergency）
+  - 外部存储机制
+  - `read_tool_result` 工具
 
 ---
 
@@ -802,12 +677,6 @@ def get_session(uuid, id):
 - **上下文保护**：大输出截断后给 LLM，完整内容保存在文件中供按需读取
 - **可追溯**：LLM 可以用 `read` 工具分批读取完整输出
 - **并发安全**：按 `tool_use_id` 隔离文件，多个工具同时执行互不干扰
-
-### 11.6 为什么需要三层压缩？
-
-- **渐进式**：先轻量压缩，不够再完整压缩
-- **性能**：Microcompact 不调用 LLM，速度快
-- **可靠性**：紧急压缩防止 413 错误
 
 ---
 
