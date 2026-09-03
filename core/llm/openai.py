@@ -135,14 +135,19 @@ class OpenAIAdapter(Adapter):
                         if not isinstance(arguments, str):
                             arguments = json.dumps(arguments, ensure_ascii=False)
 
-                    tool_calls.append({
+                    tool_call_dict: dict[str, Any] = {
                         "id": block_dict.get("id", ""),
                         "type": "function",
                         "function": {
                             "name": block_dict.get("name", ""),
                             "arguments": arguments,
                         },
-                    })
+                    }
+                    # Google Gemini: include thought_signature for reasoning models
+                    thought_sig = block_dict.get("thought_signature", "")
+                    if thought_sig:
+                        tool_call_dict["thought_signature"] = thought_sig
+                    tool_calls.append(tool_call_dict)
 
                 elif btype == "tool_result":
                     tool_results.append(block_dict)
@@ -297,6 +302,7 @@ class OpenAIAdapter(Adapter):
                 id=tc.get("id", ""),
                 name=func.get("name", ""),
                 arguments=func.get("arguments", ""),
+                thought_signature=tc.get("thought_signature", ""),
             ))
 
         # Map finish_reason
@@ -383,11 +389,14 @@ class OpenAIAdapter(Adapter):
                         # Emit id and name if present
                         tc_id = tc.get("id", "")
                         tc_name = tc.get("function", {}).get("name", "")
-                        if tc_id or tc_name:
+                        # Google Gemini: thought_signature for reasoning models
+                        tc_thought_sig = tc.get("thought_signature", "")
+                        if tc_id or tc_name or tc_thought_sig:
                             yield StreamChunk.tool_call_delta(
                                 chunk_idx,
                                 id=tc_id or None,
                                 name=tc_name or None,
+                                thought_signature=tc_thought_sig or None,
                             )
 
                     # Emit arguments delta

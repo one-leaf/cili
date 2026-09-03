@@ -84,6 +84,8 @@ class BlockAssembler:
                     block.name += chunk.data["name"]
                 if "arguments" in chunk.data and chunk.data["arguments"]:
                     block.arguments += chunk.data["arguments"]
+                if "thought_signature" in chunk.data and chunk.data["thought_signature"]:
+                    block.thought_signature += chunk.data["thought_signature"]
 
         elif ctype == "usage":
             u = chunk.data.get("usage", UsageData())

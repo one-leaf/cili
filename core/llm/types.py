@@ -119,6 +119,7 @@ class ToolCallBlock:
     id: str = ""
     name: str = ""
     arguments: str = ""  # Raw JSON string internally
+    thought_signature: str = ""  # For Google Gemini API compatibility
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization (Anthropic format)."""
@@ -127,12 +128,16 @@ class ToolCallBlock:
             input_data = json.loads(self.arguments) if self.arguments else {}
         except json.JSONDecodeError:
             input_data = {"_raw": self.arguments}
-        return {
+        result = {
             "type": "tool_use",
             "id": self.id,
             "name": self.name,
             "input": input_data,
         }
+        # Include thought_signature if present (for Google Gemini compatibility)
+        if self.thought_signature:
+            result["thought_signature"] = self.thought_signature
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolCallBlock:
@@ -159,6 +164,7 @@ class ToolCallBlock:
             id=data.get("id", "") or data.get("tool_use_id", ""),
             name=data.get("name", ""),
             arguments=arguments,
+            thought_signature=data.get("thought_signature", ""),
         )
 
     def parse_arguments(self) -> dict[str, Any]:
@@ -483,6 +489,7 @@ class StreamChunk:
         id: str | None = None,
         name: str | None = None,
         arguments: str | None = None,
+        thought_signature: str | None = None,
     ) -> StreamChunk:
         """Create tool_call_delta chunk."""
         data: dict[str, Any] = {}
@@ -492,6 +499,8 @@ class StreamChunk:
             data["name"] = name
         if arguments is not None:
             data["arguments"] = arguments
+        if thought_signature is not None:
+            data["thought_signature"] = thought_signature
         return cls(type="tool_call_delta", index=index, data=data)
 
     @classmethod
