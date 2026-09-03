@@ -85,12 +85,11 @@ data/agents/{uuid}/
         {
           "type": "tool_result",
           "tool_use_id": "toolu_123",
-          "tool_name": "write",
-          "_file_size": 24,
-          "_truncated": false,
-          "_compacted": false,
-          "_output_path": "toolu_123.txt",
-          "_is_error": false
+          "content": "文件已写入完成",
+          "is_error": false,
+          "_meta": {
+            "tool_name": "write"
+          }
         }
       ]
     },
@@ -146,18 +145,18 @@ data/agents/{uuid}/
 | `messages[].role` | string | 消息角色（user/assistant） |
 | `messages[].content` | string/array | 消息内容（字符串或 content blocks） |
 | `messages[]._meta.valid` | bool | 是否有效（false 表示不发送给 API） |
-| `tool_result.tool_name` | string | 工具名称（如 bash、read、write） |
-| `tool_result._file_size` | int | 外部输出文件的字节数 |
-| `tool_result._truncated` | bool | 输出是否被截断（>30K 字符） |
-| `tool_result._compacted` | bool | 是否被 microcompact 压缩过 |
-| `tool_result._output_path` | string | 外部输出文件相对路径（如 toolu_123.txt） |
-| `tool_result._is_error` | bool | 工具执行是否失败 |
+| `tool_result.is_error` | bool | 工具执行是否失败（block 根级，不在 _meta 内） |
+| `tool_result._meta.tool_name` | string | 工具名称（如 bash、read、write） |
+| `tool_result._meta.file_size` | int | 外部输出文件的字节数（仅外部存储时有） |
+| `tool_result._meta.truncated` | bool | 输出是否被截断（>10K 字符） |
+| `tool_result._meta.compacted` | bool | 是否被 microcompact 压缩过 |
+| `tool_result._meta.output_path` | string | 外部输出文件相对路径（如 toolu_123.txt） |
 | `metadata.created_at` | string | 创建时间（yyyy-MM-dd HH:mm:ss） |
 | `metadata.updated_at` | string | 最后更新时间 |
 | `metadata.usage` | object | 使用量统计 |
 | `metadata.subagent_count` | int | SubAgent 执行次数 |
 
-**外部优先存储**：工具结果的内容不保存在 session 中，只保存元信息。实际内容保存在外部文件 `{tool_use_id}.txt`，发送 LLM 时按需读取。
+**按需外部存储**：小体积非流式工具结果直接内联保存在消息 `content` 中。仅流式工具（bash/python）、输出超过 10K 字符或含图片的输出才写入外部文件 `{tool_use_id}.txt`（或 `.json`），`_meta` 中保存元信息（`output_path`、`file_size`、`truncated`），发送 LLM 时按需读取/截断。
 
 ### 2.3 SubAgent 执行日志
 
@@ -196,12 +195,12 @@ SubAgent 执行日志独立存储在子目录中：
 1. 工具执行前，Agent 设置 `tool.output_file = {路径}`
 2. `_run_bash()` 逐行读取子进程输出，同时 append 写入 output_file（每行 flush）
 3. 前端通过 stream API 轮询文件新增内容，实现实时显示
-4. **Session 中只保存元信息**（`_file_size`、`_truncated`、`_output_path` 等），不保存内容
+4. **Session 只保存元信息**（`_meta.file_size`、`_meta.truncated`、`_meta.output_path` 等），内容按需内联或外部存储
 5. 发送 LLM 前，`_resolve_tool_results()` 从外部文件按需读取内容注入消息中
 6. 处理三种情况：
    - 正常输出：直接读取文件内容
-   - 截断输出（>30K 字符）：读取后截断 + 引导语
-   - 压缩输出（`_compacted=True`）：注入占位符
+   - 截断输出（>10K 字符）：读取后截断 + 引导语
+   - 压缩输出（`_meta.compacted=True`）：注入占位符
 
 **文件生命周期**：随会话删除自动清理（`shutil.rmtree`）。
 
@@ -235,7 +234,7 @@ class SessionManager:
 
 | 方法 | 说明 |
 |------|------|
-| `add_message(role, content, *, flush=True, extra=None)` | 添加消息（flush 保留兼容，不会自动保存） |
+| `add_message(role, content, *, flush=True, extra=None, _meta=None)` | 添加消息（flush 保留兼容，不会自动保存；_meta 设置消息级 `_meta` 字段） |
 | `get_messages()` | 获取所有消息 |
 | `get_valid_messages()` | 获取有效消息（过滤 _valid=False，支持缓存） |
 | `clear()` | 清空所有消息 |
@@ -309,8 +308,9 @@ sessions = SessionManager.list_sessions(sessions_dir)
 ### 4.1 添加消息
 
 **自动处理**：
-- 为消息添加 `_meta.valid=True`（如果未设置）
 - 更新 `metadata.updated_at`
+
+注意：`add_message()` 不会自动设置 `_meta.valid`；`_meta.valid=False` 由压缩等逻辑在需要时标记。
 
 ### 4.2 获取消息
 
@@ -324,13 +324,11 @@ valid_messages = session.get_valid_messages()
 
 ### 4.3 有效消息过滤
 
-`get_valid_messages()` 递归过滤无效内容：
+`get_valid_messages()` 过滤无效内容：
 
 **过滤规则**：
-1. 跳过整条消息标记 `_meta.valid=False` 的
-2. 跳过 content blocks 中 `_meta.valid=False` 的
-3. 对 `tool_result` 递归过滤子块
-4. 清理内部字段（`_meta.valid`, `_compacted`）
+1. 跳过整条消息标记 `_meta.valid=False` 的（消息级过滤，不做 block 级 valid 过滤）
+2. 剥离 block 级别 `_meta` 中的内部字段（`valid`、`compacted`、`output_path`、`file_size`、`truncated`、`tool_name`、`exec_id` 等），block 本身全部保留
 
 **示例**：
 
@@ -338,18 +336,12 @@ valid_messages = session.get_valid_messages()
 # 原始消息
 messages = [
     {"role": "user", "content": "你好"},
-    {"role": "assistant", "content": [
-        {"type": "text", "text": "你好！"},
-        {"type": "image", "source": {...}, "_meta": {"valid": False}}  # 被标记无效
-    ]},
+    {"role": "assistant", "content": [...], "_meta": {"valid": False}},  # 整条消息被标记无效
 ]
 
 # 过滤后
 valid_messages = [
-    {"role": "user", "content": "你好"},
-    {"role": "assistant", "content": [
-        {"type": "text", "text": "你好！"}
-    ]}
+    {"role": "user", "content": "你好"}
 ]
 ```
 
@@ -562,12 +554,10 @@ usage = session.get_usage()
 │
 ├─ 消息级别 _meta.valid=False → 跳过整条消息
 │
-└─ 遍历 content blocks
+└─ 遍历 content blocks（全部保留，不做 valid 过滤）
     │
-    ├─ block._meta.valid=False → 跳过该 block
-    │
-    └─ 对 tool_result 递归过滤子块
-        └─ 子块._meta.valid=False → 跳过该子块
+    └─ 剥离 block 级别 _meta 中的内部字段
+        （valid、compacted、output_path、file_size、truncated、tool_name 等）
 ```
 
 ---

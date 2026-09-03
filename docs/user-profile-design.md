@@ -110,15 +110,15 @@ deadline 前会抱怨但执行力强
 **特点**：
 - 每天凌晨 2 点执行（cron 表达式 `0 2 * * *`）
 - 全量扫描所有对话，直接生成最新结果，无需合并历史
-- 通过 RootAgent 执行（在 System workspace 的 "[Cron] 任务描述" session 中）
+- 通过 SubAgent 执行（在 System workspace 的 "[Cron] 任务描述" session 中）
 - 结果保存在 System workspace 的 session 中（UI 可见）
 
 ### 提取流程
 
 ```
 1. Cron 触发（每天凌晨 2 点）
-2. RootAgent 在 System workspace 执行任务
-3. RootAgent 扫描工作区（排除 system）
+2. SubAgent 在 System workspace 执行任务
+3. SubAgent 扫描工作区（排除 system）
 4. 对每个工作区：
    a. 比较 session 的 metadata.updated_at vs user-profile.md 的 updated_at
    b. 如果 session 更新 → 提取用户消息 → 分析 5 个维度 → 生成 markdown

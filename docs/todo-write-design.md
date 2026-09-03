@@ -18,7 +18,7 @@
 - **双形式描述**：`content`（命令式）+ `activeForm`（进行时，UI 显示）
 - **并行控制**：可配置 `allow_parallel_in_progress`
 - **验证提醒**：完成多任务时提醒验证
-- **存储方式**：Session metadata（简单、可持久化）
+- **存储方式**：独立文件（`data/cili/tools/todo/{session_id}.json`，按 session 隔离）
 
 ---
 
@@ -44,25 +44,21 @@
 
 ### 2.2 存储格式
 
-Todos 存储在 session metadata 中：
+Todos 存储在独立文件中（按 session 隔离），路径为 `data/cili/tools/todo/{session_id}.json`：
 
 ```json
 {
     "session_id": "abc12345",
-    "name": "New Session",
-    "messages": [...],
-    "metadata": {
-        "created_at": "2026-08-29 10:00:00",
-        "updated_at": "2026-08-29 10:30:00",
-        "usage": {...},
-        "todos": [
-            {"content": "分析代码结构", "activeForm": "正在分析代码结构", "status": "completed"},
-            {"content": "重构工具系统", "activeForm": "正在重构工具系统", "status": "in_progress"},
-            {"content": "编写测试用例", "activeForm": "正在编写测试用例", "status": "pending"}
-        ]
-    }
+    "updated_at": "2026-08-29 10:30:00",
+    "todos": [
+        {"content": "分析代码结构", "activeForm": "正在分析代码结构", "status": "completed"},
+        {"content": "重构工具系统", "activeForm": "正在重构工具系统", "status": "in_progress"},
+        {"content": "编写测试用例", "activeForm": "正在编写测试用例", "status": "pending"}
+    ]
 }
 ```
+
+`updated_at` 记录最近一次更新的时间戳（格式 `yyyy-MM-dd HH:mm:ss`）。旧版存储在 session metadata 中的 `todos` 数据会在工具执行时自动迁移到独立文件，并从 metadata 中移除（向后兼容）。
 
 ---
 
@@ -193,7 +189,7 @@ Progress: 2/5 completed
 当以下条件全部满足时，返回验证提醒：
 1. 所有任务都已完成
 2. 任务数量 ≥ 3
-3. 没有任何任务包含 "verify"、"test"、"check" 等关键词
+3. 没有任何任务包含 "verify"、"test"、"check"、"validate"、"confirm" 等关键词（关键词列表为 `["verify", "test", "check", "validate", "confirm"]`）
 4. 之前的状态有未完成的任务
 
 ---
@@ -313,11 +309,13 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
 
     # Check for todo_write tool and push todo update event
     if tool_name == "todo_write" and not is_error and agent.session_manager:
-        todos = agent.session_manager.metadata.get("todos")
+        todos = get_todos_from_session(agent.session_manager)
         if todos is not None:
-            todo_event = json.dumps({"type": "todo_update", "todos": todos})
+            todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
             event_queue.put(f"data: {todo_event}\n\n")
 ```
+
+`get_todos_from_session` 是 `core/tools/shared/todo.py` 提供的辅助函数：通过 session_manager 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
 
 ### 7.4 前端渲染
 
@@ -360,16 +358,18 @@ function renderTodoList(todos) {
 
 这样用户可以看到 "正在修复认证 bug..." 而不是 "修复认证 bug"，更符合中文表达习惯。
 
-### Q: 为什么存储在 session metadata 而不是独立事件？
+### Q: 为什么存储在独立文件而不是 session metadata 或事件日志？
 
-**A**: 两种方案各有优劣：
-- **Session metadata**（Cili 选择）：简单、易访问、随 session 持久化
+**A**: 三种方案各有优劣：
+- **独立文件**（Cili 选择）：按 session 隔离（每个 session 一个文件 `data/cili/tools/todo/{session_id}.json`），与消息数据分离
+- **Session metadata**（旧方案）：简单、随 session 持久化，但 todos 与大量消息数据混在一起
 - **事件日志**（Harness 选择）：支持回放、历史追踪
 
-Cili 选择 metadata 方案是因为：
-1. 实现简单
-2. 前端加载 session 时直接获取
-3. 不需要复杂的事件溯源
+Cili 选择独立文件方案是因为：
+1. **数据隔离**：每个 session 一个文件（`{session_id}.json`），互不影响
+2. **更新独立**：`updated_at` 字段在每次写入时刷新，记录最近更新时间，不依赖 session 的保存时机
+3. **向后兼容**：旧 metadata 中的 `todos` 自动迁移到独立文件，`get_todos_from_session` 同时支持两种格式
+4. 不需要复杂的事件溯源
 
 ### Q: 并行控制为什么是配置项？
 

@@ -139,11 +139,12 @@ Identity: You are Cili — an AI assistant, not merely a programming assistant.
 
 | 章节 | 内容 |
 |------|------|
-| **Critical Rules** | 工具结果重读（截断/压缩场景）、Python 使用、大文件处理 |
+| **Critical Rules** | 包含以下子节：Skills - Proactive Usage、Tool Result Re-reading、Python、大文件处理 |
 | **Coding Workflow** | inspect → understand → modify → verify → fix → verify |
 | **Verification** | 修改后必须验证（测试/lint/build） |
 | **Errors** | 将错误视为调试信号，不要盲目重试 |
-| **Workspace Files** | 相对路径、图片生成规则、文件 URL 格式 |
+| **Repository Safety** | 谨慎使用破坏性命令，优先用 edit 而非 write |
+| **Workspace Files and Images** | 相对路径规则、文件 URL 格式（/api/workspace/files/）、图片生成规则（禁用 GUI API） |
 | **Memory** | 任务前搜索 memory 目录、技能命名规范 |
 | **Web** | web_search 优先，browser 备用 |
 | **Communication** | 简洁、同语言回复、完成后汇报变更 |
@@ -163,9 +164,11 @@ You are not managing the user's conversation — you are executing a specific ta
 | 章节 | 内容 |
 |------|------|
 | **Core Objective** | 完成任务，不只是给出答案 |
+| **Skills - Proactive Usage** | 检查可用技能（Research、File Processing、Learning） |
 | **Autonomous Execution** | 自主执行，不请求确认 |
 | **Execution Loop** | 7 步执行循环 |
 | **Tool Usage** | 工具是执行能力，不是推理替代 |
+| **Tool Result Re-reading** | 截断/压缩场景下的工具结果重读规则 |
 | **File and Workspace Rules** | 工作目录边界、最小修改 |
 | **Verification** | 验证是任务完成的必要部分 |
 | **Error Recovery** | 可恢复 vs 不可恢复错误分类 |
@@ -196,6 +199,13 @@ All shell commands run in **Git Bash** (MSYS2 environment).
 
 ## Python Environment
 `python` and `pip` are pre-configured in PATH, available directly in bash.
+
+## Temporary Files
+Temporary directory: `{tmp_dir}`
+Environment variables TEMP, TMP, TMPDIR are all set to this directory.
+Use this directory for all intermediate files, temp outputs, downloads, and program state files.
+In bash: use `$TEMP` or `$TMPDIR`. In Python: `tempfile` module is auto-configured.
+Agent can also use `CILI_TMP` env var to reference this path.
 
 ## Memory
 Memory directory: `{memory_dir}`
@@ -229,6 +239,8 @@ Operating System: `{os_info}`
 
 `python` and `pip` are pre-configured in PATH.
 
+**Temporary directory**: `{tmp_dir}` (TEMP/TMP/TMPDIR env vars set)
+
 **Current Date: {current_date}**
 
 Context received. Please confirm briefly and await my task.
@@ -236,18 +248,21 @@ Context received. Please confirm briefly and await my task.
 
 ### 5.3 User Profile 自动加载
 
-若 `user-profile.json` 存在，自动注入到环境变量中：
+若 `user-profile.md` 存在，自动注入到环境变量中：
 
-```json
-{
-  "工作角色": "后端工程师",
-  "编程经验": {
-    "语言": "Python, Go",
-    "框架": "FastAPI, Django"
-  },
-  "沟通偏好": "简洁直接"
-}
+```markdown
+---
+工作角色: 后端工程师
+编程经验:
+  语言: Python, Go
+  框架: FastAPI, Django
+沟通偏好: 简洁直接
+---
+
+（正文内容）
 ```
+
+支持 YAML frontmatter（`---` 包裹的元数据），加载时自动跳过 frontmatter 只取正文。
 
 加载后作为 `## User Profile` 段注入，指示 LLM 自然使用这些信息调整语气，但不要主动复述。
 
@@ -445,7 +460,8 @@ def build_llm_tool_system_prompt() -> str:
     return (
         "You are a text processing assistant. "
         "Process the given text according to the instructions. "
-        "Return only the processed content, without commentary or explanations."
+        "Return only the processed content, without commentary or explanations. "
+        "Preserve the original formatting unless instructed otherwise."
     )
 ```
 

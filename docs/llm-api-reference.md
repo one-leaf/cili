@@ -54,11 +54,8 @@ anthropic-version: 2023-06-01
     "type": "enabled",                   // "enabled" | "disabled"
     "budget_tokens": 4096                // thinking 最大 token 数，必须 < max_tokens
   },
-  // 或使用 effort 级别：
-  "thinking": {
-    "type": "enabled",
-    "effort": "medium"                   // "low" | "medium" | "high" | "xhigh" | "max"
-  },
+  // 或使用 effort 级别（Cili 内部通过 reasoning_effort 映射）：
+  // low → budget_tokens=1024, medium → 4096, high → 10000
 
   // 工具定义
   "tools": [
@@ -252,7 +249,7 @@ Authorization: Bearer sk-...
   "stream": false,                       // 是否流式响应
   "stream_options": {"include_usage": true},  // 流式响应包含 usage
 
-  // Reasoning 配置（仅推理模型：o1, o3, o4-mini 等）
+  // Reasoning 配置（仅推理模型：o1, o3, o4-mini, o5, qwen3, qwq, deepseek-r1 等）
   "reasoning_effort": "medium",          // "low" | "medium" | "high"
   // 注意：推理模型不支持 temperature
 
@@ -415,44 +412,81 @@ Cili 内部使用统一的 `LLMResponse` 格式，屏蔽两种 API 的差异。
 ```python
 @dataclass
 class LLMResponse:
-    content: list[dict[str, Any]]  # 内容块列表
-    stop_reason: str               # "end_turn" | "tool_use" | "stopped" | "error"
-    usage: dict                    # 统一的 usage 格式
-    headers: dict                  # 响应头（用于 LiteLLM 检测等）
+    content: list[ContentBlock]        # 类型化内容块列表（TextBlock, ReasoningBlock, ToolCallBlock 等）
+    stop_reason: str                   # "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+    usage: UsageData                   # 类型化的 token 用量
+    headers: dict[str, str]            # 响应头（用于 LiteLLM 检测等）
 ```
 
 ### 3.2 Content Block 类型
 
-**text 块**:
+内部使用类型化 dataclass，而非 plain dict。所有类型均为 `ContentBlock = TextBlock | ReasoningBlock | ImageBlock | ToolCallBlock | ToolResultBlock` 的联合类型。
+
+**TextBlock**（text 块）:
+```python
+@dataclass
+class TextBlock:
+    text: str = ""
+```
+
+**ReasoningBlock**（thinking 块）:
+```python
+@dataclass
+class ReasoningBlock:
+    text: str = ""
+    signature: str | None = None  # Anthropic thinking 签名（可选）
+```
+
+**ToolCallBlock**（tool_use 块）:
+```python
+@dataclass
+class ToolCallBlock:
+    id: str = ""
+    name: str = ""
+    arguments: str = ""  # 原始 JSON 字符串（延迟解析，工具执行时才 parse）
+```
+
+**ImageBlock**（image 块）:
+```python
+@dataclass
+class ImageBlock:
+    data: str = ""        # base64 编码
+    mime_type: str = ""
+```
+
+**ToolResultBlock**（tool_result 块）:
+```python
+@dataclass
+class ToolResultBlock:
+    tool_use_id: str = ""
+    content: str | list[dict] = ""  # 纯文本或多模态内容
+    is_error: bool = False
+    # SubAgent 扩展字段（可选）
+    exec_id: str = ""
+    iterations: int = 0
+    message_count: int = 0
+    duration_seconds: float = 0
+```
+
+序列化示例（发送前调用 `.to_dict()`）：
 ```json
 {"type": "text", "text": "这是文本内容"}
-```
-
-**thinking 块**:
-```json
 {"type": "thinking", "thinking": "这是思考内容"}
-```
-
-**tool_use 块**:
-```json
-{
-  "type": "tool_use",
-  "id": "toolu_abc123",
-  "name": "read_file",
-  "input": {"file_path": "/tmp/test.txt"}
-}
+{"type": "tool_use", "id": "toolu_abc123", "name": "read_file", "input": {"file_path": "/tmp/test.txt"}}
 ```
 
 ### 3.3 统一 Usage 格式
 
 ```python
-usage = {
-    "input_tokens": 100,               # 输入 token 数
-    "output_tokens": 50,               # 输出 token 数
-    "cache_read_input_tokens": 0,      # 缓存读取 token 数
-    "cache_creation_input_tokens": 0   # 缓存创建 token 数
-}
+@dataclass
+class UsageData:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0     # 缓存读取 token 数
+    cache_write_tokens: int = 0    # 缓存创建 token 数
 ```
+
+注意：内部统一使用 `cache_read_tokens` / `cache_write_tokens`，与 Anthropic API 的 `cache_read_input_tokens` / `cache_creation_input_tokens` 名称不同。`UsageData.from_anthropic()` 和 `UsageData.from_openai()` 负责从各 provider 格式转换。
 
 ### 3.4 stop_reason 映射
 
@@ -463,17 +497,30 @@ usage = {
 | `max_tokens` | `length` | `max_tokens` |
 | `stop_sequence` | - | `stop_sequence` |
 
+内部直接使用 API 原始值（不做额外映射），`end_turn` / `tool_use` 为 Anthropic 原生值，OpenAI 的 `finish_reason` 由 Adapter 转换为对应的 Anthropic 等价值。
+
 ### 3.5 消息格式对比
 
 **助手消息（含工具调用）**:
 
 ```python
-# Anthropic 格式（内部使用）
+# 内部使用 Message dataclass + typed ContentBlock
+Message(
+    role="assistant",
+    content=[
+        TextBlock(text="我来读取文件"),
+        ToolCallBlock(id="toolu_abc123", name="read_file", arguments='{"file_path": "/tmp/test.txt"}'),
+    ]
+)
+
+# 发送前通过 Adapter.serialize() 转换为 provider 格式
+
+# Anthropic 格式（发送时）
 {
     "role": "assistant",
     "content": [
         {"type": "text", "text": "我来读取文件"},
-        {"type": "tool_use", "id": "toolu_abc123", "name": "read_file", "input": {...}}
+        {"type": "tool_use", "id": "toolu_abc123", "name": "read_file", "input": {"file_path": "/tmp/test.txt"}}
     ]
 }
 
@@ -497,7 +544,15 @@ usage = {
 **工具结果消息**:
 
 ```python
-# Anthropic 格式（内部使用）
+# 内部使用 Message dataclass + ToolResultBlock
+Message(
+    role="user",
+    content=[
+        ToolResultBlock(tool_use_id="toolu_abc123", content="文件内容...")
+    ]
+)
+
+# Anthropic 格式（发送时）
 {
     "role": "user",
     "content": [

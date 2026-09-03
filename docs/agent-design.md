@@ -74,7 +74,7 @@ class BaseAgent:
         cwd: str = "",
         session_dir: Path | None = None,  # 持久化路径
         stop_check: Callable[[], bool] | None = None,
-        max_iterations: int = 50,
+        max_iterations: int = 50,  # RootAgent overrides to 200
     ):
         self.messages: list[dict] = []       # 消息列表（权威源）
         self.session_dir = session_dir       # 保存路径
@@ -120,7 +120,7 @@ BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/compre
 RootAgent 继承 BaseAgent，用于用户交互：
 - 流式输出（`streaming=True`）
 - SessionManager 持久化
-- 最多 50 次迭代
+- 最多 200 次迭代
 - 回调支持（on_text, on_thinking 等）
 
 ### 3.2 初始化参数
@@ -129,73 +129,140 @@ RootAgent 继承 BaseAgent，用于用户交互：
 class RootAgent(BaseAgent):
     def __init__(self, config: Config, cwd: str | None = None, workspace_uuid: str = ""):
         # 工作区路径
-        self.cwd = os.path.abspath(cwd)
-        self.workspace_uuid = workspace_uuid
+        self._cwd_init = os.path.abspath(cwd or os.getcwd())
 
-        # LLM 客户端
-        self.client: BaseLLMClient = create_llm_client(config.model)
+        # Setup sessions directory
+        self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        # 会话管理器
+        # 会话管理器：加载已有会话或创建默认会话
         self.session_manager = SessionManager("", self.sessions_dir)
         self.current_session_id: str = ""
+        sessions = SessionManager.list_sessions(self.sessions_dir)
+        if sessions:
+            latest = max(sessions, key=lambda s: s.get("updated_at", ""))
+            sid = latest["session_id"]
+            loaded = SessionManager.load_session(sid, self.sessions_dir)
+            if loaded:
+                self.session_manager = loaded
+                self.current_session_id = sid
+            else:
+                self._create_default_session()
+        else:
+            self._create_default_session()
 
-        # 工具实例（shared + root = 12~13 个）
-        self.tools = create_tools(cwd=self.cwd, workspace_uuid=self.workspace_uuid,
-                                   config=self.config)
-        self.tool_schemas = [t.to_schema() for t in self.tools]
+        # Initialize base agent (max_iterations=200)
+        session_dir = self.sessions_dir / self.current_session_id
+        super().__init__(config=config, workspace_uuid=workspace_uuid,
+                         cwd=self._cwd_init, session_dir=session_dir,
+                         max_iterations=200)
 
-        # 回调钩子
+        # 共享消息列表（同一引用，非拷贝）
+        self.messages = self.session_manager.messages
+        self._usage = self.session_manager.get_usage()
+
+        # LLM 客户端
+        self.client: LLMClient = create_llm_client(config.model)
+
+        # 工具实例（shared + root = 21~22 个）
+        self._rebuild_tools()
+
+        # 回调钩子（6 个）
         self._on_text: Callable[[str], None] | None = None
         self._on_thinking: Callable[[str], None] | None = None
-        self._on_tool_call: Callable[[str, dict], None] | None = None
-        self._on_tool_result: Callable[[str, str, bool], None] | None = None
+        self._on_tool_call: Callable[[str, dict, str], None] | None = None
+        self._on_tool_result: Callable[[str, str, bool, str], None] | None = None
         self._on_subagent_start: Callable[[str, str], None] | None = None
+        self._on_subagent_complete: Callable[[str], None] | None = None
 
         # 停止标志
         self._stopped = False
+
+    # 其他方法
+    def reload_config()          # 重载配置并重建 LLM 客户端
+    def resume_after_ask_user()  # ask_user 工具返回后恢复循环
+    def resume_loop()            # subagent 完成后恢复循环
+    def switch_session()         # 切换会话
+    def reset()                  # 清空对话历史
+    def compact()                # 手动压缩
+    def cleanup()                # 清理资源
 ```
 
 ### 3.3 核心循环
 
 ```python
-def run(self, user_input: str) -> dict:
-    """执行主循环"""
-    # 1. 添加用户消息
-    self.add_message("user", user_input)
-    self.save_messages()
+def run(
+    self,
+    user_input: str | list[dict],
+    on_text: Callable[[str], None] | None = None,
+    on_thinking: Callable[[str], None] | None = None,
+    on_tool_call: Callable[[str, dict, str], None] | None = None,
+    on_tool_result: Callable[[str, str, bool, str], None] | None = None,
+    on_subagent_start: Callable[[str, str], None] | None = None,
+    on_subagent_complete: Callable[[str], None] | None = None,
+) -> None:
+    """执行一轮 agent 循环"""
+    self._stopped = False
+    self._running = True
+    self._on_text = on_text
+    # ... 保存所有回调 ...
 
-    for iteration in range(self.max_iterations):
+    try:
+        # 保存上一轮
+        self._sync_to_session_manager()
+        self.session_manager.save()
+
+        # 注入项目指令（CLAUDE.md 等，幂等）
+        self._inject_project_instructions()
+
+        # 添加用户消息
+        self.add_message("user", user_input)
+
+        # 进入 agent 循环
+        self._agent_loop()
+    finally:
+        self._running = False
+
+def _agent_loop(self) -> None:
+    """共享循环体（run/resume_after_ask_user/resume_loop 均调用此方法）"""
+    self._sync_to_session_manager()
+    self.session_manager.save()
+
+    iteration = 0
+    while iteration < self.max_iterations:
         if self._stopped:
             break
+        iteration += 1
 
-        # 2. 自动压缩检查
+        # 自动压缩检查
         self._check_and_compress()
 
-        # 3. 调用 LLM（流式）
-        response = self._call_llm(streaming=True, system_prompt=self._system_prompt)
+        # 调用 LLM（流式）
+        system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
+        response = self._call_llm(streaming=True, system_prompt=system_prompt)
 
-        # 4. 添加到消息历史
-        self.add_message("assistant", response.content)
-        self.save_messages()
+        # 添加 assistant 响应
+        self.add_message("assistant", response.content_as_dicts())
 
-        # 5. 解析工具调用
-        tool_calls = [b for b in response.content if b.get("type") == "tool_use"]
+        # 解析工具调用
+        tool_call_blocks = response.get_tool_calls()
+        if not tool_call_blocks:
+            break  # 没有工具调用，结束本轮
 
-        if not tool_calls:
-            break  # 没有工具调用，结束循环
+        # 执行工具，每个工具执行后都同步到 session
+        wait_for_external = False
+        for block in tool_call_blocks:
+            input_data = block.parse_arguments()
+            result = self._execute_tool(block.name, input_data, block.id)
+            # 检查是否需要暂停等待外部输入（ask_user/subagent）
+            if result.get("_meta", {}).get("completed") is False:
+                wait_for_external = True
+            self.add_message("user", [result])
+            self._sync_to_session_manager()
+            self.session_manager.save()
 
-        # 6. 执行工具
-        tool_results = []
-        for tc in tool_calls:
-            result = self._execute_tool(tc["name"], tc.get("input", {}), tc["id"])
-            tool_results.append(result)
-
-        # 7. 添加工具结果
-        if tool_results:
-            self.add_message("user", tool_results)
-            self.save_messages()
-
-    return {"status": "completed" if not self._stopped else "stopped"}
+        if wait_for_external:
+            break  # 退出循环等待用户输入或 subagent 完成
 ```
 
 ---
@@ -214,7 +281,7 @@ SubAgent 是独立执行的子代理，用于：
 | 特性 | RootAgent | SubAgent |
 |------|-----------|----------|
 | 会话管理 | 管理用户会话，支持多轮对话 | 独立消息历史，不持久化到用户会话 |
-| 工具集 | 12~13 个工具（shared + root） | 11~12 个工具（shared + sub，无 subagent） |
+| 工具集 | 21~22 个工具（shared + root） | 19~20 个工具（shared + sub） |
 | 系统提示 | `build_root_prompt()` | `build_sub_prompt()` + 任务信息 |
 | 用户配置 | 加载用户 profile | 不加载用户 profile（轻量） |
 | 嵌套 | 可调用 SubAgent | 禁止嵌套调用 |
@@ -253,20 +320,35 @@ class SubAgent(BaseAgent):
         plan: list[str] | None = None,
         workspace_uuid: str = "",
         cwd: str = "",
-        session_dir: Path | None = None,  # 外部传入保存路径
         max_consecutive_failures: int = 5,
+        session_dir: Path | None = None,  # 外部传入保存路径
+        stop_check: Callable[[], bool] | None = None,
+        exec_id: str = "",
     ):
         self.task = task                          # 任务目标
         self.plan = plan                          # 执行计划
+        self._exec_id = exec_id
 
-        # 独立工具集（无 subagent 工具）
+        # 加载配置
+        config = load_config()
+
+        # Initialize base agent (max_iterations=200)
+        super().__init__(config=config, workspace_uuid=workspace_uuid,
+                         cwd=cwd or os.getcwd(), session_dir=session_dir,
+                         stop_check=stop_check, max_iterations=200)
+
+        # session 引用，供工具获取 session_id
+        self._session_ref = _SessionIdRef(exec_id)
+
+        # 独立工具集（pass session_ref 供 temp 等工具使用）
         self.tools = create_sub_tools(cwd=self.cwd, workspace_uuid=self.workspace_uuid,
-                                       config=config)
+                                       session_manager=self._session_ref, config=config)
+        self.tool_schemas = [t.to_schema() for t in self.tools]
 
-        # 系统提示 = 基础提示 + 任务信息
+        # 系统提示 = 基础提示 + 任务信息（任务信息为空时不追加）
         base_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
         task_section = self._build_task_section()
-        self._system_prompt = base_prompt + "\n\n" + task_section
+        self._system_prompt = base_prompt + "\n\n" + task_section if task_section else base_prompt
 
         # 独立 LLM 客户端
         self.client = create_llm_client(config.model)
@@ -279,16 +361,25 @@ SubAgent 的任务目标和执行计划被追加到系统提示**末尾**，这�
 ```python
 def _build_task_section(self) -> str:
     lines = ["## Assigned Task", ""]
+
     lines.append("### Objective")
+    lines.append("")
     lines.append(self.task)
+    lines.append("")
 
     if self.plan:
         lines.append("### Execution Plan")
+        lines.append("")
         for i, step in enumerate(self.plan, 1):
             lines.append(f"{i}. {step}")
+        lines.append("")
+        lines.append("Execute these steps in order. Report progress as you complete each step.")
+        lines.append("")
 
     return "\n".join(lines)
 ```
+
+注意：每个标题和内容之间有空行分隔；当 `plan` 为空时整个 `### Execution Plan` 部分被跳过；计划部分末尾包含执行指引行。
 
 ### 4.6 会话消息结构
 
@@ -306,13 +397,22 @@ def _build_task_section(self) -> str:
 
 SubAgent session_dir/index.json:
   {
+    "exec_id": "abc123",
+    "session_id": "abc123",
+    "task": "处理文件...",
     "messages": [...完整执行历史...],
+    "summary": "处理完成，共处理 42 个文件",
     "metadata": {
+      "parent_session_id": "",
+      "session_id": "abc123",
       "started_at": "2026-08-25 10:00:00",
       "ended_at": "2026-08-25 10:05:00",
       "duration_seconds": 300,
       "status": "completed",
-      "iterations": 15
+      "iterations": 15,
+      "max_iterations": 200,
+      "message_count": 42,
+      "summary": "处理完成，共处理 42 个文件"
     }
   }
 ```
@@ -327,21 +427,21 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 - **流式模式**：thinking 内容通过 `on_thinking` 回调实时推送到前端
 - **消息存储**：thinking blocks 保留在消息历史中，Anthropic API 要求后续请求包含之前的 thinking blocks
-- **默认级别**：非流式请求默认启用 extended thinking（`budget_tokens: 4096`，中等级别）
+- **默认级别**：非流式请求默认启用 extended thinking（`budget_tokens` 根据 `reasoning_effort` 配置动态设置：low→1024, medium→4096, high→10000）
 
 ### 5.2 LLM 配置
 
-**Anthropic API**（非流式）：
+**Anthropic API**（非流式，`budget_tokens` 由 `reasoning_effort` 配置决定）：
 ```json
 {
   "thinking": {
     "type": "enabled",
-    "budget_tokens": 4096
+    "budget_tokens": 4096  // low=1024, medium=4096, high=10000
   }
 }
 ```
 
-**OpenAI API**（推理模型）：
+**OpenAI API**（推理模型，`reasoning_effort` 来自配置；未配置时自动检测 7 种推理模型前缀：o1, o3, o4, o5, qwen3, qwq, deepseek-r1，默认 "medium"）：
 ```json
 {
   "reasoning_effort": "medium"

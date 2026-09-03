@@ -11,7 +11,7 @@ Cili Agent 提供两个浏览器相关工具：
 | 工具 | 功能 |
 |------|------|
 | `browser` | 浏览器自动化：导航、截图、执行 JS、获取文本/链接、等待元素 |
-| `web_search` | 通过 cn.bing.com 搜索，返回结构化结果 |
+| `web_search` | 通过 Bing 或 Google 搜索（可在设置中配置），返回结构化结果 |
 
 两者都依赖 Playwright + Chrome。为避免 Playwright 单实例冲突和 Chrome 进程管理混乱，引入 `BrowserService` 全局单例，集中管理所有浏览器资源。
 
@@ -461,10 +461,12 @@ class BrowserTool(Tool):
 
 **close() 行为**：委托给 `service.disconnect()`，断开连接但保持 Chrome 运行。
 
+**kill_chrome()**：独立方法（不在 execute 的 action 枚举中），委托给 `service.kill_chrome()` 终止 Chrome 进程。
+
 ### 5.2 WebSearchTool（web_search.py）
 
-精简为 ~140 行，主要职责：
-1. 构建搜索 URL（cn.bing.com/search?q=...）
+精简为 ~270 行，主要职责：
+1. 构建搜索 URL（支持 Bing 和 Google，通过 SEARCH_CONFIGS 配置）
 2. 调用 service.navigate() 加载搜索页面（每次开新 tab，获取 tab_index）
 3. 使用 tab_index 调用 service.wait_for() 和 execute_script()
 4. 格式化输出，搜索完成后调用 service.close_tab() 释放资源
@@ -474,8 +476,9 @@ class WebSearchTool(Tool):
     def execute(self, query, max_results=10):
         service = get_service()
 
-        # 1. 导航到搜索结果页（每次搜索开新 tab）
-        search_url = f"https://cn.bing.com/search?q={query}"
+        # 1. 导航到搜索结果页（每次搜索开新 tab，引擎由配置决定）
+        search_config = SEARCH_CONFIGS.get(engine, SEARCH_CONFIGS["bing"])
+        search_url = search_config["url_template"].format(query=quote_plus(query))
         nav_result = service.navigate(search_url)
 
         # 2. 获取 tab_index
@@ -758,7 +761,7 @@ core/
     │       ├── close()             # disconnect()
     │       └── kill_chrome()       # kill_chrome()
     │
-    └── web_search.py               # 搜索工具（~140 行）
+    └── web_search.py               # 搜索工具（~270 行）
         └── WebSearchTool
             └── execute()           # 委托给 BrowserService，返回 tab_index
 

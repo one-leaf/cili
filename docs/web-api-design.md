@@ -108,7 +108,8 @@ GET /api/workspaces
       "uuid": "a1b2c3d4",
       "name": "default",
       "directory": "/path/to/workspace",
-      "created_at": "2026-08-25 10:00:00"
+      "created_at": "2026-08-25 10:00:00",
+      "system": false   // 是否 System workspace（不可删除/修改）
     }
   ]
 }
@@ -180,7 +181,8 @@ GET /api/workspaces/{uuid}/sessions
       "updated_at": "2026-08-25 10:30:00",
       "message_count": 25,
       "subagent_count": 2,
-      "preview": "帮我写一个异步爬虫..."
+      "preview": "帮我写一个异步爬虫...",
+      "hidden": false   // 会话是否被隐藏
     }
   ]
 }
@@ -224,6 +226,44 @@ Content-Type: application/json
 }
 ```
 
+#### 隐藏/取消隐藏会话
+
+```
+POST /api/workspaces/{uuid}/sessions/{id}/hidden
+Content-Type: application/json
+
+{
+  "hidden": true   // true=隐藏，false=取消隐藏
+}
+```
+
+将 `metadata.hidden` 写入会话 index.json（原子写入）。隐藏的会话在列表中默认不显示，取消隐藏可恢复。
+
+#### 批量会话操作
+
+```
+POST /api/workspaces/{uuid}/sessions/batch
+Content-Type: application/json
+
+{
+  "session_ids": ["a1b2c3d4", "e5f6g7h8"],
+  "action": "hide"   // "hide" | "unhide" | "delete"
+}
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "results": [
+    {"session_id": "a1b2c3d4", "success": true},
+    {"session_id": "e5f6g7h8", "success": false, "error": "Not found"}
+  ]
+}
+```
+
+支持一次性批量隐藏、取消隐藏或删除多个会话。
+
 ### 3.4 消息发送（SSE 流式）
 
 ```
@@ -262,6 +302,8 @@ data: {"type": "done"}
 | `tool_use` | 工具调用 | `tool`, `input`, `tool_use_id` |
 | `tool_result` | 工具结果 | `tool`, `content`, `is_error`, `tool_use_id` |
 | `subagent_start` | SubAgent 启动 | `exec_id`, `task_summary` |
+| `subagent_complete` | SubAgent 执行完成 | `exec_id` |
+| `todo_update` | todo_write 工具后的待办列表更新 | `todos` |
 | `retry_clear` | 413 重试清除 | （无） |
 | `error` | 错误 | `content` |
 | `done` | 完成 | （无） |
@@ -269,6 +311,8 @@ data: {"type": "done"}
 **事件说明**：
 - `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
 - `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
+- `subagent_complete`：SubAgent 后台执行完成时发送，前端据此更新 SubAgent 卡片状态。
+- `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session_manager.metadata.todos`），前端实时更新任务清单。
 
 ### 3.5 Agent 控制
 
@@ -301,16 +345,34 @@ POST /api/workspaces/{uuid}/sessions/{id}/stop
 
 #### AskUser 交互流程
 
-`ask_user` 工具采用 **退出 Agent 循环 + 前端渲染 + 用户回答作为新消息** 模式：
+`ask_user` 工具采用 **退出 Agent 循环 + 前端渲染 + 专用端点提交答案** 模式：
 
 1. Agent 调用 `ask_user` → 工具返回 `completed=False` 的 ToolResult
 2. Agent 循环检测到 `completed=False`，保存消息后退出
 3. 前端通过 SSE 的 `tool_use` 事件（`tool: "ask_user"`）渲染交互式问题卡片
 4. `tool_result` 事件对 `ask_user` 跳过（不渲染结果气泡）
-5. 用户选择答案后，格式化答案作为普通聊天消息发送（POST /messages）
-6. 后端在下次 LLM 调用前清理 ask_user 占位符（tool_use + placeholder tool_result）
+5. 用户选择答案后，通过专用端点提交（见下）
+6. 后端替换占位符 tool_result 内容并继续 Agent 循环（`resume_after_ask_user()`）
 
-**无需独立 API 端点**，答案通过常规聊天流程发送。
+#### 提交 AskUser 答案
+
+```
+POST /api/workspaces/{uuid}/sessions/{id}/answer-ask-user
+Content-Type: application/json
+
+{
+  "tool_use_id": "toolu_01AbC...",   // ask_user 工具调用的 ID（从 tool_use 事件获取）
+  "answer": "用户选择的答案"
+}
+```
+
+**处理流程**：
+1. 校验 Agent 存在且未在运行（运行中返回 SSE `error` 事件）
+2. 根据 `tool_use_id` 查找占位符 tool_result 并替换内容为答案（`_meta.completed=true`，同步更新外部文件）
+3. 在对应的 tool_use/tool_call 块上标记 `_meta.answered=true`，保存 session
+4. 调用 `agent.resume_after_ask_user()` 继续 Agent 循环（含后台 SubAgent 结果的等待与回写）
+
+**响应**：SSE 流（与 POST /messages 相同的流式事件，继续输出后续 thinking/text/tool_use 等）。
 
 ### 3.6 SubAgent 执行日志
 
@@ -512,6 +574,30 @@ GET /api/files?workspace_uuid={uuid}&path=relative/path
 }
 ```
 
+### 3.10 自动升级
+
+```
+POST /api/upgrade
+Content-Type: application/json
+
+{
+  "mirror": "github"   // 镜像源: "github" | "ghproxy" | "ghfast" | "gh-proxy"
+}
+```
+
+自动升级：从 GitHub 下载最新代码并覆盖到项目目录（排除 `data/`、`workspace/`、`.git/`）。多个镜像按序尝试，下载失败自动切换下一个。
+
+**响应**：
+```json
+{
+  "success": true,
+  "message": "升级完成，请重启服务以应用更新",
+  "needs_restart": true
+}
+```
+
+失败时返回 `{"success": false, "error": "..."}`。
+
 ---
 
 ## 四、特殊命令
@@ -634,7 +720,6 @@ except asyncio.CancelledError:
 - **原生 JavaScript**（无框架）
 - **marked.js**：Markdown 渲染
 - **MathJax**：数学公式渲染
-- **highlight.js**：代码高亮
 
 ### 6.2 主要功能
 
@@ -657,7 +742,7 @@ except asyncio.CancelledError:
 - 思考块（可折叠："思考中..." / "思考完成"）
 - 工具调用卡片（显示工具名、输入、输出）
 - SubAgent 卡片（状态占位符，展开懒加载详情）
-- 代码块（语法高亮）
+- 代码块（CSS 样式渲染）
 - 图片显示（通过 `/api/workspace/files/` URL）
 
 #### 设置弹窗
@@ -751,13 +836,16 @@ web_api.py（模块导入时）
 ├─ _auto_init_global_config()   # 验证全局配置（模块级执行）
 │
 └─ lifespan 进入
-    └─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
+    ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
+    └─ start_message_bus()   # 初始化 MessageBus 跨会话消息总线
 ```
 
 ### 7.2 关闭流程
 
 ```
 lifespan exit
+│
+├─ stop_message_bus()        # 停止 MessageBus
 │
 ├─ stop_browser_service()    # 停止浏览器服务（Playwright + Chrome）
 │
@@ -828,7 +916,7 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
 
 ### 8.4 API Key 脱敏
 
-配置 API 返回时自动脱敏 API Key：
+配置 API 返回时自动脱敏 API Key（`model`/`llm_model` 的 `api_key` 与 `system.mineru_api_key`）：
 
 ```python
 def _mask_single_model(model: dict) -> dict:
@@ -844,6 +932,14 @@ def _mask_api_key(config: dict) -> dict:
     for key in ("model", "llm_model"):
         if key in result and isinstance(result[key], dict):
             result[key] = _mask_single_model(result[key])
+    # 系统配置中的 MinerU API Key 同样脱敏
+    if "system" in result and isinstance(result["system"], dict):
+        sys_copy = result["system"].copy()
+        mineru_key = sys_copy.get("mineru_api_key", "")
+        if mineru_key:
+            sys_copy["mineru_api_key_masked"] = mineru_key[:4] + "..." + mineru_key[-4:] if len(mineru_key) > 8 else "***"
+        sys_copy.pop("mineru_api_key", None)
+        result["system"] = sys_copy
     return result
 ```
 

@@ -12,6 +12,7 @@ data/
 │   ├── setting.json     # 全局配置
 │   └── cron.d/          # Cron 定时任务数据
 ├── agents/              # 每个 agent 的完整状态
+├── tmp/                 # 统一临时目录（TEMP/TMP/TMPDIR/CILI_TMP）
 └── deps/
     ├── python/          # Python 运行环境（embeddable 模式）
     │   ├── python.exe   # Python 解释器
@@ -20,6 +21,8 @@ data/
     │   └── Lib/         # 标准库和第三方包
     ├── git/             # Git Bash（自动下载）
     │   └── bin/bash.exe
+    ├── tectonic/        # Tectonic LaTeX 编译器（自动下载）
+    │   └── tectonic.exe
     └── browser/         # Chrome profile 数据
 ```
 
@@ -27,7 +30,7 @@ data/
 
 ### 1. 启动脚本 (`start.ps1`)
 
-**职责**：确保有可用的 Python 和 Git Bash（均从 deps 目录），然后启动 main.py
+**职责**：确保有可用的 Python、Git Bash 和 LaTeX 编译器（均从 deps 目录或系统），然后启动 main.py
 
 **流程**：
 ```
@@ -35,8 +38,11 @@ data/
 2. 如果不存在，下载 embeddable Python 3.11.9
 3. 检查 data/deps/git/bin/bash.exe 是否存在
 4. 如果不存在，下载 PortableGit
-5. 设置 GIT_BASH_PATH 环境变量
-6. 使用 deps Python 运行 main.py
+5. 检查系统是否已有 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
+6. 如果不存在，下载 Tectonic v0.17.0 到 data/deps/tectonic/
+7. 设置 GIT_BASH_PATH 环境变量
+8. 将 Tectonic 添加到 PATH（如果在 deps 目录）
+9. 使用 deps Python 运行 main.py
 ```
 
 **关键函数**：
@@ -44,6 +50,8 @@ data/
 - `Install-Python`: 下载和配置 embeddable Python
 - `Test-GitBash`: 检查 deps 目录中的 Git Bash
 - `Install-GitBash`: 下载 Git for Windows
+- `Test-Tectonic`: 检查系统中的 LaTeX 编译器（PATH、deps 目录、环境变量、常见安装路径）
+- `Install-Tectonic`: 下载 Tectonic（多镜像源：GitHub → ghproxy → ghfast → gh-proxy）
 
 ### 2. 主程序 (`main.py`)
 
@@ -51,11 +59,24 @@ data/
 
 **流程**：
 ```
-1. 创建目录结构和配置文件
-2. 检查 Git Bash 是否存在于 deps 目录
-3. 确保 deps Python 存在且健康（pip 可用）
-4. 安装依赖包（_install_packages）
-5. 启动 Web 服务
+1. 创建目录结构和配置文件（_setup_directories）
+   - 创建 data/cili/、data/agents/、data/tmp/ 等目录
+   - 创建 System workspace（data/agents/system/）
+   - 设置临时目录环境变量：TEMP、TMP、TMPDIR、CILI_TMP → data/tmp/
+   - 生成示例配置文件 setting.example.json
+2. 初始化配置（_init_settings）
+   - 若 setting.json 不存在，尝试从 ~/.claude/settings.json 迁移 API Key
+   - 否则创建默认配置
+3. 迁移旧会话格式（migrate_all_sessions）
+4. 检查 Git Bash 是否存在于 deps 目录
+5. 确保 deps Python 存在且健康（pip 可用）
+6. 安装依赖包（_install_packages）
+   - 若有新包安装，自动重启服务（os.execv）确保 import 生效
+7. 自动检测浏览器（_auto_detect_browser）
+   - 若 browser_path 为空或路径不存在，自动检测 Edge → Chrome 并写回配置
+8. 启动 Cron 调度器
+9. 启动 Web 服务（uvicorn）
+10. 延迟 2 秒后自动打开浏览器（webbrowser.open）
 ```
 
 **关键函数**：
@@ -111,7 +132,9 @@ pip install --only-binary=:all: <package>
 - httpx, playwright, playwright-stealth
 - fastapi, uvicorn[standard], python-multipart
 - requests, beautifulsoup4, lxml
-- numpy, pandas, pyyaml, toml, Pillow
+- numpy, pandas, scipy, matplotlib
+- pyyaml, toml, Pillow
+- openpyxl, python-docx, python-pptx
 - pytest
 
 **镜像源**：
@@ -122,9 +145,42 @@ pip install --only-binary=:all: <package>
 
 **start.ps1 设置的变量**：
 - `GIT_BASH_PATH`: 始终设置为 data/deps/git/bin/bash.exe
+- `PATH`: 追加 Tectonic 目录（如果从 deps 安装）
+
+**main.py 设置的变量**：
+- `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（统一临时目录）
+  - 确保所有工具（bash、python、tempfile 模块）使用同一个临时目录
+  - bash 中可用 `$TEMP` 或 `$TMPDIR`
+  - Python 中 `tempfile` 模块自动配置到此目录
 
 **main.py 使用的变量**：
 - `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 start.ps1 设置）
+- `CILI_TMP`: 临时目录路径（由 main.py 自身设置）
+
+## LaTeX / Tectonic 支持
+
+start.ps1 自动检测并安装 Tectonic（现代 LaTeX 编译器），供 `latex` 工具使用。
+
+**检测优先级**：
+1. 系统 PATH 中的 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
+2. `data/deps/tectonic/tectonic.exe`
+3. `TECTONIC_PATH` 环境变量
+4. 常见安装路径（MiKTeX、TeX Live）
+
+**安装**：
+- 版本：Tectonic v0.17.0
+- 下载位置：`data/deps/tectonic/tectonic.exe`
+- 多镜像源：GitHub → ghproxy.net → ghfast.top → gh-proxy.com
+- 安装失败不阻塞启动（降级为无 LaTeX 支持）
+
+**目录结构**：
+```
+data/deps/
+├── tectonic/
+│   └── tectonic.exe    # Tectonic LaTeX 编译器
+├── python/
+└── git/
+```
 
 ## 常见问题
 

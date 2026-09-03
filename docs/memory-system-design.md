@@ -445,7 +445,7 @@ Agent: 已保存。
       },
       "content": {
         "type": "string",
-        "description": "内容正文（knowledge 或 skill 使用）"
+        "description": "内容正文（knowledge 或 skill 使用）。内容必须完整：如果源文档被截断，应先用 offset/limit 获取剩余部分再存储，不要存储带'内容已截取'等占位符的不完整内容"
       },
       "tags": {
         "type": "array",
@@ -464,7 +464,7 @@ Agent: 已保存。
 ```
 
 **参数补充说明**：
-- `topic`：不填时默认为 `"misc"`，知识存入 `knowledge/misc/` 目录
+- `topic`：不填时默认为 `"misc"`，知识存入 `knowledge/misc/` 目录。**注意**：代码中参数描述写为 "Required for knowledge"，但实际验证并未强制要求（`kwargs.get("topic", "misc")`），不填时自动归入 `misc/`
 - `skill_name`：必须是有意义的 kebab-case 名称，代码会拒绝 UUID 格式的命名（如 `skill-a1b2c3d4` 或 36 位 UUID）
 - `source`：不填时默认为 `"manual"`
 

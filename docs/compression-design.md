@@ -83,26 +83,35 @@
 **实现位置**：`core/base_agent.py::_perform_full_compact()`
 
 **策略**：
-1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 4`）
+1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 3`）
 2. 更早的消息由 LLM 生成摘要
 3. 摘要作为新的 user+assistant 消息对插入
-4. 旧消息标记为 `_meta.valid=False`（从消息列表过滤）
+4. 旧消息标记消息级 `_meta.valid=False`（不删除，发送给 API 时被过滤）
 
 **摘要 Prompt**：
 ```
 请用中文简洁地总结以下对话的主要内容，包括：
-1. 已完成的主要工作
-2. 当前进行到哪一步
-3. 关键的发现或决策
+1. 用户的主要需求和目标
+2. 已完成的关键操作
+3. 当前进展状态
+4. 重要的上下文信息
 
-总结应简洁明了，200 字以内。
+对话内容：
+{conversation_text}
+
+请用 200-400 字总结：
 ```
 
+系统提示词：`你是一个对话总结助手。请用中文简洁地总结对话要点。`
+
 **压缩后消息格式**：
+旧消息不做删除，而是标记消息级 `_meta.valid=False`；在消息列表末尾追加两条新消息（英文占位提示 + 原始摘要文本）：
+
 ```json
 [
-  {"role": "user", "content": "[上下文压缩] 以下是之前对话的摘要：\n\n{summary}"},
-  {"role": "assistant", "content": "好的，我已经理解了之前的对话内容。以下是摘要：{summary}\n\n我将继续基于这个上下文完成任务。"},
+  {"role": "user", "content": "[Our previous conversation has been compacted due to context length.]"},
+  {"role": "assistant", "content": "{summary}"},
+  ... 分界点之前的老消息（已标记为消息级 _meta.valid=False，保留但不发送） ...
   ... 保留的最近消息 ...
 ]
 ```
@@ -116,14 +125,14 @@
 **实现位置**：`core/base_agent.py::_mark_old_tool_calls_invalid()`、`_mark_old_images_invalid()`
 
 **策略**：
-1. 优先标记旧工具调用（`tool_use`）为 `_meta.valid=False`，保留最近 3 轮
-2. 若仍超限，标记旧图片为 `_meta.valid=False`，保留最近 3 张
+1. 优先将包含旧工具调用的**整条消息**标记为 `_meta.valid=False`（消息级标记），保留最近 3 轮
+2. 若仍超限，将包含旧图片的消息标记为 `_meta.valid=False`（消息级标记），保留最近 3 张
 
-**标记字段**：
-```json
+**标记方式**（消息级 `_meta.valid`，工具调用/图片所在的整条消息被跳过）：
+```python
 {
-  "type": "tool_use",
-  "id": "call_xyz",
+  "role": "assistant",  # 或包含 tool_result 的 user 消息
+  "content": [{"type": "tool_use", "id": "call_xyz", ...}],
   "_meta": {"valid": false}
 }
 ```
@@ -136,9 +145,16 @@
 
 ### 4.1 工具结果存储
 
-所有工具输出都存储在外部文件中，Session 仅保存元数据。
+并非所有工具输出都存储到外部文件。只有以下情况才会写入外部文件：
+- **流式工具**（`bash`、`python`）：实时写入，供前端轮询显示
+- **大输出**：超过 10,000 字符（`_LARGE_OUTPUT_THRESHOLD`，将被截断）
+- **多模态内容**：含图片，保存为 `.json`
 
-**存储位置**：`{session_dir}/{exec_id}/{tool_use_id}.txt` 或 `.json`
+其余小体积非流式输出直接内联存储在消息 `content` 中。
+
+**存储位置**：
+- RootAgent：`{session_dir}/{tool_use_id}.txt` 或 `.json`
+- SubAgent：`{session_dir}/{exec_dir}/{tool_use_id}.txt` 或 `.json`
 
 **存储时机**：`Tool.execute()` 返回 `ToolResult` 时
 
@@ -203,7 +219,7 @@ total += max(750, len(data) // 100)
 | `MICROCOMPACT_KEEP_RECENT` | 6 | Microcompact 保留的最近工具结果数 |
 | `FULL_COMPACT_TOKEN_RATIO` | 0.80 | 触发 Full Compact 的 token 比例 |
 | `MAX_BODY_SIZE` | 3_000_000 | 触发 Emergency 的字节数（3MB） |
-| `KEEP_USER_MESSAGES` | 4 | Full Compact 保留的用户消息数 |
+| `KEEP_USER_MESSAGES` | 3 | Full Compact 保留的用户消息数 |
 
 ---
 

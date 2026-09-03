@@ -45,6 +45,7 @@ SubAgent.run()                       ← cron 直接执行（非流式）
 - Cron **直接创建 SubAgent**，无需经过 RootAgent
 - SubAgent 使用 `context-bounded-processing` 技能，适合后台自主执行
 - Session 消息格式与主 Agent 调用 SubAgent 完全一致（tool_use + tool_result），UI 渲染 SubAgent 卡片，用户可在 session 中继续对话
+- **注意**：`cron` 工具的 description 文本仍写着 "Tasks run through RootAgent in a 'Cron Tasks' session"（历史遗留文案），与实际执行链路不符——任务实际由 Cron 直接创建 SubAgent 在 "[Cron] 任务描述" session 中执行，不经过 RootAgent
 
 ### 2.2 组件关系
 
@@ -96,13 +97,17 @@ main.py
   └─ start_scheduler()           # 创建 CronScheduler 单例
        └─ scheduler.start()
             ├─ load_tasks()      # 从 core/cron.d/*.json + user_tasks.json 加载
+            ├─ 无任务? → 直接返回（self.tasks 为空时不启动后台线程）
             └─ 启动后台线程      # 每 60 秒检查任务
+
+> **注意**：`start()` 在 `load_tasks()` 之后检查任务列表，如果没有任何任务，直接返回、
+> 不启动后台线程（日志输出 "No tasks to schedule"）。
 
 应用关闭流程：
 web/web_api.py (lifespan shutdown)
-  └─ stop_scheduler()
-       └─ scheduler.stop()
-            └─ 等待线程结束 (timeout=5s)
+  └─ stop_scheduler()            # 停止调度器并清除单例
+       ├─ scheduler.stop()       # _running=False，等待线程结束（timeout=5s）
+       └─ _scheduler = None      # 清除全局单例，下次 get_scheduler() 重新创建
 ```
 
 ---
@@ -159,6 +164,7 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
   "name": "extract-user-info",
   "description": "每天提取用户画像",
   "enabled": true,
+  "one_time": false,
   "workspace_uuid": "system",
   "schedule": {
     "type": "cron",
@@ -181,6 +187,7 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 | `name` | string | 是 | 任务唯一标识 |
 | `description` | string | 否 | 任务描述 |
 | `enabled` | bool | 否 | 是否启用（默认 true） |
+| `one_time` | bool | 否 | 一次性任务：首次执行后自动删除（默认 false；`cron` 工具创建用户任务时默认 true） |
 | `workspace_uuid` | string | 否 | 目标 workspace（空=System） |
 | `content` | string/dict/list | 是 | 任务来源（见下文） |
 | `schedule` | object | 是 | 调度配置 |
@@ -189,6 +196,8 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 | `schedule.expr` | string | cron | 标准 5 字段 cron 表达式 |
 | `config` | object | 否 | 额外配置 |
 | `config.max_executions` | int | 否 | 最大执行次数（1-9999，默认 9999） |
+
+**`one_time`（一次性任务）**：设为 `true` 时，任务执行后（无论结果状态）自动删除——从 `user_tasks.json` 配置、`state/` 状态文件和内存任务列表中移除，不再参与调度（`_delete_one_time_task()`）。`cron` 工具创建用户任务时默认 `one_time=true`，仅当用户明确要求周期执行时（如"每天""每小时"）才设为 `false`。
 
 ### 4.2 调度类型
 
@@ -374,7 +383,7 @@ data/agents/system/
 CronTask.execute():
 │
 ├─ 调用 task_fn() 获取任务列表
-│   └─ 空列表 → 返回 {"status": "skipped"}
+│   └─ 空列表 → 返回 {"status": "skipped", "message": "No tasks to execute", "iterations": 0}
 │
 ├─ 遍历任务列表
 │   ├─ 解析目标 workspace（task_item.workspace_uuid > self.workspace_uuid > "system"）
@@ -389,12 +398,25 @@ CronTask.execute():
 │   │   ├─ 添加 user message（tool_result: 含 exec_id）+ assistant message（摘要）
 │   │   ├─ 保存 SubAgent 执行日志
 │   │   └─ subagent.close()
-│   └─ 收集结果
+│   └─ 收集结果（results.append({"task": 序号, **result})）
 │
 └─ 汇总所有结果
     ├─ 全部成功 → {"status": "completed"}
     └─ 部分失败 → {"status": "partial"}
+
+**execute() 返回格式**：
+
+```json
+{"status": "completed" | "partial",
+ "tasks_count": 任务总数,
+ "results": [{"task": 1, "status": "completed", "workspace_uuid": "...",
+              "session_id": "...", "iterations": 5}, ...],
+ "iterations": 所有任务迭代数之和}
 ```
+
+- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`
+- `completed`：所有任务成功；`partial`：至少一个任务失败或部分成功
+- `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`，失败时含 `error`
 
 ### 6.3 自循环任务（remaining 计数器）
 
@@ -504,12 +526,14 @@ class CronTask:
     description: str              # 任务描述
     enabled: bool                 # 是否启用
     workspace_uuid: str           # 目标 workspace（空=System）
+    one_time: bool                # 一次性任务（执行后自动删除）
     schedule: dict                # 调度配置
     config: dict                  # 额外配置（含 max_executions）
     task_id: str                  # 任务 ID
     _next_run: datetime           # 下次运行时间
     _last_run: datetime           # 上次运行时间
     _run_count: int               # 运行计数
+    _session_id: str              # 关联的 cron session UUID（从状态文件恢复）
     _remaining: int | None        # 剩余执行次数（配合 loop 工具）
     _task_fn: Callable            # 任务函数（可选）
 ```
