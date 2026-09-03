@@ -143,10 +143,14 @@ class OpenAIAdapter(Adapter):
                             "arguments": arguments,
                         },
                     }
-                    # Google Gemini: include thought_signature for reasoning models
+                    # Google Gemini: include thought_signature in extra_content.google
                     thought_sig = block_dict.get("thought_signature", "")
                     if thought_sig:
-                        tool_call_dict["thought_signature"] = thought_sig
+                        tool_call_dict["extra_content"] = {
+                            "google": {
+                                "thought_signature": thought_sig
+                            }
+                        }
                     tool_calls.append(tool_call_dict)
 
                 elif btype == "tool_result":
@@ -298,11 +302,15 @@ class OpenAIAdapter(Adapter):
         # Tool calls - keep arguments as raw JSON string
         for tc in message.get("tool_calls", []):
             func = tc.get("function", {})
+            # Google Gemini: thought_signature is in extra_content.google
+            extra_content = tc.get("extra_content", {})
+            google_content = extra_content.get("google", {})
+            thought_signature = google_content.get("thought_signature", "")
             content_blocks.append(ToolCallBlock(
                 id=tc.get("id", ""),
                 name=func.get("name", ""),
                 arguments=func.get("arguments", ""),
-                thought_signature=tc.get("thought_signature", ""),
+                thought_signature=thought_signature,
             ))
 
         # Map finish_reason
@@ -389,8 +397,10 @@ class OpenAIAdapter(Adapter):
                         # Emit id and name if present
                         tc_id = tc.get("id", "")
                         tc_name = tc.get("function", {}).get("name", "")
-                        # Google Gemini: thought_signature for reasoning models
-                        tc_thought_sig = tc.get("thought_signature", "")
+                        # Google Gemini: thought_signature in extra_content.google
+                        extra_content = tc.get("extra_content", {})
+                        google_content = extra_content.get("google", {})
+                        tc_thought_sig = google_content.get("thought_signature", "")
                         if tc_id or tc_name or tc_thought_sig:
                             yield StreamChunk.tool_call_delta(
                                 chunk_idx,
