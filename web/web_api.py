@@ -33,6 +33,7 @@ from core.root_agent import RootAgent
 from core.session import SessionManager
 from core.message_bus import get_message_bus
 from core.tools import get_tool_by_name
+from core.tools.shared.todo import get_todos_from_session
 
 # Configure logging
 logging.basicConfig(
@@ -1256,9 +1257,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         event_queue.put(f"data: {event}\n\n")
 
         # Check for todo_write tool and push todo update event
-        if tool_name == "todo_write" and not is_error and agent.session_manager:
-            todos = agent.session_manager.metadata.get("todos")
-            if todos is not None:
+        if tool_name == "todo_write" and not is_error:
+            todos = get_todos_from_session(agent.session_manager)
+            if todos:
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
@@ -1529,9 +1530,9 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         event_queue.put(f"data: {event}\n\n")
 
         # Check for todo_write tool and push todo update event
-        if tool_name == "todo_write" and not is_error and agent.session_manager:
-            todos = agent.session_manager.metadata.get("todos")
-            if todos is not None:
+        if tool_name == "todo_write" and not is_error:
+            todos = get_todos_from_session(agent.session_manager)
+            if todos:
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
