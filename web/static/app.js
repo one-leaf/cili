@@ -1454,18 +1454,35 @@ function renderSubagentRef(msg, idx) {
 // ── 工具输出实时流式显示 ──
 // 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入
 // 前端在收到 tool_use SSE 事件后启动轮询，收到 tool_result 后停止
+// 工具输出显示为独立的消息气泡（类似思考块），执行完毕后自动消失
 
-function startToolStreaming(toolUseId, contentDiv) {
+function startToolStreaming(toolUseId, toolName) {
     if (!currentWorkspace || !currentSession) return;
     let offset = 0;
 
-    // 创建输出容器
+    // 创建独立的消息气泡（类似思考块）
+    const div = document.createElement('div');
+    div.className = 'message assistant tool-streaming-bubble';
+    div.dataset.toolUseId = toolUseId;
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+
+    const title = document.createElement('div');
+    title.className = 'streaming-title';
+    title.textContent = `⚡ ${toolName} 执行中...`;
+    contentDiv.appendChild(title);
+
     const pre = document.createElement('pre');
     pre.className = 'tool-streaming-output';
     pre.textContent = '';
     contentDiv.appendChild(pre);
 
-    _toolStreamTimers[toolUseId] = { timer: null, pre, offset };
+    div.appendChild(contentDiv);
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    _toolStreamTimers[toolUseId] = { timer: null, pre, offset, div };
 
     const timer = setInterval(async () => {
         try {
@@ -1495,6 +1512,10 @@ function stopToolStreaming(toolUseId) {
     const entry = _toolStreamTimers[toolUseId];
     if (entry) {
         if (entry.timer) clearInterval(entry.timer);
+        // 删除独立的输出气泡
+        if (entry.div && entry.div.parentNode) {
+            entry.div.remove();
+        }
         delete _toolStreamTimers[toolUseId];
     }
 }
@@ -1871,9 +1892,9 @@ function renderAskUserQuestions(container, input, toolUseId) {
                                 const pre = document.createElement('pre');
                                 pre.textContent = JSON.stringify(event.input, null, 2);
                                 contentDiv.appendChild(pre);
-                                // 对 bash/python 工具启动实时输出流式显示
+                                // 对 bash/python 工具启动实时输出流式显示（独立气泡）
                                 if (event.tool === 'bash' || event.tool === 'python') {
-                                    startToolStreaming(event.tool_use_id, contentDiv);
+                                    startToolStreaming(event.tool_use_id, event.tool);
                                 }
                             }
                             assistantDiv = null;
@@ -2381,9 +2402,9 @@ async function sendMessage() {
                             const pre = document.createElement('pre');
                             pre.textContent = JSON.stringify(event.input, null, 2);
                             contentDiv.appendChild(pre);
-                            // 对 bash/python 工具启动实时输出流式显示
+                            // 对 bash/python 工具启动实时输出流式显示（独立气泡）
                             if (event.tool === 'bash' || event.tool === 'python') {
-                                startToolStreaming(event.tool_use_id, contentDiv);
+                                startToolStreaming(event.tool_use_id, event.tool);
                             }
                         }
 
