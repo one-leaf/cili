@@ -544,24 +544,29 @@ class BaseAgent:
         """Full auto compact: summarize old messages, keep recent user messages.
 
         Returns (before_tokens, after_tokens) tuple.
+        Project instruction messages (CLAUDE.md/agent.md) are always preserved.
         """
         from core.compression import count_messages_tokens
 
         all_messages = self.messages
         total_tokens = self._count_messages_tokens(self.get_valid_messages())
 
-        # Find split point
+        # Find split point (project instructions are excluded from the count)
         valid_messages = self.get_valid_messages()
         split_idx = self._find_split_by_user_messages(valid_messages, keep_user_messages)
         if split_idx <= 0:
             raise ValueError("Not enough messages to compress")
 
         # Mark messages before split as invalid (using _meta.valid)
+        # Skip project instruction messages - they are always preserved
         valid_count = 0
         for i, msg in enumerate(all_messages):
             # Check validity
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
+                continue
+            # Never mark project instructions as invalid
+            if self._is_project_instructions_message(msg):
                 continue
             if valid_count < split_idx:
                 # Mark message-level _meta.valid = False
@@ -572,8 +577,15 @@ class BaseAgent:
             else:
                 break
 
-        # Summarize old messages
-        old_messages = valid_messages[:split_idx]
+        # Summarize old messages (excluding project instructions)
+        old_messages = [
+            msg for msg in valid_messages[:split_idx]
+            if not self._is_project_instructions_message(msg)
+        ]
+        if not old_messages:
+            # Nothing to summarize
+            return total_tokens, total_tokens
+
         summary = self._summarize_messages(old_messages)
         if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
             logger.error("摘要生成失败，跳过压缩")
@@ -591,13 +603,22 @@ class BaseAgent:
         return total_tokens, new_tokens
 
     def _find_split_by_user_messages(self, messages: list[dict], keep_user_count: int) -> int:
-        """Find split point keeping last N user text messages."""
+        """Find split point keeping last N user text messages.
+
+        Skips project instruction messages (system-reminder with CLAUDE.md content)
+        as they should always be preserved.
+        """
+        from core.prompts import has_instructions_message
+
         user_text_indices = []
         for i, msg in enumerate(messages):
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
             if isinstance(content, str):
+                # Skip project instruction messages - they are always preserved
+                if self._is_project_instructions_message(msg):
+                    continue
                 user_text_indices.append(i)
 
         if len(user_text_indices) <= keep_user_count:
@@ -619,6 +640,16 @@ class BaseAgent:
                 continue
             break
         return split_idx
+
+    def _is_project_instructions_message(self, msg: dict) -> bool:
+        """Check if a message is the project instructions (CLAUDE.md/agent.md)."""
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            return False
+        return (
+            content.startswith("<system-reminder>")
+            and "Codebase and user instructions" in content
+        )
 
     def _summarize_messages(self, messages: list[dict]) -> str:
         """Use LLM to summarize messages."""

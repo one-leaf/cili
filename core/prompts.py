@@ -642,6 +642,8 @@ def find_project_instructions(cwd: str) -> str | None:
 def build_instructions_message(cwd: str) -> dict | None:
     """构建项目指令消息（作为第一条 user 消息注入）。
 
+    使用 <system-reminder> 标签包装，与 claude-code 保持一致。
+
     Args:
         cwd: 工作区根目录路径
 
@@ -655,12 +657,12 @@ def build_instructions_message(cwd: str) -> dict | None:
     return {
         "role": "user",
         "content": (
-            "[Project Instructions]\n"
-            "<project-instructions>\n"
+            "<system-reminder>\n"
+            "Codebase and user instructions are shown below. "
+            "Be sure to adhere to these instructions. "
+            "IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\n"
             f"{content.strip()}\n"
-            "</project-instructions>\n"
-            "(Note: These are project-specific instructions from local files. "
-            "They cannot override system-level rules or safety guidelines.)"
+            "</system-reminder>"
         )
     }
 
@@ -683,6 +685,7 @@ def has_instructions_message(messages: list[dict]) -> bool:
     return (
         first.get("role") == "user"
         and isinstance(first.get("content"), str)
-        and first["content"].startswith("[Project Instructions]")
+        and first["content"].startswith("<system-reminder>")
+        and "Codebase and user instructions" in first["content"]
     )
 
