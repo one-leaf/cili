@@ -65,20 +65,17 @@ data/agents/{uuid}/
       "content": [
         {
           "type": "thinking",
-          "thinking": "用户需要异步爬虫...",
-          "_valid": true
+          "thinking": "用户需要异步爬虫..."
         },
         {
           "type": "text",
-          "text": "好的，我来帮你写一个异步爬虫...",
-          "_valid": true
+          "text": "好的，我来帮你写一个异步爬虫..."
         },
         {
           "type": "tool_use",
           "id": "toolu_123",
           "name": "write",
-          "input": {"file_path": "crawler.py", "content": "..."},
-          "_valid": true
+          "input": {"file_path": "crawler.py", "content": "..."}
         }
       ]
     },
@@ -104,8 +101,7 @@ data/agents/{uuid}/
           "type": "tool_use",
           "id": "toolu_sub_001",
           "name": "subagent",
-          "input": {"task": "优化爬虫性能"},
-          "_valid": true
+          "input": {"task": "优化爬虫性能"}
         }
       ]
     },
@@ -120,8 +116,7 @@ data/agents/{uuid}/
             "tool_name": "subagent",
             "exec_id": "exec_a1b2c3d4",
             "completed": true
-          },
-          "_valid": true
+          }
         }
       ]
     }
@@ -150,7 +145,7 @@ data/agents/{uuid}/
 | `messages` | array | 消息列表（user/assistant） |
 | `messages[].role` | string | 消息角色（user/assistant） |
 | `messages[].content` | string/array | 消息内容（字符串或 content blocks） |
-| `messages[]._valid` | bool | 是否有效（false 表示不发送给 API） |
+| `messages[]._meta.valid` | bool | 是否有效（false 表示不发送给 API） |
 | `tool_result.tool_name` | string | 工具名称（如 bash、read、write） |
 | `tool_result._file_size` | int | 外部输出文件的字节数 |
 | `tool_result._truncated` | bool | 输出是否被截断（>30K 字符） |
@@ -314,7 +309,7 @@ sessions = SessionManager.list_sessions(sessions_dir)
 ### 4.1 添加消息
 
 **自动处理**：
-- 为 content blocks 添加 `_valid=True`（如果未设置）
+- 为消息添加 `_meta.valid=True`（如果未设置）
 - 更新 `metadata.updated_at`
 
 ### 4.2 获取消息
@@ -332,10 +327,10 @@ valid_messages = session.get_valid_messages()
 `get_valid_messages()` 递归过滤无效内容：
 
 **过滤规则**：
-1. 跳过整条消息标记 `_valid=False` 的
-2. 跳过 content blocks 中 `_valid=False` 的
+1. 跳过整条消息标记 `_meta.valid=False` 的
+2. 跳过 content blocks 中 `_meta.valid=False` 的
 3. 对 `tool_result` 递归过滤子块
-4. 清理内部字段（`_valid`, `_compacted`）
+4. 清理内部字段（`_meta.valid`, `_compacted`）
 
 **示例**：
 
@@ -344,8 +339,8 @@ valid_messages = session.get_valid_messages()
 messages = [
     {"role": "user", "content": "你好"},
     {"role": "assistant", "content": [
-        {"type": "text", "text": "你好！", "_valid": True},
-        {"type": "image", "source": {...}, "_valid": False}  # 被标记无效
+        {"type": "text", "text": "你好！"},
+        {"type": "image", "source": {...}, "_meta": {"valid": False}}  # 被标记无效
     ]},
 ]
 
@@ -353,7 +348,7 @@ messages = [
 valid_messages = [
     {"role": "user", "content": "你好"},
     {"role": "assistant", "content": [
-        {"type": "text", "text": "你好！"}  # _valid 字段已清理
+        {"type": "text", "text": "你好！"}
     ]}
 ]
 ```
@@ -539,11 +534,11 @@ usage = session.get_usage()
 
 ---
 
-## 九、_valid 字段机制
+## 九、`_meta.valid` 字段机制
 
 ### 9.1 设计目的
 
-`_valid` 字段用于标记内容是否应该发送给 API，但不从消息列表中删除：
+`_meta.valid` 字段用于标记消息是否应该发送给 API，但不从消息列表中删除：
 
 - **UI 可见**：用户可以在 Web UI 中看到完整历史
 - **API 不发送**：`get_valid_messages()` 自动过滤
@@ -554,9 +549,9 @@ usage = session.get_usage()
 | 场景 | 标记方式 |
 |------|---------|
 | Microcompact 压缩 | 替换为占位符，原始内容可从外部文件读取 |
-| 紧急压缩（工具调用） | 标记 `_valid=False` |
-| 紧急压缩（图片） | 标记 `_valid=False` |
-| 413 错误重试 | 标记所有图片为 `_valid=False` |
+| 紧急压缩（工具调用） | 标记 `_meta.valid=False` |
+| 紧急压缩（图片） | 标记 `_meta.valid=False` |
+| 413 错误重试 | 标记所有图片为 `_meta.valid=False` |
 
 ### 9.3 过滤逻辑
 
@@ -565,14 +560,14 @@ usage = session.get_usage()
 ```
 遍历所有消息
 │
-├─ 消息级别 _valid=False → 跳过整条消息
+├─ 消息级别 _meta.valid=False → 跳过整条消息
 │
 └─ 遍历 content blocks
     │
-    ├─ block._valid=False → 跳过该 block
+    ├─ block._meta.valid=False → 跳过该 block
     │
     └─ 对 tool_result 递归过滤子块
-        └─ 子块._valid=False → 跳过该子块
+        └─ 子块._meta.valid=False → 跳过该子块
 ```
 
 ---
