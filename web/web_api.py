@@ -349,8 +349,15 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> RootAgen
         return agents[key]
 
 
-# Static files
-app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+# Static files (no-store: 前端页面和 js/css 每次打开强制更新，不做缓存)
+class NoCacheStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 
 # ---------- Models ----------
@@ -379,13 +386,17 @@ class UpdateWorkspaceRequest(BaseModel):
 @app.get("/favicon.ico")
 async def favicon():
     """Serve favicon (browsers request this at root)."""
-    return FileResponse(str(WEB_DIR / "static" / "favicon.ico"))
+    response = FileResponse(str(WEB_DIR / "static" / "favicon.ico"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/")
 async def root():
     """Serve the main page."""
-    return FileResponse(str(WEB_DIR / "static" / "index.html"))
+    response = FileResponse(str(WEB_DIR / "static" / "index.html"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/health")

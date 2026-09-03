@@ -2076,10 +2076,12 @@ async function createNewSession() {
 async function stopAgent() {
     if (!currentWorkspace || !currentSession) return;
 
-    // Disable button immediately after clicking
+    // Disable button immediately after clicking, keep "停止中..." until the SSE stream actually closes
+    // (agent truly stopped). sendMessage()'s finally block restores the button.
     sendBtn.disabled = true;
     sendBtn.textContent = '停止中...';
 
+    let success = false;
     try {
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stop`,
@@ -2093,6 +2095,7 @@ async function stopAgent() {
         const result = await response.json();
         if (result.success) {
             console.log('Agent stop signal sent');
+            success = true;
         } else {
             console.warn('Stop failed:', result.message);
         }
@@ -2100,13 +2103,25 @@ async function stopAgent() {
         console.error('Failed to stop agent:', error);
     }
 
-    // 立即恢复按钮状态，不再等待 SSE 流关闭（LLM 重试可能持续数分钟）
-    // sendMessage() 的 finally 块在 SSE 流最终关闭时会再次重置，无冲突
-    isSending = false;
-    sendBtn.disabled = false;
-    sendBtn.textContent = '发送';
-    sendBtn.classList.remove('btn-danger');
-    sendBtn.classList.add('btn-primary');
+    if (!success) {
+        // 停止信号未送达（agent 可能已自行停止或网络异常）：恢复为可点击的"停止"按钮，
+        // 若 agent 确实已停止，SSE 流马上关闭，finally 会恢复为"发送"
+        sendBtn.disabled = false;
+        sendBtn.textContent = '停止';
+    } else {
+        // 保持"停止中..."直到 SSE 流关闭。兜底超时：若流长时间未关闭
+        // （如 LLM 重试卡住），恢复"停止"按钮允许重新点击
+        clearTimeout(window._stopPendingTimer);
+        window._stopPendingTimer = setTimeout(() => {
+            if (isSending && sendBtn.textContent === '停止中...') {
+                sendBtn.disabled = false;
+                sendBtn.textContent = '停止';
+            }
+        }, 60000);
+    }
+    // 不在这里恢复按钮状态：isSending 保持 true，阻止停止过程中发送新消息，
+    // 直到 SSE 流关闭（agent 真正停止）后由 sendMessage() 的 finally 恢复
+
     chatInput.disabled = false;
 
     // 禁用所有 pending 的 ask_user 问题卡片
@@ -2360,6 +2375,7 @@ async function sendMessage() {
         console.error('Failed to send message:', error);
         addMessage('assistant', '发送消息失败: ' + error.message);
     } finally {
+        clearTimeout(window._stopPendingTimer);
         isSending = false;
         sendBtn.disabled = false;
         sendBtn.textContent = '发送';
