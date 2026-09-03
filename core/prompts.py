@@ -449,9 +449,11 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
     每次请求都不同（datetime 变化等），作为单独段发送不影响 system prompt 的缓存。
     包含：Workspace、Memory、User Profile（自动加载）、Current Time。
     """
+    import os
     current_date = datetime.now().strftime("%Y-%m-%d")
-    from core.config import get_workspace_data_dir
+    from core.config import get_workspace_data_dir, PROJECT_ROOT
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
+    tmp_dir = os.environ.get("CILI_TMP", str(PROJECT_ROOT / "data" / "tmp"))
 
     parts = [
         "## Workspace",
@@ -476,6 +478,15 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "## Python Environment",
         "",
         "`python` and `pip` are pre-configured in PATH, available directly in bash.",
+        "",
+        "## Temporary Files",
+        "",
+        f"Temporary directory: `{tmp_dir}`",
+        "",
+        "Environment variables TEMP, TMP, TMPDIR are all set to this directory.",
+        "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
+        "In bash: use `$TEMP` or `$TMPDIR`. In Python: `tempfile` module is auto-configured.",
+        "Agent can also use `CILI_TMP` env var to reference this path.",
         "",
         "## Memory",
         "",
@@ -537,8 +548,11 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
 
 def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
     """构建 SubAgent 轻量环境上下文。"""
+    import os
     import platform
+    from core.config import PROJECT_ROOT
     current_date = datetime.now().strftime("%Y-%m-%d")
+    tmp_dir = os.environ.get("CILI_TMP", str(PROJECT_ROOT / "data" / "tmp"))
 
     return "\n".join([
         "## Execution Environment",
@@ -552,6 +566,8 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "`python` and `pip` are pre-configured in PATH.",
         "",
         "**This directory is the CWD for all tool executions.** All relative paths resolve against this directory.",
+        "",
+        f"**Temporary directory**: `{tmp_dir}` (TEMP/TMP/TMPDIR env vars set)",
         "",
         f"**Current Date: {current_date}**",
         "",

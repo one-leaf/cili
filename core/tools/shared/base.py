@@ -203,6 +203,7 @@ class ToolResult:
 _PROJECT_ROOT = str(PROJECT_ROOT)
 _VENV_DIR = os.path.join(_PROJECT_ROOT, "data", "deps", "python")
 _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
+_TMP_DIR = os.path.join(_PROJECT_ROOT, "data", "tmp")
 
 
 def _to_bash_path(path: str) -> str:
@@ -574,11 +575,21 @@ class Tool:
             if _VENV_SCRIPTS:
                 paths.append(_to_bash_path(_VENV_SCRIPTS))
 
+            # 统一临时目录（bash 格式）
+            tmp_bash = _to_bash_path(_TMP_DIR)
+
             if paths:
                 path_str = ":".join(paths)
-                full_command = f"export PATH=\"{path_str}:$PATH\" && {command}"
+                full_command = (
+                    f'export PATH="{path_str}:$PATH" '
+                    f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                    f'&& {command}'
+                )
             else:
-                full_command = command
+                full_command = (
+                    f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                    f'&& {command}'
+                )
 
             proc = subprocess.Popen(
                 [_GIT_BASH_PATH, "-c", full_command],

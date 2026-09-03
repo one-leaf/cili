@@ -20,7 +20,7 @@ SubAgent (orchestrator)
     │
     │ 1. python(code="init + split chunks + save state")
     ▼
-    State saved to .cili_tasks/{task_id}/state.json
+    State saved to $CILI_TMP/{task_id}/state.json
     │
     │ 2. llm(input_file="chunk_001.txt", output_file="result_001.txt")
     │ 3. python(code="update state, mark chunk 0 done")
@@ -62,13 +62,13 @@ The agent reads `state.json` to know progress and decides the next step. Python 
 # ✅ CORRECT: Python does one bounded operation
 import json, os
 
-state_path = ".cili_tasks/task_123/state.json"
+state_path = os.path.join(os.environ["CILI_TMP"], "task_123/state.json")
 with open(state_path) as f:
     state = json.load(f)
 
 # Process next chunk
 idx = state["cursor"]["next_chunk_idx"]
-chunk_file = f".cili_tasks/task_123/chunks/chunk_{idx:03d}.txt"
+chunk_file = os.path.join(os.environ["CILI_TMP"], f"task_123/chunks/chunk_{idx:03d}.txt")
 with open(chunk_file, encoding="utf-8") as f:
     chunk = f.read()
 
@@ -150,7 +150,7 @@ llm(input_file="input.txt", output_file="output.txt")
 
 ## Persistent State
 
-Task state MUST be persisted in `{cwd}/.cili_tasks/{task_id}/state.json` outside the Python process.
+Task state MUST be persisted in `$CILI_TMP/{task_id}/state.json` outside the Python process.
 
 ```json
 {
@@ -263,7 +263,7 @@ The following pattern shows how to orchestrate context-bounded processing. **The
 # Agent calls: python(code="...")
 import os, json, time
 
-TASK_DIR = ".cili_tasks"
+TASK_DIR = os.environ["CILI_TMP"]
 INPUT_FILE = "input.txt"
 OUTPUT_FILE = "output.txt"
 task_id = f"task_{int(time.time())}"
@@ -321,16 +321,16 @@ The agent reads `state.json`, then for each chunk:
 
 1. Call `llm` to process the chunk:
    ```
-   llm(input_file=".cili_tasks/{task_id}/chunks/chunk_000.txt",
+   llm(input_file="$CILI_TMP/{task_id}/chunks/chunk_000.txt",
        prompt="Translate to Chinese",
-       output_file=".cili_tasks/{task_id}/results/result_000.txt")
+       output_file="$CILI_TMP/{task_id}/results/result_000.txt")
    ```
 
 2. Call `python` to update state:
    ```python
    # Agent calls: python(code="...")
-   import json
-   state_path = ".cili_tasks/{task_id}/state.json"
+   import json, os
+   state_path = os.path.join(os.environ["CILI_TMP"], "{task_id}/state.json")
    with open(state_path) as f:
        state = json.load(f)
    idx = state["cursor"]["next_chunk_idx"]
@@ -351,7 +351,7 @@ The agent reads `state.json`, then for each chunk:
 # Agent calls: python(code="...")
 import os, json, shutil
 
-TASK_DIR = ".cili_tasks"
+TASK_DIR = os.environ["CILI_TMP"]
 task_id = "..."  # from state
 OUTPUT_FILE = "output.txt"
 task_dir = f"{TASK_DIR}/{task_id}"
@@ -389,9 +389,9 @@ When processing multiple HTTP requests, apply the same single-call-per-invocatio
 
 ```python
 # Agent calls: python(code="...") — processes exactly 1 URL
-import requests, json
+import requests, json, os
 
-state_path = ".cili_tasks/task_abc/state.json"
+state_path = os.path.join(os.environ["CILI_TMP"], "task_abc/state.json")
 with open(state_path) as f:
     state = json.load(f)
 
@@ -429,7 +429,7 @@ for url in urls:
 
 ## Key Rules
 
-1. **Temp files must live under `.cili_tasks/`** — All split chunks, intermediate results, state files, and temporary text MUST be written inside `.cili_tasks/{task_id}/`. Never scatter temp files in the working directory. Only the final output is written to the user-specified path. On failure the user can simply delete the entire `.cili_tasks/` directory to clean up.
+1. **Temp files must live under `$CILI_TMP/`** — All split chunks, intermediate results, state files, and temporary text MUST be written inside `$CILI_TMP/{task_id}/` (i.e., `data/tmp/{task_id}/`). Never scatter temp files in the working directory. Only the final output is written to the user-specified path. On failure the user can simply delete the entire `data/tmp/` directory to clean up.
 2. **Agent orchestrates, Python manages state** — The agent (SubAgent) calls tools step by step. Python handles state management, file splitting, and result merging. Never let Python loop over slow external calls.
 3. **Use `llm` directly for text processing** — Call `llm` as a tool for each chunk. Do not invoke the LLM from within Python code.
 4. **Single external call per Python invocation** — Each Python call processes at most 1 slow external operation (HTTP request, etc.) then returns; the agent handles loop orchestration.

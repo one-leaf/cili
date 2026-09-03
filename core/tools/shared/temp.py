@@ -1,16 +1,17 @@
 """Temp tool - 临时文件和目录管理。
 
-在 workspace 的 .cili/tmp/{session_id}/ 下创建临时文件和目录。
+在 data/tmp/{session_id}/ 下创建临时文件和目录。
 用于存放下载内容、中间结果等临时数据。
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-from core.config import DATA_DIR, get_workspace_data_dir
+from core.config import PROJECT_ROOT
 from core.tools.shared.base import Tool, ToolResult
 
 
@@ -20,7 +21,7 @@ class TempTool(Tool):
     name = "temp"
     description = """Manage temporary files and directories for the current session.
 
-Temporary files are stored in the workspace's .cili/tmp/{session_id}/ directory.
+Temporary files are stored in data/tmp/{session_id}/ directory (unified temp location).
 Use this for intermediate results, downloads, or any data that doesn't need to persist.
 
 Available actions:
@@ -57,13 +58,13 @@ Examples:
 
     def _get_temp_dir(self) -> Path:
         """获取当前 session 的临时目录。"""
-        base = get_workspace_data_dir(self.workspace_uuid)
+        tmp_base = Path(os.environ.get("CILI_TMP", str(PROJECT_ROOT / "data" / "tmp")))
 
         session_id = "no-session"
         if self.session_manager and hasattr(self.session_manager, "session_id"):
             session_id = self.session_manager.session_id or "no-session"
 
-        temp_dir = base / ".cili" / "tmp" / session_id
+        temp_dir = tmp_base / session_id
         temp_dir.mkdir(parents=True, exist_ok=True)
         return temp_dir
 

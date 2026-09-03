@@ -103,6 +103,7 @@ class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 _CILI_DIR = os.path.join(_PROJECT_ROOT, "data", "cili")
 _DEPS_DIR = os.path.join(_PROJECT_ROOT, "data", "deps")
+_TMP_DIR = os.path.join(_PROJECT_ROOT, "data", "tmp")
 _DEPS_GIT_BASH = os.path.join(_DEPS_DIR, "git", "bin", "bash.exe")
 
 # Runtime Python directory (always use data/deps/python, embeddable mode)
@@ -225,6 +226,14 @@ def _setup_directories() -> None:
             }, f, indent=2, ensure_ascii=False)
 
     os.makedirs(os.path.join(_PROJECT_ROOT, "workspace"), exist_ok=True)
+
+    # 统一临时目录：创建 data/tmp 并注入环境变量
+    os.makedirs(_TMP_DIR, exist_ok=True)
+    os.environ["TEMP"] = _TMP_DIR
+    os.environ["TMP"] = _TMP_DIR
+    os.environ["TMPDIR"] = _TMP_DIR
+    os.environ["CILI_TMP"] = _TMP_DIR
+
     _create_example_config()
 
 

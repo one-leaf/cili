@@ -1,6 +1,8 @@
 """Tests for core/tools/shared/temp.py - 临时文件管理工具。"""
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,10 +17,25 @@ class MockSessionManager:
         self.session_id = session_id
 
 
+@pytest.fixture
+def tmp_env(tmp_path):
+    """将 CILI_TMP 环境变量指向测试临时目录。"""
+    test_tmp = str(tmp_path / "cili_tmp")
+    os.makedirs(test_tmp, exist_ok=True)
+    old = os.environ.get("CILI_TMP")
+    os.environ["CILI_TMP"] = test_tmp
+    yield test_tmp
+    # 还原
+    if old is not None:
+        os.environ["CILI_TMP"] = old
+    else:
+        os.environ.pop("CILI_TMP", None)
+
+
 class TestTempToolCreateFile:
     """create_file action 测试。"""
 
-    def test_create_file_basic(self, test_workspace):
+    def test_create_file_basic(self, test_workspace, tmp_env):
         """测试创建基本文件。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -31,7 +48,7 @@ class TestTempToolCreateFile:
         assert "Created temp file" in result.output
         assert "test.txt" in result.output
 
-    def test_create_file_empty_content(self, test_workspace):
+    def test_create_file_empty_content(self, test_workspace, tmp_env):
         """测试创建空文件。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -43,7 +60,7 @@ class TestTempToolCreateFile:
         assert not result.is_error
         assert "Created temp file" in result.output
 
-    def test_create_file_requires_name(self, test_workspace):
+    def test_create_file_requires_name(self, test_workspace, tmp_env):
         """测试 create_file 需要 name 参数。"""
         tool = TempTool(cwd=test_workspace, workspace_uuid="test-uuid")
         result = tool.execute(action="create_file")
@@ -55,7 +72,7 @@ class TestTempToolCreateFile:
 class TestTempToolCreateDir:
     """create_dir action 测试。"""
 
-    def test_create_dir_basic(self, test_workspace):
+    def test_create_dir_basic(self, test_workspace, tmp_env):
         """测试创建目录。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -67,7 +84,7 @@ class TestTempToolCreateDir:
         assert not result.is_error
         assert "Created temp directory" in result.output
 
-    def test_create_dir_requires_name(self, test_workspace):
+    def test_create_dir_requires_name(self, test_workspace, tmp_env):
         """测试 create_dir 需要 name 参数。"""
         tool = TempTool(cwd=test_workspace, workspace_uuid="test-uuid")
         result = tool.execute(action="create_dir")
@@ -79,7 +96,7 @@ class TestTempToolCreateDir:
 class TestTempToolList:
     """list action 测试。"""
 
-    def test_list_empty(self, test_workspace):
+    def test_list_empty(self, test_workspace, tmp_env):
         """测试空目录列表。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -91,7 +108,7 @@ class TestTempToolList:
         assert not result.is_error
         assert "No temp files" in result.output
 
-    def test_list_with_files(self, test_workspace):
+    def test_list_with_files(self, test_workspace, tmp_env):
         """测试有文件时的列表。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -114,7 +131,7 @@ class TestTempToolList:
 class TestTempToolCleanup:
     """cleanup action 测试。"""
 
-    def test_cleanup_removes_directory(self, test_workspace):
+    def test_cleanup_removes_directory(self, test_workspace, tmp_env):
         """测试 cleanup 删除整个目录。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -137,7 +154,7 @@ class TestTempToolCleanup:
         list_result2 = tool.execute(action="list")
         assert "No temp files" in list_result2.output
 
-    def test_cleanup_empty_directory(self, test_workspace):
+    def test_cleanup_empty_directory(self, test_workspace, tmp_env):
         """测试清理空的目录（目录会被 _get_temp_dir 自动创建）。"""
         tool = TempTool(
             cwd=test_workspace,
@@ -151,29 +168,10 @@ class TestTempToolCleanup:
         assert "Cleaned up" in result.output
 
 
-class TestTempToolFallback:
-    """workspace_uuid 为空时的 fallback 行为。"""
-
-    def test_fallback_to_default_workspace(self, test_workspace):
-        """测试 workspace_uuid 为空时 fallback 到 workspace/。"""
-        tool = TempTool(
-            cwd=test_workspace,
-            workspace_uuid="",  # 空
-            session_manager=MockSessionManager("session-fallback"),
-        )
-        result = tool.execute(action="create_file", name="test.txt", content="data")
-
-        assert not result.is_error
-        assert "workspace" in result.output.lower() or "Created" in result.output
-
-        # 清理
-        tool.execute(action="cleanup")
-
-
 class TestTempToolNoSessionManager:
     """没有 session_manager 时的行为。"""
 
-    def test_no_session_manager(self, test_workspace):
+    def test_no_session_manager(self, test_workspace, tmp_env):
         """测试没有 session_manager 时使用 no-session。"""
         tool = TempTool(cwd=test_workspace, workspace_uuid="test-uuid", session_manager=None)
         result = tool.execute(action="create_file", name="test.txt", content="data")
@@ -188,7 +186,7 @@ class TestTempToolNoSessionManager:
 class TestTempToolIsolation:
     """Session 隔离测试。"""
 
-    def test_different_sessions_isolated(self, test_workspace):
+    def test_different_sessions_isolated(self, test_workspace, tmp_env):
         """测试不同 session 的临时文件互相隔离。"""
         tool1 = TempTool(
             cwd=test_workspace,
@@ -219,3 +217,44 @@ class TestTempToolIsolation:
         # 清理
         tool1.execute(action="cleanup")
         tool2.execute(action="cleanup")
+
+
+class TestTempToolUnifiedDir:
+    """统一临时目录测试。"""
+
+    def test_uses_cili_tmp_env(self, test_workspace, tmp_env):
+        """测试使用 CILI_TMP 环境变量作为基础目录。"""
+        tool = TempTool(
+            cwd=test_workspace,
+            workspace_uuid="any-uuid",
+            session_manager=MockSessionManager("session-env"),
+        )
+        result = tool.execute(action="create_file", name="test.txt", content="data")
+        assert not result.is_error
+        # 文件路径应在 CILI_TMP 目录下
+        assert tmp_env in result.output
+
+        # 清理
+        tool.execute(action="cleanup")
+
+    def test_workspace_uuid_ignored(self, test_workspace, tmp_env):
+        """测试不同 workspace_uuid 都使用同一个 data/tmp 目录。"""
+        tool1 = TempTool(
+            cwd=test_workspace,
+            workspace_uuid="uuid-1",
+            session_manager=MockSessionManager("session-same"),
+        )
+        tool2 = TempTool(
+            cwd=test_workspace,
+            workspace_uuid="uuid-2",
+            session_manager=MockSessionManager("session-same"),
+        )
+        # 两个不同 workspace 的 tool 使用相同的 session 目录
+        result1 = tool1.execute(action="create_file", name="a.txt", content="1")
+        result2 = tool2.execute(action="create_file", name="b.txt", content="2")
+        # 路径中不应包含 workspace uuid
+        assert "uuid-1" not in result1.output
+        assert "uuid-2" not in result2.output
+
+        # 清理
+        tool1.execute(action="cleanup")

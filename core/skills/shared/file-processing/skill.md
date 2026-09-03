@@ -1083,17 +1083,18 @@ For documents parsed with python tool (e.g., PDF):
 
 ```python
 # python tool: extract full text
-import fitz
+import fitz, os
 doc = fitz.open("long_document.pdf")
 full_text = ""
 for page in doc:
     full_text += page.get_text()
-with open("/tmp/extracted.txt", "w", encoding="utf-8") as f:
+tmp_path = os.path.join(os.environ["TEMP"], "extracted.txt")
+with open(tmp_path, "w", encoding="utf-8") as f:
     f.write(full_text)
 print(f"Extraction complete, {len(full_text)} characters")
 ```
 
-Then read `/tmp/extracted.txt` in segments.
+Then read the temp file (path printed by Python) in segments.
 
 ## Handling Very Long Content
 

@@ -195,8 +195,10 @@ class PythonTool(Tool):
         if run_in_background:
             # For background execution, write code to temp file and execute
             import tempfile
+            tmp_dir = os.environ.get("CILI_TMP")
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8"
+                mode="w", suffix=".py", delete=False, encoding="utf-8",
+                dir=tmp_dir,
             ) as f:
                 f.write(code)
                 temp_path = f.name
