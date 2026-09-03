@@ -12,7 +12,7 @@ import logging
 from typing import Any, Iterable
 
 from core.config import ModelConfig
-from core.llm.adapter import Adapter
+from core.llm.adapter import Adapter, merge_consecutive_same_role
 from core.llm.types import (
     ContentBlock,
     Message,
@@ -57,7 +57,11 @@ class AnthropicAdapter(Adapter):
         """Serialize to Anthropic Messages API format.
 
         Converts internal tool_call format to Anthropic's tool_use format.
+        Merges consecutive same-role messages for Bedrock compatibility.
         """
+        # Merge consecutive same-role messages (Bedrock rejects them)
+        messages = merge_consecutive_same_role(messages)
+
         # Convert messages to Anthropic format
         anthropic_messages = []
         for msg in messages:

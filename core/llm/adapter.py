@@ -18,8 +18,59 @@ from core.llm.types import (
     ContentBlock,
     Message,
     StreamChunk,
+    TextBlock,
     UsageData,
 )
+
+
+def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
+    """Merge consecutive messages with the same role into one.
+
+    Required by OpenAI API and Bedrock (which reject consecutive same-role
+    messages). Anthropic 1P API auto-merges, but we normalize anyway for
+    consistency across all providers.
+
+    Merging rules:
+    - Both string content → concatenate with "\\n\\n"
+    - Both list content → concatenate block lists
+    - Mixed (str + list) → convert string to TextBlock, then merge lists
+    """
+    if not messages:
+        return messages
+
+    merged: list[Message] = [messages[0]]
+
+    for msg in messages[1:]:
+        prev = merged[-1]
+        if msg.role != prev.role:
+            merged.append(msg)
+            continue
+
+        # Same role — merge content
+        prev_content = prev.content
+        cur_content = msg.content
+
+        if isinstance(prev_content, str) and isinstance(cur_content, str):
+            merged[-1] = Message(
+                role=prev.role,
+                content=prev_content + "\n\n" + cur_content,
+            )
+        elif isinstance(prev_content, list) and isinstance(cur_content, list):
+            merged[-1] = Message(
+                role=prev.role,
+                content=list(prev_content) + list(cur_content),
+            )
+        elif isinstance(prev_content, str) and isinstance(cur_content, list):
+            blocks = [TextBlock(text=prev_content)] + list(cur_content)
+            merged[-1] = Message(role=prev.role, content=blocks)
+        elif isinstance(prev_content, list) and isinstance(cur_content, str):
+            blocks = list(prev_content) + [TextBlock(text=cur_content)]
+            merged[-1] = Message(role=prev.role, content=blocks)
+        else:
+            # Fallback: keep separate (shouldn't happen)
+            merged.append(msg)
+
+    return merged
 
 
 class Adapter(ABC):

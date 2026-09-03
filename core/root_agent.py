@@ -145,9 +145,6 @@ class RootAgent(BaseAgent):
             self._sync_to_session_manager()
             self.session_manager.save()
 
-            # Inject project instructions if not already present
-            self._inject_project_instructions()
-
             # Add user message
             self.add_message("user", user_input)
 
@@ -284,20 +281,36 @@ class RootAgent(BaseAgent):
             self._sync_to_session_manager()
             self.session_manager.save()
 
-    def _inject_project_instructions(self) -> None:
-        """Inject project instructions from agent.md/CLAUDE.md as first user message.
+    def _get_messages_with_header(self) -> list[dict]:
+        """Get valid messages with dynamic project instructions injection.
 
-        Only injects if not already present (idempotent).
+        Project instructions (CLAUDE.md/agent.md) are re-read from disk on each
+        LLM call and prepended to the message list. They are NOT persisted in
+        self.messages (session file stays clean).
+
+        If the first real message is also a user message with string content,
+        the instructions are merged into it to avoid consecutive same-role
+        messages (required by OpenAI API and Bedrock).
         """
-        from core.prompts import build_instructions_message, has_instructions_message
+        from core.prompts import build_instructions_message
 
-        if has_instructions_message(self.messages):
-            return
-
+        messages = self.get_valid_messages()
         instr = build_instructions_message(self.cwd)
-        if instr:
-            self.messages.insert(0, instr)
-            logger.info(f"[RootAgent] 已注入项目指令文件 (from {self.cwd})")
+        if not instr:
+            return messages
+
+        if messages and messages[0].get("role") == "user":
+            first_content = messages[0].get("content", "")
+            if isinstance(first_content, str):
+                # Merge instructions into the first user message
+                merged = {
+                    "role": "user",
+                    "content": instr["content"] + "\n\n" + first_content,
+                }
+                return [merged] + messages[1:]
+
+        # No user messages or first message has non-string content (blocks)
+        return [instr] + messages
 
     def _sync_to_session_manager(self) -> None:
         """Sync metadata and usage to session_manager.

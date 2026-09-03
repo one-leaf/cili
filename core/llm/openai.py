@@ -12,7 +12,7 @@ import logging
 from typing import Any, Iterable
 
 from core.config import ModelConfig
-from core.llm.adapter import Adapter
+from core.llm.adapter import Adapter, merge_consecutive_same_role
 from core.llm.types import (
     ContentBlock,
     Message,
@@ -247,6 +247,9 @@ class OpenAIAdapter(Adapter):
         session_id: str = "",
     ) -> dict[str, Any]:
         """Serialize to OpenAI Chat Completions API format."""
+        # Merge consecutive same-role messages (OpenAI requires alternating roles)
+        messages = merge_consecutive_same_role(messages)
+
         body: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,

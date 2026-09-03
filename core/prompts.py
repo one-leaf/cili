@@ -667,25 +667,3 @@ def build_instructions_message(cwd: str) -> dict | None:
     }
 
 
-def has_instructions_message(messages: list[dict]) -> bool:
-    """检查消息列表开头是否已有项目指令消息。
-
-    用于幂等性检查，避免重复注入。
-
-    Args:
-        messages: 消息列表
-
-    Returns:
-        True 表示已有指令消息
-    """
-    if not messages:
-        return False
-
-    first = messages[0]
-    return (
-        first.get("role") == "user"
-        and isinstance(first.get("content"), str)
-        and first["content"].startswith("<system-reminder>")
-        and "Codebase and user instructions" in first["content"]
-    )
-
