@@ -7,6 +7,13 @@ from pathlib import Path
 import pytest
 
 
+def _write_items_file(tmp_dir: str, items: list[str]) -> str:
+    """Helper: write items to a temp file (one per line) and return the path."""
+    path = Path(tmp_dir) / "items.txt"
+    path.write_text("\n".join(items), encoding="utf-8")
+    return str(path)
+
+
 class TestLoopTool:
     """Test LoopTool basic functionality."""
 
@@ -16,16 +23,17 @@ class TestLoopTool:
         import core.tools.shared.loop as loop_module
         original_dir = loop_module.LOOP_STATE_DIR
         with tempfile.TemporaryDirectory() as temp_dir:
-            loop_module.LOOP_STATE_DIR = Path(temp_dir)
+            loop_module.LOOP_STATE_DIR = Path(temp_dir) / "state"
             yield temp_dir
             loop_module.LOOP_STATE_DIR = original_dir
 
     def test_sync_new_items(self, temp_loop_state):
-        """sync 添加新项为 pending"""
+        """sync 从文件读取并添加新项为 pending"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        result = tool.execute(action="sync", task_id="test-sync", items=["file1.md", "file2.md"])
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="sync", source_file=items_file)
         data = json.loads(result.output)
 
         assert data["added"] == 2
@@ -38,13 +46,14 @@ class TestLoopTool:
         """sync 幂等：已存在的项不重复添加"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
 
         # 第一次 sync
-        tool.execute(action="sync", task_id="test-idem", items=["file1.md", "file2.md"])
+        tool.execute(action="sync", source_file=items_file)
 
         # 第二次 sync 相同列表
-        result = tool.execute(action="sync", task_id="test-idem", items=["file1.md", "file2.md"])
+        result = tool.execute(action="sync", source_file=items_file)
         data = json.loads(result.output)
 
         assert data["added"] == 0  # 无新增
@@ -54,13 +63,15 @@ class TestLoopTool:
         """sync 只追加新项"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
 
         # 第一次 sync
-        tool.execute(action="sync", task_id="test-add-new", items=["file1.md", "file2.md"])
+        items_file1 = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool.execute(action="sync", source_file=items_file1)
 
-        # 第二次 sync 包含新项
-        result = tool.execute(action="sync", task_id="test-add-new", items=["file1.md", "file2.md", "file3.md"])
+        # 第二次 sync 包含新项（覆盖文件）
+        items_file2 = _write_items_file(temp_loop_state, ["file1.md", "file2.md", "file3.md"])
+        result = tool.execute(action="sync", source_file=items_file2)
         data = json.loads(result.output)
 
         assert data["added"] == 1
@@ -70,10 +81,11 @@ class TestLoopTool:
         """next 返回第一个 pending 项"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-next", items=["file1.md", "file2.md"])
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
 
-        result = tool.execute(action="next", task_id="test-next")
+        result = tool.execute(action="next", source_file=items_file)
         data = json.loads(result.output)
 
         assert data["item"] == "file1.md"
@@ -82,11 +94,12 @@ class TestLoopTool:
         """无 pending 项时 next 返回 null"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-next-null", items=["file1.md"])
-        tool.execute(action="done", task_id="test-next-null", item="file1.md")
+        items_file = _write_items_file(temp_loop_state, ["file1.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
+        tool.execute(action="done", source_file=items_file, item="file1.md")
 
-        result = tool.execute(action="next", task_id="test-next-null")
+        result = tool.execute(action="next", source_file=items_file)
         data = json.loads(result.output)
 
         assert data["item"] is None
@@ -95,10 +108,11 @@ class TestLoopTool:
         """done 标记项为已完成"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-done", items=["file1.md", "file2.md"])
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
 
-        result = tool.execute(action="done", task_id="test-done", item="file1.md")
+        result = tool.execute(action="done", source_file=items_file, item="file1.md")
         data = json.loads(result.output)
 
         assert data["done"] == 1
@@ -109,8 +123,9 @@ class TestLoopTool:
         """done 缺少 item 参数时返回错误"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        result = tool.execute(action="done", task_id="test-done-missing")
+        items_file = _write_items_file(temp_loop_state, ["file1.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="done", source_file=items_file)
 
         assert result.is_error
 
@@ -118,20 +133,22 @@ class TestLoopTool:
         """done 项不存在时返回错误"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-done-notfound", items=["file1.md"])
+        items_file = _write_items_file(temp_loop_state, ["file1.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
 
-        result = tool.execute(action="done", task_id="test-done-notfound", item="nonexistent.md")
+        result = tool.execute(action="done", source_file=items_file, item="nonexistent.md")
         assert result.is_error
 
     def test_fail_marks_item_failed(self, temp_loop_state):
         """fail 标记项为失败"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-fail", items=["file1.md", "file2.md"])
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
 
-        result = tool.execute(action="fail", task_id="test-fail", item="file1.md", error="编码错误")
+        result = tool.execute(action="fail", source_file=items_file, item="file1.md", error="编码错误")
         data = json.loads(result.output)
 
         assert data["done"] == 0
@@ -142,12 +159,13 @@ class TestLoopTool:
         """status 返回进度统计"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")
-        tool.execute(action="sync", task_id="test-status", items=["file1.md", "file2.md", "file3.md"])
-        tool.execute(action="done", task_id="test-status", item="file1.md")
-        tool.execute(action="fail", task_id="test-status", item="file2.md", error="test error")
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md", "file3.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=items_file)
+        tool.execute(action="done", source_file=items_file, item="file1.md")
+        tool.execute(action="fail", source_file=items_file, item="file2.md", error="test error")
 
-        result = tool.execute(action="status", task_id="test-status")
+        result = tool.execute(action="status", source_file=items_file)
         data = json.loads(result.output)
 
         assert data["total"] == 3
@@ -155,103 +173,90 @@ class TestLoopTool:
         assert data["pending"] == 1
         assert data["failed"] == 1
 
-    def test_task_id_required_without_cron_context(self, temp_loop_state):
-        """无 cron_task_id 时必须提供 task_id"""
+    def test_source_file_required(self, temp_loop_state):
+        """source_file 是必需参数"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test")  # 无 cron_task_id
-        result = tool.execute(action="status")  # 无 task_id
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="status")
 
         assert result.is_error
 
-    def test_cron_task_id_auto_bind(self, temp_loop_state):
-        """有 cron_task_id 时自动绑定"""
+    def test_sync_error_file_not_found(self, temp_loop_state):
+        """sync 文件不存在时返回错误"""
         from core.tools.shared.loop import LoopTool
 
-        tool = LoopTool(cwd=".", workspace_uuid="test", cron_task_id="my-cron-task")
-        tool.execute(action="sync", items=["file1.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="sync", source_file="/nonexistent/file.txt")
 
-        result = tool.execute(action="status")
+        assert result.is_error
+
+    def test_sync_error_empty_file(self, temp_loop_state):
+        """sync 空文件时返回错误"""
+        from core.tools.shared.loop import LoopTool
+
+        # 写入空文件
+        empty_file = Path(temp_loop_state) / "empty.txt"
+        empty_file.write_text("", encoding="utf-8")
+
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="sync", source_file=str(empty_file))
+
+        assert result.is_error
+
+    def test_sync_skips_blank_lines(self, temp_loop_state):
+        """sync 自动跳过空行"""
+        from core.tools.shared.loop import LoopTool
+
+        # 写入含空行的文件
+        file_path = Path(temp_loop_state) / "items_blanks.txt"
+        file_path.write_text("file1.md\n\n  \nfile2.md\n\n", encoding="utf-8")
+
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        result = tool.execute(action="sync", source_file=str(file_path))
         data = json.loads(result.output)
 
-        assert data["total"] == 1
+        assert data["added"] == 2  # 只添加非空行
+        assert data["total"] == 2
 
-
-class TestLoopToolCronIntegration:
-    """Test LoopTool cron integration."""
-
-    @pytest.fixture
-    def temp_dirs(self):
-        """临时替换 loop 和 cron 状态目录"""
-        import core.tools.shared.loop as loop_module
-        import core.cron as cron_module
-
-        original_loop_dir = loop_module.LOOP_STATE_DIR
-        original_cron_dir = cron_module.CRON_STATE_DIR
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            loop_module.LOOP_STATE_DIR = Path(temp_dir) / "loop"
-            cron_module.CRON_STATE_DIR = Path(temp_dir) / "cron"
-            yield temp_dir
-            loop_module.LOOP_STATE_DIR = original_loop_dir
-            cron_module.CRON_STATE_DIR = original_cron_dir
-
-    def test_sync_updates_cron_remaining(self, temp_dirs):
-        """sync 时同步 cron remaining 计数器"""
-        import core.cron as cron_module
+    def test_same_file_same_task(self, temp_loop_state):
+        """同一文件路径标识同一任务"""
         from core.tools.shared.loop import LoopTool
 
-        # 创建 cron state 文件
-        cron_state_path = cron_module.CRON_STATE_DIR / "my-task.json"
-        cron_state_path.parent.mkdir(parents=True, exist_ok=True)
-        cron_state_path.write_text(json.dumps({"remaining": 9999}))
+        items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
 
-        # 创建带 cron_task_id 的 tool
-        tool = LoopTool(cwd=".", workspace_uuid="test", cron_task_id="my-task")
-        tool.execute(action="sync", items=["file1.md", "file2.md", "file3.md"])
+        # sync
+        tool.execute(action="sync", source_file=items_file)
+        # done 一项
+        tool.execute(action="done", source_file=items_file, item="file1.md")
 
-        # 检查 cron remaining 已更新
-        with open(cron_state_path, "r", encoding="utf-8") as f:
-            cron_state = json.load(f)
-
-        # remaining = pending_count + 1 = 3 + 1 = 4
-        assert cron_state["remaining"] == 4
-
-    def test_sync_after_done_updates_cron_remaining(self, temp_dirs):
-        """done 后 sync 更新 cron remaining"""
-        import core.cron as cron_module
-        from core.tools.shared.loop import LoopTool
-
-        # 创建 cron state 文件
-        cron_state_path = cron_module.CRON_STATE_DIR / "my-task-2.json"
-        cron_state_path.parent.mkdir(parents=True, exist_ok=True)
-        cron_state_path.write_text(json.dumps({"remaining": 100}))
-
-        tool = LoopTool(cwd=".", workspace_uuid="test", cron_task_id="my-task-2")
-
-        # sync 3 项
-        tool.execute(action="sync", items=["file1.md", "file2.md", "file3.md"])
-
-        # done 1 项
-        tool.execute(action="done", item="file1.md")
-
-        # 重新 sync（模拟下次 cron 触发）
-        tool.execute(action="sync", items=["file1.md", "file2.md", "file3.md"])
-
-        # 检查 cron remaining 已更新
-        with open(cron_state_path, "r", encoding="utf-8") as f:
-            cron_state = json.load(f)
-
-        # pending = 2, remaining = 2 + 1 = 3
-        assert cron_state["remaining"] == 3
-
-    def test_sync_no_cron_state_file(self, temp_dirs):
-        """cron state 文件不存在时不报错"""
-        from core.tools.shared.loop import LoopTool
-
-        tool = LoopTool(cwd=".", workspace_uuid="test", cron_task_id="nonexistent-task")
-        result = tool.execute(action="sync", items=["file1.md"])
+        # 用同一 source_file 查看状态
+        result = tool.execute(action="status", source_file=items_file)
         data = json.loads(result.output)
 
-        # 正常返回，不报错
-        assert data["added"] == 1
+        assert data["total"] == 2
+        assert data["done"] == 1
+        assert data["pending"] == 1
+
+    def test_different_files_different_tasks(self, temp_loop_state):
+        """不同文件路径对应不同任务"""
+        from core.tools.shared.loop import LoopTool
+
+        file1 = str(Path(temp_loop_state) / "list1.txt")
+        file2 = str(Path(temp_loop_state) / "list2.txt")
+        Path(temp_loop_state, "list1.txt").write_text("item_a\n", encoding="utf-8")
+        Path(temp_loop_state, "list2.txt").write_text("item_b\n", encoding="utf-8")
+
+        tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
+        tool.execute(action="sync", source_file=file1)
+        tool.execute(action="sync", source_file=file2)
+
+        # 两个任务独立
+        r1 = tool.execute(action="status", source_file=file1)
+        r2 = tool.execute(action="status", source_file=file2)
+        d1 = json.loads(r1.output)
+        d2 = json.loads(r2.output)
+
+        assert d1["total"] == 1
+        assert d2["total"] == 1

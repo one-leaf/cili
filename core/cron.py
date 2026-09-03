@@ -367,7 +367,6 @@ class CronTask:
             max_iterations=max_iterations,
             session_dir=exec_dir,
             exec_id=exec_id,
-            cron_task_id=self.name,  # Pass cron task_id for loop tool
         )
 
         try:

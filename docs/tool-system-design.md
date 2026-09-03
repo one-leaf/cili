@@ -58,9 +58,9 @@ core/tools/
 ```
 
 **工厂函数**：
-- `create_shared_tools(**kwargs, config=None, cron_task_id="")` → 18 个固定工具 + LLMTool（条件加载）= 18~19 个共用工具
+- `create_shared_tools(**kwargs, config=None)` → 18 个固定工具 + LLMTool（条件加载）= 18~19 个共用工具
 - `create_root_tools(**kwargs)` → 3 个 RootAgent 专属工具（SkillTool + SubAgentTool + AskUserTool）
-- `create_sub_tools(**kwargs, config=None, cron_task_id="")` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
+- `create_sub_tools(**kwargs, config=None)` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
 - `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（21~22 个）
 - SubAgent 的工具集 = `create_sub_tools()` → 19~20 个工具
 
@@ -497,60 +497,50 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 `loop` 工具用于跟踪跨多次调度周期的迭代任务进度。每个项（文件、记录等）具有三种状态：`"pending"`、`"done"`、`"failed:{reason}"`。
 
 **核心特性**：
-- **5 个 Action**：sync（同步项列表）、next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
+- **5 个 Action**：sync（从文件同步项列表）、next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
+- **文件驱动**：`source_file` 参数指定项列表文件（每行一个项），同时作为任务标识符
 - **幂等同步**：`sync` 只追加新增项，已完成项不重复处理
-- **cron 集成**：检测到 `cron_task_id` 时，自动同步 cron 的 `remaining` 计数器
 - **自动终止**：配合 cron 的 `remaining` 计数器，所有项完成时任务自动 disable
 
 **调用方式**：
 ```python
-# 同步文件列表（幂等，只追加新项）
-loop(action="sync", items=["file1.md", "file2.md", "file3.md"])
-# → {"added": 3, "total": 3, "pending": 3, "done": 0, "failed": 0}
+# 同步文件列表（source_file 每行一个项，幂等，只追加新项）
+loop(action="sync", source_file="data/files.txt")
+# → {"source_file": "data/files.txt", "added": 3, "total": 3, "pending": 3, "done": 0, "failed": 0}
 
-# 获取下一个待处理项
-loop(action="next")
+# 获取下一个待处理项（所有 action 都需要 source_file）
+loop(action="next", source_file="data/files.txt")
 # → {"item": "file1.md"} 或 {"item": null}
 
 # 标记完成
-loop(action="done", item="file1.md")
+loop(action="done", source_file="data/files.txt", item="file1.md")
 # → {"done": 1, "pending": 2, "failed": 0}
 
 # 标记失败
-loop(action="fail", item="file2.md", error="encoding error")
+loop(action="fail", source_file="data/files.txt", item="file2.md", error="encoding error")
 # → {"done": 1, "pending": 1, "failed": 1}
 
 # 查看进度
-loop(action="status")
+loop(action="status", source_file="data/files.txt")
 # → {"total": 3, "done": 1, "pending": 1, "failed": 1}
 ```
 
-**状态文件**：`data/cili/tools/loop/{task_id}.json`
+**状态文件**：`data/cili/tools/loop/{hash}.json`（hash 由 source_file 绝对路径生成）
 
 ```json
 {
+  "_source_file": "/abs/path/to/data/files.txt",
   "file1.md": "done",
   "file2.md": "failed:encoding error",
   "file3.md": "pending"
 }
 ```
 
-**与 cron 集成**：
-当 LoopTool 由 cron 触发时（`cron_task_id` 不为空），`sync` action 会自动同步 cron 的 `remaining` 计数器：
-
-```
-1. Cron 执行前：remaining = 9999（默认值）
-2. SubAgent 调用 loop(sync, items=[10005个文件])
-   → loop 检测到 cron_task_id → 更新 cron.remaining = 10005 (pending_count + 1)
-3. SubAgent 处理 1 个文件
-4. Cron 下次执行：remaining = 10005 - 1 = 10004
-5. ... 重复直到 remaining = 0 → 自动 disable
-```
+`_source_file` 元数据记录了来源文件路径，方便检查。
 
 **参数**：
 - `action`: sync | next | done | fail | status
-- `task_id`: 任务标识（默认使用 cron_task_id）
-- `items`: 项列表（sync action 使用）
+- `source_file`: 项列表文件路径（每行一个项，必填，同时作为任务标识符）
 - `item`: 项标识（done/fail action 使用）
 - `error`: 失败原因（fail action 使用）
 

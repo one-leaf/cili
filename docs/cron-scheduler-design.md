@@ -385,8 +385,7 @@ CronTask.execute():
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
 │   │   ├─ 加载 SessionManager，添加 user message + _subagent_ref
 │   │   ├─ 生成 exec_id，创建 SubAgent 日志目录
-│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id, cron_task_id)
-│   │   │   └─ cron_task_id=self.name（传递任务名给 loop 工具）
+│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id)
 │   │   ├─ subagent.run() — 非流式自主执行
 │   │   ├─ 更新 _subagent_ref 状态 + 添加 assistant message
 │   │   ├─ 保存 SubAgent 执行日志
@@ -422,43 +421,32 @@ CronScheduler._execute_task(task):
 └─ mark_executed() → 保存状态
 ```
 
-**与 loop 工具集成**：
+**与 loop 工具配合**：
 
-当 SubAgent 调用 `loop(action="sync", items=[...])` 时，LoopTool 自动同步 cron 的 `remaining` 计数器：
+loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 通过 `loop(action="sync", source_file="file_list.txt")` 同步项列表，用 `loop(action="next/done/fail")` 跟踪进度。
 
 ```
 示例：导入 10005 个文件
 
-初始状态：
-  config.max_executions: 9999
-  state.remaining: 9999
+准备工作：
+  1. 扫描文件列表，写入 file_list.txt（每行一个文件路径）
+  2. 创建 cron 任务，设置 max_executions 足够大（如 9999）
 
-第 1 次执行：
-  1. CronScheduler: remaining = 9999 - 1 = 9998
-  2. SubAgent 调用 loop(sync, items=10005个文件)
-     → loop 检测到 cron_task_id → 更新 state.remaining = 10005 (pending=10005)
-  3. SubAgent 处理 1 个文件
-  4. 结束
+每次执行：
+  1. SubAgent 调用 loop(sync, source_file="file_list.txt") → 同步项列表
+  2. loop(action="next") → 获取下一个待处理文件
+  3. 处理文件
+  4. loop(action="done", item=当前文件) → 标记完成
+  5. loop(action="status") → 查看进度
 
-第 2 次执行：
-  1. CronScheduler: remaining = 10005 - 1 = 10004
-  2. SubAgent 调用 loop(sync, items=10005个文件)
-     → 发现 1 个已 done → pending = 10004
-     → 更新 state.remaining = 10004
-  3. SubAgent 处理 1 个文件
-  4. 结束
-
-...
-
-第 N 次执行：
-  1. CronScheduler: remaining = 1 - 1 = 0
-  2. remaining <= 0 → 自动 disable → 不执行
-  → 任务自动终止 ✓
+任务终止：
+  - 所有文件处理完毕 → pending=0 → SubAgent 自行结束
+  - 或 cron.remaining 递减到 0 → 自动 disable
 ```
 
 **重新激活**：
 
-用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，loop(sync) 会发现并继续处理。
+用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，更新 file_list.txt 后 loop(sync) 会发现并继续处理。
 
 ### 6.3 Cron Message 格式
 

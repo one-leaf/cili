@@ -183,21 +183,23 @@ cron(action="create", schedule={"type": "interval", "minutes": 5}, task="导入�
 
 ```python
 # 示例：渐进式导入大量文件到记忆系统
-# 1. 创建定时任务（每 5 分钟执行一次）
-cron(action="create", schedule={"type": "interval", "minutes": 5}, 
-     task="将 E:/documents/ 下的 markdown 文件导入记忆系统", max_executions=9999)
+# 1. 扫描文件列表，写入文件（每行一个路径）
+#    find E:/documents -name "*.md" > file_list.txt
 
-# 2. SubAgent 每次执行时：
-#    - 扫描文件列表
-#    - loop(action="sync", items=文件列表)  # 同步项，自动更新 cron remaining
-#    - loop(action="next")  # 获取下一个待处理文件
+# 2. 创建定时任务（每 5 分钟执行一次）
+cron(action="create", schedule={"type": "interval", "minutes": 5}, 
+     task="将 file_list.txt 中的文件逐个导入记忆系统", max_executions=9999)
+
+# 3. SubAgent 每次执行时：
+#    - loop(action="sync", source_file="file_list.txt")  # 从文件同步项列表
+#    - loop(action="next", source_file="file_list.txt")  # 获取下一个待处理文件
 #    - 读取并处理文件
-#    - loop(action="done", item=当前文件)  # 标记完成
+#    - loop(action="done", source_file="file_list.txt", item=当前文件)  # 标记完成
 ```
 
-- **自动终止**：loop 工具检测到 cron 触发时，自动同步 remaining = pending_count + 1
+- **文件驱动**：`source_file` 参数指定项列表文件（每行一个），同时作为任务标识符
 - **崩溃恢复**：当前项仍为 pending，下次执行自动重试
-- **动态新增**：源目录新增文件会被 sync 自动发现并加入处理队列
+- **动态新增**：更新 file_list.txt 后，sync 会自动发现新增项
 
 ### 技能系统
 

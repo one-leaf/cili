@@ -30,13 +30,11 @@ def create_shared_tools(
     workspace_uuid: str = "",
     session_manager=None,
     config: Config | None = None,
-    cron_task_id: str = "",
 ) -> list[Tool]:
     """Create tools available to both main agent and sub-agent.
 
     Args:
         config: Global config. If llm_model is None, LLMTool is excluded.
-        cron_task_id: Cron task ID if triggered by cron (for loop tool).
     """
     tools = [
         ReadTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
@@ -55,7 +53,7 @@ def create_shared_tools(
         CronTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         ReadToolResultTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         TempTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
-        LoopTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, cron_task_id=cron_task_id),
+        LoopTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         PDF2MarkdownTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, config=config),
     ]
     # Only include LLMTool if llm_model is configured
