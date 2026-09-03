@@ -1221,11 +1221,8 @@ function renderMessages(messages) {
         const role = msg.role;
         if (role === 'system') return;
 
-        // 处理SubAgent 引用
-        if (role === '_subagent_ref') {
-            renderSubagentRef(msg, idx);
-            return;
-        }
+        // _subagent_ref 占位符：跳过，由 tool_result 中的 exec_id 渲染卡片
+        if (role === '_subagent_ref') return;
 
         const content = msg.content;
         const blocks = normalizeContent(content);
@@ -1933,14 +1930,7 @@ async function loadExecutionDetail(execId, container, headerEl, msg) {
             // 首次加载时清空容器
             if (isFirstLoad) {
                 container.innerHTML = '';
-
-                // 渲染摘要（仅首次）
-                if (data.summary) {
-                    const summaryDiv = document.createElement('div');
-                    summaryDiv.className = 'sa-summary';
-                    summaryDiv.innerHTML = marked.parse(data.summary);
-                    container.appendChild(summaryDiv);
-                }
+                // summary 内容已在最后一条 assistant 消息中显示，不重复渲染
             }
 
             // 渲染消息（增量追加）

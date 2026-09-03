@@ -1,12 +1,11 @@
-"""Loop tool - progress tracking for iterative tasks across scheduling cycles.
+"""Loop tool - progress tracking for iterative tasks.
 
-Tracks progress of items (files, records, etc.) through multiple execution cycles.
+Tracks progress of items through multiple execution cycles.
 Each item has a status: "pending", "done", or "failed:{reason}".
 The task is identified by its source file path.
 
 Usage:
-    loop(action="sync", source_file="file_list.txt")  # Sync items from file (one per line)
-    loop(action="next", source_file="file_list.txt")  # Get next pending item
+    loop(action="next", source_file="file_list.txt")  # Get next pending item (auto-loads from file)
     loop(action="done", source_file="file_list.txt", item="file1.md")  # Mark as completed
     loop(action="fail", source_file="file_list.txt", item="file2.md", error="encoding error")
     loop(action="status", source_file="file_list.txt")  # Get progress statistics
@@ -87,8 +86,7 @@ class LoopTool(Tool):
         '"pending", "done", or "failed:{reason}".\n'
         "The task is identified by its source file path — all actions require `source_file`.\n\n"
         "## Actions:\n"
-        "- **sync**: Read items from file (one per line), add new ones as pending (idempotent)\n"
-        "- **next**: Get next pending item\n"
+        "- **next**: Get next pending item (auto-loads items from source_file)\n"
         "- **done**: Mark item as completed\n"
         "- **fail**: Mark item as failed with reason\n"
         "- **status**: Get progress statistics\n\n"
@@ -96,11 +94,7 @@ class LoopTool(Tool):
         "Plain text, one item per line. Empty lines and leading/trailing whitespace are ignored.\n\n"
         "## Examples:\n"
         "```python\n"
-        "# Sync items from file (data/files.txt contains one item per line)\n"
-        'loop(action="sync", source_file="data/files.txt")\n'
-        '→ {"added": 100, "total": 100, "pending": 100, "done": 0, "failed": 0}\n'
-        "\n"
-        "# Get next pending item\n"
+        "# Get next pending item (items auto-loaded from file)\n"
         'loop(action="next", source_file="data/files.txt")\n'
         '→ {"item": "file1.md"} or {"item": null}\n'
         "\n"
@@ -133,7 +127,7 @@ class LoopTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["sync", "next", "done", "fail", "status"],
+                    "enum": ["next", "done", "fail", "status"],
                     "description": "Action to perform.",
                 },
                 "source_file": {
@@ -177,10 +171,8 @@ class LoopTool(Tool):
             file_path = Path(self.cwd) / file_path
         tid = str(file_path.resolve())
 
-        if action == "sync":
-            return self._sync(tid, file_path)
-        elif action == "next":
-            return self._next(tid)
+        if action == "next":
+            return self._next(tid, file_path)
         elif action == "done":
             return self._done(tid, item)
         elif action == "fail":
@@ -190,44 +182,29 @@ class LoopTool(Tool):
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
-    def _sync(self, task_id: str, file_path: Path) -> ToolResult:
-        """Sync item list from file - idempotent, only adds new items as pending."""
-        if not file_path.exists():
+    def _next(self, task_id: str, file_path: Path) -> ToolResult:
+        """Get next pending item. Auto-loads items from source_file."""
+        state = _load_state(task_id)
+
+        # Auto-sync items from file on first call or when file is newer
+        if file_path.exists():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    items = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                return ToolResult(f"Error: failed to read file: {e}", error=True)
+
+            # Add new items as pending (idempotent)
+            added = 0
+            for item in items:
+                if item not in state:
+                    state[item] = "pending"
+                    added += 1
+
+            if added > 0:
+                _save_state(task_id, state)
+        elif not state:
             return ToolResult(f"Error: file not found: {file_path}", error=True)
-
-        # Read items from file (one per line, skip empty lines)
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                items = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            return ToolResult(f"Error: failed to read file: {e}", error=True)
-
-        if not items:
-            return ToolResult(
-                f"Error: file is empty or contains no valid items: {file_path}",
-                error=True,
-            )
-
-        state = _load_state(task_id)
-
-        added = 0
-        for item in items:
-            if item not in state:
-                state[item] = "pending"
-                added += 1
-
-        _save_state(task_id, state)
-
-        counts = _count(state)
-        return ToolResult(json.dumps({
-            "source_file": str(file_path),
-            "added": added,
-            **counts,
-        }, ensure_ascii=False))
-
-    def _next(self, task_id: str) -> ToolResult:
-        """Get next pending item."""
-        state = _load_state(task_id)
 
         # Find first pending item (skip metadata keys)
         for item, status in _iter_items(state).items():

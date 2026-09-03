@@ -423,7 +423,7 @@ CronScheduler._execute_task(task):
 
 **与 loop 工具配合**：
 
-loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 通过 `loop(action="sync", source_file="file_list.txt")` 同步项列表，用 `loop(action="next/done/fail")` 跟踪进度。
+loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 通过 `loop(action="next", source_file="file_list.txt")` 自动加载项列表并获取下一个待处理项，用 `loop(action="done/fail")` 跟踪进度。
 
 ```
 示例：导入 10005 个文件
@@ -433,11 +433,10 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 
   2. 创建 cron 任务，设置 max_executions 足够大（如 9999）
 
 每次执行：
-  1. SubAgent 调用 loop(sync, source_file="file_list.txt") → 同步项列表
-  2. loop(action="next") → 获取下一个待处理文件
-  3. 处理文件
-  4. loop(action="done", item=当前文件) → 标记完成
-  5. loop(action="status") → 查看进度
+  1. loop(action="next", source_file="file_list.txt") → 获取下一个待处理文件（自动加载）
+  2. 处理文件
+  3. loop(action="done", source_file="file_list.txt", item=当前文件) → 标记完成
+  4. loop(action="status", source_file="file_list.txt") → 查看进度
 
 任务终止：
   - 所有文件处理完毕 → pending=0 → SubAgent 自行结束
@@ -446,7 +445,7 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 
 
 **重新激活**：
 
-用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，更新 file_list.txt 后 loop(sync) 会发现并继续处理。
+用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，更新 file_list.txt 后 loop(next) 会发现并继续处理。
 
 ### 6.3 Cron Message 格式
 

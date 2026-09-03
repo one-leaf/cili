@@ -497,18 +497,14 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 `loop` 工具用于跟踪跨多次调度周期的迭代任务进度。每个项（文件、记录等）具有三种状态：`"pending"`、`"done"`、`"failed:{reason}"`。
 
 **核心特性**：
-- **5 个 Action**：sync（从文件同步项列表）、next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
+- **4 个 Action**：next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
 - **文件驱动**：`source_file` 参数指定项列表文件（每行一个项），同时作为任务标识符
-- **幂等同步**：`sync` 只追加新增项，已完成项不重复处理
+- **自动加载**：`next` 自动从 source_file 读取并追加新增项，已完成项不重复处理
 - **自动终止**：配合 cron 的 `remaining` 计数器，所有项完成时任务自动 disable
 
 **调用方式**：
 ```python
-# 同步文件列表（source_file 每行一个项，幂等，只追加新项）
-loop(action="sync", source_file="data/files.txt")
-# → {"source_file": "data/files.txt", "added": 3, "total": 3, "pending": 3, "done": 0, "failed": 0}
-
-# 获取下一个待处理项（所有 action 都需要 source_file）
+# 获取下一个待处理项（自动从 source_file 加载，所有 action 都需要 source_file）
 loop(action="next", source_file="data/files.txt")
 # → {"item": "file1.md"} 或 {"item": null}
 
@@ -539,7 +535,7 @@ loop(action="status", source_file="data/files.txt")
 `_source_file` 元数据记录了来源文件路径，方便检查。
 
 **参数**：
-- `action`: sync | next | done | fail | status
+- `action`: next | done | fail | status
 - `source_file`: 项列表文件路径（每行一个项，必填，同时作为任务标识符）
 - `item`: 项标识（done/fail action 使用）
 - `error`: 失败原因（fail action 使用）
