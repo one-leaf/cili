@@ -30,19 +30,21 @@ Cron 触发
 CronTask.execute()
   ├─ 解析目标 workspace（System 或用户指定）
   ├─ 用 state 中的 session_id 定位 session（不存在则新建 "[Cron] 任务描述"）
-  ├─ 在 session 中添加 user message + _subagent_ref（UI 可见）
-  └─ 创建 SubAgent 直接执行任务
+  ├─ 添加 user message（任务描述）
+  ├─ 添加 assistant message（tool_use: subagent，模拟 LLM 调用）
+  ├─ 创建 SubAgent 直接执行任务
+  ├─ 添加 user message（tool_result: 含 exec_id，UI 渲染卡片）
+  └─ 添加 assistant message（结果摘要）
   ↓
 SubAgent.run()                       ← cron 直接执行（非流式）
   ├─ 采用 context-bounded-processing 技能策略
-  ├─ 自主执行工具完成任务
-  └─ 更新 _subagent_ref + 添加 assistant message（UI 可见）
+  └─ 自主执行工具完成任务
 ```
 
 **关键点**：
 - Cron **直接创建 SubAgent**，无需经过 RootAgent
 - SubAgent 使用 `context-bounded-processing` 技能，适合后台自主执行
-- 执行结果通过 `_subagent_ref` 机制回流到 session，UI 完整可见
+- Session 消息格式与主 Agent 调用 SubAgent 完全一致（tool_use + tool_result），UI 渲染 SubAgent 卡片，用户可在 session 中继续对话
 
 ### 2.2 组件关系
 
@@ -383,11 +385,11 @@ CronTask.execute():
 │   │   ├─ _resolve_workspace_dir() — "system" → data/, 其他 → data/agents/{uuid}/
 │   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 直接定位（不存在则新建）
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
-│   │   ├─ 加载 SessionManager，添加 user message + _subagent_ref
+│   │   ├─ 加载 SessionManager，添加 user message + assistant message（tool_use: subagent）
 │   │   ├─ 生成 exec_id，创建 SubAgent 日志目录
 │   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, max_iterations, session_dir, exec_id)
 │   │   ├─ subagent.run() — 非流式自主执行
-│   │   ├─ 更新 _subagent_ref 状态 + 添加 assistant message
+│   │   ├─ 添加 user message（tool_result: 含 exec_id）+ assistant message（摘要）
 │   │   ├─ 保存 SubAgent 执行日志
 │   │   └─ subagent.close()
 │   └─ 收集结果
@@ -567,7 +569,7 @@ result = scheduler.run_task_now("extract-user-info") -> dict
 - **后台任务特性**：Cron 是后台任务，无需流式输出和用户交互能力
 - **资源效率**：SubAgent 非流式执行，比 RootAgent 更轻量
 - **技能匹配**：SubAgent 使用 `context-bounded-processing` 技能，适合自主执行
-- **UI 可见**：通过 `_subagent_ref` 机制，结果在 session 中完整可见
+- **UI 可见**：session 消息格式与主 Agent 一致（tool_use + tool_result），SubAgent 卡片正常渲染
 
 ### 9.2 为什么引入 System workspace？
 

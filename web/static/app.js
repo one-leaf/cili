@@ -1221,9 +1221,6 @@ function renderMessages(messages) {
         const role = msg.role;
         if (role === 'system') return;
 
-        // _subagent_ref 占位符：跳过，由 tool_result 中的 exec_id 渲染卡片
-        if (role === '_subagent_ref') return;
-
         const content = msg.content;
         const blocks = normalizeContent(content);
 

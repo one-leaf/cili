@@ -299,15 +299,15 @@ def _build_task_section(self) -> str:
 
 ### 4.6 会话消息结构
 
-主会话存储 `_subagent_ref` 占位符，SubAgent 自己的完整执行日志存储在独立目录：
+主会话通过 tool_use + tool_result 消息对存储 SubAgent 调用，SubAgent 自己的完整执行日志存储在独立目录：
 
 ```
 主会话 index.json:
   messages: [
     {role: "user", content: "处理这个大文件"},
-    {role: "assistant", content: "好的，我来处理..."},
-    {role: "_subagent_ref", exec_id: "abc123", task_summary: "处理文件...",
-     status: "completed", iterations: 5},
+    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "subagent", input: {task: "处理文件..."}}]},
+    {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_001",
+     _meta: {exec_id: "abc123", completed: true}}]},
     {role: "assistant", content: "处理完成！"}
   ]
 

@@ -1250,7 +1250,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 event_queue.put(f"data: {todo_event}\n\n")
 
     def on_subagent_start(exec_id: str, task_summary: str) -> None:
-        # Send SSE event for real-time UI update (no longer writing _subagent_ref)
+        # Send SSE event for real-time UI update
         event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 

@@ -98,14 +98,32 @@ data/agents/{uuid}/
       ]
     },
     {
-      "role": "_subagent_ref",
-      "exec_id": "exec_a1b2c3d4",
-      "task_summary": "优化爬虫性能",
-      "status": "completed",
-      "iterations": 5,
-      "message_count": 10,
-      "started_at": "2026-08-25 10:30:00",
-      "ended_at": "2026-08-25 10:32:00"
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_sub_001",
+          "name": "subagent",
+          "input": {"task": "优化爬虫性能"},
+          "_valid": true
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_sub_001",
+          "content": "{\"status\": \"completed\", \"summary\": \"...\"}",
+          "_meta": {
+            "tool_name": "subagent",
+            "exec_id": "exec_a1b2c3d4",
+            "completed": true
+          },
+          "_valid": true
+        }
+      ]
     }
   ],
   "metadata": {
@@ -129,8 +147,8 @@ data/agents/{uuid}/
 |------|------|------|
 | `session_id` | string | 8 位十六进制 ID |
 | `name` | string | 会话名称（可重命名） |
-| `messages` | array | 消息列表（user/assistant/_subagent_ref） |
-| `messages[].role` | string | 消息角色（user/assistant/_subagent_ref） |
+| `messages` | array | 消息列表（user/assistant） |
+| `messages[].role` | string | 消息角色（user/assistant） |
 | `messages[].content` | string/array | 消息内容（字符串或 content blocks） |
 | `messages[]._valid` | bool | 是否有效（false 表示不发送给 API） |
 | `tool_result.tool_name` | string | 工具名称（如 bash、read、write） |
@@ -145,8 +163,6 @@ data/agents/{uuid}/
 | `metadata.subagent_count` | int | SubAgent 执行次数 |
 
 **外部优先存储**：工具结果的内容不保存在 session 中，只保存元信息。实际内容保存在外部文件 `{tool_use_id}.txt`，发送 LLM 时按需读取。
-
-**注意**：`_subagent_ref` 是独立的消息角色（role），用于在主会话中展示 SubAgent 引用卡片。
 
 ### 2.3 SubAgent 执行日志
 
@@ -242,8 +258,6 @@ class SessionManager:
 | `microcompact_tool_results(keep_recent)` | Microcompact 压缩（替换内容为占位符） |
 | `mark_old_tool_calls_invalid(keep_recent_rounds)` | 标记旧工具调用为无效 |
 | `mark_old_images_invalid(keep_recent)` | 标记旧图片为无效 |
-| `add_subagent_ref(...)` | 添加 SubAgent 引用 |
-| `update_subagent_ref(...)` | 更新 SubAgent 引用状态 |
 | `save_subagent_log(...)` | 保存 SubAgent 执行日志 |
 | `load_subagent_log(exec_id)` | 加载 SubAgent 执行日志 |
 | `list_subagent_logs()` | 列出所有执行日志 |
@@ -320,10 +334,9 @@ valid_messages = session.get_valid_messages()
 
 **过滤规则**：
 1. 跳过整条消息标记 `_valid=False` 的
-2. 跳过 `role="_subagent_ref"` 的消息（SubAgent 引用，仅 UI 显示）
-3. 跳过 content blocks 中 `_valid=False` 的
-4. 对 `tool_result` 递归过滤子块
-5. 清理内部字段（`_valid`, `_compacted`）
+2. 跳过 content blocks 中 `_valid=False` 的
+3. 对 `tool_result` 递归过滤子块
+4. 清理内部字段（`_valid`, `_compacted`）
 
 **示例**：
 
@@ -335,7 +348,6 @@ messages = [
         {"type": "text", "text": "你好！", "_valid": True},
         {"type": "image", "source": {...}, "_valid": False}  # 被标记无效
     ]},
-    {"role": "_subagent_ref", "exec_id": "exec_123", ...},  # SubAgent 引用
 ]
 
 # 过滤后
@@ -351,36 +363,45 @@ valid_messages = [
 
 ## 五、SubAgent 执行日志
 
-### 5.1 添加引用
+SubAgent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与主 Agent 调用 SubAgent 的格式完全一致。
 
-主会话中只存 `_subagent_ref`（状态占位符）：
+### 5.1 主会话消息格式
 
-```python
-session.add_subagent_ref(
-    exec_id="exec_a1b2c3d4",
-    task_summary="优化爬虫性能",
-    status="running",
-    iterations=0,
-    message_count=0
-)
-```
-
-### 5.2 更新状态
-
-SubAgent 执行过程中实时更新状态：
+主会话中通过 assistant(tool_use) + user(tool_result) 表示 SubAgent 执行：
 
 ```python
-session.update_subagent_ref(
-    exec_id="exec_a1b2c3d4",
-    status="completed",
-    iterations=5,
-    message_count=10,
-    summary="已完成优化",
-    current_tool=""  # 当前工具（空=已结束）
-)
+# assistant 消息：模拟 LLM 调用 subagent
+{
+    "role": "assistant",
+    "content": [
+        {
+            "type": "tool_use",
+            "id": "toolu_sub_001",
+            "name": "subagent",
+            "input": {"task": "优化爬虫性能"}
+        }
+    ]
+}
+
+# user 消息：SubAgent 结果（含 exec_id，UI 据此渲染卡片）
+{
+    "role": "user",
+    "content": [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_sub_001",
+            "content": "{\"status\": \"completed\", ...}",
+            "_meta": {
+                "tool_name": "subagent",
+                "exec_id": "exec_a1b2c3d4",
+                "completed": true
+            }
+        }
+    ]
+}
 ```
 
-### 5.3 保存完整日志
+### 5.2 保存完整日志
 
 SubAgent 执行完成后保存完整日志到独立文件：
 
@@ -672,7 +693,6 @@ saved_bytes = session.mark_old_images_invalid(keep_recent=5)
 遍历所有消息
 │
 ├─ 消息级别 _valid=False → 跳过整条消息
-├─ role=_subagent_ref → 跳过（SubAgent 引用，仅 UI 显示）
 │
 └─ 遍历 content blocks
     │

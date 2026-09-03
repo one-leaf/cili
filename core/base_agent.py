@@ -179,9 +179,6 @@ class BaseAgent:
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
                 continue
-            # Skip internal message types
-            if msg.get("role") == "_subagent_ref":
-                continue
 
             role = msg.get("role")
             content = msg.get("content", "")
@@ -674,7 +671,7 @@ class BaseAgent:
         for msg in self.messages:
             # Check validity
             meta = msg.get("_meta", {})
-            if meta.get("valid") is False or msg.get("role") == "_subagent_ref":
+            if meta.get("valid") is False:
                 continue
 
             role = msg.get("role")
@@ -724,7 +721,7 @@ class BaseAgent:
         for i, msg in enumerate(self.messages):
             # Check validity
             meta = msg.get("_meta", {})
-            if meta.get("valid") is False or msg.get("role") == "_subagent_ref":
+            if meta.get("valid") is False:
                 continue
             content = msg.get("content", "")
             if not isinstance(content, list):

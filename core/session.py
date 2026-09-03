@@ -103,19 +103,11 @@ class SessionManager:
         """获取所有消息。"""
         return self.messages
 
-    @staticmethod
-    def _is_real_user_message(msg: dict) -> bool:
-        """Check if a message is a real user/assistant message (not SubAgent metadata)."""
-        if msg.get("role") == "_subagent_ref":
-            return False
-        return True
-
     def get_valid_messages(self) -> list[dict]:
         """获取有效的消息（递归过滤 _meta.valid=False 的消息和 blocks）。
 
         用于 API 请求前过滤。支持嵌套过滤：
         - 顶层 _meta.valid=False 的消息会被移除
-        - 跳过 _subagent_ref 角色（SubAgent 引用，仅用于 UI 显示）
         - 剥离 _meta 中的内部字段（不发送给 API）
 
         使用脏标记缓存：仅在消息变更时重建。
@@ -129,8 +121,6 @@ class SessionManager:
             # 检查消息级别的 validity
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
-                continue
-            if not self._is_real_user_message(msg):
                 continue
 
             role = msg.get("role")
@@ -218,52 +208,6 @@ class SessionManager:
     def _generate_exec_id(self) -> str:
         """生成执行日志 ID：exec_{8位hex}。"""
         return f"exec_{secrets.token_hex(4)}"
-
-    def add_subagent_ref(self, exec_id: str, task_summary: str, status: str = "running",
-                          iterations: int = 0, message_count: int = 0) -> None:
-        """添加SubAgent 引用到主消息列表。
-
-        Args:
-            exec_id: 执行日志 ID
-            task_summary: 任务摘要
-            status: 状态（running/completed/error/timeout）
-            iterations: 迭代次数
-            message_count: 消息数量
-        """
-        ref = {
-            "role": "_subagent_ref",
-            "exec_id": exec_id,
-            "task_summary": task_summary,
-            "status": status,
-            "iterations": iterations,
-            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "message_count": message_count,
-        }
-        self.messages.append(ref)
-        self._messages_dirty = True
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.metadata["subagent_count"] = self.metadata.get("subagent_count", 0) + 1
-
-    def update_subagent_ref(self, exec_id: str, status: str, iterations: int,
-                             message_count: int, summary: str = "",
-                             current_tool: str = "") -> None:
-        """更新SubAgent 引用的状态。
-
-        Args:
-            current_tool: 当前正在执行的工具名（空字符串=无/已结束）。
-                          用于前端实时展示 subagent 进度。
-        """
-        for msg in self.messages:
-            if msg.get("role") == "_subagent_ref" and msg.get("exec_id") == exec_id:
-                msg["status"] = status
-                msg["iterations"] = iterations
-                msg["message_count"] = message_count
-                msg["ended_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if summary:
-                    msg["summary"] = summary
-                if current_tool is not None:
-                    msg["current_tool"] = current_tool
-                break
 
     def save_subagent_log(self, exec_id: str, task: str, messages: list[dict],
                            metadata: dict, summary: str = "") -> str:
@@ -513,11 +457,9 @@ class SessionManager:
         saved = 0
         cache_was_valid = not self._messages_dirty
 
-        # 找到所有包含 tool_result 的 user 消息索引（跳过SubAgent 消息和引用）
+        # 找到所有包含 tool_result 的 user 消息索引
         tool_result_msg_indices: list[int] = []
         for i, msg in enumerate(self.messages):
-            if not self._is_real_user_message(msg):
-                continue
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
@@ -588,10 +530,6 @@ class SessionManager:
         round_number = 0
 
         for msg_idx, msg in enumerate(self.messages):
-            # 跳过SubAgent 消息和引用（不纳入轮次计数）
-            if not self._is_real_user_message(msg):
-                continue
-
             role = msg.get("role")
             content = msg.get("content", [])
 
@@ -660,11 +598,9 @@ class SessionManager:
         """
         saved = 0
 
-        # 找出所有图片消息（跳过SubAgent 消息和引用）
+        # 找出所有图片消息
         image_messages = []  # (msg_idx, block_idx, sub_idx, size)
         for i, msg in enumerate(self.messages):
-            if not self._is_real_user_message(msg):
-                continue
             content = msg.get("content", "")
             if not isinstance(content, list):
                 continue

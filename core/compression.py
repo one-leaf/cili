@@ -43,9 +43,6 @@ def microcompact_tool_results(
     for i, msg in enumerate(messages):
         if msg.get("role") != "user":
             continue
-        # 跳过 _subagent_ref 等内部消息
-        if msg.get("role") == "_subagent_ref":
-            continue
         content = msg.get("content", "")
         if not isinstance(content, list):
             continue

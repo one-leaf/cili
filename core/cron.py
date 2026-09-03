@@ -302,12 +302,13 @@ class CronTask:
     def _execute_in_session(self, workspace_uuid: str, task_item: dict) -> dict:
         """在 workspace 的 cron session 中通过 SubAgent 执行任务。
 
-        Cron 采用 SubAgent 策略：
+        Cron 采用 SubAgent 策略（模拟 RootAgent 调用 SubAgent 的消息格式）：
         1. 解析目标 workspace，复用或创建 cron session
-        2. 在 session 中添加 user message + _subagent_ref（UI 可见）
+        2. 添加 user message（任务描述）+ assistant message（tool_use 块）
         3. 创建 SubAgent 直接执行任务（非流式，自主运行）
-        4. 执行完成后更新 _subagent_ref + 添加 assistant message
-        5. 保存 SubAgent 执行日志到 session 目录
+        4. 添加 user message（tool_result 块，含 exec_id，UI 渲染卡片）
+        5. 添加 assistant message（结果摘要）
+        6. 保存 SubAgent 执行日志到 session 目录
 
         SubAgent 使用 context-bounded-processing 技能策略，
         适合后台自主执行的定时任务场景。
@@ -337,27 +338,31 @@ class CronTask:
         plan = task_item.get("plan", [])
         max_iterations = self.config.get("max_iterations", 30)
 
-        # 5. 添加 user message 到 session（UI 可见）
-        user_msg = self._build_cron_message(task_item)
-        session_mgr.add_message("user", user_msg)
-
-        # 6. 生成 exec_id 和 SubAgent 日志目录
+        # 5. 生成 exec_id 和 SubAgent 日志目录
         exec_id = session_mgr._generate_exec_id()
         exec_dir = session_mgr.session_dir / exec_id
         exec_dir.mkdir(parents=True, exist_ok=True)
 
-        # 7. 添加 _subagent_ref（UI 展示 SubAgent 运行状态）
-        task_brief = task_desc[:100]
-        session_mgr.add_subagent_ref(
-            exec_id=exec_id,
-            task_summary=task_brief,
-            status="running",
-        )
+        # 6. 添加 user message（任务描述）
+        user_msg = self._build_cron_message(task_item)
+        session_mgr.add_message("user", user_msg)
+
+        # 7. 添加 assistant message（模拟 LLM 调用 subagent 的 tool_use 块）
+        tool_use_id = f"cron_{exec_id}"
+        task_brief = task_desc[:200]
+        session_mgr.add_message("assistant", [
+            {
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": "subagent",
+                "input": {"task": task_brief},
+            }
+        ])
         session_mgr.save()
 
         # 8. 创建并运行 SubAgent
         config = load_config()
-        logger.info(f"[cron] [{self.name}] Starting SubAgent in session {cron_session_id}: {task_brief}...")
+        logger.info(f"[cron] [{self.name}] Starting SubAgent in session {cron_session_id}: {task_brief[:50]}...")
 
         subagent = SubAgent(
             task=task_desc,
@@ -375,21 +380,30 @@ class CronTask:
             summary = result.get("summary", "")
             iterations = result.get("iterations", 0)
 
-            # 9. 更新 _subagent_ref 状态
-            session_mgr.update_subagent_ref(
-                exec_id=exec_id,
-                status=status,
-                iterations=iterations,
-                message_count=len(subagent.messages),
-                summary=summary[:200],
-            )
+            # 9. 添加 user message（tool_result 块，含 exec_id，UI 据此渲染 SubAgent 卡片）
+            result_json = json.dumps(result, ensure_ascii=False, indent=2)
+            session_mgr.add_message("user", [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": result_json,
+                    "is_error": False,
+                    "_meta": {
+                        "tool_name": "subagent",
+                        "exec_id": exec_id,
+                        "completed": True,
+                    },
+                }
+            ])
 
-            # 10. 添加 assistant message（结果摘要）
-            if summary:
-                session_mgr.add_message("assistant", summary)
+            # 10. 添加 assistant message（结果摘要，保证对话连续性）
+            session_mgr.add_message("assistant", summary or f"SubAgent {status}")
             session_mgr.save()
 
-            # 11. 保存 SubAgent 执行日志
+            # 11. 更新 subagent_count
+            session_mgr.metadata["subagent_count"] = session_mgr.metadata.get("subagent_count", 0) + 1
+
+            # 12. 保存 SubAgent 执行日志
             ended_at = dt.now()
             started_at = subagent._started_at or ended_at
             session_mgr.save_subagent_log(
@@ -428,10 +442,21 @@ class CronTask:
 
         except Exception as e:
             logger.error(f"[cron] [{self.name}] SubAgent failed: {e}")
-            session_mgr.update_subagent_ref(
-                exec_id=exec_id, status="error", iterations=0,
-                message_count=0, summary=str(e)[:200],
-            )
+            # 添加错误 tool_result（UI 仍可渲染卡片）
+            error_result = {"status": "error", "summary": str(e), "iterations": 0}
+            session_mgr.add_message("user", [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": json.dumps(error_result, ensure_ascii=False),
+                    "is_error": True,
+                    "_meta": {
+                        "tool_name": "subagent",
+                        "exec_id": exec_id,
+                        "completed": True,
+                    },
+                }
+            ])
             session_mgr.add_message("assistant", f"任务执行失败: {e}")
             session_mgr.save()
             return {"status": "error", "error": str(e), "workspace_uuid": ws_uuid}

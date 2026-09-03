@@ -639,15 +639,15 @@ subagent(list_tasks=True)
 - **1 小时超时**
 - **禁止嵌套**：SubAgent 不能再调用 subagent 工具
 - **后台执行**：`run_in_background=true` 在独立线程中运行 SubAgent
-- **懒加载 UI**：后台 SubAgent 完成后，`_subagent_ref` 状态更新到主会话，前端通过懒加载刷新
+- **懒加载 UI**：SubAgent 结果通过 tool_result 中的 exec_id 懒加载渲染
 
 **会话消息结构**：
-- 主会话只存 `_subagent_ref`（状态占位符，UI 可见，LLM 上下文自动过滤）
+- 主会话通过 tool_use(tool: subagent) + tool_result(exec_id) 消息对呈现 SubAgent
 - 完整执行日志存入独立 `exec_*.json` 文件，每轮迭代实时保存
 
 **后台 SubAgent 生命周期**：
 1. `run_in_background=True` → 注册 task_id（格式：`subagent-N`）
-2. 独立线程运行 `SubAgent.run()`，完成后自动更新 `_subagent_ref` 状态
+2. 独立线程运行 `SubAgent.run()`，完成后自动更新 tool_result 状态
 3. `read_task` → 查询状态（running/completed）和摘要
 4. `kill_task` → 设置 `subagent._stopped=True` 终止 SubAgent
 

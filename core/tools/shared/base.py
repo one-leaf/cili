@@ -40,7 +40,7 @@ class BackgroundTask:
 
     # SubAgent-specific fields
     subagent: Any = None  # SubAgent instance
-    session_manager: Any = None  # SessionManager for updating _subagent_ref
+    session_manager: Any = None  # SessionManager reference
     result: dict | None = None  # SubAgent execution result
 
 
@@ -940,8 +940,8 @@ class Tool:
 
         Args:
             subagent: SubAgent instance to run in background.
-            session_manager: SessionManager for updating _subagent_ref.
-            exec_id: Execution ID for _subagent_ref reference.
+            session_manager: SessionManager reference.
+            exec_id: Execution ID.
             task_summary: Task summary for display.
         """
         task_id = BackgroundTaskManager.allocate_task_id(prefix="subagent")
