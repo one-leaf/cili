@@ -609,11 +609,13 @@ class Tool:
                 full_command = (
                     f'export PATH="{path_str}:$PATH" '
                     f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 '
                     f'&& {command}'
                 )
             else:
                 full_command = (
                     f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 '
                     f'&& {command}'
                 )
 
