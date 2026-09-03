@@ -336,7 +336,9 @@ class CronTask:
         # 4. 构造任务信息
         task_desc = task_item.get("task", "")
         plan = task_item.get("plan", [])
-        max_iterations = self.config.get("max_iterations", 30)
+        # 不主动限制 max_iterations，使用 SubAgent 的默认值（200）
+        # 除非用户在任务配置中明确指定
+        max_iterations = self.config.get("max_iterations", 200)
 
         # 5. 生成 exec_id 和 SubAgent 日志目录
         exec_id = session_mgr._generate_exec_id()
