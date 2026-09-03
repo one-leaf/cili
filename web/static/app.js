@@ -9,13 +9,20 @@ let selectedSessions = new Set();
 let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
 
 // ── localStorage 位置持久化 ──
+// 存储格式: { workspace_uuid: "当前工作区", ws_sessions: { "ws-uuid": "session_id" } }
+// ws_sessions 按工作区记忆上次访问的会话，刷新或切换回来可恢复
 const POSITION_KEY = 'cili_last_position';
 
 function savePosition({ workspace_uuid, session_id } = {}) {
     try {
         const current = JSON.parse(localStorage.getItem(POSITION_KEY) || '{}');
         if (workspace_uuid !== undefined) current.workspace_uuid = workspace_uuid;
-        if (session_id !== undefined) current.session_id = session_id;
+        // 当传了 session_id 时，关联到当前工作区（优先用传入的 workspace_uuid，否则用已保存的）
+        const ws = workspace_uuid || current.workspace_uuid;
+        if (ws && session_id !== undefined) {
+            current.ws_sessions = current.ws_sessions || {};
+            current.ws_sessions[ws] = session_id;
+        }
         localStorage.setItem(POSITION_KEY, JSON.stringify(current));
     } catch (e) { /* localStorage 不可用则忽略 */ }
 }
@@ -265,11 +272,7 @@ async function loadWorkspaces() {
             const wsExists = data.workspaces.some(ws => ws.uuid === saved.workspace_uuid);
             if (wsExists) {
                 workspaceSelect.value = saved.workspace_uuid;
-                await handleWorkspaceChange();
-                // handleWorkspaceChange 会清空 session_id，用本地变量恢复
-                if (saved.session_id && sessions.some(s => s.session_id === saved.session_id)) {
-                    await loadSession(saved.session_id);
-                }
+                await handleWorkspaceChange();  // 会自动加载保存的或第一个会话
             }
         }
     } catch (error) {
@@ -340,7 +343,7 @@ async function handleWorkspaceChange() {
         document.getElementById('footer-content').innerHTML = _footerOriginalHTML;
         _footerOriginalHTML = null;
     }
-    savePosition({ workspace_uuid: selectedUuid, session_id: '' });
+    savePosition({ workspace_uuid: selectedUuid });
 
     if (!currentWorkspace) {
         updateWorkspacePath();
@@ -350,6 +353,22 @@ async function handleWorkspaceChange() {
 
     updateWorkspacePath();
     await loadSessions();
+
+    // 自动加载最近的会话（如果有）
+    if (sessions.length > 0) {
+        // 优先加载该工作区上次访问的会话，否则加载第一个
+        const saved = readPosition();
+        const savedSessionId = saved.ws_sessions?.[selectedUuid];
+        const targetSession = savedSessionId && sessions.some(s => s.session_id === savedSessionId)
+            ? savedSessionId
+            : sessions[0].session_id;
+        await loadSession(targetSession);
+    } else {
+        // 没有会话时禁用输入框
+        chatInput.disabled = true;
+        sendBtn.disabled = true;
+        chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>点击 + 创建新会话</p></div>';
+    }
 }
 
 // Handle new workspace button
