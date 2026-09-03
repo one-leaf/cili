@@ -964,6 +964,25 @@ body {
     border: 1px solid #f0c8c8;
 }
 
+/* 工具输出实时流式显示 */
+pre.tool-streaming-output {
+    position: relative;
+    min-height: 1.2em;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+pre.tool-streaming-output:empty::after {
+    content: '▍';
+    animation: blink-cursor 0.8s step-end infinite;
+    color: #666;
+}
+
+@keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
 .message .message-content {
     line-height: 1.6;
     overflow-x: auto;

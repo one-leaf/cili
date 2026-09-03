@@ -8,6 +8,9 @@ let showHiddenSessions = false;
 let selectedSessions = new Set();
 let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
 
+// ── 工具输出实时流式显示 ──
+const _toolStreamTimers = {};  // { tool_use_id: { timer, pre, offset } }
+
 // ── localStorage 位置持久化 ──
 // 存储格式: { workspace_uuid: "当前工作区", ws_sessions: { "ws-uuid": "session_id" } }
 // ws_sessions 按工作区记忆上次访问的会话，刷新或切换回来可恢复
@@ -1188,6 +1191,9 @@ async function loadSession(sessionId) {
 
         console.log('Session switched to:', currentSession.session_id);
 
+        // 清理所有正在进行的工具输出轮询
+        clearAllToolStreaming();
+
         // Enable input by default when selecting a session
         chatInput.disabled = false;
         sendBtn.disabled = false;
@@ -1443,6 +1449,61 @@ function renderSubagentRef(msg, idx) {
             detail.dataset.renderedCount = '0';
         }
     });
+}
+
+// ── 工具输出实时流式显示 ──
+// 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入
+// 前端在收到 tool_use SSE 事件后启动轮询，收到 tool_result 后停止
+
+function startToolStreaming(toolUseId, contentDiv) {
+    if (!currentWorkspace || !currentSession) return;
+    let offset = 0;
+
+    // 创建输出容器
+    const pre = document.createElement('pre');
+    pre.className = 'tool-streaming-output';
+    pre.textContent = '';
+    contentDiv.appendChild(pre);
+
+    _toolStreamTimers[toolUseId] = { timer: null, pre, offset };
+
+    const timer = setInterval(async () => {
+        try {
+            const url = `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stream/${toolUseId}?offset=${offset}`;
+            const resp = await fetch(url);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            if (data.content) {
+                // 首次收到内容时清空提示
+                if (offset === 0) pre.textContent = '';
+                pre.textContent += data.content;
+                offset = data.offset;
+                _toolStreamTimers[toolUseId].offset = offset;
+                // 自动滚动到最新输出
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        } catch (e) {
+            // 轮询失败静默忽略，tool_result SSE 会兜底显示
+        }
+    }, 200); // 200ms 轮询间隔
+
+    _toolStreamTimers[toolUseId].timer = timer;
+}
+
+function stopToolStreaming(toolUseId) {
+    const entry = _toolStreamTimers[toolUseId];
+    if (entry) {
+        if (entry.timer) clearInterval(entry.timer);
+        delete _toolStreamTimers[toolUseId];
+    }
+}
+
+// 清理所有流式定时器（会话切换时调用）
+function clearAllToolStreaming() {
+    for (const id of Object.keys(_toolStreamTimers)) {
+        stopToolStreaming(id);
+    }
 }
 
 // 渲染任务清单（Todo List）
@@ -1810,10 +1871,16 @@ function renderAskUserQuestions(container, input, toolUseId) {
                                 const pre = document.createElement('pre');
                                 pre.textContent = JSON.stringify(event.input, null, 2);
                                 contentDiv.appendChild(pre);
+                                // 对 bash/python 工具启动实时输出流式显示
+                                if (event.tool === 'bash' || event.tool === 'python') {
+                                    startToolStreaming(event.tool_use_id, contentDiv);
+                                }
                             }
                             assistantDiv = null;
                             assistantContent = '';
                         } else if (event.type === 'tool_result') {
+                            // 停止该工具调用的实时输出轮询
+                            stopToolStreaming(event.tool_use_id);
                             if (event.tool === 'ask_user') {
                                 const askCard = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
                                 if (askCard) {
@@ -2314,12 +2381,18 @@ async function sendMessage() {
                             const pre = document.createElement('pre');
                             pre.textContent = JSON.stringify(event.input, null, 2);
                             contentDiv.appendChild(pre);
+                            // 对 bash/python 工具启动实时输出流式显示
+                            if (event.tool === 'bash' || event.tool === 'python') {
+                                startToolStreaming(event.tool_use_id, contentDiv);
+                            }
                         }
 
                         // 重置 assistantDiv 用于后续文本
                         assistantDiv = null;
                         assistantContent = '';
                     } else if (event.type === 'tool_result') {
+                        // 停止该工具调用的实时输出轮询
+                        stopToolStreaming(event.tool_use_id);
                         // ask_user 的 tool_result 事件：禁用问题卡片
                         if (event.tool === 'ask_user') {
                             const card = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
