@@ -89,9 +89,10 @@ class AnthropicAdapter(Adapter):
                         except json.JSONDecodeError:
                             block_dict["input"] = {"_raw": arguments}
                         block_dict.pop("arguments", None)
-                    # Convert tool_call_id to tool_use_id
+                    # Convert tool_call_id to tool_use_id (OpenAI → Anthropic)
                     elif block_dict.get("type") == "tool_result":
-                        block_dict["tool_use_id"] = block_dict.pop("tool_call_id", "")
+                        if "tool_call_id" in block_dict:
+                            block_dict["tool_use_id"] = block_dict.pop("tool_call_id")
                     content.append(block_dict)
                 anthropic_messages.append({
                     "role": msg.role,

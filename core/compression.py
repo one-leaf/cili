@@ -120,6 +120,8 @@ def count_messages_tokens(messages: list[dict]) -> int:
                         total += count_tokens_approx(str(rc))
                 elif block.get("type") == "tool_use":
                     total += count_tokens_approx(json.dumps(block.get("input", {}), ensure_ascii=False))
+                elif block.get("type") in ("reasoning", "thinking"):
+                    total += count_tokens_approx(block.get("thinking", "") or block.get("text", ""))
     return total
 
 

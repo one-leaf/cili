@@ -184,6 +184,7 @@ class LLMClient:
 
         def do_stream():
             """Execute streaming request and process chunks."""
+            assembler.reset()  # Reset on retry to avoid duplicate data
             events = self.transport.stream(url, headers, body, stop_check=stop_check)
             # Pass entire event iterator to translate_stream so it maintains
             # state (tool_call_indices, etc.) across events.

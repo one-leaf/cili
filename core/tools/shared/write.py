@@ -40,8 +40,13 @@ class WriteTool(Tool):
             parent = os.path.dirname(file_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(file_path, "w", encoding="utf-8") as f:
+            # Atomic write: write to temp file first, then replace
+            temp_path = file_path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(clean_content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, file_path)
             lines = clean_content.count("\n") + (1 if clean_content and not clean_content.endswith("\n") else 0)
             size = os.path.getsize(file_path)
             result_text = f"Successfully wrote {file_path} ({lines} lines, {size} bytes)"

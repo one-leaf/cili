@@ -186,11 +186,22 @@ CHROME_DIR = PROJECT_ROOT / "data" / "deps" / "browser"
 CHROME_DIR.mkdir(parents=True, exist_ok=True)
 
 
+_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_session_id(session_id: str) -> None:
+    """Validate session_id format to prevent path traversal."""
+    if not _SESSION_ID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id format")
+
+
 def _require_workspace(workspace_uuid: str) -> Path:
     """FastAPI dependency: validate workspace exists, return its data dir.
 
     Usage: ws_dir: Path = Depends(_require_workspace)
     """
+    if not _SESSION_ID_RE.match(workspace_uuid) or '..' in workspace_uuid:
+        raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
     ws_dir = WORKSPACE_DATA_DIR / workspace_uuid
     if not ws_dir.exists():
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -606,6 +617,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
 @app.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
 async def get_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Get a specific session with all messages."""
+    _validate_session_id(session_id)
     session_dir = ws_dir / "sessions" / session_id
     index_file = session_dir / "index.json"
     if not index_file.exists():
@@ -781,6 +793,7 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
 @app.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
 async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Delete a session."""
+    _validate_session_id(session_id)
     session_dir = ws_dir / "sessions" / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -823,6 +836,7 @@ class AnswerAskUserRequest(BaseModel):
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/rename")
 async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Rename a session (atomic write)."""
+    _validate_session_id(session_id)
     index_file = ws_dir / "sessions" / session_id / "index.json"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -847,6 +861,7 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/hidden")
 async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetHiddenRequest, ws_dir: Path = Depends(_require_workspace)):
     """Set session hidden status."""
+    _validate_session_id(session_id)
     index_file = ws_dir / "sessions" / session_id / "index.json"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -877,6 +892,9 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
     results = []
 
     for session_id in request.session_ids:
+        if not _SESSION_ID_RE.match(session_id):
+            results.append({"session_id": session_id, "success": False, "error": "Invalid session_id format"})
+            continue
         index_file = sessions_dir / session_id / "index.json"
         if not index_file.exists():
             results.append({"session_id": session_id, "success": False, "error": "Not found"})
@@ -1174,6 +1192,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         tool_use_id = f"cmd_{secrets.token_hex(4)}"
 
         loop = asyncio.get_running_loop()
+        bash_tool = None
         try:
             bash_tool = get_tool_by_name(agent.tools, 'bash')
             if not bash_tool:
@@ -1808,7 +1827,7 @@ def _find_workspace_for_file(file_path: str) -> tuple[str, Path] | None:
         workspace_path = Path(workspace_dir).resolve()
         file_full_path = (workspace_path / file_path).resolve()
         # Security: ensure file is within the workspace directory
-        if not str(file_full_path).startswith(str(workspace_path)):
+        if not file_full_path.is_relative_to(workspace_path):
             continue
         if file_full_path.exists() and file_full_path.is_file():
             return (item.name, file_full_path)
@@ -1819,7 +1838,7 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
     """Serve a file from a workspace directory with path-traversal protection."""
     workspace_path = Path(workspace_dir).resolve()
     file_full_path = (workspace_path / file_path).resolve()
-    if not str(file_full_path).startswith(str(workspace_path)):
+    if not file_full_path.is_relative_to(workspace_path):
         raise HTTPException(status_code=403, detail="Access denied: path traversal not allowed")
     if not file_full_path.exists() or not file_full_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")

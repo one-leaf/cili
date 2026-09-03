@@ -541,6 +541,32 @@ class Tool:
         """Remove surrogate characters invalid in UTF-8."""
         return ''.join(c for c in s if not ('\ud800' <= c <= '\udfff'))
 
+    @staticmethod
+    def _kill_process_tree(proc: subprocess.Popen) -> None:
+        """Kill a process and all its descendants."""
+        pid = proc.pid
+        if sys.platform == "win32":
+            # Windows: use taskkill /T to kill process tree
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            # Unix: try to kill process group first
+            try:
+                os.killpg(os.getpgid(pid), 9)
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
     def _run_bash(self, command: str, timeout: int = 30, stdin: str | None = None,
                   max_chars: int | None = None, output_file: str | None = None) -> ToolResult:
         """Execute command via Git Bash with real-time output streaming.
@@ -647,7 +673,7 @@ class Tool:
                         elapsed = time.monotonic() - start_time
                         if elapsed > timeout:
                             timed_out = True
-                            proc.kill()
+                            self._kill_process_tree(proc)
                             break
                         continue
                     if line is None:
@@ -672,7 +698,7 @@ class Tool:
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    self._kill_process_tree(proc)
                     proc.wait()
 
             output = "".join(output_parts).strip() or "(no output)"
@@ -867,8 +893,8 @@ class Tool:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
         try:
-            # Kill process
-            task.process.kill()
+            # Kill process tree
+            self._kill_process_tree(task.process)
             task.process.wait(timeout=5)
             task.status = "killed"
 
@@ -880,7 +906,7 @@ class Tool:
         except subprocess.TimeoutExpired:
             # Force kill
             try:
-                task.process.kill()
+                self._kill_process_tree(task.process)
             except Exception:
                 pass
             BackgroundTaskManager.remove(task_id)

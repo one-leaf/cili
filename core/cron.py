@@ -797,6 +797,11 @@ class CronScheduler:
                 self._delete_one_time_task(task.name)
         except Exception as e:
             logger.error(f"[cron] Task {task.name} error: {e}")
+            # Update _next_run even on failure to prevent rapid re-triggering
+            try:
+                task.mark_executed(now, None)
+            except Exception:
+                pass
         finally:
             ws_lock.release()
 

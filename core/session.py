@@ -47,6 +47,10 @@ class SessionManager:
     _INTERNAL_META_FIELDS = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
 
     def __init__(self, session_id: str, sessions_dir: Path):
+        import re as _re
+        # Allow empty string (means "not yet assigned") but validate non-empty IDs
+        if session_id and not _re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+            raise ValueError(f"Invalid session_id format: {session_id!r}")
         self.session_id = session_id
         # sessions_dir 是工作区级别的 sessions 目录
         self.sessions_dir = Path(sessions_dir)
@@ -113,7 +117,7 @@ class SessionManager:
         使用脏标记缓存：仅在消息变更时重建。
         """
         if not self._messages_dirty and self._valid_messages_cache is not None:
-            return self._valid_messages_cache
+            return list(self._valid_messages_cache)  # Return shallow copy to prevent cache mutation
 
         INTERNAL_META = self._INTERNAL_META_FIELDS
         result = []
@@ -631,10 +635,19 @@ class SessionManager:
             if meta.get("valid") is False:
                 continue
 
-            # 标记消息级别的 _meta.valid = False
-            if "_meta" not in msg:
-                msg["_meta"] = {}
-            msg["_meta"]["valid"] = False
+            # 仅替换图片 block 为文本占位符，保留消息中其他内容
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            block = content[block_idx]
+            rc = block.get("content", [])
+            if not isinstance(rc, list):
+                continue
+            # 将图片 sub-block 替换为文本占位符
+            rc[sub_idx] = {
+                "type": "text",
+                "text": "[Old image content cleared to save space]",
+            }
             saved += data_len
 
         if saved > 0:

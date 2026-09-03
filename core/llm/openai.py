@@ -83,6 +83,11 @@ class OpenAIAdapter(Adapter):
                 openai_messages.append({"role": role, "content": content})
                 continue
 
+            # Handle None content (e.g., assistant messages with only tool_calls)
+            if content is None:
+                openai_messages.append({"role": role, "content": None})
+                continue
+
             # Content is a list of blocks
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

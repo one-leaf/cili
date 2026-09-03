@@ -80,7 +80,9 @@ Examples:
             if not name:
                 return ToolResult("Error: 'name' is required for create_file", error=True)
             temp_dir = self._get_temp_dir()
-            file_path = temp_dir / name
+            file_path = (temp_dir / name).resolve()
+            if not file_path.is_relative_to(temp_dir.resolve()):
+                return ToolResult("Error: 'name' must not contain path traversal", error=True)
             try:
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(content or "", encoding="utf-8")
@@ -92,7 +94,9 @@ Examples:
             if not name:
                 return ToolResult("Error: 'name' is required for create_dir", error=True)
             temp_dir = self._get_temp_dir()
-            dir_path = temp_dir / name
+            dir_path = (temp_dir / name).resolve()
+            if not dir_path.is_relative_to(temp_dir.resolve()):
+                return ToolResult("Error: 'name' must not contain path traversal", error=True)
             try:
                 dir_path.mkdir(parents=True, exist_ok=True)
                 return ToolResult(f"Created temp directory: {dir_path}")

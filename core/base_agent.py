@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
+
 from core.config import Config, ModelConfig
 from core.llm import LLMClient, LLMResponse, format_llm_error, Message, TextBlock, UsageData
 from core.tools.shared.base import Tool, ToolResult
@@ -924,6 +926,40 @@ class BaseAgent:
                 )
             return response
         except Exception as e:
+            # Handle 413 by stripping images and retrying
+            if self._is_413_error(e):
+                logger.warning("[LLM] 请求体过大，正在重试...")
+                self._mark_all_images_invalid()
+                self.save_messages()
+
+                retry_messages = self._get_messages_with_header()
+                if not self.config.model.multimodal:
+                    retry_messages = self._strip_images_from_messages(retry_messages)
+                retry_message_objects = self._convert_to_message_objects(retry_messages)
+                try:
+                    response = self.client.chat(
+                        messages=retry_message_objects,
+                        system=system_prompt,
+                        tools=self.tool_schemas,
+                        session_id=self._session_id,
+                    )
+                    if response.usage:
+                        self._update_usage(
+                            input_tokens=response.usage.input_tokens,
+                            output_tokens=response.usage.output_tokens,
+                            api_calls=1,
+                            cache_read_tokens=response.usage.cache_read_tokens,
+                            cache_creation_tokens=response.usage.cache_write_tokens,
+                        )
+                    return response
+                except Exception as retry_e:
+                    err_msg = format_llm_error(retry_e, self.client.base_url if self.client else "")
+                    logger.error(f"[LLM] {err_msg}")
+                    return LLMResponse(
+                        content=[TextBlock(text=err_msg)],
+                        stop_reason="error",
+                    )
+
             err_msg = format_llm_error(e, self.client.base_url if self.client else "")
             logger.error(f"[LLM] {err_msg}")
             return LLMResponse(
@@ -972,7 +1008,7 @@ class BaseAgent:
             )
         except Exception as e:
             # Handle 413 by stripping images and retrying
-            if "413" in str(e) or "Entity Too Large" in str(e):
+            if self._is_413_error(e):
                 logger.warning("[LLM] 请求体过大，正在重试...")
                 self._mark_all_images_invalid()
                 self.save_messages()
@@ -1007,6 +1043,14 @@ class BaseAgent:
             )
 
         return response
+
+    @staticmethod
+    def _is_413_error(e: Exception) -> bool:
+        """Check if exception is a 413 Entity Too Large error."""
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 413:
+            return True
+        # Fallback for wrapped exceptions
+        return "413" in str(e) or "Entity Too Large" in str(e)
 
     def _mark_all_images_invalid(self) -> None:
         """Mark all images as invalid for 413 retry.

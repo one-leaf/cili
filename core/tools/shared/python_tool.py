@@ -6,6 +6,7 @@ basic code execution, package install, env info.
 from __future__ import annotations
 
 import os
+import shlex
 from typing import Any
 
 from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
@@ -182,7 +183,7 @@ class PythonTool(Tool):
 
         cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
-            cmd += f" {args}"
+            cmd += f" {shlex.quote(args)}"
 
         if run_in_background:
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
