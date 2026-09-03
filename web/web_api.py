@@ -1193,6 +1193,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
         loop = asyncio.get_running_loop()
         bash_tool = None
+        output_file_path = ""
         try:
             bash_tool = get_tool_by_name(agent.tools, 'bash')
             if not bash_tool:
@@ -1216,6 +1217,14 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         finally:
             if bash_tool:
                 bash_tool.output_file = None
+            # Clean up streaming output file (content is stored inline in message)
+            if output_file_path:
+                try:
+                    p = Path(output_file_path)
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
 
         # Build tool_use and tool_result blocks
         tool_use_block = {

@@ -354,6 +354,19 @@ class BaseAgent:
                 result_dict["_meta"] = {}
             result_dict["_meta"].update(meta)
 
+        # Clean up orphaned external file: streaming tools (bash/python) always
+        # create a .txt file for frontend polling, but when content is inlined
+        # (not truncated, not multimodal) the file becomes unnecessary.
+        # _resolve_tool_results skips blocks with inline content, so it never
+        # needs this file. Delete it now to avoid orphaned files on disk.
+        if not needs_external_file and self.session_dir and output_filename:
+            orphan_path = self.session_dir / output_filename
+            try:
+                if orphan_path.exists():
+                    orphan_path.unlink()
+            except Exception:
+                pass
+
         return result_dict
 
     def _get_tool_by_name(self, name: str) -> Tool | None:

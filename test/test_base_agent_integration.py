@@ -279,7 +279,7 @@ class TestSubAgentIntegration:
 
     @pytest.mark.parametrize("protocol", ["anthropic", "openai"])
     def test_tool_execution_creates_files(self, protocol, test_workspace_dir):
-        """SubAgent 工具调用：输出文件写入。"""
+        """SubAgent 工具调用：输出内联到消息，小输出的外部文件应被清理。"""
         result, session_dir = self._run_subagent(
             "Use bash to run 'ls -la' in the current directory and report what files you see.",
             test_workspace_dir, protocol,
@@ -288,12 +288,25 @@ class TestSubAgentIntegration:
         assert result["status"] in ("completed", "timeout"), \
             f"[{protocol}] Unexpected status: {result['status']}"
         if result["status"] == "completed":
-            output_files = list(session_dir.glob("*.txt"))
-            assert len(output_files) > 0, f"[{protocol}] Should have created output files"
-            assert any(
-                f.read_text(encoding="utf-8", errors="replace").strip()
-                for f in output_files
-            ), f"[{protocol}] Output files should not all be empty"
+            # Small outputs are inlined in messages; external .txt files should
+            # be cleaned up (no orphaned files).
+            output_files = list(session_dir.glob("call_*.txt"))
+            assert len(output_files) == 0, \
+                f"[{protocol}] Small output files should be cleaned up, found: {output_files}"
+            # Content is still persisted in messages
+            import json as _json
+            idx_file = session_dir / "index.json"
+            if idx_file.exists():
+                data = _json.loads(idx_file.read_text(encoding="utf-8"))
+                messages = data.get("messages", [])
+                tool_results = [
+                    block for msg in messages if msg.get("role") == "user"
+                    for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+                    if isinstance(block, dict) and block.get("type") == "tool_result"
+                ]
+                assert any(
+                    tr.get("content") for tr in tool_results
+                ), f"[{protocol}] Tool results should be inlined in messages"
 
     def test_cron_session_persistence(self, test_workspace_dir):
         """Cron 风格的会话持久化（exec_id）。"""
