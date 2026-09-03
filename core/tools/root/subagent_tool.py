@@ -204,6 +204,7 @@ class SubAgentTool(Tool):
         def run_subagent():
             try:
                 result = subagent.run()
+                result["message_count"] = len(subagent.messages)
                 entry["result"] = result
 
                 # Save SubAgent execution log via SessionManager

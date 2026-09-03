@@ -390,6 +390,8 @@ class CronTask:
                         "tool_name": "subagent",
                         "exec_id": exec_id,
                         "completed": True,
+                        "iterations": iterations,
+                        "message_count": len(subagent.messages),
                     },
                 }
             ])
