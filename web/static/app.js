@@ -1455,64 +1455,78 @@ function renderSubagentRef(msg, idx) {
 // 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入
 // 前端在收到 tool_use SSE 事件后启动轮询，收到 tool_result 后停止
 // 工具输出显示为独立的消息气泡（类似思考块），执行完毕后自动消失
+// 延迟5秒显示：快速执行的工具不会产生气泡闪烁
+
+const TOOL_STREAMING_DELAY = 5000; // 5秒后才显示实时输出
 
 function startToolStreaming(toolUseId, toolName) {
     if (!currentWorkspace || !currentSession) return;
-    let offset = 0;
 
-    // 创建独立的消息气泡（类似思考块）
-    const div = document.createElement('div');
-    div.className = 'message assistant tool-streaming-bubble';
-    div.dataset.toolUseId = toolUseId;
+    // 先设置延迟定时器，5秒后才真正开始轮询和显示
+    const delayTimer = setTimeout(() => {
+        // 5秒后还没完成，开始创建气泡并轮询
+        let offset = 0;
 
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
+        // 创建独立的消息气泡（类似思考块）
+        const div = document.createElement('div');
+        div.className = 'message assistant tool-streaming-bubble';
+        div.dataset.toolUseId = toolUseId;
 
-    const title = document.createElement('div');
-    title.className = 'streaming-title';
-    title.textContent = `⚡ ${toolName} 执行中...`;
-    contentDiv.appendChild(title);
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
 
-    const pre = document.createElement('pre');
-    pre.className = 'tool-streaming-output';
-    pre.textContent = '';
-    contentDiv.appendChild(pre);
+        const title = document.createElement('div');
+        title.className = 'streaming-title';
+        title.textContent = `⚡ ${toolName} 执行中...`;
+        contentDiv.appendChild(title);
 
-    div.appendChild(contentDiv);
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+        const pre = document.createElement('pre');
+        pre.className = 'tool-streaming-output';
+        pre.textContent = '';
+        contentDiv.appendChild(pre);
 
-    _toolStreamTimers[toolUseId] = { timer: null, pre, offset, div };
+        div.appendChild(contentDiv);
+        chatMessages.appendChild(div);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
 
-    const timer = setInterval(async () => {
-        try {
-            const url = `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stream/${toolUseId}?offset=${offset}`;
-            const resp = await fetch(url);
-            if (!resp.ok) return;
-            const data = await resp.json();
+        // 更新 entry，标记气泡已创建
+        const entry = _toolStreamTimers[toolUseId];
+        if (entry) {
+            entry.div = div;
+            entry.pre = pre;
+            entry.offset = offset;
+            entry.timer = setInterval(async () => {
+                try {
+                    const url = `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stream/${toolUseId}?offset=${entry.offset}`;
+                    const resp = await fetch(url);
+                    if (!resp.ok) return;
+                    const data = await resp.json();
 
-            if (data.content) {
-                // 首次收到内容时清空提示
-                if (offset === 0) pre.textContent = '';
-                pre.textContent += data.content;
-                offset = data.offset;
-                _toolStreamTimers[toolUseId].offset = offset;
-                // 自动滚动到最新输出
-                chatMessages.scrollTop = chatMessages.scrollHeight;
-            }
-        } catch (e) {
-            // 轮询失败静默忽略，tool_result SSE 会兜底显示
+                    if (data.content) {
+                        if (entry.offset === 0) entry.pre.textContent = '';
+                        entry.pre.textContent += data.content;
+                        entry.offset = data.offset;
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                } catch (e) {
+                    // 轮询失败静默忽略，tool_result SSE 会兜底显示
+                }
+            }, 200);
         }
-    }, 200); // 200ms 轮询间隔
+    }, TOOL_STREAMING_DELAY);
 
-    _toolStreamTimers[toolUseId].timer = timer;
+    // 先记录 entry，delayTimer 触发前 div/timer 为空
+    _toolStreamTimers[toolUseId] = { delayTimer, timer: null, pre: null, offset: 0, div: null };
 }
 
 function stopToolStreaming(toolUseId) {
     const entry = _toolStreamTimers[toolUseId];
     if (entry) {
+        // 清除延迟定时器（如果5秒内完成，气泡还没创建）
+        if (entry.delayTimer) clearTimeout(entry.delayTimer);
+        // 清除轮询定时器（如果已经启动）
         if (entry.timer) clearInterval(entry.timer);
-        // 删除独立的输出气泡
+        // 删除独立的输出气泡（如果已经创建）
         if (entry.div && entry.div.parentNode) {
             entry.div.remove();
         }
