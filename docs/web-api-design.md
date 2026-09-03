@@ -303,8 +303,8 @@ POST /api/workspaces/{uuid}/sessions/{id}/stop
 
 `ask_user` 工具采用 **退出 Agent 循环 + 前端渲染 + 用户回答作为新消息** 模式：
 
-1. Agent 调用 `ask_user` → 工具返回 `wait_for_user=True` 的 ToolResult
-2. Agent 循环检测到 `wait_for_user`，保存消息后退出
+1. Agent 调用 `ask_user` → 工具返回 `completed=False` 的 ToolResult
+2. Agent 循环检测到 `completed=False`，保存消息后退出
 3. 前端通过 SSE 的 `tool_use` 事件（`tool: "ask_user"`）渲染交互式问题卡片
 4. `tool_result` 事件对 `ask_user` 跳过（不渲染结果气泡）
 5. 用户选择答案后，格式化答案作为普通聊天消息发送（POST /messages）

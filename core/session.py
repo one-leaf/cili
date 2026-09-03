@@ -43,7 +43,8 @@ class SessionManager:
     """
 
     # _meta 中的内部字段（发送到 API 前剥离）
-    _INTERNAL_META_FIELDS = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal"})
+    # 包括消息级别和 block 级别的所有内部字段
+    _INTERNAL_META_FIELDS = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
 
     def __init__(self, session_id: str, sessions_dir: Path):
         self.session_id = session_id
@@ -80,38 +81,18 @@ class SessionManager:
                     _meta: dict | None = None) -> None:
         """添加消息到会话。
 
-        内部字段统一放入 message 级别的 _meta 字段。
-        flush 参数保留以兼容旧接口，但 SessionManager 不会自动保存，
-        需要显式调用 save() 来持久化。
-
         Args:
             role: 消息角色
             content: 消息内容
             flush: 是否立即保存（保留兼容）
-            extra: 额外字段（如旧的 _valid 等），会自动迁移到 _meta
-            _meta: 直接指定 _meta 字段（新格式）
+            extra: 额外字段，会合并到消息中
+            _meta: 消息级别的 _meta 字段
         """
         message = {"role": role, "content": content}
 
-        # 处理 _meta 字段
         if _meta:
             message["_meta"] = _meta
-        elif extra:
-            # 向后兼容：将旧格式的 _valid, _compacted 等迁移到 _meta
-            meta = {}
-            if "_valid" in extra:
-                meta["valid"] = extra.pop("_valid")
-            if "_compacted" in extra:
-                meta["compacted"] = extra.pop("_compacted")
-            if "_output_path" in extra:
-                meta["output_path"] = extra.pop("_output_path")
-            if "_file_size" in extra:
-                meta["file_size"] = extra.pop("_file_size")
-            if "_truncated" in extra:
-                meta["truncated"] = extra.pop("_truncated")
-            if meta:
-                message["_meta"] = meta
-            # 其他 extra 字段直接合并
+        if extra:
             message.update(extra)
 
         self.messages.append(message)
@@ -136,7 +117,6 @@ class SessionManager:
         - 顶层 _meta.valid=False 的消息会被移除
         - 跳过 _subagent_ref 角色（SubAgent 引用，仅用于 UI 显示）
         - 剥离 _meta 中的内部字段（不发送给 API）
-        - 向后兼容：检测旧格式的 _valid 字段并自动处理
 
         使用脏标记缓存：仅在消息变更时重建。
         """
@@ -146,10 +126,9 @@ class SessionManager:
         INTERNAL_META = self._INTERNAL_META_FIELDS
         result = []
         for msg in self.messages:
-            # 检查消息级别的 validity（支持新格式 _meta.valid 和旧格式 _valid）
+            # 检查消息级别的 validity
             meta = msg.get("_meta", {})
-            msg_valid = meta.get("valid", msg.get("_valid", True))
-            if msg_valid is False:
+            if meta.get("valid") is False:
                 continue
             if not self._is_real_user_message(msg):
                 continue
@@ -168,9 +147,19 @@ class SessionManager:
                 result.append(clean_msg)
                 continue
 
-            # 列表内容：直接保留所有 blocks（不再递归过滤 block 级别的 _valid）
+            # 列表内容：保留所有 blocks，剥离 block 级别 _meta 内部字段
             # 注意：新格式中 _valid 在 message 级别，不在 block 级别
-            clean_blocks = list(content)
+            clean_blocks = []
+            for block in content:
+                clean_block = dict(block)
+                # 剥离 block 级别的 _meta 内部字段
+                if "_meta" in clean_block:
+                    stripped_block_meta = {k: v for k, v in clean_block["_meta"].items() if k not in INTERNAL_META}
+                    if stripped_block_meta:
+                        clean_block["_meta"] = stripped_block_meta
+                    else:
+                        del clean_block["_meta"]
+                clean_blocks.append(clean_block)
 
             if clean_blocks:
                 clean_msg = {"role": role, "content": clean_blocks}
@@ -547,22 +536,13 @@ class SessionManager:
             msg = self.messages[idx]
             content = msg["content"]
 
-            # 检查是否已经压缩过（支持新格式 _meta.compacted 和旧格式 block._compacted）
-            meta = msg.get("_meta", {})
-            if meta.get("compacted"):
-                continue
-            # 检查旧格式：任意 block 有 _compacted
-            if any(b.get("_compacted") for b in content):
-                # 迁移旧格式到新格式
-                msg["_meta"] = {"compacted": True}
-                continue
-
             for block in content:
                 if block.get("type") != "tool_result":
                     continue
 
-                # 跳过已压缩的（旧格式）
-                if block.get("_compacted"):
+                # 从 block 级别的 _meta 读取
+                block_meta = block.get("_meta", {})
+                if block_meta.get("compacted", False):
                     continue
 
                 original = block.get("content", "")
@@ -585,10 +565,10 @@ class SessionManager:
                                     saved += len(text.encode('utf-8', errors='replace'))
                         block["content"] = [{"type": "text", "text": PLACEHOLDER}]
 
-            # 设置消息级别的 _meta.compacted
-            if "_meta" not in msg:
-                msg["_meta"] = {}
-            msg["_meta"]["compacted"] = True
+                # 标记 block 级别 _meta.compacted = True
+                if "_meta" not in block:
+                    block["_meta"] = {}
+                block["_meta"]["compacted"] = True
 
         if saved > 0:
             self._messages_dirty = True
@@ -655,9 +635,6 @@ class SessionManager:
                 # 检查消息是否已经标记为无效
                 meta = msg.get("_meta", {})
                 if meta.get("valid") is False:
-                    continue
-                # 向后兼容：检查旧格式
-                if msg.get("_valid") is False:
                     continue
 
                 # 估算大小

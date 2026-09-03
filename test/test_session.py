@@ -85,22 +85,21 @@ class TestSessionManagement:
         assert session.get_message_count() == 0
 
     def test_valid_messages_filter(self, test_workspace):
-        """测试有效消息过滤"""
+        """测试有效消息过滤（消息级别 _meta.valid=False）"""
         sessions_dir = Path(test_workspace) / ".sessions_filter"
         session = SessionManager.create_new_session(sessions_dir, "Filter Test")
 
         session.add_message("user", "Hello")
         session.add_message("assistant", [
-            {"type": "thinking", "thinking": "Let me think...", "_valid": False},
+            {"type": "thinking", "thinking": "Let me think..."},
             {"type": "text", "text": "Response"},
-        ])
+        ], _meta={"valid": False})  # 整条消息无效
+        session.add_message("assistant", "Valid response")
 
         valid = session.get_valid_messages()
-        assert len(valid) == 2
-        # Thinking block should be filtered out
-        assistant_content = valid[1]["content"]
-        assert len(assistant_content) == 1
-        assert assistant_content[0]["type"] == "text"
+        assert len(valid) == 2  # user + last assistant
+        assert valid[0]["content"] == "Hello"
+        assert valid[1]["content"] == "Valid response"
 
     def test_usage_tracking(self, test_workspace):
         """测试使用量追踪"""

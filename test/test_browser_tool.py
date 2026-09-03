@@ -11,24 +11,40 @@ class TestBrowserTool:
     """浏览器工具测试"""
 
     @pytest.fixture(autouse=True)
-    def check_browser_available(self, tools):
-        """检查浏览器是否可用"""
+    def browser_setup_teardown(self, tools):
+        """浏览器测试准备：检查浏览器可用性；测试后清理：关闭所有打开的 tab。"""
         from core.tools import get_tool_by_name
 
+        browser_tool = get_tool_by_name(tools, "browser")
+
+        # 检查浏览器是否可用
         try:
-            browser_tool = get_tool_by_name(tools, "browser")
-            # 尝试执行一个简单的操作来检查浏览器是否可用
             result = browser_tool.execute(action="navigate", url="about:blank")
             if result.error:
                 pytest.skip("Browser not available")
         except Exception as e:
             pytest.skip(f"Browser not available: {e}")
 
-    def test_browser_navigate(self, tools):
-        """测试 browser 工具 - 导航"""
-        from core.tools import get_tool_by_name
+        yield browser_tool
 
-        browser_tool = get_tool_by_name(tools, "browser")
+        # 测试结束后关闭所有打开的 tab
+        try:
+            list_result = browser_tool.execute(action="list_tabs")
+            if not list_result.error and "No tabs" not in list_result.output:
+                import re
+                # 输出格式: "tab 1: open, idle=..."
+                tab_indices = re.findall(r'^\s*tab\s+(\d+):', list_result.output, re.MULTILINE)
+                for idx in tab_indices:
+                    try:
+                        browser_tool.execute(action="close_tab", tab_index=int(idx))
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # 清理失败不影响测试结果
+
+    def test_browser_navigate(self, browser_setup_teardown):
+        """测试 browser 工具 - 导航"""
+        browser_tool = browser_setup_teardown
         result = browser_tool.execute(
             action="navigate",
             url="https://example.com"
@@ -41,11 +57,9 @@ class TestBrowserTool:
         assert not result.error
         assert "Example" in result.output or "example.com" in result.output.lower()
 
-    def test_browser_get_text(self, tools):
+    def test_browser_get_text(self, browser_setup_teardown):
         """测试 browser 工具 - 获取文本"""
-        from core.tools import get_tool_by_name
-
-        browser_tool = get_tool_by_name(tools, "browser")
+        browser_tool = browser_setup_teardown
 
         # 先导航
         nav_result = browser_tool.execute(
@@ -61,11 +75,9 @@ class TestBrowserTool:
         assert not result.error
         assert "Example" in result.output or len(result.output) > 0
 
-    def test_browser_execute_javascript(self, tools):
+    def test_browser_execute_javascript(self, browser_setup_teardown):
         """测试 browser 工具 - 执行 JavaScript"""
-        from core.tools import get_tool_by_name
-
-        browser_tool = get_tool_by_name(tools, "browser")
+        browser_tool = browser_setup_teardown
 
         # 先导航
         nav_result = browser_tool.execute(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime
 
 from core.tools.shared.base import Tool, ToolResult
@@ -64,6 +65,11 @@ class SubAgentTool(Tool):
         super().__init__(*args, **kwargs)
         self.stop_check = None  # Set by RootAgent after tool creation
         self.on_subagent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
+        self.on_subagent_complete = None  # Callback(exec_id) fired when sub-agent finishes
+        # Pending synchronous subagents: exec_id -> {thread, event, result, exec_id, subagent, task, max_iterations}
+        self._pending_subagents: dict[str, dict] = {}
+        self._pending_lock = threading.Lock()
+
 
     @property
     def parameters(self) -> dict:
@@ -201,57 +207,86 @@ class SubAgentTool(Tool):
                 task_summary=task_summary,
             )
 
-        # Synchronous mode (original behavior)
-        result = None
-        try:
-            result = subagent.run()
-        except Exception as e:
-            logger.error(f"SubAgent tool error: {e}")
-            return ToolResult(f"Error: SubAgent execution failed: {e}", error=True)
-        finally:
-            subagent.close()
-            # Save SubAgent execution log via SessionManager (safety net in case _finalize failed)
-            if self.session_manager and exec_id and result is not None:
-                try:
-                    final_status = result.get("status", "error")
-                    self.session_manager.save_subagent_log(
-                        exec_id=exec_id,
-                        task=task,
-                        messages=subagent.messages,
-                        metadata={
-                            "started_at": subagent._started_at.strftime("%Y-%m-%d %H:%M:%S") if subagent._started_at else "",
-                            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "duration_seconds": subagent._elapsed_seconds(),
-                            "status": final_status,
-                            "iterations": result.get("iterations", 0),
-                            "max_iterations": max_iterations,
-                        },
-                        summary=result.get("summary", ""),
-                    )
-                    # Update _subagent_ref status in main session messages
-                    self.session_manager.update_subagent_ref(
-                        exec_id=exec_id,
-                        status=final_status,
-                        iterations=result.get("iterations", 0),
-                        message_count=len(subagent.messages),
-                        summary=result.get("summary", "")[:200],
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to save SubAgent log: {e}")
-            # Persist main session after sub-agent writes
-            if self.session_manager:
-                self.session_manager.save()
+        # Synchronous mode: start SubAgent in background thread, return placeholder.
+        # The agent loop will exit (completed=False), SSE handler waits for completion,
+        # writes back the result, then resumes the agent loop.
+        entry = {"exec_id": exec_id, "thread": None, "event": threading.Event(), "result": None}
 
-        # Forward sub-agent usage to session metadata
-        sub_usage = result.get("usage", {})
-        if self.session_manager and sub_usage:
-            self.session_manager.update_usage(
-                input_tokens=sub_usage.get("input_tokens", 0),
-                output_tokens=sub_usage.get("output_tokens", 0),
-                api_calls=0,
-                cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
-                cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
-            )
+        def run_subagent():
+            try:
+                result = subagent.run()
+                entry["result"] = result
 
-        # Format result as JSON for the main agent
-        return ToolResult(json.dumps(result, ensure_ascii=False, indent=2))
+                # Save SubAgent execution log via SessionManager
+                if self.session_manager and exec_id:
+                    try:
+                        final_status = result.get("status", "error")
+                        self.session_manager.save_subagent_log(
+                            exec_id=exec_id,
+                            task=task,
+                            messages=subagent.messages,
+                            metadata={
+                                "started_at": subagent._started_at.strftime("%Y-%m-%d %H:%M:%S") if subagent._started_at else "",
+                                "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "duration_seconds": subagent._elapsed_seconds(),
+                                "status": final_status,
+                                "iterations": result.get("iterations", 0),
+                                "max_iterations": max_iterations,
+                            },
+                            summary=result.get("summary", ""),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to save SubAgent log: {e}")
+
+                # Forward sub-agent usage to session metadata
+                sub_usage = result.get("usage", {})
+                if self.session_manager and sub_usage:
+                    self.session_manager.update_usage(
+                        input_tokens=sub_usage.get("input_tokens", 0),
+                        output_tokens=sub_usage.get("output_tokens", 0),
+                        api_calls=0,
+                        cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
+                        cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
+                    )
+
+            except Exception as e:
+                logger.error(f"SubAgent tool error: {e}")
+                entry["result"] = {"status": "error", "summary": str(e), "iterations": 0}
+            finally:
+                subagent.close()
+                # Persist main session after sub-agent writes
+                if self.session_manager:
+                    self.session_manager.save()
+                # Signal completion
+                entry["event"].set()
+                # Fire completion callback
+                if self.on_subagent_complete:
+                    try:
+                        self.on_subagent_complete(exec_id)
+                    except Exception as e:
+                        logger.warning(f"on_subagent_complete callback error: {e}")
+
+        thread = threading.Thread(target=run_subagent, daemon=True)
+        entry["thread"] = thread
+
+        with self._pending_lock:
+            self._pending_subagents[exec_id] = entry
+
+        thread.start()
+
+        # Return placeholder; agent loop will break (completed=False)
+        return ToolResult(
+            "SubAgent 执行中...",
+            completed=False,
+            meta={"exec_id": exec_id},
+        )
+
+    def get_pending_subagent(self, exec_id: str) -> dict | None:
+        """Get pending subagent info by exec_id."""
+        with self._pending_lock:
+            return self._pending_subagents.get(exec_id)
+
+    def remove_pending_subagent(self, exec_id: str) -> None:
+        """Remove a completed subagent from pending dict."""
+        with self._pending_lock:
+            self._pending_subagents.pop(exec_id, None)

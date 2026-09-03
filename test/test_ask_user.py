@@ -1,11 +1,11 @@
 """ask_user 工具完整生命周期测试。
 
 测试流程：
-1. AskUserTool.execute() 返回 wait_for_user=True 的 ToolResult
-2. _execute_tool() 生成带 _meta.wait_for_user=True 标记的 dict
-3. Agent loop 检测到 _meta.wait_for_user 后退出（content 为占位符文本）
-4. 用户提交答案 → 后端设置 _meta.wait_for_user=False，注入 tool_result content，标记 _meta.answered=True
-5. resume_after_ask_user() 继续 agent loop
+1. AskUserTool.execute() 返回 completed=False 的 ToolResult
+2. _execute_tool() 生成带 _meta.completed=False 标记的 dict
+3. Agent loop 检测到 _meta.completed=False 后退出（content 为占位符文本）
+4. 用户提交答案 → 后端设置 _meta.completed=True，注入 tool_result content，标记 _meta.answered=True
+5. resume_loop() 继续 agent loop
 """
 
 import json
@@ -88,8 +88,8 @@ def make_test_questions():
 class TestAskUserToolExecution:
     """AskUserTool 工具执行测试"""
 
-    def test_execute_returns_wait_for_user(self, agent):
-        """execute() 返回 ToolResult，wait_for_user=True"""
+    def test_execute_returns_not_completed(self, agent):
+        """execute() 返回 ToolResult，completed=False"""
         ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
         assert ask_user_tool is not None, "ask_user 工具必须存在"
 
@@ -97,7 +97,7 @@ class TestAskUserToolExecution:
         result = ask_user_tool.execute(questions=questions)
 
         assert isinstance(result, ToolResult)
-        assert result.wait_for_user is True
+        assert result.completed is False
         # 不再在 _meta 中重复存储 questions（已在 tool_use input 中）
 
     def test_execute_output_is_placeholder(self, agent):
@@ -115,8 +115,8 @@ class TestAskUserToolExecution:
 class TestExecuteToolMetadata:
     """_execute_tool() 生成的 dict 结构测试"""
 
-    def test_execute_tool_returns_wait_for_user_flag(self, agent):
-        """_execute_tool() 返回的 dict 包含 _meta.wait_for_user=True（新格式）"""
+    def test_execute_tool_returns_not_completed_flag(self, agent):
+        """_execute_tool() 返回的 dict 包含 _meta.completed=False（新格式）"""
         ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
         questions = make_test_questions()
         tool_use_id = "test_toolu_001"
@@ -128,8 +128,8 @@ class TestExecuteToolMetadata:
         assert result_dict["tool_use_id"] == tool_use_id
         # 新格式：tool_name 在 _meta 中
         assert result_dict["_meta"]["tool_name"] == "ask_user"
-        # 新格式：wait_for_user 在 _meta 中
-        assert result_dict["_meta"]["wait_for_user"] is True
+        # 新格式：completed 在 _meta 中，False 表示等待用户
+        assert result_dict["_meta"]["completed"] is False
         # 不再在 _meta 中重复存储 questions（已在 tool_use input 中）
 
     def test_execute_tool_no_external_file(self, agent):
@@ -145,12 +145,12 @@ class TestExecuteToolMetadata:
         assert result_dict["content"] == "Waiting for user input..."
 
 
-# ── 测试 3: Agent loop 检测 wait_for_user 后退出 ──
+# ── 测试 3: Agent loop 检测外部等待（completed=False）后退出 ──
 
-class TestAgentLoopWaitForUser:
-    """Agent loop 遇到 wait_for_user 时退出测试"""
+class TestAgentLoopWaitForExternal:
+    """Agent loop 遇到外部等待（completed=False）时退出测试"""
 
-    def test_loop_exits_on_wait_for_user(self, agent):
+    def test_loop_exits_on_not_completed(self, agent):
         """LLM 返回 ask_user tool_call 后，agent loop 应退出"""
         tool_use_id = "test_toolu_003"
         questions = make_test_questions()
@@ -198,7 +198,7 @@ class TestAgentLoopWaitForUser:
         ]
         assert len(user_result_msgs) >= 1, "应有 tool_result 消息"
 
-        # tool_result 应有 _meta.wait_for_user=True
+        # tool_result 应有 _meta.completed=False
         tool_result_block = None
         for m in user_result_msgs:
             for b in m["content"]:
@@ -206,7 +206,7 @@ class TestAgentLoopWaitForUser:
                     tool_result_block = b
                     break
         assert tool_result_block is not None, "应找到 ask_user 的 tool_result"
-        assert tool_result_block["_meta"]["wait_for_user"] is True
+        assert tool_result_block["_meta"]["completed"] is False
 
         # 关键验证：tool_call 块没有 _meta.answered 标记（用户还没回答）
         for b in last_assistant["content"]:
@@ -249,9 +249,9 @@ class TestAgentLoopWaitForUser:
         # content 应该是占位符文本
         assert tool_result_block.get("content") == "Waiting for user input...", \
             "ask_user 的 tool_result 应包含占位符文本"
-        # _meta.wait_for_user 应为 True
-        assert tool_result_block.get("_meta", {}).get("wait_for_user") is True, \
-            "等待用户回答时 _meta.wait_for_user 应为 True"
+        # _meta.completed 应为 False（等待中）
+        assert tool_result_block.get("_meta", {}).get("completed") is False, \
+            "等待用户回答时 _meta.completed 应为 False"
 
 
 # ── 测试 4: 模拟 answer-ask-user 端点逻辑 ──
@@ -527,9 +527,9 @@ class TestResumeAfterAskUser:
 class TestResolveToolResultsForSession:
     """web_api.py 中 _resolve_tool_results_for_session 的 _meta.answered 标记逻辑
 
-    预扫描逻辑：当 tool_result 的 _meta.wait_for_user == False（用户已提交答案）时，
+    预扫描逻辑：当 tool_result 的 _meta.completed == True（用户已提交答案）时，
     才将对应 tool_call 标记为 _meta.answered=True。
-    如果 _meta.wait_for_user == True（占位符状态，content 是 "Waiting for user input..."），则不标记。
+    如果 _meta.completed == False（占位符状态，content 是 "Waiting for user input..."），则不标记。
     """
 
     def _simulate_pre_scan(self, messages):
@@ -542,8 +542,8 @@ class TestResolveToolResultsForSession:
             if not isinstance(content, list):
                 continue
             for block in content:
-                # 新格式：wait_for_user == False 表示用户已回答
-                if block.get("type") == "tool_result" and block.get("_meta", {}).get("wait_for_user") is False:
+                # 新格式：completed == True 表示用户已回答
+                if block.get("type") == "tool_result" and block.get("_meta", {}).get("completed") is True:
                     tool_id = block.get("tool_use_id") or block.get("tool_call_id")
                     if tool_id:
                         answered_ids.add(tool_id)
@@ -563,8 +563,8 @@ class TestResolveToolResultsForSession:
                         block["_meta"] = {}
                     block["_meta"]["answered"] = True
 
-    def test_pre_scan_marks_answered_when_wait_for_user_false(self, agent):
-        """预扫描：_meta.wait_for_user=False 且有 content → 对应 tool_call 标记 _answered"""
+    def test_pre_scan_marks_answered_when_completed_true(self, agent):
+        """预扫描：_meta.completed=True 且有 content → 对应 tool_call 标记 _answered"""
         tool_use_id = "test_toolu_prescan_001"
         questions = make_test_questions()
 
@@ -583,7 +583,7 @@ class TestResolveToolResultsForSession:
         with patch.object(agent, '_call_llm', return_value=mock_response):
             agent.run("测试")
 
-        # 模拟用户已回答：设置 _meta.wait_for_user=False + 实际答案 content
+        # 模拟用户已回答：设置 _meta.completed=True + 实际答案 content
         for msg in reversed(agent.messages):
             if msg["role"] != "user":
                 continue
@@ -596,13 +596,13 @@ class TestResolveToolResultsForSession:
                     block["content"] = "红色"  # 注入实际答案
                     if "_meta" not in block:
                         block["_meta"] = {}
-                    block["_meta"]["wait_for_user"] = False  # 表示用户已回答
+                    block["_meta"]["completed"] = True  # 表示用户已回答
                     break
 
         # 执行预扫描
         answered_ids = self._simulate_pre_scan(agent.messages)
         assert tool_use_id in answered_ids, \
-            f"wait_for_user=False 时应被收集。收集到: {answered_ids}"
+            f"completed=True 时应被收集。收集到: {answered_ids}"
 
         # 执行标记
         self._simulate_mark_answered(agent.messages, answered_ids)
@@ -615,8 +615,8 @@ class TestResolveToolResultsForSession:
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
                     assert block["_meta"]["answered"] is True, "已回答的 tool_call 应标记 _meta.answered=True"
 
-    def test_pre_scan_does_not_mark_when_wait_for_user_true(self, agent):
-        """预扫描：_meta.wait_for_user=True（占位符状态）→ 不标记 _answered"""
+    def test_pre_scan_does_not_mark_when_not_completed(self, agent):
+        """预扫描：_meta.completed=False（占位符状态）→ 不标记 _answered"""
         tool_use_id = "test_toolu_prescan_002"
         questions = make_test_questions()
 
@@ -634,13 +634,13 @@ class TestResolveToolResultsForSession:
         with patch.object(agent, '_call_llm', return_value=mock_response):
             agent.run("测试")
 
-        # ask_user 执行后 _meta.wait_for_user=True，content="Waiting for user input..."
+        # ask_user 执行后 _meta.completed=False，content="Waiting for user input..."
         # 这是占位符状态，不应被标记为已回答
 
         # 执行预扫描
         answered_ids = self._simulate_pre_scan(agent.messages)
         assert tool_use_id not in answered_ids, \
-            f"wait_for_user=True（占位符）不应被收集。收集到: {answered_ids}"
+            f"completed=False（占位符）不应被收集。收集到: {answered_ids}"
 
         # 验证 tool_call 没有被标记 _meta.answered
         for msg in agent.messages:

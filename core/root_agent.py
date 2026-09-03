@@ -77,6 +77,7 @@ class RootAgent(BaseAgent):
 
         # Build tools
         self._on_subagent_start: Callable[[str, str], None] | None = None
+        self._on_subagent_complete: Callable[[str], None] | None = None
         self._rebuild_tools()
 
     def _create_default_session(self) -> None:
@@ -103,6 +104,10 @@ class RootAgent(BaseAgent):
                 self._on_subagent_start(exec_id, task_summary)
                 if self._on_subagent_start else None
             )
+            subagent_tool.on_subagent_complete = lambda exec_id: (
+                self._on_subagent_complete(exec_id)
+                if self._on_subagent_complete else None
+            )
 
     def reload_config(self) -> None:
         """Reload config from disk and recreate LLM client."""
@@ -123,6 +128,7 @@ class RootAgent(BaseAgent):
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
         on_subagent_start: Callable[[str, str], None] | None = None,
+        on_subagent_complete: Callable[[str], None] | None = None,
     ) -> None:
         """Run one turn of the agent loop."""
         self._stopped = False
@@ -132,6 +138,7 @@ class RootAgent(BaseAgent):
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
         self._on_subagent_start = on_subagent_start
+        self._on_subagent_complete = on_subagent_complete
 
         try:
             # Save previous turn
@@ -144,78 +151,7 @@ class RootAgent(BaseAgent):
             # Add user message
             self.add_message("user", user_input)
 
-            iteration = 0
-            while iteration < self.max_iterations:
-                # Check stop
-                if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    if self._on_text:
-                        self._on_text("\n\n[已停止]")
-                    break
-
-                iteration += 1
-
-                # Compress if needed
-                self._check_and_compress()
-
-                # Call LLM with streaming
-                system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
-                response = self._call_llm(streaming=True, system_prompt=system_prompt)
-
-                if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                # Add assistant response - convert typed blocks to dicts for message storage
-                self.add_message("assistant", response.content_as_dicts())
-
-                # Check if there are tool calls (typed blocks)
-                tool_call_blocks = response.get_tool_calls()
-
-                if not tool_call_blocks:
-                    # No tool calls - conversation turn complete
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                # Process tool calls
-                wait_for_user = False
-                for block in tool_call_blocks:
-                    if self._stopped:
-                        break
-                    # Parse arguments from raw JSON string to dict at execution time
-                    input_data = block.parse_arguments()
-                    result = self._execute_tool(block.name, input_data, block.id)
-                    # Check if we need to wait for user input (block-level _meta.wait_for_user)
-                    if result.get("_meta", {}).get("wait_for_user"):
-                        wait_for_user = True
-                    # Add tool result to messages
-                    self.add_message("user", [result])
-                    # Sync to session manager
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-
-                if wait_for_user:
-                    # Exit loop to wait for user input
-                    logger.info("[RootAgent] Waiting for user input")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-            else:
-                logger.warning(f"[RootAgent] 达到最大调用次数 ({self.max_iterations})")
-                self._sync_to_session_manager()
-                self.session_manager.save()
-
+            self._agent_loop()
         finally:
             self._running = False
 
@@ -226,6 +162,7 @@ class RootAgent(BaseAgent):
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
         on_subagent_start: Callable[[str, str], None] | None = None,
+        on_subagent_complete: Callable[[str], None] | None = None,
     ) -> None:
         """Resume agent loop after ask_user tool result has been injected."""
         self._stopped = False
@@ -235,82 +172,117 @@ class RootAgent(BaseAgent):
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
         self._on_subagent_start = on_subagent_start
+        self._on_subagent_complete = on_subagent_complete
 
         try:
-            # Sync to session manager
             self._sync_to_session_manager()
             self.session_manager.save()
+            self._agent_loop()
+        finally:
+            self._running = False
 
-            iteration = 0
-            while iteration < self.max_iterations:
-                # Check stop
+    def resume_loop(
+        self,
+        on_text: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        on_tool_call: Callable[[str, dict, str], None] | None = None,
+        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
+        on_subagent_start: Callable[[str, str], None] | None = None,
+        on_subagent_complete: Callable[[str], None] | None = None,
+    ) -> None:
+        """Resume agent loop after a subagent (or other placeholder) completes."""
+        self._stopped = False
+        self._running = True
+        self._on_text = on_text
+        self._on_thinking = on_thinking
+        self._on_tool_call = on_tool_call
+        self._on_tool_result = on_tool_result
+        self._on_subagent_start = on_subagent_start
+        self._on_subagent_complete = on_subagent_complete
+
+        try:
+            self._sync_to_session_manager()
+            self.session_manager.save()
+            self._agent_loop()
+        finally:
+            self._running = False
+
+    def _agent_loop(self) -> None:
+        """Shared agent loop body (called by run/resume_after_ask_user/resume_loop)."""
+        self._sync_to_session_manager()
+        self.session_manager.save()
+
+        iteration = 0
+        while iteration < self.max_iterations:
+            # Check stop
+            if self._stopped:
+                logger.info("[RootAgent] 已停止")
+                self._sync_to_session_manager()
+                self.session_manager.save()
+                if self._on_text:
+                    self._on_text("\n\n[已停止]")
+                break
+
+            iteration += 1
+
+            # Compress if needed
+            self._check_and_compress()
+
+            # Call LLM with streaming
+            system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
+            response = self._call_llm(streaming=True, system_prompt=system_prompt)
+
+            if self._stopped:
+                logger.info("[RootAgent] 已停止")
+                self._sync_to_session_manager()
+                self.session_manager.save()
+                break
+
+            # Add assistant response - convert typed blocks to dicts for message storage
+            self.add_message("assistant", response.content_as_dicts())
+
+            # Check if there are tool calls (typed blocks)
+            tool_call_blocks = response.get_tool_calls()
+
+            if not tool_call_blocks:
+                # No tool calls - conversation turn complete
+                self._sync_to_session_manager()
+                self.session_manager.save()
+                break
+
+            # Process tool calls
+            wait_for_external = False
+            for block in tool_call_blocks:
                 if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    if self._on_text:
-                        self._on_text("\n\n[已停止]")
                     break
-
-                iteration += 1
-
-                # Compress if needed
-                self._check_and_compress()
-
-                # Call LLM with streaming
-                system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
-                response = self._call_llm(streaming=True, system_prompt=system_prompt)
-
-                if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                # Add assistant response
-                self.add_message("assistant", response.content_as_dicts())
-
-                # Check if there are tool calls
-                tool_call_blocks = response.get_tool_calls()
-
-                if not tool_call_blocks:
-                    # No tool calls - conversation turn complete
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                # Process tool calls
-                wait_for_user = False
-                for block in tool_call_blocks:
-                    if self._stopped:
-                        break
-                    input_data = block.parse_arguments()
-                    result = self._execute_tool(block.name, input_data, block.id)
-                    # Check if we need to wait for user input (block-level _meta.wait_for_user)
-                    if result.get("_meta", {}).get("wait_for_user"):
-                        wait_for_user = True
-                    self.add_message("user", [result])
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-
-                if wait_for_user:
-                    logger.info("[RootAgent] Waiting for user input")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-
-                if self._stopped:
-                    logger.info("[RootAgent] 已停止")
-                    self._sync_to_session_manager()
-                    self.session_manager.save()
-                    break
-            else:
-                logger.warning(f"[RootAgent] 达到最大调用次数 ({self.max_iterations})")
+                # Parse arguments from raw JSON string to dict at execution time
+                input_data = block.parse_arguments()
+                result = self._execute_tool(block.name, input_data, block.id)
+                # Check if tool wants to pause the loop (completed=False means placeholder mode)
+                if result.get("_meta", {}).get("completed") is False:
+                    wait_for_external = True
+                # Add tool result to messages
+                self.add_message("user", [result])
+                # Sync to session manager
                 self._sync_to_session_manager()
                 self.session_manager.save()
 
-        finally:
-            self._running = False
+            if wait_for_external:
+                # Exit loop to wait for user input or subagent completion
+                logger.info("[RootAgent] Waiting for external input (user or subagent)")
+                self._sync_to_session_manager()
+                self.session_manager.save()
+                break
+
+            if self._stopped:
+                logger.info("[RootAgent] 已停止")
+                self._sync_to_session_manager()
+                self.session_manager.save()
+                break
+        else:
+            logger.warning(f"[RootAgent] 达到最大调用次数 ({self.max_iterations})")
+            self._sync_to_session_manager()
+            self.session_manager.save()
 
     def _inject_project_instructions(self) -> None:
         """Inject project instructions from agent.md/CLAUDE.md as first user message.

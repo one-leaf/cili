@@ -48,7 +48,10 @@ class HttpTransport:
             connect_timeout: Connection timeout in seconds
         """
         self._timeout = httpx.Timeout(timeout, connect=connect_timeout)
-        self._client = httpx.Client(timeout=self._timeout)
+        self._client = httpx.Client(
+            timeout=self._timeout,
+            headers={"User-Agent": "cili-agent"},
+        )
 
     @property
     def client(self) -> httpx.Client:

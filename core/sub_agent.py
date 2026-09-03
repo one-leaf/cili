@@ -204,8 +204,8 @@ class SubAgent(BaseAgent):
 
                     self._save_progress(i + 1, status="running")
 
-                    # Track consecutive failures
-                    if result.get("_is_error"):
+                    # Track consecutive failures (is_error is Anthropic format)
+                    if result.get("is_error"):
                         consecutive_failures += 1
                         if consecutive_failures >= self.max_consecutive_failures:
                             status = "failed"

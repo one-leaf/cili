@@ -112,24 +112,24 @@ class ToolResult:
         blocks: list[ContentBlock] - typed content blocks
         is_error: bool - whether this is an error result
         meta: dict - optional structured metadata for UI
-        wait_for_user: bool - if True, agent loop exits and waits for user input
+        completed: bool | None - placeholder lifecycle:
+            None (default): normal tool result, no loop pause
+            False: placeholder mode, agent loop exits (waiting for external input)
+            True: placeholder completed (result written back)
 
     Old interface (backward compat):
         output: str - plain text output (converted to [TextBlock(text=output)])
         error: bool - alias for is_error
         content: list[dict] - legacy multimodal content (deprecated)
+        wait_for_user: bool - deprecated alias for completed=False
 
     Examples:
-        # Old style (still works)
+        # Normal tool result
         ToolResult(output="some text")
         ToolResult(output="error", error=True)
 
-        # New style (recommended)
-        ToolResult(blocks=[TextBlock(text="some text")])
-        ToolResult(blocks=[TextBlock(text="error")], is_error=True, meta={"exit_code": 1})
-
-        # Wait for user input
-        ToolResult(output="Waiting for user...", wait_for_user=True, meta={"questions": [...]})
+        # Placeholder mode (ask_user, subagent)
+        ToolResult(output="执行中...", completed=False, meta={"exec_id": "..."})
     """
 
     def __init__(
@@ -141,11 +141,21 @@ class ToolResult:
         blocks: list | None = None,
         is_error: bool = False,
         meta: dict | None = None,
+        completed: bool | None = None,
+        # Deprecated alias (backward compat)
         wait_for_user: bool = False,
     ):
         # Normalize error flags
         self.is_error = is_error or error
-        self.wait_for_user = wait_for_user
+
+        # Handle both old (wait_for_user) and new (completed) interface
+        # wait_for_user=True → completed=False (not yet done, loop should exit)
+        if completed is not None:
+            self.completed = completed
+        elif wait_for_user:
+            self.completed = False
+        else:
+            self.completed = None
 
         # Convert old interface to new interface
         if blocks is not None:
@@ -179,6 +189,11 @@ class ToolResult:
     def error(self) -> bool:
         """Backward compat alias for is_error."""
         return self.is_error
+
+    @property
+    def wait_for_user(self) -> bool:
+        """Backward compat: completed=False means wait_for_user=True."""
+        return self.completed is False
 
     def __repr__(self) -> str:
         return f"ToolResult(blocks={self.blocks!r}, is_error={self.is_error})"
@@ -927,23 +942,6 @@ class Tool:
                 task.result = result
                 task.status = "completed"
 
-                # Update _subagent_ref in session
-                if session_manager:
-                    try:
-                        session_manager.update_subagent_ref(
-                            exec_id=exec_id,
-                            status=result.get("status", "completed"),
-                            iterations=result.get("iterations", 0),
-                            message_count=len(subagent.messages),
-                            summary=result.get("summary", ""),
-                        )
-                        session_manager.save()
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            f"Failed to update _subagent_ref for {task_id}: {e}"
-                        )
-
                 # Save SubAgent log
                 if session_manager and exec_id:
                     from datetime import datetime
@@ -962,6 +960,7 @@ class Tool:
                             },
                             summary=result.get("summary", ""),
                         )
+                        session_manager.save()
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(

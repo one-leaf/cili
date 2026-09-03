@@ -170,17 +170,14 @@ class BaseAgent:
         Used before sending to LLM API. Thinking blocks are preserved because
         Anthropic API requires them in subsequent messages for multi-turn context.
         Note: _meta.compacted is preserved here, filtered later during serialization.
-
-        Uses new _meta format. Backward compatible with old _valid format.
         """
-        INTERNAL_META = {"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal"}
+        INTERNAL_META = {"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"}
         result = []
 
         for msg in self.messages:
-            # Skip messages marked as invalid (new _meta.valid or old _valid)
+            # Skip messages marked as invalid
             meta = msg.get("_meta", {})
-            msg_valid = meta.get("valid", msg.get("_valid", True))
-            if msg_valid is False:
+            if meta.get("valid") is False:
                 continue
             # Skip internal message types
             if msg.get("role") == "_subagent_ref":
@@ -200,8 +197,18 @@ class BaseAgent:
                 result.append(clean_msg)
                 continue
 
-            # List content: keep all blocks (validity is at message level now)
-            clean_blocks = list(content)
+            # List content: keep all blocks, strip block-level internal _meta
+            clean_blocks = []
+            for block in content:
+                clean_block = dict(block)
+                # Strip block-level internal _meta fields before sending to API
+                if "_meta" in clean_block:
+                    stripped_block_meta = {k: v for k, v in clean_block["_meta"].items() if k not in INTERNAL_META}
+                    if stripped_block_meta:
+                        clean_block["_meta"] = stripped_block_meta
+                    else:
+                        del clean_block["_meta"]
+                clean_blocks.append(clean_block)
 
             if clean_blocks:
                 clean_msg = {"role": role, "content": clean_blocks}
@@ -236,10 +243,12 @@ class BaseAgent:
 
         logger.debug(f"[工具调用] {name}")
 
-        # Setup output file path (skip for ask_user - placeholder goes directly in content)
+        # Setup output file path (skip for ask_user/subagent - placeholder goes directly in content)
         output_filename = f"{tool_use_id}.txt" if tool_use_id else ""
         output_file_path = ""
-        if self.session_dir and output_filename and name != "ask_user":
+        # Placeholder tools: output is temporary, no external file needed
+        _PLACEHOLDER_TOOLS = {"ask_user", "subagent"}
+        if self.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
             output_file_path = str(self.session_dir / output_filename)
             tool.output_file = output_file_path
 
@@ -268,8 +277,8 @@ class BaseAgent:
         except Exception as e:
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:
-            # ask_user 工具不创建外部文件，占位符直接放 content
-            if name != "ask_user":
+            # ask_user/subagent 工具不创建外部文件，占位符直接放 content
+            if name not in _PLACEHOLDER_TOOLS:
                 tool.save_output_to_file(result)
             # 更新 _output_path 为实际保存的文件路径（可能是 .json）
             output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
@@ -314,11 +323,11 @@ class BaseAgent:
             "is_error": result.error,
         }
 
-        # Add wait_for_user to block-level _meta (for ask_user tool)
-        if getattr(result, 'wait_for_user', False):
+        # Add completed=False to block-level _meta for placeholder tools (ask_user, subagent)
+        if result.completed is False:
             if "_meta" not in result_dict:
                 result_dict["_meta"] = {}
-            result_dict["_meta"]["wait_for_user"] = True
+            result_dict["_meta"]["completed"] = False
 
         # Add _meta if it has content
         if meta:
@@ -361,12 +370,12 @@ class BaseAgent:
                 if block.get("content"):
                     continue
 
-                # Get _meta (new format) or fall back to block-level fields (old format)
-                meta = msg.get("_meta", {})
-                compacted = meta.get("compacted", block.get("_compacted", False))
-                output_path = meta.get("output_path", block.get("_output_path", ""))
-                file_size = meta.get("file_size", block.get("_file_size", 0))
-                truncated = meta.get("truncated", block.get("_truncated", False))
+                # 从 block 级别的 _meta 读取内部元数据
+                block_meta = block.get("_meta", {})
+                compacted = block_meta.get("compacted", False)
+                output_path = block_meta.get("output_path", "")
+                file_size = block_meta.get("file_size", 0)
+                truncated = block_meta.get("truncated", False)
 
                 # Handle compacted marker - include filename for read_tool_result
                 if compacted:
@@ -518,10 +527,9 @@ class BaseAgent:
         # Mark messages before split as invalid (using _meta.valid)
         valid_count = 0
         for i, msg in enumerate(all_messages):
-            # Check validity (new _meta.valid or old _valid)
+            # Check validity
             meta = msg.get("_meta", {})
-            msg_valid = meta.get("valid", msg.get("_valid", True))
-            if msg_valid is False:
+            if meta.get("valid") is False:
                 continue
             if valid_count < split_idx:
                 # Mark message-level _meta.valid = False
@@ -638,19 +646,15 @@ class BaseAgent:
             return "（摘要生成失败，请查看完整历史）"
 
     def _mark_old_tool_calls_invalid(self, keep_recent_rounds: int = 5) -> int:
-        """Mark old tool calls as invalid to reduce body size.
-
-        Uses new _meta.valid format. Backward compatible with old _valid format.
-        """
+        """Mark old tool calls as invalid to reduce body size."""
         saved = 0
         tool_calls = []
         round_number = 0
 
         for msg in self.messages:
-            # Check validity (new _meta.valid or old _valid)
+            # Check validity
             meta = msg.get("_meta", {})
-            msg_valid = meta.get("valid", msg.get("_valid", True))
-            if msg_valid is False or msg.get("role") == "_subagent_ref":
+            if meta.get("valid") is False or msg.get("role") == "_subagent_ref":
                 continue
 
             role = msg.get("role")
@@ -677,7 +681,7 @@ class BaseAgent:
                 msg = call["msg"]
                 # Check if already marked invalid
                 meta = msg.get("_meta", {})
-                if meta.get("valid") is False or msg.get("_valid") is False:
+                if meta.get("valid") is False:
                     continue
 
                 block = call["block"]
@@ -693,18 +697,14 @@ class BaseAgent:
         return saved
 
     def _mark_old_images_invalid(self, keep_recent: int = 5) -> int:
-        """Mark old images as invalid to reduce body size.
-
-        Uses new _meta.valid format. Backward compatible with old _valid format.
-        """
+        """Mark old images as invalid to reduce body size."""
         saved = 0
         image_messages = []
 
         for i, msg in enumerate(self.messages):
-            # Check validity (new _meta.valid or old _valid)
+            # Check validity
             meta = msg.get("_meta", {})
-            msg_valid = meta.get("valid", msg.get("_valid", True))
-            if msg_valid is False or msg.get("role") == "_subagent_ref":
+            if meta.get("valid") is False or msg.get("role") == "_subagent_ref":
                 continue
             content = msg.get("content", "")
             if not isinstance(content, list):
@@ -729,7 +729,7 @@ class BaseAgent:
             msg = self.messages[msg_idx]
             # Check if already marked invalid
             meta = msg.get("_meta", {})
-            if meta.get("valid") is False or msg.get("_valid") is False:
+            if meta.get("valid") is False:
                 continue
 
             # Mark message-level _meta.valid = False

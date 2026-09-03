@@ -1262,7 +1262,22 @@ function renderMessages(messages) {
 
             // Render tool results as separate tool bubbles
             toolResultBlocks.forEach(block => {
-                if (block._meta && block._meta.wait_for_user) return;
+                // SubAgent 结果：渲染为可折叠的 SubAgent 卡片
+                if (block._meta && block._meta.exec_id) {
+                    const execId = block._meta.exec_id;
+                    const isCompleted = block._meta.completed === true;
+                    const msg = {
+                        exec_id: execId,
+                        task_summary: '',
+                        status: isCompleted ? 'completed' : 'running',
+                    };
+                    // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
+                    // 简单处理：用 exec_id 加载详情
+                    renderSubagentRef(msg, idx);
+                    return;
+                }
+                // ask_user 等待中：跳过渲染
+                if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '');
                 div.classList.add('tool');
@@ -1327,7 +1342,7 @@ function renderMessages(messages) {
                 }
             } else if (block.kind === 'tool_result') {
                 // Skip placeholder tool_result for ask_user
-                if (block._meta && block._meta.wait_for_user) return;
+                if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '');
                 div.classList.add('tool');
@@ -1519,6 +1534,24 @@ function renderSubagentStart(execId, taskSummary) {
             detail.dataset.renderedCount = '0';
         }
     });
+}
+
+// SubAgent 完成时更新卡片状态
+function renderSubagentComplete(execId) {
+    const card = chatMessages.querySelector(`.subagent-card[data-exec-id="${execId}"]`);
+    if (!card) return;
+    const header = card.querySelector('.subagent-header');
+    if (!header) return;
+    // 更新图标和标题
+    header.querySelector('.sa-icon').textContent = '✅';
+    header.querySelector('.sa-title').textContent = 'SubAgent 已完成';
+    // 触发一次展开加载以获取最新数据
+    const detail = card.querySelector('.subagent-detail');
+    if (detail && detail.style.display === 'block') {
+        // 已展开，重新加载内容
+        const msg = { exec_id: execId, status: 'completed' };
+        loadExecutionDetail(execId, detail, header, msg);
+    }
 }
 
 // 渲染 AskUser 问题卡片
@@ -1804,6 +1837,8 @@ function renderAskUserQuestions(container, input, toolUseId) {
                             assistantContent = '';
                         } else if (event.type === 'subagent_start') {
                             renderSubagentStart(event.exec_id, event.task_summary);
+                        } else if (event.type === 'subagent_complete') {
+                            renderSubagentComplete(event.exec_id);
                         } else if (event.type === 'todo_update') {
                             renderTodoList(event.todos);
                         } else if (event.type === 'retry_clear') {
@@ -2302,6 +2337,9 @@ async function sendMessage() {
                     } else if (event.type === 'subagent_start') {
                         // SubAgent 开始执行，立即渲染占位卡片
                         renderSubagentStart(event.exec_id, event.task_summary);
+                    } else if (event.type === 'subagent_complete') {
+                        // SubAgent 完成，更新卡片状态
+                        renderSubagentComplete(event.exec_id);
                     } else if (event.type === 'todo_update') {
                         // Todo 列表更新，渲染任务清单
                         renderTodoList(event.todos);

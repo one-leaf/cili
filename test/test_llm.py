@@ -314,7 +314,7 @@ class TestOpenAIAdapter:
             role="user",
             content=[
                 TextBlock(text="Here is the result"),
-                ToolResultBlock(tool_call_id="t1", content="file content"),
+                ToolResultBlock(tool_use_id="t1", content="file content"),
             ],
         )]
         result = adapter._convert_messages(messages, system="")

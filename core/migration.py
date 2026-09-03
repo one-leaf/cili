@@ -143,6 +143,16 @@ def migrate_message(msg: dict) -> bool:
                 except json.JSONDecodeError:
                     block["input"] = {"_raw": args}
 
+        # _meta.wait_for_user → _meta.completed (inverted semantics)
+        if "_meta" in block and isinstance(block["_meta"], dict):
+            block_meta = block["_meta"]
+            if "wait_for_user" in block_meta:
+                needs_migration = True
+                wfu = block_meta.pop("wait_for_user")
+                # wait_for_user=True → completed=False (waiting)
+                # wait_for_user=False → completed=True (answered)
+                meta_fields["completed"] = not wfu
+
         # Recursively migrate tool_result sub-blocks
         if block.get("type") == "tool_result":
             rc = block.get("content", "")

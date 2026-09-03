@@ -9,6 +9,28 @@ import pytest
 class TestWebSearchTool:
     """Web 搜索工具测试"""
 
+    @pytest.fixture(autouse=True)
+    def cleanup_browser_tabs(self, tools):
+        """测试后清理：关闭所有打开的 tab。"""
+        yield
+
+        # 测试结束后关闭所有打开的 tab
+        try:
+            from core.tools import get_tool_by_name
+            browser_tool = get_tool_by_name(tools, "browser")
+            list_result = browser_tool.execute(action="list_tabs")
+            if not list_result.error and "No tabs" not in list_result.output:
+                import re
+                # 输出格式: "tab 1: open, idle=..."
+                tab_indices = re.findall(r'^\s*tab\s+(\d+):', list_result.output, re.MULTILINE)
+                for idx in tab_indices:
+                    try:
+                        browser_tool.execute(action="close_tab", tab_index=int(idx))
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # 清理失败不影响测试结果
+
     @pytest.mark.skipif(
         not pytest.importorskip("requests", reason="requests not installed"),
         reason="requires network connection"

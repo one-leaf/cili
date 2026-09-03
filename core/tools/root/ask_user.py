@@ -1,6 +1,6 @@
 """AskUserQuestion tool — Agent 主动向用户提问，收集决策信息。
 
-设计：工具返回 wait_for_user=True 的 ToolResult，Agent 循环退出。
+设计：工具返回 completed=False 的 ToolResult，Agent 循环退出。
 前端检测到 ask_user 后渲染选择面板，用户提交后作为新 user message 继续循环。
 """
 
@@ -77,9 +77,9 @@ class AskUserTool(Tool):
         if not questions:
             return ToolResult("Error: at least one question is required", error=True)
 
-        # Return with wait_for_user=True to exit agent loop
+        # Return with completed=False to exit agent loop
         # Frontend will render question card, user submits as new message
         return ToolResult(
             output="Waiting for user input...",
-            wait_for_user=True,
+            completed=False,
         )

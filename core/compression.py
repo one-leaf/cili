@@ -62,38 +62,27 @@ def microcompact_tool_results(
         msg = messages[idx]
         content = msg["content"]
 
-        # 检查是否已经压缩过（新格式 _meta.compacted 或旧格式 block._compacted）
-        meta = msg.get("_meta", {})
-        if meta.get("compacted"):
-            continue
-        # 检查旧格式：任意 block 有 _compacted
-        if any(b.get("_compacted") for b in content):
-            # 迁移旧格式到新格式
-            msg["_meta"] = {"compacted": True}
-            continue
-
+        # 处理每个 tool_result block
         for block in content:
             if block.get("type") != "tool_result":
                 continue
-            # 跳过已压缩的（旧格式）
-            if block.get("_compacted"):
+
+            # 从 block 级别的 _meta 读取
+            block_meta = block.get("_meta", {})
+            if block_meta.get("compacted", False):
                 continue
 
             # 跳过小于 200 字符的工具结果（保留原文，不压缩）
-            # 新格式从 _meta.file_size 读取，旧格式从 block._file_size 读取
-            file_size = meta.get("file_size", block.get("_file_size", 0))
+            file_size = block_meta.get("file_size", 0)
             if file_size > 0 and file_size < 200:
                 continue
 
-            # 只标记，不替换内容（内容已保存在外部文件）
-            # 估算节省的字节数（基于 file_size）
+            # 标记 block 级别 _meta.compacted = True
             if file_size > 0:
                 saved += file_size
-
-        # 设置消息级别的 _meta.compacted
-        if "_meta" not in msg:
-            msg["_meta"] = {}
-        msg["_meta"]["compacted"] = True
+            if "_meta" not in block:
+                block["_meta"] = {}
+            block["_meta"]["compacted"] = True
 
     return saved
 

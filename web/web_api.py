@@ -32,6 +32,7 @@ from core.config import (
 from core.root_agent import RootAgent
 from core.session import SessionManager
 from core.message_bus import get_message_bus
+from core.tools import get_tool_by_name
 
 # Configure logging
 logging.basicConfig(
@@ -630,8 +631,8 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
         if not isinstance(content, list):
             continue
         for block in content:
-            # 已回答 = wait_for_user == false（用户已提交答案）
-            if block.get("type") == "tool_result" and block.get("_meta", {}).get("wait_for_user") is False:
+            # 已回答 = completed == True（用户已提交答案）
+            if block.get("type") == "tool_result" and block.get("_meta", {}).get("completed") is True:
                 tool_use_id = block.get("tool_use_id") or block.get("tool_call_id")
                 if tool_use_id:
                     answered_ask_user_ids.add(tool_use_id)
@@ -660,18 +661,23 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                 if block.get("content"):
                     continue
 
+                # 从 block 级别的 _meta 读取内部元数据
+                block_meta = block.get("_meta", {})
+                compacted = block_meta.get("compacted", False)
+                output_path = block_meta.get("output_path", "")
+                truncated = block_meta.get("truncated", False)
+                file_size = block_meta.get("file_size", 0)
+
                 # 处理压缩标记
-                if block.get("_compacted"):
-                    output_filename = block.get("_output_path", "")
-                    if output_filename:
-                        tool_use_id = output_filename.replace(".txt", "")
+                if compacted:
+                    if output_path:
+                        tool_use_id = output_path.replace(".txt", "").replace(".json", "")
                         block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
                     else:
                         block["content"] = "[Compacted: tool_use_id unknown]"
                     continue
 
                 # 从外部文件读取
-                output_path = block.get("_output_path", "")
                 if not output_path:
                     block["content"] = "[工具输出文件路径缺失]"
                     continue
@@ -698,20 +704,19 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                     continue
 
                 # 截断显示（前端不需要完整内容）
-                if block.get("_truncated"):
-                    truncated = Tool.truncate_middle(file_content, 8000)
-                    file_size = block.get('_file_size', len(file_content))
+                if truncated:
+                    truncated_content = Tool.truncate_middle(file_content, 8000)
+                    if not file_size:
+                        file_size = len(file_content)
                     guide = (
                         f"\n\n---\n"
-                        f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
+                        f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。\n"
                         f"完整输出保存在文件: {output_path}。"
                     )
-                    block["content"] = truncated + guide
-                    block["is_error"] = block.get("_is_error", False)
+                    block["content"] = truncated_content + guide
                 else:
                     # 正常输出：限制到 100K 字符
                     block["content"] = Tool.truncate_result(file_content, 100_000)
-                    block["is_error"] = block.get("_is_error", False)
 
 
 @app.post("/api/workspaces/{workspace_uuid}/sessions")
@@ -1021,6 +1026,71 @@ def _get_session_manager(workspace_uuid: str, session_id: str) -> SessionManager
     return SessionManager.load_session(session_id, sessions_dir)
 
 
+def _find_pending_subagent(agent: RootAgent) -> str | None:
+    """Find the most recent pending subagent exec_id from messages."""
+    for msg in reversed(agent.session_manager.messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (block.get("type") == "tool_result"
+                    and block.get("_meta", {}).get("completed") is False
+                    and block.get("_meta", {}).get("exec_id")):
+                return block["_meta"]["exec_id"]
+    return None
+
+
+def _write_back_subagent_result(agent: RootAgent, exec_id: str) -> dict | None:
+    """Write back subagent result to placeholder and mark answered. Returns result dict or None."""
+    subagent_tool = get_tool_by_name(agent.tools, "subagent")
+    if not subagent_tool:
+        return None
+    entry = subagent_tool.get_pending_subagent(exec_id)
+    if not entry:
+        return None
+    result = entry.get("result") or {"status": "error", "summary": "SubAgent execution failed", "iterations": 0}
+    result_json = json.dumps(result, ensure_ascii=False, indent=2)
+
+    # Write back placeholder tool_result
+    for msg in reversed(agent.session_manager.messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (block.get("type") == "tool_result"
+                    and block.get("_meta", {}).get("exec_id") == exec_id
+                    and block.get("_meta", {}).get("completed") is False):
+                block["content"] = result_json
+                block["_meta"]["completed"] = True
+                break
+        else:
+            continue
+        break
+
+    # Mark tool_use as answered
+    for msg in agent.session_manager.messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (block.get("type") == "tool_use"
+                    and block.get("_meta", {}).get("exec_id") == exec_id):
+                if "_meta" not in block:
+                    block["_meta"] = {}
+                block["_meta"]["answered"] = True
+                break
+
+    agent.session_manager.save()
+    subagent_tool.remove_pending_subagent(exec_id)
+    return result
+
+
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/messages")
 async def send_message(workspace_uuid: str, session_id: str, request: SendMessageRequest):
     """Send a message and get a streaming SSE response."""
@@ -1091,7 +1161,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
         loop = asyncio.get_running_loop()
         try:
-            from core.tools import get_tool_by_name
             bash_tool = get_tool_by_name(agent.tools, 'bash')
             if not bash_tool:
                 error_text = 'bash 工具不可用'
@@ -1167,6 +1236,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
+        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
+        if tool_name in ("ask_user", "subagent"):
+            return
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
@@ -1178,16 +1250,13 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 event_queue.put(f"data: {todo_event}\n\n")
 
     def on_subagent_start(exec_id: str, task_summary: str) -> None:
-        # Write _subagent_ref to main session immediately so it persists across page refreshes
-        agent.session_manager.add_subagent_ref(
-            exec_id=exec_id,
-            task_summary=task_summary,
-            status="running",
-        )
-        agent.session_manager.save()
-
-        # Send SSE event for real-time UI update
+        # Send SSE event for real-time UI update (no longer writing _subagent_ref)
         event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_subagent_complete(exec_id: str) -> None:
+        # Push SSE event for real-time UI update
+        event = json.dumps({"type": "subagent_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1221,6 +1290,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
                     on_subagent_start=on_subagent_start,
+                    on_subagent_complete=on_subagent_complete,
                 )
             except Exception as e:
                 logger.error(f"RootAgent error: {e}")
@@ -1249,6 +1319,53 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             # network glitches from aborting long-running tasks.
             logger.info("Client disconnected, agent continues running in background")
             return
+
+        # Agent loop exited — check if it was a subagent placeholder (completed=False).
+        # If so, wait for subagent completion, write back result, resume loop.
+        pending_exec_id = _find_pending_subagent(agent)
+
+        if pending_exec_id:
+            subagent_tool = get_tool_by_name(agent.tools, "subagent")
+            entry = subagent_tool.get_pending_subagent(pending_exec_id) if subagent_tool else None
+            if entry and not entry["event"].is_set():
+                # Wait in background thread, then resume loop
+                def wait_and_resume():
+                    try:
+                        # Wait for subagent completion (with timeout)
+                        entry["event"].wait(timeout=3600)
+                        _write_back_subagent_result(agent, pending_exec_id)
+
+                        # Resume agent loop
+                        agent.resume_loop(
+                            on_text=on_text,
+                            on_thinking=on_thinking,
+                            on_tool_call=on_tool_call,
+                            on_tool_result=on_tool_result,
+                            on_subagent_start=on_subagent_start,
+                            on_subagent_complete=on_subagent_complete,
+                        )
+                    except Exception as e:
+                        logger.error(f"SubAgent resume error: {e}")
+                        err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
+                        event_queue.put(f"data: {err_event}\n\n")
+                    finally:
+                        event_queue.put(None)  # sentinel: done
+
+                resume_task = asyncio.ensure_future(loop.run_in_executor(None, wait_and_resume))
+
+                # Stream resumed events
+                try:
+                    while True:
+                        try:
+                            event = await asyncio.to_thread(event_queue.get, True, 0.5)
+                            if event is None:
+                                break
+                            yield event
+                        except queue.Empty:
+                            continue
+                except asyncio.CancelledError:
+                    logger.info("Client disconnected during subagent resume")
+                    return
 
         # Send done signal
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
@@ -1324,17 +1441,20 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 block["content"] = request.answer
                 found_placeholder = True
                 logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
-                # 设置 wait_for_user = False（用户已回答）
-                if "_meta" in block and "wait_for_user" in block["_meta"]:
-                    block["_meta"]["wait_for_user"] = False
-                    logger.info(f"[ask-user] 已设置 _meta.wait_for_user=false")
+                # 设置 completed = True（用户已回答）
+                if "_meta" in block and "completed" in block["_meta"]:
+                    block["_meta"]["completed"] = True
+                    logger.info(f"[ask-user] 已设置 _meta.completed=true")
                 # 同步更新外部文件，保持与其他工具一致
-                output_path = block.get("_output_path", "")
+                block_meta = block.get("_meta", {})
+                output_path = block_meta.get("output_path", "")
                 if output_path:
                     ext_file = agent.session_manager.session_dir / output_path
                     try:
                         ext_file.write_text(request.answer, encoding="utf-8")
-                        block["_file_size"] = len(request.answer.encode("utf-8"))
+                        if "_meta" not in block:
+                            block["_meta"] = {}
+                        block["_meta"]["file_size"] = len(request.answer.encode("utf-8"))
                         logger.info(f"[ask-user] 已更新外部文件: {output_path}")
                     except Exception as e:
                         logger.warning(f"[ask-user] 更新外部文件失败: {e}")
@@ -1389,6 +1509,9 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
+        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
+        if tool_name in ("ask_user", "subagent"):
+            return
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
@@ -1400,13 +1523,11 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 event_queue.put(f"data: {todo_event}\n\n")
 
     def on_subagent_start(exec_id: str, task_summary: str) -> None:
-        agent.session_manager.add_subagent_ref(
-            exec_id=exec_id,
-            task_summary=task_summary,
-            status="running",
-        )
-        agent.session_manager.save()
         event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_subagent_complete(exec_id: str) -> None:
+        event = json.dumps({"type": "subagent_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1420,6 +1541,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
                     on_subagent_start=on_subagent_start,
+                    on_subagent_complete=on_subagent_complete,
                 )
             except Exception as e:
                 logger.error(f"RootAgent error: {e}")
@@ -1437,12 +1559,53 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 except Exception:
                     continue
                 if event is None:
-                    done_event = json.dumps({"type": "done"}, ensure_ascii=False)
-                    yield f"data: {done_event}\n\n"
                     break
                 yield event
         except asyncio.CancelledError:
             task.cancel()
+            return
+
+        # Check if agent loop exited due to subagent placeholder (completed=False)
+        pending_exec_id = _find_pending_subagent(agent)
+        if pending_exec_id:
+            subagent_tool = get_tool_by_name(agent.tools, "subagent")
+            entry = subagent_tool.get_pending_subagent(pending_exec_id) if subagent_tool else None
+            if entry and not entry["event"].is_set():
+                def wait_and_resume():
+                    try:
+                        entry["event"].wait(timeout=3600)
+                        _write_back_subagent_result(agent, pending_exec_id)
+                        agent.resume_loop(
+                            on_text=on_text,
+                            on_thinking=on_thinking,
+                            on_tool_call=on_tool_call,
+                            on_tool_result=on_tool_result,
+                            on_subagent_start=on_subagent_start,
+                            on_subagent_complete=on_subagent_complete,
+                        )
+                    except Exception as e:
+                        logger.error(f"SubAgent resume error: {e}")
+                        err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
+                        event_queue.put(f"data: {err_event}\n\n")
+                    finally:
+                        event_queue.put(None)
+
+                resume_task = asyncio.ensure_future(loop.run_in_executor(None, wait_and_resume))
+                try:
+                    while True:
+                        try:
+                            event = await asyncio.to_thread(event_queue.get, True, 0.5)
+                            if event is None:
+                                break
+                            yield event
+                        except queue.Empty:
+                            continue
+                except asyncio.CancelledError:
+                    logger.info("Client disconnected during subagent resume")
+                    return
+
+        done_event = json.dumps({"type": "done"}, ensure_ascii=False)
+        yield f"data: {done_event}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

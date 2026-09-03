@@ -86,7 +86,7 @@ class TestToolResultBlockImage:
 
         trb = ToolResultBlock.from_dict({
             "type": "tool_result",
-            "tool_call_id": "test-id-1",
+            "tool_use_id": "test-id-1",
             "content": [text_block, image_block],
         })
 
@@ -101,7 +101,7 @@ class TestToolResultBlockImage:
     def test_to_dict_preserves_image_list(self):
         """to_dict 序列化时保留 list content 中的图片块。"""
         trb = ToolResultBlock(
-            tool_call_id="test-id-2",
+            tool_use_id="test-id-2",
             content=[_dummy_text_block("标题"), _dummy_image_block()],
         )
         d = trb.to_dict()
@@ -117,7 +117,7 @@ class TestToolResultBlockImage:
 
         trb1 = ToolResultBlock.from_dict({
             "type": "tool_result",
-            "tool_call_id": "round-trip",
+            "tool_use_id": "round-trip",
             "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": original_data}}],
         })
         d = trb1.to_dict()
@@ -130,7 +130,7 @@ class TestToolResultBlockImage:
         """纯文本 tool_result 仍然返回 str，向后兼容。"""
         trb = ToolResultBlock.from_dict({
             "type": "tool_result",
-            "tool_call_id": "text-only",
+            "tool_use_id": "text-only",
             "content": "普通文本输出",
         })
         assert isinstance(trb.content, str)
@@ -279,7 +279,7 @@ class TestMessageImageDeserialization:
             "content": [
                 {
                     "type": "tool_result",
-                    "tool_call_id": "test-id",
+                    "tool_use_id": "test-id",
                     "content": [_dummy_text_block("识别结果"), image_dict],
                 }
             ],
@@ -315,7 +315,7 @@ class TestAdapterImageSerialization:
             role="user",
             content=[
                 ToolResultBlock(
-                    tool_call_id="img-call-1",
+                    tool_use_id="img-call-1",
                     content=[_dummy_text_block("图片说明"), image_dict],
                 )
             ],
@@ -486,7 +486,7 @@ class TestMultimodalDGX:
                 role="user",
                 content=[
                     ToolResultBlock(
-                        tool_call_id="test-tool-id",
+                        tool_use_id="test-tool-id",
                         content=tool_result_content,  # list[dict] 含图片
                     ),
                     TextBlock(text="请描述你看到的图片内容，简短回答颜色和形状。"),
