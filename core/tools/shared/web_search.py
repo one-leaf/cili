@@ -66,7 +66,7 @@ class WebSearchTool(Tool):
             },
             "max_results": {
                 "type": "integer",
-                "description": "Maximum number of results to return (default: 10, max: 30).",
+                "description": "Maximum number of results to return (default: 30).",
             },
             "time_range": {
                 "type": "string",
@@ -80,7 +80,7 @@ class WebSearchTool(Tool):
     def execute(
         self,
         query: str,
-        max_results: int = 10,
+        max_results: int = 30,
         time_range: str | None = None,
     ) -> ToolResult:
         """使用浏览器访问搜索引擎进行搜索。"""
@@ -91,7 +91,7 @@ class WebSearchTool(Tool):
         try:
             max_results = int(max_results)
         except (ValueError, TypeError):
-            max_results = 10
+            max_results = 30
         max_results = min(max(1, max_results), 30)
 
         # 验证 time_range
