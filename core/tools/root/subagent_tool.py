@@ -115,6 +115,16 @@ class SubAgentTool(Tool):
                     "type": "boolean",
                     "description": "If true, list all background tasks (shell commands and SubAgents).",
                 },
+                "temperature": {
+                    "type": "number",
+                    "description": "Override LLM temperature for this SubAgent (0.0=deterministic, 1.0=creative). Defaults to the configured model temperature.",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Short display label for this SubAgent (max 64 chars). Shown in UI instead of task summary.",
+                },
             },
             "required": [],  # All parameters are optional; execute() validates
         }
@@ -127,6 +137,8 @@ class SubAgentTool(Tool):
         read_task: str | None = None,
         kill_task: str | None = None,
         list_tasks: bool | None = None,
+        temperature: float | None = None,
+        label: str | None = None,
     ) -> ToolResult:
         """Execute the subagent tool - delegate task to a SubAgent or manage background tasks."""
 
@@ -185,6 +197,7 @@ class SubAgentTool(Tool):
             stop_check=self.stop_check,
             session_dir=exec_dir,
             exec_id=exec_id,
+            temperature=temperature,
         )
 
         # Background mode
@@ -264,10 +277,13 @@ class SubAgentTool(Tool):
         thread.start()
 
         # Return placeholder; agent loop will break (completed=False)
+        meta = {"exec_id": exec_id}
+        if label:
+            meta["label"] = label[:64]
         return ToolResult(
             "SubAgent 执行中...",
             completed=False,
-            meta={"exec_id": exec_id},
+            meta=meta,
         )
 
     def get_pending_subagent(self, exec_id: str) -> dict | None:

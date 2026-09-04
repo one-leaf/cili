@@ -24,12 +24,26 @@ SEARCH_CONFIGS = {
         "url_template": "https://cn.bing.com/search?q={query}",
         "wait_selector": ".b_algo",
         "error_domain": "Bing",
+        # time_range 映射：OneDay/OneWeek/OneMonth/OneYear → Bing filters 参数
+        "time_range_map": {
+            "OneDay": 'ex1:"ez1"',
+            "OneWeek": 'ex1:"ez2"',
+            "OneMonth": 'ex1:"ez3"',
+            "OneYear": 'ex1:"ez4"',
+        },
     },
     "google": {
         "name": "Google",
         "url_template": "https://www.google.com/search?q={query}",
         "wait_selector": "#rso",
         "error_domain": "Google",
+        # time_range 映射：OneDay/OneWeek/OneMonth/OneYear → Google tbs 参数
+        "time_range_map": {
+            "OneDay": "qdr:d",
+            "OneWeek": "qdr:w",
+            "OneMonth": "qdr:m",
+            "OneYear": "qdr:y",
+        },
     },
 }
 
@@ -40,7 +54,8 @@ class WebSearchTool(Tool):
         "Search the web using Bing or Google. Returns search results with titles, URLs, "
         "and descriptions. Also returns the tab_index of the search results page, "
         "which can be used with browser tool for further exploration. "
-        "The search engine is configured in system settings (default: Bing)."
+        "The search engine is configured in system settings (default: Bing). "
+        "Use time_range to filter results by recency."
     )
     parameters = {
         "type": "object",
@@ -53,6 +68,11 @@ class WebSearchTool(Tool):
                 "type": "integer",
                 "description": "Maximum number of results to return (default: 10, max: 30).",
             },
+            "time_range": {
+                "type": "string",
+                "enum": ["OneDay", "OneWeek", "OneMonth", "OneYear"],
+                "description": "Filter results by time range: 'OneDay' (past 24h), 'OneWeek', 'OneMonth', 'OneYear'. Omit for all results.",
+            },
         },
         "required": ["query"],
     }
@@ -61,8 +81,9 @@ class WebSearchTool(Tool):
         self,
         query: str,
         max_results: int = 10,
+        time_range: str | None = None,
     ) -> ToolResult:
-        """使用浏览器访问 cn.bing.com 进行搜索。"""
+        """使用浏览器访问搜索引擎进行搜索。"""
         if not query:
             return ToolResult("Error: query is required", error=True)
 
@@ -72,6 +93,14 @@ class WebSearchTool(Tool):
         except (ValueError, TypeError):
             max_results = 10
         max_results = min(max(1, max_results), 30)
+
+        # 验证 time_range
+        valid_time_ranges = {"OneDay", "OneWeek", "OneMonth", "OneYear"}
+        if time_range and time_range not in valid_time_ranges:
+            return ToolResult(
+                f"Error: invalid time_range '{time_range}'. Must be one of: {', '.join(sorted(valid_time_ranges))}",
+                error=True,
+            )
 
         # 获取浏览器服务
         from core.browser_service import get_service
@@ -88,8 +117,20 @@ class WebSearchTool(Tool):
         engine_name = search_config["name"]
         error_domain = search_config["error_domain"]
 
-        # 导航到搜索结果页面（每次搜索开新 tab）
+        # 构建搜索 URL
         search_url = search_config["url_template"].format(query=quote_plus(query))
+
+        # 添加时间范围过滤
+        if time_range:
+            time_range_map = search_config.get("time_range_map", {})
+            time_filter = time_range_map.get(time_range)
+            if time_filter:
+                if engine == "bing":
+                    search_url += f"&filters={time_filter}"
+                elif engine == "google":
+                    search_url += f"&tbs={time_filter}"
+
+        # 导航到搜索结果页面（每次搜索开新 tab）
         nav_result = service.navigate(search_url)
 
         if nav_result.error:

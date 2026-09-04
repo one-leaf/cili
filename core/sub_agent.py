@@ -57,6 +57,7 @@ class SubAgent(BaseAgent):
         session_dir: Path | None = None,
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
+        temperature: float | None = None,
     ):
         """Initialize SubAgent.
 
@@ -69,6 +70,7 @@ class SubAgent(BaseAgent):
             session_dir: Directory for saving messages
             stop_check: Callable that returns True when parent stopped
             exec_id: Pre-assigned execution ID
+            temperature: Optional temperature override for LLM (0.0~1.0)
         """
         self.task = task
         self.plan = plan
@@ -96,6 +98,8 @@ class SubAgent(BaseAgent):
         # Create LLM client
         logger.debug(f"[SubAgent] Creating LLM client for task: {task[:50]}...")
         self.client = create_llm_client(config.model)
+        if temperature is not None:
+            self.client.temperature = temperature
 
         # Create sub tool set (pass session_ref for temp tool etc.)
         self.tools = create_sub_tools(

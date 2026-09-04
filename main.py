@@ -535,6 +535,7 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
         "openpyxl",
         "python-docx",
         "python-pptx",
+        "pdfplumber",
         "pytest",
     ]
 

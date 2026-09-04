@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS, _to_bash_path
+
+
+# 危险命令黑名单（大小写不敏感）
+_DENY_PATTERNS = [
+    (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+/", re.I),        "rm -rf / (destructive recursive delete)"),
+    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I),                "format (disk format)"),
+    (re.compile(r"\bdd\s+.*\bof=/dev/", re.I),                 "dd of=/dev/ (device write)"),
+    (re.compile(r"\bmkfs\b", re.I),                            "mkfs (filesystem format)"),
+    (re.compile(r"\bshutdown\b", re.I),                        "shutdown"),
+    (re.compile(r"\breboot\b", re.I),                          "reboot"),
+    (re.compile(r":\(\)\s*\{", re.I),                          "fork bomb"),
+]
 
 
 class BashTool(Tool):
@@ -55,6 +68,10 @@ class BashTool(Tool):
                     "type": "integer",
                     "description": "Timeout in seconds (default: 120, max: 600). Set this as a SEPARATE parameter, do not embed in command.",
                 },
+                "working_dir": {
+                    "type": "string",
+                    "description": "Override the working directory for this command. Defaults to the agent's cwd.",
+                },
                 "run_in_background": {
                     "type": "boolean",
                     "description": (
@@ -103,6 +120,7 @@ class BashTool(Tool):
         self,
         command: str | None = None,
         timeout: int | None = None,
+        working_dir: str | None = None,
         run_in_background: bool | None = None,
         read_task: str | None = None,
         kill_task: str | None = None,
@@ -126,6 +144,19 @@ class BashTool(Tool):
         # Regular command execution
         if not command:
             return ToolResult("Error: command is required", error=True)
+
+        # Safety: deny dangerous commands
+        deny_msg = self._check_deny_patterns(command)
+        if deny_msg:
+            return ToolResult(f"Error: command blocked by safety check — {deny_msg}", error=True)
+
+        # Apply working_dir override
+        if working_dir:
+            resolved = os.path.abspath(self._resolve_path(working_dir))
+            if not os.path.isdir(resolved):
+                return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
+            bash_dir = _to_bash_path(resolved)
+            command = f"cd '{bash_dir}' && {command}"
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)
@@ -154,3 +185,11 @@ class BashTool(Tool):
 
         # Foreground mode (original behavior)
         return self._run_bash(command, timeout=timeout)
+
+    @staticmethod
+    def _check_deny_patterns(command: str) -> str | None:
+        """Check command against deny patterns. Returns reason string if blocked, None if OK."""
+        for pattern, reason in _DENY_PATTERNS:
+            if pattern.search(command):
+                return reason
+        return None
