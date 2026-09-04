@@ -1007,38 +1007,15 @@ class BaseAgent:
         # Convert dict messages to Message objects
         message_objects = self._convert_to_message_objects(messages)
 
-        try:
-            response = self.client.chat_stream(
-                messages=message_objects,
-                system=system_prompt,
-                tools=self.tool_schemas,
-                on_text=on_text_delta,
-                on_thinking=on_thinking_delta,
-                stop_check=lambda: self._stopped,
-                session_id=self._session_id,
-            )
-        except InterruptedError:
-            logger.info("[LLM] 已中断")
-            return LLMResponse(
-                content=[TextBlock(text="".join(text_parts))],
-                stop_reason="stopped",
-            )
-        except Exception as e:
-            # Handle 413 by stripping images and retrying
-            if self._is_413_error(e):
-                logger.warning("[LLM] 请求体过大，正在重试...")
-                self._mark_all_images_invalid()
-                self.save_messages()
-                if self._on_text:
-                    self._on_text("\x00RETRY_CLEAR\x00")
-                text_parts.clear()
+        # 重试配置：3次重试，退避 5/10/20 秒
+        max_retries = 3
+        retry_delays = [5, 10, 20]
+        images_stripped = False
 
-                retry_messages = self._get_messages_with_header()
-                if not self.config.model.multimodal:
-                    retry_messages = self._strip_images_from_messages(retry_messages)
-                retry_message_objects = self._convert_to_message_objects(retry_messages)
+        for attempt in range(max_retries + 1):
+            try:
                 response = self.client.chat_stream(
-                    messages=retry_message_objects,
+                    messages=message_objects,
                     system=system_prompt,
                     tools=self.tool_schemas,
                     on_text=on_text_delta,
@@ -1046,8 +1023,46 @@ class BaseAgent:
                     stop_check=lambda: self._stopped,
                     session_id=self._session_id,
                 )
-            else:
-                raise
+                # 成功，跳出重试循环
+                break
+            except InterruptedError:
+                logger.info("[LLM] 已中断")
+                return LLMResponse(
+                    content=[TextBlock(text="".join(text_parts))],
+                    stop_reason="stopped",
+                )
+            except Exception as e:
+                # 最后一次重试仍失败
+                if attempt == max_retries:
+                    err_msg = format_llm_error(e, self.client.base_url if self.client else "")
+                    logger.error(f"[LLM] {err_msg}")
+                    return LLMResponse(
+                        content=[TextBlock(text=err_msg)],
+                        stop_reason="error",
+                    )
+
+                # 413 错误：去掉图片后重试
+                if self._is_413_error(e) and not images_stripped:
+                    logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
+                    self._mark_all_images_invalid()
+                    self.save_messages()
+                    if self._on_text:
+                        self._on_text("\x00RETRY_CLEAR\x00")
+                    text_parts.clear()
+                    images_stripped = True
+
+                    message_objects = self._get_messages_with_header()
+                    if not self.config.model.multimodal:
+                        message_objects = self._strip_images_from_messages(message_objects)
+                    message_objects = self._convert_to_message_objects(message_objects)
+                else:
+                    # 其他错误：等待后重试
+                    delay = retry_delays[attempt]
+                    logger.warning(f"[LLM] 请求失败 (尝试 {attempt + 1}/{max_retries + 1})，{delay}秒后重试: {e}")
+                    time.sleep(delay)
+                    text_parts.clear()
+                    if self._on_text:
+                        self._on_text("\x00RETRY_CLEAR\x00")
 
         # Track usage (UsageData object)
         if response.usage:

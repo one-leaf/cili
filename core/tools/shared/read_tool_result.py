@@ -1,5 +1,7 @@
 """Tool for reading compacted tool results from external storage."""
 
+import re
+
 from core.tools.shared.base import Tool, ToolResult
 
 
@@ -20,7 +22,14 @@ class ReadToolResultTool(Tool):
         "required": ["tool_use_id"],
     }
 
+    # 只允许安全字符，防止路径遍历
+    _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
     def execute(self, tool_use_id: str, **kwargs) -> ToolResult:
+        # 校验 tool_use_id，防止路径遍历
+        if not self._SAFE_ID_PATTERN.match(tool_use_id):
+            return ToolResult(f"Error: invalid tool_use_id format: {tool_use_id}", error=True)
+
         if not self.session_manager:
             return ToolResult("Error: session manager not available", error=True)
 
