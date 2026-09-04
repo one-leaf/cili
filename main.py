@@ -117,6 +117,15 @@ def _get_deps_python() -> str:
 
 _SETTING_FILE = os.path.join(_CILI_DIR, "setting.json")
 
+# Preset pip mirror sources: {name: url}
+_PIP_MIRRORS = {
+    "pypi": "",  # Official PyPI (default, no -i flag)
+    "huaweicloud": "https://repo.huaweicloud.com/repository/pypi/simple/",
+    "aliyun": "https://mirrors.aliyun.com/pypi/simple/",
+    "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+    "douban": "https://pypi.doubanio.com/simple/",
+}
+
 # Default model config values (shared across example, migration, and initial creation)
 _DEFAULT_MODEL = {
     "name": "claude-sonnet-4-6",
@@ -599,9 +608,18 @@ def _load_settings_cached() -> dict:
 
 
 def _get_pip_mirror() -> str:
-    """Read pip mirror URL from global config, return default if not configured."""
-    default = "https://repo.huaweicloud.com/repository/pypi/simple/"
-    return _load_settings_cached().get("system", {}).get("pip_mirror", default)
+    """Read pip mirror URL from global config, return random preset if not configured."""
+    system_cfg = _load_settings_cached().get("system", {})
+    configured = system_cfg.get("pip_mirror", None)
+    # If user explicitly set it (even to empty string for official PyPI), use that
+    if configured is not None:
+        return configured
+    # No config set: pick a random mirror from presets (excluding empty 'pypi')
+    import random
+    preset_mirrors = [v for _, v in _PIP_MIRRORS.items() if v]
+    chosen = random.choice(preset_mirrors)
+    print(f"[setup] No pip mirror configured, randomly selected: {chosen}")
+    return chosen
 
 
 def _init_git_bash() -> bool:

@@ -252,9 +252,15 @@
                         <strong>系统级参数</strong> — 影响 Python 环境、包安装等底层行为。
                     </div>
                     <div class="form-group">
-                        <label>Pip 镜像地址:</label>
-                        <input type="text" id="system-pip-mirror" placeholder="https://repo.huaweicloud.com/repository/pypi/simple/">
-                        <small class="form-hint">用于 Python 包安装，默认使用华为云镜像</small>
+                        <label>Pip 镜像源:</label>
+                        <select id="system-pip-mirror">
+                            <option value="">PyPI 官方源</option>
+                            <option value="https://repo.huaweicloud.com/repository/pypi/simple/">华为云</option>
+                            <option value="https://mirrors.aliyun.com/pypi/simple/">阿里云</option>
+                            <option value="https://pypi.tuna.tsinghua.edu.cn/simple/">清华源</option>
+                            <option value="https://pypi.doubanio.com/simple/">豆瓣源</option>
+                        </select>
+                        <small class="form-hint">用于 Python 包安装，首次启动时随机选择一个</small>
                     </div>
                     <div class="form-group">
                         <label>浏览器路径:</label>
