@@ -504,12 +504,14 @@ for dist in importlib.metadata.distributions():
         return {}
 
 
-def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
-    """Install only missing dependencies in the venv.
+def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
+    """Install only missing dependencies in the venv, with mirror failover.
 
     Returns:
         (success, installed_new): whether installation succeeded, and whether new packages were installed
     """
+    if pip_mirrors is None:
+        pip_mirrors = [""]
     # All dependencies - no version constraints for flexibility
     required = [
         # Web framework dependencies
@@ -565,24 +567,42 @@ def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
     print(f"[setup] Missing {len(missing)} package(s): {', '.join(missing)}")
     print("[setup] Installing...")
 
-    # Install each package separately for progress feedback
+    # Install each package with mirror failover
+    current_mirror_idx = 0
     for i, pkg in enumerate(missing, 1):
-        print(f"[setup] ({i}/{len(missing)}) Installing {pkg}...")
-        cmd = [pip_exe, "install", "--disable-pip-version-check", "--only-binary=:all:"]
-        if pip_mirror:
-            cmd += ["-i", pip_mirror]
-        cmd.append(pkg)
+        pkg_installed = False
+        # Try each mirror in sequence
+        while current_mirror_idx < len(pip_mirrors):
+            mirror = pip_mirrors[current_mirror_idx]
+            mirror_name = mirror or "PyPI official"
+            print(f"[setup] ({i}/{len(missing)}) Installing {pkg} from {mirror_name}...")
+            cmd = [pip_exe, "install", "--disable-pip-version-check", "--only-binary=:all:"]
+            if mirror:
+                cmd += ["-i", mirror]
+            cmd.append(pkg)
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode == 0:
+                    pkg_installed = True
+                    break  # Package installed successfully
                 err = result.stderr.strip() or result.stdout.strip()
-                print(f"[setup] Error installing {pkg}: {err[:200]}")
-                return False, False
-        except Exception as e:
-            print(f"[setup] Error installing {pkg}: {e}")
+                print(f"[setup] Failed with {mirror_name}: {err[:200]}")
+            except Exception as e:
+                print(f"[setup] Failed with {mirror_name}: {e}")
+
+            # Try next mirror
+            current_mirror_idx += 1
+            if current_mirror_idx < len(pip_mirrors):
+                print(f"[setup] Trying next mirror...")
+
+        if not pkg_installed:
+            print(f"[setup] Error: all mirrors failed for {pkg}")
             return False, False
 
+    # Save the working mirror to config
+    working_mirror = pip_mirrors[current_mirror_idx]
+    _save_pip_mirror(working_mirror)
     print("[setup] All packages installed.")
     return True, True  # 安装了新包
 
@@ -607,19 +627,41 @@ def _load_settings_cached() -> dict:
     return _settings_cache
 
 
-def _get_pip_mirror() -> str:
-    """Read pip mirror URL from global config, return random preset if not configured."""
+def _get_pip_mirrors_ordered() -> list[str]:
+    """Get ordered list of pip mirrors: configured one first, then presets for failover."""
     system_cfg = _load_settings_cached().get("system", {})
     configured = system_cfg.get("pip_mirror", None)
-    # If user explicitly set it (even to empty string for official PyPI), use that
-    if configured is not None:
-        return configured
-    # No config set: pick a random mirror from presets (excluding empty 'pypi')
-    import random
-    preset_mirrors = [v for _, v in _PIP_MIRRORS.items() if v]
-    chosen = random.choice(preset_mirrors)
-    print(f"[setup] No pip mirror configured, randomly selected: {chosen}")
-    return chosen
+    # All preset mirrors (excluding empty 'pypi' which is official source)
+    presets = [v for _, v in _PIP_MIRRORS.items() if v]
+    if configured is not None and configured != "":
+        # User configured a specific URL: use it first, others as fallback
+        if configured in presets:
+            # Move configured to front, keep order of others
+            result = [configured] + [m for m in presets if m != configured]
+        else:
+            # Custom URL: use it first
+            result = [configured] + presets
+        return result
+    elif configured == "":
+        # User explicitly chose official PyPI
+        return [""] + presets
+    else:
+        # No config: start from first preset (huaweicloud)
+        return presets
+
+
+def _save_pip_mirror(mirror: str) -> None:
+    """Save the working pip mirror to config."""
+    try:
+        config = _load_settings_cached()
+        if "system" not in config:
+            config["system"] = {}
+        config["system"]["pip_mirror"] = mirror
+        with open(_SETTING_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"[setup] Saved working pip mirror: {mirror or 'PyPI official'}")
+    except Exception as e:
+        print(f"[setup] Warning: failed to save pip mirror: {e}")
 
 
 def _init_git_bash() -> bool:
@@ -734,8 +776,8 @@ def main() -> None:
         sys.exit(1)
 
     # Ensure all required packages are installed
-    pip_mirror = _get_pip_mirror()
-    pkg_success, pkg_installed = _install_packages(pip_mirror)
+    pip_mirrors = _get_pip_mirrors_ordered()
+    pkg_success, pkg_installed = _install_packages(pip_mirrors)
     if not pkg_success:
         print("[setup] Error: failed to install required packages", file=sys.stderr)
         sys.exit(1)
