@@ -4,8 +4,7 @@ Key design decisions:
 1. Whole-list replacement: each call sends the complete list (no partial updates)
 2. Three-state status: pending / in_progress / completed
 3. Single owner: belongs to the agent session that created it
-4. Parallel control: configurable allow_parallel_in_progress
-5. Storage: stored in data/cili/tools/todo/{session_id}.json (per-session isolation)
+4. Storage: stored in data/cili/tools/todo/{session_id}.json (per-session isolation)
 """
 
 from __future__ import annotations
@@ -92,7 +91,7 @@ class TodoWriteTool(Tool):
         "- Purely conversational requests\n\n"
         "## Task States\n"
         "- pending: Not yet started\n"
-        "- in_progress: Currently working on (limit to ONE at a time)\n"
+        "- in_progress: Currently working on (multiple allowed)\n"
         "- completed: Finished successfully\n\n"
         "## Task Format\n"
         "Each task must have TWO forms:\n"
@@ -130,19 +129,13 @@ class TodoWriteTool(Tool):
         "required": ["todos"]
     }
 
-    # Configuration: whether to allow multiple in_progress tasks
-    # Can be overridden per-instance for parallel-capable agents
-    allow_parallel_in_progress: bool = False
-
     def __init__(
         self,
         cwd: str = ".",
         workspace_uuid: str = "",
         session_manager=None,
-        allow_parallel_in_progress: bool = False,
     ):
         super().__init__(cwd, workspace_uuid, session_manager)
-        self.allow_parallel_in_progress = allow_parallel_in_progress
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the todo_write tool.
@@ -164,7 +157,6 @@ class TodoWriteTool(Tool):
         # Validate and normalize each item
         validated_todos = []
         seen_contents = set()
-        in_progress_count = 0
 
         for i, item in enumerate(todos):
             if not isinstance(item, dict):
@@ -203,23 +195,11 @@ class TodoWriteTool(Tool):
                 )
             seen_contents.add(content)
 
-            # Count in_progress items
-            if status == "in_progress":
-                in_progress_count += 1
-
             validated_todos.append({
                 "content": content,
                 "activeForm": active_form,
                 "status": status,
             })
-
-        # Check parallel constraint
-        if not self.allow_parallel_in_progress and in_progress_count > 1:
-            return ToolResult(
-                f"Error: at most one task may be in_progress at a time (got {in_progress_count}). "
-                "Complete the current task before starting another, or mark only one as in_progress.",
-                error=True
-            )
 
         # Read old todos for verification nudge check
         old_todos = read_todos(session_id) if session_id else []

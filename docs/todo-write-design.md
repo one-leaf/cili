@@ -16,7 +16,6 @@
 - **整表替换**：每次调用发送完整列表
 - **三态状态**：`pending` / `in_progress` / `completed`
 - **双形式描述**：`content`（命令式）+ `activeForm`（进行时，UI 显示）
-- **并行控制**：可配置 `allow_parallel_in_progress`
 - **验证提醒**：完成多任务时提醒验证
 - **存储方式**：独立文件（`data/cili/tools/todo/{session_id}.json`，按 session 隔离）
 
@@ -39,7 +38,7 @@
 - `activeForm`：任务的进行时描述，用于 UI 显示当前进行中的任务
 - `status`：任务状态
   - `pending`：未开始
-  - `in_progress`：正在进行（默认只允许一个）
+  - `in_progress`：正在进行（可同时多个）
   - `completed`：已完成
 
 ### 2.2 存储格式
@@ -88,7 +87,7 @@ class TodoWriteTool(Tool):
 
     ## Task States
     - pending: Not yet started
-    - in_progress: Currently working on (limit to ONE at a time)
+    - in_progress: Currently working on (multiple allowed)
     - completed: Finished successfully
 
     ## Task Format
@@ -160,7 +159,6 @@ Progress: 2/5 completed
 - `Error: todos must be an array`
 - `Error: todo item 0 'content' must be a non-empty string`
 - `Error: duplicate todo content "Fix bug"`
-- `Error: at most one task may be in_progress at a time (got 2)`
 
 ---
 
@@ -175,16 +173,7 @@ Progress: 2/5 completed
 5. `status` 必须是 `pending`/`in_progress`/`completed` 之一
 6. `content` 不能重复
 
-### 4.2 并行控制
-
-当 `allow_parallel_in_progress = false`（默认）时：
-- 最多只能有一个 `in_progress` 任务
-- 多个 `in_progress` 会返回错误
-
-当 `allow_parallel_in_progress = true` 时：
-- 允许多个 `in_progress` 任务（适合并行执行）
-
-### 4.3 验证提醒
+### 4.2 验证提醒
 
 当以下条件全部满足时，返回验证提醒：
 1. 所有任务都已完成
@@ -371,13 +360,9 @@ Cili 选择独立文件方案是因为：
 3. **向后兼容**：旧 metadata 中的 `todos` 自动迁移到独立文件，`get_todos_from_session` 同时支持两种格式
 4. 不需要复杂的事件溯源
 
-### Q: 并行控制为什么是配置项？
+### Q: 为什么允许多个 `in_progress`？
 
-**A**: 不同场景需要不同的并行策略：
-- **单线程执行**：限制一个 `in_progress`，防止混乱
-- **并行执行**（SubAgent）：允许多个 `in_progress`
-
-通过 `allow_parallel_in_progress` 配置项，可以灵活适配不同场景。
+**A**: 实际使用中经常有多个任务并行推进的场景（如同时审查多个模块）。强制只能标一个 in_progress 反而丢失了真实状态。整表替换设计本身已保证状态一致性，不需要额外限制并行数量。
 
 ---
 
