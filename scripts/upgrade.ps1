@@ -38,8 +38,8 @@ Import-Module BitsTransfer -ErrorAction SilentlyContinue
 
 $urls = @(
     'https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
-    'https://ghproxy.net/https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
     'https://ghfast.top/https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
+    'https://ghproxy.net/https://github.com/one-leaf/cili/archive/refs/heads/main.zip',
     'https://gh-proxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip'
 )
 
@@ -47,11 +47,20 @@ $downloaded = $false
 foreach ($url in $urls) {
     try {
         Write-Host "  Trying: $url" -ForegroundColor Cyan
+        # Clean up any leftover from previous attempt
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
         Start-BitsTransfer -Source $url -Destination $tempZip -DisplayName 'Downloading' -ErrorAction Stop
-        if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0)) {
-            Write-Host "  OK! Size: $([math]::Round((Get-Item $tempZip).Length/1KB)) KB" -ForegroundColor Green
-            $downloaded = $true
-            break
+        if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 1024)) {
+            # Validate it's actually a zip file (PK header magic bytes)
+            $bytes = [System.IO.File]::ReadAllBytes($tempZip)[0..3]
+            if ($bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B) {
+                Write-Host "  OK! Size: $([math]::Round((Get-Item $tempZip).Length/1KB)) KB" -ForegroundColor Green
+                $downloaded = $true
+                break
+            } else {
+                Write-Host "  Invalid file (not a zip)" -ForegroundColor Yellow
+                Remove-Item $tempZip -Force
+            }
         }
     } catch {
         Write-Host "  Failed: $_" -ForegroundColor Yellow
