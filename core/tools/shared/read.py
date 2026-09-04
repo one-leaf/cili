@@ -6,6 +6,7 @@ import base64
 import io
 import itertools
 import os
+import time
 
 from core.tools.shared.base import Tool, ToolResult
 
@@ -183,6 +184,9 @@ class ReadTool(Tool):
                 lines_shown = truncated.count('\n') - 1
                 output = truncated + f"\n\n... (truncated from {len(output):,} to {max_chars:,} chars, ~{lines_shown} lines shown)"
 
+            # Touch memory knowledge files to update mtime (for access tracking)
+            self._touch_memory_mtime(file_path)
+
             return ToolResult(output)
         except FileNotFoundError:
             return ToolResult(f"Error: file not found: {file_path}", error=True)
@@ -275,3 +279,18 @@ class ReadTool(Tool):
         if len(page_list) > ReadTool.MAX_PAGES_PER_READ:
             raise ValueError(f"Too many pages ({len(page_list)}). Maximum is {ReadTool.MAX_PAGES_PER_READ} per read.")
         return page_list
+
+    def _touch_memory_mtime(self, file_path: str) -> None:
+        """Update mtime of memory knowledge files to track last access time.
+
+        Only touches files under memory/knowledge/ directory.
+        Silently ignores errors (e.g. read-only filesystem).
+        """
+        normalized = file_path.replace("\\", "/")
+        if "/memory/knowledge/" not in normalized:
+            return
+        try:
+            now = time.time()
+            os.utime(file_path, (now, now))
+        except Exception:
+            pass

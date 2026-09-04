@@ -74,6 +74,10 @@ class MemoryTool(Tool):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Tag list for categorization and retrieval"
+            },
+            "source_ref": {
+                "type": "string",
+                "description": "Source reference for this knowledge. Examples: 'file:E:/docs/config.yaml' for file sources, 'session:abc123' for conversation sessions, 'web:https://...' for web sources. Added to the references list. Only for knowledge."
             }
         },
         "required": ["action", "memory_type"]
@@ -117,10 +121,21 @@ class MemoryTool(Tool):
         return ToolResult(f"Error: unknown memory_type '{memory_type}'", error=True)
 
     def _store_knowledge(self, kwargs: dict) -> ToolResult:
-        """Store a knowledge Markdown file with frontmatter."""
+        """Store a knowledge Markdown file with frontmatter.
+
+        If a knowledge with the same title already exists (across all topics),
+        automatically update it instead of creating a duplicate.
+        References are merged when updating.
+        """
         title = kwargs.get("title", "")
         if not title:
             return ToolResult("Error: title is required for knowledge", error=True)
+
+        # Dedup: search for existing knowledge with same title across all topics
+        existing_path = self._find_knowledge_by_title_across_topics(title)
+        if existing_path:
+            # Found existing — update in place, merge references
+            return self._update_knowledge_with_refs(existing_path, kwargs)
 
         topic = kwargs.get("topic", "misc")
         filename = kwargs.get("filename")
@@ -144,6 +159,31 @@ class MemoryTool(Tool):
             f.write(content)
 
         return ToolResult(f"Successfully stored knowledge in {file_path}")
+
+    def _update_knowledge_with_refs(self, existing_path: str, kwargs: dict) -> ToolResult:
+        """Update existing knowledge, merging references from old and new."""
+        try:
+            with open(existing_path, "r", encoding="utf-8") as f:
+                old_content = f.read()
+            old_fm = self._parse_knowledge_frontmatter(old_content)
+            old_refs = old_fm.get("references", [])
+            if isinstance(old_refs, str):
+                old_refs = [old_refs]
+        except Exception:
+            old_refs = []
+
+        # Get new source_ref if provided
+        new_ref = kwargs.get("source_ref", "")
+        merged_refs = list(old_refs)
+        if new_ref and new_ref not in merged_refs:
+            merged_refs.append(new_ref)
+
+        # Build updated content with merged references
+        content = self._build_knowledge_markdown(kwargs, references=merged_refs)
+        with open(existing_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        return ToolResult(f"Found existing knowledge with same title, updated: {existing_path}")
 
     def _store_skill(self, kwargs: dict) -> ToolResult:
         """Store a skill as Markdown with frontmatter.
@@ -187,9 +227,38 @@ class MemoryTool(Tool):
 
         skill_path = os.path.join(skill_dir, "skill.md")
 
-        # Check if skill already exists
+        # Check if skill already exists — auto-update if so
         if os.path.exists(skill_path):
-            return ToolResult(f"Error: skill '{skill_name}' already exists. Use update action to modify.", error=True)
+            # Parse existing to preserve created time
+            with open(skill_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+            existing_fm = self._parse_skill_frontmatter(existing)
+
+            # Merge: use provided values, fall back to existing
+            merged_name = name
+            merged_desc = description
+            merged_tags = kwargs.get("tags", existing_fm.get("tags", []))
+            merged_content = kwargs.get("content", "")
+            created = existing_fm.get("created", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            lines = ["---"]
+            lines.append(f'name: "{merged_name}"')
+            lines.append(f'description: "{merged_desc}"')
+            if merged_tags:
+                tags_str = ", ".join(merged_tags)
+                lines.append(f"tags: [{tags_str}]")
+            lines.append(f"created: {created}")
+            lines.append(f"updated: {updated}")
+            lines.append("---")
+            lines.append("")
+            if merged_content:
+                lines.append(merged_content)
+
+            with open(skill_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+            return ToolResult(f"Skill '{skill_name}' already exists, updated: {skill_path}")
 
         # Build skill markdown
         content = self._build_skill_markdown(kwargs)
@@ -198,13 +267,16 @@ class MemoryTool(Tool):
 
         return ToolResult(f"Successfully stored skill in {skill_path}")
 
-    def _build_knowledge_markdown(self, kwargs: dict) -> str:
+    def _build_knowledge_markdown(self, kwargs: dict, references: list[str] | None = None) -> str:
         """Build knowledge Markdown with frontmatter.
 
         Format:
         ---
         title: "标题"
         source: manual
+        references:
+          - "file:E:/docs/config.yaml"
+          - "session:abc123"
         time: 2026-08-21 10:30:00
         tags: [tag1, tag2]
         ---
@@ -213,13 +285,28 @@ class MemoryTool(Tool):
         """
         title = kwargs.get("title", "")
         source = kwargs.get("source", "manual")
+        source_ref = kwargs.get("source_ref", "")
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         tags = kwargs.get("tags", [])
         content = kwargs.get("content", "")
 
+        # Build references list: merge explicit list + source_ref
+        refs: list[str] = list(references) if references else []
+        if source_ref and source_ref not in refs:
+            refs.append(source_ref)
+
         lines = ["---"]
         lines.append(f'title: "{title}"')
         lines.append(f"source: {source}")
+        if refs:
+            lines.append("references:")
+            for ref in refs:
+                # Normalize file paths
+                if ref.startswith("file:"):
+                    norm = ref[len("file:"):].replace("\\", "/")
+                    lines.append(f'  - "file:{norm}"')
+                else:
+                    lines.append(f'  - "{ref}"')
         lines.append(f"time: {time_str}")
         if tags:
             tags_str = ", ".join(tags)
@@ -291,7 +378,7 @@ class MemoryTool(Tool):
         return ToolResult(f"Error: unknown memory_type '{memory_type}'", error=True)
 
     def _update_knowledge(self, kwargs: dict) -> ToolResult:
-        """Update an existing knowledge file."""
+        """Update an existing knowledge file, merging references."""
         title = kwargs.get("title", "")
         if not title:
             return ToolResult("Error: title is required to find knowledge", error=True)
@@ -305,11 +392,8 @@ class MemoryTool(Tool):
                 error=True,
             )
 
-        content = self._build_knowledge_markdown(kwargs)
-        with open(found_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        return ToolResult(f"Successfully updated {found_path}")
+        # Merge references from existing file
+        return self._update_knowledge_with_refs(found_path, kwargs)
 
     def _update_skill(self, kwargs: dict) -> ToolResult:
         """Update an existing skill."""
@@ -476,10 +560,111 @@ class MemoryTool(Tool):
 
         return None
 
+    def _find_knowledge_by_title_across_topics(self, title: str) -> str | None:
+        """Find a knowledge file by title, searching across all topics.
+
+        Used for dedup during store — prevents creating duplicate knowledge
+        with the same title in different topics.
+        Returns newest match first.
+        """
+        type_dir = os.path.join(self.memory_dir, "knowledge")
+        if not os.path.isdir(type_dir):
+            return None
+
+        # Collect all knowledge files across all topics and dates
+        all_files: list[tuple[str, str]] = []  # (filepath, date_str)
+        for topic_name in os.listdir(type_dir):
+            topic_path = os.path.join(type_dir, topic_name)
+            if not os.path.isdir(topic_path):
+                continue
+            for date_dir_name in os.listdir(topic_path):
+                date_path = os.path.join(topic_path, date_dir_name)
+                if not os.path.isdir(date_path):
+                    continue
+                for fname in os.listdir(date_path):
+                    if fname.endswith(".md"):
+                        fpath = os.path.join(date_path, fname)
+                        all_files.append((fpath, date_dir_name))
+
+        # Sort by date desc (newest first)
+        all_files.sort(key=lambda x: x[1], reverse=True)
+
+        for fpath, _ in all_files:
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                file_title = self._parse_markdown_title(content)
+                if file_title == title:
+                    return fpath
+            except Exception:
+                continue
+
+        return None
+
     def _parse_markdown_title(self, content: str) -> str:
         """Extract title from markdown frontmatter."""
-        frontmatter = self._parse_skill_frontmatter(content)
+        frontmatter = self._parse_knowledge_frontmatter(content)
         return frontmatter.get("title", "")
+
+    def _parse_knowledge_frontmatter(self, content: str) -> dict:
+        """Parse knowledge markdown frontmatter, including references list.
+
+        Handles YAML-style lists:
+          references:
+            - "file:..."
+            - "session:..."
+        """
+        if not content.startswith("---"):
+            return {}
+
+        end_idx = content.find("---", 3)
+        if end_idx == -1:
+            return {}
+
+        frontmatter_text = content[3:end_idx].strip()
+        result: dict = {}
+        lines = frontmatter_text.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            i += 1
+
+            if not stripped or ":" not in stripped:
+                continue
+
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip()
+
+            # Remove quotes
+            if value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]
+            elif value.startswith("'") and value.endswith("'"):
+                value = value[1:-1]
+            # Parse inline array: [a, b, c]
+            elif value.startswith("[") and value.endswith("]"):
+                value = [t.strip().strip('"').strip("'") for t in value[1:-1].split(",") if t.strip()]
+            # YAML list (empty value, next lines are - items)
+            elif value == "":
+                list_items: list[str] = []
+                while i < len(lines):
+                    item_line = lines[i].strip()
+                    if item_line.startswith("- "):
+                        item = item_line[2:].strip()
+                        if item.startswith('"') and item.endswith('"'):
+                            item = item[1:-1]
+                        elif item.startswith("'") and item.endswith("'"):
+                            item = item[1:-1]
+                        list_items.append(item)
+                        i += 1
+                    else:
+                        break
+                value = list_items
+
+            result[key] = value
+
+        return result
 
     @staticmethod
     def _title_to_filename(title: str, extension: str = ".md") -> str:
@@ -514,57 +699,3 @@ class MemoryTool(Tool):
 
         return f"{name}{extension}"
 
-    @staticmethod
-    def move_to_latest_date(file_path: str) -> ToolResult:
-        """Move a memory file to today's date directory.
-
-        Called after reading a knowledge file to track last access time.
-        No-op if the file is already in today's directory.
-        Only applies to knowledge files, not skills.
-        """
-        if not os.path.exists(file_path):
-            return ToolResult(f"Error: file not found: {file_path}", error=True)
-
-        # Normalize path separators
-        normalized_path = file_path.replace("\\", "/")
-
-        # Skills don't use date directories
-        if "/skills/" in normalized_path:
-            return ToolResult("Skills don't use date-based organization")
-
-        date_str = datetime.now().strftime("%Y-%m-%d")
-
-        # Parse: .../memory/{type}/{topic}/{date}/{filename}
-        parts = normalized_path.split("/")
-        try:
-            memory_idx = next(i for i, p in enumerate(parts) if p == "memory")
-        except StopIteration:
-            return ToolResult("Error: not a memory file path", error=True)
-
-        try:
-            mem_type = parts[memory_idx + 1]
-            topic = parts[memory_idx + 2]
-            current_date = parts[memory_idx + 3]
-            filename = "/".join(parts[memory_idx + 4:])
-        except IndexError:
-            return ToolResult("Error: malformed memory path", error=True)
-
-        if current_date == date_str:
-            return ToolResult("File already in today's directory, no move needed")
-
-        base_path = "/".join(parts[:memory_idx + 1])
-        new_path = f"{base_path}/{mem_type}/{topic}/{date_str}/{filename}"
-
-        os.makedirs(os.path.dirname(new_path), exist_ok=True)
-
-        # Handle filename conflicts
-        new_path = MemoryTool._resolve_filename_conflict(
-            f"{base_path}/{mem_type}/{topic}/{date_str}", filename
-        )
-
-        os.rename(file_path, new_path)
-
-        # Clean up empty source directories
-        MemoryTool._cleanup_empty_parents(file_path, levels=2)
-
-        return ToolResult(f"Moved to {new_path}")

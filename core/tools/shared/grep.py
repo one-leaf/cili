@@ -102,10 +102,59 @@ class GrepTool(Tool):
         # Resolve to absolute path
         path = self._resolve_path(path) if path else self.cwd
 
-        # Build grep command (works in Git Bash)
-        cmd_parts = ["grep", "-r", "-n"]
+        # Step 1: Get all matching files first
+        matching_files = self._find_matching_files(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            type=type,
+            case_insensitive=case_insensitive,
+            fixed_strings=fixed_strings,
+        )
 
-        # Regex vs fixed strings
+        if not matching_files:
+            return ToolResult("No matches found.")
+
+        # Step 2: Sort files by modification time (newest first)
+        files_with_mtime = []
+        for f in matching_files:
+            try:
+                mtime = os.path.getmtime(f)
+                files_with_mtime.append((f, mtime))
+            except OSError:
+                continue
+        files_with_mtime.sort(key=lambda x: x[1], reverse=True)
+        sorted_files = [f for f, _ in files_with_mtime]
+
+        # Limit to MAX_FILES
+        if len(sorted_files) > self.MAX_FILES:
+            sorted_files = sorted_files[:self.MAX_FILES]
+
+        # Step 3: Generate output based on mode
+        if output_mode == "files_with_matches":
+            output = '\n'.join(sorted_files[:max_results])
+            if len(sorted_files) > max_results:
+                output += f"\n\n... ({len(sorted_files)} files total, limited to {max_results})"
+            return ToolResult(output)
+
+        elif output_mode == "count":
+            return self._count_mode(sorted_files, pattern, case_insensitive, fixed_strings, max_results)
+
+        else:  # content mode
+            return self._content_mode(sorted_files, pattern, case_insensitive, fixed_strings, context, max_results)
+
+    def _find_matching_files(
+        self,
+        pattern: str,
+        path: str,
+        glob: str | None,
+        type: str | None,
+        case_insensitive: bool,
+        fixed_strings: bool,
+    ) -> list[str]:
+        """Find all files matching the pattern using grep -l."""
+        cmd_parts = ["grep", "-r", "-l"]
+
         if fixed_strings:
             cmd_parts.append("-F")
         else:
@@ -114,24 +163,11 @@ class GrepTool(Tool):
         if case_insensitive:
             cmd_parts.append("-i")
 
-        # Output mode flags
-        if output_mode == "files_with_matches":
-            cmd_parts.append("-l")
-        elif output_mode == "count":
-            cmd_parts.append("-c")
-        else:
-            # content mode: context lines
-            if context > 0:
-                cmd_parts.extend(["-C", str(context)])
-
-        # File filtering: type takes precedence over glob
+        # File filtering
         if type:
             exts = TYPE_EXTENSIONS.get(type.lower())
             if not exts:
-                return ToolResult(
-                    f"Error: unknown type '{type}'. Available: {', '.join(sorted(TYPE_EXTENSIONS))}",
-                    error=True,
-                )
+                return []
             for ext in exts:
                 cmd_parts.extend(["--include", ext])
         elif glob:
@@ -142,55 +178,90 @@ class GrepTool(Tool):
             cmd_parts.extend(["--exclude-dir", d])
 
         cmd_parts.extend([pattern, path])
-
-        # Pipe to head to limit results
-        # Use || true to handle SIGPIPE (exit code 141) when head closes early
         cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+        cmd += " || true"
 
-        if output_mode == "content":
-            # 限制每行长度（防止长行撑爆上下文），然后限制行数
-            cmd += f" | cut -c1-{self.MAX_COLUMNS} | head -n {max_results} || true"
-        else:
-            cmd += f" | head -n {max_results} || true"
+        result = self._run_bash(cmd, max_chars=50_000)
+        if result.error or not result.output or result.output.startswith("[exit code: 1]"):
+            return []
 
-        # max_chars 限制在 GrepTool 硬上限内（避免 _run_bash 默认 10K 提前截断）
-        result = self._run_bash(cmd, max_chars=self.MAX_RESULT_SIZE_CHARS)
+        files = [f for f in result.output.strip().split('\n') if f]
+        return files
 
-        # grep returns 1 if no matches found (not an error)
-        if result.error and result.output.startswith("[exit code: 1]"):
-            return ToolResult("No matches found.")
+    def _count_mode(
+        self,
+        sorted_files: list[str],
+        pattern: str,
+        case_insensitive: bool,
+        fixed_strings: bool,
+        max_results: int,
+    ) -> ToolResult:
+        """Generate count output for sorted files."""
+        output_lines = []
+        for f in sorted_files[:max_results]:
+            cmd_parts = ["grep", "-c"]
+            if fixed_strings:
+                cmd_parts.append("-F")
+            else:
+                cmd_parts.append("-E")
+            if case_insensitive:
+                cmd_parts.append("-i")
+            cmd_parts.extend([pattern, f])
+            cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+            cmd += " || true"
+            result = self._run_bash(cmd, max_chars=1000)
+            count = result.output.strip() if result.output else "0"
+            output_lines.append(f"{f}:{count}")
 
-        # File-count limiting only applies to 'content' mode
-        output = result.output
-        if output and output_mode == "content" and not output.startswith("No matches"):
-            lines = output.split('\n')
-            files_seen: set[str] = set()
-            file_cutoff_idx = -1
-            for idx, line in enumerate(lines):
-                # grep 格式: filepath:linenum:content
-                # Windows 路径含 C: 前缀，需跳过驱动器字母
-                stripped = line.lstrip()
-                if len(stripped) > 2 and stripped[1] == ':':
-                    # Windows 路径：跳过 X: 后再按 : 分割
-                    rest = stripped[2:]
-                    colon_pos = rest.find(':')
-                    if colon_pos >= 0:
-                        filepath = stripped[:2 + colon_pos]
-                        files_seen.add(filepath)
-                        if len(files_seen) > self.MAX_FILES:
-                            file_cutoff_idx = idx
-                            break
-                elif ':' in stripped:
-                    filepath = stripped.split(':', 1)[0]
-                    files_seen.add(filepath)
-                    if len(files_seen) > self.MAX_FILES:
-                        file_cutoff_idx = idx
+        output = '\n'.join(output_lines)
+        if len(sorted_files) > max_results:
+            output += f"\n\n... ({len(sorted_files)} files total, limited to {max_results})"
+        return ToolResult(output)
+
+    def _content_mode(
+        self,
+        sorted_files: list[str],
+        pattern: str,
+        case_insensitive: bool,
+        fixed_strings: bool,
+        context: int,
+        max_results: int,
+    ) -> ToolResult:
+        """Generate content output for sorted files."""
+        output_lines = []
+        total_lines = 0
+
+        for f in sorted_files:
+            cmd_parts = ["grep", "-n"]
+            if fixed_strings:
+                cmd_parts.append("-F")
+            else:
+                cmd_parts.append("-E")
+            if case_insensitive:
+                cmd_parts.append("-i")
+            if context > 0:
+                cmd_parts.extend(["-C", str(context)])
+            cmd_parts.extend([pattern, f])
+            cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+            cmd += f" | cut -c1-{self.MAX_COLUMNS} || true"
+
+            result = self._run_bash(cmd, max_chars=10_000)
+            if result.output and not result.output.startswith("[exit code: 1]"):
+                lines = result.output.strip().split('\n')
+                for line in lines:
+                    if total_lines >= max_results:
                         break
-            if file_cutoff_idx >= 0:
-                kept = '\n'.join(lines[:file_cutoff_idx])
-                result = ToolResult(
-                    f"{kept}\n\n... (results limited to {self.MAX_FILES} files, "
-                    f"more matches in other files omitted)"
-                )
+                    # Add filename prefix to each line
+                    # grep -n output: linenum:content or linenum-content (with context)
+                    # We need: filepath:linenum:content
+                    if line:
+                        output_lines.append(f"{f}:{line}")
+                        total_lines += 1
 
-        return result
+            if total_lines >= max_results:
+                break
+
+        output = '\n'.join(output_lines)
+        if total_lines >= max_results:
+            output += f"\n\n... (results limited to {max_results} lines)"
+        return ToolResult(output)

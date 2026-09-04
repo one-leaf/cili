@@ -56,6 +56,9 @@ data/agents/{uuid}/
 ---
 title: RESTful API 规范
 source: manual
+references:
+  - "file:E:/docs/api-spec.md"
+  - "session:abc123"
 time: 2024-01-15 14:30:00
 tags: [api, 规范, restful]
 ---
@@ -80,12 +83,20 @@ tags: [api, 命名]
 ---
 title: Markdown 语法
 source: web_search
+references:
+  - "web:https://example.com/markdown-guide"
 time: 2024-01-17 09:00:00
 tags: [markdown, 语法]
 ---
 
 使用 # 表示标题，** 表示粗体...
 ```
+
+**references 字段说明**：
+- 类似论文引用，支持多条来源累积
+- 格式：`file:路径`（文件）、`session:id`（对话会话）、`web:url`（网页）
+- 每次更新同名知识时，新的 source_ref 会追加到列表（自动去重）
+- 便于追溯知识来源，支持后续验证
 
 **为什么放在 data 目录下？**
 - 与 sessions/config 统一，属于工作区的"数据目录"
@@ -140,6 +151,9 @@ knowledge/
 ---
 title: {标题}
 source: {manual / web_search / browser / python}
+references:
+  - "file:E:/docs/config.yaml"
+  - "session:abc123"
 time: 2024-01-15 14:30:00
 tags: [标签1, 标签2]
 ---
@@ -153,6 +167,7 @@ tags: [标签1, 标签2]
 | 目录名 | 主题分类 | `find` 列出主题 |
 | 文件名 | 内容描述 | 直接 `read` |
 | source | 知识来源（用户/搜索/浏览器/代码） | `grep "source: web_search"` |
+| references | 知识引用来源列表（文件/会话/网页） | `grep "references:"` |
 | tags | 细粒度分类 | `grep "tags:"` |
 | 内容 | 具体知识 | `grep "关键词"` |
 
@@ -161,6 +176,8 @@ tags: [标签1, 标签2]
 ---
 title: RESTful API 规范
 source: manual
+references:
+  - "file:E:/docs/api-spec.md"
 time: 2024-01-15 14:30:00
 tags: [api, 规范, restful]
 ---
@@ -456,6 +473,10 @@ Agent: 已保存。
         "type": "string",
         "enum": ["manual", "web_search", "browser", "python"],
         "description": "知识来源：manual=用户主动提供，web_search=搜索结果，browser=浏览器抓取，python=代码执行结果。仅 knowledge 类型使用"
+      },
+      "source_ref": {
+        "type": "string",
+        "description": "知识引用来源。格式：'file:E:/docs/config.yaml'（文件）、'session:abc123'（对话会话）、'web:https://...'（网页）。添加到 references 列表。仅 knowledge 使用。"
       }
     },
     "required": ["action", "memory_type"]
@@ -467,6 +488,12 @@ Agent: 已保存。
 - `topic`：不填时默认为 `"misc"`，知识存入 `knowledge/misc/` 目录。**注意**：代码中参数描述写为 "Required for knowledge"，但实际验证并未强制要求（`kwargs.get("topic", "misc")`），不填时自动归入 `misc/`
 - `skill_name`：必须是有意义的 kebab-case 名称，代码会拒绝 UUID 格式的命名（如 `skill-a1b2c3d4` 或 36 位 UUID）
 - `source`：不填时默认为 `"manual"`
+- `source_ref`：支持多种来源格式，类似论文引用。每次更新同名知识时，新的 source_ref 会追加到 references 列表（自动去重）
+
+**自动查重行为**：
+- `store` knowledge 时，自动搜索所有 topic 下是否有相同 title 的知识
+- 如果找到，自动转为 update 并合并 references
+- skill 同理：同 skill_name 已存在时自动 update，保留 created 时间
 
 ### 5.3 使用示例
 
@@ -598,6 +625,7 @@ read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
 **检索策略建议**：
 - Knowledge: 先 `find` 看有哪些主题目录，再 `find` 看日期子目录（按日期倒序），再 `find` 看文件，再 `read`；或按标签/来源/关键词 `grep`
 - Skill: Agent 在收到任务时，先用 `grep` 搜索 skills 目录中的技能名称、描述、标签，找到匹配的技能后使用 `read` 工具加载完整 skill.md 文件
+- **grep 自动按 mtime 倒序**：搜索结果按文件最后修改时间倒序排列，最近访问/修改的文件排在最前
 
 **任务前搜索流程**：
 当用户提出任务请求时，Agent 应：
@@ -613,12 +641,11 @@ read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
 - 冲突时以最新记忆为准
 - Agent 在 system prompt 中被明确告知"以最新的记忆为准"
 
-**记忆移动机制**：
-- 设计：读取 knowledge 文件后，`root_agent.py` 自动调用 `MemoryTool.move_to_latest_date()` 将文件移动到当天日期目录
-- 移动条件：仅当文件所在日期目录不是今天时移动
-- 移动目的：追踪最后访问时间，支持未来遗忘处理
-- Skill 不支持移动（技能不按日期组织）
-- **当前状态**：`MemoryTool.move_to_latest_date()` 方法已定义，但尚未集成到 `root_agent.py` 的读取流程中（待实现）
+**最后访问时间追踪**：
+- 实现：`read` 工具读取 `memory/knowledge/` 下的文件时，自动调用 `os.utime()` 更新文件 mtime 为当前时间
+- 追踪目的：支持未来遗忘处理（长时间未访问的知识可自动归档）
+- grep 工具按 mtime 倒序排列结果，最近访问/修改的排在前面
+- Skill 不受影响（技能不按日期组织，同样按 mtime 排序）
 
 ### 5.5 存储规则
 
@@ -782,39 +809,25 @@ read(file_path="data/agents/{uuid}/memory/knowledge/topic/date/file.md")
 - 不依赖用户主动触发（如"结束"、"记下来"）
 - Agent 根据对话内容智能识别值得记忆的信息
 
-### 7.8 记忆移动机制
+### 7.8 最后访问时间追踪
 
 **问题**: 如何追踪知识的"最后访问时间"，支持遗忘处理？
 
-**决策**: 读取知识时，将文件移动到最新日期目录
+**决策**: 读取时更新文件 mtime（而非移动文件）
 
 **实现**:
-- **移动时机**: 设计为每次通过 `read` 工具读取 knowledge 文件后，`root_agent.py` 自动调用 `MemoryTool.move_to_latest_date()` 移动文件
-- **移动规则**: 将文件从旧日期目录移动到当天日期目录
-  - 例：读取 `knowledge/python/2024-01-15/asyncio.md` → 移动到 `knowledge/python/2024-01-20/asyncio.md`
-- **移动条件**:
-  - 仅当文件所在日期目录不是今天时移动
-  - 移动时如果目标文件已存在，追加计数器（如 `asyncio-2.md`）
-  - **Skill 不支持移动**（技能不按日期组织）
-- **移动目的**:
-  - **支持遗忘机制**：通过日期目录追踪最后访问时间，长时间没访问的知识可以被识别和归档
-  - 保持目录按日期倒序，最新访问的知识在最后
-- **当前状态**: `MemoryTool.move_to_latest_date()` 方法已实现，但尚未集成到 `root_agent.py` 的读取流程中（待实现）
+- **更新时机**: `read` 工具读取 `memory/knowledge/` 下的文件时，自动调用 `os.utime()` 更新 mtime
+- **更新规则**: 将文件 mtime 设为当前时间
+- **排序**: `grep` 工具按 mtime 倒序返回结果，最近访问/修改的文件排在最前
+- **目的**:
+  - **支持遗忘机制**：通过 mtime 追踪最后访问/修改时间，长时间没访问的知识可被识别和归档
+  - grep 检索结果自然按时间倒序，最新记忆在前
+- **跨平台**：mtime 在 Windows/Linux/macOS 上一致工作，不依赖 atime（Windows 默认禁用 atime 更新）
 
 **遗忘机制设计**（后续实现）:
-- 基于最后访问日期判断知识的重要性
-- 例如：超过 30 天未访问的知识可以自动归档
+- 基于 mtime 判断知识的重要性
+- 例如：mtime 超过 30 天的知识可以自动归档
 - 遗忘规则可在 system prompt 中配置
-  - 保持目录按日期倒序，最新知识在最后
-
-**示例**：
-```
-# 读取知识
-read(file_path="knowledge/python/2024-01-15/asyncio.md")
-
-# 自动移动（如果是今天）
-mv knowledge/python/2024-01-15/asyncio.md knowledge/python/2024-01-20/asyncio.md
-```
 
 ---
 
@@ -878,7 +891,7 @@ mv knowledge/python/2024-01-15/asyncio.md knowledge/python/2024-01-20/asyncio.md
   - Skill 每个技能一个目录：`skills/{skill-name}/skill.md`
   - 无法归类的知识存入 `misc/` 目录（同样按日期组织）
 - **日期组织优势**: 便于未来做遗忘处理，按日期归档旧知识
-- **记忆移动机制**: 设计中——`MemoryTool.move_to_latest_date()` 方法已定义，但集成到 `root_agent.py` 读取流程待实现（Skill 不支持移动）
+- **最后访问时间追踪**: `read` 读取 knowledge 文件时自动更新 mtime，grep 按 mtime 倒序返回结果
 - **文件数量控制**: Knowledge 主题数量无硬限制，由 Agent 根据需要管理
 - **知识来源**: Knowledge 支持 source 字段（manual/web_search/browser/python）
 - **工具结果入库**: web_search/browser/python 的有价值结果由 Agent 判断后存入 knowledge
@@ -899,7 +912,7 @@ mv knowledge/python/2024-01-15/asyncio.md knowledge/python/2024-01-20/asyncio.md
 7. **任务前搜索流程** — 收到任务时先搜索 skills 和 knowledge，返回匹配项再判断是否加载
 8. **misc/ 兜底 + 日期子目录** — 无法归类的知识按日期分层，避免单目录文件过多
 9. **文件数量管理** — 无硬限制，Agent 根据需要合并主题或归档
-10. **记忆移动机制** — 设计中：`MemoryTool.move_to_latest_date()` 方法已定义，集成到 `root_agent.py` 待实现，追踪最后访问时间
+10. **最后访问时间追踪** — `read` 读取 knowledge 文件时自动更新 mtime，grep 按 mtime 倒序排列结果
 11. **不做会话检索** — 会话历史不单独检索，有价值的工具结果存入知识库
 12. **工具结果自动入库** — web_search/browser/python 的结果可存入 knowledge，标记 source
 13. **避免使用 "ok" 作为触发词** — 太常见，容易误触发
