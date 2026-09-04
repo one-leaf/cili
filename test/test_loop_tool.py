@@ -28,18 +28,20 @@ class TestLoopTool:
             loop_module.LOOP_STATE_DIR = original_dir
 
     def test_next_returns_first_item(self, temp_loop_state):
-        """next 从文件加载并返回第一个 pending 项"""
+        """next 从文件加载并返回第一个 pending 项（附带进度）"""
         from core.tools.shared.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
         result = tool.execute(action="next", source_file=items_file)
-        data = json.loads(result.output)
 
-        assert data["item"] == "file1.md"
+        # 新格式：多行文本，包含进度和当前项
+        assert "进度: 0/2 已完成" in result.output
+        assert "2 待处理" in result.output
+        assert "当前项: file1.md" in result.output
 
     def test_next_returns_null_when_no_pending(self, temp_loop_state):
-        """无 pending 项时 next 返回 null"""
+        """无 pending 项时 next 返回完成提示"""
         from core.tools.shared.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md"])
@@ -48,9 +50,10 @@ class TestLoopTool:
         tool.execute(action="done", source_file=items_file, item="file1.md")
 
         result = tool.execute(action="next", source_file=items_file)
-        data = json.loads(result.output)
 
-        assert data["item"] is None
+        # 新格式：所有项处理完毕的提示
+        assert "所有项已处理完毕" in result.output
+        assert "完成: 1" in result.output
 
     def test_next_auto_syncs_new_items(self, temp_loop_state):
         """next 自动同步文件中的新增项"""
@@ -206,9 +209,10 @@ class TestLoopTool:
 
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
         result = tool.execute(action="next", source_file=str(file_path))
-        data = json.loads(result.output)
 
-        assert data["item"] == "file1.md"
+        # 新格式：多行文本
+        assert "当前项: file1.md" in result.output
+        assert "进度: 0/2 已完成" in result.output
 
         # 检查只有 2 项
         result = tool.execute(action="status", source_file=str(file_path))

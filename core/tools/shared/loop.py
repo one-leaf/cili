@@ -86,7 +86,7 @@ class LoopTool(Tool):
         '"pending", "done", or "failed:{reason}".\n'
         "The task is identified by its source file path — all actions require `source_file`.\n\n"
         "## Actions:\n"
-        "- **next**: Get next pending item (auto-loads items from source_file)\n"
+        "- **next**: Get next pending item with progress stats (auto-loads items from source_file)\n"
         "- **done**: Mark item as completed\n"
         "- **fail**: Mark item as failed with reason\n"
         "- **status**: Get progress statistics\n\n"
@@ -96,19 +96,23 @@ class LoopTool(Tool):
         "```python\n"
         "# Get next pending item (items auto-loaded from file)\n"
         'loop(action="next", source_file="data/files.txt")\n'
-        '→ {"item": "file1.md"} or {"item": null}\n'
+        '→ "进度: 47/1000 已完成, 0 失败, 953 待处理\\n当前项: file_048.md"\n'
+        "\n"
+        "# When all items are done\n"
+        'loop(action="next", source_file="data/files.txt")\n'
+        '→ "所有项已处理完毕 (完成: 999, 失败: 1)"\n'
         "\n"
         "# Mark as completed\n"
         'loop(action="done", source_file="data/files.txt", item="file1.md")\n'
-        '→ {"done": 1, "pending": 99, "failed": 0}\n'
+        '→ {"done": 48, "pending": 952, "failed": 0, "total": 1000}\n'
         "\n"
         "# Mark as failed\n"
         'loop(action="fail", source_file="data/files.txt", item="file2.md", error="encoding error")\n'
-        '→ {"done": 1, "pending": 98, "failed": 1}\n'
+        '→ {"done": 47, "pending": 952, "failed": 1, "total": 1000}\n'
         "\n"
         "# Get statistics\n"
         'loop(action="status", source_file="data/files.txt")\n'
-        '→ {"total": 100, "done": 1, "pending": 98, "failed": 1}\n'
+        '→ {"total": 1000, "done": 47, "pending": 953, "failed": 0}\n'
         "```\n"
     )
 
@@ -209,10 +213,18 @@ class LoopTool(Tool):
         # Find first pending item (skip metadata keys)
         for item, status in _iter_items(state).items():
             if status == "pending":
-                return ToolResult(json.dumps({"item": item}, ensure_ascii=False))
+                # 附带进度统计，让 agent 始终知道任务进展
+                counts = _count(state)
+                lines = [
+                    f"进度: {counts['done']}/{counts['total']} 已完成, "
+                    f"{counts['failed']} 失败, {counts['pending']} 待处理",
+                    f"当前项: {item}",
+                ]
+                return ToolResult("\n".join(lines))
 
         # No pending items
-        return ToolResult(json.dumps({"item": None}, ensure_ascii=False))
+        counts = _count(state)
+        return ToolResult(f"所有项已处理完毕 (完成: {counts['done']}, 失败: {counts['failed']})")
 
     def _done(self, task_id: str, item: str | None) -> ToolResult:
         """Mark item as completed."""
