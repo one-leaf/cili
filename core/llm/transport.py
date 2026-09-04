@@ -23,7 +23,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Retry configuration
-_MAX_RETRIES = 4
+# Transport 层不做重试（设 0），重试由 base_agent 统一管理
+_MAX_RETRIES = 0
 _BASE_DELAY = 1.0  # seconds
 _MAX_DELAY = 60.0  # seconds
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
