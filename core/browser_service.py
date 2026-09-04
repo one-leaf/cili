@@ -162,7 +162,7 @@ class BrowserService:
             daemon=True
         )
         self._worker_thread.start()
-        logger.info("[BrowserService] Worker thread started")
+        logger.debug("[BrowserService] Worker thread started")
 
     def _worker_loop(self) -> None:
         """工作线程主循环，处理任务队列中的任务。
@@ -233,7 +233,7 @@ class BrowserService:
             from playwright.sync_api import sync_playwright
             self._playwright = sync_playwright().start()
             self._running = True
-            logger.info("[BrowserService] Playwright started successfully")
+            logger.debug("[BrowserService] Playwright started successfully")
             return True
 
         try:
@@ -264,7 +264,7 @@ class BrowserService:
 
                 self._kill_chrome_internal()
                 self._running = False
-                logger.info("[BrowserService] Service stopped")
+                logger.debug("[BrowserService] Service stopped")
                 return None
 
             try:
@@ -386,7 +386,7 @@ class BrowserService:
                         parts = line.split()
                         if parts and parts[0].isdigit():
                             pid = int(parts[0])
-                            logger.info(f"[BrowserService] Found existing browser PID {pid}")
+                            logger.debug(f"[BrowserService] Found existing browser PID {pid}")
                             return _ChromeProcessRef(pid)
             else:
                 # Linux/Mac: 使用 ps 命令
@@ -398,7 +398,7 @@ class BrowserService:
                         parts = line.split()
                         if len(parts) > 1 and parts[1].isdigit():
                             pid = int(parts[1])
-                            logger.info(f"[BrowserService] Found existing browser PID {pid}")
+                            logger.debug(f"[BrowserService] Found existing browser PID {pid}")
                             return _ChromeProcessRef(pid)
         except Exception as e:
             logger.warning(f"[BrowserService] _find_chrome_process_by_profile failed: {e}")
@@ -417,7 +417,7 @@ class BrowserService:
                 return True, ""
             else:
                 # 进程已退出，清理引用
-                logger.info(f"[BrowserService] Chrome process exited with code {self._chrome_process.returncode}")
+                logger.debug(f"[BrowserService] Chrome process exited with code {self._chrome_process.returncode}")
                 self._chrome_process = None
 
         # 即使 _chrome_process 为 None，端口可能仍在监听
@@ -428,7 +428,7 @@ class BrowserService:
                 # 尝试找到并记录这个 Chrome 进程的 PID
                 self._chrome_process = self._find_chrome_process_by_profile()
                 if self._chrome_process:
-                    logger.info(f"[BrowserService] Reconnected to existing Chrome PID {self._chrome_process.pid}")
+                    logger.debug(f"[BrowserService] Reconnected to existing Chrome PID {self._chrome_process.pid}")
                 else:
                     logger.warning("[BrowserService] Connected to Chrome but could not find process PID")
                 return True, ""
@@ -439,7 +439,7 @@ class BrowserService:
                 for i in range(20):
                     time.sleep(0.5)
                     if not self._is_port_listening(port):
-                        logger.info(f"[BrowserService] Port {port} released after {(i+1)*0.5:.1f}s")
+                        logger.debug(f"[BrowserService] Port {port} released after {(i+1)*0.5:.1f}s")
                         break
                 else:
                     return False, f"Port {port} still in use after killing stale Chrome (waited 10s)"
@@ -467,9 +467,9 @@ class BrowserService:
                 "--disable-dev-shm-usage",  # 避免 /dev/shm 空间不足
             ]
 
-            logger.info(f"[BrowserService] Starting Chrome: {chrome_path}")
-            logger.info(f"[BrowserService] Profile: {user_data_dir}, Port: {port}")
-            logger.info(f"[BrowserService] Command: {' '.join(cmd)}")
+            logger.debug(f"[BrowserService] Starting Chrome: {chrome_path}")
+            logger.debug(f"[BrowserService] Profile: {user_data_dir}, Port: {port}")
+            logger.debug(f"[BrowserService] Command: {' '.join(cmd)}")
 
             if sys.platform == "win32":
                 # Windows: 使用 STARTUPINFO 隐藏控制台窗口
@@ -490,7 +490,7 @@ class BrowserService:
                     env=self._env,
                 )
 
-            logger.info(f"[BrowserService] Chrome started, PID: {self._chrome_process.pid}")
+            logger.debug(f"[BrowserService] Chrome started, PID: {self._chrome_process.pid}")
 
             # 等待 Chrome 启动并监听 CDP 端口（最多 20 秒）
             for i in range(20):
@@ -502,12 +502,12 @@ class BrowserService:
 
                 # 尝试 CDP 连接
                 if self._try_cdp_connect():
-                    logger.info(f"[BrowserService] Chrome CDP connected after {i+1}s")
+                    logger.debug(f"[BrowserService] Chrome CDP connected after {i+1}s")
                     return True, ""
 
                 # 每秒输出进度
                 if i % 5 == 4:
-                    logger.info(f"[BrowserService] Waiting for CDP... {i+1}s")
+                    logger.debug(f"[BrowserService] Waiting for CDP... {i+1}s")
 
             # 超时 - 检查进程状态
             if self._chrome_process.poll() is not None:
@@ -530,7 +530,7 @@ class BrowserService:
 
         try:
             pid = self._chrome_process.pid
-            logger.info(f"[BrowserService] Terminating Chrome PID {pid}")
+            logger.debug(f"[BrowserService] Terminating Chrome PID {pid}")
 
             # Windows: 使用 taskkill /T 杀死进程树（包括子进程）
             if sys.platform == "win32":
@@ -539,7 +539,7 @@ class BrowserService:
                         ["taskkill", "/T", "/F", "/PID", str(pid)],
                         capture_output=True, text=True, timeout=10
                     )
-                    logger.info(f"[BrowserService] taskkill result: {result.returncode}")
+                    logger.debug(f"[BrowserService] taskkill result: {result.returncode}")
                 except Exception as e:
                     logger.warning(f"[BrowserService] taskkill failed: {e}, trying terminate()")
                     self._chrome_process.terminate()
@@ -556,7 +556,7 @@ class BrowserService:
                     logger.warning(f"[BrowserService] terminate() timeout, using kill()")
                     self._chrome_process.kill()
 
-            logger.info(f"[BrowserService] Chrome PID {pid} killed")
+            logger.debug(f"[BrowserService] Chrome PID {pid} killed")
         except Exception as e:
             logger.warning(f"[BrowserService] Error killing Chrome: {e}")
         finally:
@@ -569,7 +569,7 @@ class BrowserService:
         for i in range(20):
             time.sleep(0.5)
             if not self._is_port_listening(DEFAULT_CDP_PORT):
-                logger.info(f"[BrowserService] Port {DEFAULT_CDP_PORT} released after {(i+1)*0.5:.1f}s")
+                logger.debug(f"[BrowserService] Port {DEFAULT_CDP_PORT} released after {(i+1)*0.5:.1f}s")
                 break
         else:
             logger.warning(f"[BrowserService] Port {DEFAULT_CDP_PORT} still listening after 10s")
@@ -641,7 +641,7 @@ class BrowserService:
                 logger.debug(f"[BrowserService] Existing browser connection is valid")
                 return None  # 已有有效连接
             else:
-                logger.info(f"[BrowserService] Existing browser connection invalid, reconnecting...")
+                logger.debug(f"[BrowserService] Existing browser connection invalid, reconnecting...")
                 # 连接已失效，清理后重新连接
                 self._context = None
                 self._browser = None
@@ -656,7 +656,7 @@ class BrowserService:
 
         # 连接失败 - 检查 Chrome 是否已在运行
         if self._is_port_listening(DEFAULT_CDP_PORT):
-            logger.info(f"[BrowserService] Port {DEFAULT_CDP_PORT} listening but CDP failed, retrying...")
+            logger.debug(f"[BrowserService] Port {DEFAULT_CDP_PORT} listening but CDP failed, retrying...")
             # Chrome 在运行但连不上 - 重试连接
             for attempt in range(3):
                 time.sleep(0.5)
@@ -802,7 +802,7 @@ class BrowserService:
             self._close_page_internal(tab_index, page)
 
         if tabs_to_close:
-            logger.info(f"[BrowserService] Closed {len(tabs_to_close)} idle tab(s), "
+            logger.debug(f"[BrowserService] Closed {len(tabs_to_close)} idle tab(s), "
                         f"{len(self._page_pool)} remaining")
 
     def _close_page_internal(self, tab_index: int, page) -> None:
