@@ -372,7 +372,7 @@ def _install_deps_python() -> bool:
             ["certutil", "-urlcache", "-split", "-f", url, zip_path],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
         if result.returncode != 0 or not os.path.exists(zip_path):
             print(f"[setup] Error: download failed: {result.stderr.strip()[:200]}")
@@ -440,7 +440,7 @@ def _install_deps_python() -> bool:
              "https://mirrors.aliyun.com/pypi/get-pip.py", get_pip_path],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
         if result.returncode != 0 or not os.path.exists(get_pip_path):
             print(f"[setup] Error: pip download failed")
@@ -451,7 +451,7 @@ def _install_deps_python() -> bool:
             [embed_python, get_pip_path, "-i", "https://repo.huaweicloud.com/repository/pypi/simple/", "--no-warn-script-location"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
         if result.returncode != 0:
             print(f"[setup] Error: pip installation failed: {result.stderr.strip()[:200]}")
@@ -565,7 +565,7 @@ def _install_packages(pip_mirror: str = "") -> tuple[bool, bool]:
         cmd.append(pkg)
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 err = result.stderr.strip() or result.stdout.strip()
                 print(f"[setup] Error installing {pkg}: {err[:200]}")
