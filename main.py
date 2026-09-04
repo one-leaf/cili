@@ -695,12 +695,15 @@ def main() -> None:
     _setup_directories()
     _init_settings()
 
-    # Migrate old session format to new format
-    from core.migration import migrate_all_sessions
-    agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
-    migrated = migrate_all_sessions(Path(agents_dir))
-    if migrated > 0:
-        print(f"[migration] Migrated {migrated} session(s) to new format")
+    # Migrate old session format to new format (optional, skip if missing)
+    try:
+        from core.migration import migrate_all_sessions
+        agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
+        migrated = migrate_all_sessions(Path(agents_dir))
+        if migrated > 0:
+            print(f"[migration] Migrated {migrated} session(s) to new format")
+    except ImportError:
+        print("[migration] core/migration.py not found, skipping session migration")
 
     # Check Git Bash in deps
     if not _init_git_bash():
