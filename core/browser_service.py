@@ -185,7 +185,7 @@ class BrowserService:
                     result = task_func(*task_args, **task_kwargs)
                     self._task_result = (True, result)
                 except Exception as e:
-                    logger.error(f"[BrowserService] Worker task error: {e}", exc_info=True)
+                    logger.warning(f"[BrowserService] Worker task error: {e}")
                     self._task_result = (False, e)
                 finally:
                     self._result_event.set()
