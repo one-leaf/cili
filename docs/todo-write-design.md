@@ -15,7 +15,6 @@
 
 - **整表替换**：每次调用发送完整列表
 - **三态状态**：`pending` / `in_progress` / `completed`
-- **双形式描述**：`content`（命令式）+ `activeForm`（进行时，UI 显示）
 - **验证提醒**：完成多任务时提醒验证
 - **存储方式**：独立文件（`data/cili/tools/todo/{session_id}.json`，按 session 隔离）
 
@@ -27,15 +26,13 @@
 
 ```python
 {
-    "content": "修复认证 bug",           # 命令式：描述要做什么
-    "activeForm": "正在修复认证 bug",     # 进行时：UI 显示当前正在做什么
+    "content": "修复认证 bug",     # 命令式：描述要做什么
     "status": "pending" | "in_progress" | "completed"
 }
 ```
 
 **字段说明**：
 - `content`：任务的命令式描述，如 "Run tests"、"Fix auth bug"
-- `activeForm`：任务的进行时描述，用于 UI 显示当前进行中的任务
 - `status`：任务状态
   - `pending`：未开始
   - `in_progress`：正在进行（可同时多个）
@@ -50,9 +47,9 @@ Todos 存储在独立文件中（按 session 隔离），路径为 `data/cili/to
     "session_id": "abc12345",
     "updated_at": "2026-08-29 10:30:00",
     "todos": [
-        {"content": "分析代码结构", "activeForm": "正在分析代码结构", "status": "completed"},
-        {"content": "重构工具系统", "activeForm": "正在重构工具系统", "status": "in_progress"},
-        {"content": "编写测试用例", "activeForm": "正在编写测试用例", "status": "pending"}
+        {"content": "分析代码结构", "status": "completed"},
+        {"content": "重构工具系统", "status": "in_progress"},
+        {"content": "编写测试用例", "status": "pending"}
     ]
 }
 ```
@@ -91,9 +88,7 @@ class TodoWriteTool(Tool):
     - completed: Finished successfully
 
     ## Task Format
-    Each task must have TWO forms:
-    - content: Imperative form (e.g., 'Run tests')
-    - activeForm: Present continuous form (e.g., 'Running tests')
+    Each task must have a 'content' field with imperative form (e.g., 'Run tests').
 
     IMPORTANT: Send the ENTIRE list on every call - it REPLACES the previous list.
     """
@@ -115,17 +110,13 @@ class TodoWriteTool(Tool):
                         "type": "string",
                         "description": "What the task is - imperative form"
                     },
-                    "activeForm": {
-                        "type": "string",
-                        "description": "Present continuous form shown in UI"
-                    },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed"],
                         "description": "Task state"
                     }
                 },
-                "required": ["content", "activeForm", "status"]
+                "required": ["content", "status"]
             }
         }
     },
@@ -169,9 +160,8 @@ Progress: 2/5 completed
 1. `todos` 必须是数组
 2. 每个 item 必须是对象
 3. `content` 必须是非空字符串
-4. `activeForm` 必须是非空字符串
-5. `status` 必须是 `pending`/`in_progress`/`completed` 之一
-6. `content` 不能重复
+4. `status` 必须是 `pending`/`in_progress`/`completed` 之一
+5. `content` 不能重复
 
 ### 4.2 验证提醒
 
@@ -338,14 +328,6 @@ function renderTodoList(todos) {
 2. **一致性**：每次调用后状态完全确定
 3. **与 Harness 一致**：参考成熟设计
 4. **LLM 友好**：模型更容易理解和操作完整列表
-
-### Q: 为什么需要 `activeForm` 字段？
-
-**A**: `activeForm` 用于 UI 显示当前正在进行的任务：
-- `content`: "Fix auth bug"（命令式）
-- `activeForm`: "Fixing auth bug"（进行时）
-
-这样用户可以看到 "正在修复认证 bug..." 而不是 "修复认证 bug"，更符合中文表达习惯。
 
 ### Q: 为什么存储在独立文件而不是 session metadata 或事件日志？
 

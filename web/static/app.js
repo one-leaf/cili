@@ -1584,8 +1584,7 @@ function renderTodoList(todos) {
         const statusClass = `todo-${todo.status.replace('_', '-')}`;
         const statusIcon = todo.status === 'completed' ? '✓' :
                           todo.status === 'in_progress' ? '◉' : '○';
-        const displayText = todo.status === 'in_progress' ?
-                           (todo.activeForm || todo.content) : todo.content;
+        const displayText = todo.content;
         html += `
             <li class="todo-item ${statusClass}">
                 <span class="todo-status">${statusIcon}</span>

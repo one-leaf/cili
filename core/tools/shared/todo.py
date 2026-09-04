@@ -60,7 +60,6 @@ class TodoWriteTool(Tool):
     The agent sends the ENTIRE list on every update; the new list replaces
     the previous one (no partial updates, no per-item edits). Each item has:
     - content: imperative form ("Fix auth bug")
-    - activeForm: present continuous form ("Fixing auth bug") - shown in UI
     - status: pending | in_progress | completed
 
     When to use:
@@ -94,9 +93,7 @@ class TodoWriteTool(Tool):
         "- in_progress: Currently working on (multiple allowed)\n"
         "- completed: Finished successfully\n\n"
         "## Task Format\n"
-        "Each task must have TWO forms:\n"
-        "- content: Imperative form (e.g., 'Run tests')\n"
-        "- activeForm: Present continuous form (e.g., 'Running tests')\n\n"
+        "Each task must have a 'content' field with imperative form (e.g., 'Run tests').\n\n"
         "IMPORTANT: Send the ENTIRE list on every call - it REPLACES the previous list."
     )
     parameters = {
@@ -112,17 +109,13 @@ class TodoWriteTool(Tool):
                             "type": "string",
                             "description": "What the task is - imperative form (e.g., 'Fix authentication bug')"
                         },
-                        "activeForm": {
-                            "type": "string",
-                            "description": "Present continuous form shown in UI during execution (e.g., 'Fixing authentication bug')"
-                        },
                         "status": {
                             "type": "string",
                             "enum": ["pending", "in_progress", "completed"],
                             "description": "Task state: pending (not started) | in_progress (working now) | completed (done)"
                         }
                     },
-                    "required": ["content", "activeForm", "status"]
+                    "required": ["content", "status"]
                 }
             }
         },
@@ -163,20 +156,12 @@ class TodoWriteTool(Tool):
                 return ToolResult(f"Error: todo item {i} must be an object", error=True)
 
             content = item.get("content", "").strip()
-            active_form = item.get("activeForm", "").strip()
             status = item.get("status", "")
 
             # Validate content
             if not content:
                 return ToolResult(
                     f"Error: todo item {i} 'content' must be a non-empty string",
-                    error=True
-                )
-
-            # Validate activeForm
-            if not active_form:
-                return ToolResult(
-                    f"Error: todo item {i} 'activeForm' must be a non-empty string",
                     error=True
                 )
 
@@ -197,7 +182,6 @@ class TodoWriteTool(Tool):
 
             validated_todos.append({
                 "content": content,
-                "activeForm": active_form,
                 "status": status,
             })
 
