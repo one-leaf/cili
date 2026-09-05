@@ -145,6 +145,18 @@ body {
     font-size: 18px;
 }
 
+.settings-help-link {
+    font-size: 13px;
+    color: var(--text-secondary, #666);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.settings-help-link:hover {
+    color: var(--primary-color, #007bff);
+    text-decoration: underline;
+}
+
 .modal-close {
     background: none;
     border: none;

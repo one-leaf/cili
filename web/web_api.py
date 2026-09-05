@@ -370,6 +370,7 @@ class NoCacheStaticFiles(StaticFiles):
 
 
 app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR / "static")), name="static")
+app.mount("/docs", NoCacheStaticFiles(directory=str(PROJECT_ROOT / "docs")), name="docs")
 
 
 # ---------- Models ----------
