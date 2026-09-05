@@ -447,9 +447,10 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
     """构建动态环境变量，作为独立 user 消息段发送。
 
     每次请求都不同（datetime 变化等），作为单独段发送不影响 system prompt 的缓存。
-    包含：Workspace、Memory、User Profile（自动加载）、Current Time。
+    包含：Workspace、OS、Shell、Python、Temporary Files、Memory、User Profile、Current Time。
     """
     import os
+    import platform
     current_date = datetime.now().strftime("%Y-%m-%d")
     from core.config import get_workspace_data_dir, PROJECT_ROOT
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
@@ -461,6 +462,10 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         f"Workspace directory (CWD): `{cwd}`",
         "",
         "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
+        "",
+        "## Operating System",
+        "",
+        f"`{platform.system()} {platform.release()}`",
         "",
         "## Shell Environment",
         "",
@@ -547,32 +552,103 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
 
 
 def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
-    """构建 SubAgent 轻量环境上下文。"""
+    """构建 SubAgent 环境上下文（与 RootAgent 一致）。"""
     import os
     import platform
-    from core.config import PROJECT_ROOT
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    from core.config import get_workspace_data_dir, PROJECT_ROOT
+    memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     tmp_dir = os.environ.get("CILI_TMP", str(PROJECT_ROOT / "data" / "tmp"))
 
-    return "\n".join([
-        "## Execution Environment",
+    parts = [
+        "## Workspace",
         "",
-        f"Workspace: `{workspace_uuid}`",
-        f"Working Directory: `{cwd}`",
-        f"Operating System: `{platform.system()} {platform.release()}`",
+        f"Workspace directory (CWD): `{cwd}`",
         "",
-        "**Shell**: Git Bash (MSYS2). Convert Windows paths: `E:\\path` → `/e/path`",
+        "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
         "",
-        "`python` and `pip` are pre-configured in PATH.",
+        "## Operating System",
         "",
-        "**This directory is the CWD for all tool executions.** All relative paths resolve against this directory.",
+        f"`{platform.system()} {platform.release()}`",
         "",
-        f"**Temporary directory**: `{tmp_dir}` (TEMP/TMP/TMPDIR env vars set)",
+        "## Shell Environment",
         "",
-        f"**Current Date: {current_date}**",
+        "All shell commands run in **Git Bash** (MSYS2 environment).",
+        "",
+        "**Path format conversion**: Windows paths must be converted for bash:",
+        "- `E:\\path\\to\\file` → `/e/path/to/file`",
+        "- `C:\\Users\\name` → `/c/Users/name`",
+        "",
+        "**Example**: To run Python script at `D:\\scripts\\test.py`:",
+        "```bash",
+        "python /d/scripts/test.py",
+        "```",
+        "",
+        "## Python Environment",
+        "",
+        "`python` and `pip` are pre-configured in PATH, available directly in bash.",
+        "",
+        "## Temporary Files",
+        "",
+        f"Temporary directory: `{tmp_dir}`",
+        "",
+        "Environment variables TEMP, TMP, TMPDIR are all set to this directory.",
+        "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
+        "In bash: use `$TEMP` or `$TMPDIR`. In Python: `tempfile` module is auto-configured.",
+        "Agent can also use `CILI_TMP` env var to reference this path.",
+        "",
+        "## Memory",
+        "",
+        f"Memory directory: `{memory_dir}`",
+        "",
+        "Search examples:",
+        "```",
+        f"grep(pattern=\"keyword\", path=\"{memory_dir}/skills/\")",
+        f"grep(pattern=\"keyword\", path=\"{memory_dir}/knowledge/\")",
+        f"read(file_path=\"{memory_dir}/skills/matched-skill/skill.md\")",
+        f"read(file_path=\"{memory_dir}/knowledge/topic/date/file.md\")",
+        "```",
+    ]
+
+    # User Profile（与 RootAgent 相同，自动加载）
+    profile_path = get_user_profile_path(workspace_uuid)
+    if profile_path.exists():
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if content.startswith("---"):
+                parts_end = content.find("---", 3)
+                if parts_end != -1:
+                    content = content[parts_end + 3:].strip()
+
+            if content:
+                parts.extend([
+                    "",
+                    "## User Profile",
+                    "",
+                    "The following describes the person you are currently chatting with, "
+                    "inferred from their past conversations. "
+                    "Use these insights naturally to personalize your responses — "
+                    "match their communication style, anticipate their needs, and adapt to their preferences. "
+                    "Never recite, echo, or explicitly mention these observations unless they bring it up first.",
+                    "",
+                    content,
+                ])
+        except Exception:
+            pass
+
+    # 当前时间
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    parts.extend([
+        "",
+        "## Current Time",
+        "",
+        f"**{current_date}**",
         "",
         "Context received. Please confirm briefly and await my task.",
     ])
+
+    return "\n".join(parts)
 
 
 # ─── llm_tool 批处理指令 ─────────────────────────────────────────────

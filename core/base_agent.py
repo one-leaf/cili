@@ -110,13 +110,21 @@ class BaseAgent:
         """
         return [Message.from_dict(msg) for msg in messages]
 
-    def add_message(self, role: str, content: Any) -> None:
+    def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """Add a message to internal message list.
 
         New format: no longer adds block-level _valid.
         Message-level _meta.valid is set by other logic when needed.
+
+        Args:
+            role: Message role (user/assistant/system)
+            content: Message content
+            meta: Optional metadata dict (e.g. {"pinned": True} to prevent compression)
         """
-        self.messages.append({"role": role, "content": content})
+        msg = {"role": role, "content": content}
+        if meta:
+            msg["_meta"] = meta
+        self.messages.append(msg)
 
     def save_messages(self, metadata: dict | None = None) -> None:
         """Save messages to session_dir/index.json.

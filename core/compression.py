@@ -198,6 +198,7 @@ def compact_messages_with_summary(
     """使用 LLM 摘要进行完整压缩。
 
     保留最近 keep_recent_count 条消息，更早的消息被 LLM 摘要替换。
+    pinned 消息（_meta.pinned=True）始终保留，不被压缩。
 
     Args:
         messages: 消息列表（会被原地修改）
@@ -211,9 +212,20 @@ def compact_messages_with_summary(
         # 消息太少，不需要压缩
         return 0
 
-    # 分离要压缩和要保留的消息
-    to_compact = messages[:-keep_recent_count]
+    # 提取 pinned 消息（始终保留）
+    pinned: list[tuple[int, dict]] = []
+    for i, msg in enumerate(messages):
+        if msg.get("_meta", {}).get("pinned"):
+            pinned.append((i, msg))
+
+    # 分离要压缩和要保留的消息（排除 pinned）
+    pinned_indices = {idx for idx, _ in pinned}
+    to_compact = [msg for i, msg in enumerate(messages[:-keep_recent_count]) if i not in pinned_indices]
     to_keep = messages[-keep_recent_count:]
+
+    if not to_compact:
+        # 所有旧消息都是 pinned，无需压缩
+        return 0
 
     # 计算压缩前的 token 数
     tokens_before = count_messages_tokens(to_compact)
@@ -231,11 +243,16 @@ def compact_messages_with_summary(
         "role": "assistant",
         "content": f"好的，我已经理解了之前的对话内容。以下是摘要：{summary}\n\n我将继续基于这个上下文完成任务。",
     })
+
+    # 重新插入 pinned 消息（放在摘要之后、最近消息之前）
+    for _, pinned_msg in pinned:
+        messages.append(pinned_msg)
+
     messages.extend(to_keep)
 
     # 计算压缩后的 token 数
     tokens_after = count_messages_tokens(messages)
     saved = tokens_before - tokens_after
 
-    logger.info(f"[压缩] 完整压缩完成，节省约 {saved} tokens")
+    logger.info(f"[压缩] 完整压缩完成，节省约 {saved} tokens（保留 {len(pinned)} 条 pinned 消息）")
     return saved

@@ -136,7 +136,7 @@ class TestSubAgentBuildTaskSection:
 
             from core.sub_agent import SubAgent
             agent = SubAgent(task="translate the file")
-            section = agent._build_task_section()
+            section = agent._build_task_message()
 
             assert "translate the file" in section
 
@@ -154,7 +154,7 @@ class TestSubAgentBuildTaskSection:
 
             from core.sub_agent import SubAgent
             agent = SubAgent(task="deploy app", plan=["build", "test", "deploy"])
-            section = agent._build_task_section()
+            section = agent._build_task_message()
 
             assert "deploy app" in section
             assert "build" in section

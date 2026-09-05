@@ -5,7 +5,7 @@ with its own tool set and message history.
 
 Key design:
 - Inherits from BaseAgent for unified execution loop
-- Task objective embedded in system prompt (immune to compression)
+- Task objective in pinned first user message (immune to compression)
 - Independent message history (self.messages)
 - Execution logged to {session_dir}/index.json
 """
@@ -110,17 +110,15 @@ class SubAgent(BaseAgent):
         )
         self.tool_schemas = [t.to_schema() for t in self.tools]
 
-        # Build system prompt
-        base_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
-        task_section = self._build_task_section()
-        self._system_prompt = base_prompt + "\n\n" + task_section if task_section else base_prompt
+        # Build system prompt (task/plan goes in first user message, not system prompt)
+        self._system_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
 
         # Execution tracking
         self._started_at: datetime | None = None
         self.max_consecutive_failures = max_consecutive_failures
 
-    def _build_task_section(self) -> str:
-        """Build task section to append to system prompt END."""
+    def _build_task_message(self) -> str:
+        """Build task+plan as first user message (pinned, survives compression)."""
         lines = ["## Assigned Task", ""]
 
         lines.append("### Objective")
@@ -145,8 +143,8 @@ class SubAgent(BaseAgent):
         self._stopped = False
         self._running = True
 
-        # Build initial message
-        self.add_message("user", "Execute.")
+        # Build initial pinned message (task + plan, immune to compression)
+        self.add_message("user", self._build_task_message(), meta={"pinned": True})
 
         consecutive_failures = 0
         status = "completed"
