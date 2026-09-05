@@ -345,41 +345,41 @@ class SubAgent(BaseAgent):
                                        session_manager=self._session_ref, config=config)
         self.tool_schemas = [t.to_schema() for t in self.tools]
 
-        # 系统提示 = 基础提示 + 任务信息（任务信息为空时不追加）
-        base_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
-        task_section = self._build_task_section()
-        self._system_prompt = base_prompt + "\n\n" + task_section if task_section else base_prompt
+        # 系统提示 = 基础提示（任务/计划放在首条 user 消息中）
+        self._system_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
 
         # 独立 LLM 客户端
         self.client = create_llm_client(config.model)
 ```
 
-### 4.5 任务信息免疫压缩
+### 4.5 四阶段执行流程：目标→计划→执行→检查
 
-SubAgent 的任务目标和执行计划被追加到系统提示**末尾**，这样即使上下文被压缩，任务信息也不会丢失：
+SubAgent 采用四阶段执行流程：
+
+1. **目标+计划**：作为第一条 user 消息注入，带 `_meta.pinned=True` 标记，压缩时始终保留
+2. **执行**：主循环，LLM 自主调用工具完成任务
+3. **检查**：主循环结束后自动注入检查提示，LLM 验证结果、修复问题、确认完成
 
 ```python
-def _build_task_section(self) -> str:
-    lines = ["## Assigned Task", ""]
-
-    lines.append("### Objective")
-    lines.append("")
-    lines.append(self.task)
-    lines.append("")
-
-    if self.plan:
-        lines.append("### Execution Plan")
-        lines.append("")
-        for i, step in enumerate(self.plan, 1):
-            lines.append(f"{i}. {step}")
-        lines.append("")
-        lines.append("Execute these steps in order. Report progress as you complete each step.")
-        lines.append("")
-
-    return "\n".join(lines)
+# run() 中的核心逻辑
+if not tool_calls:
+    if not in_check_phase:
+        # 主阶段结束 → 注入检查提示
+        self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
+        in_check_phase = True
+        continue
+    else:
+        # 检查阶段结束 → 任务真正完成
+        return {"status": "completed", "summary": summary, ...}
 ```
 
-注意：每个标题和内容之间有空行分隔；当 `plan` 为空时整个 `### Execution Plan` 部分被跳过；计划部分末尾包含执行指引行。
+检查提示要求 LLM：
+- 重新阅读任务目标和执行计划
+- 逐项检查执行结果是否达标
+- 发现遗漏或错误立即修复
+- 全部确认无误后输出总结报告
+
+检查阶段最多允许 `_MAX_CHECK_ITERATIONS=3` 次额外迭代。
 
 ### 4.6 会话消息结构
 

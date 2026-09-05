@@ -275,28 +275,16 @@ Context received. Please confirm briefly and await my task.
 | 角色定义 | 通用 AI 助手 | 自主任务执行 Agent |
 | 工具列表 | shared + root（含 subagent/skill） | shared + sub（含 skill，无 subagent） |
 | 技能目录 | `core/skills/root/` + `shared/` | `core/skills/sub/` + `shared/` |
-| 环境变量 | Workspace + Memory + User Profile + Time | Workspace + OS + Time（轻量） |
-| 用户 Profile | ✅ 加载 | ❌ 不加载（减少上下文污染） |
-| 任务信息 | 无（多轮对话） | 追加到系统提示末尾（免疫压缩） |
+| 环境变量 | 完整（Workspace/OS/Shell/Python/Memory/User Profile/Time） | 与 RootAgent 一致 |
+| 任务信息 | 无（多轮对话） | 首条 pinned user 消息（免疫压缩） |
+| 执行流程 | 多轮交互 | 目标→计划→执行→检查 |
 | 对话模式 | 用户交互，管理对话 | 不管理用户对话，输出是执行结果 |
 
-### SubAgent 任务信息追加
+### SubAgent 任务信息注入
 
-SubAgent 的任务目标和执行计划被追加到系统提示**末尾**：
+SubAgent 的任务目标和执行计划不再追加到系统提示，而是作为第一条 **user 消息**注入，带 `_meta.pinned=True` 标记。压缩时 pinned 消息始终保留，效果等同于在系统提示中。
 
-```python
-def _build_task_section(self) -> str:
-    lines = ["## Assigned Task", ""]
-    lines.append("### Objective")
-    lines.append(self.task)
-    if self.plan:
-        lines.append("### Execution Plan")
-        for i, step in enumerate(self.plan, 1):
-            lines.append(f"{i}. {step}")
-    return "\n".join(lines)
-```
-
-这样即使上下文被压缩，任务信息（位于系统提示末尾）也不会丢失。
+SubAgent 采用四阶段执行流程：**目标→计划→执行→检查**。主执行循环结束后自动注入检查提示（同样 pinned），LLM 验证结果、修复问题、确认完成后才返回最终结果。
 
 ---
 
@@ -438,11 +426,10 @@ Anthropic API 的 prompt caching 以 system prompt 为粒度。
 环境变量包含 `Current Date`（每次请求不同），如果嵌入 system prompt，每次都要重新计算缓存。
 分离后，system prompt 可永久缓存，只有 user message 部分需要处理。
 
-### 9.4 为什么 SubAgent 不加载 User Profile？
+### 9.4 SubAgent 与 RootAgent 环境一致性
 
-- SubAgent 是任务执行者，不需要了解用户偏好
-- User Profile 占用上下文 token，对任务执行无直接帮助
-- 减少不必要的信息干扰，提高执行专注度
+SubAgent 和 RootAgent 的环境上下文注入保持一致（Workspace、OS、Shell、Python、Memory、User Profile、Current Time）。
+SubAgent 作为任务执行者，同样需要了解用户偏好以提供更个性化的响应。
 
 ### 9.5 为什么系统提示词使用英文？
 

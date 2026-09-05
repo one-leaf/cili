@@ -5,9 +5,10 @@ with its own tool set and message history.
 
 Key design:
 - Inherits from BaseAgent for unified execution loop
-- Task objective in pinned first user message (immune to compression)
-- Independent message history (self.messages)
+- Task/plan in pinned first user message (immune to compression)
+- Independent message history
 - Execution logged to {session_dir}/index.json
+- Post-execution check phase for verification (目标→计划→执行→检查)
 """
 
 from __future__ import annotations
@@ -28,6 +29,20 @@ from core.tools.sub import create_sub_tools
 logger = logging.getLogger(__name__)
 
 
+_MAX_ITERATIONS = 200
+_MAX_CHECK_ITERATIONS = 3
+
+# Check phase prompt (injected after main execution completes)
+_CHECK_PROMPT = (
+    "## 检查阶段\n\n"
+    "执行阶段已完成。现在进入 **检查** 环节，请验证任务是否正确完成：\n\n"
+    "1. 重新阅读上方的「任务目标」和「执行计划」\n"
+    "2. 逐项检查执行结果，确认每项是否达标\n"
+    "3. 如发现遗漏或错误，**立即修复**（可使用工具）\n"
+    "4. 全部确认无误后，输出最终总结报告\n"
+)
+
+
 class _SessionIdRef:
     """简单的 session_id 引用，供工具获取 session 标识。
 
@@ -45,6 +60,7 @@ class SubAgent(BaseAgent):
     - Nesting forbidden (subagent cannot delegate further)
     - Independent message history
     - Execution logged to separate directory
+    - Post-execution check phase for verification (目标→计划→执行→检查)
     """
 
     def __init__(
@@ -138,7 +154,13 @@ class SubAgent(BaseAgent):
         return "\n".join(lines)
 
     def run(self) -> dict[str, Any]:
-        """Execute SubAgent loop, return structured result."""
+        """Execute SubAgent loop with check phase, return structured result.
+
+        Flow: 目标→计划→执行→检查
+        - Pinned task/plan message at start
+        - Main execution loop
+        - Check phase: verify results, fix if needed, confirm completion
+        """
         self._started_at = datetime.now()
         self._stopped = False
         self._running = True
@@ -149,6 +171,8 @@ class SubAgent(BaseAgent):
         consecutive_failures = 0
         status = "completed"
         summary = ""
+        in_check_phase = False
+        check_iters = 0
 
         try:
             for i in range(self.max_iterations):
@@ -176,29 +200,57 @@ class SubAgent(BaseAgent):
                 tool_calls = response.get_tool_calls()
 
                 if not tool_calls:
-                    # Task complete
-                    summary = response.get_text()
-                    self.add_message("assistant", response.content_as_dicts())
-                    status = "completed"
-                    self._finalize(status, summary, i + 1)
-                    return {"status": status, "summary": summary, "iterations": i + 1, "usage": self._usage}
+                    if not in_check_phase:
+                        # Main phase ended → inject check prompt for verification
+                        summary = response.get_text()
+                        self.add_message("assistant", response.content_as_dicts())
+
+                        # Inject check prompt (pinned to survive compression)
+                        self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
+                        in_check_phase = True
+                        check_iters = 0
+                        logger.debug(f"[SubAgent] 进入检查阶段 (iter={i}, exec={self._exec_id})")
+                        continue
+                    else:
+                        # Check phase ended → task truly complete
+                        check_iters += 1
+                        summary = response.get_text()
+                        self.add_message("assistant", response.content_as_dicts())
+                        status = "completed"
+                        self._finalize(status, summary, i + 1)
+                        logger.debug(f"[SubAgent] 检查完成 (check_iters={check_iters}, iter={i})")
+                        return {"status": status, "summary": summary, "iterations": i + 1,
+                                "check_iterations": check_iters, "usage": self._usage}
+
+                # Track check phase iterations
+                if in_check_phase:
+                    check_iters += 1
+                    if check_iters > _MAX_CHECK_ITERATIONS:
+                        summary = response.get_text() or "检查阶段超出最大迭代次数"
+                        self.add_message("assistant", response.content_as_dicts())
+                        status = "completed"
+                        self._finalize(status, summary, i + 1)
+                        logger.warning(f"[SubAgent] 检查阶段超出迭代上限 (iter={i})")
+                        return {"status": status, "summary": summary, "iterations": i + 1,
+                                "check_iterations": check_iters, "usage": self._usage}
 
                 # Add assistant message with tool calls - convert to dicts for storage
                 self.add_message("assistant", response.content_as_dicts())
 
                 # Save progress
-                self._save_progress(i + 1, status="running")
+                phase = "check" if in_check_phase else "running"
+                self._save_progress(i + 1, status=phase)
 
                 # Execute tools
                 for tc in tool_calls:
-                    self._save_progress(i + 1, status="running", current_tool=tc.name)
+                    self._save_progress(i + 1, status=phase, current_tool=tc.name)
 
                     # Parse arguments from raw JSON string to dict at execution time
                     input_data = tc.parse_arguments()
                     result = self._execute_tool(tc.name, input_data, tc.id)
                     self.add_message("user", [result])
 
-                    self._save_progress(i + 1, status="running")
+                    self._save_progress(i + 1, status=phase)
 
                     # Track consecutive failures (is_error is Anthropic format)
                     if result.get("is_error"):
