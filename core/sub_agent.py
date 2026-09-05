@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 _MAX_ITERATIONS = 200
-_MAX_CHECK_ITERATIONS = 3
+_MIN_CHECK_ITERATIONS = 10
 
 # Check phase prompt (injected after main execution completes)
 _CHECK_PROMPT = (
@@ -173,6 +173,7 @@ class SubAgent(BaseAgent):
         summary = ""
         in_check_phase = False
         check_iters = 0
+        max_check_iterations = _MIN_CHECK_ITERATIONS
 
         try:
             for i in range(self.max_iterations):
@@ -209,7 +210,8 @@ class SubAgent(BaseAgent):
                         self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
                         in_check_phase = True
                         check_iters = 0
-                        logger.debug(f"[SubAgent] 进入检查阶段 (iter={i}, exec={self._exec_id})")
+                        max_check_iterations = max(i, _MIN_CHECK_ITERATIONS)
+                        logger.debug(f"[SubAgent] 进入检查阶段 (iter={i}, max_check={max_check_iterations}, exec={self._exec_id})")
                         continue
                     else:
                         # Check phase ended → task truly complete
@@ -225,12 +227,12 @@ class SubAgent(BaseAgent):
                 # Track check phase iterations
                 if in_check_phase:
                     check_iters += 1
-                    if check_iters > _MAX_CHECK_ITERATIONS:
+                    if check_iters > max_check_iterations:
                         summary = response.get_text() or "检查阶段超出最大迭代次数"
                         self.add_message("assistant", response.content_as_dicts())
                         status = "completed"
                         self._finalize(status, summary, i + 1)
-                        logger.warning(f"[SubAgent] 检查阶段超出迭代上限 (iter={i})")
+                        logger.warning(f"[SubAgent] 检查阶段超出迭代上限 (iter={i}, max={max_check_iterations})")
                         return {"status": status, "summary": summary, "iterations": i + 1,
                                 "check_iterations": check_iters, "usage": self._usage}
 

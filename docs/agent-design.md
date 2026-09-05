@@ -379,7 +379,7 @@ if not tool_calls:
 - 发现遗漏或错误立即修复
 - 全部确认无误后输出总结报告
 
-检查阶段最多允许 `_MAX_CHECK_ITERATIONS=3` 次额外迭代。
+检查阶段最多允许 `max(main_iterations, _MIN_CHECK_ITERATIONS=10)` 次额外迭代。
 
 ### 4.6 会话消息结构
 
