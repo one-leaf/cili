@@ -109,20 +109,20 @@ class AnthropicAdapter(Adapter):
             "messages": anthropic_messages,
         }
 
-        # Enable extended thinking for non-streaming requests
-        # budget_tokens is controlled by reasoning_effort config
-        if not stream:
-            # Map reasoning_effort to budget_tokens
-            effort = self.config.reasoning_effort
-            budget_map = {
-                "low": 1024,
-                "medium": 4096,
-                "high": 10000,
-            }
-            budget_tokens = budget_map.get(effort, 4096)  # default to medium
+        # Extended thinking: enabled when reasoning_effort is configured
+        # Note: thinking and temperature are mutually exclusive in Anthropic API
+        effort = self.config.reasoning_effort
+        budget_map = {
+            "low": 1024,
+            "medium": 4096,
+            "high": 10000,
+        }
+        if effort:
+            # Enable thinking (temperature not allowed when thinking is enabled)
+            budget_tokens = budget_map.get(effort, 4096)
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
         else:
-            # Streaming requires temperature when thinking is disabled
+            # No thinking, use temperature if specified
             if temperature is not None:
                 body["temperature"] = temperature
 
