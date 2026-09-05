@@ -284,19 +284,19 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 
 | 文档 | 内容 |
 |------|------|
-| [agent-design.md](docs/agent-design.md) | Agent 架构、循环机制、消息管理 |
-| [content-block-design.md](docs/content-block-design.md) | LLM 底层：Adapter 分层、ContentBlock 类型、StreamChunk 协议 |
-| [tool-system-design.md](docs/tool-system-design.md) | 三层工具架构、执行流程、全部工具说明 |
-| [session-management-design.md](docs/session-management-design.md) | 会话存储、消息过滤、自动压缩 |
-| [browser-service-design.md](docs/browser-service-design.md) | BrowserService 单例、工作线程、Tab 池 |
-| [cron-scheduler-design.md](docs/cron-scheduler-design.md) | Cron 调度器、任务配置、执行机制 |
-| [memory-system-design.md](docs/memory-system-design.md) | 长期记忆：知识存储与技能复用 |
-| [web-api-design.md](docs/web-api-design.md) | REST API、SSE 流式、前端架构 |
-| [user-profile-design.md](docs/user-profile-design.md) | 用户画像：5 维度、Markdown 格式、Cron 提取 |
-| [todo-write-design.md](docs/todo-write-design.md) | TodoWrite 任务规划：整表替换、三态状态 |
-| [system-prompt-design.md](docs/system-prompt-design.md) | 系统提示词构建逻辑 |
-| [environment-setup-design.md](docs/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
-| [llm-api-reference.md](docs/llm-api-reference.md) | LLM API 参考文档 |
+| [agent-design.md](docs/design/agent-design.md) | Agent 架构、循环机制、消息管理 |
+| [content-block-design.md](docs/design/content-block-design.md) | LLM 底层：Adapter 分层、ContentBlock 类型、StreamChunk 协议 |
+| [tool-system-design.md](docs/design/tool-system-design.md) | 三层工具架构、执行流程、全部工具说明 |
+| [session-management-design.md](docs/design/session-management-design.md) | 会话存储、消息过滤、自动压缩 |
+| [browser-service-design.md](docs/design/browser-service-design.md) | BrowserService 单例、工作线程、Tab 池 |
+| [cron-scheduler-design.md](docs/design/cron-scheduler-design.md) | Cron 调度器、任务配置、执行机制 |
+| [memory-system-design.md](docs/design/memory-system-design.md) | 长期记忆：知识存储与技能复用 |
+| [web-api-design.md](docs/design/web-api-design.md) | REST API、SSE 流式、前端架构 |
+| [user-profile-design.md](docs/design/user-profile-design.md) | 用户画像：5 维度、Markdown 格式、Cron 提取 |
+| [todo-write-design.md](docs/design/todo-write-design.md) | TodoWrite 任务规划：整表替换、三态状态 |
+| [system-prompt-design.md](docs/design/system-prompt-design.md) | 系统提示词构建逻辑 |
+| [environment-setup-design.md](docs/design/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
+| [llm-api-reference.md](docs/design/llm-api-reference.md) | LLM API 参考文档 |
 
 ## 技术栈
 

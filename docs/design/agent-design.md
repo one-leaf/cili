@@ -99,7 +99,7 @@ class BaseAgent:
 
 ### 2.3 消息压缩
 
-BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/compression-design.md`](./compression-design.md)。
+BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design/compression-design.md`](./compression-design.md)。
 
 ### 2.4 执行循环
 

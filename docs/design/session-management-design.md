@@ -519,7 +519,7 @@ usage = session.get_usage()
 
 ## 八、相关文档
 
-- **消息压缩机制**：详见 [`docs/compression-design.md`](./compression-design.md)
+- **消息压缩机制**：详见 [`docs/design/compression-design.md`](./compression-design.md)
   - 三层压缩（Microcompact、Full Compact、Emergency）
   - 外部存储机制
   - `read_tool_result` 工具
