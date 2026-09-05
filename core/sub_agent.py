@@ -102,7 +102,7 @@ class SubAgent(BaseAgent):
             cwd=cwd or os.getcwd(),
             session_dir=session_dir,
             stop_check=stop_check,
-            max_iterations=200,  # Fixed value
+            max_iterations=config.system.max_iterations,
         )
 
         self._session_id = exec_id

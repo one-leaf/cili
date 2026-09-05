@@ -1,0 +1,35 @@
+{
+  "_comment": "Cili Agent 配置示例 - 复制为 setting.json 并修改",
+  "model": {
+    "_comment": "主模型配置（用于多轮对话，RootAgent 和 SubAgent 均使用此模型）",
+    "name": "claude-sonnet-4-6",
+    "interface_type": "anthropic",
+    "api_key": "sk-xxx",
+    "base_url": "https://api.anthropic.com",
+    "max_tokens": 36000,
+    "max_context_tokens": 256000,
+    "multimodal": true,
+    "temperature": 0.2,
+    "reasoning_effort": ""
+  },
+  "llm_model": {
+    "_comment": "LLM 工具模型配置（用于翻译、摘要等单次调用任务，可选）",
+    "name": "claude-haiku-4-5",
+    "interface_type": "anthropic",
+    "api_key": "sk-xxx",
+    "base_url": "https://api.anthropic.com",
+    "max_tokens": 8192,
+    "max_context_tokens": 200000,
+    "multimodal": false,
+    "temperature": 0.1,
+    "reasoning_effort": ""
+  },
+  "system": {
+    "_comment": "系统参数配置",
+    "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/",
+    "browser_path": "",
+    "allowed_ips": [],
+    "mineru_api_key": "",
+    "max_iterations": 200
+  }
+}

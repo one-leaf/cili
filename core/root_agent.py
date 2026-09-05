@@ -22,8 +22,6 @@ from core.tools import create_tools, get_tool_by_name
 
 logger = logging.getLogger(__name__)
 
-_MAX_ITERATIONS = 200
-
 
 class RootAgent(BaseAgent):
     """Main agent for user interaction with streaming support."""
@@ -61,7 +59,7 @@ class RootAgent(BaseAgent):
             workspace_uuid=workspace_uuid,
             cwd=self._cwd_init,
             session_dir=session_dir,
-            max_iterations=_MAX_ITERATIONS,
+            max_iterations=config.system.max_iterations,
         )
 
         self._session_id = self.current_session_id
@@ -115,6 +113,7 @@ class RootAgent(BaseAgent):
         from core.config import load_config
         try:
             self.config = load_config()
+            self.max_iterations = self.config.system.max_iterations
             self.client.close()
             self.client = create_llm_client(self.config.model)
             self._rebuild_tools()

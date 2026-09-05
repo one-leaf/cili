@@ -109,6 +109,7 @@ class SystemConfig:
     browser_path: str = ""  # Browser executable path (auto-detected if empty or invalid)
     search_engine: str = "bing"  # Web search engine: "bing" or "google"
     mineru_api_key: str = ""  # MinerU API key for PDF to Markdown (Precision Parse API)
+    max_iterations: int = 200  # Agent maximum tool call iterations per session
 
     @classmethod
     def from_dict(cls, data: dict) -> "SystemConfig":
@@ -119,6 +120,7 @@ class SystemConfig:
             browser_path=data.get("browser_path", ""),
             search_engine=data.get("search_engine", "bing"),
             mineru_api_key=data.get("mineru_api_key", ""),
+            max_iterations=int(data.get("max_iterations", 200)),
         )
 
     def to_dict(self) -> dict:
@@ -129,6 +131,7 @@ class SystemConfig:
             "browser_path": self.browser_path,
             "search_engine": self.search_engine,
             "mineru_api_key": self.mineru_api_key,
+            "max_iterations": self.max_iterations,
         }
 
 
