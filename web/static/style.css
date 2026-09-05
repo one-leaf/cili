@@ -145,6 +145,12 @@ body {
     font-size: 18px;
 }
 
+.modal-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
 .settings-help-link {
     font-size: 13px;
     color: var(--text-secondary, #666);
