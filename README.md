@@ -2,7 +2,7 @@
 
 # 草履虫 Cili Agent
 
-**自托管 Python 编程智能体 · 浏览器自动化 · 中文原生界面**
+**Harness 智能体 · 浏览器自动化 · 学习工作一体 · 开箱即用**
 
 ![草履虫](web/static/favicon.png)
 
