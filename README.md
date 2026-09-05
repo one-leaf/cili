@@ -25,9 +25,9 @@
 - **零 SDK 依赖** — 原始 httpx 实现 SSE 流式与重试，不依赖 Anthropic / OpenAI 官方 SDK
 - **双模型架构** — RootAgent 负责多轮对话，LLM 模型处理单轮摘要压缩，各司其职
 - **浏览器自动化** — Playwright + Chrome CDP，全局单例管理，支持网页搜索与内容抓取
+- **LaTeX 支持** — 内置 LaTeX 编译器，支持生成论文级别的 PDF 文档
 - **中文原生** — UI、日志、工具输出均为中文，系统提示词为英文（最优 LLM 性能）
-- **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，自动检测 / 下载环境依赖，双击即可运行
-- **可移植** — `start.cmd` 自动检测环境，缺失的 Python / Git Bash 自动下载到 `data/deps/`
+- **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，双击即可运行
 
 ## 快速开始
 
