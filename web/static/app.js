@@ -2818,6 +2818,207 @@ function exportToNewTab(markdownContent) {
 
 // ---------- Settings ----------
 
+async function openSettingsHelp() {
+    const newWindow = window.open('', '_blank');
+    if (!newWindow) {
+        alert('无法打开新窗口，请检查浏览器是否阻止了弹出窗口');
+        return;
+    }
+
+    // Show loading state
+    newWindow.document.write('<html><head><title>加载中...</title></head><body><p>正在加载设置说明...</p></body></html>');
+
+    try {
+        const response = await fetch('/docs/settings-guide.md');
+        if (!response.ok) throw new Error('无法加载文档');
+        const markdown = await response.text();
+
+        const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设置说明</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            }
+        };
+    <\/script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"><\/script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+        .message {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .message-content {
+            padding: 20px 24px;
+            font-size: 14px;
+            line-height: 1.7;
+            overflow-wrap: break-word;
+        }
+        /* Markdown rendered content */
+        .md-content p { margin: 0.6em 0; }
+        .md-content h1, .md-content h2, .md-content h3,
+        .md-content h4, .md-content h5, .md-content h6 {
+            margin: 1em 0 0.5em;
+            line-height: 1.3;
+        }
+        .md-content h1 { font-size: 1.4em; }
+        .md-content h2 { font-size: 1.25em; }
+        .md-content h3 { font-size: 1.1em; }
+        .md-content ul, .md-content ol {
+            margin: 0.5em 0;
+            padding-left: 1.8em;
+        }
+        .md-content li { margin: 0.3em 0; }
+        .md-content blockquote {
+            margin: 0.6em 0;
+            padding: 0.5em 1em;
+            border-left: 3px solid #4a90e2;
+            background: #f8f9fa;
+            color: #555;
+        }
+        .md-content pre {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 12px 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            margin: 0.6em 0;
+        }
+        .md-content code {
+            background: #f0f0f0;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.9em;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+        }
+        .md-content pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+        .md-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0.6em 0;
+        }
+        .md-content th, .md-content td {
+            border: 1px solid #e0e0e0;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .md-content th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+        .md-content a {
+            color: #4a90e2;
+            text-decoration: none;
+        }
+        .md-content a:hover {
+            text-decoration: underline;
+        }
+        .md-content hr {
+            border: none;
+            border-top: 1px solid #e0e0e0;
+            margin: 1em 0;
+        }
+        .md-content img {
+            max-width: 100%;
+            border-radius: 4px;
+        }
+        .toolbar {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            padding: 6px;
+            z-index: 100;
+        }
+        .toolbar button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #555;
+        }
+        .toolbar button:hover {
+            background: #f0f0f0;
+            color: #333;
+        }
+        @media print {
+            .toolbar { display: none; }
+            body { background: white; }
+            .message { box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button onclick="window.print()" title="打印">🖨️ 打印</button>
+    </div>
+    <div class="container">
+        <div class="message">
+            <div class="message-content md-content"></div>
+        </div>
+    </div>
+    <script>
+        const markdown = ${JSON.stringify(markdown)};
+        document.querySelector('.md-content').innerHTML = marked.parse(markdown);
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            MathJax.typesetPromise();
+        }
+    <\/script>
+</body>
+</html>
+        `;
+
+        newWindow.document.open();
+        newWindow.document.write(html);
+        newWindow.document.close();
+        newWindow.document.title = '设置说明';
+    } catch (error) {
+        newWindow.document.open();
+        newWindow.document.write(`<html><head><title>加载失败</title></head><body><p>无法加载设置说明：${error.message}</p></body></html>`);
+        newWindow.document.close();
+    }
+}
+
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
