@@ -1056,73 +1056,6 @@ def _get_session_manager(workspace_uuid: str, session_id: str) -> SessionManager
     return SessionManager.load_session(session_id, sessions_dir)
 
 
-def _find_pending_subagent(agent: RootAgent) -> str | None:
-    """Find the most recent pending subagent exec_id from messages."""
-    for msg in reversed(agent.session_manager.messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if (block.get("type") == "tool_result"
-                    and block.get("_meta", {}).get("completed") is False
-                    and block.get("_meta", {}).get("exec_id")):
-                return block["_meta"]["exec_id"]
-    return None
-
-
-def _write_back_subagent_result(agent: RootAgent, exec_id: str) -> dict | None:
-    """Write back subagent result to placeholder and mark answered. Returns result dict or None."""
-    subagent_tool = get_tool_by_name(agent.tools, "subagent")
-    if not subagent_tool:
-        return None
-    entry = subagent_tool.get_pending_subagent(exec_id)
-    if not entry:
-        return None
-    result = entry.get("result") or {"status": "error", "summary": "SubAgent execution failed", "iterations": 0}
-    result_json = json.dumps(result, ensure_ascii=False, indent=2)
-
-    # Write back placeholder tool_result
-    for msg in reversed(agent.session_manager.messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if (block.get("type") == "tool_result"
-                    and block.get("_meta", {}).get("exec_id") == exec_id
-                    and block.get("_meta", {}).get("completed") is False):
-                block["content"] = result_json
-                block["_meta"]["completed"] = True
-                block["_meta"]["iterations"] = result.get("iterations", 0)
-                block["_meta"]["message_count"] = result.get("message_count", 0)
-                break
-        else:
-            continue
-        break
-
-    # Mark tool_use as answered
-    for msg in agent.session_manager.messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if (block.get("type") == "tool_use"
-                    and block.get("_meta", {}).get("exec_id") == exec_id):
-                if "_meta" not in block:
-                    block["_meta"] = {}
-                block["_meta"]["answered"] = True
-                break
-
-    agent.session_manager.save()
-    subagent_tool.remove_pending_subagent(exec_id)
-    return result
-
-
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/messages")
 async def send_message(workspace_uuid: str, session_id: str, request: SendMessageRequest):
     """Send a message and get a streaming SSE response."""
@@ -1362,53 +1295,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             logger.info("Client disconnected, agent continues running in background")
             return
 
-        # Agent loop exited — check if it was a subagent placeholder (completed=False).
-        # If so, wait for subagent completion, write back result, resume loop.
-        pending_exec_id = _find_pending_subagent(agent)
-
-        if pending_exec_id:
-            subagent_tool = get_tool_by_name(agent.tools, "subagent")
-            entry = subagent_tool.get_pending_subagent(pending_exec_id) if subagent_tool else None
-            if entry and not entry["event"].is_set():
-                # Wait in background thread, then resume loop
-                def wait_and_resume():
-                    try:
-                        # Wait for subagent completion (with timeout)
-                        entry["event"].wait(timeout=3600)
-                        _write_back_subagent_result(agent, pending_exec_id)
-
-                        # Resume agent loop
-                        agent.resume_loop(
-                            on_text=on_text,
-                            on_thinking=on_thinking,
-                            on_tool_call=on_tool_call,
-                            on_tool_result=on_tool_result,
-                            on_subagent_start=on_subagent_start,
-                            on_subagent_complete=on_subagent_complete,
-                        )
-                    except Exception as e:
-                        logger.error(f"SubAgent resume error: {e}")
-                        err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
-                        event_queue.put(f"data: {err_event}\n\n")
-                    finally:
-                        event_queue.put(None)  # sentinel: done
-
-                resume_task = asyncio.ensure_future(loop.run_in_executor(None, wait_and_resume))
-
-                # Stream resumed events
-                try:
-                    while True:
-                        try:
-                            event = await asyncio.to_thread(event_queue.get, True, 0.5)
-                            if event is None:
-                                break
-                            yield event
-                        except queue.Empty:
-                            continue
-                except asyncio.CancelledError:
-                    logger.info("Client disconnected during subagent resume")
-                    return
-
         # Send done signal
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
@@ -1606,45 +1492,6 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         except asyncio.CancelledError:
             task.cancel()
             return
-
-        # Check if agent loop exited due to subagent placeholder (completed=False)
-        pending_exec_id = _find_pending_subagent(agent)
-        if pending_exec_id:
-            subagent_tool = get_tool_by_name(agent.tools, "subagent")
-            entry = subagent_tool.get_pending_subagent(pending_exec_id) if subagent_tool else None
-            if entry and not entry["event"].is_set():
-                def wait_and_resume():
-                    try:
-                        entry["event"].wait(timeout=3600)
-                        _write_back_subagent_result(agent, pending_exec_id)
-                        agent.resume_loop(
-                            on_text=on_text,
-                            on_thinking=on_thinking,
-                            on_tool_call=on_tool_call,
-                            on_tool_result=on_tool_result,
-                            on_subagent_start=on_subagent_start,
-                            on_subagent_complete=on_subagent_complete,
-                        )
-                    except Exception as e:
-                        logger.error(f"SubAgent resume error: {e}")
-                        err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
-                        event_queue.put(f"data: {err_event}\n\n")
-                    finally:
-                        event_queue.put(None)
-
-                resume_task = asyncio.ensure_future(loop.run_in_executor(None, wait_and_resume))
-                try:
-                    while True:
-                        try:
-                            event = await asyncio.to_thread(event_queue.get, True, 0.5)
-                            if event is None:
-                                break
-                            yield event
-                        except queue.Empty:
-                            continue
-                except asyncio.CancelledError:
-                    logger.info("Client disconnected during subagent resume")
-                    return
 
         done_event = json.dumps({"type": "done"}, ensure_ascii=False)
         yield f"data: {done_event}\n\n"

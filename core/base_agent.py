@@ -166,6 +166,15 @@ class BaseAgent:
             logger.error(f"Failed to load messages: {e}")
             return False
 
+    def invalidate_all_messages(self) -> int:
+        """Mark all messages as invalid (_meta.valid=False). Returns count."""
+        count = 0
+        for msg in self.messages:
+            if msg.get("_meta", {}).get("valid") is not False:
+                msg.setdefault("_meta", {})["valid"] = False
+                count += 1
+        return count
+
     def get_valid_messages(self) -> list[dict]:
         """Get messages with _meta.valid=False filtered out.
 

@@ -113,6 +113,10 @@ CRON_STATE_DIR = CRON_BASE_DIR / "state"
 # User tasks config file
 USER_TASKS_FILE = CRON_BASE_DIR / "user_tasks.json"
 
+# Cron agent cache: workspace_uuid → RootAgent (reused across cron runs)
+_cron_agents: dict[str, Any] = {}
+_cron_agents_lock = threading.Lock()
+
 
 class CronTask:
     """A single scheduled task."""
@@ -300,167 +304,68 @@ class CronTask:
         }
 
     def _execute_in_session(self, workspace_uuid: str, task_item: dict) -> dict:
-        """在 workspace 的 cron session 中通过 SubAgent 执行任务。
+        """在 workspace 的 cron session 中通过 RootAgent 执行任务。
 
-        Cron 采用 SubAgent 策略（模拟 RootAgent 调用 SubAgent 的消息格式）：
+        Cron 采用 RootAgent 策略：
         1. 解析目标 workspace，复用或创建 cron session
-        2. 添加 user message（任务描述）+ assistant message（tool_use 块）
-        3. 创建 SubAgent 直接执行任务（非流式，自主运行）
-        4. 添加 user message（tool_result 块，含 exec_id，UI 渲染卡片）
-        5. 添加 assistant message（结果摘要）
-        6. 保存 SubAgent 执行日志到 session 目录
-
-        SubAgent 使用 context-bounded-processing 技能策略，
-        适合后台自主执行的定时任务场景。
+        2. 获取或创建 RootAgent（按 workspace 缓存）
+        3. 切换到 cron session，标记旧消息无效
+        4. 注入 cron 任务消息，运行 agent loop（非流式）
+        5. Agent 自主调用 subagent 工具执行任务，工具内部同步等待结果
+        6. Agent loop 正常完成后返回
         """
-        from core.sub_agent import SubAgent
-        from core.session import SessionManager
-        from core.config import load_config
-        from datetime import datetime as dt
+        from core.root_agent import RootAgent
+        from core.config import load_config, load_workspace_config
 
-        # 1. 解析 workspace
+        # 1. 解析 workspace（数据目录用于 session）
         ws_uuid = workspace_uuid or "system"
-        ws_dir = self._resolve_workspace_dir(ws_uuid)
-        sessions_dir = Path(ws_dir) / "sessions"
+        ws_data_dir = self._resolve_workspace_dir(ws_uuid)
+        sessions_dir = Path(ws_data_dir) / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. 查找或创建 cron session
+        # 2. 获取 workspace 的实际工作目录（用于 agent cwd）
+        workspace_dir = ws_data_dir  # fallback
+        if ws_uuid != "system":
+            ws_config = load_workspace_config(ws_uuid)
+            if ws_config:
+                workspace_dir = ws_config.get("directory", ws_data_dir)
+
+        # 3. 查找或创建 cron session
         cron_session_id = self._resolve_cron_session(sessions_dir)
 
-        # 3. 加载 SessionManager
-        session_mgr = SessionManager.load_session(cron_session_id, sessions_dir)
-        if session_mgr is None:
-            logger.error(f"[cron] Failed to load session {cron_session_id}")
-            return {"status": "error", "error": "Session load failed", "workspace_uuid": ws_uuid}
-
-        # 4. 构造任务信息
+        # 3. 构造任务信息
         task_desc = task_item.get("task", "")
         plan = task_item.get("plan", [])
-
-        # 5. 生成 exec_id 和 SubAgent 日志目录
-        exec_id = session_mgr._generate_exec_id()
-        exec_dir = session_mgr.session_dir / exec_id
-        exec_dir.mkdir(parents=True, exist_ok=True)
-
-        # 6. 添加 user message（任务描述）
-        user_msg = self._build_cron_message(task_item)
-        session_mgr.add_message("user", user_msg)
-
-        # 7. 添加 assistant message（模拟 LLM 调用 subagent 的 tool_use 块）
-        tool_use_id = f"cron_{exec_id}"
         task_brief = task_desc[:200]
-        session_mgr.add_message("assistant", [
-            {
-                "type": "tool_use",
-                "id": tool_use_id,
-                "name": "subagent",
-                "input": {"task": task_brief},
-            }
-        ])
-        session_mgr.save()
 
-        # 8. 创建并运行 SubAgent
-        config = load_config()
-        logger.info(f"[cron] [{self.name}] Starting SubAgent in session {cron_session_id}: {task_brief[:50]}...")
+        logger.info(f"[cron] [{self.name}] Starting RootAgent in session {cron_session_id}: {task_brief[:50]}...")
 
-        subagent = SubAgent(
-            task=task_desc,
-            plan=plan,
-            workspace_uuid=ws_uuid,
-            cwd=ws_dir,
-            session_dir=exec_dir,
-            exec_id=exec_id,
-        )
+        # 4. 获取或创建 RootAgent（cwd 是 workspace 实际工作目录，不是数据目录）
+        agent = _get_or_create_root_agent(ws_uuid, workspace_dir)
+        if agent is None:
+            logger.warning(f"[cron] [{self.name}] RootAgent is busy for workspace {ws_uuid}, skipping")
+            return {"status": "skipped", "message": "RootAgent is busy", "workspace_uuid": ws_uuid}
 
         try:
-            result = subagent.run()
-            status = result.get("status", "completed")
-            summary = result.get("summary", "")
-            iterations = result.get("iterations", 0)
+            # 5. 切换到 cron session（sessions_dir 在数据目录下，cwd 已正确指向 workspace）
+            if agent.current_session_id != cron_session_id:
+                agent.switch_session(cron_session_id)
 
-            # 9. 添加 user message（tool_result 块，含 exec_id，UI 据此渲染 SubAgent 卡片）
-            result_json = json.dumps(result, ensure_ascii=False, indent=2)
-            session_mgr.add_message("user", [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": result_json,
-                    "is_error": False,
-                    "_meta": {
-                        "tool_name": "subagent",
-                        "exec_id": exec_id,
-                        "completed": True,
-                        "iterations": iterations,
-                        "message_count": len(subagent.messages),
-                    },
-                }
-            ])
+            # 6. 标记旧消息无效（每次 cron 运行上下文干净）
+            agent.invalidate_all_messages()
+            agent.session_manager._messages_dirty = True
 
-            # 10. 添加 assistant message（结果摘要，保证对话连续性）
-            session_mgr.add_message("assistant", summary or f"SubAgent {status}")
-            session_mgr.save()
+            # 7. 运行 agent loop（非流式，无回调）
+            cron_message = self._build_cron_message(task_item)
+            agent.run(cron_message, streaming=False)
 
-            # 11. 更新 subagent_count
-            session_mgr.metadata["subagent_count"] = session_mgr.metadata.get("subagent_count", 0) + 1
-
-            # 12. 保存 SubAgent 执行日志
-            ended_at = dt.now()
-            started_at = subagent._started_at or ended_at
-            session_mgr.save_subagent_log(
-                exec_id=exec_id,
-                task=task_desc,
-                messages=subagent.messages,
-                metadata={
-                    "parent_session_id": "",
-                    "session_id": exec_id,
-                    "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    "ended_at": ended_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    "duration_seconds": (ended_at - started_at).total_seconds(),
-                    "status": status,
-                    "iterations": iterations,
-                    "message_count": len(subagent.messages),
-                },
-                summary=summary,
-            )
-
-            # 转发 SubAgent usage 到 session
-            sub_usage = result.get("usage", {})
-            if sub_usage:
-                session_mgr.update_usage(
-                    input_tokens=sub_usage.get("input_tokens", 0),
-                    output_tokens=sub_usage.get("output_tokens", 0),
-                    api_calls=0,
-                    cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
-                    cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
-                )
-                session_mgr.save()
-
-            logger.info(f"[cron] [{self.name}] SubAgent {status} in session {cron_session_id}")
+            logger.info(f"[cron] [{self.name}] RootAgent completed in session {cron_session_id}")
             return {"status": "completed", "workspace_uuid": ws_uuid, "session_id": cron_session_id,
-                    "iterations": iterations}
+                    "iterations": 0}
 
         except Exception as e:
-            logger.error(f"[cron] [{self.name}] SubAgent failed: {e}")
-            # 添加错误 tool_result（UI 仍可渲染卡片）
-            error_result = {"status": "error", "summary": str(e), "iterations": 0}
-            session_mgr.add_message("user", [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": json.dumps(error_result, ensure_ascii=False),
-                    "is_error": True,
-                    "_meta": {
-                        "tool_name": "subagent",
-                        "exec_id": exec_id,
-                        "completed": True,
-                    },
-                }
-            ])
-            session_mgr.add_message("assistant", f"任务执行失败: {e}")
-            session_mgr.save()
+            logger.error(f"[cron] [{self.name}] RootAgent failed: {e}")
             return {"status": "error", "error": str(e), "workspace_uuid": ws_uuid}
-        finally:
-            subagent.close()
 
     def _resolve_workspace_dir(self, ws_uuid: str) -> str:
         """解析 workspace 目录。System workspace → data/"""
@@ -499,14 +404,15 @@ class CronTask:
         plan = task_item.get("plan", [])
 
         lines = ["[Cron 定时任务触发]", ""]
-        lines.append(f"## 任务描述\n{task}")
+        lines.append("请使用 subagent 工具执行以下任务：")
+        lines.append(f"\n## 任务描述\n{task}")
 
         if plan:
             lines.append("\n## 执行计划")
             for i, step in enumerate(plan, 1):
                 lines.append(f"{i}. {step}")
 
-        lines.append("\n请根据任务描述执行。")
+        lines.append("\n请根据任务描述和计划执行。")
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -521,6 +427,35 @@ class CronTask:
             "next_run": self._next_run.isoformat() if self._next_run else None,
             "run_count": self._run_count,
         }
+
+
+def _get_or_create_root_agent(workspace_uuid: str, ws_dir: str):
+    """获取或创建 workspace 对应的 RootAgent（cron 专用缓存）。
+
+    - 如果 agent 存在且未在运行 → 复用
+    - 如果 agent 不存在 → 创建新的并缓存
+    - 如果 agent 正在运行 → 返回 None（跳过本次执行）
+    """
+    from core.root_agent import RootAgent
+    from core.config import load_config
+
+    with _cron_agents_lock:
+        existing = _cron_agents.get(workspace_uuid)
+        if existing is not None:
+            if existing.is_running():
+                return None  # 正在运行，跳过
+            return existing
+
+        # 创建新的 RootAgent
+        try:
+            config = load_config()
+            agent = RootAgent(config, cwd=ws_dir, workspace_uuid=workspace_uuid)
+            _cron_agents[workspace_uuid] = agent
+            logger.info(f"[cron] Created RootAgent for workspace {workspace_uuid}")
+            return agent
+        except Exception as e:
+            logger.error(f"[cron] Failed to create RootAgent for workspace {workspace_uuid}: {e}")
+            return None
 
 
 class CronScheduler:

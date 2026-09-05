@@ -78,6 +78,7 @@ class RootAgent(BaseAgent):
         # Build tools
         self._on_subagent_start: Callable[[str, str], None] | None = None
         self._on_subagent_complete: Callable[[str], None] | None = None
+        self._streaming = True
         self._rebuild_tools()
 
     def _create_default_session(self) -> None:
@@ -129,10 +130,12 @@ class RootAgent(BaseAgent):
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
         on_subagent_start: Callable[[str, str], None] | None = None,
         on_subagent_complete: Callable[[str], None] | None = None,
+        streaming: bool = True,
     ) -> None:
         """Run one turn of the agent loop."""
         self._stopped = False
         self._running = True
+        self._streaming = streaming
         self._on_text = on_text
         self._on_thinking = on_thinking
         self._on_tool_call = on_tool_call
@@ -227,7 +230,7 @@ class RootAgent(BaseAgent):
 
             # Call LLM with streaming
             system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
-            response = self._call_llm(streaming=True, system_prompt=system_prompt)
+            response = self._call_llm(streaming=getattr(self, '_streaming', True), system_prompt=system_prompt)
 
             if self._stopped:
                 logger.info("[RootAgent] 已停止")

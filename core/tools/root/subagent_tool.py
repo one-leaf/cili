@@ -209,9 +209,8 @@ class SubAgentTool(Tool):
                 task_summary=task_summary,
             )
 
-        # Synchronous mode: start SubAgent in background thread, return placeholder.
-        # The agent loop will exit (completed=False), SSE handler waits for completion,
-        # writes back the result, then resumes the agent loop.
+        # Synchronous mode: start SubAgent in background thread, wait for result.
+        # The agent loop continues without exiting — no external resume needed.
         entry = {"exec_id": exec_id, "thread": None, "event": threading.Event(), "result": None}
 
         def run_subagent():
@@ -276,15 +275,19 @@ class SubAgentTool(Tool):
 
         thread.start()
 
-        # Return placeholder; agent loop will break (completed=False)
-        meta = {"exec_id": exec_id}
+        # Wait for SubAgent to complete (synchronous mode)
+        entry["event"].wait(timeout=3600)
+        result = entry.get("result") or {"status": "error", "summary": "SubAgent 执行超时", "iterations": 0}
+
+        # Clean up pending entry
+        with self._pending_lock:
+            self._pending_subagents.pop(exec_id, None)
+
+        result_json = json.dumps(result, ensure_ascii=False, indent=2)
+        meta = {"exec_id": exec_id, "completed": True, "iterations": result.get("iterations", 0), "message_count": result.get("message_count", 0)}
         if label:
             meta["label"] = label[:64]
-        return ToolResult(
-            "SubAgent 执行中...",
-            completed=False,
-            meta=meta,
-        )
+        return ToolResult(result_json, completed=True, meta=meta)
 
     def get_pending_subagent(self, exec_id: str) -> dict | None:
         """Get pending subagent info by exec_id."""

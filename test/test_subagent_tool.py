@@ -31,8 +31,8 @@ class TestSubAgentToolExecute:
         result = subagent_tool.execute(task="   \n  ")
         assert result.error is True
 
-    def test_returns_placeholder_and_starts_thread(self, subagent_tool):
-        """Returns placeholder ToolResult and starts background thread."""
+    def test_returns_result_synchronously(self, subagent_tool):
+        """Returns complete result synchronously (no placeholder)."""
         mock_subagent = MagicMock()
         mock_subagent.run.return_value = {
             "status": "completed",
@@ -41,52 +41,42 @@ class TestSubAgentToolExecute:
             "usage": {},
         }
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             result = subagent_tool.execute(task="test task")
 
-        # Should return placeholder immediately
-        assert result.completed is False
-        assert "执行中" in result.output
-        # exec_id should be in meta
+        # Should return completed result directly (no placeholder)
+        assert result.completed is True
         assert result.meta.get("exec_id") == "exec_123"
+        # Result should be JSON with the subagent result
+        result_data = json.loads(result.output)
+        assert result_data["status"] == "completed"
+        assert result_data["summary"] == "Task completed successfully"
 
-        # Wait for background thread to complete
+        # Pending entry should be cleaned up
         entry = subagent_tool.get_pending_subagent("exec_123")
-        assert entry is not None
-        entry["event"].wait(timeout=5)
+        assert entry is None
 
-        # Result should be stored in entry
-        assert entry["result"] is not None
-        assert entry["result"]["status"] == "completed"
-        assert entry["result"]["summary"] == "Task completed successfully"
-
-        # Cleanup
-        subagent_tool.remove_pending_subagent("exec_123")
-
-    def test_subagent_failure_stored_in_entry(self, subagent_tool):
-        """SubAgent error is stored in pending entry."""
+    def test_subagent_failure_returned_in_result(self, subagent_tool):
+        """SubAgent error is returned in the ToolResult."""
         mock_subagent = MagicMock()
         mock_subagent.run.side_effect = Exception("SubAgent crashed")
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             result = subagent_tool.execute(task="test")
 
-        # Should return placeholder immediately (not error)
-        assert result.completed is False
+        # Should return error result directly
+        assert result.completed is True
+        result_data = json.loads(result.output)
+        assert result_data["status"] == "error"
+        assert "crashed" in result_data["summary"].lower() or "SubAgent crashed" in result_data["summary"]
 
-        # Wait for background thread to complete
+        # Pending entry should be cleaned up
         entry = subagent_tool.get_pending_subagent("exec_123")
-        entry["event"].wait(timeout=5)
-
-        # Error result should be stored in entry
-        assert entry["result"] is not None
-        assert entry["result"]["status"] == "error"
-        assert "crashed" in entry["result"]["summary"].lower() or "SubAgent crashed" in entry["result"]["summary"]
-
-        # Cleanup
-        subagent_tool.remove_pending_subagent("exec_123")
+        assert entry is None
 
     def test_closes_subagent_after_run(self, subagent_tool):
         """SubAgent.close() is called after run."""
@@ -98,32 +88,26 @@ class TestSubAgentToolExecute:
             "usage": {},
         }
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             subagent_tool.execute(task="test")
 
-        # Wait for background thread
-        entry = subagent_tool.get_pending_subagent("exec_123")
-        entry["event"].wait(timeout=5)
-
+        # execute() waits synchronously, no need to wait for background thread
         mock_subagent.close.assert_called_once()
-        subagent_tool.remove_pending_subagent("exec_123")
 
     def test_closes_subagent_on_error(self, subagent_tool):
         """SubAgent.close() is called even when run raises."""
         mock_subagent = MagicMock()
         mock_subagent.run.side_effect = Exception("error")
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             subagent_tool.execute(task="test")
 
-        # Wait for background thread
-        entry = subagent_tool.get_pending_subagent("exec_123")
-        entry["event"].wait(timeout=5)
-
+        # execute() waits synchronously, no need to wait for background thread
         mock_subagent.close.assert_called_once()
-        subagent_tool.remove_pending_subagent("exec_123")
 
     def test_forwards_usage_to_session(self, subagent_tool):
         """SubAgent usage is forwarded to session manager."""
@@ -140,19 +124,16 @@ class TestSubAgentToolExecute:
             },
         }
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             subagent_tool.execute(task="test")
 
-        # Wait for background thread
-        entry = subagent_tool.get_pending_subagent("exec_123")
-        entry["event"].wait(timeout=5)
-
+        # execute() waits synchronously, usage is forwarded before return
         subagent_tool.session_manager.update_usage.assert_called_once()
         call_kwargs = subagent_tool.session_manager.update_usage.call_args.kwargs
         assert call_kwargs["input_tokens"] == 500
         assert call_kwargs["output_tokens"] == 200
-        subagent_tool.remove_pending_subagent("exec_123")
 
     def test_fires_start_callback(self, subagent_tool):
         """on_subagent_start callback is fired before run."""
@@ -204,16 +185,13 @@ class TestSubAgentToolExecute:
             "usage": {},
         }
         mock_subagent.close.return_value = None
+        mock_subagent.messages = []
 
         with patch("core.sub_agent.SubAgent", return_value=mock_subagent):
             subagent_tool.execute(task="test")
 
-        # Wait for background thread
-        entry = subagent_tool.get_pending_subagent("exec_123")
-        entry["event"].wait(timeout=5)
-
-        subagent_tool.session_manager.save.assert_called_once()
-        subagent_tool.remove_pending_subagent("exec_123")
+        # execute() waits synchronously, session is saved before return
+        subagent_tool.session_manager.save.assert_called()
 
 
 class TestSubAgentToolParameters:
