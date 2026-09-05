@@ -1153,3 +1153,156 @@ doc.save("output.docx")
 - Tables in Markdown can be converted using `python-docx`'s `add_table()` method
 - Images need separate handling (download/extract first, then insert into Word)
 - Complex formatting (e.g., formulas) may require additional processing
+
+---
+
+# 24. Word/Excel to PDF Workflow
+
+When the user requests converting Word (DOCX/DOC) or Excel (XLSX/XLS) to PDF format.
+
+## Priority Order
+
+1. **pwsh + COM (Microsoft Office)** — Best quality, preserves all formatting
+2. **LibreOffice** — Good quality, cross-platform
+3. **Python libraries** — Limited quality, fallback only
+
+## Method 1: pwsh + COM (Preferred on Windows with Office)
+
+Use the `pwsh` tool to invoke Microsoft Office via COM automation. This produces the highest quality PDF with perfect formatting preservation.
+
+### Word to PDF via COM
+
+```powershell
+pwsh(command="
+$word = New-Object -ComObject Word.Application
+$word.Visible = $false
+$doc = $word.Documents.Open('C:\\path\\to\\document.docx')
+$doc.SaveAs([ref]'C:\\path\\to\\output.pdf', [ref]17)  # 17 = wdFormatPDF
+$doc.Close()
+$word.Quit()
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+")
+```
+
+### Excel to PDF via COM
+
+```powershell
+pwsh(command="
+$excel = New-Object -ComObject Excel.Application
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+$wb = $excel.Workbooks.Open('C:\\path\\to\\spreadsheet.xlsx')
+$wb.ExportAsFixedFormat(0, 'C:\\path\\to\\output.pdf')  # 0 = xlTypePDF
+$wb.Close($false)
+$excel.Quit()
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+")
+```
+
+### Excel: Specific Sheets to PDF
+
+```powershell
+pwsh(command="
+$excel = New-Object -ComObject Excel.Application
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+$wb = $excel.Workbooks.Open('C:\\path\\to\\spreadsheet.xlsx')
+
+# Select specific sheets
+$sheets = @('Sheet1', 'Sheet2')
+$wb.Worksheets.Item($sheets).Select()
+
+# Export selected sheets
+$wb.ExportAsFixedFormat(0, 'C:\\path\\to\\output.pdf')
+$wb.Close($false)
+$excel.Quit()
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+")
+```
+
+### Advantages of COM Method
+
+- **Perfect formatting**: Uses actual Office rendering engine
+- **All features supported**: Charts, PivotTables, conditional formatting, etc.
+- **Macros/VBA**: If the document has macros, they execute normally
+- **Fonts**: Uses installed system fonts correctly
+
+### Requirements
+
+- Microsoft Office must be installed (Word for DOCX, Excel for XLSX)
+- Windows OS with COM support
+- Use `pwsh` tool, not bash
+
+## Method 2: LibreOffice (Cross-platform Fallback)
+
+If Office is not available, use LibreOffice command line:
+
+```bash
+bash(command="soffice --headless --convert-to pdf --outdir /c/output /c/input/document.docx")
+```
+
+Or via pwsh:
+
+```powershell
+pwsh(command="
+& 'C:\\Program Files\\LibreOffice\\program\\soffice.exe' --headless --convert-to pdf --outdir 'C:\\output' 'C:\\input\\document.docx'
+")
+```
+
+## Method 3: Python Libraries (Last Resort)
+
+Only use when neither Office nor LibreOffice is available.
+
+### DOCX to PDF
+
+```python
+# Requires docx2pdf (which needs Office installed anyway)
+from docx2pdf import convert
+convert('input.docx', 'output.pdf')
+```
+
+### XLSX to PDF
+
+```python
+# Very limited - use reportlab or fpdf for simple tables
+import pandas as pd
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
+df = pd.read_excel('input.xlsx')
+data = [df.columns.tolist()] + df.values.tolist()
+
+doc = SimpleDocTemplate('output.pdf', pagesize=A4)
+table = Table(data)
+table.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+]))
+doc.build([table])
+```
+
+## Decision Flow
+
+```
+User requests "convert to PDF"
+    ↓
+Is this Windows with Office installed?
+    ↓
+   Yes → Use pwsh + COM (Method 1)
+    ↓
+   No → Is LibreOffice available?
+           ↓
+          Yes → Use LibreOffice (Method 2)
+           ↓
+          No → Use Python library (Method 3, limited quality)
+```
+
+## Important Notes
+
+- **Always use `pwsh` tool for COM calls**, never bash (bash cannot invoke COM)
+- **Absolute paths required** for COM — convert relative paths to absolute first
+- **Release COM objects** to prevent Office processes from hanging
+- **Set Visible = $false** to run Office in background
+- **DisplayAlerts = $false** suppresses dialog prompts (Excel)
