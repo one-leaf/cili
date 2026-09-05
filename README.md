@@ -104,7 +104,7 @@ scripts\upgrade.cmd
 
 ```
 RootAgent (主对话，流式输出)
-  ├── 22 工具：读写文件、执行 Shell、Python、浏览器、搜索、记忆、定时任务、PDF转换...
+  ├── 23 工具：读写文件、执行 Shell/PowerShell、Python、浏览器、搜索、记忆、定时任务、PDF转换...
   ├── 内置技能：代码审查、任务委派、研究、学习、技能创建...
   └── SubAgent (后台委派，非流式)
         ├── 独立消息历史（最多 200 轮迭代）
@@ -115,7 +115,7 @@ RootAgent (主对话，流式输出)
 
 | 层级 | 工具数 | 说明 |
 |------|--------|------|
-| **shared** | 19~20 | RootAgent 与 SubAgent 共用（读写、Shell、浏览器、搜索、Python、记忆、PDF转换、loop 进度追踪等） |
+| **shared** | 20~21 | RootAgent 与 SubAgent 共用（读写、Shell/PowerShell、浏览器、搜索、Python、记忆、PDF转换、loop 进度追踪等） |
 | **root** | 3 | RootAgent 专属（技能系统、SubAgent 委派、用户提问） |
 | **sub** | 1 | SubAgent 专属（技能系统） |
 
@@ -247,7 +247,7 @@ cili/
 │   │   ├── assembler.py      # 流式数据块累积
 │   │   └── client.py         # 统一 API（chat / chat_stream）
 │   ├── tools/                # 工具层
-│   │   ├── shared/           # 共用工具（19~20 个，含 pdf2markdown、loop 进度追踪）
+│   │   ├── shared/           # 共用工具（20~21 个，含 pwsh、pdf2markdown、loop 进度追踪）
 │   │   ├── root/             # RootAgent 专属（3 个）
 │   │   └── sub/              # SubAgent 专属（1 个）
 │   └── skills/               # 技能层

@@ -6,10 +6,37 @@ basic code execution, package install, env info.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from typing import Any
 
 from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
+
+
+# Cross-tool isolation: block Python code from invoking bash/pwsh
+_PYTHON_DENY_PATTERNS = [
+    # subprocess module invoking shell
+    (re.compile(r"""subprocess\.\w+\s*\(\s*[\[\(]?\s*['"](?:bash|pwsh|powershell)""", re.I),
+     "subprocess call to bash/pwsh (use bash/pwsh tool directly instead)"),
+    # os.system with shell commands
+    (re.compile(r"""os\.system\s*\(\s*['"](?:bash|pwsh|powershell)""", re.I),
+     "os.system call to bash/pwsh (use bash/pwsh tool directly instead)"),
+    # os.popen with shell commands
+    (re.compile(r"""os\.popen\s*\(\s*['"](?:bash|pwsh|powershell)""", re.I),
+     "os.popen call to bash/pwsh (use bash/pwsh tool directly instead)"),
+    # shell=True with bash/pwsh in command
+    (re.compile(r"""shell\s*=\s*True.*(?:bash|pwsh|powershell)""", re.I),
+     "subprocess with shell=True and bash/pwsh (use bash/pwsh tool directly instead)"),
+    # Dangerous code execution functions
+    (re.compile(r"\beval\s*\(", re.I),
+     "eval() is not allowed (security risk)"),
+    (re.compile(r"\bexec\s*\(", re.I),
+     "exec() is not allowed (security risk)"),
+    (re.compile(r"__import__\s*\(\s*['\"]os['\"]\s*\)\.system", re.I),
+     "dynamic os.system import (use appropriate tool instead)"),
+    (re.compile(r"__import__\s*\(\s*['\"]subprocess['\"]\s*\)", re.I),
+     "dynamic subprocess import (use appropriate tool instead)"),
+]
 
 
 class PythonTool(Tool):
@@ -35,16 +62,16 @@ class PythonTool(Tool):
             "- **info**: Show environment info and installed packages (action='info')\n\n"
             "## Pre-installed packages:\n"
             "requests, httpx, beautifulsoup4, lxml, numpy, pandas, pyyaml, toml, Pillow, pytest\n\n"
+            "## Restrictions:\n"
+            "- eval() and exec() are not allowed (security risk)\n"
+            "- Do not invoke bash/pwsh from Python code (use bash/pwsh tools directly)\n"
+            "- This is the ONLY way to run Python — do NOT use bash or pwsh to invoke python\n\n"
             "## Background Tasks:\n"
             "For long-running Python scripts, use `run_in_background: true` to run in background.\n"
             "- `read_task(task_id)`: Read accumulated output\n"
             "- `kill_task(task_id)`: Terminate the background task\n"
             "- `write_stdin(task_id, text)`: Send input to stdin\n"
-            "- `list_tasks()`: List all background tasks\n\n"
-            "## Note:\n"
-            "The virtual environment is also activated in bash (python/pip are in PATH), "
-            "so simple commands can be run directly via bash. Use this tool for code execution, "
-            "package installation, and environment info."
+            "- `list_tasks()`: List all background tasks"
         )
 
     @property
@@ -181,6 +208,16 @@ class PythonTool(Tool):
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {file}", error=True)
 
+        # Check file content for cross-tool invocations
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            deny_msg = self._check_python_deny_patterns(content)
+            if deny_msg:
+                return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
+        except Exception:
+            pass  # If we can't read, let execution proceed
+
         cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             cmd += f" {shlex.quote(args)}"
@@ -191,6 +228,11 @@ class PythonTool(Tool):
 
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
         """Execute Python code (no LLM injection — main agent is the LLM itself)."""
+        # Check for cross-tool invocations
+        deny_msg = self._check_python_deny_patterns(code)
+        if deny_msg:
+            return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
+
         python_exe = os.path.join(_VENV_DIR, "python.exe")
 
         if run_in_background:
@@ -237,6 +279,14 @@ class PythonTool(Tool):
         pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
         cmd = f'"{pip_exe}" {subcmd} --disable-pip-version-check'
         return self._filter_notices(self._run_bash(cmd, timeout=timeout))
+
+    @staticmethod
+    def _check_python_deny_patterns(code: str) -> str | None:
+        """Check Python code against deny patterns. Returns reason if blocked, None if OK."""
+        for pattern, reason in _PYTHON_DENY_PATTERNS:
+            if pattern.search(code):
+                return reason
+        return None
 
     def _install_packages(self, packages: str) -> ToolResult:
         """Install Python packages using pip."""

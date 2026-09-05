@@ -241,6 +241,26 @@ def _find_git_bash() -> str:
     return "bash"
 
 
+def _find_pwsh() -> str:
+    """Find PowerShell executable path.
+
+    Priority: env var > pwsh 7 > Windows PowerShell 5.1 > fallback.
+    """
+    env_path = os.environ.get("PWSH_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    import shutil as _shutil
+    # Prefer PowerShell 7 (pwsh), fallback to Windows PowerShell 5.1
+    pwsh = _shutil.which("pwsh")
+    if pwsh:
+        return pwsh
+    ps = _shutil.which("powershell")
+    if ps:
+        return ps
+    return "powershell.exe"
+
+
+_PWSH_PATH = _find_pwsh()
 _GIT_BASH_PATH = _find_git_bash()
 
 
@@ -748,6 +768,184 @@ class Tool:
                     pass
             return ToolResult(f"Error executing command: {e}", error=True)
 
+    def _run_pwsh(self, command: str, timeout: int = 30, stdin: str | None = None,
+                  max_chars: int | None = None, output_file: str | None = None) -> ToolResult:
+        """Execute command via PowerShell with real-time output streaming.
+
+        Mirrors _run_bash() but uses pwsh with Windows-native paths and syntax.
+        Automatically sets UTF-8 encoding and adds the agent Python venv to PATH.
+
+        Args:
+            command: PowerShell command string.
+            timeout: Timeout in seconds.
+            stdin: Optional stdin data.
+            max_chars: Character limit for output.
+            output_file: Path to write output to, line by line, in real-time.
+        """
+        # Reuse same limits as bash
+        default_chars = int(os.environ.get("BASH_MAX_OUTPUT_LENGTH", "30000"))
+        if max_chars is None:
+            max_chars = min(default_chars, self._BASH_MAX_RESULT_SIZE_CHARS)
+        else:
+            max_chars = min(max_chars, self._BASH_MAX_RESULT_SIZE_CHARS)
+
+        if output_file is None:
+            output_file = self.output_file
+
+        proc = None
+        try:
+            # UTF-8 encoding preamble — ensures correct decoding of non-ASCII output
+            encoding_preamble = (
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+                "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            )
+
+            # Build PATH prefix (Windows uses ; separator)
+            paths = []
+            if _VENV_DIR:
+                paths.append(_VENV_DIR)
+            if _VENV_SCRIPTS:
+                paths.append(_VENV_SCRIPTS)
+
+            env_setup = ""
+            if paths:
+                path_str = ";".join(paths)
+                env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
+
+            # Set temp directory and Python encoding env vars
+            env_setup += (
+                f'$env:TEMP = "{_TMP_DIR}"; '
+                f'$env:TMP = "{_TMP_DIR}"; '
+                f'$env:TMPDIR = "{_TMP_DIR}"; '
+                f'$env:LANG = "C.UTF-8"; '
+                f'$env:PYTHONIOENCODING = "utf-8"; '
+                f'$env:PYTHONUTF8 = "1"; '
+            )
+
+            full_command = f"{encoding_preamble}{env_setup}{command}"
+
+            proc = subprocess.Popen(
+                [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=self.cwd,
+                stdin=subprocess.PIPE if stdin else None,
+            )
+
+            # Reader thread for real-time streaming
+            chunk_queue: queue.Queue[str | None] = queue.Queue()
+
+            def _reader_thread():
+                try:
+                    while True:
+                        char = proc.stdout.read(1)
+                        if not char:
+                            break
+                        chunk_queue.put(char)
+                except Exception:
+                    pass
+                finally:
+                    chunk_queue.put(None)
+
+            reader_thread = threading.Thread(target=_reader_thread, daemon=True)
+            reader_thread.start()
+
+            # Write stdin if provided
+            if stdin:
+                try:
+                    proc.stdin.write(stdin)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+            # Collect output with real-time file streaming
+            output_parts: list[str] = []
+            start_time = time.monotonic()
+            timed_out = False
+
+            f_out = None
+            if output_file:
+                try:
+                    f_out = open(output_file, "a", encoding="utf-8")
+                except Exception:
+                    f_out = None
+
+            try:
+                while True:
+                    try:
+                        chunk = chunk_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        elapsed = time.monotonic() - start_time
+                        if elapsed > timeout:
+                            timed_out = True
+                            self._kill_process_tree(proc)
+                            break
+                        continue
+                    if chunk is None:
+                        break
+                    output_parts.append(chunk)
+                    if f_out:
+                        try:
+                            f_out.write(chunk)
+                            f_out.flush()
+                        except Exception:
+                            pass
+            finally:
+                if f_out:
+                    try:
+                        f_out.close()
+                    except Exception:
+                        pass
+
+            reader_thread.join(timeout=2)
+            if not timed_out:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._kill_process_tree(proc)
+                    proc.wait()
+
+            output = "".join(output_parts).strip() or "(no output)"
+
+            # Truncate by character count
+            if len(output) > max_chars:
+                truncated = output[:max_chars]
+                last_newline = truncated.rfind('\n')
+                if last_newline > max_chars * 0.9:
+                    truncated = truncated[:last_newline]
+                output = truncated + f"\n\n... (truncated from {len(output):,} to {max_chars:,} chars)"
+            else:
+                lines = output.split('\n')
+                if len(lines) > self._BASH_MAX_OUTPUT_LINES:
+                    truncated_count = len(lines) - self._BASH_MAX_OUTPUT_LINES
+                    output = '\n'.join(lines[:self._BASH_MAX_OUTPUT_LINES])
+                    output += f"\n\n... ({truncated_count} lines truncated, {len(lines)} total)"
+
+            # Token budget check
+            bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", "10000"))
+            output = self.truncate_middle(output, bash_token_budget)
+
+            if proc.returncode != 0:
+                output = f"[exit code: {proc.returncode}]\n{output}"
+
+            return ToolResult(output, error=(proc.returncode != 0))
+        except subprocess.TimeoutExpired:
+            if proc:
+                proc.kill()
+                proc.wait()
+            return ToolResult(f"Error: command timed out after {timeout} seconds", error=True)
+        except Exception as e:
+            if proc:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except Exception:
+                    pass
+            return ToolResult(f"Error executing command: {e}", error=True)
+
     # ── 后台任务管理方法 ──────────────────────────────────────────────────────
 
     def _start_background_task(
@@ -815,6 +1013,88 @@ class Tool:
             thread.start()
 
             # Register task
+            task = BackgroundTask(
+                task_id=task_id,
+                command=command,
+                process=proc,
+                output_file=output_file,
+                output_queue=output_queue,
+                reader_thread=thread,
+                stdin_pipe=proc.stdin,
+            )
+
+            BackgroundTaskManager.register(task)
+
+            return ToolResult(
+                f"Background task started.\n"
+                f"Task ID: {task_id}\n"
+                f"Command: {command}\n\n"
+                f"Use read_task(\"{task_id}\") to check output.\n"
+                f"Use kill_task(\"{task_id}\") to terminate."
+            )
+
+        except Exception as e:
+            return ToolResult(f"Error starting background task: {e}", error=True)
+
+    def _start_pwsh_background_task(self, command: str, env_prefix: str = "") -> ToolResult:
+        """Start a PowerShell command in background and return task_id.
+
+        Mirrors _start_background_task() but uses pwsh invocation.
+
+        Args:
+            command: PowerShell command to execute.
+            env_prefix: Environment setup prefix (PowerShell syntax).
+        """
+        task_id = BackgroundTaskManager.allocate_task_id(prefix="bg")
+
+        # Build full command with environment prefix
+        if env_prefix:
+            full_command = f"{env_prefix}; {command}"
+        else:
+            full_command = command
+
+        # UTF-8 encoding preamble
+        encoding_preamble = (
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        )
+        full_command = f"{encoding_preamble}{full_command}"
+
+        output_file = self.output_file
+
+        try:
+            proc = subprocess.Popen(
+                [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=self.cwd,
+            )
+
+            output_queue: queue.Queue[str | None] = queue.Queue()
+
+            def reader_thread():
+                try:
+                    for line in proc.stdout:
+                        output_queue.put(line)
+                        if output_file:
+                            try:
+                                with open(output_file, "a", encoding="utf-8") as f:
+                                    f.write(line)
+                                    f.flush()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                finally:
+                    output_queue.put(None)
+
+            thread = threading.Thread(target=reader_thread, daemon=True)
+            thread.start()
+
             task = BackgroundTask(
                 task_id=task_id,
                 command=command,

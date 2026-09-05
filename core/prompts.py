@@ -125,6 +125,16 @@ def _build_prompt(header: str, tools_fn, skills_dir: str, template: str, env_con
 ROOT_PROMPT_TEMPLATE = """\
 ## Critical Rules
 
+### Tool Routing — Use the Right Tool
+
+| Task | Use Tool | NOT |
+|------|----------|-----|
+| Shell commands (ls, git, npm, curl) | `bash` | pwsh, python |
+| PowerShell commands (Get-*, Set-*, Windows API) | `pwsh` | bash, python |
+| Python code / pip install | `python` | bash, pwsh |
+
+**Cross-tool invocation is blocked**: bash cannot call pwsh/python, pwsh cannot call bash/python, python code cannot call bash/pwsh.
+
 ### Skills - Proactive Usage
 
 **ALWAYS check available skills first** when the user's request matches these patterns:
@@ -147,7 +157,9 @@ Tool outputs are stored externally and loaded on-demand. When you receive a tool
 
 ### Python
 
-Use the `python` tool for code execution, package installation, and environment info. Bash also has python/pip available (the virtual environment is pre-activated).
+Use the `python` tool for ALL Python code execution, package installation, and environment info. **Do NOT use bash to invoke Python** — the python tool is the only allowed way.
+
+Note: eval() and exec() are blocked in the python tool for security reasons.
 
 **Large file processing (translation, summarization, extraction):**
 
@@ -321,6 +333,16 @@ When a task requires investigation, investigate before drawing conclusions.
 When a task requires modifying files, actually modify them.
 Do not declare success based only on intention.
 
+## Tool Routing
+
+| Task | Use Tool | NOT |
+|------|----------|-----|
+| Shell commands (ls, git, npm, curl) | `bash` | pwsh, python |
+| PowerShell commands (Get-*, Set-*, Windows API) | `pwsh` | bash, python |
+| Python code / pip install | `python` | bash, pwsh |
+
+Cross-tool invocation is blocked. Use each tool for its intended purpose.
+
 ## Skills - Proactive Usage
 
 **Check available skills** when the task matches these patterns:
@@ -469,20 +491,26 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Shell Environment",
         "",
-        "All shell commands run in **Git Bash** (MSYS2 environment).",
+        "Three separate tools for three environments — **do NOT cross-invoke**:",
         "",
-        "**Path format conversion**: Windows paths must be converted for bash:",
+        "| Tool | Environment | Use For |",
+        "|------|-------------|---------|",
+        "| `bash` | Git Bash (MSYS2) | ls, git, npm, curl, Unix commands |",
+        "| `pwsh` | PowerShell | Get-*, Set-*, Windows APIs, registry |",
+        "| `python` | Python interpreter | Python code, pip install |",
+        "",
+        "**Path format for bash**: Windows paths must be converted:",
         "- `E:\\path\\to\\file` → `/e/path/to/file`",
         "- `C:\\Users\\name` → `/c/Users/name`",
         "",
-        "**Example**: To run Python script at `D:\\scripts\\test.py`:",
-        "```bash",
-        "python /d/scripts/test.py",
-        "```",
+        "**Path format for pwsh**: Use native Windows format (e.g., `C:\\Users`).",
+        "",
+        "**Python**: Use the `python` tool — do NOT run python from bash or pwsh.",
         "",
         "## Python Environment",
         "",
-        "`python` and `pip` are pre-configured in PATH, available directly in bash.",
+        "Use the `python` tool for ALL Python execution — do NOT invoke python from bash or pwsh.",
+        "The agent's virtual environment is automatically activated in the python tool.",
         "",
         "## Temporary Files",
         "",
@@ -572,20 +600,26 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Shell Environment",
         "",
-        "All shell commands run in **Git Bash** (MSYS2 environment).",
+        "Three separate tools for three environments — **do NOT cross-invoke**:",
         "",
-        "**Path format conversion**: Windows paths must be converted for bash:",
+        "| Tool | Environment | Use For |",
+        "|------|-------------|---------|",
+        "| `bash` | Git Bash (MSYS2) | ls, git, npm, curl, Unix commands |",
+        "| `pwsh` | PowerShell | Get-*, Set-*, Windows APIs, registry |",
+        "| `python` | Python interpreter | Python code, pip install |",
+        "",
+        "**Path format for bash**: Windows paths must be converted:",
         "- `E:\\path\\to\\file` → `/e/path/to/file`",
         "- `C:\\Users\\name` → `/c/Users/name`",
         "",
-        "**Example**: To run Python script at `D:\\scripts\\test.py`:",
-        "```bash",
-        "python /d/scripts/test.py",
-        "```",
+        "**Path format for pwsh**: Use native Windows format (e.g., `C:\\Users`).",
+        "",
+        "**Python**: Use the `python` tool — do NOT run python from bash or pwsh.",
         "",
         "## Python Environment",
         "",
-        "`python` and `pip` are pre-configured in PATH, available directly in bash.",
+        "Use the `python` tool for ALL Python execution — do NOT invoke python from bash or pwsh.",
+        "The agent's virtual environment is automatically activated in the python tool.",
         "",
         "## Temporary Files",
         "",

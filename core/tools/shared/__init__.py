@@ -8,6 +8,7 @@ from core.tools.shared.read import ReadTool
 from core.tools.shared.write import WriteTool
 from core.tools.shared.edit import EditTool
 from core.tools.shared.bash import BashTool
+from core.tools.shared.pwsh import PwshTool
 from core.tools.shared.grep import GrepTool
 from core.tools.shared.find import FindTool
 from core.tools.shared.browser import BrowserTool
@@ -41,6 +42,7 @@ def create_shared_tools(
         WriteTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         EditTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         BashTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
+        PwshTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         GrepTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         FindTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         BrowserTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),

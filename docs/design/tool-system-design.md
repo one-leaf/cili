@@ -26,13 +26,14 @@
 ```
 core/tools/
 ├── __init__.py              # 顶层注册表：create_tools(), get_tool_by_name()
-├── shared/                  # 共用工具（18~19 个）
+├── shared/                  # 共用工具（19~20 个）
 │   ├── __init__.py          # create_shared_tools()
 │   ├── base.py              # Tool 基类 + ToolResult + BackgroundTaskManager
 │   ├── read.py              # 读取文件
 │   ├── write.py             # 写入文件
 │   ├── edit.py              # 精确替换
-│   ├── bash.py              # Shell 命令
+│   ├── bash.py              # Shell 命令（Git Bash）
+│   ├── pwsh.py              # PowerShell 命令
 │   ├── grep.py              # 正则搜索
 │   ├── find.py              # 文件查找
 │   ├── browser.py           # 浏览器自动化
@@ -58,20 +59,20 @@ core/tools/
 ```
 
 **工厂函数**：
-- `create_shared_tools(**kwargs, config=None)` → 18 个固定工具 + LLMTool（条件加载）= 18~19 个共用工具
+- `create_shared_tools(**kwargs, config=None)` → 19 个固定工具 + LLMTool（条件加载）= 19~20 个共用工具
 - `create_root_tools(**kwargs)` → 3 个 RootAgent 专属工具（SkillTool + SubAgentTool + AskUserTool）
 - `create_sub_tools(**kwargs, config=None)` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
-- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（21~22 个）
-- SubAgent 的工具集 = `create_sub_tools()` → 19~20 个工具
+- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（22~23 个）
+- SubAgent 的工具集 = `create_sub_tools()` → 20~21 个工具
 
 **工具分配**：
 
 | Agent 类型 | 工具集 | 数量 |
 |-----------|--------|------|
-| RootAgent | shared + root | 21~22 个 |
-| SubAgent | shared + sub (SkillTool) | 19~20 个 |
+| RootAgent | shared + root | 22~23 个 |
+| SubAgent | shared + sub (SkillTool) | 20~21 个 |
 
-**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 18 而非 19）。
+**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 19 而非 20）。
 
 ### 2.2 工具注册表
 
@@ -219,7 +220,9 @@ content = [
 | 方法 | 说明 |
 |------|------|
 | `_run_bash(command, timeout, stdin, max_chars, output_file)` | 通过 Git Bash 执行命令，自动激活 Python 环境 |
-| `_start_background_task(command, shell_path, env_prefix)` | 启动后台任务，返回 task_id |
+| `_run_pwsh(command, timeout, stdin, max_chars, output_file)` | 通过 PowerShell 执行命令，自动设置 UTF-8 编码和 Python 环境 |
+| `_start_background_task(command, shell_path, env_prefix)` | 启动后台 bash 任务，返回 task_id |
+| `_start_pwsh_background_task(command, env_prefix)` | 启动后台 PowerShell 任务，返回 task_id |
 | `_read_background_task(task_id)` | 非阻塞读取后台任务累积输出 |
 | `_kill_background_task(task_id)` | 终止后台任务 |
 | `_write_stdin_to_task(task_id, text)` | 向运行中的后台任务发送 stdin 输入 |
@@ -235,6 +238,14 @@ content = [
 - 非零退出码时添加 `[exit code: N]` 前缀
 - 实时流式输出：逐行写入 `output_file`（供前端轮询）
 
+**_run_pwsh 特性**：
+- 与 `_run_bash` 相同的截断和超时逻辑
+- 自动设置 UTF-8 编码（`[Console]::OutputEncoding = [UTF8Encoding]::new($false)`）
+- 使用 Windows 原生路径，无需路径转换
+- PATH 使用 `;` 分隔符，环境变量使用 `$env:VAR` 语法
+- 调用方式：`pwsh -NoLogo -NoProfile -NonInteractive -Command <command>`
+- 优先使用 pwsh 7，回退到 Windows PowerShell 5.1
+
 ---
 
 ## 四、工具列表
@@ -247,6 +258,7 @@ content = [
 | write | write.py | 创建/覆盖文件（自动创建父目录） |
 | edit | edit.py | 精确文本替换（old_text 必须唯一） |
 | bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin |
+| pwsh | pwsh.py | PowerShell 命令，支持后台执行和交互式 stdin |
 | grep | grep.py | 正则搜索（支持 glob/type 过滤） |
 | find | find.py | 文件查找（glob 模式） |
 | browser | browser.py | Chrome 自动化（Playwright + CDP） |
@@ -361,7 +373,7 @@ tool_schemas = [tool.to_schema() for tool in tools]
 
 ## 七、后台任务执行
 
-bash、python 和 subagent 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
+bash、pwsh、python 和 subagent 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
 
 ### 7.1 功能概述
 
@@ -790,13 +802,37 @@ def create_shared_tools(**kwargs) -> list[Tool]:
 - **Unix 工具**：grep、sed、awk 等 Unix 工具在 Git Bash 中可用
 - **一致性**：跨平台行为一致
 
-### 10.4 为什么工具输出要截断？
+### 10.4 为什么需要 pwsh 工具？
+
+- **PowerShell 原生**：某些 Windows 管理任务（注册表、COM、.NET）用 PowerShell 更自然
+- **路径格式**：pwsh 使用 Windows 原生路径（`C:\...`），无需像 bash 那样转换
+- **环境变量**：`$env:VAR` 语法，与 Windows 生态一致
+- **UTF-8 编码**：自动设置 `[Console]::OutputEncoding`，正确处理非 ASCII 输出
+- **与 bash 互补**：bash 擅长 Unix 工具链，pwsh 擅长 Windows 原生操作
+
+### 10.5 为什么需要跨工具隔离？
+
+bash/pwsh/python 三个执行工具互相隔离，不能从一个工具调用另一个：
+
+- **防止安全绕过**：LLM 可能通过 `bash(command="powershell -Command ...")` 绕过 pwsh 的 deny_patterns
+- **工具职责清晰**：每个工具有自己的 deny_patterns 和安全检查，混用会导致安全策略失效
+- **引导正确使用**：拦截时返回错误提示用户使用正确的工具，形成正向引导
+
+**实现方式**：
+
+| 工具 | 拦截目标 | deny_patterns 示例 |
+|------|---------|-------------------|
+| `bash` | powershell, pwsh, python | `(?<![a-zA-Z0-9_-])(?:powershell\|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])` |
+| `pwsh` | bash, python, powershell | `(?<![a-zA-Z0-9_-])(?:python3?\|python\.exe)(?![a-zA-Z0-9_-])` |
+| `python` | subprocess→bash/pwsh, eval, exec | `subprocess\.\w+\s*\(\s*[\[\(]?\s*['"](?:bash\|pwsh\|powershell)` |
+
+### 10.6 为什么工具输出要截断？
 
 - **上下文窗口限制**：工具输出太大会占用 LLM 上下文
 - **成本控制**：减少 token 消耗
 - **安全性**：防止恶意输出撑爆上下文
 
-### 10.5 为什么使用外部优先存储架构？
+### 10.7 为什么使用外部优先存储架构？
 
 - **Session 体积小**：只存元信息（`_file_size`、`_output_path` 等），不存内容
 - **历史加载快**：页面刷新时不必加载大量工具输出
