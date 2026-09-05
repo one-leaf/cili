@@ -25,6 +25,7 @@
 - **零 SDK 依赖** — 原始 httpx 实现 SSE 流式与重试，不依赖 Anthropic / OpenAI 官方 SDK
 - **双模型架构** — RootAgent 负责多轮对话，LLM 模型处理单轮摘要压缩，各司其职
 - **浏览器自动化** — Playwright + Chrome CDP，全局单例管理，支持网页搜索与内容抓取
+- **文档解析** — 内置 MinerU 支持，PDF / Word / PPT 等格式智能识别与相互转换
 - **LaTeX 支持** — 内置 LaTeX 编译器，支持生成论文级别的 PDF 文档
 - **中文原生** — UI、日志、工具输出均为中文，系统提示词为英文（最优 LLM 性能）
 - **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，双击即可运行
