@@ -2,7 +2,7 @@
 
 # 草履虫 Cili Agent
 
-**Harness 智能体 · 浏览器自动化 · 学习工作一体 · 开箱即用**
+**Agent Harness · 浏览器自动化 · 学习工作一体 · 开箱即用**
 
 ![草履虫](web/static/favicon.png)
 
