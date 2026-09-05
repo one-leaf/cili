@@ -2508,6 +2508,8 @@ async function sendMessage() {
         sendBtn.classList.remove('btn-danger');
         sendBtn.classList.add('btn-primary');
         chatMessages.scrollTop = chatMessages.scrollHeight;
+        // 刷新侧边栏，更新会话标题（preview = 最后一条用户消息）
+        await loadSessions();
     }
 }
 
