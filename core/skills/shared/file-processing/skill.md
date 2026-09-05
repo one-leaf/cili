@@ -1162,15 +1162,15 @@ When the user requests converting Word (DOCX/DOC) or Excel (XLSX/XLS) to PDF for
 
 ## Priority Order
 
-1. **pwsh + COM (Microsoft Office)** — Best quality, preserves all formatting
-2. **LibreOffice** — Good quality, cross-platform
+1. **pwsh + Microsoft Office COM** — Best quality, most common
+2. **pwsh + WPS COM** — Alternative if WPS Office is installed
 3. **Python libraries** — Limited quality, fallback only
 
-## Method 1: pwsh + COM (Preferred on Windows with Office)
+## Method 1: pwsh + Microsoft Office COM (Preferred)
 
 Use the `pwsh` tool to invoke Microsoft Office via COM automation. This produces the highest quality PDF with perfect formatting preservation.
 
-### Word to PDF via COM
+### Word to PDF via Office COM
 
 ```powershell
 pwsh(command="
@@ -1184,7 +1184,7 @@ $word.Quit()
 ")
 ```
 
-### Excel to PDF via COM
+### Excel to PDF via Office COM
 
 ```powershell
 pwsh(command="
@@ -1220,38 +1220,118 @@ $excel.Quit()
 ")
 ```
 
-### Advantages of COM Method
+### Advantages of Office COM Method
 
 - **Perfect formatting**: Uses actual Office rendering engine
 - **All features supported**: Charts, PivotTables, conditional formatting, etc.
 - **Macros/VBA**: If the document has macros, they execute normally
 - **Fonts**: Uses installed system fonts correctly
 
-### Requirements
+## Method 2: pwsh + WPS Office COM (Alternative)
 
-- Microsoft Office must be installed (Word for DOCX, Excel for XLSX)
-- Windows OS with COM support
-- Use `pwsh` tool, not bash
+If WPS Office is installed instead of Microsoft Office, use WPS COM objects.
 
-## Method 2: LibreOffice (Cross-platform Fallback)
+### WPS COM Object Names
 
-If Office is not available, use LibreOffice command line:
+| Application | COM Object |
+|-------------|------------|
+| WPS 文字 (Writer) | `KWps.Application` or `WPS.Application` |
+| WPS 表格 (Spreadsheet) | `KET.Application` |
+| WPS 演示 (Presentation) | `KWPP.Application` |
 
-```bash
-bash(command="soffice --headless --convert-to pdf --outdir /c/output /c/input/document.docx")
-```
-
-Or via pwsh:
+### Word to PDF via WPS COM
 
 ```powershell
 pwsh(command="
-& 'C:\\Program Files\\LibreOffice\\program\\soffice.exe' --headless --convert-to pdf --outdir 'C:\\output' 'C:\\input\\document.docx'
+$wps = New-Object -ComObject KWps.Application
+$wps.Visible = $false
+$doc = $wps.Documents.Open('C:\\path\\to\\document.docx')
+$doc.ExportAsFixedFormat('C:\\path\\to\\output.pdf', 17)  # 17 = wdFormatPDF
+$doc.Close()
+$wps.Quit()
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($wps) | Out-Null
+")
+```
+
+### Excel to PDF via WPS COM
+
+```powershell
+pwsh(command="
+$ket = New-Object -ComObject KET.Application
+$ket.Visible = $false
+$ket.DisplayAlerts = $false
+$wb = $ket.Workbooks.Open('C:\\path\\to\\spreadsheet.xlsx')
+$wb.ExportAsFixedFormat(0, 'C:\\path\\to\\output.pdf')  # 0 = xlTypePDF
+$wb.Close($false)
+$ket.Quit()
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($ket) | Out-Null
+")
+```
+
+### Auto-detect Office vs WPS
+
+```powershell
+pwsh(command="
+function ConvertTo-PDF {
+    param([string]$InputFile, [string]$OutputFile)
+    
+    $ext = [System.IO.Path]::GetExtension($InputFile).ToLower()
+    
+    if ($ext -in '.doc', '.docx') {
+        # Try Office first, then WPS
+        try {
+            $app = New-Object -ComObject Word.Application
+            $app.Visible = $false
+            $doc = $app.Documents.Open($InputFile)
+            $doc.SaveAs([ref]$OutputFile, [ref]17)
+            $doc.Close()
+            $app.Quit()
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($app) | Out-Null
+            Write-Host 'Converted using Microsoft Word'
+        } catch {
+            $app = New-Object -ComObject KWps.Application
+            $app.Visible = $false
+            $doc = $app.Documents.Open($InputFile)
+            $doc.ExportAsFixedFormat($OutputFile, 17)
+            $doc.Close()
+            $app.Quit()
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($app) | Out-Null
+            Write-Host 'Converted using WPS Writer'
+        }
+    }
+    elseif ($ext -in '.xls', '.xlsx') {
+        # Try Office first, then WPS
+        try {
+            $app = New-Object -ComObject Excel.Application
+            $app.Visible = $false
+            $app.DisplayAlerts = $false
+            $wb = $app.Workbooks.Open($InputFile)
+            $wb.ExportAsFixedFormat(0, $OutputFile)
+            $wb.Close($false)
+            $app.Quit()
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($app) | Out-Null
+            Write-Host 'Converted using Microsoft Excel'
+        } catch {
+            $app = New-Object -ComObject KET.Application
+            $app.Visible = $false
+            $app.DisplayAlerts = $false
+            $wb = $app.Workbooks.Open($InputFile)
+            $wb.ExportAsFixedFormat(0, $OutputFile)
+            $wb.Close($false)
+            $app.Quit()
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($app) | Out-Null
+            Write-Host 'Converted using WPS Spreadsheet'
+        }
+    }
+}
+
+ConvertTo-PDF -InputFile 'C:\\path\\to\\input.docx' -OutputFile 'C:\\path\\to\\output.pdf'
 ")
 ```
 
 ## Method 3: Python Libraries (Last Resort)
 
-Only use when neither Office nor LibreOffice is available.
+Only use when neither Office nor WPS is available.
 
 ### DOCX to PDF
 
@@ -1288,21 +1368,26 @@ doc.build([table])
 ```
 User requests "convert to PDF"
     ↓
-Is this Windows with Office installed?
+Try Microsoft Office COM first
     ↓
-   Yes → Use pwsh + COM (Method 1)
+   Success? → Done
     ↓
-   No → Is LibreOffice available?
-           ↓
-          Yes → Use LibreOffice (Method 2)
-           ↓
-          No → Use Python library (Method 3, limited quality)
+   Failed (Office not installed)
+    ↓
+Try WPS Office COM
+    ↓
+   Success? → Done
+    ↓
+   Failed (WPS not installed)
+    ↓
+Use Python library (limited quality)
 ```
 
 ## Important Notes
 
 - **Always use `pwsh` tool for COM calls**, never bash (bash cannot invoke COM)
 - **Absolute paths required** for COM — convert relative paths to absolute first
-- **Release COM objects** to prevent Office processes from hanging
-- **Set Visible = $false** to run Office in background
-- **DisplayAlerts = $false** suppresses dialog prompts (Excel)
+- **Release COM objects** to prevent Office/WPS processes from hanging
+- **Set Visible = $false** to run Office/WPS in background
+- **DisplayAlerts = $false** suppresses dialog prompts (Excel/WPS Spreadsheet)
+- **WPS COM names differ**: `KWps` (Writer), `KET` (Spreadsheet), `KWPP` (Presentation)
