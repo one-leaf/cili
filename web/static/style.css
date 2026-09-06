@@ -1855,3 +1855,216 @@ mjx-container {
 #settings-modal .form-hint {
     font-size: 11px;
 }
+
+/* ========== File Manager Modal ========== */
+
+.file-manager-modal-content {
+    max-width: 900px;
+    width: 85%;
+    height: 75vh;
+}
+
+.file-manager-modal-content .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Breadcrumb */
+.file-manager-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    flex: 1;
+}
+
+.file-manager-breadcrumb span {
+    cursor: pointer;
+    color: var(--primary-color);
+}
+
+.file-manager-breadcrumb span:hover {
+    text-decoration: underline;
+}
+
+.file-manager-breadcrumb span:last-child {
+    color: var(--text-color);
+    cursor: default;
+}
+
+.file-manager-breadcrumb span:last-child:hover {
+    text-decoration: none;
+}
+
+.file-manager-breadcrumb .breadcrumb-sep {
+    color: var(--text-secondary);
+    cursor: default;
+}
+
+.file-manager-breadcrumb .breadcrumb-sep:hover {
+    text-decoration: none;
+}
+
+/* Toolbar */
+.file-manager-toolbar {
+    display: flex;
+    gap: 6px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+
+/* Body */
+.file-manager-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* File List */
+.file-manager-list {
+    flex: 1;
+    overflow-y: auto;
+    min-width: 0;
+}
+
+.fm-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 20px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background 0.15s;
+}
+
+.fm-item:hover {
+    background: #f5f5f5;
+}
+
+.fm-item.selected {
+    background: #e8f0fe;
+}
+
+.fm-checkbox {
+    margin-right: 10px;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.fm-item-icon {
+    margin-right: 10px;
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+}
+
+.fm-item-name {
+    flex: 1;
+    font-size: 14px;
+    word-break: break-all;
+}
+
+.fm-item-size {
+    width: 80px;
+    text-align: right;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.fm-item-date {
+    width: 140px;
+    text-align: right;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+/* File Preview Area */
+.file-preview-area {
+    width: 50%;
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    background: #fafafa;
+}
+
+.file-preview-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--sidebar-bg);
+    gap: 10px;
+}
+
+.file-preview-header span {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-preview-header .btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* 预览模式：隐藏 size 和 date 列 */
+.file-manager-list.preview-mode .fm-item-size,
+.file-manager-list.preview-mode .fm-item-date {
+    display: none;
+}
+
+/* 预览模式：文件项宽度调整 */
+.file-manager-list.preview-mode .fm-item {
+    width: 100%;
+}
+
+.file-preview-content {
+    flex: 1;
+    width: 100%;
+    border: none;
+    padding: 16px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    background: #fff;
+}
+
+.file-preview-image {
+    flex: 1;
+    width: 100%;
+    object-fit: contain;
+    padding: 16px;
+    background: #fff;
+}
+
+.file-preview-pdf {
+    flex: 1;
+    width: 100%;
+    border: none;
+}
+
+/* Empty state */
+.fm-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--text-secondary);
+}
+
+.fm-empty-state svg {
+    margin-bottom: 12px;
+    opacity: 0.5;
+}

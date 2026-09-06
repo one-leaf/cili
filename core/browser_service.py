@@ -966,7 +966,7 @@ class BrowserService:
                 abs_path = path
             page.screenshot(path=abs_path, full_page=True)
             filename = os.path.basename(abs_path)
-            markdown_link = f"![Screenshot](/api/workspace/files/{filename})"
+            markdown_link = f"![Screenshot](/api/files/{filename})"
             return ToolResult(f"Screenshot saved to {abs_path}\n\n{markdown_link}")
 
         return self._execute_operation(f"screenshot({path})", _do_screenshot, tab_index=tab_index)

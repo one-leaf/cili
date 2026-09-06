@@ -60,7 +60,7 @@ class TestPrompts:
     def test_build_root_prompt_contains_url_format(self):
         from core.prompts import build_root_prompt
         prompt = build_root_prompt()
-        assert "/api/workspace/files/" in prompt
+        assert "/api/files/" in prompt
         assert "plot.png" in prompt
         assert "![plot]" in prompt
 

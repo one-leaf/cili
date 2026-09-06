@@ -45,6 +45,11 @@
                     </select>
                     <button id="workspace-settings-btn" class="btn btn-small" title="工作区设置" disabled>&#9881;</button>
                     <button id="new-workspace-btn" class="btn btn-small" title="新建工作区">+</button>
+                    <button id="file-manager-btn" class="btn btn-small" title="文件管理">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
@@ -408,6 +413,39 @@
             <div class="modal-footer">
                 <button id="new-workspace-cancel-btn" class="btn">取消</button>
                 <button id="new-workspace-create-btn" class="btn btn-primary">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Manager Modal -->
+    <div id="file-manager-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="file-manager-modal"></div>
+        <div class="modal-content file-manager-modal-content">
+            <div class="modal-header">
+                <div class="file-manager-breadcrumb" id="fm-breadcrumb"></div>
+                <button class="modal-close" data-modal="file-manager-modal">&times;</button>
+            </div>
+            <div class="file-manager-toolbar">
+                <button class="btn btn-small" id="fm-new-file-btn">+ 文件</button>
+                <button class="btn btn-small" id="fm-new-folder-btn">+ 文件夹</button>
+                <button class="btn btn-small" id="fm-upload-btn">上传</button>
+                <input type="file" id="fm-upload-input" multiple style="display:none;">
+                <button class="btn btn-small" id="fm-delete-btn">删除</button>
+                <button class="btn btn-small" id="fm-rename-btn">重命名</button>
+                <button class="btn btn-small" id="fm-refresh-btn">刷新</button>
+            </div>
+            <div class="modal-body file-manager-body">
+                <div class="file-manager-list" id="file-manager-list"></div>
+                <div class="file-preview-area" id="file-preview-area" style="display:none;">
+                    <div class="file-preview-header">
+                        <span id="file-preview-name"></span>
+                        <a id="file-preview-download-btn" class="btn btn-small" download>下载</a>
+                        <button class="btn btn-small" id="file-preview-close-btn">关闭</button>
+                    </div>
+                    <textarea id="file-preview-content" class="file-preview-content" readonly></textarea>
+                    <img id="file-preview-image" class="file-preview-image" style="display:none;">
+                    <embed id="file-preview-pdf" class="file-preview-pdf" type="application/pdf" style="display:none;">
+                </div>
             </div>
         </div>
     </div>

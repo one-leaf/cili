@@ -1865,7 +1865,7 @@ async def list_files(workspace_uuid: str, path: str = ""):
         raise HTTPException(status_code=404, detail="Workspace directory not found")
 
     # Build target path
-    if path:
+    if path and path.strip():
         target_path = (workspace_dir / path).resolve()
         # Security: ensure path is within workspace
         try:
@@ -1874,6 +1874,7 @@ async def list_files(workspace_uuid: str, path: str = ""):
             raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
     else:
         target_path = workspace_dir.resolve()
+        path = ""  # 确保空路径
 
     if not target_path.exists() or not target_path.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
@@ -1884,12 +1885,22 @@ async def list_files(workspace_uuid: str, path: str = ""):
         for item in sorted(target_path.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
             if item.name.startswith('.'):
                 continue
+            # 跳过非法路径（Windows 特殊设备名等 is_file/is_dir/is_symlink 均为 False）
+            if not item.is_file() and not item.is_dir() and not item.is_symlink():
+                continue
             rel_path = str(item.relative_to(workspace_dir))
-            items.append({
-                "name": item.name,
-                "path": rel_path,
-                "is_file": item.is_file()
-            })
+            try:
+                stat = item.stat()
+                items.append({
+                    "name": item.name,
+                    "path": rel_path,
+                    "is_file": item.is_file(),
+                    "size": stat.st_size if item.is_file() else None,
+                    "modified": stat.st_mtime
+                })
+            except (OSError, PermissionError):
+                # 无法访问的文件/目录，跳过
+                continue
     except PermissionError:
         raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
 
@@ -1906,6 +1917,286 @@ async def list_files(workspace_uuid: str, path: str = ""):
         "items": items,
         "parent": parent
     }
+
+
+# ----- File Manager API (统一 /api/files 路径) -----
+
+class FileCreateRequest(BaseModel):
+    """Request model for creating a file or folder."""
+    workspace_uuid: str
+    path: str = ""  # Parent directory path
+    name: str  # File/folder name
+    type: str = "file"  # "file" or "folder"
+    content: str = ""  # Initial content for files
+
+
+class FileDeleteRequest(BaseModel):
+    """Request model for deleting files."""
+    workspace_uuid: str
+    paths: list[str]  # List of relative paths to delete
+
+
+class FileUpdateRequest(BaseModel):
+    """Request model for updating (rename/move/save) a file."""
+    workspace_uuid: str
+    path: str  # Current relative path
+    new_path: str = ""  # New relative path (for rename/move)
+    content: str | None = None  # New content (for save)
+
+
+@app.get("/api/files/{file_path:path}")
+async def read_file(file_path: str, workspace_uuid: str):
+    """Read a file from workspace.
+
+    Args:
+        file_path: Relative path within workspace
+        workspace_uuid: Workspace UUID
+
+    Returns:
+        File content as text or binary
+    """
+    ws_config = load_workspace_config(workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    # Security: ensure path is within workspace
+    file_full_path = (workspace_dir / file_path).resolve()
+    if not file_full_path.is_relative_to(workspace_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+
+    if not file_full_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    if not file_full_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Not a file: {file_path}")
+
+    return FileResponse(str(file_full_path))
+
+
+@app.post("/api/files")
+async def create_file(request: FileCreateRequest):
+    """Create a new file or folder in workspace.
+
+    Args:
+        request: FileCreateRequest with workspace_uuid, path, name, type, content
+
+    Returns:
+        Created file/folder info
+    """
+    ws_config = load_workspace_config(request.workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    # Build target path
+    if request.path:
+        target_dir = (workspace_dir / request.path).resolve()
+    else:
+        target_dir = workspace_dir.resolve()
+
+    # Security: ensure path is within workspace
+    if not target_dir.is_relative_to(workspace_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+
+    # Check for path traversal in name
+    target_path = (target_dir / request.name).resolve()
+    if not target_path.is_relative_to(workspace_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied: invalid file name")
+
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail=f"Already exists: {request.name}")
+
+    try:
+        if request.type == "folder":
+            target_path.mkdir(parents=True, exist_ok=True)
+            return {"type": "folder", "path": str(target_path.relative_to(workspace_dir)), "name": request.name}
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(request.content, encoding="utf-8")
+            return {"type": "file", "path": str(target_path.relative_to(workspace_dir)), "name": request.name}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/files")
+async def delete_files(request: FileDeleteRequest):
+    """Delete files or folders from workspace.
+
+    Args:
+        request: FileDeleteRequest with workspace_uuid and paths list
+
+    Returns:
+        Deletion result
+    """
+    ws_config = load_workspace_config(request.workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    import shutil
+
+    deleted = []
+    errors = []
+
+    for path in request.paths:
+        file_full_path = (workspace_dir / path).resolve()
+
+        # Security check
+        if not file_full_path.is_relative_to(workspace_dir.resolve()):
+            errors.append({"path": path, "error": "Access denied: path outside workspace"})
+            continue
+
+        if not file_full_path.exists():
+            errors.append({"path": path, "error": "File not found"})
+            continue
+
+        try:
+            if file_full_path.is_dir():
+                shutil.rmtree(file_full_path)
+            else:
+                file_full_path.unlink()
+            deleted.append(path)
+        except PermissionError:
+            errors.append({"path": path, "error": "Permission denied"})
+        except Exception as e:
+            errors.append({"path": path, "error": str(e)})
+
+    return {"deleted": deleted, "errors": errors}
+
+
+@app.put("/api/files")
+async def update_file(request: FileUpdateRequest):
+    """Update a file: rename/move or save content.
+
+    Args:
+        request: FileUpdateRequest with workspace_uuid, path, new_path, content
+
+    Returns:
+        Update result
+    """
+    ws_config = load_workspace_config(request.workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    file_full_path = (workspace_dir / request.path).resolve()
+
+    # Security check for source
+    if not file_full_path.is_relative_to(workspace_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+
+    if not file_full_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {request.path}")
+
+    # Handle rename/move
+    if request.new_path:
+        new_full_path = (workspace_dir / request.new_path).resolve()
+
+        # Security check for destination
+        if not new_full_path.is_relative_to(workspace_dir.resolve()):
+            raise HTTPException(status_code=403, detail="Access denied: destination outside workspace")
+
+        try:
+            new_full_path.parent.mkdir(parents=True, exist_ok=True)
+            file_full_path.rename(new_full_path)
+            return {"action": "rename", "path": request.new_path}
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Handle content save
+    if request.content is not None:
+        if not file_full_path.is_file():
+            raise HTTPException(status_code=400, detail="Cannot save content to a directory")
+
+        try:
+            file_full_path.write_text(request.content, encoding="utf-8")
+            return {"action": "save", "path": request.path}
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    raise HTTPException(status_code=400, detail="No action specified: provide new_path or content")
+
+
+@app.post("/api/files/upload")
+async def upload_files(
+    workspace_uuid: str = Form(...),
+    path: str = Form(""),
+    files: list = Form(...)
+):
+    """Upload files to workspace.
+
+    Args:
+        workspace_uuid: Workspace UUID
+        path: Relative directory path within workspace
+        files: List of uploaded files
+
+    Returns:
+        Upload result
+    """
+    from fastapi import UploadFile
+
+    ws_config = load_workspace_config(workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    # Build target directory
+    if path:
+        target_dir = (workspace_dir / path).resolve()
+    else:
+        target_dir = workspace_dir.resolve()
+
+    # Security check
+    if not target_dir.is_relative_to(workspace_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded = []
+    errors = []
+
+    for file in files:
+        if not isinstance(file, UploadFile):
+            continue
+
+        try:
+            file_path = (target_dir / file.filename).resolve()
+
+            # Security check for filename
+            if not file_path.is_relative_to(workspace_dir.resolve()):
+                errors.append({"name": file.filename, "error": "Invalid filename"})
+                continue
+
+            # Write file
+            content = await file.read()
+            file_path.write_bytes(content)
+            uploaded.append({"name": file.filename, "size": len(content)})
+        except Exception as e:
+            errors.append({"name": file.filename, "error": str(e)})
+
+    return {"uploaded": uploaded, "errors": errors}
 
 
 # ----- Upgrade -----
