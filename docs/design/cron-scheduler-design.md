@@ -430,12 +430,12 @@ CronScheduler._execute_task(task):
 ├─ 读取 remaining（从 state 或 config.max_executions 初始化）
 │   └─ remaining = state.get("remaining", config.get("max_executions", 9999))
 │
+├─ 检查终止条件（递减前）
+│   ├─ remaining <= 0 → 自动 disable → 不执行
+│   └─ remaining > 0 → 继续执行
+│
 ├─ 递减 remaining
 │   └─ remaining -= 1
-│
-├─ 检查终止条件
-│   ├─ remaining <= 0 → 自动 disable → 不执行
-│   └─ remaining > 0 → 继续执行 SubAgent
 │
 ├─ task.execute()
 │
