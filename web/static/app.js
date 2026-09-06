@@ -13,6 +13,48 @@ let fmCurrentPath = '';           // 当前路径（相对 workspace）
 let fmSelectedFiles = new Set();  // 选中的文件路径集合
 let fmPreviewFile = null;         // 当前预览的文件路径
 
+// ── 图片压缩 ──
+const MAX_IMAGE_DIMENSION = 1920;  // 最大宽高
+const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024;  // 2MB
+
+async function compressImage(file, quality = 0.85) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            let { width, height } = img;
+            // 缩放
+            if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+                const scale = Math.min(MAX_IMAGE_DIMENSION / width, MAX_IMAGE_DIMENSION / height);
+                width = Math.round(width * scale);
+                height = Math.round(height * scale);
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            canvas.toBlob((blob) => {
+                if (!blob) { resolve({ data: null, media_type: 'image/jpeg' }); return; }
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const dataUrl = ev.target.result;
+                    const commaIdx = dataUrl.indexOf(',');
+                    const data = dataUrl.substring(commaIdx + 1);
+                    resolve({ data, media_type: 'image/jpeg', preview_url: dataUrl, size: blob.size });
+                };
+                reader.readAsDataURL(blob);
+            }, 'image/jpeg', quality);
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve({ data: null, media_type: 'image/jpeg' });
+        };
+        img.src = url;
+    });
+}
+
 // ── 工具输出实时流式显示 ──
 const _toolStreamTimers = {};  // { tool_use_id: { timer, pre, offset } }
 
@@ -139,8 +181,8 @@ function setupEventListeners() {
             sendMessage();
         }
     });
-    // Paste image support
-    chatInput.addEventListener('paste', (e) => {
+    // Paste image support (with compression)
+    chatInput.addEventListener('paste', async (e) => {
         const items = e.clipboardData?.items;
         if (!items) return;
         for (const item of items) {
@@ -148,16 +190,17 @@ function setupEventListeners() {
                 e.preventDefault();
                 const file = item.getAsFile();
                 if (!file) continue;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    const dataUrl = ev.target.result;  // data:image/png;base64,xxx
-                    const commaIdx = dataUrl.indexOf(',');
-                    const data = dataUrl.substring(commaIdx + 1);
-                    const mediaType = file.type || 'image/png';
-                    pendingImages.push({ data, media_type: mediaType, preview_url: dataUrl });
-                    renderImagePreviews();
-                };
-                reader.readAsDataURL(file);
+                // 压缩图片
+                const result = await compressImage(file);
+                if (!result.data) continue;
+                // 检查压缩后大小，超过2MB再降低质量
+                if (result.size > MAX_IMAGE_SIZE_BYTES) {
+                    const retry = await compressImage(file, 0.5);
+                    if (retry.data) pendingImages.push({ data: retry.data, media_type: 'image/jpeg', preview_url: retry.preview_url });
+                } else {
+                    pendingImages.push({ data: result.data, media_type: 'image/jpeg', preview_url: result.preview_url });
+                }
+                renderImagePreviews();
                 break;  // Only take the first image
             }
         }
