@@ -703,10 +703,7 @@ class CronScheduler:
             max_exec = task.config.get("max_executions", 9999)
             remaining = task._remaining if task._remaining is not None else max_exec
 
-            remaining -= 1
-            task._remaining = remaining
-
-            # Check if should auto-disable
+            # Check if should auto-disable BEFORE decrementing
             if remaining <= 0:
                 task.enabled = False
                 logger.info(f"[cron] Task {task.name}: remaining=0, auto-disabled")
@@ -715,6 +712,9 @@ class CronScheduler:
                 # Update user_tasks.json to reflect disabled state
                 self._update_task_enabled(task.name, False)
                 return
+
+            remaining -= 1
+            task._remaining = remaining
 
             result = task.execute()
             task.mark_executed(now, result)
