@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Form, Depends, Request
+from fastapi import FastAPI, HTTPException, Form, Depends, Request, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -2140,7 +2140,7 @@ async def update_file(request: FileUpdateRequest):
 async def upload_files(
     workspace_uuid: str = Form(...),
     path: str = Form(""),
-    files: list = Form(...)
+    files: list[UploadFile] = File(...)
 ):
     """Upload files to workspace.
 
@@ -2152,8 +2152,6 @@ async def upload_files(
     Returns:
         Upload result
     """
-    from fastapi import UploadFile
-
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2178,9 +2176,6 @@ async def upload_files(
     errors = []
 
     for file in files:
-        if not isinstance(file, UploadFile):
-            continue
-
         try:
             file_path = (target_dir / file.filename).resolve()
 
