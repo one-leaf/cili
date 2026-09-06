@@ -32,8 +32,11 @@
                 <div class="sidebar-title-group">
                     <div class="title-path-wrap">
                         <h1>工作区</h1>
+                        <button id="settings-btn" class="btn btn-small" title="全局设置">&#9881;</button>
                     </div>
-                    <button id="settings-btn" class="btn btn-small" title="全局设置">&#9881;</button>
+                    <button id="sidebar-toggle-btn" class="btn btn-small" title="收起边栏">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
                 </div>
                 <div id="workspace-path" class="workspace-path">工作区路径</div>
                 <div class="workspace-controls">
@@ -64,6 +67,11 @@
                 </div>
             </div>
         </aside>
+
+        <!-- Sidebar open button (visible when collapsed) -->
+        <button id="sidebar-open-btn" class="sidebar-open-btn" title="打开边栏" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
 
         <!-- Main Chat Area -->
         <main class="chat-area">

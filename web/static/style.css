@@ -38,6 +38,7 @@ body {
 .container {
     display: flex;
     height: 100vh;
+    position: relative;
 }
 
 /* Sidebar */
@@ -48,6 +49,34 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: width 0.25s ease;
+}
+
+.sidebar.collapsed {
+    width: 0;
+    border-right: none;
+}
+
+/* Sidebar open button (visible when collapsed) */
+.sidebar-open-btn {
+    position: absolute;
+    left: 0;
+    top: 8px;
+    z-index: 10;
+    background: var(--sidebar-bg);
+    border: 1px solid var(--border-color);
+    border-left: none;
+    border-radius: 0 6px 6px 0;
+    padding: 6px 8px;
+    cursor: pointer;
+    box-shadow: 2px 0 6px rgba(0,0,0,0.08);
+    color: var(--text-secondary);
+    transition: color 0.2s, background 0.2s;
+}
+
+.sidebar-open-btn:hover {
+    background: #f0f0f0;
+    color: var(--text-color);
 }
 
 .sidebar-header {

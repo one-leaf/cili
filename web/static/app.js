@@ -64,7 +64,30 @@ document.addEventListener('DOMContentLoaded', () => {
     loadWorkspaces();
     loadFooter();
     setupEventListeners();
+    initSidebarState();
 });
+
+// Sidebar collapse / expand
+function initSidebarState() {
+    if (localStorage.getItem('sidebar-collapsed') === 'true') {
+        const sidebar = document.querySelector('.sidebar');
+        const toggleBtn = document.getElementById('sidebar-toggle-btn');
+        const openBtn = document.getElementById('sidebar-open-btn');
+        sidebar.classList.add('collapsed');
+        toggleBtn.style.display = 'none';
+        openBtn.style.display = '';
+    }
+}
+
+function toggleSidebar() {
+    const sidebar = document.querySelector('.sidebar');
+    const toggleBtn = document.getElementById('sidebar-toggle-btn');
+    const openBtn = document.getElementById('sidebar-open-btn');
+    const isCollapsed = sidebar.classList.toggle('collapsed');
+    toggleBtn.style.display = isCollapsed ? 'none' : '';
+    openBtn.style.display = isCollapsed ? '' : 'none';
+    localStorage.setItem('sidebar-collapsed', isCollapsed);
+}
 
 // Load footer info from JSON
 async function loadFooter() {
@@ -93,6 +116,8 @@ function setupEventListeners() {
     newWorkspaceBtn.addEventListener('click', handleNewWorkspace);
     newSessionBtn.addEventListener('click', createNewSession);
     sessionMenuBtn.addEventListener('click', toggleSessionPanelMenu);
+    document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
+    document.getElementById('sidebar-open-btn').addEventListener('click', toggleSidebar);
     sendBtn.addEventListener('click', () => {
         if (isSending) {
             stopAgent();
