@@ -244,19 +244,31 @@ def _find_git_bash() -> str:
 def _find_pwsh() -> str:
     """Find PowerShell executable path.
 
-    Priority: env var > pwsh 7 > Windows PowerShell 5.1 > fallback.
+    Priority: env var > PS7 install path > PATH(pwsh) > PS 5.1 path > fallback.
+    Mirrors deepseek-harness resolve.ts: probe well-known locations before PATH.
     """
     env_path = os.environ.get("PWSH_PATH")
     if env_path and os.path.isfile(env_path):
         return env_path
+
+    # Probe well-known PowerShell 7 install location (before PATH search)
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pwsh7 = os.path.join(program_files, "PowerShell", "7", "pwsh.exe")
+    if os.path.isfile(pwsh7):
+        return pwsh7
+
     import shutil as _shutil
-    # Prefer PowerShell 7 (pwsh), fallback to Windows PowerShell 5.1
+    # Search PATH for pwsh 7 (e.g. Microsoft Store install)
     pwsh = _shutil.which("pwsh")
     if pwsh:
         return pwsh
-    ps = _shutil.which("powershell")
-    if ps:
-        return ps
+
+    # Probe Windows PowerShell 5.1 explicit path
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    ps51 = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.isfile(ps51):
+        return ps51
+
     return "powershell.exe"
 
 
