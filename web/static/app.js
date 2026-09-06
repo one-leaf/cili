@@ -1419,7 +1419,7 @@ function renderMessages(messages) {
                 contentDiv.appendChild(thinkTitle);
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'think-content';
-                thinkDiv.innerHTML = marked.parse(block.text);
+                thinkDiv.innerHTML = renderMarkdown(block.text);
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
                 const div = addMessage('assistant', '');
@@ -1946,7 +1946,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
                                 thinkContent = '';
                             }
                             thinkContent += event.content;
-                            thinkDiv.innerHTML = marked.parse(thinkContent);
+                            thinkDiv.innerHTML = renderMarkdown(thinkContent);
                             chatMessages.scrollTop = chatMessages.scrollHeight;
                         } else if (event.type === 'text') {
                             if (thinkDiv) {
@@ -2149,7 +2149,7 @@ async function loadExecutionDetail(execId, container, headerEl, msg) {
                         if (block.kind === 'text' && block.text) {
                             const div = document.createElement('div');
                             div.className = `sa-msg ${message.role}`;
-                            div.innerHTML = marked.parse(block.text);
+                            div.innerHTML = renderMarkdown(block.text);
                             msgsDiv.appendChild(div);
                         } else if (block.kind === 'tool_call') {
                             const div = document.createElement('div');
@@ -2456,7 +2456,7 @@ async function sendMessage() {
                             thinkContent = '';
                         }
                         thinkContent += event.content;
-                        thinkDiv.innerHTML = marked.parse(thinkContent);
+                        thinkDiv.innerHTML = renderMarkdown(thinkContent);
                         chatMessages.scrollTop = chatMessages.scrollHeight;
                     } else if (event.type === 'text') {
                         // 如果之前有 think 块，标记完成
@@ -2466,7 +2466,7 @@ async function sendMessage() {
                             assistantDiv = addMessage('assistant', assistantContent);
                         } else {
                             assistantDiv.dataset.rawContent = assistantContent;
-                            assistantDiv.querySelector('.message-content').innerHTML = marked.parse(assistantContent);
+                            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
                             // Render math formulas with MathJax
                             if (window.MathJax && window.MathJax.typesetPromise) {
                                 MathJax.typesetPromise([assistantDiv]).catch((err) => {});
@@ -3778,13 +3778,21 @@ async function runUpgrade() {
 // 辅助函数：markdown 渲染时自动在图片 URL 后注入 workspace_uuid
 function renderMarkdown(text) {
     if (!text) return '';
+
+    // 获取 workspace_uuid：优先 currentWorkspace，其次 currentSession
+    const workspaceUuid = currentWorkspace?.uuid || currentSession?.workspace_uuid;
+
     // 匹配 ![alt](/api/files/xxx) 并追加 workspace_uuid
-    if (currentWorkspace) {
+    if (workspaceUuid) {
         text = text.replace(
             /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
             (match, alt, url) => {
+                // 如果已经有 workspace_uuid 参数，跳过
+                if (url.includes('workspace_uuid=')) {
+                    return match;
+                }
                 const sep = url.includes('?') ? '&' : '?';
-                return `![${alt}](${url}${sep}workspace_uuid=${currentWorkspace.uuid})`;
+                return `![${alt}](${url}${sep}workspace_uuid=${workspaceUuid})`;
             }
         );
     }
