@@ -10,7 +10,7 @@ import re
 import shlex
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
+from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS, _PROJECT_ROOT
 
 
 # Cross-tool isolation: block Python code from invoking bash/pwsh
@@ -218,7 +218,8 @@ class PythonTool(Tool):
         except Exception:
             pass  # If we can't read, let execution proceed
 
-        cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
+        mpl_dir = self._ensure_matplotlibrc()
+        cmd = f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             cmd += f" {shlex.quote(args)}"
 
@@ -245,10 +246,11 @@ class PythonTool(Tool):
             ) as f:
                 f.write(code)
                 temp_path = f.name
-            cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
+            cmd = f'MPLCONFIGDIR="{self._ensure_matplotlibrc()}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
 
-        return self._run_bash(f'PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
+        mpl_dir = self._ensure_matplotlibrc()
+        return self._run_bash(f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
 
     def _get_pip_mirror(self) -> str:
         """Load pip mirror from config."""
@@ -287,6 +289,36 @@ class PythonTool(Tool):
             if pattern.search(code):
                 return reason
         return None
+
+    @staticmethod
+    def _ensure_matplotlibrc() -> str:
+        """Ensure matplotlibrc with Chinese font config exists, return config dir path.
+
+        Also clears stale font caches so matplotlib re-scans fonts on next import.
+        """
+        import glob as _glob
+
+        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
+        os.makedirs(mpl_dir, exist_ok=True)
+
+        # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
+        for f in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+        rc_file = os.path.join(mpl_dir, "matplotlibrc")
+        if not os.path.exists(rc_file):
+            content = (
+                "# Cili Agent auto-generated matplotlib config for Chinese font support\n"
+                "font.sans-serif: Microsoft YaHei, SimSun, SimHei, sans-serif\n"
+                "axes.unicode_minus: False\n"
+            )
+            with open(rc_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        return mpl_dir
 
     def _install_packages(self, packages: str) -> ToolResult:
         """Install Python packages using pip."""

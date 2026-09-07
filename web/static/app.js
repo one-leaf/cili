@@ -322,6 +322,10 @@ async function loadWorkspaces() {
 
         workspaceSelect.innerHTML = '<option value="">选择工作区...</option>';
 
+        // 默认禁用工作区相关按钮
+        workspaceSettingsBtn.disabled = true;
+        document.getElementById('file-manager-btn').disabled = true;
+
         // 先渲染普通工作区
         data.workspaces.filter(ws => !ws.system).forEach(ws => {
             const option = document.createElement('option');
@@ -342,6 +346,8 @@ async function loadWorkspaces() {
         // If no workspaces, show hint
         if (data.workspaces.length === 0) {
             sessionsList.innerHTML = '<div class="empty-state">点击 + 创建工作区</div>';
+            workspaceSettingsBtn.disabled = true;
+            document.getElementById('file-manager-btn').disabled = true;
             return;
         }
 
@@ -394,6 +400,7 @@ async function handleWorkspaceChange() {
         currentSession = null;
         clearPosition();
         workspaceSettingsBtn.disabled = true;
+        document.getElementById('file-manager-btn').disabled = true;
         sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
         updateWorkspacePath();
@@ -402,6 +409,7 @@ async function handleWorkspaceChange() {
 
     // Enable workspace settings button
     workspaceSettingsBtn.disabled = false;
+    document.getElementById('file-manager-btn').disabled = false;
 
     // Find the workspace object from the list
     try {
@@ -1153,12 +1161,32 @@ async function exportSession(session) {
         ${messagesHtml}
     </div>
     <script>
+        // 保护数学公式不被 marked 破坏
+        function renderMarkdownWithMath(text) {
+            if (!text) return '';
+            const mathBlocks = [];
+            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            let html = marked.parse(text);
+            mathBlocks.forEach((block, idx) => {
+                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+            });
+            return html;
+        }
         // 渲染所有助手消息为markdown + math
         const texts = ${assistantTextsJson};
         document.querySelectorAll('.md-content').forEach(el => {
             const idx = parseInt(el.dataset.idx);
             const raw = texts[idx] || '';
-            el.innerHTML = marked.parse(raw);
+            el.innerHTML = renderMarkdownWithMath(raw);
         });
         // 触发MathJax重新排版
         if (window.MathJax && window.MathJax.typesetPromise) {
@@ -2879,7 +2907,27 @@ function exportToNewTab(markdownContent) {
     </div>
     <script>
         const markdown = ${JSON.stringify(markdownContent)};
-        document.querySelector('.md-content').innerHTML = marked.parse(markdown);
+        // 保护数学公式不被 marked 破坏
+        function renderMarkdownWithMath(text) {
+            if (!text) return '';
+            const mathBlocks = [];
+            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            let html = marked.parse(text);
+            mathBlocks.forEach((block, idx) => {
+                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+            });
+            return html;
+        }
+        document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdown);
         if (window.MathJax && window.MathJax.typesetPromise) {
             MathJax.typesetPromise();
         }
@@ -3075,7 +3123,27 @@ async function openSettingsHelp() {
     </div>
     <script>
         const markdown = ${JSON.stringify(markdown)};
-        document.querySelector('.md-content').innerHTML = marked.parse(markdown);
+        // 保护数学公式不被 marked 破坏
+        function renderMarkdownWithMath(text) {
+            if (!text) return '';
+            const mathBlocks = [];
+            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
+                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                mathBlocks.push(match);
+                return placeholder;
+            });
+            let html = marked.parse(text);
+            mathBlocks.forEach((block, idx) => {
+                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+            });
+            return html;
+        }
+        document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdown);
         if (window.MathJax && window.MathJax.typesetPromise) {
             MathJax.typesetPromise();
         }
@@ -3775,7 +3843,7 @@ async function runUpgrade() {
 
 // ── 文件管理器 API 封装 ──
 
-// 辅助函数：markdown 渲染时自动在图片 URL 后注入 workspace_uuid
+// 辅助函数：markdown 渲染时自动在图片 URL 后注入 workspace_uuid，同时保护数学公式不被破坏
 function renderMarkdown(text) {
     if (!text) return '';
 
@@ -3796,7 +3864,31 @@ function renderMarkdown(text) {
             }
         );
     }
-    return marked.parse(text);
+
+    // 保护数学公式：提取 $$...$$ 和 $...$ 为占位符，避免 marked 破坏 LaTeX 语法
+    const mathBlocks = [];
+    // 先处理 display math $$...$$
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
+        const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+        mathBlocks.push(match);
+        return placeholder;
+    });
+    // 再处理 inline math $...$（排除转义的 \$）
+    text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match, formula) => {
+        const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+        mathBlocks.push(match);
+        return placeholder;
+    });
+
+    // 解析 markdown
+    let html = marked.parse(text);
+
+    // 恢复数学公式
+    mathBlocks.forEach((block, idx) => {
+        html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+    });
+
+    return html;
 }
 
 // 辅助函数：自动注入 workspace_uuid
