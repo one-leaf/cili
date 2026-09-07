@@ -994,7 +994,7 @@ async function exportSession(session) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(sessionMeta?.preview || '会话导出')}</title>
-    <script src="/static/libs/marked.min.js"><\/script>
+    <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -1008,7 +1008,7 @@ async function exportSession(session) {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="${window.location.origin}/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
@@ -2798,7 +2798,7 @@ function exportToNewTab(messageDivOrContent) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>消息导出</title>
-    <script src="/static/libs/marked.min.js"><\/script>
+    <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -2812,7 +2812,7 @@ function exportToNewTab(messageDivOrContent) {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="${window.location.origin}/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
@@ -3028,7 +3028,7 @@ async function openSettingsHelp() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>设置说明</title>
-    <script src="/static/libs/marked.min.js"><\/script>
+    <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -3042,7 +3042,7 @@ async function openSettingsHelp() {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="${window.location.origin}/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
