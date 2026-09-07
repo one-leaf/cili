@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>会话查看</title>
+    <script src="/static/libs/marked.min.js"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+        .header {
+            background: white;
+            border-radius: 8px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+            border-left: 4px solid #4a90e2;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .header h1 {
+            color: #4a90e2;
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+        .header .meta {
+            color: #888;
+            font-size: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .message {
+            margin-bottom: 16px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .message.user {
+            background: #e3f2fd;
+            border-left: 3px solid #4a90e2;
+        }
+        .message.assistant {
+            background: white;
+            border-left: 3px solid #34a853;
+        }
+        .message-role {
+            font-weight: 600;
+            font-size: 12px;
+            padding: 10px 16px 0;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .message.user .message-role { color: #4a90e2; }
+        .message.assistant .message-role { color: #34a853; }
+        .message-content {
+            padding: 8px 16px 16px;
+            font-size: 14px;
+            line-height: 1.7;
+            overflow-wrap: break-word;
+        }
+        .message.user .message-content { white-space: pre-wrap; }
+        .message-time {
+            font-size: 11px;
+            color: #aaa;
+            padding: 0 16px 10px;
+        }
+        .md-content p { margin: 0.6em 0; }
+        .md-content h1, .md-content h2, .md-content h3,
+        .md-content h4, .md-content h5, .md-content h6 {
+            margin: 1em 0 0.5em; line-height: 1.3;
+        }
+        .md-content h1 { font-size: 1.4em; }
+        .md-content h2 { font-size: 1.25em; }
+        .md-content h3 { font-size: 1.1em; }
+        .md-content ul, .md-content ol { margin: 0.5em 0; padding-left: 1.8em; }
+        .md-content li { margin: 0.3em 0; }
+        .md-content blockquote {
+            margin: 0.6em 0; padding: 0.5em 1em;
+            border-left: 3px solid #4a90e2; background: #f8f9fa; color: #555;
+        }
+        .md-content pre {
+            background: #282c34; color: #abb2bf;
+            padding: 12px 16px; border-radius: 6px;
+            overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 0.6em 0;
+        }
+        .md-content code {
+            background: #f0f0f0; padding: 2px 5px; border-radius: 3px;
+            font-size: 0.9em; font-family: 'SF Mono', Monaco, Consolas, monospace;
+        }
+        .md-content pre code { background: none; padding: 0; color: inherit; }
+        .md-content table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
+        .md-content th, .md-content td { border: 1px solid #e0e0e0; padding: 8px 12px; text-align: left; }
+        .md-content th { background: #f5f5f5; font-weight: 600; }
+        .md-content a { color: #4a90e2; text-decoration: none; }
+        .md-content a:hover { text-decoration: underline; }
+        .md-content hr { border: none; border-top: 1px solid #e0e0e0; margin: 1em 0; }
+        .md-content img { max-width: 100%; border-radius: 4px; }
+        .status-msg {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+            font-size: 16px;
+        }
+        .status-msg.error { color: #d32f2f; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="status-msg">加载中...</div>
+    </div>
+
+    <script>
+    (function() {
+        const pathParts = window.location.pathname.split('/').filter(Boolean);
+        if (pathParts.length < 3 || pathParts[0] !== 's') {
+            document.getElementById('app').innerHTML = '<div class="status-msg error">无效的 URL</div>';
+            return;
+        }
+
+        const workspaceUuid = pathParts[1];
+        const sessionId = pathParts[2];
+        const indicesStr = pathParts.length >= 4 ? pathParts[3] : null;
+
+        function parseIndices(str) {
+            if (!str) return null;
+            const set = new Set();
+            str.split(',').forEach(part => {
+                const n = parseInt(part.trim());
+                if (!isNaN(n) && n >= 0) set.add(n);
+            });
+            return set.size > 0 ? set : null;
+        }
+
+        const targetIndices = parseIndices(indicesStr);
+
+        function renderMarkdownWithMath(text) {
+            if (!text) return '';
+            const mathBlocks = [];
+            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (m) => {
+                mathBlocks.push(m);
+                return 'MATHBLOCK{' + (mathBlocks.length - 1) + '}';
+            });
+            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (m) => {
+                mathBlocks.push(m);
+                return 'MATHBLOCK{' + (mathBlocks.length - 1) + '}';
+            });
+            let html = marked.parse(text);
+            mathBlocks.forEach((b, i) => { html = html.replace('MATHBLOCK{' + i + '}', b); });
+            return html;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function hasToolUse(content) {
+            if (!Array.isArray(content)) return false;
+            return content.some(b => b.type === 'tool_use' || b.type === 'tool_call');
+        }
+
+        function imageBlockHtml(block) {
+            const src = block.source || {};
+            if (src.type === 'base64') {
+                return `<img src="data:${src.media_type || 'image/png'};base64,${src.data || ''}" alt="图片" style="max-width:100%;border-radius:4px;margin:4px 0;">`;
+            }
+            return '';
+        }
+
+        function injectWorkspaceUuid(text) {
+            if (!workspaceUuid) return text;
+            return text.replace(
+                /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
+                (m, alt, url) => url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`
+            );
+        }
+
+        function extractTextContent(content) {
+            if (typeof content === 'string') return content;
+            if (!Array.isArray(content)) return '';
+            return content.filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+        }
+
+        function buildDisplayMessages(messages) {
+            const display = [];
+            for (const msg of messages) {
+                if (msg.role === 'user') {
+                    const content = msg.content;
+                    if (typeof content === 'string') {
+                        display.push({ role: 'user', text: content, images: [], timestamp: msg.timestamp });
+                    } else if (Array.isArray(content)) {
+                        const hasToolResult = content.some(b => b.type === 'tool_result');
+                        if (!hasToolResult) {
+                            const text = content.filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+                            const images = content.filter(b => b.type === 'image' && b.source);
+                            if (text || images.length > 0) {
+                                display.push({ role: 'user', text, images, timestamp: msg.timestamp });
+                            }
+                        }
+                    }
+                } else if (msg.role === 'assistant') {
+                    const content = msg.content;
+                    if (!hasToolUse(content)) {
+                        const text = extractTextContent(content);
+                        const images = Array.isArray(content) ? content.filter(b => b.type === 'image') : [];
+                        if (text || images.length > 0) {
+                            display.push({ role: 'assistant', text: injectWorkspaceUuid(text), images, timestamp: msg.timestamp });
+                        }
+                    }
+                }
+            }
+            return display;
+        }
+
+        function renderMessage(msg) {
+            const roleLabel = msg.role === 'user' ? '用户' : '助手';
+            const imgHtml = msg.images.map(imageBlockHtml).join('');
+            let contentHtml;
+            if (msg.role === 'user') {
+                contentHtml = imgHtml + escapeHtml(msg.text);
+            } else {
+                contentHtml = imgHtml + renderMarkdownWithMath(msg.text);
+            }
+            const timeHtml = msg.timestamp ? `<div class="message-time">${msg.timestamp}</div>` : '';
+            return `<div class="message ${msg.role}">
+                <div class="message-role">${roleLabel}</div>
+                <div class="message-content ${msg.role === 'assistant' ? 'md-content' : ''}">${contentHtml}</div>
+                ${timeHtml}
+            </div>`;
+        }
+
+        async function init() {
+            try {
+                const resp = await fetch(`/api/workspaces/${workspaceUuid}/sessions/${sessionId}`);
+                if (!resp.ok) {
+                    document.getElementById('app').innerHTML = `<div class="status-msg error">会话不存在或已删除 (${resp.status})</div>`;
+                    return;
+                }
+                const data = await resp.json();
+                const sessionTitle = data.name || data.session_id || '会话';
+                document.title = sessionTitle;
+
+                const allDisplay = buildDisplayMessages(data.messages || []);
+
+                let filtered;
+                if (targetIndices) {
+                    filtered = allDisplay.filter((_, i) => targetIndices.has(i));
+                } else {
+                    filtered = allDisplay;
+                }
+
+                if (filtered.length === 0) {
+                    document.getElementById('app').innerHTML = '<div class="status-msg">没有可显示的消息</div>';
+                    return;
+                }
+
+                const msgsHtml = filtered.map(renderMessage).join('');
+                document.getElementById('app').innerHTML = `<div class="container">${msgsHtml}</div>`;
+
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    window.MathJax.typesetPromise();
+                }
+            } catch (err) {
+                document.getElementById('app').innerHTML = `<div class="status-msg error">加载失败: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        init();
+    })();
+    </script>
+</body>
+</html>

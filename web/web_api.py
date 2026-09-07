@@ -412,6 +412,22 @@ async def root():
     return response
 
 
+@app.get("/s/{workspace_uuid}/{session_id}")
+async def session_view(workspace_uuid: str, session_id: str):
+    """独立会话查看页（完整会话模式）。"""
+    response = FileResponse(str(WEB_DIR / "static" / "session.html"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/s/{workspace_uuid}/{session_id}/{indices}")
+async def session_message_view(workspace_uuid: str, session_id: str, indices: str):
+    """独立会话查看页（指定消息模式，indices 为逗号分隔的数字）。"""
+    response = FileResponse(str(WEB_DIR / "static" / "session.html"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查端点"""

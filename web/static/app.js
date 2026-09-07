@@ -7,6 +7,7 @@ let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
 let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
+let _displayMsgIdx = 0;  // 可显示消息的索引计数器（用于分享链接）
 
 // ── 文件管理器状态 ──
 let fmCurrentPath = '';           // 当前路径（相对 workspace）
@@ -648,7 +649,7 @@ function toggleSessionItemMenu(session, btn) {
         <div class="session-dropdown-item" data-action="rename">修改名称</div>
         <div class="session-dropdown-item" data-action="hide">${hideLabel}</div>
         <div class="session-dropdown-item" data-action="delete">删除会话</div>
-        <div class="session-dropdown-item" data-action="export">导出会话</div>
+        <div class="session-dropdown-item" data-action="share">分享会话</div>
         <div class="session-dropdown-item" data-action="info">会话信息</div>
     `;
 
@@ -784,8 +785,8 @@ async function handleSessionAction(session, action) {
         case 'delete':
             await deleteSession(session);
             break;
-        case 'export':
-            await exportSession(session);
+        case 'share':
+            shareSession(session);
             break;
         case 'info':
             await showSessionInfo(session);
@@ -872,390 +873,26 @@ async function deleteSession(session) {
     }
 }
 
-// 导出会话为HTML
-async function exportSession(session) {
-    if (!currentWorkspace) return;
-
-    try {
-        // 获取完整会话数据
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${session.session_id}`);
-        const data = await response.json();
-
-        // 获取会话列表中的元数据
-        const sessionMeta = sessions.find(s => s.session_id === session.session_id);
-
-        // 创建新窗口
-        const newWindow = window.open('', '_blank');
-        if (!newWindow) {
-            alert('无法打开新窗口，请检查浏览器是否阻止了弹出窗口');
-            return;
-        }
-
-        // 生成消息HTML，助手消息存储原始markdown供JS渲染
-        let messagesHtml = '';
-        const messages = data.messages || [];
-        const assistantTexts = [];
-        const workspaceUuid = currentWorkspace?.uuid || '';
-
-        // 辅助函数：检查消息是否包含工具调用
-        function hasToolUse(content) {
-            if (!Array.isArray(content)) return false;
-            return content.some(block => block.type === 'tool_use' || block.type === 'tool_call');
-        }
-
-        // 辅助函数：生成 base64 图片 HTML（API 返回格式：source.data / source.media_type）
-        function imageBlockHtml(block) {
-            const src = block.source || {};
-            const dataUri = src.type === 'base64'
-                ? `data:${src.media_type || 'image/png'};base64,${src.data || ''}`
-                : '';
-            return dataUri ? `<img src="${dataUri}" alt="图片" style="max-width:100%;border-radius:4px;margin:4px 0;">` : '';
-        }
-
-        // 辅助函数：注入 workspace_uuid 到 markdown 中的文件图片 URL
-        function injectWorkspaceUuid(text) {
-            if (!workspaceUuid) return text;
-            return text.replace(
-                /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
-                (m, alt, url) => url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`
-            );
-        }
-
-        for (const msg of messages) {
-            if (msg.role === 'user') {
-                // 用户消息：提取纯文本 + 图片，不包含工具结果
-                const content = msg.content;
-                let text = '';
-                let imageHtml = '';
-                if (typeof content === 'string') {
-                    text = content;
-                } else if (Array.isArray(content)) {
-                    // 检查是否包含工具结果，如果有则跳过
-                    const hasToolResult = content.some(b => b.type === 'tool_result');
-                    if (!hasToolResult) {
-                        text = content
-                            .filter(block => block.type === 'text')
-                            .map(block => block.text || '')
-                            .join('\n');
-                        // 提取用户图片
-                        imageHtml = content
-                            .filter(block => block.type === 'image' && block.source)
-                            .map(block => {
-                                const src = block.source.type === 'base64'
-                                    ? `data:${block.source.media_type};base64,${block.source.data}`
-                                    : '';
-                                return src ? `<img src="${src}" alt="用户图片" style="max-width:100%;border-radius:4px;display:block;margin:4px 0;">` : '';
-                            })
-                            .join('');
-                    }
-                }
-                if (text || imageHtml) {
-                    messagesHtml += `
-                        <div class="message user">
-                            <div class="message-role">用户</div>
-                            <div class="message-content">${imageHtml}${escapeHtml(text)}</div>
-                        </div>
-                    `;
-                }
-            } else if (msg.role === 'assistant') {
-                // 助手消息：提取文本 + 图片，不包含工具调用
-                const content = msg.content;
-                if (!hasToolUse(content)) {
-                    const text = extractTextContent(content);
-                    // 提取图片块
-                    const images = Array.isArray(content)
-                        ? content.filter(block => block.type === 'image')
-                        : [];
-                    const imgHtml = images.map(imageBlockHtml).join('');
-
-                    if (text || imgHtml) {
-                        const idx = assistantTexts.length;
-                        // 注入 workspace_uuid 到 markdown 中的文件图片
-                        const textWithUuid = injectWorkspaceUuid(text);
-                        assistantTexts.push(textWithUuid);
-                        messagesHtml += `
-                            <div class="message assistant">
-                                <div class="message-role">助手</div>
-                                <div class="message-content md-content" data-idx="${idx}">${imgHtml}</div>
-                            </div>
-                        `;
-                    }
-                }
-            }
-        }
-
-        // 将助手原始文本序列化为JSON供页面JS读取
-        const assistantTextsJson = JSON.stringify(assistantTexts);
-
-        const html = `
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${escapeHtml(sessionMeta?.preview || '会话导出')}</title>
-    <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
-    <script>
-        window.MathJax = {
-            tex: {
-                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
-                processEscapes: true,
-                processEnvironments: true
-            },
-            options: {
-                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
-            }
-        };
-    <\/script>
-    <script id="MathJax-script" async src="${window.location.origin}/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            line-height: 1.6;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 30px 20px;
-        }
-        .header {
-            background: white;
-            border-radius: 8px;
-            padding: 20px 24px;
-            margin-bottom: 20px;
-            border-left: 4px solid #4a90e2;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        }
-        .header h1 {
-            color: #4a90e2;
-            font-size: 20px;
-            margin-bottom: 10px;
-        }
-        .header .meta {
-            color: #888;
-            font-size: 12px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
-        .message {
-            margin-bottom: 16px;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        }
-        .message.user {
-            background: #e3f2fd;
-            border-left: 3px solid #4a90e2;
-        }
-        .message.assistant {
-            background: white;
-            border-left: 3px solid #34a853;
-        }
-        .message-role {
-            font-weight: 600;
-            font-size: 12px;
-            padding: 10px 16px 0;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .message.user .message-role { color: #4a90e2; }
-        .message.assistant .message-role { color: #34a853; }
-        .message-content {
-            padding: 8px 16px 16px;
-            font-size: 14px;
-            line-height: 1.7;
-            overflow-wrap: break-word;
-        }
-        .message.user .message-content {
-            white-space: pre-wrap;
-        }
-        /* Markdown rendered content */
-        .md-content p { margin: 0.6em 0; }
-        .md-content h1, .md-content h2, .md-content h3,
-        .md-content h4, .md-content h5, .md-content h6 {
-            margin: 1em 0 0.5em;
-            line-height: 1.3;
-        }
-        .md-content h1 { font-size: 1.4em; }
-        .md-content h2 { font-size: 1.25em; }
-        .md-content h3 { font-size: 1.1em; }
-        .md-content ul, .md-content ol {
-            margin: 0.5em 0;
-            padding-left: 1.8em;
-        }
-        .md-content li { margin: 0.3em 0; }
-        .md-content blockquote {
-            margin: 0.6em 0;
-            padding: 0.5em 1em;
-            border-left: 3px solid #4a90e2;
-            background: #f8f9fa;
-            color: #555;
-        }
-        .md-content pre {
-            background: #282c34;
-            color: #abb2bf;
-            padding: 12px 16px;
-            border-radius: 6px;
-            overflow-x: auto;
-            font-size: 13px;
-            line-height: 1.5;
-            margin: 0.6em 0;
-        }
-        .md-content code {
-            background: #f0f0f0;
-            padding: 2px 5px;
-            border-radius: 3px;
-            font-size: 0.9em;
-            font-family: 'SF Mono', Monaco, Consolas, monospace;
-        }
-        .md-content pre code {
-            background: none;
-            padding: 0;
-            color: inherit;
-        }
-        .md-content table {
-            border-collapse: collapse;
-            width: 100%;
-            margin: 0.6em 0;
-        }
-        .md-content th, .md-content td {
-            border: 1px solid #e0e0e0;
-            padding: 8px 12px;
-            text-align: left;
-        }
-        .md-content th {
-            background: #f5f5f5;
-            font-weight: 600;
-        }
-        .md-content a {
-            color: #4a90e2;
-            text-decoration: none;
-        }
-        .md-content a:hover {
-            text-decoration: underline;
-        }
-        .md-content hr {
-            border: none;
-            border-top: 1px solid #e0e0e0;
-            margin: 1em 0;
-        }
-        .md-content img {
-            max-width: 100%;
-            border-radius: 4px;
-        }
-        .toolbar {
-            position: fixed;
-            top: 16px;
-            right: 16px;
-            background: white;
-            border-radius: 6px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            padding: 6px;
-            z-index: 100;
-        }
-        .toolbar button {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 6px 10px;
-            border-radius: 4px;
-            font-size: 13px;
-            color: #555;
-        }
-        .toolbar button:hover {
-            background: #f0f0f0;
-            color: #333;
-        }
-        @media print {
-            .toolbar { display: none; }
-            body { background: white; }
-            .message { box-shadow: none; break-inside: avoid; }
-        }
-    </style>
-</head>
-<body>
-    <div class="toolbar">
-        <button onclick="window.print()" title="打印">🖨️ 打印</button>
-    </div>
-    <div class="container">
-        <div class="header">
-            <h1>${escapeHtml(sessionMeta?.preview || '会话导出')}</h1>
-            <div class="meta">
-                <span>会话ID: ${session.session_id}</span>
-                <span>消息数量: ${messages.length}</span>
-                <span>创建时间: ${sessionMeta?.created_at || '未知'}</span>
-            </div>
-        </div>
-        ${messagesHtml}
-    </div>
-    <script>
-        // 保护数学公式不被 marked 破坏
-        function renderMarkdownWithMath(text) {
-            if (!text) return '';
-            const mathBlocks = [];
-            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            let html = marked.parse(text);
-            mathBlocks.forEach((block, idx) => {
-                html = html.replace('MATHBLOCK{' + idx + '}', block);
-            });
-            return html;
-        }
-        // 渲染所有助手消息为markdown + math
-        // 等待 MathJax 完全就绪后再渲染和排版，避免公式未渲染
-        const texts = ${assistantTextsJson};
-        const renderAndTypeset = () => {
-            document.querySelectorAll('.md-content').forEach(el => {
-                const idx = parseInt(el.dataset.idx);
-                const raw = texts[idx] || '';
-                el.innerHTML = renderMarkdownWithMath(raw);
-            });
-            if (window.MathJax && window.MathJax.typesetPromise) {
-                MathJax.typesetPromise();
-            }
-        };
-        if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-            MathJax.startup.promise.then(renderAndTypeset);
-        } else {
-            // MathJax 还没加载，等待 DOMContentLoaded 后重试
-            document.addEventListener('DOMContentLoaded', () => {
-                if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-                    MathJax.startup.promise.then(renderAndTypeset);
-                } else {
-                    renderAndTypeset();
-                }
-            });
-        }
-    <\/script>
-</body>
-</html>
-        `;
-
-        newWindow.document.write(html);
-        newWindow.document.close();
-
-    } catch (error) {
-        console.error('导出会话失败:', error);
-        alert('导出会话失败: ' + error.message);
+// 显示提示信息
+function showToast(message, duration = 2000) {
+    let toast = document.getElementById('toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast';
+        toast.className = 'toast';
+        document.body.appendChild(toast);
     }
+    toast.textContent = message;
+    toast.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+// 分享会话链接
+function shareSession(session) {
+    if (!currentWorkspace) return;
+    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${session.session_id}`;
+    window.open(url, '_blank');
 }
 
 // 显示会话信息
@@ -1392,6 +1029,7 @@ async function loadSession(sessionId) {
 // Render messages
 function renderMessages(messages) {
     chatMessages.innerHTML = '';
+    _displayMsgIdx = 0;  // 重置消息索引
 
     if (!messages || messages.length === 0) {
         chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
@@ -2679,33 +2317,79 @@ async function sendMessage() {
  *   > ...
  * [/引用]
  */
-function createQuoteButton(messageDiv) {
-    const quoteBtn = document.createElement('button');
-    quoteBtn.title = '引用';
-    quoteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
-    quoteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
+function doQuote(messageDiv) {
+    const contentDiv = messageDiv.querySelector('.message-content');
+    const raw = contentDiv ? contentDiv.textContent.trim() : '';
+    if (!raw) return;
 
-        // Extract text content from the message
-        const contentDiv = messageDiv.querySelector('.message-content');
-        const raw = contentDiv ? contentDiv.textContent.trim() : '';
-        if (!raw) return;
+    const text = raw.length > 500 ? raw.substring(0, 500) + '...' : raw;
+    const quoteText = text.split('\n').map(line => '> ' + line).join('\n') + '\n\n';
 
-        const text = raw.length > 500 ? raw.substring(0, 500) + '...' : raw;
+    const start = chatInput.selectionStart ?? chatInput.value.length;
+    const end = chatInput.selectionEnd ?? chatInput.value.length;
+    chatInput.value = chatInput.value.substring(0, start) + quoteText + chatInput.value.substring(end);
+    chatInput.focus();
+    const newPos = start + quoteText.length;
+    chatInput.setSelectionRange(newPos, newPos);
+}
 
-        const quoteText = text.split('\n').map(line => '> ' + line).join('\n') + '\n\n';
-
-        // Insert at cursor position if input is focused, else append
-        const start = chatInput.selectionStart ?? chatInput.value.length;
-        const end = chatInput.selectionEnd ?? chatInput.value.length;
-        chatInput.value = chatInput.value.substring(0, start) + quoteText + chatInput.value.substring(end);
-        chatInput.focus();
-
-        // Move cursor to end of inserted text
-        const newPos = start + quoteText.length;
-        chatInput.setSelectionRange(newPos, newPos);
+function doCopy(messageDiv) {
+    const text = messageDiv.dataset.rawContent || messageDiv.querySelector('.message-content').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制');
     });
-    return quoteBtn;
+}
+
+function doShare(msgIdx) {
+    if (!currentWorkspace || !currentSession) return;
+    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${currentSession.session_id}/${msgIdx}`;
+    window.open(url, '_blank');
+}
+
+function toggleMessageMenu(messageDiv, anchor) {
+    // 关闭其他菜单
+    document.querySelectorAll('.msg-menu.show').forEach(m => m.remove());
+
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu show';
+
+    const items = [];
+
+    // 引用
+    items.push({ label: '引用', action: () => doQuote(messageDiv) });
+
+    // 复制（仅助手消息）
+    if (messageDiv.classList.contains('assistant')) {
+        items.push({ label: '复制', action: () => doCopy(messageDiv) });
+    }
+
+    // 分享（有索引时）
+    const msgIdx = messageDiv.dataset.msgIdx;
+    if (msgIdx !== undefined) {
+        items.push({ label: '分享', action: () => doShare(msgIdx) });
+    }
+
+    items.forEach(({ label, action }) => {
+        const div = document.createElement('div');
+        div.className = 'msg-menu-item';
+        div.textContent = label;
+        div.addEventListener('click', (e) => {
+            e.stopPropagation();
+            action();
+            menu.remove();
+        });
+        menu.appendChild(div);
+    });
+
+    anchor.appendChild(menu);
+
+    // 点击其他地方关闭菜单
+    setTimeout(() => {
+        document.addEventListener('click', function closeMenu() {
+            menu.remove();
+            document.removeEventListener('click', closeMenu);
+        });
+    }, 0);
 }
 
 // Add message to UI
@@ -2722,59 +2406,29 @@ function addMessage(role, content) {
         if (contentDiv.querySelector('img')) {
             messageDiv.classList.add('has-image');
         }
+
+        // 分配可显示消息索引
+        messageDiv.dataset.msgIdx = _displayMsgIdx;
+        _displayMsgIdx++;
     }
 
     messageDiv.appendChild(contentDiv);
 
-    // 助手消息添加复制和导出按钮（仅非空文本消息）
-    if (role === 'assistant' && content) {
+    // 所有消息（有内容时）添加菜单按钮
+    if (content) {
         messageDiv.dataset.rawContent = content;
 
-        // 创建按钮容器
-        const actionsDiv = document.createElement('div');
-        actionsDiv.className = 'message-actions';
-
-        // 引用按钮（助手消息）
-        const quoteBtn = createQuoteButton(messageDiv);
-        actionsDiv.appendChild(quoteBtn);
-
-        // 复制按钮
-        const copyBtn = document.createElement('button');
-        copyBtn.title = '复制';
-        copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-        copyBtn.addEventListener('click', (e) => {
+        const triggerBtn = document.createElement('button');
+        triggerBtn.className = 'msg-menu-trigger';
+        triggerBtn.textContent = '⋯';
+        triggerBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const raw = messageDiv.dataset.rawContent || messageDiv.querySelector('.message-content').textContent;
-            navigator.clipboard.writeText(raw).then(() => {
-                copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-                copyBtn.classList.add('copied');
-                setTimeout(() => {
-                    copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-                    copyBtn.classList.remove('copied');
-                }, 2000);
-            });
+            toggleMessageMenu(messageDiv, triggerBtn);
         });
 
-        // 导出按钮
-        const exportBtn = document.createElement('button');
-        exportBtn.title = '导出';
-        exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>';
-        exportBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            exportToNewTab(messageDiv);
-        });
-
-        actionsDiv.appendChild(copyBtn);
-        actionsDiv.appendChild(exportBtn);
-        messageDiv.appendChild(actionsDiv);
-    }
-
-    // 用户消息添加引用按钮
-    if (role === 'user' && content) {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'message-actions';
-        const quoteBtn = createQuoteButton(messageDiv);
-        actionsDiv.appendChild(quoteBtn);
+        actionsDiv.appendChild(triggerBtn);
         messageDiv.appendChild(actionsDiv);
     }
 
@@ -2782,240 +2436,6 @@ function addMessage(role, content) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 
     return messageDiv;
-}
-
-// Export message to new browser tab as rendered HTML
-// Accepts either a DOM element (preferred - preserves images + rendered math)
-// or a raw markdown string (fallback)
-function exportToNewTab(messageDivOrContent) {
-    const newWindow = window.open('', '_blank');
-    if (!newWindow) {
-        alert('无法打开新窗口，请检查浏览器是否阻止了弹出窗口');
-        return;
-    }
-
-    // Get rendered HTML from DOM (includes images + MathJax-rendered formulas)
-    let renderedHtml = '';
-    let markdownContent = '';
-    if (messageDivOrContent instanceof HTMLElement) {
-        const contentDiv = messageDivOrContent.querySelector('.message-content');
-        renderedHtml = contentDiv ? contentDiv.innerHTML : '';
-        markdownContent = messageDivOrContent.dataset.rawContent || '';
-    } else {
-        markdownContent = messageDivOrContent || '';
-    }
-
-    const html = `
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>消息导出</title>
-    <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
-    <script>
-        window.MathJax = {
-            tex: {
-                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
-                processEscapes: true,
-                processEnvironments: true
-            },
-            options: {
-                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
-            }
-        };
-    <\/script>
-    <script id="MathJax-script" async src="${window.location.origin}/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-            line-height: 1.6;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 30px 20px;
-        }
-        .message {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            overflow: hidden;
-        }
-        .message-content {
-            padding: 20px 24px;
-            font-size: 14px;
-            line-height: 1.7;
-            overflow-wrap: break-word;
-        }
-        /* Markdown rendered content */
-        .md-content p { margin: 0.6em 0; }
-        .md-content h1, .md-content h2, .md-content h3,
-        .md-content h4, .md-content h5, .md-content h6 {
-            margin: 1em 0 0.5em;
-            line-height: 1.3;
-        }
-        .md-content h1 { font-size: 1.4em; }
-        .md-content h2 { font-size: 1.25em; }
-        .md-content h3 { font-size: 1.1em; }
-        .md-content ul, .md-content ol {
-            margin: 0.5em 0;
-            padding-left: 1.8em;
-        }
-        .md-content li { margin: 0.3em 0; }
-        .md-content blockquote {
-            margin: 0.6em 0;
-            padding: 0.5em 1em;
-            border-left: 3px solid #4a90e2;
-            background: #f8f9fa;
-            color: #555;
-        }
-        .md-content pre {
-            background: #282c34;
-            color: #abb2bf;
-            padding: 12px 16px;
-            border-radius: 6px;
-            overflow-x: auto;
-            font-size: 13px;
-            line-height: 1.5;
-            margin: 0.6em 0;
-        }
-        .md-content code {
-            background: #f0f0f0;
-            padding: 2px 5px;
-            border-radius: 3px;
-            font-size: 0.9em;
-            font-family: 'SF Mono', Monaco, Consolas, monospace;
-        }
-        .md-content pre code {
-            background: none;
-            padding: 0;
-            color: inherit;
-        }
-        .md-content table {
-            border-collapse: collapse;
-            width: 100%;
-            margin: 0.6em 0;
-        }
-        .md-content th, .md-content td {
-            border: 1px solid #e0e0e0;
-            padding: 8px 12px;
-            text-align: left;
-        }
-        .md-content th {
-            background: #f5f5f5;
-            font-weight: 600;
-        }
-        .md-content a {
-            color: #4a90e2;
-            text-decoration: none;
-        }
-        .md-content a:hover {
-            text-decoration: underline;
-        }
-        .md-content hr {
-            border: none;
-            border-top: 1px solid #e0e0e0;
-            margin: 1em 0;
-        }
-        .md-content img {
-            max-width: 100%;
-            border-radius: 4px;
-        }
-        .toolbar {
-            position: fixed;
-            top: 16px;
-            right: 16px;
-            background: white;
-            border-radius: 6px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            padding: 6px;
-            z-index: 100;
-        }
-        .toolbar button {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 6px 10px;
-            border-radius: 4px;
-            font-size: 13px;
-            color: #555;
-        }
-        .toolbar button:hover {
-            background: #f0f0f0;
-            color: #333;
-        }
-        @media print {
-            .toolbar { display: none; }
-            body { background: white; }
-            .message { box-shadow: none; }
-        }
-    </style>
-</head>
-<body>
-    <div class="toolbar">
-        <button onclick="window.print()" title="打印">🖨️ 打印</button>
-    </div>
-    <div class="container">
-        <div class="message">
-            <div class="message-content md-content">${renderedHtml || '<!-- placeholder -->'}</div>
-        </div>
-    </div>
-    <script>
-        const markdownContent = ${JSON.stringify(markdownContent)};
-        const hasRenderedHtml = ${!!renderedHtml};
-
-        if (!hasRenderedHtml && markdownContent) {
-            // Fallback: render from raw markdown
-            function renderMarkdownWithMath(text) {
-                if (!text) return '';
-                // 注入 workspace_uuid 到文件图片 URL
-                const wsUuid = ${JSON.stringify(currentWorkspace?.uuid || '')};
-                if (wsUuid) {
-                    text = text.replace(
-                        /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
-                        (m, alt, url) => url.includes('workspace_uuid=') ? m : \`![\${alt}](\${url}\${url.includes('?') ? '&' : '?'}workspace_uuid=\${wsUuid})\`
-                    );
-                }
-                const mathBlocks = [];
-                text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                    const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                    mathBlocks.push(match);
-                    return placeholder;
-                });
-                text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                    const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                    mathBlocks.push(match);
-                    return placeholder;
-                });
-                let html = marked.parse(text);
-                mathBlocks.forEach((block, idx) => {
-                    html = html.replace('MATHBLOCK{' + idx + '}', block);
-                });
-                return html;
-            }
-            document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdownContent);
-        }
-
-        // 触发 MathJax 排版
-        if (window.MathJax && window.MathJax.typesetPromise) {
-            MathJax.typesetPromise();
-        }
-    <\/script>
-</body>
-</html>
-    `;
-
-    newWindow.document.write(html);
-    newWindow.document.close();
 }
 
 // ---------- Settings ----------
