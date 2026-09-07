@@ -571,10 +571,10 @@ except importlib.metadata.PackageNotFoundError:
         try:
             os.makedirs(mpl_config_dir, exist_ok=True)
             content = (
-                "# Cili Agent - CJK font config (mplfonts + fixes)\n"
+                "# Cili Agent - CJK font config (mplfonts Noto CJK first)\n"
                 "font.family: sans-serif\n"
-                "font.sans-serif: Microsoft YaHei, SimHei, Noto Sans CJK SC Regular, SimSun, Segoe UI Symbol, sans-serif\n"
-                "font.monospace: Microsoft YaHei, SimHei, Noto Sans Mono CJK SC Regular, SimSun, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
+                "font.sans-serif: Noto Sans CJK SC Regular, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
+                "font.monospace: Noto Sans Mono CJK SC Regular, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
                 "axes.unicode_minus: False\n"
             )
             with open(rc_file, "w", encoding="utf-8") as f:
