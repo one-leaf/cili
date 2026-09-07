@@ -555,13 +555,11 @@ def _init_mplfonts() -> None:
     Checks:
     1. Run mplfonts init if Noto fonts not installed
     2. Synthesize Bold variants (mplfonts only provides Regular)
-    3. Write complete rc file with font.monospace and Segoe UI Symbol
-
-    Re-initializes if rc file is incomplete (missing Segoe UI Symbol).
+    3. Write complete rc file to data/deps/matplotlib/ (controlled by us)
     """
     import matplotlib
-    cache_dir = matplotlib.get_cachedir()
-    rc_file = os.path.join(cache_dir, "matplotlibrc")
+    mpl_config_dir = os.path.join(_DEPS_PYTHON_DIR, "matplotlib")
+    rc_file = os.path.join(mpl_config_dir, "matplotlibrc")
 
     # Check if rc file is complete (contains our fixes)
     rc_complete = False
@@ -620,7 +618,7 @@ except importlib.metadata.PackageNotFoundError:
     # Step 3: Write complete rc file if needed
     if not rc_complete:
         try:
-            os.makedirs(cache_dir, exist_ok=True)
+            os.makedirs(mpl_config_dir, exist_ok=True)
             content = (
                 "# Cili Agent - CJK font config (mplfonts + fixes)\n"
                 "font.family: sans-serif\n"
@@ -630,8 +628,7 @@ except importlib.metadata.PackageNotFoundError:
             )
             with open(rc_file, "w", encoding="utf-8") as f:
                 f.write(content)
-            if not rc_complete:
-                print("[setup] matplotlibrc written")
+            print("[setup] matplotlibrc written")
         except Exception as e:
             print(f"[setup] Failed to write matplotlibrc: {e}")
             return

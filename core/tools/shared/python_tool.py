@@ -220,7 +220,9 @@ class PythonTool(Tool):
         except Exception:
             pass  # If we can't read, let execution proceed
 
-        cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
+        # Set MPLCONFIGDIR to use Cili's matplotlib config
+        mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
+        cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             cmd += f" {shlex.quote(args)}"
 
@@ -236,6 +238,8 @@ class PythonTool(Tool):
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
         python_exe = os.path.join(_VENV_DIR, "python.exe")
+        # Set MPLCONFIGDIR to use Cili's matplotlib config
+        mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
 
         if run_in_background:
             # For background execution, write code to temp file and execute
@@ -246,10 +250,10 @@ class PythonTool(Tool):
             ) as f:
                 f.write(code)
                 temp_path = f.name
-            cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
+            cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
 
-        return self._run_bash(f'PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
+        return self._run_bash(f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
 
     def _get_pip_mirror(self) -> str:
         """Load pip mirror from config."""
