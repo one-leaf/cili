@@ -1220,15 +1220,29 @@ async function exportSession(session) {
             return html;
         }
         // 渲染所有助手消息为markdown + math
+        // 等待 MathJax 完全就绪后再渲染和排版，避免公式未渲染
         const texts = ${assistantTextsJson};
-        document.querySelectorAll('.md-content').forEach(el => {
-            const idx = parseInt(el.dataset.idx);
-            const raw = texts[idx] || '';
-            el.innerHTML = renderMarkdownWithMath(raw);
-        });
-        // 触发MathJax重新排版
-        if (window.MathJax && window.MathJax.typesetPromise) {
-            MathJax.typesetPromise();
+        const renderAndTypeset = () => {
+            document.querySelectorAll('.md-content').forEach(el => {
+                const idx = parseInt(el.dataset.idx);
+                const raw = texts[idx] || '';
+                el.innerHTML = renderMarkdownWithMath(raw);
+            });
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                MathJax.typesetPromise();
+            }
+        };
+        if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+            MathJax.startup.promise.then(renderAndTypeset);
+        } else {
+            // MathJax 还没加载，等待 DOMContentLoaded 后重试
+            document.addEventListener('DOMContentLoaded', () => {
+                if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                    MathJax.startup.promise.then(renderAndTypeset);
+                } else {
+                    renderAndTypeset();
+                }
+            });
         }
     <\/script>
 </body>
