@@ -3361,6 +3361,16 @@ function renderMarkdown(text) {
                 return `![${alt}](${url}${sep}workspace_uuid=${workspaceUuid})`;
             }
         );
+
+        // 匹配相对路径图片并转换为 /api/workspaces/{uuid}/files/xxx
+        text = text.replace(
+            /!\[([^\]]*)\]\((?!http|\/api|data:)([^)]+)\)/g,
+            (match, alt, url) => {
+                // 去掉开头的斜杠（如果有）
+                const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
+                return `![${alt}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
+            }
+        );
     }
 
     // 保护数学公式：提取 $$...$$ 和 $...$ 为占位符，避免 marked 破坏 LaTeX 语法

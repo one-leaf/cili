@@ -227,16 +227,16 @@ Always use relative paths.
 
 ### Showing files to the user
 
-Use `/api/files/<relative-path>` for file URLs.
+Use **relative paths** for file references. The web UI automatically resolves them.
 
-Example: `![plot](/api/files/plot.png)`
+Example: `![plot](plot.png)`
 
-**Never** use `file://` URLs. They do not work in the web UI.
+**Never** use `file://` URLs or absolute paths like `/api/files/...`. They are not needed.
 
 ### Image generation rules
 
 - Never use GUI display APIs (`plt.show()`, `Image.show()`, `cv2.imshow()`).
-- Save to a relative path (e.g., `plot.png`), then reference it with `/api/files/plot.png`.
+- Save to a relative path (e.g., `plot.png`), then reference it as `![plot](plot.png)`.
 - Do not show raw filesystem paths in response text.
 
 ## Memory

@@ -194,10 +194,20 @@
 
         function injectWorkspaceUuid(text) {
             if (!workspaceUuid) return text;
-            return text.replace(
+            // 匹配 /api/files/xxx 并追加 workspace_uuid
+            text = text.replace(
                 /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
                 (m, alt, url) => url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`
             );
+            // 匹配相对路径图片并转换为 /api/workspaces/{uuid}/files/xxx
+            text = text.replace(
+                /!\[([^\]]*)\]\((?!http|\/api|data:)([^)]+)\)/g,
+                (m, alt, url) => {
+                    const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
+                    return `![${alt}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
+                }
+            );
+            return text;
         }
 
         function extractTextContent(content) {
