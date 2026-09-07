@@ -507,20 +507,24 @@ for dist in importlib.metadata.distributions():
 def _init_mplfonts() -> None:
     """Initialize mplfonts for CJK font support if not already initialized.
 
-    Checks if Noto Sans CJK SC font file exists. If not, runs `mplfonts init`
-    to install Noto CJK fonts and configure matplotlib.
+    Checks if rc file contains CJK font config. If not, runs `mplfonts init`
+    to install fonts, then writes the rc file (mplfonts init has a bug that
+    deletes the rc file it just wrote).
     """
-    # Check if font file exists (lightweight check)
-    try:
-        import matplotlib
-        font_dir = os.path.join(os.path.dirname(matplotlib.__file__), 'mpl-data', 'fonts', 'ttf')
-        noto_font = os.path.join(font_dir, 'NotoSansCJKsc-Regular.otf')
-        if os.path.exists(noto_font):
-            return  # Already initialized
-    except Exception:
-        pass  # Proceed with init on error
+    import matplotlib
+    cache_dir = matplotlib.get_cachedir()
+    rc_file = os.path.join(cache_dir, "matplotlibrc")
 
-    # Check if mplfonts is installed
+    # Check if rc file already has CJK font config
+    if os.path.exists(rc_file):
+        try:
+            with open(rc_file, "r", encoding="utf-8") as f:
+                if "Noto Sans CJK SC" in f.read():
+                    return  # Already initialized
+        except Exception:
+            pass
+
+    # Font missing - need to run mplfonts init
     python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
     check_mplfonts = """
 import importlib.metadata
@@ -546,12 +550,28 @@ except importlib.metadata.PackageNotFoundError:
             [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
             capture_output=True, text=True, timeout=120
         )
-        if result.returncode == 0:
-            print("[setup] mplfonts initialized successfully")
-        else:
+        if result.returncode != 0:
             print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
+            return
     except Exception as e:
         print(f"[setup] mplfonts init error: {e}")
+        return
+
+    # Write matplotlibrc (mplfonts init has a bug: deletes rc after writing)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        content = (
+            "# Cili Agent - CJK font config (mplfonts + fixes)\n"
+            "font.family: sans-serif\n"
+            "font.sans-serif: Noto Sans CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
+            "font.monospace: Noto Sans Mono CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
+            "axes.unicode_minus: False\n"
+        )
+        with open(rc_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("[setup] mplfonts initialized successfully")
+    except Exception as e:
+        print(f"[setup] Failed to write matplotlibrc: {e}")
 
 
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:

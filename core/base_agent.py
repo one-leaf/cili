@@ -593,7 +593,7 @@ class BaseAgent:
         # Layer 3: Emergency body size
         messages = self._get_messages_with_header()
         body_size = self._estimate_request_body_size(messages)
-        logger.info(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
+        logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
 
         if body_size > MAX_BODY_SIZE:
             # 详细分析大小分布
@@ -607,7 +607,7 @@ class BaseAgent:
                     tool_size += len(json.dumps(data.get("input", {}), ensure_ascii=False).encode('utf-8'))
                 elif btype == "tool_result_image":
                     image_size += len(data)
-            logger.info(f"[上下文] 大小分布: 文本={text_size:,}B, 图片={image_size:,}B, 工具={tool_size:,}B")
+            logger.debug(f"[上下文] 大小分布: 文本={text_size:,}B, 图片={image_size:,}B, 工具={tool_size:,}B")
 
             logger.info("[上下文] 请求体过大，正在标记旧工具调用为无效...")
             saved = self._mark_old_tool_calls_invalid(keep_recent_rounds=3)
