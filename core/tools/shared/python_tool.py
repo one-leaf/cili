@@ -12,7 +12,7 @@ from typing import Any
 import glob as _glob
 import tempfile
 
-from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS, _PROJECT_ROOT
+from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
 
 
 # Cross-tool isolation: block Python code from invoking bash/pwsh
@@ -220,8 +220,7 @@ class PythonTool(Tool):
         except Exception:
             pass  # If we can't read, let execution proceed
 
-        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
-        cmd = f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
+        cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             cmd += f" {shlex.quote(args)}"
 
@@ -237,7 +236,6 @@ class PythonTool(Tool):
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
         python_exe = os.path.join(_VENV_DIR, "python.exe")
-        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
 
         if run_in_background:
             # For background execution, write code to temp file and execute
@@ -248,10 +246,10 @@ class PythonTool(Tool):
             ) as f:
                 f.write(code)
                 temp_path = f.name
-            cmd = f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
+            cmd = f'PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
 
-        return self._run_bash(f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
+        return self._run_bash(f'PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
 
     def _get_pip_mirror(self) -> str:
         """Load pip mirror from config."""

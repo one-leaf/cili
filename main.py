@@ -504,56 +504,6 @@ for dist in importlib.metadata.distributions():
         return {}
 
 
-def _init_mplfonts() -> None:
-    """Initialize mplfonts for CJK font support if needed.
-
-    Runs `mplfonts init` once to install Noto CJK fonts, then writes
-    a custom matplotlibrc to data/cili/matplotlib/ (python_tool uses this dir).
-    Subsequent startups skip init by checking the marker file.
-    """
-    mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
-    rc_file = os.path.join(mpl_dir, "matplotlibrc")
-    if os.path.exists(rc_file):
-        return  # Already initialized
-
-    print("[setup] Initializing mplfonts for CJK font support...")
-    python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
-    try:
-        # 1. Run mplfonts init: install Noto CJK fonts into matplotlib data dir
-        result = subprocess.run(
-            [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
-            return
-    except Exception as e:
-        print(f"[setup] mplfonts init error: {e}")
-        return
-
-    # 2. Write matplotlibrc to data/cili/matplotlib/ (MPLCONFIGDIR used by python_tool)
-    os.makedirs(mpl_dir, exist_ok=True)
-    content = (
-        "# Cili Agent - mplfonts CJK font config\n"
-        "font.family: sans-serif\n"
-        "font.sans-serif: Noto Sans CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
-        "font.monospace: Noto Sans Mono CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
-        "axes.unicode_minus: False\n"
-    )
-    with open(rc_file, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    # 3. Clear matplotlib font cache
-    import glob as _glob
-    for cache_file in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
-        try:
-            os.remove(cache_file)
-        except OSError:
-            pass
-
-    print("[setup] mplfonts initialized successfully")
-
-
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
     """Install only missing dependencies in the venv, with mirror failover.
 
@@ -838,9 +788,6 @@ def main() -> None:
         print("[setup] New packages installed, restarting service...")
         # Re-execute the same script with same arguments
         os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    # Initialize mplfonts for CJK font support (runs once after mplfonts is installed)
-    _init_mplfonts()
 
     # Auto-detect browser if not configured
     _auto_detect_browser()
