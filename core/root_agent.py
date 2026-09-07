@@ -293,10 +293,13 @@ class RootAgent(BaseAgent):
         If the first real message is also a user message with string content,
         the instructions are merged into it to avoid consecutive same-role
         messages (required by OpenAI API and Bedrock).
+
+        Returns messages with _meta intact; _meta is stripped later
+        by _strip_meta_from_messages() after _resolve_tool_results() runs.
         """
         from core.prompts import build_instructions_message
 
-        messages = self.get_valid_messages()
+        messages = self.get_valid_messages(strip_meta=False)
         instr = build_instructions_message(self.cwd)
         if not instr:
             return messages

@@ -183,12 +183,17 @@ class BaseAgent:
                 count += 1
         return count
 
-    def get_valid_messages(self) -> list[dict]:
+    def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
         """Get messages with _meta.valid=False filtered out.
 
         Used before sending to LLM API. Thinking blocks are preserved because
         Anthropic API requires them in subsequent messages for multi-turn context.
         Note: _meta.compacted is preserved here, filtered later during serialization.
+
+        Args:
+            strip_meta: If True (default), strip internal _meta fields before API call.
+                        If False, keep _meta intact for intermediate processing
+                        (e.g., _resolve_tool_results needs _meta.output_path).
         """
         INTERNAL_META = {"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"}
         result = []
@@ -204,21 +209,25 @@ class BaseAgent:
 
             # String content
             if not isinstance(content, list):
-                clean_msg = {"role": role, "content": content}
-                # Strip internal _meta fields, keep other _meta if exists
-                if meta:
-                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                    if stripped_meta:
-                        clean_msg["_meta"] = stripped_meta
+                if strip_meta:
+                    clean_msg = {"role": role, "content": content}
+                    # Strip internal _meta fields, keep other _meta if exists
+                    if meta:
+                        stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
+                        if stripped_meta:
+                            clean_msg["_meta"] = stripped_meta
+                else:
+                    # Keep _meta intact (for _resolve_tool_results etc.)
+                    clean_msg = dict(msg)
                 result.append(clean_msg)
                 continue
 
-            # List content: keep all blocks, strip block-level internal _meta
+            # List content: keep all blocks
             clean_blocks = []
             for block in content:
                 clean_block = dict(block)
-                # Strip block-level internal _meta fields before sending to API
-                if "_meta" in clean_block:
+                if strip_meta and "_meta" in clean_block:
+                    # Strip block-level internal _meta fields before sending to API
                     stripped_block_meta = {k: v for k, v in clean_block["_meta"].items() if k not in INTERNAL_META}
                     if stripped_block_meta:
                         clean_block["_meta"] = stripped_block_meta
@@ -228,11 +237,16 @@ class BaseAgent:
 
             if clean_blocks:
                 clean_msg = {"role": role, "content": clean_blocks}
-                # Strip internal _meta fields, keep other _meta if exists
-                if meta:
-                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                    if stripped_meta:
-                        clean_msg["_meta"] = stripped_meta
+                if strip_meta:
+                    # Strip internal _meta fields, keep other _meta if exists
+                    if meta:
+                        stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
+                        if stripped_meta:
+                            clean_msg["_meta"] = stripped_meta
+                else:
+                    # Keep message-level _meta intact
+                    if meta:
+                        clean_msg["_meta"] = dict(meta)
                 result.append(clean_msg)
 
         return result
@@ -496,6 +510,43 @@ class BaseAgent:
                     block["content"] = f"[读取工具输出失败: {e}]"
                     continue
 
+        return messages
+
+    def _strip_meta_from_messages(self, messages: list[dict]) -> list[dict]:
+        """Strip internal _meta fields from messages before sending to LLM API.
+
+        Called after _resolve_tool_results() has populated block content from
+        external files. The _meta fields (output_path, file_size, etc.) are
+        only needed for that resolution step and must not reach the API.
+
+        Modifies blocks in-place (same pattern as _strip_images_from_messages).
+        """
+        INTERNAL_META = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
+        for msg in messages:
+            content = msg.get("content", "")
+            if not isinstance(content, list):
+                # Strip message-level _meta
+                if "_meta" in msg:
+                    stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
+                    if stripped:
+                        msg["_meta"] = stripped
+                    else:
+                        del msg["_meta"]
+                continue
+            for block in content:
+                if "_meta" in block:
+                    stripped = {k: v for k, v in block["_meta"].items() if k not in INTERNAL_META}
+                    if stripped:
+                        block["_meta"] = stripped
+                    else:
+                        del block["_meta"]
+            # Strip message-level _meta too
+            if "_meta" in msg:
+                stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
+                if stripped:
+                    msg["_meta"] = stripped
+                else:
+                    del msg["_meta"]
         return messages
 
     # ========== Compression ==========
@@ -925,8 +976,12 @@ class BaseAgent:
         return result
 
     def _get_messages_with_header(self) -> list[dict]:
-        """Get valid messages for LLM call."""
-        return self.get_valid_messages()
+        """Get valid messages for LLM call.
+
+        Returns messages with _meta intact; _meta is stripped later
+        by _strip_meta_from_messages() after _resolve_tool_results() runs.
+        """
+        return self.get_valid_messages(strip_meta=False)
 
     # ========== LLM Calling ==========
 
@@ -949,6 +1004,7 @@ class BaseAgent:
         """Non-streaming LLM call."""
         messages = self._get_messages_with_header()
         messages = self._resolve_tool_results(messages)
+        messages = self._strip_meta_from_messages(messages)
 
         if not self.config.model.multimodal:
             messages = self._strip_images_from_messages(messages)
@@ -1031,6 +1087,7 @@ class BaseAgent:
 
         messages = self._get_messages_with_header()
         messages = self._resolve_tool_results(messages)
+        messages = self._strip_meta_from_messages(messages)
 
         if not self.config.model.multimodal:
             messages = self._strip_images_from_messages(messages)
@@ -1083,6 +1140,8 @@ class BaseAgent:
                     images_stripped = True
 
                     message_objects = self._get_messages_with_header()
+                    message_objects = self._resolve_tool_results(message_objects)
+                    message_objects = self._strip_meta_from_messages(message_objects)
                     if not self.config.model.multimodal:
                         message_objects = self._strip_images_from_messages(message_objects)
                     message_objects = self._convert_to_message_objects(message_objects)
