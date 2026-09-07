@@ -295,27 +295,30 @@ class PythonTool(Tool):
     def _ensure_matplotlibrc() -> str:
         """Ensure matplotlibrc with Chinese font config exists, return config dir path.
 
-        Also clears stale font caches so matplotlib re-scans fonts on next import.
+        Always overwrites rc file and clears font cache to pick up newly installed fonts.
         """
         mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
         os.makedirs(mpl_dir, exist_ok=True)
 
+        # font.monospace: add CJK fonts so monospace contexts don't fall back to DejaVu Sans Mono
+        # Segoe UI Symbol: Windows built-in font with subscript digits (₁₂₃ etc.)
+        content = (
+            "# Cili Agent auto-generated matplotlib config for Chinese font support\n"
+            "font.family: sans-serif\n"
+            "font.sans-serif: Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
+            "font.monospace: Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
+            "axes.unicode_minus: False\n"
+        )
         rc_file = os.path.join(mpl_dir, "matplotlibrc")
-        if not os.path.exists(rc_file):
-            content = (
-                "# Cili Agent auto-generated matplotlib config for Chinese font support\n"
-                "font.sans-serif: Microsoft YaHei, SimSun, SimHei, sans-serif\n"
-                "axes.unicode_minus: False\n"
-            )
-            with open(rc_file, "w", encoding="utf-8") as f:
-                f.write(content)
+        with open(rc_file, "w", encoding="utf-8") as f:
+            f.write(content)
 
-            # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
-            for f in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
+        # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
+        for cache_file in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
+            try:
+                os.remove(cache_file)
+            except OSError:
+                pass
 
         return mpl_dir
 
