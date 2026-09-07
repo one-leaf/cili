@@ -220,7 +220,7 @@ class PythonTool(Tool):
         except Exception:
             pass  # If we can't read, let execution proceed
 
-        mpl_dir = self._ensure_matplotlibrc()
+        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
         cmd = f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             cmd += f" {shlex.quote(args)}"
@@ -237,6 +237,7 @@ class PythonTool(Tool):
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
         python_exe = os.path.join(_VENV_DIR, "python.exe")
+        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
 
         if run_in_background:
             # For background execution, write code to temp file and execute
@@ -247,10 +248,9 @@ class PythonTool(Tool):
             ) as f:
                 f.write(code)
                 temp_path = f.name
-            cmd = f'MPLCONFIGDIR="{self._ensure_matplotlibrc()}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
+            cmd = f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
 
-        mpl_dir = self._ensure_matplotlibrc()
         return self._run_bash(f'MPLCONFIGDIR="{mpl_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
 
     def _get_pip_mirror(self) -> str:
@@ -290,37 +290,6 @@ class PythonTool(Tool):
             if pattern.search(code):
                 return reason
         return None
-
-    @staticmethod
-    def _ensure_matplotlibrc() -> str:
-        """Ensure matplotlibrc with Chinese font config exists, return config dir path.
-
-        Always overwrites rc file and clears font cache to pick up newly installed fonts.
-        """
-        mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
-        os.makedirs(mpl_dir, exist_ok=True)
-
-        # font.monospace: add CJK fonts so monospace contexts don't fall back to DejaVu Sans Mono
-        # Segoe UI Symbol: Windows built-in font with subscript digits (₁₂₃ etc.)
-        content = (
-            "# Cili Agent auto-generated matplotlib config for Chinese font support\n"
-            "font.family: sans-serif\n"
-            "font.sans-serif: Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
-            "font.monospace: Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
-            "axes.unicode_minus: False\n"
-        )
-        rc_file = os.path.join(mpl_dir, "matplotlibrc")
-        with open(rc_file, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
-        for cache_file in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
-            try:
-                os.remove(cache_file)
-            except OSError:
-                pass
-
-        return mpl_dir
 
     def _install_packages(self, packages: str) -> ToolResult:
         """Install Python packages using pip."""
