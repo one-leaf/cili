@@ -504,6 +504,56 @@ for dist in importlib.metadata.distributions():
         return {}
 
 
+def _init_mplfonts() -> None:
+    """Initialize mplfonts for CJK font support if not already initialized.
+
+    Checks if Noto Sans CJK SC font file exists. If not, runs `mplfonts init`
+    to install Noto CJK fonts and configure matplotlib.
+    """
+    # Check if font file exists (lightweight check)
+    try:
+        import matplotlib
+        font_dir = os.path.join(os.path.dirname(matplotlib.__file__), 'mpl-data', 'fonts', 'ttf')
+        noto_font = os.path.join(font_dir, 'NotoSansCJKsc-Regular.otf')
+        if os.path.exists(noto_font):
+            return  # Already initialized
+    except Exception:
+        pass  # Proceed with init on error
+
+    # Check if mplfonts is installed
+    python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
+    check_mplfonts = """
+import importlib.metadata
+try:
+    importlib.metadata.distribution('mplfonts')
+    print('installed')
+except importlib.metadata.PackageNotFoundError:
+    print('not_installed')
+"""
+    try:
+        result = subprocess.run(
+            [python_exe, "-c", check_mplfonts],
+            capture_output=True, text=True, timeout=10
+        )
+        if "not_installed" in result.stdout:
+            return  # mplfonts not installed, skip
+    except Exception:
+        return
+
+    print("[setup] Initializing mplfonts for CJK font support...")
+    try:
+        result = subprocess.run(
+            [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            print("[setup] mplfonts initialized successfully")
+        else:
+            print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
+    except Exception as e:
+        print(f"[setup] mplfonts init error: {e}")
+
+
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
     """Install only missing dependencies in the venv, with mirror failover.
 
@@ -788,6 +838,9 @@ def main() -> None:
         print("[setup] New packages installed, restarting service...")
         # Re-execute the same script with same arguments
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    # Initialize mplfonts for CJK font support (if not already done)
+    _init_mplfonts()
 
     # Auto-detect browser if not configured
     _auto_detect_browser()
