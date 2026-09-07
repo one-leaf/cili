@@ -1204,18 +1204,18 @@ async function exportSession(session) {
             if (!text) return '';
             const mathBlocks = [];
             text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                 mathBlocks.push(match);
                 return placeholder;
             });
             text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                 mathBlocks.push(match);
                 return placeholder;
             });
             let html = marked.parse(text);
             mathBlocks.forEach((block, idx) => {
-                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+                html = html.replace('MATHBLOCK{' + idx + '}', block);
             });
             return html;
         }
@@ -2973,18 +2973,18 @@ function exportToNewTab(messageDivOrContent) {
                 }
                 const mathBlocks = [];
                 text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                    const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                    const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                     mathBlocks.push(match);
                     return placeholder;
                 });
                 text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                    const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                    const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                     mathBlocks.push(match);
                     return placeholder;
                 });
                 let html = marked.parse(text);
                 mathBlocks.forEach((block, idx) => {
-                    html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+                    html = html.replace('MATHBLOCK{' + idx + '}', block);
                 });
                 return html;
             }
@@ -3192,18 +3192,18 @@ async function openSettingsHelp() {
             if (!text) return '';
             const mathBlocks = [];
             text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                 mathBlocks.push(match);
                 return placeholder;
             });
             text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
                 mathBlocks.push(match);
                 return placeholder;
             });
             let html = marked.parse(text);
             mathBlocks.forEach((block, idx) => {
-                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+                html = html.replace('MATHBLOCK{' + idx + '}', block);
             });
             return html;
         }
@@ -3933,13 +3933,13 @@ function renderMarkdown(text) {
     const mathBlocks = [];
     // 先处理 display math $$...$$
     text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
-        const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+        const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
         mathBlocks.push(match);
         return placeholder;
     });
     // 再处理 inline math $...$（排除转义的 \$）
     text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match, formula) => {
-        const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+        const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
         mathBlocks.push(match);
         return placeholder;
     });
@@ -3949,7 +3949,7 @@ function renderMarkdown(text) {
 
     // 恢复数学公式
     mathBlocks.forEach((block, idx) => {
-        html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+        html = html.replace('MATHBLOCK{' + idx + '}', block);
     });
 
     return html;
