@@ -9,6 +9,8 @@ import os
 import re
 import shlex
 from typing import Any
+import glob as _glob
+import tempfile
 
 from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS, _PROJECT_ROOT
 
@@ -238,7 +240,6 @@ class PythonTool(Tool):
 
         if run_in_background:
             # For background execution, write code to temp file and execute
-            import tempfile
             tmp_dir = os.environ.get("CILI_TMP")
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".py", delete=False, encoding="utf-8",
@@ -296,17 +297,8 @@ class PythonTool(Tool):
 
         Also clears stale font caches so matplotlib re-scans fonts on next import.
         """
-        import glob as _glob
-
         mpl_dir = os.path.join(_PROJECT_ROOT, "data", "cili", "matplotlib")
         os.makedirs(mpl_dir, exist_ok=True)
-
-        # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
-        for f in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
 
         rc_file = os.path.join(mpl_dir, "matplotlibrc")
         if not os.path.exists(rc_file):
@@ -317,6 +309,13 @@ class PythonTool(Tool):
             )
             with open(rc_file, "w", encoding="utf-8") as f:
                 f.write(content)
+
+            # Clear stale font caches in MPLCONFIGDIR so matplotlib re-scans fonts
+            for f in _glob.glob(os.path.join(mpl_dir, "fontlist-*.json")):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
         return mpl_dir
 
