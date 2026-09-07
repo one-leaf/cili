@@ -895,6 +895,7 @@ async function exportSession(session) {
         let messagesHtml = '';
         const messages = data.messages || [];
         const assistantTexts = [];
+        const workspaceUuid = currentWorkspace?.uuid || '';
 
         // 辅助函数：检查消息是否包含工具调用
         function hasToolUse(content) {
@@ -902,11 +903,30 @@ async function exportSession(session) {
             return content.some(block => block.type === 'tool_use' || block.type === 'tool_call');
         }
 
+        // 辅助函数：生成 base64 图片 HTML（API 返回格式：source.data / source.media_type）
+        function imageBlockHtml(block) {
+            const src = block.source || {};
+            const dataUri = src.type === 'base64'
+                ? `data:${src.media_type || 'image/png'};base64,${src.data || ''}`
+                : '';
+            return dataUri ? `<img src="${dataUri}" alt="图片" style="max-width:100%;border-radius:4px;margin:4px 0;">` : '';
+        }
+
+        // 辅助函数：注入 workspace_uuid 到 markdown 中的文件图片 URL
+        function injectWorkspaceUuid(text) {
+            if (!workspaceUuid) return text;
+            return text.replace(
+                /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
+                (m, alt, url) => url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`
+            );
+        }
+
         for (const msg of messages) {
             if (msg.role === 'user') {
-                // 用户消息：只提取纯文本，不包含工具结果
+                // 用户消息：提取纯文本 + 图片，不包含工具结果
                 const content = msg.content;
                 let text = '';
+                let imageHtml = '';
                 if (typeof content === 'string') {
                     text = content;
                 } else if (Array.isArray(content)) {
@@ -917,28 +937,46 @@ async function exportSession(session) {
                             .filter(block => block.type === 'text')
                             .map(block => block.text || '')
                             .join('\n');
+                        // 提取用户图片
+                        imageHtml = content
+                            .filter(block => block.type === 'image' && block.source)
+                            .map(block => {
+                                const src = block.source.type === 'base64'
+                                    ? `data:${block.source.media_type};base64,${block.source.data}`
+                                    : '';
+                                return src ? `<img src="${src}" alt="用户图片" style="max-width:100%;border-radius:4px;display:block;margin:4px 0;">` : '';
+                            })
+                            .join('');
                     }
                 }
-                if (text) {
+                if (text || imageHtml) {
                     messagesHtml += `
                         <div class="message user">
                             <div class="message-role">用户</div>
-                            <div class="message-content">${escapeHtml(text)}</div>
+                            <div class="message-content">${imageHtml}${escapeHtml(text)}</div>
                         </div>
                     `;
                 }
             } else if (msg.role === 'assistant') {
-                // 助手消息：只显示不包含工具调用的纯文本消息
+                // 助手消息：提取文本 + 图片，不包含工具调用
                 const content = msg.content;
                 if (!hasToolUse(content)) {
                     const text = extractTextContent(content);
-                    if (text) {
+                    // 提取图片块
+                    const images = Array.isArray(content)
+                        ? content.filter(block => block.type === 'image')
+                        : [];
+                    const imgHtml = images.map(imageBlockHtml).join('');
+
+                    if (text || imgHtml) {
                         const idx = assistantTexts.length;
-                        assistantTexts.push(text);
+                        // 注入 workspace_uuid 到 markdown 中的文件图片
+                        const textWithUuid = injectWorkspaceUuid(text);
+                        assistantTexts.push(textWithUuid);
                         messagesHtml += `
                             <div class="message assistant">
                                 <div class="message-role">助手</div>
-                                <div class="message-content md-content" data-idx="${idx}"></div>
+                                <div class="message-content md-content" data-idx="${idx}">${imgHtml}</div>
                             </div>
                         `;
                     }
@@ -956,7 +994,7 @@ async function exportSession(session) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(sessionMeta?.preview || '会话导出')}</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+    <script src="/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -970,7 +1008,7 @@ async function exportSession(session) {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
@@ -2709,8 +2747,7 @@ function addMessage(role, content) {
         exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>';
         exportBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const raw = messageDiv.dataset.rawContent || messageDiv.querySelector('.message-content').textContent;
-            exportToNewTab(raw);
+            exportToNewTab(messageDiv);
         });
 
         actionsDiv.appendChild(copyBtn);
@@ -2734,11 +2771,24 @@ function addMessage(role, content) {
 }
 
 // Export message to new browser tab as rendered HTML
-function exportToNewTab(markdownContent) {
+// Accepts either a DOM element (preferred - preserves images + rendered math)
+// or a raw markdown string (fallback)
+function exportToNewTab(messageDivOrContent) {
     const newWindow = window.open('', '_blank');
     if (!newWindow) {
         alert('无法打开新窗口，请检查浏览器是否阻止了弹出窗口');
         return;
+    }
+
+    // Get rendered HTML from DOM (includes images + MathJax-rendered formulas)
+    let renderedHtml = '';
+    let markdownContent = '';
+    if (messageDivOrContent instanceof HTMLElement) {
+        const contentDiv = messageDivOrContent.querySelector('.message-content');
+        renderedHtml = contentDiv ? contentDiv.innerHTML : '';
+        markdownContent = messageDivOrContent.dataset.rawContent || '';
+    } else {
+        markdownContent = messageDivOrContent || '';
     }
 
     const html = `
@@ -2748,7 +2798,7 @@ function exportToNewTab(markdownContent) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>消息导出</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+    <script src="/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -2762,7 +2812,7 @@ function exportToNewTab(markdownContent) {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
@@ -2902,32 +2952,46 @@ function exportToNewTab(markdownContent) {
     </div>
     <div class="container">
         <div class="message">
-            <div class="message-content md-content"></div>
+            <div class="message-content md-content">${renderedHtml || '<!-- placeholder -->'}</div>
         </div>
     </div>
     <script>
-        const markdown = ${JSON.stringify(markdownContent)};
-        // 保护数学公式不被 marked 破坏
-        function renderMarkdownWithMath(text) {
-            if (!text) return '';
-            const mathBlocks = [];
-            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            let html = marked.parse(text);
-            mathBlocks.forEach((block, idx) => {
-                html = html.replace('___MATH_BLOCK_' + idx + '___', block);
-            });
-            return html;
+        const markdownContent = ${JSON.stringify(markdownContent)};
+        const hasRenderedHtml = ${!!renderedHtml};
+
+        if (!hasRenderedHtml && markdownContent) {
+            // Fallback: render from raw markdown
+            function renderMarkdownWithMath(text) {
+                if (!text) return '';
+                // 注入 workspace_uuid 到文件图片 URL
+                const wsUuid = ${JSON.stringify(currentWorkspace?.uuid || '')};
+                if (wsUuid) {
+                    text = text.replace(
+                        /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
+                        (m, alt, url) => url.includes('workspace_uuid=') ? m : \`![\${alt}](\${url}\${url.includes('?') ? '&' : '?'}workspace_uuid=\${wsUuid})\`
+                    );
+                }
+                const mathBlocks = [];
+                text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                    const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                    mathBlocks.push(match);
+                    return placeholder;
+                });
+                text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
+                    const placeholder = '___MATH_BLOCK_' + mathBlocks.length + '___';
+                    mathBlocks.push(match);
+                    return placeholder;
+                });
+                let html = marked.parse(text);
+                mathBlocks.forEach((block, idx) => {
+                    html = html.replace('___MATH_BLOCK_' + idx + '___', block);
+                });
+                return html;
+            }
+            document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdownContent);
         }
-        document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdown);
+
+        // 触发 MathJax 排版
         if (window.MathJax && window.MathJax.typesetPromise) {
             MathJax.typesetPromise();
         }
@@ -2964,7 +3028,7 @@ async function openSettingsHelp() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>设置说明</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+    <script src="/static/libs/marked.min.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -2978,7 +3042,7 @@ async function openSettingsHelp() {
             }
         };
     <\/script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"><\/script>
+    <script id="MathJax-script" async src="/static/libs/mathjax/es5/tex-mml-chtml.js"><\/script>
     <style>
         * {
             margin: 0;
