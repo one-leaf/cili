@@ -529,6 +529,7 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
         "pandas",
         "scipy",
         "matplotlib",
+        "mplfonts",
         "pyyaml",
         "toml",
         "Pillow",
@@ -577,18 +578,17 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
             mirror = pip_mirrors[current_mirror_idx]
             mirror_name = mirror or "PyPI official"
             print(f"[setup] ({i}/{len(missing)}) Installing {pkg} from {mirror_name}...")
-            cmd = [pip_exe, "install", "--disable-pip-version-check", "--only-binary=:all:"]
+            cmd = [pip_exe, "install", "--disable-pip-version-check"]
             if mirror:
                 cmd += ["-i", mirror]
             cmd.append(pkg)
 
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                result = subprocess.run(cmd, timeout=300)
                 if result.returncode == 0:
                     pkg_installed = True
                     break  # Package installed successfully
-                err = result.stderr.strip() or result.stdout.strip()
-                print(f"[setup] Failed with {mirror_name}: {err[:200]}")
+                print(f"[setup] Failed with {mirror_name}")
             except Exception as e:
                 print(f"[setup] Failed with {mirror_name}: {e}")
 
