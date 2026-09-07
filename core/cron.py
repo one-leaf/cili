@@ -485,10 +485,13 @@ class CronScheduler:
                 try:
                     with open(json_file, "r", encoding="utf-8") as f:
                         config = json.load(f)
+                    # Skip disabled tasks
+                    if not config.get("enabled", True):
+                        continue
                     task_fn = self._load_task_fn(json_file, config)
                     task = CronTask(config, task_fn=task_fn)
                     self.tasks.append(task)
-                    logger.info(f"[cron] Loaded system task: {task.name}")
+                    logger.debug(f"[cron] Loaded system task: {task.name}")
                 except Exception as e:
                     logger.error(f"[cron] Failed to load {json_file}: {e}")
         else:
@@ -500,11 +503,14 @@ class CronScheduler:
                 with open(USER_TASKS_FILE, "r", encoding="utf-8") as f:
                     user_configs = json.load(f)
                 for config in user_configs:
+                    # Skip disabled tasks
+                    if not config.get("enabled", True):
+                        continue
                     task_fn = self._load_user_task_fn(config)
                     if task_fn:
                         task = CronTask(config, task_fn=task_fn)
                         self.tasks.append(task)
-                        logger.info(f"[cron] Loaded user task: {task.name}")
+                        logger.debug(f"[cron] Loaded user task: {task.name}")
             except Exception as e:
                 logger.error(f"[cron] Failed to load user tasks: {e}")
 
@@ -527,7 +533,7 @@ class CronScheduler:
             if not task:
                 logger.warning(f"[cron] User task {config.get('name')} content.task is empty")
                 return None
-            logger.info(f"[cron] Loaded user inline task: {config.get('name')}")
+            logger.debug(f"[cron] Loaded user inline task: {config.get('name')}")
             return lambda: [{"task": task, "plan": plan, "workspace_uuid": ws_uuid}]
 
         if isinstance(content, list):
@@ -544,7 +550,7 @@ class CronScheduler:
             if not tasks:
                 logger.warning(f"[cron] User task {config.get('name')} content list has no valid tasks")
                 return None
-            logger.info(f"[cron] Loaded {len(tasks)} user inline tasks from: {config.get('name')}")
+            logger.debug(f"[cron] Loaded {len(tasks)} user inline tasks from: {config.get('name')}")
             return lambda: tasks
 
         logger.error(f"[cron] Invalid content field type in user task {config.get('name')}")
@@ -577,7 +583,7 @@ class CronScheduler:
 
                 fn = getattr(module, "get_tasks", None)
                 if fn and callable(fn):
-                    logger.info(f"[cron] Loaded task function from: {content}")
+                    logger.debug(f"[cron] Loaded task function from: {content}")
                     return fn
                 else:
                     logger.warning(f"[cron] {content} missing get_tasks() function")
@@ -594,7 +600,7 @@ class CronScheduler:
                 logger.warning(f"[cron] {json_path.name} content.task is empty")
                 return None
             # Return a lambda that provides the inline task as a list
-            logger.info(f"[cron] Loaded inline task from: {json_path.name}")
+            logger.debug(f"[cron] Loaded inline task from: {json_path.name}")
             return lambda: [{"task": task, "plan": plan, "workspace_uuid": ws_uuid}]
 
         # Option 3: content is a list of tasks
@@ -612,7 +618,7 @@ class CronScheduler:
             if not tasks:
                 logger.warning(f"[cron] {json_path.name} content list has no valid tasks")
                 return None
-            logger.info(f"[cron] Loaded {len(tasks)} inline tasks from: {json_path.name}")
+            logger.debug(f"[cron] Loaded {len(tasks)} inline tasks from: {json_path.name}")
             return lambda: tasks
 
         logger.error(f"[cron] Invalid content field type in {json_path.name}")
