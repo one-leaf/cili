@@ -504,29 +504,83 @@ for dist in importlib.metadata.distributions():
         return {}
 
 
+def _synthesize_bold_fonts() -> None:
+    """Synthesize Bold variants for Noto Sans CJK SC using fontTools.
+
+    mplfonts only installs Regular variants. This copies Regular fonts and
+    modifies OS/2 weight to 700 so matplotlib can find Bold variants.
+    """
+    import matplotlib
+    font_dir = os.path.join(os.path.dirname(matplotlib.__file__), 'mpl-data', 'fonts', 'ttf')
+
+    bold_variants = {
+        'NotoSansCJKsc-Regular.otf': ('Noto Sans CJK SC', 'NotoSansCJKsc-Bold.otf'),
+        'NotoSansMonoCJKsc-Regular.otf': ('Noto Sans Mono CJK SC', 'NotoSansMonoCJKsc-Bold.otf'),
+    }
+
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        return
+
+    for regular_name, (family_name, bold_filename) in bold_variants.items():
+        regular_path = os.path.join(font_dir, regular_name)
+        bold_path = os.path.join(font_dir, bold_filename)
+        if not os.path.exists(regular_path) or os.path.exists(bold_path):
+            continue
+
+        try:
+            font = TTFont(regular_path)
+            # Modify OS/2 table: weight 400 → 700
+            font['OS/2'].usWeightClass = 700
+            # Modify name table
+            for record in font['name'].names:
+                if record.nameID == 1:  # Family name
+                    record.string = (family_name + ' Bold').encode('utf-16-be' if record.platformID == 3 else 'utf-8')
+                elif record.nameID == 2:  # Subfamily
+                    record.string = 'Bold'.encode('utf-16-be' if record.platformID == 3 else 'utf-8')
+                elif record.nameID == 4:  # Full name
+                    record.string = (family_name + ' Bold').encode('utf-16-be' if record.platformID == 3 else 'utf-8')
+                elif record.nameID == 6:  # PostScript name
+                    record.string = (family_name.replace(' ', '') + '-Bold').encode('ascii')
+            font.save(bold_path)
+            font.close()
+        except Exception as e:
+            print(f"[setup] Failed to synthesize {bold_filename}: {e}")
+
+
 def _init_mplfonts() -> None:
     """Initialize mplfonts for CJK font support if not already initialized.
 
-    Checks if rc file contains CJK font config. If not, runs `mplfonts init`
-    to install fonts, then writes the rc file (mplfonts init has a bug that
-    deletes the rc file it just wrote).
+    Checks:
+    1. Run mplfonts init if Noto fonts not installed
+    2. Synthesize Bold variants (mplfonts only provides Regular)
+    3. Write complete rc file with font.monospace and Segoe UI Symbol
+
+    Re-initializes if rc file is incomplete (missing Segoe UI Symbol).
     """
     import matplotlib
     cache_dir = matplotlib.get_cachedir()
     rc_file = os.path.join(cache_dir, "matplotlibrc")
 
-    # Check if rc file already has CJK font config
+    # Check if rc file is complete (contains our fixes)
+    rc_complete = False
     if os.path.exists(rc_file):
         try:
             with open(rc_file, "r", encoding="utf-8") as f:
-                if "Noto Sans CJK SC" in f.read():
-                    return  # Already initialized
+                content = f.read()
+                if "Segoe UI Symbol" in content and "font.monospace" in content:
+                    rc_complete = True
         except Exception:
             pass
 
-    # Font missing - need to run mplfonts init
-    python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
-    check_mplfonts = """
+    # Step 1: Ensure Noto fonts are installed
+    font_dir = os.path.join(os.path.dirname(matplotlib.__file__), 'mpl-data', 'fonts', 'ttf')
+    noto_font = os.path.join(font_dir, 'NotoSansCJKsc-Regular.otf')
+    if not os.path.exists(noto_font):
+        # Need to run mplfonts init
+        python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
+        check_mplfonts = """
 import importlib.metadata
 try:
     importlib.metadata.distribution('mplfonts')
@@ -534,44 +588,55 @@ try:
 except importlib.metadata.PackageNotFoundError:
     print('not_installed')
 """
-    try:
-        result = subprocess.run(
-            [python_exe, "-c", check_mplfonts],
-            capture_output=True, text=True, timeout=10
-        )
-        if "not_installed" in result.stdout:
-            return  # mplfonts not installed, skip
-    except Exception:
-        return
-
-    print("[setup] Initializing mplfonts for CJK font support...")
-    try:
-        result = subprocess.run(
-            [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
+        try:
+            result = subprocess.run(
+                [python_exe, "-c", check_mplfonts],
+                capture_output=True, text=True, timeout=10
+            )
+            if "not_installed" in result.stdout:
+                return  # mplfonts not installed, skip
+        except Exception:
             return
-    except Exception as e:
-        print(f"[setup] mplfonts init error: {e}")
-        return
 
-    # Write matplotlibrc (mplfonts init has a bug: deletes rc after writing)
-    try:
-        os.makedirs(cache_dir, exist_ok=True)
-        content = (
-            "# Cili Agent - CJK font config (mplfonts + fixes)\n"
-            "font.family: sans-serif\n"
-            "font.sans-serif: Noto Sans CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
-            "font.monospace: Noto Sans Mono CJK SC Regular, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
-            "axes.unicode_minus: False\n"
-        )
-        with open(rc_file, "w", encoding="utf-8") as f:
-            f.write(content)
-        print("[setup] mplfonts initialized successfully")
-    except Exception as e:
-        print(f"[setup] Failed to write matplotlibrc: {e}")
+        print("[setup] Initializing mplfonts for CJK font support...")
+        try:
+            result = subprocess.run(
+                [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
+                return
+        except Exception as e:
+            print(f"[setup] mplfonts init error: {e}")
+            return
+
+    # Step 2: Synthesize Bold variants if missing
+    bold_font = os.path.join(font_dir, 'NotoSansCJKsc-Bold.otf')
+    if not os.path.exists(bold_font):
+        print("[setup] Synthesizing Bold font variants...")
+        _synthesize_bold_fonts()
+
+    # Step 3: Write complete rc file if needed
+    if not rc_complete:
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            content = (
+                "# Cili Agent - CJK font config (mplfonts + fixes)\n"
+                "font.family: sans-serif\n"
+                "font.sans-serif: Noto Sans CJK SC Regular, Noto Sans CJK SC Bold, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, sans-serif\n"
+                "font.monospace: Noto Sans Mono CJK SC Regular, Noto Sans Mono CJK SC Bold, Microsoft YaHei, SimSun, SimHei, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
+                "axes.unicode_minus: False\n"
+            )
+            with open(rc_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            if not rc_complete:
+                print("[setup] matplotlibrc written")
+        except Exception as e:
+            print(f"[setup] Failed to write matplotlibrc: {e}")
+            return
+
+    print("[setup] mplfonts initialized successfully")
 
 
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
