@@ -163,19 +163,19 @@
 
         const workspaceUuid = pathParts[1];
         const sessionId = pathParts[2];
-        const indicesStr = pathParts.length >= 4 ? pathParts[3] : null;
+        const idsStr = pathParts.length >= 4 ? pathParts[3] : null;
 
-        function parseIndices(str) {
+        function parseMsgIds(str) {
             if (!str) return null;
             const set = new Set();
             str.split(',').forEach(part => {
-                const n = parseInt(part.trim());
-                if (!isNaN(n) && n >= 0) set.add(n);
+                const id = part.trim();
+                if (id) set.add(id);
             });
             return set.size > 0 ? set : null;
         }
 
-        const targetIndices = parseIndices(indicesStr);
+        const targetMsgIds = parseMsgIds(idsStr);
 
         function renderMarkdownWithMath(text) {
             if (!text) return '';
@@ -244,16 +244,17 @@
         }
 
         function buildDisplayMessages(messages) {
-            // 与 chat.js 渲染逻辑对齐：每个气泡占一个索引，
+            // 与 chat.js 渲染逻辑对齐：每个气泡对应一个消息 _meta.id，
             // 包括用户文本、助手文本、工具调用、工具结果、thinking 等
             const display = [];
             for (const msg of messages) {
                 if (msg.role === 'system') continue;
+                const msgId = msg._meta?.id;  // 消息唯一 ID，用于分享过滤
                 const content = msg.content;
 
                 if (msg.role === 'user') {
                     if (typeof content === 'string') {
-                        if (content) display.push({ role: 'user', type: 'text', text: content, images: [], timestamp: msg.timestamp });
+                        if (content) display.push({ role: 'user', type: 'text', text: content, images: [], timestamp: msg.timestamp, msgId });
                     } else if (Array.isArray(content)) {
                         // 用户文本 + 图片 → 一个气泡
                         const textParts = [];
@@ -265,7 +266,7 @@
                             else if (b.type === 'tool_result') toolResults.push(b);
                         }
                         if (textParts.length > 0 || images.length > 0) {
-                            display.push({ role: 'user', type: 'text', text: textParts.join('\n'), images, timestamp: msg.timestamp });
+                            display.push({ role: 'user', type: 'text', text: textParts.join('\n'), images, timestamp: msg.timestamp, msgId });
                         }
                         // 每个 tool_result → 一个气泡（与 chat.js 对齐）
                         for (const block of toolResults) {
@@ -277,28 +278,28 @@
                             display.push({
                                 role: 'assistant', type: 'tool-result',
                                 text: truncated, isError: !!block.is_error,
-                                title: '[工具结果]', timestamp: msg.timestamp,
+                                title: '[工具结果]', timestamp: msg.timestamp, msgId,
                             });
                         }
                     }
                 } else if (msg.role === 'assistant') {
                     if (!Array.isArray(content)) {
-                        if (content) display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(String(content)), images: [], timestamp: msg.timestamp });
+                        if (content) display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(String(content)), images: [], timestamp: msg.timestamp, msgId });
                         continue;
                     }
                     for (const block of content) {
                         if (block.type === 'text' && block.text) {
-                            display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(block.text), images: [], timestamp: msg.timestamp });
+                            display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(block.text), images: [], timestamp: msg.timestamp, msgId });
                         } else if (block.type === 'image') {
-                            display.push({ role: 'assistant', type: 'text', text: '', images: [block], timestamp: msg.timestamp });
+                            display.push({ role: 'assistant', type: 'text', text: '', images: [block], timestamp: msg.timestamp, msgId });
                         } else if (block.type === 'thinking' && block.thinking) {
-                            display.push({ role: 'assistant', type: 'thinking', text: block.thinking, timestamp: msg.timestamp });
+                            display.push({ role: 'assistant', type: 'thinking', text: block.thinking, timestamp: msg.timestamp, msgId });
                         } else if (block.type === 'tool_use' || block.type === 'tool_call') {
                             const inputStr = typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2);
                             const title = `[调用工具: ${block.name || 'unknown'}]`;
                             // ask_user 未回答时不渲染
                             if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) continue;
-                            display.push({ role: 'assistant', type: 'tool-call', text: inputStr, title, timestamp: msg.timestamp });
+                            display.push({ role: 'assistant', type: 'tool-call', text: inputStr, title, timestamp: msg.timestamp, msgId });
                         }
                     }
                 }
@@ -332,7 +333,8 @@
                 contentHtml = imgHtml + renderMarkdownWithMath(msg.text);
             }
             const timeHtml = msg.timestamp ? `<div class="message-time">${msg.timestamp}</div>` : '';
-            return `<div class="message ${cssClass}">
+            const msgIdAttr = msg.msgId ? ` data-msg-id="${msg.msgId}"` : '';
+            return `<div class="message ${cssClass}"${msgIdAttr}>
                 <div class="message-role">${roleLabel}</div>
                 <div class="message-content ${msg.role === 'assistant' && msg.type === 'text' ? 'md-content' : ''}">${contentHtml}</div>
                 ${timeHtml}
@@ -353,8 +355,8 @@
                 const allDisplay = buildDisplayMessages(data.messages || []);
 
                 let filtered;
-                if (targetIndices) {
-                    filtered = allDisplay.filter((_, i) => targetIndices.has(i));
+                if (targetMsgIds) {
+                    filtered = allDisplay.filter(d => d.msgId && targetMsgIds.has(d.msgId));
                 } else {
                     filtered = allDisplay;
                 }

@@ -420,9 +420,9 @@ async def session_view(workspace_uuid: str, session_id: str):
     return response
 
 
-@app.get("/s/{workspace_uuid}/{session_id}/{indices}")
-async def session_message_view(workspace_uuid: str, session_id: str, indices: str):
-    """独立会话查看页（指定消息模式，indices 为逗号分隔的数字）。"""
+@app.get("/s/{workspace_uuid}/{session_id}/{msg_ids}")
+async def session_message_view(workspace_uuid: str, session_id: str, msg_ids: str):
+    """独立会话查看页（指定消息模式，msg_ids 为逗号分隔的消息 ID）。"""
     response = FileResponse(str(WEB_DIR / "static" / "session.html"))
     response.headers["Cache-Control"] = "no-store"
     return response

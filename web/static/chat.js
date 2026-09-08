@@ -1,9 +1,7 @@
 // ── chat.js ── 聊天相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingImages,
-//   chatMessages, chatInput, sendBtn, _displayMsgIdx
+//   chatMessages, chatInput, sendBtn
 // 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast, loadSession, loadSessions, savePosition
-
-let _displayMsgIdx = 0;  // 可显示消息的索引计数器（用于分享链接）
 
 // ── 工具输出实时流式显示 ──
 // 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入
@@ -178,7 +176,6 @@ function normalizeContent(content) {
 // Render messages
 function renderMessages(messages) {
     chatMessages.innerHTML = '';
-    _displayMsgIdx = 0;  // 重置消息索引
 
     if (!messages || messages.length === 0) {
         chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
@@ -189,6 +186,7 @@ function renderMessages(messages) {
         const role = msg.role;
         if (role === 'system') return;
 
+        const msgId = msg._meta?.id;  // 消息唯一 ID，用于分享链接
         const content = msg.content;
         const blocks = normalizeContent(content);
 
@@ -207,7 +205,7 @@ function renderMessages(messages) {
             // Only create user bubble if there's actual user content
             const combinedText = textParts.join('\n');
             if (combinedText || imageParts.length > 0) {
-                const div = addMessage('user', combinedText);
+                const div = addMessage('user', combinedText, msgId);
                 if (imageParts.length > 0) {
                     const contentDiv = div.querySelector('.message-content');
                     const imgContainer = document.createElement('div');
@@ -228,7 +226,7 @@ function renderMessages(messages) {
                 if (block._meta && block._meta.exec_id) {
                     const execId = block._meta.exec_id;
                     const isCompleted = block._meta.completed === true;
-                    const msg = {
+                    const saMsg = {
                         exec_id: execId,
                         task_summary: '',
                         status: isCompleted ? 'completed' : 'running',
@@ -237,13 +235,13 @@ function renderMessages(messages) {
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
                     // 简单处理：用 exec_id 加载详情
-                    renderSubagentRef(msg, idx);
+                    renderSubagentRef(saMsg, idx, msgId);
                     return;
                 }
                 // ask_user 等待中：跳过渲染
                 if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-                const div = addMessage('assistant', '');
+                const div = addMessage('assistant', '', msgId);
                 div.classList.add('tool');
                 if (block.is_error) {
                     div.classList.add('tool-error');
@@ -265,11 +263,11 @@ function renderMessages(messages) {
 
         blocks.forEach(block => {
             if (block.kind === 'text' && block.text) {
-                addMessage(role, block.text);
+                addMessage(role, block.text, msgId);
             } else if (block.kind === 'image') {
                 // Image blocks in non-user messages (shouldn't normally happen)
                 // Render as an assistant message with the image
-                const div = addMessage('assistant', '');
+                const div = addMessage('assistant', '', msgId);
                 const contentDiv = div.querySelector('.message-content');
                 const imgEl = document.createElement('img');
                 imgEl.src = `data:${block.media_type};base64,${block.data}`;
@@ -277,7 +275,7 @@ function renderMessages(messages) {
                 contentDiv.appendChild(imgEl);
             } else if (block.kind === 'thinking' && block.text) {
                 // Render thinking block
-                const div = addMessage('assistant', '');
+                const div = addMessage('assistant', '', msgId);
                 div.classList.add('thinking');
                 const contentDiv = div.querySelector('.message-content');
                 const thinkTitle = document.createElement('div');
@@ -289,7 +287,7 @@ function renderMessages(messages) {
                 thinkDiv.innerHTML = renderMarkdown(block.text);
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
-                const div = addMessage('assistant', '');
+                const div = addMessage('assistant', '', msgId);
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
                 if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) {
@@ -308,7 +306,7 @@ function renderMessages(messages) {
                 // Skip placeholder tool_result for ask_user
                 if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-                const div = addMessage('assistant', '');
+                const div = addMessage('assistant', '', msgId);
                 div.classList.add('tool');
                 if (block.is_error) {
                     div.classList.add('tool-error');
@@ -336,7 +334,7 @@ function renderMessages(messages) {
 }
 
 // 渲染SubAgent 引用（可折叠卡片）
-function renderSubagentRef(msg, idx) {
+function renderSubagentRef(msg, idx, msgId) {
     const statusIcons = {
         'completed': '✅',
         'error': '❌',
@@ -350,6 +348,7 @@ function renderSubagentRef(msg, idx) {
     const card = document.createElement('div');
     card.className = 'message assistant subagent-card';
     card.dataset.execId = msg.exec_id;
+    if (msgId) card.dataset.msgId = msgId;
 
     const header = document.createElement('div');
     header.className = 'subagent-header';
@@ -1337,9 +1336,9 @@ function doCopy(messageDiv) {
     });
 }
 
-function doShare(msgIdx) {
+function doShare(msgId) {
     if (!currentWorkspace || !currentSession) return;
-    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${currentSession.session_id}/${msgIdx}`;
+    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${currentSession.session_id}/${msgId}`;
     window.open(url, '_blank');
 }
 
@@ -1360,10 +1359,10 @@ function toggleMessageMenu(messageDiv, anchor) {
         items.push({ label: '复制', action: () => doCopy(messageDiv) });
     }
 
-    // 分享（有索引时）
-    const msgIdx = messageDiv.dataset.msgIdx;
-    if (msgIdx !== undefined) {
-        items.push({ label: '分享', action: () => doShare(msgIdx) });
+    // 分享（有消息 ID 时）
+    const msgId = messageDiv.dataset.msgId;
+    if (msgId) {
+        items.push({ label: '分享', action: () => doShare(msgId) });
     }
 
     items.forEach(({ label, action }) => {
@@ -1390,7 +1389,7 @@ function toggleMessageMenu(messageDiv, anchor) {
 }
 
 // Add message to UI
-function addMessage(role, content) {
+function addMessage(role, content, msgId) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
@@ -1403,17 +1402,18 @@ function addMessage(role, content) {
         if (contentDiv.querySelector('img')) {
             messageDiv.classList.add('has-image');
         }
-
-        // 分配可显示消息索引
-        messageDiv.dataset.msgIdx = _displayMsgIdx;
-        _displayMsgIdx++;
     }
 
     messageDiv.appendChild(contentDiv);
 
-    // 所有消息（有内容时）添加菜单按钮
-    if (content) {
-        messageDiv.dataset.rawContent = content;
+    // 有内容或有消息 ID 时添加菜单按钮和 data-msg-id
+    if (content || msgId) {
+        if (msgId) {
+            messageDiv.dataset.msgId = msgId;
+        }
+        if (content) {
+            messageDiv.dataset.rawContent = content;
+        }
 
         const triggerBtn = document.createElement('button');
         triggerBtn.className = 'msg-menu-trigger';
