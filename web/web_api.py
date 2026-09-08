@@ -1360,34 +1360,63 @@ async def stop_agent(workspace_uuid: str, session_id: str):
 
 
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert")
-async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest):
+async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = f"{workspace_uuid}:{session_id}"
     agent = agents.get(key)
-    if not agent:
-        raise HTTPException(404, "Agent not found")
 
-    if agent.is_running():
+    # 如果 agent 存在且正在运行，拒绝操作
+    if agent and agent.is_running():
         raise HTTPException(400, "Agent 正在运行中，无法撤销")
 
     msg_id = request.msg_id
-    messages = agent.session_manager.messages
 
-    # 找到目标消息的索引
-    target_idx = None
-    for i, msg in enumerate(messages):
-        if msg.get("_meta", {}).get("id") == msg_id:
-            target_idx = i
-            break
+    # 优先使用内存中的 agent
+    if agent:
+        messages = agent.session_manager.messages
+        target_idx = None
+        for i, msg in enumerate(messages):
+            if msg.get("_meta", {}).get("id") == msg_id:
+                target_idx = i
+                break
 
-    if target_idx is None:
-        raise HTTPException(404, "未找到指定的消息")
+        if target_idx is None:
+            raise HTTPException(404, "未找到指定的消息")
 
-    # 删除该消息及其后面的所有消息
-    deleted_count = len(messages) - target_idx
-    del messages[target_idx:]
+        # 删除该消息及其后面的所有消息
+        deleted_count = len(messages) - target_idx
+        del messages[target_idx:]
+        agent.session_manager.save()
 
-    agent.session_manager.save()
+    # 如果 agent 不在内存中，直接从磁盘读取
+    else:
+        session_dir = ws_dir / "sessions" / session_id
+        index_file = session_dir / "index.json"
+
+        if not index_file.exists():
+            raise HTTPException(404, "Session not found")
+
+        with open(index_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        messages = data.get("messages", [])
+        target_idx = None
+        for i, msg in enumerate(messages):
+            if msg.get("_meta", {}).get("id") == msg_id:
+                target_idx = i
+                break
+
+        if target_idx is None:
+            raise HTTPException(404, "未找到指定的消息")
+
+        # 删除该消息及其后面的所有消息
+        deleted_count = len(messages) - target_idx
+        del messages[target_idx:]
+
+        # 保存回磁盘
+        with open(index_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
     return {"success": True, "deleted_count": deleted_count}
 
 
