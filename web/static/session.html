@@ -336,7 +336,7 @@
             const msgIdAttr = msg.msgId ? ` data-msg-id="${msg.msgId}"` : '';
             return `<div class="message ${cssClass}"${msgIdAttr}>
                 <div class="message-role">${roleLabel}</div>
-                <div class="message-content ${msg.role === 'assistant' && msg.type === 'text' ? 'md-content' : ''}">${contentHtml}</div>
+                <div class="message-content ${msg.role === 'assistant' && (msg.type === 'text' || msg.type === 'thinking') ? 'md-content' : ''}">${contentHtml}</div>
                 ${timeHtml}
             </div>`;
         }
