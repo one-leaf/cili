@@ -92,13 +92,10 @@ class SessionManager:
             extra: 额外字段，会合并到消息中
             _meta: 消息级别的 _meta 字段
         """
-        # 自动生成消息 ID（8 位十六进制），保证每条消息有唯一稳定标识
-        meta = dict(_meta) if _meta else {}
-        if "id" not in meta:
-            meta["id"] = generate_short_id()
+        message = {"role": role, "content": content}
 
-        message = {"role": role, "content": content, "_meta": meta}
-
+        if _meta:
+            message["_meta"] = _meta
         if extra:
             message.update(extra)
 

@@ -27,6 +27,7 @@ import httpx
 
 from core.config import Config, ModelConfig
 from core.llm import LLMClient, LLMResponse, format_llm_error, Message, TextBlock, UsageData
+from core.session import generate_short_id
 from core.tools.shared.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -121,9 +122,10 @@ class BaseAgent:
             content: Message content
             meta: Optional metadata dict (e.g. {"pinned": True} to prevent compression)
         """
-        msg = {"role": role, "content": content}
-        if meta:
-            msg["_meta"] = meta
+        meta = dict(meta) if meta else {}
+        if "id" not in meta:
+            meta["id"] = generate_short_id()
+        msg = {"role": role, "content": content, "_meta": meta}
         self.messages.append(msg)
 
     def save_messages(self, metadata: dict | None = None) -> None:
