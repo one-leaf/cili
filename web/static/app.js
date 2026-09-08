@@ -3341,7 +3341,7 @@ async function runUpgrade() {
 
 // ── 文件管理器 API 封装 ──
 
-// 辅助函数：markdown 渲染时自动在图片 URL 后注入 workspace_uuid，同时保护数学公式不被破坏
+// 辅助函数：markdown 渲染时自动为链接注入 workspace_uuid，同时保护数学公式不被破坏
 function renderMarkdown(text) {
     if (!text) return '';
 
@@ -3362,13 +3362,33 @@ function renderMarkdown(text) {
             }
         );
 
-        // 匹配相对路径图片并转换为 /api/workspaces/{uuid}/files/xxx
+    // 匹配相对路径图片并转换为 /api/workspaces/{uuid}/files/xxx
         text = text.replace(
             /!\[([^\]]*)\]\((?!http|\/api|data:)([^)]+)\)/g,
             (match, alt, url) => {
-                // 去掉开头的斜杠（如果有）
                 const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
                 return `![${alt}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
+            }
+        );
+
+        // 匹配普通文件链接 [text](/api/files/xxx) 并追加 workspace_uuid
+        text = text.replace(
+            /\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
+            (match, linkText, url) => {
+                if (url.includes('workspace_uuid=')) {
+                    return match;
+                }
+                const sep = url.includes('?') ? '&' : '?';
+                return `[${linkText}](${url}${sep}workspace_uuid=${workspaceUuid})`;
+            }
+        );
+
+        // 匹配相对路径文件链接 [text](file.md) 并转换为 /api/workspaces/{uuid}/files/xxx
+        text = text.replace(
+            /\[([^\]]*)\]\((?!http|\/api|data:|#)([^)]+)\)/g,
+            (match, linkText, url) => {
+                const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
+                return `[${linkText}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
             }
         );
     }
