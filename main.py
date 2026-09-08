@@ -18,6 +18,9 @@ import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+# Disable user site-packages to avoid mixing with system Python
+os.environ["PYTHONNOUSERSITE"] = "1"
+
 # Ensure deps Python site-packages is in sys.path (fix for embeddable Python)
 _project_root = os.path.dirname(os.path.abspath(__file__))
 _deps_python_dir = os.path.join(_project_root, "data", "deps", "python")
