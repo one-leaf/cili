@@ -16,12 +16,14 @@ $DepsDir = Join-Path $DataDir "deps"
 $GitDir = Join-Path $DepsDir "git"
 $PythonDir = Join-Path $DepsDir "python"
 $TectonicDir = Join-Path $DepsDir "tectonic"
+$FontsDir = Join-Path $DepsDir "fonts"
 
 # Download URLs
 $PythonVersion = "3.11.9"
 $GitVersion = "2.55.0"
 $GitBuild = "5"
 $TectonicVersion = "0.17.0"
+$WqyFontFile = "wqy-microhei-lite-0.2.0-beta.ttc"
 $PythonUrl = "https://mirrors.huaweicloud.com/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 $GitUrl = @(
     "https://mirrors.huaweicloud.com/git-for-windows/v$GitVersion.windows.$GitBuild/PortableGit-$GitVersion.$GitBuild-64-bit.7z.exe",
@@ -32,6 +34,12 @@ $TectonicUrl = @(
     "https://ghproxy.net/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
     "https://ghfast.top/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
     "https://gh-proxy.com/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip"
+)
+$WqyFontUrl = @(
+    "https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
+    "https://ghproxy.net/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
+    "https://ghfast.top/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
+    "https://gh-proxy.com/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile"
 )
 
 function Write-Status {
@@ -290,7 +298,32 @@ function Install-Tectonic {
     return $tectonicExe
 }
 
-# ═══════════════════════════════════════════════════════════════
+function Test-WqyFont {
+    $fontFile = Join-Path $FontsDir $WqyFontFile
+    if (Test-Path $fontFile) {
+        Write-Status "WenQuanYi Micro Hei found in deps: $fontFile"
+        return $fontFile
+    }
+    return $null
+}
+
+function Install-WqyFont {
+    Write-Status "Installing WenQuanYi Micro Hei to deps..." "Yellow"
+
+    New-Item -ItemType Directory -Path $FontsDir -Force | Out-Null
+
+    $fontFile = Join-Path $FontsDir $WqyFontFile
+    Download-File -Url $WqyFontUrl -OutputPath $fontFile
+
+    if (-not (Test-Path $fontFile)) {
+        throw "WenQuanYi font installation failed: $fontFile not found"
+    }
+
+    Write-Status "WenQuanYi Micro Hei installed successfully." "Green"
+    return $fontFile
+}
+
+# ══════════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════════
 
@@ -336,7 +369,20 @@ if (-not $tectonicPath) {
     }
 }
 
-# 4. 设置环境变量
+# 4. 检查/安装 WenQuanYi 字体
+$wqyFontPath = Test-WqyFont
+if (-not $wqyFontPath) {
+    Write-Status "WenQuanYi Micro Hei not found, downloading..." "Yellow"
+    try {
+        $wqyFontPath = Install-WqyFont
+    } catch {
+        Write-Status "Warning: WenQuanYi font download failed: $_" "Yellow"
+        Write-Status "Continuing without WenQuanYi font..." "Yellow"
+        $wqyFontPath = $null
+    }
+}
+
+# 5. 设置环境变量
 $env:GIT_BASH_PATH = $gitBashPath
 
 # 将 Tectonic 添加到 PATH（如果安装在 deps 目录）
@@ -346,13 +392,21 @@ if ($tectonicPath -and $tectonicPath.StartsWith($DepsDir)) {
     Write-Status "Added LaTeX to PATH: $tectonicBin"
 }
 
-# 5. 启动 Cili
+# 将字体目录设置为环境变量，供 matplotlib 使用
+if ($wqyFontPath) {
+    $env:WQY_FONT_PATH = $wqyFontPath
+}
+
+# 6. 启动 Cili
 Write-Status "Starting Cili Agent..."
 Write-Status "  Python: $pythonPath"
 Write-Status "  Git Bash: $gitBashPath"
 if ($tectonicPath) {
     $toolName = [System.IO.Path]::GetFileNameWithoutExtension($tectonicPath)
     Write-Status "  LaTeX ($toolName): $tectonicPath"
+}
+if ($wqyFontPath) {
+    Write-Status "  Font (WenQuanYi): $wqyFontPath"
 }
 Write-Status "  Port: $Port"
 Write-Host ""

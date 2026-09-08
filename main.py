@@ -507,16 +507,21 @@ for dist in importlib.metadata.distributions():
 
 
 def _init_mplfonts() -> None:
-    """Initialize mplfonts for CJK font support if not already initialized.
+    """Initialize matplotlib CJK font support.
 
-    Checks:
-    1. Run mplfonts init if Noto fonts not installed
-    2. Synthesize Bold variants (mplfonts only provides Regular)
-    3. Write complete rc file to data/deps/matplotlib/ (controlled by us)
+    Steps:
+    1. Write rc file (WenQuanYi if available, otherwise Microsoft YaHei)
+    2. Register WenQuanYi font with matplotlib if available
+    3. Clear font cache so matplotlib picks up new fonts
     """
     import matplotlib
     mpl_config_dir = os.path.join(_DEPS_PYTHON_DIR, "matplotlib")
     rc_file = os.path.join(mpl_config_dir, "matplotlibrc")
+
+    # Check if WenQuanYi font is available in deps/fonts
+    fonts_dir = os.path.join(_DEPS_DIR, "fonts")
+    wqy_font_file = os.path.join(fonts_dir, "wqy-microhei-lite-0.2.0-beta.ttc")
+    use_wqy = os.path.exists(wqy_font_file)
 
     # Check if rc file is complete (contains our fixes)
     rc_complete = False
@@ -524,65 +529,54 @@ def _init_mplfonts() -> None:
         try:
             with open(rc_file, "r", encoding="utf-8") as f:
                 content = f.read()
-                if "Segoe UI Symbol" in content and "font.monospace" in content:
-                    rc_complete = True
+                if ("Segoe UI Symbol" in content and "font.monospace" in content
+                        and ("WenQuanYi" in content or "Microsoft YaHei" in content)):
+                    # If rc has WenQuanYi but font file is gone, or vice versa, rewrite
+                    if use_wqy and "WenQuanYi" not in content:
+                        rc_complete = False
+                    elif not use_wqy and "WenQuanYi" in content:
+                        rc_complete = False
+                    else:
+                        rc_complete = True
         except Exception:
             pass
 
-    # Step 1: Ensure Noto fonts are installed
-    font_dir = os.path.join(os.path.dirname(matplotlib.__file__), 'mpl-data', 'fonts', 'ttf')
-    noto_font = os.path.join(font_dir, 'NotoSansCJKsc-Regular.otf')
-    if not os.path.exists(noto_font):
-        # Need to run mplfonts init
-        python_exe = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
-        check_mplfonts = """
-import importlib.metadata
-try:
-    importlib.metadata.distribution('mplfonts')
-    print('installed')
-except importlib.metadata.PackageNotFoundError:
-    print('not_installed')
-"""
-        try:
-            result = subprocess.run(
-                [python_exe, "-c", check_mplfonts],
-                capture_output=True, text=True, timeout=10
-            )
-            if "not_installed" in result.stdout:
-                return  # mplfonts not installed, skip
-        except Exception:
-            return
-
-        print("[setup] Initializing mplfonts for CJK font support...")
-        try:
-            result = subprocess.run(
-                [python_exe, "-c", "from mplfonts.bin.cli import init; init()"],
-                capture_output=True, text=True, timeout=120
-            )
-            if result.returncode != 0:
-                print(f"[setup] mplfonts init failed: {result.stderr[:200]}")
-                return
-        except Exception as e:
-            print(f"[setup] mplfonts init error: {e}")
-            return
-
-    # Step 2: Write complete rc file if needed
+    # Step 1: Write complete rc file if needed
     if not rc_complete:
         try:
             os.makedirs(mpl_config_dir, exist_ok=True)
-            content = (
-                "# Cili Agent - CJK font config (mplfonts Noto CJK first)\n"
-                "font.family: sans-serif\n"
-                "font.sans-serif: Noto Sans CJK SC Regular, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
-                "font.monospace: Noto Sans Mono CJK SC Regular, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, DejaVu Sans Mono, monospace\n"
-                "axes.unicode_minus: False\n"
-            )
+            if use_wqy:
+                content = (
+                    "# Cili Agent - CJK font config (WenQuanYi Micro Hei first)\n"
+                    "font.family: sans-serif\n"
+                    "font.sans-serif: WenQuanYi Micro Hei Light, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
+                    "font.monospace: WenQuanYi Micro Hei Light, Microsoft YaHei, SimHei, DejaVu Sans Mono, monospace\n"
+                    "axes.unicode_minus: False\n"
+                )
+            else:
+                content = (
+                    "# Cili Agent - CJK font config (Microsoft YaHei first)\n"
+                    "font.family: sans-serif\n"
+                    "font.sans-serif: Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
+                    "font.monospace: Microsoft YaHei, SimHei, DejaVu Sans Mono, monospace\n"
+                    "axes.unicode_minus: False\n"
+                )
             with open(rc_file, "w", encoding="utf-8") as f:
                 f.write(content)
-            print("[setup] matplotlibrc written")
+            print(f"[setup] matplotlibrc written (WenQuanYi: {use_wqy})")
         except Exception as e:
             print(f"[setup] Failed to write matplotlibrc: {e}")
             return
+
+    # Step 2: Register WenQuanYi font directory with matplotlib
+    if use_wqy:
+        try:
+            import matplotlib.font_manager as fm
+            # Add fonts directory to matplotlib's font search path
+            fm.fontManager.addfont(wqy_font_file)
+            print("[setup] WenQuanYi Micro Hei registered with matplotlib")
+        except Exception as e:
+            print(f"[setup] Failed to register WenQuanYi font: {e}")
 
     # Step 3: Clear font cache so matplotlib picks up new/updated fonts on next use
     import glob as _glob
@@ -593,7 +587,7 @@ except importlib.metadata.PackageNotFoundError:
         except Exception:
             pass
 
-    print("[setup] mplfonts initialized successfully")
+    print("[setup] matplotlib CJK fonts initialized successfully")
 
 
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
@@ -621,7 +615,6 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
         "pandas",
         "scipy",
         "matplotlib",
-        "mplfonts",
         "pyyaml",
         "toml",
         "Pillow",
