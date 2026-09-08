@@ -120,6 +120,25 @@
         .md-content a:hover { text-decoration: underline; }
         .md-content hr { border: none; border-top: 1px solid #e0e0e0; margin: 1em 0; }
         .md-content img { max-width: 100%; border-radius: 4px; }
+        /* Tool messages */
+        .message.tool { background: #f8f9fa; border-left: 3px solid #888; }
+        .message.tool .message-role { color: #666; }
+        .message.tool-result { border-left-color: #34a853; }
+        .message.tool-error { border-left-color: #d32f2f; }
+        .message.tool pre {
+            background: #282c34; color: #abb2bf;
+            padding: 10px 14px; border-radius: 6px;
+            font-size: 13px; line-height: 1.5;
+            overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+            max-height: 300px; overflow-y: auto;
+        }
+        .message.tool .tool-title {
+            font-size: 12px; font-weight: 600; color: #666;
+            margin-bottom: 6px;
+        }
+        /* Thinking messages */
+        .message.thinking { background: #fff8e1; border-left: 3px solid #ffb300; }
+        .message.thinking .message-role { color: #f57c00; }
         .status-msg {
             text-align: center;
             padding: 60px 20px;
@@ -225,29 +244,61 @@
         }
 
         function buildDisplayMessages(messages) {
+            // 与 chat.js 渲染逻辑对齐：每个气泡占一个索引，
+            // 包括用户文本、助手文本、工具调用、工具结果、thinking 等
             const display = [];
             for (const msg of messages) {
+                if (msg.role === 'system') continue;
+                const content = msg.content;
+
                 if (msg.role === 'user') {
-                    const content = msg.content;
                     if (typeof content === 'string') {
-                        display.push({ role: 'user', text: content, images: [], timestamp: msg.timestamp });
+                        if (content) display.push({ role: 'user', type: 'text', text: content, images: [], timestamp: msg.timestamp });
                     } else if (Array.isArray(content)) {
-                        const hasToolResult = content.some(b => b.type === 'tool_result');
-                        if (!hasToolResult) {
-                            const text = content.filter(b => b.type === 'text').map(b => b.text || '').join('\n');
-                            const images = content.filter(b => b.type === 'image' && b.source);
-                            if (text || images.length > 0) {
-                                display.push({ role: 'user', text, images, timestamp: msg.timestamp });
-                            }
+                        // 用户文本 + 图片 → 一个气泡
+                        const textParts = [];
+                        const images = [];
+                        const toolResults = [];
+                        for (const b of content) {
+                            if (b.type === 'text' && b.text) textParts.push(b.text);
+                            else if (b.type === 'image' && b.source) images.push(b);
+                            else if (b.type === 'tool_result') toolResults.push(b);
+                        }
+                        if (textParts.length > 0 || images.length > 0) {
+                            display.push({ role: 'user', type: 'text', text: textParts.join('\n'), images, timestamp: msg.timestamp });
+                        }
+                        // 每个 tool_result → 一个气泡（与 chat.js 对齐）
+                        for (const block of toolResults) {
+                            const meta = block._meta || {};
+                            if (meta.exec_id) continue;  // subagent 引用，单独渲染
+                            if (meta.completed === false) continue;  // ask_user 等待中
+                            const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
+                            const truncated = text.length > 2000 ? text.substring(0, 2000) + '\n... (内容过长已截断)' : text;
+                            display.push({
+                                role: 'assistant', type: 'tool-result',
+                                text: truncated, isError: !!block.is_error,
+                                title: '[工具结果]', timestamp: msg.timestamp,
+                            });
                         }
                     }
                 } else if (msg.role === 'assistant') {
-                    const content = msg.content;
-                    if (!hasToolUse(content)) {
-                        const text = extractTextContent(content);
-                        const images = Array.isArray(content) ? content.filter(b => b.type === 'image') : [];
-                        if (text || images.length > 0) {
-                            display.push({ role: 'assistant', text: injectWorkspaceUuid(text), images, timestamp: msg.timestamp });
+                    if (!Array.isArray(content)) {
+                        if (content) display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(String(content)), images: [], timestamp: msg.timestamp });
+                        continue;
+                    }
+                    for (const block of content) {
+                        if (block.type === 'text' && block.text) {
+                            display.push({ role: 'assistant', type: 'text', text: injectWorkspaceUuid(block.text), images: [], timestamp: msg.timestamp });
+                        } else if (block.type === 'image') {
+                            display.push({ role: 'assistant', type: 'text', text: '', images: [block], timestamp: msg.timestamp });
+                        } else if (block.type === 'thinking' && block.thinking) {
+                            display.push({ role: 'assistant', type: 'thinking', text: block.thinking, timestamp: msg.timestamp });
+                        } else if (block.type === 'tool_use' || block.type === 'tool_call') {
+                            const inputStr = typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2);
+                            const title = `[调用工具: ${block.name || 'unknown'}]`;
+                            // ask_user 未回答时不渲染
+                            if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) continue;
+                            display.push({ role: 'assistant', type: 'tool-call', text: inputStr, title, timestamp: msg.timestamp });
                         }
                     }
                 }
@@ -256,18 +307,34 @@
         }
 
         function renderMessage(msg) {
-            const roleLabel = msg.role === 'user' ? '用户' : '助手';
-            const imgHtml = msg.images.map(imageBlockHtml).join('');
+            const imgHtml = msg.images ? msg.images.map(imageBlockHtml).join('') : '';
             let contentHtml;
-            if (msg.role === 'user') {
+            let cssClass = msg.role;
+            let roleLabel;
+
+            if (msg.type === 'tool-call') {
+                cssClass = 'assistant tool';
+                roleLabel = '工具调用';
+                contentHtml = `<div class="tool-title">${escapeHtml(msg.title)}</div><pre>${escapeHtml(msg.text)}</pre>`;
+            } else if (msg.type === 'tool-result') {
+                cssClass = `assistant ${msg.isError ? 'tool tool-error' : 'tool tool-result'}`;
+                roleLabel = '工具结果';
+                contentHtml = `<div class="tool-title">${escapeHtml(msg.title || '[工具结果]')}</div><pre>${escapeHtml(msg.text)}</pre>`;
+            } else if (msg.type === 'thinking') {
+                cssClass = 'assistant thinking';
+                roleLabel = '💭 思考过程';
+                contentHtml = renderMarkdownWithMath(msg.text);
+            } else if (msg.role === 'user') {
+                roleLabel = '用户';
                 contentHtml = imgHtml + escapeHtml(msg.text);
             } else {
+                roleLabel = '助手';
                 contentHtml = imgHtml + renderMarkdownWithMath(msg.text);
             }
             const timeHtml = msg.timestamp ? `<div class="message-time">${msg.timestamp}</div>` : '';
-            return `<div class="message ${msg.role}">
+            return `<div class="message ${cssClass}">
                 <div class="message-role">${roleLabel}</div>
-                <div class="message-content ${msg.role === 'assistant' ? 'md-content' : ''}">${contentHtml}</div>
+                <div class="message-content ${msg.role === 'assistant' && msg.type === 'text' ? 'md-content' : ''}">${contentHtml}</div>
                 ${timeHtml}
             </div>`;
         }
