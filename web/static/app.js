@@ -107,11 +107,68 @@ chatMessages.addEventListener('click', (e) => {
     }
 });
 
+// 输入面板拖拽调整大小
+const resizeHandle = document.querySelector('.input-resize-handle');
+const chatInputArea = document.querySelector('.chat-input-area');
+const INPUT_MIN_HEIGHT = 80;
+const INPUT_MAX_HEIGHT = 500;
+const INPUT_DEFAULT_HEIGHT = 0; // 0 = 使用默认内容高度
+const STORAGE_KEY = 'chat-input-height';
+
+function initInputResize() {
+    // 恢复保存的高度
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+        const h = parseInt(saved);
+        if (h >= INPUT_MIN_HEIGHT && h <= INPUT_MAX_HEIGHT) {
+            chatInputArea.style.height = h + 'px';
+            chatInput.style.height = (h - 40) + 'px'; // 减去 padding
+        }
+    }
+
+    let startY, startH, dragging = false;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dragging = true;
+        startY = e.clientY;
+        startH = chatInputArea.getBoundingClientRect().height;
+        resizeHandle.classList.add('dragging');
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const delta = startY - e.clientY;
+        const newH = Math.min(INPUT_MAX_HEIGHT, Math.max(INPUT_MIN_HEIGHT, startH + delta));
+        chatInputArea.style.height = newH + 'px';
+        chatInput.style.height = (newH - 40) + 'px'; // 减去上下 padding
+        localStorage.setItem(STORAGE_KEY, newH);
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        resizeHandle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+
+    // 双击重置
+    resizeHandle.addEventListener('dblclick', () => {
+        chatInputArea.style.height = '';
+        chatInput.style.height = '';
+        localStorage.removeItem(STORAGE_KEY);
+    });
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadWorkspaces();
     loadFooter();
     setupEventListeners();
+    initInputResize();
     initSidebarState();
 });
 
@@ -3270,11 +3327,11 @@ function insertFilePath(filePath) {
     const textBefore = chatInput.value.substring(0, cursorPos);
     const textAfter = chatInput.value.substring(chatInput.selectionEnd);
 
-    // 插入文件路径
-    chatInput.value = textBefore + filePath + textAfter;
+    // 插入文件路径，后面加一个空格方便继续输入
+    chatInput.value = textBefore + filePath + ' ' + textAfter;
 
-    // 移动光标到插入位置之后
-    const newPos = cursorPos + filePath.length;
+    // 移动光标到插入位置之后（跳过空格）
+    const newPos = cursorPos + filePath.length + 1;
     chatInput.setSelectionRange(newPos, newPos);
     chatInput.focus();
 

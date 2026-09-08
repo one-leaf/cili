@@ -1316,18 +1316,60 @@ mjx-container {
     margin-bottom: 0;
 }
 
+.input-resize-handle {
+    height: 6px;
+    background: transparent;
+    cursor: ns-resize;
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color 0.2s;
+}
+
+.input-resize-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border-color);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.input-resize-handle:hover {
+    background-color: var(--bg-color);
+}
+
+.input-resize-handle:hover::after {
+    opacity: 1;
+}
+
+.input-resize-handle.dragging {
+    background-color: var(--bg-color);
+}
+
+.input-resize-handle.dragging::after {
+    opacity: 1;
+    background: var(--primary-color);
+}
+
 .chat-input-area {
     padding: 20px;
     background-color: white;
     border-top: 1px solid var(--border-color);
     display: flex;
     gap: 10px;
+    flex-shrink: 0;
 }
 
 .chat-input-wrap {
     flex: 1;
     position: relative;
     display: flex;
+    align-items: stretch;
 }
 
 .btn-icon-floating {
