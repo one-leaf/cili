@@ -1377,7 +1377,13 @@ function toggleMessageMenu(messageDiv, anchor) {
         menu.appendChild(div);
     });
 
-    anchor.appendChild(menu);
+    // 追加到 body，用 position: fixed 定位，避免被 .message 的 overflow:hidden 截断
+    document.body.appendChild(menu);
+
+    // 计算位置：对齐到触发按钮右侧，顶部对齐
+    const anchorRect = anchor.getBoundingClientRect();
+    menu.style.top = `${anchorRect.bottom + 4}px`;
+    menu.style.right = `${window.innerWidth - anchorRect.right}px`;
 
     // 点击其他地方关闭菜单
     setTimeout(() => {
