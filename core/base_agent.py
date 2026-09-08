@@ -501,7 +501,7 @@ class BaseAgent:
                             guide = (
                                 f"\n\n---\n"
                                 f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
-                                f"完整输出保存在文件: {output_path}。"
+                                f"完整输出保存在文件: {file_path}。"
                                 f"如需查看完整内容，请使用 read 工具分批读取该文件。"
                             )
                             block["content"] = truncated_content + guide
