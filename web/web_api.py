@@ -2191,8 +2191,15 @@ async def upload_files(
     uploaded = []
     errors = []
 
+    _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
     for file in files:
         try:
+            # Check file size before reading
+            if file.size is not None and file.size > _MAX_UPLOAD_SIZE:
+                errors.append({"name": file.filename, "error": f"File too large (max 100MB)"})
+                continue
+
             file_path = (target_dir / file.filename).resolve()
 
             # Security check for filename
@@ -2202,6 +2209,12 @@ async def upload_files(
 
             # Write file
             content = await file.read()
+
+            # Double-check size after reading (in case size header was missing)
+            if len(content) > _MAX_UPLOAD_SIZE:
+                errors.append({"name": file.filename, "error": f"File too large (max 100MB)"})
+                continue
+
             file_path.write_bytes(content)
             uploaded.append({"name": file.filename, "size": len(content)})
         except Exception as e:

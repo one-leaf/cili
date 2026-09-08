@@ -312,6 +312,8 @@ class BaseAgent:
             else:
                 result = tool.execute(**input_data)
         except Exception as e:
+            import traceback
+            logger.error(f"Tool '{name}' raised exception:\n{traceback.format_exc()}")
             result = ToolResult(f"Error executing tool: {e}", error=True)
         finally:
             # Only save external file for streaming tools

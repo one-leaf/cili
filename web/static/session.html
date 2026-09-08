@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>会话查看</title>
     <script src="/static/libs/marked.min.js"></script>
+    <script src="/static/libs/purify.min.js"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -170,6 +171,13 @@
             });
             let html = marked.parse(text);
             mathBlocks.forEach((b, i) => { html = html.replace('MATHBLOCK{' + i + '}', b); });
+            // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
+            if (typeof DOMPurify !== 'undefined') {
+                html = DOMPurify.sanitize(html, {
+                    ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math'],
+                    ADD_ATTR: ['encoding', 'display', 'xmlns'],
+                });
+            }
             return html;
         }
 

@@ -3473,6 +3473,13 @@ function renderMarkdown(text) {
         html = html.replace('MATHBLOCK{' + idx + '}', block);
     });
 
+    // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
+    if (typeof DOMPurify !== 'undefined') {
+        html = DOMPurify.sanitize(html, {
+            ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math'],
+            ADD_ATTR: ['encoding', 'display', 'xmlns'],
+        });
+    }
     return html;
 }
 

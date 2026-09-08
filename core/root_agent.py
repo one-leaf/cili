@@ -282,6 +282,8 @@ class RootAgent(BaseAgent):
             logger.warning(f"[RootAgent] 达到最大调用次数 ({self.max_iterations})")
             self._sync_to_session_manager()
             self.session_manager.save()
+            if self._on_text:
+                self._on_text(f"\n\n[已达到最大工具调用次数限制 ({self.max_iterations})，请继续提问以继续对话]")
 
     def _get_messages_with_header(self) -> list[dict]:
         """Get valid messages with dynamic project instructions injection.

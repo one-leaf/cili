@@ -126,6 +126,7 @@ class HttpTransport:
                     pass
                 resp.raise_for_status()
 
+            current_event = None
             for line in resp.iter_lines():
                 # Check for interruption
                 if stop_check and stop_check():
@@ -133,6 +134,12 @@ class HttpTransport:
 
                 line = line.strip()
                 if not line:
+                    current_event = None
+                    continue
+
+                # Parse SSE event type
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
                     continue
 
                 # Parse SSE data line
@@ -143,6 +150,11 @@ class HttpTransport:
 
                 if payload == "[DONE]":
                     break
+
+                # Skip error events with non-JSON payloads
+                if current_event == "error":
+                    logger.warning(f"[LLM] SSE error event: {payload[:200]}")
+                    continue
 
                 try:
                     event = json.loads(payload)

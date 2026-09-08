@@ -12,12 +12,16 @@ from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, 
 # 危险命令黑名单（大小写不敏感）
 _DENY_PATTERNS = [
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+/", re.I),        "rm -rf / (destructive recursive delete)"),
+    (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+\*", re.I),       "rm -rf * (destructive wildcard delete)"),
+    (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+~", re.I),        "rm -rf ~ (destructive home dir delete)"),
     (re.compile(r"\bformat\s+[a-zA-Z]:", re.I),                "format (disk format)"),
     (re.compile(r"\bdd\s+.*\bof=/dev/", re.I),                 "dd of=/dev/ (device write)"),
     (re.compile(r"\bmkfs\b", re.I),                            "mkfs (filesystem format)"),
     (re.compile(r"\bshutdown\b", re.I),                        "shutdown"),
     (re.compile(r"\breboot\b", re.I),                          "reboot"),
     (re.compile(r":\(\)\s*\{", re.I),                          "fork bomb"),
+    (re.compile(r"\bcd\s+\.\.\s*&&\s*rm\s", re.I),             "cd .. && rm (parent dir delete)"),
+    (re.compile(r">\s*/dev/sd[a-z]", re.I),                    "redirect to disk device"),
     # Cross-tool isolation: use pwsh/python tools instead of calling from bash
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "PowerShell invocation from bash (use the pwsh tool instead)"),

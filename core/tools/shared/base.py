@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
@@ -14,6 +15,21 @@ from pathlib import Path
 from typing import Any
 
 from core.config import PROJECT_ROOT
+
+# 全局跟踪所有活跃的后台 SubAgent，用于进程退出时清理
+_active_background_subagents: list = []
+_atexit_registered = False
+
+
+def _atexit_cleanup_subagents() -> None:
+    """进程退出时停止所有活跃的后台 SubAgent"""
+    for subagent in list(_active_background_subagents):
+        try:
+            if hasattr(subagent, 'stop'):
+                subagent.stop()
+        except Exception:
+            pass
+    _active_background_subagents.clear()
 
 
 # ── 后台任务管理 ──────────────────────────────────────────────────────────────
@@ -1268,10 +1284,17 @@ class Tool:
             exec_id: Execution ID.
             task_summary: Task summary for display.
         """
+        global _atexit_registered
         task_id = BackgroundTaskManager.allocate_task_id(prefix="subagent")
+
+        # Register atexit handler (once)
+        if not _atexit_registered:
+            atexit.register(_atexit_cleanup_subagents)
+            _atexit_registered = True
 
         def run_subagent():
             """Run SubAgent in background thread."""
+            _active_background_subagents.append(subagent)
             try:
                 result = subagent.run()
                 task.result = result
@@ -1307,6 +1330,11 @@ class Tool:
                 logging.getLogger(__name__).error(f"Background SubAgent {task_id} error: {e}")
                 task.status = "error"
                 task.result = {"status": "error", "message": str(e)}
+            finally:
+                try:
+                    _active_background_subagents.remove(subagent)
+                except ValueError:
+                    pass
 
         # Create background task entry
         task = BackgroundTask(

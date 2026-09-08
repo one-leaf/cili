@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 
 from core.tools.shared.base import Tool, ToolResult
+
+# 嵌套量词检测（ReDoS 风险模式）
+_REDOS_PATTERN = re.compile(
+    r'\([^)]*[+*][^)]*\)[+*]|\([^)]*\{[^)]*\}[^)]*\)[+*{]'
+)
 
 
 # 文件类型 → 扩展名映射
@@ -99,6 +105,13 @@ class GrepTool(Tool):
         context: int = 0,
         max_results: int = 250,
     ) -> ToolResult:
+        # ReDoS 防护：检测嵌套量词模式（固定字符串跳过）
+        if not fixed_strings and _REDOS_PATTERN.search(pattern):
+            return ToolResult(
+                "Error: pattern contains nested quantifiers which may cause ReDoS. "
+                "Use fixed_strings=true for literal search, or simplify the regex."
+            )
+
         # Resolve to absolute path
         path = self._resolve_path(path) if path else self.cwd
 
