@@ -18,6 +18,16 @@ import time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+# Ensure deps Python site-packages is in sys.path (fix for embeddable Python)
+_project_root = os.path.dirname(os.path.abspath(__file__))
+_deps_python_dir = os.path.join(_project_root, "data", "deps", "python")
+_deps_site_packages = os.path.join(_deps_python_dir, "Lib", "site-packages")
+if os.path.exists(_deps_site_packages) and _deps_site_packages not in sys.path:
+    sys.path.insert(0, _deps_site_packages)
+# Also add project root for imports
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
     """Windows 兼容的按日期轮转日志处理器。
