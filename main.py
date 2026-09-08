@@ -495,6 +495,9 @@ def _check_installed_packages() -> dict[str, str]:
     try:
         # Use deps Python to check installed packages
         python_exe = _get_deps_python()
+        # Pass environment with PYTHONNOUSERSITE to isolate from system Python
+        env = os.environ.copy()
+        env["PYTHONNOUSERSITE"] = "1"
         result = subprocess.run(
             [python_exe, "-c", """
 import importlib.metadata
@@ -504,6 +507,7 @@ for dist in importlib.metadata.distributions():
             capture_output=True,
             text=True,
             timeout=10,
+            env=env,
         )
         if result.returncode != 0:
             return {}
@@ -682,7 +686,10 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
             cmd.append(pkg)
 
             try:
-                result = subprocess.run(cmd, timeout=300)
+                # Pass environment with PYTHONNOUSERSITE to isolate from system Python
+                env = os.environ.copy()
+                env["PYTHONNOUSERSITE"] = "1"
+                result = subprocess.run(cmd, timeout=300, env=env)
                 if result.returncode == 0:
                     pkg_installed = True
                     break  # Package installed successfully
