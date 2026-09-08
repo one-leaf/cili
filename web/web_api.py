@@ -850,6 +850,10 @@ class AnswerAskUserRequest(BaseModel):
     answer: str  # 用户的答案
 
 
+class RevertRequest(BaseModel):
+    msg_id: str  # 要撤销到的消息 ID
+
+
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/rename")
 async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Rename a session (atomic write)."""
@@ -1353,6 +1357,38 @@ async def stop_agent(workspace_uuid: str, session_id: str):
 
     agent.stop()
     return {"success": True, "message": "已发送停止信号"}
+
+
+@app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert")
+async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest):
+    """撤销到指定消息，删除该消息及其后面的所有消息。"""
+    key = f"{workspace_uuid}:{session_id}"
+    agent = agents.get(key)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    if agent.is_running():
+        raise HTTPException(400, "Agent 正在运行中，无法撤销")
+
+    msg_id = request.msg_id
+    messages = agent.session_manager.messages
+
+    # 找到目标消息的索引
+    target_idx = None
+    for i, msg in enumerate(messages):
+        if msg.get("_meta", {}).get("id") == msg_id:
+            target_idx = i
+            break
+
+    if target_idx is None:
+        raise HTTPException(404, "未找到指定的消息")
+
+    # 删除该消息及其后面的所有消息
+    deleted_count = len(messages) - target_idx
+    del messages[target_idx:]
+
+    agent.session_manager.save()
+    return {"success": True, "deleted_count": deleted_count}
 
 
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")

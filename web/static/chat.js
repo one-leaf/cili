@@ -1342,6 +1342,36 @@ function doShare(msgId) {
     window.open(url, '_blank');
 }
 
+async function doRevert(msgId) {
+    if (!currentWorkspace || !currentSession) return;
+    if (!confirm('确定要撤销到此消息吗？该消息及其后面的所有消息将被删除。')) return;
+
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/revert`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ msg_id: msgId })
+            }
+        );
+
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+
+        const result = await resp.json();
+        showToast(`已撤销 ${result.deleted_count} 条消息`);
+
+        // 重新加载会话
+        await loadSession(currentSession.session_id);
+    } catch (err) {
+        console.error('Failed to revert:', err);
+        showToast('撤销失败: ' + err.message);
+    }
+}
+
 function toggleMessageMenu(messageDiv, anchor) {
     // 关闭其他菜单
     document.querySelectorAll('.msg-menu.show').forEach(m => m.remove());
@@ -1354,9 +1384,15 @@ function toggleMessageMenu(messageDiv, anchor) {
     // 引用
     items.push({ label: '引用', action: () => doQuote(messageDiv) });
 
-    // 复制（仅助手消息）
-    if (messageDiv.classList.contains('assistant')) {
-        items.push({ label: '复制', action: () => doCopy(messageDiv) });
+    // 复制（助手消息或用户消息）
+    items.push({ label: '复制', action: () => doCopy(messageDiv) });
+
+    // 撤销（仅用户消息）
+    if (messageDiv.classList.contains('user')) {
+        const msgId = messageDiv.dataset.msgId;
+        if (msgId) {
+            items.push({ label: '撤销', action: () => doRevert(msgId) });
+        }
     }
 
     // 分享（有消息 ID 时）
