@@ -1338,7 +1338,28 @@ function doCopy(messageDiv) {
 
 function doShare(msgId) {
     if (!currentWorkspace || !currentSession) return;
-    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${currentSession.session_id}/${msgId}`;
+    const messageDiv = document.querySelector(`[data-msg-id="${msgId}"]`);
+    if (!messageDiv) return;
+
+    let ids;
+    if (messageDiv.classList.contains('user')) {
+        // user 消息：从该消息开始到结束
+        const allMessages = document.querySelectorAll('.message[data-msg-id]');
+        let startCollecting = false;
+        const idSet = new Set();
+        for (const div of allMessages) {
+            if (div === messageDiv) startCollecting = true;
+            if (startCollecting && div.dataset.msgId) {
+                idSet.add(div.dataset.msgId);
+            }
+        }
+        ids = Array.from(idSet).join(',');
+    } else {
+        // 其他消息：只分享自己
+        ids = msgId;
+    }
+
+    const url = `${window.location.origin}/s/${currentWorkspace.uuid}/${currentSession.session_id}/${ids}`;
     window.open(url, '_blank');
 }
 
