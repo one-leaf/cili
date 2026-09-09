@@ -34,6 +34,35 @@ logger = logging.getLogger(__name__)
 _MAX_ITERATIONS = 200
 _MIN_CHECK_ITERATIONS = 10
 
+# 迭代额度预警阈值（占 max_iterations 的比例），各阶段只触发一次
+_BUDGET_WARN_RATIO = 0.8
+_BUDGET_FINAL_RATIO = 0.95
+
+_BUDGET_WARN_PROMPT = (
+    "## 额度预警\n\n"
+    "迭代额度已使用 {used}/{total}。请评估当前进度：\n"
+    "- 不要再扩展新的工作面\n"
+    "- 已开始的工作尽快完成，准备收尾总结"
+)
+
+_BUDGET_FINAL_PROMPT = (
+    "## 额度即将耗尽\n\n"
+    "迭代额度即将用尽（{used}/{total}）。**立即停止发起新的工具调用**，"
+    "直接输出最终总结报告，必须包含：\n"
+    "1. 已完成的工作与产出位置\n"
+    "2. 未完成/未验证的部分及原因\n"
+    "3. 供父代理继续的后续建议"
+)
+
+_TIMEOUT_WRAPUP_PROMPT = (
+    "迭代额度已耗尽，任务循环被强制终止。请基于上方全部历史，"
+    "输出最终执行总结报告：\n"
+    "1. 已完成的工作与产出位置\n"
+    "2. 未完成/未验证的部分及原因\n"
+    "3. 后续建议\n\n"
+    "不要调用任何工具。"
+)
+
 # Check phase prompt (injected after main execution completes)
 _CHECK_PROMPT = (
     "## 检查阶段\n\n"
@@ -139,6 +168,8 @@ class SubAgent(BaseAgent):
         # Execution tracking
         self._started_at: datetime | None = None
         self.max_consecutive_failures = max_consecutive_failures
+        self._budget_warn_triggered = False
+        self._budget_final_triggered = False
 
     def _build_task_message(self) -> str:
         """Build task+plan as first user message (pinned, survives compression)."""
@@ -158,12 +189,40 @@ class SubAgent(BaseAgent):
             lines.append("Execute these steps in order. Report progress as you complete each step.")
             lines.append("")
 
+        lines.append(
+            f"Iteration budget: at most {self.max_iterations} tool-call rounds. "
+            "Budget notices may appear near the limit — comply immediately."
+        )
+        lines.append("")
+
         # 下放主代理会话级批准的命令（共享同一 ApprovalStore，子代理可直接执行）
         approved_section = build_approved_commands_section(self.approval_store)
         if approved_section:
             lines.append(approved_section)
 
         return "\n".join(lines)
+
+    def _inject_budget_notice(self, i: int) -> None:
+        """迭代额度临近耗尽时注入预警消息（final 优先，各只触发一次）。
+
+        用 list content 注入：_find_split_by_user_messages 只统计 string user
+        消息（KEEP_USER_MESSAGES=3），string 消息会把计数推过阈值，导致 full
+        compact 挤掉 pinned 任务消息。
+        """
+        if not self._budget_final_triggered and i >= int(self.max_iterations * _BUDGET_FINAL_RATIO):
+            self._budget_final_triggered = True
+            self.add_message(
+                "user",
+                [{"type": "text", "text": _BUDGET_FINAL_PROMPT.format(used=i, total=self.max_iterations)}],
+                meta={"budget": "final"},
+            )
+        elif not self._budget_warn_triggered and i >= int(self.max_iterations * _BUDGET_WARN_RATIO):
+            self._budget_warn_triggered = True
+            self.add_message(
+                "user",
+                [{"type": "text", "text": _BUDGET_WARN_PROMPT.format(used=i, total=self.max_iterations)}],
+                meta={"budget": "warn"},
+            )
 
     @staticmethod
     def _downgrade_approval_result(result: dict) -> None:
@@ -185,6 +244,8 @@ class SubAgent(BaseAgent):
         self._started_at = datetime.now()
         self._stopped = False
         self._running = True
+        self._budget_warn_triggered = False
+        self._budget_final_triggered = False
 
         # Build initial pinned message (task + plan, immune to compression)
         self.add_message("user", self._build_task_message(), meta={"pinned": True})
@@ -205,6 +266,9 @@ class SubAgent(BaseAgent):
                     self._finalize(status, summary, i)
                     return {"status": status, "message": summary, "iterations": i, "usage": self._usage}
 
+                # 额度预警（stop 优先：用户主动停止时不注入）
+                self._inject_budget_notice(i)
+
                 try:
                     # Compress if needed
                     self._check_and_compress()
@@ -223,6 +287,15 @@ class SubAgent(BaseAgent):
 
                 if not tool_calls:
                     if not in_check_phase:
+                        if self._budget_final_triggered:
+                            # 额度兜底下跳过检查阶段，直接交付总结
+                            summary = response.get_text() or "预算耗尽，模型未输出总结"
+                            self.add_message("assistant", response.content_as_dicts())
+                            status = "completed"
+                            self._finalize(status, summary, i + 1)
+                            return {"status": status, "summary": summary, "iterations": i + 1,
+                                    "budget_wrapup": True, "usage": self._usage}
+
                         # Main phase ended → inject check prompt for verification
                         summary = response.get_text()
                         self.add_message("assistant", response.content_as_dicts())
@@ -288,14 +361,58 @@ class SubAgent(BaseAgent):
                     else:
                         consecutive_failures = 0
 
-            # Timeout
+            # Timeout — 额度耗尽，兜底生成一次执行总结
             status = "timeout"
             summary = f"Exceeded max iterations ({self.max_iterations})"
+            wrapped_up = False
+            if not (self.stop_check and self.stop_check()):
+                try:
+                    wrapup = self._wrapup_timeout_summary()
+                    if wrapup:
+                        summary = wrapup
+                        wrapped_up = True
+                except Exception as e:
+                    logger.warning(f"[SubAgent] 兜底总结失败: {e}")
             self._finalize(status, summary, self.max_iterations)
-            return {"status": status, "iterations": self.max_iterations, "usage": self._usage}
+            result = {"status": status, "summary": summary, "iterations": self.max_iterations, "usage": self._usage}
+            if wrapped_up:
+                result["wrapped_up"] = True
+            return result
 
         finally:
             self._running = False
+
+    def _wrapup_timeout_summary(self) -> str:
+        """额度耗尽时兜底生成一次执行总结。
+
+        直接调 client.chat 且不传 tools，杜绝兜底调用再次触发工具循环。
+        """
+        self._pad_dangling_tool_results()
+        self.add_message("user", [{"type": "text", "text": _TIMEOUT_WRAPUP_PROMPT}], meta={"budget": "wrapup"})
+
+        # 消息预处理与 _call_llm_non_streaming 一致
+        messages = self._get_messages_with_header()
+        messages = self._resolve_tool_results(messages)
+        messages = self._strip_meta_from_messages(messages)
+        if not self.config.model.multimodal:
+            messages = self._strip_images_from_messages(messages)
+
+        response = self.client.chat(
+            messages=self._convert_to_message_objects(messages),
+            system=self._system_prompt,
+            session_id=self._session_id,
+        )
+        if response.usage:
+            self._update_usage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                api_calls=1,
+                cache_read_tokens=response.usage.cache_read_tokens,
+                cache_creation_tokens=response.usage.cache_write_tokens,
+            )
+        text = response.get_text().strip()
+        self.add_message("assistant", text)
+        return text
 
     def _elapsed_seconds(self) -> float:
         """Calculate elapsed seconds since start."""
