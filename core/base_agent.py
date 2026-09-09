@@ -663,21 +663,25 @@ class BaseAgent:
             logger.error("摘要生成失败，跳过压缩")
             return total_tokens, total_tokens
 
-        # Mark messages before split as invalid (using _meta.valid)
-        valid_count = 0
-        for i, msg in enumerate(all_messages):
-            # Check validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
+        # Mark messages before split as invalid (using _meta.valid).
+        # valid_messages 是 get_valid_messages() 的保序拷贝（非引用），
+        # 用游标在 all_messages 中按 valid_messages 索引对齐后标记；
+        # pinned 消息永不标记失效（任务/检查提示等核心锚点）。
+        pinned_positions = {
+            pos for pos, msg in enumerate(valid_messages[:split_idx])
+            if msg.get("_meta", {}).get("pinned")
+        }
+        cursor = 0
+        for msg in all_messages:
+            if cursor >= split_idx:
+                break
+            if msg.get("_meta", {}).get("valid") is False:
                 continue
-            if valid_count < split_idx:
-                # Mark message-level _meta.valid = False
+            if cursor not in pinned_positions:
                 if "_meta" not in msg:
                     msg["_meta"] = {}
                 msg["_meta"]["valid"] = False
-                valid_count += 1
-            else:
-                break
+            cursor += 1
 
         # Add summary messages
         self.add_message(
@@ -694,6 +698,8 @@ class BaseAgent:
         """Find split point keeping last N user text messages."""
         user_text_indices = []
         for i, msg in enumerate(messages):
+            if msg.get("_meta", {}).get("pinned"):
+                continue
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")

@@ -468,6 +468,34 @@ class TestBaseAgentUnitTests:
         assert any("摘要" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
                    for m in agent.messages)
 
+    def test_full_compact_preserves_pinned_messages(self, tmp_path):
+        """full compact 不标记 pinned 消息失效，也不影响其后续消息的对齐。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        agent = BaseAgent(config=config, session_dir=tmp_path)
+        agent.messages = [
+            {"role": "user", "content": "pinned task", "_meta": {"pinned": True}},
+            {"role": "user", "content": "question 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "question 2"},
+            {"role": "assistant", "content": "answer 2"},
+            {"role": "user", "content": "pinned check", "_meta": {"pinned": True}},
+        ]
+
+        with patch.object(agent, "_summarize_messages", return_value="对话摘要"):
+            agent._perform_full_compact(keep_user_messages=1)
+
+        # pinned 消息永不失效
+        for m in agent.messages:
+            if m.get("_meta", {}).get("pinned"):
+                assert m["_meta"].get("valid") is not False
+        # pinned 之后的普通消息仍可被正常压缩
+        assert any(
+            m.get("content") == "answer 1" and m.get("_meta", {}).get("valid") is False
+            for m in agent.messages
+        )
+
     def test_save_messages_preserves_metadata(self, tmp_path):
         """save_messages 不应覆盖 SessionManager 写入的 name/metadata。"""
         from core.base_agent import BaseAgent
