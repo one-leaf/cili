@@ -59,6 +59,7 @@ class ReadTool(Tool):
     MAX_CHARS_PER_LINE = 2000   # 单行字符上限，超限截断该行
 
     MAX_PAGES_PER_READ = 20   # PDF 单次读取页数上限
+    MAX_RAW_IMAGE_BYTES = 5 * 1024 * 1024  # 无 PIL 时原始图片读取上限（5MB）
 
     def execute(
         self,
@@ -114,7 +115,18 @@ class ReadTool(Tool):
                     }]
                 )
             except ImportError:
-                # PIL not available, fallback to base64 without resize
+                # PIL not available, fallback to base64 without resize.
+                # 无 PIL 时无法缩放，限制原始文件大小防止超大图片撑爆上下文
+                file_size = os.path.getsize(file_path)
+                if file_size > self.MAX_RAW_IMAGE_BYTES:
+                    return ToolResult(
+                        output=(
+                            f"Error: Image '{file_path}' is {file_size / 1024 / 1024:.1f}MB, "
+                            f"exceeding the {self.MAX_RAW_IMAGE_BYTES // 1024 // 1024}MB limit for raw reads. "
+                            f"Install Pillow to enable automatic downscaling, or convert the image to a smaller format."
+                        ),
+                        error=True,
+                    )
                 with open(file_path, 'rb') as f:
                     raw_data = f.read()
                 base64_data = base64.b64encode(raw_data).decode('utf-8')

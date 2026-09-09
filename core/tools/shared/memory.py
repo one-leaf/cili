@@ -14,6 +14,16 @@ from core.config import PROJECT_ROOT
 from core.tools.shared.base import Tool, ToolResult
 
 
+def _fm_value(value: Any) -> str:
+    """清理用于 frontmatter 双引号值的字符串。
+
+    frontmatter 解析是逐行的、只剥掉首尾引号、没有转义处理，
+    所以内嵌引号和换行必须直接替换掉，否则会破坏文件结构。
+    """
+    return str(value).replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+
+
+
 class MemoryTool(Tool):
     name = "memory"
     description = (
@@ -325,20 +335,20 @@ class MemoryTool(Tool):
             refs.append(source_ref)
 
         lines = ["---"]
-        lines.append(f'title: "{title}"')
-        lines.append(f"source: {source}")
+        lines.append(f'title: "{_fm_value(title)}"')
+        lines.append(f"source: {_fm_value(source)}")
         if refs:
             lines.append("references:")
             for ref in refs:
                 # Normalize file paths
                 if ref.startswith("file:"):
                     norm = ref[len("file:"):].replace("\\", "/")
-                    lines.append(f'  - "file:{norm}"')
+                    lines.append(f'  - "file:{_fm_value(norm)}"')
                 else:
-                    lines.append(f'  - "{ref}"')
+                    lines.append(f'  - "{_fm_value(ref)}"')
         lines.append(f"time: {time_str}")
         if tags:
-            tags_str = ", ".join(tags)
+            tags_str = ", ".join(_fm_value(t) for t in tags)
             lines.append(f"tags: [{tags_str}]")
         lines.append("---")
         lines.append("")
@@ -369,10 +379,10 @@ class MemoryTool(Tool):
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         lines = ["---"]
-        lines.append(f'name: "{name}"')
-        lines.append(f'description: "{description}"')
+        lines.append(f'name: "{_fm_value(name)}"')
+        lines.append(f'description: "{_fm_value(description)}"')
         if tags:
-            tags_str = ", ".join(tags)
+            tags_str = ", ".join(_fm_value(t) for t in tags)
             lines.append(f"tags: [{tags_str}]")
         lines.append(f"created: {time_str}")
         lines.append(f"updated: {time_str}")
@@ -458,10 +468,10 @@ class MemoryTool(Tool):
 
         # Build new content
         lines = ["---"]
-        lines.append(f'name: "{name}"')
-        lines.append(f'description: "{description}"')
+        lines.append(f'name: "{_fm_value(name)}"')
+        lines.append(f'description: "{_fm_value(description)}"')
         if tags:
-            tags_str = ", ".join(tags)
+            tags_str = ", ".join(_fm_value(t) for t in tags)
             lines.append(f"tags: [{tags_str}]")
         lines.append(f"created: {created}")
         lines.append(f"updated: {time_str}")

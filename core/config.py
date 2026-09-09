@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.fs_utils import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -276,9 +278,7 @@ def load_global_config() -> dict:
 def save_global_config(config: dict) -> bool:
     """Save global model configuration to data/cili/setting.json."""
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(GLOBAL_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        atomic_write_json(GLOBAL_CONFIG_PATH, config)
         return True
     except OSError as e:
         logger.warning(f"Failed to save {GLOBAL_CONFIG_PATH}: {e}")

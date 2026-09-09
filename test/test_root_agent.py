@@ -63,25 +63,32 @@ class TestIterContentBlocks:
 
 
 class TestCountTokens:
-    """_count_tokens() 方法，与 compression.py 使用相同比率。"""
+    """_count_messages_tokens() 委托 compression.count_messages_tokens。"""
 
     def test_empty(self, agent):
-        assert agent._count_tokens("") == 0
+        assert agent._count_messages_tokens([]) == 0
 
     def test_english(self, agent):
-        tokens = agent._count_tokens("hello world")
-        assert tokens == int(11 / 4)
+        from core.compression import count_messages_tokens
+        messages = [{"role": "user", "content": "hello world"}]
+        assert agent._count_messages_tokens(messages) == count_messages_tokens(messages)
 
     def test_chinese(self, agent):
-        tokens = agent._count_tokens("中文测试内容")
+        messages = [{"role": "user", "content": "中文测试内容"}]
         # 6 中文字 / 2.5 = 2
-        assert tokens == 2
+        assert agent._count_messages_tokens(messages) == 2
+
+    def test_reasoning_blocks_counted(self, agent):
+        """reasoning/thinking 块计入估算（统一前 base_agent 版本会漏算）。"""
+        messages = [{"role": "assistant", "content": [{"type": "reasoning", "text": "思考内容"}]}]
+        assert agent._count_messages_tokens(messages) > 0
 
     def test_consistency_with_compression(self, agent):
-        """root_agent._count_tokens 和 compression.count_tokens_approx 比率一致。"""
-        from core.compression import count_tokens_approx
+        """root_agent._count_messages_tokens 和 compression.count_messages_tokens 一致。"""
+        from core.compression import count_messages_tokens
         text = "混合mixed测试text内容data"
-        assert agent._count_tokens(text) == count_tokens_approx(text)
+        messages = [{"role": "user", "content": text}]
+        assert agent._count_messages_tokens(messages) == count_messages_tokens(messages)
 
 
 class TestFindSplitByUserMessages:

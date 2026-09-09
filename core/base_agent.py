@@ -32,8 +32,6 @@ from core.tools.shared.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
-_CHINESE_RE = re.compile(r'[一-鿿]')
-
 # Compression constants
 KEEP_USER_MESSAGES = 3
 _LARGE_OUTPUT_THRESHOLD = 10_000
@@ -82,7 +80,6 @@ class BaseAgent:
         # Execution tracking
         self._stopped = False
         self._running = False
-        self._compression_attempted = False
 
         # Usage tracking
         self._usage: dict[str, int] = {
@@ -604,9 +601,6 @@ class BaseAgent:
                 self._perform_full_compact(KEEP_USER_MESSAGES)
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
-            self._compression_attempted = True
-        else:
-            self._compression_attempted = False
 
         # Layer 3: Emergency body size
         messages = self._get_messages_with_header()
@@ -904,29 +898,10 @@ class BaseAgent:
                         else:
                             yield ("tool_result_str", str(rc))
 
-    def _count_tokens(self, text: str) -> int:
-        """Estimate token count."""
-        if not text:
-            return 0
-        chinese_chars = len(_CHINESE_RE.findall(text))
-        other_chars = len(text) - chinese_chars
-        return int(chinese_chars / 2.5 + other_chars / 4)
-
     def _count_messages_tokens(self, messages: list[dict]) -> int:
-        """Count total tokens in messages."""
-        total = 0
-        for btype, data in self.iter_content_blocks(messages):
-            if btype == "text":
-                total += self._count_tokens(data)
-            elif btype == "tool_use":
-                total += self._count_tokens(json.dumps(data.get("input", {}), ensure_ascii=False))
-            elif btype == "tool_result_text":
-                total += self._count_tokens(data)
-            elif btype == "tool_result_image":
-                total += max(750, len(data) // 100)
-            elif btype == "tool_result_str":
-                total += self._count_tokens(data)
-        return total
+        """Count total tokens in messages (delegates to compression.count_messages_tokens)."""
+        from core.compression import count_messages_tokens
+        return count_messages_tokens(messages)
 
     def _estimate_request_body_size(self, messages: list[dict]) -> int:
         """Estimate JSON request body size in bytes."""
@@ -1215,10 +1190,16 @@ class BaseAgent:
                         message_objects = self._strip_images_from_messages(message_objects)
                     message_objects = self._convert_to_message_objects(message_objects)
                 else:
-                    # 其他错误：等待后重试
+                    # 其他错误：等待后重试（分段 sleep，期间响应停止请求）
                     delay = retry_delays[attempt]
                     logger.warning(f"[LLM] 请求失败 (尝试 {attempt + 1}/{max_retries + 1})，{delay}秒后重试: {e}")
-                    time.sleep(delay)
+                    for _ in range(delay * 10):
+                        if self._stopped:
+                            return LLMResponse(
+                                content=[TextBlock(text="".join(text_parts))],
+                                stop_reason="stopped",
+                            )
+                        time.sleep(0.1)
                     text_parts.clear()
                     if self._on_text:
                         self._on_text("\x00RETRY_CLEAR\x00")

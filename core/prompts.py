@@ -572,8 +572,6 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         f"**{current_date}**",
         "",
         "Use this time when interpreting relative or time-sensitive requests such as \"today\", \"latest\", \"current\", \"this year\", or version/documentation freshness. When the user asks for the latest information, verify it with available web tools rather than relying on model knowledge.",
-        "",
-        "Context received. Please confirm briefly and await my task.",
     ])
 
     return "\n".join(parts)
@@ -678,8 +676,6 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "## Current Time",
         "",
         f"**{current_date}**",
-        "",
-        "Context received. Please confirm briefly and await my task.",
     ])
 
     return "\n".join(parts)

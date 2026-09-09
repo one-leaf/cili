@@ -385,15 +385,22 @@ class TestBaseAgentUnitTests:
         assert len(valid) == 2  # user message + valid assistant message
 
     def test_count_tokens(self):
-        """_count_tokens 估算。"""
+        """_count_messages_tokens 委托 compression.count_messages_tokens（含 reasoning 块）。"""
         from core.base_agent import BaseAgent
 
         config = make_dgx_config("anthropic")
         agent = BaseAgent(config=config)
 
-        assert agent._count_tokens("hello world") > 0
-        assert agent._count_tokens("你好世界") > 0
-        assert agent._count_tokens("") == 0
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "reasoning", "text": "思考内容"},  # reasoning 块也应计入
+            ]},
+        ]
+
+        assert agent._count_messages_tokens(messages) > 0
+        assert agent._count_messages_tokens([]) == 0
 
     def test_iter_content_blocks(self):
         """iter_content_blocks 产出正确类型。"""

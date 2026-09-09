@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from core.tools.shared.base import Tool, ToolResult
@@ -56,7 +57,7 @@ class CronTool(Tool):
         "- **interval**: Run every N minutes (e.g., {\"type\": \"interval\", \"minutes\": 60})\n"
         "- **cron**: Standard cron expression (e.g., {\"type\": \"cron\", \"expr\": \"0 9 * * *\"} = daily at 9am)\n\n"
         "## Task Configuration:\n"
-        "- **name**: Unique task identifier (required)\n"
+        "- **name**: Unique task identifier (required, letters/digits/hyphens/underscores only)\n"
         "- **description**: Human-readable description\n"
         "- **schedule**: When to run (interval or cron)\n"
         "- **task**: What to do (task description)\n"
@@ -254,6 +255,13 @@ class CronTool(Tool):
         """Create a new scheduled task."""
         if not name:
             return ToolResult("Error: 'name' is required for create action", error=True)
+        # 任务名用作 state 文件名（CRON_STATE_DIR / f"{name}.json"），
+        # 必须限制字符集防止路径穿越
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            return ToolResult(
+                "Error: 'name' may only contain letters, digits, hyphens, and underscores (max 64 chars)",
+                error=True,
+            )
         if not task:
             return ToolResult("Error: 'task' is required for create action", error=True)
         if not schedule:
