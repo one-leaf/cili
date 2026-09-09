@@ -196,6 +196,10 @@
                     ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math'],
                     ADD_ATTR: ['encoding', 'display', 'xmlns'],
                 });
+            } else {
+                // DOMPurify 加载失败时 fail-closed：转义所有标签，阻止原始 HTML 注入。
+                // 转义后的文本节点内 `<`/`>` 经浏览器解码还原，MathJax 仍可正常渲染公式。
+                html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
             return html;
         }

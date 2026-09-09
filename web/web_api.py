@@ -195,6 +195,12 @@ def _validate_session_id(session_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid session_id format")
 
 
+def _validate_workspace_uuid(workspace_uuid: str) -> None:
+    """Validate workspace_uuid format to prevent path traversal."""
+    if not _SESSION_ID_RE.match(workspace_uuid):
+        raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
+
+
 def _require_workspace(workspace_uuid: str) -> Path:
     """FastAPI dependency: validate workspace exists, return its data dir.
 
@@ -524,6 +530,7 @@ def _cleanup_agents_for_workspace(workspace_uuid: str) -> None:
 @app.delete("/api/workspaces/{workspace_uuid}")
 async def delete_workspace(workspace_uuid: str):
     """Delete a workspace and all its data."""
+    _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
     async with _agents_lock:
@@ -535,6 +542,7 @@ async def delete_workspace(workspace_uuid: str):
 @app.put("/api/workspaces/{workspace_uuid}")
 async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest):
     """Update workspace name and/or directory."""
+    _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
@@ -569,6 +577,9 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
 @app.post("/api/workspaces/{workspace_uuid}/reset")
 async def reset_workspace(workspace_uuid: str):
     """Reset workspace config and sessions, but keep workspace files intact."""
+    _validate_workspace_uuid(workspace_uuid)
+    if workspace_uuid == "system":
+        raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     async with _agents_lock:
         _cleanup_agents_for_workspace(workspace_uuid)
     _remove_workspace_data(workspace_uuid)

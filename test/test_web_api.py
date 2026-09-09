@@ -83,6 +83,22 @@ class TestRequireWorkspace:
         assert exc_info.value.status_code == 404
 
 
+class TestValidateWorkspaceUuid:
+    """_validate_workspace_uuid() 路径穿越校验。"""
+
+    def test_valid_uuid_passes(self):
+        from web.web_api import _validate_workspace_uuid
+        _validate_workspace_uuid("abc123")  # 不应抛异常
+
+    def test_path_traversal_rejected(self):
+        from fastapi import HTTPException
+        from web.web_api import _validate_workspace_uuid
+        for evil in ("..", "../..", "a/b", "C:\\evil", "a%2Fb"):
+            with pytest.raises(HTTPException) as exc_info:
+                _validate_workspace_uuid(evil)
+            assert exc_info.value.status_code == 400
+
+
 class TestListAllWorkspaces:
     """_list_all_workspaces() scans workspace directory."""
 

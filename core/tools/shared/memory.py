@@ -7,6 +7,7 @@ import json
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from core.config import PROJECT_ROOT
@@ -89,6 +90,29 @@ class MemoryTool(Tool):
         from core.config import get_workspace_data_dir
         self.memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
 
+    @staticmethod
+    def _validate_component(name: str, field: str) -> None:
+        """Reject path-traversal / absolute components in LLM-provided names.
+
+        Raises ValueError so the caller's try/except turns it into an error result.
+        """
+        if not name or name in (".", "..") or "/" in name or "\\" in name or os.path.isabs(name):
+            raise ValueError(f"Invalid {field}: {name!r}")
+
+    def _safe_memory_path(self, *parts: str) -> str:
+        """Resolve parts under memory_dir, rejecting traversal or absolute escapes.
+
+        On Windows, os.path.join(base, "C:\\...") silently returns the absolute
+        path, so a naive join can escape memory_dir entirely. This helper
+        validates every component and double-checks the resolved path stays
+        inside memory_dir.
+        """
+        base = Path(self.memory_dir).resolve()
+        target = base.joinpath(*parts).resolve()
+        if not target.is_relative_to(base):
+            raise ValueError("Memory path escapes the memory directory")
+        return str(target)
+
     # ─── public entry point ────────────────────────────────────────────
 
     def execute(self, **kwargs: Any) -> ToolResult:
@@ -147,8 +171,11 @@ class MemoryTool(Tool):
         elif not filename.endswith(".md"):
             filename = filename + ".md"
 
+        self._validate_component(topic, "topic")
+        self._validate_component(filename, "filename")
+
         # Build directory path
-        date_dir = os.path.join(self.memory_dir, "knowledge", topic, date_str)
+        date_dir = self._safe_memory_path("knowledge", topic, date_str)
         os.makedirs(date_dir, exist_ok=True)
 
         file_path = self._resolve_filename_conflict(date_dir, filename)
@@ -221,8 +248,10 @@ class MemoryTool(Tool):
         if len(description) > 200:
             return ToolResult("Error: description must be 200 characters or less", error=True)
 
+        self._validate_component(skill_name, "skill_name")
+
         # Build skill directory
-        skill_dir = os.path.join(self.memory_dir, "skills", skill_name)
+        skill_dir = self._safe_memory_path("skills", skill_name)
         os.makedirs(skill_dir, exist_ok=True)
 
         skill_path = os.path.join(skill_dir, "skill.md")
@@ -384,6 +413,7 @@ class MemoryTool(Tool):
             return ToolResult("Error: title is required to find knowledge", error=True)
 
         topic = kwargs.get("topic", "misc")
+        self._validate_component(topic, "topic")
         found_path = self._find_knowledge_by_title(topic, title)
 
         if not found_path:
@@ -400,8 +430,9 @@ class MemoryTool(Tool):
         skill_name = kwargs.get("skill_name", "")
         if not skill_name:
             return ToolResult("Error: skill_name is required to find skill", error=True)
+        self._validate_component(skill_name, "skill_name")
 
-        skill_path = os.path.join(self.memory_dir, "skills", skill_name, "skill.md")
+        skill_path = self._safe_memory_path("skills", skill_name, "skill.md")
         if not os.path.exists(skill_path):
             return ToolResult(f"Error: skill '{skill_name}' not found", error=True)
 
@@ -463,6 +494,7 @@ class MemoryTool(Tool):
             return ToolResult("Error: title is required to find knowledge", error=True)
 
         topic = kwargs.get("topic", "misc")
+        self._validate_component(topic, "topic")
         found_path = self._find_knowledge_by_title(topic, title)
 
         if not found_path:
@@ -483,8 +515,9 @@ class MemoryTool(Tool):
         skill_name = kwargs.get("skill_name", "")
         if not skill_name:
             return ToolResult("Error: skill_name is required to delete skill", error=True)
+        self._validate_component(skill_name, "skill_name")
 
-        skill_dir = os.path.join(self.memory_dir, "skills", skill_name)
+        skill_dir = self._safe_memory_path("skills", skill_name)
         if not os.path.isdir(skill_dir):
             return ToolResult(f"Error: skill '{skill_name}' not found", error=True)
 

@@ -91,7 +91,16 @@ class BlockAssembler:
             u = chunk.data.get("usage", UsageData())
             if isinstance(u, dict):
                 u = UsageData.from_dict(u)
-            self._usage = u
+            # Merge instead of overwrite: providers emit usage in several
+            # events, each carrying only some fields (e.g. Anthropic's
+            # message_start has the full usage but message_delta only has
+            # output_tokens). Overwriting would zero out input/cache tokens.
+            self._usage = UsageData(
+                input_tokens=u.input_tokens if u.input_tokens else self._usage.input_tokens,
+                output_tokens=u.output_tokens if u.output_tokens else self._usage.output_tokens,
+                cache_read_tokens=u.cache_read_tokens if u.cache_read_tokens else self._usage.cache_read_tokens,
+                cache_write_tokens=u.cache_write_tokens if u.cache_write_tokens else self._usage.cache_write_tokens,
+            )
 
         elif ctype == "finish":
             self._stop_reason = chunk.data.get("stop_reason", "")

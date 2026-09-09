@@ -10,7 +10,7 @@ import json
 import os
 import secrets
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -416,3 +416,139 @@ class TestBaseAgentUnitTests:
         assert "text" in types
         assert "tool_use" in types
         assert "tool_result_str" in types
+
+    def test_full_compact_failure_does_not_invalidate(self, tmp_path):
+        """摘要生成失败时旧消息不应被标记无效（防止历史永久丢失）。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        agent = BaseAgent(config=config, session_dir=tmp_path)
+        agent.messages = [
+            {"role": "user", "content": "question 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "question 2"},
+            {"role": "assistant", "content": "answer 2"},
+            {"role": "user", "content": "recent question"},
+        ]
+
+        with patch.object(agent, "_summarize_messages", return_value="（摘要生成失败，请查看完整历史）"):
+            before, after = agent._perform_full_compact(keep_user_messages=1)
+
+        # 摘要失败后所有消息仍有效
+        assert all(m.get("_meta", {}).get("valid") is not False for m in agent.messages)
+        assert len(agent.get_valid_messages()) == len(agent.messages)
+
+    def test_full_compact_success_invalidates_old(self, tmp_path):
+        """摘要成功后旧消息才被标记无效。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        agent = BaseAgent(config=config, session_dir=tmp_path)
+        agent.messages = [
+            {"role": "user", "content": "question 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "question 2"},
+            {"role": "assistant", "content": "answer 2"},
+            {"role": "user", "content": "recent question"},
+        ]
+
+        with patch.object(agent, "_summarize_messages", return_value="之前的对话摘要内容"):
+            agent._perform_full_compact(keep_user_messages=1)
+
+        # 摘要成功：旧消息被标记无效，摘要消息已插入
+        valid = agent.get_valid_messages()
+        assert len(valid) < len(agent.messages)
+        assert any("摘要" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
+                   for m in agent.messages)
+
+    def test_save_messages_preserves_metadata(self, tmp_path):
+        """save_messages 不应覆盖 SessionManager 写入的 name/metadata。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        session_dir = tmp_path / "sess"
+        agent = BaseAgent(config=config, session_dir=session_dir)
+        agent._session_id = "sess123"
+
+        # 预写一个带 name/metadata 的会话文件（模拟 SessionManager.save()）
+        session_dir.mkdir(parents=True, exist_ok=True)
+        existing = {
+            "session_id": "sess123",
+            "name": "我的会话",
+            "messages": [],
+            "metadata": {
+                "usage": {"input_tokens": 100, "output_tokens": 50, "api_calls": 2},
+                "subagent_count": 3,
+            },
+        }
+        (session_dir / "index.json").write_text(
+            json.dumps(existing, ensure_ascii=False), encoding="utf-8"
+        )
+
+        agent.messages = [{"role": "user", "content": "hi"}]
+        agent.save_messages()
+
+        data = json.loads((session_dir / "index.json").read_text(encoding="utf-8"))
+        assert data["name"] == "我的会话"
+        assert data["metadata"]["usage"]["input_tokens"] == 100
+        assert data["metadata"]["subagent_count"] == 3
+        assert data["messages"] == agent.messages
+
+    def test_mark_all_images_invalid_preserves_pairing(self):
+        """图片失效改为占位符替换，tool_use/tool_result 配对不被破坏。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        agent = BaseAgent(config=config)
+        agent.messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "a"}},
+            ]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "text", "text": "screenshot"},
+                    {"type": "image", "source": {"media_type": "image/png", "data": "A" * 100}},
+                ],
+            }]},
+        ]
+
+        agent._mark_all_images_invalid()
+
+        # 消息仍有效（不被整条过滤），图片被替换为文本占位符
+        assert len(agent.get_valid_messages()) == 2
+        subs = agent.messages[1]["content"][0]["content"]
+        assert [s["type"] for s in subs] == ["text", "text"]
+
+    def test_mark_old_images_invalid_replaces_not_invalidates(self):
+        """_mark_old_images_invalid 替换旧图片，保留消息有效性。"""
+        from core.base_agent import BaseAgent
+
+        config = make_dgx_config("anthropic")
+        agent = BaseAgent(config=config)
+        agent.messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read", "input": {}},
+            ]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "image", "source": {"data": "A" * 200}},
+                ],
+            }]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "read", "input": {}},
+            ]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "t2", "content": [
+                    {"type": "image", "source": {"data": "B" * 100}},
+                ],
+            }]},
+        ]
+
+        saved = agent._mark_old_images_invalid(keep_recent=1)
+
+        assert saved == 200  # 只替换最早一条的图片
+        assert len(agent.get_valid_messages()) == 4  # 全部消息仍有效
+        first_subs = agent.messages[1]["content"][0]["content"]
+        assert first_subs[0]["type"] == "text"  # 已替换为占位符
+        last_subs = agent.messages[3]["content"][0]["content"]
+        assert last_subs[0]["type"] == "image"  # 最近一条保留

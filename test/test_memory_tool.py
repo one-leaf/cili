@@ -194,6 +194,51 @@ class TestMemoryTool:
         assert result.error
         assert "200" in result.output
 
+    def test_memory_tool_reject_path_traversal_skill(self, tools, test_workspace):
+        """拒绝含路径穿越的 skill_name，防止 rmtree 任意目录。"""
+        from core.tools import get_tool_by_name
+
+        memory_tool = get_tool_by_name(tools, "memory")
+        for evil in ("..", "../../..", "a/../..", "C:\\Users\\evil", "C:/Users/evil"):
+            result = memory_tool.execute(
+                action="delete",
+                memory_type="skill",
+                skill_name=evil,
+            )
+            assert result.error, f"skill_name={evil!r} 应被拒绝"
+            assert "Invalid" in result.output
+
+    def test_memory_tool_reject_path_traversal_knowledge(self, tools, test_workspace):
+        """拒绝含路径穿越的 topic / filename。"""
+        from core.tools import get_tool_by_name
+
+        memory_tool = get_tool_by_name(tools, "memory")
+        result = memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="../../../evil",
+            title="X",
+            content="Y",
+        )
+        assert result.error
+        assert "Invalid" in result.output
+
+    def test_memory_tool_reject_absolute_filename(self, tools, test_workspace):
+        """拒绝绝对路径 filename。"""
+        from core.tools import get_tool_by_name
+
+        memory_tool = get_tool_by_name(tools, "memory")
+        result = memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="ok-topic",
+            title="X",
+            filename="..\\..\\evil.md",
+            content="Y",
+        )
+        assert result.error
+        assert "Invalid" in result.output
+
     def test_memory_tool_skill_name_reject_uuid(self, tools, test_workspace):
         """Test that UUID-like skill names are rejected"""
         from core.tools import get_tool_by_name

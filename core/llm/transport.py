@@ -30,6 +30,15 @@ _MAX_DELAY = 60.0  # seconds
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
+class StreamErrorEvent(Exception):
+    """Raised when the SSE stream carries an error event (e.g. model overloaded).
+
+    The stream's partial response must be discarded and the call treated as a
+    transient failure so the caller can retry.
+    """
+    pass
+
+
 class HttpTransport:
     """HTTP transport for LLM API calls.
 
@@ -151,10 +160,21 @@ class HttpTransport:
                 if payload == "[DONE]":
                     break
 
-                # Skip error events with non-JSON payloads
+                # Error events (e.g. Anthropic overloaded during streaming) must
+                # not be silently swallowed: the stream is about to close with a
+                # half-assembled response, and executing a partial tool call is
+                # worse than failing the round.
                 if current_event == "error":
-                    logger.warning(f"[LLM] SSE error event: {payload[:200]}")
-                    continue
+                    detail = payload[:200]
+                    try:
+                        err = json.loads(payload)
+                        msg = err.get("error", {}).get("message")
+                        if msg:
+                            detail = msg[:200]
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+                    logger.warning(f"[LLM] SSE error event: {detail}")
+                    raise StreamErrorEvent(f"SSE stream错误: {detail}")
 
                 try:
                     event = json.loads(payload)

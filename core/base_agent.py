@@ -131,6 +131,10 @@ class BaseAgent:
     def save_messages(self, metadata: dict | None = None) -> None:
         """Save messages to session_dir/index.json.
 
+        Merges with the existing file so name/metadata written by
+        SessionManager (or SubAgent progress logs) are preserved — this save
+        only updates the messages and the caller-provided metadata.
+
         Args:
             metadata: Optional metadata to include in the file
         """
@@ -140,10 +144,20 @@ class BaseAgent:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         session_file = self.session_dir / "index.json"
 
+        # Preserve existing top-level fields from the file on disk
+        existing: dict = {}
+        if session_file.exists():
+            try:
+                with open(session_file, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+
         data = {
             "session_id": self._session_id or self.session_dir.name,
             "messages": self.messages,
-            "metadata": metadata or {},
+            "name": existing.get("name", ""),
+            "metadata": metadata if metadata is not None else existing.get("metadata", {}),
         }
 
         try:
@@ -621,10 +635,10 @@ class BaseAgent:
 
             body_size = self._estimate_request_body_size(messages)
             if body_size > MAX_BODY_SIZE:
-                logger.info("[上下文] 正在标记旧图片为无效...")
+                logger.info("[上下文] 正在替换旧图片为占位符...")
                 saved = self._mark_old_images_invalid(keep_recent=3)
                 if saved > 0:
-                    logger.info(f"[上下文] 图片标记完成，节省 {saved} 字节")
+                    logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
 
     def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
@@ -642,6 +656,19 @@ class BaseAgent:
         if split_idx <= 0:
             raise ValueError("Not enough messages to compress")
 
+        # Summarize old messages FIRST — only invalidate them after the summary
+        # succeeds. Invalidating before summarizing would permanently hide the
+        # old history if the summary LLM call fails.
+        old_messages = valid_messages[:split_idx]
+        if not old_messages:
+            # Nothing to summarize
+            return total_tokens, total_tokens
+
+        summary = self._summarize_messages(old_messages)
+        if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
+            logger.error("摘要生成失败，跳过压缩")
+            return total_tokens, total_tokens
+
         # Mark messages before split as invalid (using _meta.valid)
         valid_count = 0
         for i, msg in enumerate(all_messages):
@@ -657,17 +684,6 @@ class BaseAgent:
                 valid_count += 1
             else:
                 break
-
-        # Summarize old messages
-        old_messages = valid_messages[:split_idx]
-        if not old_messages:
-            # Nothing to summarize
-            return total_tokens, total_tokens
-
-        summary = self._summarize_messages(old_messages)
-        if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
-            logger.error("摘要生成失败，跳过压缩")
-            return total_tokens, total_tokens
 
         # Add summary messages
         self.add_message(
@@ -819,9 +835,16 @@ class BaseAgent:
         return saved
 
     def _mark_old_images_invalid(self, keep_recent: int = 5) -> int:
-        """Mark old images as invalid to reduce body size."""
+        """Replace old tool_result images with text placeholders to reduce body size.
+
+        Replaces images in place (instead of invalidating whole messages) so the
+        tool_use/tool_result pairing with the preceding assistant message stays
+        intact — invalidating only the user message would leave the assistant's
+        tool_use dangling and the API would reject the next request with 400.
+        Returns the number of image bytes removed.
+        """
         saved = 0
-        image_messages = []
+        image_refs = []  # (msg_idx, block_idx, sub_idx, data_len)
 
         for i, msg in enumerate(self.messages):
             # Check validity
@@ -833,31 +856,22 @@ class BaseAgent:
                 continue
 
             for block_idx, block in enumerate(content):
-                if block.get("type") != "tool_result":
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
                 rc = block.get("content", "")
                 if not isinstance(rc, list):
                     continue
                 for sub_idx, sub in enumerate(rc):
-                    if sub.get("type") == "image":
+                    if isinstance(sub, dict) and sub.get("type") == "image":
                         data_len = len(sub.get("source", {}).get("data", ""))
-                        image_messages.append((i, data_len))
+                        image_refs.append((i, block_idx, sub_idx, data_len))
 
-        if len(image_messages) <= keep_recent:
+        if len(image_refs) <= keep_recent:
             return 0
 
-        to_strip = image_messages[:-keep_recent]
-        for msg_idx, data_len in to_strip:
-            msg = self.messages[msg_idx]
-            # Check if already marked invalid
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-
-            # Mark message-level _meta.valid = False
-            if "_meta" not in msg:
-                msg["_meta"] = {}
-            msg["_meta"]["valid"] = False
+        for msg_idx, block_idx, sub_idx, data_len in image_refs[:-keep_recent]:
+            rc = self.messages[msg_idx]["content"][block_idx]["content"]
+            rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
             saved += data_len
 
         return saved
@@ -1179,32 +1193,25 @@ class BaseAgent:
         return "413" in str(e) or "Entity Too Large" in str(e)
 
     def _mark_all_images_invalid(self) -> None:
-        """Mark all images as invalid for 413 retry.
+        """Replace all tool_result images with text placeholders for 413 retry.
 
-        Uses new format: message-level _meta.valid = False.
+        Replaces images in place (instead of invalidating whole messages):
+        invalidating a user message here would leave the preceding assistant
+        tool_use dangling, and the API would reject the next request with 400.
         """
         for msg in self.messages:
             content = msg.get("content", "")
             if not isinstance(content, list):
                 continue
-            has_image = False
             for block in content:
-                if block.get("type") != "tool_result":
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
                 rc = block.get("content", "")
                 if not isinstance(rc, list):
                     continue
-                for sub in rc:
-                    if sub.get("type") == "image":
-                        has_image = True
-                        break
-                if has_image:
-                    break
-            # If this message has images，标记整个消息为无效
-            if has_image:
-                if "_meta" not in msg:
-                    msg["_meta"] = {}
-                msg["_meta"]["valid"] = False
+                for sub_idx, sub in enumerate(rc):
+                    if isinstance(sub, dict) and sub.get("type") == "image":
+                        rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
 
     # ========== Usage Tracking ==========
 

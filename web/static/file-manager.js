@@ -106,13 +106,13 @@ async function loadDirectory(path) {
                 item.className = 'dir-browser-item';
                 // Windows 驱动器根目录显示为驱动器名，其他目录显示文件夹名
                 const displayName = dir.name.match(/^[A-Z]:\\$/) ? dir.name : `📁 ${dir.name}`;
-                item.innerHTML = `<span>${displayName}</span>`;
+                item.textContent = displayName;
                 item.onclick = () => loadDirectory(dir.path);
                 listEl.appendChild(item);
             }
         }
     } catch (err) {
-        listEl.innerHTML = `<div class="dir-browser-error">加载失败: ${err.message}</div>`;
+        listEl.innerHTML = `<div class="dir-browser-error">加载失败: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -210,17 +210,17 @@ async function loadWorkspaceFiles(path) {
                 const el = document.createElement('div');
                 el.className = 'file-browser-item';
                 if (item.is_file) {
-                    el.innerHTML = `<span>📄 ${item.name}</span>`;
+                    el.textContent = `📄 ${item.name}`;
                     el.onclick = () => insertFilePath(item.path);
                 } else {
-                    el.innerHTML = `<span>📁 ${item.name}</span>`;
+                    el.textContent = `📁 ${item.name}`;
                     el.onclick = () => loadWorkspaceFiles(item.path);
                 }
                 listEl.appendChild(el);
             }
         }
     } catch (err) {
-        listEl.innerHTML = `<div class="file-browser-error">加载失败: ${err.message}</div>`;
+        listEl.innerHTML = `<div class="file-browser-error">加载失败: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -401,7 +401,7 @@ async function loadFileManagerFiles(path) {
                     <line x1="12" y1="8" x2="12" y2="12"/>
                     <line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
-                <span>${error.message}</span>
+                <span>${escapeHtml(error.message)}</span>
             </div>`;
     }
 }
@@ -411,20 +411,26 @@ function updateFmBreadcrumb(path) {
     const breadcrumb = document.getElementById('fm-breadcrumb');
     const parts = path ? path.split('/').filter(Boolean) : [];
 
-    let html = `<span data-path="">${currentWorkspace.name}</span>`;
-    let currentParts = '';
+    breadcrumb.innerHTML = '';
+    const root = document.createElement('span');
+    root.dataset.path = '';
+    root.textContent = currentWorkspace.name;
+    breadcrumb.appendChild(root);
 
+    let currentParts = '';
     for (let i = 0; i < parts.length; i++) {
         currentParts += (currentParts ? '/' : '') + parts[i];
-        html += `<span class="breadcrumb-sep">/</span>`;
-        if (i === parts.length - 1) {
-            html += `<span>${parts[i]}</span>`;
-        } else {
-            html += `<span data-path="${currentParts}">${parts[i]}</span>`;
+        const sep = document.createElement('span');
+        sep.className = 'breadcrumb-sep';
+        sep.textContent = '/';
+        breadcrumb.appendChild(sep);
+        const span = document.createElement('span');
+        span.textContent = parts[i];
+        if (i !== parts.length - 1) {
+            span.dataset.path = currentParts;
         }
+        breadcrumb.appendChild(span);
     }
-
-    breadcrumb.innerHTML = html;
 
     // 绑定点击事件
     breadcrumb.querySelectorAll('span[data-path]').forEach(span => {
@@ -457,22 +463,40 @@ function renderFileManagerList(items) {
         return a.is_file ? 1 : -1;
     });
 
-    list.innerHTML = items.map(item => {
-        const icon = item.is_file ? getFileIcon(item.name) : '📁';
-        const size = item.is_file ? formatFileSize(item.size) : '';
-        const date = item.modified ? new Date(item.modified * 1000).toLocaleString('zh-CN') : '';
-        const selected = fmSelectedFiles.has(item.path) ? 'selected' : '';
-        const isFileStr = item.is_file ? 'true' : 'false';
+    // 使用 DOM API 创建列表项：文件名/path 经 textContent / dataset 写入，
+    // 不走 innerHTML，避免文件名包含 HTML 时触发 XSS
+    list.innerHTML = '';
+    items.forEach(item => {
+        const el = document.createElement('div');
+        el.className = 'fm-item';
+        if (fmSelectedFiles.has(item.path)) el.classList.add('selected');
+        el.dataset.path = item.path;
+        el.dataset.isFile = item.is_file ? 'true' : 'false';
 
-        return `
-            <div class="fm-item ${selected}" data-path="${item.path}" data-is-file="${isFileStr}">
-                <input type="checkbox" class="fm-checkbox" ${selected ? 'checked' : ''}>
-                <span class="fm-item-icon">${icon}</span>
-                <span class="fm-item-name">${item.name}</span>
-                <span class="fm-item-size">${size}</span>
-                <span class="fm-item-date">${date}</span>
-            </div>`;
-    }).join('');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'fm-checkbox';
+        if (fmSelectedFiles.has(item.path)) checkbox.checked = true;
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'fm-item-icon';
+        iconSpan.textContent = item.is_file ? getFileIcon(item.name) : '📁';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'fm-item-name';
+        nameSpan.textContent = item.name;
+
+        const sizeSpan = document.createElement('span');
+        sizeSpan.className = 'fm-item-size';
+        sizeSpan.textContent = item.is_file ? formatFileSize(item.size) : '';
+
+        const dateSpan = document.createElement('span');
+        dateSpan.className = 'fm-item-date';
+        dateSpan.textContent = item.modified ? new Date(item.modified * 1000).toLocaleString('zh-CN') : '';
+
+        el.append(checkbox, iconSpan, nameSpan, sizeSpan, dateSpan);
+        list.appendChild(el);
+    });
 
     // 绑定事件
     list.querySelectorAll('.fm-item').forEach(el => {

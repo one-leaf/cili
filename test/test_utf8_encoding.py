@@ -104,10 +104,12 @@ class TestUTF8Encoding:
         python_tool = PythonTool(cwd=self.cwd)
 
         # 执行打印特殊字符的代码
+        # 用 chr() 而非 f-string 内的 \u 转义：Python < 3.12 不允许
+        # f-string 表达式内出现反斜杠（deps Python 为 3.11）
         test_code = """
 print("中文输出")
-print(f"特殊字符: {'\\u9fff'}")
-print(f"数学符号: {'\\u2200 \\u2203 \\u2211'}")
+print(f"特殊字符: {chr(0x9fff)}")
+print(f"数学符号: {chr(0x2200)} {chr(0x2203)} {chr(0x2211)}")
 """
         result = python_tool.execute(action="execute", code=test_code)
 

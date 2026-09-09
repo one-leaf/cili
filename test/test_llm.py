@@ -86,6 +86,85 @@ class TestRetryLogic:
         assert 0.75 <= delay <= 1.25
 
 
+# ========== BlockAssembler ==========
+
+class TestBlockAssembler:
+    """BlockAssembler 流式累积与 usage 合并。"""
+
+    def test_usage_merge_preserves_input_tokens(self):
+        """Anthropic message_start 带完整 usage、message_delta 只带 output_tokens 时应合并而非覆盖。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk, UsageData
+
+        assembler = BlockAssembler()
+        # 模拟 message_start 的完整 usage
+        assembler.push(StreamChunk.usage_chunk(UsageData(
+            input_tokens=100, output_tokens=10, cache_read_tokens=80, cache_write_tokens=20,
+        )))
+        # 模拟 message_delta 的 usage（只含 output_tokens）
+        assembler.push(StreamChunk.usage_chunk(UsageData(output_tokens=25)))
+
+        assert assembler.usage.input_tokens == 100
+        assert assembler.usage.output_tokens == 25
+        assert assembler.usage.cache_read_tokens == 80
+        assert assembler.usage.cache_write_tokens == 20
+
+    def test_usage_single_event(self):
+        """单个 usage 事件（OpenAI 风格）仍正常。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk, UsageData
+
+        assembler = BlockAssembler()
+        assembler.push(StreamChunk.usage_chunk(UsageData(input_tokens=5, output_tokens=3)))
+        assert assembler.usage.input_tokens == 5
+        assert assembler.usage.output_tokens == 3
+
+
+# ========== SSE 流 error 事件 ==========
+
+class TestTransportSSEError:
+    """SSE error 事件不再被吞，应抛出 StreamErrorEvent。"""
+
+    def test_error_event_raises(self):
+        """流中出现 error 事件时抛出 StreamErrorEvent，而不是静默跳过。"""
+        from core.llm.transport import HttpTransport, StreamErrorEvent
+
+        class FakeResp:
+            status_code = 200
+
+            def __init__(self, lines):
+                self._lines = lines
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def iter_lines(self):
+                return iter(self._lines)
+
+        class FakeClient:
+            def __init__(self, lines):
+                self._lines = lines
+
+            def stream(self, *args, **kwargs):
+                return FakeResp(self._lines)
+
+        transport = HttpTransport()
+        transport._client = FakeClient([
+            'event: message_start',
+            'data: {"type": "message_start", "message": {"usage": {"input_tokens": 1}}}',
+            '',
+            'event: error',
+            'data: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}',
+        ])
+
+        events = transport.stream("http://x", {}, {})
+        with pytest.raises(StreamErrorEvent):
+            list(events)
+
+
 # ========== Factory ==========
 
 class TestFactory:

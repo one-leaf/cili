@@ -41,9 +41,10 @@ class TestStreamingOutput:
         monitor_thread.start()
 
         # 执行命令：每 0.2 秒输出一个字符，无换行符
+        # 用纯 bash（printf/sleep）而非 python：bash 工具的黑名单禁止从 bash 调 python
         start_time = time.time()
         result = bash_tool.execute(
-            command='python -c "import time; [print(chr(65+i), end=\'\', flush=True) or time.sleep(0.2) for i in range(5)]"',
+            command='for c in A B C D E; do printf "%s" "$c"; sleep 0.2; done',
             timeout=30
         )
 
@@ -79,7 +80,7 @@ class TestStreamingOutput:
 
         # 执行命令：每行输出一个字符，有换行符
         result = bash_tool.execute(
-            command='python -c "import time; [print(chr(65+i), flush=True) or time.sleep(0.1) for i in range(3)]"',
+            command='for c in A B C D E; do printf "%s\\n" "$c"; sleep 0.1; done',
             timeout=30
         )
 
@@ -160,7 +161,7 @@ for i in range(5):
 
         # 执行命令：输出 100 行
         result = bash_tool.execute(
-            command='python -c "import time; [print(f\'Line {i}: data\' + \'x\'*50, flush=True) or time.sleep(0.05) for i in range(100)]"',
+            command='i=0; while [ $i -lt 100 ]; do printf "Line %d: data" $i; printf "x%.0s" {1..50}; printf "\\n"; i=$((i+1)); sleep 0.05; done',
             timeout=30
         )
 
@@ -188,15 +189,9 @@ for i in range(5):
 
         bash_tool.output_file = output_file
 
-        # 执行命令：输出 Unicode
-        code = """
-import time
-for i in range(5):
-    print(f'测试 {i} ', end='', flush=True)
-    time.sleep(0.1)
-"""
+        # 执行命令：输出 Unicode（纯 bash printf，Git Bash 下 UTF-8 正常）
         result = bash_tool.execute(
-            command=f'python -c "{code}"',
+            command='for i in 0 1 2 3 4; do printf "测试 %s " "$i"; sleep 0.1; done',
             timeout=30
         )
 
