@@ -16,13 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from core.tools.shared.base import Tool, ToolResult
+from core.config import DATA_DIR
 
 
 # Valid status values
 VALID_STATUSES = {"pending", "in_progress", "completed"}
 
-# Todo storage directory
-TODO_DIR = Path("data/cili/tools/todo")
+# Todo storage directory（绝对路径，进程从其他 CWD 启动时仍写入项目 data 目录）
+TODO_DIR = DATA_DIR / "tools" / "todo"
 
 
 def get_todo_file_path(session_id: str) -> Path:

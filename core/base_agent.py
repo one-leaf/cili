@@ -1001,6 +1001,58 @@ class BaseAgent:
         """
         return self.get_valid_messages(strip_meta=False)
 
+    def _pad_dangling_tool_results(self) -> None:
+        """为悬挂的 tool_use 补充占位 tool_result（原地修改 self.messages）。
+
+        Anthropic API 要求每个 tool_use 必须在下一条 user 消息中得到
+        tool_result 回应，否则返回 400。中途停止等中断场景会留下未回应的
+        tool_use 并随会话持久化，导致该会话后续所有 LLM 调用失败。
+        在每次 LLM 调用前修补，修补结果随下次保存持久化，可自愈历史损坏。
+        """
+        answered: set[str] = set()
+        for msg in self.messages:
+            if msg.get("_meta", {}).get("valid") is False:
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, list):
+                continue
+            if msg.get("role") == "user":
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        answered.add(block.get("tool_use_id"))
+
+        dangling: list[tuple[int, str]] = []  # (assistant 消息索引, tool_use_id)
+        for idx, msg in enumerate(self.messages):
+            if msg.get("_meta", {}).get("valid") is False:
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    if block.get("id") not in answered:
+                        dangling.append((idx, block.get("id")))
+
+        if not dangling:
+            return
+
+        logger.warning(f"[Agent] 检测到 {len(dangling)} 个未回应的 tool_use，补充占位结果")
+        # 倒序插入，避免索引失效；连续 user 消息由 adapter 的
+        # merge_consecutive_same_role 合并，不会违反 API 的角色交替要求
+        for idx, tool_use_id in reversed(dangling):
+            placeholder = {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": "[interrupted]",
+                "is_error": True,
+            }
+            self.messages.insert(
+                idx + 1,
+                {"role": "user", "content": [placeholder], "_meta": {"id": generate_short_id()}},
+            )
+
     # ========== LLM Calling ==========
 
     def _call_llm(self, streaming: bool = False, system_prompt: str = "") -> LLMResponse:
@@ -1012,6 +1064,12 @@ class BaseAgent:
 
         Returns:
             LLMResponse with content and usage
+
+        Raises:
+            RuntimeError: LLM 调用最终失败（内部重试耗尽后抛出，
+                消息为 format_llm_error 生成的友好文本）。
+                调用方需自行捕获处理——不抛会导致 SubAgent 把错误
+                误判为正常完成。用户停止不视为错误（返回 stop_reason="stopped"）。
         """
         if streaming:
             return self._call_llm_streaming(system_prompt)
@@ -1020,6 +1078,7 @@ class BaseAgent:
 
     def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
         """Non-streaming LLM call."""
+        self._pad_dangling_tool_results()
         messages = self._get_messages_with_header()
         messages = self._resolve_tool_results(messages)
         messages = self._strip_meta_from_messages(messages)
@@ -1077,17 +1136,11 @@ class BaseAgent:
                 except Exception as retry_e:
                     err_msg = format_llm_error(retry_e, self.client.base_url if self.client else "")
                     logger.error(f"[LLM] {err_msg}")
-                    return LLMResponse(
-                        content=[TextBlock(text=err_msg)],
-                        stop_reason="error",
-                    )
+                    raise RuntimeError(err_msg) from retry_e
 
             err_msg = format_llm_error(e, self.client.base_url if self.client else "")
             logger.error(f"[LLM] {err_msg}")
-            return LLMResponse(
-                content=[TextBlock(text=err_msg)],
-                stop_reason="error",
-            )
+            raise RuntimeError(err_msg) from e
 
     def _call_llm_streaming(self, system_prompt: str) -> LLMResponse:
         """Streaming LLM call. Think content passes through as-is."""
@@ -1103,6 +1156,7 @@ class BaseAgent:
             if self._on_thinking:
                 self._on_thinking(thinking)
 
+        self._pad_dangling_tool_results()
         messages = self._get_messages_with_header()
         messages = self._resolve_tool_results(messages)
         messages = self._strip_meta_from_messages(messages)
@@ -1142,10 +1196,7 @@ class BaseAgent:
                 if attempt == max_retries:
                     err_msg = format_llm_error(e, self.client.base_url if self.client else "")
                     logger.error(f"[LLM] {err_msg}")
-                    return LLMResponse(
-                        content=[TextBlock(text=err_msg)],
-                        stop_reason="error",
-                    )
+                    raise RuntimeError(err_msg) from e
 
                 # 413 错误：去掉图片后重试
                 if self._is_413_error(e) and not images_stripped:

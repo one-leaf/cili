@@ -107,6 +107,7 @@ class LLMClient:
             tools=tools,
             model=self.model_name,
             max_tokens=max_tokens,
+            temperature=self.temperature,
             stream=False,
             session_id=session_id,
         )

@@ -221,12 +221,41 @@ class TestAnthropicAdapter:
         assert "stream" not in body
 
     def test_serialize_full(self, adapter):
-        messages = [Message(role="user", content="hi")]
+        # 块列表内容（agent 会话的典型形态），最后一块可打缓存断点
+        messages = [Message(role="user", content=[TextBlock(text="hi")])]
         tools = [{"name": "read", "description": "read files"}]
         body = adapter.serialize(messages, system="You are helpful", tools=tools, model="claude-sonnet-4-6", max_tokens=4096, stream=True)
-        assert body["system"] == "You are helpful"
+        # 官方端点启用 prompt cache：system 转为带 cache_control 的块列表
+        assert body["system"] == [{
+            "type": "text",
+            "text": "You are helpful",
+            "cache_control": {"type": "ephemeral"},
+        }]
+        # 最后一条消息的最后一块打上第二个缓存断点
+        assert body["messages"][-1]["content"][0]["cache_control"] == {"type": "ephemeral"}
         assert body["tools"] == tools
         assert body["stream"] is True
+
+    def test_serialize_string_content_untouched(self, adapter):
+        # 字符串内容保持原样（不打 cache_control，也不崩）
+        messages = [Message(role="user", content="hi")]
+        body = adapter.serialize(messages, system="You are helpful", tools=None, model="claude-sonnet-4-6", max_tokens=4096)
+        assert body["messages"][-1]["content"] == "hi"
+
+    def test_serialize_no_cache_control_for_custom_base_url(self):
+        # 非官方端点（中转/网关）不启用 prompt cache，避免不兼容 cache_control
+        config = ModelConfig(
+            name="claude-sonnet-4-6",
+            api_key="test-key-123",
+            base_url="https://relay.example.com",
+            max_tokens=4096,
+            interface_type="anthropic",
+        )
+        adapter = AnthropicAdapter(config)
+        messages = [Message(role="user", content="hi")]
+        body = adapter.serialize(messages, system="You are helpful", tools=None, model="claude-sonnet-4-6", max_tokens=4096)
+        assert body["system"] == "You are helpful"
+        assert "cache_control" not in json.dumps(body["messages"])
 
     def test_serialize_litellm_session(self, adapter):
         adapter._is_litellm_proxy = True

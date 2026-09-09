@@ -156,6 +156,7 @@ class Adapter(ABC):
 - **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
 - **推理内容**: `thinking` block with `signature`
 - **扩展思考**: 配置 `reasoning_effort` 后启用（流式与非流式请求均生效），`budget_tokens` 按 `reasoning_effort` 映射：low→1024, medium→4096, high→10000（未知值默认 4096）
+- **Prompt cache**: 仅当 `base_url` 指向官方 `api.anthropic.com` 时启用（中转/网关可能不兼容 `cache_control`）：`system` 转为带 `cache_control: ephemeral` 的块列表；最后一条消息的最后一块（text/tool_use/tool_result/image）追加第二个断点。字符串内容的消息保持原样不打断点。
 
 ### OpenAIAdapter
 

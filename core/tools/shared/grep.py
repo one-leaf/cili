@@ -201,6 +201,15 @@ class GrepTool(Tool):
         files = [f for f in result.output.strip().split('\n') if f]
         return files
 
+    # 每批传入 grep 的文件数：一次子进程处理一批，避免逐文件起子进程
+    # （Windows 上 Git Bash 进程启动 ~50-100ms，100 文件逐个执行需 10s+），
+    # 同时控制单条命令长度低于 Windows 命令行上限
+    _GREP_BATCH_SIZE = 50
+
+    @staticmethod
+    def _chunked(items: list[str], size: int) -> list[list[str]]:
+        return [items[i:i + size] for i in range(0, len(items), size)]
+
     def _count_mode(
         self,
         sorted_files: list[str],
@@ -209,9 +218,10 @@ class GrepTool(Tool):
         fixed_strings: bool,
         max_results: int,
     ) -> ToolResult:
-        """Generate count output for sorted files."""
+        """Generate count output for sorted files (batched grep -c)."""
+        selected = sorted_files[:max_results]
         output_lines = []
-        for f in sorted_files[:max_results]:
+        for chunk in self._chunked(selected, self._GREP_BATCH_SIZE):
             cmd_parts = ["grep", "-c"]
             if fixed_strings:
                 cmd_parts.append("-F")
@@ -219,12 +229,17 @@ class GrepTool(Tool):
                 cmd_parts.append("-E")
             if case_insensitive:
                 cmd_parts.append("-i")
-            cmd_parts.extend([pattern, f])
+            cmd_parts.append(pattern)
+            cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             cmd += " || true"
-            result = self._run_bash(cmd, max_chars=1000)
-            count = result.output.strip() if result.output else "0"
-            output_lines.append(f"{f}:{count}")
+            result = self._run_bash(cmd, max_chars=100_000)
+            # 多文件时 grep -c 输出 "path:count"；单文件块只输出 count，需补文件名
+            lines = [line for line in result.output.strip().split('\n') if line] if result.output else []
+            if len(chunk) == 1 and lines and ":" not in lines[0]:
+                output_lines.append(f"{chunk[0]}:{lines[0]}")
+            else:
+                output_lines.extend(lines)
 
         output = '\n'.join(output_lines)
         if len(sorted_files) > max_results:
@@ -240,12 +255,13 @@ class GrepTool(Tool):
         context: int,
         max_results: int,
     ) -> ToolResult:
-        """Generate content output for sorted files."""
+        """Generate content output for sorted files (batched grep -n -H)."""
         output_lines = []
         total_lines = 0
+        remaining = max_results
 
-        for f in sorted_files:
-            cmd_parts = ["grep", "-n"]
+        for chunk in self._chunked(sorted_files, self._GREP_BATCH_SIZE):
+            cmd_parts = ["grep", "-n", "-H"]
             if fixed_strings:
                 cmd_parts.append("-F")
             else:
@@ -254,25 +270,25 @@ class GrepTool(Tool):
                 cmd_parts.append("-i")
             if context > 0:
                 cmd_parts.extend(["-C", str(context)])
-            cmd_parts.extend([pattern, f])
+            cmd_parts.append(pattern)
+            cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
-            cmd += f" | cut -c1-{self.MAX_COLUMNS} || true"
+            # -H 强制输出文件名前缀（grep -n 多文件输出格式为 path:linenum:content），
+            # 无需再手动拼接
+            cmd += f" | cut -c1-{self.MAX_COLUMNS} | head -n {remaining} || true"
 
-            result = self._run_bash(cmd, max_chars=10_000)
-            if result.output and not result.output.startswith("[exit code: 1]"):
-                lines = result.output.strip().split('\n')
-                for line in lines:
+            result = self._run_bash(cmd, max_chars=50_000)
+            if result.output:
+                for line in result.output.strip().split('\n'):
                     if total_lines >= max_results:
                         break
-                    # Add filename prefix to each line
-                    # grep -n output: linenum:content or linenum-content (with context)
-                    # We need: filepath:linenum:content
                     if line:
-                        output_lines.append(f"{f}:{line}")
+                        output_lines.append(line)
                         total_lines += 1
 
             if total_lines >= max_results:
                 break
+            remaining = max_results - total_lines
 
         output = '\n'.join(output_lines)
         if total_lines >= max_results:

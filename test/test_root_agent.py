@@ -186,3 +186,75 @@ class TestEstimateRequestBodySize:
         small = [{"role": "user", "content": "hi"}]
         large = [{"role": "user", "content": "x" * 10000}]
         assert agent._estimate_request_body_size(large) > agent._estimate_request_body_size(small)
+
+
+class TestPadDanglingToolResults:
+    """_pad_dangling_tool_results()：中断后为悬挂的 tool_use 补占位 tool_result"""
+
+    def _assistant_tool_use(self, tool_use_id, meta_id):
+        return {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": tool_use_id, "name": "bash", "input": {}}],
+            "_meta": {"id": meta_id},
+        }
+
+    def _user_tool_result(self, tool_use_id, meta_id):
+        return {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": "ok"}],
+            "_meta": {"id": meta_id},
+        }
+
+    def test_pads_dangling_tool_use(self, agent):
+        """悬挂的 tool_use 在其后插入 is_error 占位结果"""
+        agent.messages.clear()
+        agent.messages.extend([
+            self._assistant_tool_use("tu1", "a1"),
+            self._user_tool_result("tu1", "u1"),
+            self._assistant_tool_use("tu2", "a2"),
+            {"role": "user", "content": "继续", "_meta": {"id": "u2"}},
+        ])
+
+        agent._pad_dangling_tool_results()
+
+        # 占位结果应插入在 a2（索引 2）之后、原 user 消息之前
+        padded = agent.messages[3]
+        assert padded["role"] == "user"
+        assert padded["content"][0]["type"] == "tool_result"
+        assert padded["content"][0]["tool_use_id"] == "tu2"
+        assert padded["content"][0]["is_error"] is True
+        assert len(agent.messages) == 5
+
+    def test_no_pad_when_all_paired(self, agent):
+        """全部配对时不插入任何消息"""
+        agent.messages.clear()
+        agent.messages.extend([
+            self._assistant_tool_use("tu1", "a1"),
+            self._user_tool_result("tu1", "u1"),
+        ])
+
+        before = len(agent.messages)
+        agent._pad_dangling_tool_results()
+        assert len(agent.messages) == before
+
+    def test_idempotent(self, agent):
+        """重复调用不会重复插入"""
+        agent.messages.clear()
+        agent.messages.extend([
+            self._assistant_tool_use("tu1", "a1"),
+        ])
+
+        agent._pad_dangling_tool_results()
+        count_after_first = len(agent.messages)
+        agent._pad_dangling_tool_results()
+        assert len(agent.messages) == count_after_first
+
+    def test_invalid_messages_skipped(self, agent):
+        """标记 valid=False 的消息不参与配对检查"""
+        dangling = self._assistant_tool_use("tu1", "a1")
+        dangling["_meta"]["valid"] = False
+        agent.messages.clear()
+        agent.messages.extend([dangling])
+
+        agent._pad_dangling_tool_results()
+        assert len(agent.messages) == 1

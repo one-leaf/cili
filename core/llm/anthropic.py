@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from core.config import ModelConfig
 from core.llm.adapter import Adapter, merge_consecutive_same_role
@@ -31,9 +32,25 @@ logger = logging.getLogger(__name__)
 class AnthropicAdapter(Adapter):
     """Adapter for Anthropic Messages API."""
 
+    # 可标记 cache_control 的块类型（thinking 块的缓存行为未确认，跳过）
+    _CACHEABLE_BLOCK_TYPES = ("text", "tool_use", "tool_result", "image")
+
     @property
     def api_path(self) -> str:
         return "/v1/messages"
+
+    @property
+    def _prompt_cache_enabled(self) -> bool:
+        """仅对 Anthropic 官方端点启用 prompt cache。
+
+        cache_control 是标准字段，但部分第三方中转/网关不识别会直接 400，
+        非官方 base_url 时关闭以保证兼容性。
+        """
+        base = (self.config.base_url or "").strip()
+        if not base:
+            return True
+        host = urlparse(base).hostname or ""
+        return host == "api.anthropic.com"
 
     def build_headers(self) -> dict[str, str]:
         """Build headers for Anthropic API."""
@@ -132,7 +149,23 @@ class AnthropicAdapter(Adapter):
         elif self._is_litellm_proxy and not session_id:
             logger.debug(f"[Anthropic] LiteLLM proxy detected but no session_id provided")
 
-        if system:
+        # Prompt cache: 两个断点——system+tools 之后、最后一条消息之后。
+        # 长 system prompt + 递增历史下，增量缓存可大幅降低重复 input 计费
+        if self._prompt_cache_enabled:
+            if system:
+                body["system"] = [{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            if anthropic_messages:
+                last_content = anthropic_messages[-1].get("content")
+                if isinstance(last_content, list) and last_content:
+                    last_block = last_content[-1]
+                    if last_block.get("type") in self._CACHEABLE_BLOCK_TYPES:
+                        last_block["cache_control"] = {"type": "ephemeral"}
+
+        if system and "system" not in body:
             body["system"] = system
         if tools:
             body["tools"] = tools

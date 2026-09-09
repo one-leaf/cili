@@ -489,17 +489,16 @@ class PDF2MarkdownTool(Tool):
         ZIP 包内包含 full.md, 以及 _model.json (模型推理结果) 等文件
         """
         # Download ZIP (bypass proxy for SSL issues)
-        old_no_proxy = os.environ.get("no_proxy", "")
-        os.environ["no_proxy"] = "*"
+        # 用 per-request 代理设置而非改 os.environ["no_proxy"]：全局环境变量
+        # 在并发场景下会让其他线程的请求（包括 LLM 调用）也绕过代理
+        no_proxy = {"http": None, "https": None}
         try:
-            resp = requests.get(zip_url, timeout=(15, 120))
+            resp = requests.get(zip_url, timeout=(15, 120), proxies=no_proxy)
             resp.raise_for_status()
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
             # Fallback: try with verify=False
-            resp = requests.get(zip_url, timeout=(15, 120), verify=False)
+            resp = requests.get(zip_url, timeout=(15, 120), verify=False, proxies=no_proxy)
             resp.raise_for_status()
-        finally:
-            os.environ["no_proxy"] = old_no_proxy
 
         # Extract full.md from ZIP
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
@@ -520,18 +519,15 @@ class PDF2MarkdownTool(Tool):
 
         Agent API 返回的 CDN 链接可能因 SSL 代理问题失败
         """
-        old_no_proxy = os.environ.get("no_proxy", "")
-        os.environ["no_proxy"] = "*"
+        no_proxy = {"http": None, "https": None}
         try:
-            resp = requests.get(url, timeout=(15, 60))
+            resp = requests.get(url, timeout=(15, 60), proxies=no_proxy)
             resp.raise_for_status()
             return resp.text
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
-            resp = requests.get(url, timeout=(15, 60), verify=False)
+            resp = requests.get(url, timeout=(15, 60), verify=False, proxies=no_proxy)
             resp.raise_for_status()
             return resp.text
-        finally:
-            os.environ["no_proxy"] = old_no_proxy
 
 
 class _AgentLimitError(Exception):

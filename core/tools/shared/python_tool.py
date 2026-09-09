@@ -8,11 +8,17 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import time
 from typing import Any
 import glob as _glob
 import tempfile
 
 from core.tools.shared.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
+
+
+# 后台执行临时脚本的前缀（用于过期清理）
+_BG_SCRIPT_PREFIX = "cili_bg_"
+_BG_SCRIPT_MAX_AGE_SECONDS = 24 * 3600
 
 
 # Cross-tool isolation: block Python code from invoking bash/pwsh
@@ -251,9 +257,10 @@ class PythonTool(Tool):
         if run_in_background:
             # For background execution, write code to temp file and execute
             tmp_dir = os.environ.get("CILI_TMP")
+            self._cleanup_stale_bg_scripts(tmp_dir)
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".py", delete=False, encoding="utf-8",
-                dir=tmp_dir,
+                dir=tmp_dir, prefix=_BG_SCRIPT_PREFIX,
             ) as f:
                 f.write(code)
                 temp_path = f.name
@@ -261,6 +268,29 @@ class PythonTool(Tool):
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
 
         return self._run_bash(f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
+
+    @staticmethod
+    def _cleanup_stale_bg_scripts(tmp_dir: str | None) -> None:
+        """清理过期的后台执行临时脚本。
+
+        后台脚本 delete=False 且随任务结束删除困难，每次执行会残留一个 .py；
+        借新任务启动时清理超过 24 小时的旧文件，避免无限累积。
+        """
+        if not tmp_dir or not os.path.isdir(tmp_dir):
+            return
+        cutoff = time.time() - _BG_SCRIPT_MAX_AGE_SECONDS
+        try:
+            for name in os.listdir(tmp_dir):
+                if not (name.startswith(_BG_SCRIPT_PREFIX) and name.endswith(".py")):
+                    continue
+                try:
+                    path = os.path.join(tmp_dir, name)
+                    if os.path.getmtime(path) < cutoff:
+                        os.unlink(path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def _get_pip_mirror(self) -> str:
         """Load pip mirror from config."""

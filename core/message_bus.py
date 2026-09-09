@@ -54,6 +54,10 @@ class MessageBus:
     Thread-safe singleton. Messages are stored per session as a list.
     """
 
+    # 每个会话的消息上限：超出后丢弃最旧消息，防止长期运行内存无限增长
+    # （消息只在 receive 或 unregister_session 时清理，会话不退出则一直累积）
+    MAX_MESSAGES_PER_SESSION = 100
+
     def __init__(self):
         self._lock = threading.Lock()
         # session_id -> list[Message]
@@ -90,7 +94,10 @@ class MessageBus:
             if to_session_id not in self._messages:
                 # Auto-register target session (messages will wait)
                 self._messages[to_session_id] = []
-            self._messages[to_session_id].append(msg)
+            queue = self._messages[to_session_id]
+            queue.append(msg)
+            if len(queue) > self.MAX_MESSAGES_PER_SESSION:
+                del queue[: len(queue) - self.MAX_MESSAGES_PER_SESSION]
         logger.info(
             f"Message sent: {from_session_id} -> {to_session_id}: "
             f"{content[:50]}{'...' if len(content) > 50 else ''}"

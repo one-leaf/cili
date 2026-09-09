@@ -20,6 +20,7 @@ from pathlib import Path
 
 from core.tools.shared.base import Tool, ToolResult
 from core.config import DATA_DIR
+from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +40,17 @@ def _load_state(task_id: str) -> dict:
     """Load loop state from file."""
     h = _state_filename(task_id)
     state_path = LOOP_STATE_DIR / f"{h}.json"
-    if not state_path.exists():
-        return {}
-    try:
-        with open(state_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"[loop] Failed to load state for {task_id}: {e}")
-        return {}
+    return load_json_or_backup(state_path, {})
 
 
 def _save_state(task_id: str, state: dict) -> None:
     """Save loop state to file. Includes _source_file for traceability."""
-    LOOP_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    h = _state_filename(task_id)
-    state_path = LOOP_STATE_DIR / f"{h}.json"
     try:
         # Embed source_file path in state for traceability
         state[f"{_META_PREFIX}source_file"] = task_id
-        with open(state_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
+        h = _state_filename(task_id)
+        state_path = LOOP_STATE_DIR / f"{h}.json"
+        atomic_write_json(state_path, state)
     except Exception as e:
         logger.error(f"[loop] Failed to save state for {task_id}: {e}")
 

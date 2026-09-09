@@ -142,7 +142,13 @@ class WebSearchTool(Tool):
         # 使用 try/finally 确保所有路径都关闭 tab
         try:
             # 等待搜索结果加载（使用同一个 tab）
-            service.wait_for(search_config["wait_selector"], timeout=15000, tab_index=tab_index)
+            wait_result = service.wait_for(search_config["wait_selector"], timeout=15000, tab_index=tab_index)
+            if wait_result.error:
+                # 结果页没加载出来（反爬拦截/超时），明确报错而非让 LLM 看到 "Found 0 results"
+                return ToolResult(
+                    f"Error: search page failed to load (possibly blocked by anti-bot or timeout): {wait_result.output}",
+                    error=True,
+                )
 
             # 根据搜索引擎使用不同的 JS 提取代码
             if engine == "google":

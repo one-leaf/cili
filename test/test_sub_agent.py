@@ -183,3 +183,47 @@ class TestSubAgentElapsedSeconds:
             agent = SubAgent(task="test")
 
             assert agent._elapsed_seconds() == 0.0
+
+
+class TestSubAgentLLMError:
+    """LLM 错误路径：_call_llm 抛异常时 run() 必须返回 status=error，不得误判为完成。"""
+
+    def _make_agent(self):
+        with patch("core.sub_agent.load_config") as mock_load, \
+             patch("core.sub_agent.create_sub_tools") as mock_tools, \
+             patch("core.sub_agent.build_sub_prompt", return_value="test prompt"), \
+             patch("core.sub_agent.create_llm_client") as mock_client:
+            mock_config = MagicMock()
+            mock_config.model = MagicMock()
+            mock_config.system.max_iterations = 200
+            mock_load.return_value = mock_config
+            mock_tools.return_value = []
+            mock_client.return_value = MagicMock()
+
+            from core.sub_agent import SubAgent
+            return SubAgent(task="test task")
+
+    def test_llm_error_returns_error_status(self):
+        """_call_llm 抛 RuntimeError → run() 返回 status=error，错误文本透传"""
+        agent = self._make_agent()
+
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_call_llm",
+                          side_effect=RuntimeError("LLM 错误 500: overloaded")):
+            result = agent.run()
+
+        assert result["status"] == "error"
+        assert "500" in result["message"]
+        assert result["iterations"] == 0
+
+    def test_llm_error_stops_immediately(self):
+        """错误后不应继续迭代（只调用一次 _call_llm）"""
+        agent = self._make_agent()
+
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_call_llm",
+                          side_effect=RuntimeError("LLM 请求失败: connection refused")) as mock_call:
+            result = agent.run()
+
+        assert mock_call.call_count == 1
+        assert result["status"] == "error"

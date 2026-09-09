@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import PROJECT_ROOT, DATA_DIR, AGENTS_DIR
+from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,7 @@ class CronTask:
             return
 
         try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                state = json.load(f)
+            state = load_json_or_backup(state_path, {})
 
             self._session_id = state.get("session_id", "")
             self._remaining = state.get("remaining")  # May be None for old tasks
@@ -266,8 +266,7 @@ class CronTask:
             if self._remaining is not None:
                 state["remaining"] = self._remaining
 
-            with open(state_path, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
+            atomic_write_json(state_path, state)
 
             logger.debug(f"[cron] Task {self.name}: saved state to {state_path}")
         except Exception as e:

@@ -20,28 +20,20 @@ from pathlib import Path
 
 from core.tools.shared.base import Tool, ToolResult
 from core.cron import USER_TASKS_FILE
+from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
 
 def _load_user_tasks() -> list[dict]:
     """Load user task configs from JSON file."""
-    if not USER_TASKS_FILE.exists():
-        return []
-    try:
-        with open(USER_TASKS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"[cron_tool] Failed to load user tasks: {e}")
-        return []
+    return load_json_or_backup(USER_TASKS_FILE, [])
 
 
 def _save_user_tasks(tasks: list[dict]) -> None:
     """Save user task configs to JSON file."""
     try:
-        USER_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(USER_TASKS_FILE, "w", encoding="utf-8") as f:
-            json.dump(tasks, f, indent=2, ensure_ascii=False)
+        atomic_write_json(USER_TASKS_FILE, tasks)
     except Exception as e:
         logger.error(f"[cron_tool] Failed to save user tasks: {e}")
 
@@ -447,18 +439,11 @@ class CronTool(Tool):
             task_config["config"]["max_executions"] = max_executions
             # Also reset remaining counter in state
             from core.cron import CRON_STATE_DIR
-            import json
             state_path = CRON_STATE_DIR / f"{name}.json"
             try:
-                if state_path.exists():
-                    with open(state_path, "r", encoding="utf-8") as f:
-                        state = json.load(f)
-                else:
-                    state = {}
+                state = load_json_or_backup(state_path, {})
                 state["remaining"] = max_executions
-                state_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(state_path, "w", encoding="utf-8") as f:
-                    json.dump(state, f, indent=2, ensure_ascii=False)
+                atomic_write_json(state_path, state)
             except Exception as e:
                 logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
             updated_fields.append("max_executions")
@@ -528,25 +513,18 @@ class CronTool(Tool):
         # If enabling, reset remaining counter
         if enabled and task_config:
             from core.cron import CRON_STATE_DIR
-            import json
 
             max_executions = task_config.get("config", {}).get("max_executions", 9999)
             state_path = CRON_STATE_DIR / f"{name}.json"
 
             try:
                 # Load existing state or create new
-                if state_path.exists():
-                    with open(state_path, "r", encoding="utf-8") as f:
-                        state = json.load(f)
-                else:
-                    state = {}
+                state = load_json_or_backup(state_path, {})
 
                 # Reset remaining counter
                 state["remaining"] = max_executions
 
-                state_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(state_path, "w", encoding="utf-8") as f:
-                    json.dump(state, f, indent=2, ensure_ascii=False)
+                atomic_write_json(state_path, state)
 
                 logger.info(f"[cron_tool] Reset remaining={max_executions} for task '{name}'")
             except Exception as e:

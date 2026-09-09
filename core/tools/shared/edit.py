@@ -76,6 +76,10 @@ class EditTool(Tool):
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
+            # 记录原文件行尾风格：写回时保持不变，避免 LF 文件被改成 CRLF
+            with open(file_path, "rb") as f:
+                had_crlf = b"\r\n" in f.read()
+
             count = content.count(clean_old)
             if count == 0:
                 return ToolResult("Error: old_text not found in file.", error=True)
@@ -112,8 +116,9 @@ class EditTool(Tool):
                 content = content.replace(clean_old, clean_new, 1)
 
             # Atomic write: write to temp file first, then replace
+            # newline 按原文件行尾风格写入：CRLF 文件保持 CRLF，LF 文件保持 LF
             temp_path = file_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8", newline=("\r\n" if had_crlf else "")) as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())

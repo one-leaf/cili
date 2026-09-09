@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from core.fs_utils import atomic_write_json
 from core.config import (
     load_config, Config, PROJECT_ROOT, DATA_DIR,
     validate_workspace_name, get_workspace_data_dir,
@@ -1424,9 +1425,8 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
         deleted_count = len(messages) - target_idx
         del messages[target_idx:]
 
-        # 保存回磁盘
-        with open(index_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # 保存回磁盘（原子写入，避免崩溃产生半写文件）
+        atomic_write_json(index_file, data)
 
     return {"success": True, "deleted_count": deleted_count}
 

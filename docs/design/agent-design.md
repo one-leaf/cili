@@ -89,12 +89,15 @@ class BaseAgent:
     # 工具执行
     def _execute_tool(name, input, tool_use_id) -> dict
     def _resolve_tool_results(messages) -> list[dict]
+    def _pad_dangling_tool_results()          # 为悬挂 tool_use 补占位 tool_result
 
     # 压缩
     def _check_and_compress()                # 3 层压缩
 
     # LLM 调用
     def _call_llm(streaming, system_prompt) -> LLMResponse
+    # 失败语义：内部重试耗尽后抛 RuntimeError（format_llm_error 文本），
+    # 由调用方捕获处理；用户停止返回 stop_reason="stopped"，不算错误
 ```
 
 ### 2.3 消息压缩

@@ -41,8 +41,10 @@ class WriteTool(Tool):
             if parent:
                 os.makedirs(parent, exist_ok=True)
             # Atomic write: write to temp file first, then replace
+            # newline="" 禁用换行翻译，内容按原样写入（\n 保持 LF），
+            # 否则 Windows 文本模式会把 \n 写成 \r\n，破坏 .sh 等脚本
             temp_path = file_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8", newline="") as f:
                 f.write(clean_content)
                 f.flush()
                 os.fsync(f.fileno())

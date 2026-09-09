@@ -94,3 +94,70 @@ class TestFileTools:
             new_text="New text"
         )
         assert result.error
+
+
+class TestLineEndings:
+    """行尾保持：LF 文件不被写成 CRLF（Windows 文本模式默认会转换），CRLF 文件保持 CRLF"""
+
+    def test_write_tool_lf_line_endings(self, tools, test_workspace):
+        """write 工具写入的内容保持 LF，不被转换为 CRLF"""
+        from core.tools import get_tool_by_name
+
+        write_tool = get_tool_by_name(tools, "write")
+        result = write_tool.execute(
+            file_path="lf_test.sh",
+            content="#!/bin/bash\necho hello\necho world\n"
+        )
+        assert not result.error
+
+        with open(os.path.join(test_workspace, "lf_test.sh"), "rb") as f:
+            data = f.read()
+        assert b"\r\n" not in data
+        assert data == b"#!/bin/bash\necho hello\necho world\n"
+
+    def test_edit_tool_preserves_lf(self, tools, test_workspace):
+        """edit 工具编辑 LF 文件后仍是 LF"""
+        from core.tools import get_tool_by_name
+
+        path = os.path.join(test_workspace, "edit_lf.txt")
+        with open(path, "wb") as f:
+            f.write(b"line one\nline two\nline three\n")
+
+        edit_tool = get_tool_by_name(tools, "edit")
+        result = edit_tool.execute(
+            file_path="edit_lf.txt",
+            old_text="line two",
+            new_text="line TWO"
+        )
+        assert not result.error
+
+        with open(path, "rb") as f:
+            data = f.read()
+        assert b"\r\n" not in data
+        assert b"line TWO" in data
+        assert b"line one\nline TWO\nline three\n" == data
+
+    def test_edit_tool_preserves_crlf(self, tools, test_workspace):
+        """edit 工具编辑 CRLF 文件后仍是 CRLF（new_text 用 \n 书写，写回时转换）"""
+        from core.tools import get_tool_by_name
+
+        path = os.path.join(test_workspace, "edit_crlf.txt")
+        with open(path, "wb") as f:
+            f.write(b"line one\r\nline two\r\nline three\r\n")
+
+        edit_tool = get_tool_by_name(tools, "edit")
+        result = edit_tool.execute(
+            file_path="edit_crlf.txt",
+            old_text="line two",
+            new_text="line TWO\nline 2.5"
+        )
+        assert not result.error
+
+        with open(path, "rb") as f:
+            data = f.read()
+        # 替换生效且多行 new_text 也统一为 CRLF
+        assert b"line TWO\r\nline 2.5\r\nline three\r\n" in data
+        # 原有的 CRLF 行未被破坏
+        assert b"line one\r\n" in data
+        # 不应出现孤立的 \r（即没有混入裸 LF）
+        assert data.replace(b"\r\n", b"").find(b"\n") == -1

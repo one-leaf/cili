@@ -112,10 +112,15 @@ class RootAgent(BaseAgent):
         """Reload config from disk and recreate LLM client."""
         from core.config import load_config
         try:
-            self.config = load_config()
-            self.max_iterations = self.config.system.max_iterations
-            self.client.close()
-            self.client = create_llm_client(self.config.model)
+            new_config = load_config()
+            self.max_iterations = new_config.system.max_iterations
+            # 先创建新客户端，成功后再替换并关闭旧的；
+            # 否则创建失败后 self.client 指向已关闭的客户端，后续调用全部失败
+            new_client = create_llm_client(new_config.model)
+            old_client = self.client
+            self.client = new_client
+            self.config = new_config
+            old_client.close()
             self._rebuild_tools()
         except Exception as e:
             logger.warning(f"[RootAgent] 重新加载配置失败: {e}")
@@ -275,6 +280,8 @@ class RootAgent(BaseAgent):
 
             if self._stopped:
                 logger.info("[RootAgent] 已停止")
+                # 中途停止可能留下未回应的 tool_use，补占位避免下次调用 400
+                self._pad_dangling_tool_results()
                 self._sync_to_session_manager()
                 self.session_manager.save()
                 break

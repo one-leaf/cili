@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from core.config import load_config
 from core.llm import create_llm_client, format_llm_error
+from core.fs_utils import atomic_write_json
 from core.base_agent import BaseAgent
 from core.prompts import build_sub_prompt
 from core.tools.sub import create_sub_tools
@@ -312,10 +313,8 @@ class SubAgent(BaseAgent):
         }
 
         try:
-            self.session_dir.mkdir(parents=True, exist_ok=True)
             log_file = self.session_dir / "index.json"
-            with open(log_file, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(log_file, log_data)
         except Exception as e:
             logger.warning(f"[SubAgent] Failed to save progress: {e}")
 
