@@ -47,6 +47,7 @@ LLMClient (client.py)
     id: str = ""
     name: str = ""
     arguments: str = ""           # 原始 JSON 字符串，延迟解析
+    thought_signature: str = ""   # Google Gemini API 兼容字段
 
     def parse_arguments(self) -> dict[str, Any]:
         """工具执行时调用，解析 JSON → dict"""
@@ -113,7 +114,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 | `text_delta` | `text` | 文本内容增量 |
 | `reasoning_delta` | `text` | 推理内容增量 |
 | `signature_delta` | `signature` | 思考块签名（赋值替换，非累积；Anthropic 多轮重放） |
-| `tool_call_delta` | `id?`, `name?`, `arguments?` | 工具调用增量 |
+| `tool_call_delta` | `id?`, `name?`, `arguments?`, `thought_signature?` | 工具调用增量 |
 | `block_end` | — | 内容块结束 |
 | `usage` | `usage: UsageData` | Token 用量更新 |
 | `finish` | `stop_reason` | 流结束 |
@@ -154,23 +155,24 @@ class Adapter(ABC):
 - **API**: `/v1/messages`，`x-api-key` 认证
 - **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
 - **推理内容**: `thinking` block with `signature`
-- **扩展思考**: 非流式请求自动启用，`budget_tokens` 按 `reasoning_effort` 映射：low→1024, medium→4096, high→10000
+- **扩展思考**: 配置 `reasoning_effort` 后启用（流式与非流式请求均生效），`budget_tokens` 按 `reasoning_effort` 映射：low→1024, medium→4096, high→10000（未知值默认 4096）
 
 ### OpenAIAdapter
 
 - **API**: `/v1/chat/completions`，`Bearer` 认证
 - **工具调用**: 内部 `tool_call` ↔ API `function` calling（`arguments` 保持 str）
 - **消息转换**: system 消息前置，tool_result → role=tool 消息
-- **推理模型**: o1/o3/o4/o5/qwen3/qwq/deepseek-r1 自动设置 `reasoning_effort`
+- **推理模型**: `reasoning_effort` 仅在配置中显式设置时发送（无按模型名的自动检测）；未配置时改用 `temperature`
 
 ---
 
 ## 传输层 (core/llm/transport.py)
 
-HttpTransport 负责 HTTP 请求、SSE 解析和重试：
+HttpTransport 负责 HTTP 请求、SSE 解析和重试原语（实际重试由 base_agent 统一管理）：
 
-- **重试**: 429/5xx 自动重试，最多 4 次，指数退避 + 抖动
-- **Retry-After**: 尊重服务器返回的重试间隔
+- **重试**: Transport 层 `_MAX_RETRIES = 0` 默认不重试；base_agent 流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
+- **重试原语**: `should_retry()` 判定 429/5xx 可重试，`retry_delay()` 指数退避 + 抖动
+- **Retry-After**: 重试时尊重服务器返回的重试间隔
 - **SSE 解析**: 逐行解析 `data:` 行，yield JSON events
 - **中断支持**: `stop_check` 回调支持用户中断
 
@@ -270,9 +272,11 @@ for block in response.get_tool_calls():
 ```python
 class ToolResult:
     def __init__(self, output="", error=False, content=None,
-                 blocks=None, is_error=False, meta=None):
+                 blocks=None, is_error=False, meta=None,
+                 completed=None, wait_for_user=False):
         # 新接口：blocks 是 ContentBlock 列表
-        # 兼容接口：output → TextBlock
+        # completed: 占位符生命周期（None 正常 / False 占位等待 / True 已完成）
+        # 兼容接口：output → TextBlock；wait_for_user 为 completed=False 的废弃别名
 
     @property
     def output(self) -> str:    # 从 blocks 提取文本

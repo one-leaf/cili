@@ -23,6 +23,7 @@ data/
     │   └── bin/bash.exe
     ├── tectonic/        # Tectonic LaTeX 编译器（自动下载）
     │   └── tectonic.exe
+    ├── fonts/           # WenQuanYi 中文字体（matplotlib 使用，自动下载）
     └── browser/         # Chrome profile 数据
 ```
 
@@ -30,28 +31,30 @@ data/
 
 ### 1. 启动脚本 (`start.ps1`)
 
-**职责**：确保有可用的 Python、Git Bash 和 LaTeX 编译器（均从 deps 目录或系统），然后启动 main.py
+**职责**：确保有可用的 Python、Git Bash、LaTeX 编译器和中文字体（均从 deps 目录或系统），然后启动 main.py
 
 **流程**：
 ```
-1. 检查 data/deps/python/python.exe 是否存在
-2. 如果不存在，下载 embeddable Python 3.11.9
-3. 检查 data/deps/git/bin/bash.exe 是否存在
-4. 如果不存在，下载 PortableGit
+1. 检查 data/deps/git/bin/bash.exe 是否存在
+2. 如果不存在，下载 PortableGit
+3. 检查 data/deps/python/python.exe 是否存在
+4. 如果不存在，下载 embeddable Python 3.11.9
 5. 检查系统是否已有 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
 6. 如果不存在，下载 Tectonic v0.17.0 到 data/deps/tectonic/
-7. 设置 GIT_BASH_PATH 环境变量
-8. 将 Tectonic 添加到 PATH（如果在 deps 目录）
-9. 使用 deps Python 运行 main.py
+7. 检查 data/deps/fonts/ 中的 WenQuanYi 字体，不存在则下载
+8. 设置 GIT_BASH_PATH 环境变量
+9. 将 Tectonic 添加到 PATH（如果在 deps 目录），设置 WQY_FONT_PATH（如果有字体）
+10. 使用 deps Python 运行 main.py
 ```
 
 **关键函数**：
 - `Test-Python`: 检查 deps 目录中的 Python
 - `Install-Python`: 下载和配置 embeddable Python
 - `Test-GitBash`: 检查 deps 目录中的 Git Bash
-- `Install-GitBash`: 下载 Git for Windows
+- `Install-GitBash`: 下载 Git for Windows（PortableGit 7z 自解压包）
 - `Test-Tectonic`: 检查系统中的 LaTeX 编译器（PATH、deps 目录、环境变量、常见安装路径）
 - `Install-Tectonic`: 下载 Tectonic（多镜像源：GitHub → ghproxy → ghfast → gh-proxy）
+- `Test-WqyFont` / `Install-WqyFont`: 检查/下载 WenQuanYi 中文字体
 
 ### 2. 主程序 (`main.py`)
 
@@ -65,24 +68,26 @@ data/
    - 设置临时目录环境变量：TEMP、TMP、TMPDIR、CILI_TMP → data/tmp/
    - 生成示例配置文件 setting.example.json
 2. 初始化配置（_init_settings）
-   - 若 setting.json 不存在，尝试从 ~/.claude/settings.json 迁移 API Key
+   - 若 setting.json 不存在，尝试从 ~/.claude/settings.json（或 ~/.claude.json）迁移 API Key
    - 否则创建默认配置
 3. 迁移旧会话格式（migrate_all_sessions）
 4. 检查 Git Bash 是否存在于 deps 目录
 5. 确保 deps Python 存在且健康（pip 可用）
 6. 安装依赖包（_install_packages）
    - 若有新包安装，自动重启服务（os.execv）确保 import 生效
-7. 自动检测浏览器（_auto_detect_browser）
+7. 初始化 matplotlib 中文字体（_init_mplfonts）
+8. 自动检测浏览器（_auto_detect_browser）
    - 若 browser_path 为空或路径不存在，自动检测 Edge → Chrome 并写回配置
-8. 启动 Cron 调度器
-9. 启动 Web 服务（uvicorn）
-10. 延迟 2 秒后自动打开浏览器（webbrowser.open）
+9. 启动 Cron 调度器
+10. 启动 Web 服务（uvicorn）
+11. 延迟 2 秒后自动打开浏览器（webbrowser.open）
 ```
 
 **关键函数**：
 - `_ensure_deps_python()`: 确保 deps Python 可用
 - `_install_deps_python()`: 下载 embeddable Python
 - `_install_packages()`: 安装依赖
+- `_init_mplfonts()`: 初始化 matplotlib 中文字体配置
 
 ## Embeddable Python 模式
 
@@ -93,8 +98,7 @@ data/
   - 启用 `import site`
   - 添加 `Lib\site-packages`
   - 添加项目根目录（用于 import core 等）
-- 通过 get-pip.py 安装 pip
-- pip 使用 `--only-binary=:all:` 避免编译
+- 通过 get-pip.py 安装 pip（get-pip.py 从阿里云镜像下载）
 
 **优势**：
 - 不依赖系统 Python 版本
@@ -120,13 +124,13 @@ def _ensure_deps_python() -> bool:
 
 **安装方式**：
 ```bash
-pip install --only-binary=:all: <package>
+pip install --disable-pip-version-check <package>
 ```
 
-**原因**：
-- 避免需要 C++ 编译工具
-- 使用预编译的 wheel 包
-- 提高安装成功率
+**特点**：
+- 只安装缺失的包（已安装的自动跳过）
+- 多镜像源自动 failover：一个镜像失败自动切换下一个
+- 安装成功后将实际使用的镜像源写回 setting.json
 
 **依赖列表**：
 - httpx, playwright, playwright-stealth
@@ -134,27 +138,32 @@ pip install --only-binary=:all: <package>
 - requests, beautifulsoup4, lxml
 - numpy, pandas, scipy, matplotlib
 - pyyaml, toml, Pillow
-- openpyxl, python-docx, python-pptx
+- openpyxl, python-docx, python-pptx, pdfplumber
 - pytest
 
 **镜像源**：
-- 默认：https://repo.huaweicloud.com/repository/pypi/simple/
-- 可在 data/cili/setting.json 中配置
+- 未配置时按预设顺序 failover：huaweicloud → aliyun → tsinghua → douban
+- 可在 data/cili/setting.json（system.pip_mirror）中配置，配置的源优先使用
+- 配置为空字符串表示使用官方 PyPI（预设源作为后备）
+- 安装成功后，实际使用的镜像源会写回 setting.json
 
 ## 环境变量
 
 **start.ps1 设置的变量**：
 - `GIT_BASH_PATH`: 始终设置为 data/deps/git/bin/bash.exe
 - `PATH`: 追加 Tectonic 目录（如果从 deps 安装）
+- `WQY_FONT_PATH`: WenQuanYi 字体路径（如果字体存在于 deps 目录）
 
 **main.py 设置的变量**：
 - `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（统一临时目录）
   - 确保所有工具（bash、python、tempfile 模块）使用同一个临时目录
   - bash 中可用 `$TEMP` 或 `$TMPDIR`
   - Python 中 `tempfile` 模块自动配置到此目录
+- `GIT_BASH_PATH`: _init_git_bash() 会强制设置为 data/deps/git/bin/bash.exe（未找到则启动失败退出）
+- `PYTHONNOUSERSITE`: 设置为 1，禁用用户级 site-packages，避免与系统 Python 混合
 
 **main.py 使用的变量**：
-- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 start.ps1 设置）
+- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 main.py 设置为 deps 路径）
 - `CILI_TMP`: 临时目录路径（由 main.py 自身设置）
 
 ## LaTeX / Tectonic 支持

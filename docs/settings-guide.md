@@ -276,7 +276,7 @@ Cili Agent/
 
 ## 二、LLM 工具模型配置（llm_model）
 
-这是一个**可选**的配置，用于 Agent 内部的一些"后台任务"，比如消息压缩、生成摘要、翻译等。
+这是一个**可选**的配置，专供 Agent 的 `llm` 工具使用——该工具用于单次批处理文本任务（翻译、摘要、提取等）。消息压缩等 Agent 内部后台任务使用主模型，与本配置无关。
 
 ```json
 "llm_model": {
@@ -298,7 +298,7 @@ Cili Agent/
 
 | | 主模型（model） | LLM 工具模型（llm_model） |
 |--|--------------|----------------------|
-| 用途 | 和你对话、执行任务 | 后台处理（压缩、摘要等） |
+| 用途 | 和你对话、执行任务 | `llm` 工具的单次调用（翻译、摘要、提取等） |
 | 调用方式 | 多轮对话 | 单次调用 |
 | 要求 | 需要较好的能力 | 可以用更便宜/更快的模型 |
 | 是否必填 | ✅ 必填 | ❌ 可选 |
@@ -306,7 +306,7 @@ Cili Agent/
 ### 使用建议
 
 - **推荐搭配一个便宜快速的小模型**，比如 Claude Haiku、GPT-4o-mini 等
-- 如果不想配置，直接删掉整个 `"llm_model": { ... }` 块即可，Agent 会用主模型来处理这些任务
+- 如果不想配置，直接删掉整个 `"llm_model": { ... }` 块即可，`llm` 工具将不可用（不会出现在工具列表中），其他功能不受影响
 - 如果配置了但没填 `api_key`，会自动复用主模型的 api_key
 
 ---
@@ -360,8 +360,8 @@ Cili Agent/
 
 **自动检测顺序**（当值为空时）：
 
-1. Microsoft Edge（Program Files）
-2. Microsoft Edge（Program Files x86）
+1. Microsoft Edge（Program Files x86）
+2. Microsoft Edge（Program Files）
 3. Microsoft Edge（用户目录）
 4. Google Chrome（Program Files）
 5. Google Chrome（Program Files x86）
@@ -640,7 +640,7 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ### Q：配置改完后需要重启吗？
 
-A：通过 Web UI 设置页面修改的配置会立即生效。直接编辑 setting.json 文件的话，下次启动时生效。
+A：通过 Web UI 设置页面修改的配置会立即生效（会通知已创建的 Agent 重新加载配置）。直接编辑 setting.json 文件的话，对新创建的会话/Agent 生效；已在运行的会话不会自动重载，需要重启服务（或通过 Web UI 重新保存一次）。
 
 ### Q：api_key 填错了会怎样？
 
@@ -652,7 +652,7 @@ A：不需要。你可以主模型用 Anthropic，llm_model 用 OpenAI，完全�
 
 ### Q：llm_model 不配会怎样？
 
-A：不影响使用。Agent 会用主模型来处理压缩、摘要等后台任务，只是可能消耗更多 token。
+A：不影响 Agent 的正常对话（消息压缩等后台任务本来就使用主模型），但 `llm` 工具将不可用（不会出现在工具列表中），需要单次批处理文本（翻译、提取等）时无法使用。
 
 ### Q：max_context_tokens 设得比模型实际支持的大怎么办？
 

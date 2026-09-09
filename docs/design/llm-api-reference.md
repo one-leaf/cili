@@ -444,6 +444,7 @@ class ToolCallBlock:
     id: str = ""
     name: str = ""
     arguments: str = ""  # 原始 JSON 字符串（延迟解析，工具执行时才 parse）
+    thought_signature: str = ""  # Google Gemini API 兼容字段
 ```
 
 **ImageBlock**（image 块）:
@@ -494,10 +495,11 @@ class UsageData:
 |-----------|--------|------|
 | `end_turn` | `stop` | `end_turn` |
 | `tool_use` | `tool_calls` | `tool_use` |
-| `max_tokens` | `length` | `max_tokens` |
+| `max_tokens` | `length` | `length` |
 | `stop_sequence` | - | `stop_sequence` |
+| - | `content_filter` | `content_filter` |
 
-内部直接使用 API 原始值（不做额外映射），`end_turn` / `tool_use` 为 Anthropic 原生值，OpenAI 的 `finish_reason` 由 Adapter 转换为对应的 Anthropic 等价值。
+Anthropic 原生值直接使用（不做映射）；OpenAI 的 `finish_reason` 仅 `stop`→`end_turn`、`tool_calls`→`tool_use` 两项转换为 Anthropic 等价值，其余（`length`、`content_filter` 等）原样透传。
 
 ### 3.5 消息格式对比
 
@@ -583,7 +585,7 @@ Message(
 | **Thinking** | `thinking.budget_tokens` / `effort` | `reasoning_effort` (仅推理模型) |
 | **Thinking 与 temperature** | 互斥 | reasoning_effort 与 temperature 互斥 |
 | **流式 usage** | `message_delta` 事件 | `stream_options.include_usage` |
-| **Thinking 多轮** | 必须保留在消息中 | `reasoning_content` 不能重发 |
+| **Thinking 多轮** | 必须保留在消息中 | `reasoning_content` 会重发（CoT passback） |
 
 ---
 

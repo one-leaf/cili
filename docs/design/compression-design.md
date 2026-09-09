@@ -46,7 +46,7 @@
 **策略**：
 - 保留最近 6 条工具结果（`keep_recent=6`）
 - 更早的工具结果标记为 `_meta.compacted = True`
-- 跳过小于 200 字符的工具结果（压缩收益低）
+- 跳过外部存储且小于 200 字节的工具结果（依据 `_meta.file_size` 判断，压缩收益低）
 
 **元数据字段**（`tool_result._meta`）：
 | 字段 | 类型 | 说明 |
@@ -62,7 +62,7 @@
   "tool_use_id": "call_abc123",
   "_meta": {
     "compacted": true,
-    "output_path": "exec_xxx/call_abc123.txt",
+    "output_path": "call_abc123.txt",
     "file_size": 15234
   }
 }
@@ -109,10 +109,10 @@
 
 ```json
 [
-  {"role": "user", "content": "[Our previous conversation has been compacted due to context length.]"},
-  {"role": "assistant", "content": "{summary}"},
   ... 分界点之前的老消息（已标记为消息级 _meta.valid=False，保留但不发送） ...
   ... 保留的最近消息 ...
+  {"role": "user", "content": "[Our previous conversation has been compacted due to context length.]"},
+  {"role": "assistant", "content": "{summary}"}
 ]
 ```
 
@@ -158,12 +158,12 @@
 
 **存储时机**：`Tool.execute()` 返回 `ToolResult` 时
 
-**实现位置**：`core/tools/shared/base.py::Tool._save_output()`
+**实现位置**：`core/tools/shared/base.py::Tool.save_output_to_file()`
 
 ### 4.2 按需读取
 
 `_resolve_tool_results()` 在发送 LLM 前读取外部文件：
-- 未压缩：读取完整内容
+- 未压缩：读取文件内容（truncated 的超长输出会中段截断并附引导语）
 - 已压缩：注入占位符
 
 ---
@@ -229,7 +229,7 @@ total += max(750, len(data) // 100)
 用户输入
     │
     ▼
-BaseAgent.run()
+RootAgent.run() / SubAgent.run()
     │
     ├── 添加用户消息
     │

@@ -11,7 +11,7 @@ Cron 调度器为 Cili Agent 提供周期性的后台任务执行能力，用于
 **核心特性**：
 - 基于 JSON 配置的任务定义，支持内联或动态 Python 函数
 - 支持两种调度类型：`interval`（分钟间隔）和 `cron`（标准 cron 表达式）
-- **通过 SubAgent 执行**：Cron 直接在 cron session 中创建 SubAgent 执行任务（采用 context-bounded-processing 策略）
+- **通过 RootAgent 执行**：Cron 在 cron session 中运行 RootAgent（非流式），RootAgent 走正常 agent loop，自主决定是否委派 SubAgent
 - **System workspace**：专用于系统维护任务（UUID: `system`，cwd: `data/`）
 - 后台线程每 60 秒检查任务到期时间，per-workspace lock 串行化
 - **last_run 持久化**：任务执行后自动保存到状态文件，重启后恢复
@@ -28,24 +28,23 @@ Cron 调度器为 Cili Agent 提供周期性的后台任务执行能力，用于
 Cron 触发
   ↓
 CronTask.execute()
+  ├─ 调用 get_tasks() 获取任务列表（空 → 跳过本次执行）
   ├─ 解析目标 workspace（System 或用户指定）
-  ├─ 用 state 中的 session_id 定位 session（不存在则新建 "[Cron] 任务描述"）
-  ├─ 添加 user message（任务描述）
-  ├─ 添加 assistant message（tool_use: subagent，模拟 LLM 调用）
-  ├─ 创建 SubAgent 直接执行任务
-  ├─ 添加 user message（tool_result: 含 exec_id，UI 渲染卡片）
-  └─ 添加 assistant message（结果摘要）
+  ├─ _get_or_create_root_agent() — 按 workspace 获取/缓存 RootAgent（运行中 → 跳过本次）
+  ├─ agent.switch_session() — 切换到 cron session
+  │   （用 state 中的 session_id 定位，不存在则新建 "[Cron] 任务描述"）
+  ├─ agent.invalidate_all_messages() — 标记旧消息无效（每次运行上下文干净）
+  └─ agent.run(cron_message, streaming=False) — 注入 cron user message，运行 agent loop
   ↓
-SubAgent.run()                       ← cron 直接执行（非流式）
-  ├─ 采用 context-bounded-processing 技能策略
-  └─ 自主执行工具完成任务
+RootAgent.run()                      ← cron 直接执行（非流式）
+  └─ 正常 agent loop，自主执行工具完成任务；需要时通过 subagent 工具委派 SubAgent
 ```
 
 **关键点**：
-- Cron **直接创建 SubAgent**，无需经过 RootAgent
-- SubAgent 使用 `context-bounded-processing` 技能，适合后台自主执行
-- Session 消息格式与主 Agent 调用 SubAgent 完全一致（tool_use + tool_result），UI 渲染 SubAgent 卡片，用户可在 session 中继续对话
-- **注意**：`cron` 工具的 description 文本仍写着 "Tasks run through RootAgent in a 'Cron Tasks' session"（历史遗留文案），与实际执行链路不符——任务实际由 Cron 直接创建 SubAgent 在 "[Cron] 任务描述" session 中执行，不经过 RootAgent
+- Cron **直接运行 RootAgent**，RootAgent 走正常 agent loop，自主决定是否委派 SubAgent
+- Cron 维护独立的 RootAgent 缓存（`_cron_agents`，按 workspace 复用），与 Web UI 的 agents 缓存互不影响
+- 每次 cron 运行前调用 `invalidate_all_messages()`，保持上下文干净，不累积历史
+- Cron 消息以普通 user message 注入 session，用户可在 session 中继续对话
 
 ### 2.2 组件关系
 
@@ -63,7 +62,7 @@ SubAgent.run()                       ← cron 直接执行（非流式）
 │  └──────────────────┘     └──────────────┬───────────────┘  │
 │                                          │                   │
 │                               ┌──────────▼───────────┐       │
-│                               │ SubAgent           │       │
+│                               │ RootAgent            │       │
 │                               │ → session (via state) │      │
 │                               │ → 非流式执行        │      │
 │                               │ → 结果写入 session  │      │
@@ -174,7 +173,7 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
     "max_executions": 9999
   },
   "content": {
-    "task": "扫描工作区，提取用户信息到 user-profile.json",
+    "task": "扫描工作区，提取用户信息到 user-profile.md",
     "plan": ["列出工作区目录", "逐个提取并写入 profile"]
   }
 }
@@ -236,7 +235,7 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 }
 ```
 
-Python 文件必须导出 `get_tasks() -> list[dict]`：
+Python 文件必须导出 `get_tasks() -> list[dict]`（也支持返回单个任务 dict）：
 
 ```python
 def get_tasks() -> list[dict]:
@@ -287,7 +286,9 @@ def get_tasks() -> list[dict]:
     "workspace_uuid": "abc123",
     "description": "查询深圳天气",
     "enabled": true,
+    "one_time": true,
     "schedule": {"type": "interval", "minutes": 10},
+    "config": {"max_executions": 9999},
     "content": {"task": "...", "plan": []}
   }
 ]
@@ -363,8 +364,8 @@ data/agents/system/
 │
 ├─ 遍历所有 CronTask
 │   ├─ task.should_run(now)?
-│   │   ├─ 首次运行 → true
 │   │   ├─ 未启用 → false
+│   │   ├─ 首次运行（_next_run 为 None）→ true
 │   │   └─ 当前时间 >= _next_run → true
 │   │
 │   └─ 如果 should_run:
@@ -382,22 +383,22 @@ data/agents/system/
 ```
 CronTask.execute():
 │
-├─ 调用 task_fn() 获取任务列表
+├─ 调用 get_tasks() 获取任务列表
 │   └─ 空列表 → 返回 {"status": "skipped", "message": "No tasks to execute", "iterations": 0}
 │
 ├─ 遍历任务列表
 │   ├─ 解析目标 workspace（task_item.workspace_uuid > self.workspace_uuid > "system"）
 │   ├─ 调用 _execute_in_session(workspace_uuid, task_item)
 │   │   ├─ _resolve_workspace_dir() — "system" → data/, 其他 → data/agents/{uuid}/
-│   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 直接定位（不存在则新建）
+│   │   ├─ 加载 workspace 配置获取实际工作目录 cwd（非 system 时）
+│   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 定位（不存在则新建）
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
-│   │   ├─ 加载 SessionManager，添加 user message + assistant message（tool_use: subagent）
-│   │   ├─ 生成 exec_id，创建 SubAgent 日志目录
-│   │   ├─ 创建 SubAgent(task, plan, workspace_uuid, cwd, session_dir, exec_id)
-│   │   ├─ subagent.run() — 非流式自主执行
-│   │   ├─ 添加 user message（tool_result: 含 exec_id）+ assistant message（摘要）
-│   │   ├─ 保存 SubAgent 执行日志
-│   │   └─ subagent.close()
+│   │   ├─ _get_or_create_root_agent(ws_uuid, workspace_dir) — 按 workspace 缓存 RootAgent
+│   │   │   └─ agent 正在运行 → 返回 None → 本次跳过
+│   │   ├─ agent.switch_session(cron_session_id)（当前 session 不同时切换）
+│   │   ├─ agent.invalidate_all_messages() — 标记旧消息无效
+│   │   ├─ agent.run(cron_message, streaming=False) — 非流式运行 agent loop
+│   │   └─ 返回 {"status": "completed", "workspace_uuid", "session_id", "iterations": 0}
 │   └─ 收集结果（results.append({"task": 序号, **result})）
 │
 └─ 汇总所有结果
@@ -410,13 +411,13 @@ CronTask.execute():
 {"status": "completed" | "partial",
  "tasks_count": 任务总数,
  "results": [{"task": 1, "status": "completed", "workspace_uuid": "...",
-              "session_id": "...", "iterations": 5}, ...],
+              "session_id": "...", "iterations": 0}, ...],
  "iterations": 所有任务迭代数之和}
 ```
 
-- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`
+- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；RootAgent 忙 → `{"status": "skipped", "message": "RootAgent is busy", "workspace_uuid": "..."}`
 - `completed`：所有任务成功；`partial`：至少一个任务失败或部分成功
-- `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`，失败时含 `error`
+- `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`（cron 直接运行 RootAgent，固定为 0），异常时含 `error`
 
 ### 6.3 自循环任务（remaining 计数器）
 
@@ -431,7 +432,7 @@ CronScheduler._execute_task(task):
 │   └─ remaining = state.get("remaining", config.get("max_executions", 9999))
 │
 ├─ 检查终止条件（递减前）
-│   ├─ remaining <= 0 → 自动 disable → 不执行
+│   ├─ remaining <= 0 → 自动 disable（保存状态并同步 user_tasks.json 的 enabled=false）→ 不执行
 │   └─ remaining > 0 → 继续执行
 │
 ├─ 递减 remaining
@@ -468,24 +469,26 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 
 
 用户手动 `cron(action="enable")` 时，remaining 重置为 `config.max_executions`。如果源目录新增文件，更新 file_list.txt 后 loop(next) 会发现并继续处理。
 
-### 6.3 Cron Message 格式
+### 6.4 Cron Message 格式
 
-注入到 session 的 user message：
+注入到 session 的 user message（提示 RootAgent 使用 subagent 工具委派执行）：
 
 ```
 [Cron 定时任务触发]
 
+请使用 subagent 工具执行以下任务：
+
 ## 任务描述
-扫描工作区，提取用户信息到 user-profile.json
+扫描工作区，提取用户信息到 user-profile.md
 
 ## 执行计划
 1. 列出工作区目录
 2. 逐个提取并写入 profile
 
-请根据任务描述执行。
+请根据任务描述和计划执行。
 ```
 
-### 6.4 并发控制
+### 6.5 并发控制
 
 - `per-workspace lock` → 同一 workspace 的多个 cron 任务串行化执行
 - 不同 workspace 的 cron 任务可以并行
@@ -513,9 +516,9 @@ class CronScheduler:
 | `start()` | 加载任务并启动后台线程 |
 | `stop()` | 停止调度器，等待线程结束 |
 | `load_tasks() -> int` | 从 `core/cron.d/*.json` + `user_tasks.json` 加载 |
-| `get_task(name) -> CronTask` | 按名称获取任务 |
+| `get_task(name) -> CronTask \| None` | 按名称获取任务（不存在返回 None） |
 | `list_tasks() -> list[dict]` | 列出所有任务及状态 |
-| `run_task_now(name) -> dict` | 立即触发指定任务 |
+| `run_task_now(name) -> dict \| None` | 立即触发指定任务（不存在返回 None） |
 | `_get_workspace_lock(ws_uuid) -> Lock` | 获取 workspace 级锁 |
 
 ### 7.2 CronTask
@@ -544,9 +547,9 @@ class CronTask:
 |------|------|
 | `should_run(now) -> bool` | 检查是否应该运行 |
 | `get_tasks() -> list[dict]` | 调用 task_fn 获取任务列表 |
-| `execute() -> dict` | 通过 SubAgent 执行所有任务 |
+| `execute() -> dict` | 通过 RootAgent 执行所有任务 |
 | `mark_executed(now, result)` | 更新状态并持久化 |
-| `_execute_in_session(ws, item) -> dict` | 在 workspace session 中通过 SubAgent 执行 |
+| `_execute_in_session(ws, item) -> dict` | 在 workspace 的 cron session 中通过 RootAgent 执行 |
 | `_resolve_workspace_dir(uuid) -> str` | 解析 workspace 目录 |
 | `_resolve_cron_session(dir) -> str` | 用 state 中的 session_id 定位，不存在则新建（名字用任务描述） |
 | `_build_cron_message(item) -> str` | 构造 user message |
@@ -577,7 +580,7 @@ tasks = scheduler.list_tasks() -> list[dict]
 #   "schedule": {...}, "last_run": "...", "next_run": "...", "run_count": 5}]
 
 task = scheduler.get_task("extract-user-info") -> CronTask | None
-result = scheduler.run_task_now("extract-user-info") -> dict
+result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不存在返回 None
 # {"status": "triggered", "message": "Task extract-user-info triggered"}
 ```
 
@@ -585,17 +588,18 @@ result = scheduler.run_task_now("extract-user-info") -> dict
 
 ## 九、设计决策
 
-### 9.1 为什么直接用 SubAgent 而不是 RootAgent？
+### 9.1 为什么用 RootAgent 而不是直接创建 SubAgent？
 
-- **后台任务特性**：Cron 是后台任务，无需流式输出和用户交互能力
-- **资源效率**：SubAgent 非流式执行，比 RootAgent 更轻量
-- **技能匹配**：SubAgent 使用 `context-bounded-processing` 技能，适合自主执行
-- **UI 可见**：session 消息格式与主 Agent 一致（tool_use + tool_result），SubAgent 卡片正常渲染
+- **统一入口**：RootAgent 走正常 agent loop，自主决定直接执行还是委派 SubAgent，任务处理更灵活
+- **工具完整**：RootAgent 拥有完整工具集（含 subagent 工具），无需 Cron 侧特殊编排
+- **非流式执行**：Cron 后台任务无需流式输出，`agent.run(streaming=False)` 即可
+- **上下文干净**：每次运行前 `invalidate_all_messages()`，避免 cron 历史消息累积撑爆上下文
+- **按 workspace 缓存**：`_cron_agents` 复用 RootAgent 实例，运行中的 workspace 跳过本次执行
 
 ### 9.2 为什么引入 System workspace？
 
 - **职责分离**：系统维护任务与用户工作区隔离
-- **统一模型**：所有 SubAgent 必然属于某个主 Agent，System workspace 为系统 cron 提供"宿主"
+- **统一模型**：cron 通过 RootAgent 执行任务，System workspace 为系统 cron 的 RootAgent 提供"宿主"
 - **安全保护**：不能删除/修改，防止误操作
 
 ### 9.3 为什么 "[Cron]" 独立 session？
@@ -629,7 +633,7 @@ result = scheduler.run_task_now("extract-user-info") -> dict
 
 ---
 
-**文档版本**: v2.1
+**文档版本**: v2.2
 **创建时间**: 2026-08-25
-**更新时间**: 2026-09-01
-**状态**: 已实现（SubAgent 直接执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）
+**更新时间**: 2026-09-09
+**状态**: 已实现（RootAgent 执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）

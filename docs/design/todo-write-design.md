@@ -54,7 +54,7 @@ Todos 存储在独立文件中（按 session 隔离），路径为 `data/cili/to
 }
 ```
 
-`updated_at` 记录最近一次更新的时间戳（格式 `yyyy-MM-dd HH:mm:ss`）。旧版存储在 session metadata 中的 `todos` 数据会在工具执行时自动迁移到独立文件，并从 metadata 中移除（向后兼容）。
+`updated_at` 记录最近一次更新的时间戳（格式 `yyyy-MM-dd HH:mm:ss`）。旧版存储在 session metadata 中的 `todos` 数据会在 `get_todos_from_session` 读取时自动迁移到独立文件，并从 metadata 中移除；`todo_write` 工具执行写入新列表时也会移除 metadata 中的旧 `todos`（向后兼容）。
 
 ---
 
@@ -259,7 +259,7 @@ Agent：直接执行，不需要任务列表
 | `core/tools/shared/todo.py` | TodoWrite 工具实现 |
 | `core/tools/shared/__init__.py` | 工具注册 |
 | `web/web_api.py` | SSE 事件推送 |
-| `web/static/app.js` | 前端渲染 |
+| `web/static/chat.js` | 前端渲染 |
 | `web/static/style.css` | 样式定义 |
 
 ### 7.2 工具注册
@@ -287,9 +287,9 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
     event_queue.put(f"data: {event}\n\n")
 
     # Check for todo_write tool and push todo update event
-    if tool_name == "todo_write" and not is_error and agent.session_manager:
+    if tool_name == "todo_write" and not is_error:
         todos = get_todos_from_session(agent.session_manager)
-        if todos is not None:
+        if todos:
             todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
             event_queue.put(f"data: {todo_event}\n\n")
 ```
@@ -299,7 +299,7 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
 ### 7.4 前端渲染
 
 ```javascript
-// web/static/app.js
+// web/static/chat.js
 
 // SSE 事件处理
 } else if (event.type === 'todo_update') {

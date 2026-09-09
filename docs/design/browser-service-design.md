@@ -77,7 +77,7 @@ Cili Agent 提供两个浏览器相关工具：
 # 获取服务实例（不存在则自动创建并启动）
 service = get_service() -> BrowserService
 
-# 启动服务（main.py 调用）
+# 启动服务（web_api.py lifespan startup 调用，等价于 get_service()）
 start_browser_service() -> BrowserService
 
 # 停止服务（web_api.py lifespan shutdown 调用）
@@ -149,7 +149,7 @@ self._active_tab_index: int | None      # 最近使用的 tab_index
 
 操作策略：
 - navigate / web_search → _open_new_page() → 新 tab，加入池，返回 tab_index
-- screenshot/execute/get_text/get_links/wait_for → 使用 tab_index 或 _active_tab_index
+- screenshot/save_pdf/execute/get_text/get_links/wait_for → 使用 tab_index 或 _active_tab_index
 - switch_tab(tab_index) → 切换到指定 tab
 - list_tabs() → 列出所有打开的 tab
 - close_tab(tab_index) → 关闭指定 tab，释放资源
@@ -407,7 +407,9 @@ def disconnect(self) -> None:
 def navigate(self, url: str, tab_index: int | None = None) -> ToolResult:
     # 操作方法不持锁！线程安全由 worker 线程保证
     # navigate 默认创建新 tab，可指定 tab_index 复用
-    return self._execute_operation("navigate(...)", _do_navigate, tab_index=tab_index)
+    # （navigate 有专属实现 _do_navigate_tab，直接经 _run_in_worker 执行，
+    #   不走 _execute_operation，因为需要"无 tab_index 时开新 tab"的语义）
+    return self._run_in_worker(_do_navigate_tab)
 
 def screenshot(self, path: str, tab_index: int | None = None) -> ToolResult:
     # 使用 tab_index 或 _active_tab_index
@@ -425,7 +427,7 @@ def screenshot(self, path: str, tab_index: int | None = None) -> ToolResult:
 
 ### 5.1 BrowserTool（browser.py）
 
-精简为 ~150 行，主要职责：
+精简为 ~180 行，主要职责：
 1. 提供 Tool 接口给 LLM 调用
 2. 将 action 参数路由到 BrowserService 的对应方法
 3. 传递 tab_index 参数实现多 tab 操作
@@ -465,15 +467,15 @@ class BrowserTool(Tool):
 
 ### 5.2 WebSearchTool（web_search.py）
 
-精简为 ~270 行，主要职责：
-1. 构建搜索 URL（支持 Bing 和 Google，通过 SEARCH_CONFIGS 配置）
+精简为 ~310 行，主要职责：
+1. 构建搜索 URL（支持 Bing 和 Google，通过 SEARCH_CONFIGS 配置，支持 time_range 时间过滤）
 2. 调用 service.navigate() 加载搜索页面（每次开新 tab，获取 tab_index）
 3. 使用 tab_index 调用 service.wait_for() 和 execute_script()
 4. 格式化输出，搜索完成后调用 service.close_tab() 释放资源
 
 ```python
 class WebSearchTool(Tool):
-    def execute(self, query, max_results=10):
+    def execute(self, query, max_results=30, time_range=None):
         service = get_service()
 
         # 1. 导航到搜索结果页（每次搜索开新 tab，引擎由配置决定）
@@ -482,7 +484,7 @@ class WebSearchTool(Tool):
         nav_result = service.navigate(search_url)
 
         # 2. 获取 tab_index
-        tab_index = nav_result.data.get("tab_index") if nav_result.data else None
+        tab_index = nav_result.meta.get("tab_index") if nav_result.meta else None
 
         # 3. 等待结果加载（使用同一 tab）
         service.wait_for(".b_algo", timeout=15000, tab_index=tab_index)
@@ -491,15 +493,15 @@ class WebSearchTool(Tool):
         js_code = "..."
         result = service.execute_script(js_code, tab_index=tab_index)
 
-        # 5. 格式化输出（含 tab_index）
-        return ToolResult(formatted_output, data={"tab_index": tab_index})
+        # 5. 格式化输出（finally 中调用 close_tab 释放 tab）
+        return ToolResult(formatted_output)
 ```
 
 **不再需要重试逻辑**：BrowserService 的 `_ensure_connected()` 内部已处理连接恢复。
 
 **Tab 池 + tab_index 的好处**：
 - 每次操作开新 tab，不干扰之前的页面状态
-- navigate/web_search 返回 tab_index，后续操作可精确指定目标 tab
+- navigate 返回 tab_index，后续操作可精确指定目标 tab（web_search 搜索完成后自动 close_tab 释放）
 - 旧 tab 自动回收，不浪费内存
 - 支持多 tab 并行操作（如：在 tab 1 登录，在 tab 2 查资料）
 
@@ -596,20 +598,17 @@ def _kill_chrome_internal(self) -> None:
             # 超时则 kill()
         self._chrome_process = None
 
-    # 2. 杀死使用相同 profile 的其他 Chrome 进程
-    _kill_existing_chrome(self._chrome_profile_dir)
-
-    # 3. 删除 Chrome 的 singleton 锁定文件
+    # 2. 删除 Chrome 的 singleton 锁定文件
     self._remove_chrome_locks(self._chrome_profile_dir)
 
-    # 4. 等待端口释放（最多 10 秒）
+    # 3. 等待端口释放（最多 10 秒）
     for i in range(20):
         time.sleep(0.5)
         if not self._is_port_listening(DEFAULT_CDP_PORT):
             break
 ```
 
-`_kill_existing_chrome()` 通过 PowerShell 查找使用特定 profile 的 Chrome 进程并终止，避免误杀用户自己的 Chrome。
+`_kill_chrome_internal()` 只终止 `self._chrome_process` 记录的进程，不会影响其他 cili 实例或用户自己的 Chrome。若服务自身未记录 PID 但端口已被占用（如外部启动的 Chrome），`_start_chrome()` 会通过 `_find_chrome_process_by_profile()`（PowerShell `Get-CimInstance Win32_Process` 查找使用相同 profile 的 chrome.exe/msedge.exe）找到进程，用轻量级 `_ChromeProcessRef` 记录其 PID，供后续终止使用。
 
 ---
 
@@ -678,7 +677,7 @@ def _execute_operation(self, operation_name: str, func, tab_index: int | None = 
             ├─ 检查端口 → Chrome 在运行
             ├─ 重试 3 次 → 仍失败
             ├─ 杀死旧 Chrome
-            ├─ 等待端口释放（2 秒）
+            ├─ 等待端口释放（最多 10 秒）
             ├─ 删除 Chrome 锁文件
             └─ 启动新 Chrome → 成功
 ```
@@ -720,7 +719,7 @@ def _apply_stealth(self) -> None:
 
 ```
 core/
-├── browser_service.py              # 全局浏览器服务（~1000 行）
+├── browser_service.py              # 全局浏览器服务（~1200 行）
 │   ├── BrowserService              # 服务类
 │   │   ├── start() / stop()        # 生命周期
 │   │   ├── disconnect()            # 断连接保 Chrome
@@ -755,18 +754,17 @@ core/
 │       └── stop_browser_service()
 │
 └── tools/shared/
-    ├── browser.py                  # 浏览器工具（~150 行）
+    ├── browser.py                  # 浏览器工具（~180 行）
     │   └── BrowserTool
     │       ├── execute()           # 委托给 BrowserService（含 tab_index）
     │       ├── close()             # disconnect()
     │       └── kill_chrome()       # kill_chrome()
     │
-    └── web_search.py               # 搜索工具（~270 行）
+    └── web_search.py               # 搜索工具（~310 行）
         └── WebSearchTool
             └── execute()           # 委托给 BrowserService，返回 tab_index
 
-main.py                             # 启动时调用 start_browser_service()
-web/web_api.py                      # 关闭时调用 stop_browser_service()
+web/web_api.py                      # lifespan startup 调用 get_service()，shutdown 调用 stop_browser_service()
 ```
 
 ---
@@ -783,11 +781,8 @@ BrowserService
 BrowserTool / WebSearchTool
   └── core.browser_service          # get_service()
 
-main.py
-  └── core.browser_service          # start_browser_service()
-
 web/web_api.py
-  └── core.browser_service          # stop_browser_service()
+  └── core.browser_service          # get_service()（startup）/ stop_browser_service()（shutdown）
 ```
 
 ---
@@ -914,7 +909,7 @@ Chrome 使用 profile 时会创建锁文件（SingletonLock, SingletonSocket, Si
 
 ---
 
-**文档版本**: v2.3  
+**文档版本**: v2.4  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-08-30  
+**更新时间**: 2026-09-09  
 **状态**: 已实现（含工作线程、Tab 池自动回收、tab_index 管理、PDF 导出、Chrome 锁文件清理、错误诊断）

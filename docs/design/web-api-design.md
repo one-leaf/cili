@@ -13,7 +13,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 RootAgent，自动清理最久未访问的
 - **特殊命令**：/help、/status、/bash 在服务端处理，不经过 LLM
-- **统一数据访问**：所有会话写入通过 SessionManager，不直接操作 JSON 文件
+- **统一数据访问**：消息收发等核心写入通过 SessionManager；会话数据统一保存为 session 目录下的 `index.json`（原子写入，重命名/隐藏/批量/撤销等轻量操作直接读写该文件）
 
 ---
 
@@ -24,7 +24,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Web UI (Frontend)                       │
-│              web/static/index.html + app.js                 │
+│         web/static/index.html + app.js / chat.js 等         │
 └────────────────────┬────────────────────────────────────────┘
                      │ SSE / REST API
 ┌────────────────────▼────────────────────────────────────────┐
@@ -188,7 +188,7 @@ GET /api/workspaces/{uuid}/sessions
 }
 ```
 
-会话按 `updated_at` 倒序排列（最新的在前）。
+会话按最后更新时间倒序排列（最新的在前，按 `index.json` 文件的 mtime 排序）。
 
 #### 获取会话详情
 
@@ -196,7 +196,7 @@ GET /api/workspaces/{uuid}/sessions
 GET /api/workspaces/{uuid}/sessions/{id}
 ```
 
-**响应**：完整的会话数据（包括所有消息）。
+**响应**：完整的会话数据（包括所有消息）。工具结果内容保存在外部文件中，此接口按需读取并注入到消息里（含 `ask_user` 已回答的 `_meta.answered` 标记）。
 
 #### 创建会话
 
@@ -271,7 +271,8 @@ POST /api/workspaces/{uuid}/sessions/{id}/messages
 Content-Type: application/json
 
 {
-  "content": "帮我写一个 hello world"
+  "content": "帮我写一个 hello world",
+  "images": [{"data": "base64...", "media_type": "image/png"}]  // 可选，多模态图片
 }
 ```
 
@@ -343,6 +344,29 @@ POST /api/workspaces/{uuid}/sessions/{id}/stop
 }
 ```
 
+Agent 不存在或未在运行时返回 `{"success": false, "message": "..."}`。
+
+#### 撤销消息
+
+```
+POST /api/workspaces/{uuid}/sessions/{id}/revert
+Content-Type: application/json
+
+{
+  "msg_id": "消息 ID"   // 删除该消息及其后面的所有消息
+}
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "deleted_count": 5
+}
+```
+
+Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent，否则直接从磁盘读写 `index.json`。
+
 #### AskUser 交互流程
 
 `ask_user` 工具采用 **退出 Agent 循环 + 前端渲染 + 专用端点提交答案** 模式：
@@ -350,7 +374,7 @@ POST /api/workspaces/{uuid}/sessions/{id}/stop
 1. Agent 调用 `ask_user` → 工具返回 `completed=False` 的 ToolResult
 2. Agent 循环检测到 `completed=False`，保存消息后退出
 3. 前端通过 SSE 的 `tool_use` 事件（`tool: "ask_user"`）渲染交互式问题卡片
-4. `tool_result` 事件对 `ask_user` 跳过（不渲染结果气泡）
+4. `tool_result` 事件对占位工具（`ask_user`、`subagent`）跳过（不渲染结果气泡）
 5. 用户选择答案后，通过专用端点提交（见下）
 6. 后端替换占位符 tool_result 内容并继续 Agent 循环（`resume_after_ask_user()`）
 
@@ -513,6 +537,8 @@ Content-Type: application/json
 }
 ```
 
+`config` 可选：传入时用给定参数测试（api_key 为空则回退用已保存的主模型 Key）；缺省时直接用已保存的主模型配置测试。
+
 **响应**：
 ```json
 {
@@ -535,6 +561,8 @@ GET /api/workspaces/{uuid}/files/{path}
 ```
 GET /api/workspace/files/{path}?workspace_uuid={uuid}
 ```
+
+> 兼容路由：`GET /api/workspace/{path}` 也可访问同一文件服务。
 
 用于在 Web UI 中显示图片等文件。
 
@@ -567,12 +595,29 @@ GET /api/files?workspace_uuid={uuid}&path=relative/path
 {
   "path": "relative/path",
   "items": [
-    {"name": "subdir", "path": "relative/path/subdir", "is_file": false},
-    {"name": "file.py", "path": "relative/path/file.py", "is_file": true}
+    {"name": "subdir", "path": "relative/path/subdir", "is_file": false, "size": null, "modified": 1759000000.0},
+    {"name": "file.py", "path": "relative/path/file.py", "is_file": true, "size": 1024, "modified": 1759000000.0}
   ],
   "parent": "relative"
 }
 ```
+
+#### 文件管理端点（统一 `/api/files` 路径）
+
+```
+GET    /api/files/{path}?workspace_uuid={uuid}    # 读取文件内容（文本或二进制）
+POST   /api/files                                 # 创建文件或文件夹
+PUT    /api/files                                 # 重命名/移动（new_path）或保存内容（content）
+DELETE /api/files                                 # 批量删除
+POST   /api/files/upload                          # 上传文件（multipart form）
+```
+
+- **POST /api/files** 请求体：`{workspace_uuid, path(父目录), name, type("file"|"folder"), content(初始内容)}`
+- **PUT /api/files** 请求体：`{workspace_uuid, path, new_path(可选，重命名/移动), content(可选，保存内容)}`
+- **DELETE /api/files** 请求体：`{workspace_uuid, paths: ["相对路径", ...]}`，响应 `{"deleted": [...], "errors": [...]}`
+- **POST /api/files/upload** 表单字段：`workspace_uuid`、`path`、`files`（多文件），单个文件最大 100MB，响应 `{"uploaded": [...], "errors": [...]}`
+
+所有端点均校验路径必须位于工作区内，防止路径穿越。
 
 ### 3.10 自动升级
 
@@ -717,9 +762,10 @@ except asyncio.CancelledError:
 
 ### 6.1 技术栈
 
-- **原生 JavaScript**（无框架）
-- **marked.js**：Markdown 渲染
-- **MathJax**：数学公式渲染
+- **原生 JavaScript**（无框架），按职责拆分为 app.js / chat.js / settings.js / file-manager.js / utils.js
+- **marked.js**：Markdown 渲染（本地 `static/libs/marked.min.js`）
+- **DOMPurify**：HTML 净化防 XSS（本地 `static/libs/purify.min.js`）
+- **MathJax**：数学公式渲染（本地 `static/libs/mathjax/`）
 
 ### 6.2 主要功能
 
@@ -733,8 +779,9 @@ except asyncio.CancelledError:
 
 - 会话列表（按更新时间倒序）
 - 创建、重命名、删除会话
-- 导出会话为 HTML（含 Markdown + 数学渲染）
-- 查看会话信息（token 统计）
+- 批量隐藏/取消隐藏/删除会话
+- 查看会话信息（消息数、token 统计）
+- 分享会话/指定消息（打开独立只读查看页 `session.html`，即 `/s/{workspace}/{session}` 路由）
 
 #### 聊天界面
 
@@ -743,7 +790,13 @@ except asyncio.CancelledError:
 - 工具调用卡片（显示工具名、输入、输出）
 - SubAgent 卡片（状态占位符，展开懒加载详情）
 - 代码块（CSS 样式渲染）
-- 图片显示（通过 `/api/workspace/files/` URL）
+- 图片显示（聊天上传/输出的图片以 base64 data URI 直接渲染；Markdown 中的相对路径图片和文件链接转换为 `/api/workspaces/{uuid}/files/` URL 加载）
+- 撤销消息（revert 到指定消息，删除其后所有消息）
+
+#### 文件管理
+
+- 浏览、预览工作区文件（`file-manager.js` 弹窗）
+- 创建、重命名/移动、删除、上传文件与文件夹（对应 `/api/files` 系列端点）
 
 #### 设置弹窗
 
@@ -755,7 +808,7 @@ except asyncio.CancelledError:
 ### 6.3 SSE 事件处理
 
 ```javascript
-// app.js
+// chat.js（简化示意）
 async function sendMessage(content) {
     const response = await fetch(`/api/workspaces/${uuid}/sessions/${id}/messages`, {
         method: 'POST',
@@ -886,6 +939,8 @@ async def check_access_control(request: Request, call_next):
     return JSONResponse(status_code=403, content={"detail": "Access denied: IP not allowed"})
 ```
 
+> **补充**：配置未加载成功时（如尚未配置 API Key），仅允许 localhost 访问（返回 403 "Server not configured yet"），以便用户打开 UI 完成初始配置。
+
 ### 8.2 CORS 限制
 
 默认只允许 localhost 访问：
@@ -908,8 +963,8 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
     file_full_path = (workspace_path / file_path).resolve()
     
     # 安全检查：确保文件在工作区内
-    if not str(file_full_path).startswith(str(workspace_path)):
-        raise HTTPException(status_code=403, detail="Access denied")
+    if not file_full_path.is_relative_to(workspace_path):
+        raise HTTPException(status_code=403, detail="Access denied: path traversal not allowed")
     
     return FileResponse(str(file_full_path))
 ```
@@ -979,14 +1034,19 @@ def _mask_api_key(config: dict) -> dict:
 |------|------|
 | `web/web_api.py` | FastAPI 后端，所有 API 端点 |
 | `web/static/index.html` | 主页面 |
-| `web/static/app.js` | 前端逻辑（SSE、Markdown、交互） |
+| `web/static/app.js` | 前端状态与工作区/会话管理 |
+| `web/static/chat.js` | 聊天界面与 SSE 事件处理、Markdown 渲染 |
+| `web/static/settings.js` | 设置弹窗（模型/系统配置） |
+| `web/static/file-manager.js` | 工作区文件管理器 |
+| `web/static/utils.js` | 通用工具函数 |
+| `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
 | `web/static/style.css` | 样式 |
 | `core/root_agent.py` | RootAgent（被 web_api 调用） |
 | `core/session.py` | SessionManager（数据层） |
 
 ---
 
-**文档版本**: v1.1  
+**文档版本**: v1.2  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-08-28  
+**更新时间**: 2026-09-09  
 **状态**: 已实现

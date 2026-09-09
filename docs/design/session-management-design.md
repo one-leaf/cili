@@ -185,7 +185,7 @@ SubAgent 执行日志独立存储在子目录中：
 
 ### 2.4 工具输出文件（外部优先存储）
 
-工具执行时，完整输出实时写入外部 `.txt` 文件，供前端轮询实时显示，也作为 LLM 获取内容的唯一来源。
+流式工具（bash/python）执行时，完整输出实时写入外部 `.txt` 文件，供前端轮询实时显示，也作为 LLM 获取内容的唯一来源。
 
 **存储路径**：
 - RootAgent 工具：`{session_dir}/{tool_use_id}.txt`
@@ -193,7 +193,7 @@ SubAgent 执行日志独立存储在子目录中：
 
 **工作机制**：
 1. 工具执行前，Agent 设置 `tool.output_file = {路径}`
-2. `_run_bash()` 逐行读取子进程输出，同时 append 写入 output_file（每行 flush）
+2. `_run_bash()` 逐字符读取子进程输出，同时 append 写入 output_file（每块 flush）
 3. 前端通过 stream API 轮询文件新增内容，实现实时显示
 4. **Session 只保存元信息**（`_meta.file_size`、`_meta.truncated`、`_meta.output_path` 等），内容按需内联或外部存储
 5. 发送 LLM 前，`_resolve_tool_results()` 从外部文件按需读取内容注入消息中
@@ -577,12 +577,12 @@ class RootAgent:
         self.session_manager.add_message("user", user_input)
         
         # 2. 自动压缩
-        self._auto_compact()
+        self._check_and_compress()
         
         # 3. 调用 LLM（注入工具结果内容）
         messages = self.session_manager.get_valid_messages()
         messages = self._resolve_tool_results(messages)  # 从外部文件按需读取内容
-        response = self.client.chat_stream(messages, ...)
+        response = self._call_llm(streaming=True, ...)
         
         # 4. 添加助手消息
         self.session_manager.add_message("assistant", response.content)
@@ -669,7 +669,7 @@ def get_session(uuid, id):
 
 | 文件 | 职责 |
 |------|------|
-| `core/session.py` | SessionManager 实现（含 RootAgent 专用压缩方法） |
+| `core/session.py` | SessionManager 实现（含压缩辅助方法） |
 | `core/compression.py` | 独立压缩模块（共享压缩函数，SubAgent 使用） |
 | `core/root_agent.py` | 使用 SessionManager 管理对话 |
 | `core/sub_agent.py` | 使用 compression.py 管理压缩 |

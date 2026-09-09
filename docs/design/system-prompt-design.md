@@ -29,7 +29,7 @@
 系统提示词采用**静态 + 动态**分层设计，便于 API 缓存：
 
 ```
-静态部分（可永久缓存）          动态部分（每次请求变化）
+静态部分（前缀不变）            动态部分（每次请求变化）
 ┌────────────────────────┐    ┌─────────────────────┐
 │ 角色定义               │    │ 工作目录             │
 │ 工具列表               │    │ Memory 目录路径       │
@@ -37,14 +37,14 @@
 │ 行为规则（模板）        │    │ 当前日期              │
 └────────────────────────┘    └─────────────────────┘
          ↓                              ↓
-    作为 system prompt            作为独立 user 消息段
+    静态部分在前              动态部分拼接在同一 system prompt 末尾
 ```
 
 ### 1.2 核心原则
 
 | 原则 | 说明 |
 |------|------|
-| **缓存友好** | 静态规则与动态变量分离，静态部分可被 API 永久缓存 |
+| **缓存友好** | 静态规则在前、动态变量拼接在后，静态前缀逐字节稳定，有利于 API 前缀缓存 |
 | **动态注入** | 工具列表和技能列表从实例动态生成，不硬编码在模板中 |
 | **最小必要** | 只包含必要信息，避免冗余描述浪费 token |
 | **英文为主** | 系统提示词使用英文（发送给 LLM），UI 文本使用中文 |
@@ -64,7 +64,7 @@
     ↓
 [4] 行为规则（Template）              ← 静态模板
     ↓
-[5] 动态环境变量（Context）           ← 每次请求不同，作为独立 user 消息段
+[5] 动态环境变量（Context）           ← 每次请求重新构建，拼接在 system prompt 末尾
 ```
 
 ---
@@ -84,7 +84,7 @@ def _build_prompt(header, tools_fn, skills_dir, template, env_context_fn, worksp
     if skills_section:
         parts.extend(["", skills_section])
     parts.extend(["", template.strip()])
-    # 动态环境变量作为独立 user 消息段发送
+    # 动态环境变量拼接到 system prompt 末尾
     env_context = env_context_fn(workspace_uuid, cwd)
     parts.extend(["", env_context])
     return "\n".join(parts)
@@ -108,7 +108,7 @@ def _build_tools_section(tools: list) -> str:
 
 ### 3.3 技能列表生成
 
-从 `core/skills/` 目录扫描，生成技能摘要：
+从技能目录扫描（RootAgent: `core/skills/root/` + `shared/`，SubAgent: `core/skills/sub/` + `shared/`），生成技能摘要：
 
 ```python
 def _build_skills_section(skills_dir: str) -> str:
@@ -139,12 +139,12 @@ Identity: You are Cili — an AI assistant, not merely a programming assistant.
 
 | 章节 | 内容 |
 |------|------|
-| **Critical Rules** | 包含以下子节：Skills - Proactive Usage、Tool Result Re-reading、Python、大文件处理 |
+| **Critical Rules** | 包含以下子节：Tool Routing（工具路由，禁止跨工具调用）、Skills - Proactive Usage、Tool Result Re-reading、Python（含大文件处理，委托 subagent） |
 | **Coding Workflow** | inspect → understand → modify → verify → fix → verify |
 | **Verification** | 修改后必须验证（测试/lint/build） |
 | **Errors** | 将错误视为调试信号，不要盲目重试 |
 | **Repository Safety** | 谨慎使用破坏性命令，优先用 edit 而非 write |
-| **Workspace Files and Images** | 相对路径规则、文件 URL 格式（/api/workspace/files/）、图片生成规则（禁用 GUI API） |
+| **Workspace Files and Images** | 相对路径规则、禁止 `file://` 与 `/api/` 绝对路径 URL、图片生成规则（禁用 GUI 显示 API） |
 | **Memory** | 任务前搜索 memory 目录、技能命名规范 |
 | **Web** | web_search 优先，browser 备用 |
 | **Communication** | 简洁、同语言回复、完成后汇报变更 |
@@ -164,6 +164,7 @@ You are not managing the user's conversation — you are executing a specific ta
 | 章节 | 内容 |
 |------|------|
 | **Core Objective** | 完成任务，不只是给出答案 |
+| **Tool Routing** | bash/pwsh/python 三工具分工，禁止跨工具调用 |
 | **Skills - Proactive Usage** | 检查可用技能（Research、File Processing、Learning） |
 | **Autonomous Execution** | 自主执行，不请求确认 |
 | **Execution Loop** | 7 步执行循环 |
@@ -183,22 +184,32 @@ You are not managing the user's conversation — you are executing a specific ta
 
 ### 5.1 RootAgent 环境变量（build_root_context）
 
-每次请求不同，作为独立 user 消息段发送，不影响 system prompt 缓存：
+每次请求重新构建，拼接在 system prompt 末尾：
 
 ```
 ## Workspace
 Workspace directory (CWD): `{cwd}`
-This directory is the CWD for all tool executions.
+This directory is the CWD for all tool executions (python, bash, etc.).
+
+## Operating System
+`{platform.system()} {platform.release()}`
 
 ## Shell Environment
-All shell commands run in **Git Bash** (MSYS2 environment).
+Three separate tools for three environments — do NOT cross-invoke:
 
-**Path format conversion**: Windows paths must be converted for bash:
+| Tool | Environment | Use For |
+|------|-------------|---------|
+| `bash` | Git Bash (MSYS2) | ls, git, npm, curl, Unix commands |
+| `pwsh` | PowerShell | Get-*, Set-*, Windows APIs, registry |
+| `python` | Python interpreter | Python code, pip install |
+
+**Path format for bash**: Windows paths must be converted:
 - `E:\path\to\file` → `/e/path/to/file`
 - `C:\Users\name` → `/c/Users/name`
 
 ## Python Environment
-`python` and `pip` are pre-configured in PATH, available directly in bash.
+Use the `python` tool for ALL Python execution — do NOT invoke python from bash or pwsh.
+The agent's virtual environment is automatically activated in the python tool.
 
 ## Temporary Files
 Temporary directory: `{tmp_dir}`
@@ -227,21 +238,12 @@ Context received. Please confirm briefly and await my task.
 
 ### 5.2 SubAgent 环境变量（build_sub_context）
 
-轻量版本，不含 User Profile：
+与 RootAgent 结构一致（同样包含 Workspace、Operating System、Shell Environment、Python Environment、Temporary Files、Memory、User Profile），仅 Current Time 段更简短（不含 web 验证提示）：
 
 ```
-## Execution Environment
-Workspace: `{workspace_uuid}`
-Working Directory: `{cwd}`
-Operating System: `{os_info}`
+## Current Time
 
-**Shell**: Git Bash (MSYS2). Convert Windows paths: `E:\path` → `/e/path`
-
-`python` and `pip` are pre-configured in PATH.
-
-**Temporary directory**: `{tmp_dir}` (TEMP/TMP/TMPDIR env vars set)
-
-**Current Date: {current_date}**
+**{current_date}**
 
 Context received. Please confirm briefly and await my task.
 ```
@@ -290,42 +292,42 @@ SubAgent 采用四阶段执行流程：**目标→计划→执行→检查**。�
 
 ## 七、提示缓存策略
 
-Anthropic API 支持 prompt caching，Cili 的设计充分利用这一点：
+system prompt 采用**静态前缀 + 动态后缀**的排列，静态前缀保持逐字节稳定，有利于 API 的前缀缓存：
 
-### 7.1 可缓存部分
+### 7.1 静态前缀（可缓存部分）
 
 ```
-┌─ system prompt ──────────────────────────────┐
-│  角色定义（Header）                    [永久缓存] │
-│  工具列表（Tools Section）             [启动时固定] │
-│  技能列表（Skills Section）            [启动时固定] │
+┌─ system prompt 静态前缀 ─────────────────────┐
+│  角色定义（Header）                    [代码固定] │
+│  工具列表（Tools Section）             [进程内固定] │
+│  技能列表（Skills Section）            [进程内固定] │
 │  行为规则（Template）                  [代码固定]   │
 └─────────────────────────────────────────────┘
 ```
 
-### 7.2 不可缓存部分
+### 7.2 动态部分（system prompt 末尾）
 
 ```
-┌─ user message (context 段) ────────────────┐
+┌─ system prompt 末尾（环境变量段）───────────┐
 │  Workspace / Memory 路径             [启动时固定] │
 │  User Profile                        [Profile变化时] │
 │  Current Date                        [每次不同]     │
 └─────────────────────────────────────────────┘
 ```
 
-动态环境变量作为**独立 user 消息**发送，而不是嵌入 system prompt，这样：
-- System prompt 整体可被 API 永久缓存
-- 只有 user message 部分因日期变化需要重新处理
+环境变量拼接在 system prompt 末尾，静态前缀（角色/工具/技能/规则）保持逐字节稳定，这样：
+- 静态前缀有利于 API 的前缀缓存命中
+- 只有末尾环境变量段因日期变化需要重新处理
 
 ### 7.3 缓存效果
 
-| 组件 | 缓存状态 | 原因 |
-|------|----------|------|
-| 角色定义 | 永久命中 | 代码固定 |
-| 工具列表 | 进程生命周期内命中 | 工具实例缓存 |
-| 技能列表 | 进程生命周期内命中 | 扫描结果缓存 |
-| 行为规则 | 永久命中 | 模板常量 |
-| 环境变量 | 不缓存（user message） | 日期每次不同 |
+| 组件 | 状态 | 原因 |
+|------|------|------|
+| 角色定义 | 静态（前缀不变） | 代码固定 |
+| 工具列表 | 静态（进程生命周期内不变） | 工具实例缓存 |
+| 技能列表 | 静态（进程生命周期内通常不变） | 每次构建时重新扫描 |
+| 行为规则 | 静态（前缀不变） | 模板常量 |
+| 环境变量 | 动态（system prompt 末尾） | 日期每次不同 |
 
 ---
 
@@ -333,7 +335,7 @@ Anthropic API 支持 prompt caching，Cili 的设计充分利用这一点：
 
 ### 8.1 设计目标
 
-允许用户在工作区根目录放置项目级指令文件（如 `agent.md`、`CLAUDE.md`），Cili 启动时自动读取并注入到对话上下文中，使 Agent 了解项目特定的规则和约定。
+允许用户在工作区根目录放置项目级指令文件（如 `agent.md`、`CLAUDE.md`），Cili 在每次 LLM 调用时自动读取并注入到对话上下文中，使 Agent 了解项目特定的规则和约定。
 
 ### 8.2 文件搜索规则
 
@@ -347,21 +349,22 @@ Anthropic API 支持 prompt caching，Cili 的设计充分利用这一点：
 
 ### 8.3 注入位置
 
-项目指令作为**独立 user 消息**注入到 `messages` 的**最前面**（第一条消息）：
+项目指令在**每次 LLM 调用时**动态注入到 `messages` 的**最前面**，不持久化到会话消息中（会话文件保持干净）：
 
 ```
 messages = [
-  {role: "user", content: "[Project Instructions]\n\n{文件内容}"},  ← 注入位置
+  {role: "user", content: "<system-reminder>\nCodebase and user instructions are shown below...\n{文件内容}\n</system-reminder>"},  ← 动态注入
   {role: "user", content: "用户的第一条消息"},
   {role: "assistant", content: "..."},
   ...
 ]
 ```
 
+若第一条消息也是 user 消息（字符串内容），指令会**合并**进该消息，避免出现连续同角色消息（OpenAI API / Bedrock 要求）。
+
 **为什么不放入 system prompt？**
-- 保持 system prompt 可缓存（静态部分不变）
 - 项目指令内容因工作区而异，属于动态内容
-- CLAUDE.md 作为 user message 注入
+- 每次从磁盘重新读取，修改指令文件后立即生效（无需重启）
 
 ### 8.4 注入范围
 
@@ -370,19 +373,9 @@ messages = [
 | RootAgent | ✅ 注入 | 用户交互需要项目上下文 |
 | SubAgent | ❌ 不注入 | 任务执行者，不需要项目级指令 |
 
-### 8.5 幂等注入
+### 8.5 注入不持久化
 
-注入前检查 `messages[0]` 是否已是 `[Project Instructions]` 开头的 user 消息，避免重复注入：
-
-```python
-def has_instructions_message(messages: list[dict]) -> bool:
-    if not messages:
-        return False
-    first = messages[0]
-    return (first.get("role") == "user"
-            and isinstance(first.get("content"), str)
-            and first["content"].startswith("[Project Instructions]"))
-```
+项目指令在每次 LLM 调用时从磁盘重新读取并动态注入（`_get_messages_with_header()`），不写入 `self.messages`。由于每次都在同一位置重新注入而非追加，天然不会重复。
 
 ### 8.6 实现函数
 
@@ -395,13 +388,10 @@ def find_project_instructions(cwd: str) -> str | None:
     """在工作区根目录搜索项目指令文件。"""
 
 def build_instructions_message(cwd: str) -> dict | None:
-    """构建项目指令消息（作为第一条 user 消息注入）。"""
-
-def has_instructions_message(messages: list[dict]) -> bool:
-    """检查消息列表开头是否已有项目指令消息。"""
+    """构建项目指令消息（<system-reminder> 包装，作为第一条 user 消息注入）。"""
 ```
 
-调用位置：`core/root_agent.py` 的 `run()` 方法，在添加用户消息前调用 `_inject_project_instructions()`。
+调用位置：`core/root_agent.py` 的 `_get_messages_with_header()`（覆盖 BaseAgent 默认实现），每次 LLM 调用时动态注入。
 
 ---
 
@@ -420,11 +410,11 @@ def has_instructions_message(messages: list[dict]) -> bool:
 2. Agent 根据任务判断需要哪个技能
 3. 通过 `skill(action='read')` 按需加载完整内容
 
-### 9.3 为什么环境变量作为 user message 而不是 system prompt？
+### 9.3 环境变量为何拼接在 system prompt 末尾？
 
-Anthropic API 的 prompt caching 以 system prompt 为粒度。
-环境变量包含 `Current Date`（每次请求不同），如果嵌入 system prompt，每次都要重新计算缓存。
-分离后，system prompt 可永久缓存，只有 user message 部分需要处理。
+环境变量与静态模板同属 system prompt，但拼接在**末尾**：
+静态前缀（角色/工具/技能/规则）保持逐字节稳定，有利于 API 的前缀缓存命中；
+末尾的动态部分（含 `Current Date`）即使变化，也不影响前缀部分的缓存。
 
 ### 9.4 SubAgent 与 RootAgent 环境一致性
 
@@ -465,5 +455,5 @@ Execute the task autonomously to completion.
 
 ---
 
-*文档版本: v1.0*
-*最后更新: 2026-08-28*
+*文档版本: v1.1*
+*最后更新: 2026-09-09*

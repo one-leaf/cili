@@ -126,8 +126,8 @@ class Tool:
             "input_schema": self.parameters,
         }
 
-    def coerce_input(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """根据 parameters schema 修正 LLM 传入的参数类型（如 str→int）。"""
+    def coerce_input(self, kwargs: dict[str, Any]) -> dict[str, Any] | ToolResult:
+        """类型转换 + 参数校验，失败时返回错误 ToolResult。"""
 
     def save_output_to_file(self, result: ToolResult) -> None:
         """统一保存工具输出到外部文件（由 agent 的 _execute_tool() 在工具执行后统一调用）。"""
@@ -205,7 +205,7 @@ content = [
 
 | 方法 | 说明 |
 |------|------|
-| `coerce_input(kwargs)` | 根据 parameters schema 修正 LLM 传入的参数类型（如 str→int、str→bool），跳过缺失的可选参数 |
+| `coerce_input(kwargs)` | 根据 parameters schema 先做类型转换（如 str→int、str→bool），跳过缺失的可选参数；再调用 `validate_input()` 校验 required/enum/类型，失败返回错误 ToolResult |
 
 **截断工具方法**（静态方法）：
 
@@ -230,7 +230,7 @@ content = [
 
 **_run_bash 特性**：
 - 自动将 Python 环境目录（`_VENV_DIR` 和 `_VENV_SCRIPTS`）添加到 PATH
-- 支持超时控制（默认 120s）
+- 支持超时控制（BashTool/PwshTool 默认 120s、最大 600s；`_run_bash` 函数签名默认 30s）
 - **合并 stderr 到 stdout**（`stderr=subprocess.STDOUT`，确保实时输出可见）
 - 字符数截断（硬上限 30,000，默认 30,000；`BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限）
 - 行数截断（最多 2000 行）
@@ -254,7 +254,7 @@ content = [
 
 | 工具 | 文件 | 说明 |
 |------|------|------|
-| read | read.py | 读取文件内容（文本 + 图片 base64） |
+| read | read.py | 读取文件内容（文本 + 图片 base64 + PDF 按页读取） |
 | write | write.py | 创建/覆盖文件（自动创建父目录） |
 | edit | edit.py | 精确文本替换（old_text 必须唯一） |
 | bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin |
@@ -262,7 +262,7 @@ content = [
 | grep | grep.py | 正则搜索（支持 glob/type 过滤） |
 | find | find.py | 文件查找（glob 模式） |
 | browser | browser.py | Chrome 自动化（Playwright + CDP） |
-| web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 browser） |
+| web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） |
 | memory | memory.py | 长期记忆（knowledge + skill） |
 | python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） |
@@ -270,7 +270,7 @@ content = [
 | todo_write | todo.py | 任务规划（整表替换，三态状态） |
 | latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） |
 | message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） |
-| cron | cron_tool.py | 用户级定时任务管理（创建/列出/删除/执行任务） |
+| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） |
 | temp | temp.py | 临时文件和目录管理（按 session 隔离） |
 | loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） |
@@ -279,17 +279,17 @@ content = [
 
 | 工具 | 文件 | 说明 |
 |------|------|------|
-| skill | skill.py（shared/） | RootAgent 技能工具实例（扫描 core/skills/root/） |
+| skill | skill.py（shared/） | RootAgent 技能工具实例（扫描 core/skills/root/ + core/skills/shared/） |
 | subagent | subagent_tool.py | 委派复杂任务给 SubAgent |
 | ask_user | ask_user.py | 向用户提问，收集决策（RootAgent 专属，SubAgent 后台无法交互） |
 
-**注意**：`skill.py` 的共用逻辑位于 `shared/` 目录，RootAgent 和 SubAgent 各自创建独立的 SkillTool 实例，扫描不同的技能目录。
+**注意**：`skill.py` 的共用逻辑位于 `shared/` 目录，RootAgent 和 SubAgent 各自创建独立的 SkillTool 实例，扫描不同的技能目录，且两者都始终包含 `core/skills/shared/` 下的共享技能（列表中带 `shared/` 前缀）。
 
 ### 4.3 SubAgent 专属工具（sub/）
 
 | 工具 | 文件 | 说明 |
 |------|------|------|
-| skill | skill.py（shared/） | SubAgent 技能工具实例（扫描 core/skills/sub/） |
+| skill | skill.py（shared/） | SubAgent 技能工具实例（扫描 core/skills/sub/ + core/skills/shared/） |
 
 SubAgent 没有独立的工具文件，而是在 `sub/__init__.py` 中复用 shared 的 SkillTool 类，传入不同的 `skills_dir` 参数。
 
@@ -309,15 +309,17 @@ LLM 响应
 ├─ 对每个 tool_use:
 │   ├─ get_tool_by_name(tools, "bash") → tool
 │   ├─ tool.output_file = {session_dir}/{tool_use_id}.txt  # 设置输出文件
-│   ├─ input_data = tool.coerce_input(input_data)          # 修正参数类型
+│   ├─ input_data = tool.coerce_input(input_data)          # 类型转换 + 校验（失败直接返回错误）
 │   ├─ result = tool.execute(**input_data) → ToolResult
-│   ├─ tool.save_output_to_file(result)                  # 保存输出到外部文件
-│   └─ 构建 tool_result 元信息（不存内容）
-│       {"type": "tool_result", "tool_use_id": "toolu_123", "tool_name": "bash",
-│        "_file_size": 1234, "_truncated": false, "_output_path": "toolu_123.txt"}
+│   ├─ tool.save_output_to_file(result)                  # bash/python 等流式工具实时写入外部文件
+│   └─ 构建 tool_result（小输出内联，大输出落盘）
+│       {"type": "tool_result", "tool_use_id": "toolu_123", "content": "...", "is_error": false,
+│        "_meta": {"tool_name": "bash", "output_path": "toolu_123.txt",
+│                  "file_size": 1234, "truncated": false}}
+│       # 超过 10,000 字符或多模态时 content 为空，内容写入外部文件，元信息存 _meta
 │
 ├─ 发送 LLM 前，调用 _resolve_tool_results()
-│   ├─ 从外部文件按需读取内容
+│   ├─ 仅为 content 为空的 tool_result 从外部文件读取内容
 │   ├─ 处理截断/压缩标记
 │   └─ 注入到消息的 content 字段
 │
@@ -325,9 +327,10 @@ LLM 响应
 ```
 
 **关键点**：
-- Session 中只保存工具输出的元信息（`_file_size`、`_truncated`、`_output_path` 等）
-- 实际内容保存在外部文件 `{tool_use_id}.txt`
-- 发送 LLM 前，`_resolve_tool_results()` 从外部文件按需读取内容注入消息
+- 小输出直接内联在 tool_result 的 `content` 中；超过 10,000 字符阈值或包含图片时才写入外部文件
+- 落盘时 Session 只保存元信息（存于 `_meta`：`output_path`、`file_size`、`truncated` 等）
+- 外部文件名为 `{tool_use_id}.txt`（多模态为 `.json`）
+- 发送 LLM 前，`_resolve_tool_results()` 仅为 content 为空的 tool_result 从外部文件按需读取内容注入消息
 
 ### 5.2 工具 Schema 生成
 
@@ -345,7 +348,7 @@ tool_schemas = [tool.to_schema() for tool in tools]
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "..."},
-                "timeout": {"type": "integer", "default": 120}
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120, max: 600)."}
             },
             "required": ["command"]
         }
@@ -544,15 +547,16 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 ```python
 # 获取下一个待处理项（自动从 source_file 加载，所有 action 都需要 source_file）
 loop(action="next", source_file="data/files.txt")
-# → {"item": "file1.md"} 或 {"item": null}
+# → "进度: 1/3 已完成, 0 失败, 2 待处理\n当前项: file1.md"
+# 或所有项完成时："所有项已处理完毕 (完成: 2, 失败: 1)"
 
 # 标记完成
 loop(action="done", source_file="data/files.txt", item="file1.md")
-# → {"done": 1, "pending": 2, "failed": 0}
+# → {"total": 3, "done": 1, "pending": 2, "failed": 0}
 
 # 标记失败
 loop(action="fail", source_file="data/files.txt", item="file2.md", error="encoding error")
-# → {"done": 1, "pending": 1, "failed": 1}
+# → {"total": 3, "done": 1, "pending": 1, "failed": 1}
 
 # 查看进度
 loop(action="status", source_file="data/files.txt")
@@ -585,7 +589,8 @@ loop(action="status", source_file="data/files.txt")
 `llm` 是共享工具（文件：`llm_tool.py`），用于单轮 LLM 调用（翻译、摘要、提取等）。**需要配置 LLM 模型**（`llm_model`），否则返回"不可用"。
 
 **输入方式**：
-- `input_file`（必填）: 从文件读取
+- `input_file`（必填）: 从文件读取，内容作为 user message
+- `prompt`（可选）: 处理指令，作为 system prompt
 
 **输出方式**：
 - 默认：返回文本结果
@@ -650,6 +655,8 @@ subagent(list_tasks=True)
 - `read_task`: 读取后台 SubAgent 状态
 - `kill_task`: 终止后台 SubAgent
 - `list_tasks`: 列出所有后台任务
+- `temperature`: 覆盖本次 SubAgent 的 LLM temperature（0.0~1.0，可选）
+- `label`: UI 显示标签（最长 64 字符，可选）
 
 **返回值**：
 ```python
@@ -657,7 +664,7 @@ subagent(list_tasks=True)
 {"status": "completed", "summary": "翻译完成", "iterations": 12}
 # 或 {"status": "error", "message": "...", "iterations": 3}      # LLM 调用失败
 # 或 {"status": "timeout", "iterations": 50}                      # 超过最大迭代次数
-# 或 {"status": "stopped", "message": "Stopped by user", "iterations": 5}  # 用户手动停止
+# 或 {"status": "stopped", "message": "<summary>", "iterations": 5}       # 用户手动停止
 # 或 {"status": "failed", "message": "...", "iterations": 10}     # 连续工具调用失败
 
 # 后台模式
@@ -696,7 +703,7 @@ web_api.py 注入 on_subagent_start / on_subagent_complete 回调
 
 ### 8.3 temp — 临时文件/目录管理
 
-`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `data/tmp/{session_id}/`（由 `CILI_TMP` 环境变量控制，默认为 `data/tmp/`；workspace_uuid 为空时 fallback 到 `workspace/.cili/tmp/{session_id}/`）。
+`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `{CILI_TMP}/{session_id}/`（`CILI_TMP` 环境变量默认为 `data/tmp/`；session_id 缺失时使用 `no-session`）。
 
 **Actions**：
 
@@ -718,7 +725,7 @@ web_api.py 注入 on_subagent_start / on_subagent_complete 回调
 **设计要点**：
 - **Session 隔离**：每个 session 有独立的临时目录
 - **自动清理**：调用 `cleanup` 可一次性删除所有临时文件
-- **路径解析**：workspace_uuid 为空时 fallback 到项目根 `workspace/`
+- **路径解析**：根目录由 `CILI_TMP` 环境变量决定（默认 `data/tmp/`），下按 session_id 隔离
 
 **实现**：`shared/temp.py`
 
@@ -832,11 +839,12 @@ bash/pwsh/python 三个执行工具互相隔离，不能从一个工具调用另
 - **成本控制**：减少 token 消耗
 - **安全性**：防止恶意输出撑爆上下文
 
-### 10.7 为什么使用外部优先存储架构？
+### 10.7 为什么采用"内联为主、大输出落盘"的混合存储？
 
-- **Session 体积小**：只存元信息（`_file_size`、`_output_path` 等），不存内容
+- **Session 体积小**：超过 10,000 字符的输出和多模态内容不存 session，只存 `_meta` 元信息（`output_path`、`file_size`、`truncated` 等）
+- **小输出零开销**：常规输出直接内联在 tool_result 的 content 中，无需磁盘往返
 - **历史加载快**：页面刷新时不必加载大量工具输出
-- **按需读取**：LLM 可根据需要重读完整内容
+- **按需读取**：LLM 可根据需要重读完整内容（截断时会提示使用 read 工具读取原文件）
 - **前后端解耦**：后端注入内容，前端无感知
 
 ---
@@ -856,7 +864,7 @@ bash/pwsh/python 三个执行工具互相隔离，不能从一个工具调用另
 
 ---
 
-**文档版本**: v1.4  
+**文档版本**: v1.5  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-01（新增 loop 工具：循环任务进度追踪，配合 cron 实现自循环任务）  
+**更新时间**: 2026-09-09（与源码同步校正：coerce_input 校验行为、tool_result _meta 元信息格式、loop 输出格式、subagent temperature/label 参数、temp 目录规则等）  
 **状态**: 已实现

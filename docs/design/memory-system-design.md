@@ -25,7 +25,7 @@
 data/agents/{uuid}/
 ├── sessions/
 ├── setting.json
-├── user-profile.json           # 用户属性（独立系统）
+├── user-profile.md             # 用户属性（独立系统）
 └── memory/
     ├── knowledge/              # 知识库（按主题分目录，再按日期）
     │   ├── api-design/         # API 设计主题
@@ -116,7 +116,7 @@ tags: [markdown, 语法]
   - 技能目录名使用英文 kebab-case（如 `python-async`, `k8s-deploy`）
   - 技能文件固定命名为 `skill.md`
   - 路径格式：`skills/{skill-name}/skill.md`
-  - **支持渐进式加载**：系统提示词中仅注入摘要，完整内容按需读取
+  - **支持渐进式加载**：摘要用于 grep 搜索匹配（不注入系统提示词），完整内容按需读取
 
 **文件数量控制**：
 - Knowledge 主题数量无硬限制，由 Agent 根据实际需要管理
@@ -300,7 +300,7 @@ asyncio 是 Python 的异步 I/O 库，使用 async/await 语法...
 
 **特点**: 
 - 任务导向，包含完整的解决方案和步骤
-- 支持渐进式加载：系统提示词中仅显示摘要，完整内容按需读取
+- 支持渐进式加载：摘要用于搜索匹配（不注入系统提示词），完整内容按需读取
 - Markdown 格式，便于阅读和维护
 - 每个技能一个目录，便于扩展资源文件
 
@@ -572,8 +572,8 @@ memory(action="delete", memory_type="skill", skill_name="python-async")
 | skill | python-async | （固定 skill.md） | skills/python-async/skill.md |
 | skill | k8s-deploy | （固定 skill.md） | skills/k8s-deploy/skill.md |
 
-**自动生成文件名规则**：
-- Knowledge: 根据 title 转换为 kebab-case（如 "Python asyncio 用法" → "python-asyncio.md"）
+**自动生成文件名规则**（`_title_to_filename`）：
+- Knowledge: ASCII 标题转换为 kebab-case（如 "Python asyncio" → "python-asyncio.md"）；非 ASCII 标题使用 8 位 MD5 哈希（如 "用户偏好" → "memory-a1b2c3d4.md"）；超长名称截断并附加哈希
 - 如果同名文件已存在，追加计数器（如 "python-asyncio-2.md"）
 - Knowledge 所有主题目录统一按日期组织：`knowledge/{topic}/{YYYY-MM-DD}/{filename}.md`
 
@@ -639,7 +639,7 @@ read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
 **时间排序规则**：
 - 所有检索结果按时间戳倒序排列（最新的在前）
 - 冲突时以最新记忆为准
-- Agent 在 system prompt 中被明确告知"以最新的记忆为准"
+- 注："以最新的记忆为准"暂未写入 system prompt，最新优先由 grep 按 mtime 倒序保证
 
 **最后访问时间追踪**：
 - 实现：`read` 工具读取 `memory/knowledge/` 下的文件时，自动调用 `os.utime()` 更新文件 mtime 为当前时间
@@ -675,6 +675,8 @@ read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
 **注意**：技能摘要不自动注入到系统提示词中，而是由 Agent 在收到任务时主动搜索。这样可以减少上下文大小，避免不必要的 token 消耗。
 
 ### 6.2 System Prompt 指导
+
+> 实际实现：指导位于 `ROOT_PROMPT_TEMPLATE` 的 `## Memory` 段（英文），要求任务开始前先用 grep/find 搜索 skills 和 knowledge；记忆目录的具体路径由 `build_root_context()` 动态注入环境上下文。以下为要点示意。
 
 ```markdown
 ## 记忆系统
@@ -741,7 +743,7 @@ read(file_path="data/agents/{uuid}/memory/knowledge/topic/date/file.md")
 **实现**:
 - 所有记忆条目必须包含时间戳
 - 检索时按时间倒序排列，优先使用最新记忆
-- Agent 在系统 prompt 中被告知"以最新的记忆为准"
+- 注：该规则暂未写入系统 prompt，最新优先由 grep 按 mtime 倒序保证
 
 ### 7.2 记忆检索质量
 
@@ -840,7 +842,7 @@ read(file_path="data/agents/{uuid}/memory/knowledge/topic/date/file.md")
 - [x] Knowledge 按主题+日期分目录存储（Markdown 格式）
 - [x] Skill 支持 store/update/delete 操作（检索使用 grep/read/find）
 - [x] System prompt 指导 Agent 在任务前主动搜索 skills 和 knowledge
-- [ ] 读取知识后自动移动文件到最新日期目录（方法已定义，集成到 root_agent.py 待实现）
+- [ ] 读取知识后自动移动文件到最新日期目录（未实现；当前通过 read 时更新 mtime 追踪访问时间）
 - [x] 用户属性系统独立（见 [user-profile-design.md](user-profile-design.md)）
 
 ### Phase 2: 智能触发（可选）
@@ -924,5 +926,5 @@ read(file_path="data/agents/{uuid}/memory/knowledge/topic/date/file.md")
 
 ---
 
-*文档版本: v2.3*
-*最后更新: 2026-08-28*
+*文档版本: v2.4*
+*最后更新: 2026-09-09*

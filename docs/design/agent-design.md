@@ -74,17 +74,17 @@ class BaseAgent:
         cwd: str = "",
         session_dir: Path | None = None,  # 持久化路径
         stop_check: Callable[[], bool] | None = None,
-        max_iterations: int = 50,  # RootAgent overrides to 200
+        max_iterations: int = 50,  # 子类传入 config.system.max_iterations（默认 200）
     ):
         self.messages: list[dict] = []       # 消息列表（权威源）
         self.session_dir = session_dir       # 保存路径
         self.max_iterations = max_iterations
 
     # 消息管理
-    def add_message(role, content)           # 添加消息
+    def add_message(role, content, meta=None)     # 添加消息（meta 如 {"pinned": True}）
     def save_messages(metadata)              # 保存到 session_dir/index.json
     def load_messages() -> bool              # 从文件加载
-    def get_valid_messages() -> list[dict]   # 过滤无效消息
+    def get_valid_messages(strip_meta=True) -> list[dict]  # 过滤无效消息
 
     # 工具执行
     def _execute_tool(name, input, tool_use_id) -> dict
@@ -118,9 +118,9 @@ BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design
 ### 3.1 职责
 
 RootAgent 继承 BaseAgent，用于用户交互：
-- 流式输出（`streaming=True`）
+- 流式输出（`streaming=True`，可通过 `run(streaming=...)` 关闭）
 - SessionManager 持久化
-- 最多 200 次迭代
+- 最多 `max_iterations` 次迭代（取自 `config.system.max_iterations`，默认 200）
 - 回调支持（on_text, on_thinking 等）
 
 ### 3.2 初始化参数
@@ -151,11 +151,11 @@ class RootAgent(BaseAgent):
         else:
             self._create_default_session()
 
-        # Initialize base agent (max_iterations=200)
+        # Initialize base agent
         session_dir = self.sessions_dir / self.current_session_id
         super().__init__(config=config, workspace_uuid=workspace_uuid,
                          cwd=self._cwd_init, session_dir=session_dir,
-                         max_iterations=200)
+                         max_iterations=config.system.max_iterations)
 
         # 共享消息列表（同一引用，非拷贝）
         self.messages = self.session_manager.messages
@@ -164,7 +164,7 @@ class RootAgent(BaseAgent):
         # LLM 客户端
         self.client: LLMClient = create_llm_client(config.model)
 
-        # 工具实例（shared + root = 21~22 个）
+        # 工具实例（shared + root = 22~23 个）
         self._rebuild_tools()
 
         # 回调钩子（6 个）
@@ -200,6 +200,7 @@ def run(
     on_tool_result: Callable[[str, str, bool, str], None] | None = None,
     on_subagent_start: Callable[[str, str], None] | None = None,
     on_subagent_complete: Callable[[str], None] | None = None,
+    streaming: bool = True,
 ) -> None:
     """执行一轮 agent 循环"""
     self._stopped = False
@@ -212,10 +213,9 @@ def run(
         self._sync_to_session_manager()
         self.session_manager.save()
 
-        # 注入项目指令（CLAUDE.md 等，幂等）
-        self._inject_project_instructions()
-
         # 添加用户消息
+        # 项目指令（CLAUDE.md 等）不在 run() 中注入，而是在 _get_messages_with_header()
+        # 中每次 LLM 调用时从磁盘重读并动态注入（不持久化到消息历史）
         self.add_message("user", user_input)
 
         # 进入 agent 循环
@@ -237,9 +237,9 @@ def _agent_loop(self) -> None:
         # 自动压缩检查
         self._check_and_compress()
 
-        # 调用 LLM（流式）
+        # 调用 LLM（流式/非流式由 run(streaming=...) 决定）
         system_prompt = build_root_prompt(self.workspace_uuid, self.cwd)
-        response = self._call_llm(streaming=True, system_prompt=system_prompt)
+        response = self._call_llm(streaming=self._streaming, system_prompt=system_prompt)
 
         # 添加 assistant 响应
         self.add_message("assistant", response.content_as_dicts())
@@ -281,9 +281,9 @@ SubAgent 是独立执行的子代理，用于：
 | 特性 | RootAgent | SubAgent |
 |------|-----------|----------|
 | 会话管理 | 管理用户会话，支持多轮对话 | 独立消息历史，不持久化到用户会话 |
-| 工具集 | 21~22 个工具（shared + root） | 19~20 个工具（shared + sub） |
-| 系统提示 | `build_root_prompt()` | `build_sub_prompt()` + 任务信息 |
-| 用户配置 | 加载用户 profile | 不加载用户 profile（轻量） |
+| 工具集 | 22~23 个工具（shared + root） | 20~21 个工具（shared + sub） |
+| 系统提示 | `build_root_prompt()` | `build_sub_prompt()`（任务/计划放在首条 user 消息） |
+| 用户配置 | 加载用户 profile | 同样加载用户 profile（`build_sub_context` 自动加载） |
 | 嵌套 | 可调用 SubAgent | 禁止嵌套调用 |
 | 持久化 | 主会话 `index.json` | 独立目录 `session_dir/index.json` |
 | 流式 | 流式输出 | 非流式输出 |
@@ -324,6 +324,7 @@ class SubAgent(BaseAgent):
         session_dir: Path | None = None,  # 外部传入保存路径
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
+        temperature: float | None = None,  # 可选温度覆盖
     ):
         self.task = task                          # 任务目标
         self.plan = plan                          # 执行计划
@@ -332,10 +333,10 @@ class SubAgent(BaseAgent):
         # 加载配置
         config = load_config()
 
-        # Initialize base agent (max_iterations=200)
+        # Initialize base agent
         super().__init__(config=config, workspace_uuid=workspace_uuid,
                          cwd=cwd or os.getcwd(), session_dir=session_dir,
-                         stop_check=stop_check, max_iterations=200)
+                         stop_check=stop_check, max_iterations=config.system.max_iterations)
 
         # session 引用，供工具获取 session_id
         self._session_ref = _SessionIdRef(exec_id)
@@ -348,8 +349,10 @@ class SubAgent(BaseAgent):
         # 系统提示 = 基础提示（任务/计划放在首条 user 消息中）
         self._system_prompt = build_sub_prompt(self.workspace_uuid, self.cwd)
 
-        # 独立 LLM 客户端
+        # 独立 LLM 客户端（temperature 非空时覆盖默认温度）
         self.client = create_llm_client(config.model)
+        if temperature is not None:
+            self.client.temperature = temperature
 ```
 
 ### 4.5 四阶段执行流程：目标→计划→执行→检查
@@ -427,11 +430,11 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 - **流式模式**：thinking 内容通过 `on_thinking` 回调实时推送到前端
 - **消息存储**：thinking blocks 保留在消息历史中，Anthropic API 要求后续请求包含之前的 thinking blocks
-- **默认级别**：非流式请求默认启用 extended thinking（`budget_tokens` 根据 `reasoning_effort` 配置动态设置：low→1024, medium→4096, high→10000）
+- **启用条件**：配置了 `reasoning_effort` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000）
 
 ### 5.2 LLM 配置
 
-**Anthropic API**（非流式，`budget_tokens` 由 `reasoning_effort` 配置决定）：
+**Anthropic API**（`budget_tokens` 由 `reasoning_effort` 配置决定，未配置时不启用 thinking）：
 ```json
 {
   "thinking": {
@@ -441,14 +444,14 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 }
 ```
 
-**OpenAI API**（推理模型，`reasoning_effort` 来自配置；未配置时自动检测 7 种推理模型前缀：o1, o3, o4, o5, qwen3, qwq, deepseek-r1，默认 "medium"）：
+**OpenAI API**（推理模型，`reasoning_effort` 来自配置；未配置时不传该参数，使用 API 默认值）：
 ```json
 {
   "reasoning_effort": "medium"
 }
 ```
 
-> **注意**：流式模式不支持 Anthropic 的 extended thinking（API 限制），但仍透传模型输出的 think 标签内容。
+> **注意**：流式与非流式均支持 Anthropic 的 extended thinking；流式模式下 thinking 增量通过 SSE `thinking_delta` 事件翻译为 `reasoning_delta`，经 `on_thinking` 回调实时推送。
 
 ---
 
@@ -460,11 +463,12 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 - 每个 SubAgent 已有完整工具集，可处理大多数任务
 - 简化执行日志和进度追踪
 
-### 6.2 为什么任务信息放在系统提示末尾？
+### 6.2 为什么任务信息放在首条 user 消息（pinned）？
 
-- 系统提示末尾不会被上下文压缩影响
-- 确保 SubAgent 始终清楚自己的任务目标
-- 即使对话历史被压缩，任务信息仍然可见
+- 任务/计划作为第一条 user 消息注入，带 `_meta.pinned=True` 标记
+- pinned 消息不会被上下文压缩影响
+- 即使对话历史被压缩，任务信息仍然可见，SubAgent 始终清楚自己的任务目标
+- 系统提示保持为 `build_sub_prompt()` 基础提示，与任务内容解耦
 
 ### 6.3 为什么使用独立 LLM 客户端？
 
@@ -475,7 +479,7 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ### 6.4 为什么 Agent 持有消息而不是 SessionManager？
 
 - Agent 自己管理消息生命周期，保存时机由 Agent 控制
-- SessionManager 变成纯工具类（无状态），简化设计
+- BaseAgent 层仅依赖 session_dir 持久化；RootAgent 中 SessionManager 只负责会话元数据与磁盘保存（messages 共享同一引用）
 - cron 任务可以传入 session_dir 直接持久化，无需 SessionManager
 
 ---
