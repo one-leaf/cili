@@ -6,16 +6,40 @@ import os
 import re
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _PWSH_PATH, _VENV_DIR, _VENV_SCRIPTS
+from core.tools.shared.base import (
+    Tool,
+    ToolResult,
+    _PWSH_PATH,
+    _VENV_DIR,
+    _VENV_SCRIPTS,
+    _strip_shell_strings,
+)
 
 
 # PowerShell 危险命令黑名单（大小写不敏感）
+# 扫描前先剥掉字符串字面量（见 _check_deny_patterns），只扫代码部分。
+#
+# 递归强删规则：别名齐全（Remove-Item 及其别名 rm/ri/del/erase/rd/rmdir）、
+# 参数顺序无关、支持参数缩写（-r / -rec / -fo 等）、目标覆盖盘符（正反斜杠）和 $env: 路径。
+_DELETE_CMD = r"(?:Remove-Item|ri|rm|del|erase|rd|rmdir)"
+_RECURSE_PARAM = r"-(?:r|re|rec|recu|recur|recurse)\b"
+_FORCE_PARAM = r"-(?:fo|for|forc|force)\b"
+_DRIVE_TARGET = r"(?:[A-Za-z]:[\\/]|\$env:)"
+_RECURSIVE_FORCE_DELETE = re.compile(
+    r"\b" + _DELETE_CMD + r"\b"
+    r"(?=[^|;&]*" + _RECURSE_PARAM + r")"
+    r"(?=[^|;&]*" + _FORCE_PARAM + r")"
+    r"(?=[^|;&]*" + _DRIVE_TARGET + r")",
+    re.I,
+)
+
 _DENY_PATTERNS = [
-    (re.compile(r"\bRemove-Item\s+.*-[Rr]ecurse\s+.*-[Ff]orce\s+[A-Z]:\\", re.I),
-     "Remove-Item -Recurse -Force on system drive (destructive recursive delete)"),
+    (_RECURSIVE_FORCE_DELETE,
+     "Remove-Item -Recurse -Force on drive path (destructive recursive delete)"),
     (re.compile(r"\bFormat-Volume\b", re.I), "Format-Volume (disk format)"),
     (re.compile(r"\bClear-Disk\b", re.I), "Clear-Disk (disk wipe)"),
     (re.compile(r"\bInitialize-Disk\b", re.I), "Initialize-Disk (disk initialize)"),
+    (re.compile(r"\bdiskpart\b", re.I), "diskpart (disk management)"),
     (re.compile(r"\bStop-Computer\b", re.I), "Stop-Computer (shutdown)"),
     (re.compile(r"\bRestart-Computer\b", re.I), "Restart-Computer (reboot)"),
     (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "Stop-Process -Id 0 (system process)"),
@@ -23,11 +47,17 @@ _DENY_PATTERNS = [
     (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "format (disk format)"),
     (re.compile(r"\bshutdown\b", re.I), "shutdown"),
     (re.compile(r"\breboot\b", re.I), "reboot"),
-    # Cross-tool isolation: use bash/python tools instead of calling from pwsh
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|python\.exe)(?![a-zA-Z0-9_-])", re.I),
+    # Code execution from string: the payload lives in a string literal that
+    # string-stripping would hide from the scan, so block the invocation itself
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:Invoke-Expression|iex)(?![a-zA-Z0-9_-])", re.I),
+     "Invoke-Expression (code execution from string — run the command directly)"),
+    # Cross-tool isolation: use dedicated tools instead of calling from pwsh
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?|py)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Python invocation from PowerShell (use the python tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|bash\.exe)(?![a-zA-Z0-9_-])", re.I),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Bash invocation from PowerShell (use the bash tool instead)"),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+     "cmd/WSL invocation from PowerShell (cross-tool isolation)"),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "PowerShell re-invocation (use native PowerShell commands)"),
 ]
@@ -47,7 +77,8 @@ class PwshTool(Tool):
             "Each call runs in a fresh pwsh process: no state (cwd, variables, functions) persists between calls. "
             "Paths use native Windows format (e.g., C:\\Users). "
             "Environment variables use $env:NAME syntax. "
-            "Do NOT use pwsh to invoke Python (use the `python` tool) or bash (use the `bash` tool). "
+            "Do NOT use pwsh to invoke Python (use the `python` tool), bash (use the `bash` tool), "
+            "cmd, or WSL — cross-tool invocations are blocked. "
             f"Current working directory: {self.cwd}\n\n"
             "## Background Tasks\n"
             "For long-running commands, use `run_in_background: true` to start the command in background. "
@@ -190,8 +221,14 @@ class PwshTool(Tool):
 
     @staticmethod
     def _check_deny_patterns(command: str) -> str | None:
-        """Check command against deny patterns. Returns reason if blocked, None if OK."""
+        """Check command against deny patterns. Returns reason if blocked, None if OK.
+
+        String literals are stripped first so that string data (e.g. Write-Output "pwsh
+        works") does not trigger keyword rules; subexpressions inside double quotes
+        ($( ... )) are preserved because they execute as code.
+        """
+        code = _strip_shell_strings(command, "pwsh")
         for pattern, reason in _DENY_PATTERNS:
-            if pattern.search(command):
+            if pattern.search(code):
                 return reason
         return None

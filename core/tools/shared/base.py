@@ -292,6 +292,79 @@ _PWSH_PATH = _find_pwsh()
 _GIT_BASH_PATH = _find_git_bash()
 
 
+def _strip_dq_string(text: str, start: int, out: list[str], mode: str, escape: str) -> int:
+    """Strip a double-quoted string starting at text[start] == '"'. Returns next index.
+
+    Preserves $(...) subexpressions (both shells) and `...` substitutions (bash)
+    verbatim — they execute as code, so deny-scan must still see them.
+    """
+    i, n = start + 1, len(text)
+    while i < n:
+        c = text[i]
+        if c == escape:
+            i += 2
+            continue
+        if c == '"':
+            return i + 1
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            depth = 0
+            j = i + 1
+            while j < n:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if mode == "bash" and c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        i += 1
+    out.append(" ")  # unterminated — the command would be a parse error anyway
+    return n
+
+
+def _strip_shell_strings(text: str, mode: str) -> str:
+    """Strip quoted string literals from a shell command before deny-scan.
+
+    mode: "pwsh" (backtick escape) or "bash" (backslash escape).
+    Stripped content is replaced by a space to keep tokens separated, so string
+    data no longer triggers keyword deny rules. Unterminated quotes strip to
+    end (the shell would reject the command anyway). Subexpressions inside
+    double quotes ($( ... ) and bash ` ... `) are preserved because they execute.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    escape = "`" if mode == "pwsh" else "\\"
+    while i < n:
+        c = text[i]
+        if c == "'":
+            j = i + 1
+            while j < n:
+                if text[j] == "'":
+                    if mode == "pwsh" and j + 1 < n and text[j + 1] == "'":
+                        j += 2  # pwsh: '' is an escaped single quote
+                        continue
+                    break
+                j += 1
+            out.append(" ")
+            i = j + 1
+        elif c == '"':
+            i = _strip_dq_string(text, i, out, mode, escape)
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 class Tool:
     """Base class for all tools."""
 

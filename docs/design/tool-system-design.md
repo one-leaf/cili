@@ -829,9 +829,26 @@ bash/pwsh/python 三个执行工具互相隔离，不能从一个工具调用另
 
 | 工具 | 拦截目标 | deny_patterns 示例 |
 |------|---------|-------------------|
-| `bash` | powershell, pwsh, python | `(?<![a-zA-Z0-9_-])(?:powershell\|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])` |
-| `pwsh` | bash, python, powershell | `(?<![a-zA-Z0-9_-])(?:python3?\|python\.exe)(?![a-zA-Z0-9_-])` |
+| `bash` | powershell, pwsh, python/py, cmd, wsl, eval | `(?<![a-zA-Z0-9_-])(?:powershell\|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])` |
+| `pwsh` | bash/sh, python/py, cmd, wsl, powershell 重入, iex | `(?<![a-zA-Z0-9_-])(?:python3?\|pythonw?\|py)(?:\.exe)?(?![a-zA-Z0-9_-])` |
 | `python` | subprocess→bash/pwsh, eval, exec | `subprocess\.\w+\s*\(\s*[\[\(]?\s*['"](?:bash\|pwsh\|powershell)` |
+
+**扫描前的字符串剥离**（`_strip_shell_strings`，base.py）：
+
+deny 扫描只针对代码部分，不扫描字符串字面量，避免字符串数据误触发关键字规则（如 `Write-Output "pwsh tool works!"` 被当作 PowerShell 重入拦截）：
+
+- 单引号/双引号字符串内容替换为空格（保留 token 边界）
+- 双引号内的 `$(...)` 子表达式和 bash 的 `` `...` `` 替换会**执行为代码**，原样保留参与扫描
+- 未闭合的引号剥到行尾（该命令本身会是解析错误，不会执行）
+- 剥离后被隐藏的执行路径（如 `iex '...'` / `eval '...'`，payload 在字符串里）通过直接拦截 `Invoke-Expression`/`iex`/`eval` 本身来封堵
+
+**pwsh 递归强删规则**（`Remove-Item` 系）的设计要点：
+
+- 别名齐全：`Remove-Item` 及其别名 `rm`/`ri`/`del`/`erase`/`rd`/`rmdir`
+- 参数顺序无关：`-Force -Recurse` 与 `-Recurse -Force` 等价拦截（用 lookahead 实现）
+- 支持参数缩写：`-r`/`-rec`、`-fo`/`-forc` 等合法前缀
+- 目标覆盖：盘符路径正反斜杠（`C:\` / `C:/`）、`$env:` 路径、注册表（`HKLM:\` 借助 `M:\` 匹配）
+- 不带盘符目标的递归强删（如 `Remove-Item -Recurse -Force .\build`）不拦截，保留正常项目清理能力
 
 ### 10.6 为什么工具输出要截断？
 

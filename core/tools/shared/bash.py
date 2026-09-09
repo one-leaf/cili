@@ -6,10 +6,20 @@ import os
 import re
 from typing import Any
 
-from core.tools.shared.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS, _to_bash_path
+from core.tools.shared.base import (
+    Tool,
+    ToolResult,
+    _GIT_BASH_PATH,
+    _VENV_DIR,
+    _VENV_SCRIPTS,
+    _strip_shell_strings,
+    _to_bash_path,
+)
 
 
 # 危险命令黑名单（大小写不敏感）
+# 扫描前先剥掉字符串字面量（见 _check_deny_patterns），只扫代码部分；
+# 双引号内的 $(...) 和 `...` 子表达式会执行，保留参与扫描。
 _DENY_PATTERNS = [
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+/", re.I),        "rm -rf / (destructive recursive delete)"),
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+\*", re.I),       "rm -rf * (destructive wildcard delete)"),
@@ -22,11 +32,17 @@ _DENY_PATTERNS = [
     (re.compile(r":\(\)\s*\{", re.I),                          "fork bomb"),
     (re.compile(r"\bcd\s+\.\.\s*&&\s*rm\s", re.I),             "cd .. && rm (parent dir delete)"),
     (re.compile(r">\s*/dev/sd[a-z]", re.I),                    "redirect to disk device"),
+    # Code execution from string: the payload lives in a string literal that
+    # string-stripping would hide from the scan, so block the invocation itself
+    (re.compile(r"(?<![a-zA-Z0-9_-])eval\b", re.I),
+     "eval (code execution from string — run the command directly)"),
     # Cross-tool isolation: use pwsh/python tools instead of calling from bash
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "PowerShell invocation from bash (use the pwsh tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|python\.exe)(?![a-zA-Z0-9_-])", re.I),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?|py)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Python invocation from bash (use the python tool instead)"),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+     "cmd/WSL invocation from bash (cross-tool isolation)"),
 ]
 
 
@@ -197,8 +213,14 @@ class BashTool(Tool):
 
     @staticmethod
     def _check_deny_patterns(command: str) -> str | None:
-        """Check command against deny patterns. Returns reason string if blocked, None if OK."""
+        """Check command against deny patterns. Returns reason string if blocked, None if OK.
+
+        String literals are stripped first so that string data (e.g. echo "pwsh works")
+        does not trigger keyword rules; subexpressions that execute as code ($( ... )
+        and ` ... `) are preserved.
+        """
+        code = _strip_shell_strings(command, "bash")
         for pattern, reason in _DENY_PATTERNS:
-            if pattern.search(command):
+            if pattern.search(code):
                 return reason
         return None
