@@ -9,7 +9,7 @@ from core.tools.root.ask_user import AskUserTool
 
 
 def create_root_tools(
-    cwd: str = ".", workspace_uuid: str = "", session_manager=None
+    cwd: str = ".", workspace_uuid: str = "", session_manager=None, approval_store=None
 ) -> list:
     """Create tools exclusive to the root agent."""
     return [
@@ -18,6 +18,7 @@ def create_root_tools(
             role_label="built-in",
             cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
         ),
-        SubAgentTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
+        SubAgentTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
+                     approval_store=approval_store),
         AskUserTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
     ]

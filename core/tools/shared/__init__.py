@@ -31,18 +31,20 @@ def create_shared_tools(
     workspace_uuid: str = "",
     session_manager=None,
     config: Config | None = None,
+    approval_store=None,
 ) -> list[Tool]:
     """Create tools available to both main agent and sub-agent.
 
     Args:
         config: Global config. If llm_model is None, LLMTool is excluded.
+        approval_store: 会话级审批存储（根/子共享），bash/pwsh 命中 ask 档时使用。
     """
     tools = [
         ReadTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         WriteTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         EditTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
-        BashTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
-        PwshTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
+        BashTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, approval_store=approval_store),
+        PwshTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager, approval_store=approval_store),
         GrepTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         FindTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
         BrowserTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),

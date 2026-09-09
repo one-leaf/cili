@@ -34,6 +34,7 @@ from core.root_agent import RootAgent
 from core.session import SessionManager
 from core.message_bus import get_message_bus
 from core.tools import get_tool_by_name
+from core.tools.shared.approval import APPROVE_LABEL
 from core.tools.shared.todo import get_todos_from_session
 
 # Configure logging
@@ -1507,6 +1508,16 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     if not found_tool_use:
         logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={ask_user_tool_use_id}")
+
+    # 会话级审批：若本次 ask_user 是高风险命令批准卡，按答案记录批准/拒绝并清空待批槽
+    store = getattr(agent, "approval_store", None)
+    if store and store.pending:
+        if APPROVE_LABEL in request.answer:
+            store.approve(store.pending["decision_id"], store.pending["command"])
+            logger.info(f"[approval] 用户批准高风险命令: {store.pending['command']}")
+        else:
+            logger.info(f"[approval] 用户拒绝高风险命令: {store.pending['command']}")
+        store.clear_pending()
 
     agent.session_manager.save()
 

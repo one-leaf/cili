@@ -26,6 +26,7 @@ from core.fs_utils import atomic_write_json
 from core.base_agent import BaseAgent
 from core.prompts import build_sub_prompt
 from core.tools.sub import create_sub_tools
+from core.tools.shared.approval import META_KEY, build_approved_commands_section
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class SubAgent(BaseAgent):
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
         temperature: float | None = None,
+        approval_store=None,
     ):
         """Initialize SubAgent.
 
@@ -112,6 +114,9 @@ class SubAgent(BaseAgent):
         # 创建 session 引用，供工具获取 session_id
         self._session_ref = _SessionIdRef(exec_id)
 
+        # 根代理会话级审批存储（共享同一实例），已批准命令子代理可直接执行
+        self.approval_store = approval_store
+
         # Create LLM client
         logger.debug(f"[SubAgent] Creating LLM client for task: {task[:50]}...")
         self.client = create_llm_client(config.model)
@@ -124,6 +129,7 @@ class SubAgent(BaseAgent):
             workspace_uuid=self.workspace_uuid,
             session_manager=self._session_ref,
             config=config,
+            approval_store=self.approval_store,
         )
         self.tool_schemas = [t.to_schema() for t in self.tools]
 
@@ -152,7 +158,21 @@ class SubAgent(BaseAgent):
             lines.append("Execute these steps in order. Report progress as you complete each step.")
             lines.append("")
 
+        # 下放主代理会话级批准的命令（共享同一 ApprovalStore，子代理可直接执行）
+        approved_section = build_approved_commands_section(self.approval_store)
+        if approved_section:
+            lines.append(approved_section)
+
         return "\n".join(lines)
+
+    @staticmethod
+    def _downgrade_approval_result(result: dict) -> None:
+        """子代理无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问。"""
+        if META_KEY in result.get("_meta", {}):
+            result["is_error"] = True
+            result["content"] = "该命令需要用户（主代理会话）批准，子代理无法执行，请换用非拦截命令或告知主代理。"
+            result["_meta"].pop(META_KEY, None)
+            result["_meta"].pop("completed", None)
 
     def run(self) -> dict[str, Any]:
         """Execute SubAgent loop with check phase, return structured result.
@@ -251,6 +271,8 @@ class SubAgent(BaseAgent):
                     # Parse arguments from raw JSON string to dict at execution time
                     input_data = tc.parse_arguments()
                     result = self._execute_tool(tc.name, input_data, tc.id)
+                    # 子代理无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问
+                    self._downgrade_approval_result(result)
                     self.add_message("user", [result])
 
                     self._save_progress(i + 1, status=phase)

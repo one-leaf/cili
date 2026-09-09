@@ -439,10 +439,13 @@ class Tool:
             truncated = truncated[:last_newline]
         return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None):
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+                 approval_store=None):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session_manager = session_manager  # For accessing session info (e.g., in python tool)
+        # 会话级高风险命令审批存储（内存，根/子代理共享），由 agent 注入
+        self.approval_store = approval_store
         # 工具输出文件路径：由 agent 在 execute() 前设置
         # _run_bash() 逐行写入此文件（实时流式），前端可轮询读取
         # save_output_to_file() 兜底确保所有工具输出都落盘

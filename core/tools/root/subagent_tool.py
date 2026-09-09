@@ -60,8 +60,9 @@ class SubAgentTool(Tool):
         "- SubAgent has access to `llm` for single-turn LLM calls (translation, summarization, extraction)"
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, approval_store=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.approval_store = approval_store  # 根代理的会话级审批存储，传给子代理共享
         self.stop_check = None  # Set by RootAgent after tool creation
         self.on_subagent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_subagent_complete = None  # Callback(exec_id) fired when sub-agent finishes
@@ -198,6 +199,7 @@ class SubAgentTool(Tool):
             session_dir=exec_dir,
             exec_id=exec_id,
             temperature=temperature,
+            approval_store=self.approval_store,
         )
 
         # Background mode

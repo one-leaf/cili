@@ -19,7 +19,7 @@ class AskUserTool(Tool):
         "Ask the user one or more multiple-choice questions to gather information, "
         "clarify ambiguity, understand preferences, or make decisions. "
         "Use this tool when you need user input before proceeding. "
-        "Users can always choose 'Other' to provide custom text input."
+        "Each question supports 2-6 options plus a free-text 'Other' input."
     )
     parameters = {
         "type": "object",
@@ -43,8 +43,8 @@ class AskUserTool(Tool):
                         "options": {
                             "type": "array",
                             "minItems": 2,
-                            "maxItems": 4,
-                            "description": "Available choices (2-4). No 'Other' needed — added automatically.",
+                            "maxItems": 6,
+                            "description": "Available choices (2-6). No 'Other' needed — added automatically.",
                             "items": {
                                 "type": "object",
                                 "properties": {

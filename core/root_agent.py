@@ -16,9 +16,16 @@ from typing import Any, Callable
 from core.config import Config, PROJECT_ROOT
 from core.llm import create_llm_client
 from core.base_agent import BaseAgent
-from core.session import SessionManager
+from core.session import SessionManager, generate_short_id
 from core.prompts import build_root_prompt
 from core.tools import create_tools, get_tool_by_name
+from core.tools.shared.approval import (
+    APPROVE_LABEL,
+    META_KEY,
+    REJECT_LABEL,
+    ApprovalStore,
+    build_approval_question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +80,9 @@ class RootAgent(BaseAgent):
         self.messages = self.session_manager.messages
         self._usage = self.session_manager.get_usage()
 
+        # 会话级高风险命令审批存储（内存，不持久化），根/子代理共享
+        self.approval_store = ApprovalStore()
+
         # Build tools
         self._on_subagent_start: Callable[[str, str], None] | None = None
         self._on_subagent_complete: Callable[[str], None] | None = None
@@ -92,6 +102,7 @@ class RootAgent(BaseAgent):
             workspace_uuid=self.workspace_uuid,
             session_manager=self.session_manager,
             config=self.config,
+            approval_store=self.approval_store,
         )
         self.tool_schemas = [t.to_schema() for t in self.tools]
 
@@ -158,6 +169,33 @@ class RootAgent(BaseAgent):
             self._agent_loop()
         finally:
             self._running = False
+
+    def _handle_approval_required(self, approval: dict) -> None:
+        """合成 ask_user 卡询问用户是否批准高风险命令，随后暂停循环等待回答。
+
+        在批处理所有工具结果之后调用，保证消息配对正确：
+        [assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]
+        """
+        self.approval_store.set_pending(approval)
+
+        ask_id = generate_short_id()
+        ask_input = {
+            "questions": [
+                {
+                    "question": build_approval_question(approval),
+                    "header": "命令批准",
+                    "options": [
+                        {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同命令（含委派给子代理）不再询问。"},
+                        {"label": REJECT_LABEL, "description": "拒绝执行该命令。"},
+                    ],
+                }
+            ]
+        }
+        # 手动补 assistant tool_use 块，避免悬挂 tool_result（否则 API 400 或触发 _pad_dangling_tool_results）
+        self.add_message("assistant", [{"type": "tool_use", "id": ask_id, "name": "ask_user", "input": ask_input}])
+        self.add_message("user", [self._execute_tool("ask_user", ask_input, ask_id)])
+        self._sync_to_session_manager()
+        self.session_manager.save()
 
     def resume_after_ask_user(
         self,
@@ -256,20 +294,42 @@ class RootAgent(BaseAgent):
 
             # Process tool calls
             wait_for_external = False
+            external_already = False  # 本批已有非审批占位（模型自发的 ask_user/subagent）
+            approval = None  # 本批首个需用户批准的高风险命令
             for block in tool_call_blocks:
                 if self._stopped:
                     break
                 # Parse arguments from raw JSON string to dict at execution time
                 input_data = block.parse_arguments()
                 result = self._execute_tool(block.name, input_data, block.id)
-                # Check if tool wants to pause the loop (completed=False means placeholder mode)
-                if result.get("_meta", {}).get("completed") is False:
+                placeholder = result.get("_meta", {}).get("completed") is False
+                # 高风险命令需用户批准：降级为错误提示，统一在批处理完后合成 ask_user 卡
+                if META_KEY in result.get("_meta", {}):
+                    if approval is None:
+                        approval = result["_meta"][META_KEY]
+                        result["is_error"] = True
+                        result["content"] = "该命令需要用户批准，正在询问用户..."
+                    else:
+                        # 同批多个需批准命令：只询问第一条，其余保持拒绝
+                        result["is_error"] = True
+                        result["content"] = "该命令需要用户批准，本批仅询问一条，请稍后重试。"
+                    result["_meta"].pop(META_KEY, None)
+                    result["_meta"].pop("completed", None)
+                elif placeholder:
+                    # 模型自发的 ask_user/subagent 占位：正常等待，不叠加审批卡
                     wait_for_external = True
+                    external_already = True
                 # Add tool result to messages
                 self.add_message("user", [result])
                 # Sync to session manager
                 self._sync_to_session_manager()
                 self.session_manager.save()
+
+            # 合成 ask_user 卡询问用户是否批准（放在所有工具结果之后，保持消息配对正确；
+            # 本批已有模型自发的占位时不合成，避免与 pending 单槽冲突）
+            if approval and not external_already and not self._stopped:
+                self._handle_approval_required(approval)
+                wait_for_external = True
 
             if wait_for_external:
                 # Exit loop to wait for user input or subagent completion

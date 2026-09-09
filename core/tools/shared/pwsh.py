@@ -6,6 +6,13 @@ import os
 import re
 from typing import Any
 
+from core.tools.shared.approval import (
+    META_KEY,
+    MODE_ASK,
+    MODE_DENY,
+    approval_decision_id,
+    approval_placeholder_text,
+)
 from core.tools.shared.base import (
     Tool,
     ToolResult,
@@ -34,40 +41,43 @@ _RECURSIVE_FORCE_DELETE = re.compile(
 )
 
 _DENY_PATTERNS = [
+    # --- ask：破坏性操作，可经用户批准后在本次会话内执行 ---
     (_RECURSIVE_FORCE_DELETE,
-     "Remove-Item -Recurse -Force on drive path (destructive recursive delete)"),
-    (re.compile(r"\bFormat-Volume\b", re.I), "Format-Volume (disk format)"),
-    (re.compile(r"\bClear-Disk\b", re.I), "Clear-Disk (disk wipe)"),
-    (re.compile(r"\bInitialize-Disk\b", re.I), "Initialize-Disk (disk initialize)"),
-    (re.compile(r"\bdiskpart\b", re.I), "diskpart (disk management)"),
-    (re.compile(r"\bStop-Computer\b", re.I), "Stop-Computer (shutdown)"),
-    (re.compile(r"\bRestart-Computer\b", re.I), "Restart-Computer (reboot)"),
-    (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "Stop-Process -Id 0 (system process)"),
+     "Remove-Item -Recurse -Force on drive path (destructive recursive delete)", MODE_ASK),
+    (re.compile(r"\bFormat-Volume\b", re.I), "Format-Volume (disk format)", MODE_ASK),
+    (re.compile(r"\bClear-Disk\b", re.I), "Clear-Disk (disk wipe)", MODE_ASK),
+    (re.compile(r"\bInitialize-Disk\b", re.I), "Initialize-Disk (disk initialize)", MODE_ASK),
+    (re.compile(r"\bdiskpart\b", re.I), "diskpart (disk management)", MODE_ASK),
+    (re.compile(r"\bStop-Computer\b", re.I), "Stop-Computer (shutdown)", MODE_ASK),
+    (re.compile(r"\bRestart-Computer\b", re.I), "Restart-Computer (reboot)", MODE_ASK),
     # Also block legacy cmd-style dangerous commands
-    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "format (disk format)"),
-    (re.compile(r"\bshutdown\b", re.I), "shutdown"),
-    (re.compile(r"\breboot\b", re.I), "reboot"),
+    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "format (disk format)", MODE_ASK),
+    (re.compile(r"\bshutdown\b", re.I), "shutdown", MODE_ASK),
+    (re.compile(r"\breboot\b", re.I), "reboot", MODE_ASK),
+    # --- deny：架构性/代码执行，问用户无意义，保持硬拒绝 ---
+    (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "Stop-Process -Id 0 (system process)", MODE_DENY),
     # Code execution from string: the payload lives in a string literal that
     # string-stripping would hide from the scan, so block the invocation itself
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:Invoke-Expression|iex)(?![a-zA-Z0-9_-])", re.I),
-     "Invoke-Expression (code execution from string — run the command directly)"),
+     "Invoke-Expression (code execution from string — run the command directly)", MODE_DENY),
     # Cross-tool isolation: use dedicated tools instead of calling from pwsh
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?|py)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Python invocation from PowerShell (use the python tool instead)"),
+     "Python invocation from PowerShell (use the python tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Bash invocation from PowerShell (use the bash tool instead)"),
+     "Bash invocation from PowerShell (use the bash tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "cmd/WSL invocation from PowerShell (cross-tool isolation)"),
+     "cmd/WSL invocation from PowerShell (cross-tool isolation)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "PowerShell re-invocation (use native PowerShell commands)"),
+     "PowerShell re-invocation (use native PowerShell commands)", MODE_DENY),
 ]
 
 
 class PwshTool(Tool):
     name = "pwsh"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None):
-        super().__init__(cwd, workspace_uuid, session_manager)
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+                 approval_store=None):
+        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
         self.description = self._build_description()
 
     def _build_description(self) -> str:
@@ -79,6 +89,8 @@ class PwshTool(Tool):
             "Environment variables use $env:NAME syntax. "
             "Do NOT use pwsh to invoke Python (use the `python` tool), bash (use the `bash` tool), "
             "cmd, or WSL — cross-tool invocations are blocked. "
+            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations) require user approval "
+            "before execution — if blocked for approval, wait for the user's decision then retry the exact command.\n"
             f"Current working directory: {self.cwd}\n\n"
             "## Background Tasks\n"
             "For long-running commands, use `run_in_background: true` to start the command in background. "
@@ -184,10 +196,25 @@ class PwshTool(Tool):
         if not command:
             return ToolResult("Error: command is required", error=True)
 
-        # Safety: deny dangerous commands
-        deny_msg = self._check_deny_patterns(command)
-        if deny_msg:
-            return ToolResult(f"Error: command blocked by safety check — {deny_msg}", error=True)
+        # Safety: deny dangerous commands (ask 档先查会话级批准，未批准则等待用户确认)
+        deny = self._check_deny_patterns(command)
+        if deny:
+            mode, reason = deny
+            if mode == MODE_DENY or not self.approval_store:
+                return ToolResult(f"Error: command blocked by safety check — {reason}", error=True)
+            approval = {
+                "decision_id": approval_decision_id(command),
+                "command": command,
+                "reason": reason,
+            }
+            if self.approval_store.is_approved(approval["decision_id"]):
+                pass  # 本次会话已批准，放行执行
+            else:
+                return ToolResult(
+                    approval_placeholder_text(approval),
+                    completed=False,
+                    meta={META_KEY: approval},
+                )
 
         # Apply working_dir override (no path conversion needed for pwsh)
         if working_dir:
@@ -220,15 +247,16 @@ class PwshTool(Tool):
         return self._run_pwsh(command, timeout=timeout)
 
     @staticmethod
-    def _check_deny_patterns(command: str) -> str | None:
-        """Check command against deny patterns. Returns reason if blocked, None if OK.
+    def _check_deny_patterns(command: str) -> tuple[str, str] | None:
+        """Check command against deny patterns. Returns (mode, reason) if blocked, None if OK.
 
+        mode ∈ {"ask", "deny"}: ask 表示破坏性操作可经用户批准后执行；deny 表示硬拒绝。
         String literals are stripped first so that string data (e.g. Write-Output "pwsh
         works") does not trigger keyword rules; subexpressions inside double quotes
         ($( ... )) are preserved because they execute as code.
         """
         code = _strip_shell_strings(command, "pwsh")
-        for pattern, reason in _DENY_PATTERNS:
+        for pattern, reason, mode in _DENY_PATTERNS:
             if pattern.search(code):
-                return reason
+                return mode, reason
         return None

@@ -12,6 +12,7 @@ def create_sub_tools(
     workspace_uuid: str = "",
     session_manager=None,
     config: Config | None = None,
+    approval_store=None,
 ) -> list:
     """Create tools for SubAgent: shared tools + sub-specific Skill tool."""
     return create_shared_tools(
@@ -19,6 +20,7 @@ def create_sub_tools(
         workspace_uuid=workspace_uuid,
         session_manager=session_manager,
         config=config,
+        approval_store=approval_store,
     ) + [
         SkillTool(
             skills_dir=str(PROJECT_ROOT / "core" / "skills" / "sub"),
