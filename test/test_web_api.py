@@ -42,17 +42,17 @@ class TestMaskSingleModel:
 class TestMaskApiKey:
     """_mask_api_key() config-level masking."""
 
-    def test_masks_both_models(self):
+    def test_masks_all_models(self):
         from web.web_api import _mask_api_key
         config = {
             "model": {"api_key": "sk-ant-1234567890", "name": "claude"},
-            "llm_model": {"api_key": "sk-other-key-12345", "name": "haiku"},
+            "worker_model": {"api_key": "sk-worker-key-12345", "name": "worker-model"},
+            "lite_model": {"api_key": "sk-lite-key-12345", "name": "lite-model"},
         }
         result = _mask_api_key(config)
-        assert "api_key" not in result["model"]
-        assert "api_key" not in result["llm_model"]
-        assert "api_key_masked" in result["model"]
-        assert "api_key_masked" in result["llm_model"]
+        for key in ("model", "worker_model", "lite_model"):
+            assert "api_key" not in result[key]
+            assert "api_key_masked" in result[key]
 
     def test_no_model_field(self):
         from web.web_api import _mask_api_key

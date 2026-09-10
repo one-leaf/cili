@@ -1,6 +1,6 @@
 """Cron scheduler - lightweight periodic task execution.
 
-Runs tasks defined in core/cron/*.json using SubAgent.
+Runs tasks defined in core/cron/*.json using Agent.
 Each task has a schedule (interval or cron), task description, and execution plan.
 
 Usage:
@@ -114,7 +114,7 @@ CRON_STATE_DIR = CRON_BASE_DIR / "state"
 # User tasks config file
 USER_TASKS_FILE = CRON_BASE_DIR / "user_tasks.json"
 
-# Cron agent cache: workspace_uuid → RootAgent (reused across cron runs)
+# Cron agent cache: workspace_uuid → master Agent (reused across cron runs)
 _cron_agents: dict[str, Any] = {}
 _cron_agents_lock = threading.Lock()
 
@@ -273,10 +273,10 @@ class CronTask:
             logger.warning(f"[cron] Task {self.name}: failed to save state: {e}")
 
     def execute(self) -> dict[str, Any]:
-        """Execute all tasks through RootAgent. Returns result dict.
+        """Execute all tasks through master Agent. Returns result dict.
 
         Cron 的职责：创建/复用 session + 注入 user message。
-        RootAgent 走正常 agent loop，自主决定是否委派 SubAgent。
+        master Agent 走正常 agent loop，自主决定是否委派 sub-agent。
         """
         # Get task list dynamically
         tasks = self.get_tasks()
@@ -303,17 +303,16 @@ class CronTask:
         }
 
     def _execute_in_session(self, workspace_uuid: str, task_item: dict) -> dict:
-        """在 workspace 的 cron session 中通过 RootAgent 执行任务。
+        """在 workspace 的 cron session 中通过 master Agent 执行任务。
 
-        Cron 采用 RootAgent 策略：
+        Cron 采用 master Agent 策略：
         1. 解析目标 workspace，复用或创建 cron session
-        2. 获取或创建 RootAgent（按 workspace 缓存）
+        2. 获取或创建 master Agent（按 workspace 缓存）
         3. 切换到 cron session，标记旧消息无效
         4. 注入 cron 任务消息，运行 agent loop（非流式）
-        5. Agent 自主调用 subagent 工具执行任务，工具内部同步等待结果
+        5. Agent 自主调用 agent 工具执行任务，工具内部同步等待结果
         6. Agent loop 正常完成后返回
         """
-        from core.root_agent import RootAgent
         from core.config import load_config, load_workspace_config
 
         # 1. 解析 workspace（数据目录用于 session）
@@ -337,13 +336,13 @@ class CronTask:
         plan = task_item.get("plan", [])
         task_brief = task_desc[:200]
 
-        logger.info(f"[cron] [{self.name}] Starting RootAgent in session {cron_session_id}: {task_brief[:50]}...")
+        logger.info(f"[cron] [{self.name}] Starting master Agent in session {cron_session_id}: {task_brief[:50]}...")
 
-        # 4. 获取或创建 RootAgent（cwd 是 workspace 实际工作目录，不是数据目录）
-        agent = _get_or_create_root_agent(ws_uuid, workspace_dir)
+        # 4. 获取或创建 master Agent（cwd 是 workspace 实际工作目录，不是数据目录）
+        agent = _get_or_create_master_agent(ws_uuid, workspace_dir)
         if agent is None:
-            logger.warning(f"[cron] [{self.name}] RootAgent is busy for workspace {ws_uuid}, skipping")
-            return {"status": "skipped", "message": "RootAgent is busy", "workspace_uuid": ws_uuid}
+            logger.warning(f"[cron] [{self.name}] master Agent is busy for workspace {ws_uuid}, skipping")
+            return {"status": "skipped", "message": "master Agent is busy", "workspace_uuid": ws_uuid}
 
         try:
             # 5. 切换到 cron session（sessions_dir 在数据目录下，cwd 已正确指向 workspace）
@@ -358,12 +357,12 @@ class CronTask:
             cron_message = self._build_cron_message(task_item)
             agent.run(cron_message, streaming=False)
 
-            logger.info(f"[cron] [{self.name}] RootAgent completed in session {cron_session_id}")
+            logger.info(f"[cron] [{self.name}] master Agent completed in session {cron_session_id}")
             return {"status": "completed", "workspace_uuid": ws_uuid, "session_id": cron_session_id,
                     "iterations": 0}
 
         except Exception as e:
-            logger.error(f"[cron] [{self.name}] RootAgent failed: {e}")
+            logger.error(f"[cron] [{self.name}] master Agent failed: {e}")
             return {"status": "error", "error": str(e), "workspace_uuid": ws_uuid}
 
     def _resolve_workspace_dir(self, ws_uuid: str) -> str:
@@ -403,7 +402,7 @@ class CronTask:
         plan = task_item.get("plan", [])
 
         lines = ["[Cron 定时任务触发]", ""]
-        lines.append("请使用 subagent 工具执行以下任务：")
+        lines.append("请使用 agent 工具执行以下任务：")
         lines.append(f"\n## 任务描述\n{task}")
 
         if plan:
@@ -428,15 +427,15 @@ class CronTask:
         }
 
 
-def _get_or_create_root_agent(workspace_uuid: str, ws_dir: str):
-    """获取或创建 workspace 对应的 RootAgent（cron 专用缓存）。
+def _get_or_create_master_agent(workspace_uuid: str, ws_dir: str):
+    """获取或创建 workspace 对应的 master Agent（cron 专用缓存）。
 
     - 如果 agent 存在且未在运行 → 复用
     - 如果 agent 不存在 → 创建新的并缓存
     - 如果 agent 正在运行 → 返回 None（跳过本次执行）
     """
-    from core.root_agent import RootAgent
     from core.config import load_config
+    from core.agent import Agent
 
     with _cron_agents_lock:
         existing = _cron_agents.get(workspace_uuid)
@@ -445,15 +444,15 @@ def _get_or_create_root_agent(workspace_uuid: str, ws_dir: str):
                 return None  # 正在运行，跳过
             return existing
 
-        # 创建新的 RootAgent
+        # 创建新的 master Agent
         try:
             config = load_config()
-            agent = RootAgent(config, cwd=ws_dir, workspace_uuid=workspace_uuid)
+            agent = Agent(config, role="master", cwd=ws_dir, workspace_uuid=workspace_uuid)
             _cron_agents[workspace_uuid] = agent
-            logger.info(f"[cron] Created RootAgent for workspace {workspace_uuid}")
+            logger.info(f"[cron] Created master Agent for workspace {workspace_uuid}")
             return agent
         except Exception as e:
-            logger.error(f"[cron] Failed to create RootAgent for workspace {workspace_uuid}: {e}")
+            logger.error(f"[cron] Failed to create master Agent for workspace {workspace_uuid}: {e}")
             return None
 
 
@@ -747,7 +746,7 @@ class CronScheduler:
 
     def _update_task_enabled(self, name: str, enabled: bool) -> None:
         """Update task enabled state in user_tasks.json."""
-        from core.tools.shared.cron_tool import _load_user_tasks, _save_user_tasks
+        from core.tools.cron_tool import _load_user_tasks, _save_user_tasks
 
         try:
             tasks = _load_user_tasks()
@@ -762,7 +761,7 @@ class CronScheduler:
     def _delete_one_time_task(self, name: str) -> None:
         """Remove a one-time task from config and state files."""
         # Import here to avoid circular dependency
-        from core.tools.shared.cron_tool import _load_user_tasks, _save_user_tasks
+        from core.tools.cron_tool import _load_user_tasks, _save_user_tasks
 
         # Remove from user_tasks.json
         try:

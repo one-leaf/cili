@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from core.tools.shared.pdf2markdown import (
+from core.tools.pdf2markdown import (
     PDF2MarkdownTool,
     _AgentLimitError,
     _AuthError,
@@ -83,7 +83,7 @@ class TestPDF2MarkdownToolValidation:
 
     def test_supported_extensions(self):
         """支持的文件格式列表"""
-        from core.tools.shared.pdf2markdown import _PRECISION_SUPPORTED_EXT
+        from core.tools.pdf2markdown import _PRECISION_SUPPORTED_EXT
 
         expected = {".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".html"}
         assert _PRECISION_SUPPORTED_EXT == expected

@@ -187,8 +187,8 @@ class ToolResultBlock:
     Uses Anthropic format (tool_use_id) for session storage.
     This is both a content block AND the content of a tool result message.
 
-    Extended fields for SubAgent tracking:
-    - exec_id: SubAgent execution ID
+    Extended fields for delegated (Worker/Lite sub-agent) execution:
+    - exec_id: sub-agent execution ID
     - iterations: number of iterations
     - message_count: number of messages
     - duration_seconds: execution duration
@@ -198,7 +198,7 @@ class ToolResultBlock:
     content: str | list[dict] = ""  # str for plain text, list[dict] for multimodal (text + image blocks)
     is_error: bool = False
 
-    # SubAgent extension fields (optional)
+    # sub-agent extension fields (optional)
     exec_id: str = ""
     iterations: int = 0
     message_count: int = 0
@@ -212,7 +212,7 @@ class ToolResultBlock:
             "content": self.content,
             "is_error": self.is_error,
         }
-        # Include SubAgent fields if present
+        # Include sub-agent fields if present
         if self.exec_id:
             result["exec_id"] = self.exec_id
         if self.iterations:

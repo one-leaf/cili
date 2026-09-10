@@ -6,14 +6,14 @@
 
 ## 一、功能概述
 
-SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 RootAgent 和 Web API 之间的数据层，负责：
+SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Master Agent 和 Web API 之间的数据层，负责：
 
 - **消息管理**：添加、获取、过滤消息
 - **持久化**：自动保存到磁盘，支持恢复
 - **有效消息过滤**：标记无效内容，API 请求前自动过滤
 - **上下文压缩**：三层自动压缩，防止超出 token 限制
 - **使用量追踪**：统计 token 消耗和 API 调用次数
-- **SubAgent 日志**：管理子代理执行记录
+- **Agent 日志**：管理子代理执行记录
 
 ---
 
@@ -28,13 +28,13 @@ data/agents/{uuid}/
 └── sessions/
     ├── a1b2c3d4/                        # 会话 1（8 位十六进制 ID）
     │   ├── index.json                   # 主会话数据
-    │   ├── toolu_abc123.txt             # RootAgent 工具输出（实时流式写入）
+    │   ├── toolu_abc123.txt             # Master Agent 工具输出（实时流式写入）
     │   ├── toolu_def456.txt
-    │   ├── exec_a1b2c3d4/               # SubAgent 1
-    │   │   ├── index.json               # SubAgent 执行日志
-    │   │   ├── toolu_ghi789.txt         # SubAgent 工具输出
+    │   ├── exec_a1b2c3d4/               # Agent 1
+    │   │   ├── index.json               # Agent 执行日志
+    │   │   ├── toolu_ghi789.txt         # Agent 工具输出
     │   │   └── toolu_jkl012.txt
-    │   └── exec_e5f6g7h8/               # SubAgent 2
+    │   └── exec_e5f6g7h8/               # Agent 2
     │       └── index.json
     ├── e5f6g7h8/                    # 会话 2
     │   └── index.json
@@ -44,8 +44,8 @@ data/agents/{uuid}/
 **文件命名规则**：
 - **会话目录**：8 位十六进制短 ID（如 `a1b2c3d4`），由 `secrets.token_hex(4)` 生成
 - **主会话文件**：固定为 `index.json`
-- **工具输出文件**：`{tool_use_id}.txt`，与 `index.json` 同级（RootAgent）或在 SubAgent 子目录内
-- **SubAgent 目录**：`exec_{id}/`，内含 `index.json` 和该 SubAgent 调用的所有工具输出文件
+- **工具输出文件**：`{tool_use_id}.txt`，与 `index.json` 同级（Master Agent）或在 Agent 子目录内
+- **Agent 目录**：`exec_{id}/`，内含 `index.json` 和该 Agent 调用的所有工具输出文件
 
 ### 2.2 index.json 格式
 
@@ -99,7 +99,7 @@ data/agents/{uuid}/
         {
           "type": "tool_use",
           "id": "toolu_sub_001",
-          "name": "subagent",
+          "name": "agent",
           "input": {"task": "优化爬虫性能"}
         }
       ]
@@ -112,7 +112,7 @@ data/agents/{uuid}/
           "tool_use_id": "toolu_sub_001",
           "content": "{\"status\": \"completed\", \"summary\": \"...\"}",
           "_meta": {
-            "tool_name": "subagent",
+            "tool_name": "agent",
             "exec_id": "exec_a1b2c3d4",
             "completed": true
           }
@@ -130,7 +130,7 @@ data/agents/{uuid}/
       "cache_read_tokens": 12000,
       "cache_creation_tokens": 5000
     },
-    "subagent_count": 1
+    "agent_count": 1
   }
 }
 ```
@@ -154,13 +154,13 @@ data/agents/{uuid}/
 | `metadata.created_at` | string | 创建时间（yyyy-MM-dd HH:mm:ss） |
 | `metadata.updated_at` | string | 最后更新时间 |
 | `metadata.usage` | object | 使用量统计 |
-| `metadata.subagent_count` | int | SubAgent 执行次数 |
+| `metadata.agent_count` | int | Agent 执行次数 |
 
 **按需外部存储**：小体积非流式工具结果直接内联保存在消息 `content` 中。仅流式工具（bash/python）、输出超过 10K 字符或含图片的输出才写入外部文件 `{tool_use_id}.txt`（或 `.json`），`_meta` 中保存元信息（`output_path`、`file_size`、`truncated`），发送 LLM 时按需读取/截断。
 
-### 2.3 SubAgent 执行日志
+### 2.3 Agent 执行日志
 
-SubAgent 执行日志独立存储在子目录中：
+Agent 执行日志独立存储在子目录中：
 
 **存储路径**：`{session_dir}/exec_{id}/index.json`
 
@@ -178,7 +178,7 @@ SubAgent 执行日志独立存储在子目录中：
     "iterations": 5
   },
   "messages": [
-    // SubAgent 的完整消息历史
+    // Agent 的完整消息历史
   ]
 }
 ```
@@ -188,8 +188,8 @@ SubAgent 执行日志独立存储在子目录中：
 流式工具（bash/python）执行时，完整输出实时写入外部 `.txt` 文件，供前端轮询实时显示，也作为 LLM 获取内容的唯一来源。
 
 **存储路径**：
-- RootAgent 工具：`{session_dir}/{tool_use_id}.txt`
-- SubAgent 工具：`{session_dir}/{exec_dir}/{tool_use_id}.txt`
+- Master Agent 工具：`{session_dir}/{tool_use_id}.txt`
+- Agent 工具：`{session_dir}/{exec_dir}/{tool_use_id}.txt`
 
 **工作机制**：
 1. 工具执行前，Agent 设置 `tool.output_file = {路径}`
@@ -251,10 +251,10 @@ class SessionManager:
 | `microcompact_tool_results(keep_recent)` | Microcompact 压缩（替换内容为占位符） |
 | `mark_old_tool_calls_invalid(keep_recent_rounds)` | 标记旧工具调用为无效 |
 | `mark_old_images_invalid(keep_recent)` | 标记旧图片为无效 |
-| `save_subagent_log(...)` | 保存 SubAgent 执行日志 |
-| `load_subagent_log(exec_id)` | 加载 SubAgent 执行日志 |
-| `list_subagent_logs()` | 列出所有执行日志 |
-| `delete_subagent_log(exec_id)` | 删除执行日志 |
+| `save_agent_log(...)` | 保存 Agent 执行日志 |
+| `load_agent_log(exec_id)` | 加载 Agent 执行日志 |
+| `list_agent_logs()` | 列出所有执行日志 |
+| `delete_agent_log(exec_id)` | 删除执行日志 |
 | `to_dict()` | 转换为字典（用于 API 返回） |
 
 **有效消息缓存机制**：
@@ -297,7 +297,7 @@ session = SessionManager.load_session(session_id, sessions_dir)
 
 # 列出所有会话
 sessions = SessionManager.list_sessions(sessions_dir)
-# 返回: [{"session_id": "...", "name": "...", "created_at": "...", "updated_at": "...", "usage": {...}, "subagent_count": 0, ...}]
+# 返回: [{"session_id": "...", "name": "...", "created_at": "...", "updated_at": "...", "usage": {...}, "agent_count": 0, ...}]
 # 注意：metadata 中的所有字段会被展开到顶层（**metadata）
 ```
 
@@ -347,29 +347,29 @@ valid_messages = [
 
 ---
 
-## 五、SubAgent 执行日志
+## 五、Agent 执行日志
 
-SubAgent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与主 Agent 调用 SubAgent 的格式完全一致。
+Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与主 Agent 调用 Agent 的格式完全一致。
 
 ### 5.1 主会话消息格式
 
-主会话中通过 assistant(tool_use) + user(tool_result) 表示 SubAgent 执行：
+主会话中通过 assistant(tool_use) + user(tool_result) 表示 Agent 执行：
 
 ```python
-# assistant 消息：模拟 LLM 调用 subagent
+# assistant 消息：模拟 LLM 调用 agent
 {
     "role": "assistant",
     "content": [
         {
             "type": "tool_use",
             "id": "toolu_sub_001",
-            "name": "subagent",
+            "name": "agent",
             "input": {"task": "优化爬虫性能"}
         }
     ]
 }
 
-# user 消息：SubAgent 结果（含 exec_id，UI 据此渲染卡片）
+# user 消息：Agent 结果（含 exec_id，UI 据此渲染卡片）
 {
     "role": "user",
     "content": [
@@ -378,7 +378,7 @@ SubAgent 在主会话中以 tool_use + tool_result 消息对的形式呈现，�
             "tool_use_id": "toolu_sub_001",
             "content": "{\"status\": \"completed\", ...}",
             "_meta": {
-                "tool_name": "subagent",
+                "tool_name": "agent",
                 "exec_id": "exec_a1b2c3d4",
                 "completed": true
             }
@@ -389,13 +389,13 @@ SubAgent 在主会话中以 tool_use + tool_result 消息对的形式呈现，�
 
 ### 5.2 保存完整日志
 
-SubAgent 执行完成后保存完整日志到独立文件：
+Agent 执行完成后保存完整日志到独立文件：
 
 ```python
-session.save_subagent_log(
+session.save_agent_log(
     exec_id="exec_a1b2c3d4",
     task="优化爬虫性能",
-    messages=subagent_messages,
+    messages=agent_messages,
     metadata={
         "started_at": "2026-08-25 10:30:00",
         "ended_at": "2026-08-25 10:32:00",
@@ -411,15 +411,15 @@ session.save_subagent_log(
 
 ```python
 # 列出所有执行（仅元数据）
-logs = session.list_subagent_logs()
+logs = session.list_agent_logs()
 # 返回: [{"exec_id": "...", "task": "...", "summary": "...", "metadata": {...}}]
 
 # 加载完整日志
-log = session.load_subagent_log("exec_a1b2c3d4")
+log = session.load_agent_log("exec_a1b2c3d4")
 # 返回: {"exec_id": "...", "task": "...", "messages": [...], ...}
 
 # 删除日志
-session.delete_subagent_log("exec_a1b2c3d4")
+session.delete_agent_log("exec_a1b2c3d4")
 ```
 
 ---
@@ -460,9 +460,9 @@ session.add_message("user", "你好")
 session.save()
 ```
 
-**RootAgent 集成**：
+**Master Agent 集成**：
 - 每轮 LLM 调用后自动保存
-- SubAgent 执行日志实时保存（每轮迭代后）
+- Agent 执行日志实时保存（每轮迭代后）
 
 ### 6.3 加载会话
 
@@ -562,38 +562,37 @@ usage = session.get_usage()
 
 ---
 
-## 十、与 RootAgent 集成
+## 十、与 Master Agent 集成
 
-### 10.1 RootAgent 使用 SessionManager
+### 10.1 Master Agent 使用 SessionManager
 
 ```python
-class RootAgent:
-    def __init__(self, session_id, sessions_dir, ...):
-        self.session_manager = SessionManager(session_id, sessions_dir)
-        self.client = create_llm_client(config)
-    
-    def run(self, user_input):
-        # 1. 添加用户消息
-        self.session_manager.add_message("user", user_input)
-        
-        # 2. 自动压缩
-        self._check_and_compress()
-        
-        # 3. 调用 LLM（注入工具结果内容）
-        messages = self.session_manager.get_valid_messages()
-        messages = self._resolve_tool_results(messages)  # 从外部文件按需读取内容
-        response = self._call_llm(streaming=True, ...)
-        
-        # 4. 添加助手消息
-        self.session_manager.add_message("assistant", response.content)
-        
-        # 5. 执行工具（只存元信息到 session）
-        for tool_use in response.tool_uses:
-            result = self._execute_tool(tool_use)  # 返回 tool_result 元信息
-            self.session_manager.add_message("user", [result])
-        
-        # 6. 保存会话
-        self.session_manager.save()
+# 统一 Agent（master 角色，interactive 模式）
+agent = Agent(config, role="master", cwd=cwd, workspace_uuid=workspace_uuid)
+# 内部：agent.session_manager = SessionManager(session_id, sessions_dir)
+
+def run(agent, user_input):
+    # 1. 添加用户消息
+    agent.session_manager.add_message("user", user_input)
+
+    # 2. 自动压缩
+    agent._check_and_compress()
+
+    # 3. 调用 LLM（注入工具结果内容）
+    messages = agent.session_manager.get_valid_messages()
+    messages = agent._resolve_tool_results(messages)  # 从外部文件按需读取内容
+    response = agent._call_llm(streaming=True, ...)
+
+    # 4. 添加助手消息
+    agent.session_manager.add_message("assistant", response.content)
+
+    # 5. 执行工具（只存元信息到 session）
+    for tool_use in response.tool_uses:
+        result = agent._execute_tool(tool_use)  # 返回 tool_result 元信息
+        agent.session_manager.add_message("user", [result])
+
+    # 6. 保存会话
+    agent.session_manager.save()
 ```
 
 ### 10.2 Web API 使用
@@ -601,18 +600,18 @@ class RootAgent:
 ```python
 # web/web_api.py
 
-# 获取或创建 RootAgent
+# 获取或创建 Master Agent
 agent = agents.get(workspace_uuid, session_id)
 if agent is None:
     sessions_dir = workspace_dir / "sessions"
     session = SessionManager.load_session(session_id, sessions_dir)
-    agent = RootAgent(session_id, sessions_dir, ...)
+    agent = Agent(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid, ...)
     agents[key] = agent
 
 # 发送消息
 async def send_message():
     agent.run(user_input)
-    # RootAgent 内部会自动保存
+    # Agent 内部会自动保存
     
 # 获取会话列表
 @app.get("/api/workspaces/{uuid}/sessions")
@@ -634,7 +633,7 @@ def get_session(uuid, id):
 
 ### 11.1 为什么每个会话一个目录？
 
-- **文件隔离**：主会话和 SubAgent 日志分开，互不干扰
+- **文件隔离**：主会话和 Agent 日志分开，互不干扰
 - **易于管理**：删除会话只需删除目录
 - **扩展性**：未来可以添加更多文件（如附件、缓存）
 
@@ -644,17 +643,17 @@ def get_session(uuid, id):
 - **唯一性**：16^8 = 4.29 亿种组合，足够使用
 - **安全性**：使用 `secrets.token_hex()`，不可预测
 
-### 11.3 为什么 SubAgent 日志独立存储？
+### 11.3 为什么 Agent 日志独立存储？
 
 - **减少主文件大小**：主会话只存引用，不存完整日志
 - **懒加载**：前端展开卡片时才加载完整日志
-- **实时保存**：SubAgent 每轮迭代后保存，不会丢失
+- **实时保存**：Agent 每轮迭代后保存，不会丢失
 
-### 11.4 为什么 SubAgent 使用子目录而非扁平文件？
+### 11.4 为什么 Agent 使用子目录而非扁平文件？
 
-- **工具输出隔离**：SubAgent 的 `{tool_use_id}.txt` 和 `index.json` 放在同一目录，便于管理和清理
-- **避免命名冲突**：SubAgent 和 RootAgent 的工具输出可能使用相同的 `tool_use_id` 格式，子目录天然隔离
-- **完整性**：删除 SubAgent 时整个目录一起删除，不会遗留孤立文件
+- **工具输出隔离**：Agent 的 `{tool_use_id}.txt` 和 `index.json` 放在同一目录，便于管理和清理
+- **避免命名冲突**：Agent 和 Master Agent 的工具输出可能使用相同的 `tool_use_id` 格式，子目录天然隔离
+- **完整性**：删除 Agent 时整个目录一起删除，不会遗留孤立文件
 
 ### 11.5 为什么工具输出使用外部文件？
 
@@ -670,9 +669,9 @@ def get_session(uuid, id):
 | 文件 | 职责 |
 |------|------|
 | `core/session.py` | SessionManager 实现（含压缩辅助方法） |
-| `core/compression.py` | 独立压缩模块（共享压缩函数，SubAgent 使用） |
-| `core/root_agent.py` | 使用 SessionManager 管理对话 |
-| `core/sub_agent.py` | 使用 compression.py 管理压缩 |
+| `core/compression.py` | 独立压缩模块（共享压缩函数，各角色共用） |
+| `core/agent.py` | 统一 Agent（master 交互式使用 SessionManager；worker/lite 自主式使用子目录日志） |
+| `core/session.py` | SessionManager（含 save_agent_log / load_agent_log） |
 | `web/web_api.py` | 提供会话管理 API |
 | `web/static/app.js` | 前端会话列表和消息展示 |
 
@@ -698,7 +697,7 @@ POST /api/workspaces/{uuid}/sessions/{id}/messages
 
 SSE 流式返回助手响应。
 
-### 13.3 SubAgent 执行
+### 13.3 Agent 执行
 
 ```
 GET /api/workspaces/{uuid}/sessions/{id}/executions
@@ -719,7 +718,7 @@ GET /api/workspaces/{uuid}/sessions/{id}/stream/{tool_use_id}?offset=0
 **外部优先架构说明**：
 - Session API 返回前，后端调用 `_resolve_tool_results_for_session()` 从外部文件读取内容注入消息
 - 前端无感知，直接从返回的消息中渲染工具结果
-- SubAgent 执行日志 API 同样在返回前注入内容
+- Agent 执行日志 API 同样在返回前注入内容
 
 ---
 

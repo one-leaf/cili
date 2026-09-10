@@ -275,7 +275,7 @@
                         // 每个 tool_result → 一个气泡（与 chat.js 对齐）
                         for (const block of toolResults) {
                             const meta = block._meta || {};
-                            if (meta.exec_id) continue;  // subagent 引用，单独渲染
+                            if (meta.exec_id) continue;  // agent 引用，单独渲染
                             if (meta.completed === false) continue;  // ask_user 等待中
                             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                             const truncated = text.length > 2000 ? text.substring(0, 2000) + '\n... (内容过长已截断)' : text;

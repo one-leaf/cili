@@ -3,23 +3,8 @@
 from __future__ import annotations
 
 from core.config import Config
-from core.tools.shared.base import Tool, ToolResult
-from core.tools.shared import create_shared_tools
-from core.tools.root import create_root_tools
-from core.tools.sub import create_sub_tools
-
-
-def create_tools(
-    cwd: str = ".", workspace_uuid: str = "", session_manager=None, config: Config | None = None,
-    approval_store=None,
-) -> list[Tool]:
-    """Create all tools (root agent = shared + root)."""
-    return (
-        create_shared_tools(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
-                            config=config, approval_store=approval_store)
-        + create_root_tools(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
-                            approval_store=approval_store)
-    )
+from core.tools.base import Tool, ToolResult
+from core.tools.registry import TOOL_REGISTRY, create_tools
 
 
 def get_tool_by_name(tools: list[Tool], name: str) -> Tool | None:

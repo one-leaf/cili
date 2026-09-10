@@ -4,10 +4,10 @@ Directory structure:
   data/workspace/{uuid}/sessions/
     {short_id}/               # 每个 session 一个目录（8 位十六进制）
       index.json              # 主会话数据
-      {tool_use_id}.txt       # RootAgent 工具输出（实时流式写入，供前端轮询）
-      exec_{id}/              # 每个 SubAgent 一个子目录
-        index.json            # SubAgent 执行日志
-        {tool_use_id}.txt     # SubAgent 工具输出
+      {tool_use_id}.txt       # Master Agent 工具输出（实时流式写入，供前端轮询）
+      exec_{id}/              # 每个 Worker/Lite 子代理一个子目录
+        index.json            # Worker/Lite 执行日志
+        {tool_use_id}.txt     # Worker/Lite 工具输出
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class SessionManager:
     - 有效消息过滤（get_valid_messages）
     - 压缩逻辑
     - 使用量追踪
-    - SubAgent 执行日志管理
+    - Agent 执行日志管理
 
     Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
     """
@@ -71,7 +71,7 @@ class SessionManager:
                 "cache_read_tokens": 0,
                 "cache_creation_tokens": 0,
             },
-            "subagent_count": 0,
+            "agent_count": 0,
         }
         self.name: str = "New Session"
 
@@ -207,15 +207,15 @@ class SessionManager:
                         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         return
 
-    # ========== SubAgent 执行日志 ==========
+    # ========== Agent 执行日志 ==========
 
     def _generate_exec_id(self) -> str:
         """生成执行日志 ID：exec_{8位hex}。"""
         return f"exec_{secrets.token_hex(4)}"
 
-    def save_subagent_log(self, exec_id: str, task: str, messages: list[dict],
+    def save_agent_log(self, exec_id: str, task: str, messages: list[dict],
                            metadata: dict, summary: str = "") -> str:
-        """保存 SubAgent 执行日志到 {session_dir}/exec_{id}/index.json。
+        """保存 Agent 执行日志到 {session_dir}/exec_{id}/index.json。
 
         Args:
             exec_id: 执行日志 ID
@@ -244,11 +244,11 @@ class SessionManager:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             temp_file.replace(log_file)
         except Exception as e:
-            logger.error(f"Failed to save subagent log {exec_id}: {e}")
+            logger.error(f"Failed to save agent log {exec_id}: {e}")
         return exec_id
 
-    def load_subagent_log(self, exec_id: str) -> dict | None:
-        """加载单个 SubAgent 执行日志。
+    def load_agent_log(self, exec_id: str) -> dict | None:
+        """加载单个 Agent 执行日志。
 
         Returns:
             执行日志数据，None 表示不存在
@@ -260,11 +260,11 @@ class SessionManager:
             with open(log_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logger.error(f"Failed to load subagent log {exec_id}: {e}")
+            logger.error(f"Failed to load agent log {exec_id}: {e}")
             return None
 
-    def list_subagent_logs(self) -> list[dict]:
-        """列出所有 SubAgent 执行日志（仅元数据，不含消息）。
+    def list_agent_logs(self) -> list[dict]:
+        """列出所有 Agent 执行日志（仅元数据，不含消息）。
 
         Returns:
             元数据列表：[{exec_id, task, status, iterations, ...}, ...]
@@ -287,13 +287,13 @@ class SessionManager:
                     "metadata": data.get("metadata", {}),
                 })
             except Exception as e:
-                logger.warning(f"Failed to load subagent log {log_file}: {e}")
+                logger.warning(f"Failed to load agent log {log_file}: {e}")
         # 按时间排序
         logs.sort(key=lambda x: x.get("metadata", {}).get("started_at", ""), reverse=False)
         return logs
 
-    def delete_subagent_log(self, exec_id: str) -> bool:
-        """删除单个 SubAgent 执行目录（含 index.json 和工具输出文件）。
+    def delete_agent_log(self, exec_id: str) -> bool:
+        """删除单个 Agent 执行目录（含 index.json 和工具输出文件）。
 
         Returns:
             True 表示成功删除

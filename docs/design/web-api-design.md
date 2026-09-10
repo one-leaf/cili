@@ -11,7 +11,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 **核心特性**：
 - **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
-- **LRU 淘汰**：内存中最多保留 20 个 RootAgent，自动清理最久未访问的
+- **LRU 淘汰**：内存中最多保留 20 个 Master Agent，自动清理最久未访问的
 - **特殊命令**：/help、/status、/bash 在服务端处理，不经过 LLM
 - **统一数据访问**：消息收发等核心写入通过 SessionManager；会话数据统一保存为 session 目录下的 `index.json`（原子写入，重命名/隐藏/批量/撤销等轻量操作直接读写该文件）
 
@@ -37,7 +37,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
 │         │                 │                                  │
 │  ┌──────▼─────────────────▼───────────────────────────────┐ │
-│  │                  RootAgent                              │ │
+│  │                  Master Agent                              │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │ │
 │  │  │SessionManager│  │  LLM Client  │  │   Tools      │  │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘  │ │
@@ -49,7 +49,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 
 ```python
 # 全局变量
-agents: dict[str, RootAgent] = {}          # key = "workspace_uuid:session_id"
+agents: dict[str, Agent] = {}              # key = "workspace_uuid:session_id"
 _agent_access: dict[str, float] = {}       # key -> 最后访问时间戳
 _MAX_AGENTS = 20                           # 最大缓存数量
 _agents_lock = asyncio.Lock()              # 并发访问锁
@@ -180,7 +180,7 @@ GET /api/workspaces/{uuid}/sessions
       "created_at": "2026-08-25 10:00:00",
       "updated_at": "2026-08-25 10:30:00",
       "message_count": 25,
-      "subagent_count": 2,
+      "agent_count": 2,
       "preview": "帮我写一个异步爬虫...",
       "hidden": false   // 会话是否被隐藏
     }
@@ -302,8 +302,8 @@ data: {"type": "done"}
 | `text` | 文本输出 | `content` |
 | `tool_use` | 工具调用 | `tool`, `input`, `tool_use_id` |
 | `tool_result` | 工具结果 | `tool`, `content`, `is_error`, `tool_use_id` |
-| `subagent_start` | SubAgent 启动 | `exec_id`, `task_summary` |
-| `subagent_complete` | SubAgent 执行完成 | `exec_id` |
+| `agent_start` | Agent 启动 | `exec_id`, `task_summary` |
+| `agent_complete` | Agent 执行完成 | `exec_id` |
 | `todo_update` | todo_write 工具后的待办列表更新 | `todos` |
 | `retry_clear` | 413 重试清除 | （无） |
 | `error` | 错误 | `content` |
@@ -312,7 +312,7 @@ data: {"type": "done"}
 **事件说明**：
 - `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
 - `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
-- `subagent_complete`：SubAgent 后台执行完成时发送，前端据此更新 SubAgent 卡片状态。
+- `agent_complete`：Agent 后台执行完成时发送，前端据此更新 Agent 卡片状态。
 - `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session_manager.metadata.todos`），前端实时更新任务清单。
 
 ### 3.5 Agent 控制
@@ -374,7 +374,7 @@ Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent�
 1. Agent 调用 `ask_user` → 工具返回 `completed=False` 的 ToolResult
 2. Agent 循环检测到 `completed=False`，保存消息后退出
 3. 前端通过 SSE 的 `tool_use` 事件（`tool: "ask_user"`）渲染交互式问题卡片
-4. `tool_result` 事件对占位工具（`ask_user`、`subagent`）跳过（不渲染结果气泡）
+4. `tool_result` 事件对占位工具（`ask_user`、`agent`）跳过（不渲染结果气泡）
 5. 用户选择答案后，通过专用端点提交（见下）
 6. 后端替换占位符 tool_result 内容并继续 Agent 循环（`resume_after_ask_user()`）
 
@@ -394,11 +394,11 @@ Content-Type: application/json
 1. 校验 Agent 存在且未在运行（运行中返回 SSE `error` 事件）
 2. 根据 `tool_use_id` 查找占位符 tool_result 并替换内容为答案（`_meta.completed=true`，同步更新外部文件）
 3. 在对应的 tool_use/tool_call 块上标记 `_meta.answered=true`，保存 session
-4. 调用 `agent.resume_after_ask_user()` 继续 Agent 循环（含后台 SubAgent 结果的等待与回写）
+4. 调用 `agent.resume_after_ask_user()` 继续 Agent 循环（含后台 Agent 结果的等待与回写）
 
 **响应**：SSE 流（与 POST /messages 相同的流式事件，继续输出后续 thinking/text/tool_use 等）。
 
-### 3.6 SubAgent 执行日志
+### 3.6 Agent 执行日志
 
 #### 列出执行记录
 
@@ -462,7 +462,7 @@ GET /api/workspaces/{uuid}/sessions/{id}/stream/{tool_use_id}?offset=0
 }
 ```
 
-文件命名格式为 `{tool_use_id}.txt` 或 `{tool_use_id}_{tool_name}.txt`，接口通过 glob 匹配查找。同时在 session 目录和 `exec_*` 子目录中搜索（SubAgent 的输出在 exec_* 目录）。
+文件命名格式为 `{tool_use_id}.txt` 或 `{tool_use_id}_{tool_name}.txt`，接口通过 glob 匹配查找。同时在 session 目录和 `exec_*` 子目录中搜索（Agent 的输出在 exec_* 目录）。
 
 ### 3.8 全局配置
 
@@ -486,7 +486,7 @@ GET /api/config
       "multimodal": true,
       "temperature": 0.2
     },
-    "llm_model": {
+    "worker_model": {
       "name": "claude-haiku-4-5",
       ...
     },
@@ -511,7 +511,7 @@ Content-Type: application/json
     "name": "claude-sonnet-4-6",
     "api_key": "sk-ant-..."
   },
-  "llm_model": {
+  "worker_model": {
     "name": "claude-haiku-4-5"
   },
   "system": {
@@ -520,7 +520,7 @@ Content-Type: application/json
 }
 ```
 
-更新成功后，自动通知所有缓存的 RootAgent 调用 `reload_config()` 重新加载配置（使新的 API Key / Model 立即生效）。
+更新成功后，自动通知所有缓存的 Agent 调用 `reload_config()` 重新加载配置（使新的 API Key / Model 立即生效）。
 
 #### 测试连接
 
@@ -706,7 +706,7 @@ Content-Type: application/json
 
 ### 5.1 同步到异步桥接
 
-RootAgent 的回调是同步的，但 FastAPI 的 SSE 是异步的。使用 `queue.Queue` 桥接：
+Master Agent 的回调是同步的，但 FastAPI 的 SSE 是异步的。使用 `queue.Queue` 桥接：
 
 ```python
 def send_message():
@@ -788,7 +788,7 @@ except asyncio.CancelledError:
 - 消息气泡（用户/助手）
 - 思考块（可折叠："思考中..." / "思考完成"）
 - 工具调用卡片（显示工具名、输入、输出）
-- SubAgent 卡片（状态占位符，展开懒加载详情）
+- Agent 卡片（状态占位符，展开懒加载详情）
 - 代码块（CSS 样式渲染）
 - 图片显示（聊天上传/输出的图片以 base64 data URI 直接渲染；Markdown 中的相对路径图片和文件链接转换为 `/api/workspaces/{uuid}/files/` URL 加载）
 - 撤销消息（revert 到指定消息，删除其后所有消息）
@@ -800,7 +800,7 @@ except asyncio.CancelledError:
 
 #### 设置弹窗
 
-- RootAgent 模型配置
+- Master Agent 模型配置
 - LLM 模型配置（可选）
 - 测试连接按钮
 - 系统配置（pip 镜像、浏览器路径等）
@@ -849,8 +849,8 @@ function handleEvent(event) {
         case 'tool_result':
             appendToolResult(event.tool, event.content, event.is_error);
             break;
-        case 'subagent_start':
-            appendSubAgentCard(event.exec_id, event.task_summary);
+        case 'agent_start':
+            appendAgentCard(event.exec_id, event.task_summary);
             break;
         case 'retry_clear':
             // 413 重试：清除已流式输出的文本，防止重复内容
@@ -904,7 +904,7 @@ lifespan exit
 │
 ├─ stop_scheduler()          # 停止 Cron 调度器
 │
-└─ 清理所有 RootAgent
+└─ 清理所有 Master Agent
     └─ for agent in agents.values():
         ├─ agent.stop()      # 发送停止信号
         └─ agent.cleanup()   # 释放资源（浏览器、HTTP 客户端）
@@ -971,7 +971,7 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
 
 ### 8.4 API Key 脱敏
 
-配置 API 返回时自动脱敏 API Key（`model`/`llm_model` 的 `api_key` 与 `system.mineru_api_key`）：
+配置 API 返回时自动脱敏 API Key（`model`/`worker_model`/`lite_model` 的 `api_key` 与 `system.mineru_api_key`）：
 
 ```python
 def _mask_single_model(model: dict) -> dict:
@@ -984,7 +984,7 @@ def _mask_single_model(model: dict) -> dict:
 
 def _mask_api_key(config: dict) -> dict:
     result = config.copy()
-    for key in ("model", "llm_model"):
+    for key in ("model", "worker_model", "lite_model"):
         if key in result and isinstance(result[key], dict):
             result[key] = _mask_single_model(result[key])
     # 系统配置中的 MinerU API Key 同样脱敏
@@ -1010,7 +1010,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ### 9.2 为什么 Agents Dict 用 LRU 淘汰？
 
-- **内存控制**：每个 RootAgent 占用内存（工具、浏览器实例）
+- **内存控制**：每个 Master Agent 占用内存（工具、浏览器实例）
 - **性能**：避免创建过多 Agent 实例
 - **简单**：基于时间戳的 LRU 算法简单可靠
 
@@ -1041,7 +1041,7 @@ def _mask_api_key(config: dict) -> dict:
 | `web/static/utils.js` | 通用工具函数 |
 | `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
 | `web/static/style.css` | 样式 |
-| `core/root_agent.py` | RootAgent（被 web_api 调用） |
+| `core/agent.py` | 统一 Agent（master 角色，被 web_api 调用） |
 | `core/session.py` | SessionManager（数据层） |
 
 ---

@@ -11,7 +11,7 @@
 7. ask_user 选项上限扩展为 6
 """
 
-from core.tools.shared.approval import (
+from core.tools.approval import (
     APPROVE_LABEL,
     META_KEY,
     MODE_ASK,
@@ -20,9 +20,9 @@ from core.tools.shared.approval import (
     approval_decision_id,
     build_approved_commands_section,
 )
-from core.tools.shared.bash import BashTool
-from core.tools.shared.pwsh import PwshTool
-from core.tools.shared.base import ToolResult
+from core.tools.bash import BashTool
+from core.tools.pwsh import PwshTool
+from core.tools.base import ToolResult
 
 
 def _check_bash(cmd: str):
@@ -160,16 +160,16 @@ class TestExecuteApprovalFlow:
         assert not result.error
 
 
-class TestSubAgentDowngrade:
+class TestAgentDowngrade:
     def test_downgrade_approval_result(self):
-        from core.sub_agent import SubAgent
+        from core.agent import Agent
         result = {
             "type": "tool_result",
             "is_error": False,
             "content": "等待批准...",
             "_meta": {"completed": False, META_KEY: {"decision_id": "x", "command": "c", "reason": "r"}},
         }
-        SubAgent._downgrade_approval_result(result)
+        Agent._downgrade_approval_result(result)
         assert result["is_error"] is True
         assert META_KEY not in result["_meta"]
         assert "completed" not in result["_meta"]
@@ -188,7 +188,7 @@ class TestSubAgentDowngrade:
 
 class TestAskUserSchema:
     def test_options_up_to_six(self):
-        from core.tools.root.ask_user import AskUserTool
+        from core.tools.ask_user import AskUserTool
         options = AskUserTool.parameters["properties"]["questions"]["items"]["properties"]["options"]
         assert options["maxItems"] == 6
         assert options["minItems"] == 2

@@ -722,7 +722,7 @@ class TestCronToolMaxExecutions:
     def temp_cron_files(self, tmp_path):
         """临时替换 cron 相关文件路径"""
         import core.cron as cron_module
-        import core.tools.shared.cron_tool as cron_tool_module
+        import core.tools.cron_tool as cron_tool_module
 
         original_user_file = cron_module.USER_TASKS_FILE
         original_state_dir = cron_module.CRON_STATE_DIR
@@ -740,7 +740,7 @@ class TestCronToolMaxExecutions:
 
     def test_create_with_max_executions(self, temp_cron_files):
         """创建任务时设置 max_executions"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
         result = tool.execute(
@@ -760,7 +760,7 @@ class TestCronToolMaxExecutions:
 
     def test_create_with_default_max_executions(self, temp_cron_files):
         """默认 max_executions 为 9999"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
         tool.execute(
@@ -775,7 +775,7 @@ class TestCronToolMaxExecutions:
 
     def test_create_with_invalid_max_executions(self, temp_cron_files):
         """max_executions 超出范围时报错"""
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -803,7 +803,7 @@ class TestCronToolMaxExecutions:
         """enable 时重置 remaining 为 max_executions"""
         import json
         import core.cron as cron_module
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -838,7 +838,7 @@ class TestCronToolUpdate:
     def temp_cron_files(self, tmp_path):
         """临时替换 cron 相关文件路径"""
         import core.cron as cron_module
-        import core.tools.shared.cron_tool as cron_tool_module
+        import core.tools.cron_tool as cron_tool_module
 
         original_user_file = cron_module.USER_TASKS_FILE
         original_state_dir = cron_module.CRON_STATE_DIR
@@ -856,7 +856,7 @@ class TestCronToolUpdate:
 
     def test_update_task_description(self, temp_cron_files):
         """更新任务描述"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -887,7 +887,7 @@ class TestCronToolUpdate:
 
     def test_update_task_content(self, temp_cron_files):
         """更新任务内容"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -918,7 +918,7 @@ class TestCronToolUpdate:
 
     def test_update_schedule(self, temp_cron_files):
         """更新调度配置"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -949,7 +949,7 @@ class TestCronToolUpdate:
         """更新 max_executions 时重置 remaining"""
         import json
         import core.cron as cron_module
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -985,7 +985,7 @@ class TestCronToolUpdate:
 
     def test_update_nonexistent_task(self, temp_cron_files):
         """更新不存在的任务时报错"""
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -1000,7 +1000,7 @@ class TestCronToolUpdate:
 
     def test_update_without_name(self, temp_cron_files):
         """没有 name 时报错"""
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -1014,7 +1014,7 @@ class TestCronToolUpdate:
 
     def test_update_without_fields(self, temp_cron_files):
         """没有任何要更新的字段时报错"""
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -1037,7 +1037,7 @@ class TestCronToolUpdate:
 
     def test_update_invalid_schedule(self, temp_cron_files):
         """无效调度配置时报错"""
-        from core.tools.shared.cron_tool import CronTool
+        from core.tools.cron_tool import CronTool
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 
@@ -1060,7 +1060,7 @@ class TestCronToolUpdate:
 
     def test_update_partial_fields(self, temp_cron_files):
         """只更新部分字段，其他保持不变"""
-        from core.tools.shared.cron_tool import CronTool, _load_user_tasks
+        from core.tools.cron_tool import CronTool, _load_user_tasks
 
         tool = CronTool(cwd=".", workspace_uuid="test")
 

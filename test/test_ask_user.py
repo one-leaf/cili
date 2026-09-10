@@ -18,8 +18,8 @@ import pytest
 
 from core.config import Config, ModelConfig, SystemConfig
 from core.llm.types import LLMResponse, TextBlock, ToolCallBlock
-from core.root_agent import RootAgent
-from core.tools.shared.base import ToolResult
+from core.agent import Agent
+from core.tools.base import ToolResult
 from core.tools import get_tool_by_name
 
 
@@ -57,9 +57,9 @@ def config():
 
 @pytest.fixture
 def agent(config, test_workspace):
-    """创建 RootAgent 实例"""
+    """创建 Master Agent 实例"""
     test_uuid = secrets.token_hex(4)
-    agent_instance = RootAgent(config, cwd=test_workspace, workspace_uuid=test_uuid)
+    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
     yield agent_instance
     # 清理
     project_dir = Path(__file__).parent.parent

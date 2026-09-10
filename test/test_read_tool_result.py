@@ -10,7 +10,7 @@ class TestReadToolResult:
 
     def test_reads_compacted_result(self, test_workspace):
         """Should read tool result file from session directory."""
-        from core.tools.shared.read_tool_result import ReadToolResultTool
+        from core.tools.read_tool_result import ReadToolResultTool
 
         # Create mock session manager
         test_workspace = Path(test_workspace)
@@ -33,7 +33,7 @@ class TestReadToolResult:
 
     def test_file_not_found(self, test_workspace):
         """Should return error when file doesn't exist."""
-        from core.tools.shared.read_tool_result import ReadToolResultTool
+        from core.tools.read_tool_result import ReadToolResultTool
 
         test_workspace = Path(test_workspace)
         session_dir = test_workspace / "sessions" / "abc123"
@@ -49,8 +49,8 @@ class TestReadToolResult:
         assert "not found" in result.output.lower()
 
     def test_searches_exec_directories(self, test_workspace):
-        """Should search exec_* subdirectories for SubAgent results."""
-        from core.tools.shared.read_tool_result import ReadToolResultTool
+        """Should search exec_* subdirectories for Agent results."""
+        from core.tools.read_tool_result import ReadToolResultTool
 
         test_workspace = Path(test_workspace)
         session_dir = test_workspace / "sessions" / "abc123"
@@ -58,9 +58,9 @@ class TestReadToolResult:
         exec_dir.mkdir(parents=True)
 
         # Create file in exec directory
-        tool_use_id = "toolu_subagent123"
+        tool_use_id = "toolu_agent123"
         result_file = exec_dir / f"{tool_use_id}.txt"
-        result_file.write_text("SubAgent tool output", encoding="utf-8")
+        result_file.write_text("Agent tool output", encoding="utf-8")
 
         mock_sm = MagicMock()
         mock_sm.session_dir = session_dir
@@ -69,11 +69,11 @@ class TestReadToolResult:
         result = tool.execute(tool_use_id=tool_use_id)
 
         assert not result.is_error
-        assert "SubAgent tool output" in result.output
+        assert "Agent tool output" in result.output
 
     def test_empty_output(self, test_workspace):
         """Should handle empty file gracefully."""
-        from core.tools.shared.read_tool_result import ReadToolResultTool
+        from core.tools.read_tool_result import ReadToolResultTool
 
         test_workspace = Path(test_workspace)
         session_dir = test_workspace / "sessions" / "abc123"
@@ -94,7 +94,7 @@ class TestReadToolResult:
 
     def test_no_session_manager(self, test_workspace):
         """Should return error when session_manager is not available."""
-        from core.tools.shared.read_tool_result import ReadToolResultTool
+        from core.tools.read_tool_result import ReadToolResultTool
 
         test_workspace = Path(test_workspace)
         tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=None)

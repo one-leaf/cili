@@ -7,8 +7,8 @@
 3. 误拦修复：字符串字面量中的关键字不再触发拦截；$(...)/`...` 子表达式仍参与扫描
 """
 
-from core.tools.shared.bash import BashTool
-from core.tools.shared.pwsh import PwshTool
+from core.tools.bash import BashTool
+from core.tools.pwsh import PwshTool
 
 
 def _assert_blocked(check, cmd: str):

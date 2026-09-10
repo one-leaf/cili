@@ -462,7 +462,7 @@ class ToolResultBlock:
     tool_use_id: str = ""
     content: str | list[dict] = ""  # 纯文本或多模态内容
     is_error: bool = False
-    # SubAgent 扩展字段（可选）
+    # Worker/Lite 子代理执行扩展字段（可选）
     exec_id: str = ""
     iterations: int = 0
     message_count: int = 0

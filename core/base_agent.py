@@ -1,4 +1,4 @@
-"""BaseAgent - unified agent loop for RootAgent and SubAgent.
+"""BaseAgent - unified agent loop shared by the single Agent class.
 
 Provides shared infrastructure for agent execution:
 - Message management (self.messages)
@@ -7,10 +7,8 @@ Provides shared infrastructure for agent execution:
 - LLM calling with 413 retry (thinking content passes through)
 - Usage tracking
 
-Subclasses (RootAgent, SubAgent) customize:
-- Tool creation (override _create_tools())
-- System prompt building (override _build_system_prompt())
-- Callbacks (RootAgent has streaming callbacks)
+`core.agent.Agent` subclasses this and customizes behavior via role JSON
+(tools, system prompt blocks, user layers) instead of per-class overrides.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ import httpx
 from core.config import Config, ModelConfig
 from core.llm import LLMClient, LLMResponse, format_llm_error, Message, TextBlock, UsageData
 from core.session import generate_short_id
-from core.tools.shared.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +59,7 @@ class BaseAgent:
             max_iterations: Maximum tool call iterations
         """
         self.config = config
+        self.model = config.model
         self.workspace_uuid = workspace_uuid
         self.cwd = cwd or os.getcwd()
         self.session_dir = session_dir
@@ -96,8 +95,10 @@ class BaseAgent:
         self._on_tool_call: Callable[[str, dict, str], None] | None = None
         self._on_tool_result: Callable[[str, str, bool, str], None] | None = None
 
-        # Session ID for LiteLLM routing (subclasses set this)
-        self._session_id: str = ""
+        # Session ID for LLM routing — the unified Agent sets this before
+        # super().__init__ (interactive: current session; autonomous: exec_id).
+        if not getattr(self, "_session_id", None):
+            self._session_id: str = ""
 
     # ========== Message Management ==========
 
@@ -129,7 +130,7 @@ class BaseAgent:
         """Save messages to session_dir/index.json.
 
         Merges with the existing file so name/metadata written by
-        SessionManager (or SubAgent progress logs) are preserved — this save
+        SessionManager (or Agent progress logs) are preserved — this save
         only updates the messages and the caller-provided metadata.
 
         Args:
@@ -292,7 +293,7 @@ class BaseAgent:
         # Tools that need external file for streaming (frontend polling)
         _STREAMING_TOOLS = {"bash", "python"}
         # Placeholder tools: output goes directly in content, no external file
-        _PLACEHOLDER_TOOLS = {"ask_user", "subagent"}
+        _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
 
         # Setup output file path
         output_filename = f"{tool_use_id}.txt" if tool_use_id else ""
@@ -388,7 +389,7 @@ class BaseAgent:
             "is_error": result.error,
         }
 
-        # Add completed=False to block-level _meta for placeholder tools (ask_user, subagent)
+        # Add completed=False to block-level _meta for placeholder tools (ask_user, agent)
         if result.completed is False:
             if "_meta" not in result_dict:
                 result_dict["_meta"] = {}
@@ -575,7 +576,7 @@ class BaseAgent:
         """
         from core.compression import microcompact_tool_results, count_messages_tokens
 
-        MAX_TOKENS = self.config.model.max_context_tokens
+        MAX_TOKENS = self.model.max_context_tokens
         MICROCOMPACT_KEEP_RECENT = 6
         FULL_COMPACT_TOKEN_RATIO = 0.80
         MAX_BODY_SIZE = 3_000_000
@@ -747,7 +748,7 @@ class BaseAgent:
                     conversation_parts.append(f"{role}: {' '.join(texts)}")
 
         conversation_text = "\n".join(conversation_parts)
-        max_chars = min(50000, self.config.model.max_context_tokens * 2)
+        max_chars = min(50000, self.model.max_context_tokens * 2)
         if len(conversation_text) > max_chars:
             conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
 
@@ -1049,7 +1050,7 @@ class BaseAgent:
         Raises:
             RuntimeError: LLM 调用最终失败（内部重试耗尽后抛出，
                 消息为 format_llm_error 生成的友好文本）。
-                调用方需自行捕获处理——不抛会导致 SubAgent 把错误
+                调用方需自行捕获处理——不抛会导致 Agent 把错误
                 误判为正常完成。用户停止不视为错误（返回 stop_reason="stopped"）。
         """
         if streaming:
@@ -1064,7 +1065,7 @@ class BaseAgent:
         messages = self._resolve_tool_results(messages)
         messages = self._strip_meta_from_messages(messages)
 
-        if not self.config.model.multimodal:
+        if not self.model.multimodal:
             messages = self._strip_images_from_messages(messages)
 
         # Convert dict messages to Message objects
@@ -1095,7 +1096,7 @@ class BaseAgent:
                 self.save_messages()
 
                 retry_messages = self._get_messages_with_header()
-                if not self.config.model.multimodal:
+                if not self.model.multimodal:
                     retry_messages = self._strip_images_from_messages(retry_messages)
                 retry_message_objects = self._convert_to_message_objects(retry_messages)
                 try:
@@ -1142,7 +1143,7 @@ class BaseAgent:
         messages = self._resolve_tool_results(messages)
         messages = self._strip_meta_from_messages(messages)
 
-        if not self.config.model.multimodal:
+        if not self.model.multimodal:
             messages = self._strip_images_from_messages(messages)
 
         # Convert dict messages to Message objects
@@ -1192,7 +1193,7 @@ class BaseAgent:
                     message_objects = self._get_messages_with_header()
                     message_objects = self._resolve_tool_results(message_objects)
                     message_objects = self._strip_meta_from_messages(message_objects)
-                    if not self.config.model.multimodal:
+                    if not self.model.multimodal:
                         message_objects = self._strip_images_from_messages(message_objects)
                     message_objects = self._convert_to_message_objects(message_objects)
                 else:

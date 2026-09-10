@@ -110,14 +110,14 @@ deadline 前会抱怨但执行力强
 **特点**：
 - 每天凌晨 2 点执行（cron 表达式 `0 2 * * *`）
 - 全量扫描所有对话，直接生成最新结果，无需合并历史
-- 通过 RootAgent 执行（在 System workspace 的 "[Cron] 任务描述" session 中，RootAgent 可自主委派 SubAgent）
+- 通过 Master Agent 执行（在 System workspace 的 "[Cron] 任务描述" session 中，Master Agent 可自主委派 Worker/Lite 子代理）
 - 结果保存在 System workspace 的 session 中（UI 可见）
 
 ### 提取流程
 
 ```
 1. Cron 触发（每天凌晨 2 点）
-2. RootAgent 在 System workspace 的 cron session 中执行任务（可自主委派 SubAgent）
+2. Master Agent 在 System workspace 的 cron session 中执行任务（可自主委派 Worker/Lite 子代理）
 3. Agent 扫描工作区（排除 system）
 4. 对每个工作区：
    a. 比较 session 的 metadata.updated_at vs user-profile.md 的 updated_at
@@ -132,12 +132,12 @@ deadline 前会抱怨但执行力强
 
 ### 自动加载流程
 
-用户画像在 `build_root_context()` 和 `build_sub_context()` 中自动加载（RootAgent 与 SubAgent 相同），注入到每次对话的上下文中：
+用户画像在 `build_environment_context()` 中自动加载（所有角色相同），作为 `context` user 层注入到每次对话的上下文中：
 
 ```python
 # core/prompts.py
 
-def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
+def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     # ... Workspace 和 Memory 部分 ...
 
     # User Profile（自动从 user-profile.md 加载）
@@ -248,9 +248,9 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 | 文件 | 职责 |
 |------|------|
 | `core/config.py` | 提供 `get_user_profile_path()` 路径函数 |
-| `core/prompts.py` | `build_root_context()` / `build_sub_context()` 自动加载用户画像 |
+| `core/prompts.py` | `build_environment_context()` 自动加载用户画像（context user 层） |
 | `core/cron.d/extract_user_info.json` | Cron 任务配置（内联 task/plan，cron 表达式每天 2 点） |
-| `core/tools/shared/memory.py` | 仅处理 knowledge 和 skill（不涉及用户画像） |
+| `core/tools/memory.py` | 仅处理 knowledge 和 skill（不涉及用户画像） |
 
 ## 参考文档
 

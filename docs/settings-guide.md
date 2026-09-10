@@ -28,9 +28,10 @@ Cili Agent/
 
 ```json
 {
-  "model": { ... },       // 主模型配置（必填）
-  "llm_model": { ... },  // LLM 工具模型配置（可选）
-  "system": { ... }      // 系统参数配置
+  "model": { ... },           // 主模型配置（必填，所有角色默认继承）
+  "worker_model": { ... },    // Worker 角色模型（可选，缺省继承主模型）
+  "lite_model": { ... },      // Lite 角色模型（可选，缺省继承主模型）
+  "system": { ... }           // 系统参数配置
 }
 ```
 
@@ -274,12 +275,12 @@ Cili Agent/
 
 ---
 
-## 二、LLM 工具模型配置（llm_model）
+## 二、角色模型配置（worker_model / lite_model）
 
-这是一个**可选**的配置，专供 Agent 的 `llm` 工具使用——该工具用于单次批处理文本任务（翻译、摘要、提取等）。消息压缩等 Agent 内部后台任务使用主模型，与本配置无关。
+这是两个**可选**的配置，分别指定 **Worker** 和 **Lite** 角色使用的模型。Worker/Lite 是自主执行任务的子代理（通过 `agent` 工具委派），可以用更便宜/更快的模型降低成本。
 
 ```json
-"llm_model": {
+"worker_model": {
   "name": "claude-haiku-4-5",
   "interface_type": "anthropic",
   "api_key": "sk-xxx",
@@ -287,7 +288,7 @@ Cili Agent/
   "max_tokens": 8192,
   "max_context_tokens": 200000,
   "multimodal": false,
-  "temperature": 0.1,
+  "temperature": 0.2,
   "reasoning_effort": ""
 }
 ```
@@ -296,18 +297,23 @@ Cili Agent/
 
 ### 和主模型的区别
 
-| | 主模型（model） | LLM 工具模型（llm_model） |
+| | 主模型（model） | Worker/Lite 模型（worker_model / lite_model） |
 |--|--------------|----------------------|
-| 用途 | 和你对话、执行任务 | `llm` 工具的单次调用（翻译、摘要、提取等） |
-| 调用方式 | 多轮对话 | 单次调用 |
+| 用途 | Master 角色：和你对话、执行任务 | Worker/Lite 子代理：自主执行委派任务 |
 | 要求 | 需要较好的能力 | 可以用更便宜/更快的模型 |
 | 是否必填 | ✅ 必填 | ❌ 可选 |
 
+### 继承规则
+
+- **未配置时继承主模型**：`worker_model`/`lite_model` 缺省或 `name` 为空时，对应角色直接使用 `model`（Master 模型），所有字段（api_key、base_url 等）完全一致
+- **只填 name 即可部分覆盖**：只要填了 `name`，其余字段自动继承主模型的对应值（如 api_key、base_url、temperature 等）。如果某个字段需要不同（如更小的 max_tokens），单独写上即可
+- **api_key 复用**：填了 name 但没填 `api_key`，会自动复用主模型的 api_key
+
 ### 使用建议
 
-- **推荐搭配一个便宜快速的小模型**，比如 Claude Haiku、GPT-4o-mini 等
-- 如果不想配置，直接删掉整个 `"llm_model": { ... }` 块即可，`llm` 工具将不可用（不会出现在工具列表中），其他功能不受影响
-- 如果配置了但没填 `api_key`，会自动复用主模型的 api_key
+- **Worker 角色**：负责较复杂的自主任务（完整工具集、含检查阶段），建议配一个能力适中的模型
+- **Lite 角色**：只读 read/write/edit/bash 的最小执行，建议配最便宜快速的小模型
+- **不要配**：如果想全部使用主模型，直接不写这两个块即可
 
 ---
 
@@ -547,16 +553,15 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
     "temperature": 0.2,
     "reasoning_effort": ""
   },
-  "llm_model": {
+  "worker_model": {
+    "name": "claude-sonnet-4-6",
+    "interface_type": "anthropic",
+    "max_tokens": 8192
+  },
+  "lite_model": {
     "name": "claude-haiku-4-5",
     "interface_type": "anthropic",
-    "api_key": "sk-ant-api03-你的密钥",
-    "base_url": "https://api.anthropic.com",
-    "max_tokens": 8192,
-    "max_context_tokens": 200000,
-    "multimodal": false,
-    "temperature": 0.1,
-    "reasoning_effort": ""
+    "max_tokens": 8192
   },
   "system": {
     "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/",
@@ -646,13 +651,13 @@ A：通过 Web UI 设置页面修改的配置会立即生效（会通知已创�
 
 A：启动时会报错提示"No API key found"或连接失败。请检查密钥是否正确、是否复制完整。
 
-### Q：model 和 llm_model 必须用同一家提供商吗？
+### Q：model 和 worker_model / lite_model 必须用同一家提供商吗？
 
-A：不需要。你可以主模型用 Anthropic，llm_model 用 OpenAI，完全没问题。它们各自独立配置。
+A：不需要。你可以主模型用 Anthropic，worker_model 用 OpenAI，完全没问题。它们各自独立配置（前提是填写了对应的 `name`；未填 name 时角色回退继承主模型）。
 
-### Q：llm_model 不配会怎样？
+### Q：worker_model / lite_model 不配会怎样？
 
-A：不影响 Agent 的正常对话（消息压缩等后台任务本来就使用主模型），但 `llm` 工具将不可用（不会出现在工具列表中），需要单次批处理文本（翻译、提取等）时无法使用。
+A：不影响任何功能。对应角色（Worker/Lite 子代理）直接使用主模型 `model`，只是无法通过更便宜的模型降低委派任务的成本。
 
 ### Q：max_context_tokens 设得比模型实际支持的大怎么办？
 

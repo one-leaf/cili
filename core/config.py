@@ -102,6 +102,19 @@ class ModelConfig:
             "reasoning_effort": self.reasoning_effort,
         }
 
+    def merged_with(self, override: dict) -> "ModelConfig":
+        """Return a copy with fields present in *override* applied on top.
+
+        Used for worker/lite model inheritance: an override with only a subset
+        of fields (e.g. just ``{"name": "x"}``) keeps all other fields from
+        this (master) model.
+        """
+        data = self.to_dict()
+        for key, value in override.items():
+            if key in data:
+                data[key] = value
+        return ModelConfig.from_dict(data)
+
 
 @dataclass
 class SystemConfig:
@@ -140,14 +153,15 @@ class SystemConfig:
 @dataclass
 class Config:
     """Global configuration."""
-    model: ModelConfig          # RootAgent model: multi-turn conversation for root and sub-agent
-    llm_model: ModelConfig | None = None  # LLM model: single-turn for llm_tool (optional)
+    model: ModelConfig          # Master (main) model: multi-turn conversation for all agents
+    worker_model: ModelConfig | None = None  # Worker model; None = inherit master model
+    lite_model: ModelConfig | None = None    # Lite model; None = inherit master model
     system: SystemConfig = field(default_factory=SystemConfig)  # System parameters
 
     @classmethod
     def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
         """Build Config from raw global config dict with CLI/env overrides."""
-        # ── RootAgent model ──
+        # ── Master model ──
         model_data = global_config.get("model", {})
 
         api_key = (
@@ -183,24 +197,22 @@ class Config:
             "base_url": base_url,
         })
 
-        # ── LLM model (optional) ──
-        llm_model = None
-        llm_model_data = global_config.get("llm_model", {})
-        if llm_model_data and llm_model_data.get("name"):
-            llm_api_key = llm_model_data.get("api_key") or api_key
-            if llm_api_key:
-                llm_model = ModelConfig.from_dict({
-                    **llm_model_data,
-                    "api_key": llm_api_key,  # Inject fallback key
-                })
-                # bg114 endpoint forces model name to "dgx"
-                if "bg114" in llm_model.base_url:
-                    llm_model.name = "dgx"
+        # ── Worker/Lite model (optional; inherit master when unset) ──
+        worker_model = cls._parse_role_model(global_config, "worker", model)
+        lite_model = cls._parse_role_model(global_config, "lite", model)
 
         # ── System ──
         system = SystemConfig.from_dict(global_config.get("system", {}))
 
-        return cls(model=model, llm_model=llm_model, system=system)
+        return cls(model=model, worker_model=worker_model, lite_model=lite_model, system=system)
+
+    @staticmethod
+    def _parse_role_model(global_config: dict, role: str, base_model: ModelConfig) -> ModelConfig | None:
+        """Parse ``{role}_model`` config; returns None when unset or missing name."""
+        data = global_config.get(f"{role}_model", {})
+        if not data or not data.get("name"):
+            return None
+        return base_model.merged_with(data)
 
     def to_dict(self) -> dict:
         """Convert to a serializable dict (for API response)."""
@@ -208,8 +220,10 @@ class Config:
             "model": self.model.to_dict(),
             "system": self.system.to_dict(),
         }
-        if self.llm_model:
-            result["llm_model"] = self.llm_model.to_dict()
+        if self.worker_model:
+            result["worker_model"] = self.worker_model.to_dict()
+        if self.lite_model:
+            result["lite_model"] = self.lite_model.to_dict()
         return result
 
 

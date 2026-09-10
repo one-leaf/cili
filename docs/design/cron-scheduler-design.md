@@ -11,7 +11,7 @@ Cron 调度器为 Cili Agent 提供周期性的后台任务执行能力，用于
 **核心特性**：
 - 基于 JSON 配置的任务定义，支持内联或动态 Python 函数
 - 支持两种调度类型：`interval`（分钟间隔）和 `cron`（标准 cron 表达式）
-- **通过 RootAgent 执行**：Cron 在 cron session 中运行 RootAgent（非流式），RootAgent 走正常 agent loop，自主决定是否委派 SubAgent
+- **通过 Master Agent 执行**：Cron 在 cron session 中运行 Master Agent（非流式），Master Agent 走正常 agent loop，自主决定是否委派 Worker/Lite 子代理
 - **System workspace**：专用于系统维护任务（UUID: `system`，cwd: `data/`）
 - 后台线程每 60 秒检查任务到期时间，per-workspace lock 串行化
 - **last_run 持久化**：任务执行后自动保存到状态文件，重启后恢复
@@ -30,19 +30,19 @@ Cron 触发
 CronTask.execute()
   ├─ 调用 get_tasks() 获取任务列表（空 → 跳过本次执行）
   ├─ 解析目标 workspace（System 或用户指定）
-  ├─ _get_or_create_root_agent() — 按 workspace 获取/缓存 RootAgent（运行中 → 跳过本次）
+  ├─ _get_or_create_master_agent() — 按 workspace 获取/缓存 Master Agent（运行中 → 跳过本次）
   ├─ agent.switch_session() — 切换到 cron session
   │   （用 state 中的 session_id 定位，不存在则新建 "[Cron] 任务描述"）
   ├─ agent.invalidate_all_messages() — 标记旧消息无效（每次运行上下文干净）
   └─ agent.run(cron_message, streaming=False) — 注入 cron user message，运行 agent loop
   ↓
-RootAgent.run()                      ← cron 直接执行（非流式）
-  └─ 正常 agent loop，自主执行工具完成任务；需要时通过 subagent 工具委派 SubAgent
+Agent.run(cron_message, streaming=False)  ← cron 直接执行（master 角色，非流式）
+  └─ 正常 agent loop，自主执行工具完成任务；需要时通过 agent 工具委派 Worker/Lite 子代理
 ```
 
 **关键点**：
-- Cron **直接运行 RootAgent**，RootAgent 走正常 agent loop，自主决定是否委派 SubAgent
-- Cron 维护独立的 RootAgent 缓存（`_cron_agents`，按 workspace 复用），与 Web UI 的 agents 缓存互不影响
+- Cron **直接运行 Master Agent**，Master Agent 走正常 agent loop，自主决定是否委派 Worker/Lite 子代理
+- Cron 维护独立的 Master Agent 缓存（`_cron_agents`，按 workspace 复用），与 Web UI 的 agents 缓存互不影响
 - 每次 cron 运行前调用 `invalidate_all_messages()`，保持上下文干净，不累积历史
 - Cron 消息以普通 user message 注入 session，用户可在 session 中继续对话
 
@@ -62,7 +62,7 @@ RootAgent.run()                      ← cron 直接执行（非流式）
 │  └──────────────────┘     └──────────────┬───────────────┘  │
 │                                          │                   │
 │                               ┌──────────▼───────────┐       │
-│                               │ RootAgent            │       │
+│                               │ Master Agent            │       │
 │                               │ → session (via state) │      │
 │                               │ → 非流式执行        │      │
 │                               │ → 结果写入 session  │      │
@@ -393,7 +393,7 @@ CronTask.execute():
 │   │   ├─ 加载 workspace 配置获取实际工作目录 cwd（非 system 时）
 │   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 定位（不存在则新建）
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
-│   │   ├─ _get_or_create_root_agent(ws_uuid, workspace_dir) — 按 workspace 缓存 RootAgent
+│   │   ├─ _get_or_create_master_agent(ws_uuid, workspace_dir) — 按 workspace 缓存 Master Agent
 │   │   │   └─ agent 正在运行 → 返回 None → 本次跳过
 │   │   ├─ agent.switch_session(cron_session_id)（当前 session 不同时切换）
 │   │   ├─ agent.invalidate_all_messages() — 标记旧消息无效
@@ -415,9 +415,9 @@ CronTask.execute():
  "iterations": 所有任务迭代数之和}
 ```
 
-- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；RootAgent 忙 → `{"status": "skipped", "message": "RootAgent is busy", "workspace_uuid": "..."}`
+- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；Master Agent 忙 → `{"status": "skipped", "message": "Master Agent is busy", "workspace_uuid": "..."}`
 - `completed`：所有任务成功；`partial`：至少一个任务失败或部分成功
-- `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`（cron 直接运行 RootAgent，固定为 0），异常时含 `error`
+- `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`（cron 直接运行 Master Agent，固定为 0），异常时含 `error`
 
 ### 6.3 自循环任务（remaining 计数器）
 
@@ -445,7 +445,7 @@ CronScheduler._execute_task(task):
 
 **与 loop 工具配合**：
 
-loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 通过 `loop(action="next", source_file="file_list.txt")` 自动加载项列表并获取下一个待处理项，用 `loop(action="done/fail")` 跟踪进度。
+loop 工具用于跟踪批量任务进度（如处理大量文件）。Worker/Lite 子代理通过 `loop(action="next", source_file="file_list.txt")` 自动加载项列表并获取下一个待处理项，用 `loop(action="done/fail")` 跟踪进度。
 
 ```
 示例：导入 10005 个文件
@@ -461,7 +461,7 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 
   4. loop(action="status", source_file="file_list.txt") → 查看进度
 
 任务终止：
-  - 所有文件处理完毕 → pending=0 → SubAgent 自行结束
+  - 所有文件处理完毕 → pending=0 → Worker/Lite 子代理自行结束
   - 或 cron.remaining 递减到 0 → 自动 disable
 ```
 
@@ -471,12 +471,12 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。SubAgent 
 
 ### 6.4 Cron Message 格式
 
-注入到 session 的 user message（提示 RootAgent 使用 subagent 工具委派执行）：
+注入到 session 的 user message（提示 Master Agent 使用 agent 工具委派执行）：
 
 ```
 [Cron 定时任务触发]
 
-请使用 subagent 工具执行以下任务：
+请使用 agent 工具执行以下任务：
 
 ## 任务描述
 扫描工作区，提取用户信息到 user-profile.md
@@ -547,9 +547,9 @@ class CronTask:
 |------|------|
 | `should_run(now) -> bool` | 检查是否应该运行 |
 | `get_tasks() -> list[dict]` | 调用 task_fn 获取任务列表 |
-| `execute() -> dict` | 通过 RootAgent 执行所有任务 |
+| `execute() -> dict` | 通过 Master Agent 执行所有任务 |
 | `mark_executed(now, result)` | 更新状态并持久化 |
-| `_execute_in_session(ws, item) -> dict` | 在 workspace 的 cron session 中通过 RootAgent 执行 |
+| `_execute_in_session(ws, item) -> dict` | 在 workspace 的 cron session 中通过 Master Agent 执行 |
 | `_resolve_workspace_dir(uuid) -> str` | 解析 workspace 目录 |
 | `_resolve_cron_session(dir) -> str` | 用 state 中的 session_id 定位，不存在则新建（名字用任务描述） |
 | `_build_cron_message(item) -> str` | 构造 user message |
@@ -588,18 +588,18 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 
 ## 九、设计决策
 
-### 9.1 为什么用 RootAgent 而不是直接创建 SubAgent？
+### 9.1 为什么用 Master Agent 而不是直接创建 Worker/Lite 子代理？
 
-- **统一入口**：RootAgent 走正常 agent loop，自主决定直接执行还是委派 SubAgent，任务处理更灵活
-- **工具完整**：RootAgent 拥有完整工具集（含 subagent 工具），无需 Cron 侧特殊编排
+- **统一入口**：Master Agent 走正常 agent loop，自主决定直接执行还是委派 Worker/Lite 子代理，任务处理更灵活
+- **工具完整**：Master Agent 拥有完整工具集（含 agent 工具），无需 Cron 侧特殊编排
 - **非流式执行**：Cron 后台任务无需流式输出，`agent.run(streaming=False)` 即可
 - **上下文干净**：每次运行前 `invalidate_all_messages()`，避免 cron 历史消息累积撑爆上下文
-- **按 workspace 缓存**：`_cron_agents` 复用 RootAgent 实例，运行中的 workspace 跳过本次执行
+- **按 workspace 缓存**：`_cron_agents` 复用 Master Agent 实例，运行中的 workspace 跳过本次执行
 
 ### 9.2 为什么引入 System workspace？
 
 - **职责分离**：系统维护任务与用户工作区隔离
-- **统一模型**：cron 通过 RootAgent 执行任务，System workspace 为系统 cron 的 RootAgent 提供"宿主"
+- **统一模型**：cron 通过 Master Agent 执行任务，System workspace 为系统 cron 的 Master Agent 提供"宿主"
 - **安全保护**：不能删除/修改，防止误操作
 
 ### 9.3 为什么 "[Cron]" 独立 session？
@@ -622,8 +622,8 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 |------|------|
 | `core/cron.py` | CronScheduler + CronTask + cron 表达式解析 + remaining 计数器 |
 | `core/cron.d/*.json` | 系统级任务配置 |
-| `core/tools/shared/cron_tool.py` | 用户级 cron 管理工具（含 max_executions 参数） |
-| `core/tools/shared/loop.py` | 循环任务进度追踪（配合 cron 实现自循环任务） |
+| `core/tools/cron_tool.py` | 用户级 cron 管理工具（含 max_executions 参数） |
+| `core/tools/loop.py` | 循环任务进度追踪（配合 cron 实现自循环任务） |
 | `data/cili/cron.d/user_tasks.json` | 用户级任务配置 |
 | `data/cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
 | `data/cili/tools/loop/` | loop 工具状态文件 |
@@ -636,4 +636,4 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 **文档版本**: v2.2
 **创建时间**: 2026-08-25
 **更新时间**: 2026-09-09
-**状态**: 已实现（RootAgent 执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）
+**状态**: 已实现（Master Agent 执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）

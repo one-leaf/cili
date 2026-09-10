@@ -102,20 +102,20 @@ def test_workspace_dir(tmp_path):
     return workspace_dir
 
 
-# ── RootAgent 集成测试（参数化协议）────────────────────────────────────────────
+# ── Master Agent 集成测试（参数化协议）─────────────────────────────────────────
 
 
-class TestRootAgentIntegration:
-    """RootAgent 集成测试：使用 DGX 端点，覆盖 Anthropic 和 OpenAI 协议。
+class TestMasterAgentIntegration:
+    """Master Agent 集成测试：使用 DGX 端点，覆盖 Anthropic 和 OpenAI 协议。
 
     每个测试方法会被参数化运行两次：anthropic 协议和 openai 协议。
     """
 
     def test_basic_conversation(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """基本对话：2+2=4"""
-        from core.root_agent import RootAgent
+        from core.agent import Agent
 
-        agent = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         outputs = []
 
         agent.run(
@@ -132,9 +132,9 @@ class TestRootAgentIntegration:
 
     def test_tool_execution(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """工具调用：执行 bash 命令。"""
-        from core.root_agent import RootAgent
+        from core.agent import Agent
 
-        agent = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         tool_calls = []
         tool_results = []
 
@@ -160,9 +160,9 @@ class TestRootAgentIntegration:
 
     def test_session_persistence(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """会话持久化：跨 agent 实例加载消息。"""
-        from core.root_agent import RootAgent
+        from core.agent import Agent
 
-        agent1 = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent1 = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         session_id = agent1.current_session_id
 
         agent1.run(
@@ -175,7 +175,7 @@ class TestRootAgentIntegration:
         assert msg_count_1 >= 2
         agent1.cleanup()
 
-        agent2 = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent2 = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         agent2.switch_session(session_id)
 
         assert len(agent2.messages) == msg_count_1, \
@@ -191,9 +191,9 @@ class TestRootAgentIntegration:
 
     def test_usage_tracking(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """使用量追踪。"""
-        from core.root_agent import RootAgent
+        from core.agent import Agent
 
-        agent = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         agent.run("Say 'hello'", on_text=lambda t: None)
 
         usage = agent.get_usage()
@@ -204,9 +204,9 @@ class TestRootAgentIntegration:
 
     def test_session_switch(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """会话切换。"""
-        from core.root_agent import RootAgent
+        from core.agent import Agent
 
-        agent = RootAgent(dgx_config, cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
 
         session1_id = agent.current_session_id
         agent.run("Session 1 message", on_text=lambda t: None)
@@ -226,22 +226,22 @@ class TestRootAgentIntegration:
         agent.cleanup()
 
 
-# ── SubAgent 集成测试（mock load_config 注入 DGX）─────────────────────────────
+# ── Agent 集成测试（mock load_config 注入 DGX）─────────────────────────────
 
 
-class TestSubAgentIntegration:
-    """SubAgent 集成测试：mock load_config() 注入 DGX 配置。
+class TestAgentIntegration:
+    """Agent 集成测试：mock load_config() 注入 DGX 配置。
 
-    SubAgent 内部调用 load_config()，通过 mock 注入 DGX 配置。
+    Agent 内部调用 load_config()，通过 mock 注入 DGX 配置。
     同时覆盖 anthropic / openai 两种协议。
     """
 
-    def _run_subagent(self, task, test_workspace_dir, protocol, exec_id=None):
-        """创建并运行 SubAgent（mock load_config 注入 DGX 配置）。"""
-        from core.sub_agent import SubAgent
+    def _run_agent(self, task, test_workspace_dir, protocol, exec_id=None):
+        """创建并运行 Worker Agent（DGX 配置直传）。"""
+        from core.agent import Agent
 
         dgx_config = make_dgx_config(protocol)
-        session_dir = test_workspace_dir / f"subagent_{secrets.token_hex(4)}"
+        session_dir = test_workspace_dir / f"agent_{secrets.token_hex(4)}"
         session_dir.mkdir(parents=True, exist_ok=True)
 
         kwargs = {
@@ -252,18 +252,17 @@ class TestSubAgentIntegration:
         if exec_id:
             kwargs["exec_id"] = exec_id
 
-        with patch("core.sub_agent.load_config", return_value=dgx_config):
-            subagent = SubAgent(**kwargs)
-            result = subagent.run()
-            subagent.close()
+        agent = Agent(dgx_config, role="worker", **kwargs)
+        result = agent.run()
+        agent.close()
 
         return result, session_dir
 
     @pytest.mark.parametrize("protocol", ["anthropic", "openai"])
     def test_basic_execution(self, protocol, test_workspace_dir):
-        """SubAgent 基本执行。"""
-        result, session_dir = self._run_subagent(
-            "Run the command 'echo SubAgent Test' and report the output.",
+        """Agent 基本执行。"""
+        result, session_dir = self._run_agent(
+            "Run the command 'echo Agent Test' and report the output.",
             test_workspace_dir, protocol,
         )
 
@@ -271,16 +270,16 @@ class TestSubAgentIntegration:
             f"[{protocol}] Unexpected status: {result['status']}"
         if result["status"] == "completed":
             assert "summary" in result
-            assert "SubAgent Test" in result.get("summary", ""), \
-                f"[{protocol}] Expected 'SubAgent Test' in summary"
+            assert "Agent Test" in result.get("summary", ""), \
+                f"[{protocol}] Expected 'Agent Test' in summary"
 
-        messages = _read_subagent_messages(session_dir)
-        assert len(messages) > 0, f"[{protocol}] SubAgent should have messages"
+        messages = _read_agent_messages(session_dir)
+        assert len(messages) > 0, f"[{protocol}] Agent should have messages"
 
     @pytest.mark.parametrize("protocol", ["anthropic", "openai"])
     def test_tool_execution_creates_files(self, protocol, test_workspace_dir):
-        """SubAgent 工具调用：输出内联到消息，小输出的外部文件应被清理。"""
-        result, session_dir = self._run_subagent(
+        """Agent 工具调用：输出内联到消息，小输出的外部文件应被清理。"""
+        result, session_dir = self._run_agent(
             "Use bash to run 'ls -la' in the current directory and report what files you see.",
             test_workspace_dir, protocol,
         )
@@ -316,16 +315,17 @@ class TestSubAgentIntegration:
         session_dir.mkdir(parents=True, exist_ok=True)
 
         dgx_config = make_dgx_config(protocol)
-        from core.sub_agent import SubAgent
-        with patch("core.sub_agent.load_config", return_value=dgx_config):
-            subagent = SubAgent(
-                task="Run 'echo Cron Test' and report the output.",
-                cwd=str(test_workspace_dir),
-                session_dir=session_dir,
-                exec_id=exec_id,
-            )
-            result = subagent.run()
-            subagent.close()
+        from core.agent import Agent
+        agent = Agent(
+            dgx_config,
+            role="worker",
+            task="Run 'echo Cron Test' and report the output.",
+            cwd=str(test_workspace_dir),
+            session_dir=session_dir,
+            exec_id=exec_id,
+        )
+        result = agent.run()
+        agent.close()
 
         index_file = session_dir / "index.json"
         assert index_file.exists(), f"index.json should exist at {index_file}"
@@ -339,8 +339,8 @@ class TestSubAgentIntegration:
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 
-def _read_subagent_messages(session_dir):
-    """从 index.json 读取 SubAgent 的消息列表。"""
+def _read_agent_messages(session_dir):
+    """从 index.json 读取 Agent 的消息列表。"""
     index_file = session_dir / "index.json"
     if not index_file.exists():
         return []
@@ -513,7 +513,7 @@ class TestBaseAgentUnitTests:
             "messages": [],
             "metadata": {
                 "usage": {"input_tokens": 100, "output_tokens": 50, "api_calls": 2},
-                "subagent_count": 3,
+                "agent_count": 3,
             },
         }
         (session_dir / "index.json").write_text(
@@ -526,7 +526,7 @@ class TestBaseAgentUnitTests:
         data = json.loads((session_dir / "index.json").read_text(encoding="utf-8"))
         assert data["name"] == "我的会话"
         assert data["metadata"]["usage"]["input_tokens"] == 100
-        assert data["metadata"]["subagent_count"] == 3
+        assert data["metadata"]["agent_count"] == 3
         assert data["messages"] == agent.messages
 
     def test_mark_all_images_invalid_preserves_pairing(self):

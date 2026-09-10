@@ -4,12 +4,12 @@ import os
 import tempfile
 import pytest
 
-from core.tools.shared.bash import BashTool
-from core.tools.shared.python_tool import PythonTool
-from core.tools.shared.read import ReadTool
-from core.tools.shared.edit import EditTool
-from core.tools.shared.grep import GrepTool
-from core.tools.shared.find import FindTool
+from core.tools.bash import BashTool
+from core.tools.python_tool import PythonTool
+from core.tools.read import ReadTool
+from core.tools.edit import EditTool
+from core.tools.grep import GrepTool
+from core.tools.find import FindTool
 
 
 # ========== Bash Tool ==========

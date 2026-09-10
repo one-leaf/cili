@@ -14,7 +14,7 @@ project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
 from core.config import Config, ModelConfig, SystemConfig
-from core.root_agent import RootAgent
+from core.agent import Agent
 from core.tools import create_tools, get_tool_by_name
 import core.cron
 
@@ -76,10 +76,10 @@ def tools(test_workspace):
 
 @pytest.fixture
 def agent(config, test_workspace):
-    """创建 RootAgent 实例"""
+    """创建 Master Agent 实例"""
     # 使用唯一的 workspace_uuid 避免测试冲突
     test_uuid = secrets.token_hex(4)
-    agent_instance = RootAgent(config, cwd=test_workspace, workspace_uuid=test_uuid)
+    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
     yield agent_instance
     # 清理测试生成的 workspace 目录
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -20,7 +20,7 @@ class TestLoopTool:
     @pytest.fixture
     def temp_loop_state(self):
         """临时替换 loop 状态目录"""
-        import core.tools.shared.loop as loop_module
+        import core.tools.loop as loop_module
         original_dir = loop_module.LOOP_STATE_DIR
         with tempfile.TemporaryDirectory() as temp_dir:
             loop_module.LOOP_STATE_DIR = Path(temp_dir) / "state"
@@ -29,7 +29,7 @@ class TestLoopTool:
 
     def test_next_returns_first_item(self, temp_loop_state):
         """next 从文件加载并返回第一个 pending 项（附带进度）"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -42,7 +42,7 @@ class TestLoopTool:
 
     def test_next_returns_null_when_no_pending(self, temp_loop_state):
         """无 pending 项时 next 返回完成提示"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -57,7 +57,7 @@ class TestLoopTool:
 
     def test_next_auto_syncs_new_items(self, temp_loop_state):
         """next 自动同步文件中的新增项"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -76,7 +76,7 @@ class TestLoopTool:
 
     def test_done_marks_item_completed(self, temp_loop_state):
         """done 标记项为已完成"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -91,7 +91,7 @@ class TestLoopTool:
 
     def test_done_error_missing_item(self, temp_loop_state):
         """done 缺少 item 参数时返回错误"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
         result = tool.execute(action="done", source_file="some_file.txt")
@@ -100,7 +100,7 @@ class TestLoopTool:
 
     def test_done_error_item_not_found(self, temp_loop_state):
         """done 项不存在时返回错误"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -111,7 +111,7 @@ class TestLoopTool:
 
     def test_fail_marks_item_failed(self, temp_loop_state):
         """fail 标记项为失败"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -126,7 +126,7 @@ class TestLoopTool:
 
     def test_status_returns_statistics(self, temp_loop_state):
         """status 返回进度统计"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md", "file3.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -144,7 +144,7 @@ class TestLoopTool:
 
     def test_source_file_required(self, temp_loop_state):
         """source_file 是必需参数"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
         result = tool.execute(action="status")
@@ -153,7 +153,7 @@ class TestLoopTool:
 
     def test_next_error_file_not_found(self, temp_loop_state):
         """next 文件不存在且无状态时返回错误"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
         result = tool.execute(action="next", source_file="/nonexistent/file.txt")
@@ -162,7 +162,7 @@ class TestLoopTool:
 
     def test_same_file_same_task(self, temp_loop_state):
         """同一文件路径标识同一任务"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         items_file = _write_items_file(temp_loop_state, ["file1.md", "file2.md"])
         tool = LoopTool(cwd=temp_loop_state, workspace_uuid="test")
@@ -180,7 +180,7 @@ class TestLoopTool:
 
     def test_different_files_different_tasks(self, temp_loop_state):
         """不同文件路径对应不同任务"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         file1 = str(Path(temp_loop_state) / "list1.txt")
         file2 = str(Path(temp_loop_state) / "list2.txt")
@@ -202,7 +202,7 @@ class TestLoopTool:
 
     def test_empty_lines_ignored(self, temp_loop_state):
         """空行被忽略"""
-        from core.tools.shared.loop import LoopTool
+        from core.tools.loop import LoopTool
 
         file_path = Path(temp_loop_state) / "items_blanks.txt"
         file_path.write_text("file1.md\n\n  \nfile2.md\n\n", encoding="utf-8")

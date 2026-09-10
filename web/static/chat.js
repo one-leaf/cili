@@ -222,7 +222,7 @@ function renderMessages(messages) {
 
             // Render tool results as separate tool bubbles
             toolResultBlocks.forEach(block => {
-                // SubAgent 结果：渲染为可折叠的 SubAgent 卡片
+                // 子代理结果：渲染为可折叠的卡片
                 if (block._meta && block._meta.exec_id) {
                     const execId = block._meta.exec_id;
                     const isCompleted = block._meta.completed === true;
@@ -235,7 +235,7 @@ function renderMessages(messages) {
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
                     // 简单处理：用 exec_id 加载详情
-                    renderSubagentRef(saMsg, idx, msgId);
+                    renderAgentRef(saMsg, idx, msgId);
                     return;
                 }
                 // ask_user 等待中：跳过渲染
@@ -333,8 +333,8 @@ function renderMessages(messages) {
     }
 }
 
-// 渲染SubAgent 引用（可折叠卡片）
-function renderSubagentRef(msg, idx, msgId) {
+// 渲染子代理引用（可折叠卡片）
+function renderAgentRef(msg, idx, msgId) {
     const statusIcons = {
         'completed': '✅',
         'error': '❌',
@@ -346,22 +346,22 @@ function renderSubagentRef(msg, idx, msgId) {
     const icon = statusIcons[msg.status] || '📋';
 
     const card = document.createElement('div');
-    card.className = 'message assistant subagent-card';
+    card.className = 'message assistant agent-card';
     card.dataset.execId = msg.exec_id;
     if (msgId) card.dataset.msgId = msgId;
 
     const header = document.createElement('div');
-    header.className = 'subagent-header';
+    header.className = 'agent-header';
     header.innerHTML = `
         <span class="sa-icon">${icon}</span>
-        <span class="sa-title">SubAgent 执行</span>
+        <span class="sa-title">子代理执行</span>
         <span class="sa-task" title="${escapeHtml(msg.task_summary)}">${escapeHtml(msg.task_summary.substring(0, 60))}${msg.task_summary.length > 60 ? '...' : ''}</span>
         <span class="sa-meta">${msg.iterations || 0} 轮 · ${msg.message_count || 0} 条消息</span>
         <span class="sa-toggle">▶</span>
     `;
 
     const detail = document.createElement('div');
-    detail.className = 'subagent-detail';
+    detail.className = 'agent-detail';
     detail.style.display = 'none';
 
     card.appendChild(header);
@@ -449,24 +449,24 @@ function renderTodoList(todos) {
     container.innerHTML = html;
 }
 
-// SubAgent 开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
-function renderSubagentStart(execId, taskSummary) {
+// 子代理开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
+function renderAgentStart(execId, taskSummary) {
     const card = document.createElement('div');
-    card.className = 'message assistant subagent-card';
+    card.className = 'message assistant agent-card';
     card.dataset.execId = execId;
 
     const header = document.createElement('div');
-    header.className = 'subagent-header';
+    header.className = 'agent-header';
     header.innerHTML = `
         <span class="sa-icon">🔄</span>
-        <span class="sa-title">SubAgent 执行中</span>
+        <span class="sa-title">子代理执行中</span>
         <span class="sa-task" title="${escapeHtml(taskSummary)}">${escapeHtml(taskSummary.substring(0, 60))}${taskSummary.length > 60 ? '...' : ''}</span>
         <span class="sa-meta">0 轮 · 0 条消息</span>
         <span class="sa-toggle">▶</span>
     `;
 
     const detail = document.createElement('div');
-    detail.className = 'subagent-detail';
+    detail.className = 'agent-detail';
     detail.style.display = 'none';
 
     card.appendChild(header);
@@ -498,17 +498,17 @@ function renderSubagentStart(execId, taskSummary) {
     });
 }
 
-// SubAgent 完成时更新卡片状态
-function renderSubagentComplete(execId) {
-    const card = chatMessages.querySelector(`.subagent-card[data-exec-id="${execId}"]`);
+// 子代理完成时更新卡片状态
+function renderAgentComplete(execId) {
+    const card = chatMessages.querySelector(`.agent-card[data-exec-id="${execId}"]`);
     if (!card) return;
-    const header = card.querySelector('.subagent-header');
+    const header = card.querySelector('.agent-header');
     if (!header) return;
     // 更新图标和标题
     header.querySelector('.sa-icon').textContent = '✅';
-    header.querySelector('.sa-title').textContent = 'SubAgent 已完成';
+    header.querySelector('.sa-title').textContent = '子代理已完成';
     // 触发一次展开加载以获取最新数据
-    const detail = card.querySelector('.subagent-detail');
+    const detail = card.querySelector('.agent-detail');
     if (detail && detail.style.display === 'block') {
         // 已展开，重新加载内容
         const msg = { exec_id: execId, status: 'completed' };
@@ -803,10 +803,10 @@ function renderAskUserQuestions(container, input, toolUseId) {
                             contentDiv.appendChild(pre);
                             assistantDiv = null;
                             assistantContent = '';
-                        } else if (event.type === 'subagent_start') {
-                            renderSubagentStart(event.exec_id, event.task_summary);
-                        } else if (event.type === 'subagent_complete') {
-                            renderSubagentComplete(event.exec_id);
+                        } else if (event.type === 'agent_start') {
+                            renderAgentStart(event.exec_id, event.task_summary);
+                        } else if (event.type === 'agent_complete') {
+                            renderAgentComplete(event.exec_id);
                         } else if (event.type === 'todo_update') {
                             renderTodoList(event.todos);
                         } else if (event.type === 'retry_clear') {
@@ -1254,12 +1254,12 @@ async function sendMessage() {
                         // 重置 assistantDiv 用于后续文本
                         assistantDiv = null;
                         assistantContent = '';
-                    } else if (event.type === 'subagent_start') {
-                        // SubAgent 开始执行，立即渲染占位卡片
-                        renderSubagentStart(event.exec_id, event.task_summary);
-                    } else if (event.type === 'subagent_complete') {
-                        // SubAgent 完成，更新卡片状态
-                        renderSubagentComplete(event.exec_id);
+                    } else if (event.type === 'agent_start') {
+                        // 子代理开始执行，立即渲染占位卡片
+                        renderAgentStart(event.exec_id, event.task_summary);
+                    } else if (event.type === 'agent_complete') {
+                        // 子代理完成，更新卡片状态
+                        renderAgentComplete(event.exec_id);
                     } else if (event.type === 'todo_update') {
                         // Todo 列表更新，渲染任务清单
                         renderTodoList(event.todos);

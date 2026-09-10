@@ -113,7 +113,7 @@ class TestMessageBusTool:
 
     def _make_tool(self, session_id="test-session"):
         from core.session import SessionManager
-        from core.tools.shared.message_bus_tool import MessageBusTool
+        from core.tools.message_bus_tool import MessageBusTool
         import tempfile
         from pathlib import Path
         tmp = Path(tempfile.mkdtemp())

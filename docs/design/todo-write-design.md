@@ -256,8 +256,8 @@ Agent：直接执行，不需要任务列表
 
 | 文件 | 描述 |
 |------|------|
-| `core/tools/shared/todo.py` | TodoWrite 工具实现 |
-| `core/tools/shared/__init__.py` | 工具注册 |
+| `core/tools/todo.py` | TodoWrite 工具实现 |
+| `core/tools/registry.py` | 统一工具注册表（`"todo"` 条目） |
 | `web/web_api.py` | SSE 事件推送 |
 | `web/static/chat.js` | 前端渲染 |
 | `web/static/style.css` | 样式定义 |
@@ -265,16 +265,17 @@ Agent：直接执行，不需要任务列表
 ### 7.2 工具注册
 
 ```python
-# core/tools/shared/__init__.py
+# core/tools/registry.py
 
-from core.tools.shared.todo import TodoWriteTool
+from core.tools.todo import TodoWriteTool
 
-def create_shared_tools(...):
-    tools = [
-        ...
-        TodoWriteTool(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager),
-    ]
-    return tools
+TOOL_REGISTRY = {
+    ...
+    "todo": _factory(TodoWriteTool),
+    ...
+}
+
+# 角色 JSON（core/agents/{role}.json）的 "tools" 白名单包含 "todo" 时实例化
 ```
 
 ### 7.3 SSE 推送
@@ -294,7 +295,7 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
             event_queue.put(f"data: {todo_event}\n\n")
 ```
 
-`get_todos_from_session` 是 `core/tools/shared/todo.py` 提供的辅助函数：通过 session_manager 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
+`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session_manager 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
 
 ### 7.4 前端渲染
 

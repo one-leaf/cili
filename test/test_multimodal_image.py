@@ -24,7 +24,7 @@ from core.llm.types import (
     blocks_from_dicts,
     Message,
 )
-from core.tools.shared.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult
 
 
 # ── DGX 本地 LLM 端点 ──
@@ -229,7 +229,7 @@ class TestSaveOutputToFileMultimodal:
 
 def _make_tool_instance(output_file: str) -> Tool:
     """创建带 output_file 的 Tool 实例（用于测试 save_output_to_file）。"""
-    from core.tools.shared.read import ReadTool
+    from core.tools.read import ReadTool
     tool = ReadTool(cwd=tempfile.gettempdir(), workspace_uuid="test")
     tool.output_file = output_file
     return tool
@@ -249,7 +249,7 @@ class TestReadToolImage:
         return img_path
 
     def test_read_image_returns_image_block(self, tmp_image):
-        from core.tools.shared.read import ReadTool
+        from core.tools.read import ReadTool
         tool = ReadTool(cwd=os.path.dirname(tmp_image), workspace_uuid="test")
         result = tool.execute(file_path=tmp_image)
 
@@ -523,7 +523,7 @@ class TestFullImagePipeline:
 
     def test_read_save_resolve_round_trip(self, tmp_path):
         """read 工具 → save_output_to_file → 手动模拟 _resolve_tool_results 加载。"""
-        from core.tools.shared.read import ReadTool
+        from core.tools.read import ReadTool
 
         # 1. 生成图片
         img_path = str(tmp_path / "pipeline_test.png")

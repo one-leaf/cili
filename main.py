@@ -188,7 +188,7 @@ def _create_example_config() -> None:
     example_config = {
         "_comment": "Cili Agent 配置示例 - 复制为 setting.json 并修改",
         "model": {
-            "_comment": "主模型配置（用于多轮对话，RootAgent 和 SubAgent 均使用此模型）",
+            "_comment": "主模型配置（Master Agent 使用；Worker/Lite 未单独配置时继承此模型）",
             "name": "claude-sonnet-4-6",
             "interface_type": "anthropic",  # "anthropic" 或 "openai"
             "api_key": "sk-xxx",
@@ -198,8 +198,19 @@ def _create_example_config() -> None:
             "multimodal": True,  # 是否支持图片输入
             "temperature": 0.2,  # 0.1(稳定) ~ 1.0(创意)
         },
-        "llm_model": {
-            "_comment": "LLM 工具模型配置（用于翻译、摘要等单次调用任务，可选）",
+        "worker_model": {
+            "_comment": "Worker 模型配置（可选；仅填 name 即可，其余字段继承主模型）",
+            "name": "claude-sonnet-4-6",
+            "interface_type": "anthropic",  # "anthropic" 或 "openai"
+            "api_key": "sk-xxx",  # 不填则使用主模型的 api_key
+            "base_url": "https://api.anthropic.com",
+            "max_tokens": 36000,
+            "max_context_tokens": 256000,
+            "multimodal": True,
+            "temperature": 0.2,
+        },
+        "lite_model": {
+            "_comment": "Lite 模型配置（可选；仅填 name 即可，其余字段继承主模型）",
             "name": "claude-haiku-4-5",
             "interface_type": "anthropic",
             "api_key": "sk-xxx",  # 不填则使用主模型的 api_key

@@ -254,7 +254,7 @@ ModuleNotFoundError: No module named 'core'
 - `main.py`: 主程序，环境初始化逻辑
 - `start.ps1`: 启动脚本，Python/Git 检测和下载
 - `start.cmd`: Windows 批处理启动器
-- `core/tools/shared/base.py`: 工具基类，Python 路径定义
+- `core/tools/base.py`: 工具基类，Python 路径定义
 - `CLAUDE.md`: 项目说明，Python 环境描述
 
 ## 未来改进

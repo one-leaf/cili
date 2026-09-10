@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from core.tools.shared.temp import TempTool
+from core.tools.temp import TempTool
 
 
 class MockSessionManager:

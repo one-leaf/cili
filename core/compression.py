@@ -1,4 +1,4 @@
-"""Message compression utilities shared by RootAgent and SubAgent.
+"""Message compression utilities shared by the unified Agent class.
 
 Provides functions to compress message histories to stay within context limits.
 """

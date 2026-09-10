@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from core.config import PROJECT_ROOT
-from core.tools.shared.base import ToolResult
+from core.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 

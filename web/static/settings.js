@@ -226,12 +226,67 @@ async function openSettingsHelp() {
     }
 }
 
+// 加载某个角色（worker/lite）模型配置到表单
+function loadRoleModel(prefix, cfg, masterKeyMasked) {
+    document.getElementById(`${prefix}-api-key`).value = '';
+    document.getElementById(`${prefix}-base-url`).value = cfg.base_url || '';
+    document.getElementById(`${prefix}-model`).value = cfg.name || '';
+    document.getElementById(`${prefix}-interface-type`).value = cfg.interface_type || '';
+    document.getElementById(`${prefix}-max-tokens`).value = cfg.max_tokens || 16384;
+    document.getElementById(`${prefix}-max-context-tokens`).value = cfg.max_context_tokens || 256000;
+    document.getElementById(`${prefix}-multimodal`).checked = cfg.multimodal !== false;
+
+    const tempVal = cfg.temperature != null ? cfg.temperature : 0.2;
+    document.getElementById(`${prefix}-temperature`).value = tempVal;
+    document.getElementById(`${prefix}-temperature-value`).textContent = tempVal;
+    document.getElementById(`${prefix}-reasoning-effort`).value = cfg.reasoning_effort || '';
+
+    const hint = document.getElementById(`${prefix}-api-key-masked`);
+    if (cfg.api_key_masked) {
+        hint.textContent = `当前: ${cfg.api_key_masked} (留空保持不变)`;
+    } else if (masterKeyMasked) {
+        hint.textContent = '未单独配置（将继承主模型的 Key）';
+    } else {
+        hint.textContent = '未配置';
+    }
+}
+
+// 收集某个角色（worker/lite）模型配置；name 留空 → 信号后端移除、回退继承 Master
+function collectRoleModel(prefix, roleKey, payload) {
+    payload[roleKey] = {};
+    const apiKey = document.getElementById(`${prefix}-api-key`).value.trim();
+    if (apiKey) payload[roleKey].api_key = apiKey;
+
+    const baseUrl = document.getElementById(`${prefix}-base-url`).value.trim();
+    if (baseUrl) payload[roleKey].base_url = baseUrl;
+
+    const model = document.getElementById(`${prefix}-model`).value.trim();
+    if (model) payload[roleKey].name = model;
+
+    const interfaceType = document.getElementById(`${prefix}-interface-type`).value;
+    if (interfaceType) payload[roleKey].interface_type = interfaceType;
+
+    const maxTokens = document.getElementById(`${prefix}-max-tokens`).value;
+    if (maxTokens) payload[roleKey].max_tokens = parseInt(maxTokens);
+
+    const maxContextTokens = document.getElementById(`${prefix}-max-context-tokens`).value;
+    if (maxContextTokens) payload[roleKey].max_context_tokens = parseInt(maxContextTokens);
+
+    payload[roleKey].multimodal = document.getElementById(`${prefix}-multimodal`).checked;
+    payload[roleKey].temperature = parseFloat(document.getElementById(`${prefix}-temperature`).value);
+    payload[roleKey].reasoning_effort = document.getElementById(`${prefix}-reasoning-effort`).value;
+
+    if (!payload[roleKey].name) {
+        payload[roleKey] = { name: '', api_key: '' };  // Signal to backend to remove (fall back to Master)
+    }
+}
+
 // 打开全局设置弹窗
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
 
-    // Reset to RootAgent model tab
+    // Reset to Master model tab
     document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     document.querySelector('.settings-tab[data-tab="root"]').classList.add('active');
@@ -242,9 +297,8 @@ async function openSettings() {
         const data = await response.json();
         const cfg = data.config || {};
         const modelCfg = cfg.model || {};
-        const llmModelCfg = cfg.llm_model || {};
 
-        // ── RootAgent model settings ──
+        // ── Master model settings ──
         document.getElementById('setting-api-key').value = '';
         document.getElementById('setting-base-url').value = modelCfg.base_url || '';
         document.getElementById('setting-model').value = modelCfg.name || '';
@@ -269,32 +323,9 @@ async function openSettings() {
             maskedHint.textContent = '未配置 API Key';
         }
 
-        // ── LLM model settings ──
-        document.getElementById('llm-api-key').value = '';
-        document.getElementById('llm-base-url').value = llmModelCfg.base_url || '';
-        document.getElementById('llm-model').value = llmModelCfg.name || '';
-        document.getElementById('llm-interface-type').value = llmModelCfg.interface_type || '';
-        document.getElementById('llm-max-tokens').value = llmModelCfg.max_tokens || 16384;
-        document.getElementById('llm-max-context-tokens').value = llmModelCfg.max_context_tokens || 256000;
-        document.getElementById('llm-multimodal').checked = llmModelCfg.multimodal !== false;
-
-        // LLM Temperature slider
-        const llmTempVal = llmModelCfg.temperature != null ? llmModelCfg.temperature : 0.2;
-        document.getElementById('llm-temperature').value = llmTempVal;
-        document.getElementById('llm-temperature-value').textContent = llmTempVal;
-
-        // LLM Reasoning effort
-        document.getElementById('llm-reasoning-effort').value = llmModelCfg.reasoning_effort || '';
-
-        // Show LLM masked key
-        const llmMaskedHint = document.getElementById('llm-api-key-masked');
-        if (llmModelCfg.api_key_masked) {
-            llmMaskedHint.textContent = `当前: ${llmModelCfg.api_key_masked} (留空保持不变)`;
-        } else if (modelCfg.api_key_masked) {
-            llmMaskedHint.textContent = '未单独配置（将使用 RootAgent 模型的 Key）';
-        } else {
-            llmMaskedHint.textContent = '未配置';
-        }
+        // ── Worker/Lite model settings（未配置则继承 Master） ──
+        loadRoleModel('worker', cfg.worker_model || {}, modelCfg.api_key_masked);
+        loadRoleModel('lite', cfg.lite_model || {}, modelCfg.api_key_masked);
 
         // ── System parameters ──
         const systemCfg = cfg.system || {};
@@ -325,11 +356,10 @@ async function saveSettings() {
     statusEl.textContent = '保存中...';
 
     const payload = {
-        model: {},
-        llm_model: {}
+        model: {}
     };
 
-    // ── RootAgent model settings ──
+    // ── Master model settings ──
     const apiKey = document.getElementById('setting-api-key').value.trim();
     if (apiKey) payload.model.api_key = apiKey;
 
@@ -352,35 +382,9 @@ async function saveSettings() {
     payload.model.temperature = parseFloat(document.getElementById('setting-temperature').value);
     payload.model.reasoning_effort = document.getElementById('setting-reasoning-effort').value;
 
-    // ── LLM model settings ──
-    const llmApiKey = document.getElementById('llm-api-key').value.trim();
-    if (llmApiKey) payload.llm_model.api_key = llmApiKey;
-
-    const llmBaseUrl = document.getElementById('llm-base-url').value.trim();
-    if (llmBaseUrl) payload.llm_model.base_url = llmBaseUrl;
-
-    const llmModel = document.getElementById('llm-model').value.trim();
-    if (llmModel) payload.llm_model.name = llmModel;
-
-    const llmInterfaceType = document.getElementById('llm-interface-type').value;
-    if (llmInterfaceType) {
-        payload.llm_model.interface_type = llmInterfaceType;
-    }
-
-    const llmMaxTokens = document.getElementById('llm-max-tokens').value;
-    if (llmMaxTokens) payload.llm_model.max_tokens = parseInt(llmMaxTokens);
-
-    const llmMaxContextTokens = document.getElementById('llm-max-context-tokens').value;
-    if (llmMaxContextTokens) payload.llm_model.max_context_tokens = parseInt(llmMaxContextTokens);
-
-    payload.llm_model.multimodal = document.getElementById('llm-multimodal').checked;
-    payload.llm_model.temperature = parseFloat(document.getElementById('llm-temperature').value);
-    payload.llm_model.reasoning_effort = document.getElementById('llm-reasoning-effort').value;
-
-    // If LLM model has no name, clear it (unconfigured)
-    if (!payload.llm_model.name) {
-        payload.llm_model = { name: '', api_key: '' };  // Signal to backend to remove
-    }
+    // ── Worker/Lite model settings（name 留空移除 → 回退继承 Master） ──
+    collectRoleModel('worker', 'worker_model', payload);
+    collectRoleModel('lite', 'lite_model', payload);
 
     // ── System parameters ──
     const pipMirror = document.getElementById('system-pip-mirror').value.trim();
@@ -423,36 +427,34 @@ async function saveSettings() {
     }
 }
 
-// 测试 LLM 连接
+// 测试模型连接（'model' = Master；'worker'/'lite' = 子代理角色）
 async function testSettings(which = 'model') {
     const statusEl = document.getElementById('settings-status');
     statusEl.textContent = '测试连接中...';
 
-    const isLlmTab = which === 'llm';
+    const isRoleTab = which === 'worker' || which === 'lite';
+    const modelLabel = which === 'worker' ? 'Worker 模型' : which === 'lite' ? 'Lite 模型' : 'Agent 模型';
 
     let payload = {};
-    if (isLlmTab) {
-        // Test LLM model config
-        const llmModel = document.getElementById('llm-model').value.trim();
-        const llmInterfaceType = document.getElementById('llm-interface-type').value;
-        const llmBaseUrl = document.getElementById('llm-base-url').value.trim();
-        const llmApiKey = document.getElementById('llm-api-key').value.trim();
-
-        if (!llmModel) {
-            statusEl.textContent = '✗ 请先填写 LLM 模型名称';
+    if (isRoleTab) {
+        // Test worker/lite model config（未填名称 = 继承主模型，无需测试）
+        const model = document.getElementById(`${which}-model`).value.trim();
+        if (!model) {
+            statusEl.textContent = `✗ ${modelLabel} 未配置独立模型（继承主模型），无需测试`;
             return;
         }
-
         payload = {
             config: {
-                name: llmModel,
-                interface_type: llmInterfaceType || 'anthropic',
+                name: model,
+                interface_type: document.getElementById(`${which}-interface-type`).value || 'anthropic',
             }
         };
-        if (llmBaseUrl) payload.config.base_url = llmBaseUrl;
-        if (llmApiKey) payload.config.api_key = llmApiKey;
+        const baseUrl = document.getElementById(`${which}-base-url`).value.trim();
+        if (baseUrl) payload.config.base_url = baseUrl;
+        const apiKey = document.getElementById(`${which}-api-key`).value.trim();
+        if (apiKey) payload.config.api_key = apiKey;
     } else {
-        // Test Agent model config
+        // Test Master model config
         const model = document.getElementById('setting-model').value.trim();
         const interfaceType = document.getElementById('setting-interface-type').value;
         const baseUrl = document.getElementById('setting-base-url').value.trim();
@@ -484,7 +486,6 @@ async function testSettings(which = 'model') {
         if (data.success) {
             const interfaceInfo = data.interface_type === 'anthropic' ? ' (Anthropic API)' :
                                  data.interface_type === 'openai' ? ' (OpenAI API)' : '';
-            const modelLabel = isLlmTab ? 'LLM 模型' : 'Agent 模型';
             statusEl.textContent = `✓ ${modelLabel}连接成功${interfaceInfo}`;
         } else {
             statusEl.textContent = `✗ 连接失败: ${data.message}`;

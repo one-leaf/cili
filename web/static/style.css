@@ -1557,7 +1557,7 @@ mjx-container {
 }
 
 /* Sub-agent card styles */
-.subagent-card {
+.agent-card {
     background-color: #f0f4f8;
     border: 1px solid #d1d9e0;
     border-left: 4px solid #4a90d9;
@@ -1568,7 +1568,7 @@ mjx-container {
     max-width: 80% !important;
 }
 
-.subagent-header {
+.agent-header {
     display: flex;
     align-items: center;
     padding: 10px 12px;
@@ -1576,7 +1576,7 @@ mjx-container {
     gap: 8px;
 }
 
-.subagent-header:hover {
+.agent-header:hover {
     background-color: #e6edf5;
 }
 
@@ -1611,7 +1611,7 @@ mjx-container {
     transition: transform 0.2s;
 }
 
-.subagent-detail {
+.agent-detail {
     border-top: 1px solid #d1d9e0;
     padding: 12px;
     background-color: #fafbfc;

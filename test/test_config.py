@@ -185,3 +185,111 @@ class TestConfig:
         loaded = config.load_workspace_config("uuid-123")
         assert loaded["workspace_name"] == "Test WS"
         assert loaded["directory"] == "/test/dir"
+
+
+class TestModelInheritance:
+    """Worker/Lite 模型继承：未配置 → None，部分配置 → 继承 Master 其余字段。"""
+
+    def _global_config(self, worker=None, lite=None):
+        data = {
+            "model": {
+                "name": "claude-sonnet-4-6",
+                "api_key": "sk-master",
+                "base_url": "https://api.anthropic.com",
+                "max_tokens": 16384,
+                "multimodal": True,
+            }
+        }
+        if worker:
+            data["worker_model"] = worker
+        if lite:
+            data["lite_model"] = lite
+        return data
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_merged_with_partial_override(self):
+        """只覆盖 name，其余字段继承 master。"""
+        from core.config import ModelConfig
+
+        base = ModelConfig(name="claude-sonnet-4-6", api_key="sk-master",
+                           base_url="https://api.anthropic.com", multimodal=True)
+        merged = base.merged_with({"name": "claude-haiku-4-5"})
+        assert merged.name == "claude-haiku-4-5"
+        assert merged.api_key == "sk-master"
+        assert merged.base_url == "https://api.anthropic.com"
+        assert merged.multimodal is True
+
+    def test_no_role_model_returns_none(self, monkeypatch):
+        """未配置 worker/lite_model → 两者均为 None（继承 master）。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(self._global_config())
+        assert cfg.worker_model is None
+        assert cfg.lite_model is None
+
+    def test_worker_model_inherits_master_fields(self, monkeypatch):
+        """worker_model 只填 name → api_key/base_url 等继承 master。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(
+            self._global_config(worker={"name": "claude-haiku-4-5"})
+        )
+        assert cfg.worker_model is not None
+        assert cfg.worker_model.name == "claude-haiku-4-5"
+        assert cfg.worker_model.api_key == "sk-master"
+        assert cfg.worker_model.base_url == "https://api.anthropic.com"
+        assert cfg.worker_model.multimodal is True
+        # lite 未配置 → 仍为 None
+        assert cfg.lite_model is None
+
+    def test_role_model_partial_fields_merge(self, monkeypatch):
+        """worker_model 覆盖 max_tokens，其余字段继承。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(
+            self._global_config(worker={"name": "w", "max_tokens": 4096})
+        )
+        assert cfg.worker_model.max_tokens == 4096
+        assert cfg.worker_model.multimodal is True
+        assert cfg.worker_model.api_key == "sk-master"
+
+    def test_role_model_missing_name_returns_none(self, monkeypatch):
+        """worker_model 无 name → 视为未配置，回退继承 master。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(
+            self._global_config(worker={"api_key": "sk-x"})
+        )
+        assert cfg.worker_model is None
+
+    def test_lite_model_independent(self, monkeypatch):
+        """lite_model 独立配置，不影响 worker_model。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(
+            self._global_config(lite={"name": "claude-haiku-4-5"})
+        )
+        assert cfg.worker_model is None
+        assert cfg.lite_model is not None
+        assert cfg.lite_model.name == "claude-haiku-4-5"
+
+    def test_to_dict_omits_unset_role_models(self, monkeypatch):
+        """to_dict 仅在角色模型存在时输出对应 key。"""
+        from core.config import Config
+
+        self._clear_env(monkeypatch)
+        cfg = Config.from_global_config(
+            self._global_config(worker={"name": "w"})
+        )
+        result = cfg.to_dict()
+        assert "worker_model" in result
+        assert "lite_model" not in result

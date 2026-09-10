@@ -11,10 +11,10 @@ from pathlib import Path
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.tools.shared.read import ReadTool
-from core.tools.shared.write import WriteTool
-from core.tools.shared.edit import EditTool
-from core.tools.shared.python_tool import PythonTool
+from core.tools.read import ReadTool
+from core.tools.write import WriteTool
+from core.tools.edit import EditTool
+from core.tools.python_tool import PythonTool
 
 
 class TestUTF8Encoding:

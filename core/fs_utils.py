@@ -1,6 +1,6 @@
 """Filesystem helpers: atomic JSON writes and corruption-safe loads.
 
-状态文件（cron、loop、subagent 进度等）直接 open("w") 写入时，进程中断
+状态文件（cron、loop、agent 进度等）直接 open("w") 写入时，进程中断
 会产生半写文件；加载侧遇到损坏文件返回默认值后，下一次保存会用默认数据
 覆盖原始文件，造成损坏放大。这里统一两个动作：
 - atomic_write_json: 先写临时文件再 os.replace，保证读者看到的要么是

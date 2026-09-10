@@ -153,12 +153,12 @@
 其余小体积非流式输出直接内联存储在消息 `content` 中。
 
 **存储位置**：
-- RootAgent：`{session_dir}/{tool_use_id}.txt` 或 `.json`
-- SubAgent：`{session_dir}/{exec_dir}/{tool_use_id}.txt` 或 `.json`
+- Master（交互会话）：`{session_dir}/{tool_use_id}.txt` 或 `.json`
+- Worker/Lite（委派执行）：`{session_dir}/{exec_dir}/{tool_use_id}.txt` 或 `.json`
 
 **存储时机**：`Tool.execute()` 返回 `ToolResult` 时
 
-**实现位置**：`core/tools/shared/base.py::Tool.save_output_to_file()`
+**实现位置**：`core/tools/base.py::Tool.save_output_to_file()`
 
 ### 4.2 按需读取
 
@@ -177,7 +177,7 @@
 |------|------|------|
 | `tool_use_id` | str | 工具调用的唯一 ID |
 
-**实现位置**：`core/tools/shared/read_tool_result.py`
+**实现位置**：`core/tools/read_tool_result.py`
 
 **示例调用**：
 ```python
@@ -229,7 +229,7 @@ total += max(750, len(data) // 100)
 用户输入
     │
     ▼
-RootAgent.run() / SubAgent.run()
+Agent.run()（master 交互式 / worker、lite 自主式）
     │
     ├── 添加用户消息
     │
@@ -262,8 +262,8 @@ RootAgent.run() / SubAgent.run()
 |------|------|
 | `core/compression.py` | 压缩函数（microcompact、token 计数、LLM 摘要） |
 | `core/base_agent.py` | 三层压缩调用逻辑、`_resolve_tool_results()` |
-| `core/tools/shared/read_tool_result.py` | 重新获取压缩的工具结果 |
-| `core/tools/shared/base.py` | 工具输出外部存储 |
+| `core/tools/read_tool_result.py` | 重新获取压缩的工具结果 |
+| `core/tools/base.py` | 工具输出外部存储 |
 
 ---
 

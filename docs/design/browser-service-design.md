@@ -753,7 +753,7 @@ core/
 │       ├── start_browser_service()
 │       └── stop_browser_service()
 │
-└── tools/shared/
+└── tools/
     ├── browser.py                  # 浏览器工具（~180 行）
     │   └── BrowserTool
     │       ├── execute()           # 委托给 BrowserService（含 tab_index）

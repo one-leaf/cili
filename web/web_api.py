@@ -30,12 +30,12 @@ from core.config import (
     load_workspace_config, save_workspace_config,
     GLOBAL_CONFIG_PATH, load_global_config, save_global_config,
 )
-from core.root_agent import RootAgent
+from core.agent import Agent
 from core.session import SessionManager
 from core.message_bus import get_message_bus
 from core.tools import get_tool_by_name
-from core.tools.shared.approval import APPROVE_LABEL
-from core.tools.shared.todo import get_todos_from_session
+from core.tools.approval import APPROVE_LABEL
+from core.tools.todo import get_todos_from_session
 
 # Configure logging
 logging.basicConfig(
@@ -44,8 +44,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global agents dict: session_id -> RootAgent
-agents: dict[str, RootAgent] = {}
+# Global agents dict: session_id -> Agent (master)
+agents: dict[str, Agent] = {}
 # LRU tracking: key -> last access timestamp
 _agent_access: dict[str, float] = {}
 _MAX_AGENTS = 20  # Maximum number of agents to keep in memory
@@ -65,13 +65,13 @@ def _evict_idle_agent() -> None:
     if not idle_keys:
         return
     oldest = min(idle_keys, key=lambda k: _agent_access.get(k, 0))
-    logger.info(f"[RootAgent LRU] 淘汰闲置 RootAgent: {oldest}")
+    logger.info(f"[master Agent LRU] 淘汰闲置 master Agent: {oldest}")
     evicted = agents.pop(oldest)
     _agent_access.pop(oldest, None)
     try:
         evicted.cleanup()
     except Exception as e:
-        logger.warning(f"[RootAgent LRU] 清理被淘汰的 RootAgent 失败: {e}")
+        logger.warning(f"[master Agent LRU] 清理被淘汰的 master Agent 失败: {e}")
 
 
 @asynccontextmanager
@@ -102,14 +102,14 @@ async def lifespan(app: FastAPI):
         stop_scheduler()
     except Exception as e:
         logger.warning(f"[Server] 停止 cron 调度器失败: {e}")
-    # 关闭时清理所有 RootAgent 资源
-    logger.info(f"[Server] 正在关闭，清理 {len(agents)} 个 RootAgent...")
+    # 关闭时清理所有 master Agent 资源
+    logger.info(f"[Server] 正在关闭，清理 {len(agents)} 个 master Agent...")
     for key, agent in list(agents.items()):
         try:
             agent.stop()
             agent.cleanup()
         except Exception as e:
-            logger.warning(f"[Server] 清理 RootAgent {key} 失败: {e}")
+            logger.warning(f"[Server] 清理 master Agent {key} 失败: {e}")
     agents.clear()
     logger.info("[Server] 资源清理完成")
 
@@ -306,7 +306,7 @@ def _list_all_workspaces() -> list[dict]:
     return workspaces
 
 
-async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> RootAgent:
+async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
     """Get or create an agent for a given workspace and session.
 
     Thread-safe: acquires _agents_lock to prevent concurrent creation of
@@ -332,7 +332,7 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> RootAgen
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to load config: {e}")
 
-            agent = RootAgent(config, cwd=workspace_dir, workspace_uuid=workspace_uuid)
+            agent = Agent(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid)
 
             # Load the requested session if different from default
             if session_id != agent.current_session_id:
@@ -526,7 +526,7 @@ def _cleanup_agents_for_workspace(workspace_uuid: str) -> None:
         try:
             evicted.cleanup()
         except Exception as e:
-            logger.warning(f"[RootAgent] 清理 RootAgent {key} 失败: {e}")
+            logger.warning(f"[master Agent] 清理 master Agent {key} 失败: {e}")
 
 
 @app.delete("/api/workspaces/{workspace_uuid}")
@@ -632,7 +632,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
                 "created_at": metadata.get("created_at", ""),
                 "updated_at": metadata.get("updated_at", ""),
                 "message_count": len(data.get("messages", [])),
-                "subagent_count": metadata.get("subagent_count", 0),
+                "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
                 "preview": preview,
                 "hidden": metadata.get("hidden", False),
                 "_mtime": mtime,
@@ -674,7 +674,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
     此函数从文件读取内容并注入到消息中，供前端渲染。
     同时给已回答的 ask_user tool_use 块添加 _meta.answered 标记。
     """
-    from core.tools.shared.base import Tool
+    from core.tools.base import Tool
 
     # 第一遍：收集已回答的 ask_user tool_use_id
     answered_ask_user_ids = set()
@@ -738,7 +738,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 
                 file_path = session_dir / output_path
                 if not file_path.exists():
-                    # 尝试在 SubAgent 执行目录中查找
+                    # 尝试在 Agent 执行目录中查找
                     exec_dirs = list(session_dir.glob("exec_*"))
                     found = False
                     for exec_dir in exec_dirs:
@@ -793,7 +793,7 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
                 "cache_read_tokens": 0,
                 "cache_creation_tokens": 0,
             },
-            "subagent_count": 0,
+            "agent_count": 0,
         }
     }
 
@@ -964,7 +964,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
     return {"success": True, "results": results}
 
 
-# ----- SubAgent Executions -----
+# ----- Agent Executions -----
 
 @app.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions")
 async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
@@ -974,7 +974,7 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    logs = sm.list_subagent_logs()
+    logs = sm.list_agent_logs()
     return {"executions": logs}
 
 
@@ -986,7 +986,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    log = sm.load_subagent_log(exec_id)
+    log = sm.load_agent_log(exec_id)
     if not log:
         raise HTTPException(status_code=404, detail="Execution not found")
 
@@ -1006,7 +1006,7 @@ async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, w
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if sm.delete_subagent_log(exec_id):
+    if sm.delete_agent_log(exec_id):
         return {"success": True}
     raise HTTPException(status_code=404, detail="Execution not found")
 
@@ -1047,7 +1047,7 @@ async def stream_tool_output(
         raise HTTPException(status_code=404, detail="Session not found")
 
     # 查找匹配 {tool_use_id}.txt 或 {tool_use_id}_*.txt 的文件
-    # 同时在 session 目录和 exec_* 子目录中搜索（SubAgent 的输出在 exec_* 目录）
+    # 同时在 session 目录和 exec_* 子目录中搜索（Agent 的输出在 exec_* 目录）
     matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
     # 搜索 exec_* 子目录
     for exec_dir in session_dir.glob("exec_*"):
@@ -1083,7 +1083,7 @@ async def stream_tool_output(
 # ----- Chat -----
 
 def _get_session_manager(workspace_uuid: str, session_id: str) -> SessionManager | None:
-    """Load a SessionManager for the given session (lightweight, no RootAgent)."""
+    """Load a SessionManager for the given session (lightweight, no master Agent)."""
     sessions_dir = WORKSPACE_DATA_DIR / workspace_uuid / "sessions"
     if not sessions_dir.exists():
         return None
@@ -1246,7 +1246,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
         # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "subagent"):
+        if tool_name in ("ask_user", "agent"):
             return
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
@@ -1258,14 +1258,14 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
-    def on_subagent_start(exec_id: str, task_summary: str) -> None:
+    def on_agent_start(exec_id: str, task_summary: str) -> None:
         # Send SSE event for real-time UI update
-        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
-    def on_subagent_complete(exec_id: str) -> None:
+    def on_agent_complete(exec_id: str) -> None:
         # Push SSE event for real-time UI update
-        event = json.dumps({"type": "subagent_complete", "exec_id": exec_id}, ensure_ascii=False)
+        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1298,11 +1298,11 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     on_thinking=on_thinking,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
-                    on_subagent_start=on_subagent_start,
-                    on_subagent_complete=on_subagent_complete,
+                    on_agent_start=on_agent_start,
+                    on_agent_complete=on_agent_complete,
                 )
             except Exception as e:
-                logger.error(f"RootAgent error: {e}")
+                logger.error(f"master Agent error: {e}")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
@@ -1352,8 +1352,9 @@ class ModelConfigRequest(BaseModel):
 
 class UpdateConfigRequest(BaseModel):
     """Request model for updating global configuration."""
-    model: ModelConfigRequest | None = None          # RootAgent model (multi-turn)
-    llm_model: ModelConfigRequest | None = None      # LLM model (single-turn, optional)
+    model: ModelConfigRequest | None = None          # master Agent model
+    worker_model: ModelConfigRequest | None = None   # worker Agent model (optional, inherits master)
+    lite_model: ModelConfigRequest | None = None     # lite Agent model (optional, inherits master)
     system: dict | None = None                       # System parameters (pip_mirror, etc.)
 
 
@@ -1362,11 +1363,11 @@ async def stop_agent(workspace_uuid: str, session_id: str):
     """Stop the currently running agent for a session."""
     key = f"{workspace_uuid}:{session_id}"
     if key not in agents:
-        return {"success": False, "message": "没有正在运行的 RootAgent"}
+        return {"success": False, "message": "没有正在运行的 master Agent"}
 
     agent = agents[key]
     if not agent.is_running():
-        return {"success": False, "message": "RootAgent 当前未在运行"}
+        return {"success": False, "message": "master Agent 当前未在运行"}
 
     agent.stop()
     return {"success": True, "message": "已发送停止信号"}
@@ -1542,7 +1543,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
         # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "subagent"):
+        if tool_name in ("ask_user", "agent"):
             return
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
@@ -1554,12 +1555,12 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
-    def on_subagent_start(exec_id: str, task_summary: str) -> None:
-        event = json.dumps({"type": "subagent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+    def on_agent_start(exec_id: str, task_summary: str) -> None:
+        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
-    def on_subagent_complete(exec_id: str) -> None:
-        event = json.dumps({"type": "subagent_complete", "exec_id": exec_id}, ensure_ascii=False)
+    def on_agent_complete(exec_id: str) -> None:
+        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     async def generate():
@@ -1572,11 +1573,11 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                     on_thinking=on_thinking,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
-                    on_subagent_start=on_subagent_start,
-                    on_subagent_complete=on_subagent_complete,
+                    on_agent_start=on_agent_start,
+                    on_agent_complete=on_agent_complete,
                 )
             except Exception as e:
-                logger.error(f"RootAgent error: {e}")
+                logger.error(f"master Agent error: {e}")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
@@ -1627,7 +1628,7 @@ def _mask_single_model(model: dict) -> dict:
 def _mask_api_key(config: dict) -> dict:
     """Mask API keys in config for safe display."""
     result = config.copy()
-    for key in ("model", "llm_model"):
+    for key in ("model", "worker_model", "lite_model"):
         if key in result and isinstance(result[key], dict):
             result[key] = _mask_single_model(result[key])
     # Mask MinerU API key in system config
@@ -1674,15 +1675,17 @@ async def update_config(request: UpdateConfigRequest):
         existing_model = config.get("model", {})
         config["model"] = _update_model_config(existing_model, request.model)
 
-    # Update LLM model config (single-turn, optional)
-    if request.llm_model is not None:
-        # If all fields are empty/None, remove llm_model config
-        llm_data = request.llm_model
-        if not llm_data.name and not llm_data.api_key:
-            config.pop("llm_model", None)
+    # Update worker/lite model config (optional, inherits master by default)
+    # name 为空 → 移除角色模型配置，回退继承 master model
+    for role_key in ("worker_model", "lite_model"):
+        role_req = getattr(request, role_key, None)
+        if role_req is None:
+            continue
+        if not role_req.name:
+            config.pop(role_key, None)
         else:
-            existing_llm = config.get("llm_model", {})
-            config["llm_model"] = _update_model_config(existing_llm, llm_data)
+            existing_role = config.get(role_key, {})
+            config[role_key] = _update_model_config(existing_role, role_req)
 
     # Update system config
     if request.system is not None:
@@ -1693,11 +1696,11 @@ async def update_config(request: UpdateConfigRequest):
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
-    # 通知所有缓存的 RootAgent 重新加载配置（新的 API key / model 等）
+    # 通知所有缓存的 master Agent 重新加载配置（新的 API key / model 等）
     async with _agents_lock:
         for key, agent in list(agents.items()):
             agent.reload_config()
-            logger.info(f"[Config] 已通知 RootAgent {key} 重新加载配置")
+            logger.info(f"[Config] 已通知 master Agent {key} 重新加载配置")
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
 

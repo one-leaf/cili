@@ -1,4 +1,4 @@
-"""Quick debug script to test RootAgent with DGX local endpoint."""
+"""Quick debug script to test master Agent with DGX local endpoint."""
 
 import os
 import sys
@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 使用 DGX 本地端点（不消耗真实 API 配额）
 from test.conftest import make_dgx_config
-from core.root_agent import RootAgent
+from core.agent import Agent
 from core.session import SessionManager
 
 
@@ -52,8 +52,8 @@ def main():
         (test_dir / "test.txt").write_text("Hello, World!", encoding="utf-8")
         print(f"  Test dir: {test_dir}")
 
-        print("\nCreating RootAgent...")
-        agent = RootAgent(config, cwd=str(test_dir), workspace_uuid=workspace_uuid)
+        print("\nCreating master Agent...")
+        agent = Agent(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
 
         # Create a NEW session
         new_session = SessionManager.create_new_session(agent.sessions_dir, "Debug Test")
@@ -118,7 +118,7 @@ def main():
         print(f"  Saved {saved_msg_count} messages to session {saved_session_id}")
 
         # Create a new agent and load the session
-        agent2 = RootAgent(config, cwd=str(test_dir), workspace_uuid=workspace_uuid)
+        agent2 = Agent(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
         agent2.switch_session(saved_session_id)
 
         print(f"  Loaded session: {agent2.current_session_id}")

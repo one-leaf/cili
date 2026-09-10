@@ -190,7 +190,8 @@ function setupEventListeners() {
     document.getElementById('settings-btn').addEventListener('click', openSettings);
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
     document.getElementById('model-test-btn').addEventListener('click', () => testSettings('model'));
-    document.getElementById('llm-test-btn').addEventListener('click', () => testSettings('llm'));
+    document.getElementById('worker-test-btn').addEventListener('click', () => testSettings('worker'));
+    document.getElementById('lite-test-btn').addEventListener('click', () => testSettings('lite'));
 
     // Upgrade
     document.getElementById('upgrade-check-btn').addEventListener('click', runUpgrade);
@@ -235,8 +236,10 @@ function setupEventListeners() {
     document.getElementById('setting-temperature').addEventListener('input', (e) => {
         document.getElementById('setting-temperature-value').textContent = e.target.value;
     });
-    document.getElementById('llm-temperature').addEventListener('input', (e) => {
-        document.getElementById('llm-temperature-value').textContent = e.target.value;
+    ['worker', 'lite'].forEach(prefix => {
+        document.getElementById(`${prefix}-temperature`).addEventListener('input', (e) => {
+            document.getElementById(`${prefix}-temperature-value`).textContent = e.target.value;
+        });
     });
 
     // New workspace

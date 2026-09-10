@@ -118,15 +118,15 @@
             </div>
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="root">Agent 模型</button>
-                <button class="settings-tab" data-tab="llm">LLM 模型</button>
+                <button class="settings-tab" data-tab="llm">Worker/Lite 模型</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
                 <button class="settings-tab" data-tab="upgrade">升级</button>
             </div>
             <div class="modal-body">
-                <!-- RootAgent Model Tab (Multi-turn conversation) -->
+                <!-- Master Model Tab (Multi-turn conversation) -->
                 <div class="tab-content active" id="tab-root">
                     <div class="model-description">
-                        <strong>多轮对话模型</strong> — 用于日常对话和任务执行，支持上下文记忆和多轮交互。RootAgent 和 SubAgent 均使用此模型。
+                        <strong>多轮对话模型（Master）</strong> — 用于日常对话和任务执行，支持上下文记忆和多轮交互。Worker/Lite 未单独配置时继承此模型。
                     </div>
                     <div class="form-group">
                         <label>接口类型:</label>
@@ -193,15 +193,18 @@
                     </div>
                 </div>
 
-                <!-- LLM Model Tab (Single-turn processing) -->
+                <!-- Worker/Lite Model Tab (sub-agent roles) -->
                 <div class="tab-content" id="tab-llm">
                     <div class="model-description">
-                        <strong>单轮处理模型</strong> — 用于翻译、摘要、提取等单次调用任务，无上下文。若不配置，<code>llm</code> 工具将不可用。可与 Agent 模型使用相同或不同的 API。
+                        <strong>委派子代理模型</strong> — Worker（完整工具集）与 Lite（最小工具集）可独立配置模型。仅填写「模型名称」保存即可部分覆盖主模型（其余字段继承）；留空名称保存将移除该角色配置，回退继承 Master 模型。
                     </div>
+
+                    <!-- Worker -->
+                    <div class="model-description" style="margin-top: 12px;"><strong>Worker 模型</strong> — 完整工具集 + 检查阶段，负责大多数委派任务。</div>
                     <div class="form-group">
                         <label>接口类型:</label>
-                        <select id="llm-interface-type">
-                            <option value="">（未配置）</option>
+                        <select id="worker-interface-type">
+                            <option value="">（继承主模型）</option>
                             <option value="anthropic">Anthropic (Claude)</option>
                             <option value="openai">OpenAI (GPT)</option>
                         </select>
@@ -210,47 +213,47 @@
                         <label>API Key:</label>
                         <div>
                             <div class="input-with-icon">
-                                <input type="password" id="llm-api-key" placeholder="sk-...（留空使用 RootAgent 模型的 Key）">
-                                <button type="button" class="toggle-password" data-target="llm-api-key">
+                                <input type="password" id="worker-api-key" placeholder="sk-...（留空继承主模型的 Key）">
+                                <button type="button" class="toggle-password" data-target="worker-api-key">
                                     <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                                         <circle cx="12" cy="12" r="3"></circle>
                                     </svg>
                                 </button>
                             </div>
-                            <small id="llm-api-key-masked" class="form-hint"></small>
+                            <small id="worker-api-key-masked" class="form-hint"></small>
                         </div>
                     </div>
                     <div class="form-group">
                         <label>API Base URL:</label>
-                        <input type="text" id="llm-base-url" placeholder="https://api.anthropic.com">
+                        <input type="text" id="worker-base-url" placeholder="https://api.anthropic.com">
                     </div>
                     <div class="form-group">
                         <label>模型名称:</label>
-                        <input type="text" id="llm-model" placeholder="claude-sonnet-4-6">
+                        <input type="text" id="worker-model" placeholder="claude-sonnet-4-6">
                     </div>
                     <div class="form-group">
                         <label>Max Tokens:</label>
-                        <input type="number" id="llm-max-tokens" min="1" max="1000000" step="1000">
+                        <input type="number" id="worker-max-tokens" min="1" max="1000000" step="1000">
                     </div>
                     <div class="form-group">
                         <label>Max Context Tokens:</label>
-                        <input type="number" id="llm-max-context-tokens" min="1" max="1000000" step="1000">
+                        <input type="number" id="worker-max-context-tokens" min="1" max="1000000" step="1000">
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="llm-multimodal"> 支持多模态 (图片输入)</label>
+                        <label><input type="checkbox" id="worker-multimodal"> 支持多模态 (图片输入)</label>
                     </div>
                     <div class="form-group">
-                        <label>性格 (温度): <span id="llm-temperature-value">0.2</span></label>
+                        <label>性格 (温度): <span id="worker-temperature-value">0.2</span></label>
                         <div class="temperature-slider">
                             <span class="temp-label">古板</span>
-                            <input type="range" id="llm-temperature" min="0.1" max="1.0" step="0.1" value="0.2">
+                            <input type="range" id="worker-temperature" min="0.1" max="1.0" step="0.1" value="0.2">
                             <span class="temp-label">跳脱</span>
                         </div>
                     </div>
                     <div class="form-group">
                         <label>推理深度:</label>
-                        <select id="llm-reasoning-effort">
+                        <select id="worker-reasoning-effort">
                             <option value="">不启用（自动）</option>
                             <option value="low">低（快速响应）</option>
                             <option value="medium">中（平衡）</option>
@@ -260,7 +263,74 @@
                     </div>
                     <div class="form-group" style="margin-top: 12px;">
                         <label></label>
-                        <button id="llm-test-btn" class="btn btn-small">测试连接</button>
+                        <button id="worker-test-btn" class="btn btn-small">测试连接</button>
+                    </div>
+
+                    <!-- Lite -->
+                    <div class="model-description" style="margin-top: 12px;"><strong>Lite 模型</strong> — 最小工具集（read/write/edit/bash），无检查阶段，用于简单快速任务。</div>
+                    <div class="form-group">
+                        <label>接口类型:</label>
+                        <select id="lite-interface-type">
+                            <option value="">（继承主模型）</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="openai">OpenAI (GPT)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key:</label>
+                        <div>
+                            <div class="input-with-icon">
+                                <input type="password" id="lite-api-key" placeholder="sk-...（留空继承主模型的 Key）">
+                                <button type="button" class="toggle-password" data-target="lite-api-key">
+                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small id="lite-api-key-masked" class="form-hint"></small>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>API Base URL:</label>
+                        <input type="text" id="lite-base-url" placeholder="https://api.anthropic.com">
+                    </div>
+                    <div class="form-group">
+                        <label>模型名称:</label>
+                        <input type="text" id="lite-model" placeholder="claude-haiku-4-5">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Tokens:</label>
+                        <input type="number" id="lite-max-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Context Tokens:</label>
+                        <input type="number" id="lite-max-context-tokens" min="1" max="1000000" step="1000">
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="lite-multimodal"> 支持多模态 (图片输入)</label>
+                    </div>
+                    <div class="form-group">
+                        <label>性格 (温度): <span id="lite-temperature-value">0.2</span></label>
+                        <div class="temperature-slider">
+                            <span class="temp-label">古板</span>
+                            <input type="range" id="lite-temperature" min="0.1" max="1.0" step="0.1" value="0.2">
+                            <span class="temp-label">跳脱</span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>推理深度:</label>
+                        <select id="lite-reasoning-effort">
+                            <option value="">不启用（自动）</option>
+                            <option value="low">低（快速响应）</option>
+                            <option value="medium">中（平衡）</option>
+                            <option value="high">高（深度推理）</option>
+                        </select>
+                        <small class="form-hint">仅对推理模型生效（如 Qwen、DeepSeek）。启用后温度设置失效；不启用则由 API 决定</small>
+                    </div>
+                    <div class="form-group" style="margin-top: 12px;">
+                        <label></label>
+                        <button id="lite-test-btn" class="btn btn-small">测试连接</button>
                     </div>
                 </div>
 

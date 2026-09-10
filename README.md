@@ -61,11 +61,12 @@ python main.py --port 8080 --host 0.0.0.0
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `model.name` | RootAgent 模型 | `claude-sonnet-4-6` |
+| `model.name` | Master 主模型（所有角色默认继承） | `claude-sonnet-4-6` |
 | `model.interface_type` | API 协议 | `anthropic` |
 | `model.api_key` | API 密钥 | — |
 | `model.base_url` | API 端点 | `https://api.anthropic.com` |
-| `llm_model.name` | 压缩/摘要模型（可选） | `claude-haiku-4-5` |
+| `worker_model.name` | Worker 模型（可选，只填 name 则其余继承 Master） | — |
+| `lite_model.name` | Lite 模型（可选，只填 name 则其余继承 Master） | — |
 
 支持环境变量覆盖：`ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`。
 
@@ -103,22 +104,18 @@ scripts\upgrade.cmd
 
 ### Agent 架构
 
+**单一 Agent 类 + JSON 角色配置**：Master/Worker/Lite 是同一个 `Agent` 类的三个角色，行为差异全部由 `core/agents/{role}.json` 驱动（工具白名单、行为开关、system prompt 块、user 层）。全角色流式输出，可随时中断。
+
 ```
-RootAgent (主对话，流式输出)
-  ├── 23 工具：读写文件、执行 Shell/PowerShell、Python、浏览器、搜索、记忆、定时任务、PDF转换...
-  ├── 内置技能：代码审查、任务委派、研究、学习、技能创建...
-  └── SubAgent (后台委派，非流式)
-        ├── 独立消息历史（最多 200 轮迭代）
-        └── 后台任务管理：启动、读取、终止
+Agent (统一类，mode 分叉)
+  ├── master   (interactive) 22 工具：读写、Shell/PowerShell、Python、浏览器、搜索、记忆、
+  │             定时任务、PDF转换、技能、委派 agent、ask_user
+  ├── worker   (autonomous) 17 工具：master 去掉 todo/cron/message_bus/latex/ask_user，
+  │             含委派 agent、检查阶段与预算预警
+  └── lite     (autonomous) 4 工具：只读 read/write/edit/bash，最小执行（无检查/预算）
 ```
 
-三层工具设计：
-
-| 层级 | 工具数 | 说明 |
-|------|--------|------|
-| **shared** | 20~21 | RootAgent 与 SubAgent 共用（读写、Shell/PowerShell、浏览器、搜索、Python、记忆、PDF转换、loop 进度追踪等） |
-| **root** | 3 | RootAgent 专属（技能系统、SubAgent 委派、用户提问） |
-| **sub** | 1 | SubAgent 专属（技能系统） |
+**统一工具/skill 注册表**：`core/tools/` 所有工具平铺，`registry.py` 按角色 JSON 的白名单实例化；`core/skills/` 所有技能平铺，frontmatter `roles` 声明适用角色。`llm` 工具已移除。
 
 ### LLM 底层架构
 
@@ -156,7 +153,7 @@ BrowserService (模块级单例)
 - 每个会话独立目录（8 位十六进制 ID）
 - 原子写入（临时文件 + `Path.replace()`）
 - 消息三级压缩：Microcompact → Full Compact → 紧急 Body Size
-- SubAgent 执行日志实时保存，前端懒加载
+- Worker/Lite 执行日志实时保存，前端懒加载
 - 支持多工作区隔离（sessions、cwd、配置）
 
 ### 定时任务 (Cron)
@@ -193,7 +190,7 @@ cron(action="create", schedule={"type": "interval", "minutes": 5}, task="导入�
 cron(action="create", schedule={"type": "interval", "minutes": 5}, 
      task="将 file_list.txt 中的文件逐个导入记忆系统", max_executions=9999)
 
-# 3. SubAgent 每次执行时：
+# 3. Agent 每次执行时：
 #    - loop(action="sync", source_file="file_list.txt")  # 从文件同步项列表
 #    - loop(action="next", source_file="file_list.txt")  # 获取下一个待处理文件
 #    - 读取并处理文件
@@ -230,12 +227,14 @@ cili/
 │   ── upgrade.ps1             # PowerShell 升级脚本
 ├── core/
 │   ├── base_agent.py         # Agent 基类（消息管理、压缩、LLM 调用）
-│   ├── root_agent.py         # RootAgent（流式输出、用户交互）
-│   ├── sub_agent.py          # SubAgent（后台委派、非流式）
+│   ├── agent.py              # 统一 Agent 类（mode 分叉 master/worker/lite）
+│   ├── agent_config.py       # AgentRoleConfig + load_agent_role（读 core/agents/*.json）
+│   ├── agents/               # 角色 JSON 定义（master.json / worker.json / lite.json）
+│   ├── prompt_builder.py     # system prompt 块拼装 + user 层注入 + 防连续合并
 │   ├── config.py             # 配置加载（环境变量 > 文件 > 默认值）
 │   ├── session.py            # 会话管理（持久化、过滤、缓存）
 │   ├── compression.py        # 消息压缩（Microcompact / Full Compact）
-│   ├── prompts.py            # 系统提示词构建
+│   ├── prompts.py            # prompt 生成函数
 │   ├── browser_service.py    # 浏览器服务（Playwright 单例）
 │   ├── cron.py               # Cron 调度器
 │   ├── message_bus.py        # 跨会话消息总线
@@ -247,14 +246,12 @@ cili/
 │   │   ├── transport.py      # HTTP 传输（SSE / 重试）
 │   │   ├── assembler.py      # 流式数据块累积
 │   │   └── client.py         # 统一 API（chat / chat_stream）
-│   ├── tools/                # 工具层
-│   │   ├── shared/           # 共用工具（20~21 个，含 pwsh、pdf2markdown、loop 进度追踪）
-│   │   ├── root/             # RootAgent 专属（3 个）
-│   │   └── sub/              # SubAgent 专属（1 个）
-│   └── skills/               # 技能层
-│       ├── root/             # RootAgent 技能（7 个）
-│       ├── shared/           # 共用技能
-│       └── sub/              # SubAgent 技能
+│   ├── tools/                # 工具层（统一注册表，按角色 JSON 白名单加载）
+│   │   ├── registry.py       # TOOL_REGISTRY + create_tools(role_config, ...)
+│   │   ├── *.py              # 全部工具平铺（read/write/edit/bash/.../agent/ask_user）
+│   │   └── __init__.py
+│   └── skills/               # 技能层（平铺，frontmatter roles 声明适用角色）
+│       ├── *.md              # code-review / task-delegation / research / ...
 ├── web/
 │   ├── web_api.py            # FastAPI 服务（REST + SSE 流式）
 │   └── static/               # 前端静态文件
@@ -279,7 +276,7 @@ python -m pytest test/test_bash_tool.py -v
 python -m pytest test/ --cov=core --cov-report=term-missing
 ```
 
-测试覆盖：BaseAgent、RootAgent、SubAgent、LLM Adapter、Transport、工具系统、Session、Compression、Config、BrowserService、Cron、MessageBus、Web API 等核心模块。
+测试覆盖：BaseAgent、Agent（master/worker/lite 三角色）、LLM Adapter、Transport、统一工具/技能系统、Session、Compression、Config、BrowserService、Cron、MessageBus、Web API 等核心模块。
 
 ## 设计文档
 
@@ -289,7 +286,7 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 |------|------|
 | [agent-design.md](docs/design/agent-design.md) | Agent 架构、循环机制、消息管理 |
 | [content-block-design.md](docs/design/content-block-design.md) | LLM 底层：Adapter 分层、ContentBlock 类型、StreamChunk 协议 |
-| [tool-system-design.md](docs/design/tool-system-design.md) | 三层工具架构、执行流程、全部工具说明 |
+| [tool-system-design.md](docs/design/tool-system-design.md) | 统一工具注册表、执行流程、全部工具说明 |
 | [session-management-design.md](docs/design/session-management-design.md) | 会话存储、消息过滤、自动压缩 |
 | [browser-service-design.md](docs/design/browser-service-design.md) | BrowserService 单例、工作线程、Tab 池 |
 | [cron-scheduler-design.md](docs/design/cron-scheduler-design.md) | Cron 调度器、任务配置、执行机制 |

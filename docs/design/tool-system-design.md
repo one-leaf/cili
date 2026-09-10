@@ -1,6 +1,6 @@
 # Tool 工具系统设计文档
 
-本文档描述 Cili Agent 的工具系统架构、工具基类、工具层次结构和执行流程。
+本文档描述 Cili Agent 的工具系统架构、统一注册表、角色白名单、工具基类和执行流程。
 
 ---
 
@@ -9,82 +9,142 @@
 工具（Tools）是 Agent 与外部世界交互的能力。每个工具封装一种操作（读文件、执行命令、搜索等），由 LLM 通过 tool_use 调用。
 
 **核心特性**：
-- **三层工具架构**：shared（共用）、root（RootAgent 专属）、sub（SubAgent 专属）
+- **统一注册表 + 角色白名单**：所有工具在 `core/tools/` 平铺，由 `TOOL_REGISTRY` 统一注册，按角色 JSON 的 `tools` 白名单实例化（取代旧 shared/root/sub 三层目录 + 硬编码工厂）
 - **统一基类**：所有工具继承 `Tool` 基类，共享路径解析、命令执行等方法
 - **JSON Schema 参数**：工具参数使用标准 JSON Schema 描述
 - **ToolResult 返回**：统一的结果数据结构
-- **工具注册表**：动态创建和查找工具实例
+- **工具注册表**：按名称查找工具实例（O(1) 缓存查找）
 
 ---
 
 ## 二、架构设计
 
-### 2.1 工具层次
+### 2.1 工具物理布局（平铺）
 
-工具按使用场景分为三层目录：
+所有工具文件直接位于 `core/tools/`，不再有 `shared/` / `root/` / `sub/` 子目录：
 
 ```
 core/tools/
-├── __init__.py              # 顶层注册表：create_tools(), get_tool_by_name()
-├── shared/                  # 共用工具（19~20 个）
-│   ├── __init__.py          # create_shared_tools()
-│   ├── base.py              # Tool 基类 + ToolResult + BackgroundTaskManager
-│   ├── read.py              # 读取文件
-│   ├── write.py             # 写入文件
-│   ├── edit.py              # 精确替换
-│   ├── bash.py              # Shell 命令（Git Bash）
-│   ├── pwsh.py              # PowerShell 命令
-│   ├── grep.py              # 正则搜索
-│   ├── find.py              # 文件查找
-│   ├── browser.py           # 浏览器自动化
-│   ├── web_search.py        # 网络搜索
-│   ├── memory.py            # 长期记忆
-│   ├── python_tool.py       # Python 执行（共用）
-│   ├── pdf2markdown.py      # PDF 转 Markdown（MinerU API）
-│   ├── llm_tool.py          # 单轮 LLM 调用（条件加载，需配置 llm_model）
-│   ├── todo.py              # 任务规划（TodoWrite）
-│   ├── latex.py             # LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex）
-│   ├── message_bus_tool.py  # 跨会话消息传递
-│   ├── cron_tool.py         # 用户级定时任务管理
-│   ├── read_tool_result.py  # 检索压缩的工具结果
-│   ├── temp.py              # 临时文件/目录管理
-│   ├── loop.py              # 循环任务进度追踪（配合 cron 使用）
-│   └── skill.py             # 技能工具（共用逻辑，RootAgent/SubAgent 各自实例化）
-├── root/                    # RootAgent 专属（3 个）
-│   ├── __init__.py          # create_root_tools()
-│   ├── subagent_tool.py     # SubAgent 委派工具
-│   └── ask_user.py          # AskUser 用户交互工具
-└── sub/                     # SubAgent 专属（无独立文件）
-    └── __init__.py          # create_sub_tools()（复用 shared skill + 创建 sub 专属 SkillTool 实例）
+├── __init__.py              # 重新导出 create_tools / TOOL_REGISTRY，提供 get_tool_by_name()
+├── registry.py              # TOOL_REGISTRY 统一注册表 + create_tools() 工厂
+├── base.py                  # Tool 基类 + ToolResult + BackgroundTaskManager
+├── approval.py              # 会话级审批（ApprovalStore、ask/deny 常量、decision_id、文案）
+├── read.py                  # 读取文件
+├── write.py                 # 写入文件
+├── edit.py                  # 精确替换
+├── bash.py                  # Shell 命令（Git Bash，会话级审批）
+├── pwsh.py                  # PowerShell 命令（会话级审批）
+├── grep.py                  # 正则搜索
+├── find.py                  # 文件查找
+├── browser.py               # 浏览器自动化
+├── web_search.py            # 网络搜索
+├── memory.py                # 长期记忆
+├── python_tool.py           # Python 执行
+├── todo.py                  # 任务规划（TodoWriteTool）
+├── latex.py                 # LaTeX 编译（tectonic/pdflatex/xelatex/lualatex）
+├── message_bus_tool.py      # 跨会话消息传递
+├── cron_tool.py             # 用户级定时任务管理
+├── read_tool_result.py      # 检索压缩的工具结果
+├── temp.py                  # 临时文件/目录管理
+├── loop.py                  # 循环任务进度追踪（配合 cron 使用）
+├── pdf2markdown.py          # PDF 转 Markdown（MinerU API）
+├── skill.py                 # 技能工具（SkillTool，按角色 frontmatter roles 过滤）
+├── agent_tool.py         # 子代理委派（AgentTool）
+└── ask_user.py              # 用户交互（AskUserTool）
 ```
 
-**工厂函数**：
-- `create_shared_tools(**kwargs, config=None)` → 19 个固定工具 + LLMTool（条件加载）= 19~20 个共用工具
-- `create_root_tools(**kwargs)` → 3 个 RootAgent 专属工具（SkillTool + SubAgentTool + AskUserTool）
-- `create_sub_tools(**kwargs, config=None)` → `create_shared_tools()` + 1 个 SubAgent 专属 SkillTool 实例
-- `create_tools(**kwargs, config=None)` = `create_shared_tools() + create_root_tools()` → RootAgent 的完整工具集（22~23 个）
-- SubAgent 的工具集 = `create_sub_tools()` → 20~21 个工具
+### 2.2 统一注册表 TOOL_REGISTRY
 
-**工具分配**：
-
-| Agent 类型 | 工具集 | 数量 |
-|-----------|--------|------|
-| RootAgent | shared + root | 22~23 个 |
-| SubAgent | shared + sub (SkillTool) | 20~21 个 |
-
-**LLMTool 条件加载**：当 `config.llm_model` 未配置时，`create_shared_tools()` 不包含 LLMTool（总数为 19 而非 20）。
-
-### 2.2 工具注册表
-
-`core/tools/__init__.py` 提供工具注册和查找：
+`core/tools/registry.py` 定义 `TOOL_REGISTRY: dict[str, Factory]`，把工具名映射到工厂函数：
 
 ```python
-# 创建 RootAgent 的完整工具集
+Factory = Callable[[AgentRoleConfig, str, str, Any, Config | None, Any], Tool]
+# 参数依次为：(role_cfg, cwd, workspace_uuid, session_manager, config, approval_store)
+
+TOOL_REGISTRY = {
+    "read": _factory(ReadTool),
+    "write": _factory(WriteTool),
+    "edit": _factory(EditTool),
+    "bash": _factory(BashTool, needs_approval=True),
+    "pwsh": _factory(PwshTool, needs_approval=True),
+    "grep": _factory(GrepTool),
+    "find": _factory(FindTool),
+    "browser": _factory(BrowserTool),
+    "web_search": _factory(WebSearchTool),
+    "memory": _factory(MemoryTool),
+    "python": _factory(PythonTool, needs_config=True),
+    "todo": _factory(TodoWriteTool),
+    "latex": _factory(LatexTool),
+    "message_bus": _factory(MessageBusTool),
+    "cron": _factory(CronTool),
+    "read_tool_result": _factory(ReadToolResultTool),
+    "temp": _factory(TempTool),
+    "loop": _factory(LoopTool),
+    "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True),
+    "skill": _make_skill,
+    "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
+    "ask_user": _factory(AskUserTool),
+}
+```
+
+`_factory(cls, *, needs_config, needs_approval)` 是通用工厂包装器，统一注入工具公共参数（cwd / workspace_uuid / session_manager），并按需附加**特殊参数**：
+
+| 工具 | 特殊参数 | 用途 |
+|------|---------|------|
+| bash / pwsh | `approval_store` | 会话级高风险命令审批（拦截→询问→批准） |
+| python / pdf2markdown | `config` | 读取全局配置（API 密钥、模型等） |
+| skill | `role=role_cfg.name` | 角色名，决定可见技能集合（frontmatter roles 过滤） |
+| agent | `config` + `approval_store` | config 用于构造子 Agent；approval_store 透传给子代理共享 |
+
+### 2.3 create_tools 实例化流程
+
+```python
+def create_tools(
+    role_cfg: AgentRoleConfig | None = None,
+    cwd: str = ".",
+    workspace_uuid: str = "",
+    session_manager=None,
+    config: Config | None = None,
+    approval_store=None,
+    role: str | None = None,
+) -> list[Tool]:
+```
+
+1. `role_cfg` 缺省时回退到 `load_agent_role(role or "master", config)`，便于旧调用点（conftest / prompts）不显式传角色配置即可获得 master 全量工具
+2. 遍历 `role_cfg.tools` 白名单（保持 JSON 中声明顺序），逐个查 `TOOL_REGISTRY`
+3. 未注册的工具跳过并告警；实例化失败的单个工具捕获异常并告警，不中断整体流程
+4. 返回按白名单顺序排列的工具列表
+
+### 2.4 角色工具白名单
+
+每个角色的可用工具集由其 `core/agents/{role}.json` 中的 `tools` 数组**声明式**决定：
+
+| Agent 角色 | 模式 | 工具数量 | 工具清单 |
+|-----------|------|---------|---------|
+| master | interactive | 22 | read, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, read_tool_result, temp, loop, pdf2markdown, skill, agent, ask_user |
+| worker | autonomous | 17 | master 去掉 todo、cron、message_bus、latex、ask_user |
+| lite | autonomous | 4 | read, write, edit, bash |
+
+**设计要点**：
+- **ask_user 仅 master**：master 是交互式（interactive），可向用户提问；worker/lite 是自主后台模式（autonomous），不含交互工具
+- **agent 委派（master/worker）**：master、worker 都含 `agent` 委派工具，但委派深度仅 1 层——只有 master(0) 可委派 worker/lite(1)，depth≥1 的子代理再委派会直接报错；lite 是纯执行角色，不含 agent 工具
+- **todo/cron/message_bus/latex 仅 master**：任务规划、定时任务、跨会话消息、LaTeX 渲染属于主代理的编排职责，worker 不持有
+- **lite 精简集**：只保留 read/write/edit/bash，无 skill、无 python 等，适合快速文件处理类子任务
+- 修改某角色工具集只需编辑对应 JSON，无需改动注册表代码
+
+### 2.5 工具查找
+
+`core/tools/__init__.py` 提供按名称查找：
+
+```python
+# 创建 master（默认角色）的完整工具集
 tools = create_tools(cwd="/workspace", workspace_uuid="abc123", session_manager=sm, config=cfg)
 
 # 按名称查找工具（O(1) 缓存查找）
 tool = get_tool_by_name(tools, "bash")
 ```
+
+`get_tool_by_name` 通过 `_tool_map()` 构建 `{tool.name: tool}` 映射，按 `id(tools)` 缓存（列表引用在 agent 生命周期内稳定）。
 
 ---
 
@@ -250,48 +310,37 @@ content = [
 
 ## 四、工具列表
 
-### 4.1 共用工具（shared/）
+全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 22 个；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user 的 17 个（含 agent）；lite 仅 read/write/edit/bash。
 
-| 工具 | 文件 | 说明 |
-|------|------|------|
-| read | read.py | 读取文件内容（文本 + 图片 base64 + PDF 按页读取） |
-| write | write.py | 创建/覆盖文件（自动创建父目录） |
-| edit | edit.py | 精确文本替换（old_text 必须唯一） |
-| bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin |
-| pwsh | pwsh.py | PowerShell 命令，支持后台执行和交互式 stdin |
-| grep | grep.py | 正则搜索（支持 glob/type 过滤） |
-| find | find.py | 文件查找（glob 模式） |
-| browser | browser.py | Chrome 自动化（Playwright + CDP） |
-| web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） |
-| memory | memory.py | 长期记忆（knowledge + skill） |
-| python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 |
-| pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） |
-| llm | llm_tool.py | 单轮 LLM 调用（翻译/摘要/提取） |
-| todo_write | todo.py | 任务规划（整表替换，三态状态） |
-| latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） |
-| message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） |
-| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） |
-| read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） |
-| temp | temp.py | 临时文件和目录管理（按 session 隔离） |
-| loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） |
+| 工具 | 文件 | 说明 | 可用角色 |
+|------|------|------|---------|
+| read | read.py | 读取文件内容（文本 + 图片 base64 + PDF 按页读取） | master/worker/lite |
+| write | write.py | 创建/覆盖文件（自动创建父目录） | master/worker/lite |
+| edit | edit.py | 精确文本替换（old_text 必须唯一） | master/worker/lite |
+| bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker/lite |
+| pwsh | pwsh.py | PowerShell 命令，支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker |
+| grep | grep.py | 正则搜索（支持 glob/type 过滤） | master/worker |
+| find | find.py | 文件查找（glob 模式） | master/worker |
+| browser | browser.py | Chrome 自动化（Playwright + CDP） | master/worker |
+| web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） | master/worker |
+| memory | memory.py | 长期记忆（knowledge + skill，支持 find 关键词检索） | master/worker |
+| python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker |
+| todo | todo.py | 任务规划（整表替换，三态状态） | master/worker |
+| latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master/worker |
+| message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） | master/worker |
+| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master/worker |
+| read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） | master/worker |
+| temp | temp.py | 临时文件和目录管理（按 session 隔离） | master/worker |
+| loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master/worker |
+| pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master/worker |
+| skill | skill.py | 技能工具（按角色 frontmatter roles 过滤，见 8.1） | master/worker |
+| agent | agent_tool.py | 委派复杂任务给子代理（AgentTool，见 8.2） | master/worker |
+| ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 
-### 4.2 RootAgent 专属工具（root/）
-
-| 工具 | 文件 | 说明 |
-|------|------|------|
-| skill | skill.py（shared/） | RootAgent 技能工具实例（扫描 core/skills/root/ + core/skills/shared/） |
-| subagent | subagent_tool.py | 委派复杂任务给 SubAgent |
-| ask_user | ask_user.py | 向用户提问，收集决策（RootAgent 专属，SubAgent 后台无法交互） |
-
-**注意**：`skill.py` 的共用逻辑位于 `shared/` 目录，RootAgent 和 SubAgent 各自创建独立的 SkillTool 实例，扫描不同的技能目录，且两者都始终包含 `core/skills/shared/` 下的共享技能（列表中带 `shared/` 前缀）。
-
-### 4.3 SubAgent 专属工具（sub/）
-
-| 工具 | 文件 | 说明 |
-|------|------|------|
-| skill | skill.py（shared/） | SubAgent 技能工具实例（扫描 core/skills/sub/ + core/skills/shared/） |
-
-SubAgent 没有独立的工具文件，而是在 `sub/__init__.py` 中复用 shared 的 SkillTool 类，传入不同的 `skills_dir` 参数。
+**注意**：
+- 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，LLM schema 使用类属性 name）
+- `skill` 工具由注册表工厂传入 `role=role_cfg.name`，每个角色实例化独立 SkillTool，可见技能集合不同
+- `agent` 工具注册名仍为 `agent`，类名为 `AgentTool`
 
 ---
 
@@ -334,7 +383,7 @@ LLM 响应
 
 ### 5.2 工具 Schema 生成
 
-RootAgent 启动时，将所有工具转换为 Anthropic API 格式：
+Agent 启动时，将白名单实例化出的所有工具转换为 Anthropic API 格式：
 
 ```python
 tool_schemas = [tool.to_schema() for tool in tools]
@@ -376,21 +425,21 @@ tool_schemas = [tool.to_schema() for tool in tools]
 
 ## 七、后台任务执行
 
-bash、pwsh、python 和 subagent 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
+bash、pwsh、python 和 agent 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
 
 ### 7.1 功能概述
 
 | 功能 | 参数 | 说明 |
 |------|------|------|
-| 启动后台任务 | `run_in_background: true` | 立即返回 task_id，命令/SubAgent 在后台运行 |
-| 读取输出 | `read_task: "bg-N"` | 非阻塞读取累积输出/SubAgent 状态 |
+| 启动后台任务 | `run_in_background: true` | 立即返回 task_id，命令/Agent 在后台运行 |
+| 读取输出 | `read_task: "bg-N"` | 非阻塞读取累积输出/Agent 状态 |
 | 终止任务 | `kill_task: "bg-N"` | 终止后台任务 |
 | 写入 stdin | `write_stdin: {task_id, text}` | 向运行中的进程发送输入（仅 shell 任务） |
 | 列出任务 | `list_tasks: true` | 列出所有后台任务及状态 |
 
 ### 7.2 后台任务管理器
 
-`BackgroundTaskManager`（定义在 `base.py`）是类级别的单例，所有工具实例共享：
+`BackgroundTaskManager`（定义在 `core/tools/base.py`）是类级别的单例，所有工具实例共享：
 
 ```python
 class BackgroundTaskManager:
@@ -403,8 +452,8 @@ class BackgroundTaskManager:
 ```python
 @dataclass
 class BackgroundTask:
-    task_id: str                    # 任务 ID（格式：bg-N 或 subagent-N）
-    task_type: str                  # "shell" 或 "subagent"
+    task_id: str                    # 任务 ID（格式：bg-N 或 agent-N）
+    task_type: str                  # "shell" 或 "agent"
     command: str                    # 执行的命令（shell 任务）
     process: subprocess.Popen       # 子进程对象（shell 任务）
     output_file: str | None         # 输出文件路径（shell 任务）
@@ -414,10 +463,10 @@ class BackgroundTask:
     exit_code: int | None           # 退出码
     created_at: float               # 创建时间戳
     stdin_pipe: Any                 # stdin 管道（供 write_stdin 使用）
-    # SubAgent 专用字段
-    subagent: Any                   # SubAgent 实例
+    # Agent 专用字段
+    agent: Any                   # Agent 实例
     session_manager: Any            # SessionManager 实例
-    result: dict | None             # SubAgent 执行结果
+    result: dict | None             # Agent 执行结果
 ```
 
 ### 7.3 使用示例
@@ -456,34 +505,42 @@ python(action="execute_file", file="long_task.py", run_in_background=True)
 python(action="execute", code="import time; time.sleep(60)", run_in_background=True)
 ```
 
-**subagent 后台执行**：
+**agent 后台执行**：
 ```python
-# 后台运行 SubAgent
-subagent(task="Complex task...", run_in_background=True)
-# → "SubAgent started in background. Task ID: subagent-1"
+# 后台运行 Agent
+agent(task="Complex task...", run_in_background=True)
+# → "Agent started in background. Task ID: agent-1"
 
-# 查询 SubAgent 状态
-subagent(read_task="subagent-1")
-# → "SubAgent subagent-1 is still running (5 iterations)"
-# → "SubAgent subagent-1 completed: summary..."
+# 查询 Agent 状态
+agent(read_task="agent-1")
+# → "Agent agent-1 is still running (5 iterations)"
+# → "Agent agent-1 completed: summary..."
 
-# 终止后台 SubAgent
-subagent(kill_task="subagent-1")
-# → "Terminated SubAgent task subagent-1"
+# 终止后台 Agent
+agent(kill_task="agent-1")
+# → "Terminated Agent task agent-1"
 
 # 列出所有后台任务
-subagent(list_tasks=True)
+agent(list_tasks=True)
 # → 2 background task(s):
 #   bg-1: [shell][running] sleep 100
-#   subagent-1: [subagent][running] Complex task...
+#   agent-1: [agent][running] Complex task...
 ```
+
+### 7.4 设计要点
+
+- **线程安全**：`BackgroundTaskManager` 使用锁保护注册表
+- **实时输出**：后台任务使用独立线程逐行读取 stdout，写入 `output_queue` 和 `output_file`
+- **增量消费**：`read_task` 只返回自上次读取以来的新输出
+- **自动清理**：任务完成后自动从注册表移除
+- **stdin 保持打开**：后台任务的 stdin pipe 保持打开，支持后续 `write_stdin`
 
 ### 7.5 MessageBus 跨会话消息传递
 
 `MessageBus` 是一个轻量级的跨会话消息传递机制，模块级别单例（与 BrowserService/CronScheduler 同模式）。
 
 **核心模块**：`core/message_bus.py`
-**工具**：`core/tools/shared/message_bus_tool.py`（shared 工具，RootAgent 和 SubAgent 均可使用）
+**工具**：`core/tools/message_bus_tool.py`（master/worker 均可使用）
 
 **功能**：
 - `send(to_session, message)` — 发送消息到指定会话
@@ -498,19 +555,11 @@ subagent(list_tasks=True)
 - **按需读取**：消息不自动注入 agent 循环，agent 需主动调用 `message_bus(action="receive")` 检查
 - **会话注册**：`web_api.py` 在创建 agent 时自动注册到 MessageBus
 
-### 7.4 设计要点
-
-- **线程安全**：`BackgroundTaskManager` 使用锁保护注册表
-- **实时输出**：后台任务使用独立线程逐行读取 stdout，写入 `output_queue` 和 `output_file`
-- **增量消费**：`read_task` 只返回自上次读取以来的新输出
-- **自动清理**：任务完成后自动从注册表移除
-- **stdin 保持打开**：后台任务的 stdin pipe 保持打开，支持后续 `write_stdin`
-
 ### 7.6 read_tool_result — 检索压缩的工具结果
 
 `read_tool_result` 用于检索被压缩（microcompact）的旧工具结果。当工具输出被压缩后，占位符会提示 LLM 使用此工具通过 `tool_use_id` 重新获取原始内容。
 
-**核心模块**：`core/tools/shared/read_tool_result.py`
+**核心模块**：`core/tools/read_tool_result.py`
 
 **调用方式**：
 ```python
@@ -519,15 +568,13 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 
 **设计要点**：
 - **自动定位文件**：通过 `self.session_manager.session_dir` 找到正确的会话目录
-- **SubAgent 支持**：自动搜索 `exec_*` 子目录中的文件
+- **Agent 支持**：自动搜索 `exec_*` 子目录中的文件
 - **无需路径知识**：LLM 只需传入 `tool_use_id`，无需知道文件存储位置
 
 **压缩占位符格式**：
 ```
 [Compacted: use `read_tool_result` tool with tool_use_id="toolu_01ABC123" to retrieve original content]
 ```
-
-**实现**：`core/tools/shared/read_tool_result.py`（shared 工具，RootAgent 和 SubAgent 均可使用）
 
 ---
 
@@ -582,80 +629,76 @@ loop(action="status", source_file="data/files.txt")
 - `item`: 项标识（done/fail action 使用）
 - `error`: 失败原因（fail action 使用）
 
-**实现**：`core/tools/shared/loop.py`
+**实现**：`core/tools/loop.py`
 
-### 8.1 llm — 单轮 LLM 调用
+### 8.1 skill — 内置技能访问
 
-`llm` 是共享工具（文件：`llm_tool.py`），用于单轮 LLM 调用（翻译、摘要、提取等）。**需要配置 LLM 模型**（`llm_model`），否则返回"不可用"。
+`skill` 工具（`SkillTool`）用于列出和读取全局内置技能。技能平铺在 `core/skills/{name}/skill.md`，每个技能的 frontmatter 通过 `roles` 字段声明适用角色；**缺省 `roles` 视为对所有角色可见**。
 
-**输入方式**：
-- `input_file`（必填）: 从文件读取，内容作为 user message
-- `prompt`（可选）: 处理指令，作为 system prompt
+**核心模块**：`core/tools/skill.py`（扫描目录 `core/skills/`）
 
-**输出方式**：
-- 默认：返回文本结果
-- `output_file`: 写入文件
+**roles 过滤规则**：
+- frontmatter `roles: [master]` → 仅 master 可见（如 grilling / create-skill / research / code-review / skillify / learning）
+- frontmatter `roles: [worker]` → 仅 worker 可见（如 context-bounded-processing）
+- frontmatter `roles: [master, worker]` → master/worker 可见（如 task-delegation）
+- frontmatter `roles: [master, worker, lite]` → 三个角色均可见（如 file-processing）
+- 无 `roles` 字段 → 全部角色可见
 
-**结构化输出**：
-- `output_schema`: JSON Schema，定义期望输出结构
+**调用方式**：
+```python
+# 列出当前角色可见的技能
+skill(action="list")
+# → "Available skills for master (N):"
+#   [skill-id] skill name
+#     skill description
 
-**示例**：
-```json
-// 翻译文件
-{"prompt": "Translate to Chinese", "input_file": "article.txt", "output_file": "article_zh.txt"}
-
-// 结构化提取
-{"input_file": "logs.txt",
- "output_schema": {"type": "object", "properties": {"errors": {"type": "array"}}}}
+# 读取技能全文（按目录名）
+skill(action="read", skill_id="large-file-processing")
 ```
 
-**实现**：`shared/llm_tool.py`，使用 `chat()` 调用 LLM API。
+**设计要点**：
+- **角色参数化**：`SkillTool.__init__(role=...)`，注册表工厂传入 `role=role_cfg.name`，同一实例按角色过滤可见技能
+- **actions**：`list`（列出技能）、`read`（读取全文）
+- **不再有 `shared/` 前缀 id**：技能 id 即目录名，统一目录平铺
 
-**与 subagent 工具的区别**：
+### 8.2 agent 工具 — 任务委派（AgentTool）
 
-| 特性 | llm | subagent 工具 |
-|------|-----|---------------|
-| 工具 | 无（纯 LLM 调用） | 完整工具集 |
-| 适用 | 简单文本处理 | 需要工具交互的复杂任务 |
-| 超时 | LLM API 超时 | 1 小时 |
-| 上下文 | 单轮 | 多轮循环 |
-
-### 8.2 subagent 工具 — 任务委派
-
-`subagent` 工具在独立的 SubAgent 中执行复杂任务。
+`agent` 工具在独立的子代理（Worker/Lite）中执行复杂任务。工具注册名 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），master 与 worker 白名单包含（委派深度仅 1 层，见下）。
 
 **调用方式**：
 ```python
 # 同步模式（阻塞直到完成）
-subagent(
+agent(
     task="Read input.txt, translate to Chinese, write to output.txt",
-    plan=["Read input.txt", "Translate content", "Write result"]
+    plan=["Read input.txt", "Translate content", "Write result"],
+    agent_type="worker",        # "worker"（默认）| "lite"
 )
 
 # 后台模式（立即返回 task_id）
-subagent(
+agent(
     task="Long-running task...",
     run_in_background=True
 )
 
 # 查询后台任务状态
-subagent(read_task="subagent-1")
+agent(read_task="agent-1")
 
 # 终止后台任务
-subagent(kill_task="subagent-1")
+agent(kill_task="agent-1")
 
-# 列出所有后台任务（shell + subagent）
-subagent(list_tasks=True)
+# 列出所有后台任务（shell + agent）
+agent(list_tasks=True)
 ```
 
 **参数**：
-- `task`: 任务目标描述
+- `task`: 任务目标描述（必填）
 - `plan`: 执行计划（有序步骤列表）
+- `agent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash，无 check 阶段）
 - `run_in_background`: 后台执行模式（立即返回 task_id）
-- `read_task`: 读取后台 SubAgent 状态
-- `kill_task`: 终止后台 SubAgent
+- `read_task`: 读取后台 Agent 状态
+- `kill_task`: 终止后台 Agent
 - `list_tasks`: 列出所有后台任务
-- `temperature`: 覆盖本次 SubAgent 的 LLM temperature（0.0~1.0，可选）
+- `temperature`: 覆盖本次 Agent 的 LLM temperature（0.0~1.0，可选）
 - `label`: UI 显示标签（最长 64 字符，可选）
 
 **返回值**：
@@ -668,38 +711,58 @@ subagent(list_tasks=True)
 # 或 {"status": "failed", "message": "...", "iterations": 10}     # 连续工具调用失败
 
 # 后台模式
-"SubAgent started in background. Task ID: subagent-1"
+"Agent started in background. Task ID: agent-1"
 ```
 
+**子代理构造**：`AgentTool` 使用统一 `Agent`（`core/agent.py`），按 `agent_type` 选择角色：
+
+```python
+agent = Agent(
+    config=self.config,          # 全局配置（角色模型继承）
+    role=agent_type,             # "worker" | "lite"，决定工具白名单与行为开关
+    task=task,
+    plan=plan,
+    workspace_uuid=...,
+    cwd=...,
+    stop_check=self.stop_check,  # master Agent 创建工具后注入
+    session_dir=exec_dir,        # exec_id 独立目录
+    exec_id=exec_id,
+    temperature=temperature,
+    approval_store=self.approval_store,  # 根代理的会话级审批存储，子代理共享
+)
+agent.run()
+```
+
+子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 17 个 / lite 4 个）。
+
 **关键特性**：
-- **独立工具集**：shared 工具 + sub 专属 skill
+- **独立工具集**：worker 17 个 / lite 4 个（取决于 agent_type）
 - **结构化任务**：task + plan 拼接到 system prompt 末尾（不可压缩）
-- **专用 prompt**：`build_sub_prompt()` 动态构建
 - **1 小时超时**
-- **禁止嵌套**：SubAgent 不能再调用 subagent 工具
-- **后台执行**：`run_in_background=true` 在独立线程中运行 SubAgent
-- **懒加载 UI**：SubAgent 结果通过 tool_result 中的 exec_id 懒加载渲染
+- **委派深度限制（仅 1 层）**：只有 master(0) 可委派 worker/lite(1)；depth≥1 的子代理再调用 `agent` 工具直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
+- **后台执行**：`run_in_background=true` 在独立线程中运行子代理
+- **懒加载 UI**：Agent 结果通过 tool_result 中的 exec_id 懒加载渲染
 
 **会话消息结构**：
-- 主会话通过 tool_use(tool: subagent) + tool_result(exec_id) 消息对呈现 SubAgent
+- 主会话通过 tool_use(tool: agent) + tool_result(exec_id) 消息对呈现 Agent
 - 完整执行日志存入独立 `exec_*.json` 文件，每轮迭代实时保存
 
-**后台 SubAgent 生命周期**：
-1. `run_in_background=True` → 注册 task_id（格式：`subagent-N`）
-2. 独立线程运行 `SubAgent.run()`，完成后自动更新 tool_result 状态
+**后台 Agent 生命周期**：
+1. `run_in_background=True` → 注册 task_id（格式：`agent-N`）
+2. 独立线程运行 `agent.run()`，完成后自动更新 tool_result 状态
 3. `read_task` → 查询状态（running/completed）和摘要
-4. `kill_task` → 设置 `subagent._stopped=True` 终止 SubAgent
+4. `kill_task` → 设置 `agent._stopped=True` 终止 Agent
 
 **回调链路**：
 ```
-web_api.py 注入 on_subagent_start / on_subagent_complete 回调
-  → RootAgent._on_subagent_start / _on_subagent_complete
-    → SubAgentTool.on_subagent_start / on_subagent_complete
-      → 推送 SSE 事件（subagent_start / subagent_complete）
+web_api.py 注入 on_agent_start / on_agent_complete 回调
+  → Agent._on_agent_start / _on_agent_complete
+    → AgentTool.on_agent_start / on_agent_complete
+      → 推送 SSE 事件（agent_start / agent_complete）
         → 前端渲染卡片 / 更新状态
 ```
 
-**实现**：`core/sub_agent.py` 中的 `SubAgent` 类，`core/tools/root/subagent_tool.py` 提供工具接口。
+**实现**：`core/tools/agent_tool.py`（AgentTool），子代理由 `core/agent.py` 的统一 `Agent`（autonomous 模式）驱动。
 
 ### 8.3 temp — 临时文件/目录管理
 
@@ -727,7 +790,7 @@ web_api.py 注入 on_subagent_start / on_subagent_complete 回调
 - **自动清理**：调用 `cleanup` 可一次性删除所有临时文件
 - **路径解析**：根目录由 `CILI_TMP` 环境变量决定（默认 `data/tmp/`），下按 session_id 隔离
 
-**实现**：`shared/temp.py`
+**实现**：`core/tools/temp.py`
 
 ---
 
@@ -735,11 +798,11 @@ web_api.py 注入 on_subagent_start / on_subagent_complete 回调
 
 ### 9.1 创建工具文件
 
-在 `core/tools/shared/`（或 root/sub/）创建新文件：
+在 `core/tools/` 平铺目录下创建新文件：
 
 ```python
-# core/tools/shared/my_tool.py
-from core.tools.shared.base import Tool, ToolResult
+# core/tools/my_tool.py
+from core.tools.base import Tool, ToolResult
 
 class MyTool(Tool):
     name = "my_tool"
@@ -754,48 +817,63 @@ class MyTool(Tool):
         },
         "required": ["input"]
     }
-    
+
     def execute(self, **kwargs) -> ToolResult:
         input_text = kwargs.get("input", "")
-        
+
         # 实现工具逻辑
         result = f"Processed: {input_text}"
-        
+
         return ToolResult(output=result, error=False)
 ```
 
 ### 9.2 注册工具
 
-在对应的 `__init__.py` 中添加：
+在 `core/tools/registry.py` 的 `TOOL_REGISTRY` 中注册工厂（普通工具用 `_factory`；需特殊参数时按需设置 `needs_config` / `needs_approval`，或自定义工厂）：
 
 ```python
-# core/tools/shared/__init__.py
-from core.tools.shared.my_tool import MyTool
+# core/tools/registry.py
+from core.tools.my_tool import MyTool
 
-def create_shared_tools(**kwargs) -> list[Tool]:
-    return [
-        # ... existing tools ...
-        MyTool(**kwargs),
-    ]
+TOOL_REGISTRY = {
+    # ... existing tools ...
+    "my_tool": _factory(MyTool),
+}
 ```
 
-### 9.3 工具命名规范
+### 9.3 角色白名单
 
-- 使用 snake_case（如 `web_search`, `llm`）
-- 名称应清晰表达工具功能
+将工具名加入希望开放角色的 `core/agents/{role}.json` 的 `tools` 数组：
+
+```json
+{
+  "name": "master",
+  "tools": [
+    "read",
+    "...",
+    "my_tool"
+  ]
+}
+```
+
+不加入任何角色白名单的工具不会被实例化（白名单外注册名视为未注册，跳过并告警）。
+
+### 9.4 工具命名规范
+
+- 使用 snake_case（如 `web_search`）
+- 名称应清晰表达工具功能，并与注册表键、角色白名单保持一致
 - 避免与现有工具重名
 
 ---
 
 ## 十、设计决策
 
-### 10.1 为什么分三层（shared/root/sub）？
+### 10.1 为什么用"统一注册表 + 角色白名单"？
 
-- **共用工具**：大部分工具 RootAgent 和 SubAgent 都需要（如 read/write/bash）
-- **RootAgent 专属**：skill（扫描 root/ 目录的技能）、subagent（委派任务）
-- **SubAgent 专属**：skill（扫描 sub/ 目录的技能，内容不同）
-- **共用逻辑复用**：skill.py 和 python_tool.py 在 shared/，两边共用同一实现
-- **条件加载**：llm 仅在配置了 llm_model 时加载，避免无谓的 API 调用
+- **单一注册点**：所有工具集中在 `TOOL_REGISTRY`，一处注册、全局可见，取代旧 shared/root/sub 三层目录与分散的 `create_shared_tools`/`create_root_tools`/`create_sub_tools` 硬编码工厂
+- **声明式角色配置**：工具集由 `core/agents/{role}.json` 的 `tools` 数组声明，新增/调整角色只改 JSON，不动代码
+- **职责边界清晰**：同一工具类可被多角色共享（如 read/write/edit/bash），角色差异完全由白名单体现
+- **无冗余复制**：skill 等"按角色参数化"的工具通过工厂传参（`role`）复用同一实现，不再为不同角色创建独立实例目录
 
 ### 10.2 为什么 read/write/edit 用直接 I/O？
 
@@ -871,20 +949,20 @@ deny 黑名单分两档：**ask**（破坏性操作，可询问用户）与 **de
 ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会话级批准"流程：
 
 1. **工具层**（bash/pwsh）：查 `ApprovalStore.is_approved(decision_id)` → 已批准放行执行；未批准返回 `completed=False` 占位符 + `meta.approval_required`（decision_id 为规范化命令的 sha256 前 16 位，确定性）
-2. **Root 循环**（root_agent.py）：把首个 approval_required 降级为错误提示、记录 pending，批处理完后**合成一张 ask_user 卡**（选项"允许本次会话"/"拒绝"）→ 占位 break；同批多条只问一条，其余拒绝
+2. **Master 循环**（`core/agent.py`）：把首个 approval_required 降级为错误提示、记录 pending，批处理完后**合成一张 ask_user 卡**（选项"允许本次会话"/"拒绝"）→ 占位 break；同批多条只问一条，其余拒绝
 3. **answer 端点**（web_api.py）：答案含"允许本次会话" → `store.approve(did, cmd)`；否则仅清 pending（自定义输入视为拒绝）
 4. **模型重发**：resume 后模型读到批准，原样重发命令 → `is_approved` 命中 → 放行；此后**本会话内**（含子代理）同命令不再询问
 
-**会话级、内存不持久化**：`ApprovalStore` 由 RootAgent 持有（`_approved: decision_id→command`，不按次数消费 + 单槽 `pending`），服务器重启即失效，不写配置不落盘。
+**会话级、内存不持久化**：`ApprovalStore` 由 master Agent 持有（`_approved: decision_id→command`，不按次数消费 + 单槽 `pending`），服务器重启即失效，不写配置不落盘。
 
-**子代理共享**：根/子代理的 bash/pwsh 与 SubAgentTool 构造时透传同一 `ApprovalStore` 实例——
+**子代理共享**：根/子代理的 bash/pwsh 与 AgentTool 构造时透传同一 `ApprovalStore` 实例——
 - 已批准命令子代理可直接执行（工具层共享放行）
-- 已批准命令列表注入子代理 pinned 任务消息（`build_approved_commands_section`），子模型知晓可直接执行
-- 子代理无 ask_user：未批准命令的占位符被子循环 `_downgrade_approval_result` 降级为普通 error，不挂起不询问
+- 已批准命令列表注入子代理 pinned 任务消息（`build_approved_commands_section`，approval.py），子模型知晓可直接执行
+- 子代理无 ask_user：未批准命令的占位符被子循环 `_downgrade_approval_result`（`core/agent.py`）降级为普通 error，不挂起不询问
 
 **消息配对**：合成 ask_user 需手动补 `assistant` tool_use 块（`generate_short_id()` 生成 id），且全部工具结果处理完后再追加，避免悬挂 tool_result 或打断本批其他 tool_use 的配对。
 
-相关文件：`core/tools/shared/approval.py`（ApprovalStore + 常量/文案）、`core/tools/shared/bash.py`、`core/tools/shared/pwsh.py`、`core/root_agent.py`（`_handle_approval_required`）、`core/sub_agent.py`（提示词下放 + 降级）、`core/tools/root/subagent_tool.py`（透传）、`web/web_api.py`（answer_ask_user 记录批准）。
+相关文件：`core/tools/approval.py`（ApprovalStore、ask/deny 常量、decision_id 与文案）、`core/tools/bash.py`、`core/tools/pwsh.py`、`core/agent.py`（`_handle_approval_required`、`_downgrade_approval_result`）、`core/tools/agent_tool.py`（透传）、`web/web_api.py`（answer_ask_user 记录批准）。
 
 ---
 
@@ -892,19 +970,20 @@ ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会�
 
 | 文件 | 职责 |
 |------|------|
-| `core/tools/__init__.py` | 工具注册表（create_tools, get_tool_by_name） |
-| `core/tools/shared/base.py` | Tool 基类 + ToolResult |
-| `core/tools/shared/approval.py` | 会话级审批（ApprovalStore、三档常量、文案与 decision_id） |
-| `core/tools/shared/*.py` | 共用工具实现 |
-| `core/tools/root/*.py` | RootAgent 专属工具 |
-| `core/tools/sub/*.py` | SubAgent 专属工具 |
+| `core/tools/registry.py` | TOOL_REGISTRY 统一注册表 + `create_tools()` 工厂（按角色白名单实例化） |
+| `core/tools/__init__.py` | 重新导出 create_tools / TOOL_REGISTRY，提供 `get_tool_by_name()` 查找 |
+| `core/tools/base.py` | Tool 基类 + ToolResult + BackgroundTaskManager |
+| `core/tools/approval.py` | 会话级审批（ApprovalStore、ask/deny 常量、文案与 decision_id） |
+| `core/tools/*.py` | 全部工具实现（平铺） |
+| `core/agents/*.json` | 角色定义：工具白名单（tools）、行为开关、system prompt 块 |
+| `core/agent_config.py` | AgentRoleConfig + `load_agent_role`（读取角色 JSON） |
 | `core/base_agent.py` | 工具执行循环（`_execute_tool`）+ `_resolve_tool_results()` |
-| `core/root_agent.py` | RootAgent 流式交互 |
-| `core/sub_agent.py` | SubAgent 非流式循环 |
+| `core/agent.py` | 统一 Agent（master 交互 / worker/lite 自主）、审批合成与降级 |
+| `core/skills/` | 全局内置技能（平铺目录，frontmatter roles 声明适用角色） |
 
 ---
 
-**文档版本**: v1.5  
+**文档版本**: v2.0  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-09（与源码同步校正：coerce_input 校验行为、tool_result _meta 元信息格式、loop 输出格式、subagent temperature/label 参数、temp 目录规则等）  
+**更新时间**: 2026-09-10（重构：工具系统从 shared/root/sub 三层目录 + 硬编码工厂改为统一注册表 TOOL_REGISTRY + 角色 JSON 白名单；llm 工具已移除；skill 改为平铺 + frontmatter roles 过滤；agent 改为 AgentTool 并新增 agent_type；审批逻辑迁至统一 Agent）  
 **状态**: 已实现

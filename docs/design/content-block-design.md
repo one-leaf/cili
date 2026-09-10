@@ -60,7 +60,7 @@ LLMClient (client.py)
     tool_use_id: str = ""
     content: str | list[dict] = ""    # str 纯文本，list[dict] 多模态（text + image blocks）
     is_error: bool = False
-    # SubAgent 扩展字段
+    # 委派执行（agent 工具）扩展字段
     exec_id: str = ""
     iterations: int = 0
     message_count: int = 0
@@ -289,17 +289,17 @@ class ToolResult:
 
 ## 配置
 
-双模型架构：
+模型继承架构：
 
 ```json
 {
   "model": { "name": "claude-sonnet-4-6", "interface_type": "anthropic", ... },
-  "llm_model": { "name": "claude-haiku-4-5", "interface_type": "anthropic", ... }
+  "worker_model": { "name": "claude-haiku-4-5", "interface_type": "anthropic", ... }
 }
 ```
 
-- `model`: RootAgent 主对话模型
-- `llm_model`: LLMTool 单轮处理模型（可选）
+- `model`: Master 主模型（所有角色默认继承）
+- `worker_model` / `lite_model`: 对应角色的模型（可选，只填 `name` 则其余字段继承主模型）
 
 工厂函数：`create_llm_client(config) → LLMClient`
 
@@ -318,9 +318,9 @@ class ToolResult:
 | `core/llm/client.py` | LLMClient（公共 API） |
 | `core/llm/__init__.py` | 导出、create_llm_client 工厂 |
 | `core/base_agent.py` | BaseAgent（消息管理、工具执行、压缩） |
-| `core/root_agent.py` | RootAgent（流式交互） |
-| `core/sub_agent.py` | SubAgent（非流式委派） |
-| `core/tools/shared/base.py` | Tool 基类、ToolResult |
+| `core/agent.py` | 统一 Agent（mode 分叉：master 交互 / worker、lite 自主） |
+| `core/agent_config.py` | AgentRoleConfig + load_agent_role |
+| `core/tools/base.py` | Tool 基类、ToolResult |
 
 ## 参考
 
