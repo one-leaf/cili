@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import argparse
+import copy
 import json
 import logging
 import os
@@ -176,7 +177,6 @@ def _setup_logging() -> None:
     # 降低第三方库的日志级别
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
 def _create_example_config() -> None:
@@ -527,47 +527,45 @@ def _init_mplfonts() -> None:
     """Initialize matplotlib CJK font support.
 
     Steps:
-    1. Write rc file (WenQuanYi if available, otherwise Microsoft YaHei)
-    2. Register WenQuanYi font with matplotlib if available
+    1. Write rc file (HarmonyOS Sans SC if available, otherwise Microsoft YaHei)
+    2. Bundle HarmonyOS Sans SC fonts into matplotlib's font dir (子进程可见)
     3. Clear font cache so matplotlib picks up new fonts
     """
     import matplotlib
+    import shutil
     mpl_config_dir = os.path.join(_DEPS_PYTHON_DIR, "matplotlib")
     rc_file = os.path.join(mpl_config_dir, "matplotlibrc")
 
-    # Check if WenQuanYi font is available in deps/fonts
+    # 检查鸿蒙黑体 SC 是否可用（start.ps1 解压到 data/deps/fonts/HarmonyOS Sans/HarmonyOS_Sans_SC/）
     fonts_dir = os.path.join(_DEPS_DIR, "fonts")
-    wqy_font_file = os.path.join(fonts_dir, "wqy-microhei-lite-0.2.0-beta.ttc")
-    use_wqy = os.path.exists(wqy_font_file)
+    harmony_sc_dir = os.path.join(fonts_dir, "HarmonyOS Sans", "HarmonyOS_Sans_SC")
+    use_harmony = os.path.isdir(harmony_sc_dir) and any(
+        f.endswith(".ttf") for f in os.listdir(harmony_sc_dir)
+    )
 
-    # Check if rc file is complete (contains our fixes)
+    # 检查 rc 文件是否完整
     rc_complete = False
     if os.path.exists(rc_file):
         try:
             with open(rc_file, "r", encoding="utf-8") as f:
                 content = f.read()
-                if ("Segoe UI Symbol" in content and "font.monospace" in content
-                        and ("WenQuanYi" in content or "Microsoft YaHei" in content)):
-                    # If rc has WenQuanYi but font file is gone, or vice versa, rewrite
-                    if use_wqy and "WenQuanYi" not in content:
-                        rc_complete = False
-                    elif not use_wqy and "WenQuanYi" in content:
-                        rc_complete = False
-                    else:
-                        rc_complete = True
+            if use_harmony and "HarmonyOS Sans SC" in content and "font.monospace" in content:
+                rc_complete = True
+            elif not use_harmony and "Microsoft YaHei" in content and "HarmonyOS" not in content:
+                rc_complete = True
         except Exception:
             pass
 
-    # Step 1: Write complete rc file if needed
+    # Step 1: Write rc file if needed
     if not rc_complete:
         try:
             os.makedirs(mpl_config_dir, exist_ok=True)
-            if use_wqy:
+            if use_harmony:
                 content = (
-                    "# Cili Agent - CJK font config (WenQuanYi Micro Hei first)\n"
+                    "# Cili Agent - CJK font config (HarmonyOS Sans SC first)\n"
                     "font.family: sans-serif\n"
-                    "font.sans-serif: WenQuanYi Micro Hei Light, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
-                    "font.monospace: WenQuanYi Micro Hei Light, Microsoft YaHei, SimHei, DejaVu Sans Mono, monospace\n"
+                    "font.sans-serif: HarmonyOS Sans SC, Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
+                    "font.monospace: Consolas, Cascadia Mono, Courier New, NSimSun, Microsoft YaHei, DejaVu Sans Mono, monospace\n"
                     "axes.unicode_minus: False\n"
                 )
             else:
@@ -575,25 +573,37 @@ def _init_mplfonts() -> None:
                     "# Cili Agent - CJK font config (Microsoft YaHei first)\n"
                     "font.family: sans-serif\n"
                     "font.sans-serif: Microsoft YaHei, SimHei, SimSun, Segoe UI Symbol, sans-serif\n"
-                    "font.monospace: Microsoft YaHei, SimHei, DejaVu Sans Mono, monospace\n"
+                    "font.monospace: Consolas, Cascadia Mono, Courier New, NSimSun, Microsoft YaHei, DejaVu Sans Mono, monospace\n"
                     "axes.unicode_minus: False\n"
                 )
             with open(rc_file, "w", encoding="utf-8") as f:
                 f.write(content)
-            print(f"[setup] matplotlibrc written (WenQuanYi: {use_wqy})")
+            print(f"[setup] matplotlibrc written (HarmonyOS Sans SC: {use_harmony})")
         except Exception as e:
             print(f"[setup] Failed to write matplotlibrc: {e}")
             return
 
-    # Step 2: Register WenQuanYi font directory with matplotlib
-    if use_wqy:
+    # Step 2: 把鸿蒙 SC 字体复制到 matplotlib 内置字体目录（子进程可发现）
+    if use_harmony:
         try:
-            import matplotlib.font_manager as fm
-            # Add fonts directory to matplotlib's font search path
-            fm.fontManager.addfont(wqy_font_file)
-            print("[setup] WenQuanYi Micro Hei registered with matplotlib")
+            mpl_ttf_dir = os.path.join(
+                os.path.dirname(matplotlib.__file__), "mpl-data", "fonts", "ttf")
+            if os.path.isdir(mpl_ttf_dir):
+                copied = 0
+                for fname in os.listdir(harmony_sc_dir):
+                    if fname.endswith(".ttf"):
+                        src = os.path.join(harmony_sc_dir, fname)
+                        dst = os.path.join(mpl_ttf_dir, fname)
+                        if (not os.path.exists(dst)
+                                or os.path.getsize(dst) != os.path.getsize(src)):
+                            shutil.copy2(src, dst)
+                            copied += 1
+                if copied:
+                    print(f"[setup] HarmonyOS Sans SC fonts copied ({copied} files)")
+                else:
+                    print("[setup] HarmonyOS Sans SC fonts already bundled")
         except Exception as e:
-            print(f"[setup] Failed to register WenQuanYi font: {e}")
+            print(f"[setup] Failed to bundle HarmonyOS Sans SC fonts: {e}")
 
     # Step 3: Clear font cache so matplotlib picks up new/updated fonts on next use
     import glob as _glob
@@ -919,12 +929,22 @@ def main() -> None:
     threading.Thread(target=_open_browser, daemon=True).start()
 
     import uvicorn
+    from uvicorn.config import LOGGING_CONFIG
+
+    # 自定义 uvicorn 访问日志格式：给 web api 请求日志加上访问时间
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["formatters"]["access"]["fmt"] = (
+        '%(levelprefix)s %(asctime)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+    )
+    log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
     try:
         uvicorn.run(
             "web.web_api:app",
             host=args.host,
             port=args.port,
             log_level="info",
+            log_config=log_config,
         )
     except KeyboardInterrupt:
         pass  # Ctrl+C: exit silently

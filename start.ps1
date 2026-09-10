@@ -23,7 +23,9 @@ $PythonVersion = "3.11.9"
 $GitVersion = "2.55.0"
 $GitBuild = "5"
 $TectonicVersion = "0.17.0"
-$WqyFontFile = "wqy-microhei-lite-0.2.0-beta.ttc"
+$HarmonyFontZip = "HarmonyOS-Sans.zip"
+$HarmonyFontDir = "HarmonyOS Sans"
+$HarmonyFontSubDir = "HarmonyOS_Sans_SC"
 $PythonUrl = "https://mirrors.huaweicloud.com/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 $GitUrl = @(
     "https://mirrors.huaweicloud.com/git-for-windows/v$GitVersion.windows.$GitBuild/PortableGit-$GitVersion.$GitBuild-64-bit.7z.exe",
@@ -35,12 +37,7 @@ $TectonicUrl = @(
     "https://ghfast.top/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
     "https://gh-proxy.com/https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip"
 )
-$WqyFontUrl = @(
-    "https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
-    "https://ghproxy.net/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
-    "https://ghfast.top/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile",
-    "https://gh-proxy.com/https://github.com/Pengyu717/wqy/raw/refs/heads/main/fonts/$WqyFontFile"
-)
+$HarmonyFontUrl = "https://developer.huawei.com/images/download/general/HarmonyOS-Sans.zip"
 
 function Write-Status {
     param([string]$Message, [string]$Color = "White")
@@ -298,29 +295,41 @@ function Install-Tectonic {
     return $tectonicExe
 }
 
-function Test-WqyFont {
-    $fontFile = Join-Path $FontsDir $WqyFontFile
+function Test-HarmonyFont {
+    # 检查 SC 简体字体是否已解压
+    $scDir = Join-Path $FontsDir "$HarmonyFontDir\$HarmonyFontSubDir"
+    $fontFile = Join-Path $scDir "HarmonyOS_Sans_SC_Regular.ttf"
     if (Test-Path $fontFile) {
-        Write-Status "WenQuanYi Micro Hei found in deps: $fontFile"
-        return $fontFile
+        Write-Status "HarmonyOS Sans SC found in deps: $scDir"
+        return $scDir
     }
     return $null
 }
 
-function Install-WqyFont {
-    Write-Status "Installing WenQuanYi Micro Hei to deps..." "Yellow"
+function Install-HarmonyFont {
+    Write-Status "Installing HarmonyOS Sans SC to deps..." "Yellow"
 
     New-Item -ItemType Directory -Path $FontsDir -Force | Out-Null
 
-    $fontFile = Join-Path $FontsDir $WqyFontFile
-    Download-File -Url $WqyFontUrl -OutputPath $fontFile
+    $zipPath = Join-Path $FontsDir $HarmonyFontZip
+    Download-File -Url $HarmonyFontUrl -OutputPath $zipPath
 
-    if (-not (Test-Path $fontFile)) {
-        throw "WenQuanYi font installation failed: $fontFile not found"
+    if (-not (Test-Path $zipPath)) {
+        throw "HarmonyOS Sans font download failed: $zipPath not found"
     }
 
-    Write-Status "WenQuanYi Micro Hei installed successfully." "Green"
-    return $fontFile
+    # 解压到 fonts 目录
+    Write-Status "Extracting HarmonyOS Sans..."
+    Expand-Archive -Path $zipPath -DestinationPath $FontsDir -Force
+    Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
+
+    $scDir = Join-Path $FontsDir "$HarmonyFontDir\$HarmonyFontSubDir"
+    if (-not (Test-Path $scDir)) {
+        throw "HarmonyOS Sans SC extraction failed: $scDir not found"
+    }
+
+    Write-Status "HarmonyOS Sans SC installed successfully." "Green"
+    return $scDir
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -369,16 +378,16 @@ if (-not $tectonicPath) {
     }
 }
 
-# 4. 检查/安装 WenQuanYi 字体
-$wqyFontPath = Test-WqyFont
-if (-not $wqyFontPath) {
-    Write-Status "WenQuanYi Micro Hei not found, downloading..." "Yellow"
+# 4. 检查/安装 HarmonyOS Sans 字体
+$harmonyFontDir = Test-HarmonyFont
+if (-not $harmonyFontDir) {
+    Write-Status "HarmonyOS Sans SC not found, downloading..." "Yellow"
     try {
-        $wqyFontPath = Install-WqyFont
+        $harmonyFontDir = Install-HarmonyFont
     } catch {
-        Write-Status "Warning: WenQuanYi font download failed: $_" "Yellow"
-        Write-Status "Continuing without WenQuanYi font..." "Yellow"
-        $wqyFontPath = $null
+        Write-Status "Warning: HarmonyOS Sans font download failed: $_" "Yellow"
+        Write-Status "Continuing without HarmonyOS Sans font..." "Yellow"
+        $harmonyFontDir = $null
     }
 }
 
@@ -393,8 +402,8 @@ if ($tectonicPath -and $tectonicPath.StartsWith($DepsDir)) {
 }
 
 # 将字体目录设置为环境变量，供 matplotlib 使用
-if ($wqyFontPath) {
-    $env:WQY_FONT_PATH = $wqyFontPath
+if ($harmonyFontDir) {
+    $env:HARMONY_FONT_DIR = $harmonyFontDir
 }
 
 # 6. 启动 Cili
@@ -405,8 +414,8 @@ if ($tectonicPath) {
     $toolName = [System.IO.Path]::GetFileNameWithoutExtension($tectonicPath)
     Write-Status "  LaTeX ($toolName): $tectonicPath"
 }
-if ($wqyFontPath) {
-    Write-Status "  Font (WenQuanYi): $wqyFontPath"
+if ($harmonyFontDir) {
+    Write-Status "  Font (HarmonyOS Sans SC): $harmonyFontDir"
 }
 Write-Status "  Port: $Port"
 Write-Host ""
