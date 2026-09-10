@@ -240,9 +240,9 @@ updated: 2024-01-15 10:30:00
 | created/updated | 时间戳 | 排序 |
 
 **技能发现流程**：
-1. Agent 收到任务请求时，先用 `grep` 搜索 skills 目录
-2. 搜索技能名称、描述、标签中的关键词
-3. 返回匹配的技能名称和文件路径
+1. Agent 收到任务请求时，用 `memory(action="find", query="关键词")` 一次搜索 skills + knowledge 目录
+2. 搜索技能名称、描述、标签、正文中的关键词（大小写不敏感子串匹配）
+3. 返回匹配的名称和完整文件路径（按文件修改时间倒序），以及匹配片段
 4. Agent 判断是否需要使用 `read` 工具加载完整 skill.md 文件
 
 **示例**（skills/python-async/skill.md）：
@@ -422,19 +422,23 @@ Agent: 已保存。
 ```json
 {
   "name": "memory",
-  "description": "长期记忆工具，用于存储跨会话的知识和技能。Knowledge 使用 Markdown 格式存储，Skill 使用带 frontmatter 的 Markdown 格式。",
+  "description": "长期记忆工具，用于存储和检索跨会话的知识和技能。Knowledge 使用 Markdown 格式存储，Skill 使用带 frontmatter 的 Markdown 格式。检索使用 find action，读取全文使用 read 工具。",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["store", "update", "delete"],
-        "description": "操作类型：store（创建）、update（修改）、delete（删除）。检索使用 grep/read/find 工具完成。"
+        "enum": ["store", "find", "update", "delete"],
+        "description": "操作类型：store（创建）、find（按关键词检索）、update（修改）、delete（删除）"
+      },
+      "query": {
+        "type": "string",
+        "description": "检索关键词（大小写不敏感子串匹配），find 必填。匹配 knowledge 的 title/tags/正文与 skill 的 name/description/tags/正文"
       },
       "memory_type": {
         "type": "string",
         "enum": ["knowledge", "skill"],
-        "description": "记忆类型：knowledge=知识（Markdown），skill=技能（Markdown）"
+        "description": "记忆类型：knowledge=知识（Markdown），skill=技能（Markdown）。store/update/delete 必填；find 可选（不填则两类都搜）"
       },
       "topic": {
         "type": "string",
@@ -479,7 +483,7 @@ Agent: 已保存。
         "description": "知识引用来源。格式：'file:E:/docs/config.yaml'（文件）、'session:abc123'（对话会话）、'web:https://...'（网页）。添加到 references 列表。仅 knowledge 使用。"
       }
     },
-    "required": ["action", "memory_type"]
+    "required": ["action"]
   }
 }
 ```
@@ -498,6 +502,15 @@ Agent: 已保存。
 ### 5.3 使用示例
 
 ```yaml
+# ===== 检索 =====
+
+# 按关键词检索（大小写不敏感子串匹配），一次搜索 knowledge + skills
+# 结果按文件修改时间倒序，返回完整路径，可直接用 read 读取全文
+memory(action="find", query="asyncio")
+
+# 只搜某一类型
+memory(action="find", query="asyncio", memory_type="skill")
+
 # ===== Knowledge 操作 =====
 
 # 存储知识（有明确主题和文件名）
@@ -543,11 +556,8 @@ memory(action="store", memory_type="skill",
        content="## 概述\n\nasyncio 是 Python 的异步 I/O 库...\n\n## 使用场景\n\n- 需要并发处理多个 I/O 操作...",
        tags=["python", "async", "并发"])
 
-# 读取技能完整内容（使用 read 工具直接读取）
-read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
-
-# 列出所有技能（使用 find 工具）
-find(path="data/agents/{uuid}/memory/skills/", pattern="*/skill.md")
+# 读取技能完整内容（find 结果中的完整路径可直接传给 read）
+read(file_path="E:/AI/cili/data/agents/{uuid}/memory/skills/python-async/skill.md")
 
 # 更新技能（未提供的字段保留原值，created 时间自动保留）
 memory(action="update", memory_type="skill",

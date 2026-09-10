@@ -252,8 +252,8 @@ Memory subdirectories:
 
 **Always search memory first** when the user request involves a task:
 
-1. **Search skills**: Use `grep` or `find` to search the `skills/` subdirectory under the memory directory provided in the environment context
-2. **Search knowledge**: Use `grep` or `find` to search the `knowledge/` subdirectory under the memory directory
+1. **Search memory**: Use `memory(action="find", query="keyword")` — searches both `skills/` and `knowledge/` in one call, returns file paths and matching snippets
+2. **Read details**: Use `read` with a matched path to load the full file content
 
 **Skill naming**: When storing a skill, use a meaningful kebab-case name for `skill_name` (e.g., 'python-async', 'k8s-deploy', 'find-sjtu-professor-info'). Do NOT use UUIDs or random strings.
 
@@ -537,13 +537,12 @@ def build_root_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "## Memory",
         "",
         f"Memory directory: `{memory_dir}`",
+        "Subdirectories: `knowledge/` (facts) and `skills/` (reusable techniques).",
         "",
         "Search examples:",
         "```",
-        f"grep(pattern=\"keyword\", path=\"{memory_dir}/skills/\")",
-        f"grep(pattern=\"keyword\", path=\"{memory_dir}/knowledge/\")",
-        f"read(file_path=\"{memory_dir}/skills/matched-skill/skill.md\")",
-        f"read(file_path=\"{memory_dir}/knowledge/topic/date/file.md\")",
+        "memory(action=\"find\", query=\"keyword\")",
+        "read(file_path=\"...matched path from find results...\")",
         "```",
     ]
 
@@ -644,13 +643,12 @@ def build_sub_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "## Memory",
         "",
         f"Memory directory: `{memory_dir}`",
+        "Subdirectories: `knowledge/` (facts) and `skills/` (reusable techniques).",
         "",
         "Search examples:",
         "```",
-        f"grep(pattern=\"keyword\", path=\"{memory_dir}/skills/\")",
-        f"grep(pattern=\"keyword\", path=\"{memory_dir}/knowledge/\")",
-        f"read(file_path=\"{memory_dir}/skills/matched-skill/skill.md\")",
-        f"read(file_path=\"{memory_dir}/knowledge/topic/date/file.md\")",
+        "memory(action=\"find\", query=\"keyword\")",
+        "read(file_path=\"...matched path from find results...\")",
         "```",
     ]
 

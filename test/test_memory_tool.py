@@ -265,3 +265,139 @@ class TestMemoryTool:
         )
         assert result.error
         assert "UUID" in result.output or "meaningful" in result.output.lower()
+
+
+class TestMemoryToolFind:
+    """memory find action：关键词检索 knowledge + skills"""
+
+    def _get_memory_tool(self, tools):
+        from core.tools import get_tool_by_name
+        return get_tool_by_name(tools, "memory")
+
+    def test_find_knowledge_by_title(self, tools, test_workspace):
+        """按标题关键词检索 knowledge，返回完整路径"""
+        memory_tool = self._get_memory_tool(tools)
+        memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="api-design",
+            title="Kubernetes Deploy Guide",
+            content="How to deploy applications to kubernetes clusters",
+        )
+
+        result = memory_tool.execute(action="find", query="kubernetes")
+        assert not result.error
+        assert "[knowledge]" in result.output
+        assert "Kubernetes Deploy Guide" in result.output
+        # 返回完整绝对路径，可直接传给 read
+        assert os.path.isabs(_first_path_in(result.output))
+
+    def test_find_by_content(self, tools, test_workspace):
+        """正文内容命中也能检索到"""
+        memory_tool = self._get_memory_tool(tools)
+        memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="misc",
+            title="Odd Title No Keyword",
+            content="The secret zebra protocol requires three hops",
+        )
+
+        result = memory_tool.execute(action="find", query="zebra")
+        assert not result.error
+        assert "[knowledge]" in result.output
+        assert "Odd Title No Keyword" in result.output
+        assert "zebra" in result.output.lower()
+
+    def test_find_skill(self, tools, test_workspace):
+        """按名称/描述检索 skill"""
+        memory_tool = self._get_memory_tool(tools)
+        memory_tool.execute(
+            action="store",
+            memory_type="skill",
+            skill_name="test-find-skill",
+            name="Flask Migration Skill",
+            description="Migrate legacy flask apps to fastapi",
+            content="Step 1: inventory all routes",
+        )
+
+        result = memory_tool.execute(action="find", query="fastapi")
+        assert not result.error
+        assert "[skill]" in result.output
+        assert "Flask Migration Skill" in result.output
+        assert os.path.isabs(_first_path_in(result.output))
+
+    def test_find_memory_type_filter(self, tools, test_workspace):
+        """memory_type 过滤：只搜指定类型"""
+        memory_tool = self._get_memory_tool(tools)
+        memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="misc",
+            title="Deploy Knowledge",
+            content="blue-green deploy pipeline",
+        )
+        memory_tool.execute(
+            action="store",
+            memory_type="skill",
+            skill_name="test-deploy-skill",
+            name="Deploy Skill",
+            description="blue-green deploy pipeline for production",
+            content="run the deploy script",
+        )
+
+        result = memory_tool.execute(action="find", query="deploy", memory_type="skill")
+        assert not result.error
+        assert "[skill]" in result.output
+        assert "[knowledge]" not in result.output
+
+    def test_find_no_result(self, tools, test_workspace):
+        """无命中时返回友好提示"""
+        memory_tool = self._get_memory_tool(tools)
+        result = memory_tool.execute(action="find", query="nonexistent-xyz-9182")
+        assert not result.error
+        assert "No memory matches" in result.output
+
+    def test_find_missing_query(self, tools, test_workspace):
+        """缺 query 报错"""
+        memory_tool = self._get_memory_tool(tools)
+        result = memory_tool.execute(action="find")
+        assert result.error
+        assert "query" in result.output.lower()
+
+    def test_find_sorted_by_mtime_desc(self, tools, test_workspace):
+        """结果按文件修改时间倒序（最新在前）"""
+        import time
+
+        memory_tool = self._get_memory_tool(tools)
+        memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="misc",
+            title="Old Entry",
+            content="sortable keyword alpha",
+        )
+        # 保证 mtime 有可分辨的先后
+        time.sleep(0.05)
+        memory_tool.execute(
+            action="store",
+            memory_type="knowledge",
+            topic="misc",
+            title="New Entry",
+            content="sortable keyword beta",
+        )
+
+        result = memory_tool.execute(action="find", query="sortable keyword")
+        assert not result.error
+        new_pos = result.output.index("New Entry")
+        old_pos = result.output.index("Old Entry")
+        assert new_pos < old_pos
+
+
+def _first_path_in(output: str) -> str:
+    """从 find 输出中提取第一个 path: 行的路径。"""
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("path:"):
+            return line[len("path:"):].strip()
+    return ""

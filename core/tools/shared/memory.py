@@ -27,23 +27,29 @@ def _fm_value(value: Any) -> str:
 class MemoryTool(Tool):
     name = "memory"
     description = (
-        "Long-term memory tool for storing cross-session knowledge and reusable skills. "
+        "Long-term memory tool for storing and finding cross-session knowledge and reusable skills. "
         "Knowledge is stored as Markdown in knowledge/{topic}/{date}/{file}.md. "
         "Skills are stored as Markdown with frontmatter in skills/{skill-name}/skill.md. "
-        "Use 'find'/'grep' to search, 'read' to read file content."
+        "Use the 'find' action to search by keyword, 'read' to read full file content."
     )
     parameters = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["store", "update", "delete"],
-                "description": "Operation type: store (create), update (modify), delete (remove). Use 'find'/'grep' to search skills/knowledge, and 'read' tool to read file content."
+                "enum": ["store", "find", "update", "delete"],
+                "description": "Operation type: store (create), find (search by keyword), update (modify), delete (remove)."
+            },
+            "query": {
+                "type": "string",
+                "description": "Keyword to search for (case-insensitive substring match). Required for find. "
+                               "Matches knowledge titles/tags/content and skill names/descriptions/tags/content."
             },
             "memory_type": {
                 "type": "string",
                 "enum": ["knowledge", "skill"],
-                "description": "Memory type: knowledge=facts (Markdown), skill=reusable techniques (Markdown)"
+                "description": "Memory type: knowledge=facts (Markdown), skill=reusable techniques (Markdown). "
+                               "Required for store/update/delete; optional for find (omit to search both)."
             },
             "topic": {
                 "type": "string",
@@ -91,7 +97,7 @@ class MemoryTool(Tool):
                 "description": "Source reference for this knowledge. Examples: 'file:E:/docs/config.yaml' for file sources, 'session:abc123' for conversation sessions, 'web:https://...' for web sources. Added to the references list. Only for knowledge."
             }
         },
-        "required": ["action", "memory_type"]
+        "required": ["action"]
     }
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None):
@@ -129,10 +135,13 @@ class MemoryTool(Tool):
         action = kwargs.get("action", "store")
         memory_type = kwargs.get("memory_type")
 
-        if not memory_type:
-            return ToolResult("Error: memory_type is required", error=True)
-
         try:
+            if action == "find":
+                return self._find(kwargs)
+
+            if not memory_type:
+                return ToolResult("Error: memory_type is required", error=True)
+
             if action == "store":
                 return self._store(kwargs)
             elif action == "update":
@@ -143,6 +152,153 @@ class MemoryTool(Tool):
                 return ToolResult(f"Error: unknown action '{action}'", error=True)
         except Exception as e:
             return ToolResult(f"Error: {e}", error=True)
+
+    # ─── find ──────────────────────────────────────────────────────────
+
+    _FIND_MAX_RESULTS = 20
+
+    def _find(self, kwargs: dict) -> ToolResult:
+        """按关键词检索 knowledge 与 skills（大小写不敏感子串匹配）。
+
+        模型检索记忆时习惯调 find（而非 grep/read 组合），此 action
+        一次调用覆盖两种类型，返回完整路径与匹配片段供后续 read 读取全文。
+        结果按文件修改时间倒序（最新在前）。
+        """
+        query = str(kwargs.get("query", "")).strip()
+        if not query:
+            return ToolResult("Error: query is required for find", error=True)
+
+        memory_type = kwargs.get("memory_type")
+        if memory_type and memory_type not in ("knowledge", "skill"):
+            return ToolResult(f"Error: unknown memory_type '{memory_type}'", error=True)
+
+        needle = query.lower()
+        entries: list[tuple[float, str]] = []
+        if memory_type in (None, "knowledge"):
+            entries.extend(self._find_in_knowledge(needle))
+        if memory_type in (None, "skill"):
+            entries.extend(self._find_in_skills(needle))
+        # 全局按文件修改时间倒序（最新在前），knowledge/skill 混合排序
+        entries.sort(key=lambda x: x[0], reverse=True)
+
+        if not entries:
+            return ToolResult(
+                f"No memory matches for '{query}'. "
+                "Use the 'store' action to create it if worth keeping."
+            )
+
+        total = len(entries)
+        lines = [f"Found {total} match(es) for '{query}':", ""]
+        lines.extend(entry for _mtime, entry in entries[:self._FIND_MAX_RESULTS])
+        if total > self._FIND_MAX_RESULTS:
+            lines.append("")
+            lines.append(f"... and {total - self._FIND_MAX_RESULTS} more. Refine the query to narrow results.")
+        return ToolResult("\n".join(lines))
+
+    def _find_in_knowledge(self, needle: str) -> list[tuple[float, str]]:
+        """遍历 knowledge 目录，返回 (mtime, 格式化条目) 列表。"""
+        base = os.path.join(self.memory_dir, "knowledge")
+        results: list[tuple[float, str]] = []
+        for mtime, fpath in self._iter_memory_markdown_files(base):
+            content = self._read_memory_file(fpath)
+            if content is None or needle not in content.lower():
+                continue
+            fm = self._parse_knowledge_frontmatter(content)
+            title = str(fm.get("title", "")) or os.path.basename(fpath)
+            lines = [f"[knowledge] {title}", f"  path: {fpath}"]
+            tags = fm.get("tags")
+            if tags:
+                lines.append(f"  tags: [{', '.join(str(t) for t in tags)}]")
+            snippet = self._extract_match_snippet(content, needle)
+            if snippet:
+                lines.append(f"  snippet: {snippet}")
+            results.append((mtime, "\n".join(lines)))
+        return results
+
+    def _find_in_skills(self, needle: str) -> list[tuple[float, str]]:
+        """遍历 skills 目录，返回 (mtime, 格式化条目) 列表。"""
+        base = os.path.join(self.memory_dir, "skills")
+        results: list[tuple[float, str]] = []
+        for mtime, fpath in self._iter_memory_markdown_files(base):
+            content = self._read_memory_file(fpath)
+            if content is None or needle not in content.lower():
+                continue
+            fm = self._parse_skill_frontmatter(content)
+            name = str(fm.get("name", "")) or os.path.basename(os.path.dirname(fpath))
+            lines = [f"[skill] {name}"]
+            lines.append(f"  path: {fpath}")
+            desc = str(fm.get("description", ""))
+            if desc:
+                lines.append(f"  description: {desc}")
+            tags = fm.get("tags")
+            if tags:
+                lines.append(f"  tags: [{', '.join(str(t) for t in tags)}]")
+            snippet = self._extract_match_snippet(content, needle)
+            if snippet:
+                lines.append(f"  snippet: {snippet}")
+            results.append((mtime, "\n".join(lines)))
+        return results
+
+    # ─── find helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _iter_memory_markdown_files(base_dir: str) -> list[tuple[float, str]]:
+        """递归列出 base_dir 下所有 .md 文件，按修改时间倒序（最新在前）。"""
+        if not os.path.isdir(base_dir):
+            return []
+        found: list[tuple[float, str]] = []
+        for root, _dirs, files in os.walk(base_dir):
+            for fname in files:
+                if fname.endswith(".md"):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        mtime = 0.0
+                    found.append((mtime, fpath))
+        found.sort(key=lambda x: x[0], reverse=True)
+        return found
+
+    @staticmethod
+    def _read_memory_file(fpath: str) -> str | None:
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _strip_frontmatter(content: str) -> str:
+        """剥掉 frontmatter，返回正文。无 frontmatter 时原样返回。"""
+        if not content.startswith("---"):
+            return content
+        end_idx = content.find("---", 3)
+        if end_idx == -1:
+            return content
+        return content[end_idx + 3:]
+
+    @classmethod
+    def _extract_match_snippet(cls, content: str, needle: str, width: int = 150) -> str:
+        """提取第一个命中行片段；命中都在 frontmatter 时返回正文开头预览。"""
+        body = cls._strip_frontmatter(content)
+        idx = body.lower().find(needle)
+        if idx == -1:
+            # 命中在 frontmatter（title/description/tags），给正文开头预览
+            preview_src = body.strip()
+            if not preview_src:
+                return ""
+            preview = preview_src[:width].replace("\n", " ")
+            return preview + ("..." if len(preview_src) > width else "")
+        start = body.rfind("\n", 0, idx) + 1
+        end = body.find("\n", idx)
+        if end == -1:
+            end = len(body)
+        line = body[start:end].strip()
+        if len(line) <= width:
+            return line
+        rel = idx - start
+        left = max(0, min(rel - width // 3, len(line) - width))
+        return ("..." if left > 0 else "") + line[left:left + width].strip() + ("..." if left + width < len(line) else "")
 
     # ─── store ─────────────────────────────────────────────────────────
 
