@@ -34,6 +34,7 @@ from core.tools.temp import TempTool
 from core.tools.todo import TodoWriteTool
 from core.tools.web_search import WebSearchTool
 from core.tools.write import WriteTool
+from core.tools.tool_search import ToolSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "skill": _make_skill,
     "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
+    "tool_search": _factory(ToolSearchTool),
 }
 
 

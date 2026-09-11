@@ -90,39 +90,16 @@ class LoopTool(Tool):
     name = "loop"
     description = (
         "**Progress tracking for iterative tasks across scheduling cycles.**\n"
-        "Track items through multiple execution cycles. Each item has a status: "
-        '"pending", "done", or "failed:{reason}".\n'
-        "The task is identified by its source file path — all actions require `source_file`.\n\n"
+        "Tracks items through cycles; each item is pending / done / failed:{reason}.\n"
+        "The task is identified by its source_file path — all actions require it.\n\n"
         "## Actions:\n"
-        "- **next**: Get next pending item with progress stats (auto-loads items from source_file)\n"
-        "- **done**: Mark item as completed\n"
-        "- **fail**: Mark item as failed with reason\n"
-        "- **status**: Get progress statistics\n"
-        "- **reset**: Clear all item progress (keeps task metadata). Items are re-queued as pending on next `next` call.\n\n"
-        "## File Format:\n"
-        "Plain text, one item per line. Empty lines and leading/trailing whitespace are ignored.\n\n"
-        "## Examples:\n"
-        "```python\n"
-        "# Get next pending item (items auto-loaded from file)\n"
-        'loop(action="next", source_file="data/files.txt")\n'
-        '→ "进度: 47/1000 已完成, 0 失败, 953 待处理\\n当前项: file_048.md"\n'
-        "\n"
-        "# When all items are done\n"
-        'loop(action="next", source_file="data/files.txt")\n'
-        '→ "所有项已处理完毕 (完成: 999, 失败: 1)"\n'
-        "\n"
-        "# Mark as completed\n"
-        'loop(action="done", source_file="data/files.txt", item="file1.md")\n'
-        '→ {"done": 48, "pending": 952, "failed": 0, "total": 1000}\n'
-        "\n"
-        "# Mark as failed\n"
-        'loop(action="fail", source_file="data/files.txt", item="file2.md", error="encoding error")\n'
-        '→ {"done": 47, "pending": 952, "failed": 1, "total": 1000}\n'
-        "\n"
-        "# Get statistics\n"
-        'loop(action="status", source_file="data/files.txt")\n'
-        '→ {"total": 1000, "done": 47, "pending": 953, "failed": 0}\n'
-        "```\n"
+        "- next: get next pending item + progress stats (auto-loads items from source_file)\n"
+        "- done / fail: mark an item completed, or failed with a reason\n"
+        "- status: progress statistics\n"
+        "- reset: clear all progress (items re-queue as pending on next `next`)\n\n"
+        "## File format:\n"
+        "Plain text, one item per line; empty lines and surrounding whitespace ignored.\n"
+        "Example: loop(action=\"next\", source_file=\"data/files.txt\")"
     )
 
     def __init__(

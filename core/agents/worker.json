@@ -192,16 +192,12 @@
     "pwsh",
     "grep",
     "find",
-    "browser",
     "web_search",
     "memory",
     "python",
     "read_tool_result",
     "temp",
-    "loop",
-    "pdf2markdown",
-    "skill",
-    "agent"
+    "skill"
   ],
   "skills": [
     "*"

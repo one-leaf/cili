@@ -121,14 +121,17 @@ def create_tools(
 
 | Agent 角色 | 模式 | 工具数量 | 工具清单 |
 |-----------|------|---------|---------|
-| master | interactive | 22 | read, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, read_tool_result, temp, loop, pdf2markdown, skill, agent, ask_user |
-| worker | autonomous | 17 | master 去掉 todo、cron、message_bus、latex、ask_user |
+| master | interactive | 23（15 core + 8 deferred） | 全量：read, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, read_tool_result, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
+| worker | autonomous | 13 | master 去掉 todo、cron、message_bus、latex、ask_user、agent、browser、loop、pdf2markdown |
 | lite | autonomous | 4 | read, write, edit, bash |
+
+**延迟工具加载（deferred）**：master 的 8 个低频工具（browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown）schema 默认不发送给 LLM，仅名称+摘要出现在 system prompt 的 "Deferred Tools" 段。模型通过 `tool_search` 按需获取完整 schema 并激活，激活后加入后续 API 调用。工具实例仍全部实例化，执行路径不受影响。
 
 **设计要点**：
 - **ask_user 仅 master**：master 是交互式（interactive），可向用户提问；worker/lite 是自主后台模式（autonomous），不含交互工具
-- **agent 委派（master/worker）**：master、worker 都含 `agent` 委派工具，但委派深度仅 1 层——只有 master(0) 可委派 worker/lite(1)，depth≥1 的子代理再委派会直接报错；lite 是纯执行角色，不含 agent 工具
+- **agent 委派（仅 master）**：委派工具只由 master 持有——委派深度仅 1 层，只有 master(0) 可委派 worker/lite(1)；worker 是叶子节点，无 agent 工具（depth≥1 调用会直接报错，故白名单不含）；lite 是纯执行角色，亦无 agent 工具
 - **todo/cron/message_bus/latex 仅 master**：任务规划、定时任务、跨会话消息、LaTeX 渲染属于主代理的编排职责，worker 不持有
+- **worker 执行型精简集**：去 master 中编排/长会话类工具（agent/browser/loop/pdf2markdown）——worker 是有界自主执行，不应启动浏览器长会话、不做 cron 配套的 loop 迭代
 - **lite 精简集**：只保留 read/write/edit/bash，无 skill、无 python 等，适合快速文件处理类子任务
 - 修改某角色工具集只需编辑对应 JSON，无需改动注册表代码
 
@@ -310,7 +313,7 @@ content = [
 
 ## 四、工具列表
 
-全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 22 个；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user 的 17 个（含 agent）；lite 仅 read/write/edit/bash。
+全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 23 个（15 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user/agent/browser/loop/pdf2markdown 的 13 个（执行型精简集）；lite 仅 read/write/edit/bash。
 
 | 工具 | 文件 | 说明 | 可用角色 |
 |------|------|------|---------|
@@ -321,21 +324,24 @@ content = [
 | pwsh | pwsh.py | PowerShell 命令，支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker |
 | grep | grep.py | 正则搜索（支持 glob/type 过滤） | master/worker |
 | find | find.py | 文件查找（glob 模式） | master/worker |
-| browser | browser.py | Chrome 自动化（Playwright + CDP） | master/worker |
+| browser | browser.py | Chrome 自动化（Playwright + CDP） | master |
 | web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） | master/worker |
 | memory | memory.py | 长期记忆（knowledge + skill，支持 find 关键词检索） | master/worker |
 | python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker |
-| todo | todo.py | 任务规划（整表替换，三态状态） | master/worker |
-| latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master/worker |
-| message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） | master/worker |
-| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master/worker |
+| todo | todo.py | 任务规划（整表替换，三态状态） | master |
+| latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master |
+| message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） | master |
+| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） | master/worker |
 | temp | temp.py | 临时文件和目录管理（按 session 隔离） | master/worker |
-| loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master/worker |
-| pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master/worker |
+| loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master |
+| pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master |
 | skill | skill.py | 技能工具（按角色 frontmatter roles 过滤，见 8.1） | master/worker |
-| agent | agent_tool.py | 委派复杂任务给子代理（AgentTool，见 8.2） | master/worker |
+| agent | agent_tool.py | 委派复杂任务给子代理（AgentTool，见 8.2） | master |
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
+| tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master |
+
+**延迟工具**：表中标 `master` 的 browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown 8 个为 deferred（schema 按需加载，见 2.4 节），其余为 core 常驻。
 
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，LLM schema 使用类属性 name）
@@ -663,7 +669,7 @@ skill(action="read", skill_id="large-file-processing")
 
 ### 8.2 agent 工具 — 任务委派（AgentTool）
 
-`agent` 工具在独立的子代理（Worker/Lite）中执行复杂任务。工具注册名 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），master 与 worker 白名单包含（委派深度仅 1 层，见下）。
+`agent` 工具在独立的子代理（Worker/Lite）中执行复杂任务。工具注册名 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），仅 master 白名单包含（委派深度仅 1 层，见下）。
 
 **调用方式**：
 ```python
@@ -733,10 +739,10 @@ agent = Agent(
 agent.run()
 ```
 
-子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 17 个 / lite 4 个）。
+子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 13 个 / lite 4 个）。
 
 **关键特性**：
-- **独立工具集**：worker 17 个 / lite 4 个（取决于 agent_type）
+- **独立工具集**：worker 13 个 / lite 4 个（取决于 agent_type）
 - **结构化任务**：task + plan 拼接到 system prompt 末尾（不可压缩）
 - **1 小时超时**
 - **委派深度限制（仅 1 层）**：只有 master(0) 可委派 worker/lite(1)；depth≥1 的子代理再调用 `agent` 工具直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
@@ -985,5 +991,5 @@ ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会�
 
 **文档版本**: v2.0  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-10（重构：工具系统从 shared/root/sub 三层目录 + 硬编码工厂改为统一注册表 TOOL_REGISTRY + 角色 JSON 白名单；llm 工具已移除；skill 改为平铺 + frontmatter roles 过滤；agent 改为 AgentTool 并新增 agent_type；审批逻辑迁至统一 Agent）  
+**更新时间**: 2026-09-11（worker 精简为 13 个执行型工具：去 agent/browser/loop/pdf2markdown；精简 cron/agent/python/bash/pwsh/browser/loop 工具描述，降低每次 LLM 调用的 schema token 开销；修正工具表可用角色标注）  
 **状态**: 已实现

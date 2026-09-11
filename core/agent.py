@@ -245,7 +245,18 @@ class Agent(BaseAgent):
             config=self.config,
             approval_store=self.approval_store,
         )
-        self.tool_schemas = [t.to_schema() for t in self.tools]
+
+        # Split into active (schema sent to LLM) vs deferred (schema hidden)
+        self._deferred_names: set[str] = set(self.role_cfg.deferred_tools)
+        self._deferred_tools = [t for t in self.tools if t.name in self._deferred_names]
+        self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
+        self.tool_schemas = [t.to_schema() for t in self._active_tools]
+
+        # Wire tool_search: inject deferred list + activation callback
+        ts = get_tool_by_name(self.tools, "tool_search")
+        if ts:
+            ts.deferred_tools = self._deferred_tools
+            ts.on_load = self._activate_tools
 
         # Wire agent tool: set delegation depth for all modes
         agent_tool = get_tool_by_name(self.tools, "agent")
@@ -264,6 +275,26 @@ class Agent(BaseAgent):
                     self._on_agent_complete(exec_id)
                     if self._on_agent_complete else None
                 )
+
+    def _activate_tools(self, names: list[str]) -> None:
+        """Move named tools from deferred to active and rebuild tool_schemas."""
+        newly = [n for n in names if n in self._deferred_names]
+        if not newly:
+            return
+        self._deferred_names -= set(newly)
+        self._deferred_tools = [t for t in self._deferred_tools if t.name in self._deferred_names]
+        self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
+        self.tool_schemas = [t.to_schema() for t in self._active_tools]
+        # Update tool_search's deferred list
+        ts = get_tool_by_name(self.tools, "tool_search")
+        if ts:
+            ts.deferred_tools = self._deferred_tools
+
+    def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
+        """Override: auto-activate deferred tools if called directly."""
+        if name in getattr(self, "_deferred_names", set()):
+            self._activate_tools([name])
+        return super()._execute_tool(name, input_data, tool_use_id)
 
     # ─── system prompt / 上下文 ─────────────────────────────────────
 

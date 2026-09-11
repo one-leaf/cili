@@ -32,9 +32,14 @@ def _gen_text(block: dict, agent) -> str:
 
 
 def _gen_tools(block: dict, agent) -> str:
-    """tools 块：从 agent.tools 生成工具列表段。"""
-    from core.prompts import _build_tools_section
-    return _build_tools_section(agent.tools)
+    """tools 块：从 agent 的 active tools 生成工具列表段，附延迟工具摘要。"""
+    from core.prompts import _build_tools_section, _build_deferred_tools_section
+    active = getattr(agent, "_active_tools", None) or agent.tools
+    section = _build_tools_section(active)
+    deferred = getattr(agent, "_deferred_tools", None) or []
+    if deferred:
+        section += "\n\n" + _build_deferred_tools_section(deferred)
+    return section
 
 
 def _gen_skills(block: dict, agent) -> str:

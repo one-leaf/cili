@@ -21,6 +21,7 @@ _DEFAULTS = {
     "label": "",
     "mode": "autonomous",
     "tools": [],
+    "deferred_tools": [],
     "skills": [],
     "streaming": True,
     "ask_user": False,
@@ -44,6 +45,7 @@ class AgentRoleConfig:
     label: str = ""
     mode: str = "autonomous"  # "interactive" | "autonomous"
     tools: list[str] = field(default_factory=list)  # tool name whitelist
+    deferred_tools: list[str] = field(default_factory=list)  # tools whose schemas are hidden until activated
     skills: list[str] = field(default_factory=list)  # [] or ["*"] = all visible
     streaming: bool = True
     ask_user: bool = False
@@ -96,6 +98,7 @@ def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
         label=merged["label"],
         mode=merged["mode"],
         tools=list(merged["tools"]),
+        deferred_tools=list(merged["deferred_tools"]),
         skills=list(merged["skills"]),
         streaming=bool(merged["streaming"]),
         ask_user=bool(merged["ask_user"]),

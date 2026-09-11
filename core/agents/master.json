@@ -246,7 +246,18 @@
     "pdf2markdown",
     "skill",
     "agent",
-    "ask_user"
+    "ask_user",
+    "tool_search"
+  ],
+  "deferred_tools": [
+    "browser",
+    "todo_write",
+    "latex",
+    "message_bus",
+    "cron",
+    "temp",
+    "loop",
+    "pdf2markdown"
   ],
   "skills": [
     "*"

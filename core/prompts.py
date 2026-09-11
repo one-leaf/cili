@@ -34,6 +34,24 @@ def _build_tools_section(tools: list) -> str:
     return "\n".join(lines)
 
 
+def _build_deferred_tools_section(deferred_tools: list) -> str:
+    """生成延迟工具摘要段：列出名称和简介，引导模型用 tool_search 加载。"""
+    if not deferred_tools:
+        return ""
+    lines = [
+        "## Deferred Tools",
+        "",
+        "The following tools are available but not loaded by default.",
+        "Use `tool_search(query='...')` to load a tool's full schema before using it.",
+        "Once loaded, the tool becomes active for the rest of the session.",
+        "",
+    ]
+    for tool in deferred_tools:
+        desc = tool.description.split("\n")[0].strip()
+        lines.append(f"- **{tool.name}** — {desc}")
+    return "\n".join(lines)
+
+
 def _build_skills_section(role: str) -> str:
     """按角色可见技能生成技能列表段落（通用）。"""
     from core.tools.skill import list_skills

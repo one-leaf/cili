@@ -230,7 +230,7 @@ def run(self, *args, **kwargs):
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 22 个（含 agent、ask_user） | 17 个（含 agent，去 todo/cron/message_bus/latex/ask_user） | 4 个（read/write/edit/bash） |
+| **工具白名单** | 23 个（15 core 常驻 + 8 deferred 延迟加载；含 agent、ask_user、tool_search） | 13 个（执行型：read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 4 个（read/write/edit/bash） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -443,7 +443,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 | 维度 | worker | lite |
 |------|--------|------|
-| 工具集 | 17 个（read/write/edit/bash/pwsh/grep/find/browser/web_search/memory/python/read_tool_result/temp/loop/pdf2markdown/skill/agent） | 只读 read/write/edit/bash 四工具 |
+| 工具集 | 13 个（read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 只读 read/write/edit/bash 四工具 |
 | 检查阶段 | ✓（`check_phase=True`） | ✗ |
 | 预算预警 | ✓（`budget_notice=True`） | ✗ |
 | 迭代上限 | null → system（默认 200） | 20 |
@@ -573,4 +573,4 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ---
 
 *文档版本: v3.0*
-*最后更新: 2026-09-10（重构为统一 Agent + 角色 JSON 配置架构）*
+*最后更新: 2026-09-11（worker 精简为 13 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载）*

@@ -18,36 +18,25 @@ from core.tools.base import Tool, ToolResult
 
 class BrowserTool(Tool):
     name = "browser"
-    description = """Connect to a browser to access websites that block bots.
+    description = """Connect to a real Chrome browser for sites that block bots or need JS rendering.
 
-This tool automatically connects to Chrome with remote debugging. If Chrome is not
-running with debugging enabled, it will kill existing Chrome and restart with the
-workspace profile (workspace/.chrome-profile).
+Automatically connects to Chrome with remote debugging (restarts Chrome with the workspace
+profile if not running with debugging).
 
 Available actions:
-- navigate: Go to a URL and get page content (opens a new tab, returns tab_index)
-- screenshot: Take a screenshot of the current page
-- save_pdf: Save the current page as a PDF file
-- execute: Run JavaScript on the page
-- get_text: Get all text content from the page
-- get_links: Get all links from the page
-- wait_for: Wait for a CSS selector to appear (useful for JS-rendered content)
-- switch_tab: Switch to a specific tab by tab_index
-- list_tabs: List all open tabs with their tab_index
-- close_tab: Close a specific tab by tab_index
+- navigate: open a URL and get page content (opens a new tab, returns tab_index)
+- screenshot: capture the page
+- save_pdf: save the page as a PDF
+- execute: run JavaScript on the page
+- get_text / get_links: extract page text or links
+- wait_for: wait for a CSS selector (for JS-rendered content)
+- switch_tab / list_tabs / close_tab: manage tabs by tab_index
 
 Tab management:
-- Each 'navigate' opens a new tab and returns a tab_index.
-- Use 'tab_index' parameter to specify which tab to operate on.
-- If tab_index is omitted, the current active tab is used.
-- Inactive tabs are automatically closed after 10 minutes.
-- Use 'close_tab' to manually close a tab when done exploring.
+- Each 'navigate' opens a new tab; pass its tab_index to operate on it (defaults to the active tab).
+- Inactive tabs auto-close after 10 minutes; call close_tab when done exploring.
 
-Examples:
-- {"action": "navigate", "url": "https://example.com"}  → returns tab_index
-- {"action": "screenshot", "tab_index": 1}
-- {"action": "switch_tab", "tab_index": 2}
-- {"action": "close_tab", "tab_index": 1}
+Use web_search for simple lookups; use browser when search results are insufficient or the site needs a real browser.
 """
     parameters = {
         "type": "object",
