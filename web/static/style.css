@@ -1933,11 +1933,11 @@ mjx-container {
     color: white;
 }
 
-/* Settings modal smaller font and fixed height */
+/* Settings modal smaller font; size relative to viewport */
 #settings-modal .modal-content {
-    width: 1120px;
+    width: 50vw;
     max-width: 90vw;
-    height: 600px;
+    height: 80vh;
 }
 
 #settings-modal .form-group label,
