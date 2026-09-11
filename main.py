@@ -22,11 +22,21 @@ from pathlib import Path
 # Disable user site-packages to avoid mixing with system Python
 os.environ["PYTHONNOUSERSITE"] = "1"
 
-# Ensure deps Python site-packages is in sys.path (fix for embeddable Python)
+# Ensure deps Python site-packages is in sys.path (fix for embeddable Python).
+# 仅当当前解释器就是 deps Python 时才插入：site-packages 里的二进制扩展
+# （.pyd/.so）按 ABI 匹配当前版本，在其它 Python（如系统 Python 跑测试）下
+# 插入 deps 的 3.11 专属 site-packages 会污染 sys.path，导致后续
+# import（如 pydantic_core 的编译模块）因加载不到 ABI 匹配的扩展而失败。
 _project_root = os.path.dirname(os.path.abspath(__file__))
 _deps_python_dir = os.path.join(_project_root, "data", "deps", "python")
 _deps_site_packages = os.path.join(_deps_python_dir, "Lib", "site-packages")
-if os.path.exists(_deps_site_packages) and _deps_site_packages not in sys.path:
+_deps_python_exe = os.path.join(_deps_python_dir, "python.exe")
+_running_in_deps = (
+    os.path.exists(_deps_python_exe)
+    and os.path.normcase(os.path.realpath(sys.executable))
+    == os.path.normcase(os.path.realpath(_deps_python_exe))
+)
+if _running_in_deps and _deps_site_packages not in sys.path:
     sys.path.insert(0, _deps_site_packages)
 # Also add project root for imports
 if _project_root not in sys.path:
@@ -130,6 +140,11 @@ def _get_deps_python() -> str:
     return os.path.join(_DEPS_PYTHON_DIR, "python.exe")
 
 _SETTING_FILE = os.path.join(_CILI_DIR, "setting.json")
+
+# 依赖安装后自动重启上限：防止包持续被判为缺失时无限 execv 重启循环（W16）。
+# 重启计数通过环境变量跨 os.execv 传递（execv 保留进程环境）。
+_MAX_SETUP_RESTARTS = 3
+_SETUP_RESTART_ENV = "CILI_SETUP_RESTART_COUNT"
 
 # Preset pip mirror sources: {name: url}
 _PIP_MIRRORS = {
@@ -791,8 +806,39 @@ def _save_pip_mirror(mirror: str) -> None:
         print(f"[setup] Warning: failed to save pip mirror: {e}")
 
 
+def _find_system_git_bash() -> str | None:
+    """在系统中探测 Git Bash 的 bash.exe（避免误用 WSL 的 bash.exe）。
+
+    探测顺序：PATH 上的 git 反推 → 常见安装目录（Program Files / LocalAppData）。
+    """
+    import shutil
+
+    candidates: list[str] = []
+
+    # 1) 从 PATH 上的 git 反推 bash.exe（如 C:\Program Files\Git\cmd\git.exe -> ...\Git\bin\bash.exe）
+    git_path = shutil.which("git")
+    if git_path:
+        git_dir = os.path.dirname(os.path.dirname(git_path))
+        candidates.append(os.path.join(git_dir, "bin", "bash.exe"))
+        candidates.append(os.path.join(git_dir, "usr", "bin", "bash.exe"))
+
+    # 2) 常见安装目录
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    for root in (program_files, program_files_x86):
+        candidates.append(os.path.join(root, "Git", "bin", "bash.exe"))
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "Programs", "Git", "bin", "bash.exe"))
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _init_git_bash() -> bool:
-    """Check if Git Bash exists in deps directory.
+    """Check Git Bash availability: deps dir first, then system Git Bash fallback.
 
     Returns True if bash found, False otherwise (triggers exit).
     """
@@ -802,8 +848,15 @@ def _init_git_bash() -> bool:
         print(f"[setup] Git Bash from deps: {_DEPS_GIT_BASH}")
         return True
 
+    # 系统 Git Bash fallback（start.ps1 注入的 deps 不存在时，直接 `python main.py` 也能用）
+    system_bash = _find_system_git_bash()
+    if system_bash:
+        os.environ["GIT_BASH_PATH"] = system_bash
+        print(f"[setup] Git Bash from system: {system_bash}")
+        return True
+
     # Not found - fatal error (should have been downloaded by start.ps1)
-    print("[setup] FATAL: Git Bash not found in deps directory!")
+    print("[setup] FATAL: Git Bash not found (deps or system)!")
     print("[setup] Please use start.cmd to start Cili Agent, which will auto-download Git Bash.")
     return False
 
@@ -821,10 +874,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host for web server (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host for web server (default: 127.0.0.1)",
     )
     return parser.parse_args()
+
+
+def _check_web_auth(host: str) -> None:
+    """安全校验：绑定非 localhost 时必须已配置 access_token，否则拒绝启动。
+
+    防止用户误用 --host 0.0.0.0 把无鉴权服务暴露到公网。
+    """
+    local_hosts = ("127.0.0.1", "localhost", "::1")
+    if host in local_hosts:
+        return
+
+    token = ""
+    if os.path.exists(_SETTING_FILE):
+        try:
+            with open(_SETTING_FILE, "r", encoding="utf-8") as f:
+                token = (json.load(f).get("system", {}) or {}).get("access_token", "") or ""
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[setup] Warning: failed to read config for auth check: {e}")
+
+    if not token:
+        print(
+            "[setup] Error: binding to a non-localhost address requires an access_token.\n"
+            f"        Host '{host}' is exposed to the network, refusing to start unauthenticated.\n"
+            "        Configure one of:\n"
+            f"          1. Edit {_SETTING_FILE} and set system.access_token\n"
+            "          2. Start with a localhost bind: --host 127.0.0.1",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _auto_detect_browser() -> None:
@@ -892,6 +974,9 @@ def main() -> None:
     except ImportError:
         print("[migration] core/migration.py not found, skipping session migration")
 
+    # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网
+    _check_web_auth(args.host)
+
     # Check Git Bash in deps
     if not _init_git_bash():
         print("[setup] Error: Git Bash not found", file=sys.stderr)
@@ -911,8 +996,21 @@ def main() -> None:
 
     # If packages were newly installed, need to restart for imports to work
     if pkg_installed:
-        print("[setup] New packages installed, restarting service...")
+        restart_count = int(os.environ.get(_SETUP_RESTART_ENV, "0"))
+        if restart_count >= _MAX_SETUP_RESTARTS:
+            # 包安装成功但重启后仍被判为缺失：重装无法修复，终止避免无限重启
+            print(
+                f"[setup] Error: packages are still detected as missing after "
+                f"{_MAX_SETUP_RESTARTS} restart(s). Aborting to avoid an infinite "
+                f"restart loop. Please check the deps Python environment in "
+                f"{_DEPS_PYTHON_DIR} manually.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[setup] New packages installed, restarting service... "
+              f"(restart {restart_count + 1}/{_MAX_SETUP_RESTARTS})")
         # Re-execute the same script with same arguments
+        os.environ[_SETUP_RESTART_ENV] = str(restart_count + 1)
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     # Initialize mplfonts for CJK font support (if not already done)

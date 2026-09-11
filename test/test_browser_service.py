@@ -213,3 +213,171 @@ class TestClosePageInternal:
         assert 1 not in service._page_pool
         assert service._active_tab_index is None
         mock_page.close.assert_called_once()
+
+
+class TestValidateNavigateUrl:
+    """_validate_navigate_url() scheme/SSRF 过滤（A30/SEC-17）。"""
+
+    def _validate(self, url):
+        from core.browser_service import _validate_navigate_url
+        return _validate_navigate_url(url)
+
+    def test_public_http_https_allowed(self):
+        assert self._validate("https://example.com/page") is None
+        assert self._validate("http://example.com") is None
+
+    def test_file_scheme_rejected(self):
+        reason = self._validate("file:///etc/passwd")
+        assert reason and "scheme" in reason
+
+    def test_data_scheme_rejected(self):
+        reason = self._validate("data:text/html,<script>alert(1)</script>")
+        assert reason and "scheme" in reason
+
+    def test_javascript_scheme_rejected(self):
+        reason = self._validate("javascript:alert(1)")
+        assert reason and "scheme" in reason
+
+    def test_empty_scheme_rejected(self):
+        reason = self._validate("example.com")
+        assert reason and "scheme" in reason
+
+    def test_loopback_ip_rejected(self):
+        reason = self._validate("http://127.0.0.1:9222/")
+        assert reason and "SSRF" in reason
+
+    def test_localhost_rejected(self):
+        reason = self._validate("http://localhost:8080/")
+        assert reason and "SSRF" in reason
+
+    def test_private_ip_rejected(self):
+        reason = self._validate("http://192.168.1.5/")
+        assert reason and "SSRF" in reason
+
+    def test_link_local_metadata_rejected(self):
+        reason = self._validate("http://169.254.169.254/latest/meta-data/")
+        assert reason and "SSRF" in reason
+
+    def test_ipv6_loopback_rejected(self):
+        reason = self._validate("http://[::1]/")
+        assert reason and "SSRF" in reason
+
+    def test_missing_hostname_rejected(self):
+        reason = self._validate("https:///path")
+        assert reason and "主机名" in reason
+
+
+class TestCdpPortFallback:
+    """W11/W12: CDP 端口占用/冲突处理（不启动真实 Chrome）。"""
+
+    def test_cdp_port_defaults_to_9222(self):
+        from core.browser_service import BrowserService, DEFAULT_CDP_PORT
+        service = BrowserService()
+        assert service._cdp_port == DEFAULT_CDP_PORT
+
+    def test_pick_free_port_returns_unlistening_port(self):
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        with patch.object(service, "_is_port_listening", return_value=False):
+            port = service._pick_free_port()
+        assert 9300 <= port <= 9900
+
+    def test_find_pid_by_port_parses_netstat(self):
+        """从 netstat 输出解析出监听端口的 PID（Windows）。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        fake_output = (
+            "  TCP    127.0.0.1:9222    0.0.0.0:0    LISTENING    4321\n"
+            "  TCP    127.0.0.1:8080    0.0.0.0:0    LISTENING    1234\n"
+        )
+        with patch("core.browser_service.sys.platform", "win32"), \
+             patch("core.browser_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=fake_output, text=True)
+            assert service._find_pid_by_port(9222) == 4321
+            assert service._find_pid_by_port(9999) is None
+
+    def test_pid_uses_our_profile_true_when_matching(self):
+        """进程命令行包含本项目 profile 时判定为自有 Chrome。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        profile = service._chrome_profile_dir.replace("/", "\\").lower()
+        cmdline = f'"C:\\fake\\chrome.exe" --user-data-dir={profile}'
+        with patch("core.browser_service.sys.platform", "win32"), \
+             patch("core.browser_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=cmdline, text=True)
+            assert service._pid_uses_our_profile(4321) is True
+
+    def test_pid_uses_our_profile_false_when_foreign(self):
+        """进程命令行是用户个人 Chrome profile 时判定为外部进程。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        cmdline = (
+            '"C:\\Users\\me\\chrome.exe" '
+            '--user-data-dir=C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data'
+        )
+        with patch("core.browser_service.sys.platform", "win32"), \
+             patch("core.browser_service.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=cmdline, text=True)
+            assert service._pid_uses_our_profile(4321) is False
+
+    def test_start_chrome_foreign_chrome_switches_to_random_port(self, tmp_path):
+        """W12: 端口上是非本项目 Chrome（foreign profile）时，切换到随机端口启动自己的 Chrome。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        service._chrome_process = None
+        service._cdp_port = 9222
+        service._project_root = str(tmp_path)  # 重定向 profile 目录，避免动真实 data/deps/browser
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # 进程存活
+
+        with patch.object(service, "_is_port_listening", return_value=True), \
+             patch.object(service, "_try_cdp_connect", return_value=True), \
+             patch.object(service, "_find_chrome_process_by_profile", return_value=None), \
+             patch.object(service, "_pick_free_port", return_value=9500), \
+             patch.object(service, "_find_browser", return_value="C:\\fake\\chrome.exe"), \
+             patch("core.browser_service.subprocess.Popen", return_value=mock_proc), \
+             patch("core.browser_service.time.sleep"):
+            success, _msg = service._start_chrome(9222)
+
+        assert success is True
+        assert service._cdp_port == 9500
+        assert service._chrome_process is mock_proc
+
+    def test_start_chrome_kills_stale_own_chrome_on_cdp_failure(self):
+        """W11: 端口被本项目 profile 的旧 Chrome 占用且 CDP 连不上时，记录 PID 并 kill。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        service._chrome_process = None
+        service._cdp_port = 9222
+
+        with patch.object(service, "_is_port_listening", side_effect=[True, False]), \
+             patch.object(service, "_try_cdp_connect", return_value=False), \
+             patch.object(service, "_find_pid_by_port", return_value=4321), \
+             patch.object(service, "_pid_uses_our_profile", return_value=True), \
+             patch.object(service, "_find_browser", return_value=None), \
+             patch.object(service, "_kill_chrome_internal") as mock_kill:
+            service._start_chrome(9222)
+
+        assert mock_kill.call_count == 1
+        assert service._chrome_process is not None
+        assert service._chrome_process.pid == 4321
+
+    def test_start_chrome_foreign_process_not_killed_switches_port(self):
+        """W11: 端口被非本项目进程占用且 CDP 连不上时，不误杀，改用随机端口。"""
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        service._chrome_process = None
+        service._cdp_port = 9222
+
+        with patch.object(service, "_is_port_listening", return_value=True), \
+             patch.object(service, "_try_cdp_connect", return_value=False), \
+             patch.object(service, "_find_pid_by_port", return_value=9999), \
+             patch.object(service, "_pid_uses_our_profile", return_value=False), \
+             patch.object(service, "_pick_free_port", return_value=9500), \
+             patch.object(service, "_find_browser", return_value=None), \
+             patch.object(service, "_kill_chrome_internal") as mock_kill:
+            service._start_chrome(9222)
+
+        assert mock_kill.call_count == 0
+        assert service._cdp_port == 9500

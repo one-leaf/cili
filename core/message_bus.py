@@ -92,8 +92,13 @@ class MessageBus:
         )
         with self._lock:
             if to_session_id not in self._messages:
-                # Auto-register target session (messages will wait)
-                self._messages[to_session_id] = []
+                # 目标未注册（不存在/拼错）不静默积压，返回 False 让发送方感知
+                # 跨会话消息丢失（T21）
+                logger.warning(
+                    f"Message drop: target session '{to_session_id}' not registered "
+                    f"(sender: {from_session_id})"
+                )
+                return False
             queue = self._messages[to_session_id]
             queue.append(msg)
             if len(queue) > self.MAX_MESSAGES_PER_SESSION:

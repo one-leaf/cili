@@ -126,7 +126,7 @@ class Agent(BaseAgent):
             temperature: 可选的 LLM temperature 覆盖（0.0~1.0）
             approval_store: autonomous 模式共享的会话级审批存储
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
-            delegation_depth: 委派深度（master=0，最多 2 层；depth≥2 不可再委派）
+            delegation_depth: 委派深度（master=0，最多 1 层；depth≥1 不可再委派）
         """
         self.role = role
         self.role_cfg = load_agent_role(role, config)
@@ -135,6 +135,7 @@ class Agent(BaseAgent):
         self._temperature = temperature
         self._mode = self.role_cfg.mode
         self.delegation_depth = delegation_depth
+        self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/agent resume 不重置）
 
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
@@ -350,6 +351,7 @@ class Agent(BaseAgent):
         """Run one turn of the interactive agent loop."""
         self._stopped = False
         self._running = True
+        self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
         self._streaming = streaming
         self._on_text = on_text
         self._on_thinking = on_thinking
@@ -454,8 +456,7 @@ class Agent(BaseAgent):
         self._sync_to_session_manager()
         self.session_manager.save()
 
-        iteration = 0
-        while iteration < self.max_iterations:
+        while self._turn_iterations < self.max_iterations:
             # Check stop
             if self._stopped:
                 logger.info(f"[Agent:{self.role}] 已停止")
@@ -465,7 +466,7 @@ class Agent(BaseAgent):
                     self._on_text("\n\n[已停止]")
                 break
 
-            iteration += 1
+            self._turn_iterations += 1
 
             # Compress if needed
             self._check_and_compress()
@@ -690,7 +691,7 @@ class Agent(BaseAgent):
                     status = "stopped"
                     summary = "Stopped by user"
                     self._finalize(status, summary, i)
-                    return {"status": status, "message": summary, "iterations": i, "usage": self._usage}
+                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
 
                 # 额度预警（stop 优先：用户主动停止时不注入）
                 if self.role_cfg.budget_notice:
@@ -711,14 +712,14 @@ class Agent(BaseAgent):
                     logger.error(f"[Agent:{self.role}] LLM 错误 (iter={i}, exec={self._exec_id}, task='{task_brief}'): {summary}")
                     status = "error"
                     self._finalize(status, summary, i)
-                    return {"status": status, "message": summary, "iterations": i, "usage": self._usage}
+                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
 
                 # 流式中断（用户 stop）后检查：LLM 返回 stop_reason="stopped" 且无 tool_calls
                 if self._stopped:
                     status = "stopped"
                     summary = "Stopped by user"
                     self._finalize(status, summary, i)
-                    return {"status": status, "message": summary, "iterations": i, "usage": self._usage}
+                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
 
                 tool_calls = response.get_tool_calls()
 
@@ -803,7 +804,7 @@ class Agent(BaseAgent):
                             status = "failed"
                             summary = f"Exceeded max consecutive failures ({self.max_consecutive_failures})"
                             self._finalize(status, summary, i + 1)
-                            return {"status": status, "message": summary, "iterations": i + 1, "usage": self._usage}
+                            return {"status": status, "summary": summary, "iterations": i + 1, "usage": self._usage}
                     else:
                         consecutive_failures = 0
 
@@ -934,7 +935,6 @@ class Agent(BaseAgent):
             try:
                 self.session_dir.mkdir(parents=True, exist_ok=True)
                 log_file = self.session_dir / "index.json"
-                with open(log_file, "w", encoding="utf-8") as f:
-                    json.dump(log_data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(log_file, log_data)
             except Exception as e:
                 logger.warning(f"[Agent:{self.role}] Failed to finalize: {e}")

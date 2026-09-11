@@ -208,7 +208,15 @@ class BashTool(Tool):
             if not os.path.isdir(resolved):
                 return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
             bash_dir = _to_bash_path(resolved)
-            command = f"cd '{bash_dir}' && {command}"
+            # 目录名可能含引号，shell_escape 防止注入出引号；注入段参与 deny 扫描
+            cd_prefix = f"cd {self._shell_escape(bash_dir)} && "
+            deny_prefix = self._check_deny_patterns(cd_prefix + command)
+            if deny_prefix:
+                mode, reason = deny_prefix
+                return ToolResult(
+                    f"Error: command blocked by safety check — {reason}", error=True
+                )
+            command = cd_prefix + command
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-
+from core.fs_utils import atomic_write_text
 from core.tools.base import Tool, ToolResult
 
 
@@ -115,14 +114,8 @@ class EditTool(Tool):
                     )
                 content = content.replace(clean_old, clean_new, 1)
 
-            # Atomic write: write to temp file first, then replace
-            # newline 按原文件行尾风格写入：CRLF 文件保持 CRLF，LF 文件保持 LF
-            temp_path = file_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8", newline=("\r\n" if had_crlf else "")) as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, file_path)
+            # Atomic write；newline 按原文件行尾风格写入：CRLF 文件保持 CRLF，LF 文件保持 LF
+            atomic_write_text(file_path, content, newline=("\r\n" if had_crlf else ""))
 
             result_text = f"Successfully edited {file_path}"
             return ToolResult(self.truncate_result(result_text, 100_000))

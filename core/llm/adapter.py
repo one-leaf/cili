@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from core.config import ModelConfig
 from core.llm.types import (
@@ -19,8 +20,12 @@ from core.llm.types import (
     Message,
     StreamChunk,
     TextBlock,
+    ToolCallBlock,
     UsageData,
 )
+
+# 官方域名无需做 LiteLLM 代理探测（也不该为它们发多余请求）
+OFFICIAL_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
 
 
 def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
@@ -38,6 +43,12 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
     if not messages:
         return messages
 
+    def _has_tool_calls(content: str | list[ContentBlock]) -> bool:
+        """判断消息内容是否含 tool_call 块。"""
+        return isinstance(content, list) and any(
+            isinstance(b, ToolCallBlock) for b in content
+        )
+
     merged: list[Message] = [messages[0]]
 
     for msg in messages[1:]:
@@ -46,29 +57,53 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
             merged.append(msg)
             continue
 
+        # 相邻 assistant 均含 tool_calls 时禁止合并：合并成同一回合会破坏
+        # tool_use ↔ tool_result 的配对语义（L15）。其余情况照常合并。
+        if (
+            msg.role == "assistant"
+            and _has_tool_calls(prev.content)
+            and _has_tool_calls(msg.content)
+        ):
+            merged.append(msg)
+            continue
+
         # Same role — merge content
         prev_content = prev.content
         cur_content = msg.content
 
         if isinstance(prev_content, str) and isinstance(cur_content, str):
-            merged[-1] = Message(
-                role=prev.role,
-                content=prev_content + "\n\n" + cur_content,
-            )
+            new_msg = Message(role=prev.role, content=prev_content + "\n\n" + cur_content)
         elif isinstance(prev_content, list) and isinstance(cur_content, list):
-            merged[-1] = Message(
-                role=prev.role,
-                content=list(prev_content) + list(cur_content),
-            )
+            new_msg = Message(role=prev.role, content=list(prev_content) + list(cur_content))
         elif isinstance(prev_content, str) and isinstance(cur_content, list):
             blocks = [TextBlock(text=prev_content)] + list(cur_content)
-            merged[-1] = Message(role=prev.role, content=blocks)
+            new_msg = Message(role=prev.role, content=blocks)
         elif isinstance(prev_content, list) and isinstance(cur_content, str):
             blocks = list(prev_content) + [TextBlock(text=cur_content)]
-            merged[-1] = Message(role=prev.role, content=blocks)
+            new_msg = Message(role=prev.role, content=blocks)
         else:
             # Fallback: keep separate (shouldn't happen)
             merged.append(msg)
+            continue
+
+        # 保留元数据（L15）：合并前取先出现的值，避免 provider/model/usage/
+        # stop_reason 丢失（usage 两段都非空时按数值相加）。
+        new_msg.provider = prev.provider or msg.provider
+        new_msg.model = prev.model or msg.model
+        new_msg.stop_reason = prev.stop_reason or msg.stop_reason
+        new_msg.compacted = prev.compacted or msg.compacted
+        new_msg.invalidated = prev.invalidated or msg.invalidated
+        if prev.usage and msg.usage:
+            pu, mu = prev.usage, msg.usage
+            new_msg.usage = UsageData(
+                input_tokens=pu.input_tokens + mu.input_tokens,
+                output_tokens=pu.output_tokens + mu.output_tokens,
+                cache_read_tokens=pu.cache_read_tokens + mu.cache_read_tokens,
+                cache_write_tokens=pu.cache_write_tokens + mu.cache_write_tokens,
+            )
+        else:
+            new_msg.usage = prev.usage or msg.usage
+        merged[-1] = new_msg
 
     return merged
 
@@ -85,10 +120,30 @@ class Adapter(ABC):
 
         Args:
             config: Model configuration (name, api_key, base_url, etc.)
+
+        Raises:
+            ValueError: 若 base_url 为空或不可解析
         """
         self.config = config
         self.base_url = config.base_url.rstrip("/")
+        self._validate_base_url()
         self._is_litellm_proxy: bool = False
+
+    def _validate_base_url(self) -> None:
+        """校验 base_url 非空且可解析（含 scheme 与 host）。"""
+        if not self.base_url:
+            raise ValueError(
+                f"{self.__class__.__name__}: base_url 不能为空，请在配置中设置模型地址"
+            )
+        parsed = urlparse(self.base_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                f"{self.__class__.__name__}: 无效的 base_url: {self.base_url!r}"
+            )
+
+    def should_detect_litellm(self) -> bool:
+        """官方域名（Anthropic/OpenAI 1P）不做 LiteLLM 探测，直接返回 False。"""
+        return urlparse(self.base_url).hostname not in OFFICIAL_API_HOSTS
 
     @property
     @abstractmethod

@@ -125,3 +125,55 @@ class TestSessionManagement:
         session.save()
         loaded = SessionManager.load_session(session.session_id, sessions_dir)
         assert loaded.name == "New Name"
+
+
+class TestCopySemantics:
+    """C2: get_usage()/to_dict() 返回副本，调用方修改不污染内部状态。"""
+
+    def test_get_usage_returns_copy(self, test_workspace):
+        """修改 get_usage() 返回值不影响内部 usage。"""
+        sessions_dir = Path(test_workspace) / ".sessions_copy_usage"
+        session = SessionManager.create_new_session(sessions_dir, "Copy Test")
+        session.update_usage(input_tokens=100)
+
+        usage = session.get_usage()
+        usage["input_tokens"] = 9999
+        assert session.get_usage()["input_tokens"] == 100
+
+    def test_to_dict_returns_copy(self, test_workspace):
+        """修改 to_dict() 返回值不影响内部 messages/metadata。"""
+        sessions_dir = Path(test_workspace) / ".sessions_copy_dict"
+        session = SessionManager.create_new_session(sessions_dir, "Copy Test")
+        session.add_message("user", "Hello")
+
+        d = session.to_dict()
+        d["messages"].append({"role": "user", "content": "mutated"})
+        d["metadata"]["usage"]["input_tokens"] = 12345
+
+        assert session.get_message_count() == 1
+        assert session.get_usage()["input_tokens"] == 0
+
+
+class TestCacheInvalidation:
+    """C1: 压缩等原地修改共享消息后，session valid 缓存必须失效重建。"""
+
+    def test_invalidate_message_cache_rebuilds_valid_cache(self, agent):
+        """agent 原地修改共享消息后，_invalidate_message_cache() 使缓存重建。"""
+        sm = agent.session_manager
+        # 交互模式：agent.messages 与 sm.messages 是同一引用
+        sm.add_message("user", "Hello")
+        sm.add_message("assistant", "Hi")
+
+        # 构建缓存
+        assert sm.get_valid_messages()
+        assert sm._messages_dirty is False
+
+        # 模拟压缩原地改 _meta.valid（不经过 add_message）
+        sm.messages[0]["_meta"] = {"valid": False}
+        # 缓存未失效 → 仍返回旧快照
+        assert len(sm.get_valid_messages()) == 2
+
+        # 压缩入口调用 _invalidate_message_cache 后 → 重建
+        agent._invalidate_message_cache()
+        assert sm._messages_dirty is True
+        assert len(sm.get_valid_messages()) == 1

@@ -31,8 +31,11 @@ def protocol(request):
 
 
 @pytest.fixture
-def dgx_config(protocol):
-    """当前协议对应的 DGX Config。"""
+def dgx_config(protocol, dgx_available):
+    """当前协议对应的 DGX Config。
+
+    依赖 dgx_available：服务器不可达时使用本 fixture 的测试整组跳过。
+    """
     return make_dgx_config(protocol)
 
 
@@ -105,10 +108,12 @@ def test_workspace_dir(tmp_path):
 # ── Master Agent 集成测试（参数化协议）─────────────────────────────────────────
 
 
+@pytest.mark.integration
 class TestMasterAgentIntegration:
     """Master Agent 集成测试：使用 DGX 端点，覆盖 Anthropic 和 OpenAI 协议。
 
     每个测试方法会被参数化运行两次：anthropic 协议和 openai 协议。
+    dgx_config fixture 依赖 dgx_available，服务器不可达时跳过。
     """
 
     def test_basic_conversation(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
@@ -229,12 +234,19 @@ class TestMasterAgentIntegration:
 # ── Agent 集成测试（mock load_config 注入 DGX）─────────────────────────────
 
 
+@pytest.mark.integration
 class TestAgentIntegration:
     """Agent 集成测试：mock load_config() 注入 DGX 配置。
 
     Agent 内部调用 load_config()，通过 mock 注入 DGX 配置。
     同时覆盖 anthropic / openai 两种协议。
+    服务器不可达时整类跳过（dgx_available）。
     """
+
+    @pytest.fixture(autouse=True)
+    def _require_dgx(self, dgx_available):
+        """本类所有测试均发起真实 DGX 调用；不可达即跳过。"""
+        yield
 
     def _run_agent(self, task, test_workspace_dir, protocol, exec_id=None):
         """创建并运行 Worker Agent（DGX 配置直传）。"""

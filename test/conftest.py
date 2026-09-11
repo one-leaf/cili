@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import os
+import socket
 import sys
 import shutil
 import secrets
@@ -59,6 +60,28 @@ def test_workspace():
 def config():
     """加载测试配置（使用 DGX 本地端点，Anthropic 协议）。"""
     return make_dgx_config("anthropic")
+
+
+@pytest.fixture(scope="session")
+def dgx_available():
+    """探测 DGX LLM 服务器可达性，不可达则 skip（解耦 CI，A45 §2.1）。
+
+    纯逻辑测试不依赖真实 LLM；只有显式依赖本 fixture 的集成测试才声明
+    "需要真实服务器"。服务器不在线时跳过而非失败，保证无内网环境也能
+    稳定跑完套件。
+    """
+    host = DGX_BASE_URL.split("://", 1)[-1]
+    if ":" in host:
+        host, _, port = host.rpartition(":")
+        port = int(port)
+    else:
+        port = 80
+    try:
+        with socket.create_connection((host, port), timeout=1.5):
+            pass
+    except OSError:
+        pytest.skip(f"DGX LLM 服务器不可达: {DGX_BASE_URL}")
+    return True
 
 
 @pytest.fixture

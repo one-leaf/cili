@@ -6,11 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.compression import (
-    compact_messages_with_summary,
     count_messages_tokens,
     count_tokens_approx,
     microcompact_tool_results,
-    summarize_messages_for_compact,
 )
 
 
@@ -166,86 +164,83 @@ class TestMicrocompactToolResults:
         assert saved == 0
 
 
-class TestSummarizeMessagesForCompact:
-    """summarize_messages_for_compact() 用 LLM 生成摘要。"""
+class TestMicrocompactInlineSpill:
+    """内联结果（file_size=0）压缩时先 spill 到文件，保证可恢复。"""
 
-    def test_success(self):
-        """summarize_messages_for_compact() 成功调用 LLM。"""
-        from core.llm import LLMResponse, TextBlock
-        mock_client = MagicMock()
-        mock_response = LLMResponse(content=[TextBlock(text="对话摘要内容")])
-        mock_client.chat.return_value = mock_response
+    def _make_inline_msg(self, tool_use_id: str, content: str) -> dict:
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                }
+            ],
+        }
 
+    def test_inline_result_spilled_and_cleared(self, tmp_path):
+        """内联结果压缩：写入 {tool_use_id}.txt、清 content、写 output_path。"""
         messages = [
-            {"role": "user", "content": "你好"},
-            {"role": "assistant", "content": "你好！有什么可以帮你的？"},
+            self._make_inline_msg("toolu_abc", "long inline output " * 50),
+            self._make_inline_msg("toolu_recent", "recent"),
         ]
-        result = summarize_messages_for_compact(messages, mock_client)
-        assert result == "对话摘要内容"
-        mock_client.chat.assert_called_once()
+        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
 
-    def test_llm_failure_returns_truncated(self):
-        """LLM 调用失败时返回截断文本。"""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("API error")
+        old = messages[0]["content"][0]
+        assert old["_meta"]["compacted"] is True
+        assert old["_meta"]["output_path"] == "toolu_abc.txt"
+        assert old.get("content") is None
+        assert saved == len("long inline output " * 50)
 
-        messages = [{"role": "user", "content": "hello world"}]
-        result = summarize_messages_for_compact(messages, mock_client)
-        assert "hello world" in result
+        # spill 文件可经 read_tool_result 恢复
+        file_path = tmp_path / "toolu_abc.txt"
+        assert file_path.read_text(encoding="utf-8") == "long inline output " * 50
 
-    def test_long_conversation_truncated(self):
-        """超长对话截断到 max_chars。"""
-        from core.llm import LLMResponse, TextBlock
-        mock_client = MagicMock()
-        mock_response = LLMResponse(content=[TextBlock(text="摘要")])
-        mock_client.chat.return_value = mock_response
+        # 最近一条不压缩
+        recent = messages[1]["content"][0]
+        assert not recent.get("_meta", {}).get("compacted")
+        assert recent["content"] == "recent"
 
-        messages = [{"role": "user", "content": "x" * 100000}]
-        summarize_messages_for_compact(messages, mock_client, max_chars=50000)
-        # 验证传给 LLM 的 prompt 不超过 max_chars 太多
-        call_args = mock_client.chat.call_args
-        # messages 现在是 Message 对象，用属性访问
-        msg = call_args[1]["messages"][0]
-        prompt_text = msg.content if isinstance(msg.content, str) else str(msg.content)
-        # prompt 包含截断标记
-        assert "..." in prompt_text or len(prompt_text) < 100000
-
-
-class TestCompactMessagesWithSummary:
-    """compact_messages_with_summary() 保留最近 N 条，其余用摘要替换。"""
-
-    def test_too_few_messages_no_compress(self):
-        """消息数 <= keep_recent_count + 1 时不压缩。"""
+    def test_inline_without_output_dir_skipped(self):
+        """无 output_dir 时内联结果跳过压缩，避免不可恢复的数据丢失。"""
         messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "user", "content": "bye"},
+            self._make_inline_msg("toolu_abc", "inline output"),
+            self._make_inline_msg("toolu_recent", "recent"),
         ]
-        mock_client = MagicMock()
-        saved = compact_messages_with_summary(messages, mock_client, keep_recent_count=6)
+        saved = microcompact_tool_results(messages, keep_recent=1)
+
         assert saved == 0
-        assert len(messages) == 3  # 原消息不变
+        old = messages[0]["content"][0]
+        assert not old.get("_meta", {}).get("compacted")
+        assert old["content"] == "inline output"
 
-    def test_compresses_and_preserves_recent(self):
-        """压缩后保留最近消息，旧消息被摘要替换。"""
+    def test_inline_invalid_tool_use_id_skipped(self, tmp_path):
+        """tool_use_id 含危险字符时跳过（防路径遍历）。"""
         messages = [
-            {"role": "user", "content": "old question 1"},
-            {"role": "assistant", "content": "old answer 1"},
-            {"role": "user", "content": "old question 2"},
-            {"role": "assistant", "content": "old answer 2"},
-            {"role": "user", "content": "recent question"},
-            {"role": "assistant", "content": "recent answer"},
+            self._make_inline_msg("../evil", "should not spill"),
+            self._make_inline_msg("toolu_recent", "recent"),
         ]
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [{"type": "text", "text": "之前的对话摘要"}]
-        mock_client.chat.return_value = mock_response
+        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
 
-        saved = compact_messages_with_summary(messages, mock_client, keep_recent_count=2)
-        # saved 可能为负（摘要+样板比原始短消息更长），只验证结构
-        assert isinstance(saved, int)
-        # 压缩后: 摘要 user + 摘要 assistant + 2 条保留消息
-        assert len(messages) == 4
-        assert "摘要" in messages[0]["content"]
-        assert messages[-2]["content"] == "recent question"
-        assert messages[-1]["content"] == "recent answer"
+        assert saved == 0
+        old = messages[0]["content"][0]
+        assert not old.get("_meta", {}).get("compacted")
+        # 未写出任何文件（路径遍历被拦截）
+        assert list(tmp_path.iterdir()) == []
+
+    def test_file_backed_still_works_with_output_dir(self, tmp_path):
+        """外部文件结果（file_size>0）在有 output_dir 时行为不变。"""
+        messages = [
+            self._make_inline_msg("toolu_abc", "ignored"),
+            self._make_inline_msg("toolu_recent", "recent"),
+        ]
+        messages[0]["content"][0]["_meta"] = {"file_size": 300}
+        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
+
+        assert saved == 300
+        old = messages[0]["content"][0]
+        assert old["_meta"]["compacted"] is True
+        # 文件结果无需 spill，content 保持原样（None）
+        assert old["content"] == "ignored"
+

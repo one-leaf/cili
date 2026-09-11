@@ -6,12 +6,21 @@ import hashlib
 import json
 import os
 import re
+import threading
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.config import PROJECT_ROOT
-from core.tools.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
+
+# T16：find 全量 IO —— (path, mtime_ns, size) 键控的内容缓存。
+# 记忆文件只在 store/update/delete 或外部编辑时变更，mtime+size 不变即可
+# 复用缓存，避免每次 find 重读全部 .md。内容小（markdown），LRU 淘汰。
+_FIND_CACHE_MAX = 512
+_FIND_CACHE: "OrderedDict[tuple[str, int, int], str]" = OrderedDict()
+_FIND_CACHE_LOCK = threading.Lock()
 
 
 def _fm_value(value: Any) -> str:
@@ -193,7 +202,9 @@ class MemoryTool(Tool):
         if total > self._FIND_MAX_RESULTS:
             lines.append("")
             lines.append(f"... and {total - self._FIND_MAX_RESULTS} more. Refine the query to narrow results.")
-        return ToolResult("\n".join(lines))
+        return ToolResult(
+            UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END
+        )
 
     def _find_in_knowledge(self, needle: str) -> list[tuple[float, str]]:
         """遍历 knowledge 目录，返回 (mtime, 格式化条目) 列表。"""
@@ -261,11 +272,28 @@ class MemoryTool(Tool):
 
     @staticmethod
     def _read_memory_file(fpath: str) -> str | None:
+        """读取文件内容，带 (path, mtime_ns, size) 键控缓存（T16）。"""
+        try:
+            stat = os.stat(fpath)
+            key = (os.path.abspath(fpath), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
+        with _FIND_CACHE_LOCK:
+            cached = _FIND_CACHE.get(key)
+            if cached is not None:
+                _FIND_CACHE.move_to_end(key)
+                return cached
         try:
             with open(fpath, "r", encoding="utf-8") as f:
-                return f.read()
+                content = f.read()
         except Exception:
             return None
+        with _FIND_CACHE_LOCK:
+            _FIND_CACHE[key] = content
+            _FIND_CACHE.move_to_end(key)
+            while len(_FIND_CACHE) > _FIND_CACHE_MAX:
+                _FIND_CACHE.popitem(last=False)
+        return content
 
     @staticmethod
     def _strip_frontmatter(content: str) -> str:

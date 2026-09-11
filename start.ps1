@@ -4,7 +4,7 @@
 
 param(
     [int]$Port = 8000,
-    [string]$HostName = "0.0.0.0"
+    [string]$HostName = "127.0.0.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -426,7 +426,7 @@ if ($Port -ne 8000) {
     $scriptArgs += "--port"
     $scriptArgs += $Port
 }
-if ($HostName -ne "0.0.0.0") {
+if ($HostName -ne "127.0.0.1") {
     $scriptArgs += "--host"
     $scriptArgs += $HostName
 }

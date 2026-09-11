@@ -445,13 +445,10 @@ class CronTool(Tool):
             if "config" not in task_config:
                 task_config["config"] = {}
             task_config["config"]["max_executions"] = max_executions
-            # Also reset remaining counter in state
-            from core.cron import CRON_STATE_DIR
-            state_path = CRON_STATE_DIR / f"{name}.json"
+            # Also reset remaining counter in state（T13：经任务级锁 RMW，避免并发丢更新）
             try:
-                state = load_json_or_backup(state_path, {})
-                state["remaining"] = max_executions
-                atomic_write_json(state_path, state)
+                from core.cron import update_task_state
+                update_task_state(name, remaining=max_executions)
             except Exception as e:
                 logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
             updated_fields.append("max_executions")
@@ -520,20 +517,12 @@ class CronTool(Tool):
 
         # If enabling, reset remaining counter
         if enabled and task_config:
-            from core.cron import CRON_STATE_DIR
-
             max_executions = task_config.get("config", {}).get("max_executions", 9999)
-            state_path = CRON_STATE_DIR / f"{name}.json"
 
             try:
-                # Load existing state or create new
-                state = load_json_or_backup(state_path, {})
-
-                # Reset remaining counter
-                state["remaining"] = max_executions
-
-                atomic_write_json(state_path, state)
-
+                # T13: 经任务级锁 RMW 重置 remaining，避免与 scheduler 写冲突
+                from core.cron import update_task_state
+                update_task_state(name, remaining=max_executions)
                 logger.info(f"[cron_tool] Reset remaining={max_executions} for task '{name}'")
             except Exception as e:
                 logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.tools.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 from core.message_bus import get_message_bus
 
 
@@ -75,7 +75,13 @@ class MessageBusTool(Tool):
                 return ToolResult("Error: 'to_session' is required for 'send' action", error=True)
             if not message:
                 return ToolResult("Error: 'message' is required for 'send' action", error=True)
-            bus.send(current_session_id, to_session, message, message_type)
+            sent = bus.send(current_session_id, to_session, message, message_type)
+            if not sent:
+                return ToolResult(
+                    f"Error: target session '{to_session}' is not registered. "
+                    "Check the session ID (list_sessions action) — the message was not sent.",
+                    error=True,
+                )
             return ToolResult(f"Message sent to session '{to_session}'")
 
         elif action == "receive":
@@ -88,7 +94,9 @@ class MessageBusTool(Tool):
                 content = msg["content"]
                 mtype = msg.get("message_type", "text")
                 lines.append(f"  [{mtype}] From {sender}: {content}")
-            return ToolResult("\n".join(lines))
+            return ToolResult(
+                UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END
+            )
 
         elif action == "check":
             count = bus.unread_count(current_session_id)

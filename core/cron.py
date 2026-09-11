@@ -114,6 +114,44 @@ CRON_STATE_DIR = CRON_BASE_DIR / "state"
 # User tasks config file
 USER_TASKS_FILE = CRON_BASE_DIR / "user_tasks.json"
 
+# 每个任务的 state 文件写锁（T13：scheduler 线程与 cron_tool 并发写互斥，避免 RMW 丢更新）
+_state_locks: dict[str, threading.Lock] = {}
+_state_locks_guard = threading.Lock()
+
+
+def _get_task_state_lock(task_id: str) -> threading.Lock:
+    """获取任务的 state 文件锁（按 task_id 惰性创建，进程级）。"""
+    with _state_locks_guard:
+        lock = _state_locks.get(task_id)
+        if lock is None:
+            lock = threading.Lock()
+            _state_locks[task_id] = lock
+        return lock
+
+
+def update_task_state(task_id: str, **fields) -> None:
+    """线程安全地更新任务状态文件（T13）。
+
+    在任务级锁内做 read-modify-write，与 CronTask._save_state 互斥；
+    若任务已加载进 scheduler，同步其内存态（如 _remaining）。
+    """
+    with _get_task_state_lock(task_id):
+        state_path = CRON_STATE_DIR / f"{task_id}.json"
+        state = load_json_or_backup(state_path, {})
+        state.update(fields)
+        atomic_write_json(state_path, state)
+    # 同步已加载任务的内存态
+    try:
+        from core.cron import get_scheduler
+        scheduler = get_scheduler()
+        for task in scheduler.tasks:
+            if task.task_id == task_id:
+                if "remaining" in fields:
+                    task._remaining = fields["remaining"]
+                break
+    except Exception:
+        pass
+
 # Cron agent cache: workspace_uuid → master Agent (reused across cron runs)
 _cron_agents: dict[str, Any] = {}
 _cron_agents_lock = threading.Lock()
@@ -153,7 +191,12 @@ class CronTask:
         """从状态文件恢复任务运行状态。"""
         state_path = self._get_state_path()
         if not state_path.exists():
-            logger.debug(f"[cron] Task {self.name}: no state file, starting fresh")
+            # T9: 新建/无状态任务按当前时间计算首次 _next_run，
+            # 避免 should_run() 对 None 返回 True 导致任务创建后立即首跑
+            self._calculate_next_run(datetime.now())
+            logger.debug(
+                f"[cron] Task {self.name}: no state file, first run at {self._next_run}"
+            )
             return
 
         try:
@@ -266,7 +309,9 @@ class CronTask:
             if self._remaining is not None:
                 state["remaining"] = self._remaining
 
-            atomic_write_json(state_path, state)
+            # T13: 任务级锁内写 state，与 cron_tool 的 RMW 互斥
+            with _get_task_state_lock(self.task_id):
+                atomic_write_json(state_path, state)
 
             logger.debug(f"[cron] Task {self.name}: saved state to {state_path}")
         except Exception as e:
@@ -466,12 +511,14 @@ class CronScheduler:
         self._lock = threading.Lock()
         self._wake_event = threading.Event()  # Reusable for loop sleep (can be .set() to wake early)
         self._workspace_locks: dict[str, threading.Lock] = {}  # Per-workspace execution lock
+        self._workspace_locks_guard = threading.Lock()
 
     def _get_workspace_lock(self, workspace_uuid: str) -> threading.Lock:
         """Get or create a per-workspace lock for serializing cron tasks."""
-        if workspace_uuid not in self._workspace_locks:
-            self._workspace_locks[workspace_uuid] = threading.Lock()
-        return self._workspace_locks[workspace_uuid]
+        with self._workspace_locks_guard:
+            if workspace_uuid not in self._workspace_locks:
+                self._workspace_locks[workspace_uuid] = threading.Lock()
+            return self._workspace_locks[workspace_uuid]
 
     def load_tasks(self) -> int:
         """Load task configs from core/cron.d/*.json and data/cron/user_tasks.json. Returns count loaded."""
@@ -654,19 +701,22 @@ class CronScheduler:
         return None
 
     def run_task_now(self, name: str) -> dict[str, Any] | None:
-        """Manually trigger a task. Returns result or None if not found."""
+        """Manually trigger a task. Returns result or None if not found.
+
+        T10: 复用 _execute_task，尊重 remaining 额度、one_time 删除与 workspace 锁，
+        不再绕过检查直接 task.execute()。
+        """
         task = self.get_task(name)
         if not task:
             return None
 
         # Run in separate thread to not block
-        def _run():
-            now = datetime.now()
-            result = task.execute()
-            task.mark_executed(now, result)
-            return result
-
-        thread = threading.Thread(target=_run, daemon=True, name=f"CronTask-{name}")
+        thread = threading.Thread(
+            target=self._execute_task,
+            args=(task, datetime.now()),
+            daemon=True,
+            name=f"CronTask-{name}",
+        )
         thread.start()
         return {"status": "triggered", "message": f"Task {name} triggered"}
 
@@ -717,15 +767,18 @@ class CronScheduler:
                 self._update_task_enabled(task.name, False)
                 return
 
-            remaining -= 1
-            task._remaining = remaining
-
             result = task.execute()
+            # T10: skipped（如 master 忙返回 skipped）不计 remaining，仅真正执行后递减
+            if result.get("status") != "skipped":
+                task._remaining = remaining - 1
             task.mark_executed(now, result)
 
             # Log result
             if result.get("status") == "completed":
-                logger.info(f"[cron] Task {task.name} completed successfully (remaining={remaining})")
+                logger.info(
+                    f"[cron] Task {task.name} completed successfully "
+                    f"(remaining={task._remaining if task._remaining is not None else remaining})"
+                )
             elif result.get("status") == "skipped":
                 logger.info(f"[cron] Task {task.name} skipped: {result.get('message')}")
             else:

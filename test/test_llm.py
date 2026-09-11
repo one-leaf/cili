@@ -4,6 +4,8 @@ import json
 import pytest
 from unittest.mock import patch
 
+import httpx
+
 from core.config import ModelConfig
 from core.llm import (
     LLMClient,
@@ -118,6 +120,107 @@ class TestBlockAssembler:
         assembler.push(StreamChunk.usage_chunk(UsageData(input_tokens=5, output_tokens=3)))
         assert assembler.usage.input_tokens == 5
         assert assembler.usage.output_tokens == 3
+
+    def test_text_block_accumulation(self):
+        """text 块：block_start 后多个 text_delta 拼接。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "text"))
+        a.push(StreamChunk.text_delta(0, "Hello "))
+        a.push(StreamChunk.text_delta(0, "world"))
+        a.push(StreamChunk.block_end(0))
+        assert a.get_text() == "Hello world"
+        assert len(a.blocks) == 1
+
+    def test_reasoning_and_signature(self):
+        """reasoning 块：text_delta 拼接 + signature_delta 赋值。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "reasoning"))
+        a.push(StreamChunk.reasoning_delta(0, "思考"))
+        a.push(StreamChunk.reasoning_delta(0, "过程"))
+        a.push(StreamChunk.signature_delta(0, "sig-123"))
+        a.push(StreamChunk.block_end(0))
+        from core.llm.types import ReasoningBlock
+        block = a.blocks[0]
+        assert isinstance(block, ReasoningBlock)
+        assert block.text == "思考过程"
+        assert block.signature == "sig-123"
+
+    def test_tool_call_id_overwrite_arguments_append(self):
+        """L14：id/name/thought_signature 是完整值用赋值，arguments 是分片用 +=。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk, ToolCallBlock
+
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "tool_call"))
+        # 首个 delta 携带 id/name，之后某分片又重复带 id（OpenAI 分片携带完整字段）
+        a.push(StreamChunk.tool_call_delta(0, id="tool_1", name="bash",
+                                           arguments='{"command":'))
+        a.push(StreamChunk.tool_call_delta(0, id="tool_1", arguments=' "ls"}'))
+        a.push(StreamChunk.block_end(0))
+        block = a.get_tool_calls()[0]
+        assert isinstance(block, ToolCallBlock)
+        assert block.id == "tool_1"          # 赋值 → 不被分片二次拼接
+        assert block.name == "bash"
+        assert block.arguments == '{"command": "ls"}'  # += → 正确拼接
+
+    def test_tool_call_thought_signature_overwrite(self):
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "tool_call"))
+        a.push(StreamChunk.tool_call_delta(0, id="t1", thought_signature="A"))
+        a.push(StreamChunk.tool_call_delta(0, id="t1", thought_signature="B"))
+        assert a.get_tool_calls()[0].thought_signature == "B"  # 赋值非拼接
+
+    def test_finish_sets_stop_reason(self):
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+        a = BlockAssembler()
+        a.push(StreamChunk.finish_chunk("tool_use"))
+        assert a.stop_reason == "tool_use"
+        assert a.finished is True
+
+    def test_unknown_block_type_ignored(self):
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "mystery"))
+        a.push(StreamChunk.text_delta(0, "x"))  # index 0 无对应块，静默忽略
+        assert a.blocks == []
+        assert a.get_text() == ""
+
+    def test_reset_clears_state(self):
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "text"))
+        a.push(StreamChunk.text_delta(0, "hi"))
+        a.push(StreamChunk.finish_chunk("end_turn"))
+        a.reset()
+        assert a.blocks == []
+        assert a.stop_reason == ""
+        assert a.finished is False
+        assert a.get_text() == ""
+
+    def test_multiple_blocks_get_text(self):
+        """多个 text 块顺序拼接，get_tool_calls 只返回工具调用块。"""
+        from core.llm.assembler import BlockAssembler
+        from core.llm.types import StreamChunk
+        a = BlockAssembler()
+        a.push(StreamChunk.block_start(0, "text"))
+        a.push(StreamChunk.text_delta(0, "One"))
+        a.push(StreamChunk.block_start(1, "tool_call"))
+        a.push(StreamChunk.tool_call_delta(1, id="t1", name="bash", arguments="{}"))
+        a.push(StreamChunk.block_start(2, "text"))
+        a.push(StreamChunk.text_delta(2, "Two"))
+        assert a.get_text() == "OneTwo"
+        assert [tc.id for tc in a.get_tool_calls()] == ["t1"]
 
 
 # ========== SSE 流 error 事件 ==========
@@ -434,6 +537,23 @@ class TestOpenAIAdapter:
         assert tool_msg["tool_call_id"] == "t1"
         assert "file content" in tool_msg["content"]
 
+    def test_convert_messages_user_tool_result_preserves_text(self, adapter):
+        """含 tool_result 的 user 消息中的文本不能被丢弃（S10 回归）。"""
+        messages = [Message(
+            role="user",
+            content=[
+                TextBlock(text="请执行这个任务"),
+                ToolResultBlock(tool_use_id="t1", content="file content"),
+            ],
+        )]
+        result = adapter._convert_messages(messages, system="")
+        tool_msgs = [m for m in result if m["role"] == "tool"]
+        user_msgs = [m for m in result if m["role"] == "user"]
+        assert len(tool_msgs) == 1
+        # 文本必须保留，以独立 user 消息形式发给模型
+        assert any("请执行这个任务" in m["content"] for m in user_msgs), \
+            f"用户文本被丢弃: {result}"
+
     # --- Response parsing ---
 
     def test_parse_response_text(self, adapter):
@@ -450,6 +570,21 @@ class TestOpenAIAdapter:
         assert stop_reason == "end_turn"
         assert usage.input_tokens == 10
         assert usage.output_tokens == 5
+
+    def test_parse_response_refusal(self, adapter):
+        """OpenAI refusal 字段不能被静默丢弃（S11 回归）。"""
+        data = {
+            "choices": [{
+                "message": {"content": None, "refusal": "I can't help with that."},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        blocks, stop_reason, usage = adapter.parse_response(data)
+        assert len(blocks) == 1
+        assert isinstance(blocks[0], TextBlock)
+        assert "I can't help with that." in blocks[0].text
+        assert stop_reason == "end_turn"
 
     def test_parse_response_tool_calls(self, adapter):
         data = {
@@ -558,16 +693,203 @@ class TestOpenAIAdapter:
         assert adapter.api_url == "https://api.openai.com/v1/chat/completions"
 
 
+# ========== A23-A26: 重试 / SSE 边界 / base_url / 超时 ==========
+
+
+def _make_http_error(status: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "http://x")
+    resp = httpx.Response(status_code=status, request=req)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=req, response=resp)
+
+
+class TestRetryDefaults:
+    """非流式重试启用（A23）：_MAX_RETRIES >= 2，with_retry 生效。"""
+
+    def test_max_retries_default_enabled(self):
+        from core.llm import transport as transport_module
+        assert transport_module._MAX_RETRIES >= 2
+
+    def test_with_retry_retries_transient_then_succeeds(self, monkeypatch):
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise _make_http_error(502)
+            return "ok"
+
+        result = transport.with_retry(op, max_retries=2)
+        assert result == "ok"
+        assert calls["n"] == 3
+
+    def test_with_retry_max_retries_zero_raises_immediately(self):
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+
+        def op():
+            raise _make_http_error(502)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            transport.with_retry(op, max_retries=0)
+
+
+class _FakeSSEClient:
+    """流式测试用假 client，返回构造好的 SSE 行序列。"""
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    def stream(self, *args, **kwargs):
+        class FakeResp:
+            status_code = 200
+
+            def __init__(self, lines):
+                self._lines = lines
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_lines(self):
+                return iter(self._lines)
+
+        return FakeResp(self._lines)
+
+
+class TestTransportSSEMultiline:
+    """多行 data 累积为单条事件（A24）。"""
+
+    def test_multiline_data_accumulated(self):
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        transport._client = _FakeSSEClient([
+            'data: {"type": "part1",',
+            'data:  "value": "part2"}',
+            '',
+            'data: {"type": "done"}',
+            '',
+        ])
+        events = list(transport.stream("http://x", {}, {}))
+        assert len(events) == 2
+        assert events[0]["type"] == "part1"
+        assert events[0]["value"] == "part2"
+
+
+class TestTransportSSEParseFailure:
+    """SSE 非法 JSON 中止流而不是静默跳过（A24）。"""
+
+    def test_invalid_json_aborts(self):
+        from core.llm.transport import HttpTransport, StreamErrorEvent
+        transport = HttpTransport()
+        transport._client = _FakeSSEClient([
+            'data: {invalid json',
+            '',
+        ])
+        events = transport.stream("http://x", {}, {})
+        with pytest.raises(StreamErrorEvent):
+            list(events)
+
+
+class TestChatStreamIncomplete:
+    """流结束未收 finish chunk 且无内容 → 视为失败可重试（A24）。"""
+
+    def test_empty_stream_raises(self):
+        config = ModelConfig(
+            name="gpt-4o", api_key="key", interface_type="openai",
+            base_url="https://api.openai.com",
+        )
+        adapter = OpenAIAdapter(config)
+
+        class FakeTransport:
+            def stream(self, *a, **k):
+                return iter([])
+
+            def with_retry(self, op, **k):
+                return op()
+
+        client = LLMClient(adapter=adapter, transport=FakeTransport(), config=config)
+        with pytest.raises(RuntimeError, match="完成信号"):
+            client.chat_stream(messages=[Message(role="user", content="hi")])
+
+
+class TestAdapterBaseUrl:
+    """base_url 校验 + 官方域名跳过 litellm 探测（A25）。"""
+
+    def test_empty_base_url_raises(self):
+        config = ModelConfig(name="m", api_key="k", base_url="", interface_type="anthropic")
+        with pytest.raises(ValueError, match="不能为空"):
+            AnthropicAdapter(config)
+
+    def test_invalid_base_url_raises(self):
+        config = ModelConfig(name="m", api_key="k", base_url="not a url", interface_type="anthropic")
+        with pytest.raises(ValueError, match="无效的 base_url"):
+            AnthropicAdapter(config)
+
+    def test_official_skips_litellm_detection(self):
+        config = ModelConfig(
+            name="m", api_key="k", base_url="https://api.anthropic.com", interface_type="anthropic",
+        )
+        adapter = AnthropicAdapter(config)
+        assert adapter.should_detect_litellm() is False
+
+    def test_custom_detects_litellm(self):
+        config = ModelConfig(
+            name="m", api_key="k", base_url="https://relay.example.com", interface_type="anthropic",
+        )
+        adapter = AnthropicAdapter(config)
+        assert adapter.should_detect_litellm() is True
+
+
+class TestChatTimeoutParam:
+    """chat() 暴露 timeout 入参并透传（A23）。"""
+
+    def test_chat_passes_timeout_to_post(self):
+        config = ModelConfig(
+            name="gpt-4o", api_key="key", interface_type="openai",
+            base_url="https://api.openai.com",
+        )
+        adapter = OpenAIAdapter(config)
+        captured = {}
+
+        class FakeTransport:
+            def with_retry(self, op, **k):
+                return op()
+
+            def post(self, url, headers, body, timeout=None):
+                captured["timeout"] = timeout
+                return 200, {}, {
+                    "choices": [{"message": {"content": "Hi", "tool_calls": []}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+
+        client = LLMClient(adapter=adapter, transport=FakeTransport(), config=config)
+        resp = client.chat(
+            messages=[Message(role="user", content="hi")],
+            timeout=httpx.Timeout(123.0),
+        )
+        assert captured["timeout"].read == 123.0
+        assert resp.get_text() == "Hi"
+
+
 # ========== DGX 集成测试（真实 LLM 调用） ==========
 
 from test.conftest import DGX_BASE_URL, DGX_API_KEY, DGX_MODEL, make_dgx_config
 
 
+@pytest.mark.integration
 class TestLLMClientDGX:
-    """使用 DGX 本地端点的真实 LLM 调用测试，覆盖 Anthropic 和 OpenAI 协议。"""
+    """使用 DGX 本地端点的真实 LLM 调用测试，覆盖 Anthropic 和 OpenAI 协议。
+
+    依赖 dgx_available fixture：服务器不可达时整类跳过（A45 §2.1）。
+    """
 
     @pytest.fixture(params=["anthropic", "openai"], ids=["anthropic", "openai"])
-    def dgx_client(self, request):
+    def dgx_client(self, request, dgx_available):
         """创建 DGX LLMClient，参数化为两种协议。"""
         config = make_dgx_config(request.param)
         client = create_llm_client(config.model)

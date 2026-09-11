@@ -132,7 +132,7 @@ class TestWorkerLLMError:
             result = agent.run()
 
         assert result["status"] == "error"
-        assert "500" in result["message"]
+        assert "500" in (result.get("summary") or result.get("message") or "")
         assert result["iterations"] == 0
 
     def test_llm_error_stops_immediately(self):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from core.fs_utils import atomic_write_text
 from core.tools.base import Tool, ToolResult
 
 
@@ -37,18 +38,9 @@ class WriteTool(Tool):
         clean_content = self._clean_surrogates(content)
 
         try:
-            parent = os.path.dirname(file_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            # Atomic write: write to temp file first, then replace
-            # newline="" 禁用换行翻译，内容按原样写入（\n 保持 LF），
-            # 否则 Windows 文本模式会把 \n 写成 \r\n，破坏 .sh 等脚本
-            temp_path = file_path + ".tmp"
-            with open(temp_path, "w", encoding="utf-8", newline="") as f:
-                f.write(clean_content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, file_path)
+            # Atomic write（newline="" 禁用换行翻译，内容按原样写入，
+            # \n 保持 LF，否则 Windows 文本模式会把 \n 写成 \r\n，破坏 .sh 等脚本）
+            atomic_write_text(file_path, clean_content)
             lines = clean_content.count("\n") + (1 if clean_content and not clean_content.endswith("\n") else 0)
             size = os.path.getsize(file_path)
             result_text = f"Successfully wrote {file_path} ({lines} lines, {size} bytes)"

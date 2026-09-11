@@ -367,14 +367,16 @@ class TestAdapterImageSerialization:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.integration
 class TestMultimodalDGX:
     """使用 DGX 本地端点的真实 LLM 图片识别测试。
 
     参数化覆盖 Anthropic 和 OpenAI 两套接口。
+    依赖 dgx_available：服务器不可达时整类跳过（A45 §2.1）。
     """
 
     @pytest.fixture(params=["anthropic", "openai"], ids=["anthropic", "openai"])
-    def dgx_client(self, request):
+    def dgx_client(self, request, dgx_available):
         config = make_dgx_config(request.param)
         client = create_llm_client(config.model)
         yield client, request.param

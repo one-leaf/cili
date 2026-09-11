@@ -1,7 +1,7 @@
 """Migration utilities for session format upgrade.
 
 Migrates old session format (block-level _valid, _compacted, etc.)
-to new format (message-level _meta).
+to new format: message-level _meta.valid + block-level _meta storage fields.
 """
 
 from __future__ import annotations
@@ -12,9 +12,6 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# Internal meta fields (new format)
-INTERNAL_META_FIELDS = {"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal"}
 
 
 def migrate_session_file(session_file: Path) -> bool:
@@ -40,14 +37,15 @@ def migrate_session_file(session_file: Path) -> bool:
     # Migrate todos from metadata to independent file
     metadata = data.get("metadata", {})
     if "todos" in metadata:
-        if migrate_todos_from_metadata(metadata, session_file.parent.name):
+        session_id = data.get("session_id") or session_file.parent.name
+        if migrate_todos_from_metadata(metadata, session_id):
             modified = True
 
     # Save if modified
     if modified:
         try:
-            with open(session_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            from core.fs_utils import atomic_write_json
+            atomic_write_json(session_file, data)
             logger.info(f"Migrated session: {session_file}")
         except Exception as e:
             logger.error(f"Failed to save migrated session {session_file}: {e}")
@@ -60,7 +58,10 @@ def migrate_message(msg: dict) -> bool:
     """Migrate a single message from old format to new format.
 
     Old format: block-level _valid, _compacted, _output_path, etc.
-    New format: message-level _meta with these fields.
+    New format:
+    - 消息级 _meta.valid：整条消息有效性（session.get_valid_messages 只读消息级）
+    - block 级 _meta.{compacted, output_path, file_size, truncated, tool_name,
+      completed}：工具结果存储字段（_resolve_tool_results 只读 block 级）
 
     Returns True if migration was performed.
     """
@@ -76,41 +77,51 @@ def migrate_message(msg: dict) -> bool:
 
     # Check if any block has old-format fields
     needs_migration = False
-    meta_fields: dict[str, Any] = {}
+    message_valid = None  # 任一 block 无效则整条消息无效
 
     for block in content:
         if not isinstance(block, dict):
             continue
+        block_meta = block.get("_meta")
 
-        # Check for block-level internal fields
+        def _ensure_block_meta() -> dict:
+            nonlocal block_meta
+            if block_meta is None:
+                block_meta = {}
+                block["_meta"] = block_meta
+            return block_meta
+
+        # Block-level _valid → message-level _meta.valid
+        # If any block is invalid, the whole message is invalid
         if "_valid" in block:
             needs_migration = True
-            # Block-level _valid → message-level _meta.valid
-            # If any block is invalid, the whole message is invalid
             if block.pop("_valid") is False:
-                meta_fields["valid"] = False
+                message_valid = False
 
+        # 存储类字段（compacted/output_path/file_size/truncated/tool_name）是
+        # block 级 _meta（运行时 _resolve_tool_results 只读 block 级），
+        # 必须写回 block["_meta"] 而非消息级，否则外部存储工具结果丢失
         if "_compacted" in block:
             needs_migration = True
             if block.pop("_compacted"):
-                meta_fields["compacted"] = True
+                _ensure_block_meta()["compacted"] = True
 
         if "_output_path" in block:
             needs_migration = True
-            meta_fields["output_path"] = block.pop("_output_path")
+            _ensure_block_meta()["output_path"] = block.pop("_output_path")
 
         if "_file_size" in block:
             needs_migration = True
-            meta_fields["file_size"] = block.pop("_file_size")
+            _ensure_block_meta()["file_size"] = block.pop("_file_size")
 
         if "_truncated" in block:
             needs_migration = True
-            meta_fields["truncated"] = block.pop("_truncated")
+            _ensure_block_meta()["truncated"] = block.pop("_truncated")
 
-        # tool_name → _meta.tool_name
+        # tool_name → block 级 _meta.tool_name
         if "tool_name" in block:
             needs_migration = True
-            meta_fields["tool_name"] = block.pop("tool_name")
+            _ensure_block_meta()["tool_name"] = block.pop("tool_name")
 
         # _content (old microcompact storage) → remove (content already in external file)
         if "_content" in block:
@@ -143,15 +154,13 @@ def migrate_message(msg: dict) -> bool:
                 except json.JSONDecodeError:
                     block["input"] = {"_raw": args}
 
-        # _meta.wait_for_user → _meta.completed (inverted semantics)
-        if "_meta" in block and isinstance(block["_meta"], dict):
-            block_meta = block["_meta"]
-            if "wait_for_user" in block_meta:
-                needs_migration = True
-                wfu = block_meta.pop("wait_for_user")
-                # wait_for_user=True → completed=False (waiting)
-                # wait_for_user=False → completed=True (answered)
-                meta_fields["completed"] = not wfu
+        # _meta.wait_for_user → block 级 _meta.completed (inverted semantics)
+        if block_meta is not None and "wait_for_user" in block_meta:
+            needs_migration = True
+            wfu = block_meta.pop("wait_for_user")
+            # wait_for_user=True → completed=False (waiting)
+            # wait_for_user=False → completed=True (answered)
+            block_meta["completed"] = not wfu
 
         # Recursively migrate tool_result sub-blocks
         if block.get("type") == "tool_result":
@@ -163,15 +172,18 @@ def migrate_message(msg: dict) -> bool:
                             sub["type"] = "thinking"
                             if "text" in sub:
                                 sub["thinking"] = sub.pop("text")
-                        # Remove _valid from sub-blocks (new format is message-level)
-                        sub.pop("_valid", None)
+                        # 旧格式子块 _valid=False 表示加载失败（如坏图片），
+                        # 置消息级 valid=False 而非无条件丢弃，避免"复活"失败内容
+                        if sub.pop("_valid", None) is False:
+                            message_valid = False
                         sub.pop("_compacted", None)
 
-    # Apply migrated meta fields to message
-    if needs_migration or meta_fields:
-        if "_meta" not in msg:
-            msg["_meta"] = {}
-        msg["_meta"].update(meta_fields)
+    # Apply migrated message-level meta
+    if needs_migration or message_valid is not None:
+        if message_valid is False:
+            if "_meta" not in msg:
+                msg["_meta"] = {}
+            msg["_meta"]["valid"] = False
         return True
 
     return False

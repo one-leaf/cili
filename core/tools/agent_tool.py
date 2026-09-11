@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 from datetime import datetime
 
@@ -65,7 +66,7 @@ class AgentTool(Tool):
         super().__init__(*args, **kwargs)
         self.config = config  # 全局配置，构造子 Agent 用（角色模型继承）
         self.approval_store = approval_store  # 根代理的会话级审批存储，传给子代理共享
-        self.delegation_depth = delegation_depth  # 当前代理的委派深度（master=0，最大 2 层）
+        self.delegation_depth = delegation_depth  # 当前代理的委派深度（master=0，最大 1 层）
         self.stop_check = None  # Set by master Agent after tool creation
         self.on_agent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_agent_complete = None  # Callback(exec_id) fired when sub-agent finishes
@@ -199,9 +200,15 @@ class AgentTool(Tool):
             )
 
         # Generate exec_id upfront so we can notify the UI immediately
+        # _SessionIdRef（worker/lite 的 session 引用）无 _generate_exec_id，
+        # 深度限制放开委派时避免 AttributeError，回退生成随机 exec_id（T28）
         exec_id = ""
         if self.session_manager:
-            exec_id = self.session_manager._generate_exec_id()
+            gen = getattr(self.session_manager, "_generate_exec_id", None)
+            if callable(gen):
+                exec_id = gen()
+            else:
+                exec_id = f"sub-{secrets.token_hex(4)}"
 
         # Fire callback to push SSE event immediately (before blocking on agent.run())
         task_summary = task[:100]
@@ -267,7 +274,7 @@ class AgentTool(Tool):
                                 "status": final_status,
                                 "iterations": result.get("iterations", 0),
                             },
-                            summary=result.get("summary", ""),
+                            summary=result.get("summary") or result.get("message") or "",
                         )
                     except Exception as e:
                         logger.warning(f"Failed to save Agent log: {e}")
@@ -309,8 +316,13 @@ class AgentTool(Tool):
         thread.start()
 
         # Wait for Agent to complete (synchronous mode)
-        entry["event"].wait(timeout=3600)
-        result = entry.get("result") or {"status": "error", "summary": "Agent 执行超时", "iterations": 0}
+        if not entry["event"].wait(timeout=3600):
+            # 超时：终止孤儿线程，避免后台继续消耗 token。
+            # agent.stop() 置停止标记，主循环下一轮即退出；给清理留宽限期。
+            logger.warning(f"[AgentTool] 委派执行超时，停止子代理 {exec_id}")
+            agent.stop()
+            entry["event"].wait(timeout=10)
+        result = entry.get("result") or {"status": "timeout", "summary": "Agent 执行超时", "iterations": 0}
 
         # Clean up pending entry
         with self._pending_lock:

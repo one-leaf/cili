@@ -24,6 +24,7 @@ from typing import Any, Callable
 import httpx
 
 from core.config import Config, ModelConfig
+from core.fs_utils import atomic_write_json
 from core.llm import LLMClient, LLMResponse, format_llm_error, Message, TextBlock, UsageData
 from core.session import generate_short_id
 from core.tools.base import Tool, ToolResult
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 KEEP_USER_MESSAGES = 3
 _LARGE_OUTPUT_THRESHOLD = 10_000
 _MAX_ITERATIONS = 50
+
+# tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
+_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class BaseAgent:
@@ -159,10 +163,7 @@ class BaseAgent:
         }
 
         try:
-            temp_file = session_file.with_suffix(".json.tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            temp_file.replace(session_file)
+            atomic_write_json(session_file, data)
         except Exception as e:
             logger.error(f"Failed to save messages: {e}")
 
@@ -209,7 +210,7 @@ class BaseAgent:
                         If False, keep _meta intact for intermediate processing
                         (e.g., _resolve_tool_results needs _meta.output_path).
         """
-        INTERNAL_META = {"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"}
+        INTERNAL_META = {"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"}
         result = []
 
         for msg in self.messages:
@@ -267,6 +268,18 @@ class BaseAgent:
 
     # ========== Tool Execution ==========
 
+    @staticmethod
+    def _safe_output_filename(tool_use_id: str) -> str:
+        """Generate a safe output filename for a tool_use_id.
+
+        非法 ID（含路径分隔符/`..` 等）回退随机文件名，防止路径穿越。
+        """
+        if not tool_use_id:
+            return ""
+        if _SAFE_ID_PATTERN.match(tool_use_id):
+            return f"{tool_use_id}.txt"
+        return f"{generate_short_id()}.txt"
+
     def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
         """Execute a tool and return result metadata.
 
@@ -296,7 +309,9 @@ class BaseAgent:
         _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
 
         # Setup output file path
-        output_filename = f"{tool_use_id}.txt" if tool_use_id else ""
+        # 净化 tool_use_id：不合法（含路径分隔符/`..` 等）则回退随机文件名，
+        # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
+        output_filename = self._safe_output_filename(tool_use_id)
         output_file_path = ""
         if self.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
             output_file_path = str(self.session_dir / output_filename)
@@ -537,7 +552,7 @@ class BaseAgent:
 
         Modifies blocks in-place (same pattern as _strip_images_from_messages).
         """
-        INTERNAL_META = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
+        INTERNAL_META = frozenset({"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
         for msg in messages:
             content = msg.get("content", "")
             if not isinstance(content, list):
@@ -567,6 +582,18 @@ class BaseAgent:
 
     # ========== Compression ==========
 
+    def _invalidate_message_cache(self) -> None:
+        """压缩等原地修改 self.messages 后，失效 session_manager 的 valid 缓存。
+
+        交互模式下 self.messages 与 session_manager.messages 共享同一引用，
+        压缩（microcompact/full compact/emergency）直接改 block/_meta 不经过
+        add_message，必须手动置 _messages_dirty，否则 web_api 的 token 估算
+        会一直拿到过期快照（C1）。
+        """
+        sm = getattr(self, "session_manager", None)
+        if sm is not None:
+            sm._messages_dirty = True
+
     def _check_and_compress(self) -> None:
         """3-layer compression before LLM call.
 
@@ -582,9 +609,15 @@ class BaseAgent:
         MAX_BODY_SIZE = 3_000_000
 
         # Layer 1: Microcompact
-        saved = microcompact_tool_results(self.messages, keep_recent=MICROCOMPACT_KEEP_RECENT)
+        # output_dir 供内联结果 spill 到文件（保留可恢复性），session_dir 可能为 None
+        saved = microcompact_tool_results(
+            self.messages,
+            keep_recent=MICROCOMPACT_KEEP_RECENT,
+            output_dir=str(self.session_dir) if self.session_dir else None,
+        )
         if saved > 0:
             logger.debug(f"[Microcompact] 压缩旧工具结果，节省约 {saved:,} 字节")
+            self._invalidate_message_cache()
 
         # Calculate tokens
         messages = self._get_messages_with_header()
@@ -634,6 +667,9 @@ class BaseAgent:
                 saved = self._mark_old_images_invalid(keep_recent=3)
                 if saved > 0:
                     logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
+
+        # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
+        self._invalidate_message_cache()
 
     def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
@@ -691,37 +727,58 @@ class BaseAgent:
         )
         self.add_message("assistant", summary)
 
+        self._invalidate_message_cache()
+
         new_tokens = self._count_messages_tokens(self.get_valid_messages())
         logger.info(f"[Full Compact] 完成: {total_tokens:,} → {new_tokens:,} tokens")
         return total_tokens, new_tokens
 
     def _find_split_by_user_messages(self, messages: list[dict], keep_user_count: int) -> int:
-        """Find split point keeping last N user text messages."""
+        """Find split point keeping last N user messages.
+
+        优先按纯文本 user 消息（交互模式语义：保留最近 N 轮用户提问）；
+        worker/lite autonomous 模式的 user 消息多为 pinned string（任务/检查提示）
+        或 list content（tool_result、预算提示），纯文本非 pinned 可能为零，
+        此时退回按「全部非 pinned user 消息」切分，否则 full compact 永不触发、
+        长任务上下文无限增长。
+        """
         user_text_indices = []
+        user_any_indices = []
         for i, msg in enumerate(messages):
             if msg.get("_meta", {}).get("pinned"):
                 continue
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
+            user_any_indices.append(i)
             if isinstance(content, str):
                 user_text_indices.append(i)
 
-        if len(user_text_indices) <= keep_user_count:
+        if len(user_text_indices) > keep_user_count:
+            split_idx = user_text_indices[-keep_user_count]
+        elif len(user_any_indices) > keep_user_count:
+            split_idx = user_any_indices[-keep_user_count]
+        else:
             return 0
 
-        split_idx = user_text_indices[-keep_user_count]
-
-        # Don't split in middle of tool chain
+        # Don't tear a tool round in half: a split is invalid if the last kept
+        # message is an assistant tool_use (its tool_result would be discarded)
+        # or the first kept message is a user tool_result (its tool_use would be
+        # discarded). 回退到轮起点（assistant tool_use）为止，而不是一路退回 0——
+        # 否则 worker 的全链式历史（全是 tool_use/tool_result 轮）永远切不动。
         while split_idx > 0:
-            msg = messages[split_idx]
-            role = msg.get("role")
-            content = msg.get("content", [])
-            is_list = isinstance(content, list)
-            if role == "user" and is_list and any(b.get("type") == "tool_result" for b in content):
+            prev = messages[split_idx - 1]
+            prev_content = prev.get("content", [])
+            if prev.get("role") == "assistant" and isinstance(prev_content, list) and any(
+                b.get("type") == "tool_use" for b in prev_content
+            ):
                 split_idx -= 1
                 continue
-            if role == "assistant" and is_list and any(b.get("type") == "tool_use" for b in content):
+            msg = messages[split_idx]
+            content = msg.get("content", [])
+            if msg.get("role") == "user" and isinstance(content, list) and any(
+                b.get("type") == "tool_result" for b in content
+            ):
                 split_idx -= 1
                 continue
             break
@@ -1093,7 +1150,12 @@ class BaseAgent:
             if self._is_413_error(e):
                 logger.warning("[LLM] 请求体过大，正在重试...")
                 self._mark_all_images_invalid()
-                self.save_messages()
+                # autonomous 模式写 exec schema（exec_id/task），避免覆盖 exec 日志；
+                # interactive 模式写普通 session schema。
+                if getattr(self, "_mode", "interactive") == "autonomous":
+                    self._save_progress(len(self.messages), status="running")
+                else:
+                    self.save_messages()
 
                 retry_messages = self._get_messages_with_header()
                 if not self.model.multimodal:

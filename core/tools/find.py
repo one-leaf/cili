@@ -79,6 +79,10 @@ class FindTool(Tool):
         if not pattern and not type:
             return ToolResult("Error: either 'pattern' or 'type' must be provided.", error=True)
 
+        # max_results 必须 >= 1；负数会进入 `head -n -5` 语义放大输出（T25）
+        if max_results < 1:
+            return ToolResult("Error: max_results must be a positive integer (>= 1).", error=True)
+
         # Resolve to absolute path
         path = self._resolve_path(path) if path else self.cwd
 

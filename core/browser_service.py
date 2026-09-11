@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import queue
+import random
 import signal
 import socket
 import subprocess
@@ -19,9 +21,10 @@ import sys
 import threading
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from core.config import PROJECT_ROOT
-from core.tools.base import ToolResult
+from core.tools.base import ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,40 @@ try:
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
+
+# navigate 仅允许 http/https scheme（拒绝 file://、data:、javascript: 等）
+_NAVIGATE_SAFE_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_navigate_url(url: str) -> str | None:
+    """校验浏览器导航 URL（A30/SEC-17）。
+
+    Returns:
+        None 表示可导航；否则返回拒绝原因（供 ToolResult error 展示）。
+
+    策略：
+    - scheme 白名单：仅 http/https，硬拒绝 file://、data:、javascript: 等
+    - 私网/环回/链路本地/保留地址拦截（SSRF 防护）：字面 IP 判定 + localhost 特判。
+      配合网页内容提示注入，防止恶意网页诱导浏览器读取本地文件或探测内网。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in _NAVIGATE_SAFE_SCHEMES:
+        scheme = parsed.scheme or "(空)"
+        return f"URL scheme '{scheme}' 不允许，仅支持 http/https"
+    host = parsed.hostname
+    if not host:
+        return "URL 缺少主机名"
+    if host.lower() == "localhost":
+        return "localhost（环回地址）不允许导航（SSRF 防护）"
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return None  # 域名，交由浏览器 DNS 解析（无法静态预判，不拦截）
+    if not addr.is_global:
+        return (
+            f"{host} 不是公网地址（环回/私网/链路本地等），不允许导航（SSRF 防护）"
+        )
+    return None
 
 
 class _ChromeProcessRef:
@@ -128,6 +165,9 @@ class BrowserService:
         # Chrome 进程（全局唯一）
         self._chrome_process: subprocess.Popen | None = None
 
+        # CDP 调试端口（默认 9222；被外部进程/非本项目 Chrome 占用时切换到随机端口）
+        self._cdp_port: int = DEFAULT_CDP_PORT
+
         # 线程安全
         self._lock = threading.Lock()
 
@@ -146,8 +186,12 @@ class BrowserService:
         # 专用工作线程（所有 Playwright 操作在此线程执行）
         self._worker_thread: threading.Thread | None = None
         self._task_queue: queue.Queue = queue.Queue()
-        self._result_event = threading.Event()
-        self._task_result = None
+        # 每次 _run_in_worker 分配独立结果槽位（task_id → Event / 结果），
+        # 多线程并发调用互不串扰（禁止共享单槽，否则结果会串）。
+        self._task_lock = threading.Lock()
+        self._task_events: dict[int, threading.Event] = {}
+        self._task_results: dict[int, tuple[bool, Any]] = {}
+        self._next_task_id_counter = 0
 
     # ==================== 生命周期方法 ====================
 
@@ -171,9 +215,11 @@ class BrowserService:
         """
         while True:
             try:
-                task_func, task_args, task_kwargs = self._task_queue.get()
-                if task_func is None:  # 退出信号
-                    break
+                item = self._task_queue.get()
+                if item is None or (isinstance(item, tuple) and item and item[0] is None):
+                    break  # 退出信号
+
+                task_id, task_func, task_args, task_kwargs = item
 
                 # Lazy cleanup: close tabs idle for > TAB_IDLE_TIMEOUT
                 try:
@@ -183,18 +229,31 @@ class BrowserService:
 
                 try:
                     result = task_func(*task_args, **task_kwargs)
-                    self._task_result = (True, result)
+                    task_result = (True, result)
                 except Exception as e:
                     logger.warning(f"[BrowserService] Worker task error: {e}")
-                    self._task_result = (False, e)
-                finally:
-                    self._result_event.set()
+                    task_result = (False, e)
+
+                # 存储结果并通知对应调用方；若调用方已超时放弃则不存（避免泄漏）
+                with self._task_lock:
+                    event = self._task_events.pop(task_id, None)
+                    if event is not None:
+                        self._task_results[task_id] = task_result
+                if event is not None:
+                    event.set()
             except Exception as e:
                 logger.error(f"[BrowserService] Worker loop error: {e}", exc_info=True)
+
+    def _next_task_id(self) -> int:
+        """分配递增任务 ID（线程安全）。"""
+        with self._task_lock:
+            self._next_task_id_counter += 1
+            return self._next_task_id_counter
 
     def _run_in_worker(self, func, *args, **kwargs):
         """在专用工作线程中执行函数。
 
+        每次调用分配独立的结果槽位（Event + 结果），多线程并发调用互不串扰。
         注意：此方法不能在工作线程内部调用，否则会死锁！
         """
         # 检查是否在工作线程内部调用
@@ -205,21 +264,23 @@ class BrowserService:
         # 确保工作线程已启动
         self._start_worker_thread()
 
-        # 清空之前的结果
-        self._result_event.clear()
-        self._task_result = None
+        # 为本次调用分配独立结果槽位
+        task_id = self._next_task_id()
+        event = threading.Event()
+        with self._task_lock:
+            self._task_events[task_id] = event
 
         # 提交任务到队列
-        self._task_queue.put((func, args, kwargs))
+        self._task_queue.put((task_id, func, args, kwargs))
 
         # 等待结果
-        if not self._result_event.wait(timeout=60):
+        if not event.wait(timeout=60):
+            with self._task_lock:
+                self._task_events.pop(task_id, None)
             raise TimeoutError("Task execution timeout (60s)")
 
-        if self._task_result is None:
-            raise RuntimeError("Task result is None")
-
-        success, result = self._task_result
+        with self._task_lock:
+            success, result = self._task_results.pop(task_id)
         if not success:
             raise result
         return result
@@ -274,7 +335,7 @@ class BrowserService:
 
             # 停止工作线程
             if self._worker_thread:
-                self._task_queue.put((None, None, None))  # 退出信号
+                self._task_queue.put(None)  # 退出信号
                 self._worker_thread.join(timeout=5)
                 self._worker_thread = None
 
@@ -348,6 +409,61 @@ class BrowserService:
         except Exception:
             return False
 
+    def _pick_free_port(self) -> int:
+        """在 [9300, 9900] 内找一个当前未监听的端口，作为 CDP 端口替代。"""
+        for _ in range(50):
+            port = random.randint(9300, 9900)
+            if not self._is_port_listening(port):
+                return port
+        return DEFAULT_CDP_PORT + 1
+
+    def _find_pid_by_port(self, port: int) -> int | None:
+        """找到监听指定端口（LISTENING）的进程 PID。"""
+        try:
+            if sys.platform == "win32":
+                result = subprocess.run(
+                    ["netstat", "-ano", "-p", "tcp"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                needle = f":{port}"
+                for line in result.stdout.splitlines():
+                    if needle in line and "LISTENING" in line:
+                        parts = line.split()
+                        if parts and parts[-1].isdigit():
+                            return int(parts[-1])
+            else:
+                result = subprocess.run(
+                    ["lsof", "-ti", f"tcp:{port}", "-s", "tcp:LISTEN"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                for pid in result.stdout.splitlines():
+                    if pid.isdigit():
+                        return int(pid)
+        except Exception as e:
+            logger.debug(f"[BrowserService] _find_pid_by_port({port}) failed: {e}")
+        return None
+
+    def _pid_uses_our_profile(self, pid: int) -> bool:
+        """判断指定 PID 的进程命令行是否使用本项目 Chrome profile。"""
+        try:
+            profile_abs = os.path.abspath(self._chrome_profile_dir)
+            if sys.platform == "win32":
+                profile_normalized = profile_abs.replace("/", "\\").lower()
+                result = subprocess.run(
+                    ["powershell", "-Command",
+                     f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                return profile_normalized in result.stdout.lower()
+            else:
+                result = subprocess.run(
+                    ["ps", "-p", str(pid), "-o", "command="],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return profile_abs in result.stdout
+        except Exception:
+            return False
+
     def _try_cdp_connect(self) -> bool:
         """尝试通过 CDP 连接到 Chrome。返回 True 表示成功。"""
         if self._playwright is None:
@@ -355,7 +471,7 @@ class BrowserService:
 
         try:
             browser = self._playwright.chromium.connect_over_cdp(
-                f"http://localhost:{DEFAULT_CDP_PORT}"
+                f"http://localhost:{self._cdp_port}"
             )
             browser.close()
             return True
@@ -421,7 +537,7 @@ class BrowserService:
                 self._chrome_process = None
 
         # 即使 _chrome_process 为 None，端口可能仍在监听
-        # （例如：之前启动但引用丢失的 Chrome）
+        # （例如：之前启动但引用丢失的 Chrome，或用户自己的 Chrome 恰好占用 9222）
         if self._is_port_listening(port):
             # 端口在监听 - 验证 CDP 是否可用
             if self._try_cdp_connect():
@@ -429,20 +545,44 @@ class BrowserService:
                 self._chrome_process = self._find_chrome_process_by_profile()
                 if self._chrome_process:
                     logger.debug(f"[BrowserService] Reconnected to existing Chrome PID {self._chrome_process.pid}")
-                else:
-                    logger.warning("[BrowserService] Connected to Chrome but could not find process PID")
-                return True, ""
+                    return True, ""
+                # W12: 端口上是非本项目 profile 的 Chrome（很可能是用户个人 Chrome）。
+                # 不共享其登录态/cookies，切换到随机端口启动本项目自己的 Chrome。
+                logger.warning(
+                    f"[BrowserService] Port {port} is occupied by a non-project Chrome "
+                    f"(foreign profile), switching to a random port"
+                )
+                self._cdp_port = self._pick_free_port()
+                port = self._cdp_port
             else:
-                logger.warning(f"[BrowserService] Port {port} is listening but CDP connection failed, killing stale Chrome")
-                self._kill_chrome_internal()
-                # 等待端口释放
-                for i in range(20):
-                    time.sleep(0.5)
-                    if not self._is_port_listening(port):
-                        logger.debug(f"[BrowserService] Port {port} released after {(i+1)*0.5:.1f}s")
-                        break
+                # W11: CDP 连接失败，端口被占用。找到占用进程的 PID；
+                # 仅当确认是本项目 profile 的 Chrome 才 kill（避免误杀用户浏览器/其他程序）。
+                if self._chrome_process is None:
+                    pid = self._find_pid_by_port(port)
+                    if pid is not None and self._pid_uses_our_profile(pid):
+                        self._chrome_process = _ChromeProcessRef(pid)
+                if self._chrome_process:
+                    logger.warning(
+                        f"[BrowserService] Port {port} is listening but CDP connection failed, "
+                        f"killing stale Chrome PID {self._chrome_process.pid}"
+                    )
+                    self._kill_chrome_internal()
+                    # 等待端口释放
+                    for i in range(20):
+                        time.sleep(0.5)
+                        if not self._is_port_listening(port):
+                            logger.debug(f"[BrowserService] Port {port} released after {(i+1)*0.5:.1f}s")
+                            break
+                    else:
+                        return False, f"Port {port} still in use after killing stale Chrome (waited 10s)"
                 else:
-                    return False, f"Port {port} still in use after killing stale Chrome (waited 10s)"
+                    # 占用端口的不是本项目 Chrome（其他程序/用户浏览器），不误杀，改用随机端口
+                    logger.warning(
+                        f"[BrowserService] Port {port} is occupied by a foreign process, "
+                        f"switching to a random port"
+                    )
+                    self._cdp_port = self._pick_free_port()
+                    port = self._cdp_port
 
         chrome_path = self._find_browser()
         if not chrome_path:
@@ -568,11 +708,11 @@ class BrowserService:
         # 等待端口释放
         for i in range(20):
             time.sleep(0.5)
-            if not self._is_port_listening(DEFAULT_CDP_PORT):
-                logger.debug(f"[BrowserService] Port {DEFAULT_CDP_PORT} released after {(i+1)*0.5:.1f}s")
+            if not self._is_port_listening(self._cdp_port):
+                logger.debug(f"[BrowserService] Port {self._cdp_port} released after {(i+1)*0.5:.1f}s")
                 break
         else:
-            logger.warning(f"[BrowserService] Port {DEFAULT_CDP_PORT} still listening after 10s")
+            logger.warning(f"[BrowserService] Port {self._cdp_port} still listening after 10s")
 
     def _remove_chrome_locks(self, profile_dir: str) -> None:
         """删除 Chrome 的 singleton 锁定文件，防止 profile 被锁定。"""
@@ -603,7 +743,7 @@ class BrowserService:
                 self._context = None
 
             self._browser = self._playwright.chromium.connect_over_cdp(
-                f"http://localhost:{DEFAULT_CDP_PORT}"
+                f"http://localhost:{self._cdp_port}"
             )
             logger.debug(f"[BrowserService] CDP connected successfully")
             return True
@@ -655,8 +795,8 @@ class BrowserService:
             return None  # 已连接
 
         # 连接失败 - 检查 Chrome 是否已在运行
-        if self._is_port_listening(DEFAULT_CDP_PORT):
-            logger.debug(f"[BrowserService] Port {DEFAULT_CDP_PORT} listening but CDP failed, retrying...")
+        if self._is_port_listening(self._cdp_port):
+            logger.debug(f"[BrowserService] Port {self._cdp_port} listening but CDP failed, retrying...")
             # Chrome 在运行但连不上 - 重试连接
             for attempt in range(3):
                 time.sleep(0.5)
@@ -672,7 +812,7 @@ class BrowserService:
             self._remove_chrome_locks(self._chrome_profile_dir)
 
         # 没有 Chrome 在运行（或已杀死旧进程）- 启动新的
-        success, error_msg = self._start_chrome(DEFAULT_CDP_PORT)
+        success, error_msg = self._start_chrome(self._cdp_port)
         if not success:
             chrome_path = self._find_browser()
             return ToolResult(
@@ -680,10 +820,10 @@ class BrowserService:
                 f"Detail: {error_msg}\n"
                 f"Chrome path: {chrome_path}\n"
                 f"Profile: {self._chrome_profile_dir}\n"
-                f"Port: {DEFAULT_CDP_PORT}\n"
+                f"Port: {self._cdp_port}\n"
                 f"Playwright: {'OK' if self._playwright else 'NOT STARTED'}\n"
                 f"Chrome process: {self._chrome_process.pid if self._chrome_process else 'None'}\n"
-                f"Port listening: {self._is_port_listening(DEFAULT_CDP_PORT)}",
+                f"Port listening: {self._is_port_listening(self._cdp_port)}",
                 error=True,
             )
 
@@ -691,10 +831,10 @@ class BrowserService:
         if not self._connect_browser():
             return ToolResult(
                 f"Error: Chrome started but CDP connection failed.\n"
-                f"Port: {DEFAULT_CDP_PORT}\n"
+                f"Port: {self._cdp_port}\n"
                 f"Chrome PID: {self._chrome_process.pid if self._chrome_process else 'None'}\n"
                 f"Chrome alive: {self._chrome_process.poll() is None if self._chrome_process else False}\n"
-                f"Port listening: {self._is_port_listening(DEFAULT_CDP_PORT)}",
+                f"Port listening: {self._is_port_listening(self._cdp_port)}",
                 error=True,
             )
 
@@ -888,7 +1028,7 @@ class BrowserService:
                     f"  Browser: {browser_info}\n"
                     f"  Chrome: {chrome_info}\n"
                     f"  Tab pool: {len(self._page_pool)} page(s)\n"
-                    f"  Port listening: {self._is_port_listening(DEFAULT_CDP_PORT)}\n\n"
+                    f"  Port listening: {self._is_port_listening(self._cdp_port)}\n\n"
                     f"Suggestion: Try kill_chrome action to restart browser, then retry.",
                     error=True,
                 )
@@ -908,6 +1048,12 @@ class BrowserService:
         Returns:
             ToolResult，data 包含 tab_index 字段
         """
+        # A30: scheme/私网过滤（SSRF 防护），先于任何浏览器操作快速失败
+        block_reason = _validate_navigate_url(url)
+        if block_reason:
+            return ToolResult(
+                f"Error: 导航被拒绝 — {block_reason}", error=True
+            )
         def _do_navigate(page, current_tab_index):
             page.goto(url, wait_until="load", timeout=60000)
             # 等待 JavaScript 渲染和重定向
@@ -928,7 +1074,7 @@ class BrowserService:
                 f"Title: {title}\n"
                 f"Content length: {len(text)} chars\n"
                 f"Tab index: {current_tab_index}\n\n"
-                f"--- Page content ---\n{text}",
+                f"--- Page content ---\n{UNTRUSTED_DATA_BEGIN}{text}{UNTRUSTED_DATA_END}",
                 meta={"tab_index": current_tab_index}
             )
 
@@ -1164,17 +1310,21 @@ class BrowserService:
 # ==================== 模块级 API（遵循 CronScheduler 模式）====================
 
 _service: BrowserService | None = None
+_service_lock = threading.Lock()
 
 
 def get_service() -> BrowserService:
     """获取全局浏览器服务实例。
 
     如果服务未启动，会自动创建并启动（容错设计）。
+    双重检查加锁，避免多线程并发首次调用时重复创建实例和 Chrome 进程（SEC-21）。
     """
     global _service
     if _service is None:
-        _service = BrowserService()
-        _service.start()
+        with _service_lock:
+            if _service is None:
+                _service = BrowserService()
+                _service.start()
     return _service
 
 

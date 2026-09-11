@@ -66,20 +66,16 @@ class TestPDF2MarkdownToolValidation:
         assert result.is_error
         assert "file not found" in result.output
 
-    def test_unsupported_extension(self):
-        """不支持的文件格式"""
-        tool = PDF2MarkdownTool(cwd=".")
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-            f.write(b"test")
-            tmp = f.name
+    def test_unsupported_extension(self, tmp_path):
+        """不支持的文件格式（cwd 用 tmp_path，满足 workspace 边界）"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        tmp = tmp_path / "test.txt"
+        tmp.write_bytes(b"test")
 
-        try:
-            result = tool.execute(file_path=tmp)
-            assert result.is_error
-            assert "unsupported file type" in result.output
-            assert ".txt" in result.output
-        finally:
-            os.unlink(tmp)
+        result = tool.execute(file_path=str(tmp))
+        assert result.is_error
+        assert "unsupported file type" in result.output
+        assert ".txt" in result.output
 
     def test_supported_extensions(self):
         """支持的文件格式列表"""
@@ -167,9 +163,9 @@ class TestPDF2MarkdownToolAgentErrors:
     """Agent API 错误码处理测试"""
 
     @patch("requests.post")
-    def test_agent_file_size_limit(self, mock_post):
+    def test_agent_file_size_limit(self, mock_post, tmp_path):
         """Agent API 文件超限 (-30001)"""
-        tool = PDF2MarkdownTool(cwd=".")
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
 
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -178,22 +174,18 @@ class TestPDF2MarkdownToolAgentErrors:
         }
         mock_post.return_value = mock_response
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            f.write(b"test")
-            tmp = f.name
+        tmp = tmp_path / "test.pdf"
+        tmp.write_bytes(b"test")
 
-        try:
-            result = tool.execute(file_path=tmp)
-            assert result.is_error
-            # 应该尝试 Agent，失败后如果没有 API key 会报错
-            assert "未配置" in result.output or "MinerU API Key" in result.output
-        finally:
-            os.unlink(tmp)
+        result = tool.execute(file_path=str(tmp))
+        assert result.is_error
+        # 应该尝试 Agent，失败后如果没有 API key 会报错
+        assert "未配置" in result.output or "MinerU API Key" in result.output
 
     @patch("requests.post")
-    def test_agent_unsupported_type(self, mock_post):
+    def test_agent_unsupported_type(self, mock_post, tmp_path):
         """Agent API 不支持的文件类型 (-30002)"""
-        tool = PDF2MarkdownTool(cwd=".")
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
 
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -203,16 +195,12 @@ class TestPDF2MarkdownToolAgentErrors:
         mock_post.return_value = mock_response
 
         # 用 .doc 格式（Agent 不支持但 Precision 支持）
-        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as f:
-            f.write(b"test")
-            tmp = f.name
+        tmp = tmp_path / "test.doc"
+        tmp.write_bytes(b"test")
 
-        try:
-            result = tool.execute(file_path=tmp)
-            # Agent 不支持 .doc，会跳过，因为没有 API key 所以报错
-            assert result.is_error
-        finally:
-            os.unlink(tmp)
+        result = tool.execute(file_path=str(tmp))
+        # Agent 不支持 .doc，会跳过，因为没有 API key 所以报错
+        assert result.is_error
 
 
 class TestPDF2MarkdownToolConfig:
@@ -247,22 +235,18 @@ class TestPDF2MarkdownToolConfig:
 class TestPDF2MarkdownToolModelVersion:
     """model_version 参数测试"""
 
-    def test_html_auto_model_version(self):
+    def test_html_auto_model_version(self, tmp_path):
         """HTML 文件自动选择 MinerU-HTML"""
-        tool = PDF2MarkdownTool(cwd=".")
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            f.write(b"<html>test</html>")
-            tmp = f.name
+        tmp = tmp_path / "test.html"
+        tmp.write_bytes(b"<html>test</html>")
 
-        try:
-            # 模拟执行，检查 model_version 被正确设置
-            # 由于没有 API key，会报错，但可以验证逻辑
-            result = tool.execute(file_path=tmp, model_version="")
-            # HTML 应该自动设为 MinerU-HTML，但没有 API key 所以失败
-            assert result.is_error
-        finally:
-            os.unlink(tmp)
+        # 模拟执行，检查 model_version 被正确设置
+        # 由于没有 API key，会报错，但可以验证逻辑
+        result = tool.execute(file_path=str(tmp), model_version="")
+        # HTML 应该自动设为 MinerU-HTML，但没有 API key 所以失败
+        assert result.is_error
 
     def test_custom_model_version(self):
         """自定义 model_version"""

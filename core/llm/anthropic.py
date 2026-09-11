@@ -92,16 +92,8 @@ class AnthropicAdapter(Adapter):
                 content = []
                 for block in msg.content:
                     block_dict = block_to_dict(block)
-                    # Convert reasoning → thinking (Anthropic's format)
-                    if block_dict.get("type") == "reasoning":
-                        block_dict = {
-                            "type": "thinking",
-                            "thinking": block_dict.get("text", ""),
-                        }
-                        if block_dict.get("signature"):
-                            block_dict["signature"] = block_dict.pop("signature")
                     # Convert tool_call to tool_use (Anthropic's format)
-                    elif block_dict.get("type") == "tool_call":
+                    if block_dict.get("type") == "tool_call":
                         block_dict["type"] = "tool_use"
                         # Parse arguments string to input dict
                         arguments = block_dict.get("arguments", "")

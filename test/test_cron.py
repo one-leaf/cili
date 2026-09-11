@@ -29,19 +29,22 @@ class TestCronTask:
         assert task.description == "测试任务"
         assert task.enabled is True
         assert task.config == {"max_executions": 10}
-        assert task._next_run is None
+        # T9: 新建任务按当前时间计算首次 _next_run，而非 None 立即触发
+        assert task._next_run is not None
         assert task._last_run is None
         assert task._run_count == 0
 
     def test_should_run_first_time(self, temp_cron_state):
-        """首次运行：_next_run 为 None 时应触发"""
+        """T9: 新建任务不立即触发，按当前时间计算首跑（interval 60min 后）"""
         config = {
             "name": "test",
             "schedule": {"type": "interval", "minutes": 60},
             "task": "测试",
         }
         task = CronTask(config)
-        assert task.should_run(datetime.now()) is True
+        assert task.should_run(datetime.now()) is False
+        # 60 分钟后到点触发
+        assert task.should_run(datetime.now() + timedelta(minutes=61)) is True
 
     def test_should_run_disabled(self, temp_cron_state):
         """禁用的任务不应触发"""
@@ -120,7 +123,8 @@ class TestCronTask:
         assert d["description"] == "测试任务"
         assert d["enabled"] is True
         assert d["last_run"] is None
-        assert d["next_run"] is None
+        # T9: 新建任务即有首次 _next_run（interval 序列化为 ISO 字符串）
+        assert d["next_run"] is not None
         assert d["run_count"] == 0
 
     def test_to_dict_after_execution(self, temp_cron_state):
@@ -671,6 +675,82 @@ class TestCronSchedulerRemainingCounter:
         finally:
             cron_module.USER_TASKS_FILE = original_user_file
 
+    def test_skipped_execution_does_not_decrement_remaining(self, temp_cron_state, tmp_path):
+        """T10: _execute_task 中 skipped 结果不计 remaining，真正执行才递减"""
+        import core.cron as cron_module
+
+        config = {
+            "name": "skip-task",
+            "enabled": True,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "测试", "plan": []},
+            "config": {"max_executions": 3},
+        }
+        user_tasks_file = tmp_path / "user_tasks.json"
+        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        cron_module.USER_TASKS_FILE = user_tasks_file
+
+        try:
+            scheduler = CronScheduler()
+            scheduler.load_tasks()
+            task = scheduler.get_task("skip-task")
+            assert task is not None and task._remaining is None
+
+            from unittest.mock import patch
+            now = datetime.now()
+            # skipped：remaining 不递减
+            with patch.object(task, "execute", return_value={"status": "skipped", "message": "busy"}):
+                scheduler._execute_task(task, now)
+            assert task._remaining is None  # 未消耗
+
+            # completed：remaining 递减（max_executions=3 → 2）
+            with patch.object(task, "execute", return_value={"status": "completed"}):
+                scheduler._execute_task(task, now)
+            assert task._remaining == 2
+        finally:
+            cron_module.USER_TASKS_FILE = original_user_file
+
+    def test_run_task_now_reuses_execute_task(self, temp_cron_state, tmp_path):
+        """T10: run_task_now 走 _execute_task（尊重 remaining/锁），而非直接 task.execute"""
+        import core.cron as cron_module
+
+        config = {
+            "name": "now-task",
+            "enabled": True,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "测试", "plan": []},
+            "config": {"max_executions": 5},
+        }
+        user_tasks_file = tmp_path / "user_tasks.json"
+        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
+
+        original_user_file = cron_module.USER_TASKS_FILE
+        cron_module.USER_TASKS_FILE = user_tasks_file
+
+        try:
+            scheduler = CronScheduler()
+            scheduler.load_tasks()
+            task = scheduler.get_task("now-task")
+            assert task is not None
+
+            from unittest.mock import patch
+            # 直接调用 task.execute() 不应发生：run_task_now 必须经 _execute_task
+            with patch.object(task, "execute", return_value={"status": "completed"}) as mock_exec:
+                with patch.object(scheduler, "_execute_task") as mock_execute_task:
+                    result = scheduler.run_task_now("now-task")
+                    assert result == {"status": "triggered", "message": "Task now-task triggered"}
+                    mock_execute_task.assert_called_once()
+                    mock_exec.assert_not_called()  # 未绕过
+                    # 等后台线程执行完（mock 即时返回）
+                    import time
+                    for _ in range(20):
+                        if mock_execute_task.call_count == 1 and mock_exec.call_count >= 0:
+                            time.sleep(0.05)
+        finally:
+            cron_module.USER_TASKS_FILE = original_user_file
+
     def test_auto_disable_when_remaining_zero(self, temp_cron_state, tmp_path):
         """remaining <= 0 时自动 disable"""
         import core.cron as cron_module
@@ -1086,3 +1166,19 @@ class TestCronToolUpdate:
         assert tasks[0]["content"]["task"] == "新任务"
         assert tasks[0]["description"] == "原始描述"
         assert tasks[0]["content"]["plan"] == ["原始步骤"]
+
+
+class TestWorkspaceLock:
+    """_get_workspace_lock 每工作区串行锁（A43: 并发创建竞态）。"""
+
+    def test_same_workspace_returns_same_lock(self):
+        scheduler = CronScheduler()
+        lock1 = scheduler._get_workspace_lock("ws-1")
+        lock2 = scheduler._get_workspace_lock("ws-1")
+        assert lock1 is lock2
+
+    def test_different_workspaces_distinct_locks(self):
+        scheduler = CronScheduler()
+        lock_a = scheduler._get_workspace_lock("ws-a")
+        lock_b = scheduler._get_workspace_lock("ws-b")
+        assert lock_a is not lock_b

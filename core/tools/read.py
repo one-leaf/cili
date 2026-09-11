@@ -60,6 +60,7 @@ class ReadTool(Tool):
 
     MAX_PAGES_PER_READ = 20   # PDF 单次读取页数上限
     MAX_RAW_IMAGE_BYTES = 5 * 1024 * 1024  # 无 PIL 时原始图片读取上限（5MB）
+    PDF_READ_TIMEOUT = 60  # PDF 解析/取文本超时（秒），防损坏/超大 PDF 挂起；可用 CILI_PDF_READ_TIMEOUT 覆盖
 
     def execute(
         self,
@@ -101,6 +102,17 @@ class ReadTool(Tool):
                     img_bytes = img_byte_arr.getvalue()
 
                 base64_data = base64.b64encode(img_bytes).decode('utf-8')
+                # 编码后字节上限：PNG 对噪点图压缩率低，16MP 像素上限不足以保证
+                # 体积，超大 base64 会撑爆 LLM 上下文（T24）
+                if len(base64_data) > self.MAX_RAW_IMAGE_BYTES:
+                    return ToolResult(
+                        output=(
+                            f"Error: Image '{file_path}' encoded size {len(base64_data) / 1024 / 1024:.1f}MB "
+                            f"exceeds the {self.MAX_RAW_IMAGE_BYTES // 1024 // 1024}MB limit. "
+                            "Image too large to fit in LLM context."
+                        ),
+                        error=True,
+                    )
                 media_type = 'image/png'
 
                 return ToolResult(
@@ -222,24 +234,36 @@ class ReadTool(Tool):
         except ValueError as e:
             return ToolResult(f"Error: {e}", error=True)
 
-        try:
+        # 防御损坏/超大 PDF 导致 extract_text 无限挂起（A44 PDF timeout）：
+        # 解析放进工作线程并限时，超时放弃该线程直接报错返回
+        def _extract() -> str:
             with pdfplumber.open(file_path) as pdf:
                 total_pages = len(pdf.pages)
-                # Validate page numbers
                 for p in page_list:
                     if p < 1 or p > total_pages:
-                        return ToolResult(
-                            f"Error: page {p} out of range (PDF has {total_pages} pages).",
-                            error=True,
+                        raise ValueError(
+                            f"Page {p} out of range (PDF has {total_pages} pages)."
                         )
-
                 parts = [f"PDF: {file_path} ({total_pages} pages, showing pages: {', '.join(map(str, page_list))})\n\n"]
                 for page_num in page_list:
                     page = pdf.pages[page_num - 1]  # 0-indexed
                     text = page.extract_text() or "(no text extracted)"
                     parts.append(f"--- Page {page_num} ---\n{text}\n\n")
+                return "".join(parts)
 
-            output = "".join(parts)
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            try:
+                timeout = float(os.environ.get("CILI_PDF_READ_TIMEOUT", ""))
+            except ValueError:
+                timeout = float(self.PDF_READ_TIMEOUT)
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
+                future = pool.submit(_extract)
+                output = future.result(timeout=timeout)
+            finally:
+                # wait=False：超时后不阻塞等待可能卡死的线程，让其随进程自然回收
+                pool.shutdown(wait=False)
 
             # Token budget truncation
             import os as _os
@@ -247,6 +271,15 @@ class ReadTool(Tool):
             output = self.truncate_middle(output, max_tokens)
 
             return ToolResult(output)
+        except ValueError as e:
+            return ToolResult(f"Error: {e}", error=True)
+        except TimeoutError:
+            return ToolResult(
+                f"Error: PDF extraction timed out (exceeded {timeout:.0f}s; "
+                "possible corrupted or heavily scanned PDF). "
+                "Try converting the PDF to text first.",
+                error=True,
+            )
         except Exception as e:
             return ToolResult(f"Error reading PDF: {e}", error=True)
 
@@ -274,6 +307,9 @@ class ReadTool(Tool):
                     raise ValueError(f"Invalid page range: '{part}'")
                 if start < 1 or end < start:
                     raise ValueError(f"Invalid page range: '{part}' (must be start >= 1, end >= start)")
+                # 先校验区间大小再展开，避免 `1-1000000000` 展开出数十亿整数导致 OOM
+                if end - start + 1 > ReadTool.MAX_PAGES_PER_READ:
+                    raise ValueError(f"Page range '{part}' too large. Maximum is {ReadTool.MAX_PAGES_PER_READ} per read.")
                 result.update(range(start, end + 1))
             else:
                 try:

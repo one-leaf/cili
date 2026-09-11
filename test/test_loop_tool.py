@@ -218,3 +218,19 @@ class TestLoopTool:
         result = tool.execute(action="status", source_file=str(file_path))
         data = json.loads(result.output)
         assert data["total"] == 2
+
+
+class TestLoopStateLock:
+    """_get_state_lock 每任务状态锁（A43: read-modify-write 串行化）。"""
+
+    def test_same_task_returns_same_lock(self):
+        from core.tools.loop import _get_state_lock
+        lock1 = _get_state_lock("task-a")
+        lock2 = _get_state_lock("task-a")
+        assert lock1 is lock2
+
+    def test_different_tasks_distinct_locks(self):
+        from core.tools.loop import _get_state_lock
+        lock_a = _get_state_lock("task-a")
+        lock_b = _get_state_lock("task-b")
+        assert lock_a is not lock_b

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote_plus
 
-from core.tools.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 
 # 搜索引擎配置
@@ -201,7 +201,9 @@ class WebSearchTool(Tool):
                 if body_text:
                     output_lines.append(f"  Page text preview: {body_text}")
 
-            return ToolResult("\n".join(output_lines))
+            return ToolResult(
+                UNTRUSTED_DATA_BEGIN + "\n".join(output_lines) + UNTRUSTED_DATA_END
+            )
 
         finally:
             # 搜索完成，关闭 tab 释放资源（所有路径都会执行）

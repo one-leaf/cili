@@ -91,13 +91,23 @@ class TestMessageBusModule:
         bus.unregister_session("a")
         assert bus.list_sessions() == []
 
-    def test_send_to_unregistered_creates_queue(self):
+    def test_send_to_unregistered_is_dropped(self):
+        """T21：未注册目标不自动建队列，send 返回 False，消息被丢弃。"""
         bus = MessageBus()
         bus.register_session("a")
-        bus.send("a", "b", "hello")
-        # "b" auto-registered
-        messages = bus.receive("b")
-        assert len(messages) == 1
+        ok = bus.send("a", "b", "hello")
+        assert ok is False
+        registered = {s["session_id"] for s in bus.list_sessions()}
+        assert registered == {"a"}
+        assert bus.receive("b") == []
+
+    def test_send_to_registered_succeeds(self):
+        bus = MessageBus()
+        bus.register_session("a")
+        bus.register_session("b")
+        ok = bus.send("a", "b", "hello")
+        assert ok is True
+        assert len(bus.receive("b")) == 1
 
 
 class TestMessageBusTool:

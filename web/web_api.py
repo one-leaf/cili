@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -11,10 +13,12 @@ import re
 import shutil
 import secrets
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Form, Depends, Request, UploadFile, File
@@ -51,6 +55,12 @@ _agent_access: dict[str, float] = {}
 _MAX_AGENTS = 20  # Maximum number of agents to keep in memory
 # Lock for concurrent access to agents dict
 _agents_lock = asyncio.Lock()
+
+# 每个会话的执行中 claim（防 send_message 的 is_running 检查 TOCTOU）：
+# 检查与 run 实际启动之间第二个请求可能并发通过检查，导致同一 agent 双循环
+# 同时改写 messages。用 set 在请求入口原子认领，run 结束后释放。
+_session_run_claims: set[str] = set()
+_session_run_claims_lock = threading.Lock()
 
 
 def _evict_idle_agent() -> None:
@@ -132,13 +142,36 @@ app.add_middleware(
 _LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
 
 
+def _ip_matches(client_ip: str, allowed: list[str]) -> bool:
+    """精确 IP 或 CIDR 前缀匹配（W18）。非 IP 字符串退化为精确匹配。"""
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip in allowed
+    for entry in allowed:
+        if not entry:
+            continue
+        if "/" in entry:
+            try:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                continue
+        elif entry == client_ip:
+            return True
+    return False
+
+
 @app.middleware("http")
 async def check_access_control(request: Request, call_next):
-    """Middleware to enforce IP-based access control.
+    """Middleware to enforce access control.
 
-    Access is granted if:
-    - Client IP is localhost (always allowed)
-    - Client IP is in the allowed_ips whitelist
+    Two modes:
+    - No access_token configured: IP-based access control. Granted if client
+      IP is localhost (always allowed) or in the allowed_ips whitelist.
+    - access_token configured: ALL requests (including localhost) must carry a
+      valid token via X-Access-Token header or ?token= query param (the latter
+      lets the browser load static assets on first page load).
 
     Only trusts request.client.host (the real TCP connection IP).
     Host header is NOT checked because it can be spoofed by attackers.
@@ -158,13 +191,26 @@ async def check_access_control(request: Request, call_next):
             content={"detail": "Server not configured yet"}
         )
 
+    access_token = config.system.access_token or ""
+
+    # access_token 已配置：鉴权优先于 IP 白名单，任何来源都必须带有效令牌
+    if access_token:
+        provided = request.headers.get("X-Access-Token") or request.query_params.get("token") or ""
+        if provided and hmac.compare_digest(provided, access_token):
+            return await call_next(request)
+        logger.warning(f"Blocked access from {client_ip}: missing/invalid access_token")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Access denied: invalid or missing token"}
+        )
+
     # Always allow localhost
     if client_ip in _LOCALHOST_IPS:
         return await call_next(request)
 
-    # Check whitelist
+    # Check whitelist（支持 CIDR 前缀，如 "192.168.1.0/24"）
     allowed_ips = config.system.allowed_ips or []
-    if client_ip in allowed_ips:
+    if _ip_matches(client_ip, allowed_ips):
         return await call_next(request)
 
     # Blocked
@@ -201,6 +247,41 @@ def _validate_workspace_uuid(workspace_uuid: str) -> None:
     """Validate workspace_uuid format to prevent path traversal."""
     if not _SESSION_ID_RE.match(workspace_uuid):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
+
+
+_EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_exec_id(exec_id: str) -> None:
+    """Validate exec_id format to prevent path traversal."""
+    if not _EXEC_ID_RE.match(exec_id):
+        raise HTTPException(status_code=400, detail="Invalid exec_id format")
+
+
+# 单例升级锁：防止并发 /api/upgrade 互相覆盖运行代码（W7）
+_upgrade_lock = threading.Lock()
+
+
+def _csrf_protect(request: Request) -> None:
+    """CSRF 防护（W6）：跨站浏览器请求带 Origin/Referer，非本机来源则拒绝。
+
+    multipart/form-data 与简单 POST 不触发 CORS 预检，恶意网页可向
+    localhost 端点自动提交；本依赖校验浏览器来源头，curl 等无头客户端放行。
+    注意：token 鉴权由 check_access_control 中间件统一负责，此处只防 CSRF。
+    """
+    origin = request.headers.get("origin") or ""
+    referer = request.headers.get("referer") or ""
+    if not origin and not referer:
+        return  # 非浏览器客户端（curl 等），放行
+    for value in (origin, referer):
+        if not value:
+            continue
+        try:
+            host = urlparse(value).hostname or ""
+        except ValueError:
+            host = ""
+        if host not in ("localhost", "127.0.0.1"):
+            raise HTTPException(status_code=403, detail="Cross-site request blocked (CSRF)")
 
 
 def _require_workspace(workspace_uuid: str) -> Path:
@@ -343,18 +424,24 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                     agent.switch_session(session_id)
                     logger.info(f"Loaded existing session: {session_id}")
                 else:
-                    # Session doesn't exist on disk, rename the default session
+                    # 新会话：为请求的 id 直接新建 SessionManager 并立即落盘，
+                    # 避免默认会话 index.json 不迁移、旧目录 rmdir 静默失败残留（W15）
                     old_session_dir = agent.session_manager.session_dir
-                    agent.session_manager.session_id = session_id
-                    agent.session_manager.session_dir = agent.session_manager.sessions_dir / session_id
+                    new_sm = SessionManager(session_id, agent.sessions_dir)
+                    new_sm.name = f"Session {session_id[:8]}"
+                    new_sm.save()
+                    agent.session_manager = new_sm
                     agent.current_session_id = session_id
                     agent._session_id = session_id
-                    agent.session_dir = session_dir
-                    agent.messages = agent.session_manager.messages  # Update reference
-                    agent.session_manager.name = f"Session {session_id[:8]}"
-                    # Remove the empty old directory to avoid orphan dirs
-                    if old_session_dir.exists() and not any(old_session_dir.iterdir()):
-                        old_session_dir.rmdir()
+                    agent.session_dir = new_sm.session_dir
+                    agent.messages = new_sm.messages  # Update reference
+                    agent._usage = new_sm.get_usage()
+                    # 同步工具 session_manager 引用（与 switch_session 一致）
+                    for tool in agent.tools:
+                        tool.session_manager = new_sm
+                    # 删除空的旧默认会话目录，避免孤立目录
+                    if old_session_dir.exists() and old_session_dir != new_sm.session_dir:
+                        shutil.rmtree(old_session_dir, ignore_errors=True)
                     logger.info(f"Creating new session: {session_id}")
 
             agents[key] = agent
@@ -736,14 +823,18 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                     block["content"] = "[工具输出文件路径缺失]"
                     continue
 
-                file_path = session_dir / output_path
+                file_path = (session_dir / output_path).resolve()
+                # W10: output_path 来自会话文件 _meta，篡改可能穿越 session 目录 → 拒绝
+                if not file_path.is_relative_to(session_dir.resolve()):
+                    block["content"] = f"[非法 output_path: {output_path}]"
+                    continue
                 if not file_path.exists():
-                    # 尝试在 Agent 执行目录中查找
+                    # 尝试在 Agent 执行目录中查找（exec_* 位于 session 目录内）
                     exec_dirs = list(session_dir.glob("exec_*"))
                     found = False
                     for exec_dir in exec_dirs:
-                        candidate = exec_dir / output_path
-                        if candidate.exists():
+                        candidate = (exec_dir / output_path).resolve()
+                        if candidate.is_relative_to(exec_dir.resolve()) and candidate.exists():
                             file_path = candidate
                             found = True
                             break
@@ -806,15 +897,9 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
 
     # Atomic write: write to temp file then rename
     index_file = session_dir / "index.json"
-    temp_file = session_dir / "index.json.tmp"
     try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(session_data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, index_file)
+        atomic_write_json(index_file, session_data)
     except Exception as e:
-        # Clean up temp file on error
-        if temp_file.exists():
-            temp_file.unlink()
         raise HTTPException(status_code=500, detail=f"Failed to create session: {e}")
 
     return session_data
@@ -881,10 +966,7 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
 
         data["name"] = request.name
 
-        temp_file = index_file.with_suffix(".json.tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        temp_file.replace(index_file)
+        atomic_write_json(index_file, data)
 
         return {"success": True}
     except Exception as e:
@@ -908,10 +990,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
             data["metadata"] = {}
         data["metadata"]["hidden"] = request.hidden
 
-        temp_file = index_file.with_suffix(".json.tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        temp_file.replace(index_file)
+        atomic_write_json(index_file, data)
 
         return {"success": True}
     except Exception as e:
@@ -981,6 +1060,8 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
 @app.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
 async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Get a specific sub-agent execution log with full messages."""
+    _validate_session_id(session_id)
+    _validate_exec_id(exec_id)
     sessions_dir = ws_dir / "sessions"
     sm = SessionManager.load_session(session_id, sessions_dir)
     if not sm:
@@ -1001,6 +1082,8 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
 @app.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
 async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Delete a specific sub-agent execution log."""
+    _validate_session_id(session_id)
+    _validate_exec_id(exec_id)
     sessions_dir = ws_dir / "sessions"
     sm = SessionManager.load_session(session_id, sessions_dir)
     if not sm:
@@ -1040,6 +1123,7 @@ async def stream_tool_output(
     # 安全检查：tool_use_id 只允许字母、数字、下划线、短横线
     if not _TOOL_USE_ID_RE.match(tool_use_id):
         raise HTTPException(status_code=400, detail="Invalid tool_use_id")
+    _validate_session_id(session_id)
 
     sessions_dir = ws_dir / "sessions"
     session_dir = sessions_dir / session_id
@@ -1220,7 +1304,16 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     agent = await _get_or_create_agent(workspace_uuid, session_id)
 
     # Prevent concurrent execution on the same session
-    if agent.is_running():
+    # 原子认领（锁内 check-and-set），关闭 is_running 检查到 run 启动之间的窗口。
+    # agent.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
+    session_key = f"{workspace_uuid}:{session_id}"
+    with _session_run_claims_lock:
+        if session_key in _session_run_claims or agent.is_running():
+            already_running = True
+        else:
+            _session_run_claims.add(session_key)
+            already_running = False
+    if already_running:
         error_text = "当前会话正在执行中，请等待完成后再发送消息"
         return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
 
@@ -1306,6 +1399,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
+                with _session_run_claims_lock:
+                    _session_run_claims.discard(session_key)
                 event_queue.put(None)  # sentinel: done
 
         task = asyncio.ensure_future(loop.run_in_executor(None, run_agent))
@@ -1823,6 +1918,7 @@ async def get_workspace_file_short(file_path: str, workspace_uuid: str = ""):
     Otherwise, scan all workspaces to find the file.
     """
     if workspace_uuid:
+        _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
         info = _get_workspace_info(workspace_uuid)
         if not info:
             raise HTTPException(status_code=404, detail="Workspace not found")
@@ -1849,6 +1945,7 @@ async def get_workspace_file_compat(file_path: str, workspace_uuid: str = ""):
 @app.get("/api/workspaces/{workspace_uuid}/files/{file_path:path}")
 async def get_workspace_file(workspace_uuid: str, file_path: str):
     """Serve a file from the workspace directory (for images, etc.)."""
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
     info = _get_workspace_info(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -1863,7 +1960,7 @@ async def get_workspace_file(workspace_uuid: str, file_path: str):
 # ----- Directory Browser -----
 
 @app.get("/api/browse")
-async def browse_directory(path: str = ""):
+async def browse_directory(path: str = "", request: Request = None):
     """Browse directories on the server filesystem.
 
     Args:
@@ -1872,6 +1969,14 @@ async def browse_directory(path: str = ""):
     Returns:
         List of directories with their names and full paths.
     """
+    # W8: 目录浏览限本机——工作区文件夹选择是本地管理操作，
+    # 避免 LAN/网络攻击者枚举服务器任意磁盘目录结构
+    client_ip = request.client.host if request and request.client else ""
+    if client_ip not in _LOCALHOST_IPS:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: browse_directory is localhost-only",
+        )
     if not path:
         if sys.platform == "win32":
             # Get available drives on Windows
@@ -1961,6 +2066,7 @@ async def list_files(workspace_uuid: str, path: str = ""):
     Returns:
         List of files and directories with relative paths.
     """
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
     # Get workspace directory
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
@@ -2061,6 +2167,7 @@ async def read_file(file_path: str, workspace_uuid: str):
     Returns:
         File content as text or binary
     """
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2084,7 +2191,7 @@ async def read_file(file_path: str, workspace_uuid: str):
 
 
 @app.post("/api/files")
-async def create_file(request: FileCreateRequest):
+async def create_file(request: FileCreateRequest, request_raw: Request = None):
     """Create a new file or folder in workspace.
 
     Args:
@@ -2093,6 +2200,8 @@ async def create_file(request: FileCreateRequest):
     Returns:
         Created file/folder info
     """
+    _csrf_protect(request_raw)  # W6: CSRF 防护
+    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2134,7 +2243,7 @@ async def create_file(request: FileCreateRequest):
 
 
 @app.delete("/api/files")
-async def delete_files(request: FileDeleteRequest):
+async def delete_files(request: FileDeleteRequest, request_raw: Request = None):
     """Delete files or folders from workspace.
 
     Args:
@@ -2143,6 +2252,8 @@ async def delete_files(request: FileDeleteRequest):
     Returns:
         Deletion result
     """
+    _csrf_protect(request_raw)  # W6: CSRF 防护
+    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2183,7 +2294,7 @@ async def delete_files(request: FileDeleteRequest):
 
 
 @app.put("/api/files")
-async def update_file(request: FileUpdateRequest):
+async def update_file(request: FileUpdateRequest, request_raw: Request = None):
     """Update a file: rename/move or save content.
 
     Args:
@@ -2192,6 +2303,8 @@ async def update_file(request: FileUpdateRequest):
     Returns:
         Update result
     """
+    _csrf_protect(request_raw)  # W6: CSRF 防护
+    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2242,11 +2355,35 @@ async def update_file(request: FileUpdateRequest):
     raise HTTPException(status_code=400, detail="No action specified: provide new_path or content")
 
 
+def _sanitize_upload_filename(raw: str) -> str | None:
+    """净化上传文件名：取 basename，拒绝 NTFS ADS 与 Windows 保留名/字符（W14）。
+
+    返回净化后的安全文件名；非法时返回 None（调用方记为错误）。
+    """
+    if not raw:
+        return None
+    name = os.path.basename(raw.replace("\\", "/")).strip()
+    if not name or name in (".", ".."):
+        return None
+    # NTFS 备用数据流（file.txt:stream）与 Windows 保留字符
+    if ":" in name or any(c in name for c in '<>"|?*'):
+        return None
+    # Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9
+    stem = name.split(".")[0].upper()
+    if stem in {"CON", "PRN", "AUX", "NUL"}:
+        return None
+    if (stem.startswith("COM") and stem[3:].isdigit()) or \
+       (stem.startswith("LPT") and stem[3:].isdigit()):
+        return None
+    return name
+
+
 @app.post("/api/files/upload")
 async def upload_files(
     workspace_uuid: str = Form(...),
     path: str = Form(""),
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    request: Request = None,
 ):
     """Upload files to workspace.
 
@@ -2258,6 +2395,8 @@ async def upload_files(
     Returns:
         Upload result
     """
+    _csrf_protect(request)  # W6: CSRF 防护（multipart 属简单请求，须单独校验）
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2290,7 +2429,12 @@ async def upload_files(
                 errors.append({"name": file.filename, "error": f"File too large (max 100MB)"})
                 continue
 
-            file_path = (target_dir / file.filename).resolve()
+            safe_name = _sanitize_upload_filename(file.filename or "")
+            if not safe_name:
+                errors.append({"name": file.filename, "error": "Invalid filename"})
+                continue
+
+            file_path = (target_dir / safe_name).resolve()
 
             # Security check for filename
             if not file_path.is_relative_to(workspace_dir.resolve()):
@@ -2321,7 +2465,7 @@ class UpgradeRequest(BaseModel):
 
 
 @app.post("/api/upgrade")
-async def upgrade(request: UpgradeRequest):
+async def upgrade(request: UpgradeRequest, request_raw: Request = None):
     """自动升级：下载最新代码并覆盖。
 
     Args:
@@ -2330,6 +2474,18 @@ async def upgrade(request: UpgradeRequest):
     Returns:
         升级结果 {"success": bool, "message": str}
     """
+    _csrf_protect(request_raw)  # W6: CSRF 防护
+    # W7: 并发锁——同一时间只允许一个升级任务，防止互相覆盖运行代码
+    if not _upgrade_lock.acquire(blocking=False):
+        return {"success": False, "error": "已有升级任务进行中，请稍后重试"}
+    try:
+        return await _perform_upgrade(request)
+    finally:
+        _upgrade_lock.release()
+
+
+async def _perform_upgrade(request: UpgradeRequest) -> dict:
+    """实际执行升级逻辑（在 _upgrade_lock 保护下运行）。"""
     import zipfile
     import tempfile
 
@@ -2373,10 +2529,14 @@ async def upgrade(request: UpgradeRequest):
         except Exception as e:
             return {"success": False, "error": f"下载失败：{str(e)}"}
 
-        # 解压
+        # 解压（W7 zip-slip：逐条目校验路径，拒绝 ../ 与绝对路径）
         try:
             os.makedirs(temp_extract, exist_ok=True)
             with zipfile.ZipFile(temp_zip, "r") as zf:
+                for info in zf.infolist():
+                    name = info.filename.replace("\\", "/")
+                    if name.startswith("/") or ".." in Path(name).parts:
+                        return {"success": False, "error": f"压缩包包含非法路径条目: {info.filename}"}
                 zf.extractall(temp_extract)
         except Exception as e:
             return {"success": False, "error": f"解压失败：{str(e)}"}
@@ -2415,6 +2575,7 @@ async def upgrade(request: UpgradeRequest):
         "message": "升级完成，请重启服务以应用更新",
         "needs_restart": True
     }
+
 
 
 if __name__ == "__main__":

@@ -78,14 +78,16 @@ class BlockAssembler:
         elif ctype == "tool_call_delta":
             block = self._block_map.get(chunk.index)
             if isinstance(block, ToolCallBlock):
+                # id/name/thought_signature 是单次携带的完整值（providers 只在首个
+                # delta 里下发），用赋值而非 +=，避免分片发送时被错误拼接（L14）。
                 if "id" in chunk.data and chunk.data["id"]:
-                    block.id += chunk.data["id"]
+                    block.id = chunk.data["id"]
                 if "name" in chunk.data and chunk.data["name"]:
-                    block.name += chunk.data["name"]
+                    block.name = chunk.data["name"]
                 if "arguments" in chunk.data and chunk.data["arguments"]:
                     block.arguments += chunk.data["arguments"]
                 if "thought_signature" in chunk.data and chunk.data["thought_signature"]:
-                    block.thought_signature += chunk.data["thought_signature"]
+                    block.thought_signature = chunk.data["thought_signature"]
 
         elif ctype == "usage":
             u = chunk.data.get("usage", UsageData())

@@ -1,5 +1,7 @@
 """命令行命令测试"""
 
+from unittest.mock import patch
+
 from core.llm import LLMClient, AnthropicAdapter, OpenAIAdapter, create_llm_client
 from core.config import ModelConfig
 
@@ -86,3 +88,54 @@ class TestCommands:
             assert False, "Should have raised ValueError"
         except ValueError as e:
             assert "Unsupported interface_type" in str(e)
+
+
+class TestGitBashDetection:
+    """W13: main.py Git Bash 自动探测 fallback。"""
+
+    def test_find_system_git_bash_from_git_path(self):
+        """从 PATH 上的 git 反推出 Git\bin\bash.exe。"""
+        import main as main_mod
+        with patch("shutil.which", return_value=r"C:\Program Files\Git\cmd\git.exe"), \
+             patch("os.path.isfile",
+                   side_effect=lambda p: p == r"C:\Program Files\Git\bin\bash.exe"):
+            result = main_mod._find_system_git_bash()
+        assert result == r"C:\Program Files\Git\bin\bash.exe"
+
+    def test_find_system_git_bash_returns_none_when_absent(self):
+        """系统没有 Git 时返回 None。"""
+        import main as main_mod
+        with patch("shutil.which", return_value=None), \
+             patch("os.path.isfile", return_value=False), \
+             patch.dict(main_mod.os.environ, {
+                 "ProgramFiles": r"C:\Program Files",
+                 "ProgramFiles(x86)": r"C:\Program Files (x86)",
+                 "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
+             }, clear=False):
+            result = main_mod._find_system_git_bash()
+        assert result is None
+
+    def test_init_git_bash_prefers_deps(self):
+        """deps 目录存在时优先使用（不触发系统探测）。"""
+        import main as main_mod
+        with patch("os.path.isfile", return_value=True), \
+             patch.dict(main_mod.os.environ, {}, clear=True):
+            assert main_mod._init_git_bash() is True
+            assert main_mod.os.environ["GIT_BASH_PATH"] == main_mod._DEPS_GIT_BASH
+
+    def test_init_git_bash_system_fallback(self):
+        """deps 缺失时回退到系统 Git Bash。"""
+        import main as main_mod
+        with patch("os.path.isfile", return_value=False), \
+             patch("main._find_system_git_bash",
+                   return_value=r"C:\Program Files\Git\bin\bash.exe"), \
+             patch.dict(main_mod.os.environ, {}, clear=True):
+            assert main_mod._init_git_bash() is True
+            assert main_mod.os.environ["GIT_BASH_PATH"] == r"C:\Program Files\Git\bin\bash.exe"
+
+    def test_init_git_bash_fatal_when_no_bash(self):
+        """deps 与系统都找不到时返回 False。"""
+        import main as main_mod
+        with patch("os.path.isfile", return_value=False), \
+             patch("main._find_system_git_bash", return_value=None):
+            assert main_mod._init_git_bash() is False

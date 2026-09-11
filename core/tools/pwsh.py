@@ -16,7 +16,6 @@ from core.tools.approval import (
 from core.tools.base import (
     Tool,
     ToolResult,
-    _PWSH_PATH,
     _VENV_DIR,
     _VENV_SCRIPTS,
     _strip_shell_strings,
@@ -221,7 +220,16 @@ class PwshTool(Tool):
             resolved = os.path.abspath(self._resolve_path(working_dir))
             if not os.path.isdir(resolved):
                 return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
-            command = f"Set-Location '{resolved}'; {command}"
+            # 目录名可能含单引号，pwsh 单引号内用 '' 转义；注入段参与 deny 扫描
+            escaped_dir = resolved.replace("'", "''")
+            cd_prefix = f"Set-Location '{escaped_dir}'; "
+            deny_prefix = self._check_deny_patterns(cd_prefix + command)
+            if deny_prefix:
+                mode, reason = deny_prefix
+                return ToolResult(
+                    f"Error: command blocked by safety check — {reason}", error=True
+                )
+            command = cd_prefix + command
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)

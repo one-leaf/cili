@@ -161,3 +161,35 @@ class TestLineEndings:
         assert b"line one\r\n" in data
         # 不应出现孤立的 \r（即没有混入裸 LF）
         assert data.replace(b"\r\n", b"").find(b"\n") == -1
+
+
+class TestReadPages:
+    """read 工具 PDF 页区间解析：超大区间在展开前拦截，防 OOM。"""
+
+    def _parse_pages(self, pages):
+        from core.tools.read import ReadTool
+        return ReadTool._parse_pages(pages)
+
+    def test_single_page(self):
+        assert self._parse_pages("3") == [3]
+
+    def test_range(self):
+        assert self._parse_pages("1-5") == [1, 2, 3, 4, 5]
+
+    def test_comma_mixed(self):
+        assert self._parse_pages("1-3,7,9-11") == [1, 2, 3, 7, 9, 10, 11]
+
+    def test_oversized_range_rejected_before_expansion(self):
+        """1-1000000000 必须在校验时拒绝，不能先展开 10 亿整数。"""
+        import pytest
+        with pytest.raises(ValueError):
+            self._parse_pages("1-1000000000")
+
+    def test_exact_max_allowed(self):
+        from core.tools.read import ReadTool
+        assert len(self._parse_pages(f"1-{ReadTool.MAX_PAGES_PER_READ}")) == ReadTool.MAX_PAGES_PER_READ
+
+    def test_combined_pages_over_max_rejected(self):
+        import pytest
+        with pytest.raises(ValueError):
+            self._parse_pages("1-10,20-30")  # 21 页 > 20

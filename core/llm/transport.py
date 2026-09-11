@@ -23,8 +23,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Retry configuration
-# Transport 层不做重试（设 0），重试由 base_agent 统一管理
-_MAX_RETRIES = 0
+# 非流式调用（chat/压缩/兜底）由 transport 层重试；流式调用由 base_agent
+# 统一管理（chat_stream 显式传 max_retries=0），避免双层重试。
+_MAX_RETRIES = 2
 _BASE_DELAY = 1.0  # seconds
 _MAX_DELAY = 60.0  # seconds
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -37,6 +38,31 @@ class StreamErrorEvent(Exception):
     transient failure so the caller can retry.
     """
     pass
+
+
+def _parse_sse_payload(payload: str, event_type: str | None) -> dict[str, Any]:
+    """解析一条 SSE 事件（可能由多行 data: 累积而成）。
+
+    错误事件或非法 JSON 一律抛出 StreamErrorEvent，让调用方把本次流视为
+    失败并重试，而不是静默丢数据。
+    """
+    if event_type == "error":
+        detail = payload[:200]
+        try:
+            err = json.loads(payload)
+            msg = err.get("error", {}).get("message")
+            if msg:
+                detail = msg[:200]
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        logger.warning(f"[LLM] SSE error event: {detail}")
+        raise StreamErrorEvent(f"SSE stream错误: {detail}")
+
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as e:
+        logger.warning(f"[LLM] SSE 数据解析失败，中止流: {payload[:150]!r}")
+        raise StreamErrorEvent(f"SSE JSON 解析失败: {e}") from e
 
 
 class HttpTransport:
@@ -57,7 +83,14 @@ class HttpTransport:
             timeout: Default request timeout in seconds
             connect_timeout: Connection timeout in seconds
         """
-        self._timeout = httpx.Timeout(timeout, connect=connect_timeout)
+        # 各阶段单独设超时（httpx 0.28 无 total 概念）：连接短、读写长，
+        # 不设整体上限，避免长思考/长输出被总体超时打断。
+        self._timeout = httpx.Timeout(
+            connect=connect_timeout,
+            read=timeout,
+            write=timeout,
+            pool=timeout,
+        )
         self._client = httpx.Client(
             timeout=self._timeout,
             headers={"User-Agent": "cili-agent"},
@@ -110,6 +143,7 @@ class HttpTransport:
         headers: dict[str, str],
         body: dict[str, Any],
         stop_check: Callable[[], bool] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> Iterable[dict[str, Any]]:
         """Stream SSE events from API.
 
@@ -118,6 +152,7 @@ class HttpTransport:
             headers: HTTP headers
             body: Request body (JSON)
             stop_check: Optional callable; if returns True, stream is interrupted
+            timeout: Optional per-phase timeout override
 
         Yields:
             Parsed JSON events from the stream
@@ -125,8 +160,9 @@ class HttpTransport:
         Raises:
             httpx.HTTPStatusError: If response status >= 400
             InterruptedError: If stop_check returns True
+            StreamErrorEvent: On error events or malformed JSON (aborts the stream)
         """
-        with self._client.stream("POST", url, headers=headers, json=body) as resp:
+        with self._client.stream("POST", url, headers=headers, json=body, timeout=timeout) as resp:
             if resp.status_code >= 400:
                 try:
                     error_body = resp.read().decode("utf-8", errors="replace")
@@ -136,6 +172,20 @@ class HttpTransport:
                 resp.raise_for_status()
 
             current_event = None
+            data_lines: list[str] = []
+
+            def flush():
+                """将累积的多行 data 作为一条事件产出（SSE 规范：按空行分事件）。"""
+                nonlocal current_event, data_lines
+                if not data_lines:
+                    current_event = None
+                    return
+                payload = "\n".join(data_lines)
+                data_lines = []
+                ev_type = current_event
+                current_event = None
+                yield _parse_sse_payload(payload, ev_type)
+
             for line in resp.iter_lines():
                 # Check for interruption
                 if stop_check and stop_check():
@@ -143,7 +193,8 @@ class HttpTransport:
 
                 line = line.strip()
                 if not line:
-                    current_event = None
+                    # 空行 = 事件终止符，刷新累积的 data
+                    yield from flush()
                     continue
 
                 # Parse SSE event type
@@ -151,36 +202,19 @@ class HttpTransport:
                     current_event = line[6:].strip()
                     continue
 
-                # Parse SSE data line
+                # Accumulate SSE data lines (multiple data: lines = one event)
                 if line.startswith("data:"):
                     payload = line[5:].strip()
-                else:
+                    if payload == "[DONE]":
+                        yield from flush()  # 先刷新之前的累积，再结束
+                        break
+                    data_lines.append(payload)
                     continue
 
-                if payload == "[DONE]":
-                    break
+                # Ignore other SSE fields (id:, retry:, comments)
 
-                # Error events (e.g. Anthropic overloaded during streaming) must
-                # not be silently swallowed: the stream is about to close with a
-                # half-assembled response, and executing a partial tool call is
-                # worse than failing the round.
-                if current_event == "error":
-                    detail = payload[:200]
-                    try:
-                        err = json.loads(payload)
-                        msg = err.get("error", {}).get("message")
-                        if msg:
-                            detail = msg[:200]
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-                    logger.warning(f"[LLM] SSE error event: {detail}")
-                    raise StreamErrorEvent(f"SSE stream错误: {detail}")
-
-                try:
-                    event = json.loads(payload)
-                    yield event
-                except json.JSONDecodeError:
-                    continue
+            # End of stream: flush any remaining accumulated data
+            yield from flush()
 
     def close(self) -> None:
         """Close the HTTP client and release resources."""
@@ -246,6 +280,7 @@ class HttpTransport:
         operation: Callable[[], Any],
         total_timeout: float | None = None,
         stop_check: Callable[[], bool] | None = None,
+        max_retries: int | None = None,
     ) -> Any:
         """Execute an operation with automatic retry on transient errors.
 
@@ -253,6 +288,8 @@ class HttpTransport:
             operation: Callable that performs the HTTP request
             total_timeout: Optional total time limit in seconds
             stop_check: Optional callable; if returns True, retry is aborted
+            max_retries: Override retry count (defaults to _MAX_RETRIES).
+                Stream callers should pass 0 since base_agent owns stream retries.
 
         Returns:
             Result of the operation
@@ -261,10 +298,12 @@ class HttpTransport:
             The last exception if all retries fail
             InterruptedError: If stop_check returns True
         """
+        if max_retries is None:
+            max_retries = _MAX_RETRIES
         start_time = time.time()
         retry_count = 0
 
-        for attempt in range(_MAX_RETRIES + 1):
+        for attempt in range(max_retries + 1):
             # Check stop before each attempt
             if stop_check and stop_check():
                 raise InterruptedError("Stopped by user during retry")
@@ -276,7 +315,7 @@ class HttpTransport:
                 status = e.response.status_code
                 retry_count = attempt + 1
 
-                if not self.should_retry(status) or attempt == _MAX_RETRIES:
+                if not self.should_retry(status) or attempt == max_retries:
                     raise
 
                 retry_after = e.response.headers.get("retry-after")
@@ -288,13 +327,13 @@ class HttpTransport:
                         f"Last error: HTTP {status}"
                     ) from e
 
-                print(f"[LLM] {status} 错误，{delay:.0f}s 后重试 ({attempt + 1}/{_MAX_RETRIES})")
+                logger.warning(f"[LLM] {status} 错误，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
                 self.interruptible_sleep(delay, stop_check)
 
             except httpx.TransportError as e:
                 retry_count = attempt + 1
 
-                if attempt == _MAX_RETRIES:
+                if attempt == max_retries:
                     raise
 
                 delay = self.retry_delay(attempt)
@@ -305,5 +344,5 @@ class HttpTransport:
                         f"Last error: {e}"
                     ) from e
 
-                print(f"[LLM] {self.format_network_error(e)}，{delay:.0f}s 后重试 ({attempt + 1}/{_MAX_RETRIES})")
+                logger.warning(f"[LLM] {self.format_network_error(e)}，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
                 self.interruptible_sleep(delay, stop_check)

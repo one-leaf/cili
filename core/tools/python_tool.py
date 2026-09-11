@@ -5,13 +5,12 @@ basic code execution, package install, env info.
 
 from __future__ import annotations
 
+import ast
 import os
-import re
 import shlex
+import tempfile
 import time
 from typing import Any
-import glob as _glob
-import tempfile
 
 from core.tools.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
 
@@ -21,30 +20,15 @@ _BG_SCRIPT_PREFIX = "cili_bg_"
 _BG_SCRIPT_MAX_AGE_SECONDS = 24 * 3600
 
 
-# Cross-tool isolation: block Python code from invoking bash/pwsh
-_PYTHON_DENY_PATTERNS = [
-    # subprocess module invoking shell
-    (re.compile(r"""subprocess\.\w+\s*\(\s*[\[\(]?\s*['"](?:bash|pwsh|powershell)""", re.I),
-     "subprocess call to bash/pwsh (use bash/pwsh tool directly instead)"),
-    # os.system with shell commands
-    (re.compile(r"""os\.system\s*\(\s*['"](?:bash|pwsh|powershell)""", re.I),
-     "os.system call to bash/pwsh (use bash/pwsh tool directly instead)"),
-    # os.popen with shell commands
-    (re.compile(r"""os\.popen\s*\(\s*['"](?:bash|pwsh|powershell)""", re.I),
-     "os.popen call to bash/pwsh (use bash/pwsh tool directly instead)"),
-    # shell=True with bash/pwsh in command
-    (re.compile(r"""shell\s*=\s*True.*(?:bash|pwsh|powershell)""", re.I),
-     "subprocess with shell=True and bash/pwsh (use bash/pwsh tool directly instead)"),
-    # Dangerous code execution functions
-    (re.compile(r"\beval\s*\(", re.I),
-     "eval() is not allowed (security risk)"),
-    (re.compile(r"\bexec\s*\(", re.I),
-     "exec() is not allowed (security risk)"),
-    (re.compile(r"__import__\s*\(\s*['\"]os['\"]\s*\)\.system", re.I),
-     "dynamic os.system import (use appropriate tool instead)"),
-    (re.compile(r"__import__\s*\(\s*['\"]subprocess['\"]\s*\)", re.I),
-     "dynamic subprocess import (use appropriate tool instead)"),
-]
+# Cross-tool isolation: block Python code from invoking bash/pwsh.
+# 用 AST 静态分析（而非正则），字符串拼接/别名/动态 getattr 都无法绕过。
+_DENY_DIRECT_CALLS = {"eval", "exec", "__import__"}
+_OS_SHELL_ATTRS = {"system", "popen"}  # os.system / os.popen 必然拉起 shell
+_SUBPROCESS_CALLS = {
+    "Popen", "call", "run", "check_call", "check_output",
+    "getoutput", "getstatusoutput",
+}
+_SHELL_TOKENS = ("bash", "pwsh", "powershell")
 
 
 class PythonTool(Tool):
@@ -223,15 +207,15 @@ class PythonTool(Tool):
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {file}", error=True)
 
-        # Check file content for cross-tool invocations
+        # Check file content for cross-tool invocations（读取失败 fail-closed，不跳过检查）
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-            deny_msg = self._check_python_deny_patterns(content)
-            if deny_msg:
-                return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
-        except Exception:
-            pass  # If we can't read, let execution proceed
+        except Exception as e:
+            return ToolResult(f"Error: cannot read script for safety check: {e}", error=True)
+        deny_msg = self._check_python_deny(content)
+        if deny_msg:
+            return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
         # Set MPLCONFIGDIR to use Cili's matplotlib config
         mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
@@ -246,7 +230,7 @@ class PythonTool(Tool):
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
         """Execute Python code (no LLM injection — main agent is the LLM itself)."""
         # Check for cross-tool invocations
-        deny_msg = self._check_python_deny_patterns(code)
+        deny_msg = self._check_python_deny(code)
         if deny_msg:
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
@@ -323,11 +307,80 @@ class PythonTool(Tool):
         return self._filter_notices(self._run_bash(cmd, timeout=timeout))
 
     @staticmethod
-    def _check_python_deny_patterns(code: str) -> str | None:
-        """Check Python code against deny patterns. Returns reason if blocked, None if OK."""
-        for pattern, reason in _PYTHON_DENY_PATTERNS:
-            if pattern.search(code):
-                return reason
+    def _check_python_deny(code: str) -> str | None:
+        """AST 静态分析 Python 代码，拦截动态执行与 shell 逃逸。
+
+        Returns:
+            拦截原因；None 表示通过。
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return f"无法解析代码（语法错误）：{e}"
+
+        # Pass 1: 收集模块别名与危险局部名（from os import system 等）
+        os_aliases: set[str] = set()
+        subprocess_aliases: set[str] = set()
+        dangerous_locals: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "os":
+                        os_aliases.add(alias.asname or "os")
+                    elif alias.name == "subprocess":
+                        subprocess_aliases.add(alias.asname or "subprocess")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "os":
+                    for alias in node.names:
+                        if alias.name in _OS_SHELL_ATTRS or alias.name == "*":
+                            dangerous_locals.add(alias.asname or alias.name)
+                elif node.module == "subprocess":
+                    for alias in node.names:
+                        if alias.name in _SUBPROCESS_CALLS or alias.name == "*":
+                            dangerous_locals.add(alias.asname or alias.name)
+
+        def _string_literals(node: ast.AST) -> list[str]:
+            """收集表达式树内所有常量字符串（含 f-string 的常量片段）。"""
+            return [
+                sub.value for sub in ast.walk(node)
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+            ]
+
+        # Pass 2: 检查所有函数调用
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+
+            if isinstance(func, ast.Name):
+                if func.id in _DENY_DIRECT_CALLS:
+                    return f"{func.id}() 动态代码执行被禁止"
+                # getattr(os, "system") 动态取模块方法
+                if func.id == "getattr" and node.args:
+                    target = node.args[0]
+                    if isinstance(target, ast.Name) and target.id in os_aliases | subprocess_aliases:
+                        return "getattr() 动态访问 os/subprocess 方法被禁止"
+                if func.id in dangerous_locals:
+                    return f"{func.id}()（shell/子进程入口）被禁止，请改用 bash/pwsh 工具"
+
+            if isinstance(func, ast.Attribute):
+                attr = func.attr
+                obj = func.value
+                if isinstance(obj, ast.Name):
+                    if obj.id in os_aliases and attr in _OS_SHELL_ATTRS:
+                        return f"os.{attr}() 被禁止，请改用 bash/pwsh 工具"
+                    if obj.id in subprocess_aliases and attr in _SUBPROCESS_CALLS:
+                        shell_kw = [
+                            kw for kw in node.keywords
+                            if kw.arg == "shell"
+                            and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+                        ]
+                        if shell_kw:
+                            return "subprocess 调用 shell=True 被禁止，请改用 bash/pwsh 工具"
+                        strings = _string_literals(node)
+                        if any(tok in s.lower() for s in strings for tok in _SHELL_TOKENS):
+                            return f"subprocess 调用 {attr}() 指向 bash/pwsh 被禁止，请改用 bash/pwsh 工具"
+
         return None
 
     def _install_packages(self, packages: str) -> ToolResult:

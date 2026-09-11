@@ -22,7 +22,7 @@ from typing import Any
 import requests
 
 from core.config import Config
-from core.tools.base import Tool, ToolResult
+from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,12 @@ class PDF2MarkdownTool(Tool):
 
     def execute(self, **kwargs: Any) -> ToolResult:
         file_path = kwargs.get("file_path", "")
-        timeout = min(int(kwargs.get("timeout", 300)), 600)
+        # T14: timeout 安全转换 + clamp（非数字回退默认，范围 1-600）
+        try:
+            timeout = int(kwargs.get("timeout", 300))
+        except (TypeError, ValueError):
+            timeout = 300
+        timeout = max(1, min(timeout, 600))
         output_path = kwargs.get("output_path", "")
         model_version = kwargs.get("model_version", "")
 
@@ -208,7 +213,7 @@ class PDF2MarkdownTool(Tool):
             f"输出: {output_path}\n"
             f"字符数: {char_count:,}\n"
             f"行数: {line_count:,}\n\n"
-            f"--- Markdown 预览 ---\n{preview}"
+            f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
         )
         return ToolResult(output, meta={"output_path": output_path, "api_mode": api_mode})
 
@@ -523,11 +528,12 @@ class PDF2MarkdownTool(Tool):
         try:
             resp = requests.get(url, timeout=(15, 60), proxies=no_proxy)
             resp.raise_for_status()
-            return resp.text
+            # T11: 显式 UTF-8 解码，避免 requests 按 ISO-8859-1 回退导致中文乱码
+            return resp.content.decode("utf-8")
         except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
             resp = requests.get(url, timeout=(15, 60), verify=False, proxies=no_proxy)
             resp.raise_for_status()
-            return resp.text
+            return resp.content.decode("utf-8")
 
 
 class _AgentLimitError(Exception):

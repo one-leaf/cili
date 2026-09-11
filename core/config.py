@@ -125,6 +125,7 @@ class SystemConfig:
     search_engine: str = "bing"  # Web search engine: "bing" or "google"
     mineru_api_key: str = ""  # MinerU API key for PDF to Markdown (Precision Parse API)
     max_iterations: int = 200  # Agent maximum tool call iterations per session
+    access_token: str = ""  # 访问令牌：非 localhost 绑定且未配置时拒绝启动；配置后 Web 请求需携带
 
     @classmethod
     def from_dict(cls, data: dict) -> "SystemConfig":
@@ -136,6 +137,7 @@ class SystemConfig:
             search_engine=data.get("search_engine", "bing"),
             mineru_api_key=data.get("mineru_api_key", ""),
             max_iterations=int(data.get("max_iterations", 200)),
+            access_token=data.get("access_token", ""),
         )
 
     def to_dict(self) -> dict:
@@ -147,6 +149,7 @@ class SystemConfig:
             "search_engine": self.search_engine,
             "mineru_api_key": self.mineru_api_key,
             "max_iterations": self.max_iterations,
+            "access_token": self.access_token,
         }
 
 

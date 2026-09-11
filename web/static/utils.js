@@ -207,3 +207,34 @@ function formatFileSize(bytes) {
     if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 }
+
+// ── 访问令牌 (access_token) ──
+// 服务端配置 access_token 后（多用于非 localhost 绑定），前端需携带令牌访问。
+// URL ?token=xxx 支持首次页面加载与静态资源（浏览器无法给静态资源加请求头），
+// 之后所有 fetch 请求自动注入 X-Access-Token 头（含 SSE 流式请求）。
+const TOKEN_KEY = 'cili_access_token';
+
+function getAccessToken() {
+    try {
+        const urlToken = new URLSearchParams(window.location.search).get('token');
+        if (urlToken) {
+            localStorage.setItem(TOKEN_KEY, urlToken);
+            return urlToken;
+        }
+        return localStorage.getItem(TOKEN_KEY) || '';
+    } catch (e) { return ''; }
+}
+
+function patchFetchWithToken() {
+    const token = getAccessToken();
+    if (!token) return;
+    const originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+        init = init || {};
+        const headers = new Headers(init.headers || {});
+        headers.set('X-Access-Token', token);
+        init.headers = headers;
+        return originalFetch.call(this, input, init);
+    };
+}
+patchFetchWithToken();

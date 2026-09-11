@@ -12,12 +12,17 @@ Directory structure:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import re
 import secrets
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+# exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
+_EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -239,10 +244,8 @@ class SessionManager:
             "messages": messages,
         }
         try:
-            temp_file = log_file.with_suffix(".json.tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            temp_file.replace(log_file)
+            from core.fs_utils import atomic_write_json
+            atomic_write_json(log_file, data)
         except Exception as e:
             logger.error(f"Failed to save agent log {exec_id}: {e}")
         return exec_id
@@ -250,9 +253,14 @@ class SessionManager:
     def load_agent_log(self, exec_id: str) -> dict | None:
         """加载单个 Agent 执行日志。
 
+        Args:
+            exec_id: 执行 ID（必须是白名单格式，否则拒绝，防路径穿越）
+
         Returns:
             执行日志数据，None 表示不存在
         """
+        if not _EXEC_ID_RE.match(exec_id):
+            raise ValueError(f"Invalid exec_id: {exec_id!r}")
         log_file = self.session_dir / exec_id / "index.json"
         if not log_file.exists():
             return None
@@ -295,9 +303,14 @@ class SessionManager:
     def delete_agent_log(self, exec_id: str) -> bool:
         """删除单个 Agent 执行目录（含 index.json 和工具输出文件）。
 
+        Args:
+            exec_id: 执行 ID（必须是白名单格式，否则拒绝，防路径穿越）
+
         Returns:
             True 表示成功删除
         """
+        if not _EXEC_ID_RE.match(exec_id):
+            raise ValueError(f"Invalid exec_id: {exec_id!r}")
         import shutil
         exec_dir = self.session_dir / exec_id
         if exec_dir.exists() and exec_dir.is_dir():
@@ -308,7 +321,8 @@ class SessionManager:
     # ========== 持久化 ==========
 
     def save(self) -> None:
-        """持久化到 {session_dir}/index.json（原子写入）。"""
+        """持久化到 {session_dir}/index.json（原子写入，统一 fs_utils）。"""
+        from core.fs_utils import atomic_write_json
         session_file = self.session_dir / "index.json"
         data = {
             "session_id": self.session_id,
@@ -318,20 +332,9 @@ class SessionManager:
         }
 
         try:
-            # 原子写入：先写临时文件再重命名
-            temp_file = session_file.with_suffix(".json.tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            temp_file.replace(session_file)
+            atomic_write_json(session_file, data)
         except Exception as e:
             logger.error(f"Failed to save session {self.session_id}: {e}")
-            # 清理临时文件
-            try:
-                temp_file = session_file.with_suffix(".json.tmp")
-                if temp_file.exists():
-                    temp_file.unlink()
-            except Exception:
-                pass
 
     def load(self) -> bool:
         """从 {session_dir}/index.json 加载会话。
@@ -429,14 +432,14 @@ class SessionManager:
         self.metadata["usage"] = usage
 
     def get_usage(self) -> dict:
-        """获取使用量统计。"""
-        return self.metadata.get("usage", {
+        """获取使用量统计（返回副本，防止调用方原地修改不触发保存）。"""
+        return copy.deepcopy(self.metadata.get("usage", {
             "input_tokens": 0,
             "output_tokens": 0,
             "api_calls": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
-        })
+        }))
 
     # ========== 工具方法 ==========
 
@@ -461,10 +464,10 @@ class SessionManager:
         return None
 
     def to_dict(self) -> dict:
-        """转换为字典格式（用于 API 返回）。"""
+        """转换为字典格式（用于 API 返回，返回深拷贝防止调用方污染内部状态）。"""
         return {
             "session_id": self.session_id,
             "name": self.name,
-            "messages": self.messages,
-            "metadata": self.metadata,
+            "messages": copy.deepcopy(self.messages),
+            "metadata": copy.deepcopy(self.metadata),
         }

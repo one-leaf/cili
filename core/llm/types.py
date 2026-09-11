@@ -344,10 +344,16 @@ class UsageData:
     @classmethod
     def from_openai(cls, data: dict[str, Any]) -> UsageData:
         """Create from OpenAI usage format."""
+        # 标准字段 prompt_tokens_details.cached_tokens；DeepSeek/OpenRouter 等在
+        # usage 顶层返回 prompt_cache_hit_tokens / prompt_cache_miss_tokens（L7）。
+        details = data.get("prompt_tokens_details") or {}
+        cached = details.get("cached_tokens", 0) or 0
+        if not cached:
+            cached = data.get("prompt_cache_hit_tokens", 0) or 0
         return cls(
             input_tokens=data.get("prompt_tokens", 0),
             output_tokens=data.get("completion_tokens", 0),
-            cache_read_tokens=data.get("prompt_tokens_details", {}).get("cached_tokens", 0) if data.get("prompt_tokens_details") else 0,
+            cache_read_tokens=cached,
             cache_write_tokens=0,  # OpenAI doesn't report cache write
         )
 

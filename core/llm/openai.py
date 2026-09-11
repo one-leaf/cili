@@ -159,7 +159,10 @@ class OpenAIAdapter(Adapter):
             # Assistant message: text + reasoning_content + tool_calls
             if tool_calls or (role == "assistant" and (text_parts or tool_calls)):
                 msg_dict: dict[str, Any] = {"role": "assistant"}
-                msg_dict["content"] = "\n".join(text_parts)
+                # OpenAI 规范：仅含 tool_calls 时 content 必须为 null（空串会被
+                # 部分兼容端点拒绝，L11）
+                content = "\n".join(text_parts)
+                msg_dict["content"] = content if content else None
                 # CoT passback: reasoning blocks concatenated back to the wire.
                 # Reference: deepseek-harness serializeAssistant() — required on
                 # tool-call turns, ignored elsewhere but keeps prefix stable.
@@ -229,6 +232,13 @@ class OpenAIAdapter(Adapter):
                 user_content.extend(images)
                 openai_messages.append({"role": "user", "content": user_content})
 
+            # User message with tool results and leftover text: tool results already
+            # emitted as role=tool, emit the remaining text as a user message.
+            # （merge_consecutive_same_role 合并相邻 user 消息后会出现此形态，
+            #  之前 text_parts 被静默丢弃，用户问话不发模型）
+            elif tool_results and text_parts and role == "user":
+                openai_messages.append({"role": "user", "content": "\n".join(text_parts)})
+
             # User message with only text (no tool calls or results)
             elif not tool_calls and not tool_results and text_parts and role != "assistant":
                 openai_messages.append({"role": role, "content": "\n".join(text_parts)})
@@ -293,6 +303,12 @@ class OpenAIAdapter(Adapter):
         # Text content
         if message.get("content"):
             content_blocks.append(TextBlock(text=message["content"]))
+
+        # OpenAI refusal: content 为 None 时拒绝原因放在 refusal 字段，
+        # 不处理会得到「成功但空」的响应、拒绝原因丢失。
+        refusal = message.get("refusal")
+        if refusal and not message.get("content"):
+            content_blocks.append(TextBlock(text=f"[模型拒绝请求] {refusal}"))
 
         # Tool calls - keep arguments as raw JSON string
         for tc in message.get("tool_calls", []):

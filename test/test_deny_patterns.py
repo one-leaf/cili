@@ -158,6 +158,27 @@ class TestBashDeny:
         """eval 从字符串执行代码，拦截。"""
         _assert_blocked(self._check, "eval 'rm -rf /'")
 
+    def test_adjacent_concat_blocked(self):
+        """相邻字符串拼接（ev"al"）不得绕过 deny 扫描。"""
+        for cmd in [
+            'ev"al" rm -rf /',
+            "r'm' -rf /",
+            'rm" -rf" /',
+        ]:
+            _assert_blocked(self._check, cmd)
+
+    def test_ansi_c_quote_blocked(self):
+        """ANSI-C 引号 $'...' 解码后的命令词必须参与扫描。"""
+        _assert_blocked(self._check, "$'rm' -rf /")
+        _assert_blocked(self._check, "$'\\x72\\x6d' -rf /")  # \x72\x6d == rm
+
+    def test_ansi_c_eval_blocked(self):
+        _assert_blocked(self._check, "$'ev'\"al\" x")
+
+    def test_plain_concat_data_not_blocked(self):
+        """正常 glued 数据不误拦（echorm 无词边界不匹配 rm）。"""
+        _assert_allowed(self._check, 'echo pre"rm -rf"post')
+
     def test_string_literals_not_blocked(self):
         """字符串字面量中的关键字不再误拦。"""
         for cmd in [

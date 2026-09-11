@@ -72,6 +72,8 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),
     "python": _factory(PythonTool, needs_config=True),
+    # 注意：注册键 "todo" 与工具类 name="todo_write" 不同（T26）。这是有意的——
+    # 注册键简短稳定供角色白名单引用，工具名详细供 LLM 语义理解。勿"统一"改名。
     "todo": _factory(TodoWriteTool),
     "latex": _factory(LatexTool),
     "message_bus": _factory(MessageBusTool),

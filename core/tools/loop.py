@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 
 from core.tools.base import Tool, ToolResult
@@ -34,6 +35,21 @@ _META_PREFIX = "_"
 def _state_filename(task_id: str) -> str:
     """Derive a safe state filename from task_id (absolute path)."""
     return hashlib.md5(task_id.encode()).hexdigest()[:12]
+
+
+# 同一任务的加载-修改-保存串行化：多 agent 同时操作同一 source_file 时
+# 避免读-改-写竞态丢更新（SEC-20 系）。加载/保存本身已原子，但 read-modify-write
+# 需要进程内互斥。
+_state_locks: dict[str, threading.Lock] = {}
+_state_locks_guard = threading.Lock()
+
+
+def _get_state_lock(task_id: str) -> threading.Lock:
+    """Get or create the per-task state lock (双重检查加锁)。"""
+    with _state_locks_guard:
+        if task_id not in _state_locks:
+            _state_locks[task_id] = threading.Lock()
+        return _state_locks[task_id]
 
 
 def _load_state(task_id: str) -> dict:
@@ -81,7 +97,8 @@ class LoopTool(Tool):
         "- **next**: Get next pending item with progress stats (auto-loads items from source_file)\n"
         "- **done**: Mark item as completed\n"
         "- **fail**: Mark item as failed with reason\n"
-        "- **status**: Get progress statistics\n\n"
+        "- **status**: Get progress statistics\n"
+        "- **reset**: Clear all item progress (keeps task metadata). Items are re-queued as pending on next `next` call.\n\n"
         "## File Format:\n"
         "Plain text, one item per line. Empty lines and leading/trailing whitespace are ignored.\n\n"
         "## Examples:\n"
@@ -123,7 +140,7 @@ class LoopTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["next", "done", "fail", "status"],
+                    "enum": ["next", "done", "fail", "status", "reset"],
                     "description": "Action to perform.",
                 },
                 "source_file": {
@@ -175,85 +192,104 @@ class LoopTool(Tool):
             return self._fail(tid, item, error)
         elif action == "status":
             return self._status(tid)
+        elif action == "reset":
+            return self._reset(tid)
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
     def _next(self, task_id: str, file_path: Path) -> ToolResult:
         """Get next pending item. Auto-loads items from source_file."""
-        state = _load_state(task_id)
+        with _get_state_lock(task_id):
+            state = _load_state(task_id)
 
-        # Auto-sync items from file on first call or when file is newer
-        if file_path.exists():
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    items = [line.strip() for line in f if line.strip()]
-            except Exception as e:
-                return ToolResult(f"Error: failed to read file: {e}", error=True)
+            # Auto-sync items from file on first call or when file is newer
+            if file_path.exists():
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        items = [line.strip() for line in f if line.strip()]
+                except Exception as e:
+                    return ToolResult(f"Error: failed to read file: {e}", error=True)
 
-            # Add new items as pending (idempotent)
-            added = 0
-            for item in items:
-                if item not in state:
-                    state[item] = "pending"
-                    added += 1
+                # Add new items as pending (idempotent)
+                added = 0
+                for item in items:
+                    if item not in state:
+                        state[item] = "pending"
+                        added += 1
 
-            if added > 0:
-                _save_state(task_id, state)
-        elif not state:
-            return ToolResult(f"Error: file not found: {file_path}", error=True)
+                if added > 0:
+                    _save_state(task_id, state)
+            elif not state:
+                return ToolResult(f"Error: file not found: {file_path}", error=True)
 
-        # Find first pending item (skip metadata keys)
-        for item, status in _iter_items(state).items():
-            if status == "pending":
-                # 附带进度统计，让 agent 始终知道任务进展
-                counts = _count(state)
-                lines = [
-                    f"进度: {counts['done']}/{counts['total']} 已完成, "
-                    f"{counts['failed']} 失败, {counts['pending']} 待处理",
-                    f"当前项: {item}",
-                ]
-                return ToolResult("\n".join(lines))
+            # Find first pending item (skip metadata keys)
+            for item, status in _iter_items(state).items():
+                if status == "pending":
+                    # 附带进度统计，让 agent 始终知道任务进展
+                    counts = _count(state)
+                    lines = [
+                        f"进度: {counts['done']}/{counts['total']} 已完成, "
+                        f"{counts['failed']} 失败, {counts['pending']} 待处理",
+                        f"当前项: {item}",
+                    ]
+                    return ToolResult("\n".join(lines))
 
-        # No pending items
-        counts = _count(state)
-        return ToolResult(f"所有项已处理完毕 (完成: {counts['done']}, 失败: {counts['failed']})")
+            # No pending items
+            counts = _count(state)
+            return ToolResult(f"所有项已处理完毕 (完成: {counts['done']}, 失败: {counts['failed']})")
 
     def _done(self, task_id: str, item: str | None) -> ToolResult:
         """Mark item as completed."""
         if not item:
             return ToolResult("Error: 'item' is required for done action", error=True)
 
-        state = _load_state(task_id)
+        with _get_state_lock(task_id):
+            state = _load_state(task_id)
 
-        if item not in state:
-            return ToolResult(f"Error: item '{item}' not found in state", error=True)
+            if item not in state:
+                return ToolResult(f"Error: item '{item}' not found in state", error=True)
 
-        state[item] = "done"
-        _save_state(task_id, state)
+            state[item] = "done"
+            _save_state(task_id, state)
 
-        counts = _count(state)
-        return ToolResult(json.dumps(counts, ensure_ascii=False))
+            counts = _count(state)
+            return ToolResult(json.dumps(counts, ensure_ascii=False))
 
     def _fail(self, task_id: str, item: str | None, error: str | None) -> ToolResult:
         """Mark item as failed with reason."""
         if not item:
             return ToolResult("Error: 'item' is required for fail action", error=True)
 
-        state = _load_state(task_id)
+        with _get_state_lock(task_id):
+            state = _load_state(task_id)
 
-        if item not in state:
-            return ToolResult(f"Error: item '{item}' not found in state", error=True)
+            if item not in state:
+                return ToolResult(f"Error: item '{item}' not found in state", error=True)
 
-        # Store as "failed:{reason}"
-        reason = error or "unknown"
-        state[item] = f"failed:{reason}"
-        _save_state(task_id, state)
+            # Store as "failed:{reason}"
+            reason = error or "unknown"
+            state[item] = f"failed:{reason}"
+            _save_state(task_id, state)
 
-        counts = _count(state)
-        return ToolResult(json.dumps(counts, ensure_ascii=False))
+            counts = _count(state)
+            return ToolResult(json.dumps(counts, ensure_ascii=False))
 
     def _status(self, task_id: str) -> ToolResult:
         """Get progress statistics."""
         state = _load_state(task_id)
         counts = _count(state)
         return ToolResult(json.dumps(counts, ensure_ascii=False))
+
+    def _reset(self, task_id: str) -> ToolResult:
+        """Clear all item progress, keeping metadata keys (T19).
+
+        源文件删除/重跑时清理残留状态；下次 next 会按文件重新加载为 pending。
+        """
+        with _get_state_lock(task_id):
+            state = _load_state(task_id)
+            cleared = len(_iter_items(state))
+            state = {k: v for k, v in state.items() if k.startswith(_META_PREFIX)}
+            _save_state(task_id, state)
+            return ToolResult(
+                f"已重置 {cleared} 项进度（任务元数据保留）"
+            )

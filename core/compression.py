@@ -7,19 +7,22 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
-
-from core.llm import Message
+import os
+import re
 
 logger = logging.getLogger(__name__)
 
 # Placeholder for compacted tool results (injected when sending to LLM)
 MICROCOMPACT_PLACEHOLDER = "[Compacted: content stored externally, use `read` tool to retrieve]"
 
+# 仅允许安全字符，防止用 tool_use_id 拼文件名时路径遍历
+_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 def microcompact_tool_results(
     messages: list[dict],
     keep_recent: int = 6,
+    output_dir: str | None = None,
 ) -> int:
     """标记旧的工具结果为已压缩。
 
@@ -27,11 +30,17 @@ def microcompact_tool_results(
     - 标记 _meta.compacted = True（消息级别）
     - 发送 LLM 时由 _resolve_tool_results() 注入占位符
 
+    外部文件结果（file_size > 0）：内容已在文件里，仅标记 compacted。
+    内联结果（file_size = 0）：内容只在消息内，压缩前先 spill 到
+    {output_dir}/{tool_use_id}.txt 并写 _meta.output_path，再清 content，
+    保证可经 read_tool_result 恢复；无 output_dir 时跳过（避免数据丢失）。
+
     向后兼容：检测旧格式的 block._compacted 并自动迁移。
 
     Args:
         messages: 消息列表（会被原地修改）
         keep_recent: 保留最近多少条工具结果消息
+        output_dir: 内联结果 spill 的目标目录（session_dir）；为 None 时内联结果不压缩
 
     Returns:
         节省的字节数（估算）
@@ -74,12 +83,38 @@ def microcompact_tool_results(
             if file_size > 0 and file_size < 200:
                 continue
 
-            # 标记 block 级别 _meta.compacted = True
-            if file_size > 0:
-                saved += file_size
             if "_meta" not in block:
                 block["_meta"] = {}
-            block["_meta"]["compacted"] = True
+            block_meta = block["_meta"]
+
+            # 外部文件结果：内容已在文件里，仅标记
+            if file_size > 0:
+                block_meta["compacted"] = True
+                saved += file_size
+                continue
+
+            # 内联结果：内容只在消息内，压缩前先 spill 到文件，保证可恢复。
+            # 无 output_dir 或 tool_use_id 非法时跳过，避免不可恢复的数据丢失。
+            tool_use_id = block.get("tool_use_id", "")
+            content = block.get("content", "")
+            if not output_dir or not _SAFE_ID_PATTERN.match(tool_use_id):
+                continue
+            if not isinstance(content, str) or not content:
+                continue
+
+            filename = f"{tool_use_id}.txt"
+            try:
+                file_path = os.path.join(output_dir, filename)
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            except Exception as e:
+                logger.warning(f"[Microcompact] 内联结果 spill 失败，跳过压缩: {e}")
+                continue
+
+            block_meta["output_path"] = filename
+            block_meta["compacted"] = True
+            block["content"] = None  # 清空内联内容（_resolve_tool_results 注入占位符）
+            saved += len(content)
 
     return saved
 
@@ -114,7 +149,8 @@ def count_messages_tokens(messages: list[dict]) -> int:
                                 total += count_tokens_approx(sub.get("text", ""))
                             elif sub.get("type") == "image":
                                 # 图片约 750-1000 tokens
-                                data = sub.get("source", {}).get("data", "")
+                                src = sub.get("source", {})
+                                data = src.get("data", "") if isinstance(src, dict) else ""
                                 total += max(750, len(data) // 100)
                     else:
                         total += count_tokens_approx(str(rc))
@@ -125,134 +161,3 @@ def count_messages_tokens(messages: list[dict]) -> int:
     return total
 
 
-def summarize_messages_for_compact(
-    messages: list[dict],
-    llm_client: Any,
-    max_chars: int = 50000,
-) -> str:
-    """使用 LLM 摘要消息列表。
-
-    Args:
-        messages: 要摘要的消息列表
-        llm_client: LLM 客户端（需要有 chat 方法）
-        max_chars: 最大字符数限制
-
-    Returns:
-        摘要文本
-    """
-    # 构建对话文本
-    conversation_parts = []
-    for msg in messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            conversation_parts.append(f"{role}: {content}")
-        elif isinstance(content, list):
-            texts = []
-            for block in content:
-                if block.get("type") == "text":
-                    texts.append(block.get("text", ""))
-                elif block.get("type") == "tool_use":
-                    texts.append(f"[调用工具: {block.get('name', '')}]")
-                elif block.get("type") == "tool_result":
-                    texts.append("[工具结果]")
-            if texts:
-                conversation_parts.append(f"{role}: {' '.join(texts)}")
-
-    conversation_text = "\n".join(conversation_parts)
-
-    # 截断过长内容
-    if len(conversation_text) > max_chars:
-        conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
-
-    summary_prompt = f"""请用中文简洁地总结以下对话的主要内容，包括：
-1. 已完成的主要工作
-2. 当前进行到哪一步
-3. 关键的发现或决策
-
-总结应简洁明了，200 字以内。
-
-对话内容：
-{conversation_text}
-
-总结："""
-
-    try:
-        response = llm_client.chat(
-            messages=[Message(role="user", content=summary_prompt)],
-            system="你是一个对话总结助手，负责简洁地总结对话内容。",
-        )
-        # Use the typed get_text() method
-        return response.get_text().strip()
-    except Exception as e:
-        logger.warning(f"[压缩] LLM 摘要失败: {e}")
-        # 失败时返回简单的截断文本
-        return conversation_text[:500] + "..."
-
-
-def compact_messages_with_summary(
-    messages: list[dict],
-    llm_client: Any,
-    keep_recent_count: int = 6,
-) -> int:
-    """使用 LLM 摘要进行完整压缩。
-
-    保留最近 keep_recent_count 条消息，更早的消息被 LLM 摘要替换。
-    pinned 消息（_meta.pinned=True）始终保留，不被压缩。
-
-    Args:
-        messages: 消息列表（会被原地修改）
-        llm_client: LLM 客户端
-        keep_recent_count: 保留最近多少条消息
-
-    Returns:
-        节省的 token 数（估算）
-    """
-    if len(messages) <= keep_recent_count + 1:
-        # 消息太少，不需要压缩
-        return 0
-
-    # 提取 pinned 消息（始终保留）
-    pinned: list[tuple[int, dict]] = []
-    for i, msg in enumerate(messages):
-        if msg.get("_meta", {}).get("pinned"):
-            pinned.append((i, msg))
-
-    # 分离要压缩和要保留的消息（排除 pinned）
-    pinned_indices = {idx for idx, _ in pinned}
-    to_compact = [msg for i, msg in enumerate(messages[:-keep_recent_count]) if i not in pinned_indices]
-    to_keep = messages[-keep_recent_count:]
-
-    if not to_compact:
-        # 所有旧消息都是 pinned，无需压缩
-        return 0
-
-    # 计算压缩前的 token 数
-    tokens_before = count_messages_tokens(to_compact)
-
-    # 生成摘要
-    summary = summarize_messages_for_compact(to_compact, llm_client)
-
-    # 替换消息列表
-    messages.clear()
-    messages.append({
-        "role": "user",
-        "content": f"[上下文压缩] 以下是之前对话的摘要：\n\n{summary}",
-    })
-    messages.append({
-        "role": "assistant",
-        "content": f"好的，我已经理解了之前的对话内容。以下是摘要：{summary}\n\n我将继续基于这个上下文完成任务。",
-    })
-
-    # 重新插入 pinned 消息（放在摘要之后、最近消息之前）
-    for _, pinned_msg in pinned:
-        messages.append(pinned_msg)
-
-    messages.extend(to_keep)
-
-    # 计算压缩后的 token 数
-    tokens_after = count_messages_tokens(messages)
-    saved = tokens_before - tokens_after
-
-    logger.info(f"[压缩] 完整压缩完成，节省约 {saved} tokens（保留 {len(pinned)} 条 pinned 消息）")
-    return saved

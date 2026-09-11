@@ -73,8 +73,9 @@ class LLMClient:
         # Expose base_url for error formatting (backward compat)
         self.base_url = config.base_url
 
-        # Detect LiteLLM proxy
-        adapter.detect_litellm(transport)
+        # Detect LiteLLM proxy（官方域名跳过，避免启动时多余请求）
+        if adapter.should_detect_litellm():
+            adapter.detect_litellm(transport)
 
     def chat(
         self,
@@ -83,6 +84,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         session_id: str = "",
+        timeout: httpx.Timeout | None = None,
     ) -> LLMResponse:
         """Non-streaming LLM call.
 
@@ -92,6 +94,7 @@ class LLMClient:
             tools: Tool schemas
             max_tokens: Override default max_tokens
             session_id: Optional session ID for proxy routing
+            timeout: Optional per-phase timeout override for this call
 
         Returns:
             LLMResponse with content blocks, stop_reason, usage
@@ -115,7 +118,7 @@ class LLMClient:
         url = self.adapter.api_url
 
         def do_request():
-            status, resp_headers, data = self.transport.post(url, headers, body)
+            status, resp_headers, data = self.transport.post(url, headers, body, timeout=timeout)
             if status >= 400:
                 # Raise for retry logic
                 resp = httpx.Response(status_code=status, request=httpx.Request("POST", url))
@@ -147,6 +150,7 @@ class LLMClient:
         on_tool_call: Callable[[ToolCallBlock], None] | None = None,
         stop_check: Callable[[], bool] | None = None,
         session_id: str = "",
+        timeout: httpx.Timeout | None = None,
     ) -> LLMResponse:
         """Streaming LLM call with callbacks.
 
@@ -164,9 +168,13 @@ class LLMClient:
             on_tool_call: Called when a new tool call block starts
             stop_check: If returns True, stream is interrupted
             session_id: Optional session ID for proxy routing
+            timeout: Optional per-phase timeout override for this call
 
         Returns:
             LLMResponse with assembled content blocks
+
+        Raises:
+            RuntimeError: 流结束后未收到 finish chunk 且无任何内容（视为失败，供上层重试）
         """
         max_tokens = max_tokens or self.max_tokens
         body = self.adapter.serialize(
@@ -186,7 +194,7 @@ class LLMClient:
         def do_stream():
             """Execute streaming request and process chunks."""
             assembler.reset()  # Reset on retry to avoid duplicate data
-            events = self.transport.stream(url, headers, body, stop_check=stop_check)
+            events = self.transport.stream(url, headers, body, stop_check=stop_check, timeout=timeout)
             # Pass entire event iterator to translate_stream so it maintains
             # state (tool_call_indices, etc.) across events.
             for chunk in self.adapter.translate_stream(events):
@@ -205,10 +213,17 @@ class LLMClient:
 
             return assembler
 
+        # 流式重试由 base_agent 统一管理（max_retries=0），避免双层重试
         self.transport.with_retry(
             do_stream,
             stop_check=stop_check,
+            max_retries=0,
         )
+
+        # 流结束未收到 finish chunk 且无任何内容 = 连接被静默截断，视为失败供上层重试。
+        # （有内容但缺 finish chunk 的兼容服务器不误判。）
+        if not assembler.finished and not assembler.blocks:
+            raise RuntimeError("LLM 流结束但未收到完成信号（可能被截断），请重试")
 
         # Notify about completed tool calls
         if on_tool_call:
