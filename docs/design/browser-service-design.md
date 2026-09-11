@@ -147,13 +147,23 @@ self._page_pool: dict[int, tuple]       # tab_index → (page, 最后活动时�
 self._next_tab_index: int               # 下一个可分配的 tab 编号（从 1 开始）
 self._active_tab_index: int | None      # 最近使用的 tab_index
 
+ref 定位与诊断状态：
+self._snapshot_refs: dict[int, dict]    # tab_index → {ref: {role, name, index, mode}}
+self._console_buffers: dict[int, deque] # tab_index → [(type, text)]（最长 200 条）
+self._request_buffers: dict[int, deque] # tab_index → [(method, url, status)]
+self._listener_pages: set[int]          # 已挂 console/response 监听器的 page id
+
 操作策略：
 - navigate / web_search → _open_new_page() → 新 tab，加入池，返回 tab_index
 - screenshot/save_pdf/execute/get_text/get_links/wait_for → 使用 tab_index 或 _active_tab_index
+- snapshot/find/click/fill/type/press → ref 定位交互（见 5.2）
+- console / requests → 读取该 tab 的 console/网络缓冲
+- go_back / go_forward / reload → 浏览器级导航
 - switch_tab(tab_index) → 切换到指定 tab
 - list_tabs() → 列出所有打开的 tab
-- close_tab(tab_index) → 关闭指定 tab，释放资源
+- close_tab(tab_index) → 关闭指定 tab，释放资源（连带清理 ref/缓冲）
 - _worker_loop 每次任务前检查：关闭 time.time() - ts > 600 的非活跃 tab
+- _touch_page() 时幂等挂载 console/response 监听器（_ensure_listeners）
 
 生命周期：
 ├── navigate("https://example.com")
@@ -441,6 +451,24 @@ class BrowserTool(Tool):
 
         if action == "navigate":
             return service.navigate(url, tab_index=tab_index)  # 开新 tab，返回 tab_index
+        elif action == "snapshot":
+            return service.snapshot(tab_index=tab_index)
+        elif action == "find":
+            return service.find(pattern, tab_index=tab_index)
+        elif action == "click":
+            return service.click(ref, tab_index=tab_index)
+        elif action == "fill":
+            return service.fill(ref, text, tab_index=tab_index)
+        elif action == "type":
+            return service.type(ref, text, tab_index=tab_index)
+        elif action == "press":
+            return service.press(ref, key, tab_index=tab_index)
+        elif action == "go_back" / "go_forward" / "reload":
+            return service.go_back() / go_forward() / reload()
+        elif action == "console":
+            return service.console(clear=clear, tab_index=tab_index)
+        elif action == "requests":
+            return service.requests(clear=clear, tab_index=tab_index)
         elif action == "screenshot":
             return service.screenshot(path, tab_index=tab_index)
         elif action == "save_pdf":
@@ -465,7 +493,41 @@ class BrowserTool(Tool):
 
 **kill_chrome()**：独立方法（不在 execute 的 action 枚举中），委托给 `service.kill_chrome()` 终止 Chrome 进程。
 
-### 5.2 WebSearchTool（web_search.py）
+### 5.2 ref 定位交互（snapshot/find/click/fill/type/press）
+
+仿 playwright-cli 的 ref-snapshot 模型，解决「LLM 不知道页面上有哪些可交互元素、怎么选中它们」的问题。
+
+**核心思路**：`aria_snapshot()` 生成页面的 accessibility 树（role + accessible name，天然含文本/占位符，无需 CSS 选择器），解析器为每个可交互元素分配稳定 ref（`r1`, `r2`, ...），LLM 通过 ref 定位元素，完全绕开脆弱的选择器。
+
+```
+snapshot()                              # 返回带 [ref=rN] 的 accessibility 树
+  └─ page.locator("body").aria_snapshot()  # YAML，如：
+  │    - banner:
+  │    - button "Sign in"  [ref=r4]
+  │    - textbox "Search..."  [ref=r6]
+  └─ _parse_aria_snapshot()               # 分配 ref 并构建定位映射
+  └─ 存入 self._snapshot_refs[tab_index]
+
+click(ref="r4")  →  get_by_role("button", name="Sign in").nth(0).click()
+fill(ref="r6")   →  get_by_role("textbox", name="Search...").nth(0).fill(...)
+type(ref)        →  locator.press_sequentially(text)   # 逐键触发事件
+press(ref, key)  →  locator.press(key)；ref 为空则 page.keyboard.press(key)
+find(pattern)    →  重新 snapshot 并正则匹配 role/name，返回匹配行+上下文
+```
+
+**解析器规则**（`_parse_aria_snapshot`）：
+- 行形态：容器 `- banner:`（无 name，不分配 ref）；带名元素 `- button "Sign in"`（含内联属性 `[level=1]`）；文本形式 `- paragraph: some text`；属性行 `- /url: /home`（保留显示，不分配 ref）
+- ref 按行顺序（DFS）分配，`r1` 起；同名元素 index 递增（`get_by_role(role, name).nth(index)` 区分重复）
+- **mode 二选一**：`role` → `get_by_role(role, name, exact=True).nth(index)`；`text`（paragraph/generic 等）→ `get_by_text(name, exact=True).nth(index)`
+- 单次 snapshot 上限 `SNAPSHOT_MAX_REFS = 400`，超出元素保留显示但不给 ref
+- ref 仅在产生它的 snapshot 内有效；页面变化后未知 ref 会报错提示重新 snapshot
+
+**console/requests 诊断**：
+- `_ensure_listeners(page, tab_index)` 在 `_touch_page()` 时幂等挂载 `page.on("console")` 和 `page.on("response")`，写入每 tab 的 deque（上限 200 条，FIFO 丢弃）
+- `console(clear)` / `requests(clear)` 返回累积消息；`clear=True` 读取后清空
+- `_close_page_internal()` 清理对应 tab 的 ref 映射与缓冲
+
+### 5.3 WebSearchTool（web_search.py）
 
 精简为 ~310 行，主要职责：
 1. 构建搜索 URL（支持 Bing 和 Google，通过 SEARCH_CONFIGS 配置，支持 time_range 时间过滤）
@@ -719,11 +781,16 @@ def _apply_stealth(self) -> None:
 
 ```
 core/
-├── browser_service.py              # 全局浏览器服务（~1200 行）
+├── browser_service.py              # 全局浏览器服务（~1500 行）
 │   ├── BrowserService              # 服务类
 │   │   ├── start() / stop()        # 生命周期
 │   │   ├── disconnect()            # 断连接保 Chrome
 │   │   ├── navigate()              # 导航（开新 tab，返回 tab_index）
+│   │   ├── snapshot()              # accessibility 树 + ref（见 5.2）
+│   │   ├── find()                  # 正则匹配 role/name 查找元素
+│   │   ├── click() / fill() / type() / press()  # ref 定位交互
+│   │   ├── go_back() / go_forward() / reload()  # 浏览器导航
+│   │   ├── console() / requests()  # 诊断缓冲读取（可 clear）
 │   │   ├── screenshot()            # 截图（支持 tab_index）
 │   │   ├── save_pdf()              # 保存 PDF（支持 tab_index）
 │   │   ├── execute_script()        # 执行 JS（支持 tab_index）
@@ -740,13 +807,22 @@ core/
 │   │   ├── _ensure_page()          # 获取 page（tab_index > active > 新建）
 │   │   ├── _get_page()             # 按 tab_index 获取 page
 │   │   ├── _open_new_page()        # 创建新 tab，返回 tab_index
-│   │   ├── _touch_page()           # 更新 tab 活动时间
+│   │   ├── _touch_page()           # 更新 tab 活动时间（幂等挂监听器）
+│   │   ├── _ensure_listeners()     # 挂 console/response 监听器（幂等）
+│   │   ├── _build_snapshot()       # 生成 aria snapshot + 更新 ref 映射
+│   │   ├── _resolve_ref()          # ref → 定位条目（未知 ref 报错）
+│   │   ├── _locator_for()          # 定位条目 → Playwright locator
+│   │   ├── _find_tab_index()       # page 对象反查 tab_index
 │   │   ├── _cleanup_expired_tabs() # 关闭 >10min 无活动的非活跃 tab
-│   │   ├── _close_page_internal()  # 关闭单个 page
+│   │   ├── _close_page_internal()  # 关闭单个 page（清理 ref/缓冲）
 │   │   ├── _execute_operation()    # 操作通用包装（含错误诊断）
 │   │   ├── _find_browser()         # 查找浏览器可执行文件
 │   │   ├── _remove_chrome_locks()  # 删除 Chrome 锁文件
 │   │   └── _connect_browser()      # CDP 连接管理
+│   │
+│   ├── 模块级函数
+│   │   ├── _parse_aria_snapshot()  # aria_snapshot YAML → 行 + ref 映射
+│   │   └── _unescape_quoted()
 │   │
 │   └── 模块级 API
 │       ├── get_service()
@@ -754,7 +830,7 @@ core/
 │       └── stop_browser_service()
 │
 └── tools/
-    ├── browser.py                  # 浏览器工具（~180 行）
+    ├── browser.py                  # 浏览器工具（~240 行）
     │   └── BrowserTool
     │       ├── execute()           # 委托给 BrowserService（含 tab_index）
     │       ├── close()             # disconnect()

@@ -14,12 +14,14 @@ import logging
 import os
 import queue
 import random
+import re
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from typing import Any
 from urllib.parse import urlparse
 
@@ -74,6 +76,87 @@ def _validate_navigate_url(url: str) -> str | None:
             f"{host} 不是公网地址（环回/私网/链路本地等），不允许导航（SSRF 防护）"
         )
     return None
+
+
+# aria_snapshot YAML 行解析（ref 定位模型）
+# 行形态：
+#   - banner:                 容器（无 name）
+#   - button "Sign in"        带名元素（可带内联属性如 [level=1] 或子节点冒号）
+#   - paragraph: some text    文本形式（role: content）
+#   - /url: /home             属性行（保留显示，不分配 ref）
+_SNAP_EL_RE = re.compile(
+    r'^(\s*)-\s+(\w+)(?:\s+"((?:[^"\\]|\\.)*)")?(?:\s+\[([^\]]*)\])?:?\s*$'
+)
+_SNAP_TEXT_RE = re.compile(r"^(\s*)-\s+(\w+):\s+(.+?)\s*$")
+
+# 单次 snapshot 最多分配的 ref 数（超出的元素保留显示但不给 ref）
+SNAPSHOT_MAX_REFS = 400
+
+# 每 tab 的 console/request 缓冲上限
+BUFFER_MAXLEN = 200
+
+
+def _unescape_quoted(s: str) -> str:
+    """反转义 aria_snapshot 引号 name 中的 \" 和 \\。"""
+    return s.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _parse_aria_snapshot(yaml_text: str, max_refs: int = SNAPSHOT_MAX_REFS):
+    """解析 aria_snapshot YAML，为可交互元素分配 ref。
+
+    Returns:
+        lines: list[tuple[str, str]] — (indent, 带 ref 标注的重建行)
+        ref_map: dict[str, dict] — ref → {"role", "name", "index", "mode"}
+            index: 同 (role, name) 元素出现次序（0 起），用于 get_by_role().nth()
+            mode: "role" 用 get_by_role 定位，"text" 用 get_by_text 定位
+    """
+    ref_map: dict[str, dict] = {}
+    lines_out: list[tuple[str, str]] = []
+    seen: dict[tuple, int] = {}
+    ref_counter = 0
+    for line in yaml_text.splitlines():
+        if not line.strip():
+            continue
+        m = _SNAP_EL_RE.match(line)
+        if m:
+            indent, role, name, _attrs = m.groups()
+            if name:
+                key = (role, name)
+                idx = seen.get(key, 0)
+                seen[key] = idx + 1
+                if ref_counter < max_refs:
+                    ref_counter += 1
+                    ref = f"r{ref_counter}"
+                    ref_map[ref] = {
+                        "role": role,
+                        "name": _unescape_quoted(name),
+                        "index": idx,
+                        "mode": "role",
+                    }
+                    line = line.rstrip() + f" [ref={ref}]"
+            lines_out.append((indent, line))
+            continue
+        m = _SNAP_TEXT_RE.match(line)
+        if m:
+            indent, role, text = m.groups()
+            key = (role, text)
+            idx = seen.get(key, 0)
+            seen[key] = idx + 1
+            if ref_counter < max_refs:
+                ref_counter += 1
+                ref = f"r{ref_counter}"
+                ref_map[ref] = {
+                    "role": role,
+                    "name": text,
+                    "index": idx,
+                    "mode": "text",
+                }
+                line = line.rstrip() + f" [ref={ref}]"
+            lines_out.append((indent, line))
+            continue
+        # 属性行（/url 等）原样保留，不分配 ref
+        lines_out.append(("", line))
+    return lines_out, ref_map
 
 
 class _ChromeProcessRef:
@@ -192,6 +275,14 @@ class BrowserService:
         self._task_events: dict[int, threading.Event] = {}
         self._task_results: dict[int, tuple[bool, Any]] = {}
         self._next_task_id_counter = 0
+
+        # ref 定位：tab_index → {ref: {role, name, index, mode}}
+        self._snapshot_refs: dict[int, dict[str, dict]] = {}
+        # console / 网络请求缓冲：tab_index → deque[(type, text)] / deque[(method, url, status)]
+        self._console_buffers: dict[int, deque] = {}
+        self._request_buffers: dict[int, deque] = {}
+        # 已挂监听器的 page（按 id(page) 去重）
+        self._listener_pages: set[int] = set()
 
     # ==================== 生命周期方法 ====================
 
@@ -922,10 +1013,75 @@ class BrowserService:
         self._touch_page(tab_index, new_page)
         return tab_index
 
+    def _ensure_listeners(self, page, tab_index: int) -> None:
+        """为 page 挂上 console / response 监听器（幂等），供 console/requests 动作读取。
+
+        监听器回调在 Playwright driver 线程运行，deque.append 是原子的，无锁安全。
+        """
+        if id(page) in self._listener_pages:
+            return
+        self._listener_pages.add(id(page))
+        console_buf: deque = deque(maxlen=BUFFER_MAXLEN)
+        request_buf: deque = deque(maxlen=BUFFER_MAXLEN)
+        self._console_buffers[tab_index] = console_buf
+        self._request_buffers[tab_index] = request_buf
+        try:
+            page.on("console", lambda msg: console_buf.append((msg.type, msg.text)))
+            page.on(
+                "response",
+                lambda resp: request_buf.append(
+                    (resp.request.method, resp.url, resp.status)
+                ),
+            )
+        except Exception:
+            pass
+
+    def _find_tab_index(self, page) -> int | None:
+        """根据 page 对象反查它在 tab 池中的 index。"""
+        for idx, (pool_page, _ts) in self._page_pool.items():
+            if pool_page is page:
+                return idx
+        return self._active_tab_index
+
+    def _resolve_ref(self, tab_index: int, ref: str) -> dict:
+        """把 ref 解析为定位条目；未知 ref 报错提示先跑 snapshot。"""
+        ref_map = self._snapshot_refs.get(tab_index) or {}
+        entry = ref_map.get(ref)
+        if not entry:
+            raise ValueError(
+                f"Unknown ref '{ref}' for tab {tab_index}. "
+                f"Run the 'snapshot' action first to get fresh refs."
+            )
+        return entry
+
+    def _locator_for(self, page, entry: dict):
+        """根据 ref 定位条目生成 Playwright locator。
+
+        mode=role 用 get_by_role(role, name).nth(index)；
+        mode=text（paragraph/generic 等文本节点）用 get_by_text(name).nth(index)。
+        """
+        if entry["mode"] == "text":
+            return page.get_by_text(entry["name"], exact=True).nth(entry["index"])
+        return page.get_by_role(
+            entry["role"], name=entry["name"], exact=True
+        ).nth(entry["index"])
+
+    def _build_snapshot(self, page, tab_index: int) -> tuple[list[tuple[str, str]], dict]:
+        """生成页面 aria snapshot 并更新该 tab 的 ref 映射。
+
+        Returns:
+            (lines, ref_map)：lines 用于文本展示，ref_map 存入 _snapshot_refs[tab_index]
+        """
+        yaml_text = page.locator("body").aria_snapshot()
+        lines, ref_map = _parse_aria_snapshot(yaml_text)
+        self._snapshot_refs[tab_index] = ref_map
+        return lines, ref_map
+
     def _touch_page(self, tab_index: int, page) -> None:
         """更新 page 的最后活动时间，设为活跃 tab。"""
         self._page_pool[tab_index] = (page, time.time())
         self._active_tab_index = tab_index
+        self._ensure_listeners(page, tab_index)
 
     def _cleanup_expired_tabs(self) -> None:
         """关闭超过 TAB_IDLE_TIMEOUT 无活动的 tab。
@@ -950,6 +1106,10 @@ class BrowserService:
         self._page_pool.pop(tab_index, None)
         if self._active_tab_index == tab_index:
             self._active_tab_index = None
+        self._listener_pages.discard(id(page))
+        self._snapshot_refs.pop(tab_index, None)
+        self._console_buffers.pop(tab_index, None)
+        self._request_buffers.pop(tab_index, None)
         try:
             if not page.is_closed():
                 page.close()
@@ -1199,6 +1359,211 @@ class BrowserService:
             return ToolResult(f"Found {len(links)} links:\n\n" + "\n".join(lines))
 
         return self._execute_operation("get_links", _do_get_links, tab_index=tab_index)
+
+    # ==================== ref 定位交互（snapshot/find/click/fill/type/press） ====================
+
+    def snapshot(self, tab_index: int | None = None) -> ToolResult:
+        """获取页面 accessibility snapshot，为可交互元素分配 ref。
+
+        返回的 YAML 树中带 [ref=rN] 的元素可用 click/fill/type/press 定位；
+        ref 仅在本次返回的 snapshot 有效，页面变化后请重新 snapshot。
+        """
+        def _do_snapshot(page):
+            actual_tab = self._find_tab_index(page) or 0
+            lines, ref_map = self._build_snapshot(page, actual_tab)
+            if not lines:
+                return ToolResult("Snapshot empty: no accessible elements found", error=True)
+            body = "\n".join(line for _indent, line in lines)
+            if len(body) > 20000:
+                body = body[:20000] + "\n... (truncated)"
+            return ToolResult(
+                f"Accessibility snapshot (tab {actual_tab}, {len(ref_map)} refs):\n"
+                f"---\n{body}\n---\n"
+                f"Use ref to interact: click(ref=\"r1\"), fill(ref=\"r2\", text=\"...\"), "
+                f"type(ref=\"r2\", text=\"...\"), press(ref=\"r3\", key=\"Enter\")",
+                meta={"refs": ref_map},
+            )
+
+        return self._execute_operation("snapshot", _do_snapshot, tab_index=tab_index)
+
+    def find(self, pattern: str, tab_index: int | None = None) -> ToolResult:
+        """在页面 accessibility snapshot 中搜索匹配 role 或 name 的元素。
+
+        Args:
+            pattern: 正则表达式或子串（大小写不敏感），匹配 role 或 name
+            tab_index: 指定 tab 编号，None 表示使用活跃 tab
+        """
+        def _do_find(page):
+            actual_tab = self._find_tab_index(page) or 0
+            lines, ref_map = self._build_snapshot(page, actual_tab)
+            try:
+                rx = re.compile(pattern, re.IGNORECASE)
+            except re.error:
+                rx = None
+
+            matches: list[int] = []
+            for i, (_indent, line) in enumerate(lines):
+                if "[ref=" not in line:
+                    continue
+                if rx:
+                    if rx.search(line):
+                        matches.append(i)
+                elif pattern.lower() in line.lower():
+                    matches.append(i)
+
+            if not matches:
+                return ToolResult(
+                    f"No element matches '{pattern}' in tab {actual_tab} "
+                    f"({len(ref_map)} refs). Try the 'snapshot' action."
+                )
+
+            out_lines = []
+            for idx in matches:
+                start = max(0, idx - 1)
+                end = min(len(lines), idx + 2)
+                if out_lines:
+                    out_lines.append("  ...")
+                for j in range(start, end):
+                    marker = ">" if j == idx else " "
+                    out_lines.append(f"{marker} {lines[j][1]}")
+            return ToolResult(
+                f"Found {len(matches)} element(s) matching '{pattern}' (tab {actual_tab}):\n"
+                + "\n".join(out_lines),
+                meta={"refs": ref_map},
+            )
+
+        return self._execute_operation("find", _do_find, tab_index=tab_index)
+
+    def click(self, ref: str, tab_index: int | None = None) -> ToolResult:
+        """点击 snapshot 中指定 ref 的元素。"""
+        def _do_click(page):
+            actual_tab = self._find_tab_index(page) or 0
+            entry = self._resolve_ref(actual_tab, ref)
+            loc = self._locator_for(page, entry)
+            loc.click(timeout=10000)
+            return ToolResult(
+                f"Clicked [{ref}] ({entry['role']} \"{entry['name']}\")",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("click", _do_click, tab_index=tab_index)
+
+    def fill(self, ref: str, text: str, tab_index: int | None = None) -> ToolResult:
+        """向 snapshot 中指定 ref 的输入框填入文本（触发一次 input 事件）。"""
+        def _do_fill(page):
+            actual_tab = self._find_tab_index(page) or 0
+            entry = self._resolve_ref(actual_tab, ref)
+            loc = self._locator_for(page, entry)
+            loc.fill(text, timeout=10000)
+            return ToolResult(
+                f"Filled [{ref}] ({entry['role']} \"{entry['name']}\") with {len(text)} chars",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("fill", _do_fill, tab_index=tab_index)
+
+    def type(self, ref: str, text: str, tab_index: int | None = None) -> ToolResult:
+        """向 snapshot 中指定 ref 的元素逐键输入文本（触发按键级事件）。"""
+        def _do_type(page):
+            actual_tab = self._find_tab_index(page) or 0
+            entry = self._resolve_ref(actual_tab, ref)
+            loc = self._locator_for(page, entry)
+            loc.press_sequentially(text, delay=20)
+            return ToolResult(
+                f"Typed {len(text)} chars into [{ref}] ({entry['role']} \"{entry['name']}\")",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("type", _do_type, tab_index=tab_index)
+
+    def press(self, ref: str | None, key: str, tab_index: int | None = None) -> ToolResult:
+        """按指定键。
+
+        Args:
+            ref: snapshot 中的元素 ref；None 表示在页面全局按（page.keyboard.press）
+            key: 按键名（Enter/Tab/Escape/ArrowDown/Backspace 等）
+            tab_index: 指定 tab 编号，None 表示使用活跃 tab
+        """
+        def _do_press(page):
+            actual_tab = self._find_tab_index(page) or 0
+            if ref:
+                entry = self._resolve_ref(actual_tab, ref)
+                loc = self._locator_for(page, entry)
+                loc.press(key)
+                return ToolResult(
+                    f"Pressed '{key}' on [{ref}] ({entry['role']} \"{entry['name']}\")",
+                    meta={"tab_index": actual_tab},
+                )
+            page.keyboard.press(key)
+            return ToolResult(f"Pressed '{key}' (page level)", meta={"tab_index": actual_tab})
+
+        return self._execute_operation("press", _do_press, tab_index=tab_index)
+
+    # ==================== 导航（go_back/go_forward/reload） ====================
+
+    def go_back(self, tab_index: int | None = None) -> ToolResult:
+        """返回上一页。"""
+        def _do_go_back(page):
+            resp = page.go_back(wait_until="load", timeout=30000)
+            return ToolResult(f"Navigated back to {resp.url}" if resp else "No history to go back to")
+
+        return self._execute_operation("go_back", _do_go_back, tab_index=tab_index)
+
+    def go_forward(self, tab_index: int | None = None) -> ToolResult:
+        """前进到下一页。"""
+        def _do_go_forward(page):
+            resp = page.go_forward(wait_until="load", timeout=30000)
+            return ToolResult(f"Navigated forward to {resp.url}" if resp else "No forward history")
+
+        return self._execute_operation("go_forward", _do_go_forward, tab_index=tab_index)
+
+    def reload(self, tab_index: int | None = None) -> ToolResult:
+        """重新加载当前页面。"""
+        def _do_reload(page):
+            page.reload(wait_until="load", timeout=30000)
+            return ToolResult(f"Reloaded page: {page.url}")
+
+        return self._execute_operation("reload", _do_reload, tab_index=tab_index)
+
+    # ==================== 诊断（console/requests） ====================
+
+    def console(self, clear: bool = False, tab_index: int | None = None) -> ToolResult:
+        """返回该 tab 捕获的浏览器 console 消息（自挂载以来累积）。"""
+        def _do_console(page):
+            actual_tab = self._find_tab_index(page) or 0
+            buf = self._console_buffers.get(actual_tab)
+            if not buf:
+                return ToolResult("No console messages captured yet.")
+            msgs = list(buf)
+            if clear:
+                buf.clear()
+            if not msgs:
+                return ToolResult("No console messages captured.")
+            lines = [f"[{t}] {m}" for t, m in msgs]
+            return ToolResult(
+                f"Console messages (tab {actual_tab}, {len(lines)}):\n" + "\n".join(lines)
+            )
+
+        return self._execute_operation("console", _do_console, tab_index=tab_index)
+
+    def requests(self, clear: bool = False, tab_index: int | None = None) -> ToolResult:
+        """返回该 tab 捕获的网络请求（方法、URL、状态码）。"""
+        def _do_requests(page):
+            actual_tab = self._find_tab_index(page) or 0
+            buf = self._request_buffers.get(actual_tab)
+            if not buf:
+                return ToolResult("No network requests captured yet.")
+            reqs = list(buf)
+            if clear:
+                buf.clear()
+            if not reqs:
+                return ToolResult("No network requests captured.")
+            lines = [f"{method} {url} {status}" for method, url, status in reqs]
+            return ToolResult(
+                f"Network requests (tab {actual_tab}, {len(lines)}):\n" + "\n".join(lines)
+            )
+
+        return self._execute_operation("requests", _do_requests, tab_index=tab_index)
 
     def switch_tab(self, tab_index: int) -> ToolResult:
         """切换到指定 tab 并设为活跃。

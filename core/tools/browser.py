@@ -25,12 +25,23 @@ profile if not running with debugging).
 
 Available actions:
 - navigate: open a URL and get page content (opens a new tab, returns tab_index)
+- snapshot: get the accessibility tree with refs (r1, r2, ...) for element interaction
+- find: search the snapshot for elements matching a role or name pattern
+- click / fill / type / press: interact with elements by their ref from snapshot
+- go_back / go_forward / reload: browser navigation
+- console / requests: inspect console messages and network requests
 - screenshot: capture the page
 - save_pdf: save the page as a PDF
 - execute: run JavaScript on the page
 - get_text / get_links: extract page text or links
 - wait_for: wait for a CSS selector (for JS-rendered content)
 - switch_tab / list_tabs / close_tab: manage tabs by tab_index
+
+Element interaction flow:
+1. Run 'snapshot' to get the accessibility tree (each interactive element has a ref like r3).
+2. Interact with elements by ref: click(ref="r3"), fill(ref="r2", text="..."),
+   type(ref="r2", text="..."), press(ref="r3", key="Enter").
+3. Re-run 'snapshot' after the page changes (refs are only valid for the snapshot that produced them).
 
 Tab management:
 - Each 'navigate' opens a new tab; pass its tab_index to operate on it (defaults to the active tab).
@@ -43,13 +54,39 @@ Use web_search for simple lookups; use browser when search results are insuffici
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["navigate", "screenshot", "save_pdf", "execute", "get_text",
+                "enum": ["navigate", "snapshot", "find", "click", "fill", "type", "press",
+                         "go_back", "go_forward", "reload", "console", "requests",
+                         "screenshot", "save_pdf", "execute", "get_text",
                          "get_links", "wait_for", "switch_tab", "list_tabs", "close_tab"],
                 "description": "Action to perform on the browser.",
             },
             "url": {
                 "type": "string",
                 "description": "URL to navigate to (required for 'navigate' action).",
+            },
+            "ref": {
+                "type": "string",
+                "description": "Element ref (like 'r3') from the 'snapshot' action. Used by "
+                               "click/fill/type/press to target a specific element.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to fill or type into the element (used with 'fill'/'type').",
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Pattern (regex or substring) to match element role or name "
+                               "in the snapshot (used with 'find').",
+            },
+            "key": {
+                "type": "string",
+                "description": "Key to press (Enter/Tab/Escape/ArrowDown/Backspace, etc.). "
+                               "Used with 'press'. Omit ref to press at page level.",
+            },
+            "clear": {
+                "type": "boolean",
+                "description": "Clear the console/request buffer after reading "
+                               "(used with 'console'/'requests').",
             },
             "script": {
                 "type": "string",
@@ -102,6 +139,60 @@ Use web_search for simple lookups; use browser when search results are insuffici
             if not url:
                 return ToolResult("Error: 'url' is required for navigate action", error=True)
             return service.navigate(url, tab_index=tab_index)
+
+        elif action == "snapshot":
+            return service.snapshot(tab_index=tab_index)
+
+        elif action == "find":
+            pattern = kwargs.get("pattern")
+            if not pattern:
+                return ToolResult("Error: 'pattern' is required for find action", error=True)
+            return service.find(pattern, tab_index=tab_index)
+
+        elif action == "click":
+            ref = kwargs.get("ref")
+            if not ref:
+                return ToolResult("Error: 'ref' is required for click action", error=True)
+            return service.click(ref, tab_index=tab_index)
+
+        elif action == "fill":
+            ref = kwargs.get("ref")
+            text = kwargs.get("text")
+            if not ref:
+                return ToolResult("Error: 'ref' is required for fill action", error=True)
+            if text is None:
+                return ToolResult("Error: 'text' is required for fill action", error=True)
+            return service.fill(ref, text, tab_index=tab_index)
+
+        elif action == "type":
+            ref = kwargs.get("ref")
+            text = kwargs.get("text")
+            if not ref:
+                return ToolResult("Error: 'ref' is required for type action", error=True)
+            if text is None:
+                return ToolResult("Error: 'text' is required for type action", error=True)
+            return service.type(ref, text, tab_index=tab_index)
+
+        elif action == "press":
+            key = kwargs.get("key")
+            if not key:
+                return ToolResult("Error: 'key' is required for press action", error=True)
+            return service.press(kwargs.get("ref"), key, tab_index=tab_index)
+
+        elif action == "go_back":
+            return service.go_back(tab_index=tab_index)
+
+        elif action == "go_forward":
+            return service.go_forward(tab_index=tab_index)
+
+        elif action == "reload":
+            return service.reload(tab_index=tab_index)
+
+        elif action == "console":
+            return service.console(clear=bool(kwargs.get("clear")), tab_index=tab_index)
+
+        elif action == "requests":
+            return service.requests(clear=bool(kwargs.get("clear")), tab_index=tab_index)
 
         elif action == "screenshot":
             path = screenshot_path or os.path.join(self.cwd, "screenshot.png")
