@@ -35,6 +35,7 @@ _DEFAULTS = {
     "max_tokens": None,  # None -> 继承角色模型的 max_tokens
     "system_prompt": {},
     "user_layers": [],
+    "mcp": False,  # 是否注入已配置的 MCP 服务器工具
 }
 
 
@@ -60,6 +61,7 @@ class AgentRoleConfig:
     max_tokens: int | None = None  # None -> 继承角色模型的 max_tokens；否则覆盖
     system_prompt: dict = field(default_factory=dict)  # {"blocks": [...]}
     user_layers: list[dict] = field(default_factory=list)
+    mcp: bool = False  # 是否注入已配置的 MCP 服务器工具
 
 
 def _role_file(role: str) -> Path:
@@ -114,6 +116,7 @@ def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
         max_tokens=int(merged["max_tokens"]) if merged["max_tokens"] is not None else None,
         system_prompt=merged["system_prompt"] or {},
         user_layers=list(merged["user_layers"]),
+        mcp=bool(merged["mcp"]),
     )
 
     if role_cfg.max_iterations is None:

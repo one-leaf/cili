@@ -120,6 +120,7 @@
                 <button class="settings-tab active" data-tab="root">Agent 模型</button>
                 <button class="settings-tab" data-tab="llm">Worker/Lite 模型</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
+                <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="upgrade">升级</button>
             </div>
             <div class="modal-body">
@@ -392,6 +393,74 @@
                         <label>同时运行子代理数:</label>
                         <input type="number" id="system-max-concurrent-agents" min="1" max="10" value="5" placeholder="5">
                         <small class="form-hint">同时运行的后台子代理上限（默认 5，范围 1-10）</small>
+                    </div>
+                </div>
+
+                <!-- MCP Servers Tab -->
+                <div class="tab-content" id="tab-mcp">
+                    <div class="model-description">
+                        <strong>MCP 服务器</strong> — 连接外部 MCP 服务器，把其工具注入 agent（默认 deferred，聊天中用 tool_search 激活）。
+                        <button id="mcp-reload-btn" class="btn btn-small" style="margin-left: 8px;">重新连接</button>
+                        <span id="mcp-status" class="form-hint" style="margin-left: 8px;"></span>
+                    </div>
+                    <div id="mcp-server-list" style="margin-top: 8px;"></div>
+                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
+                    <div class="model-description"><strong>添加服务器</strong></div>
+                    <div class="form-group">
+                        <label>名称:</label>
+                        <input type="text" id="mcp-name" placeholder="filesystem">
+                        <small class="form-hint">唯一标识，将作为工具名前缀 mcp_{名称}_*</small>
+                    </div>
+                    <div class="form-group">
+                        <label>传输类型:</label>
+                        <select id="mcp-type">
+                            <option value="">自动检测（有 command 则 stdio，有 url 则 streamableHttp）</option>
+                            <option value="stdio">stdio（本地子进程）</option>
+                            <option value="streamableHttp">streamableHttp（HTTP 端点）</option>
+                        </select>
+                    </div>
+                    <div id="mcp-stdio-fields">
+                        <div class="form-group">
+                            <label>启动命令:</label>
+                            <input type="text" id="mcp-command" placeholder="npx">
+                            <small class="form-hint">如 npx -y @modelcontextprotocol/server-filesystem（Windows 下自动用 cmd /d /c 包装）</small>
+                        </div>
+                        <div class="form-group">
+                            <label>命令参数:</label>
+                            <input type="text" id="mcp-args" placeholder="-y @modelcontextprotocol/server-filesystem D:\data">
+                        </div>
+                        <div class="form-group">
+                            <label>工作目录:</label>
+                            <input type="text" id="mcp-cwd" placeholder="留空 = Cili 根目录">
+                        </div>
+                        <div class="form-group">
+                            <label>额外环境变量:</label>
+                            <input type="text" id="mcp-env" placeholder="KEY=VALUE, K2=V2">
+                        </div>
+                    </div>
+                    <div id="mcp-http-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>端点 URL:</label>
+                            <input type="text" id="mcp-url" placeholder="http://localhost:3000/mcp">
+                        </div>
+                        <div class="form-group">
+                            <label>请求头（认证）:</label>
+                            <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx, X-API-Key=yyy">
+                            <small class="form-hint">逗号分隔 KEY=VALUE，用于 API Key / Bearer Token 认证</small>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>工具超时（秒）:</label>
+                        <input type="number" id="mcp-tool-timeout" min="1" max="600" value="30">
+                    </div>
+                    <div class="form-group">
+                        <label>工具白名单:</label>
+                        <input type="text" id="mcp-enabled-tools" placeholder="*（全部）" value="*">
+                        <small class="form-hint">逗号分隔的 MCP 工具名；* = 全部</small>
+                    </div>
+                    <div class="form-group">
+                        <label></label>
+                        <button id="mcp-add-btn" class="btn btn-small btn-primary">添加服务器</button>
                     </div>
                 </div>
 

@@ -263,6 +263,7 @@
     "*"
   ],
   "streaming": true,
+  "mcp": true,
   "ask_user": true,
   "approval": true,
   "session_persistence": true,

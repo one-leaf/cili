@@ -676,6 +676,8 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
         "python-pptx",
         "pdfplumber",
         "pytest",
+        # MCP (Model Context Protocol) 服务器客户端
+        "mcp",
     ]
 
     pip_exe = os.path.join(_DEPS_PYTHON_SCRIPTS, "pip.exe")

@@ -82,6 +82,7 @@
   ],
   "skills": [],
   "streaming": true,
+  "mcp": false,
   "progress_persistence": true,
   "max_iterations": 200,
   "max_tokens": 8192

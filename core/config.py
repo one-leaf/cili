@@ -159,12 +159,59 @@ class SystemConfig:
 
 
 @dataclass
+class MCPConfig:
+    """MCP 服务器连接配置（stdio 或 streamableHttp）。
+
+    headers 支持 Bearer/API Key 认证，如 {"Authorization": "Bearer xxx"}。
+    """
+    type: str = ""  # "" (自动检测) | "stdio" | "streamableHttp"
+    command: str = ""  # Stdio: 命令（如 npx）
+    args: list[str] = field(default_factory=list)  # Stdio: 命令参数
+    env: dict[str, str] = field(default_factory=dict)  # Stdio: 额外环境变量
+    cwd: str = ""  # Stdio: 工作目录
+    url: str = ""  # streamableHttp: 端点 URL
+    headers: dict[str, str] = field(default_factory=dict)  # HTTP: 自定义请求头（如 Authorization）
+    tool_timeout: int = 30  # 工具调用超时（秒）
+    enabled_tools: list[str] = field(default_factory=lambda: ["*"])  # 工具白名单；["*"] = 全部
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MCPConfig":
+        """Parse MCPConfig from a dict."""
+        return cls(
+            type=data.get("type", ""),
+            command=data.get("command", ""),
+            args=list(data.get("args", [])),
+            env=dict(data.get("env", {})),
+            cwd=data.get("cwd", ""),
+            url=data.get("url", ""),
+            headers=dict(data.get("headers", {})),
+            tool_timeout=int(data.get("tool_timeout", 30)),
+            enabled_tools=list(data.get("enabled_tools", ["*"])),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to a serializable dict."""
+        return {
+            "type": self.type,
+            "command": self.command,
+            "args": self.args,
+            "env": self.env,
+            "cwd": self.cwd,
+            "url": self.url,
+            "headers": self.headers,
+            "tool_timeout": self.tool_timeout,
+            "enabled_tools": self.enabled_tools,
+        }
+
+
+@dataclass
 class Config:
     """Global configuration."""
     model: ModelConfig          # Master (main) model: multi-turn conversation for all agents
     worker_model: ModelConfig | None = None  # Worker model; None = inherit master model
     lite_model: ModelConfig | None = None    # Lite model; None = inherit master model
     system: SystemConfig = field(default_factory=SystemConfig)  # System parameters
+    mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)  # MCP 服务器配置
 
     @classmethod
     def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
@@ -212,7 +259,20 @@ class Config:
         # ── System ──
         system = SystemConfig.from_dict(global_config.get("system", {}))
 
-        return cls(model=model, worker_model=worker_model, lite_model=lite_model, system=system)
+        # ── MCP servers ──
+        mcp_servers = {
+            name: MCPConfig.from_dict(cfg)
+            for name, cfg in (global_config.get("mcp_servers") or {}).items()
+            if isinstance(cfg, dict)
+        }
+
+        return cls(
+            model=model,
+            worker_model=worker_model,
+            lite_model=lite_model,
+            system=system,
+            mcp_servers=mcp_servers,
+        )
 
     @staticmethod
     def _parse_role_model(global_config: dict, role: str, base_model: ModelConfig) -> ModelConfig | None:
@@ -232,6 +292,10 @@ class Config:
             result["worker_model"] = self.worker_model.to_dict()
         if self.lite_model:
             result["lite_model"] = self.lite_model.to_dict()
+        if self.mcp_servers:
+            result["mcp_servers"] = {
+                name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
+            }
         return result
 
 

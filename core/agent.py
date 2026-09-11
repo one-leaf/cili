@@ -251,8 +251,20 @@ class Agent(BaseAgent):
             approval_store=self.approval_store,
         )
 
+        # MCP 动态工具（默认 deferred，tool_search 按需激活）：
+        # 仅当角色开启 mcp 且配置了服务器时注入。provider 内部对配置签名
+        # 做 diff，签名未变化不重连，因此此处每次 rebuild 开销很小。
+        from core.tools.mcp import MCPToolWrapper
+        if getattr(self.role_cfg, "mcp", False) and self.config.mcp_servers:
+            from core.tools.mcp import get_provider
+            provider = get_provider()
+            provider.ensure_connected(self.config.mcp_servers)
+            self.tools.extend(provider.get_wrappers())
+
         # Split into active (schema sent to LLM) vs deferred (schema hidden)
-        self._deferred_names: set[str] = set(self.role_cfg.deferred_tools)
+        self._deferred_names: set[str] = set(self.role_cfg.deferred_tools) | {
+            t.name for t in self.tools if isinstance(t, MCPToolWrapper)
+        }
         self._deferred_tools = [t for t in self.tools if t.name in self._deferred_names]
         self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
         self.tool_schemas = [t.to_schema() for t in self._active_tools]

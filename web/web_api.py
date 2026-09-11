@@ -102,6 +102,19 @@ async def lifespan(app: FastAPI):
     # 初始化 MessageBus
     from core.message_bus import start_message_bus
     start_message_bus()
+
+    # 启动 MCP provider 并在后台连接已配置的服务器（不阻塞启动）
+    def _connect_mcp_servers() -> None:
+        try:
+            from core.config import load_config
+            from core.tools.mcp import get_provider
+            cfg = load_config()
+            if cfg.mcp_servers:
+                get_provider().ensure_connected(cfg.mcp_servers)
+        except Exception as e:
+            logger.warning(f"[Server] 连接 MCP 服务器失败: {e}")
+
+    threading.Thread(target=_connect_mcp_servers, daemon=True).start()
     yield
     # 关闭时停止 MessageBus
     try:
@@ -115,6 +128,12 @@ async def lifespan(app: FastAPI):
         stop_browser_service()
     except Exception as e:
         logger.warning(f"[Server] 停止浏览器服务失败: {e}")
+    # 关闭时停止 MCP provider（断开所有服务器连接）
+    try:
+        from core.tools.mcp import stop_mcp_provider
+        stop_mcp_provider()
+    except Exception as e:
+        logger.warning(f"[Server] 停止 MCP provider 失败: {e}")
     # 关闭时停止 cron 调度器
     try:
         from core.cron import stop_scheduler
@@ -1446,6 +1465,7 @@ class UpdateConfigRequest(BaseModel):
     worker_model: ModelConfigRequest | None = None   # worker Agent model (optional, inherits master)
     lite_model: ModelConfigRequest | None = None     # lite Agent model (optional, inherits master)
     system: dict | None = None                       # System parameters (pip_mirror, etc.)
+    mcp_servers: dict | None = None                  # MCP 服务器配置 {name: {...}}
 
 
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop")
@@ -1710,7 +1730,24 @@ def _mask_api_key(config: dict) -> dict:
             sys_copy["mineru_api_key_masked"] = mineru_key[:4] + "..." + mineru_key[-4:] if len(mineru_key) > 8 else "***"
         sys_copy.pop("mineru_api_key", None)
         result["system"] = sys_copy
+    # Mask MCP headers (可能含 Authorization/Bearer 密钥)
+    if "mcp_servers" in result and isinstance(result["mcp_servers"], dict):
+        result["mcp_servers"] = {
+            name: _mask_mcp_server(cfg) for name, cfg in result["mcp_servers"].items()
+        }
     return result
+
+
+def _mask_mcp_server(cfg: dict) -> dict:
+    """掩码单个 MCP server 配置中的 headers 值（保留 key 名）。"""
+    c = dict(cfg)
+    headers = c.get("headers") or {}
+    if headers:
+        c["headers"] = {
+            k: (v[:4] + "..." + v[-4:] if len(v) > 8 else "***")
+            for k, v in headers.items() if v
+        }
+    return c
 
 
 @app.get("/api/config")
@@ -1764,8 +1801,36 @@ async def update_config(request: UpdateConfigRequest):
         existing_system.update(request.system)
         config["system"] = existing_system
 
+    # Update MCP servers config
+    if request.mcp_servers is not None:
+        if request.mcp_servers:
+            # _preserve_headers 标记：继承已保存 config 的原 headers（前端不覆盖密钥）
+            current_mcp = config.get("mcp_servers", {})
+            if not isinstance(current_mcp, dict):
+                current_mcp = {}
+            new_servers = {}
+            for name, server in request.mcp_servers.items():
+                server = dict(server)
+                if server.pop("_preserve_headers", False) and name in current_mcp:
+                    server["headers"] = current_mcp[name].get("headers", {})
+                if server.pop("_preserve_env", False) and name in current_mcp:
+                    server["env"] = current_mcp[name].get("env", {})
+                new_servers[name] = server
+            config["mcp_servers"] = new_servers
+        else:
+            config.pop("mcp_servers", None)
+
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
+
+    # 重连 MCP 服务器（签名变化才真正重连）
+    try:
+        from core.config import load_config
+        from core.tools.mcp import get_provider
+        new_cfg = load_config()
+        get_provider().reload(new_cfg.mcp_servers)
+    except Exception as e:
+        logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
 
     # 通知所有缓存的 master Agent 重新加载配置（新的 API key / model 等）
     async with _agents_lock:
@@ -1774,6 +1839,49 @@ async def update_config(request: UpdateConfigRequest):
             logger.info(f"[Config] 已通知 master Agent {key} 重新加载配置")
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
+
+
+@app.get("/api/mcp/servers")
+async def get_mcp_servers():
+    """Get MCP servers config + 实时连接状态（headers 掩码显示）。"""
+    from core.config import load_config
+    from core.tools.mcp import get_provider
+
+    cfg = load_config()
+    status = get_provider().status()
+    servers = {}
+    for name, mcfg in cfg.mcp_servers.items():
+        st = status.get(name, {})
+        servers[name] = {
+            "name": name,
+            "type": mcfg.type,
+            "command": mcfg.command,
+            "args": mcfg.args,
+            "cwd": mcfg.cwd,
+            "url": mcfg.url,
+            "env_keys": list(mcfg.env.keys()),
+            "headers_masked": _mask_mcp_server({"headers": mcfg.headers}).get("headers", {}),
+            "tool_timeout": mcfg.tool_timeout,
+            "enabled_tools": mcfg.enabled_tools,
+            "status": st.get("status", "offline"),
+            "tool_count": st.get("tool_count", 0),
+        }
+    return {"servers": servers}
+
+
+@app.post("/api/mcp/reload")
+async def reload_mcp():
+    """强制重连所有 MCP 服务器，并刷新缓存的 master Agent（deferred 工具重建）。"""
+    from core.config import load_config
+    from core.tools.mcp import get_provider
+
+    cfg = load_config()
+    provider = get_provider()
+    provider.reload(cfg.mcp_servers, force=True)
+    async with _agents_lock:
+        for key, agent in list(agents.items()):
+            agent.reload_config()
+    return {"success": True, "servers": provider.status()}
 
 
 class TestConfigRequest(BaseModel):

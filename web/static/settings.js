@@ -281,6 +281,169 @@ function collectRoleModel(prefix, roleKey, payload) {
     }
 }
 
+// ── MCP 服务器管理 ──
+// 前端内存态：加载的服务器（保留原 headers，保存时 _preserve_headers）+
+// 表单新填的服务器（带完整 headers），一次性随 saveSettings 提交。
+let mcpServers = {};  // name -> server config
+
+function mcpTypeChanged() {
+    const type = document.getElementById('mcp-type').value;
+    document.getElementById('mcp-stdio-fields').style.display = (type !== 'streamableHttp') ? '' : 'none';
+    document.getElementById('mcp-http-fields').style.display = (type === 'streamableHttp') ? '' : 'none';
+}
+
+function mcpParseKv(text) {
+    const result = {};
+    (text || '').split(',').forEach(pair => {
+        const idx = pair.indexOf('=');
+        if (idx > 0) result[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+    });
+    return result;
+}
+
+async function loadMcpServers() {
+    try {
+        const response = await fetch('/api/mcp/servers');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        mcpServers = data.servers || {};
+    } catch (e) {
+        mcpServers = {};
+    }
+    renderMcpServers();
+}
+
+function renderMcpServers() {
+    const container = document.getElementById('mcp-server-list');
+    const statusEl = document.getElementById('mcp-status');
+    const names = Object.keys(mcpServers);
+    if (names.length === 0) {
+        container.innerHTML = '<div class="form-hint" style="color: var(--text-secondary);">尚未配置任何 MCP 服务器。</div>';
+        statusEl.textContent = '';
+        return;
+    }
+    const statusText = (s) => {
+        if (s.status === 'connected') return `已连接（${s.tool_count} 工具）`;
+        if (s.status === 'connecting') return '连接中...';
+        if (s.status === 'failed') return '连接失败';
+        return '离线';
+    };
+    container.innerHTML = names.map(name => {
+        const s = mcpServers[name];
+        const typeLabel = s.type === 'stdio' ? 'stdio' : s.type === 'streamableHttp' ? 'streamableHttp' : '自动';
+        const target = (s.command ? s.command + ' ' + (s.args || []).join(' ') : (s.url || '')).trim();
+        const headersInfo = Object.keys(s.headers_masked || {}).map(k => `${k}=${s.headers_masked[k]}`).join(', ');
+        return `
+        <div class="mcp-server-card" style="border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <strong>${escapeHtml(name)}</strong>
+                <span style="font-size:12px;padding:2px 8px;border-radius:10px;color:var(--text-secondary);">${statusText(s)}</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+                ${escapeHtml(typeLabel)} · ${escapeHtml(target || '未配置目标')}
+                ${headersInfo ? '<br>认证: ' + escapeHtml(headersInfo) : ''}
+            </div>
+            <div style="margin-top:6px;">
+                <button class="btn btn-small mcp-remove-btn" data-name="${escapeHtml(name)}">删除</button>
+            </div>
+        </div>`;
+    }).join('');
+    statusEl.textContent = `共 ${names.length} 个服务器`;
+    container.querySelectorAll('.mcp-remove-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            delete mcpServers[btn.dataset.name];
+            renderMcpServers();
+        });
+    });
+}
+
+// 收集 MCP 配置：已加载的服务器保留原 headers（_preserve_headers），
+// 表单新增的服务器带完整配置。返回 null 表示名称冲突（阻止保存）。
+function collectMcpServers() {
+    const result = {};
+    for (const [name, s] of Object.entries(mcpServers)) {
+        const server = {
+            type: s.type || '',
+            command: s.command || '',
+            args: s.args || [],
+            cwd: s.cwd || '',
+            url: s.url || '',
+            tool_timeout: s.tool_timeout != null ? s.tool_timeout : 30,
+            enabled_tools: s.enabled_tools || ['*'],
+            _preserve_headers: true,  // 后端据此继承原 headers/env（不覆盖密钥）
+            _preserve_env: true
+        };
+        // env/headers 仅新填时带值；已有服务器不重写
+        result[name] = server;
+    }
+    const name = document.getElementById('mcp-name').value.trim();
+    if (name) {
+        if (result[name]) {
+            showToast('服务器名称已存在：' + name);
+            return null;
+        }
+        const headersStr = document.getElementById('mcp-headers').value.trim();
+        result[name] = {
+            type: document.getElementById('mcp-type').value,
+            command: document.getElementById('mcp-command').value.trim(),
+            args: document.getElementById('mcp-args').value.trim().split(/\s+/).filter(Boolean),
+            cwd: document.getElementById('mcp-cwd').value.trim(),
+            env: mcpParseKv(document.getElementById('mcp-env').value.trim()),
+            url: document.getElementById('mcp-url').value.trim(),
+            headers: mcpParseKv(headersStr),
+            tool_timeout: parseInt(document.getElementById('mcp-tool-timeout').value) || 30,
+            enabled_tools: (document.getElementById('mcp-enabled-tools').value.trim() || '*').split(',').map(s => s.trim()).filter(Boolean)
+        };
+    }
+    return result;
+}
+
+async function reloadMcp() {
+    const statusEl = document.getElementById('mcp-status');
+    statusEl.textContent = '重连中...';
+    try {
+        const response = await fetch('/api/mcp/reload', { method: 'POST' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        const counts = Object.entries(data.servers || {}).map(([n, s]) =>
+            `${n}:${s.status === 'connected' ? '已连接' : s.status}`
+        ).join(', ');
+        statusEl.textContent = counts || '无服务器';
+        showToast('MCP 已重新连接');
+    } catch (e) {
+        statusEl.textContent = '重连失败: ' + e.message;
+    }
+}
+
+// 初始化 MCP 表单事件（settings.js 在 body 末尾加载，DOM 已就绪）
+(function initMcpSettings() {
+    const typeSelect = document.getElementById('mcp-type');
+    const addBtn = document.getElementById('mcp-add-btn');
+    const reloadBtn = document.getElementById('mcp-reload-btn');
+    if (typeSelect) typeSelect.addEventListener('change', mcpTypeChanged);
+    if (addBtn) addBtn.addEventListener('click', () => {
+        const name = document.getElementById('mcp-name').value.trim();
+        if (!name) { showToast('请先填写服务器名称'); return; }
+        if (mcpServers[name]) { showToast('服务器名称已存在：' + name); return; }
+        const mcp = collectMcpServers();
+        if (!mcp || !mcp[name]) return;
+        // 把表单新增项并入内存态并重渲染（不立即保存）
+        mcpServers[name] = {
+            type: mcp[name].type, command: mcp[name].command, args: mcp[name].args,
+            cwd: mcp[name].cwd, url: mcp[name].url, tool_timeout: mcp[name].tool_timeout,
+            enabled_tools: mcp[name].enabled_tools, status: 'pending', tool_count: 0,
+            headers_masked: Object.fromEntries(Object.entries(mcp[name].headers || {}).map(([k, v]) =>
+                [k, v.length > 8 ? v.slice(0, 4) + '...' + v.slice(-4) : '***']))
+        };
+        renderMcpServers();
+        ['mcp-name', 'mcp-command', 'mcp-args', 'mcp-cwd', 'mcp-env', 'mcp-url', 'mcp-headers'].forEach(id => {
+            document.getElementById(id).value = '';
+        });
+        showToast('已添加（保存后生效）');
+    });
+    if (reloadBtn) reloadBtn.addEventListener('click', reloadMcp);
+})();
+
 // 打开全局设置弹窗
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
@@ -346,6 +509,9 @@ async function openSettings() {
         }
 
         document.getElementById('settings-status').textContent = `配置文件: ${data.config_path}`;
+
+        // ── MCP servers ──
+        await loadMcpServers();
     } catch (error) {
         document.getElementById('settings-status').textContent = '加载失败: ' + error.message;
     }
@@ -408,6 +574,14 @@ async function saveSettings() {
     if (mineruApiKey) {
         payload.system.mineru_api_key = mineruApiKey;
     }
+
+    // ── MCP servers（含表单新增项；已加载的服务器保留原 headers） ──
+    const mcpServersPayload = collectMcpServers();
+    if (mcpServersPayload === null) {
+        statusEl.textContent = '✗ MCP 服务器名称冲突，无法保存';
+        return;
+    }
+    payload.mcp_servers = mcpServersPayload;
 
     try {
         const response = await fetch('/api/config', {

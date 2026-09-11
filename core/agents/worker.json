@@ -203,6 +203,7 @@
     "*"
   ],
   "streaming": true,
+  "mcp": true,
   "check_phase": true,
   "budget_notice": true,
   "progress_persistence": true,
