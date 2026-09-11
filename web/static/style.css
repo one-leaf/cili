@@ -1935,6 +1935,8 @@ mjx-container {
 
 /* Settings modal smaller font and fixed height */
 #settings-modal .modal-content {
+    width: 1120px;
+    max-width: 90vw;
     height: 600px;
 }
 
