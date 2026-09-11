@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.config import PROJECT_ROOT
+from core.config import DATA_ROOT, PROJECT_ROOT
 
 # 提示注入防护（SEC-18）：外部来源内容进入上下文前的「不可信数据」定界标签。
 # 工具返回网页正文/搜索结果/文档文本/记忆片段/跨会话消息时，用这两个标记包裹，
@@ -562,19 +562,24 @@ class Tool:
         # save_output_to_file() 兜底确保所有工具输出都落盘
         self.output_file: str | None = None
 
-    def _resolve_path(self, path: str) -> str:
+    def _resolve_path(self, path: str, *, read_only: bool = False) -> str:
         """Resolve a file path to absolute, relative to cwd.
 
-        Uses realpath（解析 `..`、符号链接与 junction）并强制 workspace 边界：
-        逃逸 cwd 的路径直接拒绝，防止 agent 被提示注入诱导读写任意系统文件。
+        Uses realpath（解析 `..`、符号链接与 junction）。
+        读取类工具传 read_only=True 时跳过访问边界（可读任意路径）；
+        写操作（默认）强制 workspace + data/ 边界，防止 agent 被提示注入诱导
+        覆盖任意系统文件。
         """
         if not os.path.isabs(path):
             path = os.path.join(self.cwd, path)
         resolved = os.path.realpath(path)
+        if read_only:
+            return resolved
         workspace_root = os.path.realpath(self.cwd)
-        if not self._is_within_workspace(resolved, workspace_root):
+        if not self._is_within_workspace(resolved, workspace_root) \
+                and not self._is_within_data_root(resolved):
             raise ValueError(
-                f"路径越界：{resolved!r} 不在工作区 {workspace_root!r} 内"
+                f"路径越界：{resolved!r} 不在工作区 {workspace_root!r} 或数据目录内"
             )
         return resolved
 
@@ -588,6 +593,13 @@ class Tool:
             ) == os.path.normcase(root)
         except ValueError:
             return False  # 不同盘符
+
+    @classmethod
+    def _is_within_data_root(cls, resolved: str) -> bool:
+        """判断 resolved 是否位于项目 data/ 目录内（cili 系统数据 + agents 状态数据）。"""
+        return cls._is_within_workspace(
+            resolved, os.path.realpath(str(DATA_ROOT))
+        )
 
     def save_output_to_file(self, result: ToolResult) -> None:
         """统一保存工具输出到外部文件。

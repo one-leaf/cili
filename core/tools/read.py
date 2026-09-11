@@ -69,7 +69,7 @@ class ReadTool(Tool):
         limit: int | None = None,
         pages: str | None = None,
     ) -> ToolResult:
-        file_path = self._resolve_path(file_path)
+        file_path = self._resolve_path(file_path, read_only=True)
         ext = os.path.splitext(file_path)[1].lower()
 
         # Handle PDFs

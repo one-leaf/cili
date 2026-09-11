@@ -84,7 +84,7 @@ class FindTool(Tool):
             return ToolResult("Error: max_results must be a positive integer (>= 1).", error=True)
 
         # Resolve to absolute path
-        path = self._resolve_path(path) if path else self.cwd
+        path = self._resolve_path(path, read_only=True) if path else self.cwd
 
         # Build find command (works in Git Bash)
         # Prune ignored directories

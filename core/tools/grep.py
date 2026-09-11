@@ -113,7 +113,7 @@ class GrepTool(Tool):
             )
 
         # Resolve to absolute path
-        path = self._resolve_path(path) if path else self.cwd
+        path = self._resolve_path(path, read_only=True) if path else self.cwd
 
         # Step 1: Get all matching files first
         matching_files = self._find_matching_files(

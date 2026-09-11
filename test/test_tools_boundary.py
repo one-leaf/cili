@@ -10,6 +10,7 @@ from core.tools.read import ReadTool
 from core.tools.edit import EditTool
 from core.tools.grep import GrepTool
 from core.tools.find import FindTool
+from core.tools.write import WriteTool
 
 
 # ========== Bash Tool ==========
@@ -293,6 +294,85 @@ class TestFindToolBoundary:
         # Count how many results
         lines = [l for l in result.output.strip().split('\n') if l.strip()]
         assert len(lines) <= 5
+
+
+# ========== Read / Write Path Boundary ==========
+
+
+class TestReadPathExemption:
+    """读取类工具路径完全放开：可读工作区与 data/ 之外的任意路径。"""
+
+    @pytest.fixture
+    def read_tool(self, test_workspace):
+        return ReadTool(cwd=test_workspace, workspace_uuid="test-workspace")
+
+    def test_read_outside_workspace_allowed(self, read_tool, tmp_path):
+        """读取工作区之外的任意路径允许。"""
+        outside = tmp_path / "secret.txt"
+        outside.write_text("hello secret", encoding="utf-8")
+
+        result = read_tool.execute(file_path=str(outside))
+        assert result.error is False
+        assert "hello secret" in result.output
+
+    def test_read_under_data_root_allowed(self, read_tool, tmp_path, monkeypatch):
+        """data/ 内的文件（如会话 index.json）可读，即使在工作区之外。"""
+        data_root = tmp_path / "data"
+        target = data_root / "agents" / "abc" / "sessions" / "x" / "index.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"ok": true}', encoding="utf-8")
+        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
+
+        result = read_tool.execute(file_path=str(target))
+        assert result.error is False
+        assert "ok" in result.output
+
+    def test_read_relative_still_resolves_cwd(self, read_tool, test_workspace):
+        """相对路径仍基于 cwd 解析。"""
+        test_file = os.path.join(test_workspace, "rel.txt")
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write("relative content")
+
+        result = read_tool.execute(file_path="rel.txt")
+        assert result.error is False
+        assert "relative content" in result.output
+
+
+class TestWritePathBoundary:
+    """写操作（write）仍受 workspace + data/ 边界约束。"""
+
+    @pytest.fixture
+    def write_tool(self, test_workspace):
+        return WriteTool(cwd=test_workspace, workspace_uuid="test-workspace")
+
+    def test_write_outside_workspace_rejected(self, write_tool, tmp_path):
+        """写工作区之外的文件被拒绝。"""
+        outside = tmp_path / "x.txt"
+        with pytest.raises(ValueError, match="越界"):
+            write_tool.execute(file_path=str(outside), content="hi")
+
+    def test_write_under_data_root_allowed(self, write_tool, tmp_path, monkeypatch):
+        """写 data/ 内的文件允许。"""
+        data_root = tmp_path / "data"
+        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
+        target = data_root / "cili" / "x.txt"
+        target.parent.mkdir(parents=True)
+
+        result = write_tool.execute(file_path=str(target), content="hi")
+        assert result.error is False
+        assert target.read_text(encoding="utf-8") == "hi"
+
+    def test_is_within_data_root_predicate(self, tmp_path, monkeypatch):
+        """_is_within_data_root 纯谓词（入参为 realpath 后路径）：data/ 内 True，data/ 外 False。"""
+        data_root = tmp_path / "data"
+        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
+
+        from core.tools.base import Tool
+
+        assert Tool._is_within_data_root(str((data_root / "cili" / "setting.json").resolve())) is True
+        assert Tool._is_within_data_root(str((data_root / "agents" / "x").resolve())) is True
+        assert Tool._is_within_data_root(str((data_root / ".." / "x").resolve())) is False
+        assert Tool._is_within_data_root(str((tmp_path / "agents" / "x").resolve())) is False
 
 
 # ========== Tool Schema Consistency ==========

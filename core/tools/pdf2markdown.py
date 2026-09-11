@@ -121,7 +121,7 @@ class PDF2MarkdownTool(Tool):
             return ToolResult("Error: file_path is required", error=True)
 
         # Resolve file path
-        abs_path = self._resolve_path(file_path)
+        abs_path = self._resolve_path(file_path, read_only=True)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
 

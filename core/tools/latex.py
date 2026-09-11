@@ -185,7 +185,7 @@ class LatexTool(Tool):
     ) -> ToolResult:
         """Compile a LaTeX file to PDF."""
         # Resolve input file path
-        tex_path = self._resolve_path(file)
+        tex_path = self._resolve_path(file, read_only=True)
         if not os.path.exists(tex_path):
             return ToolResult(f"Error: File not found: {tex_path}", error=True)
 

@@ -232,6 +232,7 @@ class Config:
 
 # Base directories (config.py is in core/, project root is one level up)
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
+DATA_ROOT = PROJECT_ROOT / "data"
 DATA_DIR = PROJECT_ROOT / "data" / "cili"
 AGENTS_DIR = PROJECT_ROOT / "data" / "agents"
 

@@ -254,7 +254,7 @@ content = [
 
 | 方法 | 说明 |
 |------|------|
-| `_resolve_path(path)` | 将相对路径转为绝对路径（基于 cwd） |
+| `_resolve_path(path, read_only=False)` | 将相对路径转为绝对路径（基于 cwd）。读取类工具传 `read_only=True` 时跳过访问边界，可读任意路径；写操作（默认）强制 workspace + `data/` 边界，逃逸路径抛 `ValueError` 拒绝 |
 | `_clean_surrogates(s)` | 移除 UTF-8 无效的代理字符（U+D800-U+DFFF） |
 | `_shell_escape(s)` | Shell 单引号转义 |
 
