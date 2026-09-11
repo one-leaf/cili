@@ -330,7 +330,8 @@ Cili Agent/
   "search_engine": "bing",
   "allowed_ips": [],
   "mineru_api_key": "",
-  "max_iterations": 200
+  "max_iterations": 200,
+  "max_concurrent_agents": 5
 }
 ```
 
@@ -523,6 +524,30 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ---
 
+### max_concurrent_agents — 同时运行子代理数
+
+**作用**：限制同一时刻最多有多少个**后台子代理**（通过 `agent` 工具以 `run_in_background=true` 委派）同时在运行。
+
+**默认值**：`5`
+
+**取值范围**：`1` ~ `10`（超出范围的值会被自动钳制到该区间）
+
+**通俗解释**：
+
+当你让 Agent 把一个大任务拆成很多小块，并同时委派给多个子代理并行处理时（例如大文件翻译的多个分块），这个值限制最多同时跑几个。超过上限的委派请求会自动**排队等待**，等有子代理完成后才开始执行，不会报错。
+
+**建议**：
+
+| 场景 | 建议值 |
+|------|--------|
+| 日常使用 | `5`（默认） |
+| 机器性能好、任务分块多 | `8`~`10` |
+| 想节省 API 费用、避免并发过高 | `1`~`3` |
+
+**注意**：设为 `1` 表示同一时刻只允许 1 个后台子代理，其余全部排队。
+
+---
+
 ## 配置优先级
 
 配置的生效优先级从高到低：
@@ -571,7 +596,8 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
     "search_engine": "bing",
     "allowed_ips": [],
     "mineru_api_key": "",
-    "max_iterations": 200
+    "max_iterations": 200,
+    "max_concurrent_agents": 5
   }
 }
 ```
@@ -596,7 +622,8 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
     "browser_path": "",
     "search_engine": "bing",
     "allowed_ips": [],
-    "max_iterations": 200
+    "max_iterations": 200,
+    "max_concurrent_agents": 5
   }
 }
 ```
@@ -621,7 +648,8 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
     "browser_path": "",
     "search_engine": "bing",
     "allowed_ips": [],
-    "max_iterations": 200
+    "max_iterations": 200,
+    "max_concurrent_agents": 5
   }
 }
 ```
@@ -636,7 +664,8 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
     "browser_path": "",
     "search_engine": "bing",
     "allowed_ips": ["192.168.1.100", "192.168.1.101"],
-    "max_iterations": 200
+    "max_iterations": 200,
+    "max_concurrent_agents": 5
   }
 }
 ```

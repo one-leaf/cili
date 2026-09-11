@@ -266,3 +266,89 @@ class TestDelegationDepthLimit:
         assert result.error is not True
         assert MockAgent.call_args.kwargs["delegation_depth"] == 1
         assert MockAgent.call_args.kwargs["role"] == "lite"
+
+
+class TestBackgroundAgentConcurrency:
+    """后台子代理并发上限（config.system.max_concurrent_agents）。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean_active(self, monkeypatch):
+        """每个用例隔离全局活跃列表。"""
+        from core.tools import base as base_mod
+        monkeypatch.setattr(base_mod, "_active_background_agents", [])
+        yield
+        with base_mod._background_agents_cond:
+            base_mod._active_background_agents.clear()
+            base_mod._background_agents_cond.notify_all()
+
+    def test_acquire_below_limit(self, agent_tool):
+        """低于上限立即获得槽位并加入活跃列表。"""
+        from core.tools import base as base_mod
+        agent = MagicMock()
+        err = agent_tool._acquire_background_agent_slot(agent)
+        assert err is None
+        assert agent in base_mod._active_background_agents
+
+    def test_blocks_until_slot_freed(self, agent_tool):
+        """达到上限时阻塞，释放后获得槽位。"""
+        from core.tools import base as base_mod
+        holder = MagicMock()
+        base_mod._active_background_agents.append(holder)
+        config = MagicMock()
+        config.system.max_concurrent_agents = 1
+        agent_tool.config = config
+
+        results = {}
+
+        def try_acquire():
+            results["err"] = agent_tool._acquire_background_agent_slot(MagicMock())
+
+        import threading
+        import time
+        t = threading.Thread(target=try_acquire, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        assert t.is_alive(), "达到上限时应阻塞等待"
+
+        with base_mod._background_agents_cond:
+            base_mod._active_background_agents.remove(holder)
+            base_mod._background_agents_cond.notify_all()
+        t.join(timeout=5)
+        assert not t.is_alive()
+        assert results["err"] is None
+        assert len(base_mod._active_background_agents) == 1
+
+    def test_stop_check_returns_error(self, agent_tool):
+        """任务停止时立即返回错误，不阻塞。"""
+        from core.tools import base as base_mod
+        base_mod._active_background_agents.append(MagicMock())
+        config = MagicMock()
+        config.system.max_concurrent_agents = 1
+        agent_tool.config = config
+        agent_tool.stop_check = lambda: True
+
+        err = agent_tool._acquire_background_agent_slot(MagicMock())
+        assert err is not None
+        assert err.error is True
+        assert "上限" in err.output
+
+    def test_timeout_returns_error(self, agent_tool, monkeypatch):
+        """等待超时返回错误。"""
+        from core.tools import base as base_mod
+        base_mod._active_background_agents.append(MagicMock())
+        config = MagicMock()
+        config.system.max_concurrent_agents = 1
+        agent_tool.config = config
+        agent_tool.stop_check = None
+
+        counter = {"n": 0}
+
+        def fake_time():
+            counter["n"] += 1
+            return 99999 if counter["n"] > 1 else 0  # deadline=3600，随后时间越过 deadline
+
+        monkeypatch.setattr(base_mod.time, "time", fake_time)
+        err = agent_tool._acquire_background_agent_slot(MagicMock())
+        assert err is not None
+        assert err.error is True
+        assert "超时" in err.output

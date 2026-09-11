@@ -335,6 +335,7 @@ async function openSettings() {
         document.getElementById('system-mineru-api-key').value = '';
         document.getElementById('system-allowed-ips').value = (systemCfg.allowed_ips || []).join(', ');
         document.getElementById('system-max-iterations').value = systemCfg.max_iterations || 200;
+        document.getElementById('system-max-concurrent-agents').value = systemCfg.max_concurrent_agents || 5;
 
         // Show MinerU masked key in placeholder
         const mineruInput = document.getElementById('system-mineru-api-key');
@@ -394,12 +395,14 @@ async function saveSettings() {
     const allowedIpsStr = document.getElementById('system-allowed-ips').value.trim();
     const allowedIps = allowedIpsStr ? allowedIpsStr.split(',').map(ip => ip.trim()).filter(Boolean) : [];
     const maxIterations = document.getElementById('system-max-iterations').value;
+    const maxConcurrentAgents = document.getElementById('system-max-concurrent-agents').value;
     payload.system = {
         pip_mirror: pipMirror,
         browser_path: browserPath,
         search_engine: searchEngine,
         allowed_ips: allowedIps,
-        max_iterations: parseInt(maxIterations) || 200
+        max_iterations: parseInt(maxIterations) || 200,
+        max_concurrent_agents: parseInt(maxConcurrentAgents) || 5
     };
     // Only include mineru_api_key if user typed a new value; empty means "don't change"
     if (mineruApiKey) {

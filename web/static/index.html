@@ -388,6 +388,11 @@
                         <input type="number" id="system-max-iterations" min="10" max="1000" value="200" placeholder="200">
                         <small class="form-hint">Agent 单次会话中最大工具调用迭代次数（默认 200）</small>
                     </div>
+                    <div class="form-group">
+                        <label>同时运行子代理数:</label>
+                        <input type="number" id="system-max-concurrent-agents" min="1" max="10" value="5" placeholder="5">
+                        <small class="form-hint">同时运行的后台子代理上限（默认 5，范围 1-10）</small>
+                    </div>
                 </div>
 
                 <!-- Upgrade Tab -->

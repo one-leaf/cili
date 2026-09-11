@@ -25,8 +25,9 @@ UNTRUSTED_DATA_BEGIN = (
 )
 UNTRUSTED_DATA_END = "\n<<< 外部不可信数据结束 >>>\n"
 
-# 全局跟踪所有活跃的后台 Agent，用于进程退出时清理
+# 全局跟踪所有活跃的后台 Agent，用于进程退出时清理 + 并发上限控制
 _active_background_agents: list = []
+_background_agents_cond = threading.Condition()
 _atexit_registered = False
 
 
@@ -1511,6 +1512,41 @@ class Tool:
             lines.append(f"  {t['task_id']}: [{task_type}][{status}] {t['command']}")
         return ToolResult("\n".join(lines))
 
+    def _acquire_background_agent_slot(self, agent: Any) -> ToolResult | None:
+        """等待后台 Agent 并发槽位并预留。
+
+        超过 config.system.max_concurrent_agents（默认 5，范围 1-10）时阻塞等待，
+        直到有子代理结束释放槽位、任务被停止、或等待超时（1 小时）。
+        返回 None 表示获得槽位（agent 已加入活跃列表）；否则返回错误 ToolResult。
+        """
+        config = getattr(self, "config", None)
+        system = getattr(config, "system", None)
+        limit = getattr(system, "max_concurrent_agents", 5)
+        try:
+            limit = max(1, min(10, int(limit or 5)))
+        except (TypeError, ValueError):
+            limit = 5
+        stop_check = getattr(self, "stop_check", None)
+        deadline = time.time() + 3600
+        with _background_agents_cond:
+            while len(_active_background_agents) >= limit:
+                if stop_check and stop_check():
+                    return ToolResult(
+                        f"Error: 后台 Agent 并发已达上限（{len(_active_background_agents)}/{limit}）"
+                        "且任务已停止，本次委派未启动。",
+                        error=True,
+                    )
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return ToolResult(
+                        f"Error: 等待后台 Agent 并发槽位超时（{len(_active_background_agents)}/{limit} 仍在运行）。"
+                        "请稍后重试，或用 kill_task 终止占用任务。",
+                        error=True,
+                    )
+                _background_agents_cond.wait(timeout=min(1.0, remaining))
+            _active_background_agents.append(agent)
+            return None
+
     def _start_background_agent(
         self,
         agent: Any,
@@ -1534,9 +1570,13 @@ class Tool:
             atexit.register(_atexit_cleanup_agents)
             _atexit_registered = True
 
+        # 并发上限控制：等待空余槽位（全局计数），并预留当前 agent 的槽位
+        slot_error = self._acquire_background_agent_slot(agent)
+        if slot_error is not None:
+            return slot_error
+
         def run_agent():
             """Run Agent in background thread."""
-            _active_background_agents.append(agent)
             try:
                 result = agent.run()
                 task.result = result
@@ -1577,6 +1617,8 @@ class Tool:
                     _active_background_agents.remove(agent)
                 except ValueError:
                     pass
+                with _background_agents_cond:
+                    _background_agents_cond.notify_all()
                 # T18: 资源/统计对称 —— 后台子代理结束也 close LLM client 并转发 usage，
                 # 与同步委派（agent_tool.py）保持一致。
                 try:
