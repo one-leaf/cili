@@ -35,7 +35,16 @@ from core.config import (
     GLOBAL_CONFIG_PATH, load_global_config, save_global_config,
 )
 from core.agent import Agent
-from core.session import SessionManager
+from core.session import (
+    MESSAGES_FILE,
+    META_FILE,
+    SessionManager,
+    _drop_session_lock,
+    load_history_messages,
+    load_history_meta,
+    read_jsonl,
+    read_meta,
+)
 from core.message_bus import get_message_bus
 from core.tools import get_tool_by_name
 from core.tools.approval import APPROVE_LABEL
@@ -694,14 +703,16 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
             continue
         try:
             mtime = index_file.stat().st_mtime
-            with open(index_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            meta = load_history_meta(session_dir)
+            metadata = meta.get("metadata", {})
 
-            # Extract preview from last user message
+            # Extract preview from last user message + message count (jsonl 行数)
             preview = ""
-            for msg in reversed(data.get("messages", [])):
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
+            message_count = 0
+            for line in read_jsonl(session_dir / MESSAGES_FILE):
+                message_count += 1
+                if line.get("role") == "user":
+                    content = line.get("content", "")
                     if isinstance(content, list):
                         for block in content:
                             if block.get("type") == "text":
@@ -709,16 +720,13 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
                                 break
                     elif isinstance(content, str):
                         preview = content[:200]
-                    if preview:
-                        break
 
-            metadata = data.get("metadata", {})
             sessions.append({
-                "session_id": data["session_id"],
-                "name": data.get("name", "Unnamed"),
+                "session_id": meta.get("session_id", session_dir.name),
+                "name": meta.get("name", "Unnamed"),
                 "created_at": metadata.get("created_at", ""),
                 "updated_at": metadata.get("updated_at", ""),
-                "message_count": len(data.get("messages", [])),
+                "message_count": message_count,
                 "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
                 "preview": preview,
                 "hidden": metadata.get("hidden", False),
@@ -741,14 +749,19 @@ async def get_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
         raise HTTPException(status_code=404, detail="Session not found")
 
     try:
-        with open(index_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # UI 直接读 messages.jsonl 完整历史（含压缩前所有消息），合并 _meta
+        meta = load_history_meta(session_dir)
+        messages = load_history_messages(session_dir)
 
         # 从外部文件按需注入工具结果内容（前端渲染需要）
-        messages = data.get("messages", [])
         _resolve_tool_results_for_session(messages, session_dir)
 
-        return data
+        return {
+            "session_id": meta.get("session_id", session_id),
+            "name": meta.get("name", "New Session"),
+            "metadata": meta.get("metadata", {}),
+            "messages": messages,
+        }
     except Exception as e:
         logger.error(f"Failed to read session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to read session")
@@ -798,15 +811,18 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
             for block in content:
                 if block.get("type") != "tool_result":
                     continue
-                # 已有内容（如错误信息），跳过
-                if block.get("content"):
-                    continue
 
                 # 从 block 级别的 _meta 读取内部元数据
                 block_meta = block.get("_meta", {})
                 compacted = block_meta.get("compacted", False)
                 output_path = block_meta.get("output_path", "")
                 truncated = block_meta.get("truncated", False)
+
+                # 已有内容（如错误信息）跳过；例外：已回答的 ask_user
+                # （jsonl 保留占位、答案在外部文件，必须读文件恢复）
+                answered = block_meta.get("completed") is True and bool(output_path)
+                if block.get("content") and not answered:
+                    continue
                 file_size = block_meta.get("file_size", 0)
 
                 # 处理压缩标记
@@ -815,7 +831,8 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                         tool_use_id = output_path.replace(".txt", "").replace(".json", "")
                         block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
                     else:
-                        block["content"] = "[Compacted: tool_use_id unknown]"
+                        # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
+                        block["content"] = "[Compacted: original content preserved in session history]"
                     continue
 
                 # 从外部文件读取
@@ -867,42 +884,13 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 @app.post("/api/workspaces/{workspace_uuid}/sessions")
 async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Create a new session."""
-    session_id = secrets.token_hex(4)  # 8 位十六进制短 ID
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    session_data = {
-        "session_id": session_id,
-        "name": request.name,
-        "messages": [],
-        "metadata": {
-            "created_at": now,
-            "updated_at": now,
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "api_calls": 0,
-                "cache_read_tokens": 0,
-                "cache_creation_tokens": 0,
-            },
-            "agent_count": 0,
-        }
-    }
-
     sessions_dir = ws_dir / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    # 创建 session 目录
-    session_dir = sessions_dir / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-
-    # Atomic write: write to temp file then rename
-    index_file = session_dir / "index.json"
     try:
-        atomic_write_json(index_file, session_data)
+        session = SessionManager.create_new_session(sessions_dir, request.name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {e}")
 
-    return session_data
+    return session.to_dict()
 
 
 @app.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
@@ -915,6 +903,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
 
     # 删除整个 session 目录
     shutil.rmtree(session_dir)
+    _drop_session_lock(session_dir)
 
     # Remove from agents dict (under lock)
     key = f"{workspace_uuid}:{session_id}"
@@ -956,18 +945,26 @@ class RevertRequest(BaseModel):
 async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Rename a session (atomic write)."""
     _validate_session_id(session_id)
-    index_file = ws_dir / "sessions" / session_id / "index.json"
-    if not index_file.exists():
+    session_dir = ws_dir / "sessions" / session_id
+    if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    key = f"{workspace_uuid}:{session_id}"
+
     try:
-        with open(index_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        agent = agents.get(key)
+        if agent:
+            # agent 已加载：改内存并统一落盘，避免下次 save() 回写旧名
+            agent.session_manager.name = request.name
+            agent.session_manager.metadata["updated_at"] = now
+            agent.session_manager.save()
+            return {"success": True}
 
-        data["name"] = request.name
-
-        atomic_write_json(index_file, data)
-
+        meta = read_meta(session_dir)
+        meta["name"] = request.name
+        meta.setdefault("metadata", {})["updated_at"] = now
+        atomic_write_json(session_dir / META_FILE, meta)
         return {"success": True}
     except Exception as e:
         logger.error(f"Failed to rename session {session_id}: {e}")
@@ -978,20 +975,25 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
 async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetHiddenRequest, ws_dir: Path = Depends(_require_workspace)):
     """Set session hidden status."""
     _validate_session_id(session_id)
-    index_file = ws_dir / "sessions" / session_id / "index.json"
-    if not index_file.exists():
+    session_dir = ws_dir / "sessions" / session_id
+    if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    key = f"{workspace_uuid}:{session_id}"
+
     try:
-        with open(index_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        agent = agents.get(key)
+        if agent:
+            agent.session_manager.metadata["hidden"] = request.hidden
+            agent.session_manager.metadata["updated_at"] = now
+            agent.session_manager.save()
+            return {"success": True}
 
-        if "metadata" not in data:
-            data["metadata"] = {}
-        data["metadata"]["hidden"] = request.hidden
-
-        atomic_write_json(index_file, data)
-
+        meta = read_meta(session_dir)
+        meta.setdefault("metadata", {})["hidden"] = request.hidden
+        meta["metadata"]["updated_at"] = now
+        atomic_write_json(session_dir / META_FILE, meta)
         return {"success": True}
     except Exception as e:
         logger.error(f"Failed to set hidden status for session {session_id}: {e}")
@@ -1008,7 +1010,8 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
         if not _SESSION_ID_RE.match(session_id):
             results.append({"session_id": session_id, "success": False, "error": "Invalid session_id format"})
             continue
-        index_file = sessions_dir / session_id / "index.json"
+        session_dir = sessions_dir / session_id
+        index_file = session_dir / "index.json"
         if not index_file.exists():
             results.append({"session_id": session_id, "success": False, "error": "Not found"})
             continue
@@ -1017,22 +1020,14 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
             if request.action == "delete":
                 # Delete session
                 import shutil
-                session_dir = sessions_dir / session_id
                 shutil.rmtree(session_dir, ignore_errors=True)
+                _drop_session_lock(session_dir)
                 results.append({"session_id": session_id, "success": True})
             elif request.action in ("hide", "unhide"):
-                # Set hidden status
-                with open(index_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                if "metadata" not in data:
-                    data["metadata"] = {}
-                data["metadata"]["hidden"] = (request.action == "hide")
-
-                temp_file = index_file.with_suffix(".json.tmp")
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                temp_file.replace(index_file)
+                # Set hidden status in meta.json
+                meta = read_meta(session_dir)
+                meta.setdefault("metadata", {})["hidden"] = (request.action == "hide")
+                atomic_write_json(session_dir / META_FILE, meta)
                 results.append({"session_id": session_id, "success": True})
             else:
                 results.append({"session_id": session_id, "success": False, "error": f"Unknown action: {request.action}"})
@@ -1480,52 +1475,33 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
 
     msg_id = request.msg_id
 
-    # 优先使用内存中的 agent
+    # 优先使用内存中的 agent（revert 会原地截断共享 messages 并物理截断 jsonl）
     if agent:
-        messages = agent.session_manager.messages
-        target_idx = None
-        for i, msg in enumerate(messages):
-            if msg.get("_meta", {}).get("id") == msg_id:
-                target_idx = i
-                break
-
-        if target_idx is None:
-            raise HTTPException(404, "未找到指定的消息")
-
-        # 删除该消息及其后面的所有消息
-        deleted_count = len(messages) - target_idx
-        del messages[target_idx:]
-        agent.session_manager.save()
-
-    # 如果 agent 不在内存中，直接从磁盘读取
+        try:
+            deleted_count = agent.session_manager.revert_to_message(msg_id)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+    # 如果 agent 不在内存中，直接从磁盘读取并迁移/重建
     else:
-        session_dir = ws_dir / "sessions" / session_id
-        index_file = session_dir / "index.json"
-
-        if not index_file.exists():
+        sm = SessionManager(session_id, ws_dir / "sessions")
+        if not sm.load():
             raise HTTPException(404, "Session not found")
-
-        with open(index_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        messages = data.get("messages", [])
-        target_idx = None
-        for i, msg in enumerate(messages):
-            if msg.get("_meta", {}).get("id") == msg_id:
-                target_idx = i
-                break
-
-        if target_idx is None:
-            raise HTTPException(404, "未找到指定的消息")
-
-        # 删除该消息及其后面的所有消息
-        deleted_count = len(messages) - target_idx
-        del messages[target_idx:]
-
-        # 保存回磁盘（原子写入，避免崩溃产生半写文件）
-        atomic_write_json(index_file, data)
+        try:
+            deleted_count = sm.revert_to_message(msg_id)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
 
     return {"success": True, "deleted_count": deleted_count}
+
+
+_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _safe_ask_user_filename(tool_use_id: str) -> str:
+    """ask_user 答案文件的净名（非法 tool_use_id 回退随机名，防路径穿越）。"""
+    if tool_use_id and _SAFE_FILENAME_RE.match(tool_use_id):
+        return f"{tool_use_id}.txt"
+    return f"{secrets.token_hex(4)}.txt"
 
 
 @app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")
@@ -1555,27 +1531,27 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
             # 检查两种字段名（tool_use_id 或 tool_call_id）
             block_tool_id = block.get("tool_use_id") or block.get("tool_call_id")
             if block.get("type") == "tool_result" and block_tool_id == ask_user_tool_use_id:
-                # 替换占位符内容
+                # 替换占位符内容（内存视图；jsonl 行保持占位）
                 block["content"] = request.answer
                 found_placeholder = True
                 logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
-                # 设置 completed = True（用户已回答）
-                if "_meta" in block and "completed" in block["_meta"]:
-                    block["_meta"]["completed"] = True
-                    logger.info(f"[ask-user] 已设置 _meta.completed=true")
-                # 同步更新外部文件，保持与其他工具一致
-                block_meta = block.get("_meta", {})
-                output_path = block_meta.get("output_path", "")
-                if output_path:
+
+                # 总是写答案到外部文件并置 completed/output_path/file_size：
+                # 消息已有 seq 不会被 jsonl 重写，reload 时模型/UI 从文件恢复答案
+                output_path = _safe_ask_user_filename(ask_user_tool_use_id)
+                if "_meta" not in block:
+                    block["_meta"] = {}
+                block["_meta"].update({
+                    "completed": True,
+                    "output_path": output_path,
+                    "file_size": len(request.answer.encode("utf-8")),
+                })
+                try:
                     ext_file = agent.session_manager.session_dir / output_path
-                    try:
-                        ext_file.write_text(request.answer, encoding="utf-8")
-                        if "_meta" not in block:
-                            block["_meta"] = {}
-                        block["_meta"]["file_size"] = len(request.answer.encode("utf-8"))
-                        logger.info(f"[ask-user] 已更新外部文件: {output_path}")
-                    except Exception as e:
-                        logger.warning(f"[ask-user] 更新外部文件失败: {e}")
+                    ext_file.write_text(request.answer, encoding="utf-8")
+                    logger.info(f"[ask-user] 已写入答案文件: {output_path}")
+                except Exception as e:
+                    logger.warning(f"[ask-user] 写入答案文件失败: {e}")
                 break
         if found_placeholder:
             break

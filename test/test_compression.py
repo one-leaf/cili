@@ -164,11 +164,11 @@ class TestMicrocompactToolResults:
         assert saved == 0
 
 
-class TestMicrocompactInlineSpill:
-    """内联结果（file_size=0）压缩时先 spill 到文件，保证可恢复。"""
+class TestMicrocompactInline:
+    """内联结果（file_size=0）压缩只标记 compacted，不 spill 外置文件（jsonl 保留原文）。"""
 
-    def _make_inline_msg(self, tool_use_id: str, content: str) -> dict:
-        return {
+    def _make_inline_msg(self, tool_use_id: str, content: str, seq: int | None = 0) -> dict:
+        msg = {
             "role": "user",
             "content": [
                 {
@@ -178,69 +178,69 @@ class TestMicrocompactInlineSpill:
                 }
             ],
         }
+        if seq is not None:
+            msg["_meta"] = {"seq": seq}
+        return msg
 
-    def test_inline_result_spilled_and_cleared(self, tmp_path):
-        """内联结果压缩：写入 {tool_use_id}.txt、清 content、写 output_path。"""
+    def test_inline_compacted_no_file_created(self, tmp_path):
+        """内联结果（已持久化）压缩：标记 compacted + 清 content，不写外置文件。"""
         messages = [
-            self._make_inline_msg("toolu_abc", "long inline output " * 50),
-            self._make_inline_msg("toolu_recent", "recent"),
+            self._make_inline_msg("toolu_abc", "long inline output " * 50, seq=0),
+            self._make_inline_msg("toolu_recent", "recent", seq=1),
         ]
-        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
+        saved = microcompact_tool_results(messages, keep_recent=1)
 
         old = messages[0]["content"][0]
         assert old["_meta"]["compacted"] is True
-        assert old["_meta"]["output_path"] == "toolu_abc.txt"
+        assert "output_path" not in old["_meta"]
         assert old.get("content") is None
         assert saved == len("long inline output " * 50)
 
-        # spill 文件可经 read_tool_result 恢复
-        file_path = tmp_path / "toolu_abc.txt"
-        assert file_path.read_text(encoding="utf-8") == "long inline output " * 50
+        # 不生成外置文件
+        assert list(tmp_path.iterdir()) == []
 
         # 最近一条不压缩
         recent = messages[1]["content"][0]
         assert not recent.get("_meta", {}).get("compacted")
         assert recent["content"] == "recent"
 
-    def test_inline_without_output_dir_skipped(self):
-        """无 output_dir 时内联结果跳过压缩，避免不可恢复的数据丢失。"""
+    def test_inline_unpersisted_skipped(self):
+        """未持久化（无 _meta.seq）的内联结果跳过压缩，避免清空后原文丢失。"""
         messages = [
-            self._make_inline_msg("toolu_abc", "inline output"),
-            self._make_inline_msg("toolu_recent", "recent"),
+            self._make_inline_msg("toolu_abc", "inline output " * 20, seq=None),
+            self._make_inline_msg("toolu_recent", "recent", seq=1),
         ]
         saved = microcompact_tool_results(messages, keep_recent=1)
 
         assert saved == 0
         old = messages[0]["content"][0]
         assert not old.get("_meta", {}).get("compacted")
-        assert old["content"] == "inline output"
+        assert old["content"] == "inline output " * 20
 
-    def test_inline_invalid_tool_use_id_skipped(self, tmp_path):
-        """tool_use_id 含危险字符时跳过（防路径遍历）。"""
+    def test_inline_small_result_skipped(self):
+        """小于 200 字符的内联结果保留原文，不压缩。"""
         messages = [
-            self._make_inline_msg("../evil", "should not spill"),
-            self._make_inline_msg("toolu_recent", "recent"),
+            self._make_inline_msg("toolu_abc", "small", seq=0),
+            self._make_inline_msg("toolu_recent", "recent", seq=1),
         ]
-        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
+        saved = microcompact_tool_results(messages, keep_recent=1)
 
         assert saved == 0
         old = messages[0]["content"][0]
         assert not old.get("_meta", {}).get("compacted")
-        # 未写出任何文件（路径遍历被拦截）
-        assert list(tmp_path.iterdir()) == []
+        assert old["content"] == "small"
 
-    def test_file_backed_still_works_with_output_dir(self, tmp_path):
-        """外部文件结果（file_size>0）在有 output_dir 时行为不变。"""
+    def test_file_backed_marks_only(self):
+        """外部文件结果（file_size>0）：只标记 compacted，content 保持原样。"""
         messages = [
-            self._make_inline_msg("toolu_abc", "ignored"),
-            self._make_inline_msg("toolu_recent", "recent"),
+            self._make_inline_msg("toolu_abc", "ignored", seq=0),
+            self._make_inline_msg("toolu_recent", "recent", seq=1),
         ]
         messages[0]["content"][0]["_meta"] = {"file_size": 300}
-        saved = microcompact_tool_results(messages, keep_recent=1, output_dir=str(tmp_path))
+        saved = microcompact_tool_results(messages, keep_recent=1)
 
         assert saved == 300
         old = messages[0]["content"][0]
         assert old["_meta"]["compacted"] is True
-        # 文件结果无需 spill，content 保持原样（None）
         assert old["content"] == "ignored"
 

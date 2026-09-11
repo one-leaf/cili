@@ -140,6 +140,12 @@ class BaseAgent:
         Args:
             metadata: Optional metadata to include in the file
         """
+        # 交互模式：统一由 SessionManager 按新 3 文件布局持久化（commits 视图）。
+        # autonomous（worker/lite）无 session_manager 属性，走下面的旧格式路径。
+        if getattr(self, "session_manager", None) is not None:
+            self.session_manager.save()
+            return
+
         if not self.session_dir:
             return
 
@@ -210,7 +216,7 @@ class BaseAgent:
                         If False, keep _meta intact for intermediate processing
                         (e.g., _resolve_tool_results needs _meta.output_path).
         """
-        INTERNAL_META = {"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"}
+        INTERNAL_META = {"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id", "seq", "summary"}
         result = []
 
         for msg in self.messages:
@@ -478,7 +484,8 @@ class BaseAgent:
                         tool_use_id = output_path.replace(".txt", "").replace(".json", "")
                         block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
                     else:
-                        block["content"] = "[Compacted: tool_use_id unknown]"
+                        # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
+                        block["content"] = "[Compacted: original content preserved in session history]"
                     continue
 
                 # Read from external file
@@ -552,7 +559,7 @@ class BaseAgent:
 
         Modifies blocks in-place (same pattern as _strip_images_from_messages).
         """
-        INTERNAL_META = frozenset({"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id"})
+        INTERNAL_META = frozenset({"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id", "seq", "summary"})
         for msg in messages:
             content = msg.get("content", "")
             if not isinstance(content, list):
@@ -609,11 +616,9 @@ class BaseAgent:
         MAX_BODY_SIZE = 3_000_000
 
         # Layer 1: Microcompact
-        # output_dir 供内联结果 spill 到文件（保留可恢复性），session_dir 可能为 None
         saved = microcompact_tool_results(
             self.messages,
             keep_recent=MICROCOMPACT_KEEP_RECENT,
-            output_dir=str(self.session_dir) if self.session_dir else None,
         )
         if saved > 0:
             logger.debug(f"[Microcompact] 压缩旧工具结果，节省约 {saved:,} 字节")
@@ -720,12 +725,14 @@ class BaseAgent:
                 msg["_meta"]["valid"] = False
             cursor += 1
 
-        # Add summary messages
+        # Add summary messages（summary=True：进 commits 视图内嵌摘要，不进 jsonl，
+        # UI 完整历史保留压缩前原始消息，不展示摘要）
         self.add_message(
             "user",
             "[Our previous conversation has been compacted due to context length.]",
+            meta={"summary": True},
         )
-        self.add_message("assistant", summary)
+        self.add_message("assistant", summary, meta={"summary": True})
 
         self._invalidate_message_cache()
 

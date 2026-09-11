@@ -209,6 +209,103 @@ def migrate_todos_from_metadata(metadata: dict, session_id: str) -> bool:
         return False
 
 
+def migrate_session_to_new_layout(session_dir: Path) -> bool:
+    """Migrate a session dir from old single-file format to the 3-file JSONL layout.
+
+    Old: {session_dir}/index.json 含完整 "messages"。
+    New: messages.jsonl（完整历史，UI 数据源）+ index.json（commits 模型视图）
+         + meta.json（会话属性）。
+
+    先跑 migrate_session_file（block 级 → 消息级 _meta），再拆 3 文件；
+    旧 index.json 备份为 index.json.legacy（copy 而非 rename，保证任意一步
+    崩溃后会话仍可读）。已是新布局（含 commits）则直接返回 False。
+
+    Returns:
+        True 表示执行了迁移。
+    """
+    import shutil
+
+    from core.session import (
+        MESSAGES_FILE,
+        META_FILE,
+        SCHEMA_VERSION,
+        _commit_for_message,
+        _jsonl_line,
+        _summary_commit,
+        generate_short_id,
+        write_jsonl,
+    )
+    from core.fs_utils import atomic_write_json
+
+    session_dir = Path(session_dir)
+    index_file = session_dir / "index.json"
+    if not index_file.exists():
+        return False
+
+    # 先做 block 级 → 消息级 _meta 迁移，保证拆文件时字段已就位（幂等）
+    migrate_session_file(index_file)
+
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load session file {index_file}: {e}")
+        return False
+
+    if "commits" in data:
+        return False  # 已是新布局
+
+    messages = data.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+
+    # 备份旧文件（copy 不 rename：rename 后若中途崩溃会短暂丢失 index.json）
+    legacy_file = index_file.with_suffix(".json.legacy")
+    if not legacy_file.exists():
+        try:
+            shutil.copy2(index_file, legacy_file)
+        except Exception as e:
+            logger.warning(f"Failed to backup legacy file {index_file}: {e}")
+
+    next_seq = 0
+    jsonl_lines: list[dict] = []
+    commits: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if "_meta" not in msg:
+            msg["_meta"] = {}
+        meta = msg["_meta"]
+        if "id" not in meta:
+            meta["id"] = generate_short_id()
+        seq = next_seq
+        next_seq += 1
+        meta["seq"] = seq
+        jsonl_lines.append(_jsonl_line(msg, seq))
+        # 无效消息从提交视图删除，但 jsonl 完整历史保留（UI 仍可见）
+        if meta.get("valid") is False:
+            continue
+        if meta.get("summary"):
+            commits.append(_summary_commit(msg))
+        else:
+            commits.append(_commit_for_message(msg, seq))
+
+    write_jsonl(session_dir / MESSAGES_FILE, jsonl_lines)
+    atomic_write_json(index_file, {
+        "schema_version": SCHEMA_VERSION,
+        "next_seq": next_seq,
+        "commits": commits,
+    })
+    atomic_write_json(session_dir / META_FILE, {
+        "session_id": data.get("session_id") or session_dir.name,
+        "name": data.get("name", "New Session"),
+        "metadata": data.get("metadata", {}),
+    })
+
+    logger.info(f"Migrated session to new layout: {session_dir}")
+    return True
+
+
 def migrate_all_sessions(agents_dir: Path) -> int:
     """Migrate all session files in the agents directory.
 
@@ -239,6 +336,8 @@ def migrate_all_sessions(agents_dir: Path) -> int:
 
             try:
                 if migrate_session_file(session_file):
+                    migrated += 1
+                if migrate_session_to_new_layout(session_dir):
                     migrated += 1
             except Exception as e:
                 logger.warning(f"Failed to migrate session {session_file}: {e}")

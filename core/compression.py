@@ -7,22 +7,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 
 logger = logging.getLogger(__name__)
-
-# Placeholder for compacted tool results (injected when sending to LLM)
-MICROCOMPACT_PLACEHOLDER = "[Compacted: content stored externally, use `read` tool to retrieve]"
-
-# 仅允许安全字符，防止用 tool_use_id 拼文件名时路径遍历
-_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def microcompact_tool_results(
     messages: list[dict],
     keep_recent: int = 6,
-    output_dir: str | None = None,
 ) -> int:
     """标记旧的工具结果为已压缩。
 
@@ -31,16 +22,16 @@ def microcompact_tool_results(
     - 发送 LLM 时由 _resolve_tool_results() 注入占位符
 
     外部文件结果（file_size > 0）：内容已在文件里，仅标记 compacted。
-    内联结果（file_size = 0）：内容只在消息内，压缩前先 spill 到
-    {output_dir}/{tool_use_id}.txt 并写 _meta.output_path，再清 content，
-    保证可经 read_tool_result 恢复；无 output_dir 时跳过（避免数据丢失）。
+    内联结果（file_size = 0）：内容由 messages.jsonl 持久化（新布局 UI 数据源），
+    压缩只标记 compacted + 清空内存内容，不再 spill 外置文件；原文保留在
+    jsonl 中，UI 可直接查看。消息尚未持久化（无 _meta.seq）时跳过，
+    避免清空后 jsonl 也丢失原文。
 
     向后兼容：检测旧格式的 block._compacted 并自动迁移。
 
     Args:
         messages: 消息列表（会被原地修改）
         keep_recent: 保留最近多少条工具结果消息
-        output_dir: 内联结果 spill 的目标目录（session_dir）；为 None 时内联结果不压缩
 
     Returns:
         节省的字节数（估算）
@@ -93,25 +84,16 @@ def microcompact_tool_results(
                 saved += file_size
                 continue
 
-            # 内联结果：内容只在消息内，压缩前先 spill 到文件，保证可恢复。
-            # 无 output_dir 或 tool_use_id 非法时跳过，避免不可恢复的数据丢失。
-            tool_use_id = block.get("tool_use_id", "")
+            # 内联结果：内容由 messages.jsonl 持久化（UI 数据源），压缩只标记
+            # compacted + 清空内存内容，不再 spill 外置文件（原文保留在 jsonl）。
             content = block.get("content", "")
-            if not output_dir or not _SAFE_ID_PATTERN.match(tool_use_id):
-                continue
             if not isinstance(content, str) or not content:
                 continue
+            if len(content) < 200:
+                continue  # 小结果保留原文，不压缩
+            if "seq" not in (msg.get("_meta") or {}):
+                continue  # 尚未持久化，清空会丢失原文
 
-            filename = f"{tool_use_id}.txt"
-            try:
-                file_path = os.path.join(output_dir, filename)
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-            except Exception as e:
-                logger.warning(f"[Microcompact] 内联结果 spill 失败，跳过压缩: {e}")
-                continue
-
-            block_meta["output_path"] = filename
             block_meta["compacted"] = True
             block["content"] = None  # 清空内联内容（_resolve_tool_results 注入占位符）
             saved += len(content)
