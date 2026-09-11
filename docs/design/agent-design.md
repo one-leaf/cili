@@ -231,7 +231,7 @@ def run(self, *args, **kwargs):
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 23 个（15 core 常驻 + 8 deferred 延迟加载；含 agent、ask_user、tool_search） | 13 个（执行型：read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 4 个（read/write/edit/bash） |
+| **工具白名单** | 23 个（15 core 常驻 + 8 deferred 延迟加载；含 agent、ask_user、tool_search） | 13 个（执行型：read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 5 个（read/write/edit/bash/python） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -240,7 +240,7 @@ def run(self, *args, **kwargs):
 | **check_phase** | ✗ | ✓ | ✗ |
 | **budget_notice** | ✗ | ✓ | ✗ |
 | **progress_persistence** | ✗ | ✓ | ✓ |
-| **max_iterations** | null → system（200） | null → system（200） | 20 |
+| **max_iterations** | null → system（200） | null → system（200） | 200 |
 | **max_tokens** | 16384 | 16384 | 8192 |
 | **system_prompt.blocks** | text(role) + tools + skills | text(role) + tools + skills | text(role) + tools |
 | **user_layers** | claude_md + context | task + context + runtime | task |

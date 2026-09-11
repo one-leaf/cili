@@ -29,6 +29,7 @@
           "| File read | `read` |",
           "| File create / full replace | `write` |",
           "| File modify | `edit` |",
+          "| Python scripts / data processing / progress state | `python` |",
           "",
           "## Execution",
           "",
@@ -76,11 +77,12 @@
     "read",
     "write",
     "edit",
-    "bash"
+    "bash",
+    "python"
   ],
   "skills": [],
   "streaming": true,
   "progress_persistence": true,
-  "max_iterations": 20,
+  "max_iterations": 200,
   "max_tokens": 8192
 }

@@ -79,6 +79,14 @@ If the task involves LLM processing (the sub-agent itself is the LLM — there i
 )
 ```
 
+### 5. Synchronous by Default
+
+Call sub-agents **synchronously** (omit `run_in_background`) unless you are launching **multiple independent sub-agents at once**. A single sub-agent: wait for its result, then continue — the result stays in your context and ordering is preserved. Use `run_in_background: true` only to parallelize several sub-agents (e.g. translating N block files at once), then `read_task` each until it completes.
+
+### 6. Concurrent Cap
+
+Background sub-agents are capped at `system.max_concurrent_agents` (default 5, range 1-10). When you launch more than the cap, later spawn calls wait (queue) until an earlier sub-agent finishes — so you can safely launch all N sub-agents in a row and they will self-throttle. A spawn call that takes a moment is normal at the cap.
+
 ## Examples
 
 ### File Translation
@@ -128,6 +136,7 @@ agent(
 - Worker/Lite sub-agent performs LLM processing in its own context (there is no separate `llm` tool)
 - Sub-agent timeout is 1 hour
 - **Delegation depth limit (1 level)**: only master can delegate — to a worker or lite (depth 1). A sub-agent at depth 1 cannot delegate further; calling `agent` there returns an error, so complete the task directly
+- **Partial runs resume**: if a sub-agent returns before finishing (hit `max_iterations` or reported partial progress), its chunks, results, and `state.json` persist under `$CILI_TMP/{task_id}/`. Re-delegate the same task with the **same `task_id`** — it resumes from the lowest missing chunk; never restart from scratch. For jobs that clearly exceed one run (~90 chunks, see context-bounded-processing), split the input into segments and delegate one sub-agent per segment up front, or plan for re-delegation rounds.
 - Sub-agent execution is visible in UI (real-time progress)
 - Return format: `{"status": "completed"/"error"/"timeout", "summary": "...", "iterations": N}`
 - Use the context-bounded-processing skill inside the sub-agent for files that exceed the context window

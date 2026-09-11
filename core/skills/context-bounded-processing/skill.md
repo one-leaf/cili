@@ -1,6 +1,6 @@
 ---
 name: Context-Bounded Processing (Runtime)
-description: Stateful resumable worker protocol for tasks that exceed context window — Python manages state, the agent orchestrates. Each step is bounded and resumable.
+description: General chunked-processing protocol for tasks that exceed the context window — the worker processes each chunk in-context, Python manages state. For translating large Office/PDF documents, use the translate-large-document skill instead.
 roles: [worker]
 ---
 
@@ -14,6 +14,8 @@ Context-bounded processing MUST be implemented as a **resumable stateful workflo
 - Batch database results that need semantic processing
 - Any task where the total data exceeds what can fit in one LLM call
 
+> **Not for large-document translation** (docx/xlsx/pdf/doc/xls) — use the `translate-large-document` skill instead (per-block Lite sub-agents + merge). This in-context loop is for summarization, extraction, analysis, and other bounded processing.
+
 The agent calls tools step by step — Python for state management and file splitting, `read` + in-context processing for each chunk — rather than expecting a single Python call to complete the entire task.
 
 ```
@@ -23,13 +25,13 @@ Worker (orchestrator)
     ▼
     State saved to $CILI_TMP/{task_id}/state.json
     │
-    │ 2. read chunk_001.txt → process in-context → write result_001.txt
-    │ 3. python(code="update state, mark chunk 0 done")
-    │ 4. read chunk_002.txt → process in-context → write result_002.txt
-    │ 5. python(code="update state, mark chunk 1 done")
+    │ 2. read chunk_000.txt → process in-context → write result_000.txt
+    │ 3. read chunk_001.txt → process in-context → write result_001.txt
     │    ... repeat until all chunks done ...
+    │    (result_NNN.txt IS the progress record — no per-chunk python call;
+    │     python checkpoint every ~10 chunks, or once when resuming)
     │
-    │ 6. python(code="merge results + cleanup")
+    │ 4. python(code="merge results + cleanup")
     ▼
     Final output ready
 ```
@@ -43,12 +45,14 @@ Worker (orchestrator loop)
   │
   ├─ for each chunk:
   │    ├─ read + in-context: process one chunk → write result file
-  │    └─ python: update state.json (mark chunk done, advance cursor)
+  │    └─ (no per-chunk python call — result_NNN.txt IS the progress record)
+  │
+  ├─ python: checkpoint every ~10 chunks (optional) — update state.json
   │
   └─ python: merge phase → combine all results, cleanup
 ```
 
-The agent reads `state.json` to know progress and decides the next step. Python is called for discrete operations — never expected to loop over slow external calls internally.
+The agent reads `state.json` / lists `results/` at start to know progress, then decides the next step. Python is called for discrete operations — never expected to loop over slow external calls internally.
 
 ## Python Execution Model
 
@@ -154,7 +158,7 @@ Task state MUST be persisted in `$CILI_TMP/{task_id}/state.json` outside the Pyt
 }
 ```
 
-Next invocation loads this state and resumes from `cursor.next_chunk_idx = 35`.
+**The results directory is the fine-grained progress source** — `result_035.txt` existing means chunk 35 is done, so progress survives even if `state.json` is stale. `state.json` holds task metadata (input/output, total chunks) plus a checkpoint. Update `state.json` **once at init, then as a periodic checkpoint every ~10 chunks, and again when resuming** — never after every chunk (that is a wasted python call; the result file already records progress). On resume, compute the next chunk from `state.json` AND the results dir: process the **lowest-numbered missing result**, so re-running never redoes or skips chunks.
 
 ## Processing Phases
 
@@ -198,6 +202,21 @@ If Python is NOT making slow external calls, it can loop normally without this r
 - File reading/writing: OK to process all files in one invocation
 - Data transformation: OK to loop over all records
 - System commands: OK to execute multiple bash commands
+
+### Worker iteration budget — how much fits in one run
+
+A Worker sub-agent has a ~200-tool-call budget (`max_iterations`, default 200) plus a check phase. Each chunk costs **2 calls** (`read` + `write`), so **one run handles ~90 chunks** (~180 calls, leaving room for the check phase):
+
+| chunk_size | chars per run |
+|------------|---------------|
+| 10000 | ~900K chars |
+| 20000-30000 | ~2M-2.7M chars |
+
+**Files larger than one run must be processed across multiple runs via resume:**
+
+- When a run stops at `max_iterations`, the results so far and `state.json` are already on disk under `$CILI_TMP/{task_id}/` — nothing is lost.
+- Re-delegate the same task with the **same `task_id`**: the worker's first step re-reads `state.json` and lists `results/`, then continues from the lowest missing chunk (see Resume below). Never restart the task from scratch.
+- A partial run's summary must say explicitly how many chunks are done and that `task_id` should be re-delegated.
 
 ### Chunk Size Guidance
 
@@ -284,7 +303,7 @@ print(json.dumps({"status": "initialized", "task_id": task_id, "total_chunks": l
 
 ### Step 2: Process each chunk (agent loop)
 
-The agent reads `state.json`, then for each chunk:
+Read `state.json` / list `results/` once, then for each chunk:
 
 1. `read` the chunk and process it in-context, then `write` the result:
    ```
@@ -293,24 +312,35 @@ The agent reads `state.json`, then for each chunk:
    write("$CILI_TMP/{task_id}/results/result_000.txt", <processed text>)
    ```
 
-2. Call `python` to update state:
+2. The existence of `result_000.txt` **is** the progress record — do NOT call python after every chunk (that wastes 1 of your ~200 tool calls per chunk and halves your throughput).
+
+3. Checkpoint (~every 10 chunks, or when resuming) — one python call that re-reads the results dir, updates `state.json`, and prints missing chunks:
    ```python
-   # Agent calls: python(code="...")
-   import json, os
-   state_path = os.path.join(os.environ["CILI_TMP"], "{task_id}/state.json")
-   with open(state_path) as f:
+   # Agent calls: python(code="...") — every ~10 chunks, or once when resuming
+   import json, os, glob
+   base = os.path.join(os.environ["CILI_TMP"], "{task_id}")
+   done = set()
+   for p in glob.glob(os.path.join(base, "results", "result_*.txt")):
+       name = os.path.basename(p)                     # result_000.txt
+       done.add(int(name[len("result_"):-len(".txt")]))
+   with open(os.path.join(base, "state.json")) as f:
        state = json.load(f)
-   idx = state["cursor"]["next_chunk_idx"]
-   state["cursor"]["next_chunk_idx"] = idx + 1
-   state["chunks"]["done"] = idx + 1
-   state["processed"]["chunks"] = idx + 1
+   total = state["file"]["total_chunks"]
+   next_idx = next((i for i in range(total) if i not in done), total)
+   state["cursor"]["next_chunk_idx"] = next_idx
+   state["chunks"]["done"] = len(done)
+   state["processed"]["chunks"] = len(done)
    import time; state["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-   with open(state_path, "w") as f:
+   with open(os.path.join(base, "state.json"), "w") as f:
        json.dump(state, f, indent=2, ensure_ascii=False)
-   print(json.dumps({"chunk_done": idx, "progress": f"{idx+1}/{state['chunks']['total']}"}))
+   missing = [i for i in range(total) if i not in done]
+   print(json.dumps({"progress": f"{len(done)}/{total}",
+                     "next": next_idx, "missing": missing}))
    ```
 
-3. Repeat until all chunks are done.
+4. Repeat until all chunks are done.
+
+**Resume:** the first step of ANY processing task is to list `results/` and read `state.json`, then process the **lowest-numbered missing chunk**. This makes re-delegation with the same `task_id` safe after a `max_iterations` stop or context compaction — missing chunks get processed, done chunks are never redone.
 
 ### Step 3: Merge (Python)
 
@@ -400,11 +430,11 @@ for url in urls:
 2. **Agent orchestrates, Python manages state** — The agent (Worker) calls tools step by step. Python handles state management, file splitting, and result merging. Never let Python loop over slow external calls.
 3. **Process each chunk in-context** — `read` the chunk, process the text directly (the agent is the LLM), then `write` the result. Never invoke the LLM from within Python code.
 4. **Single external call per Python invocation** — Each Python call processes at most 1 slow external operation (HTTP request, etc.) then returns; the agent handles loop orchestration.
-5. **Python owns execution state** — Always rely on `state.json` to track progress, never on the agent's conversation context.
+5. **Results dir owns progress** — `result_NNN.txt` existing is the progress record; `state.json` holds metadata + a checkpoint. Never rely on the agent's conversation context for progress.
 6. **Normal operations can loop** — Local operations such as file I/O, data transformation, and bash commands may process all items in a single Python invocation.
 7. **Split by paragraph boundaries** — Preserve completeness; never cut mid-sentence.
-8. **Persist immediately** — Save results and update `state.json` after every successful step.
+8. **Persist immediately** — `write` each result file right after processing it; update `state.json` as a periodic checkpoint (~every 10 chunks), not after every chunk.
 9. **Do not hardcode file content** — Never write large file contents as string literals in Python code.
 10. **Keep each step bounded in context** — Split large files via Python; process exactly one chunk per step in the agent context (chunk_size keeps each within the context window).
-11. **Resume via the same `task_id`** — Python loads state from `state.json` and continues from the last checkpoint.
+11. **Resume via the same `task_id`** — On any start or resume, list `results/` + read `state.json`, then process the lowest-numbered missing chunk. Never restart the task from scratch; a run that stops at `max_iterations` is continued by re-delegating the same `task_id`.
 12. **Write results immediately** — After processing a chunk, `write` the result to `$CILI_TMP/{task_id}/results/` before moving to the next step; never accumulate processed text in context.

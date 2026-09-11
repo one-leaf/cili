@@ -62,17 +62,17 @@ class TestLiteConstruction:
         assert agent.role == "lite"
         assert agent._mode == "autonomous"
         assert agent.task == "read file"
-        # lite.json 显式 max_iterations=20，不继承 config 默认
-        assert agent.max_iterations == 20
+        # lite.json 显式 max_iterations=200，支持批量循环，不继承 config 默认
+        assert agent.max_iterations == 200
         assert agent.max_consecutive_failures == 5  # 缺省
         assert agent.role_cfg.check_phase is False
         assert agent.role_cfg.budget_notice is False
         assert agent.role_cfg.streaming is True
 
     def test_tool_whitelist(self):
-        """Lite 白名单只含 read/write/edit/bash。"""
+        """Lite 白名单含 read/write/edit/bash/python。"""
         agent = _make_agent(task="t")
-        assert agent.role_cfg.tools == ["read", "write", "edit", "bash"]
+        assert agent.role_cfg.tools == ["read", "write", "edit", "bash", "python"]
 
     def test_tools_instantiated(self):
         tools = [MagicMock() for _ in range(4)]
@@ -178,4 +178,4 @@ class TestLiteRunFlow:
         with patch("core.agent.create_llm_client", return_value=MagicMock()):
             agent = Agent(config, role="lite", task="t", cwd=".")
         names = {t.name for t in agent.tools}
-        assert names == {"read", "write", "edit", "bash"}
+        assert names == {"read", "write", "edit", "bash", "python"}
