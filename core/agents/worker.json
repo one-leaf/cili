@@ -207,5 +207,6 @@
   "budget_notice": true,
   "progress_persistence": true,
   "max_iterations": null,
-  "max_consecutive_failures": 5
+  "max_consecutive_failures": 5,
+  "max_tokens": 16384
 }

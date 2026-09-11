@@ -266,5 +266,6 @@
   "ask_user": true,
   "approval": true,
   "session_persistence": true,
-  "max_iterations": null
+  "max_iterations": null,
+  "max_tokens": 16384
 }

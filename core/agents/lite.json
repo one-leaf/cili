@@ -81,5 +81,6 @@
   "skills": [],
   "streaming": true,
   "progress_persistence": true,
-  "max_iterations": 20
+  "max_iterations": 20,
+  "max_tokens": 8192
 }

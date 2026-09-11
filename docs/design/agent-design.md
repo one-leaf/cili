@@ -222,6 +222,7 @@ def run(self, *args, **kwargs):
 | `progress_persistence` | bool | autonomous 是否实时保存进度 |
 | `max_iterations` | int \| None | None → 取 `config.system.max_iterations`（默认 200） |
 | `max_consecutive_failures` | int | 连续失败次数上限（默认 5） |
+| `max_tokens` | int \| None | 角色级输出上限；None → 继承角色模型的 `max_tokens`；设置后取 `min(角色值, 模型上限)` |
 | `system_prompt` | dict | `{"blocks": [...]}` 系统提示块声明 |
 | `user_layers` | list[dict] | 需注入的 user 消息层声明 |
 
@@ -240,6 +241,7 @@ def run(self, *args, **kwargs):
 | **budget_notice** | ✗ | ✓ | ✗ |
 | **progress_persistence** | ✗ | ✓ | ✓ |
 | **max_iterations** | null → system（200） | null → system（200） | 20 |
+| **max_tokens** | 16384 | 16384 | 8192 |
 | **system_prompt.blocks** | text(role) + tools + skills | text(role) + tools + skills | text(role) + tools |
 | **user_layers** | claude_md + context | task + context + runtime | task |
 
@@ -573,4 +575,4 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ---
 
 *文档版本: v3.0*
-*最后更新: 2026-09-11（worker 精简为 13 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载）*
+*最后更新: 2026-09-11（worker 精简为 13 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*

@@ -159,6 +159,11 @@ class Agent(BaseAgent):
         self.client = create_llm_client(self.model)
         if temperature is not None:
             self.client.temperature = temperature
+        # 角色级 max_tokens 上限：min(角色配置, 模型上限)，避免超过模型实际能力
+        # （isinstance 守卫兼容测试中的 MagicMock 模型）
+        role_max_tokens = self.role_cfg.max_tokens
+        if role_max_tokens and isinstance(self.model.max_tokens, int):
+            self.client.max_tokens = min(role_max_tokens, self.model.max_tokens)
 
         if self._mode == "interactive":
             # 会话级高风险命令审批存储（内存，不持久化），根/子代理共享

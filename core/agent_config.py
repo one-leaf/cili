@@ -32,6 +32,7 @@ _DEFAULTS = {
     "progress_persistence": False,
     "max_iterations": None,  # None -> config.system.max_iterations
     "max_consecutive_failures": 5,
+    "max_tokens": None,  # None -> 继承角色模型的 max_tokens
     "system_prompt": {},
     "user_layers": [],
 }
@@ -56,6 +57,7 @@ class AgentRoleConfig:
     progress_persistence: bool = False
     max_iterations: int | None = None  # None -> config.system.max_iterations
     max_consecutive_failures: int = 5
+    max_tokens: int | None = None  # None -> 继承角色模型的 max_tokens；否则覆盖
     system_prompt: dict = field(default_factory=dict)  # {"blocks": [...]}
     user_layers: list[dict] = field(default_factory=list)
 
@@ -109,6 +111,7 @@ def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
         progress_persistence=bool(merged["progress_persistence"]),
         max_iterations=merged["max_iterations"],
         max_consecutive_failures=int(merged["max_consecutive_failures"]),
+        max_tokens=int(merged["max_tokens"]) if merged["max_tokens"] is not None else None,
         system_prompt=merged["system_prompt"] or {},
         user_layers=list(merged["user_layers"]),
     )

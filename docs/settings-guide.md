@@ -160,6 +160,8 @@ Cili Agent/
 
 **注意**：这个值不能超过模型本身支持的最大输出长度。比如你的模型最多输出 8192 token，你设成 100000 也没用。
 
+**角色级上限（max_tokens in core/agents/{role}.json）**：三个角色另有独立默认输出上限——master 16384、worker 16384、lite 8192。Agent 实际使用的 max_tokens 取 `min(角色上限, 模型 max_tokens)`，两方向都保护：角色上限防止单次输出过大浪费，模型上限防止超过模型实际能力报错。如某角色需要更长输出，可编辑对应角色 JSON 或调大模型的 max_tokens。
+
 ---
 
 ### max_context_tokens — 最大上下文长度
