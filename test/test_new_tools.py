@@ -44,6 +44,19 @@ class TestClock:
         r = _tool(tools, "clock").execute(action="bogus")
         assert r.error
 
+    def test_now_with_timezone(self, tools):
+        """指定 IANA 时区时直接返回该时区时间，不依赖模型心算。"""
+        pytest.importorskip("zoneinfo")
+        r = _tool(tools, "clock").execute(action="now", timezone="Asia/Ho_Chi_Minh")
+        assert not r.error
+        assert "Asia/Ho_Chi_Minh time:" in r.output
+        assert "(UTC+07" in r.output
+
+    def test_now_invalid_timezone(self, tools):
+        r = _tool(tools, "clock").execute(action="now", timezone="Mars/Olympus_Mons")
+        assert r.error
+        assert "unknown timezone" in r.output
+
 
 class TestReadImage:
     def test_missing_file(self, tools):
