@@ -221,6 +221,10 @@ class CronTask:
         schedule_type = self.schedule.get("type", "interval")
         if schedule_type == "interval":
             minutes = self.schedule.get("minutes", 60)
+            # 首次运行（无历史 last_run，如新任务/服务首次启动）用 initial_delay_minutes，
+            # 之后按固定 minutes 间隔，实现"启动 1 小时后首跑、之后每 24 小时"
+            if self._last_run is None:
+                minutes = self.schedule.get("initial_delay_minutes", minutes)
             self._next_run = from_time + timedelta(minutes=minutes)
         elif schedule_type == "cron":
             expr = self.schedule.get("expr", "")

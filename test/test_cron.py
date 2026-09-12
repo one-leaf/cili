@@ -546,8 +546,9 @@ class TestExtractUserInfoConfig:
         assert "schedule" in config
         assert "content" in config  # 新设计：使用 content 内联 task/plan
         assert config["enabled"] is True
-        assert config["schedule"]["type"] == "cron"
-        assert config["schedule"]["expr"] == "0 2 * * *"
+        assert config["schedule"]["type"] == "interval"
+        assert config["schedule"]["minutes"] == 1440
+        assert config["schedule"]["initial_delay_minutes"] == 120
 
         # 验证 content 为 dict，包含 task 和 plan
         content = config["content"]
@@ -1182,3 +1183,62 @@ class TestWorkspaceLock:
         lock_a = scheduler._get_workspace_lock("ws-a")
         lock_b = scheduler._get_workspace_lock("ws-b")
         assert lock_a is not lock_b
+
+
+class TestCronInitialDelay:
+    """interval 的 initial_delay_minutes：首次延迟 + 后续固定间隔。"""
+
+    def test_first_run_uses_initial_delay(self, temp_cron_state):
+        """无历史（新任务/服务首次启动）→ 首跑用 initial_delay_minutes"""
+        config = {
+            "name": "init-delay",
+            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        now = datetime(2026, 9, 12, 8, 0, 0)
+        assert task._last_run is None
+        task._calculate_next_run(now)
+        assert task._next_run == now + timedelta(minutes=60)
+
+    def test_after_execution_uses_regular_interval(self, temp_cron_state):
+        """首跑之后按固定 minutes 间隔（24 小时），不再用 initial_delay"""
+        config = {
+            "name": "init-delay-after",
+            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        run_time = datetime(2026, 9, 12, 9, 0, 0)
+        task.mark_executed(run_time)
+        assert task._next_run == run_time + timedelta(minutes=1440)
+
+    def test_without_initial_delay_unaffected(self, temp_cron_state):
+        """未配置 initial_delay → 行为不变，首跑即 minutes 后"""
+        config = {
+            "name": "no-init-delay",
+            "schedule": {"type": "interval", "minutes": 1440},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        now = datetime(2026, 9, 12, 8, 0, 0)
+        task._calculate_next_run(now)
+        assert task._next_run == now + timedelta(minutes=1440)
+
+    def test_restore_from_state_uses_regular_interval(self, temp_cron_state):
+        """有 last_run 状态文件（服务重启后）→ 按固定间隔续跑，不重置 initial_delay"""
+        import core.cron as cron_module
+        state_path = cron_module.CRON_STATE_DIR / "init-delay-restore.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        last_run = datetime(2026, 9, 11, 10, 0, 0)
+        state_path.write_text(json.dumps({
+            "last_run": last_run.isoformat(), "run_count": 3,
+        }))
+
+        config = {
+            "name": "init-delay-restore",
+            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
+            "task": "测试",
+        }
+        task = CronTask(config)
+        assert task._next_run == last_run + timedelta(minutes=1440)

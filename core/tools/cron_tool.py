@@ -47,6 +47,8 @@ class CronTool(Tool):
         "Tasks persist across restarts and run in a 'Cron Tasks' session via the master agent.\n\n"
         "## Schedule\n"
         "- interval: {\"type\": \"interval\", \"minutes\": N}\n"
+        "  - optional initial_delay_minutes: 首次运行延迟（从服务启动/创建起算），之后按 minutes 间隔。"
+        "例：{\"type\":\"interval\",\"minutes\":1440,\"initial_delay_minutes\":60} = 启动 1 小时后首跑，之后每 24 小时\n"
         "- cron: {\"type\": \"cron\", \"expr\": \"minute hour day month weekday\"} (e.g. \"0 9 * * *\" = daily 9am)\n\n"
         "## Rules\n"
         "- **Default to one-time**: unless the user explicitly wants recurring (\"every day/hour\", \"每X分钟/小时/天\"), "
@@ -90,6 +92,10 @@ class CronTool(Tool):
                         "minutes": {
                             "type": "integer",
                             "description": "Interval in minutes (for type='interval').",
+                        },
+                        "initial_delay_minutes": {
+                            "type": "integer",
+                            "description": "(interval only) 首次运行延迟（分钟），从创建/服务启动起算；之后按 minutes 间隔。例：minutes=1440, initial_delay_minutes=60 = 启动 1 小时后首跑，之后每 24 小时。",
                         },
                         "expr": {
                             "type": "string",
@@ -219,6 +225,9 @@ class CronTool(Tool):
             minutes = schedule.get("minutes")
             if not minutes or minutes <= 0:
                 return ToolResult("Error: 'minutes' must be positive for interval schedule", error=True)
+            init_delay = schedule.get("initial_delay_minutes")
+            if init_delay is not None and (not isinstance(init_delay, int) or init_delay <= 0):
+                return ToolResult("Error: 'initial_delay_minutes' must be a positive integer", error=True)
         elif schedule_type == "cron":
             expr = schedule.get("expr")
             if not expr:
@@ -292,7 +301,11 @@ class CronTool(Tool):
             one_time = t.get("one_time", False)
             task_type = "one-time" if one_time else "recurring"
             if schedule_type == "interval":
-                schedule_str = f"every {schedule.get('minutes', '?')} minutes"
+                minutes = schedule.get('minutes', '?')
+                init_delay = schedule.get('initial_delay_minutes')
+                schedule_str = f"every {minutes} minutes"
+                if init_delay:
+                    schedule_str += f" (首次 {init_delay} 分钟后)"
             elif schedule_type == "cron":
                 schedule_str = f"cron: {schedule.get('expr', '?')}"
             else:
@@ -342,6 +355,9 @@ class CronTool(Tool):
                 minutes = schedule.get("minutes")
                 if not minutes or minutes <= 0:
                     return ToolResult("Error: 'minutes' must be positive for interval schedule", error=True)
+                init_delay = schedule.get("initial_delay_minutes")
+                if init_delay is not None and (not isinstance(init_delay, int) or init_delay <= 0):
+                    return ToolResult("Error: 'initial_delay_minutes' must be a positive integer", error=True)
             elif schedule_type == "cron":
                 expr = schedule.get("expr")
                 if not expr:
