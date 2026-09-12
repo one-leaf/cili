@@ -121,7 +121,6 @@
                 <button class="settings-tab" data-tab="llm">Worker/Lite 模型</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
-                <button class="settings-tab" data-tab="upgrade">升级</button>
             </div>
             <div class="modal-body">
                 <!-- Master Model Tab (Multi-turn conversation) -->
@@ -435,35 +434,6 @@
                         <button id="mcp-test-new-btn" class="btn btn-small">测试连接</button>
                         <button id="mcp-add-btn" class="btn btn-small btn-primary">添加服务器</button>
                         <span id="mcp-test-new-result" class="form-hint" style="margin-left: 8px;"></span>
-                    </div>
-                </div>
-
-                <!-- Upgrade Tab -->
-                <div class="tab-content" id="tab-upgrade">
-                    <div class="model-description">
-                        <strong>软件升级</strong> — 从 GitHub 拉取最新代码并更新本地版本。
-                    </div>
-                    <div class="form-group">
-                        <label>镜像源:</label>
-                        <select id="upgrade-mirror">
-                            <option value="github">GitHub 直连</option>
-                            <option value="ghproxy">ghproxy.net 镜像</option>
-                            <option value="ghfast">ghfast.top 镜像</option>
-                            <option value="gh-proxy">gh-proxy.com 镜像</option>
-                        </select>
-                        <small class="form-hint">如果 GitHub 直连较慢，可选择国内镜像</small>
-                    </div>
-                    <div class="form-group">
-                        <button id="upgrade-check-btn" class="btn btn-primary">检查并升级</button>
-                        <small class="form-hint" id="upgrade-status" style="margin-left: 10px;"></small>
-                    </div>
-                    <div class="form-group">
-                        <label>手动升级:</label>
-                        <p style="margin: 5px 0; color: var(--text-secondary);">如果自动升级失败，可在项目目录运行：</p>
-                        <code style="display: block; background: var(--bg-secondary); padding: 8px; border-radius: 4px; margin: 5px 0;">
-                            scripts\upgrade.cmd
-                        </code>
-                        <small class="form-hint">或使用 PowerShell: <code>.\scripts\upgrade.ps1</code></small>
                     </div>
                 </div>
 

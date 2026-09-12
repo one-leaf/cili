@@ -240,6 +240,7 @@ def _create_example_config() -> None:
             "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/",  # Python 包镜像源，留空使用官方源
             "browser_path": "",  # 浏览器可执行文件路径，留空自动检测（Edge→Chrome）
             "allowed_ips": [],  # IP 白名单，留空仅允许本机访问。示例: ["192.168.1.100", "10.0.0.5"]
+            "auto_update": True,  # 启动时自动检查 GitHub 新版本并升级，false 关闭
         }
     }
 
@@ -911,6 +912,15 @@ def _check_web_auth(host: str) -> None:
         sys.exit(1)
 
 
+def _auto_update_enabled() -> bool:
+    """读取 setting.json 的 system.auto_update，未配置时默认开启。"""
+    try:
+        config = _load_settings_cached()
+        return bool(config.get("system", {}).get("auto_update", True))
+    except Exception:
+        return True
+
+
 def _auto_detect_browser() -> None:
     """检查 setting.json 中 browser_path，若为空或路径不存在则自动检测并写回。"""
     if not os.path.exists(_SETTING_FILE):
@@ -1024,6 +1034,14 @@ def main() -> None:
     # Start cron scheduler
     from core.cron import start_scheduler
     start_scheduler()
+
+    # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
+    from core.updater import start_auto_upgrade
+    if _auto_update_enabled():
+        start_auto_upgrade()
+        logger.info("自动升级检查已启动（可在 setting.json 设 system.auto_update=false 关闭）")
+    else:
+        logger.info("自动升级已关闭（system.auto_update=false）")
 
     print(f"Starting Cili Agent web server on http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop")

@@ -193,9 +193,6 @@ function setupEventListeners() {
     document.getElementById('worker-test-btn').addEventListener('click', () => testSettings('worker'));
     document.getElementById('lite-test-btn').addEventListener('click', () => testSettings('lite'));
 
-    // Upgrade
-    document.getElementById('upgrade-check-btn').addEventListener('click', runUpgrade);
-
     // Workspace settings
     document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
     document.getElementById('workspace-delete-btn').addEventListener('click', deleteWorkspaceConfig);

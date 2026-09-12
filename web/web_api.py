@@ -286,10 +286,6 @@ def _validate_exec_id(exec_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid exec_id format")
 
 
-# 单例升级锁：防止并发 /api/upgrade 互相覆盖运行代码（W7）
-_upgrade_lock = threading.Lock()
-
-
 def _csrf_protect(request: Request) -> None:
     """CSRF 防护（W6）：跨站浏览器请求带 Origin/Referer，非本机来源则拒绝。
 
@@ -2567,125 +2563,6 @@ async def upload_files(
 
     return {"uploaded": uploaded, "errors": errors}
 
-
-# ----- Upgrade -----
-
-class UpgradeRequest(BaseModel):
-    """Request model for upgrade."""
-    mirror: str = "github"  # "github" | "ghproxy" | "ghfast" | "gh-proxy"
-
-
-@app.post("/api/upgrade")
-async def upgrade(request: UpgradeRequest, request_raw: Request = None):
-    """自动升级：下载最新代码并覆盖。
-
-    Args:
-        mirror: 镜像源 ("github" | "ghproxy" | "ghfast" | "gh-proxy")
-
-    Returns:
-        升级结果 {"success": bool, "message": str}
-    """
-    _csrf_protect(request_raw)  # W6: CSRF 防护
-    # W7: 并发锁——同一时间只允许一个升级任务，防止互相覆盖运行代码
-    if not _upgrade_lock.acquire(blocking=False):
-        return {"success": False, "error": "已有升级任务进行中，请稍后重试"}
-    try:
-        return await _perform_upgrade(request)
-    finally:
-        _upgrade_lock.release()
-
-
-async def _perform_upgrade(request: UpgradeRequest) -> dict:
-    """实际执行升级逻辑（在 _upgrade_lock 保护下运行）。"""
-    import zipfile
-    import tempfile
-
-    # 镜像地址列表（与 scripts/upgrade.ps1 一致）
-    MIRROR_URLS = {
-        "github": "https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
-        "ghproxy": "https://ghproxy.net/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
-        "ghfast": "https://ghfast.top/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
-        "gh-proxy": "https://gh-proxy.com/https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
-    }
-    primary_url = MIRROR_URLS.get(request.mirror, MIRROR_URLS["github"])
-    # 构建尝试顺序：首选镜像优先，其余作为 fallback
-    fallback_urls = [v for k, v in MIRROR_URLS.items() if k != request.mirror]
-    download_urls = [primary_url] + fallback_urls
-
-    # 创建临时目录
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_zip = os.path.join(temp_dir, "cili-main.zip")
-        temp_extract = os.path.join(temp_dir, "extract")
-
-        # 下载（依次尝试各镜像，失败自动切换）
-        try:
-            import httpx
-            downloaded = False
-            last_error = ""
-            async with httpx.AsyncClient(timeout=120) as client:
-                for url in download_urls:
-                    try:
-                        resp = await client.get(url, follow_redirects=True)
-                        resp.raise_for_status()
-                        if resp.content:
-                            with open(temp_zip, "wb") as f:
-                                f.write(resp.content)
-                            downloaded = True
-                            break
-                    except Exception as e:
-                        last_error = str(e)
-                        continue
-            if not downloaded:
-                return {"success": False, "error": f"所有镜像均下载失败：{last_error}"}
-        except Exception as e:
-            return {"success": False, "error": f"下载失败：{str(e)}"}
-
-        # 解压（W7 zip-slip：逐条目校验路径，拒绝 ../ 与绝对路径）
-        try:
-            os.makedirs(temp_extract, exist_ok=True)
-            with zipfile.ZipFile(temp_zip, "r") as zf:
-                for info in zf.infolist():
-                    name = info.filename.replace("\\", "/")
-                    if name.startswith("/") or ".." in Path(name).parts:
-                        return {"success": False, "error": f"压缩包包含非法路径条目: {info.filename}"}
-                zf.extractall(temp_extract)
-        except Exception as e:
-            return {"success": False, "error": f"解压失败：{str(e)}"}
-
-        # 查找解压目录
-        extracted_dir = None
-        for name in os.listdir(temp_extract):
-            if name.startswith("cili-main"):
-                extracted_dir = os.path.join(temp_extract, name)
-                break
-
-        if not extracted_dir:
-            return {"success": False, "error": "解压目录未找到"}
-
-        # 复制文件，排除 data/, workspace/, .git/
-        def copy_tree(src, dst, exclude_dirs):
-            for item in os.listdir(src):
-                s = os.path.join(src, item)
-                d = os.path.join(dst, item)
-                if item in exclude_dirs:
-                    continue
-                if os.path.isdir(s):
-                    os.makedirs(d, exist_ok=True)
-                    copy_tree(s, d, exclude_dirs)
-                else:
-                    shutil.copy2(s, d)
-
-        try:
-            exclude = {"data", "workspace", ".git"}
-            copy_tree(extracted_dir, str(PROJECT_ROOT), exclude)
-        except Exception as e:
-            return {"success": False, "error": f"复制文件失败：{str(e)}"}
-
-    return {
-        "success": True,
-        "message": "升级完成，请重启服务以应用更新",
-        "needs_restart": True
-    }
 
 
 

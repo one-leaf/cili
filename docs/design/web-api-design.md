@@ -619,30 +619,6 @@ POST   /api/files/upload                          # 上传文件（multipart for
 
 所有端点均校验路径必须位于工作区内，防止路径穿越。
 
-### 3.10 自动升级
-
-```
-POST /api/upgrade
-Content-Type: application/json
-
-{
-  "mirror": "github"   // 镜像源: "github" | "ghproxy" | "ghfast" | "gh-proxy"
-}
-```
-
-自动升级：从 GitHub 下载最新代码并覆盖到项目目录（排除 `data/`、`workspace/`、`.git/`）。多个镜像按序尝试，下载失败自动切换下一个。
-
-**响应**：
-```json
-{
-  "success": true,
-  "message": "升级完成，请重启服务以应用更新",
-  "needs_restart": true
-}
-```
-
-失败时返回 `{"success": false, "error": "..."}`。
-
 ---
 
 ## 四、特殊命令
