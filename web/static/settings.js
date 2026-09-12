@@ -307,7 +307,11 @@ async function loadMcpServers() {
         const response = await fetch('/api/mcp/servers');
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
-        mcpServers = data.servers || {};
+        mcpServers = {};
+        for (const [name, s] of Object.entries(data.servers || {})) {
+            // _loaded 标记：已保存服务器，保存时保留原 headers/env（密钥不回传前端）
+            mcpServers[name] = { ...s, _loaded: true };
+        }
     } catch (e) {
         mcpServers = {};
     }
@@ -463,11 +467,17 @@ function collectMcpServers() {
             cwd: s.cwd || '',
             url: s.url || '',
             tool_timeout: s.tool_timeout != null ? s.tool_timeout : 30,
-            enabled_tools: s.enabled_tools || ['*'],
-            _preserve_headers: true,  // 后端据此继承原 headers/env（不覆盖密钥）
-            _preserve_env: true
+            enabled_tools: s.enabled_tools || ['*']
         };
-        // env/headers 仅新填时带值；已有服务器不重写
+        if (s._loaded) {
+            // 已保存服务器：后端继承原 headers/env（不覆盖密钥）
+            server._preserve_headers = true;
+            server._preserve_env = true;
+        } else {
+            // 本次会话新增的服务器：带上表单里填写的真实 headers/env
+            server.headers = s.headers || {};
+            server.env = s.env || {};
+        }
         result[name] = server;
     }
     const name = document.getElementById('mcp-name').value.trim();
@@ -569,6 +579,7 @@ async function testNewMcp() {
             cwd: mcp[name].cwd, url: mcp[name].url, tool_timeout: mcp[name].tool_timeout,
             enabled_tools: mcp[name].enabled_tools, status: 'pending', tool_count: 0,
             headers: mcp[name].headers,  // 保留原值，供卡片"测试连接"回退用
+            env: mcp[name].env,          // 保留原值，保存时不走 _preserve_env
             headers_masked: Object.fromEntries(Object.entries(mcp[name].headers || {}).map(([k, v]) =>
                 [k, v.length > 8 ? v.slice(0, 4) + '...' + v.slice(-4) : '***']))
         };
