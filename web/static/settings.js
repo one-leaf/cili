@@ -286,13 +286,6 @@ function collectRoleModel(prefix, roleKey, payload) {
 // 表单新填的服务器（带完整 headers），一次性随 saveSettings 提交。
 let mcpServers = {};  // name -> server config
 
-function mcpTypeChanged() {
-    const type = document.getElementById('mcp-type').value;
-    const httpLike = (type === 'streamableHttp' || type === 'sse');
-    document.getElementById('mcp-stdio-fields').style.display = httpLike ? 'none' : '';
-    document.getElementById('mcp-http-fields').style.display = httpLike ? '' : 'none';
-}
-
 function mcpParseKv(text) {
     const result = {};
     (text || '').split(',').forEach(pair => {
@@ -309,7 +302,7 @@ async function loadMcpServers() {
         const data = await response.json();
         mcpServers = {};
         for (const [name, s] of Object.entries(data.servers || {})) {
-            // _loaded 标记：已保存服务器，保存时保留原 headers/env（密钥不回传前端）
+            // _loaded 标记：已保存服务器，保存时保留原 headers（密钥不回传前端）
             mcpServers[name] = { ...s, _loaded: true };
         }
     } catch (e) {
@@ -340,8 +333,7 @@ function renderMcpServers() {
     };
     container.innerHTML = names.map(name => {
         const s = mcpServers[name];
-        const typeLabel = s.type === 'stdio' ? 'stdio' : s.type === 'streamableHttp' ? 'streamableHttp' : s.type === 'sse' ? 'sse' : '自动';
-        const target = (s.command ? s.command + ' ' + (s.args || []).join(' ') : (s.url || '')).trim();
+        const target = (s.url || '').trim();
         const headersInfo = Object.keys(s.headers_masked || {}).map(k => `${k}=${s.headers_masked[k]}`).join(', ');
         return `
         <div class="mcp-server-card" style="border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
@@ -353,7 +345,7 @@ function renderMcpServers() {
                 </span>
             </div>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
-                ${escapeHtml(typeLabel)} · ${escapeHtml(target || '未配置目标')}
+                ${escapeHtml(target || '未配置 URL')}
                 ${headersInfo ? '<br>认证: ' + escapeHtml(headersInfo) : ''}
             </div>
             <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
@@ -382,11 +374,6 @@ function renderMcpServers() {
 // 从内存态 server 对象构造待测试配置（保留新填的 headers）
 function buildMcpTestConfig(s) {
     return {
-        type: s.type || '',
-        command: s.command || '',
-        args: s.args || [],
-        cwd: s.cwd || '',
-        env: s.env || {},
         url: s.url || '',
         headers: s.headers || {},
         tool_timeout: s.tool_timeout != null ? s.tool_timeout : 30,
@@ -461,22 +448,16 @@ function collectMcpServers() {
     const result = {};
     for (const [name, s] of Object.entries(mcpServers)) {
         const server = {
-            type: s.type || '',
-            command: s.command || '',
-            args: s.args || [],
-            cwd: s.cwd || '',
             url: s.url || '',
             tool_timeout: s.tool_timeout != null ? s.tool_timeout : 30,
             enabled_tools: s.enabled_tools || ['*']
         };
         if (s._loaded) {
-            // 已保存服务器：后端继承原 headers/env（不覆盖密钥）
+            // 已保存服务器：后端继承原 headers（不覆盖密钥）
             server._preserve_headers = true;
-            server._preserve_env = true;
         } else {
-            // 本次会话新增的服务器：带上表单里填写的真实 headers/env
+            // 本次会话新增的服务器：带上表单里填写的真实 headers
             server.headers = s.headers || {};
-            server.env = s.env || {};
         }
         result[name] = server;
     }
@@ -488,11 +469,6 @@ function collectMcpServers() {
         }
         const headersStr = document.getElementById('mcp-headers').value.trim();
         result[name] = {
-            type: document.getElementById('mcp-type').value,
-            command: document.getElementById('mcp-command').value.trim(),
-            args: document.getElementById('mcp-args').value.trim().split(/\s+/).filter(Boolean),
-            cwd: document.getElementById('mcp-cwd').value.trim(),
-            env: mcpParseKv(document.getElementById('mcp-env').value.trim()),
             url: document.getElementById('mcp-url').value.trim(),
             headers: mcpParseKv(headersStr),
             tool_timeout: parseInt(document.getElementById('mcp-tool-timeout').value) || 30,
@@ -526,11 +502,6 @@ async function testNewMcp() {
     const resultEl = document.getElementById('mcp-test-new-result');
     if (!name) { resultEl.textContent = '请先填写服务器名称'; return; }
     const config = {
-        type: document.getElementById('mcp-type').value,
-        command: document.getElementById('mcp-command').value.trim(),
-        args: document.getElementById('mcp-args').value.trim().split(/\s+/).filter(Boolean),
-        cwd: document.getElementById('mcp-cwd').value.trim(),
-        env: mcpParseKv(document.getElementById('mcp-env').value.trim()),
         url: document.getElementById('mcp-url').value.trim(),
         headers: mcpParseKv(document.getElementById('mcp-headers').value.trim()),
         tool_timeout: parseInt(document.getElementById('mcp-tool-timeout').value) || 30,
@@ -561,11 +532,9 @@ async function testNewMcp() {
 
 // 初始化 MCP 表单事件（settings.js 在 body 末尾加载，DOM 已就绪）
 (function initMcpSettings() {
-    const typeSelect = document.getElementById('mcp-type');
     const addBtn = document.getElementById('mcp-add-btn');
     const reloadBtn = document.getElementById('mcp-reload-btn');
     const testNewBtn = document.getElementById('mcp-test-new-btn');
-    if (typeSelect) typeSelect.addEventListener('change', mcpTypeChanged);
     if (testNewBtn) testNewBtn.addEventListener('click', testNewMcp);
     if (addBtn) addBtn.addEventListener('click', () => {
         const name = document.getElementById('mcp-name').value.trim();
@@ -575,16 +544,14 @@ async function testNewMcp() {
         if (!mcp || !mcp[name]) return;
         // 把表单新增项并入内存态并重渲染（不立即保存）
         mcpServers[name] = {
-            type: mcp[name].type, command: mcp[name].command, args: mcp[name].args,
-            cwd: mcp[name].cwd, url: mcp[name].url, tool_timeout: mcp[name].tool_timeout,
+            url: mcp[name].url, tool_timeout: mcp[name].tool_timeout,
             enabled_tools: mcp[name].enabled_tools, status: 'pending', tool_count: 0,
             headers: mcp[name].headers,  // 保留原值，供卡片"测试连接"回退用
-            env: mcp[name].env,          // 保留原值，保存时不走 _preserve_env
             headers_masked: Object.fromEntries(Object.entries(mcp[name].headers || {}).map(([k, v]) =>
                 [k, v.length > 8 ? v.slice(0, 4) + '...' + v.slice(-4) : '***']))
         };
         renderMcpServers();
-        ['mcp-name', 'mcp-command', 'mcp-args', 'mcp-cwd', 'mcp-env', 'mcp-url', 'mcp-headers'].forEach(id => {
+        ['mcp-name', 'mcp-url', 'mcp-headers'].forEach(id => {
             document.getElementById(id).value = '';
         });
         showToast('已添加（保存后生效）');

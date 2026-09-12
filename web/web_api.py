@@ -1813,8 +1813,6 @@ async def update_config(request: UpdateConfigRequest):
                 server = dict(server)
                 if server.pop("_preserve_headers", False) and name in current_mcp:
                     server["headers"] = current_mcp[name].get("headers", {})
-                if server.pop("_preserve_env", False) and name in current_mcp:
-                    server["env"] = current_mcp[name].get("env", {})
                 new_servers[name] = server
             config["mcp_servers"] = new_servers
         else:
@@ -1855,12 +1853,7 @@ async def get_mcp_servers():
         st = status.get(name, {})
         servers[name] = {
             "name": name,
-            "type": mcfg.type,
-            "command": mcfg.command,
-            "args": mcfg.args,
-            "cwd": mcfg.cwd,
             "url": mcfg.url,
-            "env_keys": list(mcfg.env.keys()),
             "headers_masked": _mask_mcp_server({"headers": mcfg.headers}).get("headers", {}),
             "tool_timeout": mcfg.tool_timeout,
             "enabled_tools": mcfg.enabled_tools,

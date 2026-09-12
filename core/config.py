@@ -160,17 +160,12 @@ class SystemConfig:
 
 @dataclass
 class MCPConfig:
-    """MCP 服务器连接配置（stdio / streamableHttp / sse）。
+    """MCP 服务器连接配置（streamableHttp，唯一支持的传输）。
 
     headers 支持 Bearer/API Key 认证，如 {"Authorization": "Bearer xxx"}。
     """
-    type: str = ""  # "" (自动检测) | "stdio" | "streamableHttp" | "sse"
-    command: str = ""  # Stdio: 命令（如 npx）
-    args: list[str] = field(default_factory=list)  # Stdio: 命令参数
-    env: dict[str, str] = field(default_factory=dict)  # Stdio: 额外环境变量
-    cwd: str = ""  # Stdio: 工作目录
-    url: str = ""  # streamableHttp: 端点 URL
-    headers: dict[str, str] = field(default_factory=dict)  # HTTP: 自定义请求头（如 Authorization）
+    url: str = ""  # streamableHttp 端点 URL
+    headers: dict[str, str] = field(default_factory=dict)  # HTTP 请求头（如 Authorization / X-API-Key）
     tool_timeout: int = 30  # 工具调用超时（秒）
     enabled_tools: list[str] = field(default_factory=lambda: ["*"])  # 工具白名单；["*"] = 全部
 
@@ -178,11 +173,6 @@ class MCPConfig:
     def from_dict(cls, data: dict) -> "MCPConfig":
         """Parse MCPConfig from a dict."""
         return cls(
-            type=data.get("type", ""),
-            command=data.get("command", ""),
-            args=list(data.get("args", [])),
-            env=dict(data.get("env", {})),
-            cwd=data.get("cwd", ""),
             url=data.get("url", ""),
             headers=dict(data.get("headers", {})),
             tool_timeout=int(data.get("tool_timeout", 30)),
@@ -192,11 +182,6 @@ class MCPConfig:
     def to_dict(self) -> dict:
         """Convert to a serializable dict."""
         return {
-            "type": self.type,
-            "command": self.command,
-            "args": self.args,
-            "env": self.env,
-            "cwd": self.cwd,
             "url": self.url,
             "headers": self.headers,
             "tool_timeout": self.tool_timeout,

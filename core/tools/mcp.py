@@ -7,8 +7,8 @@ MCP 调用并等待结果——与 BrowserService（core/browser_service.py）�
 Playwright 接进同步工具层的范式一致。
 
 裁剪自 nanobot 的 mcp.py（reference/nanobot/.../mcp.py），去掉 resources/prompts/
-OAuth/SSE/图片落盘/复杂自动重连，保留：工具名 sanitize、schema 归一化、
-Windows stdio 命令包装、临时错误重试、超时。
+OAuth/SSE/stdio/图片落盘/复杂自动重连，仅保留 streamableHttp 传输，加上：
+工具名 sanitize、schema 归一化、临时错误重试、超时。
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import re
-import shutil
 import threading
 import time
 import urllib.parse
@@ -47,9 +45,6 @@ _TRANSIENT_EXC_NAMES: frozenset[str] = frozenset((
     "ConnectionError",
 ))
 
-# Windows 下需要 cmd /d /c 包装的 shell 启动器（Cili 是 Windows-only）
-_WINDOWS_SHELL_LAUNCHERS: frozenset[str] = frozenset(("npx", "npm", "pnpm", "yarn", "bunx"))
-
 # 模型 API 只接受 [a-zA-Z0-9_-]，其余替换为下划线并压缩连续下划线
 _SANITIZE_RE = re.compile(r"_+")
 _MAX_TOOL_NAME_LENGTH = 64
@@ -74,42 +69,6 @@ def _sanitize_mcp_tool_name(name: str) -> str:
 
 def _is_transient(exc: BaseException) -> bool:
     return type(exc).__name__ in _TRANSIENT_EXC_NAMES
-
-
-# ── Windows stdio 命令包装 ─────────────────────────────────────────────────
-
-def _windows_command_basename(command: str) -> str:
-    return command.replace("\\", "/").rsplit("/", maxsplit=1)[-1].lower()
-
-
-def _normalize_windows_stdio_command(
-    command: str,
-    args: list[str] | None,
-    env: dict[str, str] | None,
-) -> tuple[str, list[str], dict[str, str] | None]:
-    """Windows 下把 npx/npm/.cmd/.bat 等包装成 cmd /d /c 启动，保证 stdio server 可靠拉起。"""
-    normalized_args = list(args or [])
-    if os.name != "nt":
-        return command, normalized_args, env
-
-    basename = _windows_command_basename(command)
-    if basename in {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
-        return command, normalized_args, env
-    if basename.endswith((".exe", ".com")):
-        return command, normalized_args, env
-
-    resolved = shutil.which(command, path=(env or {}).get("PATH")) or command
-    resolved_basename = _windows_command_basename(resolved)
-    should_wrap = (
-        basename in _WINDOWS_SHELL_LAUNCHERS
-        or basename.endswith((".cmd", ".bat"))
-        or resolved_basename.endswith((".cmd", ".bat"))
-    )
-    if not should_wrap:
-        return command, normalized_args, env
-
-    comspec = (env or {}).get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
-    return comspec, ["/d", "/c", command, *normalized_args], env
 
 
 # ── MCP inputSchema 归一化（JSON Schema → 模型 API 兼容）──────────────────
@@ -494,51 +453,20 @@ class MCPProvider:
         self._status.pop(name, None)
 
     async def _open_session(self, name: str, cfg: MCPConfig, stack: AsyncExitStack) -> Any:
-        """建立传输 + ClientSession 并 initialize，返回 session。"""
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        from mcp.client.streamable_http import streamable_http_client
-        from mcp.client.sse import sse_client
+        """建立 streamableHttp 传输 + ClientSession 并 initialize，返回 session。"""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client, httpx2
 
-        transport_type = cfg.type
-        if not transport_type:
-            if cfg.command:
-                transport_type = "stdio"
-            elif cfg.url:
-                transport_type = "streamableHttp"
-            else:
-                raise ValueError(f"MCP server '{name}': 未配置 command 或 url")
-
-        if transport_type == "stdio":
-            if not cfg.command:
-                raise ValueError(f"MCP server '{name}': stdio 需要 command")
-            command, args, env = _normalize_windows_stdio_command(cfg.command, cfg.args, cfg.env)
-            params = StdioServerParameters(
-                command=command, args=args, env=env or None, cwd=cfg.cwd or None,
-            )
-            read, write = await stack.enter_async_context(stdio_client(params))
-        elif transport_type == "streamableHttp":
-            if not cfg.url:
-                raise ValueError(f"MCP server '{name}': streamableHttp 需要 url")
-            # mcp SDK 内置 vendored 的 httpx2；headers 认证（Bearer/API Key）须经
-            # http_client 传入。外部传入的 client 由本模块 stack 管理生命周期。
-            from mcp.client.streamable_http import httpx2
-
-            http_client = await stack.enter_async_context(
-                httpx2.AsyncClient(headers=cfg.headers or None)
-            )
-            read, write = await stack.enter_async_context(
-                streamable_http_client(cfg.url, http_client=http_client)
-            )
-        elif transport_type == "sse":
-            if not cfg.url:
-                raise ValueError(f"MCP server '{name}': sse 需要 url")
-            read, write = await stack.enter_async_context(
-                sse_client(cfg.url, headers=cfg.headers or None)
-            )
-        else:
-            raise ValueError(f"MCP server '{name}': 未知传输类型 {transport_type!r}")
-
+        if not cfg.url:
+            raise ValueError(f"MCP server '{name}': streamableHttp 需要 url")
+        # mcp SDK 内置 vendored 的 httpx2；headers 认证（Bearer/API Key）须经
+        # http_client 传入。外部传入的 client 由本模块 stack 管理生命周期。
+        http_client = await stack.enter_async_context(
+            httpx2.AsyncClient(headers=cfg.headers or None)
+        )
+        read, write = await stack.enter_async_context(
+            streamable_http_client(cfg.url, http_client=http_client)
+        )
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         return session
