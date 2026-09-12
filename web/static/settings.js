@@ -288,8 +288,9 @@ let mcpServers = {};  // name -> server config
 
 function mcpTypeChanged() {
     const type = document.getElementById('mcp-type').value;
-    document.getElementById('mcp-stdio-fields').style.display = (type !== 'streamableHttp') ? '' : 'none';
-    document.getElementById('mcp-http-fields').style.display = (type === 'streamableHttp') ? '' : 'none';
+    const httpLike = (type === 'streamableHttp' || type === 'sse');
+    document.getElementById('mcp-stdio-fields').style.display = httpLike ? 'none' : '';
+    document.getElementById('mcp-http-fields').style.display = httpLike ? '' : 'none';
 }
 
 function mcpParseKv(text) {
@@ -328,24 +329,35 @@ function renderMcpServers() {
         if (s.status === 'failed') return '连接失败';
         return '离线';
     };
+    const statusColor = (s) => {
+        if (s.status === 'connected') return '#4caf50';
+        if (s.status === 'failed') return '#e74c3c';
+        return 'var(--text-secondary)';
+    };
     container.innerHTML = names.map(name => {
         const s = mcpServers[name];
-        const typeLabel = s.type === 'stdio' ? 'stdio' : s.type === 'streamableHttp' ? 'streamableHttp' : '自动';
+        const typeLabel = s.type === 'stdio' ? 'stdio' : s.type === 'streamableHttp' ? 'streamableHttp' : s.type === 'sse' ? 'sse' : '自动';
         const target = (s.command ? s.command + ' ' + (s.args || []).join(' ') : (s.url || '')).trim();
         const headersInfo = Object.keys(s.headers_masked || {}).map(k => `${k}=${s.headers_masked[k]}`).join(', ');
         return `
         <div class="mcp-server-card" style="border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                 <strong>${escapeHtml(name)}</strong>
-                <span style="font-size:12px;padding:2px 8px;border-radius:10px;color:var(--text-secondary);">${statusText(s)}</span>
+                <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                    <span style="font-size:12px;color:${statusColor(s)};">${statusText(s)}</span>
+                    <button class="btn btn-small mcp-expand-btn" data-name="${escapeHtml(name)}">工具清单</button>
+                </span>
             </div>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
                 ${escapeHtml(typeLabel)} · ${escapeHtml(target || '未配置目标')}
                 ${headersInfo ? '<br>认证: ' + escapeHtml(headersInfo) : ''}
             </div>
-            <div style="margin-top:6px;">
+            <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+                <button class="btn btn-small mcp-test-btn" data-name="${escapeHtml(name)}">测试连接</button>
                 <button class="btn btn-small mcp-remove-btn" data-name="${escapeHtml(name)}">删除</button>
+                <span class="mcp-test-result" style="font-size:12px;"></span>
             </div>
+            <div class="mcp-tools-list" style="display:none;margin-top:8px;border-top:1px dashed var(--border-color);padding-top:8px;"></div>
         </div>`;
     }).join('');
     statusEl.textContent = `共 ${names.length} 个服务器`;
@@ -355,6 +367,88 @@ function renderMcpServers() {
             renderMcpServers();
         });
     });
+    container.querySelectorAll('.mcp-test-btn').forEach(btn => {
+        btn.addEventListener('click', () => testMcpServer(btn.dataset.name, btn));
+    });
+    container.querySelectorAll('.mcp-expand-btn').forEach(btn => {
+        btn.addEventListener('click', () => toggleMcpTools(btn));
+    });
+}
+
+// 从内存态 server 对象构造待测试配置（保留新填的 headers）
+function buildMcpTestConfig(s) {
+    return {
+        type: s.type || '',
+        command: s.command || '',
+        args: s.args || [],
+        cwd: s.cwd || '',
+        env: s.env || {},
+        url: s.url || '',
+        headers: s.headers || {},
+        tool_timeout: s.tool_timeout != null ? s.tool_timeout : 30,
+        enabled_tools: s.enabled_tools || ['*']
+    };
+}
+
+// 测试已保存服务器：优先按 name 用后端保存的配置（含真实 headers）
+async function testMcpServer(name, btn) {
+    const row = btn.closest('.mcp-server-card');
+    const resultEl = row.querySelector('.mcp-test-result');
+    resultEl.textContent = '测试中...';
+    resultEl.style.color = 'var(--text-secondary)';
+    btn.disabled = true;
+    const post = (body) => fetch('/api/mcp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    try {
+        let data = null;
+        let response = await post({ name });
+        data = await response.json();
+        // 未保存的服务器 → 回退用内存态配置测试
+        if (!data || data.status === 'failed' && /未找到已保存/.test(data.error || '')) {
+            response = await post({ name, config: buildMcpTestConfig(mcpServers[name] || {}) });
+            data = await response.json();
+        }
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        if (data.status === 'connected') {
+            resultEl.textContent = `✓ 连接成功（${data.tool_count} 工具）`;
+            resultEl.style.color = '#4caf50';
+        } else {
+            resultEl.textContent = '✗ 连接失败: ' + (data.error || '未知错误');
+            resultEl.style.color = '#e74c3c';
+        }
+    } catch (e) {
+        resultEl.textContent = '✗ 请求失败: ' + e.message;
+        resultEl.style.color = '#e74c3c';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// 展开/收起工具清单（懒渲染，数据来自 /api/mcp/servers 的 tools 字段）
+function toggleMcpTools(btn) {
+    const row = btn.closest('.mcp-server-card');
+    const listEl = row.querySelector('.mcp-tools-list');
+    if (listEl.style.display !== 'none') {
+        listEl.style.display = 'none';
+        btn.textContent = '工具清单';
+        return;
+    }
+    const tools = (mcpServers[btn.dataset.name] || {}).tools || [];
+    if (tools.length === 0) {
+        listEl.innerHTML = '<div class="form-hint" style="color:var(--text-secondary);">未连接或无工具（连接后可见，或点击"重新连接"刷新）。</div>';
+    } else {
+        listEl.innerHTML = tools.map(t => `
+            <div style="margin-bottom:8px;">
+                <code style="font-size:12px;color:var(--primary-color);">${escapeHtml(t.name)}</code>
+                ${t.description ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:2px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(t.description)}</div>` : ''}
+            </div>
+        `).join('');
+    }
+    listEl.style.display = '';
+    btn.textContent = '收起';
 }
 
 // 收集 MCP 配置：已加载的服务器保留原 headers（_preserve_headers），
@@ -410,8 +504,48 @@ async function reloadMcp() {
         ).join(', ');
         statusEl.textContent = counts || '无服务器';
         showToast('MCP 已重新连接');
+        loadMcpServers();  // 刷新工具清单
     } catch (e) {
         statusEl.textContent = '重连失败: ' + e.message;
+    }
+}
+
+// 测试添加表单中填写的服务器（不保存，使用表单里的真实 headers）
+async function testNewMcp() {
+    const name = document.getElementById('mcp-name').value.trim();
+    const resultEl = document.getElementById('mcp-test-new-result');
+    if (!name) { resultEl.textContent = '请先填写服务器名称'; return; }
+    const config = {
+        type: document.getElementById('mcp-type').value,
+        command: document.getElementById('mcp-command').value.trim(),
+        args: document.getElementById('mcp-args').value.trim().split(/\s+/).filter(Boolean),
+        cwd: document.getElementById('mcp-cwd').value.trim(),
+        env: mcpParseKv(document.getElementById('mcp-env').value.trim()),
+        url: document.getElementById('mcp-url').value.trim(),
+        headers: mcpParseKv(document.getElementById('mcp-headers').value.trim()),
+        tool_timeout: parseInt(document.getElementById('mcp-tool-timeout').value) || 30,
+        enabled_tools: (document.getElementById('mcp-enabled-tools').value.trim() || '*').split(',').map(s => s.trim()).filter(Boolean)
+    };
+    resultEl.textContent = '测试中...';
+    resultEl.style.color = 'var(--text-secondary)';
+    try {
+        const response = await fetch('/api/mcp/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, config })
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        if (data.status === 'connected') {
+            resultEl.textContent = `✓ 连接成功（${data.tool_count} 工具）`;
+            resultEl.style.color = '#4caf50';
+        } else {
+            resultEl.textContent = '✗ 连接失败: ' + (data.error || '未知错误');
+            resultEl.style.color = '#e74c3c';
+        }
+    } catch (e) {
+        resultEl.textContent = '✗ 请求失败: ' + e.message;
+        resultEl.style.color = '#e74c3c';
     }
 }
 
@@ -420,7 +554,9 @@ async function reloadMcp() {
     const typeSelect = document.getElementById('mcp-type');
     const addBtn = document.getElementById('mcp-add-btn');
     const reloadBtn = document.getElementById('mcp-reload-btn');
+    const testNewBtn = document.getElementById('mcp-test-new-btn');
     if (typeSelect) typeSelect.addEventListener('change', mcpTypeChanged);
+    if (testNewBtn) testNewBtn.addEventListener('click', testNewMcp);
     if (addBtn) addBtn.addEventListener('click', () => {
         const name = document.getElementById('mcp-name').value.trim();
         if (!name) { showToast('请先填写服务器名称'); return; }
@@ -432,6 +568,7 @@ async function reloadMcp() {
             type: mcp[name].type, command: mcp[name].command, args: mcp[name].args,
             cwd: mcp[name].cwd, url: mcp[name].url, tool_timeout: mcp[name].tool_timeout,
             enabled_tools: mcp[name].enabled_tools, status: 'pending', tool_count: 0,
+            headers: mcp[name].headers,  // 保留原值，供卡片"测试连接"回退用
             headers_masked: Object.fromEntries(Object.entries(mcp[name].headers || {}).map(([k, v]) =>
                 [k, v.length > 8 ? v.slice(0, 4) + '...' + v.slice(-4) : '***']))
         };

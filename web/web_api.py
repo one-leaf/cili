@@ -1848,7 +1848,8 @@ async def get_mcp_servers():
     from core.tools.mcp import get_provider
 
     cfg = load_config()
-    status = get_provider().status()
+    provider = get_provider()
+    status = provider.status()
     servers = {}
     for name, mcfg in cfg.mcp_servers.items():
         st = status.get(name, {})
@@ -1865,6 +1866,7 @@ async def get_mcp_servers():
             "enabled_tools": mcfg.enabled_tools,
             "status": st.get("status", "offline"),
             "tool_count": st.get("tool_count", 0),
+            "tools": provider.server_tools(name),
         }
     return {"servers": servers}
 
@@ -1882,6 +1884,38 @@ async def reload_mcp():
         for key, agent in list(agents.items()):
             agent.reload_config()
     return {"success": True, "servers": provider.status()}
+
+
+class McpTestRequest(BaseModel):
+    name: str = ""
+    config: dict | None = None
+
+
+@app.post("/api/mcp/test")
+async def test_mcp_server(request: McpTestRequest = McpTestRequest()):
+    """测试单个 MCP 服务器连接并枚举工具（不保存配置，测完即断开）。
+
+    优先用请求体 config（表单新增场景，含真实 headers）；否则按 name 用已保存配置。
+    """
+    from core.config import MCPConfig, load_config
+    from core.tools.mcp import get_provider
+
+    mcfg = None
+    if request.config:
+        try:
+            mcfg = MCPConfig.from_dict(request.config)
+        except Exception as e:
+            return {"status": "failed", "error": f"配置解析失败: {e}"}
+    elif request.name:
+        mcfg = load_config().mcp_servers.get(request.name)
+        if mcfg is None:
+            return {"status": "failed", "error": "未找到已保存的服务器配置（请先在表单中测试）"}
+    else:
+        return {"status": "failed", "error": "未提供服务器配置或名称"}
+    try:
+        return get_provider().test_connect(mcfg)
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 
 class TestConfigRequest(BaseModel):

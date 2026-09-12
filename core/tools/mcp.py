@@ -498,6 +498,7 @@ class MCPProvider:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.sse import sse_client
 
         transport_type = cfg.type
         if not transport_type:
@@ -526,8 +527,14 @@ class MCPProvider:
             http_client = await stack.enter_async_context(
                 httpx2.AsyncClient(headers=cfg.headers or None)
             )
-            read, write, _ = await stack.enter_async_context(
+            read, write = await stack.enter_async_context(
                 streamable_http_client(cfg.url, http_client=http_client)
+            )
+        elif transport_type == "sse":
+            if not cfg.url:
+                raise ValueError(f"MCP server '{name}': sse 需要 url")
+            read, write = await stack.enter_async_context(
+                sse_client(cfg.url, headers=cfg.headers or None)
             )
         else:
             raise ValueError(f"MCP server '{name}': 未知传输类型 {transport_type!r}")
@@ -613,6 +620,57 @@ class MCPProvider:
             }
             for name in sorted(self._status)
         }
+
+    def server_tools(self, name: str) -> list[dict]:
+        """返回某 server 已枚举的工具清单（名称 + 描述 + 参数 schema）。"""
+        return [
+            {
+                "name": w.name,
+                "description": w.description,
+                "parameters": w.parameters,
+            }
+            for w in self._wrappers.get(name, [])
+        ]
+
+    def test_connect(self, cfg: MCPConfig, timeout: int = 60) -> dict:
+        """测试单个 server 连接并枚举工具，测完立即断开；不改变全局连接状态。
+
+        返回 {"status": "connected", "tool_count", "tools"} 或
+        {"status": "failed", "error"}。
+        """
+        if self._loop is None or not self._loop.is_running():
+            self.start()
+        try:
+            return self.run_in_loop(self._test_connect_coro(cfg), timeout=timeout + 5)
+        except TimeoutError:
+            return {"status": "failed", "error": f"连接超时（{timeout} 秒）"}
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc)}
+
+    async def _test_connect_coro(self, cfg: MCPConfig) -> dict:
+        stack = AsyncExitStack()
+        try:
+            session = await self._open_session("_test", cfg, stack)
+            tools = await session.list_tools()
+            tool_list = [
+                {
+                    "name": t.name,
+                    "description": getattr(t, "description", None) or t.name,
+                    "parameters": _normalize_schema_for_openai(
+                        getattr(t, "input_schema", None)
+                        or getattr(t, "inputSchema", None)
+                        or {}
+                    ),
+                }
+                for t in tools.tools
+            ]
+            return {
+                "status": "connected",
+                "tool_count": len(tool_list),
+                "tools": tool_list,
+            }
+        finally:
+            await stack.aclose()
 
     def reload(self, servers: dict[str, MCPConfig], force: bool = False) -> None:
         """按新配置重连。force=True 时断开全部现有连接后重新连接。"""
