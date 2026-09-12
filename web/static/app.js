@@ -85,24 +85,88 @@ function initInputResize() {
     });
 }
 
+// 侧栏宽度拖拽调整（与输入框拖拽一致的交互：拖动调整、双击重置）
+const sidebarResizeHandle = document.querySelector('.sidebar-resize-handle');
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 500;
+const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_WIDTH_KEY = 'sidebar-width';
+
+function getSidebarEl() {
+    return document.querySelector('.sidebar');
+}
+
+function initSidebarResize() {
+    if (!sidebarResizeHandle) return;
+
+    let startX, startW, dragging = false;
+
+    sidebarResizeHandle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dragging = true;
+        startX = e.clientX;
+        startW = getSidebarEl().getBoundingClientRect().width;
+        getSidebarEl().classList.add('dragging');
+        sidebarResizeHandle.classList.add('dragging');
+        document.body.style.cursor = 'ew-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const delta = e.clientX - startX;
+        const newW = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startW + delta));
+        getSidebarEl().style.width = newW + 'px';
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, newW);
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        getSidebarEl().classList.remove('dragging');
+        sidebarResizeHandle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+
+    // 双击重置默认宽度
+    sidebarResizeHandle.addEventListener('dblclick', () => {
+        getSidebarEl().style.width = SIDEBAR_DEFAULT_WIDTH + 'px';
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, SIDEBAR_DEFAULT_WIDTH);
+    });
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadWorkspaces();
     loadFooter();
     setupEventListeners();
     initInputResize();
+    initSidebarResize();
     initSidebarState();
 });
 
 // Sidebar collapse / expand
+function restoreSidebarWidth() {
+    const saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) {
+        getSidebarEl().style.width = saved + 'px';
+    }
+}
+
 function initSidebarState() {
     if (localStorage.getItem('sidebar-collapsed') === 'true') {
         const sidebar = document.querySelector('.sidebar');
         const toggleBtn = document.getElementById('sidebar-toggle-btn');
         const openBtn = document.getElementById('sidebar-open-btn');
         sidebar.classList.add('collapsed');
+        sidebar.style.width = '0px';
         toggleBtn.style.display = 'none';
         openBtn.style.display = '';
+        sidebarResizeHandle.classList.add('hidden');
+    } else {
+        restoreSidebarWidth();
+        sidebarResizeHandle.classList.remove('hidden');
     }
 }
 
@@ -111,6 +175,13 @@ function toggleSidebar() {
     const toggleBtn = document.getElementById('sidebar-toggle-btn');
     const openBtn = document.getElementById('sidebar-open-btn');
     const isCollapsed = sidebar.classList.toggle('collapsed');
+    if (isCollapsed) {
+        sidebar.style.width = '0px';
+        sidebarResizeHandle.classList.add('hidden');
+    } else {
+        restoreSidebarWidth();
+        sidebarResizeHandle.classList.remove('hidden');
+    }
     toggleBtn.style.display = isCollapsed ? 'none' : '';
     openBtn.style.display = isCollapsed ? '' : 'none';
     localStorage.setItem('sidebar-collapsed', isCollapsed);

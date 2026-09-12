@@ -238,6 +238,16 @@
                     return `![${alt}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
                 }
             );
+            // 匹配原生 <audio>/<video>/<source> 标签的相对 src 路径并转换为文件服务 URL
+            text = text.replace(
+                /<(audio|video|source)\b([^>]*?)(\s+)src=(?:"([^"]*)"|'([^']*)')([^>]*?>)/gi,
+                (m, tag, before, ws, dq, sq, after) => {
+                    const url = dq ?? sq ?? '';
+                    if (!url || /^(?:https?:|\/api|data:)/i.test(url)) return m;
+                    const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
+                    return `<${tag}${before}${ws}src="/api/workspaces/${workspaceUuid}/files/${cleanUrl}"${after}`;
+                }
+            );
             return text;
         }
 

@@ -144,6 +144,18 @@ function renderMarkdown(text) {
                 return `[${linkText}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
             }
         );
+
+        // 匹配原生 <audio>/<video>/<source> 标签的相对 src 路径并转换为文件服务 URL
+        // 限定标签范围；跳过外部 URL、已转换的 /api 路径与 data: URI
+        text = text.replace(
+            /<(audio|video|source)\b([^>]*?)(\s+)src=(?:"([^"]*)"|'([^']*)')([^>]*?>)/gi,
+            (match, tag, before, ws, dq, sq, after) => {
+                const url = dq ?? sq ?? '';
+                if (!url || /^(?:https?:|\/api|data:)/i.test(url)) return match;
+                const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
+                return `<${tag}${before}${ws}src="/api/workspaces/${workspaceUuid}/files/${cleanUrl}"${after}`;
+            }
+        );
     }
 
     // 保护数学公式：提取 $$...$$ 和 $...$ 为占位符，避免 marked 破坏 LaTeX 语法

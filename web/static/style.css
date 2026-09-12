@@ -1354,6 +1354,57 @@ mjx-container {
     background: var(--primary-color);
 }
 
+/* Sidebar 宽度拖拽把手（纵向分隔条） */
+.sidebar-resize-handle {
+    width: 6px;
+    background: transparent;
+    cursor: ew-resize;
+    position: relative;
+    flex-shrink: 0;
+    z-index: 1;
+    transition: background-color 0.2s;
+}
+
+.sidebar-resize-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px;
+    height: 40px;
+    border-radius: 2px;
+    background: var(--border-color);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.sidebar-resize-handle:hover {
+    background-color: var(--bg-color);
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.dragging::after {
+    opacity: 1;
+}
+
+.sidebar-resize-handle.dragging {
+    background-color: var(--bg-color);
+}
+
+.sidebar-resize-handle.dragging::after {
+    background: var(--primary-color);
+}
+
+.sidebar-resize-handle.hidden {
+    display: none;
+}
+
+/* 拖拽时关闭宽度过渡，避免拖拽卡顿 */
+.sidebar.dragging {
+    transition: none;
+}
+
 .chat-input-area {
     padding: 20px;
     background-color: white;
