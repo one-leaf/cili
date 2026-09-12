@@ -78,7 +78,8 @@
     "write",
     "edit",
     "bash",
-    "python"
+    "python",
+    "clock"
   ],
   "skills": [],
   "streaming": true,

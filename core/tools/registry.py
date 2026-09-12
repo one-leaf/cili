@@ -15,6 +15,7 @@ from core.tools.base import Tool
 from core.tools.ask_user import AskUserTool
 from core.tools.bash import BashTool
 from core.tools.browser import BrowserTool
+from core.tools.clock import ClockTool
 from core.tools.cron_tool import CronTool
 from core.tools.edit import EditTool
 from core.tools.find import FindTool
@@ -27,7 +28,9 @@ from core.tools.pdf2markdown import PDF2MarkdownTool
 from core.tools.pwsh import PwshTool
 from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
+from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
+from core.tools.session_search import SessionSearchTool
 from core.tools.skill import SkillTool
 from core.tools.agent_tool import AgentTool
 from core.tools.temp import TempTool
@@ -63,6 +66,7 @@ def _factory(cls: type, *, needs_config: bool = False, needs_approval: bool = Fa
 
 TOOL_REGISTRY: dict[str, Factory] = {
     "read": _factory(ReadTool),
+    "read_image": _factory(ReadImageTool),
     "write": _factory(WriteTool),
     "edit": _factory(EditTool),
     "bash": _factory(BashTool, needs_approval=True),
@@ -79,7 +83,9 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "latex": _factory(LatexTool),
     "message_bus": _factory(MessageBusTool),
     "cron": _factory(CronTool),
+    "clock": _factory(ClockTool),
     "read_tool_result": _factory(ReadToolResultTool),
+    "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True),

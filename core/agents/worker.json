@@ -186,6 +186,7 @@
   ],
   "tools": [
     "read",
+    "read_image",
     "write",
     "edit",
     "bash",
@@ -197,6 +198,8 @@
     "python",
     "read_tool_result",
     "temp",
+    "clock",
+    "session_search",
     "skill"
   ],
   "skills": [

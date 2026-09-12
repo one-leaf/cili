@@ -226,6 +226,7 @@
   ],
   "tools": [
     "read",
+    "read_image",
     "write",
     "edit",
     "bash",
@@ -240,7 +241,9 @@
     "latex",
     "message_bus",
     "cron",
+    "clock",
     "read_tool_result",
+    "session_search",
     "temp",
     "loop",
     "pdf2markdown",
