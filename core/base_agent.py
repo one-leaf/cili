@@ -359,6 +359,12 @@ class BaseAgent:
             output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
             tool.output_file = None
 
+        # 空输出兜底：任何工具返回空内容时（竞态、空结果、无输出），统一补非空
+        # 哨兵，避免实时流显示空白、会话重载被 hydration 误标为"[工具输出文件路径缺失]"
+        if not result.output:
+            from core.llm.types import TextBlock
+            result.blocks.append(TextBlock(text="(no output)"))
+
         elapsed = time.perf_counter() - start_time
 
         # Log result

@@ -445,55 +445,65 @@ def _build_consolidation_input(pending: list[dict], index_text: str, entries_sna
     return [Message(role="user", content="\n".join(parts))]
 
 
-def apply_ops(store: MemoryStore, ops: list[dict]) -> list[dict]:
-    """确定性地应用整合 op，返回实际执行列表。任何单条失败不阻断其余。"""
+def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
+    """确定性地应用整合 op，返回 {"applied": [...], "failed": [...]}。
+
+    任何单条失败不阻断其余：失败项进 failed，由调用方决定是否推进 journal
+    游标（失败不消费记录，避免"已整合但未写入"的静默丢失）。description 截断
+    到 store 的 200 字上限（journal 截断 300，直接透传会误报）。
+    """
     applied: list[dict] = []
+    failed: list[dict] = []
     for op in ops:
         if not isinstance(op, dict):
             continue
         action = op.get("op")
         name = str(op.get("name") or "").strip()
+        reason = op.get("reason", "")
         try:
             if action == "store":
+                title = str(op.get("title") or "")
+                content = str(op.get("content") or "")
                 result = store.store(
                     type_=op.get("type") if op.get("type") in MEMORY_TYPES else "fact",
                     name=name or None,
-                    title=op.get("title") or "",
-                    description=op.get("description") or "",
-                    content=op.get("content") or "",
+                    title=title,
+                    description=str(op.get("description") or "")[:200],
+                    content=content,
                     tags=op.get("tags"),
                     source="derived",
                     refs=op.get("refs"),
                 )
-                applied.append({"op": "store", "name": result["name"], "reason": op.get("reason", "")})
+                applied.append({"op": "store", "name": result["name"], "reason": reason})
             elif action == "update":
                 if not name:
                     continue
                 store.update(
                     name,
                     title=op.get("title"),
-                    description=op.get("description"),
+                    description=str(op.get("description") or "")[:200],
                     content=op.get("content"),
                     tags=op.get("tags"),
                     refs=op.get("refs"),
                     source="derived",
                 )
-                applied.append({"op": "update", "name": name, "reason": op.get("reason", "")})
+                applied.append({"op": "update", "name": name, "reason": reason})
             elif action == "archive":
                 if not name:
                     continue
                 store.archive(name)
-                applied.append({"op": "archive", "name": name, "reason": op.get("reason", "")})
+                applied.append({"op": "archive", "name": name, "reason": reason})
             elif action == "delete":
                 if not name:
                     continue
                 store.delete(name)
-                applied.append({"op": "delete", "name": name, "reason": op.get("reason", "")})
+                applied.append({"op": "delete", "name": name, "reason": reason})
             elif action == "skip":
-                applied.append({"op": "skip", "name": name or "", "reason": op.get("reason", "")})
+                applied.append({"op": "skip", "name": name, "reason": reason})
         except Exception as e:
             logger.warning("apply_ops %s(%s) failed: %s", action, name, e)
-    return applied
+            failed.append({"op": action, "name": name, "reason": reason, "error": str(e)})
+    return {"applied": applied, "failed": failed}
 
 
 _SUMMARY_MAX_BYTES = 2 * 1024
@@ -551,9 +561,26 @@ def run_consolidation(
         ops = []
     summary = str((result or {}).get("summary") or "").strip()
 
-    applied = apply_ops(store, ops)
+    result = apply_ops(store, ops)
+    applied = result["applied"]
+    failed = result["failed"]
     if summary:
         _write_summary(memory_dir, summary)
+
+    if failed:
+        # 有 op 应用失败：不推游标，记录保持 pending 供下次整合重跑。
+        # store 幂等（同名原地替换），重放已成功的 op 无副作用。
+        return {
+            "processed": len(pending),
+            "ops": ops,
+            "applied": applied,
+            "failed": failed,
+            "archived": [],
+            "committed": False,
+            "pending_after": journal.pending_count(),
+            "summary_len": len(summary.encode("utf-8")) if summary else 0,
+            "error": f"{len(failed)} op(s) failed to apply; journal cursor not advanced",
+        }
 
     max_cursor = max((int(r.get("cursor", 0)) for r in pending), default=0)
     journal.advance(max_cursor)
@@ -565,6 +592,7 @@ def run_consolidation(
         "processed": len(pending),
         "ops": ops,
         "applied": applied,
+        "failed": failed,
         "archived": archived,
         "committed": ok,
         "commit_note": note if ok else "",

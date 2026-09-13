@@ -229,6 +229,53 @@ class TestConsolidation:
         assert r2["processed"] == 1
         assert r2["pending_after"] == 0
 
+    def test_failed_op_keeps_cursor_for_retry(self, agents_dir):
+        """某条 op 应用失败（如 name 类型冲突）时不推游标，记录保持 pending 供重跑。"""
+        store = MemoryStore(str(agents_dir / "ws1" / "memory"))
+        store.store(type_="fact", name="foo", title="Foo fact", content="existing")
+        self._seed(agents_dir)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        assert journal.cursor() == 0
+
+        def conflicting(prompt, system, schema):
+            return {"ops": [{"op": "store", "name": "foo", "type": "preference",
+                             "title": "X", "content": "y", "reason": "conflict"}],
+                    "summary": ""}
+
+        r = run_consolidation("ws1", consolidator=conflicting)
+        assert r["failed"]
+        assert r["applied"] == []
+        assert "not advanced" in r["error"]
+        # 游标未推进 → 记录保留，下次可重跑
+        assert journal.cursor() == 0
+        assert journal.pending_count() == 1
+
+        def good(prompt, system, schema):
+            return {"ops": [{"op": "store", "type": "fact", "title": "Test Memory",
+                             "content": "ok"}],
+                    "summary": ""}
+
+        r2 = run_consolidation("ws1", consolidator=good)
+        assert r2["failed"] == []
+        assert r2["pending_after"] == 0
+
+    def test_empty_store_op_keeps_cursor(self, agents_dir):
+        """空标题+正文的 store op 记为失败，游标不推进，记录保留供重跑。"""
+        self._seed(agents_dir)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+
+        def empty_store(prompt, system, schema):
+            return {"ops": [{"op": "store", "name": "", "type": "fact", "title": "",
+                             "content": "", "reason": "nothing"}],
+                    "summary": ""}
+
+        r = run_consolidation("ws1", consolidator=empty_store)
+        assert len(r["failed"]) == 1
+        assert r["applied"] == []
+        assert "not advanced" in r["error"]
+        assert journal.cursor() == 0
+        assert journal.pending_count() == 1
+
     def test_no_pending_returns_empty(self, agents_dir):
         _ws(agents_dir, "ws1", enabled=True)
         r = run_consolidation("ws1")

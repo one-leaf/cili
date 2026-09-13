@@ -13,6 +13,52 @@ _REDOS_PATTERN = re.compile(
 )
 
 
+def _sanitize_regex(pattern: str) -> str:
+    r"""把 PCRE 风格的 \d/\D 翻译成 ERE（GNU grep -E 不支持 \d，会把 \d 当字面 d）。
+
+    逐字符扫描：跳过字符类 [...] 内部，避免把 [\d] 误译为 [[0-9]]；仅当 \d 的
+    反斜杠未被自身转义（连续奇数个反斜杠）时才替换。
+    """
+    out: list[str] = []
+    in_class = False
+    escaped = False  # 当前字符被奇数个反斜杠转义（如 \[ 是字面 [）
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if escaped:
+            out.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            j = i
+            while j < n and pattern[j] == "\\":
+                j += 1
+            count = j - i
+            if not in_class and count % 2 == 1 and j < n and pattern[j] in ("d", "D"):
+                out.extend(["\\"] * (count - 1))
+                out.append("[0-9]" if pattern[j] == "d" else "[^0-9]")
+                i = j + 1
+                continue
+            out.extend(["\\"] * count)
+            i = j
+            escaped = (count % 2 == 1)
+            continue
+        if ch == "[" and not in_class:
+            in_class = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "]" and in_class:
+            in_class = False
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 # 文件类型 → 扩展名映射
 TYPE_EXTENSIONS: dict[str, list[str]] = {
     "py":     ["*.py", "*.pyi"],
@@ -49,7 +95,7 @@ class GrepTool(Tool):
         "properties": {
             "pattern": {
                 "type": "string",
-                "description": "Regular expression pattern to search for (or literal text when fixed_strings=true).",
+                "description": "Regular expression pattern to search for (or literal text when fixed_strings=true). \\d/\\D are supported (auto-converted to [0-9]/[^0-9]).",
             },
             "path": {
                 "type": "string",
@@ -112,18 +158,30 @@ class GrepTool(Tool):
                 "Use fixed_strings=true for literal search, or simplify the regex."
             )
 
+        # PCRE 的 \d/\D 不是 ERE（GNU grep 会把 \d 当字面 d），先翻译成 [0-9]/[^0-9]
+        if not fixed_strings:
+            pattern = _sanitize_regex(pattern)
+
         # Resolve to absolute path
         path = self._resolve_path(path, read_only=True) if path else self.cwd
+        # 统一为 / 分隔符：git bash 下目录遍历输出 /、单文件会原样回显 \，归一化避免混用
+        path = path.replace("\\", "/")
+
+        if not os.path.exists(path):
+            return ToolResult(f"错误: 路径不存在: {path}", error=True)
 
         # Step 1: Get all matching files first
-        matching_files = self._find_matching_files(
-            pattern=pattern,
-            path=path,
-            glob=glob,
-            type=type,
-            case_insensitive=case_insensitive,
-            fixed_strings=fixed_strings,
-        )
+        try:
+            matching_files = self._find_matching_files(
+                pattern=pattern,
+                path=path,
+                glob=glob,
+                type=type,
+                case_insensitive=case_insensitive,
+                fixed_strings=fixed_strings,
+            )
+        except ValueError as e:
+            return ToolResult(f"错误: {e}", error=True)
 
         if not matching_files:
             return ToolResult("No matches found.")
@@ -184,7 +242,10 @@ class GrepTool(Tool):
             for ext in exts:
                 cmd_parts.extend(["--include", ext])
         elif glob:
-            cmd_parts.extend(["--include", glob])
+            # 花括号展开：*.{js,py} → --include "*.js" --include "*.py"
+            # （grep 的 --include 不做 shell 式花括号展开，多个 --include 是 OR 关系）
+            for g in self._expand_glob(glob):
+                cmd_parts.extend(["--include", g])
 
         # Exclude ignored directories
         for d in self.IGNORE_DIRS:
@@ -195,10 +256,22 @@ class GrepTool(Tool):
         cmd += " || true"
 
         result = self._run_bash(cmd, max_chars=50_000)
+        # _run_bash 无输出时返回占位符 "(no output)"（而非空串），且命令带 `|| true`
+        # 使退出码恒为 0：grep 无匹配（退出码 1）会落到这里，须按"无匹配文件"处理，
+        # 否则 "(no output)" 会被当成文件名，最终产出空结果而非 "No matches found."
         if result.error or not result.output or result.output.startswith("[exit code: 1]"):
             return []
+        if result.output.strip() == "(no output)":
+            return []
 
-        files = [f for f in result.output.strip().split('\n') if f]
+        # stderr 与 stdout 合并输出：grep 的诊断（路径不存在/权限/非法正则）以
+        # "grep: ..." 开头，须与真实匹配文件行区分开——全为诊断时报错（由调用方
+        # 捕获转成错误结果），否则静默丢弃
+        lines = [l for l in result.output.strip().split('\n') if l]
+        diagnostics = [l for l in lines if l.startswith("grep:")]
+        files = [l for l in lines if not l.startswith("grep:")]
+        if not files and diagnostics:
+            raise ValueError("; ".join(diagnostics))
         return files
 
     # 每批传入 grep 的文件数：一次子进程处理一批，避免逐文件起子进程
@@ -209,6 +282,21 @@ class GrepTool(Tool):
     @staticmethod
     def _chunked(items: list[str], size: int) -> list[list[str]]:
         return [items[i:i + size] for i in range(0, len(items), size)]
+
+    @staticmethod
+    def _expand_glob(glob_pattern: str) -> list[str]:
+        """展开 glob 中的单层花括号组（*.{js,py} → ["*.js", "*.py"]），无嵌套支持。"""
+        start = glob_pattern.find("{")
+        if start == -1:
+            return [glob_pattern]
+        end = glob_pattern.find("}", start)
+        if end == -1:
+            return [glob_pattern]
+        parts = [p for p in glob_pattern[start + 1:end].split(",") if p]
+        if not parts:
+            return [glob_pattern]
+        prefix, suffix = glob_pattern[:start], glob_pattern[end + 1:]
+        return [prefix + p + suffix for p in parts]
 
     def _count_mode(
         self,

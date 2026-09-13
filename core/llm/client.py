@@ -277,16 +277,32 @@ class LLMClient:
             tools=tools,
             max_tokens=max_tokens,
         )
+        try:
+            return self._parse_tool_args(response)
+        except ValueError as e:
+            # LLM 结构化输出偶发坏 JSON/截断：盲重试一次（瞬态失败通常可恢复），仍失败则抛出
+            logger.warning("structured output parse failed, retrying once: %s", e)
+            response = self.chat(
+                messages=messages,
+                system=system,
+                tools=tools,
+                max_tokens=max_tokens,
+            )
+            return self._parse_tool_args(response)
 
+    def _parse_tool_args(self, response: LLMResponse) -> dict[str, Any]:
+        """从响应中提取工具调用参数并解析 JSON（失败时附带出错位置片段便于诊断）。"""
         tool_calls = [b for b in response.content if isinstance(b, ToolCallBlock)]
         if not tool_calls:
             raise ValueError(f"Expected tool call but got stop_reason={response.stop_reason}")
-
-        # Parse arguments (they are raw JSON string)
+        args = tool_calls[0].arguments or ""
+        if not args:
+            return {}
         try:
-            return json.loads(tool_calls[0].arguments) if tool_calls[0].arguments else {}
+            return json.loads(args)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse structured output: {e}")
+            snippet = args[max(0, e.pos - 60):e.pos + 60]
+            raise ValueError(f"Failed to parse structured output: {e} near {snippet!r}")
 
     def test_connection(self) -> tuple[bool, str]:
         """Test API connection with a minimal request.

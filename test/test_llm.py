@@ -876,6 +876,67 @@ class TestChatTimeoutParam:
         assert resp.get_text() == "Hi"
 
 
+class TestChatStructuredRetry:
+    """chat_structured 解析失败时单次重试：坏 JSON 是 LLM 偶发失败，重试通常恢复。"""
+
+    @staticmethod
+    def _client(calls, arguments_first, arguments_second):
+        config = ModelConfig(
+            name="gpt-4o", api_key="key", interface_type="openai",
+            base_url="https://api.openai.com",
+        )
+        adapter = OpenAIAdapter(config)
+
+        def _resp(arguments):
+            return 200, {}, {
+                "choices": [{
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_1", "type": "function",
+                            "function": {"name": "output", "arguments": arguments},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+            }
+
+        class FakeTransport:
+            def with_retry(self, op, **k):
+                return op()
+
+            def post(self, url, headers, body, timeout=None):
+                calls.append(body)
+                return _resp(arguments_first if len(calls) == 1 else arguments_second)
+
+        return LLMClient(adapter=adapter, transport=FakeTransport(), config=config)
+
+    def test_retries_once_on_bad_json(self):
+        calls = []
+        client = self._client(
+            calls,
+            '{"memories": [{"type": "fact"',  # 第一次：截断的坏 JSON
+            '{"memories": [{"type": "fact", "title": "ok"}]}',  # 第二次：合法
+        )
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out == {"memories": [{"type": "fact", "title": "ok"}]}
+        assert len(calls) == 2  # 只重试一次
+
+    def test_gives_up_after_second_failure(self):
+        calls = []
+        client = self._client(calls, "{bad", "{bad}")  # 两次都坏 → 抛出
+        with pytest.raises(ValueError, match="Failed to parse structured output"):
+            client.chat_structured(
+                messages=[Message(role="user", content="hi")],
+                output_schema={"type": "object", "properties": {}},
+            )
+        assert len(calls) == 2  # 重试后仍失败才抛出
+
+
 # ========== DGX 集成测试（真实 LLM 调用） ==========
 
 from test.conftest import DGX_BASE_URL, DGX_API_KEY, DGX_MODEL, make_dgx_config
