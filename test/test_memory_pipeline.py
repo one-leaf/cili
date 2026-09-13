@@ -282,6 +282,48 @@ class TestConsolidation:
         assert r["processed"] == 0
         assert r["committed"] is False
 
+    def test_incomplete_ops_keeps_cursor(self, agents_dir):
+        """op 数 < 待整合记录数（截断丢尾部/模型少输出）→ 不推游标，记录保留供重跑。"""
+        self._seed(agents_dir)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        assert journal.pending_count() == 1
+
+        def few(prompt, system, schema):
+            return {"ops": [], "summary": "partially truncated"}
+
+        r = run_consolidation("ws1", consolidator=few)
+        assert "not advanced" in r["error"]
+        assert r["applied"] == []
+        assert journal.cursor() == 0
+        assert journal.pending_count() == 1
+
+    def test_truncated_batch_splits_and_advances(self, agents_dir):
+        """整批整合抛错（模拟 max_tokens 截断）时拆半重试，两半各自成功 → 全部应用并推进游标。"""
+        _ws(agents_dir, "ws1", enabled=True)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        for i in range(4):
+            journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
+                           title=f"Memory {i}", content=f"durable fact {i}", source="session")
+        assert journal.pending_count() == 4
+
+        calls: list[int] = []
+
+        def splitty(prompt, system, schema):
+            calls.append(len(prompt[0].content))
+            # 4 条记录一起整合必失败（截断）；拆半后各自成功
+            if len(calls) == 1:
+                raise RuntimeError("truncated")
+            return {"ops": [{"op": "store", "type": "fact", "title": "T",
+                             "content": f"body {len(calls)}"}],
+                    "summary": "ok"}
+
+        r = run_consolidation("ws1", consolidator=splitty)
+        assert "error" not in r
+        assert len(calls) > 1  # 确实发生了拆半重试
+        assert len(r["applied"]) == 4
+        assert journal.cursor() == 4
+        assert journal.pending_count() == 0
+
 
 # ── 门控 / 全量整合 ───────────────────────────────────
 
@@ -324,7 +366,8 @@ class TestGating:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
-            return {"ops": [], "summary": ""}
+            return {"ops": [{"op": "store", "type": "fact", "title": "T", "content": "x"}],
+                    "summary": ""}
 
         results = consolidate_all(consolidator=flaky)
         by_uuid = {r["workspace_uuid"]: r for r in results}

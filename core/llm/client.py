@@ -66,6 +66,87 @@ def _extract_json_dict(text: str) -> dict | None:
                 return parsed
         except json.JSONDecodeError:
             continue
+    if m:
+        repaired = _repair_truncated_json(m.group(0))
+        if repaired is not None:
+            return repaired
+    return None
+
+
+def _balance_close(text: str) -> str | None:
+    """补齐未闭合的 {} 与 []；若截断点非法（闭合多于开启）返回 None。"""
+    stack: list[str] = []
+    in_string = False
+    i = 0
+    n = len(text)
+    pairs = {"}": "{", "]": "["}
+    while i < n:
+        c = text[i]
+        if in_string:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+        elif c in "{[":
+            stack.append(c)
+        elif c in "}]":
+            if not stack or stack[-1] != pairs[c]:
+                return None
+            stack.pop()
+        i += 1
+    for opener in reversed(stack):
+        text += "}" if opener == "{" else "]"
+    return text
+
+
+def _cut_positions(text: str, cap: int = 40) -> list[int]:
+    """可作为安全截断点的位置（从后往前）：每个完整 } 或 ] 之后。"""
+    positions: list[int] = []
+    in_string = False
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if in_string:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+        elif c in "}]":
+            positions.append(i + 1)
+        i += 1
+    positions.reverse()
+    return positions[:cap]
+
+
+def _repair_truncated_json(text: str) -> dict | None:
+    """修复被 token 截断的结构化输出 JSON。
+
+    截断点可能在字符串中间、元素中间或元素结束后缺闭合括号。策略：从后往前
+    尝试候选截断点（最近的完整元素边界），补齐闭合括号后解析，取第一个能解析
+    的 dict。截断只发生在尾部，因此最多丢弃末尾不完整的元素，前面已完成的
+    元素全部保留。
+    """
+    for cut in [len(text)] + _cut_positions(text):
+        repaired = _balance_close(text[:cut])
+        if repaired is None:
+            continue
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
     return None
 
 
@@ -330,6 +411,10 @@ class LLMClient:
             try:
                 return json.loads(args)
             except json.JSONDecodeError as e:
+                repaired = _repair_truncated_json(args)
+                if repaired is not None:
+                    logger.warning("truncated structured output repaired near %r", args[max(0, e.pos - 60):e.pos + 60])
+                    return repaired
                 snippet = args[max(0, e.pos - 60):e.pos + 60]
                 raise ValueError(f"Failed to parse structured output: {e} near {snippet!r}")
 

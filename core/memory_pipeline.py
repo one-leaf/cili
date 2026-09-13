@@ -380,6 +380,7 @@ def schedule_extraction(workspace_uuid: str, session_id: str, messages: list[dic
 # ─── 整合（§4.3）───────────────────────────────────────────────────
 
 _RECORD_MAX_CHARS = 1000
+_MAX_CONSOLIDATION_SPLIT = 3  # 整合分批最大递归深度：整批失败/截断时拆半重试
 
 
 def _entries_context(store: MemoryStore, pending: list[dict], cap: int = 10) -> str:
@@ -530,6 +531,51 @@ def _write_summary(memory_dir: str, summary: str) -> None:
     os.replace(tmp, path)
 
 
+def _consolidate_pending(
+    store: MemoryStore,
+    records: list[dict],
+    consolidator: Callable,
+    depth: int = 0,
+) -> tuple[list[dict], str]:
+    """整合一批记录，返回 (ops, summary)。
+
+    整批失败（异常）或输出明显不完整（op 数 < 记录数，常见于 max_tokens 截断
+    丢尾部）时，拆半递归重试——小批次输出更短，截断概率骤降。深度受
+    _MAX_CONSOLIDATION_SPLIT 限制；仍不完整则原样返回已解析的 ops，由调用方按
+    计数决定是否推进游标（不推则记录保持 pending，绝不丢内容）。
+    """
+    prompt = _build_consolidation_input(
+        records, _read_index_text(str(store.memory_dir)), _entries_context(store, records)
+    )
+    try:
+        result = consolidator(prompt, CONSOLIDATION_SYSTEM_PROMPT, CONSOLIDATION_SCHEMA)
+    except Exception:
+        if depth >= _MAX_CONSOLIDATION_SPLIT or len(records) <= 1:
+            raise
+        return _split_consolidation(store, records, consolidator, depth)
+
+    ops = (result or {}).get("ops") or []
+    if not isinstance(ops, list):
+        ops = []
+    summary = str((result or {}).get("summary") or "").strip()
+    if len(ops) >= len(records) or depth >= _MAX_CONSOLIDATION_SPLIT or len(records) <= 1:
+        return ops, summary
+    return _split_consolidation(store, records, consolidator, depth)
+
+
+def _split_consolidation(
+    store: MemoryStore,
+    records: list[dict],
+    consolidator: Callable,
+    depth: int,
+) -> tuple[list[dict], str]:
+    """把记录拆成两半分别整合，合并 ops；summary 取后半（更新鲜）。"""
+    mid = max(1, len(records) // 2)
+    left_ops, left_summary = _consolidate_pending(store, records[:mid], consolidator, depth + 1)
+    right_ops, right_summary = _consolidate_pending(store, records[mid:], consolidator, depth + 1)
+    return left_ops + right_ops, right_summary or left_summary
+
+
 def run_consolidation(
     workspace_uuid: str,
     consolidator: Callable | None = None,
@@ -537,7 +583,9 @@ def run_consolidation(
 ) -> dict:
     """整合一个工作区 journal 中的待处理记录。
 
-    仅当整合正常完成后才推进 .cursor（崩溃可安全重跑）；git 提交信息来自真实 diff。
+    仅当整合正常完成（op 覆盖全部待处理记录且无应用失败）才推进 .cursor
+    （崩溃可安全重跑）；git 提交信息来自真实 diff。op 数不足即视为截断/模型
+    少输出，不推进游标，记录保持 pending 供重跑。
     """
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     store = MemoryStore(memory_dir)
@@ -547,29 +595,30 @@ def run_consolidation(
         return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
                 "pending_after": 0, "summary_len": 0}
 
-    prompt = _build_consolidation_input(pending, _read_index_text(memory_dir), _entries_context(store, pending))
     consolidator_fn = consolidator or default_consolidator
     try:
-        result = consolidator_fn(prompt, CONSOLIDATION_SYSTEM_PROMPT, CONSOLIDATION_SCHEMA)
+        ops, summary = _consolidate_pending(store, pending, consolidator_fn)
     except Exception as e:
         logger.warning("memory consolidation failed for workspace %s: %s", workspace_uuid, e)
         return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
                 "pending_after": journal.pending_count(), "error": str(e)}
 
-    ops = (result or {}).get("ops") or []
     if not isinstance(ops, list):
         ops = []
-    summary = str((result or {}).get("summary") or "").strip()
-
     result = apply_ops(store, ops)
     applied = result["applied"]
     failed = result["failed"]
-    if summary:
+
+    incomplete = len(ops) < len(pending)
+    if summary and not (failed or incomplete):
         _write_summary(memory_dir, summary)
 
-    if failed:
-        # 有 op 应用失败：不推游标，记录保持 pending 供下次整合重跑。
-        # store 幂等（同名原地替换），重放已成功的 op 无副作用。
+    if failed or incomplete:
+        # 有 op 应用失败，或 op 未覆盖全部待整合记录（截断/模型少输出）：
+        # 不推游标，记录保持 pending 供下次整合重跑。store 幂等（同名原地替换），
+        # 重放已成功的 op 无副作用。
+        reason = (f"{len(failed)} op(s) failed to apply" if failed
+                  else f"consolidator returned {len(ops)} ops for {len(pending)} pending records")
         return {
             "processed": len(pending),
             "ops": ops,
@@ -579,7 +628,7 @@ def run_consolidation(
             "committed": False,
             "pending_after": journal.pending_count(),
             "summary_len": len(summary.encode("utf-8")) if summary else 0,
-            "error": f"{len(failed)} op(s) failed to apply; journal cursor not advanced",
+            "error": f"{reason}; journal cursor not advanced",
         }
 
     max_cursor = max((int(r.get("cursor", 0)) for r in pending), default=0)
@@ -639,23 +688,36 @@ def consolidate_all(consolidator: Callable | None = None, limit: int = 20) -> li
 
 # ─── 默认 LLM 调用（lite model 控成本；测试注入回调替换）───────────
 
+_DEFAULT_EXTRACT_MAX_TOKENS = 8000
+_DEFAULT_CONSOLIDATE_MAX_TOKENS = 16000
+
+
 def _lite_client():
     config = load_config()
     model = config.lite_model or config.model
     return create_llm_client(model)
 
 
-def default_extractor(messages: list[Message], system: str, schema: dict, max_tokens: int = 2000) -> dict:
+def _output_limit(client, requested: int) -> int:
+    """max_tokens 取请求值与模型配置上限的较小者，避免小模型被超上限拒绝。"""
+    return min(requested, client.config.max_tokens)
+
+
+def default_extractor(messages: list[Message], system: str, schema: dict,
+                      max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS) -> dict:
     client = _lite_client()
     try:
-        return client.chat_structured(messages, system=system, output_schema=schema, max_tokens=max_tokens)
+        return client.chat_structured(messages, system=system, output_schema=schema,
+                                      max_tokens=_output_limit(client, max_tokens))
     finally:
         client.close()
 
 
-def default_consolidator(messages: list[Message], system: str, schema: dict, max_tokens: int = 3000) -> dict:
+def default_consolidator(messages: list[Message], system: str, schema: dict,
+                         max_tokens: int = _DEFAULT_CONSOLIDATE_MAX_TOKENS) -> dict:
     client = _lite_client()
     try:
-        return client.chat_structured(messages, system=system, output_schema=schema, max_tokens=max_tokens)
+        return client.chat_structured(messages, system=system, output_schema=schema,
+                                      max_tokens=_output_limit(client, max_tokens))
     finally:
         client.close()

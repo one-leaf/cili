@@ -916,7 +916,7 @@ class TestChatStructuredRetry:
         calls = []
         client = self._client(
             calls,
-            '{"memories": [{"type": "fact"',  # 第一次：截断的坏 JSON
+            '{"memories": [broken',  # 第一次：无法修复的坏 JSON（无完整元素边界）
             '{"memories": [{"type": "fact", "title": "ok"}]}',  # 第二次：合法
         )
         out = client.chat_structured(
@@ -935,6 +935,84 @@ class TestChatStructuredRetry:
                 output_schema={"type": "object", "properties": {}},
             )
         assert len(calls) == 2  # 重试后仍失败才抛出
+
+
+class TestChatStructuredTruncationRepair:
+    """工具参数 JSON 被 max_tokens 截断时，_repair_truncated_json 抢救完整前缀。
+
+    回归：整合/提取输出常在字符串中间、元素中间或元素结束后被截断，旧实现直接
+    抛错导致整批失败；修复后保留已完成元素，仅丢弃末尾不完整元素。
+    """
+
+    @staticmethod
+    def _client(calls, arguments):
+        config = ModelConfig(
+            name="gpt-4o", api_key="key", interface_type="openai",
+            base_url="https://api.openai.com",
+        )
+        adapter = OpenAIAdapter(config)
+
+        def _resp():
+            return 200, {}, {
+                "choices": [{
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_1", "type": "function",
+                            "function": {"name": "output", "arguments": arguments},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+            }
+
+        class FakeTransport:
+            def with_retry(self, op, **k):
+                return op()
+
+            def post(self, url, headers, body, timeout=None):
+                calls.append(body)
+                return _resp()
+
+        return LLMClient(adapter=adapter, transport=FakeTransport(), config=config)
+
+    def test_missing_closing_brace_repaired(self):
+        """截断在最后一个元素之后（缺 ]}）→ 补齐闭合括号后解析，无需重试。"""
+        calls = []
+        args = ('{"ops": [{"op": "store", "type": "fact", "title": "A", "content": "a"},'
+                ' {"op": "update", "name": "b", "content": "b2"}')  # 缺末尾 ]}
+        client = self._client(calls, args)
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out["ops"][1] == {"op": "update", "name": "b", "content": "b2"}
+        assert len(calls) == 1  # 修复成功，不触发重试
+
+    def test_truncated_mid_element_drops_tail(self):
+        """截断在最后一个元素中间（未闭合字符串）→ 丢弃不完整尾部，保留完整元素。"""
+        calls = []
+        args = ('{"ops": [{"op": "store", "title": "ok", "content": "c"},'
+                ' {"op": "update", "name": "x", "content": "partial')
+        client = self._client(calls, args)
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out == {"ops": [{"op": "store", "title": "ok", "content": "c"}]}
+        assert len(calls) == 1
+
+    def test_unrepairable_truncation_still_raises(self):
+        """无任何完整元素边界 → 无法修复，走单次重试后抛出。"""
+        calls = []
+        client = self._client(calls, '{"ops": [{"op": "store", "content": "ab')
+        with pytest.raises(ValueError, match="Failed to parse structured output"):
+            client.chat_structured(
+                messages=[Message(role="user", content="hi")],
+                output_schema={"type": "object", "properties": {}},
+            )
+        assert len(calls) == 2
 
 
 class TestChatStructuredTextFallback:
