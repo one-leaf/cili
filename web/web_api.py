@@ -2730,7 +2730,8 @@ async def consolidate_memory(workspace_uuid: str, request_raw: Request = None):
     """手动触发记忆整合（journal → 条目）。"""
     _csrf_protect(request_raw)
     _memory_dir(workspace_uuid)
-    result = await asyncio.to_thread(run_consolidation, workspace_uuid)
+    # 手动整合一次清空待整合队列（每批 limit=20，最多 4 批）
+    result = await asyncio.to_thread(run_consolidation, workspace_uuid, max_batches=4)
     return result
 
 

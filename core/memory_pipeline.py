@@ -446,12 +446,25 @@ def _build_consolidation_input(pending: list[dict], index_text: str, entries_sna
     return [Message(role="user", content="\n".join(parts))]
 
 
+def _op_type(op: dict) -> str:
+    """模型给出的 type 不在白名单则回退 fact（类型检查友好的窄化）。"""
+    t = op.get("type")
+    return t if isinstance(t, str) and t in MEMORY_TYPES else "fact"
+
+
 def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
     """确定性地应用整合 op，返回 {"applied": [...], "failed": [...]}。
 
-    任何单条失败不阻断其余：失败项进 failed，由调用方决定是否推进 journal
-    游标（失败不消费记录，避免"已整合但未写入"的静默丢失）。description 截断
-    到 store 的 200 字上限（journal 截断 300，直接透传会误报）。
+    对模型常见的"目标错位"做容错，避免某条 op 确定性失败 → 整批不推游标 →
+    同一批记录重跑又产生同样 op 的死锁：
+    - delete/archive 目标条目不存在 → 已处于期望状态，视为完成
+    - update 目标条目不存在（模型幻觉 name）→ 有内容则退化为 store 新建保留，
+      否则视为完成
+    - store 无 title 无 content → 无可保留内容，视为完成
+    - store name 与不同类型条目冲突 → 追加 -n 后缀重试，保留内容不丢
+    其余意外失败仍进 failed，由调用方决定是否推进游标（失败不消费记录，避免
+    "已整合但未写入"的静默丢失）。description 截断到 store 的 200 字上限
+    （journal 截断 300，直接透传会误报）。
     """
     applied: list[dict] = []
     failed: list[dict] = []
@@ -463,41 +476,100 @@ def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
         reason = op.get("reason", "")
         try:
             if action == "store":
-                title = str(op.get("title") or "")
-                content = str(op.get("content") or "")
-                result = store.store(
-                    type_=op.get("type") if op.get("type") in MEMORY_TYPES else "fact",
-                    name=name or None,
-                    title=title,
-                    description=str(op.get("description") or "")[:200],
-                    content=content,
-                    tags=op.get("tags"),
-                    source="derived",
-                    refs=op.get("refs"),
-                )
+                title = str(op.get("title") or "").strip()
+                content = str(op.get("content") or "").strip()
+                if not title and not content:
+                    # 模型未给出任何可存内容 → 视为完成，不阻塞队列
+                    applied.append({"op": "store", "name": name, "reason": reason, "note": "empty op"})
+                    continue
+                try:
+                    result = store.store(
+                        type_=_op_type(op),
+                        name=name or None,
+                        title=title,
+                        description=str(op.get("description") or "")[:200],
+                        content=content,
+                        tags=op.get("tags"),
+                        source="derived",
+                        refs=op.get("refs"),
+                    )
+                except ValueError as e:
+                    if "name must be globally unique" not in str(e):
+                        raise
+                    # name 被不同类型条目占用 → 追加 -n 后缀重试
+                    n = 2
+                    while True:
+                        candidate = f"{name}-{n}"
+                        try:
+                            result = store.store(
+                                type_=_op_type(op),
+                                name=candidate,
+                                title=title,
+                                description=str(op.get("description") or "")[:200],
+                                content=content,
+                                tags=op.get("tags"),
+                                source="derived",
+                                refs=op.get("refs"),
+                            )
+                            break
+                        except ValueError as e2:
+                            if "name must be globally unique" not in str(e2):
+                                raise
+                            n += 1
                 applied.append({"op": "store", "name": result["name"], "reason": reason})
             elif action == "update":
                 if not name:
                     continue
-                store.update(
-                    name,
-                    title=op.get("title"),
-                    description=str(op.get("description") or "")[:200],
-                    content=op.get("content"),
-                    tags=op.get("tags"),
-                    refs=op.get("refs"),
-                    source="derived",
-                )
+                try:
+                    store.update(
+                        name,
+                        title=op.get("title"),
+                        description=str(op.get("description") or "")[:200],
+                        content=op.get("content"),
+                        tags=op.get("tags"),
+                        refs=op.get("refs"),
+                        source="derived",
+                    )
+                except ValueError as e:
+                    if "no memory entry named" not in str(e):
+                        raise
+                    # 目标条目不存在（模型幻觉）→ 有内容则新建保留，否则视为完成
+                    title = str(op.get("title") or "").strip()
+                    content = str(op.get("content") or "").strip()
+                    if not title and not content:
+                        applied.append({"op": "update", "name": name, "reason": reason,
+                                        "note": "target missing, no content"})
+                        continue
+                    store.store(
+                        type_=_op_type(op),
+                        name=name,
+                        title=title,
+                        description=str(op.get("description") or "")[:200],
+                        content=content,
+                        tags=op.get("tags"),
+                        source="derived",
+                        refs=op.get("refs"),
+                    )
                 applied.append({"op": "update", "name": name, "reason": reason})
             elif action == "archive":
                 if not name:
                     continue
-                store.archive(name)
+                try:
+                    store.archive(name)
+                except ValueError as e:
+                    if "no active memory entry named" not in str(e):
+                        raise
+                    # 目标不在活动条目中（不存在/已归档）→ 无需归档，视为完成
                 applied.append({"op": "archive", "name": name, "reason": reason})
             elif action == "delete":
                 if not name:
                     continue
-                store.delete(name)
+                try:
+                    store.delete(name)
+                except ValueError as e:
+                    if "no memory entry named" not in str(e):
+                        raise
+                    # 目标条目不存在 → 删除意图已满足，视为完成
                 applied.append({"op": "delete", "name": name, "reason": reason})
             elif action == "skip":
                 applied.append({"op": "skip", "name": name, "reason": reason})
@@ -580,74 +652,98 @@ def run_consolidation(
     workspace_uuid: str,
     consolidator: Callable | None = None,
     limit: int = 20,
+    max_batches: int = 1,
 ) -> dict:
     """整合一个工作区 journal 中的待处理记录。
 
     仅当整合正常完成（op 覆盖全部待处理记录且无应用失败）才推进 .cursor
     （崩溃可安全重跑）；git 提交信息来自真实 diff。op 数不足即视为截断/模型
     少输出，不推进游标，记录保持 pending 供重跑。
+
+    max_batches>1 时循环整合（手动触发用）：每批最多 limit 条，直至待整合清零、
+    到达批次上限，或某批失败/无进展。返回聚合各批计数（processed/applied/
+    failed/archived 求和，ops/summary_len/error 取最后一批）。
     """
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     store = MemoryStore(memory_dir)
     journal = Journal(memory_dir)
-    pending = journal.read_pending(limit=limit)
-    if not pending:
-        return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
-                "pending_after": 0, "summary_len": 0}
-
     consolidator_fn = consolidator or default_consolidator
-    try:
-        ops, summary = _consolidate_pending(store, pending, consolidator_fn)
-    except Exception as e:
-        logger.warning("memory consolidation failed for workspace %s: %s", workspace_uuid, e)
-        return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
-                "pending_after": journal.pending_count(), "error": str(e)}
 
-    if not isinstance(ops, list):
-        ops = []
-    result = apply_ops(store, ops)
-    applied = result["applied"]
-    failed = result["failed"]
+    batch_results: list[dict] = []
+    for _ in range(max(max_batches, 1)):
+        pending = journal.read_pending(limit=limit)
+        if not pending:
+            break
 
-    incomplete = len(ops) < len(pending)
-    if summary and not (failed or incomplete):
-        _write_summary(memory_dir, summary)
+        try:
+            ops, summary = _consolidate_pending(store, pending, consolidator_fn)
+        except Exception as e:
+            logger.warning("memory consolidation failed for workspace %s: %s", workspace_uuid, e)
+            batch_results.append({"processed": 0, "ops": [], "applied": [], "failed": [],
+                                  "archived": [], "committed": False,
+                                  "pending_after": journal.pending_count(), "error": str(e)})
+            break
 
-    if failed or incomplete:
-        # 有 op 应用失败，或 op 未覆盖全部待整合记录（截断/模型少输出）：
-        # 不推游标，记录保持 pending 供下次整合重跑。store 幂等（同名原地替换），
-        # 重放已成功的 op 无副作用。
-        reason = (f"{len(failed)} op(s) failed to apply" if failed
-                  else f"consolidator returned {len(ops)} ops for {len(pending)} pending records")
-        return {
+        if not isinstance(ops, list):
+            ops = []
+        applied_res = apply_ops(store, ops)
+        applied = applied_res["applied"]
+        failed = applied_res["failed"]
+
+        incomplete = len(ops) < len(pending)
+        if summary and not (failed or incomplete):
+            _write_summary(memory_dir, summary)
+
+        if failed or incomplete:
+            # 有 op 应用失败，或 op 未覆盖全部待整合记录（截断/模型少输出）：
+            # 不推游标，记录保持 pending 供下次整合重跑。store 幂等（同名原地替换），
+            # 重放已成功的 op 无副作用。
+            reason = (f"{len(failed)} op(s) failed to apply" if failed
+                      else f"consolidator returned {len(ops)} ops for {len(pending)} pending records")
+            batch_results.append({
+                "processed": len(pending),
+                "ops": ops,
+                "applied": applied,
+                "failed": failed,
+                "archived": [],
+                "committed": False,
+                "pending_after": journal.pending_count(),
+                "summary_len": len(summary.encode("utf-8")) if summary else 0,
+                "error": f"{reason}; journal cursor not advanced",
+            })
+            break
+
+        max_cursor = max((int(r.get("cursor", 0)) for r in pending), default=0)
+        journal.advance(max_cursor)
+        journal.compact(keep=500)
+        archived = store.archive_stale()
+
+        ok, note = best_effort_commit(memory_dir, f"consolidate: {len(applied)} ops, {len(archived)} archived")
+        batch_results.append({
             "processed": len(pending),
             "ops": ops,
             "applied": applied,
             "failed": failed,
-            "archived": [],
-            "committed": False,
+            "archived": archived,
+            "committed": ok,
+            "commit_note": note if ok else "",
             "pending_after": journal.pending_count(),
             "summary_len": len(summary.encode("utf-8")) if summary else 0,
-            "error": f"{reason}; journal cursor not advanced",
-        }
+        })
+        if batch_results[-1]["pending_after"] == 0:
+            break
 
-    max_cursor = max((int(r.get("cursor", 0)) for r in pending), default=0)
-    journal.advance(max_cursor)
-    journal.compact(keep=500)
-    archived = store.archive_stale()
+    if not batch_results:
+        return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
+                "pending_after": 0, "summary_len": 0}
 
-    ok, note = best_effort_commit(memory_dir, f"consolidate: {len(applied)} ops, {len(archived)} archived")
-    return {
-        "processed": len(pending),
-        "ops": ops,
-        "applied": applied,
-        "failed": failed,
-        "archived": archived,
-        "committed": ok,
-        "commit_note": note if ok else "",
-        "pending_after": journal.pending_count(),
-        "summary_len": len(summary.encode("utf-8")) if summary else 0,
-    }
+    final = dict(batch_results[-1])
+    final["processed"] = sum(b["processed"] for b in batch_results)
+    final["applied"] = [a for b in batch_results for a in b["applied"]]
+    final["failed"] = [f for b in batch_results for f in b["failed"]]
+    final["archived"] = [x for b in batch_results for x in b["archived"]]
+    final["pending_after"] = journal.pending_count()
+    return final
 
 
 def _iter_workspace_uuids() -> list[str]:

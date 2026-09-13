@@ -229,8 +229,11 @@ class TestConsolidation:
         assert r2["processed"] == 1
         assert r2["pending_after"] == 0
 
-    def test_failed_op_keeps_cursor_for_retry(self, agents_dir):
-        """某条 op 应用失败（如 name 类型冲突）时不推游标，记录保持 pending 供重跑。"""
+    def test_conflicting_store_self_heals(self, agents_dir):
+        """store name 与不同类型条目冲突 → 自动追加 -2 后缀新建保留内容，游标照常推进。
+
+        （旧行为是记 failed 不推游标，重跑同批记录会产生同样的冲突 → 确定性死锁。）
+        """
         store = MemoryStore(str(agents_dir / "ws1" / "memory"))
         store.store(type_="fact", name="foo", title="Foo fact", content="existing")
         self._seed(agents_dir)
@@ -243,24 +246,16 @@ class TestConsolidation:
                     "summary": ""}
 
         r = run_consolidation("ws1", consolidator=conflicting)
-        assert r["failed"]
-        assert r["applied"] == []
-        assert "not advanced" in r["error"]
-        # 游标未推进 → 记录保留，下次可重跑
-        assert journal.cursor() == 0
-        assert journal.pending_count() == 1
+        assert r["failed"] == []
+        names = [a["name"] for a in r["applied"]]
+        assert "foo-2" in names
+        fm, _ = MemoryStore(str(agents_dir / "ws1" / "memory")).peek("foo-2")
+        assert fm["type"] == "preference"
+        assert journal.cursor() == 1
+        assert journal.pending_count() == 0
 
-        def good(prompt, system, schema):
-            return {"ops": [{"op": "store", "type": "fact", "title": "Test Memory",
-                             "content": "ok"}],
-                    "summary": ""}
-
-        r2 = run_consolidation("ws1", consolidator=good)
-        assert r2["failed"] == []
-        assert r2["pending_after"] == 0
-
-    def test_empty_store_op_keeps_cursor(self, agents_dir):
-        """空标题+正文的 store op 记为失败，游标不推进，记录保留供重跑。"""
+    def test_empty_store_op_consumed(self, agents_dir):
+        """空 title+content 的 store op → 无可保留内容，视为完成并推进游标，避免死锁。"""
         self._seed(agents_dir)
         journal = Journal(str(agents_dir / "ws1" / "memory"))
 
@@ -270,11 +265,11 @@ class TestConsolidation:
                     "summary": ""}
 
         r = run_consolidation("ws1", consolidator=empty_store)
-        assert len(r["failed"]) == 1
-        assert r["applied"] == []
-        assert "not advanced" in r["error"]
-        assert journal.cursor() == 0
-        assert journal.pending_count() == 1
+        assert r["failed"] == []
+        assert len(r["applied"]) == 1
+        assert r.get("error") is None
+        assert journal.cursor() == 1
+        assert journal.pending_count() == 0
 
     def test_no_pending_returns_empty(self, agents_dir):
         _ws(agents_dir, "ws1", enabled=True)
@@ -296,6 +291,70 @@ class TestConsolidation:
         assert r["applied"] == []
         assert journal.cursor() == 0
         assert journal.pending_count() == 1
+
+    def test_missing_target_ops_do_not_deadlock(self, agents_dir):
+        """delete/archive 目标条目不存在、update 目标缺失 → 视为完成/新建保留，队列照常推进。
+
+        复现线上死锁：模型对不存在的条目发 delete/archive/update，旧行为记 failed
+        不推游标，重跑同批记录产生同样的 op → 待整合永远不降。
+        """
+        self._seed(agents_dir)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        assert journal.cursor() == 0
+
+        def hallucinating(prompt, system, schema):
+            return {"ops": [
+                {"op": "delete", "name": "ghost-entry", "reason": "wrong"},
+                {"op": "archive", "name": "ghost-archive", "reason": "obsolete"},
+                {"op": "update", "name": "ghost-update", "type": "fact",
+                 "title": "New Ghost", "content": "kept content", "reason": "refine"},
+            ], "summary": ""}
+
+        r = run_consolidation("ws1", consolidator=hallucinating)
+        assert r["failed"] == []
+        assert len(r["applied"]) == 3
+        # update 退化 store 新建，内容不丢
+        fm, body = MemoryStore(str(agents_dir / "ws1" / "memory")).peek("ghost-update")
+        assert body.strip() == "kept content"
+        assert journal.cursor() == 1
+        assert journal.pending_count() == 0
+
+    def test_max_batches_clears_queue(self, agents_dir):
+        """max_batches>1 循环整合至清零，返回跨批聚合计数。"""
+        _ws(agents_dir, "ws1", enabled=True)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        for i in range(5):
+            journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
+                           title=f"Memory {i}", content=f"durable fact {i}", source="session")
+
+        def per_record(prompt, system, schema):
+            n = prompt[0].content.count("[cursor")
+            return {"ops": [{"op": "store", "type": "fact", "title": "T", "content": "b"}
+                            for _ in range(n)], "summary": ""}
+
+        r = run_consolidation("ws1", consolidator=per_record, limit=2, max_batches=4)
+        assert "error" not in r
+        assert r["processed"] == 5
+        assert len(r["applied"]) == 5
+        assert r["pending_after"] == 0
+        assert journal.pending_count() == 0
+
+    def test_default_max_batches_one(self, agents_dir):
+        """缺省 max_batches=1 只处理一批（limit 条），行为与旧版一致。"""
+        _ws(agents_dir, "ws1", enabled=True)
+        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        for i in range(5):
+            journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
+                           title=f"Memory {i}", content=f"durable fact {i}", source="session")
+
+        def per_record(prompt, system, schema):
+            n = prompt[0].content.count("[cursor")
+            return {"ops": [{"op": "store", "type": "fact", "title": "T", "content": "b"}
+                            for _ in range(n)], "summary": ""}
+
+        r = run_consolidation("ws1", consolidator=per_record, limit=2)
+        assert r["processed"] == 2
+        assert r["pending_after"] == 3
 
     def test_truncated_batch_splits_and_advances(self, agents_dir):
         """整批整合抛错（模拟 max_tokens 截断）时拆半重试，两半各自成功 → 全部应用并推进游标。"""
