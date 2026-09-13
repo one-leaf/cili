@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable
 
 import httpx
@@ -41,6 +42,31 @@ from core.llm.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json_dict(text: str) -> dict | None:
+    """尽力从模型正文中解析 JSON 对象。
+
+    end_turn 兜底：模型未调用工具但直接在正文输出 JSON（小模型/工具调用异常时
+    常见）。依次尝试整段解析、去掉 markdown 围栏后解析、取最外层 {...} 子串解析。
+    """
+    candidates = [text.strip()]
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\s*\n?", "", stripped)
+        stripped = re.sub(r"\n?\s*```$", "", stripped)
+        candidates.append(stripped.strip())
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for c in candidates:
+        try:
+            parsed = json.loads(c)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 class LLMClient:
@@ -291,18 +317,27 @@ class LLMClient:
             return self._parse_tool_args(response)
 
     def _parse_tool_args(self, response: LLMResponse) -> dict[str, Any]:
-        """从响应中提取工具调用参数并解析 JSON（失败时附带出错位置片段便于诊断）。"""
+        """从响应中提取工具调用参数并解析 JSON（失败时附带出错位置片段便于诊断）。
+
+        end_turn 兜底：模型未调用工具但正文含 JSON 时（如直接输出
+        '{"ops": [...]}'），尽力解析正文，避免提取/整合整段失败退化。
+        """
         tool_calls = [b for b in response.content if isinstance(b, ToolCallBlock)]
-        if not tool_calls:
-            raise ValueError(f"Expected tool call but got stop_reason={response.stop_reason}")
-        args = tool_calls[0].arguments or ""
-        if not args:
-            return {}
-        try:
-            return json.loads(args)
-        except json.JSONDecodeError as e:
-            snippet = args[max(0, e.pos - 60):e.pos + 60]
-            raise ValueError(f"Failed to parse structured output: {e} near {snippet!r}")
+        if tool_calls:
+            args = tool_calls[0].arguments or ""
+            if not args:
+                return {}
+            try:
+                return json.loads(args)
+            except json.JSONDecodeError as e:
+                snippet = args[max(0, e.pos - 60):e.pos + 60]
+                raise ValueError(f"Failed to parse structured output: {e} near {snippet!r}")
+
+        text = "\n".join(b.text for b in response.content if isinstance(b, TextBlock))
+        parsed = _extract_json_dict(text) if text.strip() else None
+        if parsed is not None:
+            return parsed
+        raise ValueError(f"Expected tool call but got stop_reason={response.stop_reason}")
 
     def test_connection(self) -> tuple[bool, str]:
         """Test API connection with a minimal request.

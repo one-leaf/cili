@@ -24,7 +24,7 @@ function setupMemoryEvents() {
     document.getElementById('memory-consolidate-btn').addEventListener('click', consolidateMemory);
     document.getElementById('memory-enabled-toggle').addEventListener('change', toggleMemoryEnabled);
     document.getElementById('memory-type-filter').addEventListener('change', renderMemoryList);
-    document.getElementById('memory-status-filter').addEventListener('change', renderMemoryList);
+    document.getElementById('memory-status-filter').addEventListener('change', loadMemory);
     document.getElementById('memory-search').addEventListener('input', renderMemoryList);
     document.getElementById('mem-save-btn').addEventListener('click', saveMemoryEntry);
     document.getElementById('mem-archive-btn').addEventListener('click', () => changeMemoryEntryStatus('archive'));
@@ -47,7 +47,9 @@ async function loadMemory() {
     const logEl = document.getElementById('memory-action-log');
     logEl.textContent = '加载中...';
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/memory`);
+        // 状态过滤需要服务端参与：已归档条目单独存放在 archive/，默认列表不含它们
+        const statusFilter = document.getElementById('memory-status-filter').value;
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/memory?status=${encodeURIComponent(statusFilter)}`);
         if (!response.ok) {
             const err = await response.json();
             throw new Error(err.detail || `HTTP ${response.status}`);

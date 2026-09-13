@@ -937,6 +937,87 @@ class TestChatStructuredRetry:
         assert len(calls) == 2  # 重试后仍失败才抛出
 
 
+class TestChatStructuredTextFallback:
+    """end_turn（模型未调用工具但正文含 JSON）时从正文解析的兜底。
+
+    回归：小模型/工具调用异常时常直接输出 '{"ops": [...]}' 而非调用工具，
+    旧实现直接抛错导致提取/整合退化。
+    """
+
+    @staticmethod
+    def _client(calls, *responses):
+        config = ModelConfig(
+            name="gpt-4o", api_key="key", interface_type="openai",
+            base_url="https://api.openai.com",
+        )
+        adapter = OpenAIAdapter(config)
+
+        def _resp(content):
+            return 200, {}, {
+                "choices": [{
+                    "message": {"content": content},  # 无 tool_calls → end_turn
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+            }
+
+        class FakeTransport:
+            def with_retry(self, op, **k):
+                return op()
+
+            def post(self, url, headers, body, timeout=None):
+                calls.append(body)
+                return _resp(responses[len(calls) - 1])
+
+        return LLMClient(adapter=adapter, transport=FakeTransport(), config=config)
+
+    def test_end_turn_text_json_parsed(self):
+        calls = []
+        client = self._client(
+            calls,
+            '{"memories": [{"type": "fact", "title": "t", "content": "c"}]}',
+        )
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out == {"memories": [{"type": "fact", "title": "t", "content": "c"}]}
+        assert len(calls) == 1  # 正文解析成功，无需重试
+
+    def test_end_turn_fenced_json_parsed(self):
+        """markdown 围栏包裹的 JSON 也能解析。"""
+        calls = []
+        client = self._client(calls, '```json\n{"ops": []}\n```')
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out == {"ops": []}
+        assert len(calls) == 1
+
+    def test_end_turn_prose_wrapping_json_parsed(self):
+        """散文包裹的 JSON（'Here you go: {json}'）也能解析。"""
+        calls = []
+        client = self._client(calls, 'Here you go:\n{"ops": []}\nDone.')
+        out = client.chat_structured(
+            messages=[Message(role="user", content="hi")],
+            output_schema={"type": "object", "properties": {}},
+        )
+        assert out == {"ops": []}
+        assert len(calls) == 1
+
+    def test_end_turn_prose_raises(self):
+        """纯散文（无 JSON）仍失败并重试一次。"""
+        calls = []
+        client = self._client(calls, "No memories found.", "Still nothing.")
+        with pytest.raises(ValueError, match="Expected tool call"):
+            client.chat_structured(
+                messages=[Message(role="user", content="hi")],
+                output_schema={"type": "object", "properties": {}},
+            )
+        assert len(calls) == 2  # 重试后仍失败才抛出
+
+
 # ========== DGX 集成测试（真实 LLM 调用） ==========
 
 from test.conftest import DGX_BASE_URL, DGX_API_KEY, DGX_MODEL, make_dgx_config

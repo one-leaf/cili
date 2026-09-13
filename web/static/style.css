@@ -2254,12 +2254,16 @@ mjx-container {
     white-space: nowrap;
 }
 
+.memory-toolbar-right select,
 .memory-toolbar-right input[type="text"] {
-    width: 180px;
+    font-size: 12px;
     padding: 4px 8px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    font-size: 13px;
+}
+
+.memory-toolbar-right input[type="text"] {
+    width: 180px;
 }
 
 .memory-stats {
@@ -2293,10 +2297,10 @@ mjx-container {
 }
 
 .memory-list-item {
-    padding: 8px 10px;
+    padding: 6px 10px;
     border-radius: 6px;
     cursor: pointer;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
     background: #fff;
     border: 1px solid transparent;
 }
@@ -2314,7 +2318,7 @@ mjx-container {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 500;
     overflow: hidden;
 }
@@ -2328,8 +2332,8 @@ mjx-container {
 
 .memory-type-tag {
     flex-shrink: 0;
-    font-size: 11px;
-    padding: 1px 6px;
+    font-size: 10px;
+    padding: 1px 5px;
     border-radius: 8px;
     background: var(--primary-color);
     color: #fff;
@@ -2341,8 +2345,8 @@ mjx-container {
 
 .memory-status-tag {
     flex-shrink: 0;
-    font-size: 11px;
-    padding: 1px 6px;
+    font-size: 10px;
+    padding: 1px 5px;
     border-radius: 8px;
     border: 1px solid var(--border-color);
     color: var(--text-light);
@@ -2352,18 +2356,18 @@ mjx-container {
 .memory-status-tag.archived { color: #888; }
 
 .memory-item-desc {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
-    margin-top: 3px;
+    margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .memory-item-meta {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-light);
-    margin-top: 3px;
+    margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2373,16 +2377,21 @@ mjx-container {
     flex: 1;
     overflow-y: auto;
     padding: 16px 20px;
+    font-size: 12px;
 }
 
 .memory-detail .form-group label {
-    font-size: 13px;
+    font-size: 12px;
+}
+
+.memory-detail .form-group input[type="text"] {
+    font-size: 12px;
 }
 
 .memory-content-input {
     min-height: 220px;
     font-family: 'SF Mono', Consolas, Menlo, monospace;
-    font-size: 13px;
+    font-size: 12px;
     resize: vertical;
 }
 
@@ -2428,6 +2437,7 @@ mjx-container {
 
 .memory-commits-title {
     font-weight: 500;
+    font-size: 11px;
 }
 
 .memory-commit-item {
@@ -2436,7 +2446,7 @@ mjx-container {
     border-radius: 4px;
     padding: 1px 6px;
     font-family: 'SF Mono', Consolas, Menlo, monospace;
-    font-size: 11px;
+    font-size: 10px;
     max-width: 260px;
     overflow: hidden;
     text-overflow: ellipsis;
