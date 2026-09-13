@@ -57,7 +57,8 @@ class PythonTool(Tool):
             "- eval() and exec() are blocked.\n"
             "- Do not invoke bash/pwsh from Python code.\n"
             "- This is the ONLY way to run Python — never use bash or pwsh to call python.\n"
-            "- Long-running scripts: run_in_background=true, then read_task/kill_task/write_stdin/list_tasks."
+            "- There is NO 'timeout' parameter here (unlike bash): execution timeout is fixed. "
+            "For long-running scripts use run_in_background=true, then read_task/kill_task/write_stdin/list_tasks."
         )
 
     @property

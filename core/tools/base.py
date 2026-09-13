@@ -793,7 +793,19 @@ class Tool:
 
             coerced[key] = value
 
-        # 第二步：参数校验（在类型转换之后）
+        # 第二步：未知参数拦截——LLM 常把其他工具的参数（如 bash 的 timeout）
+        # 张冠李戴，直接透传会让 execute(**kwargs) 抛 TypeError。报错列出合法参数，
+        # 模型看到后下一轮自纠。
+        valid = set(props.keys())
+        unknown = [k for k in coerced if k not in valid]
+        if unknown:
+            return ToolResult(
+                f"Error: 无效参数 {', '.join(repr(k) for k in unknown)}。"
+                f"该工具支持的参数: {', '.join(sorted(valid))}",
+                error=True,
+            )
+
+        # 第三步：参数校验（在类型转换之后）
         validation_error = self.validate_input(coerced)
         if validation_error is not None:
             return validation_error

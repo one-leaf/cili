@@ -4,6 +4,7 @@ import os
 import tempfile
 import pytest
 
+from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
@@ -93,6 +94,22 @@ class TestPythonToolBoundary:
         """Missing code for execute action."""
         result = python_tool.execute(action="execute")
         assert result.error is True
+
+    def test_unknown_parameter_rejected(self, python_tool):
+        """未知参数（如把 bash 的 timeout 张冠李戴）在 coerce_input 拦截，而非 execute 抛 TypeError。"""
+        result = python_tool.coerce_input({"code": "print(1)", "timeout": "120"})
+        assert isinstance(result, ToolResult)
+        assert result.error is True
+        assert "timeout" in result.output
+        assert "无效参数" in result.output
+        assert "code" in result.output  # 报错里列出合法参数
+
+    def test_valid_parameters_pass_coerce(self, python_tool):
+        """合法参数正常通过 coerce_input（类型转换后返回 dict）。"""
+        result = python_tool.coerce_input({"action": "execute", "code": "print(1)"})
+        assert isinstance(result, dict)
+        assert result["action"] == "execute"
+        assert result["code"] == "print(1)"
 
 
 # ========== Read Tool ==========
