@@ -176,6 +176,41 @@ class TestToolSearchExecute:
         result = ts.execute(query="")
         assert result.error
 
+    def test_search_multiword_query(self):
+        """多词查询按 token AND 匹配：'cron schedule' 命中 cron（旧版整串子串匹配不到）。"""
+        agent = _make_master_agent()
+        ts = get_tool_by_name(agent.tools, "tool_search")
+
+        result = ts.execute(query="cron schedule")
+        assert not result.error
+        assert "cron" in result.output
+
+    def test_search_multiword_name_tokens(self):
+        """多词查询每个 token 都命中工具名：'pdf markdown' 命中 pdf2markdown。"""
+        agent = _make_master_agent()
+        ts = get_tool_by_name(agent.tools, "tool_search")
+
+        result = ts.execute(query="pdf markdown")
+        assert not result.error
+        assert "pdf2markdown" in result.output
+
+    def test_search_multiword_hyphen_split(self):
+        """带连字符的多词查询拆分后匹配：'message-bus' 命中 message_bus。"""
+        agent = _make_master_agent()
+        ts = get_tool_by_name(agent.tools, "tool_search")
+
+        result = ts.execute(query="message-bus")
+        assert not result.error
+        assert "message_bus" in result.output
+
+    def test_search_multiword_requires_all_tokens(self):
+        """AND 语义：'cron browser' 无工具同时命中两个 token → 无匹配。"""
+        agent = _make_master_agent()
+        ts = get_tool_by_name(agent.tools, "tool_search")
+
+        result = ts.execute(query="cron browser")
+        assert "No deferred tools matched" in result.output
+
 
 class TestExecuteToolOverride:
     """_execute_tool override 安全网。"""

@@ -8,6 +8,7 @@ and triggers activation so the schemas are included in subsequent API calls.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.tools.base import Tool, ToolResult
@@ -51,32 +52,43 @@ class ToolSearchTool(Tool):
         if not query:
             return ToolResult("Error: query is required", error=True)
 
-        query_lower = query.lower()
+        # 多词查询按空白/下划线/连字符拆成 token，每个 token 都必须命中 name 或
+        # description 之一（AND），得分按 token 累加；单 token 行为与旧版一致。
+        tokens = [t for t in re.split(r"[\s_\-/]+", query.lower()) if t]
+        if not tokens:
+            return ToolResult("Error: query is required", error=True)
+
         scored: list[tuple[int, Tool]] = []
 
         for tool in self.deferred_tools:
-            score = 0
             name_lower = tool.name.lower()
-            # Exact name match
-            if query_lower == name_lower:
-                score = 100
-            # Name contains query
-            elif query_lower in name_lower:
-                score = 50
-            # Query matches any word in name
-            elif any(query_lower in part for part in name_lower.replace("_", " ").split()):
-                score = 30
-
-            # Description first-line match
+            name_parts = [p for p in name_lower.replace("_", " ").split()]
+            desc = tool.description.lower()
             desc_first_line = tool.description.split("\n")[0].lower()
-            if query_lower in desc_first_line:
-                score = max(score, 20)
-            # Broader description match
-            elif query_lower in tool.description.lower():
-                score = max(score, 10)
 
-            if score > 0:
-                scored.append((score, tool))
+            token_scores: list[int] = []
+            for tok in tokens:
+                score = 0
+                # Exact name match
+                if tok == name_lower:
+                    score = 100
+                # Name contains token
+                elif tok in name_lower:
+                    score = 50
+                # Token matches any word in name
+                elif any(tok in part for part in name_parts):
+                    score = 30
+
+                # Description first-line match
+                if tok in desc_first_line:
+                    score = max(score, 20)
+                # Broader description match
+                elif tok in desc:
+                    score = max(score, 10)
+                token_scores.append(score)
+
+            if all(s > 0 for s in token_scores):
+                scored.append((sum(token_scores), tool))
 
         # Sort by score descending
         scored.sort(key=lambda x: -x[0])
