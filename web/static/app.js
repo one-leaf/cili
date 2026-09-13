@@ -190,7 +190,8 @@ function toggleSidebar() {
 // Load footer info from JSON
 async function loadFooter() {
     try {
-        const response = await fetch('/static/footer.json');
+        // 版本文件带时间戳缓存破除：自动升级更新版本号后，浏览器不再展示旧版
+        const response = await fetch(`/static/version.json?t=${Date.now()}`);
         const data = await response.json();
         const footerContent = document.getElementById('footer-content');
         if (footerContent) {
@@ -344,6 +345,7 @@ async function loadWorkspaces() {
         // 默认禁用工作区相关按钮
         workspaceSettingsBtn.disabled = true;
         document.getElementById('file-manager-btn').disabled = true;
+        document.getElementById('memory-btn').disabled = true;
 
         // 先渲染普通工作区
         data.workspaces.filter(ws => !ws.system).forEach(ws => {
@@ -367,6 +369,7 @@ async function loadWorkspaces() {
             sessionsList.innerHTML = '<div class="empty-state">点击 + 创建工作区</div>';
             workspaceSettingsBtn.disabled = true;
             document.getElementById('file-manager-btn').disabled = true;
+        document.getElementById('memory-btn').disabled = true;
             return;
         }
 
@@ -420,6 +423,7 @@ async function handleWorkspaceChange() {
         clearPosition();
         workspaceSettingsBtn.disabled = true;
         document.getElementById('file-manager-btn').disabled = true;
+        document.getElementById('memory-btn').disabled = true;
         sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
         updateWorkspacePath();
@@ -429,6 +433,7 @@ async function handleWorkspaceChange() {
     // Enable workspace settings button
     workspaceSettingsBtn.disabled = false;
     document.getElementById('file-manager-btn').disabled = false;
+    document.getElementById('memory-btn').disabled = false;
 
     // Find the workspace object from the list
     try {

@@ -60,10 +60,15 @@ def _wait_ready(port: int, timeout: float = 20) -> None:
 def echo_server_url():
     """拉起 streamableHttp echo server 子进程，返回 /mcp 端点 URL。"""
     port = _find_free_port()
+    # main.py 导入时设置 PYTHONNOUSERSITE=1（持久化到 os.environ），子进程继承后
+    # 会禁用 user site-packages，而 mcp 只装在 user site，导致子进程 ImportError。
+    # 拉起子进程前剔除该变量，避免 test_commands.py 先 import main 时的串扰。
+    child_env = {k: v for k, v in os.environ.items() if k != "PYTHONNOUSERSITE"}
     proc = subprocess.Popen(
         [sys.executable, FIXTURE_SERVER, "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=child_env,
     )
     try:
         _wait_ready(port)

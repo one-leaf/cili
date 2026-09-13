@@ -1,9 +1,9 @@
 """自动升级模块：启动时检查 GitHub 新版本，有更新则自动下载代码包覆盖本地。
 
-版本比对来源是 web/static/footer.json 的 version 字段（格式 vYYYYMMDD），
+版本比对来源是 web/static/version.json 的 version 字段（格式 vYYYYMMDD），
 由 .githooks pre-commit hook 每次提交时自动更新为当天日期：
-- 本地 footer.json 缺失或不可读时按 0.0.0 处理
-- 远端 footer.json 拉取失败视为"检查失败"，跳过升级（不影响服务启动）
+- 本地 version.json 缺失或不可读时按 0.0.0 处理
+- 远端 version.json 拉取失败视为"检查失败"，跳过升级（不影响服务启动）
 
 升级由启动时的后台线程自动完成，进程级 _upgrade_lock 保证同一时间只有一个
 升级任务在写代码文件。
@@ -28,8 +28,8 @@ from core.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
-# 本地版本文件（version 字段，与 GitHub 仓库 web/static/footer.json 对应）
-VERSION_FILE = PROJECT_ROOT / "web" / "static" / "footer.json"
+# 本地版本文件（version 字段，与 GitHub 仓库 web/static/version.json 对应）
+VERSION_FILE = PROJECT_ROOT / "web" / "static" / "version.json"
 
 # 代码包镜像 URL（与 scripts/upgrade.ps1 一致）
 MIRROR_URLS = {
@@ -41,10 +41,10 @@ MIRROR_URLS = {
 
 # 版本文件 URL（raw 直连 + 国内镜像回退）
 VERSION_URLS = [
-    "https://raw.githubusercontent.com/one-leaf/cili/main/web/static/footer.json",
-    "https://ghproxy.net/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/footer.json",
-    "https://ghfast.top/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/footer.json",
-    "https://gh-proxy.com/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/footer.json",
+    "https://raw.githubusercontent.com/one-leaf/cili/main/web/static/version.json",
+    "https://ghproxy.net/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/version.json",
+    "https://ghfast.top/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/version.json",
+    "https://gh-proxy.com/https://raw.githubusercontent.com/one-leaf/cili/main/web/static/version.json",
 ]
 
 # 升级时排除的顶层目录（用户数据与版本控制目录不覆盖）
@@ -55,7 +55,7 @@ _upgrade_lock = threading.Lock()
 
 
 def get_local_version() -> str:
-    """读取本地版本号（footer.json 的 version 字段）；缺失或不可读时返回 0.0.0。"""
+    """读取本地版本号（version.json 的 version 字段）；缺失或不可读时返回 0.0.0。"""
     try:
         data = json.loads(VERSION_FILE.read_text(encoding="utf-8"))
         return str(data.get("version", "")).strip() or "0.0.0"
@@ -102,7 +102,7 @@ def _download_text(urls: list[str], timeout: float = 30) -> str | None:
 
 
 def fetch_remote_version() -> str | None:
-    """获取 GitHub 仓库 footer.json 的 version 字段。"""
+    """获取 GitHub 仓库 version.json 的 version 字段。"""
     text = _download_text(VERSION_URLS)
     if not text:
         return None

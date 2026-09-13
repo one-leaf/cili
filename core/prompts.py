@@ -87,6 +87,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     parts = [
         "## Workspace",
         "",
+        f"Workspace ID: `{workspace_uuid}`",
         f"Workspace directory (CWD): `{cwd}`",
         "",
         "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
@@ -129,44 +130,14 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Memory",
         "",
-        f"Memory directory: `{memory_dir}`",
-        "Subdirectories: `knowledge/` (facts) and `skills/` (reusable techniques).",
+        "The workspace's persisted memory is injected below: always-on preferences, "
+        "the MEMORY.md index, and the global summary. Apply relevant facts, preferences "
+        "and skills instead of relying on model memory.",
         "",
-        "Search examples:",
-        "```",
-        "memory(action=\"find\", query=\"keyword\")",
-        "read(file_path=\"...matched path from find results...\")",
-        "```",
     ]
 
-    # User Profile（自动从 user-profile.md 加载）
-    profile_path = get_user_profile_path(workspace_uuid)
-    if profile_path.exists():
-        try:
-            with open(profile_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            # 解析 YAML frontmatter（如果有）
-            if content.startswith("---"):
-                parts_end = content.find("---", 3)
-                if parts_end != -1:
-                    content = content[parts_end + 3:].strip()
-
-            if content:
-                parts.extend([
-                    "",
-                    "## User Profile",
-                    "",
-                    "The following describes the person you are currently chatting with, "
-                    "inferred from their past conversations. "
-                    "Use these insights naturally to personalize your responses — "
-                    "match their communication style, anticipate their needs, and adapt to their preferences. "
-                    "Never recite, echo, or explicitly mention these observations unless they bring it up first.",
-                    "",
-                    content,
-                ])
-        except Exception:
-            pass  # Silently skip if file is corrupted
+    # 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）
+    parts.extend(_build_memory_sections(memory_dir, workspace_uuid))
 
     # 当前时间（放在最后）
     parts.extend([
@@ -179,6 +150,77 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     ])
 
     return "\n".join(parts)
+
+
+# ─── 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）────────
+
+_MEMORY_PREFERENCE_CAP = 10
+_MEMORY_SUMMARY_MAX_BYTES = 2 * 1024
+
+
+def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
+    """构建记忆注入段（设计 §5 三层注入；记忆系统不可用时降级为提示语，绝不阻塞请求）。
+
+    迁移前 preference 为空时回退注入 user-profile.md，避免丢失原有用户画像。
+    """
+    lines: list[str] = []
+    try:
+        from core.memory_store import MemoryStore
+        store = MemoryStore(memory_dir)
+
+        prefs = store.list(type_="preference")
+        if prefs:
+            lines.append("### User Preferences (always-on)")
+            for p in prefs[:_MEMORY_PREFERENCE_CAP]:
+                stale_note = " ⚠ stale, verify before applying" if store.is_stale(p) else ""
+                lines.append(f"- {p.get('title', p['name'])}: {p.get('description', '')}{stale_note}")
+            lines.append("")
+        else:
+            # 迁移前回退：user-profile.md → 旧用户画像
+            profile_path = get_user_profile_path(workspace_uuid)
+            if profile_path.is_file():
+                try:
+                    content = profile_path.read_text(encoding="utf-8").strip()
+                    if content.startswith("---"):
+                        end = content.find("---", 3)
+                        if end != -1:
+                            content = content[end + 3:].strip()
+                    if content:
+                        lines.append("### User Preferences (from user-profile.md)")
+                        lines.append(content)
+                        lines.append("")
+                except OSError:
+                    pass
+
+        index_path = os.path.join(memory_dir, "MEMORY.md")
+        if os.path.isfile(index_path):
+            with open(index_path, encoding="utf-8") as f:
+                index_text = f.read().strip()
+            if index_text:
+                lines.append("### Memory Index (descriptions of all entries)")
+                lines.append(index_text)
+                lines.append("")
+
+        summary_path = os.path.join(memory_dir, "summary.md")
+        if os.path.isfile(summary_path):
+            with open(summary_path, encoding="utf-8") as f:
+                summary_text = f.read().strip()[:_MEMORY_SUMMARY_MAX_BYTES]
+            if summary_text:
+                lines.append("### Memory Summary")
+                lines.append(summary_text)
+                lines.append("")
+
+        lines.extend([
+            "Search/recall: `memory(action=\"find\", query=\"keyword\")` lists matching entries "
+            "with descriptions; then `memory(action=\"read\", name=\"<name>\")` reads the full body.",
+        ])
+    except Exception:
+        # 记忆系统初始化失败：给出降级提示，不阻塞任何请求
+        lines.extend([
+            f"Memory directory: `{memory_dir}`",
+            'Search: `memory(action="find", query="keyword")`, then `memory(action="read", name="...")`.',
+        ])
+    return lines
 
 
 # ─── 工作区指令文件加载（claude_md 层）────────────────────────────────

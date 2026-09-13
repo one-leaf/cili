@@ -2213,3 +2213,238 @@ mjx-container {
     margin-bottom: 12px;
     opacity: 0.5;
 }
+
+/* ── Memory Manager (v3) ── */
+.memory-modal-content {
+    max-width: 1000px;
+    width: 92%;
+    height: 85vh;
+}
+
+.memory-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary, #f5f5f5);
+}
+
+.memory-toolbar-left,
+.memory-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.memory-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.memory-pending {
+    font-size: 13px;
+    color: var(--primary-color);
+    white-space: nowrap;
+}
+
+.memory-toolbar-right input[type="text"] {
+    width: 180px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.memory-stats {
+    padding: 8px 20px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.memory-stat-sep { color: var(--border-color); }
+.memory-stat-stale { color: #d9822b; }
+.memory-stat-index { color: var(--text-light); }
+
+.memory-body {
+    display: flex;
+    padding: 0;
+    overflow: hidden;
+}
+
+.memory-list {
+    width: 340px;
+    min-width: 260px;
+    border-right: 1px solid var(--border-color);
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--bg-secondary, #f5f5f5);
+}
+
+.memory-list-item {
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 4px;
+    background: #fff;
+    border: 1px solid transparent;
+}
+
+.memory-list-item:hover {
+    border-color: var(--border-color);
+}
+
+.memory-list-item.active {
+    border-color: var(--primary-color);
+    background: #eef4fc;
+}
+
+.memory-list-item-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+}
+
+.memory-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-type-tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.memory-type-tag[data-type="preference"] { background: #9b59b6; }
+.memory-type-tag[data-type="skill"] { background: #27ae60; }
+.memory-type-tag[data-type="reference"] { background: #e67e22; }
+
+.memory-status-tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    color: var(--text-light);
+}
+
+.memory-status-tag.stale { color: #d9822b; border-color: #d9822b; }
+.memory-status-tag.archived { color: #888; }
+
+.memory-item-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-item-meta {
+    font-size: 11px;
+    color: var(--text-light);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-detail {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+}
+
+.memory-detail .form-group label {
+    font-size: 13px;
+}
+
+.memory-content-input {
+    min-height: 220px;
+    font-family: 'SF Mono', Consolas, Menlo, monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+
+.memory-name {
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.memory-meta {
+    margin: 10px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.memory-meta-row {
+    margin-bottom: 3px;
+}
+
+.memory-detail-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.memory-footer {
+    padding: 10px 20px;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-secondary, #f5f5f5);
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.memory-commits {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.memory-commits-title {
+    font-weight: 500;
+}
+
+.memory-commit-item {
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: 'SF Mono', Consolas, Menlo, monospace;
+    font-size: 11px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
+}
+
+.memory-action-log {
+    margin-left: auto;
+    color: var(--text-color);
+}

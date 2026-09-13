@@ -1,403 +1,247 @@
-"""Memory tool tests"""
+"""Memory tool tests (v3) - action=store/find/read/update/delete/list/stat/consolidate。
 
-import os
+v3 数据模型：entries/{type}/{name}.md，定位键是全局唯一的 name（slug）。
+type ∈ {fact, preference, skill, reference}，旧的 memory_type/topic/skill_name 已废弃。
+"""
+
 import pytest
 
+from core.tools import get_tool_by_name
 
-class TestMemoryTool:
-    """Memory tool tests"""
 
-    def test_memory_tool_store_knowledge(self, tools, test_workspace):
-        """Test storing knowledge memory"""
-        from core.tools import get_tool_by_name
+@pytest.fixture(autouse=True)
+def _no_git(monkeypatch):
+    """工具单元测试不做真实 git 提交（git 行为由 test_memory_store TestGit 覆盖）。
+    否则每次 store/update/delete 都 spawn git 子进程，整个文件会慢 5-10 倍。"""
+    monkeypatch.setattr("core.tools.memory.best_effort_commit", lambda md, subj: (False, "test-skip"))
 
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
+
+def _memory_tool(tools):
+    return get_tool_by_name(tools, "memory")
+
+
+class TestMemoryToolStore:
+    """store：按 type + name（缺省由 title 派生）写入。"""
+
+    def test_store_fact(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(
             action="store",
-            memory_type="knowledge",
-            topic="api-design",
+            type="fact",
+            name="rest-api",
             title="REST API Design",
-            content="Use plural nouns for resource names",
-            source="manual",
-            tags=["api", "rest"]
+            description="Use plural nouns for resource names",
+            content="## Rules\n- use plural nouns",
+            tags=["api", "rest"],
+            source="user",
         )
         assert not result.error
-        assert "stored" in result.output.lower()
+        assert "Stored fact 'rest-api'" in result.output
 
-    def test_memory_tool_store_skill(self, tools, test_workspace):
-        """Test storing skill memory"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="python-async",
-            name="Python Async Programming",
-            description="Techniques for async programming in Python using asyncio",
-            content="## Overview\nUse asyncio for concurrent I/O operations",
-            tags=["python", "async"]
+    def test_store_derives_name_from_title(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(
+            action="store", type="skill", title="Python Async", content="use asyncio"
         )
         assert not result.error
-        assert "stored" in result.output.lower()
+        assert "'python-async'" in result.output
 
-    def test_memory_tool_update_skill(self, tools, test_workspace):
-        """Test updating a skill"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        # Store first
-        memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="update-test-skill",
-            name="Update Test Skill",
-            description="Original description",
-            content="Original content"
-        )
-        # Then update
-        result = memory_tool.execute(
-            action="update",
-            memory_type="skill",
-            skill_name="update-test-skill",
-            name="Updated Skill Name",
-            description="Updated description",
-            content="Updated content"
+    def test_store_chinese_title_hash_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(
+            action="store", type="preference", title="用户偏好简洁回复", content="用简洁中文回复"
         )
         assert not result.error
-        assert "updated" in result.output.lower()
+        assert "memory-" in result.output
 
-    def test_memory_tool_delete_skill(self, tools, test_workspace):
-        """Test deleting a skill"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        # Store first
-        memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="delete-test-skill",
-            name="Delete Test Skill",
-            description="A skill to be deleted",
-            content="Content to delete"
-        )
-        # Then delete
-        result = memory_tool.execute(
-            action="delete",
-            memory_type="skill",
-            skill_name="delete-test-skill"
-        )
+    def test_store_replaces_same_name(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="same", title="V1", content="v1")
+        result = t.execute(action="store", type="fact", name="same", title="V2", content="v2")
         assert not result.error
-        assert "deleted" in result.output.lower()
+        assert "Updated fact 'same'" in result.output
 
-    def test_memory_tool_update_knowledge(self, tools, test_workspace):
-        """Test updating existing knowledge"""
-        from core.tools import get_tool_by_name
+    def test_store_missing_type(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="store", title="X", content="Y")
+        assert result.error
+        assert "type is required" in result.output
 
-        memory_tool = get_tool_by_name(tools, "memory")
-        # Store first
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="test-topic",
-            title="Test Memory",
-            content="Original content"
-        )
-        # Then update
-        result = memory_tool.execute(
-            action="update",
-            memory_type="knowledge",
-            topic="test-topic",
-            title="Test Memory",
-            content="Updated content"
-        )
-        assert not result.error
-        assert "updated" in result.output.lower()
+    def test_store_invalid_type(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="store", type="bogus", title="X", content="Y")
+        assert result.error
+        assert "Unknown memory type" in result.output
 
-    def test_memory_tool_delete_knowledge(self, tools, test_workspace):
-        """Test deleting knowledge"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        # Store first
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="delete-test",
-            title="To Delete",
-            content="This will be deleted"
-        )
-        # Then delete
-        result = memory_tool.execute(
-            action="delete",
-            memory_type="knowledge",
-            topic="delete-test",
-            title="To Delete"
-        )
-        assert not result.error
-        assert "deleted" in result.output.lower()
-
-    def test_memory_tool_missing_topic(self, tools, test_workspace):
-        """Test default topic 'misc' when topic is missing for knowledge"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            title="No Topic"
-        )
-        assert not result.error
-        assert "misc" in result.output
-
-    def test_memory_tool_skill_name_required(self, tools, test_workspace):
-        """Test error when skill_name is missing for skill operations"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            name="Test Skill",
-            description="Test description"
+    def test_store_reject_uuid_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(
+            action="store", type="fact", name="550e8400-e29b-41d4-a716-446655440000",
+            title="X", content="Y",
         )
         assert result.error
-        assert "skill_name" in result.output.lower()
+        assert "meaningful" in result.output
 
-    def test_memory_tool_skill_name_length_limit(self, tools, test_workspace):
-        """Test skill name length limit (64 chars)"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="long-name",
-            name="A" * 65,  # Exceeds 64 char limit
-            description="Test description"
-        )
-        assert result.error
-        assert "64" in result.output
-
-    def test_memory_tool_skill_description_length_limit(self, tools, test_workspace):
-        """Test skill description length limit (200 chars)"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="long-desc",
-            name="Test Skill",
-            description="A" * 201  # Exceeds 200 char limit
-        )
-        assert result.error
-        assert "200" in result.output
-
-    def test_memory_tool_reject_path_traversal_skill(self, tools, test_workspace):
-        """拒绝含路径穿越的 skill_name，防止 rmtree 任意目录。"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        for evil in ("..", "../../..", "a/../..", "C:\\Users\\evil", "C:/Users/evil"):
-            result = memory_tool.execute(
-                action="delete",
-                memory_type="skill",
-                skill_name=evil,
+    def test_store_reject_path_traversal_name(self, tools, test_workspace):
+        for evil in ("..", "../../../evil", "a/../b", "C:\\Users\\evil", "C:/Users/evil"):
+            result = _memory_tool(tools).execute(
+                action="store", type="fact", name=evil, title="X", content="Y"
             )
-            assert result.error, f"skill_name={evil!r} 应被拒绝"
-            assert "Invalid" in result.output
+            assert result.error, f"name={evil!r} 应被拒绝"
 
-    def test_memory_tool_reject_path_traversal_knowledge(self, tools, test_workspace):
-        """拒绝含路径穿越的 topic / filename。"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="../../../evil",
-            title="X",
-            content="Y",
-        )
+    def test_store_global_name_uniqueness(self, tools, test_workspace):
+        """同一 name 不能跨类型复用。"""
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="dup", title="A", content="x")
+        result = t.execute(action="store", type="skill", name="dup", title="B", content="y")
         assert result.error
-        assert "Invalid" in result.output
-
-    def test_memory_tool_reject_absolute_filename(self, tools, test_workspace):
-        """拒绝绝对路径 filename。"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        result = memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="ok-topic",
-            title="X",
-            filename="..\\..\\evil.md",
-            content="Y",
-        )
-        assert result.error
-        assert "Invalid" in result.output
-
-    def test_memory_tool_skill_name_reject_uuid(self, tools, test_workspace):
-        """Test that UUID-like skill names are rejected"""
-        from core.tools import get_tool_by_name
-
-        memory_tool = get_tool_by_name(tools, "memory")
-        # Test skill-UUID format
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="skill-54bb73ce",
-            name="Test Skill",
-            description="Test description"
-        )
-        assert result.error
-        assert "UUID" in result.output or "meaningful" in result.output.lower()
-
-        # Test full UUID format
-        result = memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="550e8400-e29b-41d4-a716-446655440000",
-            name="Test Skill",
-            description="Test description"
-        )
-        assert result.error
-        assert "UUID" in result.output or "meaningful" in result.output.lower()
+        assert "globally unique" in result.output
 
 
 class TestMemoryToolFind:
-    """memory find action：关键词检索 knowledge + skills"""
+    """find：frontmatter 关键词召回（name/title/description/tags/refs）。"""
 
-    def _get_memory_tool(self, tools):
-        from core.tools import get_tool_by_name
-        return get_tool_by_name(tools, "memory")
-
-    def test_find_knowledge_by_title(self, tools, test_workspace):
-        """按标题关键词检索 knowledge，返回完整路径"""
-        memory_tool = self._get_memory_tool(tools)
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="api-design",
-            title="Kubernetes Deploy Guide",
-            content="How to deploy applications to kubernetes clusters",
+    def test_find_by_title_keyword(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(
+            action="store", type="fact", name="k8s-guide", title="Kubernetes Deploy Guide",
+            description="Deploy apps to kubernetes clusters", content="steps", tags=["k8s"],
         )
-
-        result = memory_tool.execute(action="find", query="kubernetes")
+        result = t.execute(action="find", query="kubernetes")
         assert not result.error
-        assert "[knowledge]" in result.output
+        assert "[fact]" in result.output
         assert "Kubernetes Deploy Guide" in result.output
-        # 返回完整绝对路径，可直接传给 read
-        assert os.path.isabs(_first_path_in(result.output))
+        assert "name: k8s-guide" in result.output
 
-    def test_find_by_content(self, tools, test_workspace):
-        """正文内容命中也能检索到"""
-        memory_tool = self._get_memory_tool(tools)
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="misc",
-            title="Odd Title No Keyword",
-            content="The secret zebra protocol requires three hops",
-        )
-
-        result = memory_tool.execute(action="find", query="zebra")
+    def test_find_by_tag_and_case_insensitive(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="x", title="X Entry", content="c", tags=["FastAPI"])
+        result = t.execute(action="find", query="FASTAPI")
         assert not result.error
-        assert "[knowledge]" in result.output
-        assert "Odd Title No Keyword" in result.output
-        assert "zebra" in result.output.lower()
+        assert "[fact]" in result.output
 
-    def test_find_skill(self, tools, test_workspace):
-        """按名称/描述检索 skill"""
-        memory_tool = self._get_memory_tool(tools)
-        memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="test-find-skill",
-            name="Flask Migration Skill",
-            description="Migrate legacy flask apps to fastapi",
-            content="Step 1: inventory all routes",
-        )
-
-        result = memory_tool.execute(action="find", query="fastapi")
+    def test_find_type_filter(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="dep-fact", title="Deploy Fact",
+                  description="blue-green deploy pipeline", content="x")
+        t.execute(action="store", type="skill", name="dep-skill", title="Deploy Skill",
+                  description="blue-green deploy for prod", content="x")
+        result = t.execute(action="find", query="deploy", type="skill")
         assert not result.error
         assert "[skill]" in result.output
-        assert "Flask Migration Skill" in result.output
-        assert os.path.isabs(_first_path_in(result.output))
-
-    def test_find_memory_type_filter(self, tools, test_workspace):
-        """memory_type 过滤：只搜指定类型"""
-        memory_tool = self._get_memory_tool(tools)
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="misc",
-            title="Deploy Knowledge",
-            content="blue-green deploy pipeline",
-        )
-        memory_tool.execute(
-            action="store",
-            memory_type="skill",
-            skill_name="test-deploy-skill",
-            name="Deploy Skill",
-            description="blue-green deploy pipeline for production",
-            content="run the deploy script",
-        )
-
-        result = memory_tool.execute(action="find", query="deploy", memory_type="skill")
-        assert not result.error
-        assert "[skill]" in result.output
-        assert "[knowledge]" not in result.output
+        assert "[fact]" not in result.output
 
     def test_find_no_result(self, tools, test_workspace):
-        """无命中时返回友好提示"""
-        memory_tool = self._get_memory_tool(tools)
-        result = memory_tool.execute(action="find", query="nonexistent-xyz-9182")
+        result = _memory_tool(tools).execute(action="find", query="nonexistent-xyz-9182")
         assert not result.error
         assert "No memory matches" in result.output
 
     def test_find_missing_query(self, tools, test_workspace):
-        """缺 query 报错"""
-        memory_tool = self._get_memory_tool(tools)
-        result = memory_tool.execute(action="find")
+        result = _memory_tool(tools).execute(action="find")
         assert result.error
-        assert "query" in result.output.lower()
+        assert "query is required" in result.output
 
-    def test_find_sorted_by_mtime_desc(self, tools, test_workspace):
-        """结果按文件修改时间倒序（最新在前）"""
-        import time
+    def test_find_does_not_increment_usage(self, tools, test_workspace):
+        """find 只检索不递增 usage（真实使用以 read 为准）。"""
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="counter", title="C", content="body")
+        t.execute(action="find", query="counter")
+        result = t.execute(action="find", query="counter")
+        assert "uses: 0" in result.output
 
-        memory_tool = self._get_memory_tool(tools)
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="misc",
-            title="Old Entry",
-            content="sortable keyword alpha",
-        )
-        # 保证 mtime 有可分辨的先后
-        time.sleep(0.05)
-        memory_tool.execute(
-            action="store",
-            memory_type="knowledge",
-            topic="misc",
-            title="New Entry",
-            content="sortable keyword beta",
-        )
 
-        result = memory_tool.execute(action="find", query="sortable keyword")
+class TestMemoryToolReadUpdateDelete:
+    def test_read_increments_usage(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="counter", title="C", content="the body text")
+        result = t.execute(action="read", name="counter")
         assert not result.error
-        new_pos = result.output.index("New Entry")
-        old_pos = result.output.index("Old Entry")
-        assert new_pos < old_pos
+        assert "the body text" in result.output
+        # read 后 usage 从 0 → 1
+        find = t.execute(action="find", query="counter")
+        assert "uses: 1" in find.output
+
+    def test_read_missing_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="read")
+        assert result.error
+        assert "name is required" in result.output
+
+    def test_read_unknown_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="read", name="does-not-exist")
+        assert result.error
+        assert "no memory entry named" in result.output
+
+    def test_update_entry(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="up", title="Old", content="v1")
+        result = t.execute(action="update", name="up", title="New", content="v2")
+        assert not result.error
+        assert "Updated 'up'" in result.output
+        read = t.execute(action="read", name="up")
+        assert "v2" in read.output
+        assert "v1" not in read.output
+
+    def test_update_missing_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="update", content="x")
+        assert result.error
+        assert "name is required" in result.output
+
+    def test_delete_entry(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="del", title="X", content="y")
+        result = t.execute(action="delete", name="del")
+        assert not result.error
+        assert "Deleted fact 'del'" in result.output
+        # 删除后 find 不到
+        assert "No memory matches" in t.execute(action="find", query="del").output
+
+    def test_delete_missing_name(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="delete")
+        assert result.error
+        assert "name is required" in result.output
 
 
-def _first_path_in(output: str) -> str:
-    """从 find 输出中提取第一个 path: 行的路径。"""
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("path:"):
-            return line[len("path:"):].strip()
-    return ""
+class TestMemoryToolListStat:
+    def test_list_entries(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="one", title="One Entry", content="x")
+        result = t.execute(action="list")
+        assert not result.error
+        assert "1 memory entry" in result.output
+        assert "One Entry" in result.output
+
+    def test_list_empty(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(action="list")
+        assert not result.error
+        assert "No memory entries." in result.output
+
+    def test_stat_shows_counts(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", type="fact", name="f", title="F", content="x")
+        result = t.execute(action="stat")
+        assert not result.error
+        assert "entries: 1" in result.output
+        assert "fact: 1" in result.output
+
+
+class TestMemoryToolConsolidate:
+    def test_consolidate_delegates(self, monkeypatch, tools, test_workspace):
+        """consolidate 动作委托 core.memory_pipeline.consolidate_all（方法内 import）。"""
+        from core import memory_pipeline
+
+        fake_result = [{
+            "workspace_uuid": "w-fake",
+            "processed": 2,
+            "applied": [{"op": "store", "name": "a"}, {"op": "update", "name": "b"}],
+            "archived": [],
+            "pending_after": 0,
+            "committed": True,
+        }]
+        monkeypatch.setattr(memory_pipeline, "consolidate_all", lambda **kw: fake_result)
+
+        result = _memory_tool(tools).execute(action="consolidate")
+        assert not result.error
+        assert "w-fake" in result.output
+        assert "1 stored, 1 updated" in result.output
+
+    def test_consolidate_no_workspaces(self, monkeypatch, tools, test_workspace):
+        from core import memory_pipeline
+
+        monkeypatch.setattr(memory_pipeline, "consolidate_all", lambda **kw: [])
+        result = _memory_tool(tools).execute(action="consolidate")
+        assert not result.error
+        assert "No workspace memory to consolidate." in result.output

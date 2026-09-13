@@ -46,6 +46,7 @@
                     </select>
                     <button id="workspace-settings-btn" class="btn btn-small" title="工作区设置" disabled>&#9881;</button>
                     <button id="new-workspace-btn" class="btn btn-small" title="新建工作区">+</button>
+                    <button id="memory-btn" class="btn btn-small" title="记忆管理">&#128221;</button>
                     <button id="file-manager-btn" class="btn btn-small" title="文件管理">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -69,7 +70,7 @@
 
             <div class="sidebar-footer">
                 <div class="footer-content" id="footer-content">
-                    <!-- Loaded dynamically from footer.json -->
+                    <!-- Loaded dynamically from version.json -->
                 </div>
             </div>
         </aside>
@@ -543,9 +544,85 @@
         </div>
     </div>
 
+    <!-- Memory Manager Modal -->
+    <div id="memory-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="memory-modal"></div>
+        <div class="modal-content memory-modal-content">
+            <div class="modal-header">
+                <h2>记忆管理</h2>
+                <button class="modal-close" data-modal="memory-modal">&times;</button>
+            </div>
+            <div class="memory-toolbar">
+                <div class="memory-toolbar-left">
+                    <label class="memory-toggle">
+                        <input type="checkbox" id="memory-enabled-toggle"> 启用记忆
+                    </label>
+                    <button class="btn btn-small" id="memory-consolidate-btn">立即整合</button>
+                    <span class="memory-pending" id="memory-pending-label"></span>
+                </div>
+                <div class="memory-toolbar-right">
+                    <select id="memory-type-filter">
+                        <option value="">全部类型</option>
+                        <option value="fact">事实</option>
+                        <option value="preference">偏好</option>
+                        <option value="skill">技能</option>
+                        <option value="reference">参考</option>
+                    </select>
+                    <select id="memory-status-filter">
+                        <option value="">全部状态</option>
+                        <option value="active">活跃</option>
+                        <option value="stale">待验证</option>
+                        <option value="archived">已归档</option>
+                    </select>
+                    <input type="text" id="memory-search" placeholder="搜索记忆...">
+                </div>
+            </div>
+            <div class="memory-stats" id="memory-stats"></div>
+            <div class="modal-body memory-body">
+                <div class="memory-list" id="memory-list"></div>
+                <div class="memory-detail" id="memory-detail">
+                    <div class="empty-state" id="memory-detail-empty">选择左侧条目查看详情</div>
+                    <div id="memory-detail-content" style="display:none;">
+                        <div class="form-group">
+                            <label>名称: <span class="memory-name" id="mem-name"></span></label>
+                        </div>
+                        <div class="form-group">
+                            <label>标题:</label>
+                            <input type="text" id="mem-title">
+                        </div>
+                        <div class="form-group">
+                            <label>描述:</label>
+                            <input type="text" id="mem-description" maxlength="200">
+                        </div>
+                        <div class="form-group">
+                            <label>标签 (逗号分隔):</label>
+                            <input type="text" id="mem-tags">
+                        </div>
+                        <div class="form-group">
+                            <label>内容:</label>
+                            <textarea id="mem-content" class="memory-content-input"></textarea>
+                        </div>
+                        <div class="memory-meta" id="mem-meta"></div>
+                        <div class="memory-detail-actions">
+                            <button class="btn btn-small btn-primary" id="mem-save-btn">保存</button>
+                            <button class="btn btn-small" id="mem-archive-btn">归档</button>
+                            <button class="btn btn-small" id="mem-restore-btn" style="display:none;">恢复</button>
+                            <button class="btn btn-small btn-danger" id="mem-delete-btn">删除</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="memory-footer">
+                <div class="memory-commits" id="memory-commits"></div>
+                <div class="memory-action-log" id="memory-action-log"></div>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/utils.js"></script>
     <script src="/static/settings.js"></script>
     <script src="/static/file-manager.js"></script>
+    <script src="/static/memory.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/chat.js"></script>
 </body>

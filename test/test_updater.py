@@ -42,8 +42,8 @@ class TestVersion:
         assert updater.is_newer_version("v20260910", "v20260912") is False
 
     def test_get_local_version(self, tmp_path, monkeypatch):
-        """读取本地 footer.json 的 version 字段"""
-        version_file = tmp_path / "footer.json"
+        """读取本地 version.json 的 version 字段"""
+        version_file = tmp_path / "version.json"
         version_file.write_text('{"app_name": "草履虫", "version": "v20260912"}', encoding="utf-8")
         monkeypatch.setattr(updater, "VERSION_FILE", version_file)
         assert updater.get_local_version() == "v20260912"
@@ -55,7 +55,7 @@ class TestVersion:
 
     def test_check_update(self, tmp_path, monkeypatch):
         """远端版本高于本地时判定有更新"""
-        version_file = tmp_path / "footer.json"
+        version_file = tmp_path / "version.json"
         version_file.write_text('{"version": "v20260911"}', encoding="utf-8")
         monkeypatch.setattr(updater, "VERSION_FILE", version_file)
         monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260912")
@@ -66,14 +66,14 @@ class TestVersion:
 
     def test_check_update_fetch_failed(self, tmp_path, monkeypatch):
         """远端拉取失败时视为无更新，remote 为 None"""
-        monkeypatch.setattr(updater, "VERSION_FILE", tmp_path / "footer.json")
+        monkeypatch.setattr(updater, "VERSION_FILE", tmp_path / "version.json")
         monkeypatch.setattr(updater, "fetch_remote_version", lambda: None)
         has_update, local, remote = updater.check_update()
         assert has_update is False
         assert remote is None
 
     def test_fetch_remote_version_parses_json(self, monkeypatch):
-        """远端 footer.json 拉取后解析 version 字段"""
+        """远端 version.json 拉取后解析 version 字段"""
         monkeypatch.setattr(updater, "_download_text", lambda urls: '{"version": "v20260912"}')
         assert updater.fetch_remote_version() == "v20260912"
 
@@ -139,7 +139,7 @@ class TestUpgrade:
         project_root = tmp_path / "project"
         project_root.mkdir()
         (project_root / "web" / "static").mkdir(parents=True)
-        (project_root / "web" / "static" / "footer.json").write_text(
+        (project_root / "web" / "static" / "version.json").write_text(
             '{"version": "v20260911"}', encoding="utf-8")
         (project_root / "data").mkdir()
         (project_root / "data" / "user.json").write_text('{"keep": 1}', encoding="utf-8")
@@ -151,7 +151,7 @@ class TestUpgrade:
         (src / "web" / "static").mkdir(parents=True)
         (src / "data").mkdir()
         (src / "main.py").write_text("new main", encoding="utf-8")
-        (src / "web" / "static" / "footer.json").write_text(
+        (src / "web" / "static" / "version.json").write_text(
             '{"version": "v20260912"}', encoding="utf-8")
         (src / "data" / "x.txt").write_text("x", encoding="utf-8")
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -173,8 +173,8 @@ class TestUpgrade:
         assert result["needs_restart"] is True
         assert (project_root / "main.py").read_text(encoding="utf-8") == "new main"
         # 版本文件随升级更新为远端版本
-        new_footer = json.loads((project_root / "web" / "static" / "footer.json").read_text(encoding="utf-8"))
-        assert new_footer["version"] == "v20260912"
+        new_version = json.loads((project_root / "web" / "static" / "version.json").read_text(encoding="utf-8"))
+        assert new_version["version"] == "v20260912"
         # 用户数据目录保留
         assert (project_root / "data" / "user.json").read_text(encoding="utf-8") == '{"keep": 1}'
         assert not (project_root / "data" / "x.txt").exists()
