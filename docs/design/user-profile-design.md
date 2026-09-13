@@ -2,11 +2,11 @@
 
 ## 概述
 
-用户画像（User Profile）系统独立于记忆系统（Memory），用于存储和管理用户的个人特征、表达风格和行为模式。这些信息在每次对话开始时自动加载到 Agent 上下文中，使 Agent 能够个性化地回应用户。
+用户画像（User Profile）描述用户的个人特征、表达风格和行为模式。当前实现中，画像内容由 **preference 类型记忆条目**承载，与记忆系统共用存储与提取/整合流水线，并在每次对话开始时自动加载到 Agent 上下文中，使 Agent 能够个性化地回应用户。
 
 ## 与记忆系统的关系
 
-用户画像和记忆系统是两个独立的持久化系统，各司其职：
+用户画像和记忆系统各司其职：画像内容以 **preference 类型记忆条目**承载，与记忆系统共用存储与提取/整合流水线；user-profile.md 作为迁移回退保留。两者对比：
 
 | 特性 | 用户画像 | 记忆系统 |
 |------|---------|---------|
@@ -15,8 +15,8 @@
 | 文件数量 | 单文件 | 多文件（按类型/主题组织） |
 | 格式 | Markdown（带 YAML frontmatter） | Markdown |
 | 加载方式 | 每次对话自动加载到上下文 | 按需检索 |
-| 更新方式 | cron 任务自动提取 | Agent 主动存储 |
-| 维度 | 5 个（身份、表达风格、决策、边界、压力行为） | knowledge、skill |
+| 更新方式 | 经记忆提取/整合流水线维护 | Agent 主动存储 |
+| 维度 | 5 个（身份、表达风格、决策、边界、压力行为） | fact、preference、skill、reference |
 
 ## 存储设计
 
@@ -27,7 +27,7 @@ data/agents/{uuid}/
 ├── setting.json            # 工作区配置
 ├── user-profile.md         # 用户画像（本系统设计对象）
 ├── sessions/               # 会话存储
-└── memory/                 # 记忆系统（knowledge、skill）
+└── memory/                 # 记忆系统（fact、preference、skill、reference）
 ```
 
 ### Markdown 格式
@@ -75,64 +75,31 @@ deadline 前会抱怨但执行力强
 
 - **被动识别**：从对话中捕捉，不主动询问
 - **无信息不写**：如果某维度在对话中完全没有信息，不写该维度
-- **全量扫描**：每次 cron 执行时全量扫描所有对话，直接生成最新结果
+- **经记忆流水线维护**：画像由 preference 条目承载，经记忆提取/整合流水线维护，无需独立 cron 任务
 
-## 自动提取机制
+## 提取与维护机制
 
-### Cron 任务配置
+用户画像不再由独立的 cron 任务提取（`core/cron.d/extract_user_info.json` 已移除），而是作为 **preference 类型记忆条目**承载，经记忆提取/整合流水线维护：
 
-用户画像由 cron 任务自动从会话记录中提取，配置位于 `core/cron.d/extract_user_info.json`：
+- **记忆提取**：Agent 通过 `memory(action="store", type="preference")` 将对话中捕捉到的用户特征、表达风格、决策偏好写入工作区记忆（`memory/entries/preference/{name}.md`），同时追加到 journal.jsonl 审计日志
+- **记忆整合**：系统级 cron 任务 `core/cron.d/memory_consolidation.json`（每 2 小时）调用 `memory(action="consolidate")`，把各工作区 journal 中待整合的记录整合为条目、刷新 summary、推进游标并 git 提交
+- **上下文注入**：各工作区 preference 条目常驻注入 Agent 上下文（详见「上下文加载」）
 
-```json
-{
-  "name": "extract-user-info",
-  "description": "每天扫描工作区，从对话中提取用户画像到 user-profile.md",
-  "enabled": true,
-  "schedule": {
-    "type": "cron",
-    "expr": "0 2 * * *"
-  },
-  "content": {
-    "task": "扫描 data/agents/ 下的所有工作区（排除 system）...",
-    "plan": [
-      "列出 data/agents/ 下的所有目录",
-      "对每个目录（排除 system）：",
-      "  1. 检查 user-profile.md 的 updated_at",
-      "  2. 扫描 sessions/ 下最新的 updated_at",
-      "  3. 如果需要更新：读取所有 session → 提取用户消息 → 生成 markdown → 写入 profile",
-      "  4. 如果不需要更新：跳过",
-      "完成后报告处理的工作区数量"
-    ]
-  }
-}
-```
-
-**特点**：
-- 每天凌晨 2 点执行（cron 表达式 `0 2 * * *`）
-- 全量扫描所有对话，直接生成最新结果，无需合并历史
-- 通过 Master Agent 执行（在 System workspace 的 "[Cron] 任务描述" session 中，Master Agent 可自主委派 Worker/Lite 子代理）
-- 结果保存在 System workspace 的 session 中（UI 可见）
-
-### 提取流程
+### 数据流向
 
 ```
-1. Cron 触发（每天凌晨 2 点）
-2. Master Agent 在 System workspace 的 cron session 中执行任务（可自主委派 Worker/Lite 子代理）
-3. Agent 扫描工作区（排除 system）
-4. 对每个工作区：
-   a. 比较 session 的 metadata.updated_at vs user-profile.md 的 updated_at
-   b. 如果 session 更新 → 提取用户消息 → 分析 5 个维度 → 生成 markdown
-   c. 如果无更新 → 跳过
-5. 结果保存在 System workspace 的 "[Cron] 任务描述" session（UI 可见）
+用户对话 → 提取（memory store → journal.jsonl） → 整合（memory consolidate）
+                                                       ↓
+                context 注入（preference 常驻 + MEMORY.md 索引 + summary.md 摘要）
 ```
 
-> **更新判断**：直接比较 session 的 `metadata.updated_at` 和 profile 的 `updated_at`。
+> **更新判断**：以 memory journal 的游标和条目的 created/updated 为准，由整合流水线负责增量合并；不再对比 profile 文件的 updated_at。
 
 ## 上下文加载
 
 ### 自动加载流程
 
-用户画像在 `build_environment_context()` 中自动加载（所有角色相同），作为 `context` user 层注入到每次对话的上下文中：
+用户画像在 `build_environment_context()` 中自动加载（所有角色相同），作为 `context` user 层注入到每次对话的上下文中。当前实现为 v3 三层记忆注入：preference 常驻 + MEMORY.md 索引 + summary.md 摘要；user-profile.md 仅在 preference 为空时作为迁移回退：
 
 ```python
 # core/prompts.py
@@ -140,69 +107,58 @@ deadline 前会抱怨但执行力强
 def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     # ... Workspace 和 Memory 部分 ...
 
-    # User Profile（自动从 user-profile.md 加载）
-    profile_path = get_user_profile_path(workspace_uuid)
-    if profile_path.exists():
-        try:
-            with open(profile_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            # 解析 YAML frontmatter（如果有）
-            if content.startswith("---"):
-                parts_end = content.find("---", 3)
-                if parts_end != -1:
-                    content = content[parts_end + 3:].strip()
-
-            if content:
-                parts.extend([
-                    "",
-                    "## User Profile",
-                    "",
-                    "The following describes the person you are currently chatting with, "
-                    "inferred from their past conversations. "
-                    "Use these insights naturally to personalize your responses — "
-                    "match their communication style, anticipate their needs, and adapt to their preferences. "
-                    "Never recite, echo, or explicitly mention these observations unless they bring it up first.",
-                    "",
-                    content,
-                ])
-        except Exception:
-            pass  # 文件损坏时静默跳过
+    # 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）
+    parts.extend(_build_memory_sections(memory_dir, workspace_uuid))
 
     # ... Current Time 部分 ...
+
+
+def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
+    """构建记忆注入段：preference 常驻 + MEMORY.md 索引 + summary.md 摘要。"""
+    # 1) preference 常驻（最多 _MEMORY_PREFERENCE_CAP=10 条，stale 标注）
+    prefs = store.list(type_="preference")
+    if prefs:
+        lines.append("### User Preferences (always-on)")
+        for p in prefs[:10]:
+            stale = " ⚠ stale, verify before applying" if store.is_stale(p) else ""
+            lines.append(f"- {p.get('title', p['name'])}: {p.get('description', '')}{stale}")
+    else:
+        # 迁移回退：preference 为空时读 user-profile.md（标题 "### User Preferences (from user-profile.md)"）
+        profile_path = get_user_profile_path(workspace_uuid)
+        if profile_path.is_file():
+            content = profile_path.read_text(encoding="utf-8").strip()
+            if content:
+                lines.append("### User Preferences (from user-profile.md)")
+                lines.append(content)
+
+    # 2) MEMORY.md 索引（"### Memory Index (descriptions of all entries)"）
+    # 3) summary.md 摘要（"### Memory Summary"，截断 2KB）
+    # 4) 检索提示：memory(action="find") / memory(action="read")
 ```
 
 ### 加载格式
 
-加载后的上下文格式示例：
+加载后的上下文格式示例（`## Memory` 段，preference 常驻 + 索引 + 摘要）：
 
 ```markdown
-## User Profile
+## Memory
 
-The following describes the person you are currently chatting with, inferred from their past conversations. Use these insights naturally to personalize your responses — match their communication style, anticipate their needs, and adapt to their preferences. Never recite, echo, or explicitly mention these observations unless they bring it up first.
+The workspace's persisted memory is injected below: always-on preferences, the MEMORY.md index, and the global summary. Apply relevant facts, preferences and skills instead of relying on model memory.
 
-## 身份
-- **花名**: OneLeaf
-- **基本信息**: 学生 后端工程师 男
-- **性格**: INTJ 摩羯座 甩锅高手
-- **地点**: 深圳
+### User Preferences (always-on)
+- 表达风格: 直接简洁的指令式表达，短句为主，不用 emoji
+- 花名: OneLeaf
+- 性格: INTJ 摩羯座
+- 地点: 深圳
 
-## 表达风格
-- **语气**: 直接简洁的指令式表达
-- **口头禅**: 查一下, 帮我看看
-- **句式**: 短句为主，开门见山
-- **Emoji**: 不用 emoji
-- **正式程度**: 非常口语化
+### Memory Index (descriptions of all entries)
+- preference/表达风格: 直接简洁的指令式表达
+- preference/基本信息: 学生 后端工程师 男
 
-## 决策与判断
-效率优先，果断，直接否定不认可的方案
+### Memory Summary
+（summary.md 摘要内容，截断 2KB）
 
-## 边界与雷区
-- 不喜欢过度封装
-- 拒绝照搬外部材料
-
-## 压力下行为
-deadline 前会抱怨但执行力强
+Search/recall: `memory(action="find", query="keyword")` lists matching entries with descriptions; then `memory(action="read", name="<name>")` reads the full body.
 ```
 
 ## 路径工具函数
@@ -219,24 +175,24 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 
 ## 设计原则
 
-### Markdown 格式
+### 条目化存储格式
 
-- 人类可直接阅读和编辑
-- prompts.py 无需渲染逻辑，直接读取内容插入上下文
-- cron 任务的 LLM 直接生成 markdown，无需转换为 JSON
+- 人类可直接阅读和编辑（每条一个 markdown 文件）
+- preference 条目写入 `memory/entries/preference/{name}.md`，由记忆整合流水线生成
+- MEMORY.md 索引 + summary.md 摘要由整合流水线维护，prompts.py 负责拼装注入
 
 ### 不在提示词中强调保存
 
-用户画像的保存完全由 cron 任务自动处理，不需要在系统提示词中强调特定关键词来触发保存。这与记忆系统不同：
+用户画像以 preference 条目承载，与其余记忆共用同一套提取/整合流水线，不需要在系统提示词中强调特定关键词来触发保存：
 
-- **记忆系统**：Agent 根据用户指令（"记住这个"）或自主判断主动存储
-- **用户画像**：由后台 cron 任务定期从会话记录中自动提取
+- **记忆系统**：Agent 根据用户指令（"记住这个"）或自主判断主动存储，写入 memory entries
+- **用户画像**：同样是 preference 类型条目，经记忆整合流水线定期整合维护
 
 ### 轻量级设计
 
-- 单文件存储，无需复杂的目录结构
+- 与记忆系统统一，按 preference 条目存储，无需独立的单文件目录结构
 - 5 个提取维度，按需写入（无信息的维度不写）
-- 文件控制在 500 字以内（约 200-300 token）
+- 条目短小精炼，常驻注入有上限（`_MEMORY_PREFERENCE_CAP = 10` 条）
 
 ### 静默失败
 
@@ -248,9 +204,10 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 | 文件 | 职责 |
 |------|------|
 | `core/config.py` | 提供 `get_user_profile_path()` 路径函数 |
-| `core/prompts.py` | `build_environment_context()` 自动加载用户画像（context user 层） |
-| `core/cron.d/extract_user_info.json` | Cron 任务配置（内联 task/plan，cron 表达式每天 2 点） |
-| `core/tools/memory.py` | 仅处理 knowledge 和 skill（不涉及用户画像） |
+| `core/prompts.py` | `build_environment_context()` 三层记忆注入（preference 常驻 + MEMORY.md 索引 + summary.md 摘要，context user 层） |
+| `core/memory_store.py` | `MEMORY_TYPES` 含 preference，preference 条目存储/检索 |
+| `core/tools/memory.py` | memory 工具（store/find/read/.../consolidate），preference 类型写入与整合 |
+| `core/cron.d/memory_consolidation.json` | 记忆整合 cron 任务（每 2 小时，整合 journal 到条目） |
 
 ## 参考文档
 
@@ -259,5 +216,5 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 
 ---
 
-*文档版本: v2.1*
-*最后更新: 2026-09-09*
+*文档版本: v3.0*
+*最后更新: 2026-09-13*

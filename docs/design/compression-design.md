@@ -24,8 +24,8 @@
 │   token > 80% 阈值时，LLM 摘要旧消息                     │  │     │
 │                                                          │  │     │
 │   Layer 3: Emergency  ───────────────────────────────┐  │  │     │
-│   body > 3MB 时，标记旧工具调用/图片为 valid=False    │  │  │     │
-│                                                       │  │  │     │
+│   body > 3MB 时，标记旧工具调用为 valid=False       │  │  │     │
+│   旧图片替换为文本占位符                            │  │  │     │
 └───────────────────────────────────────────────────────┴──┴──┴─────┘
                               │
                               ▼
@@ -126,14 +126,24 @@
 
 **策略**：
 1. 优先将包含旧工具调用的**整条消息**标记为 `_meta.valid=False`（消息级标记），保留最近 3 轮
-2. 若仍超限，将包含旧图片的消息标记为 `_meta.valid=False`（消息级标记），保留最近 3 张
+2. 若仍超限，将更早的旧图片**就地替换为文本占位符**（`[image removed to reduce request size]`），保留最近 3 张
 
-**标记方式**（消息级 `_meta.valid`，工具调用/图片所在的整条消息被跳过）：
+**标记方式**（工具调用为消息级 `_meta.valid=False`；图片则就地替换子块为文本占位符，不做消息级无效，避免 tool_use/tool_result 配对断裂）：
 ```python
+# 工具调用：整条消息标记 valid=False
 {
   "role": "assistant",  # 或包含 tool_result 的 user 消息
   "content": [{"type": "tool_use", "id": "call_xyz", ...}],
   "_meta": {"valid": false}
+}
+
+# 图片：就地替换 tool_result 内的 image 子块为文本占位符
+{
+  "type": "tool_result",
+  "content": [
+    {"type": "image", "source": {...}},  # → 被替换为
+    {"type": "text", "text": "[image removed to reduce request size]"}
+  ]
 }
 ```
 

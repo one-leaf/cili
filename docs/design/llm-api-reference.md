@@ -413,7 +413,7 @@ Cili 内部使用统一的 `LLMResponse` 格式，屏蔽两种 API 的差异。
 @dataclass
 class LLMResponse:
     content: list[ContentBlock]        # 类型化内容块列表（TextBlock, ReasoningBlock, ToolCallBlock 等）
-    stop_reason: str                   # "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+    stop_reason: str                   # "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "length" | "content_filter"
     usage: UsageData                   # 类型化的 token 用量
     headers: dict[str, str]            # 响应头（用于 LiteLLM 检测等）
 ```
@@ -495,8 +495,9 @@ class UsageData:
 |-----------|--------|------|
 | `end_turn` | `stop` | `end_turn` |
 | `tool_use` | `tool_calls` | `tool_use` |
-| `max_tokens` | `length` | `length` |
+| `max_tokens` | - | `max_tokens` |
 | `stop_sequence` | - | `stop_sequence` |
+| - | `length` | `length` |
 | - | `content_filter` | `content_filter` |
 
 Anthropic 原生值直接使用（不做映射）；OpenAI 的 `finish_reason` 仅 `stop`→`end_turn`、`tool_calls`→`tool_use` 两项转换为 Anthropic 等价值，其余（`length`、`content_filter` 等）原样透传。

@@ -13,7 +13,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 Master Agent，自动清理最久未访问的
 - **特殊命令**：/help、/status、/bash 在服务端处理，不经过 LLM
-- **统一数据访问**：消息收发等核心写入通过 SessionManager；会话数据统一保存为 session 目录下的 `index.json`（原子写入，重命名/隐藏/批量/撤销等轻量操作直接读写该文件）
+- **统一数据访问**：消息收发等核心写入通过 SessionManager；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionManager 原子落盘
 
 ---
 
@@ -237,7 +237,7 @@ Content-Type: application/json
 }
 ```
 
-将 `metadata.hidden` 写入会话 index.json（原子写入）。隐藏的会话在列表中默认不显示，取消隐藏可恢复。
+将 `metadata.hidden` 写入会话 meta.json（`read_meta()` + `atomic_write_json()` 原子写入）。隐藏的会话在列表中默认不显示，取消隐藏可恢复。
 
 #### 批量会话操作
 
@@ -264,6 +264,15 @@ Content-Type: application/json
 
 支持一次性批量隐藏、取消隐藏或删除多个会话。
 
+#### 会话查看页（页面路由）
+
+```
+GET /s/{workspace}/{session}              # 完整会话模式
+GET /s/{workspace}/{session}/{msg_ids}    # 指定消息模式（msg_ids 为逗号分隔的消息 ID）
+```
+
+均为页面路由，返回 `web/static/session.html` 独立只读查看页（`msg_ids` 用于定位并高亮指定消息）。
+
 ### 3.4 消息发送（SSE 流式）
 
 ```
@@ -285,9 +294,9 @@ data: {"type": "text", "content": "好的，"}
 
 data: {"type": "text", "content": "我来帮你"}
 
-data: {"type": "tool_use", "tool": "write", "input": {"file_path": "hello.py", "content": "..."}}
+data: {"type": "tool_use", "tool": "write", "input": {"file_path": "hello.py", "content": "..."}, "tool_use_id": "toolu_01AbC..."}
 
-data: {"type": "tool_result", "tool": "write", "content": "File written successfully", "is_error": false}
+data: {"type": "tool_result", "tool": "write", "content": "File written successfully", "is_error": false, "tool_use_id": "toolu_01AbC..."}
 
 data: {"type": "text", "content": "已创建 hello.py"}
 
@@ -365,7 +374,7 @@ Content-Type: application/json
 }
 ```
 
-Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent，否则直接从磁盘读写 `index.json`。
+Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent（`revert_to_message()` 原地截断），否则直接从磁盘加载 SessionManager 处理——物理截断 `messages.jsonl`，并原子重写 `index.json`（commits 视图）与 `meta.json`。
 
 #### AskUser 交互流程
 
@@ -619,6 +628,119 @@ POST   /api/files/upload                          # 上传文件（multipart for
 
 所有端点均校验路径必须位于工作区内，防止路径穿越。
 
+### 3.10 记忆管理（Memory API）
+
+记忆以工作区为单位存储，API 前缀 `/api/workspaces/{uuid}/memory`。
+
+#### 记忆总览
+
+```
+GET /api/workspaces/{uuid}/memory?type=&status=&q=
+```
+
+返回统计、条目列表（可按 type/status/关键词过滤）、待整合数与 git 提交记录。
+
+**响应**：
+```json
+{
+  "enabled": true,
+  "stats": {"total": 5, "archived": 1, "stale": 0, "by_type": {"fact": 3, "preference": 1, "skill": 0, "reference": 1}, "index_lines": 6, "index_bytes": 1024},
+  "entries": [{"name": "20260825-fact-xxx.md", "type": "fact", "status": "active", "title": "...", "tags": ["..."], "usage_count": 2, "updated_at": "..."}],
+  "pending": 0,
+  "commits": [{"hash": "abc123", "message": "add memory entry: ...", "ts": "..."}]
+}
+```
+
+#### 查看 / 编辑条目
+
+```
+GET /api/workspaces/{uuid}/memory/entries/{name}   # 查看条目全文（只读，不递增 usage_count）
+PUT /api/workspaces/{uuid}/memory/entries/{name}   # 编辑 title/description/tags/content 并 git 提交
+```
+
+#### 归档 / 恢复 / 删除条目
+
+```
+POST /api/workspaces/{uuid}/memory/entries/{name}/archive   # 归档（移出索引，不再参与检索）
+POST /api/workspaces/{uuid}/memory/entries/{name}/restore   # 从归档恢复
+POST /api/workspaces/{uuid}/memory/entries/{name}/delete    # 永久删除（不可恢复）
+```
+
+各操作成功后执行 git 提交，响应 `{"ok": true, "committed": bool, "note": "..."}`。
+
+#### 手动整合
+
+```
+POST /api/workspaces/{uuid}/memory/consolidate
+```
+
+手动触发记忆整合（journal → 条目），每批 limit=20，最多 4 批。
+
+#### 记忆开关
+
+```
+PUT /api/workspaces/{uuid}/memory/settings
+Content-Type: application/json
+
+{
+  "memory_enabled": true
+}
+```
+
+开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制），响应 `{"ok": true, "memory_enabled": ...}`。
+
+> 上述写端点（PUT/POST）均调用 `_csrf_protect()` 做 CSRF 校验（W6）。
+
+### 3.11 MCP 服务器管理
+
+#### 获取服务器列表
+
+```
+GET /api/mcp/servers
+```
+
+返回 MCP 服务器配置 + 实时连接状态（headers 掩码显示）与工具列表。
+
+**响应**：
+```json
+{
+  "servers": {
+    "server-name": {
+      "name": "server-name",
+      "url": "http://...",
+      "headers_masked": {},
+      "tool_timeout": 60,
+      "enabled_tools": ["*"],
+      "status": "connected",
+      "tool_count": 5,
+      "tools": [{"name": "...", "description": "..."}]
+    }
+  }
+}
+```
+
+#### 强制重连
+
+```
+POST /api/mcp/reload
+```
+
+强制重连所有 MCP 服务器，并刷新缓存的 master Agent（deferred 工具重建），响应 `{"success": true, "servers": {...}}`。
+
+#### 测试单个服务器
+
+```
+POST /api/mcp/test
+Content-Type: application/json
+
+{
+  "name": "server-name",   // 可选：按已保存配置测试
+  "config": {...}          // 可选：优先用请求体配置测试（含真实 headers）
+}
+```
+
+测试单个 MCP 服务器连接并枚举工具（不保存配置，测完即断开），响应 `{"status": "connected" | "failed", "tools": [...], "error": ...}`。
+
 ---
 
 ## 四、特殊命令
@@ -732,13 +854,15 @@ except asyncio.CancelledError:
 
 用户需要显式点击"停止"按钮（调用 `/stop` 端点）才能中断 Agent。
 
+> **例外（answer-ask-user）**：`POST /api/workspaces/{uuid}/sessions/{id}/answer-ask-user` 的 SSE 生成器在客户端断开（`asyncio.CancelledError`）时调用 `task.cancel()` 终止恢复中的 Agent 循环——该端点用于继续同一会话的问答流程，客户端断开后没有新的输入来源，继续后台运行没有意义。
+
 ---
 
 ## 六、前端架构
 
 ### 6.1 技术栈
 
-- **原生 JavaScript**（无框架），按职责拆分为 app.js / chat.js / settings.js / file-manager.js / utils.js
+- **原生 JavaScript**（无框架），按职责拆分为 app.js / chat.js / settings.js / file-manager.js / memory.js / utils.js
 - **marked.js**：Markdown 渲染（本地 `static/libs/marked.min.js`）
 - **DOMPurify**：HTML 净化防 XSS（本地 `static/libs/purify.min.js`）
 - **MathJax**：数学公式渲染（本地 `static/libs/mathjax/`）
@@ -757,7 +881,7 @@ except asyncio.CancelledError:
 - 创建、重命名、删除会话
 - 批量隐藏/取消隐藏/删除会话
 - 查看会话信息（消息数、token 统计）
-- 分享会话/指定消息（打开独立只读查看页 `session.html`，即 `/s/{workspace}/{session}` 路由）
+- 分享会话/指定消息（打开独立只读查看页 `session.html`，即 `/s/{workspace}/{session}` 完整会话路由，或 `/s/{workspace}/{session}/{msg_ids}` 指定消息路由）
 
 #### 聊天界面
 
@@ -866,7 +990,9 @@ web_api.py（模块导入时）
 │
 └─ lifespan 进入
     ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
-    └─ start_message_bus()   # 初始化 MessageBus 跨会话消息总线
+    ├─ start_message_bus()   # 初始化 MessageBus 跨会话消息总线
+    └─ 后台线程连接 MCP 服务器 # threading.Thread(daemon=True)：load_config 后调用
+                             # core/tools/mcp 的 get_provider().ensure_connected()，不阻塞启动
 ```
 
 ### 7.2 关闭流程
@@ -877,6 +1003,8 @@ lifespan exit
 ├─ stop_message_bus()        # 停止 MessageBus
 │
 ├─ stop_browser_service()    # 停止浏览器服务（Playwright + Chrome）
+│
+├─ stop_mcp_provider()       # 停止 MCP provider（断开所有服务器连接）
 │
 ├─ stop_scheduler()          # 停止 Cron 调度器
 │
@@ -897,23 +1025,57 @@ lifespan exit
 ```python
 _LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
 
+def _ip_matches(client_ip: str, allowed: list[str]) -> bool:
+    """精确 IP 或 CIDR 前缀匹配（W18）。非 IP 字符串退化为精确匹配。"""
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip in allowed
+    for entry in allowed:
+        if not entry:
+            continue
+        if "/" in entry:
+            try:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                continue
+        elif entry == client_ip:
+            return True
+    return False
+
+
 @app.middleware("http")
 async def check_access_control(request: Request, call_next):
     config = load_config()
     client_ip = request.client.host if request.client else ""
 
+    # access_token 已配置：鉴权优先于 IP 白名单，任何来源都必须带有效令牌
+    access_token = config.system.access_token or ""
+    if access_token:
+        provided = request.headers.get("X-Access-Token") or request.query_params.get("token") or ""
+        if provided and hmac.compare_digest(provided, access_token):
+            return await call_next(request)
+        return JSONResponse(status_code=403, content={"detail": "Access denied: invalid or missing token"})
+
     # 始终允许 localhost
     if client_ip in _LOCALHOST_IPS:
         return await call_next(request)
 
-    # 检查白名单（system.allowed_ips 配置）
+    # 检查白名单（system.allowed_ips 配置，支持 CIDR 前缀）
     allowed_ips = config.system.allowed_ips or []
-    if client_ip in allowed_ips:
+    if _ip_matches(client_ip, allowed_ips):
         return await call_next(request)
 
     # 拒绝访问
     return JSONResponse(status_code=403, content={"detail": "Access denied: IP not allowed"})
 ```
+
+**鉴权优先级**：配置了 `system.access_token` 时，**令牌鉴权优先于 IP 白名单**——所有请求（含 localhost）都必须携带有效令牌（`X-Access-Token` 请求头或 `?token=` 查询参数，后者便于浏览器首次加载页面静态资源），否则返回 403；未配置令牌时退化为纯 IP 白名单模式。白名单通过 `_ip_matches()` 匹配，支持精确 IP 与 CIDR 前缀（如 `"192.168.1.0/24"`）。
+
+**W8：/api/browse 限本机**：`GET /api/browse` 目录浏览端点仅允许 localhost 访问（非本机 IP 直接 403），防止 LAN/网络攻击者枚举服务器任意磁盘目录结构。
+
+**W6：/api/files 写操作 CSRF 校验**：`POST /api/files`、`PUT /api/files`、`DELETE /api/files`、`POST /api/files/upload` 等写端点调用 `_csrf_protect()`——multipart/form-data 与简单 POST 不触发 CORS 预检，恶意网页可向 localhost 端点自动提交；该校验依赖浏览器来源头（Origin/Referer），非本机来源拒绝，curl 等无头客户端放行。令牌鉴权由 `check_access_control` 中间件统一负责，CSRF 校验只防跨站请求。
 
 > **补充**：配置未加载成功时（如尚未配置 API Key），仅允许 localhost 访问（返回 403 "Server not configured yet"），以便用户打开 UI 完成初始配置。
 
@@ -1014,6 +1176,7 @@ def _mask_api_key(config: dict) -> dict:
 | `web/static/chat.js` | 聊天界面与 SSE 事件处理、Markdown 渲染 |
 | `web/static/settings.js` | 设置弹窗（模型/系统配置） |
 | `web/static/file-manager.js` | 工作区文件管理器 |
+| `web/static/memory.js` | 记忆面板（总览/检索/归档/整合 UI，index.html L626 加载） |
 | `web/static/utils.js` | 通用工具函数 |
 | `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
 | `web/static/style.css` | 样式 |
@@ -1022,7 +1185,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ---
 
-**文档版本**: v1.2  
+**文档版本**: v1.3  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-09  
+**更新时间**: 2026-09-13  
 **状态**: 已实现

@@ -1,940 +1,554 @@
 # 记忆系统设计文档
 
-本文档描述记忆系统（Memory），涵盖 knowledge 和 skill 两种记忆类型。用户属性（User Profile）为独立系统，见 [user-profile-design.md](user-profile-design.md)。
+本文档描述记忆系统（Memory）v3 设计。系统提供跨会话长期记忆能力：会话中产生的持久信息经**提取流水线**（后台线程 + Lite 模型）写入摄入日志（journal），再由**整合流水线**（cron 定时 + 手动触发）落为四类条目（fact / preference / skill / reference），并通过三层上下文注入与 `memory` 工具在会话中检索与使用。
+
+v3 与旧版（knowledge / skills 目录 + source_ref + mtime 追踪）在设计上有本质差异：四类条目统一以 `entries/{type}/{name}.md` 平铺存储，`name` 为全局唯一 slug 定位键；引入 journal + 游标的「恰好一次」摄入/整合流水线；条目经 git 独立仓库做版本审计。
+
+---
 
 ## 一、功能概述
 
-为 Cili Agent 添加长期记忆能力，让 Agent 能够跨会话记住知识和技能，提升任务完成效率。
+### 1.1 概述
 
-### 记忆类型总览
+记忆系统为每个工作区（workspace）维护独立的长期记忆存储。核心职责：
 
-| 记忆类型 | 说明 | 存储位置 | 文件组织 | 特点 |
-|---------|------|---------|---------|------|
-| **knowledge** | 知识（长期） | `memory/knowledge/` | 按主题+日期分目录 | 事实性，按主题检索，Markdown 格式 |
-| **skill** | 技能（长期） | `memory/skills/` | 每个技能一个目录 | 可复用技术，渐进式加载，Markdown 格式 |
+1. **捕获**：会话回合结束后，后台线程用 Lite 模型从新增消息中提取「值得跨会话保留」的候选，写入 journal 摄入日志（结构化或 RAW 原文）。
+2. **整合**：定期（cron 每 2 小时）或手动把 journal 中待整合记录落为条目，并刷新全局摘要、推进游标、git 提交。
+3. **检索**：`memory(action="find")` 按关键词匹配条目 frontmatter，返回按使用频率排序的候选；`read` 读取全文并递增使用计数。
+4. **注入**：每次会话的上下文自动注入常驻偏好、索引与全局摘要三层记忆。
 
-**工具结果自动入库**：web_search、browser 抓取的工具结果可由 Agent 判断后存入 knowledge，避免重复搜索。
+记忆功能默认关闭（`memory_enabled=false`），需用户在记忆管理页显式开启。
+
+### 1.2 记忆类型总览
+
+| 记忆类型 | 说明 | 典型内容 | 检索方式 |
+|---------|------|---------|---------|
+| **fact** | 项目事实/决策/配置 | API 规范、部署流程、表结构 | find + read |
+| **preference** | 用户偏好/工作风格/沟通偏好 | 「中文回复」「周报格式」 | 常驻注入 + find |
+| **skill** | 可复用技术/工作流 | 异步编程指南、CORS 修复步骤 | find + read |
+| **reference** | 外部来源线索 | 文档、URL、文章链接 | find + read |
+
+四类条目存储格式完全一致（同一 frontmatter 结构），区别仅在 `type` 与语义。
+
+### 1.3 关键设计决策
+
+- **纯文件存储**：条目为 Markdown 文件，无数据库依赖，可读可审计。
+- **name 全局唯一**：`name`（slug）是跨类型的唯一定位键，store 按 name 原地替换。
+- **journal 摄入 + 游标消费**：提取端与整合端解耦，恰好一次、崩溃可重跑。
+- **Lite 模型调用**：提取/整合两阶段调用 Lite 模型，**不挂任何工具**（无 bash/python/web），沙箱更强、成本更低。
+- **git 版本审计**：memory 目录自管独立 git 仓库，提交信息取真实 diff 摘要。
 
 ---
 
 ## 二、存储设计
 
-### 2.1 目录结构
+### 2.1 存储位置与目录布局
+
+每个工作区记忆位于 `data/agents/{uuid}/memory/`（空 uuid 时为 `workspace/memory/`）：
 
 ```
-data/agents/{uuid}/
-├── sessions/
-├── setting.json
-├── user-profile.md             # 用户属性（独立系统）
-└── memory/
-    ├── knowledge/              # 知识库（按主题分目录，再按日期）
-    │   ├── api-design/         # API 设计主题
-    │   │   ├── 2024-01-15/     # 按日期分子目录
-    │   │   │   ├── restful.md
-    │   │   │   └── graphql.md
-    │   │   └── 2024-01-16/
-    │   │       └── ...
-    │   ├── database/           # 数据库主题
-    │   │   └── 2024-01-15/
-    │   │       └── mysql.md
-    │   ├── python/             # Python 主题
-    │   │   └── 2024-01-15/
-    │   │       └── asyncio.md
-    │   └── misc/               # 杂项（无法归类的知识）
-    │       └── 2024-01-15/
-    │           └── markdown.md
-    └── skills/                 # 技能库（每个技能一个目录）
-        ├── python-async/       # Python 异步编程技能
-        │   └── skill.md        # 技能定义（Markdown + frontmatter）
-        ├── k8s-deploy/         # Kubernetes 部署技能
-        │   └── skill.md
-        └── ...
+data/agents/{uuid}/memory/
+├── entries/                  # 活动条目（四类平铺）
+│   ├── fact/
+│   │   └── rest-api-design.md
+│   ├── preference/
+│   │   └── chinese-replies.md
+│   ├── skill/
+│   │   └── python-async.md
+│   └── reference/
+│       └── faiss-paper.md
+├── archive/                  # 归档条目（不参与检索）
+│   └── {type}/{name}.md
+├── MEMORY.md                 # 索引（MemoryStore 自动维护）
+├── summary.md                # 全局摘要（整合时刷新）
+├── journal.jsonl             # 摄入日志（append-only）
+├── .cursor                   # 整合游标（已整合的最大 cursor）
+└── .extract/                 # 会话级提取指针
+    └── {session_id}.json     # last_msg_id / last_extract_ts
 ```
 
-**Knowledge 文件示例**（api-design/2024-01-15/restful.md）：
+### 2.2 条目文件格式
+
+条目为「frontmatter + Markdown 正文」文件。frontmatter 字段固定顺序：
+
+| 字段 | 说明 | 约束 |
+|------|------|------|
+| `type` | 记忆类型 | 四类之一 |
+| `name` | 全局唯一 slug 定位键 | 见 2.3 |
+| `title` | 人类可读标题 | store 必填（或由 name 派生） |
+| `description` | 一句话描述 | ≤200 字符，主要检索信号 |
+| `tags` | 分类标签数组 | 内联数组或块状列表 |
+| `source` | 来源 | session / user / web / file / python / derived |
+| `refs` | 来源引用数组 | 如 `file:...`、`session:...`、`web:...` |
+| `created` | 创建时间 | `yyyy-MM-dd HH:mm:ss` |
+| `updated` | 最后更新时间 | 同上 |
+| `usage_count` | 使用次数 | read 时递增 |
+| `last_used` | 最近使用时间 | read 时更新 |
+| `status` | 状态 | active / stale / archived |
+
+**文件示例**（entries/skill/python-async.md）：
+
 ```markdown
 ---
-title: RESTful API 规范
-source: manual
-references:
-  - "file:E:/docs/api-spec.md"
-  - "session:abc123"
-time: 2024-01-15 14:30:00
-tags: [api, 规范, restful]
+type: "skill"
+name: "python-async"
+title: "Python 异步编程"
+description: "使用 asyncio 进行并发编程，包括事件循环、协程、Task 管理"
+tags:
+  - "python"
+  - "async"
+source: "session"
+refs:
+  - "web:https://docs.python.org/3/library/asyncio.html"
+created: "2026-09-01 10:30:00"
+updated: "2026-09-02 15:00:00"
+usage_count: 3
+last_used: "2026-09-12 09:00:00"
+status: "active"
 ---
 
-RESTful 设计，端口 8080，使用 JWT 认证，统一返回格式
-```
-
-**Knowledge 文件示例**（api-design/2024-01-15/naming.md）：
-```markdown
----
-title: 接口命名规范
-source: manual
-time: 2024-01-15 15:00:00
-tags: [api, 命名]
----
-
-使用 camelCase 命名，复数名词表示集合，如 /users, /orders
-```
-
-**misc 目录示例**（misc/2024-01-15/markdown.md，存放无法归类的知识）：
-```markdown
----
-title: Markdown 语法
-source: web_search
-references:
-  - "web:https://example.com/markdown-guide"
-time: 2024-01-17 09:00:00
-tags: [markdown, 语法]
----
-
-使用 # 表示标题，** 表示粗体...
-```
-
-**references 字段说明**：
-- 类似论文引用，支持多条来源累积
-- 格式：`file:路径`（文件）、`session:id`（对话会话）、`web:url`（网页）
-- 每次更新同名知识时，新的 source_ref 会追加到列表（自动去重）
-- 便于追溯知识来源，支持后续验证
-
-**为什么放在 data 目录下？**
-- 与 sessions/config 统一，属于工作区的"数据目录"
-- memory 是 Agent 的数据，不是用户的工作文件，隔离更清晰
-- 避免污染工作区，用户不会误删
-- 符合现有架构（sessions 就在 data 下面）
-
-### 2.2 文件命名规则
-
-- **Knowledge**: 按主题分目录，再按日期分子目录
-  - 主题目录名使用英文 kebab-case（如 `api-design`, `database`）
-  - 日期子目录格式 `YYYY-MM-DD`
-  - 文件名描述内容（如 `restful.md`, `asyncio.md`）
-  - 无法归类的知识存入 `misc/` 目录
-  - 路径格式：`knowledge/{topic}/{date}/{filename}.md`
-- **Skill**: 每个技能一个目录，目录内包含 skill.md 文件
-  - 技能目录名使用英文 kebab-case（如 `python-async`, `k8s-deploy`）
-  - 技能文件固定命名为 `skill.md`
-  - 路径格式：`skills/{skill-name}/skill.md`
-  - **支持渐进式加载**：摘要用于 grep 搜索匹配（不注入系统提示词），完整内容按需读取
-
-**文件数量控制**：
-- Knowledge 主题数量无硬限制，由 Agent 根据实际需要管理
-- Agent 可在适当时候合并相关小主题或归档旧知识
-- Knowledge 所有主题统一按日期组织：`knowledge/{topic}/{YYYY-MM-DD}/`
-
-### 2.3 记忆条目格式
-
-#### Knowledge（知识）— 按主题分目录，Markdown 格式
-
-每个主题一个目录，目录下可有多个内容文件，支持丰富的知识结构。
-
-**目录结构**：
-```
-knowledge/
-├── api-design/         # 主题目录
-│   ├── 2024-01-15/     # 日期子目录
-│   │   ├── restful.md  # 内容文件
-│   │   └── graphql.md
-│   └── 2024-01-16/
-│       └── ...
-├── python/
-│   └── 2024-01-15/
-│       └── asyncio.md
-└── misc/               # 杂项目录
-    └── 2024-01-15/
-        └── markdown.md
-```
-
-**内容文件格式**（Markdown with frontmatter）：
-```markdown
----
-title: {标题}
-source: {manual / web_search / browser / python}
-references:
-  - "file:E:/docs/config.yaml"
-  - "session:abc123"
-time: 2024-01-15 14:30:00
-tags: [标签1, 标签2]
----
-
-具体知识内容...
-```
-
-**要素说明**：
-| 字段 | 作用 | 检索方式 |
-|------|------|----------|
-| 目录名 | 主题分类 | `find` 列出主题 |
-| 文件名 | 内容描述 | 直接 `read` |
-| source | 知识来源（用户/搜索/浏览器/代码） | `grep "source: web_search"` |
-| references | 知识引用来源列表（文件/会话/网页） | `grep "references:"` |
-| tags | 细粒度分类 | `grep "tags:"` |
-| 内容 | 具体知识 | `grep "关键词"` |
-
-**示例**（api-design/restful.md）：
-```markdown
----
-title: RESTful API 规范
-source: manual
-references:
-  - "file:E:/docs/api-spec.md"
-time: 2024-01-15 14:30:00
-tags: [api, 规范, restful]
----
-
-RESTful 设计，端口 8080，使用 JWT 认证，统一返回格式
-```
-
----
-
-#### Skill（技能）— 可复用技术
-
-每个技能一个目录，Agent 在任务前通过搜索发现相关技能。
-
-**目录结构**：
-```
-skills/
-├── python-async/           # 技能目录
-│   └── skill.md            # 技能定义文件
-├── k8s-deploy/             # 另一个技能
-│   └── skill.md
-└── cors-fix/
-    └── skill.md
-```
-
-**skill.md 文件格式**（Markdown with frontmatter）：
-```markdown
----
-name: {技能名称（最多64字符）}
-description: {技能描述（最多200字符，用于搜索匹配）}
-tags: [标签1, 标签2]
-created: 2024-01-15 10:30:00
-updated: 2024-01-15 10:30:00
----
-
-## 概述
-
-技能详细说明...
+asyncio 是 Python 的异步 I/O 库，使用 async/await 语法…
 
 ## 使用场景
 
-什么情况下使用这个技能...
-
-## 步骤
-
-1. 第一步...
-2. 第二步...
-
-## 示例
-
-具体示例...
+- 需要并发处理多个 I/O 操作…
 ```
 
-**要素说明**：
-| 字段 | 作用 | 检索方式 |
-|------|------|----------|
-| skill_name | 技能标识（目录名） | `find` 列出所有技能 |
-| name | 技能显示名称 | `grep` 搜索 |
-| description | 技能描述 | `grep` 搜索匹配 |
-| tags | 技能分类 | `grep "tags:"` |
-| created/updated | 时间戳 | 排序 |
+**序列化规则**：标量值一律双引号包裹并内联替换引号/换行（frontmatter 逐行解析无转义）；`tags`/`refs` 为数组，空数组不写出；`usage_count` 为整数。解析端兼容标量、内联数组 `[a, b]`、块状列表 `- "a"` 三种写法，无 frontmatter 时返回空。
 
-**技能发现流程**：
-1. Agent 收到任务请求时，用 `memory(action="find", query="关键词")` 一次搜索 skills + knowledge 目录
-2. 搜索技能名称、描述、标签、正文中的关键词（大小写不敏感子串匹配）
-3. 返回匹配的名称和完整文件路径（按文件修改时间倒序），以及匹配片段
-4. Agent 判断是否需要使用 `read` 工具加载完整 skill.md 文件
+### 2.3 命名规则
 
-**示例**（skills/python-async/skill.md）：
-```markdown
----
-name: Python 异步编程
-description: 使用 asyncio 进行并发编程的技术，包括事件循环、协程、Task 管理
-tags: [python, async, 并发]
-created: 2024-01-15 10:30:00
-updated: 2024-01-15 10:30:00
----
+**slugify（标题 → name）**：
 
-## 概述
+- ASCII 标题 → kebab-case（小写、去非字母数字、空格/连字符合并）。
+- 非 ASCII（中文）标题 → `memory-{md5(title)[:8]}`。
+- 超 96 字符 → 截断前 88 字符并附加哈希。
+- 空标题 → `untitled`。
 
-asyncio 是 Python 的异步 I/O 库，使用 async/await 语法...
+**validate_name（校验 name）**：
 
-## 使用场景
+- 非空；拒绝 `.`/`..`、含路径分隔符、绝对路径。
+- 必须为 ASCII kebab-case；中文等非 ASCII 标题应省略 `name`，由 title 派生。
+- 拒绝无意义的 UUID 样式（`8-4-4-4-12` 或 `skill-{8hex}`）。
 
-- 需要并发处理多个 I/O 操作
-- 网络请求、文件读写等 I/O 密集型任务
+**冲突处理**：store 时派生 name 与既有**不同标题**条目冲突，自动追加 `-2`/`-3` 后缀，避免误覆盖；`name` 已被**不同类型**条目占用时直接报错（name 全局唯一）。
 
-## 核心概念
+### 2.4 MEMORY.md 索引
 
-### 协程
-使用 `async def` 定义协程函数...
+由 `MemoryStore._rebuild_index()` 在每次写操作后自动重建，头部注释标明自动维护、请勿手改：
 
-### 事件循环
-使用 `asyncio.run()` 启动事件循环...
-```
+- 收录所有非 archived 条目，按 `updated` 倒序。
+- 每行格式：`- [title](entries/{type}/{name}.md) — description`。
+- **双截断上限**：≤200 行 / ≤25KB（常驻注入预算，仿 claude-code 验证过的控制手段）。
+- 供提取/整合阶段的 LLM 作为「当前记忆索引」上下文，也作为注入层的第二层。
+
+### 2.5 summary.md
+
+整合成功时由模型生成的全局摘要，≤2KB，超出按整行截断丢弃尾部。语言随记忆内容（中文记忆写中文摘要）。每次整合刷新，供上下文注入的第三层。
+
+### 2.6 journal.jsonl 摄入日志
+
+append-only 日志，记录每次提取/手动写入的候选。记录字段：
+
+`cursor`（单调递增 id）、`key`（去重键）、`ts`、`session_key`、`type_guess`、`title`、`description`、`content`、`tags`、`refs`、`source`、`integrated`（是否已整合）、`raw`（是否 RAW 原文）。
+
+**追加端去重**：同 `key` 的记录只写一次，返回既有 cursor。key 规约：
+
+- 结构化提取：`extract:{session_id}:{key_base}:{i}`（key_base 为首/尾消息 id）
+- RAW 降级：`raw:{session_id}:{key_base}`
+- 手动写入审计：`store:{name}`（integrated=true，整合时跳过但游标越过）
+
+**防膨胀**：整合成功后 `compact(keep=500)` 删除已整合且超预算的旧记录。
+
+### 2.7 .cursor 游标
+
+消费端去重的载体。游标单调推进（不后退）：
+
+- `read_pending(limit)` 只读「cursor 之后且 integrated!=true」的记录，按 cursor 升序。
+- 仅当整批整合**正常完成**（op 覆盖全部待处理记录且无应用失败）才推进游标。
+- 崩溃/失败不推游标 → 记录保持 pending，下次可安全重跑；store 幂等（同名原地替换），重放已成功的 op 无副作用。
+
+### 2.8 archive/ 归档与老化
+
+- **手动归档**：`archive(name)` 移入 `archive/{type}/{name}.md`，status 置 archived，从索引与检索中移除；`restore(name)` 移回并置 active。
+- **自动老化（cron 每日）**：`archive_stale()` 将「updated > 90 天 且 usage_count=0」的条目自动归档。
+- **时效标注**：>30 天未更新的条目为 stale，find/read 输出追加提示「⚠ 此为历史观察（>30 天未更新），使用前请对照当前代码/事实验证」（仿 claude-code memoryAge）。
 
 ---
 
 ## 三、记忆类型定义
 
-### 3.1 Knowledge（知识库）
+### 3.1 fact（事实）
 
-**用途**: 存储用户提供的知识、事实、规范、文档摘要等。工具搜索结果（web_search、browser 抓取）也可存入此类型。
+**用途**：项目事实、决策、配置、规范、文档摘要等客观信息。
 
-**示例**:
-- "我们公司的 API 规范是 RESTful，端口用 8080"
-- "数据库表 users 的字段有 id, name, email, created_at"
-- "项目部署流程：先 build，再 docker build，最后 kubectl apply"
-- "Python asyncio 用法：使用 async/await 关键字..."（来自 web_search）
+**示例**：
+- 「我们公司的 API 规范是 RESTful，端口 8080」
+- 「数据库表 users 的字段有 id, name, email, created_at」
+- 「项目部署流程：先 build，再 docker build，最后 kubectl apply」
 
-**特点**: 客观事实，Markdown 格式，可被引用，需要时可检索
+### 3.2 preference（偏好）
 
-### 3.2 Skill（技能）
+**用途**：用户偏好、工作风格、沟通偏好。独特地位：**每次请求常驻注入**（见 §7），无需检索即生效。
 
-**用途**: 存储可复用的技术和工作流，替代原有的 experience 类型
+**示例**：
+- 「用户偏好中文回复」
+- 「代码注释用中文」
+- 「用户希望报告附带测试命令」
 
-**示例**:
-- "Python 异步编程"：使用 asyncio 进行并发编程的完整指南
-- "K8s 部署"：将 Node.js 项目部署到 Kubernetes 的步骤和注意事项
-- "CORS 错误修复"：解决跨域问题的标准方法
+### 3.3 skill（技能）
 
-**特点**: 
-- 任务导向，包含完整的解决方案和步骤
-- 支持渐进式加载：摘要用于搜索匹配（不注入系统提示词），完整内容按需读取
-- Markdown 格式，便于阅读和维护
-- 每个技能一个目录，便于扩展资源文件
+**用途**：可复用的技术方法和工作流。按需检索，完整内容经 read 加载。
+
+**示例**：
+- 「Python 异步编程」：asyncio 并发编程指南
+- 「K8s 部署」：部署步骤与注意事项
+- 「CORS 错误修复」：标准排查方法
+
+### 3.4 reference（参考）
+
+**用途**：外部来源的线索（文档、URL、文章），不必把整篇内容抄入正文，记下出处即可。
+
+**示例**：
+- 「FAISS 官方论文：https://...」
+- 「xmake 官方文档中 lua 配置一节：web:https://...」
+
+### 3.5 source 来源与 status 状态
+
+- `source` 枚举：`session`（会话提取）、`user`（用户/工具显式写入）、`web`、`file`、`python`、`derived`（整合生成）。
+- `status` 枚举：`active`（活跃，参与检索）、`stale`（>30 天未更新，仅提示标注）、`archived`（已归档，仅 list(status=archived) 可见）。
 
 ---
 
-## 四、触发机制
+## 四、提取流水线（Extraction）
 
-### 4.1 存储触发
+### 4.1 触发时机
 
-#### 类型一：显式存储触发
+Web SSE 回合结束后，若该工作区 `memory_enabled` 且存在 session_manager，则在**后台守护线程**（`memory-extract`）触发 `schedule_extraction`：
 
-用户明确要求存储：
-- "记下来"、"记录下来"
-- "记住这个"、"保存这个"
-- "这个很重要"、"以后还会用到"
-
-#### 类型二：会话结束时的主动记忆
-
-**Agent 主动判断**：
-- 会话结束时（Agent 完成所有工具调用）
-- 自动判断是否有值得记忆的内容
-- 如果有，主动调用 memory 工具并告知用户
-
-**示例**：
-```
-Agent: 任务完成。我发现你使用了特定的部署方式，要记录为技能吗？
-用户: 好的
-[Agent 调用 memory 存储 skill]
+```python
+if sm is not None and memory_enabled(agent.workspace_uuid or ""):
+    schedule_extraction(agent.workspace_uuid or "", agent.current_session_id or "", list(sm.messages))
 ```
 
-#### 类型四：工具结果自动入库
+后台线程不阻塞 SSE 流；失败只记日志，不影响正常对话。
 
-当 Agent 使用 `web_search`、`browser`、`python` 等工具获取结果后，自动判断是否有值得保存的知识：
+### 4.2 恰好一次
 
-**触发条件**：
-- 工具返回了有价值的信息（搜索结果、网页内容、代码输出等）
-- Agent 判断该信息在当前或未来对话中可能被再次使用
-- 用户明确要求"记住这个结果"
+两层去重保证每条消息只被提取一次：
 
-**处理逻辑**：
-1. 工具执行完成后，Agent 判断结果的价值
-2. 如果有价值，判断是否有明确主题
-   - 有主题：topic 设为对应值（如 `python`, `api-design`）
-   - 无主题：topic 不填，存入 `misc/` 目录
-3. 调用 memory 工具存储，source 设为对应来源
-4. 告知用户已保存（"已将搜索结果保存到知识库"）
+1. **会话级指针**（`.extract/{session_id}.json`）：记录 `last_msg_id`，只挑指针之后的新增消息（含无 id 消息），崩溃后重读 messages 仍能接续。
+2. **journal key 去重**：append 时同 key 只写一次，重试不产生重复记录。
 
-**文件数量管理**：
-- Knowledge 主题数量无硬限制
-- Agent 可在适当时候整理主题：
-  - 合并相关小主题（如 `flask/` + `django/` → `web-framework/`）
-  - 将零散知识集中到 `misc/`
+**输入**：新增 user/assistant 文本消息（单条截断 4000 字符）+ 当前 MEMORY.md 索引。
 
-**示例**：
-```
-用户: 帮我搜一下 Python asyncio 怎么用
-Agent: [调用 web_search 搜索 "Python asyncio"]
-Agent: [获取到搜索结果]
-Agent: Python asyncio 的核心用法如下...
-Agent: 已将这条知识保存到知识库，下次可以直接查阅。
-[Agent 调用 memory store, topic="python", source="web_search"]
-
-用户: 帮我搜一下 Markdown 表格怎么写
-Agent: [调用 web_search 搜索]
-Agent: [获取到结果]
-Agent: Markdown 表格语法如下...
-Agent: 已保存。
-[Agent 调用 memory store, 不填 topic → 存入 misc/]
-```
-
-**注意**：
-- 不是所有工具结果都入库，Agent 需要判断价值
-- 重复的知识不重复存储
-- source 字段标记来源，方便后续按来源检索
-- 无法归类的知识存入 misc/，避免目录爆炸
-
-### 4.2 检索触发
-
-#### 方案 A：关键词触发（原始需求）
-
-触发词：
-- "查一下记忆"、"回忆一下"
-- "之前说过"、"我记得"
-- "根据我的偏好"
-
-**问题**:
-- 用户需要记住这些触发词
-- 不够自然
-
-#### 方案 B：上下文自动检索（推荐）
-
-**自动检索策略**:
-1. **Knowledge 类型**: 当用户提到"之前说的"、"那个规范"等指代性词汇时，自动检索
-2. **Skill 类型**: Agent 在收到任务时主动搜索 skills 目录，找到匹配的技能后加载完整内容
-
-**实现**:
-- 在 system prompt 中说明记忆检索规则
-- Agent 在收到任务时先用 `grep` 搜索 skills 和 knowledge
-- 返回匹配项的名称和文件路径，判断是否需要加载完整内容
-
----
-
-## 五、工具设计
-
-### 5.1 工具概览
-
-| 工具 | 职责 | 说明 |
-|------|------|------|
-| `memory` | 长期记忆存储 | 存储 knowledge/skill，支持 source 标记来源 |
-| `grep` + `read` | 长期记忆检索 | 搜索 memory 目录下的知识/技能 |
-
-**设计原则**：
-- memory 工具负责**存储和管理**长期记忆，检索交给 grep/read
-- knowledge 可标记来源（manual/web_search/browser/python），工具结果可由 Agent 判断后存入
-- Agent 在收到任务时先用 `grep` 搜索 skills 和 knowledge，返回匹配项后再判断是否加载完整内容
-
-### 5.2 memory 工具参数
+**结构化输出**（`EXTRACTION_SCHEMA`）：
 
 ```json
-{
-  "name": "memory",
-  "description": "长期记忆工具，用于存储和检索跨会话的知识和技能。Knowledge 使用 Markdown 格式存储，Skill 使用带 frontmatter 的 Markdown 格式。检索使用 find action，读取全文使用 read 工具。",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "action": {
-        "type": "string",
-        "enum": ["store", "find", "update", "delete"],
-        "description": "操作类型：store（创建）、find（按关键词检索）、update（修改）、delete（删除）"
-      },
-      "query": {
-        "type": "string",
-        "description": "检索关键词（大小写不敏感子串匹配），find 必填。匹配 knowledge 的 title/tags/正文与 skill 的 name/description/tags/正文"
-      },
-      "memory_type": {
-        "type": "string",
-        "enum": ["knowledge", "skill"],
-        "description": "记忆类型：knowledge=知识（Markdown），skill=技能（Markdown）。store/update/delete 必填；find 可选（不填则两类都搜）"
-      },
-      "topic": {
-        "type": "string",
-        "description": "【knowledge 专用】主题目录名（英文 kebab-case），如 'api-design'。不填则存入 misc/ 目录"
-      },
-      "skill_name": {
-        "type": "string",
-        "description": "【skill 专用】技能目录名（英文 kebab-case），如 'python-async'。skill 类型必填"
-      },
-      "filename": {
-        "type": "string",
-        "description": "【knowledge 专用】内容文件名（如 'restful.md'）。不填则根据 title 自动生成"
-      },
-      "title": {
-        "type": "string",
-        "description": "【knowledge 专用】记忆标题"
-      },
-      "name": {
-        "type": "string",
-        "description": "【skill 专用】技能显示名称（最多 64 字符）"
-      },
-      "description": {
-        "type": "string",
-        "description": "【skill 专用】技能描述（最多 200 字符，用于渐进式加载）"
-      },
-      "content": {
-        "type": "string",
-        "description": "内容正文（knowledge 或 skill 使用）。内容必须完整：如果源文档被截断，应先用 offset/limit 获取剩余部分再存储，不要存储带'内容已截取'等占位符的不完整内容"
-      },
-      "tags": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "标签列表，用于分类和检索"
-      },
-      "source": {
-        "type": "string",
-        "enum": ["manual", "web_search", "browser", "python"],
-        "description": "知识来源：manual=用户主动提供，web_search=搜索结果，browser=浏览器抓取，python=代码执行结果。仅 knowledge 类型使用"
-      },
-      "source_ref": {
-        "type": "string",
-        "description": "知识引用来源。格式：'file:E:/docs/config.yaml'（文件）、'session:abc123'（对话会话）、'web:https://...'（网页）。添加到 references 列表。仅 knowledge 使用。"
-      }
-    },
-    "required": ["action"]
-  }
-}
+{ "memories": [ { "type", "title", "description", "content", "tags", "refs" } ] }
 ```
 
-**参数补充说明**：
-- `topic`：不填时默认为 `"misc"`，知识存入 `knowledge/misc/` 目录。**注意**：代码中参数描述写为 "Required for knowledge"，但实际验证并未强制要求（`kwargs.get("topic", "misc")`），不填时自动归入 `misc/`
-- `skill_name`：必须是有意义的 kebab-case 名称，代码会拒绝 UUID 格式的命名（如 `skill-a1b2c3d4` 或 36 位 UUID）
-- `source`：不填时默认为 `"manual"`
-- `source_ref`：支持多种来源格式，类似论文引用。每次更新同名知识时，新的 source_ref 会追加到 references 列表（自动去重）
+系统提示词规则：四类互斥、只提取新增持久信息、title 为短语、description ≤200 字、content 完整不截断、refs 记 file:/web:/session: 来源；不保存可从代码/ git 推导的内容，不复制「记住这个 PR 列表」类原文。
 
-**自动查重行为**：
-- `store` knowledge 时，自动搜索所有 topic 下是否有相同 title 的知识
-- 如果找到，自动转为 update 并合并 references
-- skill 同理：同 skill_name 已存在时自动 update，保留 created 时间
+### 4.3 RAW 降级
 
-### 5.3 使用示例
+提取阶段任一异常（模型不可用、解析失败等）→ **绝不丢内容**：把新增消息原文经密钥掩蔽后追加为一条 `raw=true` 记录，留待整合阶段处理。
+
+### 4.4 密钥掩蔽
+
+`redact_secrets()` 在入库前掩蔽疑似密钥，三类 pattern：
+
+- 带标签赋值：`api_key=`/`password=`/`secret`/`auth_token` 等后跟 8 位以上值 → 保留标签、掩蔽取值（`api_key=***REDACTED***`）。
+- 密钥前缀整段：`sk-`/`sk-ant-`/`ghp_`/`gho_`/`xoxb`/`AKIA`/`AIza` 开头 12 位以上 → 整段掩蔽。
+- `bearer` token → 保留前缀、掩蔽 token。
+
+结构化提取的 title/description/content/tags 同样经掩蔽。
+
+### 4.5 memory_enabled 开关
+
+- 存储于 `data/agents/{uuid}/setting.json`（空 uuid 为 `workspace/setting.json`）的 `memory_enabled` 字段。
+- **缺省 False**——纯工作区隔离，除非用户在记忆管理页显式开启。
+- 控制范围：回合后提取钩子（§4.1）、cron/manual 整合 `consolidate_all` 的工作区过滤（§5.1）。关闭时两者都不执行。
+
+---
+
+## 五、整合流水线（Consolidation）
+
+### 5.1 触发方式
+
+| 触发 | 入口 | 参数 |
+|------|------|------|
+| cron 每 2 小时 | `core/cron.d/memory_consolidation.json`（系统级任务，interval 120 分钟，启动 30 分钟后首次） | `limit=20, max_batches=1` |
+| 手动立即整合 | Web 记忆管理页「立即整合」按钮 → `POST /memory/consolidate` | `limit=20, max_batches=4` |
+| 手动工具触发 | `memory(action="consolidate")` → `consolidate_all()` | 全工作区 |
+
+`consolidate_all()` 扫描 `data/agents/` 下带 `memory/` 的工作区，过滤掉 `memory_enabled=false` 的，逐个整合并返回每工作区结果。
+
+### 5.2 输入与结构化输出
+
+**输入**：待整合记录（每条标注 `[cursor N]` 及 type_guess/source/raw/session，正文截断 1000 字符）+ 当前 MEMORY.md 索引 + 匹配的既有条目快照（`_entries_context`：从待整合记录取关键词 find 已有条目，最多 10 条，只读 frontmatter 不增 usage，作为冲突消解上下文）。
+
+**结构化输出**（`CONSOLIDATION_SCHEMA`）：
+
+```json
+{ "ops": [ { "op", "name", "type", "title", "description", "content", "tags", "refs", "reason" } ],
+  "summary": "全局摘要" }
+```
+
+`op` 枚举与语义（系统提示词指导）：
+
+| op | 语义 |
+|----|------|
+| `store` | 全新内容 → 提供完整字段新建 |
+| `update` | 与既有条目重复/细化 → 按 name 合并，refs 累积 |
+| `archive` | 过时但值得留史 |
+| `delete` | 错误、已被取代、可推导 |
+| `skip` | 暂留 pending（如缺上下文） |
+
+模型给出的 `type` 不在白名单时回退 `fact`（`_op_type`）。
+
+### 5.3 ops 应用与容错
+
+`apply_ops()` 对模型常见的「目标错位」做确定性容错，避免某条 op 失败 → 整批不推游标 → 重跑产生同样 op 的死锁：
+
+- `delete`/`archive` 目标条目不存在 → 已处于期望状态，**视为完成**（no-op）。
+- `update` 目标不存在（模型幻觉 name）→ 有内容则**退化为 store 新建保留**；无内容视为完成。
+- `store` 无 title 无 content → 无可保留内容，视为完成（empty op）。
+- `store` name 与不同类型条目冲突 → **追加 `-2`/`-3` 后缀重试**，内容不丢。
+- 其余意外失败进 `failed`，由调用方决定是否推进游标（失败不消费记录，避免「已整合但未写入」的静默丢失）。
+
+description 一律截断到 200 字上限（journal 记录截断 300，直接透传会误报）。
+
+### 5.4 游标推进与 git 提交
+
+单批流程（成功后顺序执行）：
+
+1. `journal.advance(max_cursor)`——单调推进，覆盖全部已处理记录。
+2. `journal.compact(keep=500)`——清理已整合旧记录。
+3. `store.archive_stale()`——自动归档 >90 天且零使用的条目。
+4. `best_effort_commit(memory_dir, f"consolidate: {n} ops, {m} archived")`——git 提交真实 diff。
+
+**不推游标的情形**：有 op 应用失败，或 op 数 < 待整合记录数（视为截断/模型少输出）→ 记录保持 pending 供重跑，报错注明原因。
+
+### 5.5 拆半重试与批量
+
+- **拆半重试**：整批异常，或 op 数不足（常见于 max_tokens 截断丢尾部）时，`_split_consolidation` 把记录拆两半递归整合再合并（小批次输出更短，截断概率骤降）。递归深度 ≤3；仍不完整则原样返回已解析 ops，由调用方按计数决定是否推游标。
+- **多批循环**：`max_batches>1`（手动触发）时循环整合，每批最多 20 条，直至待整合清零、到达批次上限、或某批失败/无进展。返回聚合计数（processed/applied/failed/archived 求和，ops/summary/error 取最后一批）。
+
+### 5.6 摘要刷新
+
+`summary` 仅当该批无失败且 op 覆盖全部记录时写入（`_write_summary`，≤2KB 整行截断）。旧摘要被覆盖，不累积。
+
+### 5.7 Lite 模型与沙箱
+
+- 提取/整合两阶段均调用 Lite 模型（`config.lite_model` 或 `config.model`），max_tokens 分别 8000 / 16000（取模型配置上限的较小者）。
+- **无工具**：两阶段 LLM 调用不挂 bash/python/web 等任何工具——比只读 agent 更严的沙箱、更便宜，测试可注入回调替换。
+
+---
+
+## 六、memory 工具设计
+
+### 6.1 工具概览
+
+`memory` 工具是检索与管理的唯一入口，委托 `MemoryStore`/`Journal`，不做 LLM 调用。定位键是 `name`（slug，全局唯一），不再按 title 全目录搜索。
+
+### 6.2 action 与参数
+
+`action` 枚举：`store` / `find` / `read` / `update` / `delete` / `list` / `stat` / `consolidate`。
+
+| 参数 | 说明 |
+|------|------|
+| `action` | 操作类型（必填） |
+| `type` | 记忆类型（store 必填；find/list 可选过滤） |
+| `name` | 全局唯一 kebab-case slug（read/update/delete 必填；store 缺省由 title 派生） |
+| `query` | find 关键词（必填，匹配 name/title/description/tags/refs） |
+| `status` | find/list 状态过滤（active/stale/archived） |
+| `title` | 人类可读标题 |
+| `description` | 一句话描述 ≤200 字符（主要检索信号） |
+| `content` | 正文（Markdown，须完整不截断） |
+| `tags` | 标签数组（替代旧 topic） |
+| `source` | 来源（默认 user） |
+| `refs` | 来源引用数组，如 `['file:E:/docs/x.md', 'session:abc123', 'web:https://...']` |
+
+### 6.3 各 action 行为
+
+**store**：新建或按 name 原地替换；name 缺省由 title 派生，派生冲突自动 `-2`/`-3` 后缀；存在于 archive 且同类型 → 移回 entries（自动解除归档）；name 跨类型冲突报错。成功后写审计 journal（`store:{name}`，integrated=true）并 git 提交。
+
+**find**：描述驱动召回——只匹配 frontmatter（name/title/description/tags/refs），**不读正文**、**不递增 usage**（真实使用以 read 为准）；返回 active/stale（不含 archived），按 `usage_count` 倒序（次按 updated），上限 20；结果附 stale 提示与 read 使用 hint。
+
+**read**：读条目全文，递增 `usage_count` / 更新 `last_used`，输出附 stale 提示。
+
+**update**：原地更新，preserve created/usage_count/last_used；refs 累积去重；status 仅允许 active/stale（归档经 archive/restore）。
+
+**delete**：永久删除并清理空目录，git 提交（历史可恢复）。
+
+**list**：列条目（默认 active+stale，按 updated 倒序；status=archived 时可含归档）。
+
+**stat**：统计——各类条目数、stale/archived 数、索引行数/字节、journal 待整合数与游标位置、最近 5 次 git 提交。
+
+**consolidate**：调用 `consolidate_all()`，报告每工作区处理记录数、store/update 数与归档数。
+
+### 6.4 使用示例
 
 ```yaml
-# ===== 检索 =====
-
-# 按关键词检索（大小写不敏感子串匹配），一次搜索 knowledge + skills
-# 结果按文件修改时间倒序，返回完整路径，可直接用 read 读取全文
+# 检索（按关键词匹配 frontmatter，按使用频率排序）
 memory(action="find", query="asyncio")
+memory(action="find", query="部署", type="skill", status="active")
 
-# 只搜某一类型
-memory(action="find", query="asyncio", memory_type="skill")
+# 读取全文（递增 usage_count）
+memory(action="read", name="python-async")
 
-# ===== Knowledge 操作 =====
+# 存储（name 缺省由 title 派生）
+memory(action="store", type="preference", title="中文回复",
+       description="用户偏好使用中文回复", tags=["沟通"], source="user")
 
-# 存储知识（有明确主题和文件名）
-# topic="api-design", filename="restful.md" -> knowledge/api-design/2024-01-15/restful.md
-memory(action="store", memory_type="knowledge", title="RESTful API 规范", 
-       topic="api-design", filename="restful.md",
-       content="RESTful 设计，端口 8080，使用 JWT 认证，统一返回格式",
-       source="manual",
-       tags=["api", "规范", "restful"])
+# 更新（refs 累积去重，created/usage_count 保留）
+memory(action="update", name="python-async", content="…新正文…", tags=["python"])
 
-# 存储知识（有主题，自动生成文件名）
-# topic="python", 不填 filename -> knowledge/python/2024-01-15/{自动}.md
-memory(action="store", memory_type="knowledge", title="Python asyncio 用法", 
-       topic="python",
-       content="asyncio 使用 async/await 关键字，事件循环，Task 并发...",
-       source="web_search",
-       tags=["python", "asyncio", "并发"])
+# 列出与统计
+memory(action="list", type="fact")
+memory(action="stat")
 
-# 存储知识（无法归类，存入 misc/）
-# 不填 topic -> knowledge/misc/2024-01-15/{自动}.md
-memory(action="store", memory_type="knowledge", title="Markdown 语法",
-       content="使用 # 表示标题，** 表示粗体...",
-       source="web_search",
-       tags=["markdown", "语法"])
-
-# 更新知识
-memory(action="update", memory_type="knowledge", topic="api-design", 
-       title="RESTful API 规范",
-       content="RESTful 设计，端口 8080，使用 JWT 认证...（更新内容）")
-
-# 删除知识
-memory(action="delete", memory_type="knowledge", topic="api-design", 
-       title="RESTful API 规范")
-
-# ===== Skill 操作 =====
-
-# 存储技能
-# skill_name="python-async" -> skills/python-async/skill.md
-memory(action="store", memory_type="skill",
-       skill_name="python-async",
-       name="Python 异步编程",
-       description="使用 asyncio 进行并发编程的技术，包括事件循环、协程、Task 管理",
-       content="## 概述\n\nasyncio 是 Python 的异步 I/O 库...\n\n## 使用场景\n\n- 需要并发处理多个 I/O 操作...",
-       tags=["python", "async", "并发"])
-
-# 读取技能完整内容（find 结果中的完整路径可直接传给 read）
-read(file_path="E:/AI/cili/data/agents/{uuid}/memory/skills/python-async/skill.md")
-
-# 更新技能（未提供的字段保留原值，created 时间自动保留）
-memory(action="update", memory_type="skill",
-       skill_name="python-async",
-       name="Python 异步编程进阶",
-       description="使用 asyncio 进行高级并发编程...",
-       content="## 概述\n\nasyncio 高级用法...")
-
-# 删除技能
-memory(action="delete", memory_type="skill", skill_name="python-async")
-```
-
-**topic/filename 到路径映射示例**（日期假设为 2024-01-15）：
-| 类型 | topic/skill_name | filename | 最终路径 |
-|------|------------------|----------|----------|
-| knowledge | api-design | restful.md | knowledge/api-design/2024-01-15/restful.md |
-| knowledge | api-design | graphql.md | knowledge/api-design/2024-01-15/graphql.md |
-| knowledge | python | asyncio.md | knowledge/python/2024-01-15/asyncio.md |
-| knowledge | python | （不填） | knowledge/python/2024-01-15/{自动}.md |
-| knowledge | （不填） | markdown.md | knowledge/misc/2024-01-15/markdown.md |
-| knowledge | （不填） | （不填） | knowledge/misc/2024-01-15/{自动}.md |
-| skill | python-async | （固定 skill.md） | skills/python-async/skill.md |
-| skill | k8s-deploy | （固定 skill.md） | skills/k8s-deploy/skill.md |
-
-**自动生成文件名规则**（`_title_to_filename`）：
-- Knowledge: ASCII 标题转换为 kebab-case（如 "Python asyncio" → "python-asyncio.md"）；非 ASCII 标题使用 8 位 MD5 哈希（如 "用户偏好" → "memory-a1b2c3d4.md"）；超长名称截断并附加哈希
-- 如果同名文件已存在，追加计数器（如 "python-asyncio-2.md"）
-- Knowledge 所有主题目录统一按日期组织：`knowledge/{topic}/{YYYY-MM-DD}/{filename}.md`
-
-### 5.4 检索方式
-
-Agent 使用现有工具检索不同类型的记忆：
-
-```yaml
-# ===== Knowledge 检索 =====
-# 列出所有主题（查看有哪些主题目录）
-find(path="data/agents/{uuid}/memory/knowledge/", pattern="*")
-
-# 列出特定主题下的所有日期目录
-find(path="data/agents/{uuid}/memory/knowledge/api-design/", pattern="*")
-
-# 列出特定日期下的所有文件
-find(path="data/agents/{uuid}/memory/knowledge/api-design/2024-01-15/", pattern="*.md")
-
-# 读取特定主题特定日期的内容文件
-read(file_path="data/agents/{uuid}/memory/knowledge/api-design/2024-01-15/restful.md")
-
-# 列出所有日期下特定主题的所有文件
-find(path="data/agents/{uuid}/memory/knowledge/misc/", pattern="*/*.md")
-
-# 按来源检索（如只看 web_search 存入的知识）
-grep(pattern="source: web_search", path="data/agents/{uuid}/memory/knowledge/")
-
-# 按标签检索
-grep(pattern="- restful", path="data/agents/{uuid}/memory/knowledge/")
-
-# 按关键词检索内容
-grep(pattern="JWT", path="data/agents/{uuid}/memory/knowledge/")
-
-# ===== Skill 检索 =====
-
-# 列出所有技能（使用 find 工具）
-find(path="data/agents/{uuid}/memory/skills/", pattern="*/skill.md")
-
-# 按标签检索技能
-grep(pattern="- async", path="data/agents/{uuid}/memory/skills/")
-
-# 按关键词检索技能内容
-grep(pattern="asyncio", path="data/agents/{uuid}/memory/skills/")
-
-# 读取技能完整内容（直接使用 read 工具）
-read(file_path="data/agents/{uuid}/memory/skills/python-async/skill.md")
-```
-
-**检索策略建议**：
-- Knowledge: 先 `find` 看有哪些主题目录，再 `find` 看日期子目录（按日期倒序），再 `find` 看文件，再 `read`；或按标签/来源/关键词 `grep`
-- Skill: Agent 在收到任务时，先用 `grep` 搜索 skills 目录中的技能名称、描述、标签，找到匹配的技能后使用 `read` 工具加载完整 skill.md 文件
-- **grep 自动按 mtime 倒序**：搜索结果按文件最后修改时间倒序排列，最近访问/修改的文件排在最前
-
-**任务前搜索流程**：
-当用户提出任务请求时，Agent 应：
-1. 先用 `grep` 搜索 skills 目录，查找相关技能
-2. 返回匹配的技能名称和文件路径
-3. 判断是否需要使用 `read` 工具加载完整技能内容（skill.md）
-4. 同时搜索 knowledge 目录，查找相关知识
-5. 返回匹配的知识标题和文件路径
-6. 判断是否需要使用 `read` 加载完整知识内容
-
-**时间排序规则**：
-- 所有检索结果按时间戳倒序排列（最新的在前）
-- 冲突时以最新记忆为准
-- 注："以最新的记忆为准"暂未写入 system prompt，最新优先由 grep 按 mtime 倒序保证
-
-**最后访问时间追踪**：
-- 实现：`read` 工具读取 `memory/knowledge/` 下的文件时，自动调用 `os.utime()` 更新文件 mtime 为当前时间
-- 追踪目的：支持未来遗忘处理（长时间未访问的知识可自动归档）
-- grep 工具按 mtime 倒序排列结果，最近访问/修改的排在前面
-- Skill 不受影响（技能不按日期组织，同样按 mtime 排序）
-
-### 5.5 存储规则
-
-**Knowledge 存储规则**：
-- 同一主题下按日期组织
-- 文件名冲突时追加计数器
-- Markdown 格式，包含 frontmatter
-- 更新时按 title 查找（跨所有日期目录，最新优先），整体重写文件
-- 删除后自动清理空的日期目录和主题目录
-
-**Skill 存储规则**：
-- 每个技能一个目录，目录名为 kebab-case，拒绝 UUID 格式的 skill_name
-- 技能文件固定命名为 `skill.md`
-- Markdown 格式，包含 frontmatter
-- 更新时保留已有的 `created` 时间和未提供的字段（name、description、tags），仅更新显式提供的参数
-- `updated` 时间戳自动更新为当前时间
-- 删除时移除整个技能目录及其内容
-
----
-
-## 六、系统 Prompt 集成
-
-### 6.1 初始上下文加载
-
-用户属性由独立系统自动加载，不在记忆系统中处理（见 [user-profile-design.md](user-profile-design.md)）。
-
-**注意**：技能摘要不自动注入到系统提示词中，而是由 Agent 在收到任务时主动搜索。这样可以减少上下文大小，避免不必要的 token 消耗。
-
-### 6.2 System Prompt 指导
-
-> 实际实现：指导位于 `ROOT_PROMPT_TEMPLATE` 的 `## Memory` 段（英文），要求任务开始前先用 grep/find 搜索 skills 和 knowledge；记忆目录的具体路径由 `build_root_context()` 动态注入环境上下文。以下为要点示意。
-
-```markdown
-## 记忆系统
-
-你可以使用 `memory` 工具存储长期记忆。
-
-### 何时记忆
-- 当用户明确说"记住这个"、"记下来"时
-- 当你认为当前对话中有重要信息（如用户偏好、关键知识、技能方法）
-- 会话结束前，如果有值得记录的内容
-
-### 记忆类型选择
-- **knowledge**: 客观事实、规范、文档
-- **skill**: 可复用的技术和工作流
-
-### 任务前搜索（重要）
-
-**收到任务请求时，必须先搜索记忆**：
-
-1. **搜索技能**：使用 `grep` 搜索 `data/agents/{uuid}/memory/skills/` 目录
-   - 按技能名称、描述关键词或标签搜索
-   - 返回匹配的技能名称和文件路径
-   - 判断是否需要使用 `read` 工具加载完整 skill.md 文件
-
-2. **搜索知识**：使用 `grep` 搜索 `data/agents/{uuid}/memory/knowledge/` 目录
-   - 按主题、关键词或标签搜索
-   - 返回匹配的知识标题和文件路径
-   - 判断是否需要使用 `read` 加载完整内容
-
-**示例搜索流程**：
-```
-# 搜索相关技能
-grep(pattern="关键词|keyword", path="data/agents/{uuid}/memory/skills/")
-
-# 搜索相关知识
-grep(pattern="关键词|keyword", path="data/agents/{uuid}/memory/knowledge/")
-
-# 如果找到匹配的技能，用 read 工具加载完整内容
-read(file_path="data/agents/{uuid}/memory/skills/matched-skill-name/skill.md")
-
-# 如果找到匹配的知识，加载完整内容
-read(file_path="data/agents/{uuid}/memory/knowledge/topic/date/file.md")
-```
-
-### 检索时机
-- 用户提出新任务 → 先搜索 skills 和 knowledge
-- 用户提到"之前说过"、"我记得" → 搜索 knowledge
+# 手动触发全工作区整合
+memory(action="consolidate")
 ```
 
 ---
 
-## 七、待解决问题
+## 七、上下文注入
 
-### 7.1 记忆冲突
+### 7.1 三层注入
 
-**问题**: 如果新记忆与旧记忆矛盾怎么办？
+每次请求的 `build_environment_context` 中，`_build_memory_sections` 注入三层记忆（v3）：
 
-**示例**:
-- 旧记忆："用户偏好中文回复"
-- 新记忆："用户希望用英文回复"
+1. **User Preferences（常驻）**：preference 类型条目，最多 10 条，格式 `- title: description`；>30 天未更新附加「⚠ stale, verify before applying」。无需检索即生效，保证沟通偏好始终在场。
+2. **Memory Index**：MEMORY.md 索引全文（≤200 行 / 25KB 双截断），展示所有条目标题与描述，作为「有哪些记忆可查」的目录。
+3. **Memory Summary**：summary.md 全局摘要（≤2KB）。
 
-**决策**: 方案 A - 追加新记忆，保留旧记忆
+之后附检索提示：`memory(action="find", query="keyword")` 列匹配条目，`memory(action="read", name="<name>")` 读全文。
 
-**实现**:
-- 所有记忆条目必须包含时间戳
-- 检索时按时间倒序排列，优先使用最新记忆
-- 注：该规则暂未写入系统 prompt，最新优先由 grep 按 mtime 倒序保证
+### 7.2 user-profile.md 迁移回退
 
-### 7.2 记忆检索质量
+迁移前（preference 为空）时，回退注入 `user-profile.md` 旧用户画像内容，避免丢失原有用户画像。一旦提取/整合产生 preference 条目即切换到常驻注入。
 
-**决策**: 方案 A - 关键词匹配 + 标签过滤（简单）
+### 7.3 降级策略
 
-**实现**:
-- 使用 grep 按关键词、标签、来源检索
-- 使用 find 列出目录结构
-- 复用现有工具，无需额外依赖
-
-### 7.3 Knowledge 主题数量控制
-
-**问题**: 长期积累后，knowledge 目录可能产生大量主题目录
-
-**决策**: 方案 C - 自动合并，无硬限制
-
-**实现**:
-- 无硬限制，由 Agent 根据需要管理主题数量
-- Agent 定期自动整理：合并相关小主题
-- 合并策略：如 `flask/` + `django/` → `web-framework/`
-
-### 7.4 记忆大小控制
-
-**问题**: 长期积累后，记忆文件可能过大
-
-**决策**: 方案 C - 暂不限制，观察使用
-
-**实现**:
-- MVP 阶段不对单个文件大小做限制
-- 观察实际使用情况，收集数据
-- 如后续发现问题，可考虑：
-  - 定期归档旧记忆（移到 archive/）
-  - 限制单文件最大条目数
-
-### 7.5 记忆更新与删除
-
-**问题**: 如何修改或删除错误的记忆？
-
-**决策**: Phase 1 就实现 update/delete 功能
-
-**实现**:
-- memory 工具添加 `update` 和 `delete` action
-- 用户说"忘掉这个"、"更新一下"时触发
-- 支持通过标题、标签或内容匹配来定位要更新/删除的记忆
-
-### 7.6 跨工作区记忆
-
-**问题**: 记忆是否应该跨工作区共享？
-
-**决策**: 方案 A - 每个工作区独立记忆
-
-**实现**:
-- 每个工作区的记忆存储在 `data/agents/{uuid}/memory/`
-- 不同工作区的记忆完全独立
-- 不支持跨工作区共享记忆
-
-### 7.7 记忆触发时机
-
-**问题**: "会话结束时自动记忆" 的时机如何判断？
-
-**决策**: 方案 A - Agent 自动判断
-
-**实现**:
-- Agent 完成所有工具调用后，自动判断是否需要记忆
-- 不依赖用户主动触发（如"结束"、"记下来"）
-- Agent 根据对话内容智能识别值得记忆的信息
-
-### 7.8 最后访问时间追踪
-
-**问题**: 如何追踪知识的"最后访问时间"，支持遗忘处理？
-
-**决策**: 读取时更新文件 mtime（而非移动文件）
-
-**实现**:
-- **更新时机**: `read` 工具读取 `memory/knowledge/` 下的文件时，自动调用 `os.utime()` 更新 mtime
-- **更新规则**: 将文件 mtime 设为当前时间
-- **排序**: `grep` 工具按 mtime 倒序返回结果，最近访问/修改的文件排在最前
-- **目的**:
-  - **支持遗忘机制**：通过 mtime 追踪最后访问/修改时间，长时间没访问的知识可被识别和归档
-  - grep 检索结果自然按时间倒序，最新记忆在前
-- **跨平台**：mtime 在 Windows/Linux/macOS 上一致工作，不依赖 atime（Windows 默认禁用 atime 更新）
-
-**遗忘机制设计**（后续实现）:
-- 基于 mtime 判断知识的重要性
-- 例如：mtime 超过 30 天的知识可以自动归档
-- 遗忘规则可在 system prompt 中配置
+记忆系统初始化异常时，注入层降级为提示语（记忆目录路径 + find/read 用法），**绝不阻塞请求**。
 
 ---
 
-## 八、实现优先级
+## 八、Web 管理界面
 
-### Phase 1: 核心功能（MVP）
+### 8.1 功能
 
-- [x] memory 工具基础框架（store/update/delete 操作）
-- [x] 两种类型存储（knowledge, skill）
-- [x] Knowledge 按主题+日期分目录存储（Markdown 格式）
-- [x] Skill 支持 store/update/delete 操作（检索使用 grep/read/find）
-- [x] System prompt 指导 Agent 在任务前主动搜索 skills 和 knowledge
-- [ ] 读取知识后自动移动文件到最新日期目录（未实现；当前通过 read 时更新 mtime 追踪访问时间）
-- [x] 用户属性系统独立（见 [user-profile-design.md](user-profile-design.md)）
+顶部工具栏「记忆管理」按钮打开记忆模态框，提供完整管理能力：
 
-### Phase 2: 智能触发（可选）
+- **启用/停用**：记忆开关（`memory_enabled`），控制提取钩子与 cron 整合。
+- **立即整合**：手动触发整合（`max_batches=4`，清空待整合队列），显示「整合中（调用 lite 模型，可能需要几十秒）」。
+- **待整合提示**：`待整合 N 条` 标签。
+- **统计栏**：总条目数、四类计数、待验证数、已归档数、索引行数/KB。
+- **过滤**：类型过滤（事实/偏好/技能/参考）、状态过滤（活跃/待验证/已归档）、关键词搜索（客户端匹配 name/title/description/tags）。
+- **条目列表**：类型标签 + 标题 + 描述 + 状态标记（待验证/已归档）+ name/tags。
+- **详情编辑**：编辑 title/description/tags/content；展示类型/来源/创建/更新/使用次数/最近使用/引用。
+- **操作**：保存（PUT）、归档、恢复、永久删除（带确认），操作结果提示 git 提交状态。
+- **git 记录**：最近 10 次提交（hash + subject，悬停显示日期）。
 
-- [ ] Agent 主动判断记忆时机
-- [ ] 会话结束时自动总结并记忆
+### 8.2 API 端点
 
-### Phase 3: 高级功能（可选）
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/workspaces/{uuid}/memory` | 记忆总览：enabled + stats + 条目列表（≤500，可按 type/status/关键词过滤）+ 待整合数 + 最近 10 次提交 |
+| GET | `/api/workspaces/{uuid}/memory/entries/{name}` | 查看条目全文（peek，只读不递增 usage） |
+| PUT | `/api/workspaces/{uuid}/memory/entries/{name}` | 编辑条目（title/description/tags/content）+ git 提交 |
+| POST | `/api/workspaces/{uuid}/memory/entries/{name}/archive` | 归档条目（移出索引与检索） |
+| POST | `/api/workspaces/{uuid}/memory/entries/{name}/restore` | 从归档恢复 |
+| POST | `/api/workspaces/{uuid}/memory/entries/{name}/delete` | 永久删除（不可恢复） |
+| POST | `/api/workspaces/{uuid}/memory/consolidate` | 手动整合（max_batches=4） |
+| PUT | `/api/workspaces/{uuid}/memory/settings` | 开/关 `memory_enabled`（写入 setting.json） |
 
-- [ ] 标签过滤
-- [ ] 知识归档（旧知识移到 archive/）
+所有写操作经 `_csrf_protect` 防护；name 经正则校验。
 
 ---
 
-## 九、风险与权衡
+## 九、git 版本控制
+
+### 9.1 独立仓库
+
+memory 目录自管**独立的 git 仓库**（best-effort，失败静默跳过）：
+
+- 用 `data/deps/git` 内置 git 优先，其次系统 PATH。
+- `_ensure_self_repo` 校验 `rev-parse --show-toplevel` 就是 memory 目录本身；否则重新 init，避免 `add -A` 误提交整个 cili 项目仓库。
+- 损坏的 `.git` 目录先备份为 `.git.bak.{ts}` 再重建；本地配置 `user.name=cili`、`user.email=cili@localhost`，避免依赖全局配置。
+
+### 9.2 提交时机与信息
+
+- **写操作即提交**：工具 store/update/delete、整合成功、UI 编辑/归档/恢复/删除后均提交。
+- **提交信息 = 真实 diff 摘要**（非 LLM 自述）：`git add -A` 后取 `diff --cached --stat -M` 摘要拼入 commit message，满足审计要求。
+- **只读自身仓库**：`git_log_summary` 校验 `--show-toplevel` 后读取最近提交，防止泄漏父仓库全局日志。
+
+---
+
+## 十、并发与安全
+
+### 10.1 线程安全
+
+- **跨线程文件锁**：每个 memory 目录一把 `threading.Lock`（`_STORE_LOCKS`），多 agent 并发写同一 memory 目录时串行化（对应多工作区/多会话并发的兜底）。
+- **提取指针锁**：每 (memory_dir, session_id) 一把锁，避免同会话并发提取竞争指针。
+
+### 10.2 原子写
+
+所有文件写入（条目、索引、cursor、journal compact、summary、提取指针）采用「写 `.tmp` + `os.replace`」原子替换，崩溃不产生半写文件；journal 追加本身为 append-only 单行 JSON。
+
+### 10.3 密钥掩蔽
+
+提取入库前 `redact_secrets` 掩蔽 API key / token / password（见 §4.4），防止密钥写入记忆库与 git 历史。
+
+---
+
+## 十一、风险与权衡
 
 | 风险 | 影响 | 缓解措施 |
 |------|------|----------|
-| 记忆误触发 | 用户体验差 | 使用明确的触发词，避免 "ok" 这种模糊词 |
-| 记忆膨胀 | 占用磁盘空间 | 暂不限制，观察使用情况，后续可加归档 |
-| 记忆冲突 | Agent 行为不一致 | 追加不删除，优先使用最新记忆 |
-| 触发词太生硬 | 用户需要学习 | 后续考虑自然语言理解 |
-| grep 检索不够智能 | 检索效果依赖关键词 | Agent 可自行组合多个 grep 调用 |
+| 提取误判（垃圾入库） | 记忆噪声 | 结构化 schema + WHAT_NOT_TO_SAVE 提示（可从代码/git 推导的不存）；整合层可 delete/skip |
+| 整合截断（max_tokens 丢尾部） | 部分记录滞留 | op 数 < 记录数即视为不完整：拆半重试 + 不推游标，记录保持 pending 可重跑 |
+| 模型幻觉 op（目标错位） | 失败死锁 | apply_ops 容错：缺失目标 no-op / 退化为 store / name 加 -n 后缀 |
+| 记忆膨胀 | 注入上下文超预算 | MEMORY.md ≤200 行/25KB 双截断、summary ≤2KB、preference 常驻 ≤10 条、journal compact(500)、90 天自动归档 |
+| 密钥入库 | 泄漏风险 | redact_secrets 入库前掩蔽 |
+| 并发写冲突 | 条目损坏 | 每 memory 目录线程锁 + 原子写 |
+| git 误提交父仓库 | 污染项目历史 | `_ensure_self_repo` 校验独立仓库 |
+| 记忆功能误开 | 消耗 Lite 模型 token | 默认关闭，用户显式开启；提取失败 RAW 降级不丢内容 |
 
 ---
 
-## 十、开放问题
-
-1. **是否需要记忆优先级？** 某些记忆是否比其他记忆更重要？
-2. **是否需要记忆过期机制？** 某些记忆是否应该随时间衰减？
-3. **是否需要记忆共享？** 多个工作区之间是否应该共享某些记忆？
-4. **是否需要记忆版本控制？** 是否保留记忆的修改历史？
-5. **是否需要导出/导入功能？** 是否支持记忆备份和迁移？
-
----
-
-## 十一、总结
+## 十二、总结
 
 ### 核心设计
 
-- **存储位置**: `data/agents/{uuid}/memory/`，与 sessions/config 统一
-- **存储类型**: knowledge、skill 两种类型（用户属性为独立系统）
-- **文件格式**: 
-  - Knowledge: Markdown with frontmatter（.md 文件）
-  - Skill: Markdown with frontmatter（skill.md 文件）
-- **文件组织**: 
-  - Knowledge 按主题分目录，再按日期分子目录：`knowledge/{topic}/{YYYY-MM-DD}/{file}.md`
-  - Skill 每个技能一个目录：`skills/{skill-name}/skill.md`
-  - 无法归类的知识存入 `misc/` 目录（同样按日期组织）
-- **日期组织优势**: 便于未来做遗忘处理，按日期归档旧知识
-- **最后访问时间追踪**: `read` 读取 knowledge 文件时自动更新 mtime，grep 按 mtime 倒序返回结果
-- **文件数量控制**: Knowledge 主题数量无硬限制，由 Agent 根据需要管理
-- **知识来源**: Knowledge 支持 source 字段（manual/web_search/browser/python）
-- **工具结果入库**: web_search/browser/python 的有价值结果由 Agent 判断后存入 knowledge
-- **工具职责**: memory 负责存储和管理，检索用 grep/read/find
-- **触发机制**: Agent 主动判断 + 用户关键词触发 + 工具结果自动入库
-- **上下文加载**: 技能按需检索，用户属性由独立系统自动加载
-  - **Skill 摘要不自动注入**，Agent 在收到任务时主动搜索 skills 目录
-- **任务前搜索**: Agent 收到任务请求时，先用 grep 搜索 skills 和 knowledge，返回匹配项的文件名和路径，判断是否需要加载完整内容
+- **存储位置**：`data/agents/{uuid}/memory/`，纯文件、无数据库。
+- **存储类型**：fact / preference / skill / reference 四类，统一 `entries/{type}/{name}.md` frontmatter 格式。
+- **定位键**：`name`（slug）全局唯一，跨类型不重复；store 按 name 原地替换。
+- **摄入日志**：journal.jsonl append-only + `.cursor` 单调游标，两端去重实现「恰好一次」。
+- **提取流水线**：回合结束后台线程 + Lite 模型结构化提取，失败 RAW 降级绝不丢内容，密钥入库前掩蔽。
+- **整合流水线**：cron 每 2 小时 + 手动立即整合，Lite 模型输出 ops 应用，成功后推游标 + git 提交；容错齐全。
+- **上下文注入**：三层——preference 常驻 + MEMORY.md 索引 + summary.md 摘要；user-profile.md 迁移回退。
+- **检索**：find 匹配 frontmatter 按 usage_count 排序，read 读全文并递增使用计数。
+- **管理 UI**：Web 记忆管理页完整覆盖开关/整合/编辑/归档/恢复/删除/git 记录。
+- **版本控制**：memory 目录自管独立 git 仓库，提交信息为真实 diff 摘要。
 
 ### 关键决策
 
-1. **存储放在 data 目录** — 与 sessions/config 统一，隔离清晰，避免污染工作区
-2. **memory 工具负责存储和管理** — 检索用 grep/read/find，复用现有工具，更灵活
-3. **Knowledge 使用 Markdown 格式** — 便于阅读和维护，支持 frontmatter 存储元数据
-4. **Skill 替代 Experience** — 技能系统更灵活和可扩展
-5. **Knowledge 按主题+日期分目录** — 主题目录 + 日期子目录，便于检索和遗忘处理
-6. **Skill 不自动注入摘要** — 避免上下文膨胀，Agent 在任务前主动搜索
-7. **任务前搜索流程** — 收到任务时先搜索 skills 和 knowledge，返回匹配项再判断是否加载
-8. **misc/ 兜底 + 日期子目录** — 无法归类的知识按日期分层，避免单目录文件过多
-9. **文件数量管理** — 无硬限制，Agent 根据需要合并主题或归档
-10. **最后访问时间追踪** — `read` 读取 knowledge 文件时自动更新 mtime，grep 按 mtime 倒序排列结果
-11. **不做会话检索** — 会话历史不单独检索，有价值的工具结果存入知识库
-12. **工具结果自动入库** — web_search/browser/python 的结果可存入 knowledge，标记 source
-13. **避免使用 "ok" 作为触发词** — 太常见，容易误触发
-14. **Agent 主动记忆** — 不完全依赖用户触发
-15. **追加不删除** — 简单且保留历史
-16. **记忆按时间排序** — 所有记忆带时间戳，检索时倒序排列，冲突时以最新为准
-17. **记忆冲突处理** — 追加新记忆，不删除旧记忆，按时间排序
-18. **检索方式** — MVP 使用关键词匹配 + 标签过滤，复用 grep/find
+1. **四类条目统一平铺** — 替代旧版 knowledge/skills 分目录设计，type 由 frontmatter 表达，存储/检索/管理逻辑统一。
+2. **name 全局唯一 slug** — 确定性定位，杜绝「按 title 全目录搜索」的歧义。
+3. **journal + 游标摄入模型** — 提取与整合解耦，恰好一次、崩溃可重跑、store 幂等重放无副作用。
+4. **后台线程提取** — 不阻塞 SSE 流；整合 cron 定时不占用对话路径。
+5. **Lite 模型 + 无工具沙箱** — 提取/整合成本可控、更安全、测试可注入。
+6. **preference 常驻注入** — 沟通偏好始终在场，无需检索。
+7. **MEMORY.md 双截断** — 常驻注入预算受控（200 行/25KB）。
+8. **op 容错与拆半重试** — 整批失败不消费记录，绝不丢内容。
+9. **git 独立仓库审计** — 所有写操作留痕，可回溯、可恢复。
+10. **默认关闭** — 记忆功能由用户显式开启，纯工作区隔离。
 
 ---
 
-*文档版本: v2.4*
-*最后更新: 2026-09-09*
+*文档版本: v3*
+*v3 更新: 2026-09-13 — 重写为 v3 实现：四类条目统一 entries/{type}/{name}.md 布局（替换旧 knowledge/{topic}/{date} 与 skills/{name}/skill.md）、journal + 游标提取/整合流水线、Lite 模型两阶段、git 独立仓库审计、三层上下文注入、Web 记忆管理 UI。*

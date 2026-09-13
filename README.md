@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![Playwright](https://img.shields.io/badge/Playwright-Browser_Automation-00c4ff.svg)](https://playwright.dev/)
-[![Tests](https://img.shields.io/badge/Tests-30+_Files-yellow.svg)](test/)
+[![Tests](https://img.shields.io/badge/Tests-50+_Files-yellow.svg)](test/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 </div>
@@ -22,13 +22,13 @@ Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时
 
 草履虫是自然界最简单的多细胞生物之一——结构精简，但功能完备。本项目以此为名，追求同样的哲学：**架构干净、依赖极少、开箱即用**。
 
-- **双模型架构** — Agent 负责多轮对话，LLM 模型处理单轮摘要压缩，各司其职
+- **角色化多模型架构** — Master/Worker/Lite 三角色共享同一 Agent 类，可分别指定模型；Full Compact 用 LLM 摘要旧消息，Lite 模型跑记忆提取与整合，各司其职
 - **浏览器自动化** — Playwright 驱动，支持 Chrome / Edge，全局单例管理，网页搜索与内容抓取
-- **文档解析** — 内置 MinerU 支持，PDF / Word / PPT 等格式智能识别与相互转换
+- **文档解析** — 内置 MinerU 支持，PDF / Word / PPT / 图片等格式智能识别并转 Markdown
 - **LaTeX 支持** — 内置 LaTeX 编译器，支持生成论文级别的 PDF 文档
 - **内置学习引擎** — 参考艾宾浩斯遗忘曲线设计，六种学习模式（学习阶梯、20小时计划、测验、速查表、资源筛选、费曼学习法）。说一句"我想学习 XXX"即可启动结构化学习
 - **内置调研引擎** — 只采信官方文档和一手来源，自动过滤自媒体和二手解读。说"帮我查查 XXX"即可启动，输出带完整引用链的 Markdown 报告
-- **用户画像系统** — 自动学习用户沟通风格和偏好，按工作区建立独立画像，让Agent更懂你的表达习惯和决策方式
+- **用户画像 / 偏好记忆** — 自动学习你的沟通风格和偏好，按工作区沉淀为 preference 记忆条目并常驻注入，让 Agent 更懂你的表达习惯和决策方式
 - **长期记忆** — 跨会话知识存储与技能复用，避免重复搜索和学习
 - **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，双击即可运行
 
@@ -72,17 +72,9 @@ python main.py --port 8080 --host 0.0.0.0
 
 ## 自动升级
 
-### Web UI 升级（推荐）
+### 启动时自动升级（默认开启）
 
-1. 打开设置页面（点击左上角 ⚙ 按钮）
-2. 切换到「升级」标签页
-3. 选择镜像源：
-   - **GitHub 直连** — 默认，适合海外用户
-   - **ghproxy.net 镜像** — 国内加速
-   - **ghfast.top 镜像** — 国内加速（备用）
-   - **gh-proxy.com 镜像** — 国内加速（备用）
-4. 点击「检查并升级」
-5. 升级完成后重启服务
+服务启动后，后台线程自动检查 GitHub 最新版本（版本号取自 `web/static/version.json`），发现新版本即自动下载代码包并覆盖本地代码，保留 `data/`、`workspace/`、`.git` 目录。下载优先 GitHub 直连，失败自动回退国内镜像。如需关闭，在 `setting.json` 中设置 `system.auto_update=false`。
 
 ### 命令行升级
 
@@ -95,7 +87,7 @@ scripts\upgrade.cmd
 ```
 
 升级脚本会自动：
-- 从 GitHub 或镜像下载最新代码 ZIP
+- 从 GitHub 或镜像下载最新代码 ZIP（默认 GitHub 直连，自动回退 ghfast.top / ghproxy.net / gh-proxy.com 国内镜像）
 - 解压并覆盖本地文件（保留 `data/`、`workspace/` 目录）
 - 新增/更新的文件会用 `[+]` / `[~]` 标记
 - 升级完成后重启服务即可
@@ -108,14 +100,14 @@ scripts\upgrade.cmd
 
 ```
 Agent (统一类，mode 分叉)
-  ├── master   (interactive) 22 工具：读写、Shell/PowerShell、Python、浏览器、搜索、记忆、
-  │             定时任务、PDF转换、技能、委派 agent、ask_user
-  ├── worker   (autonomous) 17 工具：master 去掉 todo/cron/message_bus/latex/ask_user，
-  │             含委派 agent、检查阶段与预算预警
-  └── lite     (autonomous) 4 工具：只读 read/write/edit/bash，最小执行（无检查/预算）
+  ├── master   (interactive) 26 工具：读写/图片、Shell/PowerShell、Python、浏览器、搜索、记忆、
+  │             定时任务、Todo、LaTeX、PDF转换、技能、委派 agent、ask_user、会话/工具搜索等
+  ├── worker   (autonomous) 16 工具：master 去掉浏览器/定时/Todo/LaTeX/委派/ask_user 等，
+  │             保留搜索、记忆、技能、会话搜索，适合批量后台任务
+  └── lite     (autonomous) 6 工具：read/write/edit/bash/python/clock，最小执行（无检查/预算）
 ```
 
-**统一工具/skill 注册表**：`core/tools/` 所有工具平铺，`registry.py` 按角色 JSON 的白名单实例化；`core/skills/` 所有技能平铺，frontmatter `roles` 声明适用角色。`llm` 工具已移除。
+**统一工具/skill 注册表**：`core/tools/` 所有工具平铺，`registry.py` 按角色 JSON 的白名单实例化；`core/skills/` 每个技能一个目录（`skill.md`），frontmatter `roles` 声明适用角色。
 
 ### LLM 底层架构
 
@@ -155,6 +147,16 @@ BrowserService (模块级单例)
 - 消息三级压缩：Microcompact → Full Compact → 紧急 Body Size
 - Worker/Lite 执行日志实时保存，前端懒加载
 - 支持多工作区隔离（sessions、cwd、配置）
+
+### 长期记忆
+
+跨会话的知识存储与技能复用系统（v3）：
+
+- **四类条目**：fact / preference / skill / reference，Markdown 存储，按工作区隔离
+- **提取流水线**：会话回合结束后后台提取记忆候选写入 journal；提取失败降级为 `[RAW]` 原文，绝不丢内容
+- **整合流水线**：每 2 小时（或手动「立即整合」）由 Lite 模型把 journal 待整合记录转成条目，刷新全局摘要，推进游标并 git 提交
+- **记忆管理 UI**：记忆总览、按类型/状态/关键词过滤、查看/归档/恢复/删除条目、手动整合按钮、记忆功能开关
+- **容错设计**：journal 按 key 去重保证恰好一次；游标单调推进、崩溃可安全重跑；幻觉 op 自动容错不阻塞队列
 
 ### 定时任务 (Cron)
 
@@ -203,18 +205,20 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 
 ### 技能系统
 
-Markdown + YAML frontmatter 格式，渐进式加载：
+每个技能一个目录（`skill.md`，YAML frontmatter 声明名称/描述/适用角色），按角色注入 system prompt：
 
-| 技能 | 所属层级 | 说明 |
+| 技能 | 适用角色 | 说明 |
 |------|---------|------|
-| code-review | root | 代码审查 |
-| task-delegation | root | 任务拆分与委派 |
-| research | root | 深度研究 |
-| learning | root | 知识学习 |
-| create-skill | root | 创建新技能 |
-| grilling | root | 深度追问 |
-| context-bounded-processing | sub | 上下文受限处理 |
-| file-processing | shared | 文件处理 |
+| code-review | master | 代码审查 |
+| task-delegation | master/worker | 任务拆分与委派 |
+| research | master | 深度研究（委托 Worker，只采信一手来源） |
+| learning | master | 知识学习 |
+| create-skill | master | 创建新技能 |
+| skillify | master | 把当前会话流程固化为技能 |
+| grilling | master | 深度追问 |
+| translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
+| context-bounded-processing | worker | 上下文受限处理 |
+| file-processing | master/worker/lite | 文件处理与文档解析 |
 
 ## 项目结构
 
@@ -222,45 +226,52 @@ Markdown + YAML frontmatter 格式，渐进式加载：
 cili/
 ├── start.cmd / start.ps1       # 启动入口（自动环境检测）
 ├── main.py                     # Python 入口（uvicorn web server）
-── scripts/
+├── scripts/
 │   ├── upgrade.cmd             # Windows 批处理升级脚本
-│   ── upgrade.ps1             # PowerShell 升级脚本
+│   └── upgrade.ps1             # PowerShell 升级脚本
 ├── core/
-│   ├── base_agent.py         # Agent 基类（消息管理、压缩、LLM 调用）
-│   ├── agent.py              # 统一 Agent 类（mode 分叉 master/worker/lite）
-│   ├── agent_config.py       # AgentRoleConfig + load_agent_role（读 core/agents/*.json）
-│   ├── agents/               # 角色 JSON 定义（master.json / worker.json / lite.json）
-│   ├── prompt_builder.py     # system prompt 块拼装 + user 层注入 + 防连续合并
-│   ├── config.py             # 配置加载（环境变量 > 文件 > 默认值）
-│   ├── session.py            # 会话管理（持久化、过滤、缓存）
-│   ├── compression.py        # 消息压缩（Microcompact / Full Compact）
-│   ├── prompts.py            # prompt 生成函数
-│   ├── browser_service.py    # 浏览器服务（Playwright 单例）
-│   ├── cron.py               # Cron 调度器
-│   ├── message_bus.py        # 跨会话消息总线
-│   ├── llm/                  # LLM 底层架构
-│   │   ├── types.py          # ContentBlock / Message / StreamChunk
-│   │   ├── adapter.py        # Adapter 抽象基类
-│   │   ├── anthropic.py      # Anthropic Adapter
-│   │   ├── openai.py         # OpenAI Adapter
-│   │   ├── transport.py      # HTTP 传输（SSE / 重试）
-│   │   ├── assembler.py      # 流式数据块累积
-│   │   └── client.py         # 统一 API（chat / chat_stream）
-│   ├── tools/                # 工具层（统一注册表，按角色 JSON 白名单加载）
-│   │   ├── registry.py       # TOOL_REGISTRY + create_tools(role_config, ...)
-│   │   ├── *.py              # 全部工具平铺（read/write/edit/bash/.../agent/ask_user）
-│   │   └── __init__.py
-│   └── skills/               # 技能层（平铺，frontmatter roles 声明适用角色）
-│       ├── *.md              # code-review / task-delegation / research / ...
+│   ├── base_agent.py           # Agent 基类（消息管理、压缩、LLM 调用）
+│   ├── agent.py                # 统一 Agent 类（mode 分叉 master/worker/lite）
+│   ├── agent_config.py         # AgentRoleConfig + load_agent_role（读 core/agents/*.json）
+│   ├── agents/                 # 角色 JSON 定义（master.json / worker.json / lite.json）
+│   ├── prompt_builder.py       # system prompt 块拼装 + user 层注入 + 防连续合并
+│   ├── config.py               # 配置加载（环境变量 > 文件 > 默认值）
+│   ├── session.py              # 会话管理（持久化、过滤、缓存）
+│   ├── compression.py          # 消息压缩（Microcompact / Full Compact / Emergency）
+│   ├── prompts.py              # prompt 生成函数
+│   ├── browser_service.py      # 浏览器服务（Playwright 单例）
+│   ├── cron.py                 # Cron 调度器
+│   ├── cron.d/                 # 系统级 Cron 任务配置（如每 2 小时记忆整合）
+│   ├── memory_pipeline.py      # 记忆提取/整合流水线（journal → 条目）
+│   ├── memory_store.py         # 记忆存储（Journal / MemoryStore / 四类条目）
+│   ├── message_bus.py          # 跨会话消息总线
+│   ├── updater.py              # 启动时自动升级（GitHub 检查 + 覆盖）
+│   ├── llm/                    # LLM 底层架构
+│   │   ├── types.py            # ContentBlock / Message / StreamChunk
+│   │   ├── adapter.py          # Adapter 抽象基类
+│   │   ├── anthropic.py        # Anthropic Adapter
+│   │   ├── openai.py           # OpenAI Adapter
+│   │   ├── transport.py        # HTTP 传输（SSE / 重试）
+│   │   ├── assembler.py        # 流式数据块累积
+│   │   └── client.py           # 统一 API（chat / chat_stream / chat_structured）
+│   ├── tools/                  # 工具层（统一注册表，按角色 JSON 白名单加载）
+│   │   ├── registry.py         # TOOL_REGISTRY + create_tools(role_config, ...)
+│   │   └── *.py                # 全部工具平铺（read/write/edit/bash/.../agent/ask_user）
+│   └── skills/                 # 技能层（每技能一个目录，skill.md + roles frontmatter）
 ├── web/
-│   ├── web_api.py            # FastAPI 服务（REST + SSE 流式）
-│   └── static/               # 前端静态文件
-│       ├── index.html        # 单页应用
-│       ├── app.js            # 前端逻辑
-│       └── style.css         # 样式
-├── docs/                     # 设计文档（14 篇）
-── test/                     # 测试（30+ 文件）
-└── workspace/                # 默认工作目录
+│   ├── web_api.py              # FastAPI 服务（REST + SSE 流式 + 记忆管理 API）
+│   └── static/                 # 前端静态文件
+│       ├── index.html          # 单页应用
+│       ├── session.html        # 会话页面
+│       ├── app.js / chat.js    # 前端逻辑
+│       ├── memory.js           # 记忆管理页面
+│       ├── settings.js         # 设置说明（加载 docs/settings-guide.md）
+│       ├── file-manager.js     # 文件管理
+│       ├── utils.js            # 工具函数
+│       └── style.css           # 样式
+├── docs/                       # 设计文档 + 设置说明（15 篇）
+├── test/                       # 测试（52 文件）
+└── workspace/                  # 默认工作目录
 ```
 
 ## 测试
@@ -286,6 +297,7 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 |------|------|
 | [agent-design.md](docs/design/agent-design.md) | Agent 架构、循环机制、消息管理 |
 | [content-block-design.md](docs/design/content-block-design.md) | LLM 底层：Adapter 分层、ContentBlock 类型、StreamChunk 协议 |
+| [compression-design.md](docs/design/compression-design.md) | 三层消息压缩：Microcompact、Full Compact、Emergency |
 | [tool-system-design.md](docs/design/tool-system-design.md) | 统一工具注册表、执行流程、全部工具说明 |
 | [session-management-design.md](docs/design/session-management-design.md) | 会话存储、消息过滤、自动压缩 |
 | [browser-service-design.md](docs/design/browser-service-design.md) | BrowserService 单例、工作线程、Tab 池 |
@@ -297,6 +309,7 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | [system-prompt-design.md](docs/design/system-prompt-design.md) | 系统提示词构建逻辑 |
 | [environment-setup-design.md](docs/design/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
 | [llm-api-reference.md](docs/design/llm-api-reference.md) | LLM API 参考文档 |
+| [settings-guide.md](docs/settings-guide.md) | 配置项说明（模型、角色模型、鉴权、MinerU 等） |
 
 ## 技术栈
 

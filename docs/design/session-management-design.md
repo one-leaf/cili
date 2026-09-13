@@ -27,7 +27,9 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
 data/agents/{uuid}/
 └── sessions/
     ├── a1b2c3d4/                        # 会话 1（8 位十六进制 ID）
-    │   ├── index.json                   # 主会话数据
+    │   ├── messages.jsonl               # 完整消息历史（追加式，UI 数据源）
+    │   ├── index.json                   # 模型提交视图（schema_version/next_seq/commits[]）
+    │   ├── meta.json                    # 会话属性（session_id/name/metadata）
     │   ├── toolu_abc123.txt             # Master Agent 工具输出（实时流式写入）
     │   ├── toolu_def456.txt
     │   ├── exec_a1b2c3d4/               # Agent 1
@@ -36,90 +38,87 @@ data/agents/{uuid}/
     │   │   └── toolu_jkl012.txt
     │   └── exec_e5f6g7h8/               # Agent 2
     │       └── index.json
-    ├── e5f6g7h8/                    # 会话 2
-    │   └── index.json
+    ├── e5f6g7h8/                        # 会话 2
+    │   ├── messages.jsonl
+    │   ├── index.json
+    │   └── meta.json
     └── ...
 ```
 
 **文件命名规则**：
 - **会话目录**：8 位十六进制短 ID（如 `a1b2c3d4`），由 `secrets.token_hex(4)` 生成
-- **主会话文件**：固定为 `index.json`
-- **工具输出文件**：`{tool_use_id}.txt`，与 `index.json` 同级（Master Agent）或在 Agent 子目录内
+- **完整消息历史**：固定为 `messages.jsonl`（追加式，UI 直接读取，保留压缩前会话）
+- **模型提交视图**：固定为 `index.json`（`{schema_version, next_seq, commits[]}`，不再存消息正文）
+- **会话属性**：固定为 `meta.json`（`session_id/name/metadata`）
+- **工具输出文件**：`{tool_use_id}.txt`，与会话目录内其他文件同级（Master Agent）或在 Agent 子目录内
 - **Agent 目录**：`exec_{id}/`，内含 `index.json` 和该 Agent 调用的所有工具输出文件
 
-### 2.2 index.json 格式
+### 2.2 三文件布局（messages.jsonl / index.json / meta.json）
 
-主会话文件包含完整的对话数据：
+会话目录采用**三文件布局**，完整历史与模型提交视图分离，互不重写。
+
+#### messages.jsonl（完整消息历史，UI 数据源）
+
+追加式 JSONL，每行一条消息（block 级 `_meta` 被剥离）：
+
+```json
+{"seq": 0, "id": "msg_001", "role": "user", "content": "帮我写一个异步爬虫"}
+{"seq": 1, "id": "msg_002", "role": "assistant", "content": [{"type": "thinking", "thinking": "用户需要异步爬虫..."}, {"type": "text", "text": "好的，我来帮你写一个异步爬虫..."}]}
+{"seq": 2, "id": "msg_003", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_123", "name": "write", "input": {"file_path": "crawler.py", "content": "..."}}]}
+{"seq": 3, "id": "msg_004", "role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_123", "content": "文件已写入完成", "is_error": false}]}
+```
+
+- `seq`：会话内单调递增序号，模型视图按它引用 jsonl 内容；
+- `id`：消息短 ID；
+- `content`：消息正文；block 级 `_meta` 不写入 jsonl，UI 渲染所需 `_meta` 由前端从 index.json commits 合并。
+- **永不重写**：压缩/无效化只改提交视图，jsonl 保留压缩前的完整历史；`revert`/`clear` 是唯一显式截断 jsonl 的例外。
+
+#### index.json（模型提交视图）
+
+不存消息正文，只存提交记录——普通消息由 `seq` 引用 jsonl 内容，压缩摘要消息内嵌 `summary`：
+
+```json
+{
+  "schema_version": 2,
+  "next_seq": 5,
+  "commits": [
+    {"seq": 0, "msg_meta": {}, "blocks": {}},
+    {"seq": 1, "msg_meta": {}, "blocks": {}},
+    {"seq": 2, "msg_meta": {}, "blocks": {"toolu_123": {"output_path": "toolu_123.txt", "file_size": 2048, "truncated": false}}},
+    {"seq": 3, "msg_meta": {}, "blocks": {"toolu_123": {"tool_name": "write"}}},
+    {"summary": "……（压缩后的摘要）……", "role": "assistant", "msg_meta": {"valid": false}, "blocks": {}}
+  ]
+}
+```
+
+**关键字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `schema_version` | int | 布局版本（当前 2） |
+| `next_seq` | int | 下一个可用序号（崩溃自愈取磁盘/内存最大 seq+1） |
+| `commits[]` | array | 模型提交视图（有序） |
+| `commit.seq` | int | 普通消息：引用 messages.jsonl 中同 seq 行的内容 |
+| `commit.summary` | string | 压缩摘要消息：内嵌摘要内容（无 seq，不进 jsonl） |
+| `commit.role` | string | 摘要消息角色（assistant/user） |
+| `commit.msg_meta` | object | 消息级 `_meta`（`valid`、`compacted` 等，不含 `id/seq`） |
+| `commit.blocks` | object | block 级 `_meta`，键为 block id（`tool_use_id`/`tool_call_id`/`id`） |
+| `commit.blocks[].tool_name` | string | 工具名称（如 bash、read、write） |
+| `commit.blocks[].file_size` | int | 外部输出文件的字节数（仅外部存储时有） |
+| `commit.blocks[].truncated` | bool | 输出是否被截断（>10K 字符） |
+| `commit.blocks[].compacted` | bool | 是否被 microcompact 压缩过 |
+| `commit.blocks[].output_path` | string | 外部输出文件相对路径（如 toolu_123.txt） |
+
+**双读路径**：
+- **UI** 读 `messages.jsonl` 完整历史（append 序 = 会话序），从 `index.json` commits 合并 block 级 `_meta`；
+- **模型**读 `index.json` commits 视图（`seq` 引用 jsonl 内容 / `summary` 内嵌摘要 + 全部 `_meta`），压缩/无效化只改提交视图。
+
+#### meta.json（会话属性）
 
 ```json
 {
   "session_id": "a1b2c3d4",
   "name": "Python 异步编程讨论",
-  "messages": [
-    {
-      "role": "user",
-      "content": "帮我写一个异步爬虫"
-    },
-    {
-      "role": "assistant",
-      "content": [
-        {
-          "type": "thinking",
-          "thinking": "用户需要异步爬虫..."
-        },
-        {
-          "type": "text",
-          "text": "好的，我来帮你写一个异步爬虫..."
-        },
-        {
-          "type": "tool_use",
-          "id": "toolu_123",
-          "name": "write",
-          "input": {"file_path": "crawler.py", "content": "..."}
-        }
-      ]
-    },
-    {
-      "role": "user",
-      "content": [
-        {
-          "type": "tool_result",
-          "tool_use_id": "toolu_123",
-          "content": "文件已写入完成",
-          "is_error": false,
-          "_meta": {
-            "tool_name": "write"
-          }
-        }
-      ]
-    },
-    {
-      "role": "assistant",
-      "content": [
-        {
-          "type": "tool_use",
-          "id": "toolu_sub_001",
-          "name": "agent",
-          "input": {"task": "优化爬虫性能"}
-        }
-      ]
-    },
-    {
-      "role": "user",
-      "content": [
-        {
-          "type": "tool_result",
-          "tool_use_id": "toolu_sub_001",
-          "content": "{\"status\": \"completed\", \"summary\": \"...\"}",
-          "_meta": {
-            "tool_name": "agent",
-            "exec_id": "exec_a1b2c3d4",
-            "completed": true
-          }
-        }
-      ]
-    }
-  ],
   "metadata": {
     "created_at": "2026-08-25 10:00:00",
     "updated_at": "2026-08-25 10:32:00",
@@ -135,22 +134,10 @@ data/agents/{uuid}/
 }
 ```
 
-**关键字段说明**：
-
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `session_id` | string | 8 位十六进制 ID |
 | `name` | string | 会话名称（可重命名） |
-| `messages` | array | 消息列表（user/assistant） |
-| `messages[].role` | string | 消息角色（user/assistant） |
-| `messages[].content` | string/array | 消息内容（字符串或 content blocks） |
-| `messages[]._meta.valid` | bool | 是否有效（false 表示不发送给 API） |
-| `tool_result.is_error` | bool | 工具执行是否失败（block 根级，不在 _meta 内） |
-| `tool_result._meta.tool_name` | string | 工具名称（如 bash、read、write） |
-| `tool_result._meta.file_size` | int | 外部输出文件的字节数（仅外部存储时有） |
-| `tool_result._meta.truncated` | bool | 输出是否被截断（>10K 字符） |
-| `tool_result._meta.compacted` | bool | 是否被 microcompact 压缩过 |
-| `tool_result._meta.output_path` | string | 外部输出文件相对路径（如 toolu_123.txt） |
 | `metadata.created_at` | string | 创建时间（yyyy-MM-dd HH:mm:ss） |
 | `metadata.updated_at` | string | 最后更新时间 |
 | `metadata.usage` | object | 使用量统计 |
@@ -240,17 +227,16 @@ class SessionManager:
 | `clear()` | 清空所有消息 |
 | `get_last_n_messages(n)` | 获取最后 N 条消息 |
 | `get_message_count()` | 获取消息数量 |
-| `update_tool_result(tool_use_id, updates)` | 更新指定 tool_use_id 的 tool_result 字段 |
-| `save()` | 持久化到 index.json |
+| `save()` | 持久化三件套（messages.jsonl 追加 + index.json/meta.json 原子重写） |
 | `load()` | 从 index.json 加载 |
 | `delete()` | 删除会话目录 |
 | `list_sessions(sessions_dir)` | 列出所有会话（静态方法） |
 | `rename(new_name)` | 重命名会话 |
 | `update_usage(...)` | 更新使用量统计 |
 | `get_usage()` | 获取使用量统计 |
-| `microcompact_tool_results(keep_recent)` | Microcompact 压缩（替换内容为占位符） |
-| `mark_old_tool_calls_invalid(keep_recent_rounds)` | 标记旧工具调用为无效 |
-| `mark_old_images_invalid(keep_recent)` | 标记旧图片为无效 |
+| `microcompact_tool_results(keep_recent)` | Microcompact 压缩（core/compression.py 模块级函数，替换内容为占位符） |
+| `mark_old_tool_calls_invalid(keep_recent_rounds)` | 标记旧工具调用为无效（BaseAgent 方法） |
+| `mark_old_images_invalid(keep_recent)` | 标记旧图片为无效（BaseAgent 方法） |
 | `save_agent_log(...)` | 保存 Agent 执行日志 |
 | `load_agent_log(exec_id)` | 加载 Agent 执行日志 |
 | `list_agent_logs()` | 列出所有执行日志 |
@@ -426,27 +412,37 @@ session.delete_agent_log("exec_a1b2c3d4")
 
 ## 六、持久化机制
 
-### 6.1 原子写入
+### 6.1 原子写入（_persist 三件套）
 
-所有文件写入都使用原子写入，防止数据损坏：
+所有文件写入都使用原子写入，防止数据损坏。`save()` 持会话目录写锁后调用 `_persist()`，一次性写入三件套：
 
 ```python
 def save(self) -> None:
-    session_file = self.session_dir / "index.json"
-    
-    # 1. 写入临时文件
-    temp_file = session_file.with_suffix(".json.tmp")
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    # 2. 原子替换（Windows 上也安全）
-    temp_file.replace(session_file)
+    lock = _get_session_lock(self.session_dir)
+    with lock:
+        self._persist()          # 持锁写入三件套
+
+def _persist(self) -> None:
+    # 1. 派生 commits：invalid 消息跳过（jsonl 保留）、summary 消息内嵌摘要、
+    #    普通消息按 seq 引用 jsonl；仅追加无 seq 的新消息到 jsonl
+    # 2. 追加新消息到 messages.jsonl（append + fsync）
+    append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)
+    # 3. 原子重写 index.json（模型提交视图）
+    atomic_write_json(index_file, {
+        "schema_version": SCHEMA_VERSION,
+        "next_seq": next_seq,
+        "commits": commits,
+    })
+    # 4. 原子重写 meta.json（会话属性）
+    atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
 ```
 
 **优势**：
 - 写入中断不会损坏原文件
 - 并发读取不会看到半写入状态
 - 失败时自动清理临时文件
+- 每会话目录一把写锁（`_SESSION_LOCKS`），串行化 jsonl 追加与 index.json/meta.json 原子重写
+- `next_seq = max(磁盘, 内存最大 seq+1)`，崩溃自愈
 
 ### 6.2 加载时机
 
@@ -668,10 +664,9 @@ def get_session(uuid, id):
 
 | 文件 | 职责 |
 |------|------|
-| `core/session.py` | SessionManager 实现（含压缩辅助方法） |
+| `core/session.py` | SessionManager 实现（三件套持久化、消息/使用量管理、Agent 日志） |
 | `core/compression.py` | 独立压缩模块（共享压缩函数，各角色共用） |
 | `core/agent.py` | 统一 Agent（master 交互式使用 SessionManager；worker/lite 自主式使用子目录日志） |
-| `core/session.py` | SessionManager（含 save_agent_log / load_agent_log） |
 | `web/web_api.py` | 提供会话管理 API |
 | `web/static/app.js` | 前端会话列表和消息展示 |
 

@@ -74,10 +74,10 @@ Cili Agent 提供两个浏览器相关工具：
 遵循 `CronScheduler` 的模块级单例模式：
 
 ```python
-# 获取服务实例（不存在则自动创建并启动）
+# 获取服务实例（不存在则自动创建并启动；web_api.py lifespan startup 调用）
 service = get_service() -> BrowserService
 
-# 启动服务（web_api.py lifespan startup 调用，等价于 get_service()）
+# 兼容别名：等价于 get_service()（旧调用方仍可使用）
 start_browser_service() -> BrowserService
 
 # 停止服务（web_api.py lifespan shutdown 调用）
@@ -170,7 +170,7 @@ self._listener_pages: set[int]          # 已挂 console/response 监听器的 p
 │    └─ _open_new_page() → tab_index=1, page_A
 │         └─ _page_pool = {1: (page_A, t1)}
 │         └─ _active_tab_index = 1
-│         └─ 返回 ToolResult(..., data={"tab_index": 1})
+│         └─ 返回 ToolResult(..., meta={"tab_index": 1})
 │
 ├── screenshot("shot.png", tab_index=1)
 │    └─ _ensure_page(tab_index=1) → 复用 page_A
@@ -285,8 +285,26 @@ stop()                          # 完整清理
   │         └─ _running = False
   │
   └─ 停止 worker 线程
-       ├─ task_queue.put((None, ...))     # 发送退出信号
+       ├─ task_queue.put(None)            # 发送退出信号
        └─ worker_thread.join(timeout=5)
+```
+
+### 3.5 URL 校验与 SSRF 防护
+
+**方案**：模块级函数 `_validate_navigate_url(url)` 在导航前校验 URL，拒绝非法 scheme 与私网/环回地址，防止恶意网页诱导浏览器读取本地文件或探测内网（SSRF 防护）。
+
+**校验策略**：
+1. **scheme 白名单**：仅允许 `http` / `https`，硬拒绝 `file://`、`data:`、`javascript:` 等
+2. **主机名校验**：缺少主机名的 URL 拒绝；`localhost`（环回地址）特判拒绝
+3. **私网/环回/链路本地/保留地址拦截**：字面 IP 通过 `ipaddress.ip_address()` 判定，非公网地址（`not addr.is_global`）即拒绝；域名交由浏览器 DNS 解析（无法静态预判，不拦截）
+
+**执行时机**：`navigate()` 先于任何浏览器操作（`_ensure_connected`、开新 tab 等）调用 `_validate_navigate_url()`，校验失败立即返回错误 `ToolResult`，不启动浏览器：
+
+```python
+# navigate() 入口处
+block_reason = _validate_navigate_url(url)
+if block_reason:
+    return ToolResult(f"Error: 导航被拒绝 — {block_reason}", error=True)
 ```
 
 ---
@@ -313,8 +331,12 @@ class BrowserService:
         self._lock = threading.Lock()
         self._worker_thread: threading.Thread | None = None
         self._task_queue: queue.Queue = queue.Queue()
-        self._task_result: tuple[bool, Any] | None = None
-        self._result_event = threading.Event()
+        # 每次 _run_in_worker 分配独立结果槽位（task_id → Event / 结果），
+        # 多线程并发调用互不串扰（禁止共享单槽，否则结果会串）。
+        self._task_lock = threading.Lock()
+        self._task_events: dict[int, threading.Event] = {}
+        self._task_results: dict[int, tuple[bool, Any]] = {}
+        self._next_task_id_counter = 0
 
     def _start_worker_thread(self) -> None:
         """启动专用工作线程。所有 Playwright 操作都在此线程执行。"""
@@ -335,9 +357,11 @@ class BrowserService:
         """
         while True:
             try:
-                task_func, task_args, task_kwargs = self._task_queue.get()
-                if task_func is None:  # 退出信号
-                    break
+                item = self._task_queue.get()
+                if item is None or (isinstance(item, tuple) and item and item[0] is None):
+                    break  # 退出信号
+
+                task_id, task_func, task_args, task_kwargs = item
 
                 # Lazy cleanup: close tabs idle for > TAB_IDLE_TIMEOUT
                 try:
@@ -347,18 +371,32 @@ class BrowserService:
 
                 try:
                     result = task_func(*task_args, **task_kwargs)
-                    self._task_result = (True, result)
+                    task_result = (True, result)
                 except Exception as e:
-                    self._task_result = (False, e)
-                finally:
-                    self._result_event.set()
+                    logger.warning(f"[BrowserService] Worker task error: {e}")
+                    task_result = (False, e)
+
+                # 存储结果并通知对应调用方；若调用方已超时放弃则不存（避免泄漏）
+                with self._task_lock:
+                    event = self._task_events.pop(task_id, None)
+                    if event is not None:
+                        self._task_results[task_id] = task_result
+                if event is not None:
+                    event.set()
             except Exception as e:
                 logger.error(f"[BrowserService] Worker loop error: {e}", exc_info=True)
+
+    def _next_task_id(self) -> int:
+        """分配递增任务 ID（线程安全）。"""
+        with self._task_lock:
+            self._next_task_id_counter += 1
+            return self._next_task_id_counter
 
     def _run_in_worker(self, func, *args, **kwargs):
         """在专用工作线程中执行函数。
 
-        支持嵌套调用检测：如果已经在工作线程中，直接执行以避免死锁。
+        每次调用分配独立的结果槽位（Event + 结果），多线程并发调用互不串扰。
+        注意：此方法不能在工作线程内部调用，否则会死锁！
         """
         # 检查是否在工作线程内部调用（避免死锁）
         if threading.current_thread() == self._worker_thread:
@@ -367,18 +405,23 @@ class BrowserService:
         # 确保工作线程已启动
         self._start_worker_thread()
 
-        # 提交任务并等待结果
-        self._result_event.clear()
-        self._task_result = None
-        self._task_queue.put((func, args, kwargs))
+        # 为本次调用分配独立结果槽位
+        task_id = self._next_task_id()
+        event = threading.Event()
+        with self._task_lock:
+            self._task_events[task_id] = event
 
-        if not self._result_event.wait(timeout=60):
+        # 提交任务到队列
+        self._task_queue.put((task_id, func, args, kwargs))
+
+        # 等待结果
+        if not event.wait(timeout=60):
+            with self._task_lock:
+                self._task_events.pop(task_id, None)
             raise TimeoutError("Task execution timeout (60s)")
 
-        if self._task_result is None:
-            raise RuntimeError("Task result is None")
-
-        success, result = self._task_result
+        with self._task_lock:
+            success, result = self._task_results.pop(task_id)
         if not success:
             raise result
         return result
@@ -437,7 +480,7 @@ def screenshot(self, path: str, tab_index: int | None = None) -> ToolResult:
 
 ### 5.1 BrowserTool（browser.py）
 
-精简为 ~180 行，主要职责：
+精简为 ~258 行，主要职责：
 1. 提供 Tool 接口给 LLM 调用
 2. 将 action 参数路由到 BrowserService 的对应方法
 3. 传递 tab_index 参数实现多 tab 操作
@@ -529,7 +572,7 @@ find(pattern)    →  重新 snapshot 并正则匹配 role/name，返回匹配�
 
 ### 5.3 WebSearchTool（web_search.py）
 
-精简为 ~310 行，主要职责：
+精简为 ~322 行，主要职责：
 1. 构建搜索 URL（支持 Bing 和 Google，通过 SEARCH_CONFIGS 配置，支持 time_range 时间过滤）
 2. 调用 service.navigate() 加载搜索页面（每次开新 tab，获取 tab_index）
 3. 使用 tab_index 调用 service.wait_for() 和 execute_script()
@@ -548,8 +591,8 @@ class WebSearchTool(Tool):
         # 2. 获取 tab_index
         tab_index = nav_result.meta.get("tab_index") if nav_result.meta else None
 
-        # 3. 等待结果加载（使用同一 tab）
-        service.wait_for(".b_algo", timeout=15000, tab_index=tab_index)
+        # 3. 等待结果加载（使用同一 tab；selector 按引擎配置，bing: .b_algo / google: #rso）
+        service.wait_for(search_config["wait_selector"], timeout=15000, tab_index=tab_index)
 
         # 4. JS 提取结果（使用同一 tab）
         js_code = "..."
@@ -591,10 +634,28 @@ def _start_chrome(self, port: int) -> tuple[bool, str]:
     # 2. 检查端口（可能被外部启动的 Chrome 占用）
     if self._is_port_listening(port):
         if self._try_cdp_connect():
-            return True, ""
+            # 复用本项目的 Chrome：_find_chrome_process_by_profile() 记录其 PID
+            self._chrome_process = self._find_chrome_process_by_profile()
+            if self._chrome_process:
+                return True, ""
+            # 端口上是非本项目 profile 的 Chrome（用户个人浏览器）
+            # 不共享其登录态/cookies，切换随机端口启动本项目自己的 Chrome
+            self._cdp_port = self._pick_free_port()
+            port = self._cdp_port
         else:
-            self._kill_chrome_internal()  # 杀死 stale Chrome
-            # 等待端口释放...
+            # CDP 连接失败，端口被占用：仅当确认是本项目 profile 的 Chrome 才 kill，
+            # 否则不误杀（用户浏览器/其他程序），切换随机端口
+            if self._chrome_process is None:
+                pid = self._find_pid_by_port(port)
+                if pid is not None and self._pid_uses_our_profile(pid):
+                    self._chrome_process = _ChromeProcessRef(pid)
+            if self._chrome_process:
+                self._kill_chrome_internal()  # 杀死 stale Chrome
+                # 等待端口释放...
+            else:
+                # 非本项目进程，切换随机端口
+                self._cdp_port = self._pick_free_port()
+                port = self._cdp_port
 
     # 3. 查找 Chrome 可执行文件
     chrome_path = self._find_browser()
@@ -666,11 +727,15 @@ def _kill_chrome_internal(self) -> None:
     # 3. 等待端口释放（最多 10 秒）
     for i in range(20):
         time.sleep(0.5)
-        if not self._is_port_listening(DEFAULT_CDP_PORT):
+        if not self._is_port_listening(self._cdp_port):
             break
 ```
 
-`_kill_chrome_internal()` 只终止 `self._chrome_process` 记录的进程，不会影响其他 cili 实例或用户自己的 Chrome。若服务自身未记录 PID 但端口已被占用（如外部启动的 Chrome），`_start_chrome()` 会通过 `_find_chrome_process_by_profile()`（PowerShell `Get-CimInstance Win32_Process` 查找使用相同 profile 的 chrome.exe/msedge.exe）找到进程，用轻量级 `_ChromeProcessRef` 记录其 PID，供后续终止使用。
+`_kill_chrome_internal()` 只终止 `self._chrome_process` 记录的进程，不会影响其他 cili 实例或用户自己的 Chrome。端口被占用时的处理逻辑：
+- **CDP 可连接 + 本项目 profile**：`_find_chrome_process_by_profile()`（PowerShell `Get-CimInstance Win32_Process` 查找使用相同 profile 的 chrome.exe/msedge.exe）用轻量级 `_ChromeProcessRef` 记录 PID，直接复用；
+- **CDP 可连接 + 非本项目 profile**（用户个人浏览器）：不共享其登录态，也不误杀，切换随机端口（`_pick_free_port()`）启动本项目 Chrome；
+- **CDP 连接失败 + 本项目 profile 的 stale Chrome**：通过 `_pid_uses_our_profile()` 确认后 kill；
+- **CDP 连接失败 + 非本项目进程**：不误杀，切换随机端口。
 
 ---
 
@@ -704,7 +769,7 @@ def _execute_operation(self, operation_name: str, func, tab_index: int | None = 
             page_info = f"url={page.url}, closed={page.is_closed()}"
             browser_info = f"connected={self._browser.is_connected()}"
             chrome_info = f"pid={self._chrome_process.pid}, alive={...}"
-            port_listening = self._is_port_listening(DEFAULT_CDP_PORT)
+            port_listening = self._is_port_listening(self._cdp_port)
             tab_pool_size = len(self._page_pool)
 
             return ToolResult(
@@ -781,7 +846,7 @@ def _apply_stealth(self) -> None:
 
 ```
 core/
-├── browser_service.py              # 全局浏览器服务（~1500 行）
+├── browser_service.py              # 全局浏览器服务（~1707 行）
 │   ├── BrowserService              # 服务类
 │   │   ├── start() / stop()        # 生命周期
 │   │   ├── disconnect()            # 断连接保 Chrome
@@ -830,13 +895,13 @@ core/
 │       └── stop_browser_service()
 │
 └── tools/
-    ├── browser.py                  # 浏览器工具（~240 行）
+    ├── browser.py                  # 浏览器工具（~258 行）
     │   └── BrowserTool
     │       ├── execute()           # 委托给 BrowserService（含 tab_index）
     │       ├── close()             # disconnect()
     │       └── kill_chrome()       # kill_chrome()
     │
-    └── web_search.py               # 搜索工具（~310 行）
+    └── web_search.py               # 搜索工具（~322 行）
         └── WebSearchTool
             └── execute()           # 委托给 BrowserService，返回 tab_index
 
@@ -851,7 +916,7 @@ web/web_api.py                      # lifespan startup 调用 get_service()，sh
 BrowserService
   ├── playwright.sync_api           # Playwright Python API
   ├── playwright_stealth            # 反 bot 检测
-  ├── core.tools.shared.base        # ToolResult
+  ├── core.tools.base               # ToolResult
   └── core.config                   # PROJECT_ROOT, load_config (浏览器路径查找)
 
 BrowserTool / WebSearchTool

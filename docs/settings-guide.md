@@ -24,14 +24,15 @@ Cili Agent/
 
 ## 整体结构
 
-`setting.json` 是一个 JSON 格式的文件，内容分为三大块：
+`setting.json` 是一个 JSON 格式的文件，内容分为四大块：
 
 ```json
 {
   "model": { ... },           // 主模型配置（必填，所有角色默认继承）
   "worker_model": { ... },    // Worker 角色模型（可选，缺省继承主模型）
   "lite_model": { ... },      // Lite 角色模型（可选，缺省继承主模型）
-  "system": { ... }           // 系统参数配置
+  "system": { ... },          // 系统参数配置
+  "mcp_servers": { ... }      // MCP 服务器配置（可选）
 }
 ```
 
@@ -329,6 +330,7 @@ Cili Agent/
   "browser_path": "",
   "search_engine": "bing",
   "allowed_ips": [],
+  "access_token": "",
   "mineru_api_key": "",
   "max_iterations": 200,
   "max_concurrent_agents": 5
@@ -446,6 +448,20 @@ Cili Agent/
 
 ---
 
+### access_token — 访问令牌
+
+**作用**：Web 界面的访问令牌。配置后，访问 Agent 的 Web 请求需要携带该令牌才能通过。
+
+**默认值**：`""`（空字符串，默认不启用）
+
+**说明**：
+
+- 留空 `""`：默认不启用访问控制
+- 当服务绑定到非 localhost 地址（如通过 `allowed_ips` 允许局域网访问）且未配置 `access_token` 时，Agent 会**拒绝启动**，强制要求设置令牌以保证安全
+- 配置后，Web 请求需携带该令牌才能访问
+
+---
+
 ### mineru_api_key — MinerU 文档解析 API 密钥
 
 **作用**：用于高精度文档（PDF、Word、PPT 等）转 Markdown 的 API 密钥。MinerU 是一个专业的文档解析服务，特别擅长处理含表格、公式、图片的复杂文档。
@@ -545,6 +561,25 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 | 想节省 API 费用、避免并发过高 | `1`~`3` |
 
 **注意**：设为 `1` 表示同一时刻只允许 1 个后台子代理，其余全部排队。
+
+### auto_update — 启动时自动升级
+
+**作用**：服务启动后是否在后台线程自动检查 GitHub 新版本并升级（`system.auto_update` 位于 system 下）。
+
+**默认值**：`true`（未配置时默认开启）
+
+**通俗解释**：
+
+服务启动约 5 秒后，后台线程读取本地 `web/static/version.json` 的 `version` 字段（格式 `vYYYYMMDD`），并与 GitHub 仓库（`one-leaf/cili`）的 version.json 比对。发现新版本即自动下载代码包并覆盖本地代码，**保留** `data/`、`workspace/`、`.git` 目录。下载优先 GitHub 直连，失败自动回退 ghfast.top / ghproxy.net / gh-proxy.com 国内镜像；远端拉取失败视为检查失败，跳过升级，不影响服务启动。
+
+**建议**：
+
+| 场景 | 建议值 |
+|------|--------|
+| 想始终使用最新版 | 保持默认 `true` |
+| 生产环境或需要固定版本 | `false` |
+
+**注意**：关闭后只能手动升级（运行 `scripts/upgrade.cmd` / `upgrade.ps1`）。
 
 ---
 

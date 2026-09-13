@@ -2,7 +2,7 @@
 
 ## 概述
 
-Cili Agent 自动管理 Python 运行环境，强制使用 `data/deps/python/` 目录下的 embeddable Python 3.11.9。不依赖系统环境中的 Python 或 Bash，所有运行时均自动下载到 `data/deps/` 目录。
+Cili Agent 自动管理 Python 运行环境，强制使用 `data/deps/python/` 目录下的 embeddable Python 3.11.9，不依赖系统环境中的 Python。Git Bash 优先使用 `data/deps/git/` 目录，deps 缺失时回退到系统 Git Bash，仅两者皆无才 FATAL 退出。
 
 ## 目录结构
 
@@ -23,7 +23,7 @@ data/
     │   └── bin/bash.exe
     ├── tectonic/        # Tectonic LaTeX 编译器（自动下载）
     │   └── tectonic.exe
-    ├── fonts/           # WenQuanYi 中文字体（matplotlib 使用，自动下载）
+    ├── fonts/           # HarmonyOS Sans SC 中文字体（matplotlib 使用，自动下载）
     └── browser/         # Chrome profile 数据
 ```
 
@@ -31,7 +31,7 @@ data/
 
 ### 1. 启动脚本 (`start.ps1`)
 
-**职责**：确保有可用的 Python、Git Bash、LaTeX 编译器和中文字体（均从 deps 目录或系统），然后启动 main.py
+**职责**：确保有可用的 Python、Git Bash、LaTeX 编译器和 HarmonyOS Sans SC 中文字体（均从 deps 目录或系统），然后启动 main.py
 
 **流程**：
 ```
@@ -41,9 +41,9 @@ data/
 4. 如果不存在，下载 embeddable Python 3.11.9
 5. 检查系统是否已有 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
 6. 如果不存在，下载 Tectonic v0.17.0 到 data/deps/tectonic/
-7. 检查 data/deps/fonts/ 中的 WenQuanYi 字体，不存在则下载
+7. 检查 data/deps/fonts/ 中的 HarmonyOS Sans SC 字体，不存在则下载
 8. 设置 GIT_BASH_PATH 环境变量
-9. 将 Tectonic 添加到 PATH（如果在 deps 目录），设置 WQY_FONT_PATH（如果有字体）
+9. 将 Tectonic 添加到 PATH（如果在 deps 目录），设置 HARMONY_FONT_DIR（如果有字体）
 10. 使用 deps Python 运行 main.py
 ```
 
@@ -54,7 +54,7 @@ data/
 - `Install-GitBash`: 下载 Git for Windows（PortableGit 7z 自解压包）
 - `Test-Tectonic`: 检查系统中的 LaTeX 编译器（PATH、deps 目录、环境变量、常见安装路径）
 - `Install-Tectonic`: 下载 Tectonic（多镜像源：GitHub → ghproxy → ghfast → gh-proxy）
-- `Test-WqyFont` / `Install-WqyFont`: 检查/下载 WenQuanYi 中文字体
+- `Test-HarmonyFont` / `Install-HarmonyFont`: 检查/下载 HarmonyOS Sans SC 中文字体
 
 ### 2. 主程序 (`main.py`)
 
@@ -71,7 +71,7 @@ data/
    - 若 setting.json 不存在，尝试从 ~/.claude/settings.json（或 ~/.claude.json）迁移 API Key
    - 否则创建默认配置
 3. 迁移旧会话格式（migrate_all_sessions）
-4. 检查 Git Bash 是否存在于 deps 目录
+4. 检查 Git Bash（_init_git_bash：deps 优先，缺失时回退系统 Git Bash）
 5. 确保 deps Python 存在且健康（pip 可用）
 6. 安装依赖包（_install_packages）
    - 若有新包安装，自动重启服务（os.execv）确保 import 生效
@@ -140,6 +140,7 @@ pip install --disable-pip-version-check <package>
 - pyyaml, toml, Pillow
 - openpyxl, python-docx, python-pptx, pdfplumber
 - pytest
+- mcp（MCP 服务器客户端）
 
 **镜像源**：
 - 未配置时按预设顺序 failover：huaweicloud → aliyun → tsinghua → douban
@@ -152,18 +153,18 @@ pip install --disable-pip-version-check <package>
 **start.ps1 设置的变量**：
 - `GIT_BASH_PATH`: 始终设置为 data/deps/git/bin/bash.exe
 - `PATH`: 追加 Tectonic 目录（如果从 deps 安装）
-- `WQY_FONT_PATH`: WenQuanYi 字体路径（如果字体存在于 deps 目录）
+- `HARMONY_FONT_DIR`: HarmonyOS Sans SC 字体目录（如果字体存在于 deps 目录，供 matplotlib 使用）
 
 **main.py 设置的变量**：
 - `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（统一临时目录）
   - 确保所有工具（bash、python、tempfile 模块）使用同一个临时目录
   - bash 中可用 `$TEMP` 或 `$TMPDIR`
   - Python 中 `tempfile` 模块自动配置到此目录
-- `GIT_BASH_PATH`: _init_git_bash() 会强制设置为 data/deps/git/bin/bash.exe（未找到则启动失败退出）
+- `GIT_BASH_PATH`: _init_git_bash() 优先设置为 data/deps/git/bin/bash.exe；deps 缺失时回退系统 Git Bash，仅两者皆无才 FATAL 退出
 - `PYTHONNOUSERSITE`: 设置为 1，禁用用户级 site-packages，避免与系统 Python 混合
 
 **main.py 使用的变量**：
-- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 main.py 设置为 deps 路径）
+- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 main.py 设置为 deps 路径或系统 Git Bash 路径）
 - `CILI_TMP`: 临时目录路径（由 main.py 自身设置）
 
 ## LaTeX / Tectonic 支持
@@ -208,12 +209,13 @@ data/deps/
 
 **症状**：
 ```
-[setup] FATAL: Git Bash not found in deps directory!
+[setup] FATAL: Git Bash not found (deps or system)!
 ```
 
 **解决**：
 - 确保使用 start.cmd 启动
 - start.ps1 会自动下载 Git Bash 到 data/deps/git/
+- 若系统已安装 Git Bash，`python main.py` 直接启动时 _init_git_bash() 也会回退使用
 
 ### 3. 包安装失败
 

@@ -169,9 +169,9 @@ class Adapter(ABC):
 
 ## 传输层 (core/llm/transport.py)
 
-HttpTransport 负责 HTTP 请求、SSE 解析和重试原语（实际重试由 base_agent 统一管理）：
+HttpTransport 负责 HTTP 请求、SSE 解析和重试原语：
 
-- **重试**: Transport 层 `_MAX_RETRIES = 0` 默认不重试；base_agent 流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
+- **重试**: Transport 层 `_MAX_RETRIES = 2`，非流式调用（chat/压缩/兜底）由 `with_retry` 重试；流式调用显式传 `max_retries=0`，由 base_agent 管理——流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
 - **重试原语**: `should_retry()` 判定 429/5xx 可重试，`retry_delay()` 指数退避 + 抖动
 - **Retry-After**: 重试时尊重服务器返回的重试间隔
 - **SSE 解析**: 逐行解析 `data:` 行，yield JSON events
@@ -266,7 +266,7 @@ for block in response.get_tool_calls():
 
 ---
 
-## ToolResult (core/tools/shared/base.py)
+## ToolResult (core/tools/base.py)
 
 工具执行结果，支持新接口（blocks）和兼容旧接口（output）：
 

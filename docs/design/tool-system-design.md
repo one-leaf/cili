@@ -30,6 +30,7 @@ core/tools/
 ├── base.py                  # Tool 基类 + ToolResult + BackgroundTaskManager
 ├── approval.py              # 会话级审批（ApprovalStore、ask/deny 常量、decision_id、文案）
 ├── read.py                  # 读取文件
+├── read_image.py            # 独立图片查看（复用 ReadTool.read_image，缩放/格式转换一致）
 ├── write.py                 # 写入文件
 ├── edit.py                  # 精确替换
 ├── bash.py                  # Shell 命令（Git Bash，会话级审批）
@@ -44,13 +45,17 @@ core/tools/
 ├── latex.py                 # LaTeX 编译（tectonic/pdflatex/xelatex/lualatex）
 ├── message_bus_tool.py      # 跨会话消息传递
 ├── cron_tool.py             # 用户级定时任务管理
+├── clock.py                 # 当前日期/时间查询（含时区）与短时等待（ClockTool）
 ├── read_tool_result.py      # 检索压缩的工具结果
+├── session_search.py        # 跨会话历史消息检索
 ├── temp.py                  # 临时文件/目录管理
 ├── loop.py                  # 循环任务进度追踪（配合 cron 使用）
 ├── pdf2markdown.py          # PDF 转 Markdown（MinerU API）
 ├── skill.py                 # 技能工具（SkillTool，按角色 frontmatter roles 过滤）
 ├── agent_tool.py         # 子代理委派（AgentTool）
-└── ask_user.py              # 用户交互（AskUserTool）
+├── ask_user.py              # 用户交互（AskUserTool）
+├── tool_search.py           # 延迟工具搜索与激活（ToolSearchTool）
+└── mcp.py                   # MCP 服务器桥接（MCPProvider，非注册工具）
 ```
 
 ### 2.2 统一注册表 TOOL_REGISTRY
@@ -63,6 +68,7 @@ Factory = Callable[[AgentRoleConfig, str, str, Any, Config | None, Any], Tool]
 
 TOOL_REGISTRY = {
     "read": _factory(ReadTool),
+    "read_image": _factory(ReadImageTool),
     "write": _factory(WriteTool),
     "edit": _factory(EditTool),
     "bash": _factory(BashTool, needs_approval=True),
@@ -77,13 +83,16 @@ TOOL_REGISTRY = {
     "latex": _factory(LatexTool),
     "message_bus": _factory(MessageBusTool),
     "cron": _factory(CronTool),
+    "clock": _factory(ClockTool),
     "read_tool_result": _factory(ReadToolResultTool),
+    "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True),
     "skill": _make_skill,
     "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
+    "tool_search": _factory(ToolSearchTool),
 }
 ```
 
@@ -121,9 +130,9 @@ def create_tools(
 
 | Agent 角色 | 模式 | 工具数量 | 工具清单 |
 |-----------|------|---------|---------|
-| master | interactive | 23（15 core + 8 deferred） | 全量：read, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, read_tool_result, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
-| worker | autonomous | 13 | master 去掉 todo、cron、message_bus、latex、ask_user、agent、browser、loop、pdf2markdown |
-| lite | autonomous | 4 | read, write, edit, bash |
+| master | interactive | 26（18 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
+| worker | autonomous | 16 | master 去掉 todo、cron、message_bus、latex、ask_user、agent、browser、loop、pdf2markdown、tool_search |
+| lite | autonomous | 6 | read, write, edit, bash, python, clock |
 
 **延迟工具加载（deferred）**：master 的 8 个低频工具（browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown）schema 默认不发送给 LLM，仅名称+摘要出现在 system prompt 的 "Deferred Tools" 段。模型通过 `tool_search` 按需获取完整 schema 并激活，激活后加入后续 API 调用。工具实例仍全部实例化，执行路径不受影响。
 
@@ -132,7 +141,7 @@ def create_tools(
 - **agent 委派（仅 master）**：委派工具只由 master 持有——委派深度仅 1 层，只有 master(0) 可委派 worker/lite(1)；worker 是叶子节点，无 agent 工具（depth≥1 调用会直接报错，故白名单不含）；lite 是纯执行角色，亦无 agent 工具
 - **todo/cron/message_bus/latex 仅 master**：任务规划、定时任务、跨会话消息、LaTeX 渲染属于主代理的编排职责，worker 不持有
 - **worker 执行型精简集**：去 master 中编排/长会话类工具（agent/browser/loop/pdf2markdown）——worker 是有界自主执行，不应启动浏览器长会话、不做 cron 配套的 loop 迭代
-- **lite 精简集**：只保留 read/write/edit/bash，无 skill、无 python 等，适合快速文件处理类子任务
+- **lite 精简集**：只保留 read/write/edit/bash/python/clock，无 skill、无 web_search 等，适合快速文件处理类子任务
 - 修改某角色工具集只需编辑对应 JSON，无需改动注册表代码
 
 ### 2.5 工具查找
@@ -171,10 +180,11 @@ class Tool:
     BYTES_PER_TOKEN: int = 4                      # Token 估算系数
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session_manager=None):
+                 session_manager=None, approval_store=None):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session_manager = session_manager
+        self.approval_store = approval_store  # 会话级审批存储（根/子代理共享）
         self.output_file: str | None = None  # 输出文件路径（agent 在 execute 前设置）
 
     def execute(self, **kwargs: Any) -> ToolResult:
@@ -313,11 +323,12 @@ content = [
 
 ## 四、工具列表
 
-全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 23 个（15 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user/agent/browser/loop/pdf2markdown 的 13 个（执行型精简集）；lite 仅 read/write/edit/bash。
+全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 26 个（18 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user/agent/browser/loop/pdf2markdown/tool_search 的 16 个（执行型精简集）；lite 仅 read/write/edit/bash/python/clock。
 
 | 工具 | 文件 | 说明 | 可用角色 |
 |------|------|------|---------|
 | read | read.py | 读取文件内容（文本 + 图片 base64 + PDF 按页读取） | master/worker/lite |
+| read_image | read_image.py | 独立查看图片（复用 ReadTool.read_image，缩放/格式转换一致） | master/worker |
 | write | write.py | 创建/覆盖文件（自动创建父目录） | master/worker/lite |
 | edit | edit.py | 精确文本替换（old_text 必须唯一） | master/worker/lite |
 | bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker/lite |
@@ -327,12 +338,14 @@ content = [
 | browser | browser.py | Chrome 自动化（Playwright + CDP） | master |
 | web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） | master/worker |
 | memory | memory.py | 长期记忆（knowledge + skill，支持 find 关键词检索） | master/worker |
-| python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker |
+| python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker/lite |
 | todo | todo.py | 任务规划（整表替换，三态状态） | master |
 | latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master |
 | message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） | master |
 | cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master |
+| clock | clock.py | 当前日期/时间查询（含指定时区）与短时等待（sleep） | master/worker/lite |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） | master/worker |
+| session_search | session_search.py | 跨会话搜索历史消息（当前工作区按关键词检索 messages.jsonl） | master/worker |
 | temp | temp.py | 临时文件和目录管理（按 session 隔离） | master/worker |
 | loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master |
@@ -341,7 +354,7 @@ content = [
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 | tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master |
 
-**延迟工具**：表中标 `master` 的 browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown 8 个为 deferred（schema 按需加载，见 2.4 节），其余为 core 常驻。
+**延迟工具**：browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown 8 个为 deferred（schema 按需加载，见 2.4 节；其中 temp 对 master/worker 开放，其余仅 master），其余为 core 常驻。
 
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，LLM schema 使用类属性 name）
@@ -423,7 +436,7 @@ tool_schemas = [tool.to_schema() for tool in tools]
 | Bash | 30,000 字符 | 30,000 字符 | `BASH_MAX_OUTPUT_LENGTH` 环境变量可调，不突破硬上限 |
 | Read | 10,000 tokens | 2000 行 | 单行最长 2000 字符，offset/limit 分片读取，`CILI_FILE_READ_MAX_OUTPUT_TOKENS` 环境变量可调 |
 | Grep | 20,000 字符 | 250 匹配行 | 最多 100 个文件，超过自动截断 |
-| Find | 100 条路径 | 100 条 | 超过由 `head -n` 截断 |
+| Find | 100,000 字符 | 100 条（默认 max_results） | 输出按 100,000 字符硬上限截断；条数由 `max_results` 限制（默认 100，`head -n` 截断） |
 
 **截断行为**：超过上限时静默截断，末尾追加提示（如 `... (truncated from N to M chars)`）。
 
@@ -546,7 +559,7 @@ agent(list_tasks=True)
 `MessageBus` 是一个轻量级的跨会话消息传递机制，模块级别单例（与 BrowserService/CronScheduler 同模式）。
 
 **核心模块**：`core/message_bus.py`
-**工具**：`core/tools/message_bus_tool.py`（master/worker 均可使用）
+**工具**：`core/tools/message_bus_tool.py`（仅 master 可用，worker/lite 白名单均无 message_bus）
 
 **功能**：
 - `send(to_session, message)` — 发送消息到指定会话
@@ -591,7 +604,7 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 `loop` 工具用于跟踪跨多次调度周期的迭代任务进度。每个项（文件、记录等）具有三种状态：`"pending"`、`"done"`、`"failed:{reason}"`。
 
 **核心特性**：
-- **4 个 Action**：next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）
+- **5 个 Action**：next（取下一个待处理项）、done（标记完成）、fail（标记失败）、status（查看进度）、reset（重置全部进度，下次 next 重新加载为 pending）
 - **文件驱动**：`source_file` 参数指定项列表文件（每行一个项），同时作为任务标识符
 - **自动加载**：`next` 自动从 source_file 读取并追加新增项，已完成项不重复处理
 - **自动终止**：配合 cron 的 `remaining` 计数器，所有项完成时任务自动 disable
@@ -630,7 +643,7 @@ loop(action="status", source_file="data/files.txt")
 `_source_file` 元数据记录了来源文件路径，方便检查。
 
 **参数**：
-- `action`: next | done | fail | status
+- `action`: next | done | fail | status | reset
 - `source_file`: 项列表文件路径（每行一个项，必填，同时作为任务标识符）
 - `item`: 项标识（done/fail action 使用）
 - `error`: 失败原因（fail action 使用）
@@ -699,7 +712,7 @@ agent(list_tasks=True)
 **参数**：
 - `task`: 任务目标描述（必填）
 - `plan`: 执行计划（有序步骤列表）
-- `agent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash，无 check 阶段）
+- `agent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash/python/clock，无 check 阶段）
 - `run_in_background`: 后台执行模式（立即返回 task_id）
 - `read_task`: 读取后台 Agent 状态
 - `kill_task`: 终止后台 Agent
@@ -739,10 +752,10 @@ agent = Agent(
 agent.run()
 ```
 
-子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 13 个 / lite 4 个）。
+子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 16 个 / lite 6 个）。
 
 **关键特性**：
-- **独立工具集**：worker 13 个 / lite 4 个（取决于 agent_type）
+- **独立工具集**：worker 16 个 / lite 6 个（取决于 agent_type）
 - **结构化任务**：task + plan 拼接到 system prompt 末尾（不可压缩）
 - **1 小时超时**
 - **委派深度限制（仅 1 层）**：只有 master(0) 可委派 worker/lite(1)；depth≥1 的子代理再调用 `agent` 工具直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
@@ -991,5 +1004,5 @@ ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会�
 
 **文档版本**: v2.0  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-11（worker 精简为 13 个执行型工具：去 agent/browser/loop/pdf2markdown；精简 cron/agent/python/bash/pwsh/browser/loop 工具描述，降低每次 LLM 调用的 schema token 开销；修正工具表可用角色标注）  
+**更新时间**: 2026-09-13（工具白名单对齐代码：master 26 个（含 read_image/clock/session_search）、worker 16 个（含 read_image/clock/session_search/temp，无 tool_search）、lite 6 个（含 python/clock）；TOOL_REGISTRY 补 26 键、Tool.__init__ 签名补 approval_store、loop 增加 reset action、find 输出上限改为 100,000 字符、message_bus 标注仅 master 可用）  
 **状态**: 已实现

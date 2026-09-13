@@ -63,7 +63,7 @@ system prompt（静态块，可缓存）             user 消息（动态层，�
 | 块类型 | 生成器 | 内容 | 来源 |
 |--------|--------|------|------|
 | `text` | `_gen_text` | 固定文案（角色定义 + 行为规则） | 角色 JSON 中块的 `content` |
-| `tools` | `_gen_tools` | 工具列表段 | 从 `agent.tools` 实例生成 |
+| `tools` | `_gen_tools` | 工具列表段（含延迟工具摘要） | 从 `agent._active_tools` 实例生成 |
 | `skills` | `_gen_skills` | 技能列表段 | 从角色可见技能生成 |
 
 ### 2.2 user 层
@@ -120,7 +120,7 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
 ```
 
 - `_gen_text(block, agent)`：直接返回块的 `content`；`content` 为字符串或字符串数组（按行拼装）。
-- `_gen_tools(block, agent)`：调用 `core.prompts._build_tools_section(agent.tools)`。
+- `_gen_tools(block, agent)`：从 `agent._active_tools`（启用工具，排除延迟工具 `_deferred_names`）调用 `core.prompts._build_tools_section` 生成工具列表段，再叠加 `core.prompts._build_deferred_tools_section` 的延迟工具摘要。
 - `_gen_skills(block, agent)`：调用 `core.prompts._build_skills_section(agent.role)`。
 
 ### 3.3 工具列表生成（_build_tools_section）
@@ -197,13 +197,13 @@ Agent 通过 `skill(action='read', skill_id='...')` 按需读取完整技能内�
 
 | 角色 | 文件 | blocks | user_layers | mode |
 |------|------|--------|-------------|------|
-| master | `master.json` | role(text) / tools / skills | project_instructions(claude_md) / context | interactive |
-| worker | `worker.json` | role(text) / tools / skills | task_message(task) / context / runtime_prompts(runtime) | autonomous |
-| lite | `lite.json` | role(text) / tools | task_message(task) | autonomous |
+| master | `master.json` | role(text) / tools / skills / security(text) | project_instructions(claude_md) / context | interactive |
+| worker | `worker.json` | role(text) / tools / skills / security(text) | task_message(task) / context / runtime_prompts(runtime) | autonomous |
+| lite | `lite.json` | role(text) / tools / security(text) | task_message(task) | autonomous |
 
 - **master**：完整交互 Agent，注入项目指令（claude_md）与环境上下文（context）；
 - **worker**：完整自主 Agent，注入任务消息（task）、环境上下文（context）与运行时提示（runtime：预算/检查/超时）；
-- **lite**：极简自主 Agent（仅 read/write/edit/bash），只注入任务消息（task），无 context/运行时提示。
+- **lite**：极简自主 Agent（仅 read/write/edit/bash/python/clock），只注入任务消息（task），无 context/运行时提示。
 
 ---
 
@@ -302,8 +302,8 @@ def assemble_context(messages, inject_messages):
 |------|--------|--------|------|
 | mode | interactive | autonomous | autonomous |
 | 角色定义 | 通用交互助手 | 自主任务执行 Agent | 极简自主 Agent |
-| 工具白名单 | shared + agent/ask_user | shared（含 agent，去 todo/cron/message_bus/latex/ask_user） | read/write/edit/bash |
-| system prompt 块 | role/tools/skills | role/tools/skills | role/tools |
+| 工具白名单 | shared + agent/ask_user | shared（去 agent/todo/cron/message_bus/latex/ask_user） | read/write/edit/bash/python/clock |
+| system prompt 块 | role/tools/skills/security | role/tools/skills/security | role/tools/security |
 | user 层 | claude_md / context | task / context / runtime | task |
 | 项目指令注入 | ✅ | ❌ | ❌ |
 | 环境上下文注入 | ✅（context 层） | ✅（context 层） | ❌ |
@@ -339,13 +339,13 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
 | **Shell Environment** | bash / pwsh / python 三工具分工表、路径格式转换规则 |
 | **Python Environment** | 必须使用 python 工具，虚拟环境自动激活 |
 | **Temporary Files** | 临时目录（`CILI_TMP` 或 `data/tmp`），TEMP/TMP/TMPDIR 环境变量 |
-| **Memory** | 内存目录（workspace 的 memory 目录），`memory(action='find')` 检索示例 |
-| **User Profile** | 可选，存在 user-profile.md 时加载（跳过 YAML frontmatter 取正文） |
+| **Memory** | 内存目录（workspace 的 memory 目录），v3 三层注入实际内容（preference 常驻 + MEMORY.md 索引 + summary.md 摘要），`memory(action='find')` 检索示例 |
+| **User Profile** | 迁移回退：preference 常驻段为空时，加载 user-profile.md（跳过 YAML frontmatter 取正文） |
 | **Current Time** | 当前日期，提示用于解释相对/时效性请求 |
 
 每次调用重新生成（含当前时间），作为独立 user 消息（context 层）注入，不进入 system prompt，不影响其缓存。
 
-**User Profile 自动加载**：若 workspace 的 `user-profile.md` 存在，自动读取正文（`---` 包裹的 YAML frontmatter 被跳过）注入为 `## User Profile` 段，指示 LLM 自然使用这些信息调整语气，但不要主动复述。文件损坏时静默跳过。
+**记忆注入（v3 三层）**：`_build_memory_sections()` 注入记忆目录的实际内容——① **preference 常驻段**（`### User Preferences (always-on)`，最多 10 条，过期条目附 stale 警告）；② **MEMORY.md 索引**（`### Memory Index`，全部条目的描述）；③ **summary.md 摘要**（`### Memory Summary`，截断至 2KB）。仅当 preference 为空时回退读取 workspace 的 `user-profile.md`（跳过 `---` 包裹的 YAML frontmatter 取正文），注入为 `### User Preferences (from user-profile.md)` 段。记忆系统不可用时降级为提示语，绝不阻塞请求。
 
 ---
 

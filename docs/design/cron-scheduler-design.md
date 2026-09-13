@@ -375,7 +375,7 @@ data/agents/system/
 │               ├─ 已锁定 → 跳过（另一个 cron 在同 workspace 执行）
 │               └─ 获取成功 → task.execute() → mark_executed()
 │
-└─ 等待 60 秒（Event.wait，可被 stop() 提前唤醒）
+└─ 等待 60 秒（Event.wait；stop() 不提前唤醒，仅设 _running=False 后 join(timeout=5) 等待退出）
 ```
 
 ### 6.2 任务执行
@@ -415,13 +415,13 @@ CronTask.execute():
  "iterations": 所有任务迭代数之和}
 ```
 
-- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；Master Agent 忙 → `{"status": "skipped", "message": "Master Agent is busy", "workspace_uuid": "..."}`
+- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；Master Agent 忙 → `{"status": "skipped", "message": "master Agent is busy", "workspace_uuid": "..."}`
 - `completed`：所有任务成功；`partial`：至少一个任务失败或部分成功
 - `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`（cron 直接运行 Master Agent，固定为 0），异常时含 `error`
 
 ### 6.3 自循环任务（remaining 计数器）
 
-CronScheduler 维护通用的 `remaining` 计数器，每次执行递减，到 0 自动 disable。配合 `loop` 工具可实现跨调度周期的自循环任务。
+CronScheduler 维护通用的 `remaining` 计数器，每次真正执行后递减（skipped 不计），到 0 自动 disable。配合 `loop` 工具可实现跨调度周期的自循环任务。
 
 **执行流程**：
 
@@ -431,14 +431,15 @@ CronScheduler._execute_task(task):
 ├─ 读取 remaining（从 state 或 config.max_executions 初始化）
 │   └─ remaining = state.get("remaining", config.get("max_executions", 9999))
 │
-├─ 检查终止条件（递减前）
+├─ 检查终止条件（执行前）
 │   ├─ remaining <= 0 → 自动 disable（保存状态并同步 user_tasks.json 的 enabled=false）→ 不执行
 │   └─ remaining > 0 → 继续执行
 │
-├─ 递减 remaining
-│   └─ remaining -= 1
-│
 ├─ task.execute()
+│   └─ 返回结果 result
+│
+├─ 递减 remaining（仅真正执行后）
+│   └─ result.status != "skipped" → remaining -= 1（skipped 不计 remaining）
 │
 └─ mark_executed() → 保存状态
 ```
@@ -533,8 +534,8 @@ class CronTask:
     schedule: dict                # 调度配置
     config: dict                  # 额外配置（含 max_executions）
     task_id: str                  # 任务 ID
-    _next_run: datetime           # 下次运行时间
-    _last_run: datetime           # 上次运行时间
+    _next_run: datetime | None    # 下次运行时间（None = 首次运行/已标记待执行）
+    _last_run: datetime | None    # 上次运行时间
     _run_count: int               # 运行计数
     _session_id: str              # 关联的 cron session UUID（从状态文件恢复）
     _remaining: int | None        # 剩余执行次数（配合 loop 工具）

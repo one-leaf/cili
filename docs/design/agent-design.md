@@ -212,6 +212,7 @@ def run(self, *args, **kwargs):
 | `label` | str | 显示名 |
 | `mode` | str | `interactive` 或 `autonomous`（仅这两值合法） |
 | `tools` | list[str] | 工具白名单，`create_tools(role_cfg, ...)` 按此实例化 |
+| `deferred_tools` | list[str] | 延迟加载工具白名单：schema 默认不发给 LLM，经 tool_search 激活后才暴露（如 browser、todo、latex 等） |
 | `skills` | list[str] | 可见技能，`[]` 或 `["*"]`（全部可见） |
 | `streaming` | bool | 是否流式输出（所有角色默认均流式） |
 | `ask_user` | bool | 是否允许 ask_user 工具 |
@@ -220,6 +221,7 @@ def run(self, *args, **kwargs):
 | `check_phase` | bool | autonomous 是否启用检查阶段 |
 | `budget_notice` | bool | autonomous 是否注入迭代额度预警 |
 | `progress_persistence` | bool | autonomous 是否实时保存进度 |
+| `mcp` | bool | 是否注入已配置的 MCP 服务器工具（master/worker 为 true） |
 | `max_iterations` | int \| None | None → 取 `config.system.max_iterations`（默认 200） |
 | `max_consecutive_failures` | int | 连续失败次数上限（默认 5） |
 | `max_tokens` | int \| None | 角色级输出上限；None → 继承角色模型的 `max_tokens`；设置后取 `min(角色值, 模型上限)` |
@@ -231,7 +233,7 @@ def run(self, *args, **kwargs):
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 23 个（15 core 常驻 + 8 deferred 延迟加载；含 agent、ask_user、tool_search） | 13 个（执行型：read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 5 个（read/write/edit/bash/python） |
+| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 16 个（执行型：read/read_image/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -346,11 +348,12 @@ def _run_interactive(
 
 def _agent_loop(self) -> None:
     """共享循环体（run/resume_after_ask_user/resume_loop 均调用此方法）"""
-    iteration = 0
-    while iteration < self.max_iterations:
+    # self._turn_iterations 为实例级累计：仅 _run_interactive（用户新轮次）清零，
+    # resume_after_ask_user / resume_loop 沿用不重置，继续累加
+    while self._turn_iterations < self.max_iterations:
         if self._stopped:
             break
-        iteration += 1
+        self._turn_iterations += 1
         # 自动压缩检查
         self._check_and_compress()
         # 调用 LLM（每轮重建 system prompt，注入型 user 层动态生成）
@@ -445,10 +448,10 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 | 维度 | worker | lite |
 |------|--------|------|
-| 工具集 | 13 个（read/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/skill） | 只读 read/write/edit/bash 四工具 |
+| 工具集 | 16 个（read/read_image/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
 | 检查阶段 | ✓（`check_phase=True`） | ✗ |
 | 预算预警 | ✓（`budget_notice=True`） | ✗ |
-| 迭代上限 | null → system（默认 200） | 20 |
+| 迭代上限 | null → system（默认 200） | 200 |
 | 适用场景 | 复杂/耗时任务 | 简单文件读写改造 |
 
 ---
@@ -575,4 +578,4 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ---
 
 *文档版本: v3.0*
-*最后更新: 2026-09-11（worker 精简为 13 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
+*最后更新: 2026-09-13（worker 精简为 16 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
