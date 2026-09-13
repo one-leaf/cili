@@ -1034,8 +1034,15 @@ async function createNewSession() {
 
         await loadSessions();
         chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
+
+        // 完整重置发送/停止状态（可能在旧会话运行中创建新会话）
+        clearAllToolStreaming();
         chatInput.disabled = false;
         sendBtn.disabled = false;
+        sendBtn.textContent = '发送';
+        sendBtn.classList.remove('btn-danger');
+        sendBtn.classList.add('btn-primary');
+        isSending = false;
         chatInput.focus();
     } catch (error) {
         console.error('Failed to create session:', error);

@@ -1063,6 +1063,7 @@ async function sendMessage() {
     }
 
     console.log('Sending message to session:', currentSession.session_id);
+    const sessionId = currentSession.session_id;
 
     // Capture images before clearing
     const imagesToSend = hasImages ? pendingImages.map(img => ({
@@ -1118,7 +1119,7 @@ async function sendMessage() {
             requestBody.images = imagesToSend;
         }
         const response = await fetch(
-            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/messages`,
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/messages`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1284,20 +1285,26 @@ async function sendMessage() {
             }
         }
 
-        // Refresh session to get persisted state
-        await loadSession(currentSession.session_id);
+        // Refresh session to get persisted state（仅当仍停留在该会话时，避免切走后被拉回）
+        if (currentSession && currentSession.session_id === sessionId) {
+            await loadSession(sessionId);
+        }
 
     } catch (error) {
         console.error('Failed to send message:', error);
         addMessage('assistant', '发送消息失败: ' + error.message);
     } finally {
         clearTimeout(window._stopPendingTimer);
-        isSending = false;
-        sendBtn.disabled = false;
-        sendBtn.textContent = '发送';
-        sendBtn.classList.remove('btn-danger');
-        sendBtn.classList.add('btn-primary');
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        // 仅当仍在查看本会话时才重置发送/停止状态，
+        // 避免旧会话流结束时覆盖新会话的运行状态
+        if (currentSession && currentSession.session_id === sessionId) {
+            isSending = false;
+            sendBtn.disabled = false;
+            sendBtn.textContent = '发送';
+            sendBtn.classList.remove('btn-danger');
+            sendBtn.classList.add('btn-primary');
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
         // 刷新侧边栏，更新会话标题（preview = 最后一条用户消息）
         await loadSessions();
     }
