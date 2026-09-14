@@ -613,7 +613,7 @@ async function openSettings() {
         document.getElementById('system-mineru-api-key').value = '';
         document.getElementById('system-allowed-ips').value = (systemCfg.allowed_ips || []).join(', ');
         document.getElementById('system-max-iterations').value = systemCfg.max_iterations || 200;
-        document.getElementById('system-max-concurrent-agents').value = systemCfg.max_concurrent_agents || 5;
+        document.getElementById('system-max-concurrent-agents').value = systemCfg.max_concurrent_agents || 2;
 
         // Show MinerU masked key in placeholder
         const mineruInput = document.getElementById('system-mineru-api-key');
@@ -683,7 +683,7 @@ async function saveSettings() {
         search_engine: searchEngine,
         allowed_ips: allowedIps,
         max_iterations: parseInt(maxIterations) || 200,
-        max_concurrent_agents: parseInt(maxConcurrentAgents) || 5
+        max_concurrent_agents: parseInt(maxConcurrentAgents) || 2
     };
     // Only include mineru_api_key if user typed a new value; empty means "don't change"
     if (mineruApiKey) {

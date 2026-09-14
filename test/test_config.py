@@ -191,10 +191,10 @@ class TestSystemConfig:
     """SystemConfig：max_concurrent_agents 默认值与范围钳制。"""
 
     def test_default_max_concurrent_agents(self):
-        """默认并发上限为 5。"""
+        """默认并发上限为 2。"""
         from core.config import SystemConfig
 
-        assert SystemConfig().max_concurrent_agents == 5
+        assert SystemConfig().max_concurrent_agents == 2
 
     def test_max_concurrent_agents_clamped_to_bounds(self):
         """并发上限钳制在 [1, 10]。"""

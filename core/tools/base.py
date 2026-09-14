@@ -1581,17 +1581,17 @@ class Tool:
     def _acquire_background_agent_slot(self, agent: Any) -> ToolResult | None:
         """等待后台 Agent 并发槽位并预留。
 
-        超过 config.system.max_concurrent_agents（默认 5，范围 1-10）时阻塞等待，
+        超过 config.system.max_concurrent_agents（默认 2，范围 1-10）时阻塞等待，
         直到有子代理结束释放槽位、任务被停止、或等待超时（1 小时）。
         返回 None 表示获得槽位（agent 已加入活跃列表）；否则返回错误 ToolResult。
         """
         config = getattr(self, "config", None)
         system = getattr(config, "system", None)
-        limit = getattr(system, "max_concurrent_agents", 5)
+        limit = getattr(system, "max_concurrent_agents", 2)
         try:
-            limit = max(1, min(10, int(limit or 5)))
+            limit = max(1, min(10, int(limit or 2)))
         except (TypeError, ValueError):
-            limit = 5
+            limit = 2
         stop_check = getattr(self, "stop_check", None)
         deadline = time.time() + 3600
         with _background_agents_cond:
