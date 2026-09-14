@@ -92,7 +92,7 @@ System workspace (UUID: "system", cwd: "data/")
 应用启动流程：
 main.py
   └─ _setup_directories()
-       └─ 创建 data/agents/system/sessions/ + setting.json
+       └─ 创建 data/projects/system/sessions/ + setting.json
   └─ start_scheduler()           # 创建 CronScheduler 单例
        └─ scheduler.start()
             ├─ load_tasks()      # 从 core/cron.d/*.json + user_tasks.json 加载
@@ -120,7 +120,7 @@ System workspace 是一个特殊的 workspace，用于系统维护和定时任�
 | 属性 | 值 |
 |------|-----|
 | UUID | `system` |
-| 目录 | `data/agents/system/` |
+| 目录 | `data/projects/system/` |
 | cwd | `data/`（项目数据根目录） |
 | 用途 | 系统维护、定时清理等 |
 
@@ -129,7 +129,7 @@ System workspace 是一个特殊的 workspace，用于系统维护和定时任�
 `main.py` 启动时自动创建：
 
 ```python
-system_ws_dir = data/agents/system
+system_ws_dir = data/projects/system
 system_ws_dir/sessions/         # session 存储
 system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志）
 ```
@@ -309,7 +309,7 @@ data/cili/cron.d/
     ├── extract-user-info.json   # {"last_run": "...", "run_count": 5, "session_id": "431ea12b"}
     └── daily-report.json
 
-data/agents/system/
+data/projects/system/
 ├── setting.json                 # System workspace 配置
 └── sessions/
     └── {session_id}/            # "[Cron] 任务描述" session
@@ -389,7 +389,7 @@ CronTask.execute():
 ├─ 遍历任务列表
 │   ├─ 解析目标 workspace（task_item.workspace_uuid > self.workspace_uuid > "system"）
 │   ├─ 调用 _execute_in_session(workspace_uuid, task_item)
-│   │   ├─ _resolve_workspace_dir() — "system" → data/, 其他 → data/agents/{uuid}/
+│   │   ├─ _resolve_workspace_dir() — "system" → data/, 其他 → data/projects/{uuid}/
 │   │   ├─ 加载 workspace 配置获取实际工作目录 cwd（非 system 时）
 │   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 定位（不存在则新建）
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
@@ -628,7 +628,7 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 | `data/cili/cron.d/user_tasks.json` | 用户级任务配置 |
 | `data/cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
 | `data/cili/tools/loop/` | loop 工具状态文件 |
-| `data/agents/system/` | System workspace |
+| `data/projects/system/` | System workspace |
 | `main.py` | 启动调度器，创建 System workspace |
 | `web/web_api.py` | 停止调度器，System workspace 保护 |
 

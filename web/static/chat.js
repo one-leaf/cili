@@ -164,7 +164,7 @@ function renderMessages(messages) {
             // Only create user bubble if there's actual user content
             const combinedText = textParts.join('\n');
             if (combinedText || imageParts.length > 0) {
-                const div = addMessage('user', combinedText, msgId);
+                const div = addMessage('user', combinedText, msgId, msg._meta?.created_at);
                 if (imageParts.length > 0) {
                     const contentDiv = div.querySelector('.message-content');
                     const imgContainer = document.createElement('div');
@@ -200,7 +200,7 @@ function renderMessages(messages) {
                 // ask_user 等待中：跳过渲染
                 if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-                const div = addMessage('assistant', '', msgId);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
                 if (block.is_error) {
                     div.classList.add('tool-error');
@@ -222,11 +222,11 @@ function renderMessages(messages) {
 
         blocks.forEach(block => {
             if (block.kind === 'text' && block.text) {
-                addMessage(role, block.text, msgId);
+                addMessage(role, block.text, msgId, msg._meta?.created_at);
             } else if (block.kind === 'image') {
                 // Image blocks in non-user messages (shouldn't normally happen)
                 // Render as an assistant message with the image
-                const div = addMessage('assistant', '', msgId);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 const contentDiv = div.querySelector('.message-content');
                 const imgEl = document.createElement('img');
                 imgEl.src = `data:${block.media_type};base64,${block.data}`;
@@ -234,7 +234,7 @@ function renderMessages(messages) {
                 contentDiv.appendChild(imgEl);
             } else if (block.kind === 'thinking' && block.text) {
                 // Render thinking block
-                const div = addMessage('assistant', '', msgId);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('thinking');
                 const contentDiv = div.querySelector('.message-content');
                 const thinkTitle = document.createElement('div');
@@ -246,7 +246,7 @@ function renderMessages(messages) {
                 thinkDiv.innerHTML = renderMarkdown(block.text);
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
-                const div = addMessage('assistant', '', msgId);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
                 if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) {
@@ -265,7 +265,7 @@ function renderMessages(messages) {
                 // Skip placeholder tool_result for ask_user
                 if (block._meta && block._meta.completed === false) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-                const div = addMessage('assistant', '', msgId);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
                 if (block.is_error) {
                     div.classList.add('tool-error');
@@ -1112,66 +1112,50 @@ async function doRevert(msgId) {
     }
 }
 
-function toggleMessageMenu(messageDiv, anchor) {
-    // 关闭其他菜单
-    document.querySelectorAll('.msg-menu.show').forEach(m => m.remove());
+// 消息气泡操作图标：复制 / 引用 / 分享 / 撤销（Material Design 图标，Apache 2.0）
+const ACTION_ICONS = {
+    copy: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>',
+    quote: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>',
+    share: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>',
+    revert: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>',
+};
 
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu show';
-
-    const items = [];
-
-    // 引用
-    items.push({ label: '引用', action: () => doQuote(messageDiv) });
-
-    // 复制（助手消息或用户消息）
-    items.push({ label: '复制', action: () => doCopy(messageDiv) });
-
-    // 撤销（仅用户消息）
-    if (messageDiv.classList.contains('user')) {
-        const msgId = messageDiv.dataset.msgId;
-        if (msgId) {
-            items.push({ label: '撤销', action: () => doRevert(msgId) });
-        }
-    }
-
-    // 分享（有消息 ID 时）
-    const msgId = messageDiv.dataset.msgId;
-    if (msgId) {
-        items.push({ label: '分享', action: () => doShare(msgId) });
-    }
-
-    items.forEach(({ label, action }) => {
-        const div = document.createElement('div');
-        div.className = 'msg-menu-item';
-        div.textContent = label;
-        div.addEventListener('click', (e) => {
-            e.stopPropagation();
-            action();
-            menu.remove();
-        });
-        menu.appendChild(div);
+function makeMessageAction(title, iconKey, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'msg-action-btn';
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.innerHTML = ACTION_ICONS[iconKey] || '';
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onClick();
     });
+    return btn;
+}
 
-    // 追加到 body，用 position: fixed 定位，避免被 .message 的 overflow:hidden 截断
-    document.body.appendChild(menu);
-
-    // 计算位置：对齐到触发按钮右侧，顶部对齐
-    const anchorRect = anchor.getBoundingClientRect();
-    menu.style.top = `${anchorRect.bottom + 4}px`;
-    menu.style.right = `${window.innerWidth - anchorRect.right}px`;
-
-    // 点击其他地方关闭菜单
-    setTimeout(() => {
-        document.addEventListener('click', function closeMenu() {
-            menu.remove();
-            document.removeEventListener('click', closeMenu);
-        });
-    }, 0);
+// 把 "YYYY-MM-DD HH:MM:SS" 格式化为相对时间：
+//   一周内 → 星期X HH:MM
+//   一周外 → X月D日 HH:MM
+function formatMessageTime(isoStr) {
+    if (!isoStr) return '';
+    // 兼容两种格式："2026-09-14 12:30:00" 与 "2026-09-14T12:30:00"
+    const d = new Date(isoStr.replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const diffDays = Math.floor((now - d) / (24 * 3600 * 1000));
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const time = hh + ':' + mm;
+    if (diffDays < 7) {
+        const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+        return weekdays[d.getDay()] + ' ' + time;
+    }
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + time;
 }
 
 // Add message to UI
-function addMessage(role, content, msgId) {
+function addMessage(role, content, msgId, createdAt) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
@@ -1188,8 +1172,8 @@ function addMessage(role, content, msgId) {
 
     messageDiv.appendChild(contentDiv);
 
-    // 有内容或有消息 ID 时添加菜单按钮和 data-msg-id
-    if (content || msgId) {
+    // 有内容或有消息 ID 时添加菜单按钮、时间、data-msg-id
+    if (content || msgId || createdAt) {
         if (msgId) {
             messageDiv.dataset.msgId = msgId;
         }
@@ -1197,17 +1181,36 @@ function addMessage(role, content, msgId) {
             messageDiv.dataset.rawContent = content;
         }
 
-        const triggerBtn = document.createElement('button');
-        triggerBtn.className = 'msg-menu-trigger';
-        triggerBtn.textContent = '⋯';
-        triggerBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleMessageMenu(messageDiv, triggerBtn);
-        });
-
+        // 底部操作行：按钮 + 时间（所有角色气泡都显示）
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'message-actions';
-        actionsDiv.appendChild(triggerBtn);
+
+        // 复制（仅 用户/助手 且有内容）
+        if ((role === 'user' || role === 'assistant') && content) {
+            actionsDiv.appendChild(makeMessageAction('复制', 'copy', () => doCopy(messageDiv)));
+        }
+        // 引用（仅 用户/助手）
+        if (role === 'user' || role === 'assistant') {
+            actionsDiv.appendChild(makeMessageAction('引用', 'quote', () => doQuote(messageDiv)));
+        }
+        // 撤销（仅用户消息）
+        if (role === 'user' && msgId) {
+            actionsDiv.appendChild(makeMessageAction('撤销', 'revert', () => doRevert(msgId)));
+        }
+        // 分享（有消息 ID 时）
+        if (msgId) {
+            actionsDiv.appendChild(makeMessageAction('分享', 'share', () => doShare(msgId)));
+        }
+
+        // 时间标签（紧跟按钮右侧）
+        if (createdAt) {
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'message-time';
+            timeSpan.textContent = formatMessageTime(createdAt);
+            timeSpan.title = createdAt;
+            actionsDiv.appendChild(timeSpan);
+        }
+
         messageDiv.appendChild(actionsDiv);
     }
 

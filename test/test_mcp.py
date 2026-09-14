@@ -196,7 +196,7 @@ def test_agent_injection_deferred(tmp_path, echo_server_url):
             assert "mcp_echo_echo" in names
         finally:
             agent.cleanup()
-            base = os.path.join(project_dir, "data", "agents", ws_uuid)
+            base = os.path.join(project_dir, "data", "projects", ws_uuid)
             if os.path.exists(base):
                 shutil.rmtree(base, ignore_errors=True)
     finally:

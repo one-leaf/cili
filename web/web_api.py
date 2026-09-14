@@ -258,7 +258,7 @@ async def check_access_control(request: Request, call_next):
 
 # Base directories (imported from core.config for consistency)
 WEB_DIR = Path(__file__).parent.resolve()
-WORKSPACE_DATA_DIR = PROJECT_ROOT / "data" / "agents"
+WORKSPACE_DATA_DIR = PROJECT_ROOT / "data" / "projects"
 WORKSPACE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Working directory for default workspace
@@ -401,7 +401,7 @@ def _get_workspace_info(workspace_uuid: str) -> dict | None:
 
 
 def _list_all_workspaces() -> list[dict]:
-    """Scan data/agents/ and return all workspaces."""
+    """Scan data/projects/ and return all workspaces."""
     workspaces = []
     if not WORKSPACE_DATA_DIR.exists():
         return workspaces
@@ -1394,6 +1394,18 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         error_text = "当前会话正在执行中，请等待完成后再发送消息"
         return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
 
+    # ask_user 待回答时：直接把用户输入作为"其他"回复提交（等价于在卡片输入"其他"）。
+    # 输入不会作为新 user message 追加，而是注入占位 tool_result 后恢复循环；
+    # 前端无需改动，靠推送 tool_result(ask_user) 事件让问题卡片立即关闭。
+    pending_ask_user_id: str | None = None
+    ask_user_answer: str | None = None
+    if content:
+        pending_ask_user_id = _find_pending_ask_user(agent.session_manager)
+        if pending_ask_user_id:
+            ask_user_answer = _build_other_answer(agent.session_manager, pending_ask_user_id, content)
+            if not _inject_ask_user_answer(agent, pending_ask_user_id, ask_user_answer):
+                pending_ask_user_id = None  # 竞态：占位符已消失，回退普通消息
+
     # Use a queue to bridge sync agent callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
 
@@ -1444,33 +1456,55 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
         def run_agent():
             try:
-                # Build user_input: str or list[dict] for multimodal
-                user_input = request.content
-                if request.images:
-                    content_blocks: list[dict] = [
-                        {"type": "text", "text": request.content, "_valid": True}
-                    ]
-                    for img in request.images:
-                        content_blocks.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": img.get("media_type", "image/png"),
-                                "data": img.get("data", ""),
-                            },
-                            "_valid": True,
-                        })
-                    user_input = content_blocks
+                if pending_ask_user_id is not None:
+                    # 用户输入已作为 ask_user 的"其他"回复注入占位 tool_result。
+                    # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），
+                    # 再恢复循环；不追加新 user message，避免 LLM 双重处理输入。
+                    close_event = json.dumps({
+                        "type": "tool_result",
+                        "tool": "ask_user",
+                        "content": ask_user_answer,
+                        "is_error": False,
+                        "tool_use_id": pending_ask_user_id,
+                    }, ensure_ascii=False)
+                    event_queue.put(f"data: {close_event}\n\n")
 
-                agent.run(
-                    user_input=user_input,
-                    on_text=on_text,
-                    on_thinking=on_thinking,
-                    on_tool_call=on_tool_call,
-                    on_tool_result=on_tool_result,
-                    on_agent_start=on_agent_start,
-                    on_agent_complete=on_agent_complete,
-                )
+                    agent.resume_after_ask_user(
+                        on_text=on_text,
+                        on_thinking=on_thinking,
+                        on_tool_call=on_tool_call,
+                        on_tool_result=on_tool_result,
+                        on_agent_start=on_agent_start,
+                        on_agent_complete=on_agent_complete,
+                    )
+                else:
+                    # Build user_input: str or list[dict] for multimodal
+                    user_input = request.content
+                    if request.images:
+                        content_blocks: list[dict] = [
+                            {"type": "text", "text": request.content, "_valid": True}
+                        ]
+                        for img in request.images:
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": img.get("media_type", "image/png"),
+                                    "data": img.get("data", ""),
+                                },
+                                "_valid": True,
+                            })
+                        user_input = content_blocks
+
+                    agent.run(
+                        user_input=user_input,
+                        on_text=on_text,
+                        on_thinking=on_thinking,
+                        on_tool_call=on_tool_call,
+                        on_tool_result=on_tool_result,
+                        on_agent_start=on_agent_start,
+                        on_agent_complete=on_agent_complete,
+                    )
 
                 # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
                 try:
@@ -1600,22 +1634,49 @@ def _safe_ask_user_filename(tool_use_id: str) -> str:
     return f"{secrets.token_hex(4)}.txt"
 
 
-@app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")
-async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
-    """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 agent 循环"""
-    key = f"{workspace_uuid}:{session_id}"
-    agent = agents.get(key)
-    if not agent:
-        raise HTTPException(404, "Agent not found")
+def _find_pending_ask_user(session_manager) -> str | None:
+    """查找最后一个待回答的 ask_user 占位 tool_result，返回其 tool_use_id（无则 None）。
 
-    if agent.is_running():
-        return StreamingResponse(_sse_stream({"type": "error", "content": "Agent is already running"}), media_type="text/event-stream")
+    占位符由 _execute_tool 生成：user 消息中的 tool_result 块带
+    `_meta.completed=False` 且 `_meta.tool_name="ask_user"`。
+    """
+    for msg in reversed(session_manager.messages):
+        if msg["role"] != "user":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") == "tool_result":
+                meta = block.get("_meta") or {}
+                if meta.get("completed") is False and meta.get("tool_name") == "ask_user":
+                    return block.get("tool_use_id") or block.get("tool_call_id")
+    return None
 
-    # 使用前端提供的 tool_use_id
-    ask_user_tool_use_id = request.tool_use_id
-    logger.info(f"[ask-user] 尝试为 tool_use_id={ask_user_tool_use_id} 提交答案")
 
-    # 找到并替换占位符 tool_result
+def _build_other_answer(session_manager, ask_user_tool_use_id: str, content: str) -> str:
+    """以用户输入作为 ask_user 的"其他"回复，按卡片 formatAnswers 格式组装（`问题 答案`）。"""
+    for msg in session_manager.messages:
+        if msg["role"] != "assistant":
+            continue
+        blocks = msg.get("content", [])
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == ask_user_tool_use_id:
+                questions = (block.get("input") or {}).get("questions", [])
+                parts = [f"{q.get('question', '')} {content}" for q in questions if q.get("question")]
+                return "\n".join(parts) if parts else content
+    return content
+
+
+def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bool:
+    """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
+
+    返回是否找到占位符。消息块是 agent 与 session_manager 的共享引用，就地修改
+    对两者都生效（answer_ask_user 与 send_message 共用）。
+    """
+    logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
     found_placeholder = False
     for msg in reversed(agent.session_manager.messages):
         if msg["role"] != "user":
@@ -1628,7 +1689,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
             block_tool_id = block.get("tool_use_id") or block.get("tool_call_id")
             if block.get("type") == "tool_result" and block_tool_id == ask_user_tool_use_id:
                 # 替换占位符内容（内存视图；jsonl 行保持占位）
-                block["content"] = request.answer
+                block["content"] = answer
                 found_placeholder = True
                 logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
 
@@ -1640,11 +1701,11 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 block["_meta"].update({
                     "completed": True,
                     "output_path": output_path,
-                    "file_size": len(request.answer.encode("utf-8")),
+                    "file_size": len(answer.encode("utf-8")),
                 })
                 try:
                     ext_file = agent.session_manager.session_dir / output_path
-                    ext_file.write_text(request.answer, encoding="utf-8")
+                    ext_file.write_text(answer, encoding="utf-8")
                     logger.info(f"[ask-user] 已写入答案文件: {output_path}")
                 except Exception as e:
                     logger.warning(f"[ask-user] 写入答案文件失败: {e}")
@@ -1654,7 +1715,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     if not found_placeholder:
         logger.error(f"[ask-user] 未找到占位符 tool_result: tool_use_id={ask_user_tool_use_id}")
-        raise HTTPException(400, f"Placeholder tool_result not found for tool_use_id: {ask_user_tool_use_id}")
+        return False
 
     # 在对应的 tool_use/tool_call 块上添加 _answered 标记
     found_tool_use = False
@@ -1673,6 +1734,8 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
                 found_tool_use = True
                 logger.info(f"[ask-user] 在 {block.get('type')} 上添加 _meta.answered=true: id={ask_user_tool_use_id}")
                 break
+        if found_tool_use:
+            break
 
     if not found_tool_use:
         logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={ask_user_tool_use_id}")
@@ -1680,7 +1743,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     # 会话级审批：若本次 ask_user 是高风险命令批准卡，按答案记录批准/拒绝并清空待批槽
     store = getattr(agent, "approval_store", None)
     if store and store.pending:
-        if APPROVE_LABEL in request.answer:
+        if APPROVE_LABEL in answer:
             store.approve(store.pending["decision_id"], store.pending["command"])
             logger.info(f"[approval] 用户批准高风险命令: {store.pending['command']}")
         else:
@@ -1688,6 +1751,26 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         store.clear_pending()
 
     agent.session_manager.save()
+    return True
+
+
+@app.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")
+async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
+    """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 agent 循环"""
+    key = f"{workspace_uuid}:{session_id}"
+    agent = agents.get(key)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    if agent.is_running():
+        return StreamingResponse(_sse_stream({"type": "error", "content": "Agent is already running"}), media_type="text/event-stream")
+
+    # 使用前端提供的 tool_use_id
+    ask_user_tool_use_id = request.tool_use_id
+    logger.info(f"[ask-user] 尝试为 tool_use_id={ask_user_tool_use_id} 提交答案")
+
+    if not _inject_ask_user_answer(agent, ask_user_tool_use_id, request.answer):
+        raise HTTPException(400, f"Placeholder tool_result not found for tool_use_id: {ask_user_tool_use_id}")
 
     # 继续 agent 循环
     event_queue: queue.Queue[str | None] = queue.Queue()

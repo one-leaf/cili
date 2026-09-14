@@ -11,7 +11,7 @@
 | 特性 | 用户画像 | 记忆系统 |
 |------|---------|---------|
 | 职责 | 描述"谁在使用" | 记录"做了什么" |
-| 存储位置 | `data/agents/{uuid}/user-profile.md` | `data/agents/{uuid}/memory/` |
+| 存储位置 | `data/projects/{uuid}/user-profile.md` | `data/projects/{uuid}/memory/` |
 | 文件数量 | 单文件 | 多文件（按类型/主题组织） |
 | 格式 | Markdown（带 YAML frontmatter） | Markdown |
 | 加载方式 | 每次对话自动加载到上下文 | 按需检索 |
@@ -23,7 +23,7 @@
 ### 文件位置
 
 ```
-data/agents/{uuid}/
+data/projects/{uuid}/
 ├── setting.json            # 工作区配置
 ├── user-profile.md         # 用户画像（本系统设计对象）
 ├── sessions/               # 会话存储
@@ -167,10 +167,10 @@ Search/recall: `memory(action="find", query="keyword")` lists matching entries w
 
 ```python
 def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/agents/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
+    """Get the user profile path: data/projects/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
     if not workspace_uuid:
         return PROJECT_ROOT / "workspace" / "user-profile.md"
-    return AGENTS_DIR / workspace_uuid / "user-profile.md"
+    return PROJECTS_DIR / workspace_uuid / "user-profile.md"
 ```
 
 ## 设计原则

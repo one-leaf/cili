@@ -313,3 +313,137 @@ class TestGlobalEvents:
                 get_event_bus().unsubscribe(q)
 
         assert asyncio.run(run())
+
+
+class TestAskUserDirectInput:
+    """ask_user 待回答时，对话框直接输入作为"其他"回复（后端处理，前端零改动）。
+
+    回归：此前该场景会作为新 user message 发送给 LLM 造成双重处理，
+    ask_user 卡片也无法正常关闭。
+    """
+
+    @staticmethod
+    def _placeholder_session(tmp_path):
+        """构造带待回答 ask_user 占位符的假 session（工具结果 completed=False）。"""
+        from types import SimpleNamespace
+        tool_use_id = "call_ask_1"
+        messages = [
+            {"role": "user", "content": "最初的用户消息", "_meta": {"id": "m1"}},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": tool_use_id, "name": "ask_user",
+                "input": {"questions": [
+                    {"question": "你喜欢哪种语言？", "header": "语言",
+                     "options": [{"label": "Python", "description": "..."}]},
+                    {"question": "多久反馈一次？", "header": "频率",
+                     "options": [{"label": "每小时", "description": "..."}]},
+                ]},
+            }], "_meta": {"id": "m2"}},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": tool_use_id,
+                "content": "Waiting for user input...", "is_error": False,
+                "_meta": {"tool_name": "ask_user", "completed": False},
+            }], "_meta": {"id": "m3"}},
+        ]
+        session_dir = tmp_path / "sessions" / "sess-ask"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        sm = SimpleNamespace(messages=messages, session_dir=session_dir)
+        sm.saved = []
+        sm.save = lambda: sm.saved.append(True)
+        return sm, tool_use_id
+
+    def test_find_pending_ask_user(self, tmp_path):
+        from web.web_api import _find_pending_ask_user
+        sm, tool_use_id = self._placeholder_session(tmp_path)
+        assert _find_pending_ask_user(sm) == tool_use_id
+
+    def test_find_pending_ask_user_none_when_answered(self, tmp_path):
+        from web.web_api import _find_pending_ask_user
+        sm, tool_use_id = self._placeholder_session(tmp_path)
+        sm.messages[-1]["content"][0]["_meta"]["completed"] = True
+        assert _find_pending_ask_user(sm) is None
+
+    def test_build_other_answer_formats_questions(self, tmp_path):
+        from web.web_api import _build_other_answer
+        sm, tool_use_id = self._placeholder_session(tmp_path)
+        answer = _build_other_answer(sm, tool_use_id, "我选 Python")
+        assert answer == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
+
+    def test_inject_ask_user_answer(self, tmp_path):
+        from types import SimpleNamespace
+        from web.web_api import _inject_ask_user_answer
+        sm, tool_use_id = self._placeholder_session(tmp_path)
+        agent = SimpleNamespace(session_manager=sm, approval_store=None)
+        ok = _inject_ask_user_answer(agent, tool_use_id, "你喜欢哪种语言？ Python")
+        assert ok is True
+        placeholder = sm.messages[-1]["content"][0]
+        assert placeholder["content"] == "你喜欢哪种语言？ Python"
+        assert placeholder["_meta"]["completed"] is True
+        # 答案文件已写盘
+        out = sm.session_dir / placeholder["_meta"]["output_path"]
+        assert out.read_text(encoding="utf-8") == "你喜欢哪种语言？ Python"
+        # tool_use 块已标记 answered
+        assert sm.messages[1]["content"][0]["_meta"]["answered"] is True
+        assert sm.saved
+
+    def test_inject_ask_user_answer_unknown_id_returns_false(self, tmp_path):
+        from types import SimpleNamespace
+        from web.web_api import _inject_ask_user_answer
+        sm, _ = self._placeholder_session(tmp_path)
+        agent = SimpleNamespace(session_manager=sm, approval_store=None)
+        assert _inject_ask_user_answer(agent, "call_missing", "x") is False
+
+    def test_send_message_resumes_ask_user_with_other_answer(self, monkeypatch, tmp_path):
+        """send_message 检测到待回答 ask_user 时：注入输入为"其他"答案并 resume，
+        不调用 agent.run、不追加新 user message，首事件 tool_result(ask_user) 关闭卡片。"""
+        import asyncio
+        import json
+        from types import SimpleNamespace
+        from web import web_api
+
+        sm, tool_use_id = self._placeholder_session(tmp_path)
+        agent = SimpleNamespace(
+            session_manager=sm,
+            approval_store=None,
+            workspace_uuid="ws-ask",
+            current_session_id="sess-ask",
+        )
+        agent.is_running = lambda: False
+        agent.resumed = []
+        agent.resume_after_ask_user = lambda **kw: agent.resumed.append(kw)
+        agent.run = lambda **kw: (_ for _ in ()).throw(AssertionError("agent.run 不应被调用"))
+
+        async def fake_get_agent(ws, sid):
+            return agent
+
+        monkeypatch.setattr(web_api, "_get_or_create_agent", fake_get_agent)
+        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+
+        request = SimpleNamespace(content="我选 Python", images=None)
+
+        async def run():
+            resp = await web_api.send_message("ws-ask", "sess-ask", request)
+            text = ""
+            agen = resp.body_iterator
+            while True:
+                try:
+                    chunk = await agen.__anext__()
+                except StopAsyncIteration:
+                    break
+                text += chunk if isinstance(chunk, str) else chunk.decode()
+            return text
+
+        text = asyncio.run(run())
+
+        # resume 被调用，run 未被调用
+        assert agent.resumed, "resume_after_ask_user 应被调用"
+        # 占位符已注入答案（每个问题都以输入作为"其他"回复）
+        placeholder = sm.messages[-1]["content"][0]
+        assert placeholder["content"] == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
+        # 未追加新 user message（末条仍是占位符所在消息）
+        assert sm.messages[-1]["_meta"]["id"] == "m3"
+        # 首事件关闭卡片，末事件 done
+        events = [json.loads(line[6:]) for line in text.split("\n") if line.startswith("data: ")]
+        assert events[0]["type"] == "tool_result"
+        assert events[0]["tool"] == "ask_user"
+        assert events[0]["tool_use_id"] == tool_use_id
+        assert events[-1]["type"] == "done"

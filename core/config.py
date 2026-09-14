@@ -288,7 +288,7 @@ class Config:
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
 DATA_ROOT = PROJECT_ROOT / "data"
 DATA_DIR = PROJECT_ROOT / "data" / "cili"
-AGENTS_DIR = PROJECT_ROOT / "data" / "agents"
+PROJECTS_DIR = PROJECT_ROOT / "data" / "projects"
 
 # Global config path: data/cili/setting.json
 GLOBAL_CONFIG_PATH = DATA_DIR / "setting.json"
@@ -311,24 +311,24 @@ def validate_workspace_name(name: str) -> str | None:
 
 
 def get_workspace_data_dir(workspace_uuid: str) -> Path:
-    """Get the data directory for a workspace: data/agents/{uuid}/ or workspace/ if empty."""
+    """Get the data directory for a workspace: data/projects/{uuid}/ or workspace/ if empty."""
     if not workspace_uuid:
         return PROJECT_ROOT / "workspace"
-    return AGENTS_DIR / workspace_uuid
+    return PROJECTS_DIR / workspace_uuid
 
 
 def get_workspace_config_path(workspace_uuid: str) -> Path:
-    """Get the workspace config path: data/agents/{uuid}/setting.json or workspace/setting.json if empty."""
+    """Get the workspace config path: data/projects/{uuid}/setting.json or workspace/setting.json if empty."""
     if not workspace_uuid:
         return PROJECT_ROOT / "workspace" / "setting.json"
-    return AGENTS_DIR / workspace_uuid / "setting.json"
+    return PROJECTS_DIR / workspace_uuid / "setting.json"
 
 
 def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/agents/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
+    """Get the user profile path: data/projects/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
     if not workspace_uuid:
         return PROJECT_ROOT / "workspace" / "user-profile.md"
-    return AGENTS_DIR / workspace_uuid / "user-profile.md"
+    return PROJECTS_DIR / workspace_uuid / "user-profile.md"
 
 
 def load_global_config() -> dict:
@@ -364,7 +364,7 @@ def load_config(model_override: str | None = None) -> Config:
 
 
 def load_workspace_config(workspace_uuid: str) -> dict:
-    """Load workspace metadata from data/agents/{uuid}/setting.json.
+    """Load workspace metadata from data/projects/{uuid}/setting.json.
 
     Returns dict with workspace_name, directory, created_at, updated_at.
     """
@@ -381,7 +381,7 @@ def load_workspace_config(workspace_uuid: str) -> dict:
 
 
 def save_workspace_config(workspace_uuid: str, config: dict) -> bool:
-    """Save workspace metadata to data/agents/{uuid}/setting.json."""
+    """Save workspace metadata to data/projects/{uuid}/setting.json."""
     config_path = get_workspace_config_path(workspace_uuid)
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)

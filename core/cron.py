@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from core.config import PROJECT_ROOT, DATA_DIR, AGENTS_DIR
+from core.config import PROJECT_ROOT, DATA_DIR, PROJECTS_DIR
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -418,7 +418,7 @@ class CronTask:
         """解析 workspace 目录。System workspace → data/"""
         if ws_uuid == "system":
             return str(DATA_DIR)
-        return str(AGENTS_DIR / ws_uuid)
+        return str(PROJECTS_DIR / ws_uuid)
 
     def _resolve_cron_session(self, sessions_dir: Path) -> str:
         """查找或创建 cron session。

@@ -44,10 +44,10 @@ v3 与旧版（knowledge / skills 目录 + source_ref + mtime 追踪）在设计
 
 ### 2.1 存储位置与目录布局
 
-每个工作区记忆位于 `data/agents/{uuid}/memory/`（空 uuid 时为 `workspace/memory/`）：
+每个工作区记忆位于 `data/projects/{uuid}/memory/`（空 uuid 时为 `workspace/memory/`）：
 
 ```
-data/agents/{uuid}/memory/
+data/projects/{uuid}/memory/
 ├── entries/                  # 活动条目（四类平铺）
 │   ├── fact/
 │   │   └── rest-api-design.md
@@ -266,7 +266,7 @@ if sm is not None and memory_enabled(agent.workspace_uuid or ""):
 
 ### 4.5 memory_enabled 开关
 
-- 存储于 `data/agents/{uuid}/setting.json`（空 uuid 为 `workspace/setting.json`）的 `memory_enabled` 字段。
+- 存储于 `data/projects/{uuid}/setting.json`（空 uuid 为 `workspace/setting.json`）的 `memory_enabled` 字段。
 - **缺省 False**——纯工作区隔离，除非用户在记忆管理页显式开启。
 - 控制范围：回合后提取钩子（§4.1）、cron/manual 整合 `consolidate_all` 的工作区过滤（§5.1）。关闭时两者都不执行。
 
@@ -282,7 +282,7 @@ if sm is not None and memory_enabled(agent.workspace_uuid or ""):
 | 手动立即整合 | Web 记忆管理页「立即整合」按钮 → `POST /memory/consolidate` | `limit=20, max_batches=4` |
 | 手动工具触发 | `memory(action="consolidate")` → `consolidate_all()` | 全工作区 |
 
-`consolidate_all()` 扫描 `data/agents/` 下带 `memory/` 的工作区，过滤掉 `memory_enabled=false` 的，逐个整合并返回每工作区结果。
+`consolidate_all()` 扫描 `data/projects/` 下带 `memory/` 的工作区，过滤掉 `memory_enabled=false` 的，逐个整合并返回每工作区结果。
 
 ### 5.2 输入与结构化输出
 
@@ -524,7 +524,7 @@ memory 目录自管**独立的 git 仓库**（best-effort，失败静默跳过�
 
 ### 核心设计
 
-- **存储位置**：`data/agents/{uuid}/memory/`，纯文件、无数据库。
+- **存储位置**：`data/projects/{uuid}/memory/`，纯文件、无数据库。
 - **存储类型**：fact / preference / skill / reference 四类，统一 `entries/{type}/{name}.md` frontmatter 格式。
 - **定位键**：`name`（slug）全局唯一，跨类型不重复；store 按 name 原地替换。
 - **摄入日志**：journal.jsonl append-only + `.cursor` 单调游标，两端去重实现「恰好一次」。

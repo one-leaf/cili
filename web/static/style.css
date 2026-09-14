@@ -959,7 +959,7 @@ body {
 
 .message {
     margin-bottom: 20px;
-    padding: 15px;
+    padding: 15px 15px 28px 15px;
     border-radius: 8px;
     max-width: 80%;
     min-width: 0;
@@ -1193,72 +1193,61 @@ mjx-container {
     font-weight: 600;
 }
 
-/* Message menu trigger and dropdown */
+/* Message action bar: 气泡外左下角小图标按钮（复制/引用/分享/撤销）+ 时间 */
 .message-actions {
     position: absolute;
-    right: 8px;
-    top: 8px;
+    left: 2px;
+    bottom: -20px;
     display: flex;
-    gap: 4px;
-    opacity: 0;
-    transition: opacity 0.2s;
+    gap: 2px;
     z-index: 1;
 }
 
-.message:hover .message-actions {
-    opacity: 1;
-}
-
-.msg-menu-trigger {
-    background: none;
-    border: 1px solid transparent;
-    cursor: pointer;
-    color: #aaa;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 16px;
-    transition: color 0.2s, background-color 0.2s, border-color 0.2s;
-}
-
-.msg-menu-trigger:hover {
-    color: #555;
-    background-color: rgba(0, 0, 0, 0.06);
-    border-color: rgba(0, 0, 0, 0.1);
-}
-
-.msg-menu {
-    position: fixed;
-    background: white;
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-    min-width: 120px;
-    z-index: 10000;
+/* tool 气泡在滚动容器内，底部操作条会被裁切，隐藏 */
+.message.tool .message-actions {
     display: none;
 }
 
-.msg-menu.show {
-    display: block;
+/* 思考过程气泡不需要操作条 */
+.message.thinking .message-actions {
+    display: none;
 }
 
-.msg-menu-item {
-    padding: 8px 16px;
+.msg-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    color: #aaa;
     cursor: pointer;
-    font-size: 13px;
-    color: #333;
-    transition: background-color 0.2s;
+    transition: color 0.2s, background-color 0.2s;
 }
 
-.msg-menu-item:hover {
-    background-color: #f5f5f5;
+.msg-action-btn svg {
+    width: 13px;
+    height: 13px;
+    pointer-events: none;
 }
 
-.msg-menu-item:first-child {
-    border-radius: 6px 6px 0 0;
+.msg-action-btn:hover {
+    color: #555;
+    background-color: rgba(0, 0, 0, 0.06);
 }
 
-.msg-menu-item:last-child {
-    border-radius: 0 0 6px 6px;
+/* 时间标签（跟在操作按钮右侧） */
+.message-time {
+    font-size: 11px;
+    color: #aaa;
+    line-height: 18px;
+    padding: 0 4px;
+    white-space: nowrap;
+    user-select: none;
+    pointer-events: none;
 }
 
 /* Toast notification */

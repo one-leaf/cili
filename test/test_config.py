@@ -45,7 +45,7 @@ class TestConfig:
         from core.config import get_workspace_data_dir
 
         path = get_workspace_data_dir("test-uuid-123")
-        assert "agents" in str(path)
+        assert "projects" in str(path)
         assert "test-uuid-123" in str(path)
 
     def test_load_global_config_missing(self, tmp_path, monkeypatch):

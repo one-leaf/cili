@@ -110,7 +110,7 @@ class TestSessionSearch:
     """跨会话历史消息搜索。
 
     使用 tools fixture 的 workspace_uuid="test-workspace"，
-    会话文件写入 data/agents/test-workspace/sessions/（fixture 自动清理）。
+    会话文件写入 data/projects/test-workspace/sessions/（fixture 自动清理）。
     """
 
     def _write_session(self, sid, name, messages, updated):

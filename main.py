@@ -256,10 +256,10 @@ def _setup_directories() -> None:
     """Create basic directories."""
     print("[setup] Creating directories...")
     os.makedirs(_CILI_DIR, exist_ok=True)
-    os.makedirs(os.path.join(_PROJECT_ROOT, "data", "agents"), exist_ok=True)
+    os.makedirs(os.path.join(_PROJECT_ROOT, "data", "projects"), exist_ok=True)
 
     # System workspace: UUID "system", cwd = data/
-    system_ws_dir = os.path.join(_PROJECT_ROOT, "data", "agents", "system")
+    system_ws_dir = os.path.join(_PROJECT_ROOT, "data", "projects", "system")
     os.makedirs(os.path.join(system_ws_dir, "sessions"), exist_ok=True)
     system_config = os.path.join(system_ws_dir, "setting.json")
     if not os.path.exists(system_config):
@@ -315,9 +315,7 @@ def _init_settings() -> None:
                 config_found = path
                 break
             except Exception as e:
-                print(f"[setup] Warning: failed to read {path}: {e}")
-
-    # Also check environment variables directly
+                print(f"[setup] Warning: failed to read {path}: {e}")    # Also check environment variables directly
     # Support both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY
     api_key = (claude_env.get("ANTHROPIC_AUTH_TOKEN") or
                claude_env.get("ANTHROPIC_API_KEY") or
@@ -360,6 +358,31 @@ def _init_settings() -> None:
             print("[setup] Please edit the config file and add your API Key.")
     except Exception as e:
         print(f"[setup] Warning: failed to create settings: {e}")
+
+
+def _migrate_agents_to_projects() -> None:
+    """迁移旧 data/agents 目录到 data/projects。
+
+    如果 data/agents 存在但 data/projects 不存在，则重命名目录。
+    如果两者都存在，保留 data/projects 并警告用户。
+    """
+    agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
+    projects_dir = os.path.join(_PROJECT_ROOT, "data", "projects")
+
+    if not os.path.exists(agents_dir):
+        return  # 旧目录不存在，无需迁移
+
+    if os.path.exists(projects_dir):
+        print(f"[setup] Directory data/projects already exists, keeping it.")
+        print(f"[setup] Warning: data/agents also exists. You can remove it manually if no longer needed.")
+        return
+
+    try:
+        os.rename(agents_dir, projects_dir)
+        print(f"[setup] Migrated data/agents -> data/projects")
+    except Exception as e:
+        print(f"[setup] Warning: failed to migrate data/agents to data/projects: {e}")
+        print(f"[setup] You can manually rename data/agents to data/projects")
 
 
 def _check_deps_python_healthy() -> bool:
@@ -972,6 +995,9 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("日志系统已初始化")
 
+    # 迁移旧 data/agents 目录到 data/projects（如需要），须在创建目录前执行
+    _migrate_agents_to_projects()
+
     # Setup directories and settings
     _setup_directories()
     _init_settings()
@@ -979,8 +1005,8 @@ def main() -> None:
     # Migrate old session format to new format (optional, skip if missing)
     try:
         from core.migration import migrate_all_sessions
-        agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
-        migrated = migrate_all_sessions(Path(agents_dir))
+        projects_dir = os.path.join(_PROJECT_ROOT, "data", "projects")
+        migrated = migrate_all_sessions(Path(projects_dir))
         if migrated > 0:
             print(f"[migration] Migrated {migrated} session(s) to new format")
     except ImportError:

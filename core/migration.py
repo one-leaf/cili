@@ -306,18 +306,18 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
     return True
 
 
-def migrate_all_sessions(agents_dir: Path) -> int:
-    """Migrate all session files in the agents directory.
+def migrate_all_sessions(workspaces_dir: Path) -> int:
+    """Migrate all session files in the workspaces directory.
 
     Returns the number of sessions migrated.
     """
     migrated = 0
 
     # Find all workspace directories
-    if not agents_dir.exists():
+    if not workspaces_dir.exists():
         return 0
 
-    for workspace_dir in agents_dir.iterdir():
+    for workspace_dir in workspaces_dir.iterdir():
         if not workspace_dir.is_dir():
             continue
 

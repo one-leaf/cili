@@ -24,7 +24,7 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
 每个工作区有独立的 sessions 目录，每个会话是一个子目录：
 
 ```
-data/agents/{uuid}/
+data/projects/{uuid}/
 └── sessions/
     ├── a1b2c3d4/                        # 会话 1（8 位十六进制 ID）
     │   ├── messages.jsonl               # 完整消息历史（追加式，UI 数据源）

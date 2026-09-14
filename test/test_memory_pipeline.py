@@ -20,17 +20,17 @@ from core.memory_store import Journal, MemoryStore, _find_git
 
 
 @pytest.fixture
-def agents_dir(tmp_path, monkeypatch):
-    """把 data/agents 重定向到临时目录，隔离真实工作区。"""
-    ad = tmp_path / "agents"
+def projects_dir(tmp_path, monkeypatch):
+    """把 data/projects 重定向到临时目录，隔离真实工作区。"""
+    ad = tmp_path / "projects"
     ad.mkdir()
-    monkeypatch.setattr("core.config.AGENTS_DIR", ad)
-    monkeypatch.setattr("core.memory_pipeline.AGENTS_DIR", ad)
+    monkeypatch.setattr("core.config.PROJECTS_DIR", ad)
+    monkeypatch.setattr("core.memory_pipeline.PROJECTS_DIR", ad)
     return ad
 
 
-def _ws(agents_dir, uuid, *, enabled=False, has_memory=True):
-    d = agents_dir / uuid
+def _ws(projects_dir, uuid, *, enabled=False, has_memory=True):
+    d = projects_dir / uuid
     d.mkdir(parents=True, exist_ok=True)
     (d / "setting.json").write_text(json.dumps({"memory_enabled": enabled}), encoding="utf-8")
     if has_memory:
@@ -83,8 +83,8 @@ class TestRedactSecrets:
 # ── 提取 ──────────────────────────────────────────────
 
 class TestExtraction:
-    def test_happy_path_appends_structured(self, agents_dir):
-        _ws(agents_dir, "ws1")
+    def test_happy_path_appends_structured(self, projects_dir):
+        _ws(projects_dir, "ws1")
 
         def fake_extractor(prompt, system, schema):
             return {"memories": [
@@ -99,7 +99,7 @@ class TestExtraction:
         assert r["raw"] == 0
         assert r["extracted"] == 2
 
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.pending_count() == 2
         recs = journal.read_pending(limit=10)
         assert recs[0]["type_guess"] == "preference"
@@ -107,8 +107,8 @@ class TestExtraction:
         assert "sk-secret1234567890" not in recs[1]["content"]
         assert "***REDACTED***" in recs[1]["content"]
 
-    def test_idempotent_rerun(self, agents_dir):
-        _ws(agents_dir, "ws1")
+    def test_idempotent_rerun(self, projects_dir):
+        _ws(projects_dir, "ws1")
 
         def fake_extractor(prompt, system, schema):
             return {"memories": [{"type": "fact", "title": "T", "content": "x"}]}
@@ -118,12 +118,12 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=fake_extractor)
         assert r["skipped"] is True
         assert r["appended"] == 0
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.pending_count() == 1
 
-    def test_pointer_continues_from_last_id(self, agents_dir):
+    def test_pointer_continues_from_last_id(self, projects_dir):
         """只提取指针之后的新消息（last_msg_id）。"""
-        _ws(agents_dir, "ws1")
+        _ws(projects_dir, "ws1")
         seen: list[str] = []
 
         def fake_extractor(prompt, system, schema):
@@ -138,8 +138,8 @@ class TestExtraction:
         assert "新消息" in seen[1]
         assert "我的 API key" not in seen[1]
 
-    def test_degraded_appends_raw(self, agents_dir):
-        _ws(agents_dir, "ws1")
+    def test_degraded_appends_raw(self, projects_dir):
+        _ws(projects_dir, "ws1")
 
         def broken(prompt, system, schema):
             raise RuntimeError("llm down")
@@ -147,15 +147,15 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=broken)
         assert r["raw"] == 1
         assert r["appended"] == 1
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         recs = journal.read_pending(limit=10)
         assert recs[0]["raw"] is True
         # 降级原文同样掩蔽密钥
         assert "sk-abcdef1234567890xyz" not in recs[0]["content"]
         assert "***REDACTED***" in recs[0]["content"]
 
-    def test_no_new_messages_skips(self, agents_dir):
-        _ws(agents_dir, "ws1")
+    def test_no_new_messages_skips(self, projects_dir):
+        _ws(projects_dir, "ws1")
         r = run_extraction("ws1", "s1", [], extractor=lambda *a: {"memories": []})
         assert r["skipped"] is True
 
@@ -163,15 +163,15 @@ class TestExtraction:
 # ── 整合 ──────────────────────────────────────────────
 
 class TestConsolidation:
-    def _seed(self, agents_dir, uuid="ws1", content="some durable fact"):
-        _ws(agents_dir, uuid, enabled=True)
-        journal = Journal(str(agents_dir / uuid / "memory"))
+    def _seed(self, projects_dir, uuid="ws1", content="some durable fact"):
+        _ws(projects_dir, uuid, enabled=True)
+        journal = Journal(str(projects_dir / uuid / "memory"))
         journal.append(key="extract:s1:m1:0", type_guess="fact", title="Test Memory",
                        content=content, source="session")
         return journal
 
-    def test_applies_ops_and_advances_cursor(self, agents_dir):
-        self._seed(agents_dir)
+    def test_applies_ops_and_advances_cursor(self, projects_dir):
+        self._seed(projects_dir)
 
         def fake(prompt, system, schema):
             return {
@@ -189,26 +189,26 @@ class TestConsolidation:
         assert ops == ["store", "skip"]
         assert r["pending_after"] == 0
 
-        store = MemoryStore(str(agents_dir / "ws1" / "memory"))
+        store = MemoryStore(str(projects_dir / "ws1" / "memory"))
         fm, body = store.peek("test-memory")
         assert body.strip() == "consolidated body"
         assert fm["tags"] == ["t"]
         assert fm["source"] == "derived"
 
         # summary 已写入
-        summary = (agents_dir / "ws1" / "memory" / "summary.md").read_text(encoding="utf-8")
+        summary = (projects_dir / "ws1" / "memory" / "summary.md").read_text(encoding="utf-8")
         assert "用户偏好简洁回复" in summary
         assert r["summary_len"] > 0
 
         # 游标推进到已处理记录
-        assert Journal(str(agents_dir / "ws1" / "memory")).cursor() == 1
+        assert Journal(str(projects_dir / "ws1" / "memory")).cursor() == 1
         assert "committed" in r
         if _find_git() is not None:
             assert r["committed"] is True
 
-    def test_failure_leaves_cursor_untouched(self, agents_dir):
-        self._seed(agents_dir)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+    def test_failure_leaves_cursor_untouched(self, projects_dir):
+        self._seed(projects_dir)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.cursor() == 0
 
         def broken(prompt, system, schema):
@@ -229,15 +229,15 @@ class TestConsolidation:
         assert r2["processed"] == 1
         assert r2["pending_after"] == 0
 
-    def test_conflicting_store_self_heals(self, agents_dir):
+    def test_conflicting_store_self_heals(self, projects_dir):
         """store name 与不同类型条目冲突 → 自动追加 -2 后缀新建保留内容，游标照常推进。
 
         （旧行为是记 failed 不推游标，重跑同批记录会产生同样的冲突 → 确定性死锁。）
         """
-        store = MemoryStore(str(agents_dir / "ws1" / "memory"))
+        store = MemoryStore(str(projects_dir / "ws1" / "memory"))
         store.store(type_="fact", name="foo", title="Foo fact", content="existing")
-        self._seed(agents_dir)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        self._seed(projects_dir)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.cursor() == 0
 
         def conflicting(prompt, system, schema):
@@ -249,15 +249,15 @@ class TestConsolidation:
         assert r["failed"] == []
         names = [a["name"] for a in r["applied"]]
         assert "foo-2" in names
-        fm, _ = MemoryStore(str(agents_dir / "ws1" / "memory")).peek("foo-2")
+        fm, _ = MemoryStore(str(projects_dir / "ws1" / "memory")).peek("foo-2")
         assert fm["type"] == "preference"
         assert journal.cursor() == 1
         assert journal.pending_count() == 0
 
-    def test_empty_store_op_consumed(self, agents_dir):
+    def test_empty_store_op_consumed(self, projects_dir):
         """空 title+content 的 store op → 无可保留内容，视为完成并推进游标，避免死锁。"""
-        self._seed(agents_dir)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        self._seed(projects_dir)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
 
         def empty_store(prompt, system, schema):
             return {"ops": [{"op": "store", "name": "", "type": "fact", "title": "",
@@ -271,16 +271,16 @@ class TestConsolidation:
         assert journal.cursor() == 1
         assert journal.pending_count() == 0
 
-    def test_no_pending_returns_empty(self, agents_dir):
-        _ws(agents_dir, "ws1", enabled=True)
+    def test_no_pending_returns_empty(self, projects_dir):
+        _ws(projects_dir, "ws1", enabled=True)
         r = run_consolidation("ws1")
         assert r["processed"] == 0
         assert r["committed"] is False
 
-    def test_incomplete_ops_keeps_cursor(self, agents_dir):
+    def test_incomplete_ops_keeps_cursor(self, projects_dir):
         """op 数 < 待整合记录数（截断丢尾部/模型少输出）→ 不推游标，记录保留供重跑。"""
-        self._seed(agents_dir)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        self._seed(projects_dir)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.pending_count() == 1
 
         def few(prompt, system, schema):
@@ -292,14 +292,14 @@ class TestConsolidation:
         assert journal.cursor() == 0
         assert journal.pending_count() == 1
 
-    def test_missing_target_ops_do_not_deadlock(self, agents_dir):
+    def test_missing_target_ops_do_not_deadlock(self, projects_dir):
         """delete/archive 目标条目不存在、update 目标缺失 → 视为完成/新建保留，队列照常推进。
 
         复现线上死锁：模型对不存在的条目发 delete/archive/update，旧行为记 failed
         不推游标，重跑同批记录产生同样的 op → 待整合永远不降。
         """
-        self._seed(agents_dir)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        self._seed(projects_dir)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         assert journal.cursor() == 0
 
         def hallucinating(prompt, system, schema):
@@ -314,15 +314,15 @@ class TestConsolidation:
         assert r["failed"] == []
         assert len(r["applied"]) == 3
         # update 退化 store 新建，内容不丢
-        fm, body = MemoryStore(str(agents_dir / "ws1" / "memory")).peek("ghost-update")
+        fm, body = MemoryStore(str(projects_dir / "ws1" / "memory")).peek("ghost-update")
         assert body.strip() == "kept content"
         assert journal.cursor() == 1
         assert journal.pending_count() == 0
 
-    def test_max_batches_clears_queue(self, agents_dir):
+    def test_max_batches_clears_queue(self, projects_dir):
         """max_batches>1 循环整合至清零，返回跨批聚合计数。"""
-        _ws(agents_dir, "ws1", enabled=True)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        _ws(projects_dir, "ws1", enabled=True)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         for i in range(5):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -339,10 +339,10 @@ class TestConsolidation:
         assert r["pending_after"] == 0
         assert journal.pending_count() == 0
 
-    def test_default_max_batches_one(self, agents_dir):
+    def test_default_max_batches_one(self, projects_dir):
         """缺省 max_batches=1 只处理一批（limit 条），行为与旧版一致。"""
-        _ws(agents_dir, "ws1", enabled=True)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        _ws(projects_dir, "ws1", enabled=True)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         for i in range(5):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -356,10 +356,10 @@ class TestConsolidation:
         assert r["processed"] == 2
         assert r["pending_after"] == 3
 
-    def test_truncated_batch_splits_and_advances(self, agents_dir):
+    def test_truncated_batch_splits_and_advances(self, projects_dir):
         """整批整合抛错（模拟 max_tokens 截断）时拆半重试，两半各自成功 → 全部应用并推进游标。"""
-        _ws(agents_dir, "ws1", enabled=True)
-        journal = Journal(str(agents_dir / "ws1" / "memory"))
+        _ws(projects_dir, "ws1", enabled=True)
+        journal = Journal(str(projects_dir / "ws1" / "memory"))
         for i in range(4):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -387,18 +387,18 @@ class TestConsolidation:
 # ── 门控 / 全量整合 ───────────────────────────────────
 
 class TestGating:
-    def test_memory_enabled_reads_setting(self, agents_dir):
-        _ws(agents_dir, "on", enabled=True)
-        _ws(agents_dir, "off", enabled=False)
-        _ws(agents_dir, "none")
+    def test_memory_enabled_reads_setting(self, projects_dir):
+        _ws(projects_dir, "on", enabled=True)
+        _ws(projects_dir, "off", enabled=False)
+        _ws(projects_dir, "none")
         assert memory_enabled("on") is True
         assert memory_enabled("off") is False
         assert memory_enabled("none") is False
 
-    def test_consolidate_all_skips_disabled(self, agents_dir):
-        _ws(agents_dir, "w1", enabled=True)
-        _ws(agents_dir, "w2", enabled=False)
-        _ws(agents_dir, "w3", enabled=True, has_memory=False)  # 无 memory 目录，不被扫描
+    def test_consolidate_all_skips_disabled(self, projects_dir):
+        _ws(projects_dir, "w1", enabled=True)
+        _ws(projects_dir, "w2", enabled=False)
+        _ws(projects_dir, "w3", enabled=True, has_memory=False)  # 无 memory 目录，不被扫描
 
         def fake(prompt, system, schema):
             return {"ops": [], "summary": ""}
@@ -409,12 +409,12 @@ class TestGating:
         assert "w2" not in uuids
         assert "w3" not in uuids
 
-    def test_consolidate_all_errors_captured(self, agents_dir):
-        _ws(agents_dir, "w1", enabled=True)
-        _ws(agents_dir, "w2", enabled=True)
+    def test_consolidate_all_errors_captured(self, projects_dir):
+        _ws(projects_dir, "w1", enabled=True)
+        _ws(projects_dir, "w2", enabled=True)
         # 两个工作区都有待整合记录，才能让回调真正被调用
         for uuid in ("w1", "w2"):
-            Journal(str(agents_dir / uuid / "memory")).append(
+            Journal(str(projects_dir / uuid / "memory")).append(
                 key=f"extract:{uuid}:m1:0", type_guess="fact", title="T", content="x"
             )
 

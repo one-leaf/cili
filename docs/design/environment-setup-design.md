@@ -63,8 +63,8 @@ data/
 **流程**：
 ```
 1. 创建目录结构和配置文件（_setup_directories）
-   - 创建 data/cili/、data/agents/、data/tmp/ 等目录
-   - 创建 System workspace（data/agents/system/）
+   - 创建 data/cili/、data/projects/、data/tmp/ 等目录
+   - 创建 System workspace（data/projects/system/）
    - 设置临时目录环境变量：TEMP、TMP、TMPDIR、CILI_TMP → data/tmp/
    - 生成示例配置文件 setting.example.json
 2. 初始化配置（_init_settings）

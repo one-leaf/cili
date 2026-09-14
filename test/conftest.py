@@ -92,7 +92,7 @@ def tools(test_workspace):
     yield create_tools(cwd=test_workspace, workspace_uuid=test_uuid)
     # 清理测试产生的 memory 目录
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_memory_dir = os.path.join(project_dir, "data", "agents", test_uuid)
+    test_memory_dir = os.path.join(project_dir, "data", "projects", test_uuid)
     if os.path.exists(test_memory_dir):
         shutil.rmtree(test_memory_dir, ignore_errors=True)
 
@@ -106,7 +106,7 @@ def agent(config, test_workspace):
     yield agent_instance
     # 清理测试生成的 workspace 目录
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_workspace_dir = os.path.join(project_dir, "data", "agents", test_uuid)
+    test_workspace_dir = os.path.join(project_dir, "data", "projects", test_uuid)
     if os.path.exists(test_workspace_dir):
         shutil.rmtree(test_workspace_dir, ignore_errors=True)
 

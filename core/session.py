@@ -156,14 +156,23 @@ def _merge_block_meta(content: Any, blocks: dict | None) -> None:
 
 
 def _jsonl_line(msg: dict, seq: int) -> dict:
-    """把内存消息序列化为 jsonl 行（含 id，剥离 _meta）。"""
+    """把内存消息序列化为 jsonl 行（含 id + created_at，剥离 _meta）。"""
     meta = msg.get("_meta") or {}
-    return {
+    line = {
         "seq": seq,
         "id": meta.get("id", ""),
         "role": msg.get("role"),
         "content": _strip_block_meta(msg.get("content")),
     }
+    created_at = meta.get("created_at")
+    if not created_at:
+        # 兜底注入（agent.add_message 等未走 session.add_message 的路径）
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if "_meta" not in msg:
+            msg["_meta"] = {}
+        msg["_meta"]["created_at"] = created_at
+    line["created_at"] = created_at
+    return line
 
 
 def _message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
@@ -171,6 +180,9 @@ def _message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
     meta = dict(msg_meta or {})
     meta["id"] = line.get("id") or meta.get("id") or generate_short_id()
     meta["seq"] = seq
+    created_at = line.get("created_at")
+    if created_at:
+        meta["created_at"] = created_at
     return {"role": line.get("role"), "content": line.get("content"), "_meta": meta}
 
 
@@ -371,9 +383,15 @@ class SessionManager:
         message = {"role": role, "content": content}
 
         if _meta:
-            message["_meta"] = _meta
+            message["_meta"] = dict(_meta)
         if extra:
             message.update(extra)
+
+        # 注入消息创建时间（已有则保留，兼容重建/重放场景）
+        msg_meta = message.get("_meta") or {}
+        if "created_at" not in msg_meta:
+            msg_meta["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message["_meta"] = msg_meta
 
         self.messages.append(message)
         self._messages_dirty = True
