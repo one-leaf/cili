@@ -50,6 +50,45 @@ class AgentTool(Tool):
         self._pending_lock = threading.Lock()
 
 
+    def _publish(self, ev_type: str, **extra) -> None:
+        """发布事件到全局事件流（worker 事件）。事件壳带 workspace_uuid/session_id。"""
+        try:
+            sm = self.session_manager
+            if sm is None:
+                return
+            session_id = getattr(sm, "session_id", "")
+            if not session_id:
+                return
+            from core.event_bus import get_event_bus
+            get_event_bus().publish({
+                "type": ev_type,
+                "workspace_uuid": self.workspace_uuid,
+                "session_id": session_id,
+                **extra,
+            })
+        except Exception:
+            logger.debug(f"event publish failed: {ev_type}", exc_info=True)
+
+    def _notify_agent_start(self, exec_id: str, task_summary: str) -> None:
+        """广播 agent_start：保留 on_agent_start 回调（master POST SSE）+ 全局事件流。"""
+        if self.on_agent_start and exec_id:
+            try:
+                self.on_agent_start(exec_id, task_summary)
+            except Exception as e:
+                logger.warning(f"on_agent_start callback error: {e}")
+        if exec_id:
+            self._publish("agent_start", exec_id=exec_id, task_summary=task_summary)
+
+    def _notify_agent_complete(self, exec_id: str, status: str = "completed") -> None:
+        """广播 agent_complete：保留 on_agent_complete 回调 + 全局事件流。"""
+        if exec_id:
+            self._publish("agent_complete", exec_id=exec_id, status=status)
+        if self.on_agent_complete:
+            try:
+                self.on_agent_complete(exec_id)
+            except Exception as e:
+                logger.warning(f"on_agent_complete callback error: {e}")
+
     @property
     def parameters(self) -> dict:
         """Dynamic parameters schema."""
@@ -185,13 +224,9 @@ class AgentTool(Tool):
             else:
                 exec_id = f"sub-{secrets.token_hex(4)}"
 
-        # Fire callback to push SSE event immediately (before blocking on agent.run())
+        # Fire callback + 全局事件流广播（before blocking on agent.run()）
         task_summary = task[:100]
-        if self.on_agent_start and exec_id:
-            try:
-                self.on_agent_start(exec_id, task_summary)
-            except Exception as e:
-                logger.warning(f"on_agent_start callback error: {e}")
+        self._notify_agent_start(exec_id, task_summary)
 
         # Create exec directory for sub-agent logs and tool output files
         exec_dir = None
@@ -214,6 +249,21 @@ class AgentTool(Tool):
             approval_store=self.approval_store,
             delegation_depth=self.delegation_depth + 1,
         )
+
+        # 全局事件流：worker 逐 token 消息与工具增量 → 事件总线（实时推送，去前端轮询）。
+        # 这些是 BaseAgent 的普通实例属性（默认 None），run() 前赋值即可，无需改 agent 循环。
+        agent._on_text = lambda content, _id=exec_id: self._publish(
+            "text", exec_id=_id, content=content)
+        agent._on_thinking = lambda content, _id=exec_id: self._publish(
+            "thinking", exec_id=_id, content=content)
+        agent._on_tool_call = lambda tool, input_data, tool_use_id, _id=exec_id: self._publish(
+            "tool_use", exec_id=_id, tool=tool, input=input_data, tool_use_id=tool_use_id)
+        agent._on_tool_result = lambda tool, content, is_error, tool_use_id, _id=exec_id: self._publish(
+            "tool_result", exec_id=_id, tool=tool, content=content, is_error=is_error,
+            tool_use_id=tool_use_id)
+        agent._on_tool_output = lambda tool, content, offset, tool_use_id, _id=exec_id: self._publish(
+            "tool_output", exec_id=_id, tool=tool, content=content, offset=offset,
+            tool_use_id=tool_use_id)
 
         # Background mode
         if run_in_background:
@@ -275,12 +325,9 @@ class AgentTool(Tool):
                     self.session_manager.save()
                 # Signal completion
                 entry["event"].set()
-                # Fire completion callback
-                if self.on_agent_complete:
-                    try:
-                        self.on_agent_complete(exec_id)
-                    except Exception as e:
-                        logger.warning(f"on_agent_complete callback error: {e}")
+                # Fire completion callback + 事件流广播
+                status = (entry.get("result") or {}).get("status", "completed")
+                self._notify_agent_complete(exec_id, status=status)
 
         thread = threading.Thread(target=run_agent, daemon=True)
         entry["thread"] = thread

@@ -98,6 +98,8 @@ class BaseAgent:
         self._on_thinking: Callable[[str], None] | None = None
         self._on_tool_call: Callable[[str, dict, str], None] | None = None
         self._on_tool_result: Callable[[str, str, bool, str], None] | None = None
+        # 工具实时输出增量：(tool_name, content, written_bytes, tool_use_id)
+        self._on_tool_output: Callable[[str, str, int, str], None] | None = None
 
         # Session ID for LLM routing — the unified Agent sets this before
         # super().__init__ (interactive: current session; autonomous: exec_id).
@@ -330,6 +332,14 @@ class BaseAgent:
                         f.write("")
                 except Exception:
                     pass
+                # 全局事件流：流式工具的实时输出增量 → agent._on_tool_output
+                if self._on_tool_output:
+                    tool.on_output = (
+                        lambda chunk, offset, _n=name, _id=tool_use_id:
+                        self._on_tool_output(_n, chunk, offset, _id)
+                    )
+                else:
+                    tool.on_output = None
 
         # Notify callback
         if self._on_tool_call:
@@ -358,6 +368,7 @@ class BaseAgent:
             # 更新 _output_path 为实际保存的文件路径（可能是 .json）
             output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
             tool.output_file = None
+            tool.on_output = None
 
         # 空输出兜底：任何工具返回空内容时（竞态、空结果、无输出），统一补非空
         # 哨兵，避免实时流显示空白、会话重载被 hydration 误标为"[工具输出文件路径缺失]"

@@ -420,6 +420,7 @@ async function handleWorkspaceChange() {
     if (!selectedUuid) {
         currentWorkspace = null;
         currentSession = null;
+        closeEventSource();  // 无工作区：断开事件流
         clearPosition();
         workspaceSettingsBtn.disabled = true;
         document.getElementById('file-manager-btn').disabled = true;
@@ -971,8 +972,11 @@ async function loadSession(sessionId) {
 
         console.log('Session switched to:', currentSession.session_id);
 
-        // 清理所有正在进行的工具输出轮询
+        // 清理所有正在进行的工具输出轮询与 worker 卡片状态（修复切会话泄漏）
         clearAllToolStreaming();
+
+        // 重连全局事件流到当前会话（worker 消息 + 工具输出实时推送）
+        connectEventSource();
 
         // Enable input by default when selecting a session
         chatInput.disabled = false;
@@ -992,6 +996,8 @@ async function loadSession(sessionId) {
             sendBtn.classList.remove('btn-primary');
             sendBtn.classList.add('btn-danger');
             isSending = true;
+            // 恢复该会话运行中的 worker 卡片（历史消息里只有已完成的 agent_ref）
+            recoverRunningCards();
         }
 
         renderSessions();
@@ -1037,6 +1043,8 @@ async function createNewSession() {
 
         // 完整重置发送/停止状态（可能在旧会话运行中创建新会话）
         clearAllToolStreaming();
+        // 重连事件流到新会话
+        connectEventSource();
         chatInput.disabled = false;
         sendBtn.disabled = false;
         sendBtn.textContent = '发送';

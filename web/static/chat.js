@@ -4,72 +4,27 @@
 // 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast, loadSession, loadSessions, savePosition
 
 // ── 工具输出实时流式显示 ──
-// 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入
-// 前端在收到 tool_use SSE 事件后启动轮询，收到 tool_result 后停止
+// 后端 /stream/{tool_use_id} 端点支持增量读取，_run_bash 边执行边写入；
+// 工具实时输出由全局事件流（sse-client.js）推送 tool_output 事件驱动，不再轮询。
 // 工具输出显示为独立的消息气泡（类似思考块），执行完毕后自动消失
 // 延迟5秒显示：快速执行的工具不会产生气泡闪烁
+// （有实时输出事件时 sse-client 会跳过延迟立即建气泡）
 
-const _toolStreamTimers = {};  // { tool_use_id: { timer, pre, offset } }
+const _toolStreamTimers = {};  // { tool_use_id: { delayTimer, pre, offset, div } }
 const TOOL_STREAMING_DELAY = 5000; // 5秒后才显示实时输出
 
 function startToolStreaming(toolUseId, toolName) {
     if (!currentWorkspace || !currentSession) return;
+    if (_toolStreamTimers[toolUseId]) return;
 
-    // 先设置延迟定时器，5秒后才真正开始轮询和显示
-    const delayTimer = setTimeout(() => {
-        // 5秒后还没完成，开始创建气泡并轮询
-        let offset = 0;
-
-        // 创建独立的消息气泡（类似思考块）
-        const div = document.createElement('div');
-        div.className = 'message assistant tool-streaming-bubble';
-        div.dataset.toolUseId = toolUseId;
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-
-        const title = document.createElement('div');
-        title.className = 'streaming-title';
-        title.textContent = `⚡ ${toolName} 执行中...`;
-        contentDiv.appendChild(title);
-
-        const pre = document.createElement('pre');
-        pre.className = 'tool-streaming-output';
-        pre.textContent = '';
-        contentDiv.appendChild(pre);
-
-        div.appendChild(contentDiv);
-        chatMessages.appendChild(div);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-
-        // 更新 entry，标记气泡已创建
+    // 先记录 entry；5 秒后若无 tool_output 事件，由延迟定时器创建气泡
+    _toolStreamTimers[toolUseId] = { delayTimer: null, timer: null, pre: null, offset: 0, div: null };
+    _toolStreamTimers[toolUseId].delayTimer = setTimeout(() => {
         const entry = _toolStreamTimers[toolUseId];
-        if (entry) {
-            entry.div = div;
-            entry.pre = pre;
-            entry.offset = offset;
-            entry.timer = setInterval(async () => {
-                try {
-                    const url = `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stream/${toolUseId}?offset=${entry.offset}`;
-                    const resp = await fetch(url);
-                    if (!resp.ok) return;
-                    const data = await resp.json();
-
-                    if (data.content) {
-                        if (entry.offset === 0) entry.pre.textContent = '';
-                        entry.pre.textContent += data.content;
-                        entry.offset = data.offset;
-                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                    }
-                } catch (e) {
-                    // 轮询失败静默忽略，tool_result SSE 会兜底显示
-                }
-            }, 200);
-        }
+        if (!entry) return;
+        entry.delayTimer = null;
+        ensureMasterToolBubble(toolUseId, toolName);
     }, TOOL_STREAMING_DELAY);
-
-    // 先记录 entry，delayTimer 触发前 div/timer 为空
-    _toolStreamTimers[toolUseId] = { delayTimer, timer: null, pre: null, offset: 0, div: null };
 }
 
 function stopToolStreaming(toolUseId) {
@@ -91,6 +46,10 @@ function stopToolStreaming(toolUseId) {
 function clearAllToolStreaming() {
     for (const id of Object.keys(_toolStreamTimers)) {
         stopToolStreaming(id);
+    }
+    // 一并清理 worker 子代理卡片状态（sse-client.js，修复切会话泄漏）
+    if (typeof clearAllAgentStreaming === 'function') {
+        clearAllAgentStreaming();
     }
 }
 
@@ -333,64 +292,9 @@ function renderMessages(messages) {
     }
 }
 
-// 渲染子代理引用（可折叠卡片）
+// 渲染子代理引用（可折叠卡片）——委托 sse-client.js 卡片状态机
 function renderAgentRef(msg, idx, msgId) {
-    const statusIcons = {
-        'completed': '✅',
-        'error': '❌',
-        'failed': '❌',
-        'timeout': '⏱️',
-        'running': '🔄',
-        'stopped': '⏹️'
-    };
-    const icon = statusIcons[msg.status] || '📋';
-
-    const card = document.createElement('div');
-    card.className = 'message assistant agent-card';
-    card.dataset.execId = msg.exec_id;
-    if (msgId) card.dataset.msgId = msgId;
-
-    const header = document.createElement('div');
-    header.className = 'agent-header';
-    header.innerHTML = `
-        <span class="sa-icon">${icon}</span>
-        <span class="sa-title">子代理执行</span>
-        <span class="sa-task" title="${escapeHtml(msg.task_summary)}">${escapeHtml(msg.task_summary.substring(0, 60))}${msg.task_summary.length > 60 ? '...' : ''}</span>
-        <span class="sa-meta">${msg.iterations || 0} 轮 · ${msg.message_count || 0} 条消息</span>
-        <span class="sa-toggle">▶</span>
-    `;
-
-    const detail = document.createElement('div');
-    detail.className = 'agent-detail';
-    detail.style.display = 'none';
-
-    card.appendChild(header);
-    card.appendChild(detail);
-    chatMessages.appendChild(card);
-
-    // 点击展开/折叠
-    header.addEventListener('click', () => {
-        if (detail.style.display === 'none') {
-            detail.style.display = 'block';
-            header.querySelector('.sa-toggle').textContent = '▼';
-            // 运行中时每次都重新加载，完成后缓存
-            const shouldReload = !detail.dataset.loaded || msg.status === 'running';
-            if (shouldReload) {
-                loadExecutionDetail(msg.exec_id, detail, header, msg);
-            }
-        } else {
-            detail.style.display = 'none';
-            header.querySelector('.sa-toggle').textContent = '▶';
-            // 折叠时停止定时器并重置状态
-            if (msg._refreshTimer) {
-                clearInterval(msg._refreshTimer);
-                msg._refreshTimer = null;
-            }
-            // 重置加载状态，再次展开时当作全新加载
-            detail.dataset.loaded = 'false';
-            detail.dataset.renderedCount = '0';
-        }
-    });
+    agentCardForMessage(msg, msgId);
 }
 
 // 渲染任务清单（Todo List）
@@ -450,70 +354,14 @@ function renderTodoList(todos) {
 }
 
 // 子代理开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
+// 委托 sse-client.js 幂等 ensureAgentCard（POST SSE 与事件流双源共用）
 function renderAgentStart(execId, taskSummary) {
-    const card = document.createElement('div');
-    card.className = 'message assistant agent-card';
-    card.dataset.execId = execId;
-
-    const header = document.createElement('div');
-    header.className = 'agent-header';
-    header.innerHTML = `
-        <span class="sa-icon">🔄</span>
-        <span class="sa-title">子代理执行中</span>
-        <span class="sa-task" title="${escapeHtml(taskSummary)}">${escapeHtml(taskSummary.substring(0, 60))}${taskSummary.length > 60 ? '...' : ''}</span>
-        <span class="sa-meta">0 轮 · 0 条消息</span>
-        <span class="sa-toggle">▶</span>
-    `;
-
-    const detail = document.createElement('div');
-    detail.className = 'agent-detail';
-    detail.style.display = 'none';
-
-    card.appendChild(header);
-    card.appendChild(detail);
-    chatMessages.appendChild(card);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-
-    // msg 对象用于 loadExecutionDetail 更新卡片状态
-    const msg = { exec_id: execId, task_summary: taskSummary, status: 'running' };
-
-    // 点击展开/折叠（运行中时每次都重新加载）
-    header.addEventListener('click', () => {
-        if (detail.style.display === 'none') {
-            detail.style.display = 'block';
-            header.querySelector('.sa-toggle').textContent = '▼';
-            loadExecutionDetail(execId, detail, header, msg);
-        } else {
-            detail.style.display = 'none';
-            header.querySelector('.sa-toggle').textContent = '▶';
-            // 折叠时停止定时器并重置状态
-            if (msg._refreshTimer) {
-                clearInterval(msg._refreshTimer);
-                msg._refreshTimer = null;
-            }
-            // 重置加载状态，再次展开时当作全新加载
-            detail.dataset.loaded = 'false';
-            detail.dataset.renderedCount = '0';
-        }
-    });
+    ensureAgentCard(execId, taskSummary, { status: 'running' });
 }
 
-// 子代理完成时更新卡片状态
+// 子代理完成时更新卡片状态——委托 sse-client.js 幂等 markAgentComplete
 function renderAgentComplete(execId) {
-    const card = chatMessages.querySelector(`.agent-card[data-exec-id="${execId}"]`);
-    if (!card) return;
-    const header = card.querySelector('.agent-header');
-    if (!header) return;
-    // 更新图标和标题
-    header.querySelector('.sa-icon').textContent = '✅';
-    header.querySelector('.sa-title').textContent = '子代理已完成';
-    // 触发一次展开加载以获取最新数据
-    const detail = card.querySelector('.agent-detail');
-    if (detail && detail.style.display === 'block') {
-        // 已展开，重新加载内容
-        const msg = { exec_id: execId, status: 'completed' };
-        loadExecutionDetail(execId, detail, header, msg);
-    }
+    markAgentComplete(execId, 'completed');
 }
 
 // 渲染 AskUser 问题卡片
@@ -844,142 +692,6 @@ function renderAskUserQuestions(container, input, toolUseId) {
     card.appendChild(submitBtn);
     container.appendChild(card);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-// 加载执行详情（headerEl 和 msg 用于实时更新卡片状态）
-async function loadExecutionDetail(execId, container, headerEl, msg) {
-    // 如果正在刷新，先清除旧的定时器
-    if (msg._refreshTimer) {
-        clearInterval(msg._refreshTimer);
-        msg._refreshTimer = null;
-    }
-
-    container.innerHTML = '<div class="sa-loading">加载中...</div>';
-
-    // 实际加载函数
-    const doLoad = async () => {
-        try {
-            const workspaceUuid = currentWorkspace?.uuid;
-            const sessionId = currentSession.session_id;
-            const url = `/api/workspaces/${workspaceUuid}/sessions/${sessionId}/executions/${execId}`;
-            const resp = await fetch(url);
-
-            if (!resp.ok) {
-                container.innerHTML = '<div class="sa-error">加载失败</div>';
-                return false;
-            }
-
-            const data = await resp.json();
-            const isFirstLoad = container.dataset.loaded !== 'true';
-            container.dataset.loaded = 'true';
-
-            // 更新卡片 header 中的状态信息
-            if (headerEl && msg) {
-                // 更新 status（从运行中变为已完成等）
-                if (data.metadata && data.metadata.status) {
-                    msg.status = data.metadata.status;
-                    const statusIcons = {
-                        'completed': '✅',
-                        'error': '❌',
-                        'failed': '❌',
-                        'timeout': '⏱️',
-                        'running': '🔄',
-                        'stopped': '⏹️'
-                    };
-                    headerEl.querySelector('.sa-icon').textContent = statusIcons[msg.status] || '📋';
-                }
-                // 更新 iterations 和 message_count
-                if (data.metadata) {
-                    const iters = data.metadata.iterations || 0;
-                    const msgs = data.messages ? data.messages.length : 0;
-                    const currentTool = data.metadata.current_tool || '';
-                    const toolSuffix = currentTool ? ` · 正在: ${currentTool}` : '';
-                    headerEl.querySelector('.sa-meta').textContent = `${iters} 轮 · ${msgs} 条消息${toolSuffix}`;
-                }
-            }
-
-            // 首次加载时清空容器
-            if (isFirstLoad) {
-                container.innerHTML = '';
-                // summary 内容已在最后一条 assistant 消息中显示，不重复渲染
-            }
-
-            // 渲染消息（增量追加）
-            const renderedCount = parseInt(container.dataset.renderedCount || '0');
-            const messages = data.messages || [];
-
-            if (messages.length > renderedCount) {
-                // 获取或创建消息容器
-                let msgsDiv = container.querySelector('.sa-messages');
-                if (!msgsDiv) {
-                    msgsDiv = document.createElement('div');
-                    msgsDiv.className = 'sa-messages';
-                    container.appendChild(msgsDiv);
-                }
-
-                // 只渲染新消息
-                const newMessages = messages.slice(renderedCount);
-                newMessages.forEach(message => {
-                    const blocks = normalizeContent(message.content);
-                    blocks.forEach(block => {
-                        if (block.kind === 'text' && block.text) {
-                            const div = document.createElement('div');
-                            div.className = `sa-msg ${message.role}`;
-                            div.innerHTML = renderMarkdown(block.text);
-                            msgsDiv.appendChild(div);
-                        } else if (block.kind === 'tool_call') {
-                            const div = document.createElement('div');
-                            div.className = 'sa-msg tool-use';
-                            div.innerHTML = `<strong>[工具调用: ${block.name}]</strong><pre>${escapeHtml(JSON.stringify(block.input, null, 2))}</pre>`;
-                            msgsDiv.appendChild(div);
-                        } else if (block.kind === 'tool_result') {
-                            const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-                            const div = document.createElement('div');
-                            div.className = 'sa-msg tool-result';
-                            div.innerHTML = `<strong>[工具结果]</strong><pre>${escapeHtml(text.substring(0, 500))}${text.length > 500 ? '...' : ''}</pre>`;
-                            msgsDiv.appendChild(div);
-                        }
-                    });
-                });
-
-                // 更新已渲染计数
-                container.dataset.renderedCount = messages.length;
-
-                // 自动滚动：只在用户已经在底部附近时才滚动
-                const chatMessages = document.getElementById('chat-messages');
-                if (chatMessages) {
-                    const isNearBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 100;
-                    if (isNearBottom) {
-                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                    }
-                }
-            }
-
-            // 返回当前状态
-            return msg.status === 'running';
-        } catch (err) {
-            console.error('Failed to load execution detail:', err);
-            if (container.dataset.loaded !== 'true') {
-                container.innerHTML = '<div class="sa-error">加载失败: ' + escapeHtml(err.message) + '</div>';
-            }
-            return false;
-        }
-    };
-
-    // 首次加载
-    const isRunning = await doLoad();
-
-    // 如果还在运行，设置定时刷新（每 3 秒）
-    if (isRunning) {
-        msg._refreshTimer = setInterval(async () => {
-            const stillRunning = await doLoad();
-            if (!stillRunning) {
-                // 已完成，停止刷新
-                clearInterval(msg._refreshTimer);
-                msg._refreshTimer = null;
-            }
-        }, 3000);
-    }
 }
 
 // Stop agent

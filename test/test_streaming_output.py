@@ -201,3 +201,78 @@ for i in range(5):
 
         # 清理
         os.unlink(output_file)
+
+    def test_bash_on_output_hook(self, tools, test_workspace):
+        """bash 实时输出触发 on_output 钩子：多 chunk、字节 offset 单调递增、终值=文件字节数"""
+        from core.tools import get_tool_by_name
+
+        bash_tool = get_tool_by_name(tools, "bash")
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, dir=test_workspace, encoding='utf-8') as f:
+            output_file = f.name
+
+        bash_tool.output_file = output_file
+        chunks = []
+        offsets = []
+        bash_tool.on_output = lambda chunk, offset: (chunks.append(chunk), offsets.append(offset))
+
+        # 每字符带换行：每个字符触发一次 emit，验证增量流式
+        result = bash_tool.execute(
+            command='for c in A B C D E; do printf "%s\n" "$c"; sleep 0.1; done',
+            timeout=30
+        )
+
+        assert not result.error
+        assert len(chunks) >= 3, f"应收到多个实时 chunk，实际: {chunks}"
+        assert "".join(chunks).replace("\n", "") == "ABCDE"
+        # offset 严格单调递增
+        assert all(b > a for a, b in zip(offsets, offsets[1:])), f"offset 应单调递增: {offsets}"
+        # 终值 = 输出文件实际字节数（/stream 端点 f.seek(offset) 契约）
+        final_size = os.path.getsize(output_file)
+        assert offsets[-1] == final_size, f"offset 终值 {offsets[-1]} != 文件字节数 {final_size}"
+
+        bash_tool.on_output = None
+        os.unlink(output_file)
+
+    def test_on_output_unicode_byte_offset(self, tools, test_workspace):
+        """Unicode 输出的字节 offset（UTF-8 多字节字符按字节计，非字符数）"""
+        from core.tools import get_tool_by_name
+
+        bash_tool = get_tool_by_name(tools, "bash")
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, dir=test_workspace, encoding='utf-8') as f:
+            output_file = f.name
+
+        bash_tool.output_file = output_file
+        offsets = []
+        bash_tool.on_output = lambda chunk, offset: offsets.append(offset)
+
+        result = bash_tool.execute(command='printf "测试\n"', timeout=30)
+
+        assert not result.error
+        final_size = os.path.getsize(output_file)
+        assert offsets and offsets[-1] == final_size, \
+            f"字节 offset {offsets[-1] if offsets else None} != 文件字节数 {final_size}（测试=3字符x3字节+换行=7）"
+
+        bash_tool.on_output = None
+        os.unlink(output_file)
+
+    def test_on_output_error_does_not_break_execution(self, tools, test_workspace):
+        """on_output 回调抛异常不影响工具执行（钩子静默保护）"""
+        from core.tools import get_tool_by_name
+
+        bash_tool = get_tool_by_name(tools, "bash")
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, dir=test_workspace, encoding='utf-8') as f:
+            output_file = f.name
+
+        bash_tool.output_file = output_file
+
+        def bad_hook(chunk, offset):
+            raise RuntimeError("hook failed")
+
+        bash_tool.on_output = bad_hook
+        result = bash_tool.execute(command='echo hello', timeout=30)
+
+        assert not result.error
+        assert "hello" in result.output
+
+        bash_tool.on_output = None
+        os.unlink(output_file)

@@ -46,6 +46,7 @@ from core.session import (
     read_meta,
 )
 from core.message_bus import get_message_bus
+from core.event_bus import get_event_bus
 from core.tools import get_tool_by_name
 from core.tools.approval import APPROVE_LABEL
 from core.tools.todo import get_todos_from_session
@@ -477,10 +478,28 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
 
             agents[key] = agent
 
+            # 全局事件流：master 工具实时输出 → 事件总线（无 exec_id 表示 master 工具）
+            bus = get_event_bus()
+
+            def _on_tool_output(tool_name: str, content: str, offset: int, tool_use_id: str) -> None:
+                bus.publish({
+                    "type": "tool_output",
+                    "workspace_uuid": workspace_uuid,
+                    "session_id": session_id,
+                    "tool": tool_name,
+                    "content": content,
+                    "offset": offset,
+                    "tool_use_id": tool_use_id,
+                })
+
+            agent._on_tool_output = _on_tool_output
+
             # Register session with MessageBus for cross-session messaging
+            # （注意：不能复用变量名 bus——上方 _on_tool_output 闭包晚绑定捕获，
+            #  改名 mbus 防止把事件总线遮蔽成 MessageBus，导致 publish 属性缺失）
             try:
-                bus = get_message_bus()
-                bus.register_session(session_id, agent.session_manager.name)
+                mbus = get_message_bus()
+                mbus.register_session(session_id, agent.session_manager.name)
             except Exception as e:
                 logger.warning(f"Failed to register session with MessageBus: {e}")
 
@@ -1179,6 +1198,47 @@ async def stream_tool_output(
     except Exception as e:
         logger.warning(f"Failed to read stream file for {tool_use_id}: {e}")
         return {"content": "", "offset": offset, "exists": True}
+
+
+# ----- Global Event Stream -----
+
+@app.get("/api/events")
+async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
+    """全局 SSE 事件流：实时推送 worker 子 agent 消息与工具输出增量。
+
+    与现有 POST SSE（request-scoped，只能推 master 同步事件）互补——事件总线
+    广播后台线程产生的异步事件（worker 逐 token 消息、工具实时输出），
+    前端通过 EventSource 订阅。EventSource 只支持 GET，鉴权走 ?token= 查询参数
+    （check_access_control 中间件支持）。
+
+    可选 workspace_uuid/session_id 过滤；不传则接收所有事件。
+    """
+    if session_id:
+        _validate_session_id(session_id)
+    if workspace_uuid:
+        _validate_workspace_uuid(workspace_uuid)
+
+    event_queue: queue.Queue[dict] = queue.Queue(maxsize=512)
+    bus = get_event_bus()
+    bus.subscribe(event_queue, workspace_uuid or None, session_id or None)
+
+    async def generate():
+        try:
+            while True:
+                try:
+                    event = await asyncio.to_thread(event_queue.get, True, 15)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except queue.Empty:
+                    # 心跳（SSE 注释行，客户端忽略），防中间代理空闲断连
+                    yield ": keepalive\n\n"
+        finally:
+            bus.unsubscribe(event_queue)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ----- Chat -----

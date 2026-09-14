@@ -195,3 +195,121 @@ class TestEvictIdleAgent:
             agents.update(original_agents)
             _agent_access.clear()
             _agent_access.update(original_access)
+
+
+class TestGlobalEvents:
+    """GET /api/events 全局 SSE 事件流测试（直接调端点函数，迭代 body_iterator）。
+
+    不用 TestClient：TestClient + asyncio.to_thread 组合会死锁挂起，且
+    TestClient 的 client IP "testclient" 不在 _LOCALHOST_IPS 会 403。
+    """
+
+    def test_event_delivery_and_session_filter(self):
+        """事件按 session_id 过滤投递；不匹配的事件被过滤"""
+        import asyncio
+        from web.web_api import stream_global_events
+        from core.event_bus import get_event_bus
+
+        async def run():
+            resp = await stream_global_events(session_id="sess-a")
+            assert resp.status_code == 200
+            assert resp.media_type == "text/event-stream"
+            agen = resp.body_iterator
+
+            # 先发布不匹配的事件（应被过滤，收不到）
+            get_event_bus().publish({
+                "type": "text", "workspace_uuid": "ws-x", "session_id": "sess-other",
+                "content": "should-not-arrive",
+            })
+            # 再发布匹配的事件
+            get_event_bus().publish({
+                "type": "text", "workspace_uuid": "ws-x", "session_id": "sess-a",
+                "content": "hello", "exec_id": "exec-1",
+            })
+
+            chunk = await agen.__anext__()
+            text = chunk if isinstance(chunk, str) else chunk.decode()
+            assert "hello" in text
+            assert "should-not-arrive" not in text
+            await agen.aclose()
+            return True
+
+        assert asyncio.run(run())
+
+    def test_unsubscribe_on_close(self):
+        """流关闭后退订（finally unsubscribe），新订阅不受影响"""
+        import asyncio
+        from web.web_api import stream_global_events
+        from core.event_bus import get_event_bus
+
+        async def run():
+            resp = await stream_global_events(session_id="sess-b")
+            agen = resp.body_iterator
+            get_event_bus().publish({
+                "type": "text", "workspace_uuid": "ws-x", "session_id": "sess-b", "content": "first",
+            })
+            chunk = await agen.__anext__()
+            text = chunk if isinstance(chunk, str) else chunk.decode()
+            assert "first" in text
+            await agen.aclose()
+
+            # 关闭后再发布，同 session 的新订阅应正常收到
+            resp2 = await stream_global_events(session_id="sess-b")
+            agen2 = resp2.body_iterator
+            get_event_bus().publish({
+                "type": "text", "workspace_uuid": "ws-x", "session_id": "sess-b", "content": "second",
+            })
+            chunk2 = await agen2.__anext__()
+            text2 = chunk2 if isinstance(chunk2, str) else chunk2.decode()
+            assert "second" in text2
+            await agen2.aclose()
+            return True
+
+        assert asyncio.run(run())
+
+    def test_invalid_session_id_raises_400(self):
+        """非法 session_id 返回 400（防注入）"""
+        import asyncio
+        import pytest
+        from fastapi import HTTPException
+        from web.web_api import stream_global_events
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(stream_global_events(session_id="bad/id"))
+        assert exc_info.value.status_code == 400
+
+    def test_master_on_tool_output_publishes_to_event_bus(self, monkeypatch, tmp_path):
+        """回归：master 的 _on_tool_output 必须发布到事件总线。
+
+        此前 _get_or_create_agent 里 event bus 变量被后面的 get_message_bus() 闭包
+        晚绑定遮蔽成 MessageBus，publish 抛 AttributeError 被静默吞掉，
+        导致前端收不到 master 执行 bash/python 的 tool_output 推流。
+        """
+        import asyncio
+        import queue
+        from web import web_api
+        from core.event_bus import get_event_bus
+
+        ws, sid = "ws-regress", "sess-regress-1"
+        (tmp_path / "sessions").mkdir(exist_ok=True)
+        monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
+
+        async def run():
+            agent = await web_api._get_or_create_agent(ws, sid)
+            q = queue.Queue()
+            get_event_bus().subscribe(q, ws, sid)
+            try:
+                # 直接调用 master 工具输出回调，验证走事件总线而非 MessageBus
+                agent._on_tool_output("bash", "行 1\n", 7, "call_regress_1")
+                ev = q.get(timeout=1)
+                assert ev["type"] == "tool_output"
+                assert ev["tool"] == "bash"
+                assert ev["content"] == "行 1\n"
+                assert ev["offset"] == 7
+                assert ev["tool_use_id"] == "call_regress_1"
+                assert "exec_id" not in ev  # master 工具不带 exec_id
+                return True
+            finally:
+                get_event_bus().unsubscribe(q)
+
+        assert asyncio.run(run())

@@ -291,3 +291,115 @@ class TestWorkerBudgetAwareness:
         assert result["check_iterations"] == 1
         assert "budget_wrapup" not in result
         assert not any(m.get("_meta", {}).get("budget") for m in agent.messages)
+
+
+class TestWorkerEventCallbacks:
+    """worker 事件回调：_on_text/_on_thinking/_on_tool_call/_on_tool_result 逐事件触发"""
+
+    def _make_tool(self, name="bash"):
+        """构造最小 mock 工具：coerce_input 透传入参，execute 返回固定结果"""
+        from core.tools.base import ToolResult
+        tool = MagicMock()
+        tool.name = name
+        tool.coerce_input.side_effect = lambda x: x
+        tool.execute.return_value = ToolResult("ok", completed=True, meta={})
+        return tool
+
+    def test_text_and_thinking_deltas(self):
+        """流式 delta 触发 _on_text/_on_thinking，顺序与内容正确"""
+        agent = _make_agent(task="test task")
+        texts = []
+        thinkings = []
+        agent._on_text = texts.append
+        agent._on_thinking = thinkings.append
+
+        mock_resp = MagicMock()
+        mock_resp.get_tool_calls.return_value = []
+        mock_resp.get_text.return_value = "最终回答"
+        mock_resp.content_as_dicts.return_value = [{"type": "text", "text": "最终回答"}]
+        mock_resp.usage = None
+
+        round_count = [0]
+
+        def fake_chat_stream(messages, system, tools, on_text, on_thinking, **kwargs):
+            # 仅第一轮模拟流式 delta（worker 有检查阶段会再调一次，但回调只盯第一轮）
+            round_count[0] += 1
+            if round_count[0] == 1:
+                on_thinking("我先思考")
+                on_text("最终")
+                on_text("回答")
+            return mock_resp
+
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent.client, "chat_stream", side_effect=fake_chat_stream):
+            result = agent.run()
+
+        assert result["status"] == "completed"
+        assert "".join(thinkings) == "我先思考"
+        assert "".join(texts) == "最终回答"
+
+    def test_tool_call_then_result_order(self):
+        """tool_call 在 execute 前触发、tool_result 在 execute 后触发，携带正确 payload"""
+        tool = self._make_tool()
+        agent = _make_agent(task="test task", tools=[tool])
+        calls = []
+        results = []
+        agent._on_tool_call = lambda name, inp, tid: calls.append((name, inp, tid))
+        agent._on_tool_result = lambda name, content, is_error, tid: results.append((name, content, is_error))
+
+        resp_tool = MagicMock()
+        tc = MagicMock()
+        tc.name = "bash"
+        tc.id = "toolu_1"
+        tc.parse_arguments.return_value = {"command": "echo hi"}
+        resp_tool.get_tool_calls.return_value = [tc]
+        resp_tool.content_as_dicts.return_value = [
+            {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "echo hi"}}
+        ]
+        resp_tool.usage = None
+
+        resp_text = _make_text_response("done")
+
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_call_llm", side_effect=[resp_tool, resp_text, resp_text]):
+            result = agent.run()
+
+        assert result["status"] == "completed"
+        assert calls, "应触发 _on_tool_call"
+        assert calls[0][0] == "bash"
+        assert calls[0][1] == {"command": "echo hi"}
+        assert results, "应触发 _on_tool_result"
+        assert results[0][0] == "bash"
+        assert "ok" in results[0][1]
+        assert results[0][2] is False  # 非错误
+
+    def test_tool_result_preview_truncated_500(self):
+        """大工具输出 preview 截断到 500 字符并标注总量"""
+        tool = self._make_tool()
+        from core.tools.base import ToolResult
+        big_output = "x" * 1000
+        tool.execute.return_value = ToolResult(big_output, completed=True, meta={})
+        agent = _make_agent(task="test task", tools=[tool])
+        results = []
+        agent._on_tool_result = lambda name, content, is_error, tid: results.append(content)
+
+        resp_tool = MagicMock()
+        tc = MagicMock()
+        tc.name = "bash"
+        tc.id = "toolu_2"
+        tc.parse_arguments.return_value = {}
+        resp_tool.get_tool_calls.return_value = [tc]
+        resp_tool.content_as_dicts.return_value = [
+            {"type": "tool_use", "id": "toolu_2", "name": "bash", "input": {}}
+        ]
+        resp_tool.usage = None
+
+        resp_text = _make_text_response("done")
+
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_call_llm", side_effect=[resp_tool, resp_text, resp_text]):
+            agent.run()
+
+        assert results and len(results[0]) == 500 + len("\n... (1000 chars total)")
+        assert "1000 chars total" in results[0]
+        assert results[0].count("x") == 500

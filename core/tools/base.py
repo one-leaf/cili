@@ -562,6 +562,9 @@ class Tool:
         # _run_bash() 逐行写入此文件（实时流式），前端可轮询读取
         # save_output_to_file() 兜底确保所有工具输出都落盘
         self.output_file: str | None = None
+        # 工具实时输出钩子（由 agent 在 execute() 前设置）：cb(chunk, written_bytes)
+        # chunk 为增量片段，written_bytes 为写入后的累计字节偏移（与 /stream 端点一致）
+        self.on_output: Callable[[str, int], None] | None = None
 
     def _resolve_path(self, path: str, *, read_only: bool = False) -> str:
         """Resolve a file path to absolute, relative to cwd.
@@ -601,6 +604,16 @@ class Tool:
         return cls._is_within_workspace(
             resolved, os.path.realpath(str(DATA_ROOT))
         )
+
+    def _emit_output(self, chunk: str, written_bytes: int) -> None:
+        """调用 on_output 钩子，异常不影响工具执行（钩子失败静默忽略）。"""
+        cb = self.on_output
+        if cb is None:
+            return
+        try:
+            cb(chunk, written_bytes)
+        except Exception:
+            pass
 
     def save_output_to_file(self, result: ToolResult) -> None:
         """统一保存工具输出到外部文件。
@@ -890,13 +903,13 @@ class Tool:
                 full_command = (
                     f'export PATH="{path_str}:$PATH" '
                     f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 '
+                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
                     f'&& {command}'
                 )
             else:
                 full_command = (
                     f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 '
+                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
                     f'&& {command}'
                 )
 
@@ -946,11 +959,15 @@ class Tool:
 
             # 打开流文件（如有）：append 模式，UTF-8，逐块写入+flush
             f_out = None
+            written_bytes = 0
             if output_file:
                 try:
                     f_out = open(output_file, "a", encoding="utf-8")
+                    written_bytes = os.path.getsize(output_file)
                 except Exception:
                     f_out = None  # 写入失败不影响命令执行
+            # 实时输出缓冲：按换行或达到阈值批量 emit，减少事件数又保持实时
+            out_buf: list[str] = []
 
             try:
                 while True:
@@ -972,7 +989,18 @@ class Tool:
                             f_out.flush()
                         except Exception:
                             pass
+                    if self.on_output:
+                        out_buf.append(chunk)
+                        # 文本模式写 Windows 下 \n -> \r\n（多 1 字节），
+                        # 补偿后 written_bytes 才是文件真实字节数（与 /stream 端点契约一致）
+                        written_bytes += len(chunk.encode("utf-8", "replace")) + (1 if chunk == "\n" else 0)
+                        if chunk in ("\n", "\r") or len(out_buf) >= 32:
+                            self._emit_output("".join(out_buf), written_bytes)
+                            out_buf.clear()
             finally:
+                if self.on_output and out_buf:
+                    self._emit_output("".join(out_buf), written_bytes)
+                    out_buf.clear()
                 if f_out:
                     try:
                         f_out.close()
@@ -1128,11 +1156,14 @@ class Tool:
             timed_out = False
 
             f_out = None
+            written_bytes = 0
             if output_file:
                 try:
                     f_out = open(output_file, "a", encoding="utf-8")
+                    written_bytes = os.path.getsize(output_file)
                 except Exception:
                     f_out = None
+            out_buf: list[str] = []
 
             try:
                 while True:
@@ -1154,7 +1185,18 @@ class Tool:
                             f_out.flush()
                         except Exception:
                             pass
+                    if self.on_output:
+                        out_buf.append(chunk)
+                        # 文本模式写 Windows 下 \n -> \r\n（多 1 字节），
+                        # 补偿后 written_bytes 才是文件真实字节数（与 /stream 端点契约一致）
+                        written_bytes += len(chunk.encode("utf-8", "replace")) + (1 if chunk == "\n" else 0)
+                        if chunk in ("\n", "\r") or len(out_buf) >= 32:
+                            self._emit_output("".join(out_buf), written_bytes)
+                            out_buf.clear()
             finally:
+                if self.on_output and out_buf:
+                    self._emit_output("".join(out_buf), written_bytes)
+                    out_buf.clear()
                 if f_out:
                     try:
                         f_out.close()
@@ -1256,9 +1298,11 @@ class Tool:
             def reader_thread():
                 # 复用单一句柄写输出文件，避免每行 open/close 的高开销（T23）
                 f_out = None
+                written_bytes = 0
                 if output_file:
                     try:
                         f_out = open(output_file, "a", encoding="utf-8")
+                        written_bytes = os.path.getsize(output_file)
                     except Exception:
                         f_out = None
                 try:
@@ -1271,6 +1315,10 @@ class Tool:
                                 f_out.flush()
                             except Exception:
                                 pass
+                        if self.on_output:
+                            # 文本模式写 Windows 下 \n -> \r\n，按行内换行数补偿字节数
+                            written_bytes += len(line.encode("utf-8", "replace")) + line.count("\n")
+                            self._emit_output(line, written_bytes)
                 except Exception:
                     pass
                 finally:
@@ -1351,9 +1399,11 @@ class Tool:
             def reader_thread():
                 # 复用单一句柄写输出文件，避免每行 open/close 的高开销（T23）
                 f_out = None
+                written_bytes = 0
                 if output_file:
                     try:
                         f_out = open(output_file, "a", encoding="utf-8")
+                        written_bytes = os.path.getsize(output_file)
                     except Exception:
                         f_out = None
                 try:
@@ -1365,6 +1415,10 @@ class Tool:
                                 f_out.flush()
                             except Exception:
                                 pass
+                        if self.on_output:
+                            # 文本模式写 Windows 下 \n -> \r\n，按行内换行数补偿字节数
+                            written_bytes += len(line.encode("utf-8", "replace")) + line.count("\n")
+                            self._emit_output(line, written_bytes)
                 except Exception:
                     pass
                 finally:
@@ -1653,6 +1707,19 @@ class Tool:
                         logging.getLogger(__name__).warning(
                             f"Failed to forward usage for background Agent {task_id}: {e}"
                         )
+                # 全局事件流：后台模式补发 agent_complete（修复原先缺失）+ 保留 on_agent_complete 回调
+                try:
+                    status = (task.result or {}).get("status", "completed")
+                    publish = getattr(self, "_publish", None)
+                    if publish:
+                        publish("agent_complete", exec_id=exec_id, status=status)
+                    if getattr(self, "on_agent_complete", None):
+                        self.on_agent_complete(exec_id)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Failed to notify background Agent complete {task_id}: {e}"
+                    )
 
         # Create background task entry
         task = BackgroundTask(

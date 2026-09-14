@@ -352,3 +352,88 @@ class TestBackgroundAgentConcurrency:
         assert err is not None
         assert err.error is True
         assert "超时" in err.output
+
+
+class TestAgentLifecycleBroadcast:
+    """agent_start/agent_complete 生命周期事件广播到全局事件总线"""
+
+    def test_sync_start_and_complete_published(self, agent_tool):
+        """同步执行：agent_start 在 run 前发布、agent_complete 在完成后发布，payload 正确"""
+        agent_tool.session_manager.session_id = "sess-1"
+
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = {"status": "completed", "summary": "ok", "iterations": 1, "usage": {}}
+        mock_agent.close.return_value = None
+        mock_agent.messages = []
+
+        published = []
+        mock_bus = MagicMock()
+        mock_bus.publish.side_effect = published.append
+
+        with patch("core.agent.Agent", return_value=mock_agent), \
+             patch("core.event_bus.get_event_bus", return_value=mock_bus):
+            agent_tool.execute(task="test task")
+
+        types = [e["type"] for e in published]
+        assert types[0] == "agent_start"
+        assert "agent_complete" in types
+        start = published[0]
+        assert start["exec_id"] == "exec_123"
+        assert start["session_id"] == "sess-1"
+        assert start["workspace_uuid"] == "test-workspace"
+        assert "task_summary" in start
+        complete = next(e for e in published if e["type"] == "agent_complete")
+        assert complete["status"] == "completed"
+        assert complete["exec_id"] == "exec_123"
+        assert complete["session_id"] == "sess-1"
+
+    def test_background_complete_republished(self, agent_tool, monkeypatch):
+        """后台模式：线程结束后补发 agent_complete（修复原先缺失的缺陷）"""
+        import time
+        from core.tools import base as base_mod
+
+        agent_tool.session_manager.session_id = "sess-bg"
+        monkeypatch.setattr(base_mod, "_active_background_agents", [])
+
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = {"status": "completed", "summary": "bg done", "iterations": 1, "usage": {}}
+        mock_agent.close.return_value = None
+        mock_agent.messages = []
+        mock_agent.task = "test task"
+        mock_agent.max_iterations = 100
+
+        published = []
+        mock_bus = MagicMock()
+        mock_bus.publish.side_effect = published.append
+
+        registered = []
+
+        # 记录注册的后台任务，测试结束后移除，避免污染 BackgroundTaskManager
+        orig_register = base_mod.BackgroundTaskManager.register
+        monkeypatch.setattr(
+            base_mod.BackgroundTaskManager, "register",
+            lambda task: (registered.append(task), orig_register(task))[1],
+        )
+
+        with patch("core.event_bus.get_event_bus", return_value=mock_bus):
+            agent_tool._start_background_agent(
+                agent=mock_agent,
+                session_manager=agent_tool.session_manager,
+                exec_id="exec_123",
+                task_summary="test task",
+            )
+
+        # 等待后台线程结束并补发 agent_complete
+        deadline = time.time() + 5
+        while time.time() < deadline and not any(e["type"] == "agent_complete" for e in published):
+            time.sleep(0.01)
+
+        completes = [e for e in published if e["type"] == "agent_complete"]
+        assert completes, "后台模式应补发 agent_complete"
+        assert completes[0]["exec_id"] == "exec_123"
+        assert completes[0]["status"] == "completed"
+        assert completes[0]["session_id"] == "sess-bg"
+
+        # 清理注册的后台任务
+        for task in registered:
+            base_mod.BackgroundTaskManager.remove(task.task_id)
