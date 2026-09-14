@@ -179,6 +179,7 @@ function toggleSidebar() {
         sidebar.style.width = '0px';
         sidebarResizeHandle.classList.add('hidden');
     } else {
+        sidebar.style.width = '';
         restoreSidebarWidth();
         sidebarResizeHandle.classList.remove('hidden');
     }
