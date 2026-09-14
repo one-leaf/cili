@@ -27,9 +27,26 @@ Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时
 - **文档解析** — 内置 MinerU 支持，PDF / Word / PPT / 图片等格式智能识别并转 Markdown
 - **LaTeX 支持** — 内置 LaTeX 编译器，支持生成论文级别的 PDF 文档
 - **内置学习引擎** — 参考艾宾浩斯遗忘曲线设计，六种学习模式（学习阶梯、20小时计划、测验、速查表、资源筛选、费曼学习法）。说一句"我想学习 XXX"即可启动结构化学习
+
+  <details>
+  <summary>学习模式截图</summary>
+
+  ![学习模式问卷交互](docs/images/learning-mode.png)
+
+  ![学习模式输出](docs/images/learning-mode-start.png)
+
+  </details>
+
 - **内置调研引擎** — 只采信官方文档和一手来源，自动过滤自媒体和二手解读。说"帮我查查 XXX"即可启动，输出带完整引用链的 Markdown 报告
 - **用户画像 / 偏好记忆** — 自动学习你的沟通风格和偏好，按工作区沉淀为 preference 记忆条目并常驻注入，让 Agent 更懂你的表达习惯和决策方式
 - **长期记忆** — 跨会话知识存储与技能复用，避免重复搜索和学习
+
+  <details>
+  <summary>记忆管理截图</summary>
+
+  ![记忆管理](docs/images/workspace-memory.png)
+
+  </details>
 - **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，双击即可运行
 
 ## 快速开始
@@ -321,6 +338,10 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | 前端 | 原生 HTML/CSS/JS | 零框架依赖，轻量快速 |
 | 数学渲染 | MathJax | LaTeX 公式支持 |
 | Markdown | marked.js | 消息 Markdown 渲染 |
+
+## 完整使用指南
+
+含全部截图和功能说明：[使用指南 →](docs/usage-guide.md)
 
 ## 许可证
 
