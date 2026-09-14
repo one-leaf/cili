@@ -83,13 +83,14 @@ _CHECK_PROMPT = (
 
 
 class _SessionIdRef:
-    """简单的 session_id 引用，供工具获取 session 标识。
+    """简单的 session 引用，供工具获取 session 标识和目录。
 
     autonomous 模式使用 exec_id 作为 session 标识。
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, session_dir: Path | None = None):
         self.session_id = session_id
+        self.session_dir = session_dir
 
 
 class Agent(BaseAgent):
@@ -229,8 +230,8 @@ class Agent(BaseAgent):
         self.plan = plan
         self._exec_id = exec_id
         self._session_id = exec_id
-        # 创建 session 引用，供工具获取 session_id
-        self._session_ref = _SessionIdRef(exec_id)
+        # 创建 session 引用，供工具获取 session_id 和 session_dir
+        self._session_ref = _SessionIdRef(exec_id, session_dir)
         logger.debug(f"[Agent:{self.role}] Session ID set to: {exec_id}")
 
     def _create_default_session(self) -> None:

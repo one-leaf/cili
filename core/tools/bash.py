@@ -48,8 +48,10 @@ _DENY_PATTERNS = [
     # Cross-tool isolation: use pwsh/python tools instead of calling from bash
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "PowerShell invocation from bash (use the pwsh tool instead)", MODE_DENY),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?|py)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Python invocation from bash (use the python tool instead)", MODE_DENY),
+    (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+     "py launcher invocation from bash (use the python tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cmd/WSL invocation from bash (cross-tool isolation)", MODE_DENY),
 ]

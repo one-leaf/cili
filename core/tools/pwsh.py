@@ -60,8 +60,10 @@ _DENY_PATTERNS = [
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:Invoke-Expression|iex)(?![a-zA-Z0-9_-])", re.I),
      "Invoke-Expression (code execution from string — run the command directly)", MODE_DENY),
     # Cross-tool isolation: use dedicated tools instead of calling from pwsh
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?|py)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Python invocation from PowerShell (use the python tool instead)", MODE_DENY),
+    (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+     "py launcher invocation from PowerShell (use the python tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "Bash invocation from PowerShell (use the bash tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
