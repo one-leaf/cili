@@ -1662,6 +1662,7 @@ class Tool:
                                 "duration_seconds": agent._elapsed_seconds(),
                                 "status": result.get("status", "completed"),
                                 "iterations": result.get("iterations", 0),
+                                "message_count": len(agent.messages),
                                 "max_iterations": agent.max_iterations,
                             },
                             summary=result.get("summary") or result.get("message") or "",

@@ -298,6 +298,7 @@ class AgentTool(Tool):
                                 "duration_seconds": agent._elapsed_seconds(),
                                 "status": final_status,
                                 "iterations": result.get("iterations", 0),
+                                "message_count": result.get("message_count", 0),
                             },
                             summary=result.get("summary") or result.get("message") or "",
                         )
