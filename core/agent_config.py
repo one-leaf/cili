@@ -28,6 +28,7 @@ _DEFAULTS = {
     "approval": False,
     "session_persistence": False,
     "check_phase": False,
+    "check_iterations": 10,  # 检查阶段允许的最大工具调用轮次
     "budget_notice": False,
     "progress_persistence": False,
     "max_iterations": None,  # None -> config.system.max_iterations
@@ -54,6 +55,7 @@ class AgentRoleConfig:
     approval: bool = False
     session_persistence: bool = False
     check_phase: bool = False
+    check_iterations: int = 10  # 检查阶段允许的最大工具调用轮次
     budget_notice: bool = False
     progress_persistence: bool = False
     max_iterations: int | None = None  # None -> config.system.max_iterations
@@ -109,6 +111,7 @@ def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
         approval=bool(merged["approval"]),
         session_persistence=bool(merged["session_persistence"]),
         check_phase=bool(merged["check_phase"]),
+        check_iterations=int(merged["check_iterations"]),
         budget_notice=bool(merged["budget_notice"]),
         progress_persistence=bool(merged["progress_persistence"]),
         max_iterations=merged["max_iterations"],

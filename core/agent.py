@@ -40,8 +40,6 @@ logger = logging.getLogger(__name__)
 
 # ─── autonomous 运行时常量 ───────────────────────────────────────────
 
-_MIN_CHECK_ITERATIONS = 10
-
 # 迭代额度预警阈值（占 max_iterations 的比例），各阶段只触发一次
 _BUDGET_WARN_RATIO = 0.8
 _BUDGET_FINAL_RATIO = 0.95
@@ -74,11 +72,19 @@ _TIMEOUT_WRAPUP_PROMPT = (
 # Check phase prompt (injected after main execution completes)
 _CHECK_PROMPT = (
     "## 检查阶段\n\n"
-    "执行阶段已完成。现在进入 **检查** 环节，请验证任务是否正确完成：\n\n"
-    "1. 重新阅读上方的「任务目标」和「执行计划」\n"
-    "2. 逐项检查执行结果，确认每项是否达标\n"
-    "3. 如发现遗漏或错误，**立即修复**（可使用工具）\n"
-    "4. 全部确认无误后，输出最终总结报告\n"
+    "执行阶段已完成。现在进入 **检查** 环节，逐项验证任务是否正确完成，"
+    "不允许只凭之前的工具结果印象下结论：\n\n"
+    "1. 重新阅读上方的「任务目标」和「执行计划」，提炼可验证的验收标准\n"
+    "2. 逐项核对执行结果：每一项都要**用工具取证**（运行测试、读取实际文件、"
+    "检查输出与配置），不要仅凭记忆\n"
+    "3. 如发现遗漏或错误，**立即修复**，并在修复后重新验证该项\n"
+    "4. 全部核对完成后，输出最终总结报告，**必须包含**：\n"
+    "   - 已逐项验证的内容（附取证来源）\n"
+    "   - 未能验证或未验证的项及原因\n"
+    "   - 检查过程中修复的问题\n"
+    "5. 总结前回顾本次任务：若发现值得跨会话复用的**非显然知识**"
+    "（操作经验、关键决策、踩坑教训），用 `memory(action='store')` 存入"
+    "（type 选 skill 或 fact）\n"
 )
 
 
@@ -731,7 +737,7 @@ class Agent(BaseAgent):
         summary = ""
         in_check_phase = False
         check_iters = 0
-        max_check_iterations = _MIN_CHECK_ITERATIONS
+        max_check_iterations = self.role_cfg.check_iterations
 
         try:
             for i in range(self.max_iterations):
@@ -800,7 +806,7 @@ class Agent(BaseAgent):
                         self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
                         in_check_phase = True
                         check_iters = 0
-                        max_check_iterations = max(i, _MIN_CHECK_ITERATIONS)
+                        max_check_iterations = max(i, self.role_cfg.check_iterations)
                         logger.debug(f"[Agent:{self.role}] 进入检查阶段 (iter={i}, max_check={max_check_iterations}, exec={self._exec_id})")
                         continue
                     else:

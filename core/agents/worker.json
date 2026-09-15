@@ -208,6 +208,7 @@
   "streaming": true,
   "mcp": true,
   "check_phase": true,
+  "check_iterations": 20,
   "budget_notice": true,
   "progress_persistence": true,
   "max_iterations": null,
