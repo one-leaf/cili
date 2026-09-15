@@ -191,6 +191,46 @@ def _copy_tree(src: str, dst: str, exclude_dirs: set[str]) -> None:
             shutil.copy2(s, d)
 
 
+def _prune_dir(dst_dir: str, src_dir: str) -> None:
+    """递归删除 dst_dir 中 src_dir 不存在的内容（共享代码目录内部的清理）。"""
+    for item in os.listdir(dst_dir):
+        s = os.path.join(dst_dir, item)
+        if not os.path.exists(os.path.join(src_dir, item)):
+            if os.path.isdir(s) and not os.path.islink(s):
+                shutil.rmtree(s)
+            else:
+                os.remove(s)
+        elif os.path.isdir(s) and not os.path.islink(s):
+            _prune_dir(s, os.path.join(src_dir, item))
+
+
+def _prune_stale_files(dst: str, src: str, exclude_dirs: set[str]) -> None:
+    """删除升级前存在、但新版本代码包已移除的残余文件/目录。
+
+    覆盖语义只处理"新增/覆盖"，不处理"删除"，导致旧版曾发布、新版已移除的
+    文件（以及 __pycache__ 等生成物）成为残余；本函数补齐删除语义。
+
+    仅清理新版本仍保留的代码目录内部（如 core/cron.d/ 下被移除的配置）；
+    顶层本地目录（.claude/、reference/、.pytest_cache/、__pycache__/ 等不在
+    代码包中的目录）与本地顶层文件整体保留，避免误删用户本地资源。
+    """
+    top_src_dirs = set()
+    if os.path.isdir(src):
+        for name in os.listdir(src):
+            if os.path.isdir(os.path.join(src, name)):
+                top_src_dirs.add(name)
+    for item in os.listdir(dst):
+        if item in exclude_dirs:
+            continue
+        abs_item = os.path.join(dst, item)
+        if os.path.isdir(abs_item) and not os.path.islink(abs_item):
+            # 本地目录（新代码包中不存在）整体保留，不进入清理
+            if item not in top_src_dirs:
+                continue
+            _prune_dir(abs_item, os.path.join(src, item))
+        # 顶层文件：新版本仍在的文件已由覆盖阶段处理；本地独有文件一律保留
+
+
 def _restore_tree(backup: str, dst: str, exclude_dirs: set[str]) -> str | None:
     """回滚：用备份恢复被覆盖文件，再删除升级新增的文件/目录。
 
@@ -223,9 +263,11 @@ def _restore_tree(backup: str, dst: str, exclude_dirs: set[str]) -> str | None:
 
 
 def do_upgrade() -> dict:
-    """执行升级：下载代码包 → 安全解压 → 备份 → 覆盖本地代码文件。
+    """执行升级：下载代码包 → 安全解压 → 备份 → 覆盖 → 清理残余文件。
 
-    覆盖前先备份当前代码；复制失败时自动回滚，避免代码树不一致导致无法启动。
+    覆盖前先备份当前代码；覆盖后删除新版本已移除的残余文件/目录
+    （_prune_stale_files），避免旧版文件残留。任一阶段失败自动回滚，
+    避免代码树不一致导致无法启动。
 
     Returns:
         成功: {"success": True, "message": str, "needs_restart": True}
@@ -262,11 +304,12 @@ def do_upgrade() -> dict:
 
             try:
                 _copy_tree(extracted_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
+                _prune_stale_files(str(PROJECT_ROOT), extracted_dir, _EXCLUDE_DIRS)
             except Exception as e:
                 rollback_error = _restore_tree(backup_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
                 if rollback_error:
-                    return {"success": False, "error": f"复制文件失败：{e}；回滚也失败：{rollback_error}"}
-                return {"success": False, "error": f"复制文件失败，已回滚到升级前版本：{str(e)}"}
+                    return {"success": False, "error": f"更新文件失败：{e}；回滚也失败：{rollback_error}"}
+                return {"success": False, "error": f"更新文件失败，已回滚到升级前版本：{str(e)}"}
     finally:
         _upgrade_lock.release()
 

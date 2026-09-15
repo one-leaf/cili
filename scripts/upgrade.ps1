@@ -164,6 +164,39 @@ Write-Host ""
 Write-Host "[INFO] 文件统计：新增 $newCount 个，修改 $updateCount 个，未变 $skipCount 个" -ForegroundColor Gray
 Write-Host "  [+] 新增  [~] 已更新" -ForegroundColor Gray
 
+# ==================== Cleanup stale files ====================
+
+Write-Host ""
+Write-Host "[CLEANUP] 清理新版本已移除的残余文件..." -ForegroundColor Cyan
+
+# 只清理新版本仍保留的代码目录内部（core/web/test/docs/scripts 等）；
+# 顶层本地目录（.claude/reference/.pytest_cache 等）与本地顶层文件整体保留，
+# 避免误删用户本地资源。data/、workspace/、.git/ 始终跳过。
+$newTopDirs = @(Get-ChildItem -Path $extractedDir.FullName -Directory -Force | Select-Object -ExpandProperty Name)
+$staleCount = 0
+
+function Remove-StaleEntries($dstDir, $srcDir) {
+    Get-ChildItem -Path $dstDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $srcItem = Join-Path $srcDir $_.Name
+        if (-not (Test-Path $srcItem)) {
+            Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            $script:staleCount++
+            $relPath = $_.FullName.Substring($ProjectRoot.Length + 1)
+            Write-Host "  [-] $relPath" -ForegroundColor Yellow
+        } elseif ($_.PSIsContainer) {
+            Remove-StaleEntries $_.FullName $srcItem
+        }
+    }
+}
+
+Get-ChildItem -Path $ProjectRoot -Directory -Force |
+    Where-Object { $_.Name -notin @('data', 'workspace', '.git') -and $_.Name -in $newTopDirs } |
+    ForEach-Object {
+        Remove-StaleEntries $_.FullName (Join-Path $extractedDir.FullName $_.Name)
+    }
+
+Write-Host "  [INFO] 清理残余文件 $staleCount 个" -ForegroundColor Gray
+
 # ==================== Cleanup ====================
 
 if (Test-Path $tempZip) { Remove-Item $tempZip -Force }

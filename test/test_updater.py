@@ -209,6 +209,58 @@ class TestUpgrade:
         finally:
             updater._upgrade_lock.release()
 
+    def test_do_upgrade_removes_stale_files(self, tmp_path, monkeypatch):
+        """升级后删除新版本已移除的残余文件（含 core/cron.d/ 下旧配置与 __pycache__）"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        # 旧版本曾发布的文件：core/cron.d/ 下系统 cron 配置 + __pycache__ 生成物
+        (project_root / "core" / "cron.d").mkdir(parents=True)
+        (project_root / "core" / "cron.d" / "memory_consolidation.json").write_text("old", encoding="utf-8")
+        (project_root / "core" / "cron.d" / "obsolete_task.json").write_text("obsolete", encoding="utf-8")
+        (project_root / "core" / "cron.d" / "__pycache__").mkdir()
+        (project_root / "core" / "cron.d" / "__pycache__" / "cron_tool.cpython-311.pyc").write_bytes(b"x")
+        # 本地资源目录，升级不应触碰
+        (project_root / ".claude").mkdir()
+        (project_root / ".claude" / "settings.local.json").write_text("local", encoding="utf-8")
+        (project_root / "pytest.ini").write_text("[pytest]", encoding="utf-8")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        # 新版本：core/cron.d/ 只保留 memory_consolidation.json，obsolete_task.json 已移除
+        zip_path = tmp_path / "remote.zip"
+        src = tmp_path / "pkg"
+        (src / "core" / "cron.d").mkdir(parents=True)
+        (src / "core" / "cron.d" / "memory_consolidation.json").write_text("new", encoding="utf-8")
+        (src / "web" / "static").mkdir(parents=True)
+        (src / "web" / "static" / "version.json").write_text(
+            '{"version": "v20260912"}', encoding="utf-8")
+        (src / "main.py").write_text("new main", encoding="utf-8")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for root, _, files in os.walk(src):
+                for f in files:
+                    full = os.path.join(root, f)
+                    rel = os.path.relpath(full, src)
+                    zf.write(full, f"cili-main/{rel}")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(zip_path.read_bytes())
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+
+        result = updater.do_upgrade()
+        assert result["success"] is True
+        # 新版本保留的文件被覆盖
+        assert (project_root / "core" / "cron.d" / "memory_consolidation.json").read_text(
+            encoding="utf-8") == "new"
+        # 新版本已移除的残余文件与 __pycache__ 被删除
+        assert not (project_root / "core" / "cron.d" / "obsolete_task.json").exists()
+        assert not (project_root / "core" / "cron.d" / "__pycache__").exists()
+        # 本地资源目录/文件保留
+        assert (project_root / ".claude" / "settings.local.json").read_text(
+            encoding="utf-8") == "local"
+        assert (project_root / "pytest.ini").read_text(encoding="utf-8") == "[pytest]"
+
     def test_do_upgrade_rollback_on_failure(self, tmp_path, monkeypatch):
         """复制中途失败时回滚到升级前版本，升级新增的文件被删除"""
         project_root = tmp_path / "project"
@@ -263,3 +315,74 @@ class TestUpgrade:
         assert (project_root / "a.py").read_text(encoding="utf-8") == "old-a"
         assert (project_root / "b.py").read_text(encoding="utf-8") == "old-b"
         assert not (project_root / "c.py").exists()
+
+
+class TestPruneStaleFiles:
+    """升级残余文件清理"""
+
+    def test_prune_removes_stale_files_in_shared_dir(self, tmp_path):
+        """共享代码目录内部：新版本不存在的文件与 __pycache__ 被删除，新版本文件保留"""
+        dst = tmp_path / "dst"
+        src = tmp_path / "src"
+        (dst / "core" / "cron.d").mkdir(parents=True)
+        (dst / "core" / "cron.d" / "memory_consolidation.json").write_text("keep", encoding="utf-8")
+        (dst / "core" / "cron.d" / "obsolete.json").write_text("stale", encoding="utf-8")
+        (dst / "core" / "cron.d" / "__pycache__").mkdir()
+        (dst / "core" / "cron.d" / "__pycache__" / "x.pyc").write_bytes(b"x")
+        (src / "core" / "cron.d").mkdir(parents=True)
+        (src / "core" / "cron.d" / "memory_consolidation.json").write_text("new", encoding="utf-8")
+
+        updater._prune_stale_files(str(dst), str(src), updater._EXCLUDE_DIRS)
+
+        assert (dst / "core" / "cron.d" / "memory_consolidation.json").exists()
+        assert not (dst / "core" / "cron.d" / "obsolete.json").exists()
+        assert not (dst / "core" / "cron.d" / "__pycache__").exists()
+
+    def test_prune_preserves_local_top_level_dirs_and_files(self, tmp_path):
+        """新代码包中不存在的顶层本地目录与文件整体保留"""
+        dst = tmp_path / "dst"
+        src = tmp_path / "src"
+        (dst / ".claude").mkdir(parents=True)
+        (dst / ".claude" / "settings.local.json").write_text("local", encoding="utf-8")
+        (dst / "reference" / "nanobot").mkdir(parents=True)
+        (dst / "reference" / "nanobot" / "main.py").write_text("ref", encoding="utf-8")
+        (dst / "pytest.ini").write_text("[pytest]", encoding="utf-8")
+        (dst / "core").mkdir(parents=True)
+        (dst / "core" / "old.py").write_text("stale", encoding="utf-8")
+        (src / "core").mkdir(parents=True)
+        (src / "core" / "updater.py").write_text("code", encoding="utf-8")
+
+        updater._prune_stale_files(str(dst), str(src), updater._EXCLUDE_DIRS)
+
+        assert (dst / ".claude" / "settings.local.json").read_text(encoding="utf-8") == "local"
+        assert (dst / "reference" / "nanobot" / "main.py").read_text(encoding="utf-8") == "ref"
+        assert (dst / "pytest.ini").read_text(encoding="utf-8") == "[pytest]"
+        assert not (dst / "core" / "old.py").exists()
+
+    def test_prune_never_touches_excluded_dirs(self, tmp_path):
+        """data/workspace/.git 等排除目录整体保留，即使新代码包中不存在"""
+        dst = tmp_path / "dst"
+        src = tmp_path / "src"
+        (dst / "data" / "cili" / "cron.d").mkdir(parents=True)
+        (dst / "data" / "cili" / "cron.d" / "user_tasks.json").write_text("keep", encoding="utf-8")
+        (dst / "workspace").mkdir(parents=True)
+        (dst / "workspace" / "note.txt").write_text("keep", encoding="utf-8")
+        (src / "core").mkdir(parents=True)
+
+        updater._prune_stale_files(str(dst), str(src), updater._EXCLUDE_DIRS)
+
+        assert (dst / "data" / "cili" / "cron.d" / "user_tasks.json").exists()
+        assert (dst / "workspace" / "note.txt").exists()
+
+    def test_prune_removes_stale_nested_dirs(self, tmp_path):
+        """共享目录内，新版本整体移除的子目录被删除"""
+        dst = tmp_path / "dst"
+        src = tmp_path / "src"
+        (dst / "core" / "legacy" / "sub").mkdir(parents=True)
+        (dst / "core" / "legacy" / "sub" / "a.py").write_text("stale", encoding="utf-8")
+        (src / "core").mkdir(parents=True)
+        (src / "core" / "updater.py").write_text("code", encoding="utf-8")
+
+        updater._prune_stale_files(str(dst), str(src), updater._EXCLUDE_DIRS)
+
+        assert not (dst / "core" / "legacy").exists()
