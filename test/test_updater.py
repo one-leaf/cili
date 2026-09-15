@@ -2,9 +2,28 @@
 
 import json
 import os
+import shutil
 import zipfile
 
 from core import updater
+
+
+def _make_remote_zip(tmp_path, version="v20260912", main_content="new main"):
+    """构造一个"远端"代码包 zip（cili-main/main.py + version.json），返回 zip 路径。"""
+    zip_path = tmp_path / "remote.zip"
+    src = tmp_path / "pkg"
+    src.mkdir(parents=True)
+    (src / "main.py").write_text(main_content, encoding="utf-8")
+    (src / "web" / "static").mkdir(parents=True)
+    (src / "web" / "static" / "version.json").write_text(
+        f'{{"version": "{version}"}}', encoding="utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for root, _, files in os.walk(src):
+            for f in files:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, src)
+                zf.write(full, f"cili-main/{rel}")
+    return zip_path
 
 
 class TestVersion:
@@ -189,3 +208,58 @@ class TestUpgrade:
             assert "进行中" in result["error"]
         finally:
             updater._upgrade_lock.release()
+
+    def test_do_upgrade_rollback_on_failure(self, tmp_path, monkeypatch):
+        """复制中途失败时回滚到升级前版本，升级新增的文件被删除"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "a.py").write_text("old-a", encoding="utf-8")
+        (project_root / "b.py").write_text("old-b", encoding="utf-8")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        # 远端包：a.py/b.py 更新 + 新增 c.py
+        zip_path = tmp_path / "remote.zip"
+        src = tmp_path / "pkg"
+        src.mkdir(parents=True)
+        (src / "a.py").write_text("new-a", encoding="utf-8")
+        (src / "b.py").write_text("new-b", encoding="utf-8")
+        (src / "c.py").write_text("new-c", encoding="utf-8")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for root, _, files in os.walk(src):
+                for f in files:
+                    full = os.path.join(root, f)
+                    rel = os.path.relpath(full, src)
+                    zf.write(full, f"cili-main/{rel}")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(zip_path.read_bytes())
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+
+        # 复制到项目根：a/b/c 全部先复制，随后对 c.py 抛异常，模拟半成品升级
+        real_copy_tree = updater._copy_tree
+
+        def flaky_copy_tree(src_dir, dst, exclude_dirs):
+            for item in sorted(os.listdir(src_dir)):
+                if item in exclude_dirs:
+                    continue
+                s = os.path.join(src_dir, item)
+                d = os.path.join(dst, item)
+                if os.path.isdir(s):
+                    real_copy_tree(s, d, exclude_dirs)
+                else:
+                    shutil.copy2(s, d)
+                    if item == "c.py" and os.path.abspath(dst) == os.path.abspath(str(project_root)):
+                        raise OSError("simulated disk full")
+
+        monkeypatch.setattr(updater, "_copy_tree", flaky_copy_tree)
+
+        result = updater.do_upgrade()
+        assert result["success"] is False
+        assert "回滚" in result["error"]
+        # 被覆盖的文件恢复，升级新增的文件被删除
+        assert (project_root / "a.py").read_text(encoding="utf-8") == "old-a"
+        assert (project_root / "b.py").read_text(encoding="utf-8") == "old-b"
+        assert not (project_root / "c.py").exists()

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # 本地版本文件（version 字段，与 GitHub 仓库 web/static/version.json 对应）
 VERSION_FILE = PROJECT_ROOT / "web" / "static" / "version.json"
 
+
 # 代码包镜像 URL（与 scripts/upgrade.ps1 一致）
 MIRROR_URLS = {
     "github": "https://github.com/one-leaf/cili/archive/refs/heads/main.zip",
@@ -190,8 +191,41 @@ def _copy_tree(src: str, dst: str, exclude_dirs: set[str]) -> None:
             shutil.copy2(s, d)
 
 
+def _restore_tree(backup: str, dst: str, exclude_dirs: set[str]) -> str | None:
+    """回滚：用备份恢复被覆盖文件，再删除升级新增的文件/目录。
+
+    Returns:
+        str | None: None 表示成功，否则返回错误信息。
+    """
+    try:
+        _copy_tree(backup, dst, exclude_dirs)
+        # 删除升级引入、备份中不存在的文件与空目录，使代码树回到升级前状态
+        for root, dirs, files in os.walk(dst):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]
+            for f in files:
+                abs_path = os.path.join(root, f)
+                rel = os.path.relpath(abs_path, dst)
+                if not os.path.exists(os.path.join(backup, rel)):
+                    os.remove(abs_path)
+        for root, dirs, files in os.walk(dst, topdown=False):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]
+            rel = os.path.relpath(root, dst)
+            if rel == "." or os.path.exists(os.path.join(backup, rel)):
+                continue
+            try:
+                os.rmdir(root)
+            except OSError:
+                pass  # 非空目录（还有备份中也存在的子文件）忽略
+        return None
+    except Exception as e:
+        logger.error(f"[updater] 回滚失败: {e}")
+        return str(e)
+
+
 def do_upgrade() -> dict:
-    """执行升级：下载代码包 → 安全解压 → 覆盖本地代码文件。
+    """执行升级：下载代码包 → 安全解压 → 备份 → 覆盖本地代码文件。
+
+    覆盖前先备份当前代码；复制失败时自动回滚，避免代码树不一致导致无法启动。
 
     Returns:
         成功: {"success": True, "message": str, "needs_restart": True}
@@ -203,12 +237,13 @@ def do_upgrade() -> dict:
     try:
         import tempfile
 
-        # 按插入顺序依次尝试各镜像（GitHub 直连优先，国内镜像回退）
-        download_urls = list(MIRROR_URLS.values())
-
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_zip = os.path.join(temp_dir, "cili-main.zip")
             temp_extract = os.path.join(temp_dir, "extract")
+            backup_dir = os.path.join(temp_dir, "backup")
+
+            # 按插入顺序依次尝试各镜像（GitHub 直连优先，国内镜像回退）
+            download_urls = list(MIRROR_URLS.values())
 
             downloaded, last_error = _download_zip(download_urls, temp_zip)
             if not downloaded:
@@ -218,10 +253,20 @@ def do_upgrade() -> dict:
             if not extracted_dir:
                 return {"success": False, "error": "解压失败或解压目录未找到"}
 
+            # 覆盖前备份当前代码（data/workspace/.git 不受升级影响，无需备份）
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+                _copy_tree(str(PROJECT_ROOT), backup_dir, _EXCLUDE_DIRS)
+            except Exception as e:
+                return {"success": False, "error": f"备份当前代码失败：{str(e)}"}
+
             try:
                 _copy_tree(extracted_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
             except Exception as e:
-                return {"success": False, "error": f"复制文件失败：{str(e)}"}
+                rollback_error = _restore_tree(backup_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
+                if rollback_error:
+                    return {"success": False, "error": f"复制文件失败：{e}；回滚也失败：{rollback_error}"}
+                return {"success": False, "error": f"复制文件失败，已回滚到升级前版本：{str(e)}"}
     finally:
         _upgrade_lock.release()
 

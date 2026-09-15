@@ -22,12 +22,25 @@ _BG_SCRIPT_MAX_AGE_SECONDS = 24 * 3600
 
 # Cross-tool isolation: block Python code from invoking bash/pwsh.
 # 用 AST 静态分析（而非正则），字符串拼接/别名/动态 getattr 都无法绕过。
-_DENY_DIRECT_CALLS = {"eval", "exec", "__import__"}
+# 注意：这是护栏而非沙箱——有意的全面绕过（如 sys._getframe / marshal 构造）
+# 无法完全阻止，目标是挡住 agent 在提示注入下随手写出的常见逃逸写法。
+_DENY_DIRECT_CALLS = {"eval", "exec", "compile", "__import__"}
 _OS_SHELL_ATTRS = {"system", "popen"}  # os.system / os.popen 必然拉起 shell
 _SUBPROCESS_CALLS = {
     "Popen", "call", "run", "check_call", "check_output",
     "getoutput", "getstatusoutput",
 }
+_BUILTINS_DENY = {"eval", "exec", "compile", "__import__"}
+_IMPORTLIB_DENY = {"import_module"}
+# 危险模块 → 需拦截的方法：import os as o / builtins.eval / importlib.import_module
+_DANGEROUS_MODULES = {
+    "os": _OS_SHELL_ATTRS,
+    "subprocess": _SUBPROCESS_CALLS,
+    "builtins": _BUILTINS_DENY,
+    "importlib": _IMPORTLIB_DENY,
+}
+# 无需显式 import 即存在的全局名（__builtins__ 是内建全局）
+_ALWAYS_DANGEROUS = {"__builtins__"}
 _SHELL_TOKENS = ("bash", "pwsh", "powershell")
 
 
@@ -306,25 +319,24 @@ class PythonTool(Tool):
         except SyntaxError as e:
             return f"无法解析代码（语法错误）：{e}"
 
-        # Pass 1: 收集模块别名与危险局部名（from os import system 等）
-        os_aliases: set[str] = set()
-        subprocess_aliases: set[str] = set()
+        # Pass 1: 收集危险模块别名与危险局部名
+        #   import os as o        → aliases["os"] = {"o"}
+        #   from builtins import eval → dangerous_locals = {"eval"}
+        aliases: dict[str, set[str]] = {mod: set() for mod in _DANGEROUS_MODULES}
         dangerous_locals: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name == "os":
-                        os_aliases.add(alias.asname or "os")
-                    elif alias.name == "subprocess":
-                        subprocess_aliases.add(alias.asname or "subprocess")
+                    if alias.name in _DANGEROUS_MODULES:
+                        aliases[alias.name].add(alias.asname or alias.name)
+                    elif alias.name == "__builtins__":
+                        aliases["builtins"].add(alias.asname or alias.name)
             elif isinstance(node, ast.ImportFrom):
-                if node.module == "os":
+                if node.module in _DANGEROUS_MODULES:
                     for alias in node.names:
-                        if alias.name in _OS_SHELL_ATTRS or alias.name == "*":
-                            dangerous_locals.add(alias.asname or alias.name)
-                elif node.module == "subprocess":
-                    for alias in node.names:
-                        if alias.name in _SUBPROCESS_CALLS or alias.name == "*":
+                        if alias.name == "*":
+                            return f"from {node.module} import * 被禁止（无法静态审计具体名称）"
+                        if alias.name in _DANGEROUS_MODULES[node.module]:
                             dangerous_locals.add(alias.asname or alias.name)
 
         def _string_literals(node: ast.AST) -> list[str]:
@@ -333,6 +345,11 @@ class PythonTool(Tool):
                 sub.value for sub in ast.walk(node)
                 if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
             ]
+
+        def _deny_msg(mod: str, attr: str) -> str:
+            if mod == "builtins":
+                return f"{mod}.{attr}() 动态代码执行被禁止"
+            return f"{mod}.{attr}() 被禁止，请改用 bash/pwsh 工具"
 
         # Pass 2: 检查所有函数调用
         for node in ast.walk(tree):
@@ -343,31 +360,57 @@ class PythonTool(Tool):
             if isinstance(func, ast.Name):
                 if func.id in _DENY_DIRECT_CALLS:
                     return f"{func.id}() 动态代码执行被禁止"
-                # getattr(os, "system") 动态取模块方法
+                if func.id in dangerous_locals:
+                    return f"{func.id}()（shell/子进程/动态执行入口）被禁止，请改用 bash/pwsh 工具"
+                # getattr(os, "system") / getattr(builtins, "eval") 动态取模块方法
                 if func.id == "getattr" and node.args:
                     target = node.args[0]
-                    if isinstance(target, ast.Name) and target.id in os_aliases | subprocess_aliases:
-                        return "getattr() 动态访问 os/subprocess 方法被禁止"
-                if func.id in dangerous_locals:
-                    return f"{func.id}()（shell/子进程入口）被禁止，请改用 bash/pwsh 工具"
+                    if isinstance(target, ast.Name) and (
+                        target.id in _ALWAYS_DANGEROUS
+                        or any(target.id in aliases[mod] for mod in _DANGEROUS_MODULES)
+                    ):
+                        return "getattr() 动态访问危险模块方法被禁止"
 
-            if isinstance(func, ast.Attribute):
+            elif isinstance(func, ast.Attribute):
                 attr = func.attr
                 obj = func.value
                 if isinstance(obj, ast.Name):
-                    if obj.id in os_aliases and attr in _OS_SHELL_ATTRS:
-                        return f"os.{attr}() 被禁止，请改用 bash/pwsh 工具"
-                    if obj.id in subprocess_aliases and attr in _SUBPROCESS_CALLS:
-                        shell_kw = [
-                            kw for kw in node.keywords
-                            if kw.arg == "shell"
-                            and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
-                        ]
-                        if shell_kw:
-                            return "subprocess 调用 shell=True 被禁止，请改用 bash/pwsh 工具"
-                        strings = _string_literals(node)
-                        if any(tok in s.lower() for s in strings for tok in _SHELL_TOKENS):
-                            return f"subprocess 调用 {attr}() 指向 bash/pwsh 被禁止，请改用 bash/pwsh 工具"
+                    obj_id = obj.id
+                    # __builtins__.eval(...) / __builtins__["eval"] 未显式 import
+                    if obj_id in _ALWAYS_DANGEROUS and attr in _BUILTINS_DENY:
+                        return f"{obj_id}.{attr}() 动态代码执行被禁止"
+                    for mod, attrs in _DANGEROUS_MODULES.items():
+                        if obj_id not in aliases[mod] or attr not in attrs:
+                            continue
+                        if mod == "subprocess":
+                            shell_kw = [
+                                kw for kw in node.keywords
+                                if kw.arg == "shell"
+                                and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+                            ]
+                            if shell_kw:
+                                return "subprocess 调用 shell=True 被禁止，请改用 bash/pwsh 工具"
+                            strings = _string_literals(node)
+                            if any(tok in s.lower() for s in strings for tok in _SHELL_TOKENS):
+                                return f"subprocess 调用 {attr}() 指向 bash/pwsh 被禁止，请改用 bash/pwsh 工具"
+                            break  # subprocess 非 shell 调用放行
+                        return _deny_msg(mod, attr)
+
+            # globals()['eval'](...) / vars()['system'](...) / __builtins__['eval'](...)
+            # 经全局字典动态取函数后调用
+            if isinstance(func, ast.Subscript):
+                sub_val = func.value
+                resolved = (
+                    sub_val.id
+                    if isinstance(sub_val, ast.Name)
+                    else (
+                        sub_val.func.id
+                        if isinstance(sub_val, ast.Call) and isinstance(sub_val.func, ast.Name)
+                        else None
+                    )
+                )
+                if resolved in ("globals", "vars", "locals", "__builtins__"):
+                    return "通过全局字典动态取函数调用被禁止"
 
         return None
 
