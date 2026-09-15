@@ -65,6 +65,51 @@ function Test-Python {
     return $null
 }
 
+function Configure-PythonPth {
+    # 重写 python*._pth 为规范内容。项目根用相对路径（相对 exe 目录），
+    # 整个项目复制/移动后不会因 _pth 里写死的旧绝对路径而失效。
+    $pthFile = Get-ChildItem -Path $PythonDir -Filter "python*._pth" | Select-Object -First 1
+    if (-not $pthFile) {
+        Write-Status "Warning: no python*._pth found in $PythonDir" "Yellow"
+        return
+    }
+    # 标准库存档名（python311.zip 等）从实际文件推导，兼容 Python 版本升级
+    $zipFile = Get-ChildItem -Path $PythonDir -Filter "python*.zip" | Select-Object -First 1
+    $zipName = if ($zipFile) { $zipFile.Name } else { "python311.zip" }
+    # 项目根相对 data/deps/python 的路径（通常为 ..\..\..），PS 5.1 无 GetRelativePath，手动计算
+    $relProjectRoot = ""
+    if ($PythonDir.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $pyRelative = $PythonDir.Substring($ProjectRoot.Length).TrimStart('\', '/')
+        $depth = ($pyRelative -split '[\\/]' | Where-Object { $_ -ne '' }).Count
+        $relProjectRoot = ('..\' * $depth).TrimEnd('\')
+    }
+    # Write without BOM (critical for Python to parse paths correctly)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $lines = [string[]]@(
+        $zipName,
+        ".",
+        "import site",
+        $relProjectRoot,
+        "Lib/site-packages"
+    )
+    [System.IO.File]::WriteAllLines($pthFile.FullName, $lines, $utf8NoBom)
+    Write-Status "Python _pth configured."
+}
+
+function Test-PythonOk {
+    # 完整性校验：embeddable 的标准库打包在 pythonXXX.zip 里，
+    # zip 缺失/损坏时 import encodings 会在启动阶段直接 fatal。
+    param([string]$PythonExe)
+    if (-not (Test-Path $PythonExe)) { return $false }
+    # 原生 stderr 在 EAP=Stop 下会被当作终止性错误，这里临时切到 Continue
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $PythonExe -c "import encodings" 2>$null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $oldEAP
+    return $ok
+}
+
 function Test-Tectonic {
     # Check if any LaTeX compiler is available (tectonic, pdflatex, xelatex, lualatex)
     $oldErrorAction = $ErrorActionPreference
@@ -205,35 +250,8 @@ function Install-Python {
     # Clean up archive
     Remove-Item -Path $archivePath -Force -ErrorAction SilentlyContinue
 
-    # Configure _pth file (enable site-packages + project root)
-    $pthFile = Get-ChildItem -Path $PythonDir -Filter "python*._pth" | Select-Object -First 1
-    if ($pthFile) {
-        Write-Status "Configuring Python _pth file..."
-        # Read with ASCII to avoid BOM issues
-        $pthContent = [System.IO.File]::ReadAllLines($pthFile.FullName)
-        $newContent = New-Object System.Collections.Generic.List[string]
-        $hasLibSitePackages = $false
-        foreach ($line in $pthContent) {
-            if ($line -match "^#import site") {
-                $newContent.Add("import site")
-            } elseif ($line -match "^Lib\\site-packages") {
-                $newContent.Add($line)
-                $hasLibSitePackages = $true
-            } else {
-                $newContent.Add($line)
-            }
-        }
-        # Add project root (so `from core.xxx import` works)
-        $newContent.Add($ProjectRoot)
-        # Add Lib/site-packages path if not present
-        if (-not $hasLibSitePackages) {
-            $newContent.Add("Lib/site-packages")
-        }
-        # Write without BOM (critical for Python to parse paths correctly)
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllLines($pthFile.FullName, $newContent.ToArray(), $utf8NoBom)
-        Write-Status "Python _pth configured."
-    }
+    # Configure _pth file (stdlib zip + site-packages + project root)
+    Configure-PythonPth
 
     $pythonExe = Join-Path $PythonDir "python.exe"
     if (-not (Test-Path $pythonExe)) {
@@ -354,8 +372,17 @@ if (-not $gitBashPath) {
 
 # 2. 检查/安装 Python
 $pythonPath = Test-Python
+if ($pythonPath) {
+    # 每次启动都刷新 _pth：修复项目复制/移动后残留的旧绝对路径
+    Configure-PythonPth
+    # 完整性校验：stdlib 不可导入说明 pythonXXX.zip 缺失/损坏，触发重装
+    if (-not (Test-PythonOk $pythonPath)) {
+        Write-Status "Python runtime is broken (stdlib unavailable), reinstalling..." "Yellow"
+        $pythonPath = $null
+    }
+}
 if (-not $pythonPath) {
-    Write-Status "Python not found or version too low, downloading..." "Yellow"
+    Write-Status "Python not found or runtime broken, downloading..." "Yellow"
     $pythonPath = Install-Python
 }
 
