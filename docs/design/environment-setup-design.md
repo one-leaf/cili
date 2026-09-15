@@ -156,7 +156,7 @@ pip install --disable-pip-version-check <package>
 - `HARMONY_FONT_DIR`: HarmonyOS Sans SC 字体目录（如果字体存在于 deps 目录，供 matplotlib 使用）
 
 **main.py 设置的变量**：
-- `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（统一临时目录）
+- `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（**遗留全局系统临时目录**，供 bash/python/tempfile 子进程环境使用；agent 文件操作请用工作区内 `.tmp/`）
   - 确保所有工具（bash、python、tempfile 模块）使用同一个临时目录
   - bash 中可用 `$TEMP` 或 `$TMPDIR`
   - Python 中 `tempfile` 模块自动配置到此目录

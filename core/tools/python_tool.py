@@ -12,6 +12,7 @@ import tempfile
 import time
 from typing import Any
 
+from core.security.python_paths import collect_python_targets
 from core.tools.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
 
 
@@ -47,8 +48,9 @@ _SHELL_TOKENS = ("bash", "pwsh", "powershell")
 class PythonTool(Tool):
     name = "python"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None, config=None):
-        super().__init__(cwd, workspace_uuid, session_manager)
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None, config=None,
+                 approval_store=None):
+        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
         self._config = config
         self.description = self._build_description()
 
@@ -218,6 +220,11 @@ class PythonTool(Tool):
         if deny_msg:
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
 
+        # 路径权限门：脚本内的写/删目标，越界需审批/拒绝
+        gate = self._path_gate(collect_python_targets(content, cwd=self.cwd))
+        if gate:
+            return gate
+
         # Set MPLCONFIGDIR to use Cili's matplotlib config
         mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
         cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
@@ -234,6 +241,11 @@ class PythonTool(Tool):
         deny_msg = self._check_python_deny(code)
         if deny_msg:
             return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
+
+        # 路径权限门：AST 收集写/删目标，越界需审批/拒绝
+        gate = self._path_gate(collect_python_targets(code, cwd=self.cwd))
+        if gate:
+            return gate
 
         python_exe = os.path.join(_VENV_DIR, "python.exe")
         # Set MPLCONFIGDIR to use Cili's matplotlib config

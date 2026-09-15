@@ -219,11 +219,11 @@ class TestTempToolIsolation:
         tool2.execute(action="cleanup")
 
 
-class TestTempToolUnifiedDir:
-    """统一临时目录测试。"""
+class TestTempToolWorkspaceDir:
+    """工作区内临时目录测试。"""
 
-    def test_uses_cili_tmp_env(self, test_workspace, tmp_env):
-        """测试使用 CILI_TMP 环境变量作为基础目录。"""
+    def test_uses_workspace_dot_tmp(self, test_workspace, tmp_env):
+        """测试使用 {cwd}/.tmp 作为基础目录（工作区内）。"""
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="any-uuid",
@@ -231,14 +231,14 @@ class TestTempToolUnifiedDir:
         )
         result = tool.execute(action="create_file", name="test.txt", content="data")
         assert not result.is_error
-        # 文件路径应在 CILI_TMP 目录下
-        assert tmp_env in result.output
+        # 文件路径应在 {cwd}/.tmp/{session_id} 下
+        assert os.path.join(test_workspace, ".tmp", "session-env") in result.output
 
         # 清理
         tool.execute(action="cleanup")
 
     def test_workspace_uuid_ignored(self, test_workspace, tmp_env):
-        """测试不同 workspace_uuid 都使用同一个 data/tmp 目录。"""
+        """测试不同 workspace_uuid 使用同一个 cwd/.tmp 目录。"""
         tool1 = TempTool(
             cwd=test_workspace,
             workspace_uuid="uuid-1",
@@ -249,7 +249,7 @@ class TestTempToolUnifiedDir:
             workspace_uuid="uuid-2",
             session_manager=MockSessionManager("session-same"),
         )
-        # 两个不同 workspace 的 tool 使用相同的 session 目录
+        # 两个不同 workspace_uuid 的 tool 使用相同的 session 目录
         result1 = tool1.execute(action="create_file", name="a.txt", content="1")
         result2 = tool2.execute(action="create_file", name="b.txt", content="2")
         # 路径中不应包含 workspace uuid

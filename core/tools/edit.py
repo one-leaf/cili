@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.fs_utils import atomic_write_text
+from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 
 
@@ -55,7 +56,12 @@ class EditTool(Tool):
         occurrence: int | None = None,
         line_hint: int | None = None,
     ) -> ToolResult:
-        file_path = self._resolve_path(file_path)
+        policy = self._path_policy()
+        resolved = policy.resolve(file_path)
+        gate = self._path_gate([PathTarget(OP_WRITE, file_path, "edit", resolved=resolved)])
+        if gate:
+            return gate
+        file_path = resolved
 
         if not old_text:
             return ToolResult("Error: old_text must not be empty", error=True)

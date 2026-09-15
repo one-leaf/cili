@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.shell_paths import extract_shell_targets
 from core.tools.approval import (
     META_KEY,
     MODE_ASK,
@@ -61,7 +63,7 @@ _DENY_PATTERNS = [
      "Invoke-Expression (code execution from string — run the command directly)", MODE_DENY),
     # Cross-tool isolation: use dedicated tools instead of calling from pwsh
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Python invocation from PowerShell (use the python tool instead)", MODE_DENY),
+     "Python invocation from PowerShell bypasses the python tool's safety checks (use the python tool instead)", MODE_ASK),
     (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "py launcher invocation from PowerShell (use the python tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
@@ -87,9 +89,9 @@ class PwshTool(Tool):
             "Execute a PowerShell command and return its output. "
             "Each call runs in a fresh pwsh process — no state (cwd, variables, functions) persists between calls.\n"
             "Paths use native Windows format (e.g., C:\\Users); environment variables use $env:NAME.\n"
-            "Do NOT use pwsh to invoke Python (`python` tool), bash (`bash` tool), cmd, or WSL — cross-tool calls are blocked.\n"
-            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations) require user approval; "
-            "if blocked, wait for the decision then retry the exact command.\n"
+            "Do NOT use pwsh to invoke bash (`bash` tool), cmd, or WSL — cross-tool calls are blocked.\n"
+            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations) and Python invocation "
+            "from pwsh require user approval; if blocked, wait for the decision then retry the exact command.\n"
             f"Current working directory: {self.cwd}\n\n"
             "## Background tasks\n"
             "Long-running commands: run_in_background=true → task_id, then read_task(task_id), kill_task(task_id), "
@@ -189,6 +191,7 @@ class PwshTool(Tool):
 
         # Safety: deny dangerous commands (ask 档先查会话级批准，未批准则等待用户确认)
         deny = self._check_deny_patterns(command)
+        keyword_approved = False
         if deny:
             mode, reason = deny
             if mode == MODE_DENY or not self.approval_store:
@@ -198,18 +201,24 @@ class PwshTool(Tool):
                 "command": command,
                 "reason": reason,
             }
-            if self.approval_store.is_approved(approval["decision_id"]):
-                pass  # 本次会话已批准，放行执行
-            else:
+            if not self.approval_store.is_approved(approval["decision_id"]):
                 return ToolResult(
                     approval_placeholder_text(approval),
                     completed=False,
                     meta={META_KEY: approval},
                 )
+            keyword_approved = True  # 整条命令已批准，跳过路径门
+
+        policy = self._path_policy()
+        initial_dir = self.cwd
 
         # Apply working_dir override (no path conversion needed for pwsh)
         if working_dir:
-            resolved = os.path.abspath(self._resolve_path(working_dir))
+            resolved = policy.resolve(working_dir)
+            # 区外 working_dir 也需审批/拒绝
+            gate = self._path_gate([PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)])
+            if gate:
+                return gate
             if not os.path.isdir(resolved):
                 return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
             # 目录名可能含单引号，pwsh 单引号内用 '' 转义；注入段参与 deny 扫描
@@ -222,6 +231,14 @@ class PwshTool(Tool):
                     f"Error: command blocked by safety check — {reason}", error=True
                 )
             command = cd_prefix + command
+            initial_dir = resolved
+
+        # 路径权限门：静态提取写/删目标，越界需审批（keyword_approved 时跳过）
+        if not keyword_approved:
+            targets = extract_shell_targets(command, "pwsh", cwd=self.cwd, initial_dir=initial_dir)
+            gate = self._path_gate(targets)
+            if gate:
+                return gate
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)

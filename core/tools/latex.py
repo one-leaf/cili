@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from core.config import PROJECT_ROOT
+from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 
 
@@ -94,8 +95,9 @@ class LatexTool(Tool):
         ".synctex.gz", ".synctex.gz(busy)",
     }
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None):
-        super().__init__(cwd, workspace_uuid, session_manager)
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+                 approval_store=None):
+        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
         self._compiler_cache: str | None = None
 
     def execute(
@@ -197,6 +199,11 @@ class LatexTool(Tool):
             pdf_path = self._resolve_path(output)
         else:
             pdf_path = tex_path[:-4] + ".pdf"
+
+        # 路径权限门：输出 PDF 写入工作区外需审批/拒绝
+        gate = self._path_gate([PathTarget(OP_WRITE, pdf_path, "output", resolved=pdf_path)])
+        if gate:
+            return gate
 
         # Get compiler
         if compiler:

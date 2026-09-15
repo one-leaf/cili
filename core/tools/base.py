@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.config import DATA_ROOT, PROJECT_ROOT
+from core.config import PROJECT_ROOT
+from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy
+from core.tools.approval import META_KEY, approval_placeholder_text
 
 # 提示注入防护（SEC-18）：外部来源内容进入上下文前的「不可信数据」定界标签。
 # 工具返回网页正文/搜索结果/文档文本/记忆片段/跨会话消息时，用这两个标记包裹，
@@ -567,43 +569,53 @@ class Tool:
         self.on_output: Callable[[str, int], None] | None = None
 
     def _resolve_path(self, path: str, *, read_only: bool = False) -> str:
-        """Resolve a file path to absolute, relative to cwd.
+        """Resolve a file path to absolute, relative to cwd (纯解析器).
 
-        Uses realpath（解析 `..`、符号链接与 junction）。
-        读取类工具传 read_only=True 时跳过访问边界（可读任意路径）；
-        写操作（默认）强制 workspace + data/ 边界，防止 agent 被提示注入诱导
-        覆盖任意系统文件。
+        Uses realpath（解析 `..`、符号链接与 junction）。写/删是否越界由
+        各工具的 _path_gate 统一判定（PathPolicy），这里不再抛边界错误；
+        read_only 参数保留为读工具的语义提示，无行为分支。
         """
         if not os.path.isabs(path):
             path = os.path.join(self.cwd, path)
-        resolved = os.path.realpath(path)
-        if read_only:
-            return resolved
-        workspace_root = os.path.realpath(self.cwd)
-        if not self._is_within_workspace(resolved, workspace_root) \
-                and not self._is_within_data_root(resolved):
-            raise ValueError(
-                f"路径越界：{resolved!r} 不在工作区 {workspace_root!r} 或数据目录内"
-            )
-        return resolved
+        return os.path.realpath(path)
 
-    @staticmethod
-    def _is_within_workspace(resolved: str, root: str) -> bool:
-        """判断 resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。"""
-        try:
-            # commonpath 保留输入大小写，两侧都 normcase 才能正确比较
-            return os.path.normcase(
-                os.path.commonpath([resolved, root])
-            ) == os.path.normcase(root)
-        except ValueError:
-            return False  # 不同盘符
+    def _path_policy(self) -> PathPolicy:
+        """构造本工具工作区（= cwd）的路径权限判定器。
 
-    @classmethod
-    def _is_within_data_root(cls, resolved: str) -> bool:
-        """判断 resolved 是否位于项目 data/ 目录内（cili 系统数据 + agents 状态数据）。"""
-        return cls._is_within_workspace(
-            resolved, os.path.realpath(str(DATA_ROOT))
+        各工具 cwd 即其 workspace 目录；子代理继承 master 的 cwd，
+        因此 master/worker/lite 的 workspace 边界天然统一。
+        """
+        return PathPolicy(
+            workspace_root=self.cwd, cwd=self.cwd,
+            approval_store=self.approval_store,
         )
+
+    def _path_gate(self, targets: list) -> ToolResult | None:
+        """统一写/删路径审批门。返回 None 表示放行；否则返回拒绝/占位结果。
+
+        - 任一目标越界且无审批通道（approval_store=None）→ 硬拒绝（fail-closed）
+        - 否则按序返回第一个未批准越界目标的审批占位符（pending 单槽，一次一卡）
+        - 已批准目标自动放行（is_approved 命中）
+        """
+        if not targets:
+            return None
+        policy = self._path_policy()
+        denied = policy.any_denied(targets)
+        if denied is not None:
+            verb = "删除" if denied.op == OP_DELETE else "写入"
+            return ToolResult(
+                f"Error: {verb}目标不在工作区 {policy.workspace_root!r} 内，且无审批通道：{denied.raw}",
+                error=True,
+            )
+        pending = policy.first_pending(targets)
+        if pending is not None:
+            approval = policy.approval_meta(pending)
+            return ToolResult(
+                approval_placeholder_text(approval),
+                completed=False,
+                meta={META_KEY: approval},
+            )
+        return None
 
     def _emit_output(self, chunk: str, written_bytes: int) -> None:
         """调用 on_output 钩子，异常不影响工具执行（钩子失败静默忽略）。"""

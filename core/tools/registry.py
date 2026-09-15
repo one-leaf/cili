@@ -67,8 +67,8 @@ def _factory(cls: type, *, needs_config: bool = False, needs_approval: bool = Fa
 TOOL_REGISTRY: dict[str, Factory] = {
     "read": _factory(ReadTool),
     "read_image": _factory(ReadImageTool),
-    "write": _factory(WriteTool),
-    "edit": _factory(EditTool),
+    "write": _factory(WriteTool, needs_approval=True),
+    "edit": _factory(EditTool, needs_approval=True),
     "bash": _factory(BashTool, needs_approval=True),
     "pwsh": _factory(PwshTool, needs_approval=True),
     "grep": _factory(GrepTool),
@@ -76,11 +76,11 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "browser": _factory(BrowserTool),
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),
-    "python": _factory(PythonTool, needs_config=True),
+    "python": _factory(PythonTool, needs_config=True, needs_approval=True),
     # 注意：注册键 "todo" 与工具类 name="todo_write" 不同（T26）。这是有意的——
     # 注册键简短稳定供角色白名单引用，工具名详细供 LLM 语义理解。勿"统一"改名。
     "todo": _factory(TodoWriteTool),
-    "latex": _factory(LatexTool),
+    "latex": _factory(LatexTool, needs_approval=True),
     "message_bus": _factory(MessageBusTool),
     "cron": _factory(CronTool),
     "clock": _factory(ClockTool),
@@ -88,7 +88,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
-    "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True),
+    "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_approval=True),
     "skill": _make_skill,
     "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),

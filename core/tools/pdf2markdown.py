@@ -22,6 +22,7 @@ from typing import Any
 import requests
 
 from core.config import Config
+from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,9 @@ class PDF2MarkdownTool(Tool):
     MAX_TOOL_RESULT_SIZE_CHARS = 50_000
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session_manager=None, config: Config | None = None):
-        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager)
+                 session_manager=None, config: Config | None = None, approval_store=None):
+        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
+                         approval_store=approval_store)
         self._config = config
 
     def _get_mineru_api_key(self) -> str:
@@ -142,6 +144,11 @@ class PDF2MarkdownTool(Tool):
             output_path = os.path.join(self.cwd, f"{stem}.md")
         else:
             output_path = self._resolve_path(output_path)
+
+        # 路径权限门：输出 .md 写入工作区外需审批/拒绝
+        gate = self._path_gate([PathTarget(OP_WRITE, output_path, "output", resolved=output_path)])
+        if gate:
+            return gate
 
         # Determine model version (HTML files need MinerU-HTML)
         if file_ext == ".html":

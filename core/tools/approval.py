@@ -6,18 +6,24 @@ completed=False 占位符，由 Master Agent 循环合成 ask_user 卡询问用�
 
 ApprovalStore 由 Master Agent 持有，Master/Worker/Lite 的 bash/pwsh 与
 agent 委派共享同一实例：Master 批准的会话级命令在 Worker/Lite 中同样
-放行。仅存内存，服务器重启即失效，不做任何持久化。
+放行。会话级批准仅存内存，服务器重启即失效；用户选择「允许并记住」
+时规则持久化到 workspace 的 approvals.json（Master 启动时回灌）。
 """
 
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+from core.fs_utils import atomic_write_json, load_json_or_backup
 
 MODE_ASK = "ask"
 MODE_DENY = "deny"
 
 APPROVE_LABEL = "允许本次会话"
+REMEMBER_LABEL = "允许并记住"
 REJECT_LABEL = "拒绝"
 
 # ToolResult.meta 中标记"需要用户批准"的键
@@ -38,18 +44,44 @@ def approval_decision_id(command: str) -> str:
 
 
 def build_approval_question(approval: dict[str, Any]) -> str:
-    """构造发给用户的批准问题文案。"""
+    """构造发给用户的批准问题文案。
+
+    按 kind 分支：path:write/path:delete 为工作区外文件操作，其余为高风险命令。
+    """
+    kind = approval.get("kind", "command")
+    target_label = "路径" if kind.startswith("path:") else "命令"
+    if kind == "path:delete":
+        head = (
+            f"检测到工作区外的文件操作，需要您批准后才能执行：\n\n"
+            f"操作：删除 `{approval['command']}`\n"
+        )
+    elif kind.startswith("path:"):
+        head = (
+            f"检测到工作区外的文件操作，需要您批准后才能执行：\n\n"
+            f"操作：写入 `{approval['command']}`\n"
+        )
+    else:
+        head = (
+            f"检测到高风险命令，需要您批准后才能执行：\n\n"
+            f"命令：`{approval['command']}`\n"
+        )
     return (
-        f"检测到高风险命令，需要您批准后才能执行：\n\n"
-        f"命令：`{approval['command']}`\n"
+        f"{head}"
         f"拦截原因：{approval['reason']}\n"
         f"判定编号：{approval['decision_id']}\n\n"
-        f"批准后，本次会话内执行相同命令（包括委派给子代理）将不再询问。"
+        f"「{APPROVE_LABEL}」仅本次会话放行；「{REMEMBER_LABEL}」会写入此工作区，"
+        f"重启后仍放行相同{target_label}（包括委派给子代理）；「{REJECT_LABEL}」则本次与今后均拦截。"
     )
 
 
 def approval_placeholder_text(approval: dict[str, Any]) -> str:
     """工具返回给 LLM 的占位文本（completed=False，等待用户批准）。"""
+    if approval.get("kind", "command").startswith("path:"):
+        return (
+            "该文件操作被路径权限拦截，需要用户批准后才能执行。\n"
+            "等待用户选择「允许本次会话」或「拒绝」...\n"
+            "若用户允许，请**原样重发**该操作执行。"
+        )
     return (
         "该命令被高风险拦截，需要用户批准后才能执行。\n"
         "等待用户选择「允许本次会话」或「拒绝」...\n"
@@ -58,43 +90,112 @@ def approval_placeholder_text(approval: dict[str, Any]) -> str:
 
 
 def build_approved_commands_section(approval_store: "ApprovalStore | None") -> str:
-    """子代理任务消息中下放的已批准命令段落（无批准时返回空串）。"""
+    """子代理任务消息中下放的已批准命令/路径段落（无批准时返回空串）。
+
+    命令与路径规则分列：worker/lite 据此得知主会话已放行的命令与
+    工作区外文件操作，避免重复尝试被拒。
+    """
     if not approval_store:
         return ""
     approved = approval_store.approved_commands()
-    if not approved:
+    path_rules = approval_store.approved_path_rules()
+    if not approved and not path_rules:
         return ""
-    lines = [
-        "### Pre-approved commands",
-        "",
-        "The following commands have been approved by the user for this session and may be executed directly:",
-        "",
-    ]
+    if approved and path_rules:
+        intro = (
+            "The following commands and file operations have been approved by the "
+            "user for this session and may be executed directly:"
+        )
+    elif approved:
+        intro = (
+            "The following commands have been approved by the user for this "
+            "session and may be executed directly:"
+        )
+    else:
+        intro = (
+            "The following file operations have been approved by the user for this "
+            "session and may be executed directly:"
+        )
+    lines = ["### Pre-approved commands", "", intro, ""]
     lines += [f"- `{cmd}`" for cmd in approved]
+    for rule in path_rules:
+        verb = "delete" if rule["kind"] == "path:delete" else "write"
+        lines.append(f"- {verb} `{rule['command']}`")
     lines.append("")
     return "\n".join(lines)
 
 
 class ApprovalStore:
-    """会话级高风险命令审批存储（内存，不持久化）。
+    """高风险命令审批存储：会话级（内存）+ 可选持久化到 workspace。
 
-    - _approved: decision_id -> command，会话内持续生效，不按次数消费
+    - _approved: decision_id -> command，会话内持续生效，不按次数消费；
+      含从 rules_path 回灌的持久化规则
     - pending: 单槽待批准项 {decision_id, command, reason}，由 root 循环写入、
       answer 端点读取后清空
+    - rules_path: 持久化规则文件（workspace 的 approvals.json）。为 None 时
+      退化为纯内存存储（现有测试/独立调用零改动）。仅 Master 写入文件，
+      Worker/Lite 通过共享实例继承。
     """
 
-    def __init__(self) -> None:
-        self._approved: dict[str, str] = {}
+    def __init__(self, rules_path: Path | str | None = None) -> None:
+        self._approved: dict[str, dict[str, str]] = {}
         self.pending: dict[str, Any] | None = None
+        self._rules_path = Path(rules_path) if rules_path is not None else None
+        self._load_rules()
+
+    def _load_rules(self) -> None:
+        """启动时从 rules_path 回灌持久化规则（文件缺失/损坏时静默跳过）。
+
+        旧规则无 kind 字段，按 "command" 回灌（兼容既有 approvals.json）。
+        """
+        if self._rules_path is None:
+            return
+        data = load_json_or_backup(self._rules_path, {})
+        for rule in data.get("rules", []):
+            did = rule.get("decision_id")
+            command = rule.get("command")
+            if did and command:
+                kind = rule.get("kind", "command")
+                self._approved[did] = {"command": command, "kind": kind}
 
     def is_approved(self, decision_id: str) -> bool:
         return decision_id in self._approved
 
-    def approve(self, decision_id: str, command: str) -> None:
-        self._approved[decision_id] = command
+    def approve(self, decision_id: str, command: str, persist: bool = False,
+                reason: str = "", kind: str = "command") -> None:
+        """记录批准。persist=True 时把规则原子写入 rules_path（按 decision_id 去重）。
+
+        kind 默认 "command"，现有调用点零改动；路径规则传 "path:write"/"path:delete"。
+        """
+        self._approved[decision_id] = {"command": command, "kind": kind}
+        if persist:
+            self._persist_rule(decision_id, command, reason, kind)
+
+    def _persist_rule(self, decision_id: str, command: str, reason: str, kind: str) -> None:
+        if self._rules_path is None:
+            return
+        data = load_json_or_backup(self._rules_path, {"rules": []})
+        rules = [r for r in data.get("rules", []) if r.get("decision_id") != decision_id]
+        rules.append({
+            "decision_id": decision_id,
+            "command": command,
+            "reason": reason or "",
+            "kind": kind,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        data["rules"] = rules
+        atomic_write_json(self._rules_path, data)
 
     def approved_commands(self) -> list[str]:
-        return list(self._approved.values())
+        """仅命令类规则（kind == "command"），供现有调用/测试保持语义。"""
+        return [v["command"] for v in self._approved.values() if v["kind"] == "command"]
+
+    def approved_path_rules(self) -> list[dict[str, str]]:
+        """路径类规则（kind == "path:write"/"path:delete"）。"""
+        return [
+            {"kind": v["kind"], "command": v["command"]}
+            for v in self._approved.values() if v["kind"] != "command"
+        ]
 
     def set_pending(self, approval: dict[str, Any]) -> None:
         self.pending = approval

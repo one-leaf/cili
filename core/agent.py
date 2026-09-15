@@ -30,6 +30,7 @@ from core.tools.approval import (
     APPROVE_LABEL,
     META_KEY,
     REJECT_LABEL,
+    REMEMBER_LABEL,
     ApprovalStore,
     build_approved_commands_section,
     build_approval_question,
@@ -173,8 +174,11 @@ class Agent(BaseAgent):
             self.client.max_tokens = min(role_max_tokens, self.model.max_tokens)
 
         if self._mode == "interactive":
-            # 会话级高风险命令审批存储（内存，不持久化），根/子代理共享
-            self.approval_store = ApprovalStore()
+            # 高风险命令审批存储：会话级内存 + workspace 持久化规则（启动回灌），根/子代理共享
+            from core.config import get_workspace_data_dir
+            self.approval_store = ApprovalStore(
+                rules_path=get_workspace_data_dir(self.workspace_uuid) / "approvals.json"
+            )
             # IMPORTANT: Share messages list with session_manager (not copy!)
             self.messages = self.session_manager.messages
             self._usage = self.session_manager.get_usage()
@@ -443,6 +447,7 @@ class Agent(BaseAgent):
                     "header": "命令批准",
                     "options": [
                         {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同命令（含委派给子代理）不再询问。"},
+                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区，重启后仍放行相同命令。"},
                         {"label": REJECT_LABEL, "description": "拒绝执行该命令。"},
                     ],
                 }

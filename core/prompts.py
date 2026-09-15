@@ -16,7 +16,7 @@ import logging
 import os
 from datetime import datetime
 
-from core.config import PROJECT_ROOT, get_user_profile_path
+from core.config import get_user_profile_path
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,8 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     current_date = datetime.now().strftime("%Y-%m-%d")
     from core.config import get_workspace_data_dir
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
-    tmp_dir = os.environ.get("CILI_TMP", str(PROJECT_ROOT / "data" / "tmp"))
+    # 工作区临时目录：写在 workspace/.tmp 内，受统一路径权限（写/删限工作区）约束
+    tmp_dir = os.path.join(cwd, ".tmp") if cwd else ".tmp"
 
     parts = [
         "## Workspace",
@@ -121,12 +122,12 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Temporary Files",
         "",
-        f"Temporary directory: `{tmp_dir}`",
+        f"Workspace temp directory: `{tmp_dir}` (inside the workspace).",
         "",
-        "Environment variables TEMP, TMP, TMPDIR are all set to this directory.",
         "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
-        "In bash: use `$TEMP` or `$TMPDIR`. In Python: `tempfile` module is auto-configured.",
-        "Agent can also use `CILI_TMP` env var to reference this path.",
+        "Writes/deletes are only allowed inside the workspace; anything outside requires approval.",
+        "For session-scoped temp storage use the `temp` tool — it creates `{cwd}/.tmp/{{session_id}}/`.",
+        "In Python, `tempfile` module is auto-configured to the system temp.",
         "",
         "## Memory",
         "",

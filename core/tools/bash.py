@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.shell_paths import extract_shell_targets
 from core.tools.approval import (
     META_KEY,
     MODE_ASK,
@@ -49,7 +51,7 @@ _DENY_PATTERNS = [
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "PowerShell invocation from bash (use the pwsh tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Python invocation from bash (use the python tool instead)", MODE_DENY),
+     "Python invocation from bash bypasses the python tool's safety checks (use the python tool instead)", MODE_ASK),
     (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "py launcher invocation from bash (use the python tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
@@ -72,9 +74,9 @@ class BashTool(Tool):
             "Execute a shell command via Git Bash and return its output. "
             "Commands run in the agent's working directory. Supports pipes, redirects, and all shell features.\n"
             "Use for: ls, git, npm, curl, system commands, file operations, etc.\n"
-            "Do NOT use bash to invoke Python (use `python`) or PowerShell (use `pwsh`) — cross-tool calls are blocked.\n"
-            "Some destructive commands (e.g. rm -rf, format, shutdown) require user approval; if blocked, "
-            "wait for the user's decision then retry the exact command.\n"
+            "Do NOT use bash to invoke PowerShell (use `pwsh`) — cross-tool calls are blocked.\n"
+            "Some destructive commands (e.g. rm -rf, format, shutdown) and Python invocation from bash "
+            "require user approval; if blocked, wait for the user's decision then retry the exact command.\n"
             f"Paths are in Windows format (e.g., {self.cwd}).\n\n"
             "## Background tasks\n"
             "Long-running commands: run_in_background=true → task_id, then read_task(task_id) to check progress, "
@@ -174,6 +176,7 @@ class BashTool(Tool):
 
         # Safety: deny dangerous commands (ask 档先查会话级批准，未批准则等待用户确认)
         deny = self._check_deny_patterns(command)
+        keyword_approved = False
         if deny:
             mode, reason = deny
             if mode == MODE_DENY or not self.approval_store:
@@ -183,18 +186,24 @@ class BashTool(Tool):
                 "command": command,
                 "reason": reason,
             }
-            if self.approval_store.is_approved(approval["decision_id"]):
-                pass  # 本次会话已批准，放行执行
-            else:
+            if not self.approval_store.is_approved(approval["decision_id"]):
                 return ToolResult(
                     approval_placeholder_text(approval),
                     completed=False,
                     meta={META_KEY: approval},
                 )
+            keyword_approved = True  # 整条命令已批准，跳过路径门
+
+        policy = self._path_policy()
+        initial_dir = self.cwd
 
         # Apply working_dir override
         if working_dir:
-            resolved = os.path.abspath(self._resolve_path(working_dir))
+            resolved = policy.resolve(working_dir)
+            # 区外 working_dir 也需审批/拒绝
+            gate = self._path_gate([PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)])
+            if gate:
+                return gate
             if not os.path.isdir(resolved):
                 return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
             bash_dir = _to_bash_path(resolved)
@@ -207,6 +216,14 @@ class BashTool(Tool):
                     f"Error: command blocked by safety check — {reason}", error=True
                 )
             command = cd_prefix + command
+            initial_dir = resolved
+
+        # 路径权限门：静态提取写/删目标，越界需审批（keyword_approved 时跳过）
+        if not keyword_approved:
+            targets = extract_shell_targets(command, "bash", cwd=self.cwd, initial_dir=initial_dir)
+            gate = self._path_gate(targets)
+            if gate:
+                return gate
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)

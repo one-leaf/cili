@@ -392,6 +392,87 @@ class TestAskUserDirectInput:
         agent = SimpleNamespace(session_manager=sm, approval_store=None)
         assert _inject_ask_user_answer(agent, "call_missing", "x") is False
 
+    # ─── 审批分支三态 ─────────────────────────────────────────────
+
+    @staticmethod
+    def _approval_agent(tmp_path):
+        """构造带待批准命令的 agent（approval_store.pending 非空）。"""
+        from types import SimpleNamespace
+        from core.tools.approval import ApprovalStore, approval_decision_id
+        sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
+        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
+        store.set_pending({
+            "decision_id": approval_decision_id("rm -rf /tmp/x"),
+            "command": "rm -rf /tmp/x",
+            "reason": "destructive recursive delete",
+        })
+        agent = SimpleNamespace(session_manager=sm, approval_store=store)
+        return agent, tool_use_id, store
+
+    def test_inject_answer_remember_persists_rule(self, tmp_path):
+        from core.tools.approval import REMEMBER_LABEL, approval_decision_id
+        from web.web_api import _inject_ask_user_answer
+        agent, tool_use_id, store = self._approval_agent(tmp_path)
+        did = approval_decision_id("rm -rf /tmp/x")
+        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REMEMBER_LABEL}") is True
+        assert store.is_approved(did)
+        assert store.pending is None
+        # 规则已落盘（含命令），新实例回灌后仍放行
+        path = tmp_path / "approvals.json"
+        assert path.exists()
+        assert "rm -rf /tmp/x" in path.read_text(encoding="utf-8")
+        reloaded = type(store)(rules_path=path)
+        assert reloaded.is_approved(did)
+
+    def test_inject_answer_approve_session_only(self, tmp_path):
+        from core.tools.approval import APPROVE_LABEL, approval_decision_id
+        from web.web_api import _inject_ask_user_answer
+        agent, tool_use_id, store = self._approval_agent(tmp_path)
+        did = approval_decision_id("rm -rf /tmp/x")
+        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {APPROVE_LABEL}") is True
+        assert store.is_approved(did)
+        assert store.pending is None
+        # 仅会话级：不落盘
+        assert not (tmp_path / "approvals.json").exists()
+
+    def test_inject_answer_remember_persists_path_kind(self, tmp_path):
+        """路径审批（kind=path:write）经「允许并记住」后，kind 落盘并回灌为路径规则。"""
+        from types import SimpleNamespace
+        from core.tools.approval import REMEMBER_LABEL, ApprovalStore
+        from web.web_api import _inject_ask_user_answer
+        sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
+        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
+        store.set_pending({
+            "decision_id": "pathwrite1234567890ab",
+            "command": "C:\\outside\\x.txt",
+            "reason": "工作区外写入",
+            "kind": "path:write",
+        })
+        agent = SimpleNamespace(session_manager=sm, approval_store=store)
+        assert _inject_ask_user_answer(agent, tool_use_id, f"批准写入 {REMEMBER_LABEL}") is True
+        assert store.is_approved("pathwrite1234567890ab")
+        assert store.pending is None
+        # 规则已落盘（含 kind），路径规则可被 approved_path_rules() 枚举
+        path = tmp_path / "approvals.json"
+        assert path.exists()
+        assert "path:write" in path.read_text(encoding="utf-8")
+        rules = store.approved_path_rules()
+        assert any(r["kind"] == "path:write" and "outside" in r["command"] for r in rules)
+        # 新实例回灌后仍按路径规则放行
+        reloaded = ApprovalStore(rules_path=path)
+        assert reloaded.is_approved("pathwrite1234567890ab")
+        assert reloaded.approved_path_rules()
+
+    def test_inject_answer_reject_does_not_approve(self, tmp_path):
+        from core.tools.approval import REJECT_LABEL, approval_decision_id
+        from web.web_api import _inject_ask_user_answer
+        agent, tool_use_id, store = self._approval_agent(tmp_path)
+        did = approval_decision_id("rm -rf /tmp/x")
+        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REJECT_LABEL}") is True
+        assert not store.is_approved(did)
+        assert store.pending is None
+        assert not (tmp_path / "approvals.json").exists()
+
     def test_send_message_resumes_ask_user_with_other_answer(self, monkeypatch, tmp_path):
         """send_message 检测到待回答 ask_user 时：注入输入为"其他"答案并 resume，
         不调用 agent.run、不追加新 user message，首事件 tool_result(ask_user) 关闭卡片。"""

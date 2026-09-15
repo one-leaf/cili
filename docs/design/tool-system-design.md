@@ -785,7 +785,7 @@ web_api.py 注入 on_agent_start / on_agent_complete 回调
 
 ### 8.3 temp — 临时文件/目录管理
 
-`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `{CILI_TMP}/{session_id}/`（`CILI_TMP` 环境变量默认为 `data/tmp/`；session_id 缺失时使用 `no-session`）。
+`temp` 工具用于管理当前 session 的临时文件和目录。临时数据存放在 `{cwd}/.tmp/{session_id}/`（工作区内，受统一路径权限约束；session_id 缺失时使用 `no-session`）。
 
 **Actions**：
 
@@ -807,7 +807,7 @@ web_api.py 注入 on_agent_start / on_agent_complete 回调
 **设计要点**：
 - **Session 隔离**：每个 session 有独立的临时目录
 - **自动清理**：调用 `cleanup` 可一次性删除所有临时文件
-- **路径解析**：根目录由 `CILI_TMP` 环境变量决定（默认 `data/tmp/`），下按 session_id 隔离
+- **路径解析**：根目录为 `{cwd}/.tmp/`（工作区内），下按 session_id 隔离
 
 **实现**：`core/tools/temp.py`
 

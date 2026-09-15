@@ -16,6 +16,8 @@ from core.tools.approval import (
     META_KEY,
     MODE_ASK,
     MODE_DENY,
+    REJECT_LABEL,
+    REMEMBER_LABEL,
     ApprovalStore,
     approval_decision_id,
     build_approved_commands_section,
@@ -48,9 +50,15 @@ class TestDenyTiers:
 
     def test_bash_architectural_is_deny(self):
         for cmd in ["eval 'x'", "pwsh -Command foo", "powershell -Command foo",
-                    "python x.py", "py x.py", "cmd /c dir", "wsl ls /"]:
+                    "py x.py", "cmd /c dir", "wsl ls /"]:
             mode, reason = _check_bash(cmd)
             assert mode == MODE_DENY, f"{cmd!r} should be deny, got {mode} ({reason})"
+
+    def test_bash_python_invocation_is_ask(self):
+        # python 调用降为 ask 档：可经用户批准成为例外，而非架构性硬拒
+        for cmd in ["python x.py", "python3 x.py", "pythonw x.py", "python.exe x.py"]:
+            mode, reason = _check_bash(cmd)
+            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
 
     def test_pwsh_destructive_is_ask(self):
         for cmd in [
@@ -63,10 +71,15 @@ class TestDenyTiers:
             assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
 
     def test_pwsh_architectural_is_deny(self):
-        for cmd in ["iex 'x'", "Invoke-Expression 'x'", "python x.py", "py x.py",
+        for cmd in ["iex 'x'", "Invoke-Expression 'x'", "py x.py",
                     "bash -c 'x'", "cmd /c dir", "wsl ls /", "pwsh -Command x"]:
             mode, reason = _check_pwsh(cmd)
             assert mode == MODE_DENY, f"{cmd!r} should be deny, got {mode} ({reason})"
+
+    def test_pwsh_python_invocation_is_ask(self):
+        for cmd in ["python x.py", "python3 x.py", "python.exe x.py"]:
+            mode, reason = _check_pwsh(cmd)
+            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
 
     def test_benign_not_blocked(self):
         assert _check_bash("ls -la") is None
@@ -109,6 +122,51 @@ class TestApprovalStore:
         store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
         assert store.approved_commands() == ["rm -rf /tmp/x"]
 
+    # ─── 持久化 ──────────────────────────────────────────────────
+
+    def test_persist_writes_file(self, tmp_path):
+        import json as _json
+        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
+        did = approval_decision_id("rm -rf /tmp/x")
+        store.approve(did, "rm -rf /tmp/x", persist=True, reason="rm -rf /")
+        path = tmp_path / "approvals.json"
+        assert path.exists()
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        assert data["rules"][0]["decision_id"] == did
+        assert data["rules"][0]["command"] == "rm -rf /tmp/x"
+        assert data["rules"][0]["reason"] == "rm -rf /"
+        assert "created_at" in data["rules"][0]
+
+    def test_load_rules_from_file(self, tmp_path):
+        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
+        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x", persist=True)
+        # 新实例从文件回灌
+        reloaded = ApprovalStore(rules_path=tmp_path / "approvals.json")
+        assert reloaded.is_approved(approval_decision_id("rm -rf /tmp/x"))
+
+    def test_persist_dedup_replaces(self, tmp_path):
+        import json as _json
+        path = tmp_path / "approvals.json"
+        store = ApprovalStore(rules_path=path)
+        did = approval_decision_id("rm -rf /tmp/x")
+        store.approve(did, "rm -rf /tmp/x", persist=True, reason="old")
+        store.approve(did, "rm -rf /tmp/y", persist=True, reason="new")
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        assert len(data["rules"]) == 1
+        assert data["rules"][0]["command"] == "rm -rf /tmp/y"
+        assert data["rules"][0]["reason"] == "new"
+
+    def test_no_path_does_not_write(self, tmp_path):
+        store = ApprovalStore()  # rules_path=None → 纯内存，不落盘
+        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x", persist=True)
+        assert not (tmp_path / "approvals.json").exists()
+
+    def test_corrupt_file_loads_default(self, tmp_path):
+        path = tmp_path / "approvals.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        store = ApprovalStore(rules_path=path)
+        assert not store.is_approved("anything")
+
 
 class TestExecuteApprovalFlow:
     def test_unapproved_returns_placeholder(self):
@@ -139,6 +197,20 @@ class TestExecuteApprovalFlow:
     def test_deny_tier_hard_deny_even_with_store(self):
         store = ApprovalStore()
         tool = BashTool(cwd=".", approval_store=store)
+        result = tool.execute(command="py x.py")
+        assert result.error
+
+    def test_bash_python_ask_tier_placeholder(self):
+        # python 调用降为 ask 档：有 store 时返回占位等待用户批准，而非硬拒
+        store = ApprovalStore()
+        tool = BashTool(cwd=".", approval_store=store)
+        result = tool.execute(command="python x.py")
+        assert result.completed is False
+        assert result.meta[META_KEY]["command"] == "python x.py"
+
+    def test_bash_python_ask_tier_hard_deny_without_store(self):
+        # 无 store（如独立 worker）仍硬拒绝，不询问
+        tool = BashTool(cwd=".")
         result = tool.execute(command="python x.py")
         assert result.error
 
@@ -195,3 +267,109 @@ class TestAskUserSchema:
 
     def test_approve_label_constant(self):
         assert APPROVE_LABEL == "允许本次会话"
+
+    def test_remember_label_constant(self):
+        assert REMEMBER_LABEL == "允许并记住"
+        # endswith 匹配安全：两 label 互不为子串
+        assert not APPROVE_LABEL.endswith(REMEMBER_LABEL)
+        assert not REMEMBER_LABEL.endswith(APPROVE_LABEL)
+
+    def test_approval_question_mentions_three_options(self):
+        from core.tools.approval import build_approval_question
+        q = build_approval_question({
+            "decision_id": "abc",
+            "command": "rm -rf /tmp/x",
+            "reason": "destructive delete",
+        })
+        assert APPROVE_LABEL in q
+        assert REMEMBER_LABEL in q
+        assert REJECT_LABEL in q
+        assert "rm -rf /tmp/x" in q
+
+
+class TestPathKind:
+    """kind 字段：路径规则与命令规则共存、互不串扰。"""
+
+    def test_command_default_kind(self):
+        store = ApprovalStore()
+        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
+        assert store.approved_commands() == ["rm -rf /tmp/x"]
+        assert store.approved_path_rules() == []
+
+    def test_path_write_rule(self, tmp_path):
+        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
+        policy = PathPolicy(workspace_root=str(tmp_path))
+        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
+        store = ApprovalStore()
+        store.approve(did, "C:\\out", kind="path:write")
+        assert store.is_approved(did)
+        assert store.approved_path_rules() == [{"kind": "path:write", "command": "C:\\out"}]
+        assert store.approved_commands() == []
+
+    def test_write_does_not_unlock_delete(self, tmp_path):
+        from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy, PathTarget
+        policy = PathPolicy(workspace_root=str(tmp_path))
+        w = policy.decision_id(PathTarget(OP_WRITE, "C:\\x", resolved="C:\\x"))
+        d = policy.decision_id(PathTarget(OP_DELETE, "C:\\x", resolved="C:\\x"))
+        store = ApprovalStore()
+        store.approve(w, "C:\\x", kind="path:write")
+        assert store.is_approved(w)
+        assert not store.is_approved(d)  # 批 write 不解锁同路径 delete
+
+    def test_old_rule_without_kind_loads_as_command(self, tmp_path):
+        import json as _json
+        path = tmp_path / "approvals.json"
+        path.write_text(_json.dumps({
+            "rules": [{"decision_id": "abc123", "command": "rm -rf /tmp/old", "reason": ""}]
+        }), encoding="utf-8")
+        store = ApprovalStore(rules_path=path)
+        assert store.approved_commands() == ["rm -rf /tmp/old"]
+        assert store.approved_path_rules() == []
+
+    def test_persist_writes_kind_field(self, tmp_path):
+        import json as _json
+        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
+        path = tmp_path / "approvals.json"
+        policy = PathPolicy(workspace_root=str(tmp_path))
+        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
+        store = ApprovalStore(rules_path=path)
+        store.approve(did, "C:\\out", kind="path:write", persist=True)
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        assert data["rules"][0]["kind"] == "path:write"
+
+    def test_question_path_write_wording(self):
+        from core.tools.approval import build_approval_question
+        q = build_approval_question({
+            "decision_id": "abc", "command": "C:\\out",
+            "kind": "path:write", "reason": "写入目标不在工作区 内",
+        })
+        assert "工作区外" in q
+        assert "操作：写入" in q
+        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
+
+    def test_question_path_delete_wording(self):
+        from core.tools.approval import build_approval_question
+        q = build_approval_question({
+            "decision_id": "abc", "command": "rm out",
+            "kind": "path:delete", "reason": "删除目标不在工作区内",
+        })
+        assert "操作：删除" in q
+        assert "操作：写入" not in q
+
+    def test_question_default_command_wording(self):
+        from core.tools.approval import build_approval_question
+        q = build_approval_question({
+            "decision_id": "abc", "command": "rm -rf /tmp/x", "reason": "r",
+        })
+        assert "高风险命令" in q
+        assert "命令：`rm -rf /tmp/x`" in q
+
+    def test_section_includes_path_rules(self):
+        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
+        store = ApprovalStore()
+        policy = PathPolicy(workspace_root="C:\\ws")
+        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
+        store.approve(did, "C:\\out", kind="path:write")
+        section = build_approved_commands_section(store)
+        assert "Pre-approved commands" in section
+        assert "write `C:\\out`" in section

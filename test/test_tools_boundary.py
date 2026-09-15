@@ -405,13 +405,11 @@ class TestReadPathExemption:
         assert result.error is False
         assert "hello secret" in result.output
 
-    def test_read_under_data_root_allowed(self, read_tool, tmp_path, monkeypatch):
+    def test_read_under_data_root_allowed(self, read_tool, tmp_path):
         """data/ 内的文件（如会话 index.json）可读，即使在工作区之外。"""
-        data_root = tmp_path / "data"
-        target = data_root / "agents" / "abc" / "sessions" / "x" / "index.json"
+        target = tmp_path / "data" / "agents" / "abc" / "sessions" / "x" / "index.json"
         target.parent.mkdir(parents=True)
         target.write_text('{"ok": true}', encoding="utf-8")
-        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
 
         result = read_tool.execute(file_path=str(target))
         assert result.error is False
@@ -429,40 +427,25 @@ class TestReadPathExemption:
 
 
 class TestWritePathBoundary:
-    """写操作（write）仍受 workspace + data/ 边界约束。"""
+    """写操作（write）：严格只 workspace，越界在无审批通道时硬拒（fail-closed）。"""
 
     @pytest.fixture
     def write_tool(self, test_workspace):
         return WriteTool(cwd=test_workspace, workspace_uuid="test-workspace")
 
     def test_write_outside_workspace_rejected(self, write_tool, tmp_path):
-        """写工作区之外的文件被拒绝。"""
+        """写工作区之外的文件被拒绝（无审批通道 → error，不再抛 ValueError）。"""
         outside = tmp_path / "x.txt"
-        with pytest.raises(ValueError, match="越界"):
-            write_tool.execute(file_path=str(outside), content="hi")
+        result = write_tool.execute(file_path=str(outside), content="hi")
+        assert result.error is True
+        assert not outside.exists()
 
-    def test_write_under_data_root_allowed(self, write_tool, tmp_path, monkeypatch):
-        """写 data/ 内的文件允许。"""
-        data_root = tmp_path / "data"
-        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
-        target = data_root / "cili" / "x.txt"
-        target.parent.mkdir(parents=True)
-
+    def test_write_under_data_root_rejected(self, write_tool, tmp_path):
+        """data/ 不再自动放行：工作区之外 → 拒绝（严格只 workspace）。"""
+        target = tmp_path / "data" / "cili" / "x.txt"
         result = write_tool.execute(file_path=str(target), content="hi")
-        assert result.error is False
-        assert target.read_text(encoding="utf-8") == "hi"
-
-    def test_is_within_data_root_predicate(self, tmp_path, monkeypatch):
-        """_is_within_data_root 纯谓词（入参为 realpath 后路径）：data/ 内 True，data/ 外 False。"""
-        data_root = tmp_path / "data"
-        monkeypatch.setattr("core.tools.base.DATA_ROOT", data_root)
-
-        from core.tools.base import Tool
-
-        assert Tool._is_within_data_root(str((data_root / "cili" / "setting.json").resolve())) is True
-        assert Tool._is_within_data_root(str((data_root / "agents" / "x").resolve())) is True
-        assert Tool._is_within_data_root(str((data_root / ".." / "x").resolve())) is False
-        assert Tool._is_within_data_root(str((tmp_path / "agents" / "x").resolve())) is False
+        assert result.error is True
+        assert not target.exists()
 
 
 # ========== Tool Schema Consistency ==========

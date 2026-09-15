@@ -338,7 +338,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
 | **Operating System** | `platform.system() + platform.release()` |
 | **Shell Environment** | bash / pwsh / python 三工具分工表、路径格式转换规则 |
 | **Python Environment** | 必须使用 python 工具，虚拟环境自动激活 |
-| **Temporary Files** | 临时目录（`CILI_TMP` 或 `data/tmp`），TEMP/TMP/TMPDIR 环境变量 |
+| **Temporary Files** | 工作区临时目录（`{cwd}/.tmp`），写/删限工作区、越界审批；`CILI_TMP` 为遗留全局系统临时目录 |
 | **Memory** | 内存目录（workspace 的 memory 目录），v3 三层注入实际内容（preference 常驻 + MEMORY.md 索引 + summary.md 摘要），`memory(action='find')` 检索示例 |
 | **User Profile** | 迁移回退：preference 常驻段为空时，加载 user-profile.md（跳过 YAML frontmatter 取正文） |
 | **Current Time** | 当前日期，提示用于解释相对/时效性请求 |

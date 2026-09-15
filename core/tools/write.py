@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from core.fs_utils import atomic_write_text
+from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 
 
@@ -32,7 +33,12 @@ class WriteTool(Tool):
     MAX_RESULT_SIZE_CHARS = 100_000  # 工具结果上限
 
     def execute(self, file_path: str, content: str) -> ToolResult:
-        file_path = self._resolve_path(file_path)
+        policy = self._path_policy()
+        resolved = policy.resolve(file_path)
+        gate = self._path_gate([PathTarget(OP_WRITE, file_path, "write", resolved=resolved)])
+        if gate:
+            return gate
+        file_path = resolved
 
         # Remove surrogate characters that are invalid in UTF-8
         clean_content = self._clean_surrogates(content)

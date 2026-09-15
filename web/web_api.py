@@ -48,7 +48,7 @@ from core.session import (
 from core.message_bus import get_message_bus
 from core.event_bus import get_event_bus
 from core.tools import get_tool_by_name
-from core.tools.approval import APPROVE_LABEL
+from core.tools.approval import APPROVE_LABEL, REMEMBER_LABEL
 from core.tools.todo import get_todos_from_session
 from core.memory_store import (
     MemoryStore,
@@ -1741,11 +1741,23 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
         logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={ask_user_tool_use_id}")
 
     # 会话级审批：若本次 ask_user 是高风险命令批准卡，按答案记录批准/拒绝并清空待批槽
+    # 答案格式为 "{question} {label}"，用 label 后缀精确匹配区分三档（避免子串误判）
     store = getattr(agent, "approval_store", None)
     if store and store.pending:
-        if APPROVE_LABEL in answer:
-            store.approve(store.pending["decision_id"], store.pending["command"])
-            logger.info(f"[approval] 用户批准高风险命令: {store.pending['command']}")
+        stripped = answer.rstrip()
+        kind = store.pending.get("kind", "command")
+        if stripped.endswith(REMEMBER_LABEL):
+            store.approve(
+                store.pending["decision_id"],
+                store.pending["command"],
+                persist=True,
+                reason=store.pending.get("reason", ""),
+                kind=kind,
+            )
+            logger.info(f"[approval] 用户批准并记住高风险命令: {store.pending['command']}")
+        elif stripped.endswith(APPROVE_LABEL):
+            store.approve(store.pending["decision_id"], store.pending["command"], kind=kind)
+            logger.info(f"[approval] 用户批准高风险命令(本次会话): {store.pending['command']}")
         else:
             logger.info(f"[approval] 用户拒绝高风险命令: {store.pending['command']}")
         store.clear_pending()
