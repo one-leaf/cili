@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import threading
 import uuid
 from datetime import datetime
@@ -36,6 +37,22 @@ from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_bac
 
 # exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
 _EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+# 执行日志列表里任务描述/摘要的截断长度
+_TASK_BRIEF_MAX = 100
+
+# _meta 中的内部字段（发送到 API 前剥离，包括消息级别和 block 级别）
+_INTERNAL_META_FIELDS = frozenset({
+    "valid", "compacted", "output_path", "file_size", "truncated",
+    "tool_name", "multimodal", "completed", "answered", "exec_id",
+    "id", "seq", "summary",
+})
+
+
+def _strip_internal_meta(meta: dict) -> dict | None:
+    """剥离 _meta 中的内部字段；无剩余字段时返回 None。"""
+    stripped = {k: v for k, v in meta.items() if k not in _INTERNAL_META_FIELDS}
+    return stripped or None
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +101,7 @@ def read_jsonl(path: Path | str) -> list[dict]:
                 try:
                     lines.append(json.loads(line))
                 except json.JSONDecodeError:
+                    logger.warning(f"[session] 损坏行 {path}:{len(lines) + 1}，丢弃该行及之后内容")
                     break
     except Exception as e:
         logger.warning(f"[session] 读取 jsonl 失败 {path}: {e}")
@@ -316,188 +334,26 @@ def generate_short_id() -> str:
     return secrets.token_hex(4)
 
 
-class SessionManager:
-    """独立管理会话数据，与 LLMClient 解耦。
+class AgentLogStore:
+    """Agent 执行日志存储：{session_dir}/exec_{id}/index.json 的读写。
 
-    负责：
-    - 消息管理（add, get, clear）
-    - 持久化（load, save, delete）
-    - 有效消息过滤（get_valid_messages）
-    - 压缩逻辑
-    - 使用量追踪
-    - Agent 执行日志管理
-
-    Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
+    从 SessionManager 抽出的独立职责（避免 God Object），通过持有
+    SessionManager 引用访问 session_dir/session_id。
     """
 
-    # _meta 中的内部字段（发送到 API 前剥离）
-    # 包括消息级别和 block 级别的所有内部字段
-    _INTERNAL_META_FIELDS = frozenset({"valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id", "id", "seq", "summary"})
+    def __init__(self, session_manager: SessionManager):
+        self._sm = session_manager
 
-    def __init__(self, session_id: str, sessions_dir: Path):
-        import re as _re
-        # Allow empty string (means "not yet assigned") but validate non-empty IDs
-        if session_id and not _re.match(r'^[a-zA-Z0-9_-]+$', session_id):
-            raise ValueError(f"Invalid session_id format: {session_id!r}")
-        self.session_id = session_id
-        # sessions_dir 是工作区级别的 sessions 目录
-        self.sessions_dir = Path(sessions_dir)
-        # session_dir 是当前 session 的目录
-        self.session_dir = self.sessions_dir / session_id
-
-        self.messages: list[dict] = []
-        self._valid_messages_cache: list[dict] | None = None
-        self._messages_dirty: bool = True
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.metadata: dict = {
-            "created_at": now,
-            "updated_at": now,
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "api_calls": 0,
-                "cache_read_tokens": 0,
-                "cache_creation_tokens": 0,
-            },
-            "agent_count": 0,
-        }
-        self.name: str = "New Session"
-
-        # 确保目录存在
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.session_dir.mkdir(parents=True, exist_ok=True)
-
-    # ========== 消息管理 ==========
-
-    def add_message(self, role: str, content: Any, *, flush: bool = True, extra: dict | None = None,
-                    _meta: dict | None = None) -> None:
-        """添加消息到会话。
-
-        Args:
-            role: 消息角色
-            content: 消息内容
-            flush: 是否立即保存（保留兼容）
-            extra: 额外字段，会合并到消息中
-            _meta: 消息级别的 _meta 字段
-        """
-        message = {"role": role, "content": content}
-
-        if _meta:
-            message["_meta"] = dict(_meta)
-        if extra:
-            message.update(extra)
-
-        # 注入消息创建时间（已有则保留，兼容重建/重放场景）
-        msg_meta = message.get("_meta") or {}
-        if "created_at" not in msg_meta:
-            msg_meta["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            message["_meta"] = msg_meta
-
-        self.messages.append(message)
-        self._messages_dirty = True
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def get_messages(self) -> list[dict]:
-        """获取所有消息。"""
-        return self.messages
-
-    def get_valid_messages(self) -> list[dict]:
-        """获取有效的消息（递归过滤 _meta.valid=False 的消息和 blocks）。
-
-        用于 API 请求前过滤。支持嵌套过滤：
-        - 顶层 _meta.valid=False 的消息会被移除
-        - 剥离 _meta 中的内部字段（不发送给 API）
-
-        使用脏标记缓存：仅在消息变更时重建。
-        """
-        if not self._messages_dirty and self._valid_messages_cache is not None:
-            return list(self._valid_messages_cache)  # Return shallow copy to prevent cache mutation
-
-        INTERNAL_META = self._INTERNAL_META_FIELDS
-        result = []
-        for msg in self.messages:
-            # 检查消息级别的 validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-
-            role = msg.get("role")
-            content = msg.get("content", "")
-
-            # 字符串内容直接保留
-            if not isinstance(content, list):
-                clean_msg = {"role": role, "content": content}
-                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
-                if meta:
-                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                    if stripped_meta:
-                        clean_msg["_meta"] = stripped_meta
-                result.append(clean_msg)
-                continue
-
-            # 列表内容：保留所有 blocks，剥离 block 级别 _meta 内部字段
-            # 注意：新格式中 _valid 在 message 级别，不在 block 级别
-            clean_blocks = []
-            for block in content:
-                clean_block = dict(block)
-                # 剥离 block 级别的 _meta 内部字段
-                if "_meta" in clean_block:
-                    stripped_block_meta = {k: v for k, v in clean_block["_meta"].items() if k not in INTERNAL_META}
-                    if stripped_block_meta:
-                        clean_block["_meta"] = stripped_block_meta
-                    else:
-                        del clean_block["_meta"]
-                clean_blocks.append(clean_block)
-
-            if clean_blocks:
-                clean_msg = {"role": role, "content": clean_blocks}
-                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
-                if meta:
-                    stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                    if stripped_meta:
-                        clean_msg["_meta"] = stripped_meta
-                result.append(clean_msg)
-
-        self._valid_messages_cache = result
-        self._messages_dirty = False
-        return result
-
-    def clear(self) -> None:
-        """清空所有消息并落盘（显式销毁，唯一重写 jsonl 的例外之一）。
-
-        agent.reset() 调用后不另存，故必须直接写盘。
-        """
-        lock = _get_session_lock(self.session_dir)
-        with lock:
-            self.messages.clear()
-            self._messages_dirty = True
-            self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            jsonl_path = self.session_dir / MESSAGES_FILE
-            if jsonl_path.exists():
-                write_jsonl(jsonl_path, [])
-            atomic_write_json(self.session_dir / INDEX_FILE, {
-                "schema_version": SCHEMA_VERSION,
-                "next_seq": 0,
-                "commits": [],
-            })
-            atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
-
-    def get_last_n_messages(self, n: int) -> list[dict]:
-        """获取最后 N 条消息。"""
-        return self.messages[-n:] if n > 0 else []
-
-    def get_message_count(self) -> int:
-        """获取消息数量。"""
-        return len(self.messages)
-
-    # ========== Agent 执行日志 ==========
+    @property
+    def session_dir(self) -> Path:
+        return self._sm.session_dir
 
     def _generate_exec_id(self) -> str:
         """生成执行日志 ID：exec_{8位hex}。"""
         return f"exec_{secrets.token_hex(4)}"
 
     def save_agent_log(self, exec_id: str, task: str, messages: list[dict],
-                           metadata: dict, summary: str = "") -> str:
+                       metadata: dict, summary: str = "") -> str:
         """保存 Agent 执行日志到 {session_dir}/exec_{id}/index.json。
 
         Args:
@@ -515,14 +371,13 @@ class SessionManager:
         log_file = exec_dir / "index.json"
         data = {
             "exec_id": exec_id,
-            "session_id": self.session_id,
+            "session_id": self._sm.session_id,
             "task": task,
             "metadata": metadata,
             "summary": summary,
             "messages": messages,
         }
         try:
-            from core.fs_utils import atomic_write_json
             atomic_write_json(log_file, data)
         except Exception as e:
             logger.error(f"Failed to save agent log {exec_id}: {e}")
@@ -568,7 +423,7 @@ class SessionManager:
                 # 只返回元数据，不返回完整消息
                 logs.append({
                     "exec_id": data.get("exec_id"),
-                    "task": data.get("task", "")[:100],  # 截断长任务描述
+                    "task": data.get("task", "")[:_TASK_BRIEF_MAX],  # 截断长任务描述
                     "summary": data.get("summary", ""),
                     "metadata": data.get("metadata", {}),
                 })
@@ -589,12 +444,182 @@ class SessionManager:
         """
         if not _EXEC_ID_RE.match(exec_id):
             raise ValueError(f"Invalid exec_id: {exec_id!r}")
-        import shutil
         exec_dir = self.session_dir / exec_id
         if exec_dir.exists() and exec_dir.is_dir():
             shutil.rmtree(exec_dir)
             return True
         return False
+
+
+class SessionManager:
+    """独立管理会话数据，与 LLMClient 解耦。
+
+    负责：
+    - 消息管理（add, get, clear）
+    - 持久化（load, save, delete）
+    - 有效消息过滤（get_valid_messages）
+    - 压缩逻辑
+    - 使用量追踪
+    （Agent 执行日志由 AgentLogStore 承担，见 self.agent_logs）
+
+    Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
+    """
+
+    def __init__(self, session_id: str, sessions_dir: Path):
+        # Allow empty string (means "not yet assigned") but validate non-empty IDs
+        if session_id and not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+            raise ValueError(f"Invalid session_id format: {session_id!r}")
+        self.session_id = session_id
+        # sessions_dir 是工作区级别的 sessions 目录
+        self.sessions_dir = Path(sessions_dir)
+        # session_dir 是当前 session 的目录
+        self.session_dir = self.sessions_dir / session_id
+
+        self.messages: list[dict] = []
+        self._valid_messages_cache: list[dict] | None = None
+        self._messages_dirty: bool = True
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata: dict = {
+            "created_at": now,
+            "updated_at": now,
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "api_calls": 0,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            "agent_count": 0,
+        }
+        self.name: str = "New Session"
+
+        # 确保目录存在
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Agent 执行日志是独立职责，抽到 AgentLogStore
+        self.agent_logs = AgentLogStore(self)
+
+    # ========== 消息管理 ==========
+
+    def add_message(self, role: str, content: Any, *, extra: dict | None = None,
+                    _meta: dict | None = None) -> None:
+        """添加消息到会话。
+
+        Args:
+            role: 消息角色
+            content: 消息内容
+            extra: 额外字段，会合并到消息中
+            _meta: 消息级别的 _meta 字段
+        """
+        message = {"role": role, "content": content}
+
+        if _meta:
+            message["_meta"] = dict(_meta)
+        if extra:
+            message.update(extra)
+
+        # 注入消息创建时间（已有则保留，兼容重建/重放场景）
+        msg_meta = message.get("_meta") or {}
+        if "created_at" not in msg_meta:
+            msg_meta["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message["_meta"] = msg_meta
+
+        self.messages.append(message)
+        self._messages_dirty = True
+        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def get_messages(self) -> list[dict]:
+        """获取所有消息。"""
+        return self.messages
+
+    def get_valid_messages(self) -> list[dict]:
+        """获取有效的消息（递归过滤 _meta.valid=False 的消息和 blocks）。
+
+        用于 API 请求前过滤。支持嵌套过滤：
+        - 顶层 _meta.valid=False 的消息会被移除
+        - 剥离 _meta 中的内部字段（不发送给 API）
+
+        使用脏标记缓存：仅在消息变更时重建。
+        """
+        if not self._messages_dirty and self._valid_messages_cache is not None:
+            return list(self._valid_messages_cache)  # Return shallow copy to prevent cache mutation
+
+        result = []
+        for msg in self.messages:
+            # 检查消息级别的 validity
+            meta = msg.get("_meta", {})
+            if meta.get("valid") is False:
+                continue
+
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            # 字符串内容直接保留
+            if not isinstance(content, list):
+                clean_msg = {"role": role, "content": content}
+                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
+                if meta:
+                    stripped_meta = _strip_internal_meta(meta)
+                    if stripped_meta:
+                        clean_msg["_meta"] = stripped_meta
+                result.append(clean_msg)
+                continue
+
+            # 列表内容：保留所有 blocks，剥离 block 级别 _meta 内部字段
+            # 注意：新格式中 _valid 在 message 级别，不在 block 级别
+            clean_blocks = []
+            for block in content:
+                clean_block = dict(block)
+                # 剥离 block 级别的 _meta 内部字段
+                if "_meta" in clean_block:
+                    stripped_block_meta = _strip_internal_meta(clean_block["_meta"])
+                    if stripped_block_meta:
+                        clean_block["_meta"] = stripped_block_meta
+                    else:
+                        del clean_block["_meta"]
+                clean_blocks.append(clean_block)
+
+            if clean_blocks:
+                clean_msg = {"role": role, "content": clean_blocks}
+                # 剥离 _meta 中的内部字段，保留其他 _meta（如果存在）
+                if meta:
+                    stripped_meta = _strip_internal_meta(meta)
+                    if stripped_meta:
+                        clean_msg["_meta"] = stripped_meta
+                result.append(clean_msg)
+
+        self._valid_messages_cache = result
+        self._messages_dirty = False
+        return result
+
+    def clear(self) -> None:
+        """清空所有消息并落盘（显式销毁，唯一重写 jsonl 的例外之一）。
+
+        agent.reset() 调用后不另存，故必须直接写盘。
+        """
+        lock = _get_session_lock(self.session_dir)
+        with lock:
+            self.messages.clear()
+            self._messages_dirty = True
+            self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            jsonl_path = self.session_dir / MESSAGES_FILE
+            if jsonl_path.exists():
+                write_jsonl(jsonl_path, [])
+            atomic_write_json(self.session_dir / INDEX_FILE, {
+                "schema_version": SCHEMA_VERSION,
+                "next_seq": 0,
+                "commits": [],
+            })
+            atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
+
+    def get_last_n_messages(self, n: int) -> list[dict]:
+        """获取最后 N 条消息。"""
+        return self.messages[-n:] if n > 0 else []
+
+    def get_message_count(self) -> int:
+        """获取消息数量。"""
+        return len(self.messages)
 
     # ========== 持久化 ==========
 
@@ -686,7 +711,6 @@ class SessionManager:
 
     def delete(self) -> None:
         """删除会话目录（包括 index.json、exec 子目录和工具输出文件）。"""
-        import shutil
         if self.session_dir.exists():
             shutil.rmtree(self.session_dir)
         _drop_session_lock(self.session_dir)

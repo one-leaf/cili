@@ -23,7 +23,6 @@ from core.llm.types import (
     ToolCallBlock,
     UsageData,
     block_to_dict,
-    blocks_to_dicts,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,8 +77,30 @@ class AnthropicAdapter(Adapter):
         """
         # Merge consecutive same-role messages (Bedrock rejects them)
         messages = merge_consecutive_same_role(messages)
+        anthropic_messages = self._convert_messages(messages)
 
-        # Convert messages to Anthropic format
+        body: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": anthropic_messages,
+        }
+
+        self._apply_thinking_config(body, temperature)
+        # LiteLLM proxy support
+        self._apply_litellm_extras(body, session_id)
+        self._apply_prompt_cache(body, system, anthropic_messages)
+
+        if system and "system" not in body:
+            body["system"] = system
+        if tools:
+            body["tools"] = tools
+        if stream:
+            body["stream"] = True
+
+        return body
+
+    def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """将内部 Message 转为 Anthropic 格式（tool_call→tool_use、tool_call_id→tool_use_id）。"""
         anthropic_messages = []
         for msg in messages:
             if isinstance(msg.content, str):
@@ -111,23 +132,19 @@ class AnthropicAdapter(Adapter):
                     "role": msg.role,
                     "content": content,
                 })
+        return anthropic_messages
 
-        body: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": anthropic_messages,
-        }
-
-        # Extended thinking: enabled when reasoning_effort is configured
-        # Note: thinking and temperature are mutually exclusive in Anthropic API
+    def _apply_thinking_config(self, body: dict[str, Any], temperature: float | None) -> None:
+        """Extended thinking：配置 reasoning_effort 时开启 thinking（与 temperature 互斥）。"""
         effort = self.config.reasoning_effort
-        budget_map = {
-            "low": 1024,
-            "medium": 4096,
-            "high": 10000,
-        }
         if effort:
-            # Enable thinking (temperature not allowed when thinking is enabled)
+            # budget_tokens 按档位映射（经验值）：low/medium/high 分别为
+            # 1024/4096/10000，未命中档位时回退 4096（medium）
+            budget_map = {
+                "low": 1024,
+                "medium": 4096,
+                "high": 10000,
+            }
             budget_tokens = budget_map.get(effort, 4096)
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
         else:
@@ -135,36 +152,32 @@ class AnthropicAdapter(Adapter):
             if temperature is not None:
                 body["temperature"] = temperature
 
-        # LiteLLM proxy support
-        if self._is_litellm_proxy and session_id:
-            body["litellm_session_id"] = session_id
-        elif self._is_litellm_proxy and not session_id:
-            logger.debug(f"[Anthropic] LiteLLM proxy detected but no session_id provided")
+    def _apply_prompt_cache(
+        self,
+        body: dict[str, Any],
+        system: str,
+        anthropic_messages: list[dict[str, Any]],
+    ) -> None:
+        """Prompt cache：两个断点——system+tools 之后、最后一条消息之后。
 
-        # Prompt cache: 两个断点——system+tools 之后、最后一条消息之后。
-        # 长 system prompt + 递增历史下，增量缓存可大幅降低重复 input 计费
-        if self._prompt_cache_enabled:
-            if system:
-                body["system"] = [{
-                    "type": "text",
-                    "text": system,
-                    "cache_control": {"type": "ephemeral"},
-                }]
-            if anthropic_messages:
-                last_content = anthropic_messages[-1].get("content")
-                if isinstance(last_content, list) and last_content:
-                    last_block = last_content[-1]
-                    if last_block.get("type") in self._CACHEABLE_BLOCK_TYPES:
-                        last_block["cache_control"] = {"type": "ephemeral"}
-
-        if system and "system" not in body:
-            body["system"] = system
-        if tools:
-            body["tools"] = tools
-        if stream:
-            body["stream"] = True
-
-        return body
+        长 system prompt + 递增历史下，增量缓存可大幅降低重复 input 计费。
+        非官方端点（中转/网关）不识别 cache_control 会直接 400，由
+        _prompt_cache_enabled 统一关闭。
+        """
+        if not self._prompt_cache_enabled:
+            return
+        if system:
+            body["system"] = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        if anthropic_messages:
+            last_content = anthropic_messages[-1].get("content")
+            if isinstance(last_content, list) and last_content:
+                last_block = last_content[-1]
+                if last_block.get("type") in self._CACHEABLE_BLOCK_TYPES:
+                    last_block["cache_control"] = {"type": "ephemeral"}
 
     def parse_response(self, data: dict[str, Any]) -> tuple[list[ContentBlock], str, UsageData]:
         """Parse Anthropic API response."""

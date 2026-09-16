@@ -11,13 +11,21 @@ from __future__ import annotations
 import sys
 import argparse
 import copy
+import glob
 import json
 import logging
 import os
+import shutil
 import subprocess
+import threading
 import time
+import webbrowser
+import zipfile
+from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Disable user site-packages to avoid mixing with system Python
 os.environ["PYTHONNOUSERSITE"] = "1"
@@ -263,8 +271,6 @@ def _setup_directories() -> None:
     os.makedirs(os.path.join(system_ws_dir, "sessions"), exist_ok=True)
     system_config = os.path.join(system_ws_dir, "setting.json")
     if not os.path.exists(system_config):
-        import json
-        from datetime import datetime
         with open(system_config, "w", encoding="utf-8") as f:
             json.dump({
                 "workspace_name": "System",
@@ -413,7 +419,6 @@ def _ensure_deps_python() -> bool:
             return True
         # Broken installation, recreate
         print(f"[setup] Deps Python is broken, recreating: {_DEPS_PYTHON_DIR}")
-        import shutil
         shutil.rmtree(_DEPS_PYTHON_DIR, ignore_errors=True)
 
     return _install_deps_python()
@@ -421,9 +426,6 @@ def _ensure_deps_python() -> bool:
 
 def _install_deps_python() -> bool:
     """Download and configure embeddable Python to data/deps/python."""
-    import shutil
-    import zipfile
-
     # Embeddable Python has python.exe at root
     embed_python = os.path.join(_DEPS_PYTHON_DIR, "python.exe")
 
@@ -541,7 +543,6 @@ def _install_deps_python() -> bool:
 
 def _check_installed_packages() -> dict[str, str]:
     """Check which packages are installed in deps Python and return {name: version}."""
-    import subprocess
     try:
         # Use deps Python to check installed packages
         python_exe = _get_deps_python()
@@ -582,7 +583,6 @@ def _init_mplfonts() -> None:
     3. Clear font cache so matplotlib picks up new fonts
     """
     import matplotlib
-    import shutil
     mpl_config_dir = os.path.join(_DEPS_PYTHON_DIR, "matplotlib")
     rc_file = os.path.join(mpl_config_dir, "matplotlibrc")
 
@@ -656,8 +656,7 @@ def _init_mplfonts() -> None:
             print(f"[setup] Failed to bundle HarmonyOS Sans SC fonts: {e}")
 
     # Step 3: Clear font cache so matplotlib picks up new/updated fonts on next use
-    import glob as _glob
-    for cache_file in _glob.glob(os.path.join(mpl_config_dir, "fontlist-*.json")):
+    for cache_file in glob.glob(os.path.join(mpl_config_dir, "fontlist-*.json")):
         try:
             os.remove(cache_file)
             print("[setup] Cleared stale font cache")
@@ -820,6 +819,7 @@ def _get_pip_mirrors_ordered() -> list[str]:
 
 def _save_pip_mirror(mirror: str) -> None:
     """Save the working pip mirror to config."""
+    global _settings_cache
     try:
         config = _load_settings_cached()
         if "system" not in config:
@@ -827,6 +827,8 @@ def _save_pip_mirror(mirror: str) -> None:
         config["system"]["pip_mirror"] = mirror
         with open(_SETTING_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
+        # 写盘成功后使缓存失效，避免同进程后续读取旧值（M2）
+        _settings_cache = None
         print(f"[setup] Saved working pip mirror: {mirror or 'PyPI official'}")
     except Exception as e:
         print(f"[setup] Warning: failed to save pip mirror: {e}")
@@ -837,8 +839,6 @@ def _find_system_git_bash() -> str | None:
 
     探测顺序：PATH 上的 git 反推 → 常见安装目录（Program Files / LocalAppData）。
     """
-    import shutil
-
     candidates: list[str] = []
 
     # 1) 从 PATH 上的 git 反推 bash.exe（如 C:\Program Files\Git\cmd\git.exe -> ...\Git\bin\bash.exe）
@@ -979,9 +979,8 @@ def _auto_detect_browser() -> None:
         print("[setup] No browser (Edge/Chrome) found on system")
 
 
-def main() -> None:
-    args = parse_args()
-
+def _prepare_environment(args: argparse.Namespace) -> None:
+    """阶段一：编码、日志、目录、配置、会话迁移、安全校验。"""
     # Ensure UTF-8 encoding on Windows
     if sys.platform == "win32":
         try:
@@ -992,7 +991,6 @@ def main() -> None:
 
     # 配置日志系统
     _setup_logging()
-    logger = logging.getLogger(__name__)
     logger.info("日志系统已初始化")
 
     # 迁移旧 data/agents 目录到 data/projects（如需要），须在创建目录前执行
@@ -1015,6 +1013,29 @@ def main() -> None:
     # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网
     _check_web_auth(args.host)
 
+
+def _maybe_restart_after_install() -> None:
+    """新装包后 os.execv 重启自身（带次数上限，防无限重启循环）。"""
+    restart_count = int(os.environ.get(_SETUP_RESTART_ENV, "0"))
+    if restart_count >= _MAX_SETUP_RESTARTS:
+        # 包安装成功但重启后仍被判为缺失：重装无法修复，终止避免无限重启
+        print(
+            f"[setup] Error: packages are still detected as missing after "
+            f"{_MAX_SETUP_RESTARTS} restart(s). Aborting to avoid an infinite "
+            f"restart loop. Please check the deps Python environment in "
+            f"{_DEPS_PYTHON_DIR} manually.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"[setup] New packages installed, restarting service... "
+          f"(restart {restart_count + 1}/{_MAX_SETUP_RESTARTS})")
+    # Re-execute the same script with same arguments
+    os.environ[_SETUP_RESTART_ENV] = str(restart_count + 1)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def _ensure_runtime() -> None:
+    """阶段二：Git Bash、deps Python、依赖安装（可能需要重启）、字体与浏览器检测。"""
     # Check Git Bash in deps
     if not _init_git_bash():
         print("[setup] Error: Git Bash not found", file=sys.stderr)
@@ -1034,22 +1055,7 @@ def main() -> None:
 
     # If packages were newly installed, need to restart for imports to work
     if pkg_installed:
-        restart_count = int(os.environ.get(_SETUP_RESTART_ENV, "0"))
-        if restart_count >= _MAX_SETUP_RESTARTS:
-            # 包安装成功但重启后仍被判为缺失：重装无法修复，终止避免无限重启
-            print(
-                f"[setup] Error: packages are still detected as missing after "
-                f"{_MAX_SETUP_RESTARTS} restart(s). Aborting to avoid an infinite "
-                f"restart loop. Please check the deps Python environment in "
-                f"{_DEPS_PYTHON_DIR} manually.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        print(f"[setup] New packages installed, restarting service... "
-              f"(restart {restart_count + 1}/{_MAX_SETUP_RESTARTS})")
-        # Re-execute the same script with same arguments
-        os.environ[_SETUP_RESTART_ENV] = str(restart_count + 1)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        _maybe_restart_after_install()
 
     # Initialize mplfonts for CJK font support (if not already done)
     _init_mplfonts()
@@ -1057,6 +1063,9 @@ def main() -> None:
     # Auto-detect browser if not configured
     _auto_detect_browser()
 
+
+def _start_services(args: argparse.Namespace) -> None:
+    """阶段三：cron、自动升级、浏览器打开、uvicorn。"""
     # Start cron scheduler
     from core.cron import start_scheduler
     start_scheduler()
@@ -1073,9 +1082,6 @@ def main() -> None:
     print("Press Ctrl+C to stop")
 
     # Auto-open browser after server starts
-    import webbrowser
-    import threading
-
     def _open_browser():
         """等待 2 秒后自动打开浏览器（让服务器有时间就绪）"""
         time.sleep(2)
@@ -1103,6 +1109,13 @@ def main() -> None:
         )
     except KeyboardInterrupt:
         pass  # Ctrl+C: exit silently
+
+
+def main() -> None:
+    args = parse_args()
+    _prepare_environment(args)
+    _ensure_runtime()
+    _start_services(args)
 
 
 if __name__ == "__main__":

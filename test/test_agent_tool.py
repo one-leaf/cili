@@ -13,7 +13,7 @@ from core.tools.base import ToolResult
 def agent_tool(test_workspace):
     tool = AgentTool(cwd=test_workspace, workspace_uuid="test-workspace")
     tool.session_manager = MagicMock()
-    tool.session_manager._generate_exec_id.return_value = "exec_123"
+    tool.session_manager.agent_logs._generate_exec_id.return_value = "exec_123"
     return tool
 
 

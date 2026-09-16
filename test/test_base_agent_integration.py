@@ -45,9 +45,9 @@ def workspace_uuid():
 
     测试完成后清理测试期间创建的 session 目录和 memory 文件。
     """
-    from core.config import DATA_DIR
+    from core.config import PROJECTS_DIR
     import shutil
-    workspace_dir = DATA_DIR / "workspace"
+    workspace_dir = PROJECTS_DIR  # 工作区数据目录 data/projects/{uuid}
     if not workspace_dir.exists():
         pytest.skip("No workspace found")
 
@@ -158,9 +158,7 @@ class TestMasterAgentIntegration:
         assert len(bash_results) > 0
         assert "Hello Test" in bash_results[0][1], f"[{protocol}] Output: {bash_results[0][1]}"
 
-        session_dir = agent.session_dir
-        output_files = list(session_dir.glob("*.txt"))
-        assert len(output_files) > 0, f"[{protocol}] Output files should be created"
+        # 小输出内联到消息，不残留外部 .txt（见 test_tool_execution_creates_files）
         agent.cleanup()
 
     def test_session_persistence(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):

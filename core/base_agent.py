@@ -39,6 +39,12 @@ _MAX_ITERATIONS = 50
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
 _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+# on_text 回调哨兵：413 去图/延迟重试时发出，通知前端清空已流式输出的文本
+RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
+
+# 估算 JSON 请求体大小时，为 system prompt + tools 预留的保守字节开销
+_SYSTEM_OVERHEAD_BYTES = 10_000
+
 
 class BaseAgent:
     """Base class for agents with unified execution loop."""
@@ -1005,7 +1011,7 @@ class BaseAgent:
                 size += len(data)
             elif btype == "tool_result_str":
                 size += len(data) * 2
-        size += 10000  # System prompt + tools overhead
+        size += _SYSTEM_OVERHEAD_BYTES
         return size
 
     def _strip_images_from_messages(self, messages: list[dict]) -> list[dict]:
@@ -1139,18 +1145,32 @@ class BaseAgent:
         else:
             return self._call_llm_non_streaming(system_prompt)
 
-    def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
-        """Non-streaming LLM call."""
-        self._pad_dangling_tool_results()
-        messages = self._get_messages_with_header()
-        messages = self._resolve_tool_results(messages)
-        messages = self._strip_meta_from_messages(messages)
+    def _prepare_messages_for_llm(
+        self,
+        *,
+        pad_dangling: bool = True,
+        resolve_results: bool = True,
+    ) -> list[Message]:
+        """Build Message objects for the LLM API from self.messages.
 
+        共享的消息预处理管道（non-streaming / streaming / 413 重试 / 超时兜底）。
+        ``pad_dangling``：为悬挂 tool_use 补占位（重试或超时兜底路径已修补过，跳过）。
+        ``resolve_results``：从外部文件解析工具输出并剥离内部 _meta
+        （non-streaming 413 重试路径首轮已解析过，跳过）。
+        """
+        if pad_dangling:
+            self._pad_dangling_tool_results()
+        messages = self._get_messages_with_header()
+        if resolve_results:
+            messages = self._resolve_tool_results(messages)
+            messages = self._strip_meta_from_messages(messages)
         if not self.model.multimodal:
             messages = self._strip_images_from_messages(messages)
+        return self._convert_to_message_objects(messages)
 
-        # Convert dict messages to Message objects
-        message_objects = self._convert_to_message_objects(messages)
+    def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
+        """Non-streaming LLM call."""
+        message_objects = self._prepare_messages_for_llm()
 
         try:
             response = self.client.chat(
@@ -1181,10 +1201,10 @@ class BaseAgent:
                 else:
                     self.save_messages()
 
-                retry_messages = self._get_messages_with_header()
-                if not self.model.multimodal:
-                    retry_messages = self._strip_images_from_messages(retry_messages)
-                retry_message_objects = self._convert_to_message_objects(retry_messages)
+                # 首轮已 pad/解析过工具输出，重试仅重新组装并去图
+                retry_message_objects = self._prepare_messages_for_llm(
+                    pad_dangling=False, resolve_results=False
+                )
                 try:
                     response = self.client.chat(
                         messages=retry_message_objects,
@@ -1224,16 +1244,7 @@ class BaseAgent:
             if self._on_thinking:
                 self._on_thinking(thinking)
 
-        self._pad_dangling_tool_results()
-        messages = self._get_messages_with_header()
-        messages = self._resolve_tool_results(messages)
-        messages = self._strip_meta_from_messages(messages)
-
-        if not self.model.multimodal:
-            messages = self._strip_images_from_messages(messages)
-
-        # Convert dict messages to Message objects
-        message_objects = self._convert_to_message_objects(messages)
+        message_objects = self._prepare_messages_for_llm()
 
         # 重试配置：3次重试，退避 5/10/20 秒
         max_retries = 3
@@ -1272,16 +1283,12 @@ class BaseAgent:
                     self._mark_all_images_invalid()
                     self.save_messages()
                     if self._on_text:
-                        self._on_text("\x00RETRY_CLEAR\x00")
+                        self._on_text(RETRY_CLEAR_SENTINEL)
                     text_parts.clear()
                     images_stripped = True
 
-                    message_objects = self._get_messages_with_header()
-                    message_objects = self._resolve_tool_results(message_objects)
-                    message_objects = self._strip_meta_from_messages(message_objects)
-                    if not self.model.multimodal:
-                        message_objects = self._strip_images_from_messages(message_objects)
-                    message_objects = self._convert_to_message_objects(message_objects)
+                    # 去图重试：已 pad 过，但需重新解析工具输出（图片标记为无效后重组装）
+                    message_objects = self._prepare_messages_for_llm(pad_dangling=False)
                 else:
                     # 其他错误：等待后重试（分段 sleep，期间响应停止请求）
                     delay = retry_delays[attempt]
@@ -1295,7 +1302,7 @@ class BaseAgent:
                         time.sleep(0.1)
                     text_parts.clear()
                     if self._on_text:
-                        self._on_text("\x00RETRY_CLEAR\x00")
+                        self._on_text(RETRY_CLEAR_SENTINEL)
 
         # Track usage (UsageData object)
         if response.usage:
@@ -1352,8 +1359,8 @@ class BaseAgent:
         self._usage["input_tokens"] += input_tokens
         self._usage["output_tokens"] += output_tokens
         self._usage["api_calls"] += api_calls
-        self._usage["cache_read_tokens"] = self._usage.get("cache_read_tokens", 0) + cache_read_tokens
-        self._usage["cache_creation_tokens"] = self._usage.get("cache_creation_tokens", 0) + cache_creation_tokens
+        self._usage["cache_read_tokens"] += cache_read_tokens
+        self._usage["cache_creation_tokens"] += cache_creation_tokens
 
     def get_usage(self) -> dict[str, int]:
         """Get accumulated usage statistics."""

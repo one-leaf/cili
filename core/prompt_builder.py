@@ -33,6 +33,7 @@ def _gen_text(block: dict, agent) -> str:
 
 def _gen_tools(block: dict, agent) -> str:
     """tools 块：从 agent 的 active tools 生成工具列表段，附延迟工具摘要。"""
+    # 延迟导入：避免与 core.prompts 的循环依赖
     from core.prompts import _build_tools_section, _build_deferred_tools_section
     active = getattr(agent, "_active_tools", None) or agent.tools
     section = _build_tools_section(active)
@@ -44,6 +45,7 @@ def _gen_tools(block: dict, agent) -> str:
 
 def _gen_skills(block: dict, agent) -> str:
     """skills 块：从角色可见技能生成技能列表段。"""
+    # 延迟导入：避免与 core.prompts 的循环依赖
     from core.prompts import _build_skills_section
     return _build_skills_section(agent.role)
 

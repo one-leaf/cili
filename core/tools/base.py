@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.config import PROJECT_ROOT
 from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy
@@ -873,18 +873,13 @@ class Tool:
                 except Exception:
                     pass
 
-    def _run_bash(self, command: str, timeout: int = 30, stdin: str | None = None,
-                  max_chars: int | None = None, output_file: str | None = None) -> ToolResult:
-        """Execute command via Git Bash with real-time output streaming.
+    def _run_shell(self, command: str, timeout: int = 30, stdin: str | None = None,
+                   max_chars: int | None = None, output_file: str | None = None,
+                   *, shell: str = "bash") -> ToolResult:
+        """Execute command via Git Bash or PowerShell with real-time output streaming.
 
-        The agent Python venv is automatically activated by prepending its
-        Scripts directory to PATH.
-
-        Args:
-            max_chars: Character limit for output. Defaults to BASH_MAX_OUTPUT_LENGTH
-                       env var (default 30,000), capped at _BASH_MAX_RESULT_SIZE_CHARS (30,000).
-            output_file: Path to write output to, line by line, in real-time.
-                         Used for frontend polling. Falls back to self.output_file.
+        _run_bash()/_run_pwsh() 的共享实现。命令前缀构造与 Popen argv 因 shell 而异，
+        reader 线程、实时流式、截断、超时与 token 预算逻辑共用一份，修复只需改一处。
         """
         # Bash 默认输出上限，可通过环境变量调整，但不超过硬上限
         default_chars = int(os.environ.get("BASH_MAX_OUTPUT_LENGTH", "30000"))
@@ -899,34 +894,60 @@ class Tool:
 
         proc = None
         try:
-            # Build PATH prefix for the command
-            # Add both _VENV_DIR (python.exe) and _VENV_SCRIPTS (pip.exe) to PATH
-            paths = []
-            if _VENV_DIR:
-                paths.append(_to_bash_path(_VENV_DIR))
-            if _VENV_SCRIPTS:
-                paths.append(_to_bash_path(_VENV_SCRIPTS))
-
-            # 统一临时目录（bash 格式）
-            tmp_bash = _to_bash_path(_TMP_DIR)
-
-            if paths:
-                path_str = ":".join(paths)
-                full_command = (
-                    f'export PATH="{path_str}:$PATH" '
-                    f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
-                    f'&& {command}'
+            if shell == "pwsh":
+                # PowerShell: UTF-8 编码 preamble + $env: 赋值（Windows 原生路径，; 分隔）
+                encoding_preamble = (
+                    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+                    "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                 )
+                paths = []
+                if _VENV_DIR:
+                    paths.append(_VENV_DIR)
+                if _VENV_SCRIPTS:
+                    paths.append(_VENV_SCRIPTS)
+                env_setup = ""
+                if paths:
+                    path_str = ";".join(paths)
+                    env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
+                env_setup += (
+                    f'$env:TEMP = "{_TMP_DIR}"; '
+                    f'$env:TMP = "{_TMP_DIR}"; '
+                    f'$env:TMPDIR = "{_TMP_DIR}"; '
+                    f'$env:LANG = "C.UTF-8"; '
+                    f'$env:PYTHONIOENCODING = "utf-8"; '
+                    f'$env:PYTHONUTF8 = "1"; '
+                )
+                full_command = f"{encoding_preamble}{env_setup}{command}"
+                argv = [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command]
             else:
-                full_command = (
-                    f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
-                    f'&& {command}'
-                )
+                # Git Bash: export 前缀（POSIX 路径，: 分隔；PYTHONUNBUFFERED 仅 bash 侧设置）
+                paths = []
+                if _VENV_DIR:
+                    paths.append(_to_bash_path(_VENV_DIR))
+                if _VENV_SCRIPTS:
+                    paths.append(_to_bash_path(_VENV_SCRIPTS))
+
+                # 统一临时目录（bash 格式）
+                tmp_bash = _to_bash_path(_TMP_DIR)
+
+                if paths:
+                    path_str = ":".join(paths)
+                    full_command = (
+                        f'export PATH="{path_str}:$PATH" '
+                        f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                        f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
+                        f'&& {command}'
+                    )
+                else:
+                    full_command = (
+                        f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                        f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
+                        f'&& {command}'
+                    )
+                argv = [_GIT_BASH_PATH, "-c", full_command]
 
             proc = subprocess.Popen(
-                [_GIT_BASH_PATH, "-c", full_command],
+                argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,  # 合并 stderr 到 stdout，确保实时输出可见
                 text=True,
@@ -1069,197 +1090,25 @@ class Tool:
                     pass
             return ToolResult(f"Error executing command: {e}", error=True)
 
+    def _run_bash(self, command: str, timeout: int = 30, stdin: str | None = None,
+                  max_chars: int | None = None, output_file: str | None = None) -> ToolResult:
+        """Execute command via Git Bash with real-time output streaming.
+
+        The agent Python venv is automatically activated by prepending its
+        Scripts directory to PATH. (delegates to _run_shell)
+        """
+        return self._run_shell(command, timeout=timeout, stdin=stdin,
+                               max_chars=max_chars, output_file=output_file, shell="bash")
+
     def _run_pwsh(self, command: str, timeout: int = 30, stdin: str | None = None,
                   max_chars: int | None = None, output_file: str | None = None) -> ToolResult:
         """Execute command via PowerShell with real-time output streaming.
 
-        Mirrors _run_bash() but uses pwsh with Windows-native paths and syntax.
         Automatically sets UTF-8 encoding and adds the agent Python venv to PATH.
-
-        Args:
-            command: PowerShell command string.
-            timeout: Timeout in seconds.
-            stdin: Optional stdin data.
-            max_chars: Character limit for output.
-            output_file: Path to write output to, line by line, in real-time.
+        (delegates to _run_shell)
         """
-        # Reuse same limits as bash
-        default_chars = int(os.environ.get("BASH_MAX_OUTPUT_LENGTH", "30000"))
-        if max_chars is None:
-            max_chars = min(default_chars, self._BASH_MAX_RESULT_SIZE_CHARS)
-        else:
-            max_chars = min(max_chars, self._BASH_MAX_RESULT_SIZE_CHARS)
-
-        if output_file is None:
-            output_file = self.output_file
-
-        proc = None
-        try:
-            # UTF-8 encoding preamble — ensures correct decoding of non-ASCII output
-            encoding_preamble = (
-                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-                "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-            )
-
-            # Build PATH prefix (Windows uses ; separator)
-            paths = []
-            if _VENV_DIR:
-                paths.append(_VENV_DIR)
-            if _VENV_SCRIPTS:
-                paths.append(_VENV_SCRIPTS)
-
-            env_setup = ""
-            if paths:
-                path_str = ";".join(paths)
-                env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
-
-            # Set temp directory and Python encoding env vars
-            env_setup += (
-                f'$env:TEMP = "{_TMP_DIR}"; '
-                f'$env:TMP = "{_TMP_DIR}"; '
-                f'$env:TMPDIR = "{_TMP_DIR}"; '
-                f'$env:LANG = "C.UTF-8"; '
-                f'$env:PYTHONIOENCODING = "utf-8"; '
-                f'$env:PYTHONUTF8 = "1"; '
-            )
-
-            full_command = f"{encoding_preamble}{env_setup}{command}"
-
-            proc = subprocess.Popen(
-                [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=self.cwd,
-                stdin=subprocess.PIPE if stdin else None,
-            )
-
-            # Reader thread for real-time streaming
-            chunk_queue: queue.Queue[str | None] = queue.Queue()
-
-            def _reader_thread():
-                try:
-                    while True:
-                        char = proc.stdout.read(1)
-                        if not char:
-                            break
-                        chunk_queue.put(char)
-                except Exception:
-                    pass
-                finally:
-                    chunk_queue.put(None)
-
-            reader_thread = threading.Thread(target=_reader_thread, daemon=True)
-            reader_thread.start()
-
-            # Write stdin if provided
-            if stdin:
-                try:
-                    proc.stdin.write(stdin)
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-            # Collect output with real-time file streaming
-            output_parts: list[str] = []
-            start_time = time.monotonic()
-            timed_out = False
-
-            f_out = None
-            written_bytes = 0
-            if output_file:
-                try:
-                    f_out = open(output_file, "a", encoding="utf-8")
-                    written_bytes = os.path.getsize(output_file)
-                except Exception:
-                    f_out = None
-            out_buf: list[str] = []
-
-            try:
-                while True:
-                    try:
-                        chunk = chunk_queue.get(timeout=0.5)
-                    except queue.Empty:
-                        elapsed = time.monotonic() - start_time
-                        if elapsed > timeout:
-                            timed_out = True
-                            self._kill_process_tree(proc)
-                            break
-                        continue
-                    if chunk is None:
-                        break
-                    output_parts.append(chunk)
-                    if f_out:
-                        try:
-                            f_out.write(chunk)
-                            f_out.flush()
-                        except Exception:
-                            pass
-                    if self.on_output:
-                        out_buf.append(chunk)
-                        # 文本模式写 Windows 下 \n -> \r\n（多 1 字节），
-                        # 补偿后 written_bytes 才是文件真实字节数（与 /stream 端点契约一致）
-                        written_bytes += len(chunk.encode("utf-8", "replace")) + (1 if chunk == "\n" else 0)
-                        if chunk in ("\n", "\r") or len(out_buf) >= 32:
-                            self._emit_output("".join(out_buf), written_bytes)
-                            out_buf.clear()
-            finally:
-                if self.on_output and out_buf:
-                    self._emit_output("".join(out_buf), written_bytes)
-                    out_buf.clear()
-                if f_out:
-                    try:
-                        f_out.close()
-                    except Exception:
-                        pass
-
-            reader_thread.join(timeout=2)
-            if not timed_out:
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self._kill_process_tree(proc)
-                    proc.wait()
-
-            output = "".join(output_parts).strip() or "(no output)"
-
-            # Truncate by character count
-            if len(output) > max_chars:
-                truncated = output[:max_chars]
-                last_newline = truncated.rfind('\n')
-                if last_newline > max_chars * 0.9:
-                    truncated = truncated[:last_newline]
-                output = truncated + f"\n\n... (truncated from {len(output):,} to {max_chars:,} chars)"
-            else:
-                lines = output.split('\n')
-                if len(lines) > self._BASH_MAX_OUTPUT_LINES:
-                    truncated_count = len(lines) - self._BASH_MAX_OUTPUT_LINES
-                    output = '\n'.join(lines[:self._BASH_MAX_OUTPUT_LINES])
-                    output += f"\n\n... ({truncated_count} lines truncated, {len(lines)} total)"
-
-            # Token budget check
-            bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", "10000"))
-            output = self.truncate_middle(output, bash_token_budget)
-
-            if proc.returncode != 0:
-                output = f"[exit code: {proc.returncode}]\n{output}"
-
-            return ToolResult(output, error=(proc.returncode != 0))
-        except subprocess.TimeoutExpired:
-            if proc:
-                proc.kill()
-                proc.wait()
-            return ToolResult(f"Error: command timed out after {timeout} seconds", error=True)
-        except Exception as e:
-            if proc:
-                try:
-                    proc.kill()
-                    proc.wait()
-                except Exception:
-                    pass
-            return ToolResult(f"Error executing command: {e}", error=True)
+        return self._run_shell(command, timeout=timeout, stdin=stdin,
+                               max_chars=max_chars, output_file=output_file, shell="pwsh")
 
     # ── 后台任务管理方法 ──────────────────────────────────────────────────────
 
@@ -1268,25 +1117,47 @@ class Tool:
         command: str,
         shell_path: str | None = None,
         env_prefix: str = "",
+        *,
+        shell: str = "bash",
     ) -> ToolResult:
         """Start a command in background and return task_id.
+
+        _start_pwsh_background_task() 的共享实现。命令前缀构造与 Popen argv 因 shell 而异，
+        其余（reader 线程、文件流式、注册）共用一份。
 
         Args:
             command: Shell command to execute.
             shell_path: Path to shell executable. Defaults to Git Bash.
             env_prefix: Environment setup prefix (e.g., PATH export).
+            shell: "bash"（默认）或 "pwsh"，决定命令前缀与 Popen argv。
         """
         task_id = BackgroundTaskManager.allocate_task_id()
 
-        # Determine shell
-        if shell_path is None:
-            shell_path = _GIT_BASH_PATH
+        if shell == "pwsh":
+            # Build full command with environment prefix
+            if env_prefix:
+                full_command = f"{env_prefix}; {command}"
+            else:
+                full_command = command
 
-        # Build full command with environment prefix
-        if env_prefix:
-            full_command = f"{env_prefix} && {command}"
+            # UTF-8 encoding preamble
+            encoding_preamble = (
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+                "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+            )
+            full_command = f"{encoding_preamble}{full_command}"
+            argv = [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command]
         else:
-            full_command = command
+            # Determine shell
+            if shell_path is None:
+                shell_path = _GIT_BASH_PATH
+
+            # Build full command with environment prefix
+            if env_prefix:
+                full_command = f"{env_prefix} && {command}"
+            else:
+                full_command = command
+            argv = [shell_path, "-c", full_command]
 
         # Determine output file
         output_file = self.output_file
@@ -1294,7 +1165,7 @@ class Tool:
         try:
             # Start process with stdin pipe for write_stdin support
             proc = subprocess.Popen(
-                [shell_path, "-c", full_command],
+                argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE,  # Keep stdin open for write_stdin
@@ -1372,100 +1243,9 @@ class Tool:
         """Start a PowerShell command in background and return task_id.
 
         Mirrors _start_background_task() but uses pwsh invocation.
-
-        Args:
-            command: PowerShell command to execute.
-            env_prefix: Environment setup prefix (PowerShell syntax).
+        (delegates to _start_background_task)
         """
-        task_id = BackgroundTaskManager.allocate_task_id(prefix="bg")
-
-        # Build full command with environment prefix
-        if env_prefix:
-            full_command = f"{env_prefix}; {command}"
-        else:
-            full_command = command
-
-        # UTF-8 encoding preamble
-        encoding_preamble = (
-            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-            "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-        )
-        full_command = f"{encoding_preamble}{full_command}"
-
-        output_file = self.output_file
-
-        try:
-            proc = subprocess.Popen(
-                [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=self.cwd,
-            )
-
-            output_queue: queue.Queue[str | None] = queue.Queue()
-
-            def reader_thread():
-                # 复用单一句柄写输出文件，避免每行 open/close 的高开销（T23）
-                f_out = None
-                written_bytes = 0
-                if output_file:
-                    try:
-                        f_out = open(output_file, "a", encoding="utf-8")
-                        written_bytes = os.path.getsize(output_file)
-                    except Exception:
-                        f_out = None
-                try:
-                    for line in proc.stdout:
-                        output_queue.put(line)
-                        if f_out:
-                            try:
-                                f_out.write(line)
-                                f_out.flush()
-                            except Exception:
-                                pass
-                        if self.on_output:
-                            # 文本模式写 Windows 下 \n -> \r\n，按行内换行数补偿字节数
-                            written_bytes += len(line.encode("utf-8", "replace")) + line.count("\n")
-                            self._emit_output(line, written_bytes)
-                except Exception:
-                    pass
-                finally:
-                    if f_out:
-                        try:
-                            f_out.close()
-                        except Exception:
-                            pass
-                    output_queue.put(None)
-
-            thread = threading.Thread(target=reader_thread, daemon=True)
-            thread.start()
-
-            task = BackgroundTask(
-                task_id=task_id,
-                command=command,
-                process=proc,
-                output_file=output_file,
-                output_queue=output_queue,
-                reader_thread=thread,
-                stdin_pipe=proc.stdin,
-            )
-
-            BackgroundTaskManager.register(task)
-
-            return ToolResult(
-                f"Background task started.\n"
-                f"Task ID: {task_id}\n"
-                f"Command: {command}\n\n"
-                f"Use read_task(\"{task_id}\") to check output.\n"
-                f"Use kill_task(\"{task_id}\") to terminate."
-            )
-
-        except Exception as e:
-            return ToolResult(f"Error starting background task: {e}", error=True)
+        return self._start_background_task(command, env_prefix=env_prefix, shell="pwsh")
 
     def _read_background_task(self, task_id: str) -> ToolResult:
         """Read accumulated output from a background task (non-blocking)."""
@@ -1664,7 +1444,7 @@ class Tool:
                 if session_manager and exec_id:
                     from datetime import datetime
                     try:
-                        session_manager.save_agent_log(
+                        session_manager.agent_logs.save_agent_log(
                             exec_id=exec_id,
                             task=agent.task,
                             messages=agent.messages,

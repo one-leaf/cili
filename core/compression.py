@@ -10,6 +10,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ─── 压缩阈值与 token 估算常量 ────────────────────────────────────────
+_MIN_COMPACT_SIZE = 200  # 小于此字符数的工具结果不压缩（保留原文）
+_IMAGE_BASE_TOKENS = 750  # 单张图片的基准 token 估算
+_IMAGE_DATA_BYTES_PER_TOKEN = 100  # 图片 base64 数据每 100 字节折合 1 token
+_CHINESE_CHARS_PER_TOKEN = 2.5  # 中文约 2.5 字符/token
+_OTHER_CHARS_PER_TOKEN = 4  # 英文等其他字符约 4 字符/token
+
 
 def microcompact_tool_results(
     messages: list[dict],
@@ -69,9 +76,9 @@ def microcompact_tool_results(
             if block_meta.get("compacted", False):
                 continue
 
-            # 跳过小于 200 字符的工具结果（保留原文，不压缩）
+            # 跳过小于 _MIN_COMPACT_SIZE 字符的工具结果（保留原文，不压缩）
             file_size = block_meta.get("file_size", 0)
-            if file_size > 0 and file_size < 200:
+            if file_size > 0 and file_size < _MIN_COMPACT_SIZE:
                 continue
 
             if "_meta" not in block:
@@ -89,7 +96,7 @@ def microcompact_tool_results(
             content = block.get("content", "")
             if not isinstance(content, str) or not content:
                 continue
-            if len(content) < 200:
+            if len(content) < _MIN_COMPACT_SIZE:
                 continue  # 小结果保留原文，不压缩
             if "seq" not in (msg.get("_meta") or {}):
                 continue  # 尚未持久化，清空会丢失原文
@@ -108,8 +115,7 @@ def count_tokens_approx(text: str) -> int:
     """
     chinese_chars = sum(1 for c in text if '一' <= c <= '鿿')
     other_chars = len(text) - chinese_chars
-    # 中文: ~2.5 chars/token, 英文: ~4 chars/token
-    return int(chinese_chars / 2.5 + other_chars / 4)
+    return int(chinese_chars / _CHINESE_CHARS_PER_TOKEN + other_chars / _OTHER_CHARS_PER_TOKEN)
 
 
 def count_messages_tokens(messages: list[dict]) -> int:
@@ -130,10 +136,10 @@ def count_messages_tokens(messages: list[dict]) -> int:
                             if sub.get("type") == "text":
                                 total += count_tokens_approx(sub.get("text", ""))
                             elif sub.get("type") == "image":
-                                # 图片约 750-1000 tokens
+                                # 图片约 _IMAGE_BASE_TOKENS+ tokens
                                 src = sub.get("source", {})
                                 data = src.get("data", "") if isinstance(src, dict) else ""
-                                total += max(750, len(data) // 100)
+                                total += max(_IMAGE_BASE_TOKENS, len(data) // _IMAGE_DATA_BYTES_PER_TOKEN)
                     else:
                         total += count_tokens_approx(str(rc))
                 elif block.get("type") == "tool_use":

@@ -15,9 +15,10 @@ import secrets
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from contextlib import asynccontextmanager
@@ -28,8 +29,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from core.fs_utils import atomic_write_json
+from core.base_agent import RETRY_CLEAR_SENTINEL
 from core.config import (
-    load_config, Config, PROJECT_ROOT, DATA_DIR,
+    load_config, Config, ModelConfig, MCPConfig, PROJECT_ROOT, DATA_DIR,
     validate_workspace_name, get_workspace_data_dir,
     load_workspace_config, save_workspace_config,
     GLOBAL_CONFIG_PATH, load_global_config, save_global_config,
@@ -49,14 +51,16 @@ from core.message_bus import get_message_bus
 from core.event_bus import get_event_bus
 from core.tools import get_tool_by_name
 from core.tools.approval import APPROVE_LABEL, REMEMBER_LABEL
+from core.tools.base import Tool
 from core.tools.todo import get_todos_from_session
+from core.tools.mcp import get_provider
 from core.memory_store import (
     MemoryStore,
     Journal,
     best_effort_commit,
     git_log_summary,
 )
-from core.memory_pipeline import memory_enabled, run_consolidation
+from core.memory_pipeline import memory_enabled, run_consolidation, schedule_extraction
 
 # Configure logging
 logging.basicConfig(
@@ -72,12 +76,103 @@ _agent_access: dict[str, float] = {}
 _MAX_AGENTS = 20  # Maximum number of agents to keep in memory
 # Lock for concurrent access to agents dict
 _agents_lock = asyncio.Lock()
+# 单次上传文件大小上限
+_MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+# 特殊命令 /bash 前缀
+_BASH_PREFIX = "/bash "
 
 # 每个会话的执行中 claim（防 send_message 的 is_running 检查 TOCTOU）：
 # 检查与 run 实际启动之间第二个请求可能并发通过检查，导致同一 agent 双循环
 # 同时改写 messages。用 set 在请求入口原子认领，run 结束后释放。
 _session_run_claims: set[str] = set()
 _session_run_claims_lock = threading.Lock()
+
+
+@dataclass
+class _SSECallbacks:
+    """SSE 事件回调组：send_message 与 answer_ask_user 共用同一套实现。"""
+    on_text: Callable[[str], None]
+    on_thinking: Callable[[str], None]
+    on_tool_call: Callable[[str, dict, str], None]
+    on_tool_result: Callable[[str, str, bool, str], None]
+    on_agent_start: Callable[[str, str], None]
+    on_agent_complete: Callable[[str], None]
+
+
+def _make_sse_callbacks(event_queue: queue.Queue[str | None], agent: Agent) -> _SSECallbacks:
+    """构造统一的 SSE 回调组，同步 agent 回调 → 队列，供两个 Agent 运行入口复用。"""
+
+    def on_text(text: str) -> None:
+        # Sentinel: 413 retry needs frontend to clear already-streamed text
+        if text == RETRY_CLEAR_SENTINEL:
+            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
+            event_queue.put(f"data: {event}\n\n")
+            return
+        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_thinking(text: str) -> None:
+        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
+        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
+        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
+        if tool_name in ("ask_user", "agent"):
+            return
+        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+        # Check for todo_write tool and push todo update event
+        if tool_name == "todo_write" and not is_error:
+            todos = get_todos_from_session(agent.session_manager)
+            if todos:
+                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
+                event_queue.put(f"data: {todo_event}\n\n")
+
+    def on_agent_start(exec_id: str, task_summary: str) -> None:
+        # Send SSE event for real-time UI update
+        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    def on_agent_complete(exec_id: str) -> None:
+        # Push SSE event for real-time UI update
+        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
+    return _SSECallbacks(
+        on_text=on_text,
+        on_thinking=on_thinking,
+        on_tool_call=on_tool_call,
+        on_tool_result=on_tool_result,
+        on_agent_start=on_agent_start,
+        on_agent_complete=on_agent_complete,
+    )
+
+
+def _claim_session_run(key: str) -> bool:
+    """原子认领会话执行权，返回是否认领成功。
+
+    在锁内 check-and-set，关闭 is_running 检查到 run 启动之间的 TOCTOU 窗口；
+    agent.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
+    """
+    with _session_run_claims_lock:
+        if key in _session_run_claims:
+            return False
+        agent = agents.get(key)
+        if agent is not None and agent.is_running():
+            return False
+        _session_run_claims.add(key)
+        return True
+
+
+def _release_session_run(key: str) -> None:
+    """释放会话执行权认领。"""
+    with _session_run_claims_lock:
+        _session_run_claims.discard(key)
 
 
 def _evict_idle_agent() -> None:
@@ -114,8 +209,6 @@ async def lifespan(app: FastAPI):
     # 启动 MCP provider 并在后台连接已配置的服务器（不阻塞启动）
     def _connect_mcp_servers() -> None:
         try:
-            from core.config import load_config
-            from core.tools.mcp import get_provider
             cfg = load_config()
             if cfg.mcp_servers:
                 get_provider().ensure_connected(cfg.mcp_servers)
@@ -270,27 +363,25 @@ CHROME_DIR = PROJECT_ROOT / "data" / "deps" / "browser"
 CHROME_DIR.mkdir(parents=True, exist_ok=True)
 
 
-_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+# 通用安全标识符校验（session/exec/tool_use_id/文件名/记忆名共用）：防止路径穿越
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 def _validate_session_id(session_id: str) -> None:
     """Validate session_id format to prevent path traversal."""
-    if not _SESSION_ID_RE.match(session_id):
+    if not _SAFE_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session_id format")
 
 
 def _validate_workspace_uuid(workspace_uuid: str) -> None:
     """Validate workspace_uuid format to prevent path traversal."""
-    if not _SESSION_ID_RE.match(workspace_uuid):
+    if not _SAFE_ID_RE.match(workspace_uuid):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
-
-
-_EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 def _validate_exec_id(exec_id: str) -> None:
     """Validate exec_id format to prevent path traversal."""
-    if not _EXEC_ID_RE.match(exec_id):
+    if not _SAFE_ID_RE.match(exec_id):
         raise HTTPException(status_code=400, detail="Invalid exec_id format")
 
 
@@ -321,7 +412,7 @@ def _require_workspace(workspace_uuid: str) -> Path:
 
     Usage: ws_dir: Path = Depends(_require_workspace)
     """
-    if not _SESSION_ID_RE.match(workspace_uuid) or '..' in workspace_uuid:
+    if not _SAFE_ID_RE.match(workspace_uuid) or '..' in workspace_uuid:
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
     ws_dir = WORKSPACE_DATA_DIR / workspace_uuid
     if not ws_dir.exists():
@@ -346,7 +437,7 @@ def _ensure_default_workspace() -> str | None:
                     return item.name
 
         # Create default workspace
-        workspace_uuid = secrets.token_hex(4)
+        workspace_uuid = _new_short_id()
         ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
         ws_data_dir.mkdir(parents=True, exist_ok=True)
         (ws_data_dir / "sessions").mkdir(exist_ok=True)
@@ -605,7 +696,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
         raise HTTPException(status_code=400, detail=err)
 
     # Generate UUID for data directory
-    workspace_uuid = secrets.token_hex(4)  # 8 位十六进制短 ID
+    workspace_uuid = _new_short_id()
 
     # Default directory: use workspace/ subdir if not specified
     if request.directory:
@@ -815,8 +906,6 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
     此函数从文件读取内容并注入到消息中，供前端渲染。
     同时给已回答的 ask_user tool_use 块添加 _meta.answered 标记。
     """
-    from core.tools.base import Tool
-
     # 第一遍：收集已回答的 ask_user tool_use_id
     answered_ask_user_ids = set()
     for msg in messages:
@@ -1048,7 +1137,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
     results = []
 
     for session_id in request.session_ids:
-        if not _SESSION_ID_RE.match(session_id):
+        if not _SAFE_ID_RE.match(session_id):
             results.append({"session_id": session_id, "success": False, "error": "Invalid session_id format"})
             continue
         session_dir = sessions_dir / session_id
@@ -1060,7 +1149,6 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
         try:
             if request.action == "delete":
                 # Delete session
-                import shutil
                 shutil.rmtree(session_dir, ignore_errors=True)
                 _drop_session_lock(session_dir)
                 results.append({"session_id": session_id, "success": True})
@@ -1089,7 +1177,7 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    logs = sm.list_agent_logs()
+    logs = sm.agent_logs.list_agent_logs()
     return {"executions": logs}
 
 
@@ -1103,7 +1191,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    log = sm.load_agent_log(exec_id)
+    log = sm.agent_logs.load_agent_log(exec_id)
     if not log:
         raise HTTPException(status_code=404, detail="Execution not found")
 
@@ -1125,16 +1213,12 @@ async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, w
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if sm.delete_agent_log(exec_id):
+    if sm.agent_logs.delete_agent_log(exec_id):
         return {"success": True}
     raise HTTPException(status_code=404, detail="Execution not found")
 
 
 # ----- Tool Output Streaming -----
-
-import re as _re
-# tool_use_id 只允许字母、数字、下划线、短横线（防止路径穿越）
-_TOOL_USE_ID_RE = _re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 @app.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stream/{tool_use_id}")
@@ -1157,7 +1241,7 @@ async def stream_tool_output(
         {content: 新内容, offset: 新位置, exists: 文件是否存在}
     """
     # 安全检查：tool_use_id 只允许字母、数字、下划线、短横线
-    if not _TOOL_USE_ID_RE.match(tool_use_id):
+    if not _SAFE_ID_RE.match(tool_use_id):
         raise HTTPException(status_code=400, detail="Invalid tool_use_id")
     _validate_session_id(session_id)
 
@@ -1307,9 +1391,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent.session_manager.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
 
-    if content.startswith("/bash "):
+    if content.startswith(_BASH_PREFIX):
         # 执行 bash 命令
-        command = content[6:].strip()
+        command = content[len(_BASH_PREFIX):].strip()
         if not command:
             return StreamingResponse(_sse_stream({"type": "text", "content": "请输入要执行的命令"}), media_type="text/event-stream")
 
@@ -1317,7 +1401,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent = await _get_or_create_agent(workspace_uuid, session_id)
 
         # 提前生成 tool_use_id，用于设置输出文件和 SSE 事件
-        tool_use_id = f"cmd_{secrets.token_hex(4)}"
+        tool_use_id = f"cmd_{_new_short_id()}"
 
         loop = asyncio.get_running_loop()
         bash_tool = None
@@ -1381,16 +1465,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     agent = await _get_or_create_agent(workspace_uuid, session_id)
 
     # Prevent concurrent execution on the same session
-    # 原子认领（锁内 check-and-set），关闭 is_running 检查到 run 启动之间的窗口。
-    # agent.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
     session_key = f"{workspace_uuid}:{session_id}"
-    with _session_run_claims_lock:
-        if session_key in _session_run_claims or agent.is_running():
-            already_running = True
-        else:
-            _session_run_claims.add(session_key)
-            already_running = False
-    if already_running:
+    if not _claim_session_run(session_key):
         error_text = "当前会话正在执行中，请等待完成后再发送消息"
         return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
 
@@ -1408,47 +1484,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
     # Use a queue to bridge sync agent callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
-
-    def on_text(text: str) -> None:
-        # Sentinel: 413 retry needs frontend to clear already-streamed text
-        if text == "\x00RETRY_CLEAR\x00":
-            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
-            event_queue.put(f"data: {event}\n\n")
-            return
-        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "agent"):
-            return
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-        # Check for todo_write tool and push todo update event
-        if tool_name == "todo_write" and not is_error:
-            todos = get_todos_from_session(agent.session_manager)
-            if todos:
-                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
-                event_queue.put(f"data: {todo_event}\n\n")
-
-    def on_agent_start(exec_id: str, task_summary: str) -> None:
-        # Send SSE event for real-time UI update
-        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_agent_complete(exec_id: str) -> None:
-        # Push SSE event for real-time UI update
-        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
+    cb = _make_sse_callbacks(event_queue, agent)
 
     async def generate():
         # Run the agent loop in a background thread
@@ -1470,12 +1506,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     event_queue.put(f"data: {close_event}\n\n")
 
                     agent.resume_after_ask_user(
-                        on_text=on_text,
-                        on_thinking=on_thinking,
-                        on_tool_call=on_tool_call,
-                        on_tool_result=on_tool_result,
-                        on_agent_start=on_agent_start,
-                        on_agent_complete=on_agent_complete,
+                        on_text=cb.on_text,
+                        on_thinking=cb.on_thinking,
+                        on_tool_call=cb.on_tool_call,
+                        on_tool_result=cb.on_tool_result,
+                        on_agent_start=cb.on_agent_start,
+                        on_agent_complete=cb.on_agent_complete,
                     )
                 else:
                     # Build user_input: str or list[dict] for multimodal
@@ -1498,17 +1534,16 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
                     agent.run(
                         user_input=user_input,
-                        on_text=on_text,
-                        on_thinking=on_thinking,
-                        on_tool_call=on_tool_call,
-                        on_tool_result=on_tool_result,
-                        on_agent_start=on_agent_start,
-                        on_agent_complete=on_agent_complete,
+                        on_text=cb.on_text,
+                        on_thinking=cb.on_thinking,
+                        on_tool_call=cb.on_tool_call,
+                        on_tool_result=cb.on_tool_result,
+                        on_agent_start=cb.on_agent_start,
+                        on_agent_complete=cb.on_agent_complete,
                     )
 
                 # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
                 try:
-                    from core.memory_pipeline import memory_enabled, schedule_extraction
                     sm = getattr(agent, "session_manager", None)
                     if sm is not None and memory_enabled(agent.workspace_uuid or ""):
                         schedule_extraction(
@@ -1523,8 +1558,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
-                with _session_run_claims_lock:
-                    _session_run_claims.discard(session_key)
+                _release_session_run(session_key)
                 event_queue.put(None)  # sentinel: done
 
         task = asyncio.ensure_future(loop.run_in_executor(None, run_agent))
@@ -1624,14 +1658,11 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
     return {"success": True, "deleted_count": deleted_count}
 
 
-_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
 def _safe_ask_user_filename(tool_use_id: str) -> str:
     """ask_user 答案文件的净名（非法 tool_use_id 回退随机名，防路径穿越）。"""
-    if tool_use_id and _SAFE_FILENAME_RE.match(tool_use_id):
+    if tool_use_id and _SAFE_ID_RE.match(tool_use_id):
         return f"{tool_use_id}.txt"
-    return f"{secrets.token_hex(4)}.txt"
+    return f"{_new_short_id()}.txt"
 
 
 def _find_pending_ask_user(session_manager) -> str | None:
@@ -1774,8 +1805,9 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     if not agent:
         raise HTTPException(404, "Agent not found")
 
-    if agent.is_running():
-        return StreamingResponse(_sse_stream({"type": "error", "content": "Agent is already running"}), media_type="text/event-stream")
+    # 与 send_message 相同的原子认领，防止两个请求并发 resume 同一 agent 双循环改写 messages
+    if not _claim_session_run(key):
+        return StreamingResponse(_sse_stream({"type": "error", "content": "当前会话正在执行中，请等待完成后再提交答案"}), media_type="text/event-stream")
 
     # 使用前端提供的 tool_use_id
     ask_user_tool_use_id = request.tool_use_id
@@ -1786,44 +1818,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     # 继续 agent 循环
     event_queue: queue.Queue[str | None] = queue.Queue()
-
-    def on_text(text: str) -> None:
-        if text == "\x00RETRY_CLEAR\x00":
-            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
-            event_queue.put(f"data: {event}\n\n")
-            return
-        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "agent"):
-            return
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-        # Check for todo_write tool and push todo update event
-        if tool_name == "todo_write" and not is_error:
-            todos = get_todos_from_session(agent.session_manager)
-            if todos:
-                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
-                event_queue.put(f"data: {todo_event}\n\n")
-
-    def on_agent_start(exec_id: str, task_summary: str) -> None:
-        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_agent_complete(exec_id: str) -> None:
-        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
+    cb = _make_sse_callbacks(event_queue, agent)
 
     async def generate():
         loop = asyncio.get_running_loop()
@@ -1831,18 +1826,19 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         def run_agent():
             try:
                 agent.resume_after_ask_user(
-                    on_text=on_text,
-                    on_thinking=on_thinking,
-                    on_tool_call=on_tool_call,
-                    on_tool_result=on_tool_result,
-                    on_agent_start=on_agent_start,
-                    on_agent_complete=on_agent_complete,
+                    on_text=cb.on_text,
+                    on_thinking=cb.on_thinking,
+                    on_tool_call=cb.on_tool_call,
+                    on_tool_result=cb.on_tool_result,
+                    on_agent_start=cb.on_agent_start,
+                    on_agent_complete=cb.on_agent_complete,
                 )
             except Exception as e:
                 logger.error(f"master Agent error: {e}")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
+                _release_session_run(key)
                 event_queue.put(None)  # sentinel: done
 
         task = asyncio.ensure_future(loop.run_in_executor(None, run_agent))
@@ -1877,12 +1873,22 @@ async def get_agent_status(workspace_uuid: str, session_id: str):
     return {"running": agent.is_running()}
 
 
+def _mask_secret(v: str) -> str:
+    """掩码密钥：保留首尾 4 位，中间省略；过短则整体打码。"""
+    return v[:4] + "..." + v[-4:] if len(v) > 8 else "***"
+
+
+def _new_short_id() -> str:
+    """8 位十六进制短 ID（32bit 熵），用于标识符命名空间防碰撞。"""
+    return secrets.token_hex(4)
+
+
 def _mask_single_model(model: dict) -> dict:
     """Mask API key in a single model config dict."""
     m = model.copy()
     api_key = m.get("api_key", "")
     if api_key:
-        m["api_key_masked"] = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
+        m["api_key_masked"] = _mask_secret(api_key)
     m.pop("api_key", None)
     return m
 
@@ -1898,7 +1904,7 @@ def _mask_api_key(config: dict) -> dict:
         sys_copy = result["system"].copy()
         mineru_key = sys_copy.get("mineru_api_key", "")
         if mineru_key:
-            sys_copy["mineru_api_key_masked"] = mineru_key[:4] + "..." + mineru_key[-4:] if len(mineru_key) > 8 else "***"
+            sys_copy["mineru_api_key_masked"] = _mask_secret(mineru_key)
         sys_copy.pop("mineru_api_key", None)
         result["system"] = sys_copy
     # Mask MCP headers (可能含 Authorization/Bearer 密钥)
@@ -1915,7 +1921,7 @@ def _mask_mcp_server(cfg: dict) -> dict:
     headers = c.get("headers") or {}
     if headers:
         c["headers"] = {
-            k: (v[:4] + "..." + v[-4:] if len(v) > 8 else "***")
+            k: _mask_secret(v)
             for k, v in headers.items() if v
         }
     return c
@@ -1994,8 +2000,6 @@ async def update_config(request: UpdateConfigRequest):
 
     # 重连 MCP 服务器（签名变化才真正重连）
     try:
-        from core.config import load_config
-        from core.tools.mcp import get_provider
         new_cfg = load_config()
         get_provider().reload(new_cfg.mcp_servers)
     except Exception as e:
@@ -2013,9 +2017,6 @@ async def update_config(request: UpdateConfigRequest):
 @app.get("/api/mcp/servers")
 async def get_mcp_servers():
     """Get MCP servers config + 实时连接状态（headers 掩码显示）。"""
-    from core.config import load_config
-    from core.tools.mcp import get_provider
-
     cfg = load_config()
     provider = get_provider()
     status = provider.status()
@@ -2038,9 +2039,6 @@ async def get_mcp_servers():
 @app.post("/api/mcp/reload")
 async def reload_mcp():
     """强制重连所有 MCP 服务器，并刷新缓存的 master Agent（deferred 工具重建）。"""
-    from core.config import load_config
-    from core.tools.mcp import get_provider
-
     cfg = load_config()
     provider = get_provider()
     provider.reload(cfg.mcp_servers, force=True)
@@ -2061,9 +2059,6 @@ async def test_mcp_server(request: McpTestRequest = McpTestRequest()):
 
     优先用请求体 config（表单新增场景，含真实 headers）；否则按 name 用已保存配置。
     """
-    from core.config import MCPConfig, load_config
-    from core.tools.mcp import get_provider
-
     mcfg = None
     if request.config:
         try:
@@ -2095,8 +2090,6 @@ async def test_config(request: TestConfigRequest = TestConfigRequest()):
     try:
         if request.config is not None:
             # 用传入的配置临时测试
-            from core.config import ModelConfig
-
             # 如果 api_key 为空，尝试从已保存的配置中获取
             api_key = request.config.api_key
             if not api_key:
@@ -2544,8 +2537,6 @@ async def delete_files(request: FileDeleteRequest, request_raw: Request = None):
     if not workspace_dir.exists():
         raise HTTPException(status_code=404, detail="Workspace directory not found")
 
-    import shutil
-
     deleted = []
     errors = []
 
@@ -2702,8 +2693,6 @@ async def upload_files(
     uploaded = []
     errors = []
 
-    _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
-
     for file in files:
         try:
             # Check file size before reading
@@ -2741,8 +2730,6 @@ async def upload_files(
 
 # ----- Memory Management API (v3 记忆管理) -----
 
-_MEMORY_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
-
 
 class UpdateMemoryEntryRequest(BaseModel):
     """更新记忆条目（title/description/tags/content 均可选）。"""
@@ -2766,7 +2753,7 @@ def _memory_dir(workspace_uuid: str) -> Path:
 
 
 def _validate_memory_name(name: str) -> None:
-    if not _MEMORY_NAME_RE.match(name):
+    if not _SAFE_ID_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid memory entry name")
 
 

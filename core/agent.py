@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 # ─── autonomous 运行时常量 ───────────────────────────────────────────
 
 # 迭代额度预警阈值（占 max_iterations 的比例），各阶段只触发一次
-_BUDGET_WARN_RATIO = 0.8
-_BUDGET_FINAL_RATIO = 0.95
+_BUDGET_WARN_RATIO = 0.8  # 迭代额度使用率达到 80% 时注入一次预警提示
+_BUDGET_FINAL_RATIO = 0.95  # 达到 95% 时跳过检查阶段，直接兜底总结交付
 
 _BUDGET_WARN_PROMPT = (
     "## 额度预警\n\n"
@@ -459,7 +459,7 @@ class Agent(BaseAgent):
         self._sync_to_session_manager()
         self.session_manager.save()
 
-    def resume_after_ask_user(
+    def _resume_loop(
         self,
         on_text: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
@@ -468,7 +468,7 @@ class Agent(BaseAgent):
         on_agent_start: Callable[[str, str], None] | None = None,
         on_agent_complete: Callable[[str], None] | None = None,
     ) -> None:
-        """Resume agent loop after ask_user tool result has been injected."""
+        """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。"""
         self._stopped = False
         self._running = True
         self._on_text = on_text
@@ -484,6 +484,25 @@ class Agent(BaseAgent):
             self._agent_loop()
         finally:
             self._running = False
+
+    def resume_after_ask_user(
+        self,
+        on_text: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        on_tool_call: Callable[[str, dict, str], None] | None = None,
+        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
+        on_agent_start: Callable[[str, str], None] | None = None,
+        on_agent_complete: Callable[[str], None] | None = None,
+    ) -> None:
+        """Resume agent loop after ask_user tool result has been injected."""
+        self._resume_loop(
+            on_text=on_text,
+            on_thinking=on_thinking,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+            on_agent_start=on_agent_start,
+            on_agent_complete=on_agent_complete,
+        )
 
     def resume_loop(
         self,
@@ -495,21 +514,14 @@ class Agent(BaseAgent):
         on_agent_complete: Callable[[str], None] | None = None,
     ) -> None:
         """Resume agent loop after a agent (or other placeholder) completes."""
-        self._stopped = False
-        self._running = True
-        self._on_text = on_text
-        self._on_thinking = on_thinking
-        self._on_tool_call = on_tool_call
-        self._on_tool_result = on_tool_result
-        self._on_agent_start = on_agent_start
-        self._on_agent_complete = on_agent_complete
-
-        try:
-            self._sync_to_session_manager()
-            self.session_manager.save()
-            self._agent_loop()
-        finally:
-            self._running = False
+        self._resume_loop(
+            on_text=on_text,
+            on_thinking=on_thinking,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+            on_agent_start=on_agent_start,
+            on_agent_complete=on_agent_complete,
+        )
 
     def _agent_loop(self) -> None:
         """Shared interactive agent loop body (called by run/resume_after_ask_user/resume_loop)."""
@@ -901,15 +913,11 @@ class Agent(BaseAgent):
         self._pad_dangling_tool_results()
         self.add_message("user", [{"type": "text", "text": _TIMEOUT_WRAPUP_PROMPT}], meta={"budget": "wrapup"})
 
-        # 消息预处理与 _call_llm_non_streaming 一致
-        messages = self._get_messages_with_header()
-        messages = self._resolve_tool_results(messages)
-        messages = self._strip_meta_from_messages(messages)
-        if not self.model.multimodal:
-            messages = self._strip_images_from_messages(messages)
+        # 消息预处理与 _call_llm_non_streaming 一致（此处已 pad，复用共享管道）
+        message_objects = self._prepare_messages_for_llm(pad_dangling=False)
 
         response = self.client.chat(
-            messages=self._convert_to_message_objects(messages),
+            messages=message_objects,
             system=self._system_prompt,
             session_id=self._session_id,
         )
@@ -934,7 +942,7 @@ class Agent(BaseAgent):
     def _save_progress(self, iterations: int, status: str = "running", current_tool: str = "") -> None:
         """Save execution progress in real-time.
 
-        Writes to {exec_dir}/index.json in the format SessionManager.load_agent_log() expects.
+        Writes to {exec_dir}/index.json in the format SessionManager.agent_logs.load_agent_log() expects.
         This ensures the file always has exec_id and task, even before the final save.
         """
         if not self.session_dir or not self._exec_id:

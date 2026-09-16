@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
+
+from core.fs_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +47,6 @@ def migrate_session_file(session_file: Path) -> bool:
     # Save if modified
     if modified:
         try:
-            from core.fs_utils import atomic_write_json
             atomic_write_json(session_file, data)
             logger.info(f"Migrated session: {session_file}")
         except Exception as e:
@@ -223,8 +225,6 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
     Returns:
         True 表示执行了迁移。
     """
-    import shutil
-
     from core.session import (
         MESSAGES_FILE,
         META_FILE,
@@ -235,7 +235,6 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
         generate_short_id,
         write_jsonl,
     )
-    from core.fs_utils import atomic_write_json
 
     session_dir = Path(session_dir)
     index_file = session_dir / "index.json"

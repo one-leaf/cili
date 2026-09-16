@@ -214,11 +214,11 @@ class AgentTool(Tool):
             )
 
         # Generate exec_id upfront so we can notify the UI immediately
-        # _SessionIdRef（worker/lite 的 session 引用）无 _generate_exec_id，
+        # _SessionIdRef（worker/lite 的 session 引用）无 agent_logs，
         # 深度限制放开委派时避免 AttributeError，回退生成随机 exec_id（T28）
         exec_id = ""
         if self.session_manager:
-            gen = getattr(self.session_manager, "_generate_exec_id", None)
+            gen = getattr(getattr(self.session_manager, "agent_logs", None), "_generate_exec_id", None)
             if callable(gen):
                 exec_id = gen()
             else:
@@ -288,7 +288,7 @@ class AgentTool(Tool):
                 if self.session_manager and exec_id:
                     try:
                         final_status = result.get("status", "error")
-                        self.session_manager.save_agent_log(
+                        self.session_manager.agent_logs.save_agent_log(
                             exec_id=exec_id,
                             task=task,
                             messages=agent.messages,

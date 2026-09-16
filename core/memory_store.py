@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -22,12 +23,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 # ── 常量 ─────────────────────────────────────────────
 MEMORY_TYPES = ("fact", "preference", "skill", "reference")
 SOURCES = ("session", "user", "web", "file", "python", "derived")
 STATUS_ACTIVE = "active"
 STATUS_STALE = "stale"
 STATUS_ARCHIVED = "archived"
+
+# description 长度上限（memory_pipeline 也复用，勿单独改）
+MAX_DESCRIPTION_LEN = 200
 
 # 老化阈值（天）
 STALE_AFTER_DAYS = 30
@@ -466,8 +472,8 @@ class MemoryStore:
             raise ValueError(f"Unknown memory type: {type_!r} (allowed: {', '.join(MEMORY_TYPES)})")
         if source not in SOURCES:
             raise ValueError(f"Unknown source: {source!r} (allowed: {', '.join(SOURCES)})")
-        if len(description or "") > 200:
-            raise ValueError("description must be 200 characters or less")
+        if len(description or "") > MAX_DESCRIPTION_LEN:
+            raise ValueError(f"description must be {MAX_DESCRIPTION_LEN} characters or less")
         if not (title or "").strip() and not (content or "").strip():
             raise ValueError("title or content is required for store")
 
@@ -599,8 +605,8 @@ class MemoryStore:
             if title is not None:
                 fm["title"] = (title or "").strip() or name
             if description is not None:
-                if len(description) > 200:
-                    raise ValueError("description must be 200 characters or less")
+                if len(description) > MAX_DESCRIPTION_LEN:
+                    raise ValueError(f"description must be {MAX_DESCRIPTION_LEN} characters or less")
                 fm["description"] = (description or "").strip()
             if tags is not None:
                 fm["tags"] = [str(t).strip() for t in tags if str(t).strip()]
@@ -863,6 +869,7 @@ class Journal:
                     try:
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
+                        logger.warning(f"[memory] 损坏 journal 行（跳过单行）: {self.journal_path}")
                         continue
         except OSError:
             return []

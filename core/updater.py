@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import threading
 import time
 import zipfile
@@ -50,6 +51,9 @@ VERSION_URLS = [
 
 # 升级时排除的顶层目录（用户数据与版本控制目录不覆盖）
 _EXCLUDE_DIRS = {"data", "workspace", ".git"}
+
+# GitHub 仓库归档解压出的根目录前缀（{repo}-{branch}，one-leaf/cili@main → cili-main）
+_ARCHIVE_ROOT_PREFIX = "cili-main"
 
 # 进程级升级锁：web 手动升级与启动自动升级互斥，防止并发覆盖运行代码（W7）
 _upgrade_lock = threading.Lock()
@@ -171,9 +175,9 @@ def _safe_extract(zip_path: str, dest_dir: str) -> str | None:
         return None
 
     for name in os.listdir(dest_dir):
-        if name.startswith("cili-main"):
+        if name.startswith(_ARCHIVE_ROOT_PREFIX):
             return os.path.join(dest_dir, name)
-    logger.error("[updater] 解压后未找到 cili-main 目录")
+    logger.error(f"[updater] 解压后未找到 {_ARCHIVE_ROOT_PREFIX} 目录")
     return None
 
 
@@ -277,8 +281,6 @@ def do_upgrade() -> dict:
         return {"success": False, "error": "已有升级任务进行中，请稍后重试"}
 
     try:
-        import tempfile
-
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_zip = os.path.join(temp_dir, "cili-main.zip")
             temp_extract = os.path.join(temp_dir, "extract")

@@ -58,6 +58,9 @@ class MessageBus:
     # （消息只在 receive 或 unregister_session 时清理，会话不退出则一直累积）
     MAX_MESSAGES_PER_SESSION = 100
 
+    # 日志里内容预览的截断长度
+    LOG_CONTENT_TRUNCATE = 50
+
     def __init__(self):
         self._lock = threading.Lock()
         # session_id -> list[Message]
@@ -105,7 +108,8 @@ class MessageBus:
                 del queue[: len(queue) - self.MAX_MESSAGES_PER_SESSION]
         logger.info(
             f"Message sent: {from_session_id} -> {to_session_id}: "
-            f"{content[:50]}{'...' if len(content) > 50 else ''}"
+            f"{content[:self.LOG_CONTENT_TRUNCATE]}"
+            f"{'...' if len(content) > self.LOG_CONTENT_TRUNCATE else ''}"
         )
         return True
 

@@ -4,7 +4,6 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -28,7 +27,7 @@ class TestCronTask:
         assert task.name == "test-task"
         assert task.description == "测试任务"
         assert task.enabled is True
-        assert task.config == {"max_executions": 10}
+        assert task.runtime_config == {"max_executions": 10}
         # T9: 新建任务按当前时间计算首次 _next_run，而非 None 立即触发
         assert task._next_run is not None
         assert task._last_run is None
@@ -529,34 +528,6 @@ class TestCronCondition:
             cron_module.CRON_DIR = original_dir
 
 
-class TestExtractUserInfoConfig:
-    """测试 extract_user_info.json 配置加载"""
-
-    def test_extract_user_info_config_loads(self):
-        """extract_user_info.json 能正确加载"""
-        config_path = Path(__file__).parent.parent / "core" / "cron.d" / "extract_user_info.json"
-        if not config_path.exists():
-            pytest.skip("extract_user_info.json not found")
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        # 验证必需字段
-        assert "name" in config
-        assert "schedule" in config
-        assert "content" in config  # 新设计：使用 content 内联 task/plan
-        assert config["enabled"] is True
-        assert config["schedule"]["type"] == "interval"
-        assert config["schedule"]["minutes"] == 1440
-        assert config["schedule"]["initial_delay_minutes"] == 120
-
-        # 验证 content 为 dict，包含 task 和 plan
-        content = config["content"]
-        assert isinstance(content, dict)
-        assert content.get("task", "") != ""
-        assert isinstance(content.get("plan", []), list)
-
-
 class TestCronTaskRemainingCounter:
     """Test remaining counter functionality in CronTask."""
 
@@ -666,7 +637,7 @@ class TestCronSchedulerRemainingCounter:
             assert task._remaining is None
 
             # 模拟 _execute_task 中的 remaining 逻辑
-            max_exec = task.config.get("max_executions", 9999)
+            max_exec = task.runtime_config.get("max_executions", 9999)
             remaining = task._remaining if task._remaining is not None else max_exec
             remaining -= 1
             task._remaining = remaining

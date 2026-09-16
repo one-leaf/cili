@@ -36,6 +36,28 @@ DEFAULT_CDP_PORT = 9222
 # Tab idle timeout: auto-close tabs inactive for this many seconds (10 minutes)
 TAB_IDLE_TIMEOUT = 600
 
+# 工作线程任务执行超时（秒）
+_WORKER_TASK_TIMEOUT = 60
+# 随机 CDP 端口的候选范围与尝试次数
+_RANDOM_CDP_PORT_RANGE = (9300, 9900)
+_RANDOM_CDP_PORT_TRIES = 50
+# 端口释放等待的重试次数与轮询间隔（秒）
+_PORT_RELEASE_RETRIES = 20
+_POLL_INTERVAL_S = 0.5
+# Chrome 启动等待的重试次数（间隔 1s，约 20 秒上限）
+_CHROME_START_RETRIES = 20
+# CDP 连接重试次数
+_CDP_CONNECT_RETRIES = 3
+# 页面交互超时（ms）：导航 / 前进后退刷新 / 单击与输入
+_NAV_TIMEOUT_MS = 60000
+_HISTORY_TIMEOUT_MS = 30000
+_ACTION_TIMEOUT_MS = 10000
+# 输出文本截断上限（字符）：工具输出 / snapshot 展示
+_TRUNCATE_OUTPUT_CHARS = 10000
+_TRUNCATE_SNAPSHOT_CHARS = 20000
+# 顺序输入按键间隔（ms）
+_TYPE_DELAY_MS = 20
+
 # Try to import stealth
 try:
     from playwright_stealth import stealth_sync
@@ -210,7 +232,6 @@ class _ChromeProcessRef:
     def wait(self, timeout: float | None = None) -> int:
         """等待进程退出。"""
         # 简单实现：轮询检查
-        import time
         start = time.time()
         while True:
             result = self.poll()
@@ -365,7 +386,7 @@ class BrowserService:
         self._task_queue.put((task_id, func, args, kwargs))
 
         # 等待结果
-        if not event.wait(timeout=60):
+        if not event.wait(timeout=_WORKER_TASK_TIMEOUT):
             with self._task_lock:
                 self._task_events.pop(task_id, None)
             raise TimeoutError("Task execution timeout (60s)")
@@ -502,8 +523,8 @@ class BrowserService:
 
     def _pick_free_port(self) -> int:
         """在 [9300, 9900] 内找一个当前未监听的端口，作为 CDP 端口替代。"""
-        for _ in range(50):
-            port = random.randint(9300, 9900)
+        for _ in range(_RANDOM_CDP_PORT_TRIES):
+            port = random.randint(*_RANDOM_CDP_PORT_RANGE)
             if not self._is_port_listening(port):
                 return port
         return DEFAULT_CDP_PORT + 1
@@ -659,8 +680,8 @@ class BrowserService:
                     )
                     self._kill_chrome_internal()
                     # 等待端口释放
-                    for i in range(20):
-                        time.sleep(0.5)
+                    for i in range(_PORT_RELEASE_RETRIES):
+                        time.sleep(_POLL_INTERVAL_S)
                         if not self._is_port_listening(port):
                             logger.debug(f"[BrowserService] Port {port} released after {(i+1)*0.5:.1f}s")
                             break
@@ -724,7 +745,7 @@ class BrowserService:
             logger.debug(f"[BrowserService] Chrome started, PID: {self._chrome_process.pid}")
 
             # 等待 Chrome 启动并监听 CDP 端口（最多 20 秒）
-            for i in range(20):
+            for i in range(_CHROME_START_RETRIES):
                 time.sleep(1)
 
                 # 先检查进程是否还活着
@@ -797,8 +818,8 @@ class BrowserService:
         self._remove_chrome_locks(self._chrome_profile_dir)
 
         # 等待端口释放
-        for i in range(20):
-            time.sleep(0.5)
+        for i in range(_PORT_RELEASE_RETRIES):
+            time.sleep(_POLL_INTERVAL_S)
             if not self._is_port_listening(self._cdp_port):
                 logger.debug(f"[BrowserService] Port {self._cdp_port} released after {(i+1)*0.5:.1f}s")
                 break
@@ -889,8 +910,8 @@ class BrowserService:
         if self._is_port_listening(self._cdp_port):
             logger.debug(f"[BrowserService] Port {self._cdp_port} listening but CDP failed, retrying...")
             # Chrome 在运行但连不上 - 重试连接
-            for attempt in range(3):
-                time.sleep(0.5)
+            for attempt in range(_CDP_CONNECT_RETRIES):
+                time.sleep(_POLL_INTERVAL_S)
                 logger.debug(f"[BrowserService] CDP retry attempt {attempt + 1}/3")
                 if self._connect_browser():
                     return None
@@ -1215,7 +1236,7 @@ class BrowserService:
                 f"Error: 导航被拒绝 — {block_reason}", error=True
             )
         def _do_navigate(page, current_tab_index):
-            page.goto(url, wait_until="load", timeout=60000)
+            page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
             # 等待 JavaScript 渲染和重定向
             time.sleep(1)
             title = page.title()
@@ -1226,8 +1247,8 @@ class BrowserService:
             except Exception:
                 # fallback: 如果 inner_text 失败（如页面结构异常），取 HTML
                 text = page.content()
-            if len(text) > 10000:
-                text = text[:10000] + "\n... (truncated)"
+            if len(text) > _TRUNCATE_OUTPUT_CHARS:
+                text = text[:_TRUNCATE_OUTPUT_CHARS] + "\n... (truncated)"
 
             return ToolResult(
                 f"Navigated to {url}\n"
@@ -1306,13 +1327,13 @@ class BrowserService:
         def _do_execute(page):
             exec_result = page.evaluate(script)
             result_str = json.dumps(exec_result, ensure_ascii=False, indent=2)
-            if len(result_str) > 10000:
-                result_str = result_str[:10000] + "\n... (truncated)"
+            if len(result_str) > _TRUNCATE_OUTPUT_CHARS:
+                result_str = result_str[:_TRUNCATE_OUTPUT_CHARS] + "\n... (truncated)"
             return ToolResult(f"JavaScript result:\n{result_str}")
 
         return self._execute_operation("execute_script", _do_execute, tab_index=tab_index)
 
-    def wait_for(self, selector: str, timeout: int = 10000, tab_index: int | None = None) -> ToolResult:
+    def wait_for(self, selector: str, timeout: int = _ACTION_TIMEOUT_MS, tab_index: int | None = None) -> ToolResult:
         """等待 CSS 选择器出现。
 
         Args:
@@ -1334,8 +1355,8 @@ class BrowserService:
         """
         def _do_get_text(page):
             text = page.inner_text("body")
-            if len(text) > 20000:
-                text = text[:20000] + "\n... (truncated)"
+            if len(text) > _TRUNCATE_SNAPSHOT_CHARS:
+                text = text[:_TRUNCATE_SNAPSHOT_CHARS] + "\n... (truncated)"
             return ToolResult(f"Page text:\n{text}")
 
         return self._execute_operation("get_text", _do_get_text, tab_index=tab_index)
@@ -1374,8 +1395,8 @@ class BrowserService:
             if not lines:
                 return ToolResult("Snapshot empty: no accessible elements found", error=True)
             body = "\n".join(line for _indent, line in lines)
-            if len(body) > 20000:
-                body = body[:20000] + "\n... (truncated)"
+            if len(body) > _TRUNCATE_SNAPSHOT_CHARS:
+                body = body[:_TRUNCATE_SNAPSHOT_CHARS] + "\n... (truncated)"
             return ToolResult(
                 f"Accessibility snapshot (tab {actual_tab}, {len(ref_map)} refs):\n"
                 f"---\n{body}\n---\n"
@@ -1440,7 +1461,7 @@ class BrowserService:
             actual_tab = self._find_tab_index(page) or 0
             entry = self._resolve_ref(actual_tab, ref)
             loc = self._locator_for(page, entry)
-            loc.click(timeout=10000)
+            loc.click(timeout=_ACTION_TIMEOUT_MS)
             return ToolResult(
                 f"Clicked [{ref}] ({entry['role']} \"{entry['name']}\")",
                 meta={"tab_index": actual_tab},
@@ -1454,7 +1475,7 @@ class BrowserService:
             actual_tab = self._find_tab_index(page) or 0
             entry = self._resolve_ref(actual_tab, ref)
             loc = self._locator_for(page, entry)
-            loc.fill(text, timeout=10000)
+            loc.fill(text, timeout=_ACTION_TIMEOUT_MS)
             return ToolResult(
                 f"Filled [{ref}] ({entry['role']} \"{entry['name']}\") with {len(text)} chars",
                 meta={"tab_index": actual_tab},
@@ -1468,7 +1489,7 @@ class BrowserService:
             actual_tab = self._find_tab_index(page) or 0
             entry = self._resolve_ref(actual_tab, ref)
             loc = self._locator_for(page, entry)
-            loc.press_sequentially(text, delay=20)
+            loc.press_sequentially(text, delay=_TYPE_DELAY_MS)
             return ToolResult(
                 f"Typed {len(text)} chars into [{ref}] ({entry['role']} \"{entry['name']}\")",
                 meta={"tab_index": actual_tab},
@@ -1504,7 +1525,7 @@ class BrowserService:
     def go_back(self, tab_index: int | None = None) -> ToolResult:
         """返回上一页。"""
         def _do_go_back(page):
-            resp = page.go_back(wait_until="load", timeout=30000)
+            resp = page.go_back(wait_until="load", timeout=_HISTORY_TIMEOUT_MS)
             return ToolResult(f"Navigated back to {resp.url}" if resp else "No history to go back to")
 
         return self._execute_operation("go_back", _do_go_back, tab_index=tab_index)
@@ -1512,7 +1533,7 @@ class BrowserService:
     def go_forward(self, tab_index: int | None = None) -> ToolResult:
         """前进到下一页。"""
         def _do_go_forward(page):
-            resp = page.go_forward(wait_until="load", timeout=30000)
+            resp = page.go_forward(wait_until="load", timeout=_HISTORY_TIMEOUT_MS)
             return ToolResult(f"Navigated forward to {resp.url}" if resp else "No forward history")
 
         return self._execute_operation("go_forward", _do_go_forward, tab_index=tab_index)
@@ -1520,7 +1541,7 @@ class BrowserService:
     def reload(self, tab_index: int | None = None) -> ToolResult:
         """重新加载当前页面。"""
         def _do_reload(page):
-            page.reload(wait_until="load", timeout=30000)
+            page.reload(wait_until="load", timeout=_HISTORY_TIMEOUT_MS)
             return ToolResult(f"Reloaded page: {page.url}")
 
         return self._execute_operation("reload", _do_reload, tab_index=tab_index)

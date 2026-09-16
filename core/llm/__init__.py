@@ -31,9 +31,6 @@ from core.llm.types import (
     block_from_dict,
     blocks_to_dicts,
     blocks_from_dicts,
-    extract_text_from_blocks,
-    extract_tool_calls_from_blocks,
-    has_tool_calls,
     # Message and usage
     Message,
     UsageData,
@@ -76,9 +73,6 @@ __all__ = [
     "block_from_dict",
     "blocks_to_dicts",
     "blocks_from_dicts",
-    "extract_text_from_blocks",
-    "extract_tool_calls_from_blocks",
-    "has_tool_calls",
     # Message and usage
     "Message",
     "UsageData",

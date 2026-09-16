@@ -27,6 +27,7 @@ from typing import Any, Callable
 from core.config import PROJECTS_DIR, get_workspace_data_dir, load_config, load_workspace_config
 from core.llm import Message, create_llm_client
 from core.memory_store import (
+    MAX_DESCRIPTION_LEN,
     MEMORY_TYPES,
     Journal,
     MemoryStore,
@@ -452,6 +453,116 @@ def _op_type(op: dict) -> str:
     return t if isinstance(t, str) and t in MEMORY_TYPES else "fact"
 
 
+def _store_with_retry(store: MemoryStore, op: dict, name: str | None) -> dict:
+    """执行 store.store；name 与不同类型条目冲突时追加 -n 后缀重试，保留内容不丢。"""
+    title = str(op.get("title") or "").strip()
+    content = str(op.get("content") or "").strip()
+    try:
+        return store.store(
+            type_=_op_type(op),
+            name=name or None,
+            title=title,
+            description=str(op.get("description") or "")[:MAX_DESCRIPTION_LEN],
+            content=content,
+            tags=op.get("tags"),
+            source="derived",
+            refs=op.get("refs"),
+        )
+    except ValueError as e:
+        if "name must be globally unique" not in str(e):
+            raise
+        n = 2
+        while True:
+            candidate = f"{name}-{n}"
+            try:
+                return store.store(
+                    type_=_op_type(op),
+                    name=candidate,
+                    title=title,
+                    description=str(op.get("description") or "")[:MAX_DESCRIPTION_LEN],
+                    content=content,
+                    tags=op.get("tags"),
+                    source="derived",
+                    refs=op.get("refs"),
+                )
+            except ValueError as e2:
+                if "name must be globally unique" not in str(e2):
+                    raise
+                n += 1
+
+
+def _apply_store(store: MemoryStore, op: dict) -> dict:
+    """action=store：新建条目。返回 applied 条目。"""
+    name = str(op.get("name") or "").strip()
+    reason = op.get("reason", "")
+    title = str(op.get("title") or "").strip()
+    content = str(op.get("content") or "").strip()
+    if not title and not content:
+        # 模型未给出任何可存内容 → 视为完成，不阻塞队列
+        return {"op": "store", "name": name, "reason": reason, "note": "empty op"}
+    result = _store_with_retry(store, op, name)
+    return {"op": "store", "name": result["name"], "reason": reason}
+
+
+def _apply_update(store: MemoryStore, op: dict) -> dict | None:
+    """action=update：更新条目；目标不存在（模型幻觉）时有内容则退化为新建。"""
+    name = str(op.get("name") or "").strip()
+    reason = op.get("reason", "")
+    if not name:
+        return None
+    try:
+        store.update(
+            name,
+            title=op.get("title"),
+            description=str(op.get("description") or "")[:MAX_DESCRIPTION_LEN],
+            content=op.get("content"),
+            tags=op.get("tags"),
+            refs=op.get("refs"),
+            source="derived",
+        )
+    except ValueError as e:
+        if "no memory entry named" not in str(e):
+            raise
+        # 目标条目不存在（模型幻觉）→ 有内容则新建保留，否则视为完成
+        title = str(op.get("title") or "").strip()
+        content = str(op.get("content") or "").strip()
+        if not title and not content:
+            return {"op": "update", "name": name, "reason": reason,
+                    "note": "target missing, no content"}
+        _store_with_retry(store, op, name)
+    return {"op": "update", "name": name, "reason": reason}
+
+
+def _apply_archive(store: MemoryStore, op: dict) -> dict | None:
+    """action=archive：归档条目；目标不存在/已归档则视为完成。"""
+    name = str(op.get("name") or "").strip()
+    reason = op.get("reason", "")
+    if not name:
+        return None
+    try:
+        store.archive(name)
+    except ValueError as e:
+        if "no active memory entry named" not in str(e):
+            raise
+        # 目标不在活动条目中（不存在/已归档）→ 无需归档，视为完成
+    return {"op": "archive", "name": name, "reason": reason}
+
+
+def _apply_delete(store: MemoryStore, op: dict) -> dict | None:
+    """action=delete：删除条目；目标不存在则视为完成。"""
+    name = str(op.get("name") or "").strip()
+    reason = op.get("reason", "")
+    if not name:
+        return None
+    try:
+        store.delete(name)
+    except ValueError as e:
+        if "no memory entry named" not in str(e):
+            raise
+        # 目标条目不存在 → 删除意图已满足，视为完成
+    return {"op": "delete", "name": name, "reason": reason}
+
+
 def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
     """确定性地应用整合 op，返回 {"applied": [...], "failed": [...]}。
 
@@ -463,7 +574,7 @@ def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
     - store 无 title 无 content → 无可保留内容，视为完成
     - store name 与不同类型条目冲突 → 追加 -n 后缀重试，保留内容不丢
     其余意外失败仍进 failed，由调用方决定是否推进游标（失败不消费记录，避免
-    "已整合但未写入"的静默丢失）。description 截断到 store 的 200 字上限
+    "已整合但未写入"的静默丢失）。description 截断到 store 的长度上限
     （journal 截断 300，直接透传会误报）。
     """
     applied: list[dict] = []
@@ -476,103 +587,19 @@ def apply_ops(store: MemoryStore, ops: list[dict]) -> dict:
         reason = op.get("reason", "")
         try:
             if action == "store":
-                title = str(op.get("title") or "").strip()
-                content = str(op.get("content") or "").strip()
-                if not title and not content:
-                    # 模型未给出任何可存内容 → 视为完成，不阻塞队列
-                    applied.append({"op": "store", "name": name, "reason": reason, "note": "empty op"})
-                    continue
-                try:
-                    result = store.store(
-                        type_=_op_type(op),
-                        name=name or None,
-                        title=title,
-                        description=str(op.get("description") or "")[:200],
-                        content=content,
-                        tags=op.get("tags"),
-                        source="derived",
-                        refs=op.get("refs"),
-                    )
-                except ValueError as e:
-                    if "name must be globally unique" not in str(e):
-                        raise
-                    # name 被不同类型条目占用 → 追加 -n 后缀重试
-                    n = 2
-                    while True:
-                        candidate = f"{name}-{n}"
-                        try:
-                            result = store.store(
-                                type_=_op_type(op),
-                                name=candidate,
-                                title=title,
-                                description=str(op.get("description") or "")[:200],
-                                content=content,
-                                tags=op.get("tags"),
-                                source="derived",
-                                refs=op.get("refs"),
-                            )
-                            break
-                        except ValueError as e2:
-                            if "name must be globally unique" not in str(e2):
-                                raise
-                            n += 1
-                applied.append({"op": "store", "name": result["name"], "reason": reason})
+                entry = _apply_store(store, op)
             elif action == "update":
-                if not name:
-                    continue
-                try:
-                    store.update(
-                        name,
-                        title=op.get("title"),
-                        description=str(op.get("description") or "")[:200],
-                        content=op.get("content"),
-                        tags=op.get("tags"),
-                        refs=op.get("refs"),
-                        source="derived",
-                    )
-                except ValueError as e:
-                    if "no memory entry named" not in str(e):
-                        raise
-                    # 目标条目不存在（模型幻觉）→ 有内容则新建保留，否则视为完成
-                    title = str(op.get("title") or "").strip()
-                    content = str(op.get("content") or "").strip()
-                    if not title and not content:
-                        applied.append({"op": "update", "name": name, "reason": reason,
-                                        "note": "target missing, no content"})
-                        continue
-                    store.store(
-                        type_=_op_type(op),
-                        name=name,
-                        title=title,
-                        description=str(op.get("description") or "")[:200],
-                        content=content,
-                        tags=op.get("tags"),
-                        source="derived",
-                        refs=op.get("refs"),
-                    )
-                applied.append({"op": "update", "name": name, "reason": reason})
+                entry = _apply_update(store, op)
             elif action == "archive":
-                if not name:
-                    continue
-                try:
-                    store.archive(name)
-                except ValueError as e:
-                    if "no active memory entry named" not in str(e):
-                        raise
-                    # 目标不在活动条目中（不存在/已归档）→ 无需归档，视为完成
-                applied.append({"op": "archive", "name": name, "reason": reason})
+                entry = _apply_archive(store, op)
             elif action == "delete":
-                if not name:
-                    continue
-                try:
-                    store.delete(name)
-                except ValueError as e:
-                    if "no memory entry named" not in str(e):
-                        raise
-                    # 目标条目不存在 → 删除意图已满足，视为完成
-                applied.append({"op": "delete", "name": name, "reason": reason})
+                entry = _apply_delete(store, op)
             elif action == "skip":
-                applied.append({"op": "skip", "name": name, "reason": reason})
+                entry = {"op": "skip", "name": name, "reason": reason}
+            else:
+                continue  # 未知 action：既不 applied 也不 failed
+            if entry is not None:
+                applied.append(entry)
         except Exception as e:
             logger.warning("apply_ops %s(%s) failed: %s", action, name, e)
             failed.append({"op": action, "name": name, "reason": reason, "error": str(e)})

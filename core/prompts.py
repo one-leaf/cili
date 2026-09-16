@@ -155,8 +155,9 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
 
 # ─── 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）────────
 
-_MEMORY_PREFERENCE_CAP = 10
-_MEMORY_SUMMARY_MAX_BYTES = 2 * 1024
+# 记忆注入限额：控制 system prompt 体积，避免无限膨胀
+_MEMORY_PREFERENCE_CAP = 10  # 最多注入 10 条 preference
+_MEMORY_SUMMARY_MAX_BYTES = 2 * 1024  # summary.md 最多截取 2KB
 
 
 def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
@@ -216,6 +217,7 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
             "with descriptions; then `memory(action=\"read\", name=\"<name>\")` reads the full body.",
         ])
     except Exception:
+        logger.debug("Memory system unavailable, using fallback", exc_info=True)
         # 记忆系统初始化失败：给出降级提示，不阻塞任何请求
         lines.extend([
             f"Memory directory: `{memory_dir}`",

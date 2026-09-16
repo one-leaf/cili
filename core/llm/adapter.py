@@ -10,6 +10,7 @@ This separation allows the LLMClient to be provider-agnostic.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -23,6 +24,8 @@ from core.llm.types import (
     ToolCallBlock,
     UsageData,
 )
+
+logger = logging.getLogger(__name__)
 
 # 官方域名无需做 LiteLLM 代理探测（也不该为它们发多余请求）
 OFFICIAL_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
@@ -226,9 +229,6 @@ class Adapter(ABC):
         Args:
             transport: HttpTransport instance for making the detection request
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         try:
             # /openapi.json is a standard REST endpoint, must use GET
             url = f"{self.base_url}/openapi.json"
@@ -250,3 +250,15 @@ class Adapter(ABC):
                     logger.debug(f"[LiteLLM] Not a LiteLLM proxy: {self.base_url}")
         except Exception as e:
             logger.warning(f"[LiteLLM] Detection failed for {self.base_url}: {e}")
+
+    def _apply_litellm_extras(self, body: dict[str, Any], session_id: str) -> None:
+        """LiteLLM 代理额外字段：有 session_id 时写入，便于代理做会话路由。
+
+        两个 adapter 的 serialize() 共用此逻辑，避免重复。
+        """
+        if self._is_litellm_proxy and session_id:
+            body["litellm_session_id"] = session_id
+        elif self._is_litellm_proxy and not session_id:
+            logger.debug(
+                f"[{self.__class__.__name__}] LiteLLM proxy detected but no session_id provided"
+            )

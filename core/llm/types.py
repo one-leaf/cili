@@ -573,25 +573,6 @@ class LLMResponse:
 # ========== Helper Functions ==========
 
 
-def extract_text_from_blocks(blocks: list[ContentBlock]) -> str:
-    """Extract all text content from blocks."""
-    parts = []
-    for block in blocks:
-        if isinstance(block, TextBlock):
-            parts.append(block.text)
-    return "".join(parts)
-
-
-def extract_tool_calls_from_blocks(blocks: list[ContentBlock]) -> list[ToolCallBlock]:
-    """Extract all tool call blocks from content."""
-    return [block for block in blocks if isinstance(block, ToolCallBlock)]
-
-
-def has_tool_calls(blocks: list[ContentBlock]) -> bool:
-    """Check if content contains any tool calls."""
-    return any(isinstance(block, ToolCallBlock) for block in blocks)
-
-
 def format_llm_error(e: Exception, base_url: str = "") -> str:
     """Format an LLM API exception into a short, actionable Chinese message.
 

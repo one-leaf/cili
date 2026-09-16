@@ -31,7 +31,7 @@ _SUBPROCESS_CALLS = {
     "Popen", "call", "run", "check_call", "check_output",
     "getoutput", "getstatusoutput",
 }
-_BUILTINS_DENY = {"eval", "exec", "compile", "__import__"}
+_BUILTINS_DENY = _DENY_DIRECT_CALLS  # 与 _DENY_DIRECT_CALLS 必须同值，别名引用防止漂移出漏洞
 _IMPORTLIB_DENY = {"import_module"}
 # 危险模块 → 需拦截的方法：import os as o / builtins.eval / importlib.import_module
 _DANGEROUS_MODULES = {

@@ -35,8 +35,8 @@ def _next_cron_time(from_time: datetime, expr: str) -> datetime:
     """
     parts = expr.strip().split()
     if len(parts) != 5:
-        logger.warning(f"[cron] Invalid cron expression: {expr}, fallback to 60 minutes")
-        return from_time + timedelta(minutes=60)
+        logger.warning(f"[cron] Invalid cron expression: {expr}, fallback to {_FALLBACK_INTERVAL_MINUTES} minutes")
+        return from_time + timedelta(minutes=_FALLBACK_INTERVAL_MINUTES)
 
     try:
         minute_spec, hour_spec, day_spec, month_spec, weekday_spec = parts
@@ -64,12 +64,12 @@ def _next_cron_time(from_time: datetime, expr: str) -> datetime:
             check_time += timedelta(minutes=1)
 
         # Fallback if no match found
-        logger.warning(f"[cron] No valid time found for expression: {expr}, fallback to 60 minutes")
-        return from_time + timedelta(minutes=60)
+        logger.warning(f"[cron] No valid time found for expression: {expr}, fallback to {_FALLBACK_INTERVAL_MINUTES} minutes")
+        return from_time + timedelta(minutes=_FALLBACK_INTERVAL_MINUTES)
 
     except Exception as e:
         logger.warning(f"[cron] Failed to parse cron expression: {expr}, error: {e}")
-        return from_time + timedelta(minutes=60)
+        return from_time + timedelta(minutes=_FALLBACK_INTERVAL_MINUTES)
 
 
 def _parse_cron_field(field: str, min_val: int, max_val: int) -> set[int]:
@@ -114,6 +114,11 @@ CRON_STATE_DIR = CRON_BASE_DIR / "state"
 # User tasks config file
 USER_TASKS_FILE = CRON_BASE_DIR / "user_tasks.json"
 
+# 模块级常量
+_FALLBACK_INTERVAL_MINUTES = 60  # 表达式解析失败 / 未知调度类型时的回退间隔（分钟）
+_POLL_INTERVAL_SECONDS = 60      # 调度循环轮询间隔（秒）
+_DEFAULT_MAX_EXECUTIONS = 9999   # 未配置 max_executions 时的默认执行次数
+
 # 每个任务的 state 文件写锁（T13：scheduler 线程与 cron_tool 并发写互斥，避免 RMW 丢更新）
 _state_locks: dict[str, threading.Lock] = {}
 _state_locks_guard = threading.Lock()
@@ -149,23 +154,64 @@ def update_task_state(task_id: str, **fields) -> None:
                 if "remaining" in fields:
                     task._remaining = fields["remaining"]
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[cron] Failed to sync in-memory state for task {task_id}: {e}")
 
 # Cron agent cache: workspace_uuid → master Agent (reused across cron runs)
 _cron_agents: dict[str, Any] = {}
 _cron_agents_lock = threading.Lock()
 
 
+def _normalize_task_item(item: Any, default_ws_uuid: str = "") -> dict | None:
+    """规范化单个任务项 → {task, plan, workspace_uuid}；非 dict 或 task 为空返回 None。"""
+    if not isinstance(item, dict):
+        return None
+    task = item.get("task", "")
+    if not task:
+        return None
+    return {
+        "task": task,
+        "plan": item.get("plan", []),
+        "workspace_uuid": item.get("workspace_uuid", default_ws_uuid),
+    }
+
+
+def _inline_task_fn(content: Any, label: str, ws_uuid: str):
+    """从内联 content（dict 单任务 / list 多任务）构造 task_fn lambda；无效返回 None。"""
+    if isinstance(content, dict):
+        item = _normalize_task_item(content, ws_uuid)
+        if item is None:
+            logger.warning(f"[cron] {label} content.task is empty")
+            return None
+        logger.debug(f"[cron] Loaded inline task from: {label}")
+        return lambda: [item]
+
+    if isinstance(content, list):
+        tasks = []
+        for item in content:
+            norm = _normalize_task_item(item, ws_uuid)
+            if norm:
+                tasks.append(norm)
+        if not tasks:
+            logger.warning(f"[cron] {label} content list has no valid tasks")
+            return None
+        logger.debug(f"[cron] Loaded {len(tasks)} inline tasks from: {label}")
+        return lambda: tasks
+
+    logger.error(f"[cron] Invalid content field type in {label}")
+    return None
+
+
 class CronTask:
     """A single scheduled task."""
 
-    def __init__(self, config: dict, task_fn=None):
+    def __init__(self, config: dict, task_fn=None) -> None:
         self.name: str = config["name"]
         self.description: str = config.get("description", "")
         self.enabled: bool = config.get("enabled", True)
         self.schedule: dict = config["schedule"]  # {"type": "interval", "minutes": 60}
-        self.config: dict = config.get("config", {})  # Extra config (max_executions, etc.)
+        # 内层 config 子字典（max_executions 等运行时参数），与构造参数 config（完整任务配置）区分
+        self.runtime_config: dict = config.get("config", {})
         self.workspace_uuid: str = config.get("workspace_uuid", "")  # Empty = System workspace
         self.one_time: bool = config.get("one_time", False)  # Delete after first execution
 
@@ -230,8 +276,8 @@ class CronTask:
             expr = self.schedule.get("expr", "")
             self._next_run = _next_cron_time(from_time, expr)
         else:
-            # Fallback: run again in 60 minutes
-            self._next_run = from_time + timedelta(minutes=60)
+            # Fallback: run again in a fixed interval
+            self._next_run = from_time + timedelta(minutes=_FALLBACK_INTERVAL_MINUTES)
 
     def should_run(self, now: datetime) -> bool:
         """Check if this task should run now."""
@@ -253,31 +299,14 @@ class CronTask:
             result = self._task_fn()
             if not result:
                 return []
-            # 支持返回单个任务或任务列表
-            if isinstance(result, dict):
-                # 单个任务：{"task": "...", "plan": [...]}
-                task = result.get("task", "")
-                if not task:
-                    return []
-                return [{
-                    "task": task,
-                    "plan": result.get("plan", []),
-                    "workspace_uuid": result.get("workspace_uuid", ""),
-                }]
-            elif isinstance(result, list):
-                # 任务列表：[{"task": "...", "plan": [...]}, ...]
-                tasks = []
-                for item in result:
-                    if isinstance(item, dict):
-                        task = item.get("task", "")
-                        if task:
-                            tasks.append({
-                                "task": task,
-                                "plan": item.get("plan", []),
-                                "workspace_uuid": item.get("workspace_uuid", ""),
-                            })
-                return tasks
-            return []
+            # 支持返回单个任务或任务列表，统一规范化
+            items = result if isinstance(result, list) else [result]
+            tasks = []
+            for item in items:
+                norm = _normalize_task_item(item)
+                if norm:
+                    tasks.append(norm)
+            return tasks
         except Exception as e:
             logger.error(f"[cron] get_tasks() failed for {self.name}: {e}")
             return []
@@ -340,7 +369,7 @@ class CronTask:
             # Resolve target workspace: task_item > task-level > system
             target_ws = task_item.get("workspace_uuid") or self.workspace_uuid
             result = self._execute_in_session(target_ws, task_item)
-            results.append({"task": i, **result})
+            results.append({"task_index": i, **result})
 
         # 汇总结果
         all_success = all(r.get("status") == "completed" for r in results)
@@ -476,7 +505,7 @@ class CronTask:
         }
 
 
-def _get_or_create_master_agent(workspace_uuid: str, ws_dir: str):
+def _get_or_create_master_agent(workspace_uuid: str, ws_dir: str) -> "Agent | None":
     """获取或创建 workspace 对应的 master Agent（cron 专用缓存）。
 
     - 如果 agent 存在且未在运行 → 复用
@@ -508,7 +537,7 @@ def _get_or_create_master_agent(workspace_uuid: str, ws_dir: str):
 class CronScheduler:
     """Lightweight cron scheduler that runs tasks in background thread."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.tasks: list[CronTask] = []
         self._running = False
         self._thread: threading.Thread | None = None
@@ -571,39 +600,8 @@ class CronScheduler:
         if not content:
             logger.warning(f"[cron] User task {config.get('name')} has no 'content' field")
             return None
-
-        # Capture workspace_uuid from config for fallback
-        ws_uuid = config.get("workspace_uuid", "")
-
-        # User tasks use inline task/plan
-        if isinstance(content, dict):
-            task = content.get("task", "")
-            plan = content.get("plan", [])
-            if not task:
-                logger.warning(f"[cron] User task {config.get('name')} content.task is empty")
-                return None
-            logger.debug(f"[cron] Loaded user inline task: {config.get('name')}")
-            return lambda: [{"task": task, "plan": plan, "workspace_uuid": ws_uuid}]
-
-        if isinstance(content, list):
-            tasks = []
-            for item in content:
-                if isinstance(item, dict):
-                    task = item.get("task", "")
-                    if task:
-                        tasks.append({
-                            "task": task,
-                            "plan": item.get("plan", []),
-                            "workspace_uuid": ws_uuid,
-                        })
-            if not tasks:
-                logger.warning(f"[cron] User task {config.get('name')} content list has no valid tasks")
-                return None
-            logger.debug(f"[cron] Loaded {len(tasks)} user inline tasks from: {config.get('name')}")
-            return lambda: tasks
-
-        logger.error(f"[cron] Invalid content field type in user task {config.get('name')}")
-        return None
+        label = f"User task {config.get('name')}"
+        return _inline_task_fn(content, label, config.get("workspace_uuid", ""))
 
     def _load_task_fn(self, json_path: Path, config: dict):
         """Load task from the content field. Can be a Python file path or inline dict/list."""
@@ -611,9 +609,6 @@ class CronScheduler:
         if not content:
             logger.warning(f"[cron] {json_path.name} has no 'content' field")
             return None
-
-        # Capture workspace_uuid from config
-        ws_uuid = config.get("workspace_uuid", "")
 
         # Option 1: content is a string path to Python file
         if isinstance(content, str):
@@ -641,37 +636,8 @@ class CronScheduler:
                 logger.error(f"[cron] Failed to load task function from {py_path}: {e}")
                 return None
 
-        # Option 2: content is an inline dict with task/plan (single task)
-        if isinstance(content, dict):
-            task = content.get("task", "")
-            plan = content.get("plan", [])
-            if not task:
-                logger.warning(f"[cron] {json_path.name} content.task is empty")
-                return None
-            # Return a lambda that provides the inline task as a list
-            logger.debug(f"[cron] Loaded inline task from: {json_path.name}")
-            return lambda: [{"task": task, "plan": plan, "workspace_uuid": ws_uuid}]
-
-        # Option 3: content is a list of tasks
-        if isinstance(content, list):
-            tasks = []
-            for item in content:
-                if isinstance(item, dict):
-                    task = item.get("task", "")
-                    if task:
-                        tasks.append({
-                            "task": task,
-                            "plan": item.get("plan", []),
-                            "workspace_uuid": ws_uuid,
-                        })
-            if not tasks:
-                logger.warning(f"[cron] {json_path.name} content list has no valid tasks")
-                return None
-            logger.debug(f"[cron] Loaded {len(tasks)} inline tasks from: {json_path.name}")
-            return lambda: tasks
-
-        logger.error(f"[cron] Invalid content field type in {json_path.name}")
-        return None
+        # Option 2/3: content is inline dict/list (single or multiple tasks)
+        return _inline_task_fn(content, json_path.name, config.get("workspace_uuid", ""))
 
     def start(self) -> None:
         """Start the scheduler in a background thread."""
@@ -743,8 +709,8 @@ class CronScheduler:
                         )
                         thread.start()
 
-            # Check every 60 seconds (or wake early if stop requested)
-            self._wake_event.wait(60)
+            # Check periodically (or wake early if stop requested)
+            self._wake_event.wait(_POLL_INTERVAL_SECONDS)
             self._wake_event.clear()
 
     def _execute_task(self, task: CronTask, now: datetime) -> None:
@@ -758,7 +724,7 @@ class CronScheduler:
 
         try:
             # Check and decrement remaining counter
-            max_exec = task.config.get("max_executions", 9999)
+            max_exec = task.runtime_config.get("max_executions", _DEFAULT_MAX_EXECUTIONS)
             remaining = task._remaining if task._remaining is not None else max_exec
 
             # Check if should auto-disable BEFORE decrementing
@@ -796,8 +762,8 @@ class CronScheduler:
             # Update _next_run even on failure to prevent rapid re-triggering
             try:
                 task.mark_executed(now, None)
-            except Exception:
-                pass
+            except Exception as state_e:
+                logger.warning(f"[cron] Task {task.name} failed to update state after error: {state_e}")
         finally:
             ws_lock.release()
 

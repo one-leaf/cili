@@ -134,10 +134,10 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
 
-    MAX_RESULT_SIZE_CHARS = 20_000  # GrepTool 硬上限（与 Bash 的 30K 不同）
-    DEFAULT_HEAD_LIMIT = 250        # 默认最多返回 250 条匹配行
-    MAX_FILES = 100                 # 最多检索 100 个文件
-    MAX_COLUMNS = 500               # 每行最大字符数（防止长行撑爆上下文）
+    MAX_FILES = 100                  # 最多检索 100 个文件
+    MAX_COLUMNS = 500                # 每行最大字符数（防止长行撑爆上下文）
+    MAX_LIST_OUTPUT_CHARS = 50_000   # 文件列表/内容模式输出上限（字符）
+    MAX_COUNT_OUTPUT_CHARS = 100_000 # count 模式输出上限（字符，"path:count" 行允许更大）
 
     def execute(
         self,
@@ -255,7 +255,7 @@ class GrepTool(Tool):
         cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
         cmd += " || true"
 
-        result = self._run_bash(cmd, max_chars=50_000)
+        result = self._run_bash(cmd, max_chars=self.MAX_LIST_OUTPUT_CHARS)
         # _run_bash 无输出时返回占位符 "(no output)"（而非空串），且命令带 `|| true`
         # 使退出码恒为 0：grep 无匹配（退出码 1）会落到这里，须按"无匹配文件"处理，
         # 否则 "(no output)" 会被当成文件名，最终产出空结果而非 "No matches found."
@@ -321,7 +321,7 @@ class GrepTool(Tool):
             cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             cmd += " || true"
-            result = self._run_bash(cmd, max_chars=100_000)
+            result = self._run_bash(cmd, max_chars=self.MAX_COUNT_OUTPUT_CHARS)
             # 多文件时 grep -c 输出 "path:count"；单文件块只输出 count，需补文件名
             lines = [line for line in result.output.strip().split('\n') if line] if result.output else []
             if len(chunk) == 1 and lines and ":" not in lines[0]:
@@ -365,7 +365,7 @@ class GrepTool(Tool):
             # 无需再手动拼接
             cmd += f" | cut -c1-{self.MAX_COLUMNS} | head -n {remaining} || true"
 
-            result = self._run_bash(cmd, max_chars=50_000)
+            result = self._run_bash(cmd, max_chars=self.MAX_LIST_OUTPUT_CHARS)
             if result.output:
                 for line in result.output.strip().split('\n'):
                     if total_lines >= max_results:
