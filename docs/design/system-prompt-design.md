@@ -316,7 +316,7 @@ def assemble_context(messages, inject_messages):
 
 - 启动时注入 pinned 任务消息（目标 + 计划）；
 - 主执行循环结束后自动注入 `_CHECK_PROMPT`（同样 pinned），LLM 重新阅读任务目标与计划，**用工具取证**逐项验证结果、发现问题立即修复，最终总结须列出已验证/未验证项及修复内容，并将非显然的可复用知识用 `memory` 工具主动沉淀；
-- 检查阶段有独立的迭代上限（`role_cfg.check_iterations`，默认 10，worker 为 20），超出后强制收尾；
+- 检查阶段有独立的迭代上限（`role_cfg.check_iterations`，默认 10；worker 设为 `null` 即不设上限，仅由总迭代额度兜底），超出后强制收尾；
 - 检查阶段/预算预警由 `role_cfg.check_phase` / `role_cfg.budget_notice` 开关控制（lite 均关闭）。
 
 ---

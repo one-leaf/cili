@@ -742,6 +742,7 @@ class Agent(BaseAgent):
         summary = ""
         in_check_phase = False
         check_iters = 0
+        # None = 不设检查轮次上限，仅由总迭代额度兜底
         max_check_iterations = self.role_cfg.check_iterations
 
         try:
@@ -811,7 +812,10 @@ class Agent(BaseAgent):
                         self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
                         in_check_phase = True
                         check_iters = 0
-                        max_check_iterations = max(i, self.role_cfg.check_iterations)
+                        max_check_iterations = (
+                            max(i, self.role_cfg.check_iterations)
+                            if self.role_cfg.check_iterations is not None else None
+                        )
                         logger.debug(f"[Agent:{self.role}] 进入检查阶段 (iter={i}, max_check={max_check_iterations}, exec={self._exec_id})")
                         continue
                     else:
@@ -828,7 +832,7 @@ class Agent(BaseAgent):
                 # Track check phase iterations
                 if in_check_phase:
                     check_iters += 1
-                    if check_iters > max_check_iterations:
+                    if max_check_iterations is not None and check_iters > max_check_iterations:
                         summary = response.get_text() or "检查阶段超出最大迭代次数"
                         self.add_message("assistant", response.content_as_dicts())
                         status = "completed"

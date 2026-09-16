@@ -293,6 +293,57 @@ class TestWorkerBudgetAwareness:
         assert not any(m.get("_meta", {}).get("budget") for m in agent.messages)
 
 
+class TestWorkerCheckIterations:
+    """检查阶段迭代上限：null（不设上限）与数字上限两态"""
+
+    def test_worker_loads_check_iterations_none_from_role(self):
+        """worker.json 配置 check_iterations=null → role_cfg 解析为 None（不设上限）"""
+        agent = _make_agent(task="test task")
+        assert agent.role_cfg.check_phase is True
+        assert agent.role_cfg.check_iterations is None
+
+    def test_no_cap_when_check_iterations_none(self):
+        """check_iterations=None 时检查阶段不受轮次上限约束，直至正常收尾"""
+        agent = _make_agent(task="test task")
+        agent.role_cfg.check_iterations = None
+        agent.max_iterations = 200
+
+        # 主阶段 1 轮 → 进入检查 → 检查阶段连续 25 轮工具调用 → 最终文本收尾
+        responses = (
+            [_make_tool_call_response(), _make_text_response("主阶段结束")]
+            + [_make_tool_call_response() for _ in range(25)]
+            + [_make_text_response("检查完成")]
+        )
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_execute_tool", return_value=_make_tool_result()), \
+             patch.object(agent, "_call_llm", side_effect=responses):
+            result = agent.run()
+
+        assert result["status"] == "completed"
+        # 25 轮检查工具 + 1 轮收尾文本 = 26，未被上限截断
+        assert result["check_iterations"] == 26
+
+    def test_numeric_cap_still_enforced(self):
+        """check_iterations 为数字时仍按上限强制收尾"""
+        agent = _make_agent(task="test task")
+        agent.role_cfg.check_iterations = 5
+        agent.max_iterations = 200
+
+        # 主阶段 1 轮 → 进入检查（max(1,5)=5）→ 检查阶段 10 轮工具调用（无收尾文本）
+        responses = (
+            [_make_tool_call_response(), _make_text_response("主阶段结束")]
+            + [_make_tool_call_response() for _ in range(10)]
+        )
+        with patch.object(agent, "_check_and_compress"), \
+             patch.object(agent, "_execute_tool", return_value=_make_tool_result()), \
+             patch.object(agent, "_call_llm", side_effect=responses):
+            result = agent.run()
+
+        # 检查阶段第 6 轮（check_iters=6 > 5）触发上限强制收尾
+        assert result["status"] == "completed"
+        assert result["check_iterations"] == 6
+
+
 class TestWorkerEventCallbacks:
     """worker 事件回调：_on_text/_on_thinking/_on_tool_call/_on_tool_result 逐事件触发"""
 

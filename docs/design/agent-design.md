@@ -421,7 +421,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 1. **目标+计划**：`_build_task_message()` 作为第一条 user 消息注入，带 `_meta.pinned=True` 标记，压缩时始终保留。内容含 Objective、可选的 Execution Plan、迭代额度说明，以及下放的「主代理会话已批准命令」（`build_approved_commands_section`）。
 2. **执行**：主循环，LLM 自主调用工具完成任务。全部角色流式输出（`streaming=True`），可通过 `stop()` 随时中断（`_stopped`）。
-3. **检查**（仅 worker，`check_phase=True`）：主阶段结束后注入 `_CHECK_PROMPT`（pinned），要求 LLM 重新阅读任务目标与执行计划、用工具取证逐项核对执行结果、发现遗漏立即修复，最终总结须列出已验证/未验证项及修复内容；总结前回顾任务，将非显然的可复用知识用 `memory` 工具主动沉淀。检查阶段最多允许 `max(main_iterations, role_cfg.check_iterations=10)` 次额外迭代（worker 默认 20，可在角色 JSON 调整）。
+3. **检查**（仅 worker，`check_phase=True`）：主阶段结束后注入 `_CHECK_PROMPT`（pinned），要求 LLM 重新阅读任务目标与执行计划、用工具取证逐项核对执行结果、发现遗漏立即修复，最终总结须列出已验证/未验证项及修复内容；总结前回顾任务，将非显然的可复用知识用 `memory` 工具主动沉淀。检查阶段迭代上限由 `role_cfg.check_iterations` 控制：默认 `max(main_iterations, 10)` 次额外迭代；worker 设为 `null`（不设上限），仅由总迭代额度兜底，可在角色 JSON 调整。
 4. **兜底总结**：迭代额度耗尽（timeout）时，`_wrapup_timeout_summary()` 直接调用 `client.chat`（**不传 tools**）生成一次执行总结，杜绝兜底调用再次触发工具循环。
 
 ### 5.3 返回状态
