@@ -70,7 +70,8 @@ def build_approval_question(approval: dict[str, Any]) -> str:
         f"拦截原因：{approval['reason']}\n"
         f"判定编号：{approval['decision_id']}\n\n"
         f"「{APPROVE_LABEL}」仅本次会话放行；「{REMEMBER_LABEL}」会写入此工作区，"
-        f"重启后仍放行相同{target_label}（包括委派给子代理）；「{REJECT_LABEL}」则本次与今后均拦截。"
+        f"重启后仍放行相同{target_label}（包括委派给子代理）；「{REJECT_LABEL}」仅拦截本次执行，"
+        f"下次遇到相同{target_label}仍会询问。"
     )
 
 
