@@ -125,6 +125,7 @@ class SkillTool(Tool):
     """Access built-in global skills. Parameterised by the agent role."""
 
     name = "skill"
+    concurrency_safe = True
     parameters = {
         "type": "object",
         "properties": {

@@ -31,6 +31,7 @@ TYPE_EXTENSIONS: dict[str, list[str]] = {
 
 class FindTool(Tool):
     name = "find"
+    concurrency_safe = True
     description = (
         "Find files by name pattern (glob syntax) or by file type shortcut. "
         "Recursively searches directories. "

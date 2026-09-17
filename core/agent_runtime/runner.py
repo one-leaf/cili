@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from core.agent_runtime.context import INTERNAL_META
-from core.llm import LLMResponse, Message, TextBlock, format_llm_error
+from core.llm import LLMResponse, Message, TextBlock, classify_llm_error, format_llm_error
 from core.session import generate_short_id
 from core.tools.base import Tool, ToolResult
 
@@ -84,6 +84,10 @@ class Runner:
         - Multimodal content (images, saved as .json)
         Returns result dict with _meta containing internal fields.
         Uses Anthropic format: tool_use_id (not tool_call_id), is_error (not _is_error).
+
+        并发：标记为 concurrency_safe 的纯读工具可跨线程并行（其 execute 不读写
+        output_file/on_output）；其余工具经同实例 _exec_lock 串行化，防止并行批中
+        output_file/on_output 两个实例属性被互相覆盖。
         """
         tool = self._get_tool_by_name(name)
 
@@ -103,6 +107,29 @@ class Runner:
         # Placeholder tools: output goes directly in content, no external file
         _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
 
+        if tool.concurrency_safe and name not in _STREAMING_TOOLS:
+            return self._execute_tool_impl(
+                name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
+            )
+        with tool._exec_lock:
+            return self._execute_tool_impl(
+                name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
+            )
+
+    def _execute_tool_impl(
+        self,
+        name: str,
+        tool: Tool,
+        input_data: dict,
+        tool_use_id: str,
+        _STREAMING_TOOLS: set[str],
+        _PLACEHOLDER_TOOLS: set[str],
+    ) -> dict:
+        """工具执行主体（并发安全与否共用同一实现）。
+
+        并发安全工具在其 execute 中不读写 output_file/on_output，故不设实例属性；
+        非流式工具的输出落盘统一走显式路径，避免并行时实例属性互覆。
+        """
         # Setup output file path
         # 净化 tool_use_id：不合法（含路径分隔符/`..` 等）则回退随机文件名，
         # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
@@ -110,10 +137,12 @@ class Runner:
         output_file_path = ""
         if self.agent.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
             output_file_path = str(self.agent.session_dir / output_filename)
-            tool.output_file = output_file_path
-
-            # Create empty file only for streaming tools (signals tool is running)
+            # 仅流式工具（bash/python）需要实例属性实时写 + 前端轮询文件；
+            # 并发安全工具（纯读）execute 不读 output_file，不设实例属性防互覆。
             if name in _STREAMING_TOOLS:
+                tool.output_file = output_file_path
+
+                # Create empty file only for streaming tools (signals tool is running)
                 try:
                     with open(output_file_path, "w", encoding="utf-8") as f:
                         f.write("")
@@ -152,8 +181,8 @@ class Runner:
             # Non-streaming tools save lazily based on output size (see below)
             if name in _STREAMING_TOOLS:
                 tool.save_output_to_file(result)
-            # 更新 _output_path 为实际保存的文件路径（可能是 .json）
-            output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
+                # 更新 _output_path 为实际保存的文件路径（可能是 .json）
+                output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
             tool.output_file = None
             tool.on_output = None
 
@@ -187,13 +216,13 @@ class Runner:
         # Only save external file when needed (streaming already saved, skip)
         needs_external_file = truncated or is_multimodal
         if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
-            # Set output_file for save_output_to_file
-            tool.output_file = str(self.agent.session_dir / output_filename) if self.agent.session_dir else None
-            if tool.output_file:
-                tool.save_output_to_file(result)
+            # 显式路径调用 save_output_to_file，避免并行时实例属性互覆
+            save_path = str(self.agent.session_dir / output_filename) if self.agent.session_dir else None
+            if save_path:
+                saved_path = tool.save_output_to_file(result, output_file=save_path)
                 # Update filename if changed to .json (multimodal)
-                output_filename = os.path.basename(tool.output_file)
-                tool.output_file = None
+                if saved_path:
+                    output_filename = os.path.basename(saved_path)
 
         meta = {
             "tool_name": name,
@@ -966,10 +995,17 @@ class Runner:
                     # 去图重试：已 pad 过，但需重新解析工具输出（图片标记为无效后重组装）
                     message_objects = self._prepare_messages_for_llm(pad_dangling=False)
                 else:
-                    # 其他错误：等待后重试（分段 sleep，期间响应停止请求）
-                    delay = retry_delays[attempt]
-                    logger.warning(f"[LLM] 请求失败 (尝试 {attempt + 1}/{max_retries + 1})，{delay}秒后重试: {e}")
-                    for _ in range(delay * 10):
+                    # 统一 taxonomy（三态之二/三）：非瞬态（quota/auth/context_length/
+                    # bad_request）立即放弃，不消耗剩余重试次数——原来 quota 429 也会空等 3 次。
+                    info = classify_llm_error(e, self.agent.client.base_url if self.agent.client else "")
+                    if not info.should_retry:
+                        logger.error(f"[LLM] {info.message}")
+                        raise RuntimeError(info.message) from e
+
+                    # 瞬态错误：退避重试（尊重 Retry-After），分段 sleep 期间响应停止请求
+                    delay = info.retry_after_s if info.retry_after_s is not None else retry_delays[attempt]
+                    logger.warning(f"[LLM] 请求失败 ({info.kind}，尝试 {attempt + 1}/{max_retries + 1})，{delay:.0f}s 后重试")
+                    for _ in range(int(delay * 10)):
                         if self.agent._stopped:
                             return LLMResponse(
                                 content=[TextBlock(text="".join(text_parts))],

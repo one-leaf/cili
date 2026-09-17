@@ -20,6 +20,8 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
+from core.llm.errors import StreamErrorEvent, _classify_429, classify_llm_error
+
 logger = logging.getLogger(__name__)
 
 # Retry configuration
@@ -29,15 +31,6 @@ _MAX_RETRIES = 2
 _BASE_DELAY = 1.0  # seconds
 _MAX_DELAY = 60.0  # seconds
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
-
-
-class StreamErrorEvent(Exception):
-    """Raised when the SSE stream carries an error event (e.g. model overloaded).
-
-    The stream's partial response must be discarded and the call treated as a
-    transient failure so the caller can retry.
-    """
-    pass
 
 
 def _parse_sse_payload(payload: str, event_type: str | None) -> dict[str, Any]:
@@ -223,9 +216,17 @@ class HttpTransport:
     # ========== Retry logic ==========
 
     @staticmethod
-    def should_retry(status_code: int) -> bool:
-        """Return True if this status code is retryable."""
-        return status_code in _RETRY_STATUS_CODES
+    def should_retry(status_code: int, body: str | None = None) -> bool:
+        """Return True if this status code is retryable.
+
+        429 走语义细分：配额/余额不足（quota/billing）不可重试，
+        限流/过载可重试，未知 429 默认可重试（body 提供响应体文本时生效）。
+        """
+        if status_code not in _RETRY_STATUS_CODES:
+            return False
+        if status_code == 429:
+            return _classify_429(body or "")[1]
+        return True
 
     @staticmethod
     def retry_delay(attempt: int, retry_after: str | None = None) -> float:
@@ -315,11 +316,15 @@ class HttpTransport:
                 status = e.response.status_code
                 retry_count = attempt + 1
 
-                if not self.should_retry(status) or attempt == max_retries:
+                # 统一 taxonomy：非瞬态（quota/auth/context_length/bad_request）立即放弃
+                info = classify_llm_error(e)
+                if not info.should_retry or attempt == max_retries:
                     raise
 
-                retry_after = e.response.headers.get("retry-after")
-                delay = self.retry_delay(attempt, retry_after)
+                if info.retry_after_s is not None:
+                    delay = info.retry_after_s + random.uniform(0, 0.5)
+                else:
+                    delay = self.retry_delay(attempt, e.response.headers.get("retry-after"))
 
                 if total_timeout and time.time() - start_time + delay > total_timeout:
                     raise RuntimeError(
@@ -327,7 +332,7 @@ class HttpTransport:
                         f"Last error: HTTP {status}"
                     ) from e
 
-                logger.warning(f"[LLM] {status} 错误，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
+                logger.warning(f"[LLM] {info.kind} 错误 (HTTP {status})，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
                 self.interruptible_sleep(delay, stop_check)
 
             except httpx.TransportError as e:

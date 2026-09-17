@@ -9,6 +9,7 @@ class ReadToolResultTool(Tool):
     """Retrieve compacted tool output from external storage."""
 
     name = "read_tool_result"
+    concurrency_safe = True
     description = "Retrieve a compacted tool result by its tool_use_id. Use when you see '[Compacted: use `read_tool_result` tool ...]' in a tool result."
 
     parameters = {

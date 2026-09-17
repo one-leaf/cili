@@ -696,9 +696,13 @@ class TestOpenAIAdapter:
 # ========== A23-A26: 重试 / SSE 边界 / base_url / 超时 ==========
 
 
-def _make_http_error(status: int) -> httpx.HTTPStatusError:
+def _make_http_error(status: int, body: str = "", headers: dict | None = None) -> httpx.HTTPStatusError:
     req = httpx.Request("POST", "http://x")
     resp = httpx.Response(status_code=status, request=req)
+    if body:
+        resp._content = body.encode("utf-8")
+    if headers:
+        resp.headers.update(headers)
     return httpx.HTTPStatusError(f"HTTP {status}", request=req, response=resp)
 
 
@@ -734,6 +738,88 @@ class TestRetryDefaults:
 
         with pytest.raises(httpx.HTTPStatusError):
             transport.with_retry(op, max_retries=0)
+
+    # ---- 统一 taxonomy：429 语义细分（quota 不可重试 / rate_limit 可重试）----
+
+    def test_quota_429_not_retried(self, monkeypatch):
+        """配额/余额不足的 429 立即放弃，不消耗重试次数。"""
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            raise _make_http_error(429, '{"error": {"type": "insufficient_quota"}}')
+
+        with pytest.raises(httpx.HTTPStatusError):
+            transport.with_retry(op, max_retries=2)
+        assert calls["n"] == 1, "quota 429 不应重试"
+
+    def test_quota_429_chinese_marker_not_retried(self, monkeypatch):
+        """中文「余额不足」标记同样判定为不可重试。"""
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            raise _make_http_error(429, "余额不足，请充值")
+
+        with pytest.raises(httpx.HTTPStatusError):
+            transport.with_retry(op, max_retries=2)
+        assert calls["n"] == 1
+
+    def test_rate_limit_429_retried_and_succeeds(self, monkeypatch):
+        """限流 429 重试并成功。"""
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise _make_http_error(429, '{"error": {"code": "rate_limit_exceeded"}}')
+            return "ok"
+
+        assert transport.with_retry(op, max_retries=2) == "ok"
+        assert calls["n"] == 2
+
+    def test_rate_limit_429_honors_retry_after(self, monkeypatch):
+        """限流 429 尊重 Retry-After 头作为退避时长。"""
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        delays = []
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: delays.append(a[0]))
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise _make_http_error(429, '{"error": {"type": "rate_limit_exceeded"}}', {"retry-after": "7"})
+            return "ok"
+
+        assert transport.with_retry(op, max_retries=2) == "ok"
+        assert 7.0 <= delays[0] <= 7.6, f"应尊重 Retry-After≈7s，实际 {delays}"
+
+    def test_rate_limit_429_retry_after_from_body(self, monkeypatch):
+        """限流 429 尊重响应体里的 retry_after 字段。"""
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        delays = []
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: delays.append(a[0]))
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise _make_http_error(429, '{"error": {"type": "rate_limit_exceeded", "retry_after": 5}}')
+            return "ok"
+
+        assert transport.with_retry(op, max_retries=2) == "ok"
+        assert 5.0 <= delays[0] <= 5.6, f"应尊重 body retry_after≈5s，实际 {delays}"
 
 
 class _FakeSSEClient:

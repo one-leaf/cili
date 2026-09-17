@@ -14,6 +14,7 @@ from core.tools.read import ReadTool
 
 class ReadImageTool(Tool):
     name = "read_image"
+    concurrency_safe = True
     description = (
         "View an image file and return it to the model for visual inspection. "
         "Supports PNG, JPG, JPEG, GIF, WebP, BMP. Large images are automatically "

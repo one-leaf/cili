@@ -12,6 +12,7 @@ from core.tools.base import Tool, ToolResult
 
 class ReadTool(Tool):
     name = "read"
+    concurrency_safe = True
     description = (
         "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP), and PDFs. "
         "Use offset/limit for pagination on large text files. "

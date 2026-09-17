@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.llm.errors import format_llm_error
 
 # ========== Content Block Types ==========
 
@@ -572,25 +573,4 @@ class LLMResponse:
 
 # ========== Helper Functions ==========
 
-
-def format_llm_error(e: Exception, base_url: str = "") -> str:
-    """Format an LLM API exception into a short, actionable Chinese message.
-
-    Shared by root_agent.py and sub_agent.py to avoid duplicating the
-    isinstance chain.
-    """
-    import httpx
-
-    if isinstance(e, httpx.ConnectTimeout):
-        return f"LLM 连接超时，请检查网络或 API 地址是否正确 ({base_url})"
-    if isinstance(e, httpx.ReadTimeout):
-        return f"LLM 读取超时，服务器响应过慢 ({base_url})"
-    if isinstance(e, httpx.ConnectError):
-        return f"LLM 连接失败: {e}，请检查 API 地址和网络"
-    if isinstance(e, httpx.NetworkError):
-        return f"LLM 网络错误: {e}"
-    if isinstance(e, httpx.TimeoutException):
-        return f"LLM 请求超时，请检查网络连接 ({base_url})"
-    if isinstance(e, httpx.HTTPStatusError):
-        return f"LLM 错误 {e.response.status_code}: {e.response.text[:200]}"
-    return f"LLM 请求失败: {e}"
+# format_llm_error 已移至 core/llm/errors.py（统一 taxonomy），此处 re-export 兼容。

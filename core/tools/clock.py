@@ -10,6 +10,7 @@ from core.tools.base import Tool, ToolResult
 
 class ClockTool(Tool):
     name = "clock"
+    concurrency_safe = True
     description = (
         "Get the current date/time, or pause execution for a short time.\n"
         "- action='now' (default): returns current local time, weekday, UTC offset, and UTC time.\n"

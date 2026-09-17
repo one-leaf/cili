@@ -127,6 +127,7 @@ class SystemConfig:
     max_iterations: int = 200  # Agent maximum tool call iterations per session
     max_concurrent_agents: int = 2  # 同时运行的后台子代理上限（范围 1-10）
     access_token: str = ""  # 访问令牌：非 localhost 绑定且未配置时拒绝启动；配置后 Web 请求需携带
+    parallel_tools: bool = True  # 工具批内并行：无依赖的纯读工具（concurrency_safe）同一回合并行执行
 
     @classmethod
     def from_dict(cls, data: dict) -> "SystemConfig":
@@ -142,6 +143,7 @@ class SystemConfig:
             max_iterations=int(data.get("max_iterations", 200)),
             max_concurrent_agents=max_concurrent_agents,
             access_token=data.get("access_token", ""),
+            parallel_tools=bool(data.get("parallel_tools", True)),
         )
 
     def to_dict(self) -> dict:
@@ -155,6 +157,7 @@ class SystemConfig:
             "max_iterations": self.max_iterations,
             "max_concurrent_agents": self.max_concurrent_agents,
             "access_token": self.access_token,
+            "parallel_tools": self.parallel_tools,
         }
 
 

@@ -42,6 +42,8 @@ from core.llm.types import (
     format_llm_error,
 )
 
+from core.llm.errors import LLMErrorInfo, classify_llm_error
+
 from core.llm.assembler import BlockAssembler
 from core.llm.client import LLMClient
 from core.llm.anthropic import AnthropicAdapter
@@ -80,8 +82,10 @@ __all__ = [
     "StreamChunk",
     # Response
     "LLMResponse",
-    # Error formatting
+    # Error formatting / taxonomy
     "format_llm_error",
+    "classify_llm_error",
+    "LLMErrorInfo",
     # Assembler
     "BlockAssembler",
     # Client

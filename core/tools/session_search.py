@@ -15,6 +15,7 @@ from core.tools.base import Tool, ToolResult
 
 class SessionSearchTool(Tool):
     name = "session_search"
+    concurrency_safe = True
     description = (
         "Search historical messages across all sessions in the current workspace.\n"
         "Useful to recall what was discussed or done in past sessions: what files were "

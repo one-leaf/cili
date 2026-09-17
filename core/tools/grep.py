@@ -83,6 +83,7 @@ TYPE_EXTENSIONS: dict[str, list[str]] = {
 
 class GrepTool(Tool):
     name = "grep"
+    concurrency_safe = True
     description = (
         "Search file contents using regular expressions. "
         "Supports case-insensitive matching, context lines, glob filters, and file type shortcuts. "

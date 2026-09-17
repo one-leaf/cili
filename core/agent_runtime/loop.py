@@ -18,7 +18,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from core.llm import format_llm_error
+from core.agent_runtime.tool_batch import execute_tool_calls
 from core.tools.approval import META_KEY
 
 logger = logging.getLogger(__name__)
@@ -261,7 +261,9 @@ class Loop:
                         system_prompt=agent._system_prompt,
                     )
                 except Exception as e:
-                    summary = format_llm_error(e, agent.client.base_url if agent.client else "")
+                    # runner 已抛用户可读 RuntimeError（统一 taxonomy 文案），直接取 str(e)，
+                    # 避免二次 format_llm_error 把文案再包一层「LLM 请求失败: ...」。
+                    summary = str(e)
                     task_brief = agent.task[:50].replace("\n", " ")
                     logger.error(
                         f"[Agent:{agent.role}] LLM 错误 (iter={n - 1}, exec={agent._exec_id}, "
@@ -407,17 +409,25 @@ class Loop:
         """autonomous 工具批：降级审批 + 实时进度 + 连续失败熔断。
 
         返回 True 表示熔断触发（结果已组装），本批与整个执行应终止。
+
+        并发安全工具批内并行执行（execute_tool_calls），结果按输入顺序返回；
+        _save_progress 降到批级（批前/批后各一次），避免逐工具写 index.json 竞态。
         """
         agent = self.agent
         policy = self.policy
-        for tc in tool_calls:
-            agent._save_progress(n, status=phase, current_tool=tc.name)
-            input_data = tc.parse_arguments()
-            result = agent._execute_tool(tc.name, input_data, tc.id)
+        agent._save_progress(n, status=phase)
+        parallel = bool(getattr(agent.config, "system", None)
+                        and getattr(agent.config.system, "parallel_tools", True))
+        results = execute_tool_calls(
+            agent, tool_calls,
+            parallel=parallel,
+            on_execute=lambda names: agent._save_progress(n, status=phase, current_tool=names),
+        )
+
+        for result in results:
             # autonomous 无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问
             agent._downgrade_approval_result(result)
             agent.add_message("user", [result])
-            agent._save_progress(n, status=phase)
 
             if result.get("is_error"):
                 state["consecutive_failures"] += 1
@@ -428,19 +438,23 @@ class Loop:
                     return True
             else:
                 state["consecutive_failures"] = 0
+        agent._save_progress(n, status=phase)
         return False
 
     def _interactive_tool_batch(self, tool_calls: list, state: dict[str, Any]) -> bool:
         """interactive 工具批：审批/占位标注 + 批后合成 ask_user 卡。
 
         返回 True 表示需等待外部输入（ask_user/agent 占位或审批卡）。
+
+        并发安全工具批内并行执行（execute_tool_calls），结果按输入顺序返回；
+        审批单槽/占位等顺序相关逻辑在结果循环中保持输入顺序处理。
         """
         agent = self.agent
-        for block in tool_calls:
-            if agent._stopped:
-                break
-            input_data = block.parse_arguments()
-            result = agent._execute_tool(block.name, input_data, block.id)
+        parallel = bool(getattr(agent.config, "system", None)
+                        and getattr(agent.config.system, "parallel_tools", True))
+        results = execute_tool_calls(agent, tool_calls, parallel=parallel)
+
+        for result in results:
             placeholder = result.get("_meta", {}).get("completed") is False
             # 高风险命令需用户批准：降级为错误提示，统一在批处理完后合成 ask_user 卡
             if META_KEY in result.get("_meta", {}):
