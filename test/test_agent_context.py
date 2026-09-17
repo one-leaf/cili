@@ -60,12 +60,12 @@ class TestContextUnit:
         assert msg["content"] == "hello"
         assert "id" in msg["_meta"]
 
-    def test_add_message_marks_dirty_and_flushes(self):
+    def test_add_message_marks_dirty_no_flush(self):
         sm = _FakeSM()
         ctx = AgentContext(session_manager=sm)
         ctx.add_message("user", "hi")
         assert sm.mark_dirty_count == 1
-        assert sm.flush_count == 1
+        assert sm.flush_count == 0  # 批量落盘：逐条不 flush，由迭代/回合边界 flush()/save() 收尾
         # 同一引用不变式由 agent.py 的 `self.messages = session_manager.messages`
         # 重绑建立，见 TestAgentForwarding.test_messages_property_shares_reference
 

@@ -56,7 +56,12 @@ class AgentContext:
     # ─── 消息写入 ─────────────────────────────────────────────────
 
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
-        """追加一条消息；交互模式下 mark_dirty + flush jsonl（崩溃不丢消息）。"""
+        """追加一条消息；交互模式下仅置脏，落盘由迭代/回合边界的 flush()/save() 批量完成。
+
+        消息引用与 session_manager.messages 共享（同一 list），mark_dirty 递增版本号，
+        jsonl 追加推迟到 _interactive_tool_batch 末尾 flush / 回合退出点 save，
+        崩溃窗口从"消息级"放宽到"迭代级"（工具输出内容已外置文件不丢）。
+        """
         meta = dict(meta) if meta else {}
         if "id" not in meta:
             meta["id"] = generate_short_id()
@@ -64,7 +69,6 @@ class AgentContext:
         self.messages.append(msg)
         if self.session_manager is not None:
             self.session_manager.mark_dirty()
-            self.session_manager.flush()
 
     def invalidate_all_messages(self) -> int:
         """标记全部消息无效（_meta.valid=False）。返回标记数。"""

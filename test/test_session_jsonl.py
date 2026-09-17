@@ -15,6 +15,7 @@ from core.session import (
     build_model_messages,
     load_history_messages,
     read_jsonl,
+    read_meta,
     read_view,
 )
 from core.migration import migrate_session_to_new_layout
@@ -456,3 +457,51 @@ class TestMigration:
         # 模型视图只剩有效消息；jsonl 两条都保留（UI 可见）
         assert len(build_model_messages(session_dir)) == 1
         assert len(load_history_messages(session_dir)) == 2
+
+
+class TestMetaPreview:
+    """meta.json 下沉 preview/message_count：列表纯 meta 读，免扫 jsonl。"""
+
+    def test_meta_payload_has_preview_and_message_count(self, test_workspace):
+        sm, sessions_dir = _new_session(test_workspace)
+        for m in [
+            {"role": "user", "content": "第一条问题"},
+            {"role": "assistant", "content": "回答"},
+            {"role": "user", "content": "最后一条问题"},
+        ]:
+            sm.add_message(m["role"], m["content"])
+        sm.save()
+
+        sdir = _session_dir(sessions_dir, sm.session_id)
+        meta = read_meta(sdir)
+        assert meta["preview"] == "最后一条问题"
+        assert meta["message_count"] == 3
+
+    def test_meta_preview_skips_summary_and_tool_result_only(self, test_workspace):
+        """语义对齐旧 jsonl 扫描：取最后一条含文本的 user 消息。
+
+        纯 tool_result 的 user 消息无文本 → 回退到上一条；summary 消息不进 jsonl → 跳过。
+        """
+        sm, sessions_dir = _new_session(test_workspace)
+        sm.add_message("user", "问题")
+        sm.add_message("assistant", "回答")
+        sm.add_message("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "res"}])
+        sm.add_message("user", "后面的总结", _meta={"summary": True})
+        sm.save()
+
+        sdir = _session_dir(sessions_dir, sm.session_id)
+        meta = read_meta(sdir)
+        assert meta["preview"] == "问题"
+        assert meta["message_count"] == 3  # summary 不进 jsonl，仍 3 行
+
+    def test_clear_resets_message_count_and_preview(self, test_workspace):
+        """回归：clear() 顺序缺陷——_meta_payload 先于 _jsonl_max_seq=-1 会残留旧计数。"""
+        sm, sessions_dir = _new_session(test_workspace)
+        sm.add_message("user", "hello")
+        sm.save()
+        sm.clear()
+
+        sdir = _session_dir(sessions_dir, sm.session_id)
+        meta = read_meta(sdir)
+        assert meta["message_count"] == 0
+        assert meta["preview"] == ""

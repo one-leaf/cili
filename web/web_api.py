@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from core.fs_utils import atomic_write_json
+from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.base_agent import RETRY_CLEAR_SENTINEL
 from core.config import (
     load_config, Config, ModelConfig, MCPConfig, PROJECT_ROOT, DATA_DIR,
@@ -44,6 +44,7 @@ from core.session import (
     _drop_session_lock,
     load_history_messages,
     load_history_meta,
+    preview_from_messages,
     read_jsonl,
     read_meta,
 )
@@ -820,9 +821,31 @@ async def reset_workspace(workspace_uuid: str):
 
 # ----- Sessions -----
 
+def _scan_session_brief(session_dir: Path) -> tuple[str, int]:
+    """回退扫描 jsonl：取最后一条含文本的 user 消息预览 + 消息数。
+
+    仅用于升级前写入的 meta.json（缺 preview/message_count 字段）时一次性回退，
+    不回写磁盘，由下一次 checkpoint save() 自然收敛。
+    """
+    preview = ""
+    message_count = 0
+    for line in read_jsonl(session_dir / MESSAGES_FILE):
+        message_count += 1
+        if line.get("role") == "user":
+            content = line.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "text":
+                        preview = block.get("text", "")[:200]
+                        break
+            elif isinstance(content, str):
+                preview = content[:200]
+    return preview, message_count
+
+
 @app.get("/api/workspaces/{workspace_uuid}/sessions")
 async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
-    """List all sessions in a workspace."""
+    """List all sessions in a workspace (纯 meta 读，不读消息正文、不触发迁移)。"""
     sessions_dir = ws_dir / "sessions"
     if not sessions_dir.exists():
         return {"sessions": []}
@@ -834,37 +857,46 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
         index_file = session_dir / "index.json"
         if not index_file.exists():
             continue
+        meta_file = session_dir / META_FILE
         try:
-            mtime = index_file.stat().st_mtime
-            meta = load_history_meta(session_dir)
-            metadata = meta.get("metadata", {})
-
-            # Extract preview from last user message + message count (jsonl 行数)
-            preview = ""
-            message_count = 0
-            for line in read_jsonl(session_dir / MESSAGES_FILE):
-                message_count += 1
-                if line.get("role") == "user":
-                    content = line.get("content", "")
-                    if isinstance(content, list):
-                        for block in content:
-                            if block.get("type") == "text":
-                                preview = block.get("text", "")[:200]
-                                break
-                    elif isinstance(content, str):
-                        preview = content[:200]
-
-            sessions.append({
-                "session_id": meta.get("session_id", session_dir.name),
-                "name": meta.get("name", "Unnamed"),
-                "created_at": metadata.get("created_at", ""),
-                "updated_at": metadata.get("updated_at", ""),
-                "message_count": message_count,
-                "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
-                "preview": preview,
-                "hidden": metadata.get("hidden", False),
-                "_mtime": mtime,
-            })
+            if meta_file.exists():
+                # 新格式：纯 meta 读（preview/message_count 已由 checkpoint 下沉）
+                meta = read_meta(session_dir)
+                metadata = meta.get("metadata", {})
+                mtime = meta_file.stat().st_mtime
+                preview = meta.get("preview", "")
+                message_count = meta.get("message_count", 0)
+                if "preview" not in meta or "message_count" not in meta:
+                    preview, message_count = _scan_session_brief(session_dir)
+                sessions.append({
+                    "session_id": meta.get("session_id") or session_dir.name,
+                    "name": meta.get("name", "Unnamed"),
+                    "created_at": metadata.get("created_at", ""),
+                    "updated_at": metadata.get("updated_at", ""),
+                    "message_count": message_count,
+                    "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
+                    "preview": preview,
+                    "hidden": metadata.get("hidden", False),
+                    "_mtime": mtime,
+                })
+            else:
+                # 旧单文件格式（无 meta.json）：直读 index.json 的 name/metadata，只读不迁移
+                old = load_json_or_backup(index_file, {}) or {}
+                old_messages = old.get("messages", [])
+                if not isinstance(old_messages, list):
+                    old_messages = []
+                metadata = old.get("metadata", {})
+                sessions.append({
+                    "session_id": old.get("session_id") or session_dir.name,
+                    "name": old.get("name", "Unnamed"),
+                    "created_at": metadata.get("created_at", ""),
+                    "updated_at": metadata.get("updated_at", ""),
+                    "message_count": len(old_messages),
+                    "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
+                    "preview": preview_from_messages(old_messages),
+                    "hidden": metadata.get("hidden", False),
+                    "_mtime": index_file.stat().st_mtime,
+                })
         except Exception as e:
             logger.error(f"Failed to read session {index_file}: {e}")
 

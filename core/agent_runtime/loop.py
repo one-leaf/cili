@@ -466,6 +466,9 @@ class Loop:
         if state["approval"] and not state["external_already"] and not agent._stopped:
             agent._handle_approval_required(state["approval"])
             state["wait_for_external"] = True
+        # 迭代边界批量落盘一次：本批工具结果已入内存，一次性追加 jsonl + fsync（非逐条）。
+        # 已由 _handle_approval_required 的 save() 落盘时此处为幂等 no-op。
+        agent.session_manager.flush()
         return state["wait_for_external"]
 
     # ─── 辅助 ───────────────────────────────────────────────────────

@@ -54,6 +54,33 @@ def _strip_internal_meta(meta: dict) -> dict | None:
     stripped = {k: v for k, v in meta.items() if k not in _INTERNAL_META_FIELDS}
     return stripped or None
 
+
+def preview_from_messages(messages: list[dict]) -> str:
+    """取最后一条含文本的 user 消息的前 200 字符，用作会话列表预览。
+
+    语义对齐旧 jsonl 扫描：跳过 _meta.summary 消息（摘要不进 jsonl）；
+    content 为字符串取原文，为 list 取第一个 type=="text" block；
+    纯工具结果等无文本的 user 消息跳过，继续往前找。
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        if (msg.get("_meta") or {}).get("summary"):
+            continue
+        content = msg.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = str(block.get("text", ""))
+                    break
+        if text:
+            return text[:200]
+    return ""
+
+
 logger = logging.getLogger(__name__)
 
 # 新式会话文件布局
@@ -624,8 +651,9 @@ class SessionManager:
                 "next_seq": 0,
                 "commits": [],
             })
-            atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
+            # 先重置 _jsonl_max_seq 再写 meta，否则 message_count 会残留旧值
             self._jsonl_max_seq = -1
+            atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
             self._persisted_version = self._index_version
 
     def get_last_n_messages(self, n: int) -> list[dict]:
@@ -681,11 +709,14 @@ class SessionManager:
 
         幂等：已分配 seq 的消息跳过。调用方必须持有 _get_session_lock。
         """
-        index_file = self.session_dir / INDEX_FILE
-        disk_next_seq = (load_json_or_backup(index_file, {}) or {}).get("next_seq", 0) or 0
-        # 崩溃自愈：jsonl 可能有未 commit 的孤儿行，取其最大 seq 为基数，防新消息序号碰撞
+        # 崩溃自愈：jsonl 可能有未 commit 的孤儿行，取其最大 seq 为基数，防新消息序号碰撞。
+        # 磁盘 index 的 next_seq 仅在 _jsonl_max_seq < 0（fresh load/clear/revert 后）时读盘兜底，
+        # 稳态纯内存，避免高频 flush 每次全读 index.json。
         if self._jsonl_max_seq < 0:
             self._refresh_jsonl_max_seq()
+            disk_next_seq = (load_json_or_backup(self.session_dir / INDEX_FILE, {}) or {}).get("next_seq", 0) or 0
+        else:
+            disk_next_seq = 0
         next_seq = max(disk_next_seq, self._jsonl_max_seq + 1)
         append_lines: list[dict] = []
 
@@ -761,12 +792,18 @@ class SessionManager:
         })
         atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
 
+    def _jsonl_message_count(self) -> int:
+        """jsonl 行数（seq 连续分配，恒等于 max_seq+1；空会话为 0）。"""
+        return self._jsonl_max_seq + 1 if self._jsonl_max_seq >= 0 else 0
+
     def _meta_payload(self) -> dict:
-        """meta.json 内容。"""
+        """meta.json 内容（preview/message_count 供列表纯 meta 读，免读 jsonl）。"""
         return {
             "session_id": self.session_id or self.session_dir.name,
             "name": self.name,
             "metadata": self.metadata,
+            "preview": preview_from_messages(self.messages),
+            "message_count": self._jsonl_message_count(),
         }
 
     def load(self) -> bool:

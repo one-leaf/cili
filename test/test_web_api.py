@@ -529,3 +529,98 @@ class TestAskUserDirectInput:
         assert events[0]["tool"] == "ask_user"
         assert events[0]["tool_use_id"] == tool_use_id
         assert events[-1]["type"] == "done"
+
+
+class TestListSessionsMetaOnly:
+    """list_sessions 双分支只读：新格式纯 meta 读不扫 jsonl；旧格式直读不迁移。"""
+
+    def _make_new_session(self, ws_dir, sid="s1", preview="预览文本", message_count=5):
+        sdir = ws_dir / "sessions" / sid
+        sdir.mkdir(parents=True)
+        body = {
+            "session_id": sid,
+            "name": "新会话",
+            "metadata": {
+                "created_at": "2026-01-01 00:00:00",
+                "updated_at": "2026-01-02 00:00:00",
+            },
+        }
+        (sdir / "index.json").write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        (sdir / "meta.json").write_text(
+            json.dumps({**body, "preview": preview, "message_count": message_count}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return sdir
+
+    def test_new_format_pure_meta_read_no_jsonl(self, monkeypatch, tmp_path):
+        """meta.json 含 preview/message_count → 纯 meta 读，不触发 jsonl 扫描。"""
+        import asyncio
+        from web import web_api
+
+        self._make_new_session(tmp_path)
+        calls = []
+        monkeypatch.setattr(web_api, "read_jsonl", lambda *a, **k: calls.append(a) or [])
+        sessions = asyncio.run(web_api.list_sessions("ws", ws_dir=tmp_path))
+        assert calls == [], "纯 meta 读不应扫描 jsonl"
+        assert len(sessions["sessions"]) == 1
+        s = sessions["sessions"][0]
+        assert s["session_id"] == "s1"
+        assert s["name"] == "新会话"
+        assert s["preview"] == "预览文本"
+        assert s["message_count"] == 5
+
+    def test_old_format_reads_index_no_migration(self, tmp_path):
+        """旧格式（仅 index.json）直读显示，不生成 meta.json/messages.jsonl。"""
+        import asyncio
+        from web import web_api
+
+        sdir = tmp_path / "sessions" / "s2"
+        sdir.mkdir(parents=True)
+        messages = [
+            {"role": "user", "content": "旧会话问题", "_meta": {"id": "m1"}},
+            {"role": "assistant", "content": "旧会话回答", "_meta": {"id": "m2"}},
+        ]
+        (sdir / "index.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "s2",
+                    "name": "旧会话",
+                    "metadata": {"created_at": "2026-01-01 00:00:00"},
+                    "messages": messages,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        sessions = asyncio.run(web_api.list_sessions("ws", ws_dir=tmp_path))
+        assert len(sessions["sessions"]) == 1
+        s = sessions["sessions"][0]
+        assert s["preview"] == "旧会话问题"
+        assert s["message_count"] == 2
+        # 只读不迁移
+        assert not (sdir / "meta.json").exists()
+        assert not (sdir / "messages.jsonl").exists()
+
+    def test_missing_meta_fields_falls_back_to_jsonl_scan(self, tmp_path):
+        """升级前写的 meta.json 缺 preview/message_count → 一次性回退 jsonl 扫描，不回写。"""
+        import asyncio
+        from web import web_api
+        from core.session import MESSAGES_FILE
+
+        sdir = self._make_new_session(tmp_path)
+        meta = json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
+        del meta["preview"]
+        del meta["message_count"]
+        (sdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        with open(sdir / MESSAGES_FILE, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"role": "user", "content": "回退预览"}, ensure_ascii=False) + "\n")
+
+        sessions = asyncio.run(web_api.list_sessions("ws", ws_dir=tmp_path))
+        assert len(sessions["sessions"]) == 1
+        s = sessions["sessions"][0]
+        assert s["preview"] == "回退预览"
+        assert s["message_count"] == 1
+        # 回退只读，不回写 meta.json
+        meta_after = json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
+        assert "preview" not in meta_after
+        assert "message_count" not in meta_after
