@@ -9,13 +9,8 @@ build/
 develop-eggs/
 dist/
 downloads/
-data/
 eggs/
 .eggs/
-.claude/
-.githooks/
-.playwright-mcp/
-CLAUDE.md
 lib/
 lib64/
 parts/
@@ -38,17 +33,22 @@ ENV/
 *.swp
 *.swo
 *~
+
+# Windows
 nul
 
-# Cili Agent specific
+# 工具链 / 本地配置（不入库）
+.claude/
+.githooks/
+.playwright-mcp/
+CLAUDE.md
+
+# Cili Agent 运行时数据
 workspace/
 data/*
 .tmp/
 .test_tmp/
 *.log
-
-# Reference code (third-party, not tracked)
-reference/
 
 # 本地 pytest 配置（仅本地保留，不入库）
 pytest.ini
