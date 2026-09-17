@@ -10,7 +10,7 @@ class TestMaskSingleModel:
     """_mask_single_model() API key masking."""
 
     def test_long_key_masked(self):
-        from web.web_api import _mask_single_model
+        from web.routes_config import _mask_single_model
         model = {"api_key": "sk-ant-1234567890abcdef", "name": "claude"}
         result = _mask_single_model(model)
         assert "api_key" not in result
@@ -18,21 +18,21 @@ class TestMaskSingleModel:
         assert result["name"] == "claude"
 
     def test_short_key_masked(self):
-        from web.web_api import _mask_single_model
+        from web.routes_config import _mask_single_model
         model = {"api_key": "shortkey", "name": "test"}
         result = _mask_single_model(model)
         assert "api_key" not in result
         assert result["api_key_masked"] == "***"
 
     def test_empty_key_no_masked_field(self):
-        from web.web_api import _mask_single_model
+        from web.routes_config import _mask_single_model
         model = {"api_key": "", "name": "test"}
         result = _mask_single_model(model)
         assert "api_key" not in result
         assert "api_key_masked" not in result
 
     def test_no_api_key_field(self):
-        from web.web_api import _mask_single_model
+        from web.routes_config import _mask_single_model
         model = {"name": "test"}
         result = _mask_single_model(model)
         assert "api_key" not in result
@@ -43,7 +43,7 @@ class TestMaskApiKey:
     """_mask_api_key() config-level masking."""
 
     def test_masks_all_models(self):
-        from web.web_api import _mask_api_key
+        from web.routes_config import _mask_api_key
         config = {
             "model": {"api_key": "sk-ant-1234567890", "name": "claude"},
             "worker_model": {"api_key": "sk-worker-key-12345", "name": "worker-model"},
@@ -55,7 +55,7 @@ class TestMaskApiKey:
             assert "api_key_masked" in result[key]
 
     def test_no_model_field(self):
-        from web.web_api import _mask_api_key
+        from web.routes_config import _mask_api_key
         config = {"system": {"pip_mirror": "https://..."}}
         result = _mask_api_key(config)
         assert result["system"]["pip_mirror"] == "https://..."
@@ -65,7 +65,7 @@ class TestLocalhostIPs:
     """Access control localhost IP set."""
 
     def test_contains_standard_ips(self):
-        from web.web_api import _LOCALHOST_IPS
+        from web.deps import _LOCALHOST_IPS
         assert "127.0.0.1" in _LOCALHOST_IPS
         assert "::1" in _LOCALHOST_IPS
 
@@ -75,7 +75,7 @@ class TestRequireWorkspace:
 
     def test_nonexistent_workspace_raises_404(self):
         from fastapi import HTTPException
-        from web.web_api import _require_workspace
+        from web.deps import _require_workspace
         with pytest.raises(HTTPException) as exc_info:
             # _require_workspace is an async dependency
             import asyncio
@@ -87,12 +87,12 @@ class TestValidateWorkspaceUuid:
     """_validate_workspace_uuid() 路径穿越校验。"""
 
     def test_valid_uuid_passes(self):
-        from web.web_api import _validate_workspace_uuid
+        from web.deps import _validate_workspace_uuid
         _validate_workspace_uuid("abc123")  # 不应抛异常
 
     def test_path_traversal_rejected(self):
         from fastapi import HTTPException
-        from web.web_api import _validate_workspace_uuid
+        from web.deps import _validate_workspace_uuid
         for evil in ("..", "../..", "a/b", "C:\\evil", "a%2Fb"):
             with pytest.raises(HTTPException) as exc_info:
                 _validate_workspace_uuid(evil)
@@ -104,7 +104,7 @@ class TestListAllWorkspaces:
 
     def test_returns_empty_when_no_workspaces(self, tmp_path):
         """Empty directory returns empty list."""
-        import web.web_api as api_module
+        import web.deps as api_module
         original = api_module.WORKSPACE_DATA_DIR
         try:
             api_module.WORKSPACE_DATA_DIR = tmp_path
@@ -117,7 +117,7 @@ class TestListAllWorkspaces:
         """Directories starting with '.' are skipped."""
         (tmp_path / ".hidden").mkdir()
         (tmp_path / "visible").mkdir()
-        import web.web_api as api_module
+        import web.deps as api_module
         original = api_module.WORKSPACE_DATA_DIR
         try:
             api_module.WORKSPACE_DATA_DIR = tmp_path
@@ -132,7 +132,7 @@ class TestEvictIdleAgent:
     """_evict_idle_agent() LRU eviction logic."""
 
     def test_no_eviction_when_under_limit(self):
-        from web.web_api import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
+        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
         original_agents = dict(agents)
         original_access = dict(_agent_access)
         try:
@@ -146,7 +146,7 @@ class TestEvictIdleAgent:
             _agent_access.update(original_access)
 
     def test_evicts_oldest_idle(self):
-        from web.web_api import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
+        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
         original_agents = dict(agents)
         original_access = dict(_agent_access)
         try:
@@ -173,7 +173,7 @@ class TestEvictIdleAgent:
             _agent_access.update(original_access)
 
     def test_does_not_evict_running_agent(self):
-        from web.web_api import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
+        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
         original_agents = dict(agents)
         original_access = dict(_agent_access)
         try:
@@ -207,7 +207,7 @@ class TestGlobalEvents:
     def test_event_delivery_and_session_filter(self):
         """事件按 session_id 过滤投递；不匹配的事件被过滤"""
         import asyncio
-        from web.web_api import stream_global_events
+        from web.routes_chat import stream_global_events
         from core.event_bus import get_event_bus
 
         async def run():
@@ -239,7 +239,7 @@ class TestGlobalEvents:
     def test_unsubscribe_on_close(self):
         """流关闭后退订（finally unsubscribe），新订阅不受影响"""
         import asyncio
-        from web.web_api import stream_global_events
+        from web.routes_chat import stream_global_events
         from core.event_bus import get_event_bus
 
         async def run():
@@ -272,7 +272,7 @@ class TestGlobalEvents:
         import asyncio
         import pytest
         from fastapi import HTTPException
-        from web.web_api import stream_global_events
+        from web.routes_chat import stream_global_events
 
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(stream_global_events(session_id="bad/id"))
@@ -287,7 +287,7 @@ class TestGlobalEvents:
         """
         import asyncio
         import queue
-        from web import web_api
+        from web import deps as web_api
         from core.event_bus import get_event_bus
 
         ws, sid = "ws-regress", "sess-regress-1"
@@ -353,25 +353,25 @@ class TestAskUserDirectInput:
         return sm, tool_use_id
 
     def test_find_pending_ask_user(self, tmp_path):
-        from web.web_api import _find_pending_ask_user
+        from web.routes_ask_user import _find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         assert _find_pending_ask_user(sm) == tool_use_id
 
     def test_find_pending_ask_user_none_when_answered(self, tmp_path):
-        from web.web_api import _find_pending_ask_user
+        from web.routes_ask_user import _find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         sm.messages[-1]["content"][0]["_meta"]["completed"] = True
         assert _find_pending_ask_user(sm) is None
 
     def test_build_other_answer_formats_questions(self, tmp_path):
-        from web.web_api import _build_other_answer
+        from web.routes_ask_user import _build_other_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
         answer = _build_other_answer(sm, tool_use_id, "我选 Python")
         assert answer == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
 
     def test_inject_ask_user_answer(self, tmp_path):
         from types import SimpleNamespace
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
         agent = SimpleNamespace(session_manager=sm, approval_store=None)
         ok = _inject_ask_user_answer(agent, tool_use_id, "你喜欢哪种语言？ Python")
@@ -388,7 +388,7 @@ class TestAskUserDirectInput:
 
     def test_inject_ask_user_answer_unknown_id_returns_false(self, tmp_path):
         from types import SimpleNamespace
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         sm, _ = self._placeholder_session(tmp_path)
         agent = SimpleNamespace(session_manager=sm, approval_store=None)
         assert _inject_ask_user_answer(agent, "call_missing", "x") is False
@@ -412,7 +412,7 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_remember_persists_rule(self, tmp_path):
         from core.tools.approval import REMEMBER_LABEL, approval_decision_id
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
         assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REMEMBER_LABEL}") is True
@@ -427,7 +427,7 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_approve_session_only(self, tmp_path):
         from core.tools.approval import APPROVE_LABEL, approval_decision_id
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
         assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {APPROVE_LABEL}") is True
@@ -440,7 +440,7 @@ class TestAskUserDirectInput:
         """路径审批（kind=path:write）经「允许并记住」后，kind 落盘并回灌为路径规则。"""
         from types import SimpleNamespace
         from core.tools.approval import REMEMBER_LABEL, ApprovalStore
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
         store = ApprovalStore(rules_path=tmp_path / "approvals.json")
         store.set_pending({
@@ -466,7 +466,7 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_reject_does_not_approve(self, tmp_path):
         from core.tools.approval import REJECT_LABEL, approval_decision_id
-        from web.web_api import _inject_ask_user_answer
+        from web.routes_ask_user import _inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
         assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REJECT_LABEL}") is True
@@ -480,7 +480,7 @@ class TestAskUserDirectInput:
         import asyncio
         import json
         from types import SimpleNamespace
-        from web import web_api
+        from web import routes_chat as web_api
 
         sm, tool_use_id = self._placeholder_session(tmp_path)
         agent = SimpleNamespace(
@@ -555,7 +555,7 @@ class TestListSessionsMetaOnly:
     def test_new_format_pure_meta_read_no_jsonl(self, monkeypatch, tmp_path):
         """meta.json 含 preview/message_count → 纯 meta 读，不触发 jsonl 扫描。"""
         import asyncio
-        from web import web_api
+        from web import routes_workspace as web_api
 
         self._make_new_session(tmp_path)
         calls = []
@@ -572,7 +572,7 @@ class TestListSessionsMetaOnly:
     def test_old_format_reads_index_no_migration(self, tmp_path):
         """旧格式（仅 index.json）直读显示，不生成 meta.json/messages.jsonl。"""
         import asyncio
-        from web import web_api
+        from web import routes_workspace as web_api
 
         sdir = tmp_path / "sessions" / "s2"
         sdir.mkdir(parents=True)
@@ -604,7 +604,7 @@ class TestListSessionsMetaOnly:
     def test_missing_meta_fields_falls_back_to_jsonl_scan(self, tmp_path):
         """升级前写的 meta.json 缺 preview/message_count → 一次性回退 jsonl 扫描，不回写。"""
         import asyncio
-        from web import web_api
+        from web import routes_workspace as web_api
         from core.session import MESSAGES_FILE
 
         sdir = self._make_new_session(tmp_path)

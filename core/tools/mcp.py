@@ -210,7 +210,12 @@ def _normalize_nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _normalize_schema_for_openai(schema: Any) -> dict[str, Any]:
+def _normalize_schema(schema: Any) -> dict[str, Any]:
+    """把 MCP 提供的 schema 归一化为规范 JSON Schema（input_schema 承载）。
+
+    MCP server 可能输出 nullable/oneOf/anyOf、本地 $ref 等非规范结构，
+    统一在此折叠为单类型 schema，供 wrapper 存储 / 模型 API 消费。
+    """
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
     return _normalize_nullable_schema(_rewrite_local_schema_refs(schema))
@@ -486,7 +491,7 @@ class MCPProvider:
                 or getattr(tool_def, "inputSchema", None)
                 or {}
             )
-            parameters = _normalize_schema_for_openai(input_schema)
+            parameters = _normalize_schema(input_schema)
             wrappers.append(MCPToolWrapper(
                 provider=self,
                 server_name=name,
@@ -550,12 +555,12 @@ class MCPProvider:
         }
 
     def server_tools(self, name: str) -> list[dict]:
-        """返回某 server 已枚举的工具清单（名称 + 描述 + 参数 schema）。"""
+        """返回某 server 已枚举的工具清单（名称 + 描述 + 参数 schema，规范 input_schema 键）。"""
         return [
             {
                 "name": w.name,
                 "description": w.description,
-                "parameters": w.parameters,
+                "input_schema": w.parameters,
             }
             for w in self._wrappers.get(name, [])
         ]
@@ -584,7 +589,7 @@ class MCPProvider:
                 {
                     "name": t.name,
                     "description": getattr(t, "description", None) or t.name,
-                    "parameters": _normalize_schema_for_openai(
+                    "input_schema": _normalize_schema(
                         getattr(t, "input_schema", None)
                         or getattr(t, "inputSchema", None)
                         or {}
