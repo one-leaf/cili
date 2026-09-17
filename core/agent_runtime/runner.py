@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -26,6 +27,9 @@ from core.session import generate_short_id
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# 兜底锁：仅用于不继承 Tool 基类的鸭子类型工具（如测试替身），真实工具均有 _exec_lock
+_FALLBACK_EXEC_LOCK = threading.Lock()
 
 # 压缩常量
 KEEP_USER_MESSAGES = 3
@@ -107,11 +111,11 @@ class Runner:
         # Placeholder tools: output goes directly in content, no external file
         _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
 
-        if tool.concurrency_safe and name not in _STREAMING_TOOLS:
+        if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
             return self._execute_tool_impl(
                 name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
             )
-        with tool._exec_lock:
+        with getattr(tool, "_exec_lock", _FALLBACK_EXEC_LOCK):
             return self._execute_tool_impl(
                 name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
             )
