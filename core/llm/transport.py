@@ -21,8 +21,12 @@ from typing import Any, Callable, Iterable
 import httpx
 
 from core.llm.errors import StreamErrorEvent, _classify_429, classify_llm_error
+from core.updater import get_local_version
 
 logger = logging.getLogger(__name__)
+
+# 进程级静态版本号：模块导入时读一次，HttpTransport 构造不再做文件 I/O
+_USER_AGENT_VERSION = get_local_version()
 
 # Retry configuration
 # 非流式调用（chat/压缩/兜底）由 transport 层重试；流式调用由 base_agent
@@ -86,7 +90,7 @@ class HttpTransport:
         )
         self._client = httpx.Client(
             timeout=self._timeout,
-            headers={"User-Agent": "cili-agent"},
+            headers={"User-Agent": f"cili-agent/{_USER_AGENT_VERSION}"},
         )
 
     @property
