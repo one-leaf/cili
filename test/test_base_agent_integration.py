@@ -41,59 +41,22 @@ def dgx_config(protocol, dgx_available):
 
 @pytest.fixture
 def workspace_uuid():
-    """测试用 workspace UUID（使用第一个可用 workspace，不存在则 skip）。
+    """测试用独立临时工作区 UUID。
 
-    测试完成后清理测试期间创建的 session 目录和 memory 文件。
+    每个测试函数创建全新工作区并整体清理，避免：① 污染真实工作区；
+    ② 集成测试的 Agent 会加载「最新会话」，若复用真实工作区则每次运行
+    都追加消息、越滚越大（曾导致 test_tool_execution 因 289 条历史而
+    LLM 不再可靠调用工具）。
     """
-    from core.config import PROJECTS_DIR
+    import secrets
     import shutil
-    workspace_dir = PROJECTS_DIR  # 工作区数据目录 data/projects/{uuid}
-    if not workspace_dir.exists():
-        pytest.skip("No workspace found")
-
-    found_uuid = None
-    for item in workspace_dir.iterdir():
-        if item.is_dir():
-            config_file = item / "setting.json"
-            if config_file.exists():
-                found_uuid = item.name
-                break
-
-    if not found_uuid:
-        pytest.skip("No workspace with config found")
-
-    # 记录测试前已有的 session
-    sessions_dir = workspace_dir / found_uuid / "sessions"
-    existing_sessions = set()
-    if sessions_dir.exists():
-        existing_sessions = {d.name for d in sessions_dir.iterdir() if d.is_dir()}
-
-    # 记录测试前已有的 memory 文件
-    memory_dir = workspace_dir / found_uuid / "memory"
-    existing_memory_files = set()
-    if memory_dir.exists():
-        existing_memory_files = {f for f in memory_dir.rglob("*") if f.is_file()}
-
-    yield found_uuid
-
-    # 清理测试期间创建的 session
-    if sessions_dir.exists():
-        for d in sessions_dir.iterdir():
-            if d.is_dir() and d.name not in existing_sessions:
-                shutil.rmtree(d, ignore_errors=True)
-
-    # 清理测试期间创建的 memory 文件
-    if memory_dir.exists():
-        for f in memory_dir.rglob("*"):
-            if f.is_file() and f not in existing_memory_files:
-                f.unlink(missing_ok=True)
-        # 清理空目录
-        for d in sorted(memory_dir.rglob("*"), reverse=True):
-            if d.is_dir():
-                try:
-                    d.rmdir()  # 只删除空目录
-                except OSError:
-                    pass
+    from core.config import PROJECTS_DIR
+    test_uuid = secrets.token_hex(4)
+    workspace_dir = PROJECTS_DIR / test_uuid
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    yield test_uuid
+    # 整体删除测试工作区（含 sessions/memory），避免残留累积
+    shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
 @pytest.fixture

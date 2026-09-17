@@ -349,6 +349,7 @@ class TestAskUserDirectInput:
         sm = SimpleNamespace(messages=messages, session_dir=session_dir)
         sm.saved = []
         sm.save = lambda: sm.saved.append(True)
+        sm.mark_dirty = lambda: None  # _inject_ask_user_answer 就地改消息后置脏
         return sm, tool_use_id
 
     def test_find_pending_ask_user(self, tmp_path):

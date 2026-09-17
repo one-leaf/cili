@@ -429,7 +429,7 @@ class CronTask:
 
             # 6. 标记旧消息无效（每次 cron 运行上下文干净）
             agent.invalidate_all_messages()
-            agent.session_manager._messages_dirty = True
+            agent.session_manager.mark_dirty()
 
             # 7. 运行 agent loop（非流式，无回调）
             cron_message = self._build_cron_message(task_item)

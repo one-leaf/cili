@@ -16,7 +16,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from core.config import Config, PROJECT_ROOT
 from core.llm import create_llm_client, format_llm_error
@@ -24,6 +24,16 @@ from core.fs_utils import atomic_write_json
 from core.base_agent import BaseAgent
 from core.session import SessionManager, generate_short_id
 from core.agent_config import load_agent_role
+from core.agent_runtime.loop import (
+    BUDGET_FINAL_PROMPT,
+    BUDGET_FINAL_RATIO,
+    BUDGET_WARN_PROMPT,
+    BUDGET_WARN_RATIO,
+    CHECK_PROMPT,
+    TIMEOUT_WRAPUP_PROMPT,
+    Loop,
+    LoopPolicy,
+)
 from core.prompt_builder import USER_LAYER_GENERATORS, assemble_context, build_system_prompt
 from core.tools import create_tools, get_tool_by_name
 from core.tools.approval import (
@@ -37,56 +47,6 @@ from core.tools.approval import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ─── autonomous 运行时常量 ───────────────────────────────────────────
-
-# 迭代额度预警阈值（占 max_iterations 的比例），各阶段只触发一次
-_BUDGET_WARN_RATIO = 0.8  # 迭代额度使用率达到 80% 时注入一次预警提示
-_BUDGET_FINAL_RATIO = 0.95  # 达到 95% 时跳过检查阶段，直接兜底总结交付
-
-_BUDGET_WARN_PROMPT = (
-    "## 额度预警\n\n"
-    "迭代额度已使用 {used}/{total}。请评估当前进度：\n"
-    "- 不要再扩展新的工作面\n"
-    "- 已开始的工作尽快完成，准备收尾总结"
-)
-
-_BUDGET_FINAL_PROMPT = (
-    "## 额度即将耗尽\n\n"
-    "迭代额度即将用尽（{used}/{total}）。**立即停止发起新的工具调用**，"
-    "直接输出最终总结报告，必须包含：\n"
-    "1. 已完成的工作与产出位置\n"
-    "2. 未完成/未验证的部分及原因\n"
-    "3. 供父代理继续的后续建议"
-)
-
-_TIMEOUT_WRAPUP_PROMPT = (
-    "迭代额度已耗尽，任务循环被强制终止。请基于上方全部历史，"
-    "输出最终执行总结报告：\n"
-    "1. 已完成的工作与产出位置\n"
-    "2. 未完成/未验证的部分及原因\n"
-    "3. 后续建议\n\n"
-    "不要调用任何工具。"
-)
-
-# Check phase prompt (injected after main execution completes)
-_CHECK_PROMPT = (
-    "## 检查阶段\n\n"
-    "执行阶段已完成。现在进入 **检查** 环节，逐项验证任务是否正确完成，"
-    "不允许只凭之前的工具结果印象下结论：\n\n"
-    "1. 重新阅读上方的「任务目标」和「执行计划」，提炼可验证的验收标准\n"
-    "2. 逐项核对执行结果：每一项都要**用工具取证**（运行测试、读取实际文件、"
-    "检查输出与配置），不要仅凭记忆\n"
-    "3. 如发现遗漏或错误，**立即修复**，并在修复后重新验证该项\n"
-    "4. 全部核对完成后，输出最终总结报告，**必须包含**：\n"
-    "   - 已逐项验证的内容（附取证来源）\n"
-    "   - 未能验证或未验证的项及原因\n"
-    "   - 检查过程中修复的问题\n"
-    "5. 总结前回顾本次任务：若发现值得跨会话复用的**非显然知识**"
-    "（操作经验、关键决策、踩坑教训），用 `memory(action='store')` 存入"
-    "（type 选 skill 或 fact）\n"
-)
 
 
 class _SessionIdRef:
@@ -163,6 +123,16 @@ class Agent(BaseAgent):
 
         self.model = getattr(config, f"{role}_model", None) or config.model
 
+        # 统一循环编排层（Step 4）：交互/自主共用同一骨架，参数实时读 agent/role_cfg
+        self.loop = Loop(
+            self,
+            LoopPolicy(
+                agent=self,
+                mode=self._mode,
+                on_max_iterations="soft" if self._mode == "interactive" else "hard",
+            ),
+        )
+
         # Create LLM client（worker/lite 用角色模型，未配置继承 master model）
         self.client = create_llm_client(self.model)
         if temperature is not None:
@@ -197,7 +167,7 @@ class Agent(BaseAgent):
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
-        # autonomous 用缓存的 system prompt（interactive 每轮在 _agent_loop 重建）
+        # autonomous 用缓存的 system prompt（interactive 每轮在 run 入口重建）
         self._system_prompt = self._build_system_prompt()
 
     # ─── mode 专属初始化 ────────────────────────────────────────────
@@ -336,7 +306,7 @@ class Agent(BaseAgent):
         注入层每次从磁盘/环境动态生成，不持久化到 self.messages（会话文件保持干净）。
         合并后连续 user 消息自动合成一条，保证角色交替（OpenAI/Bedrock 约束）。
         """
-        messages = super()._get_messages_with_header()
+        messages = self.context.get_messages_with_header()
 
         inject: list[dict] = []
         for layer in self.role_cfg.user_layers:
@@ -354,17 +324,11 @@ class Agent(BaseAgent):
     # ─── interactive（master）：会话管理 ────────────────────────────
 
     def _sync_to_session_manager(self) -> None:
-        """Sync metadata and usage to session_manager.
+        """Sync metadata and usage to session_manager (delegated to AgentContext).
 
         Note: messages are shared (same reference), no need to sync them.
         """
-        self.session_manager.metadata["updated_at"] = self._get_current_time()
-        self.session_manager.metadata["usage"] = self._usage.copy()
-        self.session_manager._messages_dirty = True  # Invalidate cache
-
-    def _get_current_time(self) -> str:
-        """Get current time as formatted string."""
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.context.sync_to_session_manager()
 
     def reload_config(self) -> None:
         """Reload config from disk and recreate LLM client."""
@@ -394,7 +358,7 @@ class Agent(BaseAgent):
         """
         if self._mode == "interactive":
             return self._run_interactive(*args, **kwargs)
-        return self._run_autonomous(*args, **kwargs)
+        return self.loop.run_autonomous()
 
     def _run_interactive(
         self,
@@ -420,16 +384,16 @@ class Agent(BaseAgent):
         self._on_agent_complete = on_agent_complete
 
         try:
-            # Save previous turn
-            self._sync_to_session_manager()
-            self.session_manager.save()
-
-            # Add user message
+            # Add user message（loop.run_interactive 在回合前做 checkpoint save）
             self.add_message("user", user_input)
 
-            self._agent_loop()
+            self.loop.run_interactive()
         finally:
             self._running = False
+            # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
+            if getattr(self, "session_manager", None) is not None:
+                self._sync_to_session_manager()
+                self.session_manager.save()
 
     def _handle_approval_required(self, approval: dict) -> None:
         """合成 ask_user 卡询问用户是否批准高风险命令，随后暂停循环等待回答。
@@ -479,11 +443,13 @@ class Agent(BaseAgent):
         self._on_agent_complete = on_agent_complete
 
         try:
-            self._sync_to_session_manager()
-            self.session_manager.save()
-            self._agent_loop()
+            # loop.run_interactive 在回合前做 checkpoint save
+            self.loop.run_interactive()
         finally:
             self._running = False
+            # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
+            self._sync_to_session_manager()
+            self.session_manager.save()
 
     def resume_after_ask_user(
         self,
@@ -523,108 +489,6 @@ class Agent(BaseAgent):
             on_agent_complete=on_agent_complete,
         )
 
-    def _agent_loop(self) -> None:
-        """Shared interactive agent loop body (called by run/resume_after_ask_user/resume_loop)."""
-        self._sync_to_session_manager()
-        self.session_manager.save()
-
-        while self._turn_iterations < self.max_iterations:
-            # Check stop
-            if self._stopped:
-                logger.info(f"[Agent:{self.role}] 已停止")
-                self._sync_to_session_manager()
-                self.session_manager.save()
-                if self._on_text:
-                    self._on_text("\n\n[已停止]")
-                break
-
-            self._turn_iterations += 1
-
-            # Compress if needed
-            self._check_and_compress()
-
-            # Call LLM with streaming
-            system_prompt = self._build_system_prompt()
-            response = self._call_llm(streaming=getattr(self, '_streaming', True), system_prompt=system_prompt)
-
-            if self._stopped:
-                logger.info(f"[Agent:{self.role}] 已停止")
-                self._sync_to_session_manager()
-                self.session_manager.save()
-                break
-
-            # Add assistant response - convert typed blocks to dicts for message storage
-            self.add_message("assistant", response.content_as_dicts())
-
-            # Check if there are tool calls (typed blocks)
-            tool_call_blocks = response.get_tool_calls()
-
-            if not tool_call_blocks:
-                # No tool calls - conversation turn complete
-                self._sync_to_session_manager()
-                self.session_manager.save()
-                break
-
-            # Process tool calls
-            wait_for_external = False
-            external_already = False  # 本批已有非审批占位（模型自发的 ask_user/agent）
-            approval = None  # 本批首个需用户批准的高风险命令
-            for block in tool_call_blocks:
-                if self._stopped:
-                    break
-                # Parse arguments from raw JSON string to dict at execution time
-                input_data = block.parse_arguments()
-                result = self._execute_tool(block.name, input_data, block.id)
-                placeholder = result.get("_meta", {}).get("completed") is False
-                # 高风险命令需用户批准：降级为错误提示，统一在批处理完后合成 ask_user 卡
-                if META_KEY in result.get("_meta", {}):
-                    if approval is None:
-                        approval = result["_meta"][META_KEY]
-                        result["is_error"] = True
-                        result["content"] = "该命令需要用户批准，正在询问用户..."
-                    else:
-                        # 同批多个需批准命令：只询问第一条，其余保持拒绝
-                        result["is_error"] = True
-                        result["content"] = "该命令需要用户批准，本批仅询问一条，请稍后重试。"
-                    result["_meta"].pop(META_KEY, None)
-                    result["_meta"].pop("completed", None)
-                elif placeholder:
-                    # 模型自发的 ask_user/agent 占位：正常等待，不叠加审批卡
-                    wait_for_external = True
-                    external_already = True
-                # Add tool result to messages
-                self.add_message("user", [result])
-                # Sync to session manager
-                self._sync_to_session_manager()
-                self.session_manager.save()
-
-            # 合成 ask_user 卡询问用户是否批准（放在所有工具结果之后，保持消息配对正确；
-            # 本批已有模型自发的占位时不合成，避免与 pending 单槽冲突）
-            if approval and not external_already and not self._stopped:
-                self._handle_approval_required(approval)
-                wait_for_external = True
-
-            if wait_for_external:
-                # Exit loop to wait for user input or agent completion
-                logger.info(f"[Agent:{self.role}] Waiting for external input (user or agent)")
-                self._sync_to_session_manager()
-                self.session_manager.save()
-                break
-
-            if self._stopped:
-                logger.info(f"[Agent:{self.role}] 已停止")
-                # 中途停止可能留下未回应的 tool_use，补占位避免下次调用 400
-                self._pad_dangling_tool_results()
-                self._sync_to_session_manager()
-                self.session_manager.save()
-                break
-        else:
-            logger.warning(f"[Agent:{self.role}] 达到最大调用次数 ({self.max_iterations})")
-            self._sync_to_session_manager()
-            self.session_manager.save()
-            if self._on_text:
-                self._on_text(f"\n\n[已达到最大工具调用次数限制 ({self.max_iterations})，请继续提问以继续对话]")
-
     def switch_session(self, session_id: str) -> None:
         """Switch to a different session.
 
@@ -634,6 +498,7 @@ class Agent(BaseAgent):
         loaded = SessionManager.load_session(session_id, self.sessions_dir)
         if loaded:
             self.session_manager = loaded
+            self.context.set_session_manager(loaded)  # 同步 context 引用，保持一致
             self.current_session_id = session_id
             self._session_id = session_id
             self.session_dir = self.sessions_dir / session_id
@@ -708,18 +573,18 @@ class Agent(BaseAgent):
         消息（KEEP_USER_MESSAGES=3），string 消息会把计数推过阈值，导致 full
         compact 挤掉 pinned 任务消息。
         """
-        if not self._budget_final_triggered and i >= int(self.max_iterations * _BUDGET_FINAL_RATIO):
+        if not self._budget_final_triggered and i >= int(self.max_iterations * BUDGET_FINAL_RATIO):
             self._budget_final_triggered = True
             self.add_message(
                 "user",
-                [{"type": "text", "text": _BUDGET_FINAL_PROMPT.format(used=i, total=self.max_iterations)}],
+                [{"type": "text", "text": BUDGET_FINAL_PROMPT.format(used=i, total=self.max_iterations)}],
                 meta={"budget": "final"},
             )
-        elif not self._budget_warn_triggered and i >= int(self.max_iterations * _BUDGET_WARN_RATIO):
+        elif not self._budget_warn_triggered and i >= int(self.max_iterations * BUDGET_WARN_RATIO):
             self._budget_warn_triggered = True
             self.add_message(
                 "user",
-                [{"type": "text", "text": _BUDGET_WARN_PROMPT.format(used=i, total=self.max_iterations)}],
+                [{"type": "text", "text": BUDGET_WARN_PROMPT.format(used=i, total=self.max_iterations)}],
                 meta={"budget": "warn"},
             )
 
@@ -732,186 +597,13 @@ class Agent(BaseAgent):
             result["_meta"].pop(META_KEY, None)
             result["_meta"].pop("completed", None)
 
-    def _run_autonomous(self) -> dict[str, Any]:
-        """Execute autonomous loop with check phase, return structured result.
-
-        Flow: 目标→计划→执行→检查
-        - Pinned task/plan message at start
-        - Main execution loop
-        - Check phase: verify results, fix if needed, confirm completion
-        """
-        self._started_at = datetime.now()
-        self._stopped = False
-        self._running = True
-        self._budget_warn_triggered = False
-        self._budget_final_triggered = False
-
-        # Build initial pinned message (task + plan, immune to compression)
-        self.add_message("user", self._build_task_message(), meta={"pinned": True})
-
-        consecutive_failures = 0
-        status = "completed"
-        summary = ""
-        in_check_phase = False
-        check_iters = 0
-        # None = 不设检查轮次上限，仅由总迭代额度兜底
-        max_check_iterations = self.role_cfg.check_iterations
-
-        try:
-            for i in range(self.max_iterations):
-                # Check stop (父代理停止或流式中断标记)
-                if self._stopped or (self.stop_check and self.stop_check()):
-                    status = "stopped"
-                    summary = "Stopped by user"
-                    self._finalize(status, summary, i)
-                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
-
-                # 额度预警（stop 优先：用户主动停止时不注入）
-                if self.role_cfg.budget_notice:
-                    self._inject_budget_notice(i)
-
-                try:
-                    # Compress if needed
-                    self._check_and_compress()
-
-                    # Call LLM
-                    response = self._call_llm(
-                        streaming=self.role_cfg.streaming,
-                        system_prompt=self._system_prompt,
-                    )
-                except Exception as e:
-                    summary = format_llm_error(e, self.client.base_url if self.client else "")
-                    task_brief = self.task[:50].replace("\n", " ")
-                    logger.error(f"[Agent:{self.role}] LLM 错误 (iter={i}, exec={self._exec_id}, task='{task_brief}'): {summary}")
-                    status = "error"
-                    self._finalize(status, summary, i)
-                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
-
-                # 流式中断（用户 stop）后检查：LLM 返回 stop_reason="stopped" 且无 tool_calls
-                if self._stopped:
-                    status = "stopped"
-                    summary = "Stopped by user"
-                    self._finalize(status, summary, i)
-                    return {"status": status, "summary": summary, "iterations": i, "usage": self._usage}
-
-                tool_calls = response.get_tool_calls()
-
-                if not tool_calls:
-                    if not in_check_phase:
-                        if self.role_cfg.budget_notice and self._budget_final_triggered:
-                            # 额度兜底下跳过检查阶段，直接交付总结
-                            summary = response.get_text() or "预算耗尽，模型未输出总结"
-                            self.add_message("assistant", response.content_as_dicts())
-                            status = "completed"
-                            self._finalize(status, summary, i + 1)
-                            return {"status": status, "summary": summary, "iterations": i + 1,
-                                    "budget_wrapup": True, "usage": self._usage}
-
-                        if not self.role_cfg.check_phase:
-                            # 无检查阶段：直接交付
-                            summary = response.get_text()
-                            self.add_message("assistant", response.content_as_dicts())
-                            status = "completed"
-                            self._finalize(status, summary, i + 1)
-                            return {"status": status, "summary": summary, "iterations": i + 1,
-                                    "usage": self._usage}
-
-                        # Main phase ended → inject check prompt for verification
-                        summary = response.get_text()
-                        self.add_message("assistant", response.content_as_dicts())
-
-                        # Inject check prompt (pinned to survive compression)
-                        self.add_message("user", _CHECK_PROMPT, meta={"pinned": True})
-                        in_check_phase = True
-                        check_iters = 0
-                        max_check_iterations = (
-                            max(i, self.role_cfg.check_iterations)
-                            if self.role_cfg.check_iterations is not None else None
-                        )
-                        logger.debug(f"[Agent:{self.role}] 进入检查阶段 (iter={i}, max_check={max_check_iterations}, exec={self._exec_id})")
-                        continue
-                    else:
-                        # Check phase ended → task truly complete
-                        check_iters += 1
-                        summary = response.get_text()
-                        self.add_message("assistant", response.content_as_dicts())
-                        status = "completed"
-                        self._finalize(status, summary, i + 1)
-                        logger.debug(f"[Agent:{self.role}] 检查完成 (check_iters={check_iters}, iter={i})")
-                        return {"status": status, "summary": summary, "iterations": i + 1,
-                                "check_iterations": check_iters, "usage": self._usage}
-
-                # Track check phase iterations
-                if in_check_phase:
-                    check_iters += 1
-                    if max_check_iterations is not None and check_iters > max_check_iterations:
-                        summary = response.get_text() or "检查阶段超出最大迭代次数"
-                        self.add_message("assistant", response.content_as_dicts())
-                        status = "completed"
-                        self._finalize(status, summary, i + 1)
-                        logger.warning(f"[Agent:{self.role}] 检查阶段超出迭代上限 (iter={i}, max={max_check_iterations})")
-                        return {"status": status, "summary": summary, "iterations": i + 1,
-                                "check_iterations": check_iters, "usage": self._usage}
-
-                # Add assistant message with tool calls - convert to dicts for storage
-                self.add_message("assistant", response.content_as_dicts())
-
-                # Save progress
-                phase = "check" if in_check_phase else "running"
-                self._save_progress(i + 1, status=phase)
-
-                # Execute tools
-                for tc in tool_calls:
-                    self._save_progress(i + 1, status=phase, current_tool=tc.name)
-
-                    # Parse arguments from raw JSON string to dict at execution time
-                    input_data = tc.parse_arguments()
-                    result = self._execute_tool(tc.name, input_data, tc.id)
-                    # autonomous 无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问
-                    self._downgrade_approval_result(result)
-                    self.add_message("user", [result])
-
-                    self._save_progress(i + 1, status=phase)
-
-                    # Track consecutive failures (is_error is Anthropic format)
-                    if result.get("is_error"):
-                        consecutive_failures += 1
-                        if consecutive_failures >= self.max_consecutive_failures:
-                            status = "failed"
-                            summary = f"Exceeded max consecutive failures ({self.max_consecutive_failures})"
-                            self._finalize(status, summary, i + 1)
-                            return {"status": status, "summary": summary, "iterations": i + 1, "usage": self._usage}
-                    else:
-                        consecutive_failures = 0
-
-            # Timeout — 额度耗尽，兜底生成一次执行总结
-            status = "timeout"
-            summary = f"Exceeded max iterations ({self.max_iterations})"
-            wrapped_up = False
-            if not (self.stop_check and self.stop_check()):
-                try:
-                    wrapup = self._wrapup_timeout_summary()
-                    if wrapup:
-                        summary = wrapup
-                        wrapped_up = True
-                except Exception as e:
-                    logger.warning(f"[Agent:{self.role}] 兜底总结失败: {e}")
-            self._finalize(status, summary, self.max_iterations)
-            result = {"status": status, "summary": summary, "iterations": self.max_iterations, "usage": self._usage}
-            if wrapped_up:
-                result["wrapped_up"] = True
-            return result
-
-        finally:
-            self._running = False
-
     def _wrapup_timeout_summary(self) -> str:
         """额度耗尽时兜底生成一次执行总结。
 
         直接调 client.chat 且不传 tools，杜绝兜底调用再次触发工具循环。
         """
         self._pad_dangling_tool_results()
-        self.add_message("user", [{"type": "text", "text": _TIMEOUT_WRAPUP_PROMPT}], meta={"budget": "wrapup"})
+        self.add_message("user", [{"type": "text", "text": TIMEOUT_WRAPUP_PROMPT}], meta={"budget": "wrapup"})
 
         # 消息预处理与 _call_llm_non_streaming 一致（此处已 pad，复用共享管道）
         message_objects = self._prepare_messages_for_llm(pad_dangling=False)

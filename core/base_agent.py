@@ -1,49 +1,30 @@
 """BaseAgent - unified agent loop shared by the single Agent class.
 
 Provides shared infrastructure for agent execution:
-- Message management (self.messages)
-- Tool execution with external file storage
-- 3-layer compression (microcompact → full compact → emergency body size)
-- LLM calling with 413 retry (thinking content passes through)
-- Usage tracking
+- Message management (self.messages, delegated to AgentContext)
+- Tool execution / LLM calling / compression (delegated to Runner)
 
 `core.agent.Agent` subclasses this and customizes behavior via role JSON
 (tools, system prompt blocks, user layers) instead of per-class overrides.
+
+执行逻辑（LLM 调用/工具执行/压缩）已抽至 core.agent_runtime.Runner；
+本类保留同名薄转发方法，web 层与测试对 agent 方法的调用接口不变。
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import os
-import re
-import time
 from pathlib import Path
 from typing import Any, Callable
 
-import httpx
+from core.agent_runtime.context import AgentContext
+from core.agent_runtime.runner import Runner, RETRY_CLEAR_SENTINEL
+from core.config import Config
+from core.llm import LLMClient, LLMResponse, Message
+from core.tools.base import Tool
 
-from core.config import Config, ModelConfig
-from core.fs_utils import atomic_write_json
-from core.llm import LLMClient, LLMResponse, format_llm_error, Message, TextBlock, UsageData
-from core.session import generate_short_id
-from core.tools.base import Tool, ToolResult
-
-logger = logging.getLogger(__name__)
-
-# Compression constants
-KEEP_USER_MESSAGES = 3
-_LARGE_OUTPUT_THRESHOLD = 10_000
+# 迭代上限默认值（Loop 层在 Step 4 接管计数）
 _MAX_ITERATIONS = 50
-
-# tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
-_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-# on_text 回调哨兵：413 去图/延迟重试时发出，通知前端清空已流式输出的文本
-RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
-
-# 估算 JSON 请求体大小时，为 system prompt + tools 预留的保守字节开销
-_SYSTEM_OVERHEAD_BYTES = 10_000
 
 
 class BaseAgent:
@@ -76,7 +57,18 @@ class BaseAgent:
         self.stop_check = stop_check
         self.max_iterations = max_iterations
 
-        # Message management
+        # 消息状态层：先建 context（Agent 的 _init_interactive 已在此前注入 session_manager），
+        # messages/_usage 属性转发到 context，保证后续所有直接赋值/读取一致
+        self.context = AgentContext(
+            messages=[],
+            session_manager=getattr(self, "session_manager", None),
+            session_dir=session_dir,
+        )
+
+        # 执行层：持本 agent 引用，压缩/LLM 调用/工具执行在回合运行时访问共享状态
+        self.runner = Runner(self)
+
+        # Message management (property → context.messages)
         self.messages: list[dict] = []
 
         # LLM client
@@ -114,1025 +106,146 @@ class BaseAgent:
 
     # ========== Message Management ==========
 
-    def _convert_to_message_objects(self, messages: list[dict]) -> list[Message]:
-        """Convert dict-based messages to Message objects.
+    @property
+    def messages(self) -> list[dict]:
+        """消息列表（转发到 context.messages，保持与 session_manager 同一引用）。"""
+        return self.context.messages
 
-        Internal helper for passing messages to LLMClient.
-        """
-        return [Message.from_dict(msg) for msg in messages]
+    @messages.setter
+    def messages(self, value: list[dict]) -> None:
+        self.context.messages = value
+
+    @property
+    def _usage(self) -> dict[str, int]:
+        """usage 统计（转发到 context._usage）。"""
+        return self.context._usage
+
+    @_usage.setter
+    def _usage(self, value: dict[str, int]) -> None:
+        self.context._usage = value
+
+    @staticmethod
+    def _convert_to_message_objects(messages: list[dict]) -> list[Message]:
+        """Convert dict-based messages to Message objects (delegated to Runner)."""
+        return Runner._convert_to_message_objects(messages)
 
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
-        """Add a message to internal message list.
-
-        New format: no longer adds block-level _valid.
-        Message-level _meta.valid is set by other logic when needed.
-
-        Args:
-            role: Message role (user/assistant/system)
-            content: Message content
-            meta: Optional metadata dict (e.g. {"pinned": True} to prevent compression)
-        """
-        meta = dict(meta) if meta else {}
-        if "id" not in meta:
-            meta["id"] = generate_short_id()
-        msg = {"role": role, "content": content, "_meta": meta}
-        self.messages.append(msg)
+        """Add a message to internal message list (delegated to AgentContext)."""
+        self.context.add_message(role, content, meta)
 
     def save_messages(self, metadata: dict | None = None) -> None:
-        """Save messages to session_dir/index.json.
-
-        Merges with the existing file so name/metadata written by
-        SessionManager (or Agent progress logs) are preserved — this save
-        only updates the messages and the caller-provided metadata.
-
-        Args:
-            metadata: Optional metadata to include in the file
-        """
-        # 交互模式：统一由 SessionManager 按新 3 文件布局持久化（commits 视图）。
-        # autonomous（worker/lite）无 session_manager 属性，走下面的旧格式路径。
-        if getattr(self, "session_manager", None) is not None:
-            self.session_manager.save()
-            return
-
-        if not self.session_dir:
-            return
-
-        self.session_dir.mkdir(parents=True, exist_ok=True)
-        session_file = self.session_dir / "index.json"
-
-        # Preserve existing top-level fields from the file on disk
-        existing: dict = {}
-        if session_file.exists():
-            try:
-                with open(session_file, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-
-        data = {
-            "session_id": self._session_id or self.session_dir.name,
-            "messages": self.messages,
-            "name": existing.get("name", ""),
-            "metadata": metadata if metadata is not None else existing.get("metadata", {}),
-        }
-
-        try:
-            atomic_write_json(session_file, data)
-        except Exception as e:
-            logger.error(f"Failed to save messages: {e}")
+        """Save messages (delegated to AgentContext)."""
+        self.context.save_messages(metadata, session_id=getattr(self, "_session_id", ""))
 
     def load_messages(self) -> bool:
-        """Load messages from session_dir/index.json.
-
-        Returns:
-            True if loaded successfully, False if file doesn't exist
-        """
-        if not self.session_dir:
-            return False
-
-        session_file = self.session_dir / "index.json"
-        if not session_file.exists():
-            return False
-
-        try:
-            with open(session_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.messages = data.get("messages", [])
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load messages: {e}")
-            return False
+        """Load messages from session_dir/index.json (delegated to AgentContext)."""
+        return self.context.load_messages()
 
     def invalidate_all_messages(self) -> int:
         """Mark all messages as invalid (_meta.valid=False). Returns count."""
-        count = 0
-        for msg in self.messages:
-            if msg.get("_meta", {}).get("valid") is not False:
-                msg.setdefault("_meta", {})["valid"] = False
-                count += 1
-        return count
+        return self.context.invalidate_all_messages()
 
     def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
-        """Get messages with _meta.valid=False filtered out.
-
-        Used before sending to LLM API. Thinking blocks are preserved because
-        Anthropic API requires them in subsequent messages for multi-turn context.
-        Note: _meta.compacted is preserved here, filtered later during serialization.
-
-        Args:
-            strip_meta: If True (default), strip internal _meta fields before API call.
-                        If False, keep _meta intact for intermediate processing
-                        (e.g., _resolve_tool_results needs _meta.output_path).
-        """
-        INTERNAL_META = {"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id", "seq", "summary"}
-        result = []
-
-        for msg in self.messages:
-            # Skip messages marked as invalid
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-
-            role = msg.get("role")
-            content = msg.get("content", "")
-
-            # String content
-            if not isinstance(content, list):
-                if strip_meta:
-                    clean_msg = {"role": role, "content": content}
-                    # Strip internal _meta fields, keep other _meta if exists
-                    if meta:
-                        stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                        if stripped_meta:
-                            clean_msg["_meta"] = stripped_meta
-                else:
-                    # Keep _meta intact (for _resolve_tool_results etc.)
-                    clean_msg = dict(msg)
-                result.append(clean_msg)
-                continue
-
-            # List content: keep all blocks
-            clean_blocks = []
-            for block in content:
-                clean_block = dict(block)
-                if strip_meta and "_meta" in clean_block:
-                    # Strip block-level internal _meta fields before sending to API
-                    stripped_block_meta = {k: v for k, v in clean_block["_meta"].items() if k not in INTERNAL_META}
-                    if stripped_block_meta:
-                        clean_block["_meta"] = stripped_block_meta
-                    else:
-                        del clean_block["_meta"]
-                clean_blocks.append(clean_block)
-
-            if clean_blocks:
-                clean_msg = {"role": role, "content": clean_blocks}
-                if strip_meta:
-                    # Strip internal _meta fields, keep other _meta if exists
-                    if meta:
-                        stripped_meta = {k: v for k, v in meta.items() if k not in INTERNAL_META}
-                        if stripped_meta:
-                            clean_msg["_meta"] = stripped_meta
-                else:
-                    # Keep message-level _meta intact
-                    if meta:
-                        clean_msg["_meta"] = dict(meta)
-                result.append(clean_msg)
-
-        return result
+        """Get messages with _meta.valid=False filtered out (delegated to AgentContext)."""
+        return self.context.get_valid_messages(strip_meta=strip_meta)
 
     # ========== Tool Execution ==========
 
     @staticmethod
     def _safe_output_filename(tool_use_id: str) -> str:
-        """Generate a safe output filename for a tool_use_id.
-
-        非法 ID（含路径分隔符/`..` 等）回退随机文件名，防止路径穿越。
-        """
-        if not tool_use_id:
-            return ""
-        if _SAFE_ID_PATTERN.match(tool_use_id):
-            return f"{tool_use_id}.txt"
-        return f"{generate_short_id()}.txt"
+        """Generate a safe output filename for a tool_use_id (delegated to Runner)."""
+        return Runner._safe_output_filename(tool_use_id)
 
     def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
-        """Execute a tool and return result metadata.
-
-        Tool output is saved to external file {session_dir}/{tool_use_id}.txt only when needed:
-        - Streaming tools (bash, python) for real-time frontend polling
-        - Large outputs (exceeds threshold, will be truncated)
-        - Multimodal content (images, saved as .json)
-        Returns result dict with _meta containing internal fields.
-        Uses Anthropic format: tool_use_id (not tool_call_id), is_error (not _is_error).
-        """
-        tool = self._get_tool_by_name(name)
-
-        if tool is None:
-            return {
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": f"Error: unknown tool '{name}'",
-                "is_error": True,
-                "_meta": {"tool_name": name},
-            }
-
-        logger.debug(f"[工具调用] {name}")
-
-        # Tools that need external file for streaming (frontend polling)
-        _STREAMING_TOOLS = {"bash", "python"}
-        # Placeholder tools: output goes directly in content, no external file
-        _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
-
-        # Setup output file path
-        # 净化 tool_use_id：不合法（含路径分隔符/`..` 等）则回退随机文件名，
-        # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
-        output_filename = self._safe_output_filename(tool_use_id)
-        output_file_path = ""
-        if self.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
-            output_file_path = str(self.session_dir / output_filename)
-            tool.output_file = output_file_path
-
-            # Create empty file only for streaming tools (signals tool is running)
-            if name in _STREAMING_TOOLS:
-                try:
-                    with open(output_file_path, "w", encoding="utf-8") as f:
-                        f.write("")
-                except Exception:
-                    pass
-                # 全局事件流：流式工具的实时输出增量 → agent._on_tool_output
-                if self._on_tool_output:
-                    tool.on_output = (
-                        lambda chunk, offset, _n=name, _id=tool_use_id:
-                        self._on_tool_output(_n, chunk, offset, _id)
-                    )
-                else:
-                    tool.on_output = None
-
-        # Notify callback
-        if self._on_tool_call:
-            self._on_tool_call(name, input_data, tool_use_id)
-
-        # Execute tool
-        start_time = time.perf_counter()
-        result = ToolResult("Error: tool execution was interrupted", error=True)
-
-        try:
-            input_data = tool.coerce_input(input_data)
-            # coerce_input 可能返回 ToolResult（参数校验失败）
-            if isinstance(input_data, ToolResult):
-                result = input_data
-            else:
-                result = tool.execute(**input_data)
-        except Exception as e:
-            import traceback
-            logger.error(f"Tool '{name}' raised exception:\n{traceback.format_exc()}")
-            result = ToolResult(f"Error executing tool: {e}", error=True)
-        finally:
-            # Only save external file for streaming tools
-            # Non-streaming tools save lazily based on output size (see below)
-            if name in _STREAMING_TOOLS:
-                tool.save_output_to_file(result)
-            # 更新 _output_path 为实际保存的文件路径（可能是 .json）
-            output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
-            tool.output_file = None
-            tool.on_output = None
-
-        # 空输出兜底：任何工具返回空内容时（竞态、空结果、无输出），统一补非空
-        # 哨兵，避免实时流显示空白、会话重载被 hydration 误标为"[工具输出文件路径缺失]"
-        if not result.output:
-            from core.llm.types import TextBlock
-            result.blocks.append(TextBlock(text="(no output)"))
-
-        elapsed = time.perf_counter() - start_time
-
-        # Log result
-        output_preview = result.output
-        if len(output_preview) > 500:
-            output_preview = output_preview[:500] + f"\n... ({len(result.output)} chars total)"
-        status = "失败" if result.error else "完成"
-        logger.debug(f"[工具结果] {name} {status} ({elapsed:.2f}s)")
-
-        # Notify callback
-        if self._on_tool_result:
-            self._on_tool_result(name, output_preview, result.error, tool_use_id)
-
-        # Build _meta with internal fields
-        file_size = len(result.output.encode('utf-8', errors='replace'))
-        truncated = file_size > _LARGE_OUTPUT_THRESHOLD
-
-        # Check if multimodal (has image blocks)
-        from core.llm.types import ImageBlock
-        is_multimodal = any(isinstance(block, ImageBlock) for block in result.blocks)
-
-        # Only save external file when needed (streaming already saved, skip)
-        needs_external_file = truncated or is_multimodal
-        if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
-            # Set output_file for save_output_to_file
-            tool.output_file = str(self.session_dir / output_filename) if self.session_dir else None
-            if tool.output_file:
-                tool.save_output_to_file(result)
-                # Update filename if changed to .json (multimodal)
-                output_filename = os.path.basename(tool.output_file)
-                tool.output_file = None
-
-        meta = {
-            "tool_name": name,
-        }
-        if needs_external_file:
-            meta["output_path"] = output_filename
-            meta["file_size"] = file_size
-            meta["truncated"] = truncated
-        # Add any extra meta from tool result
-        if result.meta:
-            meta.update(result.meta)
-
-        # Build result dict (Anthropic format)
-        result_dict = {
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": result.output if not truncated else None,
-            "is_error": result.error,
-        }
-
-        # Add completed=False to block-level _meta for placeholder tools (ask_user, agent)
-        if result.completed is False:
-            if "_meta" not in result_dict:
-                result_dict["_meta"] = {}
-            result_dict["_meta"]["completed"] = False
-
-        # Add _meta if it has content
-        if meta:
-            if "_meta" not in result_dict:
-                result_dict["_meta"] = {}
-            result_dict["_meta"].update(meta)
-
-        # Clean up orphaned external file: streaming tools (bash/python) always
-        # create a .txt file for frontend polling, but when content is inlined
-        # (not truncated, not multimodal) the file becomes unnecessary.
-        # _resolve_tool_results skips blocks with inline content, so it never
-        # needs this file. Delete it now to avoid orphaned files on disk.
-        if not needs_external_file and self.session_dir and output_filename:
-            orphan_path = self.session_dir / output_filename
-            try:
-                if orphan_path.exists():
-                    orphan_path.unlink()
-            except Exception:
-                pass
-
-        return result_dict
+        """Execute a tool and return result metadata (delegated to Runner)."""
+        return self.runner.execute_tool(name, input_data, tool_use_id)
 
     def _get_tool_by_name(self, name: str) -> Tool | None:
-        """Find tool by name."""
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
-        return None
+        """Find tool by name (delegated to Runner)."""
+        return self.runner._get_tool_by_name(name)
 
     def _resolve_tool_results(self, messages: list[dict]) -> list[dict]:
-        """Read tool output from external files before sending to LLM.
-
-        Session only stores metadata. This method reads actual content
-        from {session_dir}/{tool_use_id}.txt or .json files.
-
-        支持两种格式：
-        - .txt: 纯文本
-        - .json: 多模态内容（包含图片和文本块）
-
-        Uses new _meta format: _meta.output_path, _meta.compacted, etc.
-        Backward compatible with old _output_path, _compacted format.
-        """
-        for msg in messages:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if block.get("type") != "tool_result":
-                    continue
-                # Skip if already has content (e.g., error message)
-                if block.get("content"):
-                    continue
-
-                # 从 block 级别的 _meta 读取内部元数据
-                block_meta = block.get("_meta", {})
-                compacted = block_meta.get("compacted", False)
-                output_path = block_meta.get("output_path", "")
-                file_size = block_meta.get("file_size", 0)
-                truncated = block_meta.get("truncated", False)
-
-                # Handle compacted marker - include filename for read_tool_result
-                if compacted:
-                    if output_path:
-                        # Extract tool_use_id from filename (remove extension)
-                        tool_use_id = output_path.replace(".txt", "").replace(".json", "")
-                        block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
-                    else:
-                        # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
-                        block["content"] = "[Compacted: original content preserved in session history]"
-                    continue
-
-                # Read from external file
-                if not output_path or not self.session_dir:
-                    block["content"] = "[工具输出文件路径缺失]"
-                    continue
-
-                file_path = self.session_dir / output_path
-                if not file_path.exists():
-                    block["content"] = "[工具正在执行中...]"
-                    continue
-
-                try:
-                    # 检查是否是 json 文件（多模态内容）
-                    if str(file_path).endswith(".json"):
-                        import json as json_module
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            data = json_module.load(f)
-
-                        if data.get("type") == "multimodal":
-                            # 多模态内容：返回 content blocks 列表
-                            from core.llm.types import block_from_dict
-                            content_blocks = []
-                            for block_data in data.get("blocks", []):
-                                try:
-                                    content_blocks.append(block_from_dict(block_data))
-                                except Exception:
-                                    # 无法解析的块，跳过
-                                    pass
-                            # 将 content blocks 转为 dict 列表
-                            block["content"] = [
-                                cb.to_dict() if hasattr(cb, 'to_dict') else cb
-                                for cb in content_blocks
-                            ]
-                        else:
-                            block["content"] = "[工具输出格式错误]"
-                    else:
-                        # 纯文本文件
-                        file_content = file_path.read_text(encoding='utf-8', errors='replace')
-
-                        # Empty file = tool still running
-                        if not file_content:
-                            block["content"] = "[工具正在执行中...]"
-                            continue
-
-                        # Truncate + guide
-                        if truncated:
-                            truncated_content = Tool.truncate_middle(file_content, 8000)
-                            guide = (
-                                f"\n\n---\n"
-                                f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
-                                f"完整输出保存在文件: {file_path}。"
-                                f"如需查看完整内容，请使用 read 工具分批读取该文件。"
-                            )
-                            block["content"] = truncated_content + guide
-                        else:
-                            block["content"] = Tool.truncate_result(file_content, Tool.MAX_TOOL_RESULT_SIZE_CHARS)
-
-                except Exception as e:
-                    block["content"] = f"[读取工具输出失败: {e}]"
-                    continue
-
-        return messages
+        """Read tool output from external files before sending to LLM (delegated to Runner)."""
+        return self.runner._resolve_tool_results(messages)
 
     def _strip_meta_from_messages(self, messages: list[dict]) -> list[dict]:
-        """Strip internal _meta fields from messages before sending to LLM API.
-
-        Called after _resolve_tool_results() has populated block content from
-        external files. The _meta fields (output_path, file_size, etc.) are
-        only needed for that resolution step and must not reach the API.
-
-        Modifies blocks in-place (same pattern as _strip_images_from_messages).
-        """
-        INTERNAL_META = frozenset({"id", "valid", "compacted", "output_path", "file_size", "truncated", "tool_name", "multimodal", "completed", "answered", "exec_id", "seq", "summary"})
-        for msg in messages:
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                # Strip message-level _meta
-                if "_meta" in msg:
-                    stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
-                    if stripped:
-                        msg["_meta"] = stripped
-                    else:
-                        del msg["_meta"]
-                continue
-            for block in content:
-                if "_meta" in block:
-                    stripped = {k: v for k, v in block["_meta"].items() if k not in INTERNAL_META}
-                    if stripped:
-                        block["_meta"] = stripped
-                    else:
-                        del block["_meta"]
-            # Strip message-level _meta too
-            if "_meta" in msg:
-                stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
-                if stripped:
-                    msg["_meta"] = stripped
-                else:
-                    del msg["_meta"]
-        return messages
+        """Strip internal _meta fields from messages (delegated to Runner)."""
+        return self.runner._strip_meta_from_messages(messages)
 
     # ========== Compression ==========
 
     def _invalidate_message_cache(self) -> None:
-        """压缩等原地修改 self.messages 后，失效 session_manager 的 valid 缓存。
-
-        交互模式下 self.messages 与 session_manager.messages 共享同一引用，
-        压缩（microcompact/full compact/emergency）直接改 block/_meta 不经过
-        add_message，必须手动置 _messages_dirty，否则 web_api 的 token 估算
-        会一直拿到过期快照（C1）。
-        """
-        sm = getattr(self, "session_manager", None)
-        if sm is not None:
-            sm._messages_dirty = True
+        """压缩等原地修改 self.messages 后，失效 session_manager 的 valid 缓存。"""
+        self.context.invalidate_message_cache()
 
     def _check_and_compress(self) -> None:
-        """3-layer compression before LLM call.
-
-        Layer 1: Microcompact (replace old tool results with placeholder)
-        Layer 2: Full compact (LLM summary when tokens > 80% threshold)
-        Layer 3: Emergency body size (mark old tool calls/images as invalid)
-        """
-        from core.compression import microcompact_tool_results, count_messages_tokens
-
-        MAX_TOKENS = self.model.max_context_tokens
-        MICROCOMPACT_KEEP_RECENT = 6
-        FULL_COMPACT_TOKEN_RATIO = 0.80
-        MAX_BODY_SIZE = 3_000_000
-
-        # Layer 1: Microcompact
-        saved = microcompact_tool_results(
-            self.messages,
-            keep_recent=MICROCOMPACT_KEEP_RECENT,
-        )
-        if saved > 0:
-            logger.debug(f"[Microcompact] 压缩旧工具结果，节省约 {saved:,} 字节")
-            self._invalidate_message_cache()
-
-        # Calculate tokens
-        messages = self._get_messages_with_header()
-        total_tokens = self._count_messages_tokens(messages)
-
-        # Layer 2: Full compact
-        full_compact_threshold = int(MAX_TOKENS * FULL_COMPACT_TOKEN_RATIO)
-
-        if total_tokens > full_compact_threshold:
-            logger.info(
-                f"[上下文] token 超过阈值 ({total_tokens:,} > {full_compact_threshold:,})，"
-                f"执行完整压缩"
-            )
-            try:
-                self._perform_full_compact(KEEP_USER_MESSAGES)
-            except Exception as e:
-                logger.warning(f"[上下文] 完整压缩失败: {e}")
-
-        # Layer 3: Emergency body size
-        messages = self._get_messages_with_header()
-        body_size = self._estimate_request_body_size(messages)
-        logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
-
-        if body_size > MAX_BODY_SIZE:
-            # 详细分析大小分布
-            text_size = 0
-            image_size = 0
-            tool_size = 0
-            for btype, data in self.iter_content_blocks(messages):
-                if btype in ("text", "tool_result_text", "tool_result_str"):
-                    text_size += len(data.encode('utf-8')) if isinstance(data, str) else len(data)
-                elif btype == "tool_use":
-                    tool_size += len(json.dumps(data.get("input", {}), ensure_ascii=False).encode('utf-8'))
-                elif btype == "tool_result_image":
-                    image_size += len(data)
-            logger.debug(f"[上下文] 大小分布: 文本={text_size:,}B, 图片={image_size:,}B, 工具={tool_size:,}B")
-
-            logger.info("[上下文] 请求体过大，正在标记旧工具调用为无效...")
-            saved = self._mark_old_tool_calls_invalid(keep_recent_rounds=3)
-            if saved > 0:
-                messages = self._get_messages_with_header()
-                logger.info(f"[上下文] 工具调用标记完成，节省 {saved} 字节")
-
-            body_size = self._estimate_request_body_size(messages)
-            if body_size > MAX_BODY_SIZE:
-                logger.info("[上下文] 正在替换旧图片为占位符...")
-                saved = self._mark_old_images_invalid(keep_recent=3)
-                if saved > 0:
-                    logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
-
-        # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
-        self._invalidate_message_cache()
+        """3-layer compression before LLM call (delegated to Runner)."""
+        self.runner._check_and_compress()
 
     def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
-        """Full auto compact: summarize old messages, keep recent user messages.
+        """Full auto compact: summarize old messages (delegated to Runner)."""
+        return self.runner._perform_full_compact(keep_user_messages)
 
-        Returns (before_tokens, after_tokens) tuple.
-        """
-        from core.compression import count_messages_tokens
-
-        all_messages = self.messages
-        total_tokens = self._count_messages_tokens(self.get_valid_messages())
-
-        # Find split point
-        valid_messages = self.get_valid_messages()
-        split_idx = self._find_split_by_user_messages(valid_messages, keep_user_messages)
-        if split_idx <= 0:
-            raise ValueError("Not enough messages to compress")
-
-        # Summarize old messages FIRST — only invalidate them after the summary
-        # succeeds. Invalidating before summarizing would permanently hide the
-        # old history if the summary LLM call fails.
-        old_messages = valid_messages[:split_idx]
-        if not old_messages:
-            # Nothing to summarize
-            return total_tokens, total_tokens
-
-        summary = self._summarize_messages(old_messages)
-        if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
-            logger.error("摘要生成失败，跳过压缩")
-            return total_tokens, total_tokens
-
-        # Mark messages before split as invalid (using _meta.valid).
-        # valid_messages 是 get_valid_messages() 的保序拷贝（非引用），
-        # 用游标在 all_messages 中按 valid_messages 索引对齐后标记；
-        # pinned 消息永不标记失效（任务/检查提示等核心锚点）。
-        pinned_positions = {
-            pos for pos, msg in enumerate(valid_messages[:split_idx])
-            if msg.get("_meta", {}).get("pinned")
-        }
-        cursor = 0
-        for msg in all_messages:
-            if cursor >= split_idx:
-                break
-            if msg.get("_meta", {}).get("valid") is False:
-                continue
-            if cursor not in pinned_positions:
-                if "_meta" not in msg:
-                    msg["_meta"] = {}
-                msg["_meta"]["valid"] = False
-            cursor += 1
-
-        # Add summary messages（summary=True：进 commits 视图内嵌摘要，不进 jsonl，
-        # UI 完整历史保留压缩前原始消息，不展示摘要）
-        self.add_message(
-            "user",
-            "[Our previous conversation has been compacted due to context length.]",
-            meta={"summary": True},
-        )
-        self.add_message("assistant", summary, meta={"summary": True})
-
-        self._invalidate_message_cache()
-
-        new_tokens = self._count_messages_tokens(self.get_valid_messages())
-        logger.info(f"[Full Compact] 完成: {total_tokens:,} → {new_tokens:,} tokens")
-        return total_tokens, new_tokens
-
-    def _find_split_by_user_messages(self, messages: list[dict], keep_user_count: int) -> int:
-        """Find split point keeping last N user messages.
-
-        优先按纯文本 user 消息（交互模式语义：保留最近 N 轮用户提问）；
-        worker/lite autonomous 模式的 user 消息多为 pinned string（任务/检查提示）
-        或 list content（tool_result、预算提示），纯文本非 pinned 可能为零，
-        此时退回按「全部非 pinned user 消息」切分，否则 full compact 永不触发、
-        长任务上下文无限增长。
-        """
-        user_text_indices = []
-        user_any_indices = []
-        for i, msg in enumerate(messages):
-            if msg.get("_meta", {}).get("pinned"):
-                continue
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            user_any_indices.append(i)
-            if isinstance(content, str):
-                user_text_indices.append(i)
-
-        if len(user_text_indices) > keep_user_count:
-            split_idx = user_text_indices[-keep_user_count]
-        elif len(user_any_indices) > keep_user_count:
-            split_idx = user_any_indices[-keep_user_count]
-        else:
-            return 0
-
-        # Don't tear a tool round in half: a split is invalid if the last kept
-        # message is an assistant tool_use (its tool_result would be discarded)
-        # or the first kept message is a user tool_result (its tool_use would be
-        # discarded). 回退到轮起点（assistant tool_use）为止，而不是一路退回 0——
-        # 否则 worker 的全链式历史（全是 tool_use/tool_result 轮）永远切不动。
-        while split_idx > 0:
-            prev = messages[split_idx - 1]
-            prev_content = prev.get("content", [])
-            if prev.get("role") == "assistant" and isinstance(prev_content, list) and any(
-                b.get("type") == "tool_use" for b in prev_content
-            ):
-                split_idx -= 1
-                continue
-            msg = messages[split_idx]
-            content = msg.get("content", [])
-            if msg.get("role") == "user" and isinstance(content, list) and any(
-                b.get("type") == "tool_result" for b in content
-            ):
-                split_idx -= 1
-                continue
-            break
-        return split_idx
+    @staticmethod
+    def _find_split_by_user_messages(messages: list[dict], keep_user_count: int) -> int:
+        """Find split point keeping last N user messages (delegated to AgentContext)."""
+        return AgentContext.find_split_by_user_messages(messages, keep_user_count)
 
     def _summarize_messages(self, messages: list[dict]) -> str:
-        """Use LLM to summarize messages."""
-        conversation_parts = []
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                conversation_parts.append(f"{role}: {content}")
-            elif isinstance(content, list):
-                texts = []
-                for block in content:
-                    if block.get("type") == "text":
-                        texts.append(block.get("text", ""))
-                    elif block.get("type") == "tool_use":
-                        texts.append(f"[调用工具: {block.get('name', '')}]")
-                    elif block.get("type") == "tool_result":
-                        texts.append("[工具结果]")
-                if texts:
-                    conversation_parts.append(f"{role}: {' '.join(texts)}")
-
-        conversation_text = "\n".join(conversation_parts)
-        max_chars = min(50000, self.model.max_context_tokens * 2)
-        if len(conversation_text) > max_chars:
-            conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
-
-        summary_prompt = f"""请用中文简洁地总结以下对话的主要内容，包括：
-1. 用户的主要需求和目标
-2. 已完成的关键操作
-3. 当前进展状态
-4. 重要的上下文信息
-
-对话内容：
-{conversation_text}
-
-请用 200-400 字总结："""
-
-        try:
-            response = self.client.chat(
-                messages=[Message(role="user", content=summary_prompt)],
-                system="你是一个对话总结助手。请用中文简洁地总结对话要点。",
-                session_id=self._session_id,
-            )
-            # Track usage (UsageData object)
-            if response.usage:
-                self._update_usage(
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
-                    api_calls=1,
-                    cache_read_tokens=response.usage.cache_read_tokens,
-                    cache_creation_tokens=response.usage.cache_write_tokens,
-                )
-            # Use the new get_text() method for typed content blocks
-            return response.get_text() or "（摘要生成失败）"
-        except Exception as e:
-            logger.error("[上下文] 摘要生成失败")
-            return "（摘要生成失败，请查看完整历史）"
+        """Use LLM to summarize messages (delegated to Runner)."""
+        return self.runner._summarize_messages(messages)
 
     def _mark_old_tool_calls_invalid(self, keep_recent_rounds: int = 5) -> int:
-        """Mark old tool calls as invalid to reduce body size."""
-        saved = 0
-        tool_calls = []
-        round_number = 0
-
-        for msg in self.messages:
-            # Check validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-
-            role = msg.get("role")
-            content = msg.get("content", [])
-
-            if not isinstance(content, list):
-                continue
-
-            if role == "assistant":
-                round_number += 1
-
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type in ("tool_use", "tool_result"):
-                    tool_calls.append({"block": block, "round": round_number, "msg": msg})
-
-        if round_number <= keep_recent_rounds:
-            return 0
-
-        for call in tool_calls:
-            if call["round"] <= round_number - keep_recent_rounds:
-                msg = call["msg"]
-                # Check if already marked invalid
-                meta = msg.get("_meta", {})
-                if meta.get("valid") is False:
-                    continue
-
-                block = call["block"]
-                content = block.get("input", {}) if block.get("type") == "tool_use" else block.get("content", "")
-                size = len(str(content))
-
-                # Mark message-level _meta.valid = False
-                if "_meta" not in msg:
-                    msg["_meta"] = {}
-                msg["_meta"]["valid"] = False
-                saved += size
-
-        return saved
+        """Mark old tool calls as invalid to reduce body size (delegated to Runner)."""
+        return self.runner._mark_old_tool_calls_invalid(keep_recent_rounds)
 
     def _mark_old_images_invalid(self, keep_recent: int = 5) -> int:
-        """Replace old tool_result images with text placeholders to reduce body size.
+        """Replace old tool_result images with text placeholders (delegated to Runner)."""
+        return self.runner._mark_old_images_invalid(keep_recent)
 
-        Replaces images in place (instead of invalidating whole messages) so the
-        tool_use/tool_result pairing with the preceding assistant message stays
-        intact — invalidating only the user message would leave the assistant's
-        tool_use dangling and the API would reject the next request with 400.
-        Returns the number of image bytes removed.
-        """
-        saved = 0
-        image_refs = []  # (msg_idx, block_idx, sub_idx, data_len)
-
-        for i, msg in enumerate(self.messages):
-            # Check validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                continue
-
-            for block_idx, block in enumerate(content):
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                rc = block.get("content", "")
-                if not isinstance(rc, list):
-                    continue
-                for sub_idx, sub in enumerate(rc):
-                    if isinstance(sub, dict) and sub.get("type") == "image":
-                        data_len = len(sub.get("source", {}).get("data", ""))
-                        image_refs.append((i, block_idx, sub_idx, data_len))
-
-        if len(image_refs) <= keep_recent:
-            return 0
-
-        for msg_idx, block_idx, sub_idx, data_len in image_refs[:-keep_recent]:
-            rc = self.messages[msg_idx]["content"][block_idx]["content"]
-            rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
-            saved += data_len
-
-        return saved
+    def _mark_all_images_invalid(self) -> None:
+        """Replace all tool_result images with text placeholders for 413 retry (delegated to Runner)."""
+        self.runner._mark_all_images_invalid()
 
     # ========== Token Counting & Body Size ==========
 
     @staticmethod
     def iter_content_blocks(messages: list[dict]):
-        """Yield (block_type, data) for each content element."""
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                yield ("text", content)
-            elif isinstance(content, list):
-                for block in content:
-                    btype = block.get("type", "")
-                    if btype == "text":
-                        yield ("text", block.get("text", ""))
-                    elif btype == "tool_use":
-                        yield ("tool_use", block)
-                    elif btype == "tool_result":
-                        rc = block.get("content", "")
-                        if isinstance(rc, list):
-                            for sub in rc:
-                                stype = sub.get("type", "")
-                                if stype == "text":
-                                    yield ("tool_result_text", sub.get("text", ""))
-                                elif stype == "image":
-                                    yield ("tool_result_image", sub.get("source", {}).get("data", ""))
-                        else:
-                            yield ("tool_result_str", str(rc))
+        """Yield (block_type, data) for each content element (delegated to Runner)."""
+        return Runner.iter_content_blocks(messages)
 
     def _count_messages_tokens(self, messages: list[dict]) -> int:
-        """Count total tokens in messages (delegates to compression.count_messages_tokens)."""
-        from core.compression import count_messages_tokens
-        return count_messages_tokens(messages)
+        """Count total tokens in messages (delegated to AgentContext)."""
+        return self.context.count_messages_tokens(messages)
 
     def _estimate_request_body_size(self, messages: list[dict]) -> int:
-        """Estimate JSON request body size in bytes."""
-        size = 0
-        for btype, data in self.iter_content_blocks(messages):
-            if btype == "text":
-                size += len(data) * 2
-            elif btype == "tool_use":
-                size += len(json.dumps(data.get("input", {}), ensure_ascii=False)) * 2
-            elif btype == "tool_result_text":
-                size += len(data) * 2
-            elif btype == "tool_result_image":
-                size += len(data)
-            elif btype == "tool_result_str":
-                size += len(data) * 2
-        size += _SYSTEM_OVERHEAD_BYTES
-        return size
+        """Estimate JSON request body size in bytes (delegated to Runner)."""
+        return self.runner._estimate_request_body_size(messages)
 
     def _strip_images_from_messages(self, messages: list[dict]) -> list[dict]:
-        """Strip images from messages for non-multimodal models."""
-        result = []
-        for msg in messages:
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                result.append(msg)
-                continue
-
-            has_image = False
-            for block in content:
-                if block.get("type") != "tool_result":
-                    continue
-                rc = block.get("content", "")
-                if isinstance(rc, list):
-                    for sub in rc:
-                        if sub.get("type") == "image":
-                            has_image = True
-                            break
-                if has_image:
-                    break
-
-            if not has_image:
-                result.append(msg)
-                continue
-
-            new_content = []
-            for block in content:
-                if block.get("type") != "tool_result":
-                    new_content.append(block)
-                    continue
-                rc = block.get("content", "")
-                if not isinstance(rc, list):
-                    new_content.append(block)
-                    continue
-                new_sub = []
-                for sub in rc:
-                    if sub.get("type") == "image":
-                        new_sub.append({
-                            "type": "text",
-                            "text": "[image - model does not support multimodal]",
-                        })
-                    else:
-                        new_sub.append(sub)
-                new_content.append({**block, "content": new_sub})
-            result.append({**msg, "content": new_content})
-        return result
+        """Strip images from messages for non-multimodal models (delegated to Runner)."""
+        return self.runner._strip_images_from_messages(messages)
 
     def _get_messages_with_header(self) -> list[dict]:
-        """Get valid messages for LLM call.
+        """Get valid messages for LLM call (delegated to AgentContext).
 
         Returns messages with _meta intact; _meta is stripped later
         by _strip_meta_from_messages() after _resolve_tool_results() runs.
         """
-        return self.get_valid_messages(strip_meta=False)
+        return self.context.get_messages_with_header()
 
     def _pad_dangling_tool_results(self) -> None:
-        """为悬挂的 tool_use 补充占位 tool_result（原地修改 self.messages）。
-
-        Anthropic API 要求每个 tool_use 必须在下一条 user 消息中得到
-        tool_result 回应，否则返回 400。中途停止等中断场景会留下未回应的
-        tool_use 并随会话持久化，导致该会话后续所有 LLM 调用失败。
-        在每次 LLM 调用前修补，修补结果随下次保存持久化，可自愈历史损坏。
-        """
-        answered: set[str] = set()
-        for msg in self.messages:
-            if msg.get("_meta", {}).get("valid") is False:
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                continue
-            if msg.get("role") == "user":
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        answered.add(block.get("tool_use_id"))
-
-        dangling: list[tuple[int, str]] = []  # (assistant 消息索引, tool_use_id)
-        for idx, msg in enumerate(self.messages):
-            if msg.get("_meta", {}).get("valid") is False:
-                continue
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    if block.get("id") not in answered:
-                        dangling.append((idx, block.get("id")))
-
-        if not dangling:
-            return
-
-        logger.warning(f"[Agent] 检测到 {len(dangling)} 个未回应的 tool_use，补充占位结果")
-        # 倒序插入，避免索引失效；连续 user 消息由 adapter 的
-        # merge_consecutive_same_role 合并，不会违反 API 的角色交替要求
-        for idx, tool_use_id in reversed(dangling):
-            placeholder = {
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": "[interrupted]",
-                "is_error": True,
-            }
-            self.messages.insert(
-                idx + 1,
-                {"role": "user", "content": [placeholder], "_meta": {"id": generate_short_id()}},
-            )
+        """为悬挂的 tool_use 补充占位 tool_result（原地修改 messages）。"""
+        self.context.pad_dangling_tool_results()
 
     # ========== LLM Calling ==========
 
     def _call_llm(self, streaming: bool = False, system_prompt: str = "") -> LLMResponse:
         """Call LLM with optional streaming.
 
-        Args:
-            streaming: Whether to use streaming mode
-            system_prompt: System prompt to use
-
-        Returns:
-            LLMResponse with content and usage
+        转发到 Runner.run_round：每轮先压缩再调用 LLM（压缩入口收敛在此，
+        loop 不再显式调用 _check_and_compress）。测试 patch 本方法时整体替换
+        回合入口，压缩与真实调用均被跳过。
 
         Raises:
             RuntimeError: LLM 调用最终失败（内部重试耗尽后抛出，
@@ -1140,10 +253,7 @@ class BaseAgent:
                 调用方需自行捕获处理——不抛会导致 Agent 把错误
                 误判为正常完成。用户停止不视为错误（返回 stop_reason="stopped"）。
         """
-        if streaming:
-            return self._call_llm_streaming(system_prompt)
-        else:
-            return self._call_llm_non_streaming(system_prompt)
+        return self.runner.run_round(streaming=streaming, system_prompt=system_prompt)
 
     def _prepare_messages_for_llm(
         self,
@@ -1151,199 +261,24 @@ class BaseAgent:
         pad_dangling: bool = True,
         resolve_results: bool = True,
     ) -> list[Message]:
-        """Build Message objects for the LLM API from self.messages.
-
-        共享的消息预处理管道（non-streaming / streaming / 413 重试 / 超时兜底）。
-        ``pad_dangling``：为悬挂 tool_use 补占位（重试或超时兜底路径已修补过，跳过）。
-        ``resolve_results``：从外部文件解析工具输出并剥离内部 _meta
-        （non-streaming 413 重试路径首轮已解析过，跳过）。
-        """
-        if pad_dangling:
-            self._pad_dangling_tool_results()
-        messages = self._get_messages_with_header()
-        if resolve_results:
-            messages = self._resolve_tool_results(messages)
-            messages = self._strip_meta_from_messages(messages)
-        if not self.model.multimodal:
-            messages = self._strip_images_from_messages(messages)
-        return self._convert_to_message_objects(messages)
+        """Build Message objects for the LLM API from self.messages (delegated to Runner)."""
+        return self.runner._prepare_messages_for_llm(
+            pad_dangling=pad_dangling,
+            resolve_results=resolve_results,
+        )
 
     def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
-        """Non-streaming LLM call."""
-        message_objects = self._prepare_messages_for_llm()
-
-        try:
-            response = self.client.chat(
-                messages=message_objects,
-                system=system_prompt,
-                tools=self.tool_schemas,
-                session_id=self._session_id,
-            )
-            # Track usage (UsageData object)
-            if response.usage:
-                self._update_usage(
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
-                    api_calls=1,
-                    cache_read_tokens=response.usage.cache_read_tokens,
-                    cache_creation_tokens=response.usage.cache_write_tokens,
-                )
-            return response
-        except Exception as e:
-            # Handle 413 by stripping images and retrying
-            if self._is_413_error(e):
-                logger.warning("[LLM] 请求体过大，正在重试...")
-                self._mark_all_images_invalid()
-                # autonomous 模式写 exec schema（exec_id/task），避免覆盖 exec 日志；
-                # interactive 模式写普通 session schema。
-                if getattr(self, "_mode", "interactive") == "autonomous":
-                    self._save_progress(len(self.messages), status="running")
-                else:
-                    self.save_messages()
-
-                # 首轮已 pad/解析过工具输出，重试仅重新组装并去图
-                retry_message_objects = self._prepare_messages_for_llm(
-                    pad_dangling=False, resolve_results=False
-                )
-                try:
-                    response = self.client.chat(
-                        messages=retry_message_objects,
-                        system=system_prompt,
-                        tools=self.tool_schemas,
-                        session_id=self._session_id,
-                    )
-                    if response.usage:
-                        self._update_usage(
-                            input_tokens=response.usage.input_tokens,
-                            output_tokens=response.usage.output_tokens,
-                            api_calls=1,
-                            cache_read_tokens=response.usage.cache_read_tokens,
-                            cache_creation_tokens=response.usage.cache_write_tokens,
-                        )
-                    return response
-                except Exception as retry_e:
-                    err_msg = format_llm_error(retry_e, self.client.base_url if self.client else "")
-                    logger.error(f"[LLM] {err_msg}")
-                    raise RuntimeError(err_msg) from retry_e
-
-            err_msg = format_llm_error(e, self.client.base_url if self.client else "")
-            logger.error(f"[LLM] {err_msg}")
-            raise RuntimeError(err_msg) from e
+        """Non-streaming LLM call (delegated to Runner)."""
+        return self.runner._call_llm_non_streaming(system_prompt)
 
     def _call_llm_streaming(self, system_prompt: str) -> LLMResponse:
-        """Streaming LLM call. Think content passes through as-is."""
-        text_parts: list[str] = []
-
-        def on_text_delta(text: str):
-            text_parts.append(text)
-            if text and self._on_text:
-                safe = text.encode("utf-8", errors="replace").decode("utf-8")
-                self._on_text(safe)
-
-        def on_thinking_delta(thinking: str):
-            if self._on_thinking:
-                self._on_thinking(thinking)
-
-        message_objects = self._prepare_messages_for_llm()
-
-        # 重试配置：3次重试，退避 5/10/20 秒
-        max_retries = 3
-        retry_delays = [5, 10, 20]
-        images_stripped = False
-
-        for attempt in range(max_retries + 1):
-            try:
-                response = self.client.chat_stream(
-                    messages=message_objects,
-                    system=system_prompt,
-                    tools=self.tool_schemas,
-                    on_text=on_text_delta,
-                    on_thinking=on_thinking_delta,
-                    stop_check=lambda: self._stopped,
-                    session_id=self._session_id,
-                )
-                # 成功，跳出重试循环
-                break
-            except InterruptedError:
-                logger.info("[LLM] 已中断")
-                return LLMResponse(
-                    content=[TextBlock(text="".join(text_parts))],
-                    stop_reason="stopped",
-                )
-            except Exception as e:
-                # 最后一次重试仍失败
-                if attempt == max_retries:
-                    err_msg = format_llm_error(e, self.client.base_url if self.client else "")
-                    logger.error(f"[LLM] {err_msg}")
-                    raise RuntimeError(err_msg) from e
-
-                # 413 错误：去掉图片后重试
-                if self._is_413_error(e) and not images_stripped:
-                    logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
-                    self._mark_all_images_invalid()
-                    self.save_messages()
-                    if self._on_text:
-                        self._on_text(RETRY_CLEAR_SENTINEL)
-                    text_parts.clear()
-                    images_stripped = True
-
-                    # 去图重试：已 pad 过，但需重新解析工具输出（图片标记为无效后重组装）
-                    message_objects = self._prepare_messages_for_llm(pad_dangling=False)
-                else:
-                    # 其他错误：等待后重试（分段 sleep，期间响应停止请求）
-                    delay = retry_delays[attempt]
-                    logger.warning(f"[LLM] 请求失败 (尝试 {attempt + 1}/{max_retries + 1})，{delay}秒后重试: {e}")
-                    for _ in range(delay * 10):
-                        if self._stopped:
-                            return LLMResponse(
-                                content=[TextBlock(text="".join(text_parts))],
-                                stop_reason="stopped",
-                            )
-                        time.sleep(0.1)
-                    text_parts.clear()
-                    if self._on_text:
-                        self._on_text(RETRY_CLEAR_SENTINEL)
-
-        # Track usage (UsageData object)
-        if response.usage:
-            self._update_usage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                api_calls=1,
-                cache_read_tokens=response.usage.cache_read_tokens,
-                cache_creation_tokens=response.usage.cache_write_tokens,
-            )
-
-        return response
+        """Streaming LLM call. Think content passes through as-is (delegated to Runner)."""
+        return self.runner._call_llm_streaming(system_prompt)
 
     @staticmethod
     def _is_413_error(e: Exception) -> bool:
-        """Check if exception is a 413 Entity Too Large error."""
-        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 413:
-            return True
-        # Fallback for wrapped exceptions
-        return "413" in str(e) or "Entity Too Large" in str(e)
-
-    def _mark_all_images_invalid(self) -> None:
-        """Replace all tool_result images with text placeholders for 413 retry.
-
-        Replaces images in place (instead of invalidating whole messages):
-        invalidating a user message here would leave the preceding assistant
-        tool_use dangling, and the API would reject the next request with 400.
-        """
-        for msg in self.messages:
-            content = msg.get("content", "")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                rc = block.get("content", "")
-                if not isinstance(rc, list):
-                    continue
-                for sub_idx, sub in enumerate(rc):
-                    if isinstance(sub, dict) and sub.get("type") == "image":
-                        rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
+        """Check if exception is a 413 Entity Too Large error (delegated to Runner)."""
+        return Runner._is_413_error(e)
 
     # ========== Usage Tracking ==========
 
@@ -1355,16 +290,18 @@ class BaseAgent:
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
     ) -> None:
-        """Update usage statistics."""
-        self._usage["input_tokens"] += input_tokens
-        self._usage["output_tokens"] += output_tokens
-        self._usage["api_calls"] += api_calls
-        self._usage["cache_read_tokens"] += cache_read_tokens
-        self._usage["cache_creation_tokens"] += cache_creation_tokens
+        """Update usage statistics (delegated to AgentContext)."""
+        self.context.update_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            api_calls=api_calls,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
 
     def get_usage(self) -> dict[str, int]:
-        """Get accumulated usage statistics."""
-        return self._usage.copy()
+        """Get accumulated usage statistics (delegated to AgentContext)."""
+        return self.context.get_usage()
 
     # ========== Lifecycle ==========
 

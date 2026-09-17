@@ -478,6 +478,12 @@ class SessionManager:
         self.messages: list[dict] = []
         self._valid_messages_cache: list[dict] | None = None
         self._messages_dirty: bool = True
+        # 单调版本号：任何变更（含原地改消息）递增 _index_version；
+        # _persist 开头捕获、结尾写回，避免并发下 boolean 脏标记被覆盖丢变更
+        self._index_version: int = 0
+        self._persisted_version: int = 0
+        # 磁盘 jsonl 已知最大 seq（load 时扫描一次；崩溃自愈防新消息序号碰撞）
+        self._jsonl_max_seq: int = -1
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.metadata: dict = {
             "created_at": now,
@@ -503,7 +509,7 @@ class SessionManager:
     # ========== 消息管理 ==========
 
     def add_message(self, role: str, content: Any, *, extra: dict | None = None,
-                    _meta: dict | None = None) -> None:
+                    _meta: dict | None = None, flush: bool = False) -> None:
         """添加消息到会话。
 
         Args:
@@ -511,6 +517,8 @@ class SessionManager:
             content: 消息内容
             extra: 额外字段，会合并到消息中
             _meta: 消息级别的 _meta 字段
+            flush: True 时立即追加 jsonl（崩溃不丢），False 仅内存 + 置脏，
+                由后续 save() checkpoint 统一落盘（web_api 批量场景用 False）
         """
         message = {"role": role, "content": content}
 
@@ -527,7 +535,12 @@ class SessionManager:
 
         self.messages.append(message)
         self._messages_dirty = True
+        self._index_version += 1
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if flush:
+            lock = _get_session_lock(self.session_dir)
+            with lock:
+                self._append_pending_messages()
 
     def get_messages(self) -> list[dict]:
         """获取所有消息。"""
@@ -612,6 +625,8 @@ class SessionManager:
                 "commits": [],
             })
             atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
+            self._jsonl_max_seq = -1
+            self._persisted_version = self._index_version
 
     def get_last_n_messages(self, n: int) -> list[dict]:
         """获取最后 N 条消息。"""
@@ -623,11 +638,78 @@ class SessionManager:
 
     # ========== 持久化 ==========
 
-    def save(self) -> None:
-        """持久化：追加新消息到 messages.jsonl + 原子重写 index.json/meta.json。"""
+    def mark_dirty(self) -> None:
+        """标记 index.json/meta.json 已与内存不同步（供外部就地修改消息后调用）。"""
+        self._index_version += 1
+        self._messages_dirty = True
+
+    def flush(self) -> None:
+        """仅追加新消息到 messages.jsonl 并 fsync（崩溃不丢消息）。
+
+        与 save() 的区别：不重写 index.json/meta.json（模型提交视图），
+        UI 经 load_history_messages 直读 jsonl 即可看到新消息；
+        index 视图留待下一次 checkpoint save() 收敛。
+        """
+        lock = _get_session_lock(self.session_dir)
+        with lock:
+            if self._append_pending_messages():
+                self._index_version += 1
+
+    def save(self, force: bool = False) -> None:
+        """Checkpoint 持久化：追加新消息 + 原子重写 index.json/meta.json。
+
+        无变更时短路（版本比对），避免高频调用下反复全量对账重写；
+        force=True 强制重写（如初始建会话）。
+        版本比对在锁外进行：即使并发下读到陈旧 persisted_version，最坏只是
+        一次多余持久化（幂等 no-op），绝不会漏持久化并发写入的消息。
+        """
+        if not force and self._index_version == self._persisted_version:
+            return
         lock = _get_session_lock(self.session_dir)
         with lock:
             self._persist()
+
+    def _refresh_jsonl_max_seq(self) -> None:
+        """重新扫描 jsonl 的最大 seq（load/截断/清空后调用）。"""
+        self._jsonl_max_seq = max(
+            (line.get("seq", -1) for line in read_jsonl(self.session_dir / MESSAGES_FILE)),
+            default=-1,
+        )
+
+    def _append_pending_messages(self) -> bool:
+        """为无 seq 的新消息分配 seq/id 并追加 jsonl。返回是否追加了行。
+
+        幂等：已分配 seq 的消息跳过。调用方必须持有 _get_session_lock。
+        """
+        index_file = self.session_dir / INDEX_FILE
+        disk_next_seq = (load_json_or_backup(index_file, {}) or {}).get("next_seq", 0) or 0
+        # 崩溃自愈：jsonl 可能有未 commit 的孤儿行，取其最大 seq 为基数，防新消息序号碰撞
+        if self._jsonl_max_seq < 0:
+            self._refresh_jsonl_max_seq()
+        next_seq = max(disk_next_seq, self._jsonl_max_seq + 1)
+        append_lines: list[dict] = []
+
+        for msg in self.messages:
+            if not isinstance(msg, dict):
+                continue
+            meta = msg.get("_meta") or {}
+            if meta.get("summary"):
+                continue  # 摘要只进提交视图，不进 jsonl
+            seq = meta.get("seq")
+            if seq is None:
+                seq = next_seq
+                next_seq += 1
+                if "_meta" not in msg:
+                    msg["_meta"] = {}
+                msg["_meta"]["seq"] = seq
+                if "id" not in msg["_meta"]:
+                    msg["_meta"]["id"] = generate_short_id()
+                append_lines.append(_jsonl_line(msg, seq))
+
+        if append_lines:
+            append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)
+            self._jsonl_max_seq = max(self._jsonl_max_seq, next_seq - 1)
+        return bool(append_lines)
 
     def _persist(self) -> None:
         """对账 self.messages → 三件套文件（调用方必须持有 _get_session_lock）。
@@ -636,11 +718,19 @@ class SessionManager:
         普通消息按 seq 引用 jsonl；仅追加无 seq 的新消息到 jsonl。
         next_seq = max(磁盘, 内存最大 seq+1) 崩溃自愈。
         """
+        # 开头捕获版本、结尾写回：并发 add_message 在持久化中途置脏的变更
+        # 不会被本次 write-back 覆盖，而是保留版本差触发下一次 save
+        persisted_version = self._index_version
+        self._append_pending_messages()
+        self._rewrite_index_and_meta()
+        self._persisted_version = persisted_version
+
+    def _rewrite_index_and_meta(self) -> None:
+        """派生 commits 并原子重写 index.json/meta.json。调用方必须持有 _get_session_lock。"""
         index_file = self.session_dir / INDEX_FILE
         disk_next_seq = (load_json_or_backup(index_file, {}) or {}).get("next_seq", 0) or 0
-        next_seq = disk_next_seq
+        next_seq = max(disk_next_seq, self._jsonl_max_seq + 1)
         max_seq = -1
-        append_lines: list[dict] = []
         commits: list[dict] = []
 
         for msg in self.messages:
@@ -652,14 +742,11 @@ class SessionManager:
                 continue  # 摘要只进提交视图，不进 jsonl（UI 不显示摘要）
             seq = meta.get("seq")
             if seq is None:
-                seq = next_seq
-                next_seq += 1
-                if "_meta" not in msg:
-                    msg["_meta"] = {}
-                msg["_meta"]["seq"] = seq
-                if "id" not in msg["_meta"]:
-                    msg["_meta"]["id"] = generate_short_id()
-                append_lines.append(_jsonl_line(msg, seq))
+                # 未落 jsonl 的新消息（如并发 add_message 在 _append_pending_messages
+                # walk 后加入）：seq 分配只归 _append_pending_messages（同时写 jsonl），
+                # 这里若顺手分配会「只有 index 有 seq、jsonl 无行」，后续 persist 误以为
+                # 已落盘而跳过 → 崩溃/重载丢消息（test_concurrent_save_no_loss_no_dup 复现）
+                continue
             max_seq = max(max_seq, seq)
             if meta.get("valid") is False:
                 continue  # 无效消息仍写 jsonl（UI 历史保留），但不进提交视图
@@ -667,8 +754,6 @@ class SessionManager:
 
         next_seq = max(next_seq, max_seq + 1)
 
-        if append_lines:
-            append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)
         atomic_write_json(index_file, {
             "schema_version": SCHEMA_VERSION,
             "next_seq": next_seq,
@@ -703,11 +788,42 @@ class SessionManager:
             return False
 
         self.messages = build_model_messages(session_dir)
+        self._refresh_jsonl_max_seq()
+        tail_recovered = self._append_uncommitted_tail(session_dir)
         meta = read_meta(session_dir)
         self.name = meta.get("name", "New Session")
         self.metadata = meta.get("metadata", self.metadata)
         self._messages_dirty = True
+        self._persisted_version = self._index_version
+        if tail_recovered:
+            # 恢复了未 checkpoint 的尾部：index 提交视图确实落后，下次 save 应收敛
+            self._index_version += 1
         return True
+
+    def _append_uncommitted_tail(self, session_dir: Path) -> bool:
+        """崩溃自愈：把 jsonl 中已 flush 但未 checkpoint（seq 超出提交视图）的尾部
+        消息追加回模型视图，避免 save 降频后进程崩溃丢失尾部消息。
+
+        过滤依据 seq > 提交视图最大 seq：压缩已提交的 invalid 消息（jsonl 保留、
+        commits 剔除）seq 不超界故不会复活；未提交的压缩/invalidate 变更则按
+        jsonl 原始内容恢复（正确——压缩本身也未落盘）。
+        """
+        view = read_view(session_dir)
+        max_committed = max(
+            (c.get("seq", -1) for c in view.get("commits", []) if "seq" in c),
+            default=-1,
+        )
+        if self._jsonl_max_seq <= max_committed:
+            return False
+        appended = False
+        for line in read_jsonl(session_dir / MESSAGES_FILE):
+            seq = line.get("seq", -1)
+            if seq > max_committed:
+                msg = _message_from_line(line, None, seq)
+                _apply_model_content_rules(msg)
+                self.messages.append(msg)
+                appended = True
+        return appended
 
     def delete(self) -> None:
         """删除会话目录（包括 index.json、exec 子目录和工具输出文件）。"""
@@ -748,6 +864,7 @@ class SessionManager:
             # 目标消息本身也删除（与旧 API 一致：撤销到该消息之前），
             # jsonl/commits/内存三者同步截断，避免幽灵消息
             self._truncate_jsonl_to(target_seq)
+            self._refresh_jsonl_max_seq()
             del self.messages[target_idx:]
             # 预置 next_seq，让 _persist 复用被截断的序号
             atomic_write_json(self.session_dir / INDEX_FILE, {
@@ -806,11 +923,13 @@ class SessionManager:
         """重命名会话。"""
         self.name = new_name
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._index_version += 1
 
     def set_hidden(self, hidden: bool) -> None:
         """设置会话隐藏状态。"""
         self.metadata["hidden"] = hidden
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._index_version += 1
 
     def is_hidden(self) -> bool:
         """获取会话隐藏状态。"""
@@ -829,6 +948,7 @@ class SessionManager:
         usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cache_read_tokens
         usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation_tokens
         self.metadata["usage"] = usage
+        self._index_version += 1
 
     def get_usage(self) -> dict:
         """获取使用量统计（返回副本，防止调用方原地修改不触发保存）。"""
@@ -848,7 +968,8 @@ class SessionManager:
         session_id = generate_short_id()
         session = SessionManager(session_id, sessions_dir)
         session.name = name
-        session.save()
+        # force：新会话无脏标记也需写出初始三件套文件
+        session.save(force=True)
         return session
 
     @staticmethod

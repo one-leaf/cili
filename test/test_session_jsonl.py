@@ -116,6 +116,7 @@ class TestCompaction:
         sm.add_message("user", "drop me")
         sm.save()
         sm.messages[1]["_meta"]["valid"] = False
+        sm.mark_dirty()
         sm.save()
 
         sdir = _session_dir(sessions_dir, sm.session_id)
@@ -145,6 +146,7 @@ class TestMicroCompactSpill:
         assert block["content"] is None
         assert "output_path" not in block["_meta"]
         assert not (sdir / "toolu_old.txt").exists()  # 不 spill 外置文件
+        sm.mark_dirty()
         sm.save()
 
         # 模型视图：compacted → content None（无 output_path 也清空）
@@ -186,6 +188,7 @@ class TestMicroCompactSpill:
         block["_meta"] = {"compacted": True, "output_path": "toolu_1.txt", "file_size": 21}
         block["content"] = None
         (_session_dir(sessions_dir, sm.session_id) / "toolu_1.txt").write_text("spilled", encoding="utf-8")
+        sm.mark_dirty()
         sm.save()
 
         sdir = _session_dir(sessions_dir, sm.session_id)
@@ -224,6 +227,7 @@ class TestAskUserAnswer:
             "file_size": len(answer.encode("utf-8")),
         }
         (sdir / "toolu_q.txt").write_text(answer, encoding="utf-8")
+        sm.mark_dirty()
         sm.save()
 
         # 模型视图：content 被 _apply_model_content_rules 清空，等待 _resolve_tool_results 读文件
@@ -299,6 +303,80 @@ class TestTornTail:
 
         assert len(read_jsonl(sdir / MESSAGES_FILE)) == 3
         assert len(load_history_messages(sdir)) == 3
+
+
+class TestSaveFrequency:
+    def test_save_no_change_does_not_rewrite(self, test_workspace):
+        """save 降频：无变更时短路，不重写 index.json/meta.json。"""
+        sm, sessions_dir = _new_session(test_workspace)
+        sm.add_message("user", "a")
+        sm.add_message("assistant", "b")
+        sm.save()
+        sdir = _session_dir(sessions_dir, sm.session_id)
+        idx_mtime = (sdir / "index.json").stat().st_mtime_ns
+        meta_mtime = (sdir / "meta.json").stat().st_mtime_ns
+
+        sm.save()  # 无变更 → 短路，不触碰磁盘
+
+        assert (sdir / "index.json").stat().st_mtime_ns == idx_mtime
+        assert (sdir / "meta.json").stat().st_mtime_ns == meta_mtime
+
+    def test_flush_then_crash_self_heals_tail(self, test_workspace):
+        """flush 落盘 jsonl 但 index 落后：崩溃重启后 load 自愈恢复尾部消息。"""
+        sm, sessions_dir = _new_session(test_workspace)
+        for i in range(3):
+            sm.add_message("user", f"m{i}")
+        sm.save()
+        sdir = _session_dir(sessions_dir, sm.session_id)
+        # 模拟 agent 路径：新消息只 flush jsonl，不 checkpoint（index 提交视图仍 3 条）
+        sm.add_message("user", "tail-0", flush=True)
+        sm.add_message("user", "tail-1", flush=True)
+        assert len(read_jsonl(sdir / MESSAGES_FILE)) == 5
+        assert len(read_view(sdir)["commits"]) == 3  # index 落后于 jsonl
+
+        # 模拟崩溃重启：只从磁盘加载
+        loaded = SessionManager.load_session(sm.session_id, sessions_dir)
+        assert loaded is not None
+        assert [m["content"] for m in loaded.messages] == ["m0", "m1", "m2", "tail-0", "tail-1"]
+        assert [m["_meta"]["seq"] for m in loaded.messages] == [0, 1, 2, 3, 4]
+
+        # 重启后新消息 checkpoint：未提交的尾部一并收敛进提交视图
+        loaded.add_message("user", "after-restart")
+        loaded.save()
+        assert len(read_view(sdir)["commits"]) == 6
+
+    def test_session_list_updated_at_refreshed_on_checkpoint(self, test_workspace, monkeypatch):
+        """会话列表 updated_at 排序：checkpoint save 保证 meta 刷新不滞后。"""
+        from datetime import datetime as _real_datetime
+
+        class _FakeClock:
+            t = _real_datetime(2026, 1, 1, 12, 0, 0)
+
+            @classmethod
+            def now(cls):
+                return cls.t
+
+        # 假时钟：updated_at 秒级精度，快进时间保证排序可判定，不依赖墙钟（墙钟下跨秒不可靠）
+        monkeypatch.setattr("core.session.datetime", _FakeClock)
+
+        sessions_dir = Path(test_workspace) / ".sess_list"
+        a = SessionManager.create_new_session(sessions_dir, "A")
+        a.add_message("user", "a1")
+        a.save()
+        _FakeClock.t = _real_datetime(2026, 1, 1, 12, 0, 5)  # 快进 5 秒
+        b = SessionManager.create_new_session(sessions_dir, "B")
+        b.add_message("user", "b1")
+        b.save()
+
+        sessions = SessionManager.list_sessions(sessions_dir)
+        assert [s["name"] for s in sessions] == ["B", "A"]
+
+        # 旧会话 A 新增消息 + checkpoint：updated_at 反超 B，排序随之更新
+        _FakeClock.t = _real_datetime(2026, 1, 1, 12, 0, 6)
+        a.add_message("user", "a2")
+        a.save()
+        sessions = SessionManager.list_sessions(sessions_dir)
+        assert [s["name"] for s in sessions] == ["A", "B"]
 
 
 class TestConcurrency:

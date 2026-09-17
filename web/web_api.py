@@ -552,8 +552,9 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                     old_session_dir = agent.session_manager.session_dir
                     new_sm = SessionManager(session_id, agent.sessions_dir)
                     new_sm.name = f"Session {session_id[:8]}"
-                    new_sm.save()
+                    new_sm.save(force=True)  # 新会话首次落盘：跳过脏标记短路
                     agent.session_manager = new_sm
+                    agent.context.set_session_manager(new_sm)  # 同步 context 引用，保持一致
                     agent.current_session_id = session_id
                     agent._session_id = session_id
                     agent.session_dir = new_sm.session_dir
@@ -1085,10 +1086,8 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     try:
         agent = agents.get(key)
         if agent:
-            # agent 已加载：改内存并统一落盘，避免下次 save() 回写旧名
-            agent.session_manager.name = request.name
-            agent.session_manager.metadata["updated_at"] = now
-            agent.session_manager.save()
+            # agent 已加载：经 rename() 改内存并置脏（递增版本号），落盘不短路
+            agent.session_manager.rename(request.name)
             return {"success": True}
 
         meta = read_meta(session_dir)
@@ -1115,9 +1114,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     try:
         agent = agents.get(key)
         if agent:
-            agent.session_manager.metadata["hidden"] = request.hidden
-            agent.session_manager.metadata["updated_at"] = now
-            agent.session_manager.save()
+            agent.session_manager.set_hidden(request.hidden)
             return {"success": True}
 
         meta = read_meta(session_dir)
@@ -1793,6 +1790,8 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
             logger.info(f"[approval] 用户拒绝高风险命令: {store.pending['command']}")
         store.clear_pending()
 
+    # 就地修改了共享消息块（未走 add_message），须置脏否则 save 短路不落盘
+    agent.session_manager.mark_dirty()
     agent.session_manager.save()
     return True
 
