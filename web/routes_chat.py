@@ -17,10 +17,9 @@ from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.memory_pipeline import memory_enabled, schedule_extraction
 from core.session import SessionManager
-from core.tools import get_tool_by_name
 
 from web.deps import (
-    agents, _get_or_create_agent, _new_short_id, _require_workspace,
+    agents, _get_or_create_agent, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
     WORKSPACE_DATA_DIR,
@@ -32,9 +31,6 @@ from web.routes_ask_user import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# 特殊命令 /bash 前缀
-_BASH_PREFIX = "/bash "
 
 
 # ---------- Models ----------
@@ -176,7 +172,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - `/help` - 显示本帮助信息
 - `/status` - 显示当前会话状态（上下文长度、用量等）
 - `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
-- `/bash <command>` - 直接执行 bash 命令（例如：`/bash ls -la`）
 
 **工具使用：**
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
@@ -299,76 +294,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent.session_manager.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
-    if content.startswith(_BASH_PREFIX):
-        # 执行 bash 命令
-        command = content[len(_BASH_PREFIX):].strip()
-        if not command:
-            return StreamingResponse(_sse_stream({"type": "text", "content": "请输入要执行的命令"}), media_type="text/event-stream")
-
-        # 使用 agent 的 bash 工具执行命令
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-
-        # 提前生成 tool_use_id，用于设置输出文件和 SSE 事件
-        tool_use_id = f"cmd_{_new_short_id()}"
-
-        loop = asyncio.get_running_loop()
-        bash_tool = None
-        output_file_path = ""
-        try:
-            bash_tool = get_tool_by_name(agent.tools, 'bash')
-            if not bash_tool:
-                error_text = 'bash 工具不可用'
-                agent.session_manager.add_message("user", content, flush=False)
-                agent.session_manager.add_message("assistant", [{"type": "text", "text": error_text}], flush=False)
-                agent.session_manager.save()
-                return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
-
-            # 设置输出文件路径（供前端轮询实时显示）
-            session_dir = agent.session_manager.session_dir
-            output_file_path = str(session_dir / f"{tool_use_id}.txt")
-            bash_tool.output_file = output_file_path
-
-            result = await loop.run_in_executor(None, lambda: bash_tool.execute(command=command))
-            output = result.output if hasattr(result, 'output') else str(result)
-            is_error = bool(result.error if hasattr(result, 'error') else False)
-        except Exception as e:
-            output = f'执行失败: {str(e)}'
-            is_error = True
-        finally:
-            if bash_tool:
-                bash_tool.output_file = None
-            # Clean up streaming output file (content is stored inline in message)
-            if output_file_path:
-                try:
-                    p = Path(output_file_path)
-                    if p.exists():
-                        p.unlink()
-                except Exception:
-                    pass
-
-        # Build tool_use and tool_result blocks
-        tool_use_block = {
-            "type": "tool_use",
-            "id": tool_use_id,
-            "name": "bash",
-            "input": {"command": command},
-        }
-        tool_result_block = {
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": output,
-            "is_error": is_error,
-        }
-        # Save to session via SessionManager (user + assistant tool_use + user tool_result)
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [tool_use_block], flush=False)
-        agent.session_manager.add_message("user", [tool_result_block], flush=False)
-        agent.session_manager.save()
-
-        return StreamingResponse(_sse_stream(
-            {"type": "tool_use", "tool": "bash", "input": {"command": command}, "tool_use_id": tool_use_id},
-            {"type": "tool_result", "tool": "bash", "content": output, "is_error": is_error, "tool_use_id": tool_use_id},
-        ), media_type="text/event-stream")
     # Normal message - send to agent
     agent = await _get_or_create_agent(workspace_uuid, session_id)
 

@@ -1465,8 +1465,8 @@ mjx-container {
     position: absolute;
     right: 8px;
     bottom: 8px;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border: none;
     border-radius: 4px;
     background: transparent;
@@ -1483,15 +1483,15 @@ mjx-container {
     color: var(--primary-color);
 }
 
-/* 帮助按钮位于插入文件名按钮左侧，同处输入框右下角 */
-#help-btn {
-    right: 48px;
+/* 插入文件名按钮在左、帮助按钮在最右（两者都小一号） */
+#insert-file-btn {
+    right: 40px;
 }
 
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    padding-right: 88px;
+    padding-right: 76px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;

@@ -12,7 +12,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 - **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 Master Agent，自动清理最久未访问的
-- **特殊命令**：/help、/status、/bash 在服务端处理，不经过 LLM
+- **特殊命令**：/help、/status、/goal 在服务端处理，不经过 LLM
 - **统一数据访问**：消息收发等核心写入通过 SessionManager；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionManager 原子落盘
 
 ---
@@ -761,7 +761,7 @@ Content-Type: application/json
 
 - `/help` - 显示本帮助信息
 - `/status` - 显示当前会话状态（上下文长度、用量等）
-- `/bash <command>` - 直接执行 bash 命令（例如：`/bash ls -la`）
+- `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
 
 **工具使用：**
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
@@ -787,16 +787,6 @@ Content-Type: application/json
 - **缓存读取：** 12,000 tokens
 - **缓存创建：** 5,000 tokens
 ```
-
-### 4.3 /bash
-
-直接执行 bash 命令：
-
-```
-/bash ls -la
-```
-
-**响应**：工具调用和结果（不经过 LLM）。
 
 ---
 
