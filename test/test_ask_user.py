@@ -61,9 +61,9 @@ def agent(config, test_workspace):
     test_uuid = secrets.token_hex(4)
     agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
     yield agent_instance
-    # 清理
+    # 清理（master Agent 实际写入 data/projects/{uuid}，之前误写成 data/agents 导致目录泄漏）
     project_dir = Path(__file__).parent.parent
-    ws_dir = project_dir / "data" / "agents" / test_uuid
+    ws_dir = project_dir / "data" / "projects" / test_uuid
     if ws_dir.exists():
         shutil.rmtree(ws_dir, ignore_errors=True)
 
