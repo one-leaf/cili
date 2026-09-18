@@ -1,6 +1,6 @@
 ---
 name: research
-description: "Authoritative fact research (must delegate to Worker). Use when the user wants to learn a fact, verify a claim, or look up real information about a product/technology/policy. After reading this skill, the agent MUST use the agent tool to delegate the research task, enforce primary sources (official docs, source code, official announcements), and output a Markdown report with verifiable citations. Also triggered when the user explicitly uses 'research'."
+description: "权威事实调研（必须委派 Worker 执行）。Use when user mentions 查证、核实、调研、查资料、research、产品/技术/政策的真实信息。After reading this skill, the agent MUST use the agent tool to delegate the research task, enforce primary sources (official docs, source code, official announcements), and output a Markdown report with verifiable citations."
 roles: [master]
 ---
 

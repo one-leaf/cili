@@ -1,6 +1,6 @@
 ---
 name: File Processing & Document Parsing
-description: Guidelines for parsing and processing various file formats (PDF, DOCX, XLSX, PPTX, CSV, HTML, XML, images, archives). Prioritizes parsing quality and using preferred libraries.
+description: 各类文件格式（PDF/DOCX/XLSX/PPTX/CSV/HTML/XML/图片/压缩包）的解析与处理选库指南，优先解析质量与首选库。Use when user mentions 文件处理、文档解析、解析 PDF、读取文件、文件格式、file parsing。
 roles: [master, worker, lite]
 ---
 
@@ -23,6 +23,8 @@ You have access to a Python execution environment and may need to read, analyze,
 When processing files, **prioritize parsing quality and correctness over avoiding dependency installation**.
 
 Do not arbitrarily switch to a less capable Python package merely because the preferred package is not currently installed.
+
+> **End-to-end Office workflows live in dedicated skills**: this skill only sets the parsing-library baseline ("which library to parse with"). For the full create / edit / convert / verify workflow and domain conventions, read the `word` (docx), `excel` (xlsx), `powerpoint` (pptx), and `pdf` skills. Legacy `.doc` / `.xls` / `.xlsb` / `.ppt`: if Office / WPS is installed locally, **convert via COM to the new format first** (see §4.2 / §5.3 / §5.4 / §7); do not parse with a read-only engine directly.
 
 ---
 
@@ -306,25 +308,23 @@ Do not switch immediately to ZIP/XML parsing merely to avoid installing `python-
 
 `python-docx` does NOT directly support `.doc`.
 
-Preferred strategy:
+**Preferred strategy — Office COM first** (Microsoft Office / WPS is commonly installed locally; LibreOffice is rarely used in this region):
 
 ```text
 .doc
  ↓
-LibreOffice conversion to .docx
+Word COM (pwsh) → .docx
  ↓
 python-docx
 ```
 
-If LibreOffice is available, convert:
+If Microsoft Office (or WPS) is installed, convert via COM — highest fidelity (formulas, styles, comments all preserved):
 
 ```text
-DOC → DOCX
+pwsh tool: New-Object Word.Application → Documents.Open(input.doc) → SaveAs2(output.docx, 16) → Close → Quit → ReleaseComObject
 ```
 
-and then process the resulting DOCX using `python-docx`.
-
-If LibreOffice is unavailable, investigate whether an appropriate legacy DOC parser is installed or install an appropriate conversion/parser dependency.
+Only when no Office COM is available, fall back to LibreOffice conversion or a legacy `.doc` parser, and report the quality loss.
 
 Do not simply rename:
 
@@ -333,6 +333,8 @@ file.doc → file.docx
 ```
 
 This is invalid.
+
+For the full Word workflow (create/edit/convert/verify), read the `word` skill.
 
 ---
 
@@ -423,15 +425,23 @@ If `pandas` or the required engine is missing, install it.
 
 ## 5.3 XLS
 
-Legacy `.xls` files should use:
+Legacy `.xls` is a binary format; `openpyxl` cannot read it directly.
+
+**Preferred strategy — Office COM first** (preserves formulas, styles, merged cells, sheets):
 
 ```text
-xlrd
+.xls
+ ↓
+Excel COM (pwsh) → .xlsx
+ ↓
+openpyxl / pandas
 ```
 
-Do not attempt to use `openpyxl` for `.xls`.
+```text
+pwsh tool: New-Object Excel.Application → Workbooks.Open(input.xls) → SaveAs(output.xlsx, 51) → Close → Quit → ReleaseComObject
+```
 
-Example:
+Only when no Office COM is available, fall back to the read-only engine:
 
 ```python
 import pandas as pd
@@ -445,6 +455,8 @@ If `xlrd` is missing:
 pip install xlrd
 ```
 
+For the full Excel workflow (create/edit/formulas/verify), read the `excel` skill.
+
 ---
 
 ## 5.4 XLSB
@@ -455,13 +467,7 @@ For Excel Binary Workbook:
 .xlsb
 ```
 
-prefer:
-
-```text
-pyxlsb
-```
-
-Example:
+**Preferred strategy — Office COM first**: Excel opens `.xlsb` natively; convert to `.xlsx` via COM (same as §5.3), then use `openpyxl` / `pandas`. Only when no Office COM is available, read with the binary engine `pyxlsb`:
 
 ```python
 import pandas as pd
@@ -537,17 +543,23 @@ pip install python-pptx
 
 `.ppt` is a legacy binary PowerPoint format.
 
-Preferred strategy:
+**Preferred strategy — Office COM first** (preserves layouts, text, images, notes):
 
 ```text
 PPT
  ↓
-LibreOffice conversion
- ↓
-PPTX
+PowerPoint COM (pwsh) → .pptx
  ↓
 python-pptx
 ```
+
+```text
+pwsh tool: New-Object PowerPoint.Application → Presentations.Open(input.ppt) → SaveAs(output.pptx, 24) → Close → Quit → ReleaseComObject
+```
+
+Only when no Office COM is available, fall back to LibreOffice conversion and report the quality loss.
+
+For the full PowerPoint workflow (create/edit/visual QC), read the `powerpoint` skill.
 
 ---
 
@@ -981,14 +993,14 @@ Remaining limitation:
 | PDF table   | pdfplumber / Camelot  | table extraction  |
 | Scanned PDF | PyMuPDF + OCR         | OCR               |
 | DOCX        | python-docx           | Word documents    |
-| DOC         | LibreOffice → DOCX    | legacy Word       |
+| DOC         | Office COM → DOCX     | legacy Word (no COM: LibreOffice/parsers) |
 | XLSX        | openpyxl              | workbook/cells    |
 | XLSX data   | pandas + openpyxl     | data analysis     |
-| XLS         | xlrd                  | legacy Excel      |
-| XLSB        | pyxlsb                | binary Excel      |
+| XLS         | Office COM → XLSX     | legacy Excel (no COM: xlrd) |
+| XLSB        | Office COM → XLSX     | binary Excel (no COM: pyxlsb) |
 | CSV         | pandas / csv          | tabular data      |
 | PPTX        | python-pptx           | PowerPoint        |
-| PPT         | LibreOffice → PPTX    | legacy PowerPoint |
+| PPT         | Office COM → PPTX     | legacy PowerPoint (no COM: LibreOffice) |
 | HTML        | BeautifulSoup4 / lxml | HTML              |
 | XML         | ElementTree / lxml    | XML               |
 | JSON        | json                  | JSON              |

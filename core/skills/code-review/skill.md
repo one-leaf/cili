@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Senior-level code review for git changes. Reviews correctness, security, architecture, performance, concurrency, error handling, testing, and maintainability. Supports Python, TypeScript/JavaScript, React, Vue, Go, SQL, and shell. Use when reviewing PRs, git diffs, code changes, or when the user asks for code review. Outputs structured findings with severity levels (P0-P3) and actionable recommendations."
+description: "对 git 变更做资深级代码审查（正确性/安全/架构/性能/并发/错误处理/测试/可维护性），输出 P0-P3 分级发现与可执行建议。Use when user mentions 代码审查、代码评审、审查代码、审 PR、code review。Supports Python, TypeScript/JavaScript, React, Vue, Go, SQL, and shell."
 roles: [master]
 ---
 

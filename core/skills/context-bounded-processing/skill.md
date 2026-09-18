@@ -1,6 +1,6 @@
 ---
 name: Context-Bounded Processing (Runtime)
-description: General chunked-processing protocol for tasks that exceed the context window — the worker processes each chunk in-context, Python manages state. For translating large Office/PDF documents, use the translate-large-document skill instead.
+description: 超出上下文窗口的任务分块处理协议——worker 在上下文内处理每块，Python 管理状态。Use when user mentions 分块处理、分批处理、上下文超限、context 超限。For translating large Office/PDF documents, use the translate-large-document skill instead.
 roles: [worker]
 ---
 

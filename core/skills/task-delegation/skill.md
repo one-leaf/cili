@@ -1,6 +1,6 @@
 ---
 name: task-delegation
-description: Delegate large or complex multi-step tasks to a Worker/Lite sub-agent via the agent tool. For file translation, batch processing, data extraction, code refactoring, etc.
+description: 通过 agent 工具把大型/复杂多步任务委派给 Worker/Lite 子代理。Use when user mentions 委派、派子代理、批量处理、大任务、任务拆分、文件翻译、数据抽取、代码重构。
 roles: [master, worker]
 ---
 

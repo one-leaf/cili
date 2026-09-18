@@ -1,6 +1,6 @@
 ---
 name: skillify
-description: Solidify the current session's repeatable process into a reusable skill and save to user memory. Use when the user says "skillify", "固化会话", "save as skill", "把这个做成技能", or after completing a reusable workflow.
+description: 把当前会话中可复用的流程固化成技能并保存到用户记忆。Use when user mentions skillify、固化会话、把这个做成技能、save as skill，或完成一个可复用流程后。
 roles: [master]
 ---
 

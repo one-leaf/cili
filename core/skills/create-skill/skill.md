@@ -1,6 +1,6 @@
 ---
 name: create-skill
-description: How to write skills. Use when creating or editing a skill.
+description: 如何编写技能：description 决定何时触发，body 决定执行步骤，两者都要极简。Use when user mentions 创建技能、写技能、把流程做成技能、skill、编辑技能。
 roles: [master]
 ---
 

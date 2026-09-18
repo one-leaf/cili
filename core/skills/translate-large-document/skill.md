@@ -1,6 +1,6 @@
 ---
 name: translate-large-document
-description: Translate large or multi-format documents (docx/xlsx/pdf/doc/xls) into another language. Use when the user asks to translate a big file or a document — split into ~5K blocks, group into batches, delegate each batch to a Worker sub-agent that loops over its blocks, track with todo_write, merge back into the original format.
+description: 翻译大型/多格式文档（docx/xlsx/pdf/doc/xls）。Use when user mentions 翻译大文件、翻译长文档、翻译文档、translate。Split into ~5K blocks, group into batches, delegate each batch to a Worker sub-agent that loops over its blocks, track with todo_write, merge back into the original format.
 roles: [master]
 ---
 

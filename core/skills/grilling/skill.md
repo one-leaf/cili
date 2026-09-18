@@ -1,6 +1,6 @@
 ---
-name: Grilling
-description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+name: 推敲
+description: 对用户的方案、决策或想法做多轮追问与压力测试，推敲打磨思路直到达成共识。Use when user mentions 推敲、经得起推敲、帮我推敲、帮我过一遍方案/想法、这个方案行不行。
 roles: [master]
 ---
 
