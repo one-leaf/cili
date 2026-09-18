@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from core.config import load_config
 from core.event_bus import get_event_bus
+from core.goal import get_goal_manager
 from core.memory_pipeline import memory_enabled, schedule_extraction
 from core.session import SessionManager
 from core.tools import get_tool_by_name
@@ -24,6 +25,7 @@ from web.deps import (
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
     WORKSPACE_DATA_DIR,
 )
+from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
 from web.routes_ask_user import (
     _find_pending_ask_user, _build_other_answer, _inject_ask_user_answer,
 )
@@ -173,6 +175,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
 - `/help` - 显示本帮助信息
 - `/status` - 显示当前会话状态（上下文长度、用量等）
+- `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
 - `/bash <command>` - 直接执行 bash 命令（例如：`/bash ls -la`）
 
 **工具使用：**
@@ -217,6 +220,84 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent.session_manager.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
         agent.session_manager.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
+
+    # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
+    if content == "/goal" or content == "/goal status":
+        agent = await _get_or_create_agent(workspace_uuid, session_id)
+        manager = get_goal_manager(agent.session_manager.session_dir)
+        goal_text = format_goal_status(manager)
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": goal_text}], flush=False)
+        agent.session_manager.save()
+        return StreamingResponse(_sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
+
+    if content == "/goal clear":
+        agent = await _get_or_create_agent(workspace_uuid, session_id)
+        manager = get_goal_manager(agent.session_manager.session_dir)
+        stop_goal_runner(f"{workspace_uuid}:{session_id}")  # 请求轮间停止（不中断进行中的单轮）
+        manager.clear()
+        result_text = "🗑️ 目标已清除，目标循环已停止。"
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        agent.session_manager.save()
+        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+
+    if content == "/goal pause":
+        agent = await _get_or_create_agent(workspace_uuid, session_id)
+        manager = get_goal_manager(agent.session_manager.session_dir)
+        if not manager.exists():
+            result_text = "当前没有目标，无需暂停。"
+        else:
+            stop_goal_runner(f"{workspace_uuid}:{session_id}")
+            manager.pause()
+            result_text = "⏸️ 目标循环已暂停，可用 `/goal resume` 恢复。"
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        agent.session_manager.save()
+        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+
+    if content == "/goal resume":
+        agent = await _get_or_create_agent(workspace_uuid, session_id)
+        manager = get_goal_manager(agent.session_manager.session_dir)
+        if not manager.exists():
+            result_text = "当前没有已保存的目标，请先用 `/goal <目标>` 设置目标。"
+        else:
+            manager.resume()
+            loop = asyncio.get_running_loop()
+            runner = await loop.run_in_executor(None, lambda: start_goal_runner(
+                workspace_uuid, session_id, agent, manager, _claim_session_run, _release_session_run))
+            if runner is None:
+                result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
+            else:
+                result_text = "▶️ 已恢复目标循环，进度实时显示。"
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        agent.session_manager.save()
+        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+
+    if content.startswith("/goal "):
+        objective = content[len("/goal "):].strip()
+        if not objective:
+            result_text = "请输入目标内容，例如：`/goal 把 README 翻译成中文`"
+            agent = await _get_or_create_agent(workspace_uuid, session_id)
+            agent.session_manager.add_message("user", content, flush=False)
+            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            agent.session_manager.save()
+            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        agent = await _get_or_create_agent(workspace_uuid, session_id)
+        manager = get_goal_manager(agent.session_manager.session_dir)
+        manager.set(objective)
+        loop = asyncio.get_running_loop()
+        runner = await loop.run_in_executor(None, lambda: start_goal_runner(
+            workspace_uuid, session_id, agent, manager, _claim_session_run, _release_session_run))
+        if runner is None:
+            result_text = f"🎯 目标已设置：{objective}\n但上一轮目标循环 60s 内未收尾，暂未启动，请稍后重试或 `/goal resume`。"
+        else:
+            result_text = f"🎯 已设置目标并开始执行：{objective}\n进度实时显示，`/goal status` 查看状态，`/goal pause` 暂停。"
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        agent.session_manager.save()
+        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
     if content.startswith(_BASH_PREFIX):
         # 执行 bash 命令
@@ -294,7 +375,11 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     # Prevent concurrent execution on the same session
     session_key = f"{workspace_uuid}:{session_id}"
     if not _claim_session_run(session_key):
-        error_text = "当前会话正在执行中，请等待完成后再发送消息"
+        goal_runner = get_runner(session_key)
+        if goal_runner is not None and goal_runner.is_running():
+            error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
+        else:
+            error_text = "当前会话正在执行中，请等待完成后再发送消息"
         return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
 
     # ask_user 待回答时：直接把用户输入作为"其他"回复提交（等价于在卡片输入"其他"）。
