@@ -295,7 +295,8 @@ class AgentTool(Tool):
                 entry["result"] = result
 
                 # Save Agent execution log via SessionManager
-                if self.session_manager and exec_id:
+                # worker/lite 的 session_manager 是 _SessionIdRef（无 agent_logs），跳过
+                if self.session_manager and exec_id and hasattr(self.session_manager, "agent_logs"):
                     try:
                         final_status = result.get("status", "error")
                         self.session_manager.agent_logs.save_agent_log(
@@ -318,23 +319,31 @@ class AgentTool(Tool):
                 # Forward sub-agent usage to session metadata
                 sub_usage = result.get("usage", {})
                 if self.session_manager and sub_usage:
-                    self.session_manager.update_usage(
-                        input_tokens=sub_usage.get("input_tokens", 0),
-                        output_tokens=sub_usage.get("output_tokens", 0),
-                        api_calls=0,
-                        cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
-                        cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
-                    )
+                    try:
+                        self.session_manager.update_usage(
+                            input_tokens=sub_usage.get("input_tokens", 0),
+                            output_tokens=sub_usage.get("output_tokens", 0),
+                            api_calls=0,
+                            cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
+                            cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to forward sub-agent usage: {e}")
 
             except Exception as e:
                 logger.error(f"Agent tool error: {e}")
                 entry["result"] = {"status": "error", "summary": str(e), "iterations": 0}
             finally:
                 agent.close()
-                # Persist main session after sub-agent writes
-                if self.session_manager:
-                    self.session_manager.save()
-                # Signal completion
+                # Persist main session after sub-agent writes.
+                # worker/lite 的 _SessionIdRef 无 save()：此处若抛异常，
+                # 下方 event.set() 永不执行，委派方会永久阻塞在 event.wait(3600)。
+                try:
+                    if self.session_manager and hasattr(self.session_manager, "save"):
+                        self.session_manager.save()
+                except Exception as e:
+                    logger.warning(f"Failed to save session after sub-agent: {e}")
+                # Signal completion（必须无条件执行）
                 entry["event"].set()
                 # Fire completion callback + 事件流广播
                 status = (entry.get("result") or {}).get("status", "completed")
