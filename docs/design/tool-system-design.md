@@ -657,7 +657,7 @@ loop(action="status", source_file="data/files.txt")
 **核心模块**：`core/tools/skill.py`（扫描目录 `core/skills/`）
 
 **roles 过滤规则**：
-- frontmatter `roles: [master]` → 仅 master 可见（如 grilling / create-skill / research / code-review / skillify / learning）
+- frontmatter `roles: [master]` → 仅 master 可见（如 grilling / research / code-review / news / learning）
 - frontmatter `roles: [worker]` → 仅 worker 可见（如 context-bounded-processing）
 - frontmatter `roles: [master, worker]` → master/worker 可见（如 task-delegation）
 - frontmatter `roles: [master, worker, lite]` → 三个角色均可见（如 file-processing）

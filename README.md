@@ -230,8 +230,7 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 | task-delegation | master/worker | 任务拆分与委派 |
 | research | master | 深度研究（委托 Worker，只采信一手来源） |
 | learning | master | 结构化学习助手 |
-| create-skill | master | 创建新技能 |
-| skillify | master | 把当前会话流程固化为技能 |
+| news | master | 热点新闻聚合（热搜/早报/金价汇率/科技资讯） |
 | grilling | master | 推敲（多轮追问、压力测试方案） |
 | translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
 | context-bounded-processing | worker | 上下文受限处理 |
