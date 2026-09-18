@@ -94,7 +94,7 @@ class Agent(BaseAgent):
             temperature: 可选的 LLM temperature 覆盖（0.0~1.0）
             approval_store: autonomous 模式共享的会话级审批存储
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
-            delegation_depth: 委派深度（master=0，最多 1 层；depth≥1 不可再委派）
+            delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
         """
         self.role = role
         self.role_cfg = load_agent_role(role, config)

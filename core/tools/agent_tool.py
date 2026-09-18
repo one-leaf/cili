@@ -33,15 +33,15 @@ class AgentTool(Tool):
         "- run_in_background: true returns a task_id immediately; manage via read_task/kill_task/list_tasks\n\n"
         "## Returns:\n"
         "{\"status\": \"completed|error|timeout|failed\", \"summary\": \"...\", \"iterations\": N}\n"
-        "Timeout: 1 hour. Delegation is limited to 1 level: only master may delegate; a worker/lite "
-        "calling this tool gets an error and must complete the task directly."
+        "Timeout: 1 hour. Delegation limits: master (depth 0) may delegate to worker/lite; "
+        "a sub-agent (depth 1) may delegate only to 'lite'; agents two levels deep cannot delegate."
     )
 
     def __init__(self, *args, config=None, approval_store=None, delegation_depth: int = 0, **kwargs):
         super().__init__(*args, **kwargs)
         self.config = config  # 全局配置，构造子 Agent 用（角色模型继承）
         self.approval_store = approval_store  # 根代理的会话级审批存储，传给子代理共享
-        self.delegation_depth = delegation_depth  # 当前代理的委派深度（master=0，最大 1 层）
+        self.delegation_depth = delegation_depth  # 当前代理的委派深度（master=0；depth1 仅可委派 lite；depth≥2 禁止）
         self.stop_check = None  # Set by master Agent after tool creation
         self.on_agent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_agent_complete = None  # Callback(exec_id) fired when sub-agent finishes
@@ -117,7 +117,8 @@ class AgentTool(Tool):
                     "enum": ["worker", "lite"],
                     "description": (
                         "Sub-agent role: 'worker' (default, full tool set + check phase) "
-                        "or 'lite' (minimal read/write/edit/bash, no check phase)."
+                        "or 'lite' (minimal read/write/edit/bash, no check phase). "
+                        "If you are already a sub-agent (delegation depth 1), only 'lite' is allowed."
                     ),
                 },
                 "run_in_background": {
@@ -194,24 +195,33 @@ class AgentTool(Tool):
         if not task or not task.strip():
             return ToolResult("Error: 'task' is required and cannot be empty", error=True)
 
-        # Delegation depth limit: only master (depth 0) may delegate, to a worker or
-        # lite. A worker/lite at depth >= 1 cannot delegate further — complete directly.
-        if self.delegation_depth >= 1:
-            return ToolResult(
-                "Error: delegation depth limit reached (max 1 level). "
-                "Only master can delegate (to a worker or lite); a sub-agent must "
-                "complete the task directly without delegating to another agent.",
-                error=True,
-            )
-
-        # Deferred import to avoid circular dependency
-        from core.agent import Agent
-
         if agent_type not in ("worker", "lite"):
             return ToolResult(
                 f"Error: invalid agent_type '{agent_type}' (expected 'worker' or 'lite')",
                 error=True,
             )
+
+        # Delegation depth limit:
+        #   depth 0 (master): may delegate to worker or lite.
+        #   depth 1 (sub-agent): may delegate only to lite (lighter, budget-bounded).
+        #   depth >= 2: cannot delegate further — complete the task directly.
+        if self.delegation_depth >= 2:
+            return ToolResult(
+                "Error: delegation depth limit reached (max 2 levels). "
+                "An agent two levels below master must complete the task directly "
+                "without delegating to another agent.",
+                error=True,
+            )
+        if self.delegation_depth == 1 and agent_type != "lite":
+            return ToolResult(
+                "Error: a sub-agent (delegation depth 1) may only delegate to a "
+                "'lite' agent, not to another worker. Complete the task directly, "
+                "or delegate with agent_type='lite'.",
+                error=True,
+            )
+
+        # Deferred import to avoid circular dependency
+        from core.agent import Agent
 
         # Generate exec_id upfront so we can notify the UI immediately
         # _SessionIdRef（worker/lite 的 session 引用）无 agent_logs，

@@ -200,7 +200,8 @@
     "temp",
     "clock",
     "session_search",
-    "skill"
+    "skill",
+    "agent"
   ],
   "skills": [
     "*"

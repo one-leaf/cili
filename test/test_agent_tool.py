@@ -213,41 +213,65 @@ class TestAgentToolParameters:
 
 
 class TestDelegationDepthLimit:
-    """委派深度限制：只有 master(0) 能委派 worker/lite(1)；depth≥1 的子代理禁止再委派。"""
+    """委派深度限制：master(0) 可委派 worker/lite；depth1 子代理仅可委派 lite；depth≥2 禁止再委派。"""
 
-    def test_depth_1_worker_returns_error(self, agent_tool):
-        """depth=1 的 worker 再调用 agent 工具 → 直接报错，不构造子 Agent。"""
-        agent_tool.delegation_depth = 1
-        with patch("core.agent.Agent") as MockAgent:
-            result = agent_tool.execute(task="delegate me")
-        assert result.error is True
-        assert "depth" in result.output.lower()
-        MockAgent.assert_not_called()
-
-    def test_depth_1_lite_also_blocked(self, agent_tool):
-        """depth=1 的 agent 委派 lite 同样报错（只有 master 能委派）。"""
-        agent_tool.delegation_depth = 1
-        with patch("core.agent.Agent") as MockAgent:
-            result = agent_tool.execute(task="delegate me", agent_type="lite")
-        assert result.error is True
-        MockAgent.assert_not_called()
-
-    def test_depth_1_background_also_blocked(self, agent_tool):
-        """background 委派同样受 depth 限制。"""
-        agent_tool.delegation_depth = 1
-        with patch("core.agent.Agent") as MockAgent:
-            result = agent_tool.execute(task="delegate me", run_in_background=True)
-        assert result.error is True
-        MockAgent.assert_not_called()
-
-    def test_depth_0_forwards_depth_1(self, agent_tool):
-        """master（depth=0）正常委派 worker，子 Agent 收到 depth=1。"""
+    def _mock_agent_run(self):
         mock_agent = MagicMock()
         mock_agent.run.return_value = {
             "status": "completed", "summary": "ok", "iterations": 1, "usage": {},
         }
         mock_agent.close.return_value = None
         mock_agent.messages = []
+        return mock_agent
+
+    def test_depth_1_worker_blocked(self, agent_tool):
+        """depth=1 的子代理委派 worker → 报错，不构造子 Agent（depth1 仅可委派 lite）。"""
+        agent_tool.delegation_depth = 1
+        with patch("core.agent.Agent") as MockAgent:
+            result = agent_tool.execute(task="delegate me")
+        assert result.error is True
+        assert "lite" in result.output.lower()
+        MockAgent.assert_not_called()
+
+    def test_depth_1_lite_allowed(self, agent_tool):
+        """depth=1 的 worker 委派 lite → 允许，子 Agent 收到 depth=2 且 role=lite。"""
+        agent_tool.delegation_depth = 1
+        mock_agent = self._mock_agent_run()
+        with patch("core.agent.Agent", return_value=mock_agent) as MockAgent:
+            result = agent_tool.execute(task="delegate me", agent_type="lite")
+        assert result.error is not True
+        assert MockAgent.call_args.kwargs["delegation_depth"] == 2
+        assert MockAgent.call_args.kwargs["role"] == "lite"
+
+    def test_depth_2_blocked(self, agent_tool):
+        """depth=2 的子代理（lite）再委派 → 报错，不构造子 Agent。"""
+        agent_tool.delegation_depth = 2
+        with patch("core.agent.Agent") as MockAgent:
+            result = agent_tool.execute(task="delegate me", agent_type="lite")
+        assert result.error is True
+        assert "depth" in result.output.lower()
+        MockAgent.assert_not_called()
+
+    def test_depth_2_background_blocked(self, agent_tool):
+        """depth=2 background 委派同样受限制。"""
+        agent_tool.delegation_depth = 2
+        with patch("core.agent.Agent") as MockAgent:
+            result = agent_tool.execute(task="delegate me", run_in_background=True, agent_type="lite")
+        assert result.error is True
+        MockAgent.assert_not_called()
+
+    def test_depth_1_background_lite_allowed(self, agent_tool):
+        """depth=1 background 委派 lite → 允许，子 Agent 收到 depth=2。"""
+        agent_tool.delegation_depth = 1
+        mock_agent = self._mock_agent_run()
+        with patch("core.agent.Agent", return_value=mock_agent) as MockAgent:
+            result = agent_tool.execute(task="delegate me", run_in_background=True, agent_type="lite")
+        assert result.error is not True
+        assert MockAgent.call_args.kwargs["delegation_depth"] == 2
+
+    def test_depth_0_forwards_depth_1(self, agent_tool):
+        """master（depth=0）正常委派 worker，子 Agent 收到 depth=1。"""
+        mock_agent = self._mock_agent_run()
         with patch("core.agent.Agent", return_value=mock_agent) as MockAgent:
             result = agent_tool.execute(task="test")
         assert result.error is not True
@@ -255,12 +279,7 @@ class TestDelegationDepthLimit:
 
     def test_depth_0_lite_allowed(self, agent_tool):
         """master（depth=0）可委派 lite，子 Agent 收到 depth=1 且 role=lite。"""
-        mock_agent = MagicMock()
-        mock_agent.run.return_value = {
-            "status": "completed", "summary": "ok", "iterations": 1, "usage": {},
-        }
-        mock_agent.close.return_value = None
-        mock_agent.messages = []
+        mock_agent = self._mock_agent_run()
         with patch("core.agent.Agent", return_value=mock_agent) as MockAgent:
             result = agent_tool.execute(task="test", agent_type="lite")
         assert result.error is not True
