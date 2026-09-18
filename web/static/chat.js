@@ -187,7 +187,7 @@ function renderMessages(messages) {
                     const isCompleted = block._meta.completed === true;
                     const saMsg = {
                         exec_id: execId,
-                        task_summary: '',
+                        task_summary: block._meta.task_summary || '',
                         status: isCompleted ? 'completed' : 'running',
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,

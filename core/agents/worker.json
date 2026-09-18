@@ -197,15 +197,29 @@
     "pwsh",
     "grep",
     "find",
+    "browser",
     "web_search",
     "memory",
     "python",
-    "read_tool_result",
-    "temp",
+    "todo",
+    "latex",
     "clock",
+    "read_tool_result",
     "session_search",
+    "temp",
+    "loop",
+    "pdf2markdown",
     "skill",
-    "agent"
+    "agent",
+    "tool_search"
+  ],
+  "deferred_tools": [
+    "browser",
+    "todo_write",
+    "latex",
+    "temp",
+    "loop",
+    "pdf2markdown"
   ],
   "skills": [
     "*"

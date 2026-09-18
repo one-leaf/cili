@@ -6,7 +6,7 @@
 - _activate_tools 正确迁移并重建 tool_schemas
 - ToolSearchTool.execute() 搜索并激活延迟工具
 - _execute_tool override 安全网：直接调用延迟工具自动激活
-- worker/lite 无 deferred_tools，行为不变
+- worker 有 deferred_tools（非交互工具可延迟加载），lite 无 deferred_tools
 - system prompt 包含 Deferred Tools 段
 """
 
@@ -253,11 +253,16 @@ class TestDeferredToolsSection:
         assert "tool_search" in prompt
 
 
-class TestWorkerLiteNoDeferred:
-    """worker/lite 角色无 deferred_tools，行为不受影响。"""
+class TestWorkerLiteDeferred:
+    """worker 有 deferred_tools（非交互工具可延迟加载），lite 无。"""
 
-    @pytest.mark.parametrize("role", ["worker", "lite"])
-    def test_no_deferred_tools(self, role):
-        """worker/lite 的 deferred_tools 为空。"""
-        role_cfg = load_agent_role(role)
+    def test_worker_deferred_tools(self):
+        """worker 的 deferred_tools 覆盖非交互工具，不含交互三件套。"""
+        role_cfg = load_agent_role("worker")
+        expected = {"browser", "todo_write", "latex", "temp", "loop", "pdf2markdown"}
+        assert set(role_cfg.deferred_tools) == expected
+
+    def test_lite_no_deferred_tools(self):
+        """lite 的 deferred_tools 为空。"""
+        role_cfg = load_agent_role("lite")
         assert role_cfg.deferred_tools == []

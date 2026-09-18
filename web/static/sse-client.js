@@ -116,6 +116,15 @@ function handleBusEvent(e) {
         return;
     }
 
+    // goal 级状态文本（无 exec_id：完成/暂停/错误）→ 主聊天直渲；
+    // goal 轮次事件带 exec_id=exec_*，走下方 worker 卡路径
+    if (!e.exec_id) {
+        if (e.type === 'text') {
+            handleMasterBusEvent(e);
+        }
+        return;
+    }
+
     const entry = _agentCards[e.exec_id];
     if (!entry) return;  // agent_start 先于一切 worker 事件，卡片未建则忽略
 
@@ -561,6 +570,16 @@ function ensureMasterToolBubble(toolUseId, toolName) {
 
     entry.div = div;
     entry.pre = pre;
+}
+
+// ── goal 级状态文本（无 exec_id → 主聊天）──
+// goal 轮次由每轮 worker 卡承载（exec_id），此处仅处理 goal 循环级
+// 状态文本（完成/暂停/错误），以普通 assistant 气泡进主聊天。
+
+function handleMasterBusEvent(e) {
+    if (!e || e.type !== 'text') return;
+    addMessage('assistant', e.content || '');
+    _scrollChatIfNearBottom();
 }
 
 // 重连时按已应用 offset 补拉 master 工具流（/stream 增量，事件流丢失兜底）

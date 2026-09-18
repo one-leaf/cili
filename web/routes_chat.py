@@ -256,19 +256,25 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         manager = get_goal_manager(agent.session_manager.session_dir)
         if not manager.exists():
             result_text = "当前没有已保存的目标，请先用 `/goal <目标>` 设置目标。"
-        else:
-            manager.resume()
-            loop = asyncio.get_running_loop()
-            runner = await loop.run_in_executor(None, lambda: start_goal_runner(
-                workspace_uuid, session_id, agent, manager, _claim_session_run, _release_session_run))
-            if runner is None:
-                result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
-            else:
-                result_text = "▶️ 已恢复目标循环，进度实时显示。"
+            agent.session_manager.add_message("user", content, flush=False)
+            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            agent.session_manager.save()
+            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        manager.resume()
+        # 同 /goal <目标>：先落恢复确认，再启动循环，保证顺序「命令 → 恢复确认 → 下一轮卡片」
+        confirm_text = "▶️ 已恢复目标循环，进度实时显示。"
         agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
         agent.session_manager.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        loop = asyncio.get_running_loop()
+        runner = await loop.run_in_executor(None, lambda: start_goal_runner(
+            workspace_uuid, session_id, agent, manager))
+        if runner is None:
+            result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
+            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            agent.session_manager.save()
+            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
     if content.startswith("/goal "):
         objective = content[len("/goal "):].strip()
@@ -282,17 +288,23 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         agent = await _get_or_create_agent(workspace_uuid, session_id)
         manager = get_goal_manager(agent.session_manager.session_dir)
         manager.set(objective)
+        # 先落用户目标 + 确认文本，再启动循环：若先启动 runner，daemon 线程可能
+        # 抢先落占位消息，导致会话顺序变成「轮次卡片 → 用户目标 → 已设置」（显示错乱）
+        confirm_text = (f"🎯 已设置目标并开始执行：{objective}\n"
+                        "进度实时显示，`/goal status` 查看状态，`/goal pause` 暂停。")
+        agent.session_manager.add_message("user", content, flush=False)
+        agent.session_manager.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
+        agent.session_manager.save()
         loop = asyncio.get_running_loop()
         runner = await loop.run_in_executor(None, lambda: start_goal_runner(
-            workspace_uuid, session_id, agent, manager, _claim_session_run, _release_session_run))
+            workspace_uuid, session_id, agent, manager))
         if runner is None:
-            result_text = f"🎯 目标已设置：{objective}\n但上一轮目标循环 60s 内未收尾，暂未启动，请稍后重试或 `/goal resume`。"
-        else:
-            result_text = f"🎯 已设置目标并开始执行：{objective}\n进度实时显示，`/goal status` 查看状态，`/goal pause` 暂停。"
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-        agent.session_manager.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+            result_text = (f"🎯 目标已设置：{objective}\n"
+                           "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
+            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            agent.session_manager.save()
+            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
     # Normal message - send to agent
     agent = await _get_or_create_agent(workspace_uuid, session_id)

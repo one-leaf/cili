@@ -168,6 +168,7 @@ class AgentTool(Tool):
         list_tasks: bool | None = None,
         temperature: float | None = None,
         label: str | None = None,
+        exec_id: str | None = None,
     ) -> ToolResult:
         """Execute the agent tool - delegate task to a Agent or manage background tasks."""
 
@@ -226,13 +227,15 @@ class AgentTool(Tool):
         # Generate exec_id upfront so we can notify the UI immediately
         # _SessionIdRef（worker/lite 的 session 引用）无 agent_logs，
         # 深度限制放开委派时避免 AttributeError，回退生成随机 exec_id（T28）
-        exec_id = ""
-        if self.session_manager:
-            gen = getattr(getattr(self.session_manager, "agent_logs", None), "_generate_exec_id", None)
-            if callable(gen):
-                exec_id = gen()
-            else:
-                exec_id = f"sub-{secrets.token_hex(4)}"
+        # GoalRunner 会预生成 exec_id 传入，以便占位消息引用同一 id
+        if not exec_id:
+            exec_id = ""
+            if self.session_manager:
+                gen = getattr(getattr(self.session_manager, "agent_logs", None), "_generate_exec_id", None)
+                if callable(gen):
+                    exec_id = gen()
+                else:
+                    exec_id = f"sub-{secrets.token_hex(4)}"
 
         # Fire callback + 全局事件流广播（before blocking on agent.run()）
         task_summary = task[:100]
