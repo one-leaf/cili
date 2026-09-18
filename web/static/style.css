@@ -211,6 +211,57 @@ body {
     overflow-y: auto;
 }
 
+/* 特殊指令帮助弹框 */
+.help-section {
+    margin-bottom: 20px;
+}
+
+.help-section:last-child {
+    margin-bottom: 0;
+}
+
+.help-section h3 {
+    font-size: 14px;
+    margin: 0 0 10px;
+    color: var(--text-secondary, #666);
+}
+
+.help-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.help-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+
+.help-table tr:last-child td {
+    border-bottom: none;
+}
+
+.help-cmd {
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.help-cmd code {
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--bg-color);
+    color: var(--primary-color, #007bff);
+}
+
+.help-table td code {
+    font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--bg-color);
+}
+
 .modal-footer {
     padding: 16px 24px;
     border-top: 1px solid var(--border-color);
@@ -1432,10 +1483,15 @@ mjx-container {
     color: var(--primary-color);
 }
 
+/* 帮助按钮位于插入文件名按钮左侧，同处输入框右下角 */
+#help-btn {
+    right: 48px;
+}
+
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    padding-right: 40px;
+    padding-right: 88px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;

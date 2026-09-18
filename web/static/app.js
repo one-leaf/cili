@@ -277,6 +277,11 @@ function setupEventListeners() {
         openFileBrowser();
     });
 
+    // 特殊指令帮助按钮
+    document.getElementById('help-btn').addEventListener('click', () => {
+        document.getElementById('help-modal').style.display = 'flex';
+    });
+
     // Settings tabs
     document.querySelectorAll('.settings-tab').forEach(tab => {
         tab.addEventListener('click', () => {
