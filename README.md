@@ -229,13 +229,17 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 | code-review | master | 代码审查 |
 | task-delegation | master/worker | 任务拆分与委派 |
 | research | master | 深度研究（委托 Worker，只采信一手来源） |
-| learning | master | 知识学习 |
+| learning | master | 结构化学习助手 |
 | create-skill | master | 创建新技能 |
 | skillify | master | 把当前会话流程固化为技能 |
-| grilling | master | 深度追问 |
+| grilling | master | 推敲（多轮追问、压力测试方案） |
 | translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
 | context-bounded-processing | worker | 上下文受限处理 |
 | file-processing | master/worker/lite | 文件处理与文档解析 |
+| word | master/worker/lite | Word 文档处理（docx/doc 读取、创建、编辑、转换） |
+| excel | master/worker/lite | Excel 表格处理（xlsx/xls 读取、公式、格式化） |
+| powerpoint | master/worker/lite | PPT 演示文稿处理（pptx/ppt 创建、编辑、视觉检查） |
+| pdf | master/worker/lite | PDF 处理（提取、合并拆分、OCR、转 Word） |
 
 ## 项目结构
 
