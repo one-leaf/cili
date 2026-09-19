@@ -518,11 +518,24 @@ class BackgroundMixin:
                             f"Failed to forward usage for background Agent {task_id}: {e}"
                         )
                 # 全局事件流：后台模式补发 agent_complete（修复原先缺失）+ 保留 on_agent_complete 回调
+                # + 写入 master 通知队列（使主循环下一轮迭代自动感知，无需 LLM 轮询 read_task）
                 try:
                     status = (task.result or {}).get("status", "completed")
                     publish = getattr(self, "_publish", None)
                     if publish:
                         publish("agent_complete", exec_id=exec_id, status=status)
+                    # 写入 master 通知队列
+                    queue = getattr(self, "_notification_queue", None)
+                    if queue is not None:
+                        summary = ""
+                        if task.result:
+                            summary = (task.result.get("summary")
+                                       or task.result.get("message") or "")
+                        queue.append({
+                            "exec_id": exec_id,
+                            "status": status,
+                            "summary": summary[:200],
+                        })
                     if getattr(self, "on_agent_complete", None):
                         self.on_agent_complete(exec_id)
                 except Exception as e:

@@ -104,6 +104,9 @@ class Agent(BaseAgent):
         self._mode = self.role_cfg.mode
         self.delegation_depth = delegation_depth
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/agent resume 不重置）
+        # 后台子代理完成通知队列：后台 agent 线程完成时 append，主循环每次迭代前 drain。
+        # 解决后台 agent 完成后 master agent 收不到通知、必须靠 LLM 主动轮询 read_task 的问题。
+        self._notification_queue: list[dict] = []
 
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
@@ -260,6 +263,8 @@ class Agent(BaseAgent):
         agent_tool = get_tool_by_name(self.tools, "agent")
         if agent_tool:
             agent_tool.delegation_depth = self.delegation_depth
+            # 把 master 的通知队列传给 AgentTool，后台子代理完成时写入通知
+            agent_tool._notification_queue = self._notification_queue
 
         if self._mode == "interactive":
             # Wire agent callbacks

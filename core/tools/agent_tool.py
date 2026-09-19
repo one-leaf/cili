@@ -80,9 +80,27 @@ class AgentTool(Tool):
             self._publish("agent_start", exec_id=exec_id, task_summary=task_summary)
 
     def _notify_agent_complete(self, exec_id: str, status: str = "completed") -> None:
-        """广播 agent_complete：保留 on_agent_complete 回调 + 全局事件流。"""
+        """广播 agent_complete：保留 on_agent_complete 回调 + 全局事件流 + 通知队列。"""
         if exec_id:
             self._publish("agent_complete", exec_id=exec_id, status=status)
+        # 写入 master 的通知队列，使主循环下一轮迭代自动感知子代理完成（无需轮询 read_task）
+        queue = getattr(self, "_notification_queue", None)
+        if queue is not None and exec_id:
+            # 从 BackgroundTaskManager 取结果摘要（后台路径已写入 task.result）
+            summary = ""
+            try:
+                from core.tools.background import BackgroundTaskManager
+                bg_task = BackgroundTaskManager.get(exec_id)
+                if bg_task and bg_task.result:
+                    summary = (bg_task.result.get("summary")
+                               or bg_task.result.get("message") or "")
+            except Exception:
+                pass
+            queue.append({
+                "exec_id": exec_id,
+                "status": status,
+                "summary": summary[:200],
+            })
         if self.on_agent_complete:
             try:
                 self.on_agent_complete(exec_id)

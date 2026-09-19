@@ -187,6 +187,8 @@ class Loop:
     def run_interactive(self) -> None:
         """交互回合循环主体（run()/resume_* 薄入口调用）。"""
         agent = self.agent
+        # 入口排空：用户发新消息前后台子代理已完成的通知，注入到 messages，LLM 第一轮即可见
+        self._drain_agent_notifications()
         agent._sync_to_session_manager()
         agent.session_manager.save()
         self._run_loop(autonomous=False)
@@ -244,6 +246,12 @@ class Loop:
                 if agent._on_text:
                     agent._on_text("\n\n[已停止]")
                 return None
+
+            # ── 后台子代理完成通知排空（interactive 模式）──
+            # 后台 agent 线程完成时往 agent._notification_queue 写入通知，
+            # 此处每轮迭代前排空并注入为 user 消息，使 LLM 无需轮询 read_task 即可感知完成。
+            if not autonomous:
+                self._drain_agent_notifications()
 
             # ── 额度预警（autonomous，stop 已排除）──
             if autonomous and policy.budget_notice:
@@ -486,6 +494,29 @@ class Loop:
         return state["wait_for_external"]
 
     # ─── 辅助 ───────────────────────────────────────────────────────
+
+    def _drain_agent_notifications(self) -> None:
+        """排空后台子代理完成通知队列，注入为 user 消息供 LLM 下一轮感知。
+
+        后台 agent 线程完成时由 AgentTool._notify_agent_complete /
+        background.py 的 run_agent 往 agent._notification_queue 写入通知；
+        本方法在每次 LLM 调用前（loop 迭代顶部 + run_interactive 入口）排空，
+        使 master agent 无需主动调 read_task 即可感知后台子代理完成。
+        列表 append/pop(0) 在 CPython GIL 下是线程安全的。
+        """
+        agent = self.agent
+        queue = getattr(agent, "_notification_queue", None)
+        if not queue:
+            return
+        while queue:
+            notif = queue.pop(0)
+            exec_id = notif.get("exec_id", "")
+            status = notif.get("status", "completed")
+            summary = notif.get("summary", "")
+            parts = [f"[子代理完成通知] exec_id={exec_id}, status={status}"]
+            if summary:
+                parts.append(f"summary: {summary}")
+            agent.add_message("user", "\n".join(parts), meta={"notification": "agent_complete"})
 
     def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
         """组装 autonomous 结果 dict（usage 恒取当前快照）。"""
