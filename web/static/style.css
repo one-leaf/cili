@@ -138,7 +138,59 @@ ul, ol {
     appearance: none;
 }
 
-/* 会话项 */
+/* 图标按钮 */
+[data-theme="dark"] .btn-icon-flat:hover { background: #27272a; color: #e4e4e7; }
+
+/* 面板菜单下拉 */
+[data-theme="dark"] .panel-menu-dropdown {
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+[data-theme="dark"] .panel-menu-item:hover { background: #3f3f46; }
+
+/* 工具流式输出 */
+[data-theme="dark"] .tool-streaming-bubble {
+    background-color: #292524;
+    border-color: #3f3f46;
+    border-left-color: #f97316;
+}
+[data-theme="dark"] .streaming-title { color: #a1a1aa; }
+[data-theme="dark"] .tool-streaming-output { color: #e4e4e7; }
+
+/* 代理卡片悬停 */
+[data-theme="dark"] .agent-header:hover { background-color: #3f3f46; }
+[data-theme="dark"] .sa-title { color: #e4e4e7; }
+[data-theme="dark"] .sa-task { color: #a1a1aa; }
+[data-theme="dark"] .sa-meta { color: #71717a; }
+[data-theme="dark"] .sa-loading { color: #a1a1aa; }
+[data-theme="dark"] .sa-error { color: #ef4444; }
+
+/* Todo 进度条 */
+[data-theme="dark"] .todo-progress-bar { background-color: #3f3f46; }
+[data-theme="dark"] .todo-progress-fill { background-color: #4ade80; }
+
+/* Todo 文字 */
+[data-theme="dark"] .todo-title { color: #e4e4e7; }
+[data-theme="dark"] .todo-progress { color: #a1a1aa; }
+[data-theme="dark"] .todo-item { border-bottom-color: #3f3f46; }
+[data-theme="dark"] .todo-text { color: #e4e4e7; }
+
+/* 文件预览 */
+[data-theme="dark"] .file-preview-area { background: #1c1c1e; }
+[data-theme="dark"] .file-preview-text textarea { background: #27272a; color: #e4e4e7; }
+[data-theme="dark"] .file-preview-image { background: #27272a; }
+
+/* 询问用户选项 */
+[data-theme="dark"] .ask-option { background: #1c1c1e; border-color: #3f3f46; }
+[data-theme="dark"] .ask-option:hover { background: #3f3f46; border-color: #f97316; }
+[data-theme="dark"] .ask-option.selected { background: #3f3f46; border-color: #f97316; }
+[data-theme="dark"] .ask-option-label { color: #e4e4e7; }
+[data-theme="dark"] .ask-option-desc { color: #a1a1aa; }
+[data-theme="dark"] .ask-question-text { color: #e4e4e7; }
+[data-theme="dark"] .ask-title { color: #e4e4e7; }
+
+/* 区域分割线 */
 [data-theme="dark"] .session-item:hover { background-color: #27272a; }
 [data-theme="dark"] .session-item.active { background-color: #3f3f46; }
 [data-theme="dark"] .session-item.selected { background-color: #292524; }
@@ -349,6 +401,8 @@ body {
     height: 14px;
     line-height: 14px;
 }
+
+[data-theme="dark"] .workspace-path { color: #71717a; }
 
 .workspace-controls {
     display: flex;
@@ -1086,6 +1140,10 @@ body {
     color: #444;
     line-height: 1.3;
 }
+
+[data-theme="dark"] .session-preview { color: #a1a1aa; }
+[data-theme="dark"] .footer-dev { color: #a1a1aa; }
+[data-theme="dark"] .footer-company { color: #a1a1aa; }
 
 .session-menu-btn {
     position: absolute;
@@ -2660,6 +2718,8 @@ mjx-container {
 .memory-stat-stale { color: #d9822b; }
 .memory-stat-index { color: var(--text-light); }
 
+[data-theme="dark"] .memory-stat-stale { color: #fbbf24; }
+
 .memory-body {
     display: flex;
     padding: 0;
@@ -2703,7 +2763,8 @@ mjx-container {
 }
 
 [data-theme="dark"] .memory-list-item.active {
-    background: #1e3a5f;
+    background: #3f3f46;
+    border-color: var(--primary-color);
 }
 
 .memory-list-item-title {
