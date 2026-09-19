@@ -119,6 +119,10 @@ def validate_name(name: str) -> None:
             "name must be an ASCII kebab-case slug (e.g., 'rest-api-design'); "
             "for non-ASCII titles, omit 'name' and it will be derived from title"
         )
+    if "." in name:
+        raise ValueError(
+            f"name must not contain dots (use hyphens): {name!r}"
+        )
     if _UUID_RE.match(name) or _SKILL_UUID_RE.match(name):
         raise ValueError(
             f"name must be a meaningful kebab-case slug (e.g., 'python-async'), not a UUID: {name!r}"
