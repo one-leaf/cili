@@ -176,6 +176,18 @@ function renderMarkdown(text) {
     // 解析 markdown
     let html = marked.parse(text);
 
+    // 将 mermaid 代码块转换为 <div class="mermaid">，由 mermaid.js 渲染为 SVG
+    html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, (match, content) => {
+        // 还原 marked 的 HTML 转义，mermaid 需要原始文本
+        const decoded = content
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&amp;/g, '&');
+        return '<div class="mermaid">' + decoded + '</div>';
+    });
+
     // 恢复数学公式
     mathBlocks.forEach((block, idx) => {
         html = html.replace('MATHBLOCK{' + idx + '}', block);
@@ -193,6 +205,62 @@ function renderMarkdown(text) {
         html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
     return html;
+}
+
+// ── Mermaid 图表渲染 ──
+// 初始化 mermaid 并通过 MutationObserver 自动渲染插入 DOM 的 .mermaid 元素
+if (typeof mermaid !== 'undefined') {
+    const mermaidTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
+    mermaid.initialize({
+        startOnLoad: false,
+        theme: mermaidTheme,
+        securityLevel: 'loose',
+    });
+
+    // 存储每个元素对应的原始源码，用于主题切换时重新渲染
+    const mermaidSourceMap = new WeakMap();
+
+    async function renderMermaidIn(container) {
+        if (typeof mermaid === 'undefined') return;
+        const elements = container.querySelectorAll
+            ? container.querySelectorAll('.mermaid:not([data-mermaid-error])')
+            : [];
+        for (const el of elements) {
+            // 保存原始源码（首次渲染前）
+            if (!mermaidSourceMap.has(el)) {
+                mermaidSourceMap.set(el, el.textContent.trim());
+            }
+            try {
+                const source = mermaidSourceMap.get(el);
+                if (!source) continue;
+                const id = 'mmd-' + Math.random().toString(36).slice(2, 9);
+                const { svg } = await mermaid.render(id, source);
+                el.innerHTML = svg;
+                el.removeAttribute('data-mermaid-error');
+            } catch (e) {
+                el.setAttribute('data-mermaid-error', 'true');
+                const orig = mermaidSourceMap.get(el) || '';
+                el.innerHTML = '<pre class="mermaid-error">' + escapeHtml(e.message || 'Mermaid 渲染失败') + '\n\n' + escapeHtml(orig) + '</pre>';
+            }
+        }
+    }
+    // 暴露为全局函数，供主题切换调用
+    window.renderMermaidIn = renderMermaidIn;
+
+    // 全局 MutationObserver：监听 DOM 插入的 .mermaid 元素并自动渲染
+    const mermaidObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (!(node instanceof HTMLElement)) continue;
+                if (node.classList?.contains('mermaid')) {
+                    renderMermaidIn(node.parentElement || document.body);
+                } else if (node.querySelector?.('.mermaid')) {
+                    renderMermaidIn(node);
+                }
+            }
+        }
+    });
+    mermaidObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 // ── 获取文件图标 ──

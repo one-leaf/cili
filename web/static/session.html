@@ -4,8 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>会话查看</title>
+    <script>
+        (function() {
+            var theme = localStorage.getItem('cili-theme');
+            if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+        })();
+    </script>
     <script src="/static/libs/marked.min.js"></script>
     <script src="/static/libs/purify.min.js"></script>
+    <script src="/static/libs/mermaid.min.js"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -189,6 +196,16 @@
                 return 'MATHBLOCK{' + (mathBlocks.length - 1) + '}';
             });
             let html = marked.parse(text);
+            // 将 mermaid 代码块转换为 <div class="mermaid">
+            html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, (match, content) => {
+                const decoded = content
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'")
+                    .replace(/&amp;/g, '&');
+                return '<div class="mermaid">' + decoded + '</div>';
+            });
             mathBlocks.forEach((b, i) => { html = html.replace('MATHBLOCK{' + i + '}', b); });
             // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
             if (typeof DOMPurify !== 'undefined') {
@@ -197,8 +214,6 @@
                     ADD_ATTR: ['encoding', 'display', 'xmlns'],
                 });
             } else {
-                // DOMPurify 加载失败时 fail-closed：转义所有标签，阻止原始 HTML 注入。
-                // 转义后的文本节点内 `<`/`>` 经浏览器解码还原，MathJax 仍可正常渲染公式。
                 html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
             return html;
@@ -385,6 +400,24 @@
 
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     window.MathJax.typesetPromise();
+                }
+
+                // 渲染 mermaid 图表
+                if (typeof mermaid !== 'undefined') {
+                    const mTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
+                    mermaid.initialize({ startOnLoad: false, theme: mTheme, securityLevel: 'loose' });
+                    const mermaidEls = document.querySelectorAll('.mermaid');
+                    for (const el of mermaidEls) {
+                        try {
+                            const source = el.textContent.trim();
+                            if (!source) continue;
+                            const id = 'mmd-' + Math.random().toString(36).slice(2, 9);
+                            const { svg } = await mermaid.render(id, source);
+                            el.innerHTML = svg;
+                        } catch (e) {
+                            el.innerHTML = '<pre class="mermaid-error">' + (e.message || 'Mermaid 渲染失败') + '\n\n' + el.textContent + '</pre>';
+                        }
+                    }
                 }
             } catch (err) {
                 document.getElementById('app').innerHTML = `<div class="status-msg error">加载失败: ${escapeHtml(err.message)}</div>`;
