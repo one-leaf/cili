@@ -233,6 +233,8 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 | news | master | 热点新闻聚合（热搜/早报/金价汇率/科技资讯） |
 | grilling | master | 推敲（多轮追问、压力测试方案） |
 | translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
+| generate-agents-md | master/worker | 扫描项目代码结构，生成 AGENTS.md 项目指令文件 |
+| mermaid-diagram | master/worker/lite | Mermaid 图表生成（流程图、架构图、时序图、脑图、ER图等） |
 | context-bounded-processing | worker | 上下文受限处理 |
 | file-processing | master/worker/lite | 文件处理与文档解析 |
 | word | master/worker/lite | Word 文档处理（docx/doc 读取、创建、编辑、转换） |
@@ -266,6 +268,7 @@ cili/
 │   ├── memory_store.py         # 记忆存储（Journal / MemoryStore / 四类条目）
 │   ├── message_bus.py          # 跨会话消息总线
 │   ├── updater.py              # 启动时自动升级（GitHub 检查 + 覆盖）
+│   ├── templates/prompts/      # 项目提示词模板（信息学奥赛、语文、英语等）
 │   ├── llm/                    # LLM 底层架构
 │   │   ├── types.py            # ContentBlock / Message / StreamChunk
 │   │   ├── adapter.py          # Adapter 抽象基类
