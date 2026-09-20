@@ -1,7 +1,7 @@
 ---
 name: generate-agents-md
 description: Scan project and generate AGENTS.md project instructions. Use when user mentions 生成 AGENTS.md、生成项目提示词、scan project、analyze codebase。
-roles: [worker]
+roles: [master, worker]
 ---
 
 # Generate AGENTS.md
