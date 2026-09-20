@@ -229,13 +229,13 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
 # ─── 工作区指令文件加载（claude_md 层）────────────────────────────────
 
 # 支持的项目指令文件（按优先级排序）
-_PROJECT_INSTRUCTION_FILES = ["agent.md", "CLAUDE.md", "claude.md"]
+_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]
 
 
 def find_project_instructions(cwd: str) -> str | None:
     """在工作区根目录搜索项目指令文件。
 
-    按优先级搜索：agent.md > CLAUDE.md > claude.md
+    按优先级搜索：AGENTS.md > agent.md > CLAUDE.md > claude.md
     找到第一个即返回。
 
     Args:

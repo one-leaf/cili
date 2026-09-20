@@ -512,21 +512,42 @@
                 <h2>工作区设置</h2>
                 <button class="modal-close" data-modal="workspace-settings-modal">&times;</button>
             </div>
+            <div class="settings-tabs">
+                <button class="settings-tab active" data-tab="ws-basic" onclick="switchWorkspaceSettingsTab('ws-basic')">基本设置</button>
+                <button class="settings-tab" data-tab="ws-instructions" onclick="switchWorkspaceSettingsTab('ws-instructions')">项目提示词</button>
+            </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <label>工作区名称:</label>
-                    <input type="text" id="ws-setting-name" placeholder="输入工作区名称">
-                    <small class="form-hint">最多50个字符</small>
-                </div>
-                <div class="form-group">
-                    <label>工作目录:</label>
-                    <div class="input-with-button">
-                        <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
-                        <button type="button" id="ws-browse-dir-btn" class="btn btn-small">浏览...</button>
+                <!-- 基本设置 Tab -->
+                <div class="tab-content active" id="tab-ws-basic">
+                    <div class="form-group">
+                        <label>工作区名称:</label>
+                        <input type="text" id="ws-setting-name" placeholder="输入工作区名称">
+                        <small class="form-hint">最多50个字符</small>
                     </div>
-                    <small class="form-hint">Agent 在此目录下执行操作</small>
+                    <div class="form-group">
+                        <label>工作目录:</label>
+                        <div class="input-with-button">
+                            <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
+                            <button type="button" id="ws-browse-dir-btn" class="btn btn-small">浏览...</button>
+                        </div>
+                        <small class="form-hint">Agent 在此目录下执行操作</small>
+                    </div>
+                    <div id="workspace-settings-status" class="settings-status"></div>
                 </div>
-                <div id="workspace-settings-status" class="settings-status"></div>
+                <!-- 项目提示词 Tab -->
+                <div class="tab-content" id="tab-ws-instructions">
+                    <div class="instructions-header">
+                        <span id="instructions-filename">AGENTS.md</span>
+                        <div class="instructions-actions">
+                            <select id="instructions-template-select" class="template-select">
+                                <option value="">加载模板...</option>
+                            </select>
+                            <button type="button" id="instructions-generate-btn" class="btn btn-small btn-secondary">AI 生成</button>
+                        </div>
+                    </div>
+                    <textarea id="instructions-editor" class="instructions-editor" placeholder="项目提示词内容（AGENTS.md / CLAUDE.md）..."></textarea>
+                    <div id="instructions-status" class="settings-status"></div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="workspace-delete-btn" class="btn btn-danger" style="margin-right:auto;">删除配置</button>

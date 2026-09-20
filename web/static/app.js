@@ -317,6 +317,10 @@ function setupEventListeners() {
     document.getElementById('ws-browse-dir-btn').addEventListener('click', browseDirectory);
     document.getElementById('new-ws-browse-dir-btn').addEventListener('click', browseDirectory);
 
+    // 项目提示词相关按钮
+    document.getElementById('instructions-generate-btn').addEventListener('click', generateInstructions);
+    document.getElementById('instructions-template-select').addEventListener('change', loadTemplate);
+
     // File insert button
     document.getElementById('insert-file-btn').addEventListener('click', () => {
         openFileBrowser();
@@ -1139,6 +1143,11 @@ async function openWorkspaceSettings() {
     if (isSystem) {
         statusEl.textContent = `工作区 UUID: ${currentWorkspace.uuid}（系统工作区，不可修改）`;
     }
+
+    // 切换到基本设置 tab 并加载项目提示词
+    switchWorkspaceSettingsTab('ws-basic');
+    loadInstructions();
+    loadTemplateList();
 }
 
 
@@ -1229,5 +1238,219 @@ async function deleteWorkspaceConfig() {
         }, 800);
     } catch (error) {
         statusEl.textContent = '✗ 删除失败: ' + error.message;
+    }
+}
+
+// ─── 工作区设置 Tab 切换 ─────────────────────────────────────────
+
+function switchWorkspaceSettingsTab(tabName) {
+    // 切换 tab 按钮状态
+    document.querySelectorAll('#workspace-settings-modal .settings-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    // 切换 tab 内容
+    document.querySelectorAll('#workspace-settings-modal .tab-content').forEach(content => {
+        content.classList.toggle('active', content.id === `tab-${tabName}`);
+    });
+    // 切换 footer 按钮
+    const saveBtn = document.getElementById('workspace-settings-save-btn');
+    const deleteBtn = document.getElementById('workspace-delete-btn');
+    if (tabName === 'ws-instructions') {
+        saveBtn.textContent = '保存提示词';
+        saveBtn.onclick = saveInstructions;
+        deleteBtn.style.display = 'none';
+    } else {
+        saveBtn.textContent = '保存';
+        saveBtn.onclick = saveWorkspaceSettings;
+        const isSystem = currentWorkspace?.system || currentWorkspace?.uuid === 'system';
+        deleteBtn.style.display = isSystem ? 'none' : '';
+    }
+}
+
+// ─── 项目提示词相关 ─────────────────────────────────────────────
+
+async function loadInstructions() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('instructions-status');
+    const editor = document.getElementById('instructions-editor');
+    const filenameEl = document.getElementById('instructions-filename');
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions`);
+        const data = await response.json();
+
+        editor.value = data.content || '';
+        filenameEl.textContent = data.filename || 'AGENTS.md';
+        if (!data.found) {
+            statusEl.textContent = '未找到项目指令文件，将创建 AGENTS.md';
+            statusEl.className = 'settings-status info';
+        } else {
+            statusEl.textContent = '';
+        }
+    } catch (error) {
+        statusEl.textContent = '✗ 加载失败: ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function saveInstructions() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('instructions-status');
+    const editor = document.getElementById('instructions-editor');
+    const filenameEl = document.getElementById('instructions-filename');
+
+    statusEl.textContent = '保存中...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: filenameEl.textContent,
+                content: editor.value
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Failed to save');
+        }
+
+        statusEl.textContent = '✓ 保存成功';
+        statusEl.className = 'settings-status success';
+    } catch (error) {
+        statusEl.textContent = '✗ 保存失败: ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function generateInstructions() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('instructions-status');
+    const generateBtn = document.getElementById('instructions-generate-btn');
+
+    const confirmed = confirm(
+        '将启动 AI 分析项目代码并生成 AGENTS.md。\n\n' +
+        '此过程可能需要几分钟，期间会扫描项目结构和代码。\n\n' +
+        '是否继续？'
+    );
+    if (!confirmed) return;
+
+    generateBtn.disabled = true;
+    generateBtn.textContent = '生成中...';
+    statusEl.textContent = '正在启动 AI 生成...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions/generate`, {
+            method: 'POST'
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Failed to start');
+        }
+
+        const data = await response.json();
+        const taskId = data.task_id;
+
+        // 轮询状态
+        pollGenerateStatus(taskId);
+    } catch (error) {
+        statusEl.textContent = '✗ 启动失败: ' + error.message;
+        statusEl.className = 'settings-status error';
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'AI 生成';
+    }
+}
+
+async function pollGenerateStatus(taskId) {
+    const statusEl = document.getElementById('instructions-status');
+    const generateBtn = document.getElementById('instructions-generate-btn');
+    const editor = document.getElementById('instructions-editor');
+    const filenameEl = document.getElementById('instructions-filename');
+
+    const poll = async () => {
+        try {
+            const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions/generate/${taskId}`);
+            const data = await response.json();
+
+            if (data.status === 'running') {
+                statusEl.textContent = 'AI 正在分析代码...';
+                setTimeout(poll, 3000);
+            } else if (data.status === 'completed') {
+                statusEl.textContent = '✓ 生成完成';
+                statusEl.className = 'settings-status success';
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'AI 生成';
+                // 重新加载内容
+                filenameEl.textContent = 'AGENTS.md';
+                await loadInstructions();
+            } else {
+                statusEl.textContent = '✗ 生成失败: ' + (data.summary || 'Unknown error');
+                statusEl.className = 'settings-status error';
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'AI 生成';
+            }
+        } catch (error) {
+            statusEl.textContent = '✗ 查询状态失败: ' + error.message;
+            statusEl.className = 'settings-status error';
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'AI 生成';
+        }
+    };
+
+    poll();
+}
+
+async function loadTemplateList() {
+    if (!currentWorkspace) return;
+    const select = document.getElementById('instructions-template-select');
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions/templates`);
+        const data = await response.json();
+
+        select.innerHTML = '<option value="">加载模板...</option>';
+        for (const tpl of data.templates) {
+            const option = document.createElement('option');
+            option.value = tpl.name;
+            option.textContent = tpl.name;
+            select.appendChild(option);
+        }
+    } catch (error) {
+        console.error('Failed to load templates:', error);
+    }
+}
+
+async function loadTemplate() {
+    if (!currentWorkspace) return;
+    const select = document.getElementById('instructions-template-select');
+    const templateName = select.value;
+    if (!templateName) return;
+
+    const statusEl = document.getElementById('instructions-status');
+    const editor = document.getElementById('instructions-editor');
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions/templates/${templateName}`);
+        const data = await response.json();
+
+        if (editor.value.trim()) {
+            const confirmed = confirm('加载模板将覆盖当前内容，是否继续？');
+            if (!confirmed) {
+                select.value = '';
+                return;
+            }
+        }
+
+        editor.value = data.content;
+        statusEl.textContent = `已加载模板: ${templateName}`;
+        statusEl.className = 'settings-status info';
+        select.value = '';
+    } catch (error) {
+        statusEl.textContent = '✗ 加载模板失败: ' + error.message;
+        statusEl.className = 'settings-status error';
     }
 }

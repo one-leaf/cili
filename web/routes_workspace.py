@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from web.deps import (
     agents, _agent_access, _agents_lock, _list_all_workspaces,
     _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
     _validate_session_id, _validate_workspace_uuid, WORKSPACE_DATA_DIR,
+    _get_workspace_info,
 )
 
 router = APIRouter()
@@ -609,3 +611,200 @@ async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, w
     if sm.agent_logs.delete_agent_log(exec_id):
         return {"success": True}
     raise HTTPException(status_code=404, detail="Execution not found")
+
+
+# ----- Project Instructions (AGENTS.md / CLAUDE.md) -----
+
+# 支持的项目指令文件（按优先级排序，与 core/prompts.py 保持一致）
+_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]
+
+# 模板目录
+_TEMPLATES_DIR = PROJECT_ROOT / "core" / "templates" / "prompts"
+
+
+class SaveInstructionsRequest(BaseModel):
+    filename: str  # 文件名（AGENTS.md / CLAUDE.md 等）
+    content: str
+
+
+@router.get("/api/workspaces/{workspace_uuid}/instructions")
+async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+    """读取工作区的项目指令文件（AGENTS.md / CLAUDE.md）。
+
+    按优先级查找，返回第一个找到的文件内容和文件名。
+    """
+    info = _get_workspace_info(workspace_uuid)
+    if not info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_dir = info.get("directory", "")
+    if not workspace_dir:
+        raise HTTPException(status_code=400, detail="Workspace directory not set")
+
+    for filename in _PROJECT_INSTRUCTION_FILES:
+        filepath = os.path.join(workspace_dir, filename)
+        if os.path.isfile(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return {"filename": filename, "content": content, "found": True}
+            except Exception as e:
+                logger.warning(f"Failed to read {filepath}: {e}")
+                continue
+
+    # 未找到任何文件，返回空内容（默认用 AGENTS.md）
+    return {"filename": "AGENTS.md", "content": "", "found": False}
+
+
+@router.put("/api/workspaces/{workspace_uuid}/instructions")
+async def save_instructions(workspace_uuid: str, request: SaveInstructionsRequest, ws_dir: Path = Depends(_require_workspace)):
+    """保存项目指令文件到工作区。
+
+    保持原文件名，若指定新文件名则写入对应文件。
+    """
+    info = _get_workspace_info(workspace_uuid)
+    if not info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_dir = info.get("directory", "")
+    if not workspace_dir:
+        raise HTTPException(status_code=400, detail="Workspace directory not set")
+
+    # 验证文件名（只允许已知指令文件名）
+    filename = request.filename
+    if filename not in _PROJECT_INSTRUCTION_FILES and not filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
+
+    filepath = os.path.join(workspace_dir, filename)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(request.content)
+        return {"success": True, "filename": filename}
+    except Exception as e:
+        logger.error(f"Failed to save instructions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save: {e}")
+
+
+@router.post("/api/workspaces/{workspace_uuid}/instructions/generate")
+async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+    """创建 worker agent 后台扫描代码并生成 AGENTS.md。
+
+    返回任务 ID 供前端轮询状态。
+    """
+    info = _get_workspace_info(workspace_uuid)
+    if not info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_dir = info.get("directory", "")
+    if not workspace_dir:
+        raise HTTPException(status_code=400, detail="Workspace directory not set")
+
+    # 构造任务描述
+    task = (
+        "Scan the project in the current working directory and generate an AGENTS.md file.\n\n"
+        "First, use skill(action='read', skill_id='generate-agents-md') to get the detailed instructions.\n"
+        "Then follow the skill instructions to scan the project and generate AGENTS.md.\n\n"
+        "Write the generated AGENTS.md to the workspace root directory using the write tool."
+    )
+
+    try:
+        from core.config import load_config
+        from core.agent import Agent
+        import secrets
+
+        config = load_config()
+        exec_id = f"gen-{secrets.token_hex(4)}"
+
+        # 创建 worker agent
+        agent = Agent(
+            config=config,
+            role="worker",
+            task=task,
+            workspace_uuid=workspace_uuid,
+            cwd=workspace_dir,
+            exec_id=exec_id,
+        )
+
+        # 在后台线程运行
+        import threading
+        result_holder = {"status": "running", "summary": ""}
+
+        def run_agent():
+            try:
+                result = agent.run()
+                result_holder["status"] = result.get("status", "completed")
+                result_holder["summary"] = result.get("summary", "")
+            except Exception as e:
+                result_holder["status"] = "error"
+                result_holder["summary"] = str(e)
+
+        thread = threading.Thread(target=run_agent, daemon=True)
+        thread.start()
+
+        # 存储任务状态（简单实现：用全局字典）
+        _generate_tasks[exec_id] = {
+            "status": "running",
+            "thread": thread,
+            "result": result_holder,
+            "workspace_dir": workspace_dir,
+        }
+
+        return {"task_id": exec_id, "status": "running"}
+
+    except Exception as e:
+        logger.error(f"Failed to start generate agent: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start: {e}")
+
+
+# 存储生成任务状态（简单实现）
+_generate_tasks: dict[str, dict] = {}
+
+
+@router.get("/api/workspaces/{workspace_uuid}/instructions/generate/{task_id}")
+async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = Depends(_require_workspace)):
+    """查询 AGENTS.md 生成任务状态。"""
+    task = _generate_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = task["result"]
+    return {
+        "task_id": task_id,
+        "status": result.get("status", "running"),
+        "summary": result.get("summary", ""),
+    }
+
+
+@router.get("/api/workspaces/{workspace_uuid}/instructions/templates")
+async def list_instruction_templates(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+    """列出可用的项目指令模板。
+
+    模板存放在 core/templates/prompts/ 目录，为 .md 文件。
+    """
+    templates = []
+    if _TEMPLATES_DIR.exists():
+        for f in sorted(_TEMPLATES_DIR.iterdir()):
+            if f.is_file() and f.suffix == ".md":
+                templates.append({
+                    "name": f.stem,
+                    "filename": f.name,
+                })
+    return {"templates": templates}
+
+
+@router.get("/api/workspaces/{workspace_uuid}/instructions/templates/{template_name}")
+async def load_instruction_template(workspace_uuid: str, template_name: str, ws_dir: Path = Depends(_require_workspace)):
+    """加载指定模板的内容。"""
+    # 安全检查：防止路径穿越，支持中文文件名
+    # 只允许字母、数字、中文、下划线、连字符
+    if not re.match(r'^[\w一-鿿-]+$', template_name):
+        raise HTTPException(status_code=400, detail="Invalid template name")
+
+    template_file = _TEMPLATES_DIR / f"{template_name}.md"
+    if not template_file.exists():
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        with open(template_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"name": template_name, "content": content}
+    except Exception as e:
+        logger.error(f"Failed to read template: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read template")

@@ -453,6 +453,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-shrink: 0;
 }
 
 .modal-header h2 {
@@ -554,6 +555,8 @@ body {
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+    flex-shrink: 0;
+}
 }
 
 .settings-status {
@@ -746,6 +749,7 @@ body {
     border-bottom: 1px solid var(--border-color);
     padding: 0 24px;
     background: #fafafa;
+    flex-shrink: 0;
 }
 
 .settings-tab {
@@ -2910,6 +2914,125 @@ mjx-container {
 [data-theme="dark"] .memory-commit-item {
     background: #27272a;
     color: #e4e4e7;
+}
+
+/* ─── Project Instructions Editor ───────────────────────── */
+
+/* 工作区设置固定大小，与系统设置一致 */
+#workspace-settings-modal .modal-content {
+    width: 50vw;
+    max-width: 90vw;
+    height: 80vh;
+}
+
+/* 工作区设置 modal-body 用 flex 布局，让 tab-content 扩展 */
+#workspace-settings-modal .modal-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+}
+
+/* 基本设置 tab 可滚动 */
+#tab-ws-basic {
+    overflow-y: auto;
+}
+
+/* 项目提示词 tab 填充剩余空间 */
+#workspace-settings-modal .tab-content.active {
+    flex: 1;
+    min-height: 0;
+}
+
+#tab-ws-instructions.active {
+    display: flex;
+    flex-direction: column;
+}
+
+#tab-ws-instructions .instructions-editor {
+    flex: 1;
+    min-height: 100px;
+}
+
+.instructions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.instructions-header #instructions-filename {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-color);
+}
+
+.instructions-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.template-select {
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 12px;
+    background: white;
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+[data-theme="dark"] .template-select {
+    background: #27272a;
+    color: #e4e4e7;
+    border-color: #3f3f46;
+}
+
+.instructions-editor {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-family: 'SF Mono', Consolas, Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    background: white;
+    color: var(--text-color);
+    box-sizing: border-box;
+}
+
+.instructions-editor:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+}
+
+[data-theme="dark"] .instructions-editor {
+    background: #18181b;
+    color: #e4e4e7;
+    border-color: #3f3f46;
+}
+
+#instructions-status {
+    margin-top: 8px;
+    font-size: 12px;
+    flex: none;
+    flex-shrink: 0;
+}
+
+#instructions-status.success {
+    color: #10b981;
+}
+
+#instructions-status.error {
+    color: #ef4444;
+}
+
+#instructions-status.info {
+    color: var(--primary-color);
 }
 
 .memory-action-log {
