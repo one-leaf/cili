@@ -64,7 +64,7 @@ For each batch, in order:
 
 ### Wait for the batches (avoid per-task polling)
 
-Instead of calling `read_task` once per batch, wait with a single bounded bash loop and re-check:
+Instead of calling `agent` with `action="read"` once per batch, wait with a single bounded bash loop and re-check:
 
 - `bash` `while [ $(ls $CILI_TMP/{task_id}/results/*.txt 2>/dev/null | wc -l) -lt {total} ]; do sleep 30; done` — but keep each bash call under ~4 minutes (hard 300s limit). If it is not done in one call, repeat it.
 

@@ -199,7 +199,7 @@ class TestAgentToolParameters:
 
     def test_required_task(self):
         tool = AgentTool()
-        # task is no longer required (run_in_background/read_task/kill_task/list_tasks are alternatives)
+        # task is no longer required (action='read'/'kill'/'list' are alternatives to 'start')
         assert "task" in tool.parameters["properties"]
 
     def test_optional_parameters(self):
@@ -207,9 +207,11 @@ class TestAgentToolParameters:
         props = tool.parameters["properties"]
         assert "plan" in props
         assert "run_in_background" in props
-        assert "read_task" in props
-        assert "kill_task" in props
-        assert "list_tasks" in props
+        assert "action" in props
+        assert "read" in props["action"]["enum"]
+        assert "kill" in props["action"]["enum"]
+        assert "list" in props["action"]["enum"]
+        assert "start" in props["action"]["enum"]
 
 
 class TestDelegationDepthLimit:

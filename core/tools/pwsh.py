@@ -94,8 +94,9 @@ class PwshTool(Tool):
             "from pwsh require user approval; if blocked, wait for the decision then retry the exact command.\n"
             f"Current working directory: {self.cwd}\n\n"
             "## Background tasks\n"
-            "Long-running commands: run_in_background=true → task_id, then read_task(task_id), kill_task(task_id), "
-            "write_stdin({task_id, text}), list_tasks()."
+            "Long-running commands: action=\"run\", run_in_background=true → task_id. "
+            "You will receive an automatic notification when it completes — no polling needed. "
+            "Use action=\"read\"/\"kill\"/\"write_stdin\"/\"list\" to manage background tasks."
         )
 
     @property
@@ -104,9 +105,21 @@ class PwshTool(Tool):
         return {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["run", "read", "kill", "write_stdin", "list"],
+                    "description": (
+                        "Operation to perform. Defaults to 'run' if omitted. "
+                        "'run': execute a PowerShell command. "
+                        "'read': read background task output (requires task_id). "
+                        "'kill': terminate a background task (requires task_id). "
+                        "'write_stdin': send input to a background task (requires task_id + text). "
+                        "'list': list all background tasks."
+                    ),
+                },
                 "command": {
                     "type": "string",
-                    "description": "The PowerShell command to execute. Do NOT include timeout in the command — use the timeout parameter instead.",
+                    "description": "The PowerShell command to execute (action='run'). Do NOT include timeout in the command — use the timeout parameter instead.",
                 },
                 "timeout": {
                     "type": "integer",
@@ -119,39 +132,19 @@ class PwshTool(Tool):
                 "run_in_background": {
                     "type": "boolean",
                     "description": (
-                        "If true, run the command in background and return immediately "
-                        "with a task_id. Use read_task/kill_task/write_stdin to manage it."
+                        "action='run' only. If true, run the command in background and return immediately "
+                        "with a task_id. You will receive an automatic notification when it completes — no polling needed."
                     ),
                 },
-                "read_task": {
+                "task_id": {
                     "type": "string",
                     "description": (
-                        "Task ID to read output from (e.g., 'bg-1'). "
-                        "Returns accumulated output since last read. Non-blocking."
+                        "Background task ID (e.g. 'bg-1'). Required for action='read'/'kill'/'write_stdin'."
                     ),
                 },
-                "kill_task": {
+                "text": {
                     "type": "string",
-                    "description": "Task ID to terminate (e.g., 'bg-1').",
-                },
-                "write_stdin": {
-                    "type": "object",
-                    "description": "Send input to a running background task.",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Task ID to write to (e.g., 'bg-1').",
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "Text to send to stdin (e.g., 'y\\n').",
-                        },
-                    },
-                    "required": ["task_id", "text"],
-                },
-                "list_tasks": {
-                    "type": "boolean",
-                    "description": "If true, list all background tasks and their status.",
+                    "description": "Text to send to stdin. Required for action='write_stdin' (e.g. 'y\\n').",
                 },
             },
             "required": [],
@@ -162,28 +155,40 @@ class PwshTool(Tool):
 
     def execute(
         self,
+        action: str | None = None,
         command: str | None = None,
         timeout: int | None = None,
         working_dir: str | None = None,
         run_in_background: bool | None = None,
-        read_task: str | None = None,
-        kill_task: str | None = None,
-        write_stdin: dict | None = None,
-        list_tasks: bool | None = None,
+        task_id: str | None = None,
+        text: str | None = None,
     ) -> ToolResult:
-        """Execute PowerShell command or manage background tasks."""
+        """Execute PowerShell command or manage background tasks.
+
+        Dispatch logic:
+        - action='run' (or omitted): execute a PowerShell command (default)
+        - action='read': read background task output (requires task_id)
+        - action='kill': terminate a background task (requires task_id)
+        - action='write_stdin': send input to a background task (requires task_id + text)
+        - action='list': list all background tasks
+        """
+        effective_action = action or "run"
 
         # Handle background task operations (shared with bash)
-        if list_tasks:
+        if effective_action == "list":
             return self._list_background_tasks()
-        if read_task:
-            return self._read_background_task(read_task)
-        if kill_task:
-            return self._kill_background_task(kill_task)
-        if write_stdin:
-            task_id = write_stdin.get("task_id")
-            text = write_stdin.get("text", "")
-            return self._write_stdin_to_task(task_id, text)
+        if effective_action == "read":
+            if not task_id:
+                return ToolResult("Error: action='read' requires 'task_id' parameter (e.g. 'bg-1')", error=True)
+            return self._read_background_task(task_id)
+        if effective_action == "kill":
+            if not task_id:
+                return ToolResult("Error: action='kill' requires 'task_id' parameter (e.g. 'bg-1')", error=True)
+            return self._kill_background_task(task_id)
+        if effective_action == "write_stdin":
+            if not task_id:
+                return ToolResult("Error: action='write_stdin' requires 'task_id' and 'text' parameters", error=True)
+            return self._write_stdin_to_task(task_id, text or "")
 
         # Regular command execution
         if not command:

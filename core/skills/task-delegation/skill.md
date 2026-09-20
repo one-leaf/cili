@@ -81,7 +81,7 @@ If the task involves LLM processing (the sub-agent itself is the LLM — there i
 
 ### 5. Synchronous by Default
 
-Call sub-agents **synchronously** (omit `run_in_background`) unless you are launching **multiple independent sub-agents at once**. A single sub-agent: wait for its result, then continue — the result stays in your context and ordering is preserved. Use `run_in_background: true` only to parallelize several sub-agents (e.g. translating N block files at once), then `read_task` each until it completes.
+Call sub-agents **synchronously** (omit `run_in_background`) unless you are launching **multiple independent sub-agents at once**. A single sub-agent: wait for its result, then continue — the result stays in your context and ordering is preserved. Use `run_in_background: true` only to parallelize several sub-agents (e.g. translating N block files at once); you will receive an automatic notification when each completes — no polling needed.
 
 ### 6. Concurrent Cap
 

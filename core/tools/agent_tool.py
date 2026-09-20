@@ -18,20 +18,25 @@ class AgentTool(Tool):
     description = (
         "**Delegate complex, multi-step tasks to an autonomous sub-agent (Worker/Lite).**\n"
         "The sub-agent runs a complete agent loop with its own tool access.\n\n"
+        "## Actions:\n"
+        "- \"start\" (default): delegate a task. Params: task (required), plan, agent_type, run_in_background, label, temperature\n"
+        "- \"read\": check a background agent's status/output. Params: task (pass task_id, e.g. \"agent-1\")\n"
+        "- \"kill\": terminate a background agent. Params: task (pass task_id)\n"
+        "- \"list\": list all background tasks. No extra params needed.\n\n"
         "## Use when:\n"
         "- Multi-step work needing many tool calls (translate a file, analyze code, batch processing)\n"
-        "- Long-running work that should not block the conversation (run_in_background=true)\n\n"
+        "- Long-running work that should not block the conversation (action=\"start\", run_in_background=true)\n\n"
         "## Do NOT use for:\n"
         "- Simple reads/edits/commands/search — use read/edit/bash/web_search directly\n\n"
-        "## Task must be self-contained:\n"
+        "## Task must be self-contained (action=\"start\"):\n"
         "The sub-agent does NOT see your conversation or CLAUDE.md. Put all context, file paths, "
         "constraints, and expected output format directly in `task`. Never say 'as before' or reference prior turns.\n\n"
-        "## Params:\n"
-        "- task: self-contained objective (required)\n"
-        "- plan: optional ordered steps with file paths and verification criteria\n"
-        "- agent_type: \"worker\" (default, full tool set + check phase) or \"lite\" (read/write/edit/bash only)\n"
-        "- run_in_background: true returns a task_id immediately; manage via read_task/kill_task/list_tasks\n\n"
-        "## Returns:\n"
+        "## Examples:\n"
+        "- Start in background: {\"action\": \"start\", \"task\": \"...\", \"run_in_background\": true}\n"
+        "- Check status: {\"action\": \"read\", \"task\": \"agent-1\"}\n"
+        "- Kill: {\"action\": \"kill\", \"task\": \"agent-1\"}\n"
+        "- List all: {\"action\": \"list\"}\n\n"
+        "## Returns (action=\"start\"):\n"
         "{\"status\": \"completed|error|timeout|failed\", \"summary\": \"...\", \"iterations\": N}\n"
         "Timeout: 1 hour. Delegation limits: master (depth 0) may delegate to worker/lite; "
         "a sub-agent (depth 1) may delegate only to 'lite'; agents two levels deep cannot delegate."
@@ -113,19 +118,31 @@ class AgentTool(Tool):
         return {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "read", "kill", "list"],
+                    "description": (
+                        "Operation to perform. Defaults to 'start' if omitted. "
+                        "'start': delegate a task (requires 'task' as description). "
+                        "'read': check background agent status (requires 'task' as task_id, e.g. 'agent-1'). "
+                        "'kill': terminate a background agent (requires 'task' as task_id). "
+                        "'list': list all background tasks."
+                    ),
+                },
                 "task": {
                     "type": "string",
                     "description": (
-                        "Clear, self-contained task description. "
-                        "Include: objective, necessary context, constraints, expected output format. "
-                        "Remember: Agent has NO access to your conversation history or project rules."
+                        "For action='start': clear, self-contained task description. "
+                        "Include objective, necessary context, constraints, expected output format. "
+                        "Agent has NO access to your conversation history or project rules.\n"
+                        "For action='read'/'kill': the task_id string (e.g. 'agent-1')."
                     ),
                 },
                 "plan": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Execution plan: ordered list of concrete steps. "
+                        "Execution plan: ordered list of concrete steps (action='start' only). "
                         "Each step should be actionable and self-explanatory. "
                         "Include file paths, expected outputs, or verification criteria where relevant."
                     ),
@@ -134,7 +151,7 @@ class AgentTool(Tool):
                     "type": "string",
                     "enum": ["worker", "lite"],
                     "description": (
-                        "Sub-agent role: 'worker' (default, full tool set + check phase) "
+                        "Sub-agent role (action='start' only): 'worker' (default, full tool set + check phase) "
                         "or 'lite' (minimal read/write/edit/bash, no check phase). "
                         "If you are already a sub-agent (delegation depth 1), only 'lite' is allowed."
                     ),
@@ -142,24 +159,10 @@ class AgentTool(Tool):
                 "run_in_background": {
                     "type": "boolean",
                     "description": (
-                        "If true, run the Agent in background and return immediately "
-                        "with a task_id. Use read_task/kill_task/list_tasks to manage it."
+                        "action='start' only. If true, run the Agent in background and return immediately "
+                        "with a task_id. You will receive an automatic notification when it "
+                        "completes — no polling needed."
                     ),
-                },
-                "read_task": {
-                    "type": "string",
-                    "description": (
-                        "Task ID to read status/output from (e.g., 'agent-1'). "
-                        "Returns Agent status and summary if completed."
-                    ),
-                },
-                "kill_task": {
-                    "type": "string",
-                    "description": "Task ID of background Agent to terminate (e.g., 'agent-1').",
-                },
-                "list_tasks": {
-                    "type": "boolean",
-                    "description": "If true, list all background tasks (shell commands and Agents).",
                 },
                 "temperature": {
                     "type": "number",
@@ -177,38 +180,46 @@ class AgentTool(Tool):
 
     def execute(
         self,
+        action: str | None = None,
         task: str | None = None,
         plan: list[str] | None = None,
         agent_type: str = "worker",
         run_in_background: bool | None = None,
-        read_task: str | None = None,
-        kill_task: str | None = None,
-        list_tasks: bool | None = None,
         temperature: float | None = None,
         label: str | None = None,
         exec_id: str | None = None,
     ) -> ToolResult:
-        """Execute the agent tool - delegate task to a Agent or manage background tasks."""
+        """Execute the agent tool - delegate task to an Agent or manage background tasks.
 
-        # Handle background task operations
-        if list_tasks:
+        Dispatch logic:
+        - action='read': read background agent status (task = task_id)
+        - action='kill': kill background agent (task = task_id)
+        - action='list': list all background tasks
+        - action='start' (or omitted): start a new agent (default)
+        """
+        effective_action = action or "start"
+
+        # Handle read / kill / list operations
+        if effective_action == "list":
             return self._list_background_tasks()
-        if read_task:
-            # Try Agent first, then fall back to shell task
+        if effective_action == "read":
+            if not task:
+                return ToolResult("Error: action='read' requires 'task' parameter (task_id, e.g. 'agent-1')", error=True)
             from core.tools.base import BackgroundTaskManager
-            bg_task = BackgroundTaskManager.get(read_task)
+            bg_task = BackgroundTaskManager.get(task)
             if bg_task and bg_task.task_type == "agent":
-                return self._read_background_agent(read_task)
+                return self._read_background_agent(task)
             else:
-                return self._read_background_task(read_task)
-        if kill_task:
-            # Try Agent first, then fall back to shell task
+                return self._read_background_task(task)
+        if effective_action == "kill":
+            if not task:
+                return ToolResult("Error: action='kill' requires 'task' parameter (task_id, e.g. 'agent-1')", error=True)
             from core.tools.base import BackgroundTaskManager
-            bg_task = BackgroundTaskManager.get(kill_task)
+            bg_task = BackgroundTaskManager.get(task)
             if bg_task and bg_task.task_type == "agent":
-                return self._kill_background_agent(kill_task)
+                return self._kill_background_agent(task)
             else:
-                return self._kill_background_task(kill_task)
+                return self._kill_background_task(task)
 
         # Regular Agent execution
         if not task or not task.strip():

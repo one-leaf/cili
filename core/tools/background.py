@@ -249,8 +249,8 @@ class BackgroundMixin:
                 f"Background task started.\n"
                 f"Task ID: {task_id}\n"
                 f"Command: {command}\n\n"
-                f"Use read_task(\"{task_id}\") to check output.\n"
-                f"Use kill_task(\"{task_id}\") to terminate."
+                f"Use action=\"read\", task_id=\"{task_id}\" to check output.\n"
+                f"Use action=\"kill\", task_id=\"{task_id}\" to terminate."
             )
 
         except Exception as e:
@@ -415,7 +415,7 @@ class BackgroundMixin:
                 if remaining <= 0:
                     return ToolResult(
                         f"Error: 等待后台 Agent 并发槽位超时（{len(_active_background_agents)}/{limit} 仍在运行）。"
-                        "请稍后重试，或用 kill_task 终止占用任务。",
+                        "请稍后重试，或用 action=\"kill\" 终止占用任务。",
                         error=True,
                     )
                 _background_agents_cond.wait(timeout=min(1.0, remaining))
@@ -565,8 +565,9 @@ class BackgroundMixin:
             f"Background Agent started.\n"
             f"Task ID: {task_id}\n"
             f"Task: {task_summary}\n\n"
-            f"Use read_task(\"{task_id}\") to check status.\n"
-            f"Use kill_task(\"{task_id}\") to terminate."
+            f"You will receive an automatic notification when it completes — do NOT poll with "
+            f"action=\"read\" or sleep to wait. Continue your other work in the meantime.\n"
+            f"Use action=\"kill\", task_id=\"{task_id}\" only if you need to terminate it early."
         )
 
     def _read_background_agent(self, task_id: str) -> ToolResult:
