@@ -57,6 +57,12 @@ _TRUNCATE_OUTPUT_CHARS = 10000
 _TRUNCATE_SNAPSHOT_CHARS = 20000
 # 顺序输入按键间隔（ms）
 _TYPE_DELAY_MS = 20
+# 下载等待超时（ms）
+_DOWNLOAD_TIMEOUT_MS = 60000
+# 弹窗自动处理行为：dismiss（记录后关闭）/ accept（记录后确认）
+_DIALOG_BEHAVIOR = "dismiss"
+# 请求详情 body 读取上限（字符），超过则跳过 body
+_BODY_MAX_CHARS = 2000
 
 # Try to import stealth
 try:
@@ -297,11 +303,14 @@ class BrowserService:
         self._task_results: dict[int, tuple[bool, Any]] = {}
         self._next_task_id_counter = 0
 
-        # ref 定位：tab_index → {ref: {role, name, index, mode}}
-        self._snapshot_refs: dict[int, dict[str, dict]] = {}
-        # console / 网络请求缓冲：tab_index → deque[(type, text)] / deque[(method, url, status)]
+        # ref 定位：(tab_index, frame_index) → {ref: {role, name, index, mode}}；
+        # frame_index None/0 均归一为主 frame（None 为默认主 frame 上下文）
+        self._snapshot_refs: dict[tuple[int, int | None], dict[str, dict]] = {}
+        # console / 网络请求 / dialog 缓冲：tab_index → deque[(type, text)] /
+        # deque[dict]（请求详情）/ deque[(type, message)]
         self._console_buffers: dict[int, deque] = {}
         self._request_buffers: dict[int, deque] = {}
+        self._dialog_buffers: dict[int, deque] = {}
         # 已挂监听器的 page（按 id(page) 去重）
         self._listener_pages: set[int] = set()
 
@@ -1035,7 +1044,7 @@ class BrowserService:
         return tab_index
 
     def _ensure_listeners(self, page, tab_index: int) -> None:
-        """为 page 挂上 console / response 监听器（幂等），供 console/requests 动作读取。
+        """为 page 挂上 console / response / dialog 监听器（幂等）。
 
         监听器回调在 Playwright driver 线程运行，deque.append 是原子的，无锁安全。
         """
@@ -1044,16 +1053,63 @@ class BrowserService:
         self._listener_pages.add(id(page))
         console_buf: deque = deque(maxlen=BUFFER_MAXLEN)
         request_buf: deque = deque(maxlen=BUFFER_MAXLEN)
+        dialog_buf: deque = deque(maxlen=BUFFER_MAXLEN)
         self._console_buffers[tab_index] = console_buf
         self._request_buffers[tab_index] = request_buf
+        self._dialog_buffers[tab_index] = dialog_buf
         try:
             page.on("console", lambda msg: console_buf.append((msg.type, msg.text)))
-            page.on(
-                "response",
-                lambda resp: request_buf.append(
-                    (resp.request.method, resp.url, resp.status)
-                ),
-            )
+            page.on("response", lambda resp: self._capture_response(request_buf, resp))
+            page.on("dialog", lambda dlg: self._handle_dialog(tab_index, dlg))
+        except Exception:
+            pass
+
+    def _capture_response(self, buf: deque, resp) -> None:
+        """捕获响应详情为 dict（driver 线程回调，绝不调 page 方法，全部 try/except 包裹）。
+
+        body 仅对文本类 content-type 且 content-length 在阈值内才读取，避免大响应拖慢页面。
+        """
+        try:
+            entry: dict = {
+                "method": resp.request.method,
+                "url": resp.url,
+                "status": resp.status,
+            }
+            try:
+                entry["req_headers"] = dict(resp.request.headers)
+            except Exception:
+                pass
+            try:
+                entry["resp_headers"] = dict(resp.headers)
+            except Exception:
+                pass
+            try:
+                ct = (resp.headers.get("content-type") or "").lower()
+                cl = resp.headers.get("content-length")
+                if ("text/" in ct or "json" in ct or "xml" in ct or "+json" in ct) \
+                        and cl is not None and cl.isdigit() and int(cl) <= _BODY_MAX_CHARS * 4:
+                    body = resp.body()
+                    if len(body) <= _BODY_MAX_CHARS:
+                        entry["body_text"] = body.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            buf.append(entry)
+        except Exception:
+            pass
+
+    def _handle_dialog(self, tab_index: int, dlg) -> None:
+        """记录弹窗并按策略自动关闭（driver 线程回调，只调 dialog 方法不调 page，防死锁）。"""
+        try:
+            buf = self._dialog_buffers.get(tab_index)
+            if buf is not None:
+                buf.append((dlg.type, (dlg.message or "")[:500]))
+        except Exception:
+            pass
+        try:
+            if _DIALOG_BEHAVIOR == "accept":
+                dlg.accept()
+            else:
+                dlg.dismiss()
         except Exception:
             pass
 
@@ -1064,38 +1120,60 @@ class BrowserService:
                 return idx
         return self._active_tab_index
 
-    def _resolve_ref(self, tab_index: int, ref: str) -> dict:
+    def _resolve_frame(self, page, frame: int | None = None):
+        """解析 frame 上下文：None/0 → 主 frame；否则 page.frames[i]（越界报错）。
+
+        Page 与 Frame 提供相同定位接口（get_by_role/get_by_text/locator/evaluate），
+        返回的 base 可直接用于这些调用。
+        """
+        if frame is None:
+            return page
+        frames = page.frames
+        if not (0 <= frame < len(frames)):
+            raise ValueError(
+                f"Frame index {frame} out of range (0-{len(frames)-1}). "
+                f"Run 'get_frames' to list frames."
+            )
+        return frames[frame]
+
+    def _ref_key(self, tab_index: int, frame: int | None) -> tuple[int, int | None]:
+        """ref 映射键：主 frame 统一用 0（None 与 0 等价）。"""
+        return (tab_index, 0 if frame is None else frame)
+
+    def _resolve_ref(self, tab_index: int, ref: str, frame: int | None = None) -> dict:
         """把 ref 解析为定位条目；未知 ref 报错提示先跑 snapshot。"""
-        ref_map = self._snapshot_refs.get(tab_index) or {}
+        ref_map = self._snapshot_refs.get(self._ref_key(tab_index, frame)) or {}
         entry = ref_map.get(ref)
         if not entry:
+            fdesc = "" if frame is None else f" (frame {frame})"
             raise ValueError(
-                f"Unknown ref '{ref}' for tab {tab_index}. "
+                f"Unknown ref '{ref}' for tab {tab_index}{fdesc}. "
                 f"Run the 'snapshot' action first to get fresh refs."
             )
         return entry
 
-    def _locator_for(self, page, entry: dict):
-        """根据 ref 定位条目生成 Playwright locator。
+    def _locator_for(self, base, entry: dict):
+        """根据 ref 定位条目生成 Playwright locator（base 为 Page 或 Frame）。
 
         mode=role 用 get_by_role(role, name).nth(index)；
         mode=text（paragraph/generic 等文本节点）用 get_by_text(name).nth(index)。
         """
         if entry["mode"] == "text":
-            return page.get_by_text(entry["name"], exact=True).nth(entry["index"])
-        return page.get_by_role(
+            return base.get_by_text(entry["name"], exact=True).nth(entry["index"])
+        return base.get_by_role(
             entry["role"], name=entry["name"], exact=True
         ).nth(entry["index"])
 
-    def _build_snapshot(self, page, tab_index: int) -> tuple[list[tuple[str, str]], dict]:
-        """生成页面 aria snapshot 并更新该 tab 的 ref 映射。
+    def _build_snapshot(self, page, tab_index: int, frame: int | None = None) -> tuple[list[tuple[str, str]], dict]:
+        """生成页面 aria snapshot 并更新该 tab+frame 的 ref 映射。
 
         Returns:
-            (lines, ref_map)：lines 用于文本展示，ref_map 存入 _snapshot_refs[tab_index]
+            (lines, ref_map)：lines 用于文本展示，ref_map 存入 _snapshot_refs[(tab_index, frame)]
         """
-        yaml_text = page.locator("body").aria_snapshot()
+        base = self._resolve_frame(page, frame)
+        yaml_text = base.locator("body").aria_snapshot()
         lines, ref_map = _parse_aria_snapshot(yaml_text)
-        self._snapshot_refs[tab_index] = ref_map
+        self._snapshot_refs[self._ref_key(tab_index, frame)] = ref_map
         return lines, ref_map
 
     def _touch_page(self, tab_index: int, page) -> None:
@@ -1128,9 +1206,10 @@ class BrowserService:
         if self._active_tab_index == tab_index:
             self._active_tab_index = None
         self._listener_pages.discard(id(page))
-        self._snapshot_refs.pop(tab_index, None)
+        self._snapshot_refs = {k: v for k, v in self._snapshot_refs.items() if k[0] != tab_index}
         self._console_buffers.pop(tab_index, None)
         self._request_buffers.pop(tab_index, None)
+        self._dialog_buffers.pop(tab_index, None)
         try:
             if not page.is_closed():
                 page.close()
@@ -1219,22 +1298,26 @@ class BrowserService:
         except Exception as e:
             return ToolResult(f"Browser {operation_name} failed with worker error: {e}", error=True)
 
-    def navigate(self, url: str, tab_index: int | None = None) -> ToolResult:
+    def navigate(self, url: str, tab_index: int | None = None, skip_ssrf: bool = False) -> ToolResult:
         """导航到 URL 并返回页面文本内容。
 
         Args:
             url: 目标 URL
             tab_index: 指定 tab 编号，None 表示创建新 tab
+            skip_ssrf: 内部参数，True 时跳过 SSRF 预检（仅工具层用户批准后调用；
+                      非公网地址对直接调用者仍保持防护，纵深防御）
 
         Returns:
             ToolResult，data 包含 tab_index 字段
         """
-        # A30: scheme/私网过滤（SSRF 防护），先于任何浏览器操作快速失败
-        block_reason = _validate_navigate_url(url)
-        if block_reason:
-            return ToolResult(
-                f"Error: 导航被拒绝 — {block_reason}", error=True
-            )
+        # A30: scheme/私网过滤（SSRF 防护），先于任何浏览器操作快速失败。
+        # skip_ssrf=True 由浏览器工具在用户批准非公网导航后传入。
+        if not skip_ssrf:
+            block_reason = _validate_navigate_url(url)
+            if block_reason:
+                return ToolResult(
+                    f"Error: 导航被拒绝 — {block_reason}", error=True
+                )
         def _do_navigate(page, current_tab_index):
             page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
             # 等待 JavaScript 渲染和重定向
@@ -1383,22 +1466,24 @@ class BrowserService:
 
     # ==================== ref 定位交互（snapshot/find/click/fill/type/press） ====================
 
-    def snapshot(self, tab_index: int | None = None) -> ToolResult:
+    def snapshot(self, tab_index: int | None = None, frame: int | None = None) -> ToolResult:
         """获取页面 accessibility snapshot，为可交互元素分配 ref。
 
         返回的 YAML 树中带 [ref=rN] 的元素可用 click/fill/type/press 定位；
         ref 仅在本次返回的 snapshot 有效，页面变化后请重新 snapshot。
+        frame: 指定 frame 索引（见 get_frames），None 表示主 frame。
         """
         def _do_snapshot(page):
             actual_tab = self._find_tab_index(page) or 0
-            lines, ref_map = self._build_snapshot(page, actual_tab)
+            lines, ref_map = self._build_snapshot(page, actual_tab, frame)
             if not lines:
                 return ToolResult("Snapshot empty: no accessible elements found", error=True)
             body = "\n".join(line for _indent, line in lines)
             if len(body) > _TRUNCATE_SNAPSHOT_CHARS:
                 body = body[:_TRUNCATE_SNAPSHOT_CHARS] + "\n... (truncated)"
+            fdesc = "" if frame is None else f", frame {frame}"
             return ToolResult(
-                f"Accessibility snapshot (tab {actual_tab}, {len(ref_map)} refs):\n"
+                f"Accessibility snapshot (tab {actual_tab}{fdesc}, {len(ref_map)} refs):\n"
                 f"---\n{body}\n---\n"
                 f"Use ref to interact: click(ref=\"r1\"), fill(ref=\"r2\", text=\"...\"), "
                 f"type(ref=\"r2\", text=\"...\"), press(ref=\"r3\", key=\"Enter\")",
@@ -1407,16 +1492,17 @@ class BrowserService:
 
         return self._execute_operation("snapshot", _do_snapshot, tab_index=tab_index)
 
-    def find(self, pattern: str, tab_index: int | None = None) -> ToolResult:
+    def find(self, pattern: str, tab_index: int | None = None, frame: int | None = None) -> ToolResult:
         """在页面 accessibility snapshot 中搜索匹配 role 或 name 的元素。
 
         Args:
             pattern: 正则表达式或子串（大小写不敏感），匹配 role 或 name
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
+            frame: 指定 frame 索引（见 get_frames），None 表示主 frame
         """
         def _do_find(page):
             actual_tab = self._find_tab_index(page) or 0
-            lines, ref_map = self._build_snapshot(page, actual_tab)
+            lines, ref_map = self._build_snapshot(page, actual_tab, frame)
             try:
                 rx = re.compile(pattern, re.IGNORECASE)
             except re.error:
@@ -1455,26 +1541,31 @@ class BrowserService:
 
         return self._execute_operation("find", _do_find, tab_index=tab_index)
 
-    def click(self, ref: str, tab_index: int | None = None) -> ToolResult:
-        """点击 snapshot 中指定 ref 的元素。"""
+    def click(self, ref: str, button: str = "left", tab_index: int | None = None,
+              frame: int | None = None) -> ToolResult:
+        """点击 snapshot 中指定 ref 的元素（支持右键/中键）。"""
         def _do_click(page):
             actual_tab = self._find_tab_index(page) or 0
-            entry = self._resolve_ref(actual_tab, ref)
-            loc = self._locator_for(page, entry)
-            loc.click(timeout=_ACTION_TIMEOUT_MS)
+            entry = self._resolve_ref(actual_tab, ref, frame)
+            base = self._resolve_frame(page, frame)
+            loc = self._locator_for(base, entry)
+            loc.click(button=button, timeout=_ACTION_TIMEOUT_MS)
             return ToolResult(
-                f"Clicked [{ref}] ({entry['role']} \"{entry['name']}\")",
+                f"Clicked [{ref}] ({entry['role']} \"{entry['name']}\") "
+                f"[{button}]",
                 meta={"tab_index": actual_tab},
             )
 
         return self._execute_operation("click", _do_click, tab_index=tab_index)
 
-    def fill(self, ref: str, text: str, tab_index: int | None = None) -> ToolResult:
+    def fill(self, ref: str, text: str, tab_index: int | None = None,
+             frame: int | None = None) -> ToolResult:
         """向 snapshot 中指定 ref 的输入框填入文本（触发一次 input 事件）。"""
         def _do_fill(page):
             actual_tab = self._find_tab_index(page) or 0
-            entry = self._resolve_ref(actual_tab, ref)
-            loc = self._locator_for(page, entry)
+            entry = self._resolve_ref(actual_tab, ref, frame)
+            base = self._resolve_frame(page, frame)
+            loc = self._locator_for(base, entry)
             loc.fill(text, timeout=_ACTION_TIMEOUT_MS)
             return ToolResult(
                 f"Filled [{ref}] ({entry['role']} \"{entry['name']}\") with {len(text)} chars",
@@ -1483,12 +1574,14 @@ class BrowserService:
 
         return self._execute_operation("fill", _do_fill, tab_index=tab_index)
 
-    def type(self, ref: str, text: str, tab_index: int | None = None) -> ToolResult:
+    def type(self, ref: str, text: str, tab_index: int | None = None,
+             frame: int | None = None) -> ToolResult:
         """向 snapshot 中指定 ref 的元素逐键输入文本（触发按键级事件）。"""
         def _do_type(page):
             actual_tab = self._find_tab_index(page) or 0
-            entry = self._resolve_ref(actual_tab, ref)
-            loc = self._locator_for(page, entry)
+            entry = self._resolve_ref(actual_tab, ref, frame)
+            base = self._resolve_frame(page, frame)
+            loc = self._locator_for(base, entry)
             loc.press_sequentially(text, delay=_TYPE_DELAY_MS)
             return ToolResult(
                 f"Typed {len(text)} chars into [{ref}] ({entry['role']} \"{entry['name']}\")",
@@ -1497,28 +1590,323 @@ class BrowserService:
 
         return self._execute_operation("type", _do_type, tab_index=tab_index)
 
-    def press(self, ref: str | None, key: str, tab_index: int | None = None) -> ToolResult:
+    def press(self, ref: str | None, key: str, tab_index: int | None = None,
+              frame: int | None = None) -> ToolResult:
         """按指定键。
 
         Args:
             ref: snapshot 中的元素 ref；None 表示在页面全局按（page.keyboard.press）
             key: 按键名（Enter/Tab/Escape/ArrowDown/Backspace 等）
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
+            frame: 指定 frame 索引（见 get_frames），None 表示主 frame
         """
         def _do_press(page):
             actual_tab = self._find_tab_index(page) or 0
             if ref:
-                entry = self._resolve_ref(actual_tab, ref)
-                loc = self._locator_for(page, entry)
+                entry = self._resolve_ref(actual_tab, ref, frame)
+                base = self._resolve_frame(page, frame)
+                loc = self._locator_for(base, entry)
                 loc.press(key)
                 return ToolResult(
                     f"Pressed '{key}' on [{ref}] ({entry['role']} \"{entry['name']}\")",
                     meta={"tab_index": actual_tab},
                 )
+            # Frame 无独立 keyboard API：page 级按键统一走 page.keyboard（发给当前聚焦元素）
             page.keyboard.press(key)
             return ToolResult(f"Pressed '{key}' (page level)", meta={"tab_index": actual_tab})
 
         return self._execute_operation("press", _do_press, tab_index=tab_index)
+
+    # ==================== 增强交互（scroll/hover/drag/upload/fill_form） ====================
+
+    def scroll(self, direction: str = "down", amount: int = 800, ref: str | None = None,
+               frame: int | None = None, tab_index: int | None = None) -> ToolResult:
+        """滚动页面或滚动到指定元素。
+
+        Args:
+            direction: down/up（按 amount 像素滚动）/ top/bottom（到顶/到底）/ to_element（滚动到 ref）
+            amount: down/up 的滚动像素量（默认 800）
+            ref: direction='to_element' 时目标元素 ref
+            frame: 指定 frame 索引（见 get_frames），None 表示主 frame
+            tab_index: 指定 tab 编号，None 表示使用活跃 tab
+        """
+        def _do_scroll(page):
+            actual_tab = self._find_tab_index(page) or 0
+            if direction == "to_element":
+                if not ref:
+                    return ToolResult("Error: 'ref' is required for scroll direction='to_element'", error=True)
+                entry = self._resolve_ref(actual_tab, ref, frame)
+                base = self._resolve_frame(page, frame)
+                loc = self._locator_for(base, entry)
+                loc.scroll_into_view_if_needed(timeout=_ACTION_TIMEOUT_MS)
+                return ToolResult(
+                    f"Scrolled [{ref}] ({entry['role']} \"{entry['name']}\") into view",
+                    meta={"tab_index": actual_tab},
+                )
+            delta = {"up": -amount, "down": amount}.get(direction)
+            if delta is not None:
+                base = self._resolve_frame(page, frame)
+                base.evaluate(f"window.scrollBy(0, {delta})")
+                return ToolResult(f"Scrolled {direction} by {amount}px", meta={"tab_index": actual_tab})
+            if direction == "top":
+                base = self._resolve_frame(page, frame)
+                base.evaluate("window.scrollTo(0, 0)")
+                return ToolResult("Scrolled to top", meta={"tab_index": actual_tab})
+            if direction == "bottom":
+                base = self._resolve_frame(page, frame)
+                base.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                return ToolResult("Scrolled to bottom", meta={"tab_index": actual_tab})
+            return ToolResult(
+                f"Error: unknown direction '{direction}' (use down/up/top/bottom/to_element)", error=True
+            )
+
+        return self._execute_operation("scroll", _do_scroll, tab_index=tab_index)
+
+    def hover(self, ref: str, frame: int | None = None, tab_index: int | None = None) -> ToolResult:
+        """悬停到 snapshot 中指定 ref 的元素。"""
+        def _do_hover(page):
+            actual_tab = self._find_tab_index(page) or 0
+            entry = self._resolve_ref(actual_tab, ref, frame)
+            base = self._resolve_frame(page, frame)
+            loc = self._locator_for(base, entry)
+            loc.hover(timeout=_ACTION_TIMEOUT_MS)
+            return ToolResult(
+                f"Hovered [{ref}] ({entry['role']} \"{entry['name']}\")",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("hover", _do_hover, tab_index=tab_index)
+
+    def drag(self, ref: str, target_ref: str, frame: int | None = None,
+             tab_index: int | None = None) -> ToolResult:
+        """把 snapshot 中 ref 元素拖拽到 target_ref 元素上。"""
+        def _do_drag(page):
+            actual_tab = self._find_tab_index(page) or 0
+            base = self._resolve_frame(page, frame)
+            src = self._resolve_ref(actual_tab, ref, frame)
+            dst = self._resolve_ref(actual_tab, target_ref, frame)
+            src_loc = self._locator_for(base, src)
+            dst_loc = self._locator_for(base, dst)
+            src_loc.drag_to(dst_loc, timeout=_ACTION_TIMEOUT_MS)
+            return ToolResult(
+                f"Dragged [{ref}] ({src['role']} \"{src['name']}\") onto [{target_ref}]",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("drag", _do_drag, tab_index=tab_index)
+
+    def upload(self, ref: str, path: str, frame: int | None = None,
+               tab_index: int | None = None) -> ToolResult:
+        """向 snapshot 中指定 ref 的文件输入框上传本地文件。"""
+        def _do_upload(page):
+            actual_tab = self._find_tab_index(page) or 0
+            entry = self._resolve_ref(actual_tab, ref, frame)
+            base = self._resolve_frame(page, frame)
+            loc = self._locator_for(base, entry)
+            loc.set_input_files(path, timeout=_ACTION_TIMEOUT_MS)
+            return ToolResult(
+                f"Uploaded file to [{ref}] ({entry['role']} \"{entry['name']}\"): {path}",
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("upload", _do_upload, tab_index=tab_index)
+
+    def fill_form(self, fields: list[dict], frame: int | None = None,
+                  tab_index: int | None = None) -> ToolResult:
+        """批量填充表单：fields=[{ref, value}, ...]，单个 worker 任务内顺序填充。"""
+        def _do_fill_form(page):
+            actual_tab = self._find_tab_index(page) or 0
+            base = self._resolve_frame(page, frame)
+            results = []
+            for field in fields or []:
+                ref = field.get("ref")
+                value = field.get("value")
+                if not ref or value is None:
+                    results.append(f"  [{ref}]: skipped (missing ref/value)")
+                    continue
+                entry = self._resolve_ref(actual_tab, ref, frame)
+                loc = self._locator_for(base, entry)
+                loc.fill(str(value), timeout=_ACTION_TIMEOUT_MS)
+                results.append(
+                    f"  Filled [{ref}] ({entry['role']} \"{entry['name']}\") with {len(str(value))} chars"
+                )
+            return ToolResult(
+                f"Fill form ({len(fields or [])} fields):\n" + "\n".join(results),
+                meta={"tab_index": actual_tab},
+            )
+
+        return self._execute_operation("fill_form", _do_fill_form, tab_index=tab_index)
+
+    # ==================== 结构化提取（extract/extract_table） ====================
+
+    def extract(self, selector: str, attribute: str = "text", limit: int = 50,
+                frame: int | None = None, tab_index: int | None = None) -> ToolResult:
+        """按 CSS 选择器批量提取元素文本或属性值。"""
+        def _do_extract(page):
+            base = self._resolve_frame(page, frame)
+            js = (
+                "(sel, attr, limit) => Array.from(document.querySelectorAll(sel))"
+                ".slice(0, limit)"
+                ".map(el => attr === 'text' ? (el.textContent || '').trim() "
+                ": (el.getAttribute(attr) ?? el[attr] ?? ''))"
+            )
+            try:
+                data = base.evaluate(js, selector, attribute, limit)
+            except Exception as e:
+                return ToolResult(f"Error: extract failed — {e}", error=True)
+            if not data:
+                return ToolResult(f"No elements match selector '{selector}'")
+            lines = [f"{i + 1}. {str(v)}" for i, v in enumerate(data)]
+            return ToolResult(
+                f"Extracted {len(data)} element(s) via '{selector}' (attr={attribute}):\n"
+                + "\n".join(lines)
+            )
+
+        return self._execute_operation("extract", _do_extract, tab_index=tab_index)
+
+    def extract_table(self, index: int = 0, frame: int | None = None,
+                      tab_index: int | None = None) -> ToolResult:
+        """把页面第 index 个 <table> 转为 markdown 表格。"""
+        def _do_extract_table(page):
+            base = self._resolve_frame(page, frame)
+            try:
+                rows = base.evaluate(
+                    "(i) => Array.from(document.querySelectorAll('table')[i].rows)"
+                    ".map(r => Array.from(r.cells).map(c => (c.textContent || '').trim()))",
+                    index,
+                )
+            except Exception as e:
+                return ToolResult(f"Error: extract_table failed — {e}", error=True)
+            if not rows:
+                return ToolResult(f"No <table> elements found (or table {index} is empty)")
+            if not rows[0]:
+                return ToolResult(f"Table {index} has no cells")
+
+            def _fmt_row(cells):
+                return "| " + " | ".join(str(c).replace("|", "\\|") for c in cells) + " |"
+
+            header = _fmt_row(rows[0])
+            sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+            body_lines = [_fmt_row(r) for r in rows[1:]]
+            out = "\n".join([header, sep] + body_lines)
+            if len(out) > _TRUNCATE_OUTPUT_CHARS:
+                out = out[:_TRUNCATE_OUTPUT_CHARS] + "\n... (truncated)"
+            return ToolResult(f"Table {index} ({len(rows) - 1} data rows):\n{out}")
+
+        return self._execute_operation("extract_table", _do_extract_table, tab_index=tab_index)
+
+    # ==================== 下载（download） ====================
+
+    def download(self, ref: str | None = None, url: str | None = None, save_path: str | None = None,
+                 tab_index: int | None = None) -> ToolResult:
+        """下载文件：点击 ref 触发，或直接导航到下载 URL。
+
+        Args:
+            ref: 触发下载的元素 ref（点击后等待下载）
+            url: 直接导航到的下载 URL（与 ref 二选一）
+            save_path: 保存路径（绝对路径，由工具层解析）；缺省用 suggested_filename
+            tab_index: 指定 tab 编号，None 表示使用活跃 tab
+        """
+        def _do_download(page):
+            actual_tab = self._find_tab_index(page) or 0
+            with page.expect_download(timeout=_DOWNLOAD_TIMEOUT_MS) as dl_info:
+                if url:
+                    page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
+                elif ref:
+                    entry = self._resolve_ref(actual_tab, ref)
+                    loc = self._locator_for(page, entry)
+                    loc.click(timeout=_ACTION_TIMEOUT_MS)
+                else:
+                    return ToolResult("Error: download requires 'ref' (trigger) or 'url'", error=True)
+            download = dl_info.value
+            suggested = download.suggested_filename
+            if save_path:
+                abs_path = save_path if os.path.isabs(save_path) else os.path.join(self._project_root, save_path)
+            else:
+                abs_path = os.path.join(self._project_root, suggested)
+            download.save_as(abs_path)
+            return ToolResult(
+                f"Downloaded '{suggested}' -> {abs_path} (tab {actual_tab})",
+                meta={"tab_index": actual_tab, "file": abs_path, "filename": suggested},
+            )
+
+        return self._execute_operation("download", _do_download, tab_index=tab_index)
+
+    # ==================== 弹窗（dialogs） ====================
+
+    def dialogs(self, clear: bool = False, tab_index: int | None = None) -> ToolResult:
+        """返回该 tab 捕获的 JS 弹窗（alert/confirm/prompt）。弹窗已被自动关闭。"""
+        def _do_dialogs(page):
+            actual_tab = self._find_tab_index(page) or 0
+            buf = self._dialog_buffers.get(actual_tab)
+            if not buf:
+                return ToolResult("No dialogs captured yet.")
+            msgs = list(buf)
+            if clear:
+                buf.clear()
+            if not msgs:
+                return ToolResult("No dialogs captured.")
+            lines = [f"[{t}] {m}" for t, m in msgs]
+            return ToolResult(
+                f"Dialogs (tab {actual_tab}, {len(lines)}):\n" + "\n".join(lines)
+            )
+
+        return self._execute_operation("dialogs", _do_dialogs, tab_index=tab_index)
+
+    # ==================== iframe（get_frames） ====================
+
+    def get_frames(self, tab_index: int | None = None) -> ToolResult:
+        """列出当前页面的所有 frame（index 0 为主 frame，其余为 iframe）。"""
+        def _do_get_frames(page):
+            frames = page.frames
+            if not frames:
+                return ToolResult("No frames found")
+            lines = []
+            for i, f in enumerate(frames):
+                name = f.name or "(unnamed)"
+                url = f.url or "(no url)"
+                tag = " [MAIN]" if i == 0 else ""
+                lines.append(f"  frame {i}: {name}{tag}\n    URL: {url}")
+            return ToolResult(f"Frames ({len(lines)}):\n\n" + "\n".join(lines))
+
+        return self._execute_operation("get_frames", _do_get_frames, tab_index=tab_index)
+
+    # ==================== cookies（get/clear/set） ====================
+
+    def get_cookies(self, url: str | None = None, tab_index: int | None = None) -> ToolResult:
+        """返回当前浏览器 context 的 cookies（可选按 url 过滤）。"""
+        def _do_get_cookies(page):
+            ctx = page.context
+            cookies = ctx.cookies(url=url) if url else ctx.cookies()
+            if not cookies:
+                return ToolResult("No cookies found")
+            lines = [
+                f"  {c['name']} = {c['value']} "
+                f"(domain={c.get('domain')}, path={c.get('path')}, "
+                f"secure={c.get('secure')}, httpOnly={c.get('httpOnly')}, sameSite={c.get('sameSite')})"
+                for c in cookies
+            ]
+            return ToolResult(f"Cookies ({len(cookies)}):\n" + "\n".join(lines))
+
+        return self._execute_operation("get_cookies", _do_get_cookies, tab_index=tab_index)
+
+    def clear_cookies(self, tab_index: int | None = None) -> ToolResult:
+        """清除当前浏览器 context 的全部 cookies。"""
+        def _do_clear_cookies(page):
+            ctx = page.context
+            ctx.clear_cookies()
+            return ToolResult("All cookies cleared")
+
+        return self._execute_operation("clear_cookies", _do_clear_cookies, tab_index=tab_index)
+
+    def set_cookie(self, cookie: dict, tab_index: int | None = None) -> ToolResult:
+        """设置一个 cookie：{name, value, domain, path, ...}（Playwright Cookie 字段）。"""
+        def _do_set_cookie(page):
+            ctx = page.context
+            ctx.add_cookies([cookie])
+            return ToolResult(f"Cookie set: {cookie.get('name')} (domain={cookie.get('domain')})")
+
+        return self._execute_operation("set_cookie", _do_set_cookie, tab_index=tab_index)
 
     # ==================== 导航（go_back/go_forward/reload） ====================
 
@@ -1567,8 +1955,16 @@ class BrowserService:
 
         return self._execute_operation("console", _do_console, tab_index=tab_index)
 
-    def requests(self, clear: bool = False, tab_index: int | None = None) -> ToolResult:
-        """返回该 tab 捕获的网络请求（方法、URL、状态码）。"""
+    def requests(self, clear: bool = False, details: bool = False, body: bool = False,
+                 tab_index: int | None = None) -> ToolResult:
+        """返回该 tab 捕获的网络请求。
+
+        Args:
+            clear: 读取后清空缓冲
+            details: True 时展开请求/响应头（默认仅 方法 URL 状态码）
+            body: True 时展开捕获到的响应 body（受 content-type/length 阈值限制）
+            tab_index: 指定 tab 编号，None 表示使用活跃 tab
+        """
         def _do_requests(page):
             actual_tab = self._find_tab_index(page) or 0
             buf = self._request_buffers.get(actual_tab)
@@ -1579,7 +1975,19 @@ class BrowserService:
                 buf.clear()
             if not reqs:
                 return ToolResult("No network requests captured.")
-            lines = [f"{method} {url} {status}" for method, url, status in reqs]
+            if details:
+                lines = []
+                for r in reqs:
+                    head = f"{r['method']} {r['url']} {r['status']}"
+                    if body and r.get("body_text"):
+                        head += "\n  body: " + r["body_text"][:500]
+                    if r.get("req_headers"):
+                        head += "\n  req headers: " + json.dumps(r["req_headers"], ensure_ascii=False)[:800]
+                    if r.get("resp_headers"):
+                        head += "\n  resp headers: " + json.dumps(r["resp_headers"], ensure_ascii=False)[:800]
+                    lines.append(head)
+            else:
+                lines = [f"{r['method']} {r['url']} {r['status']}" for r in reqs]
             return ToolResult(
                 f"Network requests (tab {actual_tab}, {len(lines)}):\n" + "\n".join(lines)
             )

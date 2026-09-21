@@ -373,3 +373,92 @@ class TestPathKind:
         section = build_approved_commands_section(store)
         assert "Pre-approved commands" in section
         assert "write `C:\\out`" in section
+
+
+class TestBrowserNavigateKind:
+    """kind="browser:navigate"（SSRF 导航审批）：文案、存储归类、下放段落。"""
+
+    URL = "http://127.0.0.1:8885/tcmp-war/"
+
+    def test_question_wording(self):
+        from core.tools.approval import build_approval_question
+        q = build_approval_question({
+            "decision_id": "abc",
+            "command": self.URL,
+            "kind": "browser:navigate",
+            "reason": "127.0.0.1 不是公网地址（环回）",
+        })
+        assert "非公网地址导航" in q
+        assert self.URL in q
+        assert "拦截原因" in q
+        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
+
+    def test_placeholder_wording(self):
+        from core.tools.approval import approval_placeholder_text
+        p = approval_placeholder_text({
+            "decision_id": "abc", "command": self.URL,
+            "kind": "browser:navigate", "reason": "r",
+        })
+        assert "SSRF" in p
+        assert "原样重发" in p
+
+    def test_store_classifies_navigation(self):
+        store = ApprovalStore()
+        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
+        assert store.approved_navigations() == [self.URL]
+        assert store.approved_commands() == []  # 导航不计入命令
+        assert store.approved_path_rules() == []  # 也不落入路径规则
+
+    def test_command_does_not_count_as_navigation(self):
+        store = ApprovalStore()
+        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
+        assert store.approved_navigations() == []
+        assert store.approved_commands() == ["rm -rf /tmp/x"]
+
+    def test_section_includes_navigation(self):
+        store = ApprovalStore()
+        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
+        section = build_approved_commands_section(store)
+        assert "Pre-approved commands" in section
+        assert f"navigate `{self.URL}`" in section
+
+    def test_persist_roundtrip_kind(self, tmp_path):
+        import json as _json
+        path = tmp_path / "approvals.json"
+        store = ApprovalStore(rules_path=path)
+        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate", persist=True)
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        assert data["rules"][0]["kind"] == "browser:navigate"
+        reloaded = ApprovalStore(rules_path=path)
+        assert reloaded.approved_navigations() == [self.URL]
+
+    def test_browser_tool_placeholder_and_gate(self):
+        """浏览器工具 navigate 到非公网地址：未批准返回占位，已批准 skip_ssrf 放行。"""
+        from unittest.mock import MagicMock, patch
+        from core.tools.approval import META_KEY
+        from core.tools.browser import BrowserTool
+
+        svc = MagicMock()
+        svc.is_running.return_value = True
+
+        # 无 store → 占位，不调用 service
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool().execute(action="navigate", url=self.URL)
+        assert result.completed is False
+        assert not result.error
+        assert result.meta[META_KEY]["kind"] == "browser:navigate"
+        assert result.meta[META_KEY]["command"] == self.URL
+        svc.navigate.assert_not_called()
+
+        # 有 store 但未批准 → 仍占位
+        store = ApprovalStore()
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
+        assert result.completed is False
+        svc.navigate.assert_not_called()
+
+        # 已批准 → 真正导航（skip_ssrf=True）
+        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
+        with patch("core.browser_service.get_service", return_value=svc):
+            BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
+        svc.navigate.assert_called_once_with(self.URL, tab_index=None, skip_ssrf=True)

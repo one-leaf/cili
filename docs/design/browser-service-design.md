@@ -148,22 +148,29 @@ self._next_tab_index: int               # 下一个可分配的 tab 编号（从
 self._active_tab_index: int | None      # 最近使用的 tab_index
 
 ref 定位与诊断状态：
-self._snapshot_refs: dict[int, dict]    # tab_index → {ref: {role, name, index, mode}}
+self._snapshot_refs: dict[tuple, dict]  # (tab_index, frame) → {ref: {role, name, index, mode}}
+                                        #   frame=0 表示主 frame（None 与 0 等价）；iframe 各自独立 ref 映射
 self._console_buffers: dict[int, deque] # tab_index → [(type, text)]（最长 200 条）
-self._request_buffers: dict[int, deque] # tab_index → [(method, url, status)]
-self._listener_pages: set[int]          # 已挂 console/response 监听器的 page id
+self._request_buffers: dict[int, deque] # tab_index → [dict]（method/url/status + 请求头/响应头/截断 body）
+self._dialog_buffers: dict[int, deque]  # tab_index → [(type, message)]（JS 弹窗，自动关闭后记录）
+self._listener_pages: set[int]          # 已挂 console/response/dialog 监听器的 page id
 
 操作策略：
 - navigate / web_search → _open_new_page() → 新 tab，加入池，返回 tab_index
 - screenshot/save_pdf/execute/get_text/get_links/wait_for → 使用 tab_index 或 _active_tab_index
-- snapshot/find/click/fill/type/press → ref 定位交互（见 5.2）
-- console / requests → 读取该 tab 的 console/网络缓冲
+- snapshot/find/click/fill/type/press → ref 定位交互（见 5.2；可传 frame 指定 iframe）
+- scroll/hover/drag/upload/fill_form/download → 增强交互（见 5.4）
+- extract/extract_table → 结构化采集（见 5.4）
+- dialogs → 读取该 tab 的 JS 弹窗缓冲（自动关闭）
+- get_frames → 列出 iframe（frame 参数目标定位用）
+- get_cookies/clear_cookies/set_cookie → cookie 管理
+- console / requests → 读取该 tab 的 console/网络缓冲（requests 支持 details/body 展开）
 - go_back / go_forward / reload → 浏览器级导航
 - switch_tab(tab_index) → 切换到指定 tab
 - list_tabs() → 列出所有打开的 tab
 - close_tab(tab_index) → 关闭指定 tab，释放资源（连带清理 ref/缓冲）
 - _worker_loop 每次任务前检查：关闭 time.time() - ts > 600 的非活跃 tab
-- _touch_page() 时幂等挂载 console/response 监听器（_ensure_listeners）
+- _touch_page() 时幂等挂载 console/response/dialog 监听器（_ensure_listeners）
 
 生命周期：
 ├── navigate("https://example.com")
@@ -301,11 +308,19 @@ stop()                          # 完整清理
 **执行时机**：`navigate()` 先于任何浏览器操作（`_ensure_connected`、开新 tab 等）调用 `_validate_navigate_url()`，校验失败立即返回错误 `ToolResult`，不启动浏览器：
 
 ```python
-# navigate() 入口处
-block_reason = _validate_navigate_url(url)
-if block_reason:
-    return ToolResult(f"Error: 导航被拒绝 — {block_reason}", error=True)
+# navigate() 入口处（skip_ssrf=True 时跳过校验，仅工具层在用户批准后传入）
+if not skip_ssrf:
+    block_reason = _validate_navigate_url(url)
+    if block_reason:
+        return ToolResult(f"Error: 导航被拒绝 — {block_reason}", error=True)
 ```
+
+**导航审批（SSRF 防护 + ask_user 交互）**：浏览器工具在调用 `service.navigate` 前做同样的 `_validate_navigate_url` 预检。命中非公网地址时不再硬拒绝，而是返回带 `META_KEY=approval_required` 的占位 `ToolResult`（kind=`browser:navigate`），由 agent 循环分叉处理：
+
+- **master（交互式）**：合成 ask_user 审批卡（「允许本次会话 / 允许并记住 / 拒绝」），用户批准后 LLM 原样重发 navigate，此时 `approval_store.is_approved()` 命中 → `service.navigate(url, skip_ssrf=True)` 放行；
+- **worker/lite（自主）**：循环把审批占位降级为普通错误，保持硬拒绝（子代理不弹卡）；
+- **无 approval_store**（独立/测试环境）：同样返回占位而非放行，SSRF 防护不因缺 store 而失效；
+- 「允许并记住」的导航规则持久化到 approvals.json（kind=`browser:navigate`），重启回灌后仍放行。
 
 ---
 
@@ -487,31 +502,46 @@ def screenshot(self, path: str, tab_index: int | None = None) -> ToolResult:
 
 ```python
 class BrowserTool(Tool):
-    def execute(self, action, url=None, script=None, tab_index=None, ...):
+    def execute(self, action, url=None, script=None, tab_index=None, **kwargs):
         service = get_service()
         if not service.is_running():
             return ToolResult("Error: Browser service not available", error=True)
 
         if action == "navigate":
+            # SSRF 审批门：非公网地址 → 已批准则 skip_ssrf 放行，否则返回审批占位
+            block_reason = _validate_navigate_url(url)
+            if block_reason:
+                approval = {"kind": "browser:navigate", "decision_id": approval_decision_id(url),
+                            "command": url, "reason": block_reason}
+                if not self.approval_store or not self.approval_store.is_approved(approval["decision_id"]):
+                    return ToolResult(approval_placeholder_text(approval),
+                                      completed=False, meta={META_KEY: approval})
+                return service.navigate(url, tab_index=tab_index, skip_ssrf=True)
             return service.navigate(url, tab_index=tab_index)  # 开新 tab，返回 tab_index
         elif action == "snapshot":
-            return service.snapshot(tab_index=tab_index)
+            return service.snapshot(tab_index=tab_index, frame=frame)
         elif action == "find":
-            return service.find(pattern, tab_index=tab_index)
+            return service.find(pattern, tab_index=tab_index, frame=frame)
         elif action == "click":
-            return service.click(ref, tab_index=tab_index)
+            return service.click(ref, button=button, tab_index=tab_index, frame=frame)
         elif action == "fill":
-            return service.fill(ref, text, tab_index=tab_index)
+            return service.fill(ref, text, tab_index=tab_index, frame=frame)
         elif action == "type":
-            return service.type(ref, text, tab_index=tab_index)
+            return service.type(ref, text, tab_index=tab_index, frame=frame)
         elif action == "press":
-            return service.press(ref, key, tab_index=tab_index)
+            return service.press(ref, key, tab_index=tab_index, frame=frame)
+        elif action == "scroll" / "hover" / "drag" / "upload" / "fill_form":
+            return service.xxx(...)  # 见 5.4
+        elif action == "extract" / "extract_table" / "download" / "dialogs":
+            return service.xxx(...)  # 见 5.4
+        elif action == "get_frames" / "get_cookies" / "clear_cookies" / "set_cookie":
+            return service.xxx(...)  # 见 5.4
         elif action == "go_back" / "go_forward" / "reload":
             return service.go_back() / go_forward() / reload()
         elif action == "console":
             return service.console(clear=clear, tab_index=tab_index)
         elif action == "requests":
-            return service.requests(clear=clear, tab_index=tab_index)
+            return service.requests(clear=clear, details=details, body=body, tab_index=tab_index)
         elif action == "screenshot":
             return service.screenshot(path, tab_index=tab_index)
         elif action == "save_pdf":
@@ -566,9 +596,45 @@ find(pattern)    →  重新 snapshot 并正则匹配 role/name，返回匹配�
 - ref 仅在产生它的 snapshot 内有效；页面变化后未知 ref 会报错提示重新 snapshot
 
 **console/requests 诊断**：
-- `_ensure_listeners(page, tab_index)` 在 `_touch_page()` 时幂等挂载 `page.on("console")` 和 `page.on("response")`，写入每 tab 的 deque（上限 200 条，FIFO 丢弃）
+- `_ensure_listeners(page, tab_index)` 在 `_touch_page()` 时幂等挂载 `page.on("console")` / `page.on("response")` / `page.on("dialog")`，写入每 tab 的 deque（上限 200 条，FIFO 丢弃）
 - `console(clear)` / `requests(clear)` 返回累积消息；`clear=True` 读取后清空
 - `_close_page_internal()` 清理对应 tab 的 ref 映射与缓冲
+
+### 5.4 增强交互、采集与诊断
+
+以下动作都经 `_execute_operation(name, func, tab_index)` 在 worker 线程执行（`func(page)` 内部可访问 frame 上下文）。
+
+**滚动 / 悬停 / 拖拽 / 上传 / 表单批量填充**：
+- `scroll(direction, amount, ref, frame, tab_index)`：`down/up` 用 `base.evaluate("window.scrollBy(0, ±Δ)")`（默认 800px）；`top/bottom` 用 `scrollTo`；`to_element` 用 `locator.scroll_into_view_if_needed()`（需 ref）
+- `hover(ref, ...)`：`locator.hover(timeout)`（触发悬停菜单/ tooltip）
+- `drag(ref, target_ref, ...)`：`locator.drag_to(target_locator)`，源/目标同 frame 上下文
+- `upload(ref, path, ...)`：`locator.set_input_files(abs_path)`（路径相对 cwd 由工具层解析）
+- `fill_form(fields, ...)`：`fields=[{ref, value}, ...]`，单 worker 任务内逐个 `fill`，缺 ref/value 跳过，返回汇总文本
+
+**结构化提取**（确定性，不依赖 LLM 视觉）：
+- `extract(selector, attribute="text", limit=50, ...)`：`base.evaluate(JS querySelectorAll)` 批量取文本/属性，截断到 limit 条
+- `extract_table(index=0, ...)`：取第 index 个 `<table>` 转 markdown 表格（单元格内 `|` 转义）
+
+**下载**：
+- `download(ref=None, url=None, save_path=None, ...)`：`with page.expect_download(timeout=_DOWNLOAD_TIMEOUT_MS)` 内点击 ref 或 `goto` 下载 URL；`download.value.suggested_filename` + `save_as(abs_path)`；save_path 缺省用 suggested filename（相对 cwd 解析）。注意 worker 任务 60s 超时对大文件偏紧
+
+**弹窗**（JS dialog 自动处理）：
+- `_handle_dialog(tab_index, dlg)` 是 `page.on("dialog")` 回调：把 `(type, message)` 写入 `_dialog_buffers[tab_index]`，然后按 `_DIALOG_BEHAVIOR`（默认 dismiss）关闭。**回调跑在 driver 线程，只调 dialog 方法绝不调 page 方法（防死锁）**；避免页面因未关闭弹窗而挂起
+- `dialogs(clear, ...)`：读取/清空该 tab 的弹窗缓冲
+
+**cookies 管理**：
+- `get_cookies(url=None, ...)`：`page.context.cookies(url=...)`（可过滤域名）
+- `clear_cookies(...)`：`page.context.clear_cookies()`
+- `set_cookie(cookie, ...)`：`page.context.add_cookies([cookie])`（Playwright Cookie 字段）
+
+**iframe 定位（frame 参数）**：
+- `get_frames(...)`：列出 `page.frames`（index/name/url，frame 0 为主 frame）
+- ref 定位类动作（snapshot/find/click/fill/type/press/hover/drag/upload/extract/extract_table/scroll-to_element）接受 `frame=<index>`：`_resolve_frame(page, frame)` 返回 `page` 或 `page.frames[i]`（越界报错提示先 get_frames）
+- `_snapshot_refs` 按 `(tab_index, frame)` 双键隔离：主 frame 统一键 `(tab, 0)`（`None` 与 `0` 等价），iframe 各自独立 ref 映射，互不串扰
+
+**requests 网络请求详情**：
+- `_capture_response(buf, resp)` 把响应存为 dict：`{method, url, status, req_headers, resp_headers, body_text}`；`resp.request.headers` 取请求头，`resp.headers` 取响应头；body 仅对文本类 content-type 且 content-length ≤ 阈值才 `resp.body()` 读取（截断 `_BODY_MAX_CHARS`，全部 try/except 包裹，不拖慢页面）
+- `requests(details=False, body=False, clear=False, ...)`：默认仅 `method url status`；`details=True` 展开请求/响应头（json 截断 800 字符），`body=True` 附带捕获的响应 body
 
 ### 5.3 WebSearchTool（web_search.py）
 
@@ -850,12 +916,18 @@ core/
 │   ├── BrowserService              # 服务类
 │   │   ├── start() / stop()        # 生命周期
 │   │   ├── disconnect()            # 断连接保 Chrome
-│   │   ├── navigate()              # 导航（开新 tab，返回 tab_index）
-│   │   ├── snapshot()              # accessibility 树 + ref（见 5.2）
-│   │   ├── find()                  # 正则匹配 role/name 查找元素
-│   │   ├── click() / fill() / type() / press()  # ref 定位交互
+│   │   ├── navigate()              # 导航（开新 tab，返回 tab_index；skip_ssrf 内部参数）
+│   │   ├── snapshot()              # accessibility 树 + ref（见 5.2；支持 frame）
+│   │   ├── find()                  # 正则匹配 role/name 查找元素（支持 frame）
+│   │   ├── click() / fill() / type() / press()  # ref 定位交互（支持 frame，click 支持 button）
+│   │   ├── scroll() / hover() / drag() / upload() / fill_form()  # 增强交互（见 5.4）
+│   │   ├── extract() / extract_table()          # 结构化采集（见 5.4）
+│   │   ├── download()              # 文件下载（ref 触发 / url 直达，save_as）
+│   │   ├── dialogs()               # JS 弹窗缓冲读取（自动关闭）
+│   │   ├── get_frames()            # 列出 iframe
+│   │   ├── get_cookies() / clear_cookies() / set_cookie()  # cookie 管理
 │   │   ├── go_back() / go_forward() / reload()  # 浏览器导航
-│   │   ├── console() / requests()  # 诊断缓冲读取（可 clear）
+│   │   ├── console() / requests()  # 诊断缓冲读取（requests 支持 details/body）
 │   │   ├── screenshot()            # 截图（支持 tab_index）
 │   │   ├── save_pdf()              # 保存 PDF（支持 tab_index）
 │   │   ├── execute_script()        # 执行 JS（支持 tab_index）
@@ -873,10 +945,14 @@ core/
 │   │   ├── _get_page()             # 按 tab_index 获取 page
 │   │   ├── _open_new_page()        # 创建新 tab，返回 tab_index
 │   │   ├── _touch_page()           # 更新 tab 活动时间（幂等挂监听器）
-│   │   ├── _ensure_listeners()     # 挂 console/response 监听器（幂等）
-│   │   ├── _build_snapshot()       # 生成 aria snapshot + 更新 ref 映射
+│   │   ├── _ensure_listeners()     # 挂 console/response/dialog 监听器（幂等）
+│   │   ├── _capture_response()     # 响应详情入 dict 缓冲（driver 线程，不调 page 方法）
+│   │   ├── _handle_dialog()        # 记录并自动关闭 JS 弹窗（driver 线程，只调 dialog 方法）
+│   │   ├── _build_snapshot()       # 生成 aria snapshot + 更新 (tab, frame) ref 映射
+│   │   ├── _resolve_frame()        # frame 参数 → page 或 page.frames[i]（越界报错）
+│   │   ├── _ref_key()              # (tab, frame) → ref 映射键（None/0 → 主 frame 键）
 │   │   ├── _resolve_ref()          # ref → 定位条目（未知 ref 报错）
-│   │   ├── _locator_for()          # 定位条目 → Playwright locator
+│   │   ├── _locator_for()          # 定位条目 → Playwright locator（Page/Frame 通用）
 │   │   ├── _find_tab_index()       # page 对象反查 tab_index
 │   │   ├── _cleanup_expired_tabs() # 关闭 >10min 无活动的非活跃 tab
 │   │   ├── _close_page_internal()  # 关闭单个 page（清理 ref/缓冲）

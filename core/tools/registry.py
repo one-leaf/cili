@@ -73,7 +73,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "pwsh": _factory(PwshTool, needs_approval=True),
     "grep": _factory(GrepTool),
     "find": _factory(FindTool),
-    "browser": _factory(BrowserTool),
+    "browser": _factory(BrowserTool, needs_approval=True),
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),
     "python": _factory(PythonTool, needs_config=True, needs_approval=True),

@@ -106,37 +106,42 @@ class TestBrowserToolDispatch:
     def test_snapshot(self):
         svc = self._service()
         self._execute(svc, action="snapshot", tab_index=2)
-        svc.snapshot.assert_called_once_with(tab_index=2)
+        svc.snapshot.assert_called_once_with(tab_index=2, frame=None)
 
     def test_find(self):
         svc = self._service()
         self._execute(svc, action="find", pattern="Sign in")
-        svc.find.assert_called_once_with("Sign in", tab_index=None)
+        svc.find.assert_called_once_with("Sign in", tab_index=None, frame=None)
 
     def test_click(self):
         svc = self._service()
         self._execute(svc, action="click", ref="r4")
-        svc.click.assert_called_once_with("r4", tab_index=None)
+        svc.click.assert_called_once_with("r4", button="left", tab_index=None, frame=None)
+
+    def test_click_right_button(self):
+        svc = self._service()
+        self._execute(svc, action="click", ref="r4", button="right")
+        svc.click.assert_called_once_with("r4", button="right", tab_index=None, frame=None)
 
     def test_fill(self):
         svc = self._service()
         self._execute(svc, action="fill", ref="r6", text="hello")
-        svc.fill.assert_called_once_with("r6", "hello", tab_index=None)
+        svc.fill.assert_called_once_with("r6", "hello", tab_index=None, frame=None)
 
     def test_type(self):
         svc = self._service()
         self._execute(svc, action="type", ref="r6", text="hi")
-        svc.type.assert_called_once_with("r6", "hi", tab_index=None)
+        svc.type.assert_called_once_with("r6", "hi", tab_index=None, frame=None)
 
     def test_press_with_ref(self):
         svc = self._service()
         self._execute(svc, action="press", ref="r3", key="Enter")
-        svc.press.assert_called_once_with("r3", "Enter", tab_index=None)
+        svc.press.assert_called_once_with("r3", "Enter", tab_index=None, frame=None)
 
     def test_press_page_level(self):
         svc = self._service()
         self._execute(svc, action="press", key="Escape")
-        svc.press.assert_called_once_with(None, "Escape", tab_index=None)
+        svc.press.assert_called_once_with(None, "Escape", tab_index=None, frame=None)
 
     def test_go_back_forward_reload(self):
         svc = self._service()
@@ -152,7 +157,7 @@ class TestBrowserToolDispatch:
         self._execute(svc, action="console", clear=True)
         svc.console.assert_called_once_with(clear=True, tab_index=None)
         self._execute(svc, action="requests")
-        svc.requests.assert_called_once_with(clear=False, tab_index=None)
+        svc.requests.assert_called_once_with(clear=False, details=False, body=False, tab_index=None)
 
     def test_missing_required_args(self):
         svc = self._service()
@@ -163,6 +168,168 @@ class TestBrowserToolDispatch:
         assert self._execute(svc, action="find").error
         assert self._execute(svc, action="press").error
         assert self._execute(svc, action="navigate").error
+        assert self._execute(svc, action="hover").error
+        assert self._execute(svc, action="drag", ref="r1").error
+        assert self._execute(svc, action="upload", ref="r1").error
+        assert self._execute(svc, action="fill_form").error
+        assert self._execute(svc, action="extract").error
+        assert self._execute(svc, action="download").error
+        assert self._execute(svc, action="set_cookie").error
         # 缺参时不调用 service
         svc.click.assert_not_called()
         svc.fill.assert_not_called()
+
+
+class TestEnhancedDispatch:
+    """新增动作的分发转发：参数映射 + 缺参校验 + navigate 审批门。"""
+
+    def _service(self):
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        return svc
+
+    def _execute(self, svc, **kwargs):
+        from core.tools.browser import BrowserTool
+        with patch("core.browser_service.get_service", return_value=svc):
+            return BrowserTool().execute(**kwargs)
+
+    def test_scroll(self):
+        svc = self._service()
+        self._execute(svc, action="scroll", direction="down", amount=400)
+        svc.scroll.assert_called_once_with(direction="down", amount=400, ref=None, frame=None, tab_index=None)
+
+    def test_scroll_default_direction(self):
+        svc = self._service()
+        self._execute(svc, action="scroll")
+        svc.scroll.assert_called_once_with(direction="down", amount=800, ref=None, frame=None, tab_index=None)
+
+    def test_hover(self):
+        svc = self._service()
+        self._execute(svc, action="hover", ref="r1")
+        svc.hover.assert_called_once_with("r1", frame=None, tab_index=None)
+
+    def test_drag(self):
+        svc = self._service()
+        self._execute(svc, action="drag", ref="r1", target_ref="r2")
+        svc.drag.assert_called_once_with("r1", "r2", frame=None, tab_index=None)
+
+    def test_upload_resolves_relative_path(self):
+        import os
+        svc = self._service()
+        self._execute(svc, action="upload", ref="r1", path="a.txt")
+        args = svc.upload.call_args.args
+        assert args[0] == "r1"
+        assert os.path.isabs(args[1]) and args[1].endswith("a.txt")
+        assert svc.upload.call_args.kwargs == {"frame": None, "tab_index": None}
+
+    def test_fill_form(self):
+        svc = self._service()
+        fields = [{"ref": "r1", "value": "x"}, {"ref": "r2", "value": "y"}]
+        self._execute(svc, action="fill_form", fields=fields)
+        svc.fill_form.assert_called_once_with(fields, frame=None, tab_index=None)
+
+    def test_extract(self):
+        svc = self._service()
+        self._execute(svc, action="extract", selector=".item", attribute="href", limit=5)
+        svc.extract.assert_called_once_with(".item", attribute="href", limit=5, frame=None, tab_index=None)
+
+    def test_extract_table(self):
+        svc = self._service()
+        self._execute(svc, action="extract_table", index=1)
+        svc.extract_table.assert_called_once_with(index=1, frame=None, tab_index=None)
+
+    def test_download_with_ref(self):
+        import os
+        svc = self._service()
+        self._execute(svc, action="download", ref="r1", save_path="dl.bin")
+        assert svc.download.call_args.kwargs["ref"] == "r1"
+        assert svc.download.call_args.kwargs["url"] is None
+        assert svc.download.call_args.kwargs["save_path"].endswith("dl.bin")
+        assert svc.download.call_args.kwargs["tab_index"] is None
+
+    def test_dialogs(self):
+        svc = self._service()
+        self._execute(svc, action="dialogs", clear=True)
+        svc.dialogs.assert_called_once_with(clear=True, tab_index=None)
+
+    def test_get_frames(self):
+        svc = self._service()
+        self._execute(svc, action="get_frames")
+        svc.get_frames.assert_called_once_with(tab_index=None)
+
+    def test_cookies_actions(self):
+        svc = self._service()
+        self._execute(svc, action="get_cookies", url="https://example.com")
+        svc.get_cookies.assert_called_once_with(url="https://example.com", tab_index=None)
+        self._execute(svc, action="clear_cookies")
+        svc.clear_cookies.assert_called_once_with(tab_index=None)
+        cookie = {"name": "a", "value": "b", "domain": "example.com"}
+        self._execute(svc, action="set_cookie", cookie=cookie)
+        svc.set_cookie.assert_called_once_with(cookie, tab_index=None)
+
+    def test_frame_passed_to_actions(self):
+        svc = self._service()
+        self._execute(svc, action="click", ref="r1", frame=2)
+        svc.click.assert_called_once_with("r1", button="left", tab_index=None, frame=2)
+        self._execute(svc, action="snapshot", frame="1")
+        svc.snapshot.assert_called_once_with(tab_index=None, frame=1)
+
+    def test_navigate_public_url_no_gate(self):
+        svc = self._service()
+        self._execute(svc, action="navigate", url="https://example.com")
+        svc.navigate.assert_called_once_with("https://example.com", tab_index=None)
+
+    def test_navigate_private_url_placeholder(self):
+        from core.tools.approval import META_KEY
+        svc = self._service()
+        result = self._execute(svc, action="navigate", url="http://127.0.0.1:8885/tcmp-war/")
+        assert result.completed is False
+        assert not result.error
+        assert META_KEY in result.meta
+        assert result.meta[META_KEY]["kind"] == "browser:navigate"
+        assert result.meta[META_KEY]["command"] == "http://127.0.0.1:8885/tcmp-war/"
+        svc.navigate.assert_not_called()
+
+    def test_navigate_private_url_approved_bypasses(self):
+        from core.tools.approval import ApprovalStore, approval_decision_id
+        from core.tools.browser import BrowserTool
+        url = "http://127.0.0.1:8885/tcmp-war/"
+        store = ApprovalStore()
+        store.approve(approval_decision_id(url), url, kind="browser:navigate")
+        svc = self._service()
+        with patch("core.browser_service.get_service", return_value=svc):
+            BrowserTool(approval_store=store).execute(action="navigate", url=url)
+        svc.navigate.assert_called_once_with(url, tab_index=None, skip_ssrf=True)
+
+    def test_navigate_private_url_no_store_hard_placeholder(self):
+        """无 approval_store（独立/worker 无共享实例）时仍返回占位而非放行。"""
+        svc = self._service()
+        result = self._execute(svc, action="navigate", url="http://192.168.1.5/")
+        assert result.completed is False
+        svc.navigate.assert_not_called()
+
+    def test_create_tools_wires_approval_store_to_browser(self):
+        """回归：create_tools 必须把共享 approval_store 注入 BrowserTool。
+
+        曾因 registry 中 browser 工厂缺 needs_approval=True，导致工具侧
+        self.approval_store 恒为 None，即使规则已写入 approvals.json，
+        navigate 门也永远返回审批占位（用户批准后反复弹卡）。
+        """
+        from core.agent_config import load_agent_role
+        from core.tools.approval import ApprovalStore, approval_decision_id
+        from core.tools.registry import create_tools
+        url = "http://127.0.0.1:8000/"
+        store = ApprovalStore()
+        store.approve(approval_decision_id(url), url, kind="browser:navigate")
+        tools = create_tools(
+            load_agent_role("master"),
+            cwd=".", workspace_uuid="d1b45267",
+            config=None, approval_store=store,
+        )
+        bt = next(t for t in tools if t.name == "browser")
+        assert bt.approval_store is store
+        svc = self._service()
+        with patch("core.browser_service.get_service", return_value=svc):
+            bt.execute(action="navigate", url=url)
+        svc.navigate.assert_called_once_with(url, tab_index=None, skip_ssrf=True)
+

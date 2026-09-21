@@ -17,9 +17,9 @@ class TestBrowserTool:
 
         browser_tool = get_tool_by_name(tools, "browser")
 
-        # 检查浏览器是否可用
+        # 检查浏览器是否可用（about:blank 已被 SSRF 防护拦截，改用公网地址探测）
         try:
-            result = browser_tool.execute(action="navigate", url="about:blank")
+            result = browser_tool.execute(action="navigate", url="https://example.com")
             if result.error:
                 pytest.skip("Browser not available")
         except Exception as e:

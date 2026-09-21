@@ -46,11 +46,17 @@ def approval_decision_id(command: str) -> str:
 def build_approval_question(approval: dict[str, Any]) -> str:
     """构造发给用户的批准问题文案。
 
-    按 kind 分支：path:write/path:delete 为工作区外文件操作，其余为高风险命令。
+    按 kind 分支：browser:navigate 为非公网地址导航；path:write/path:delete 为
+    工作区外文件操作；其余为高风险命令。
     """
     kind = approval.get("kind", "command")
     target_label = "路径" if kind.startswith("path:") else "命令"
-    if kind == "path:delete":
+    if kind == "browser:navigate":
+        head = (
+            f"检测到非公网地址导航，需要您批准后才能执行：\n\n"
+            f"地址：`{approval['command']}`\n"
+        )
+    elif kind == "path:delete":
         head = (
             f"检测到工作区外的文件操作，需要您批准后才能执行：\n\n"
             f"操作：删除 `{approval['command']}`\n"
@@ -77,7 +83,14 @@ def build_approval_question(approval: dict[str, Any]) -> str:
 
 def approval_placeholder_text(approval: dict[str, Any]) -> str:
     """工具返回给 LLM 的占位文本（completed=False，等待用户批准）。"""
-    if approval.get("kind", "command").startswith("path:"):
+    kind = approval.get("kind", "command")
+    if kind == "browser:navigate":
+        return (
+            "该导航被 SSRF 防护拦截，需要用户批准后才能执行。\n"
+            "等待用户选择「允许本次会话」或「拒绝」...\n"
+            "若用户允许，请**原样重发**该 navigate 调用。"
+        )
+    if kind.startswith("path:"):
         return (
             "该文件操作被路径权限拦截，需要用户批准后才能执行。\n"
             "等待用户选择「允许本次会话」或「拒绝」...\n"
@@ -91,37 +104,40 @@ def approval_placeholder_text(approval: dict[str, Any]) -> str:
 
 
 def build_approved_commands_section(approval_store: "ApprovalStore | None") -> str:
-    """子代理任务消息中下放的已批准命令/路径段落（无批准时返回空串）。
+    """子代理任务消息中下放的已批准命令/导航/路径段落（无批准时返回空串）。
 
-    命令与路径规则分列：worker/lite 据此得知主会话已放行的命令与
-    工作区外文件操作，避免重复尝试被拒。
+    命令、导航 URL 与路径规则分列：worker/lite 据此得知主会话已放行的命令、
+    非公网导航与工作区外文件操作，避免重复尝试被拒（放行本身由共享 store
+    的 is_approved 保证，本段仅作提示）。
     """
     if not approval_store:
         return ""
     approved = approval_store.approved_commands()
+    navigations = approval_store.approved_navigations()
     path_rules = approval_store.approved_path_rules()
-    if not approved and not path_rules:
+    if not approved and not navigations and not path_rules:
         return ""
-    if approved and path_rules:
-        intro = (
-            "The following commands and file operations have been approved by the "
-            "user for this session and may be executed directly:"
-        )
-    elif approved:
-        intro = (
+    lines = ["### Pre-approved commands", ""]
+    if approved:
+        lines.append(
             "The following commands have been approved by the user for this "
             "session and may be executed directly:"
         )
-    else:
-        intro = (
-            "The following file operations have been approved by the user for this "
-            "session and may be executed directly:"
+        lines += [f"- `{cmd}`" for cmd in approved]
+    if navigations:
+        lines.append(
+            "The following navigation URLs have been approved by the user for "
+            "this session and may be navigated to directly:"
         )
-    lines = ["### Pre-approved commands", "", intro, ""]
-    lines += [f"- `{cmd}`" for cmd in approved]
-    for rule in path_rules:
-        verb = "delete" if rule["kind"] == "path:delete" else "write"
-        lines.append(f"- {verb} `{rule['command']}`")
+        lines += [f"- navigate `{url}`" for url in navigations]
+    if path_rules:
+        lines.append(
+            "The following file operations have been approved by the user for "
+            "this session and may be executed directly:"
+        )
+        for rule in path_rules:
+            verb = "delete" if rule["kind"] == "path:delete" else "write"
+            lines.append(f"- {verb} `{rule['command']}`")
     lines.append("")
     return "\n".join(lines)
 
@@ -191,11 +207,15 @@ class ApprovalStore:
         """仅命令类规则（kind == "command"），供现有调用/测试保持语义。"""
         return [v["command"] for v in self._approved.values() if v["kind"] == "command"]
 
+    def approved_navigations(self) -> list[str]:
+        """导航类规则（kind == "browser:navigate"），供子代理提示段落。"""
+        return [v["command"] for v in self._approved.values() if v["kind"] == "browser:navigate"]
+
     def approved_path_rules(self) -> list[dict[str, str]]:
         """路径类规则（kind == "path:write"/"path:delete"）。"""
         return [
             {"kind": v["kind"], "command": v["command"]}
-            for v in self._approved.values() if v["kind"] != "command"
+            for v in self._approved.values() if v["kind"].startswith("path:")
         ]
 
     def set_pending(self, approval: dict[str, Any]) -> None:
