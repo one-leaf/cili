@@ -1454,3 +1454,116 @@ async function loadTemplate() {
         statusEl.className = 'settings-status error';
     }
 }
+
+// ─── 全局文件拖放上传 ─────────────────────────────────────────────
+// 拖放文件到任意窗口，自动上传到当前工作区；若文件管理器已打开且拖放落在其内，则上传到当前文件夹
+// 复用 file-manager.js 的 uploadFiles / fmCurrentPath / loadFileManagerFiles
+
+const dropOverlay = document.createElement('div');
+dropOverlay.className = 'drop-overlay';
+const dropOverlayInner = document.createElement('div');
+dropOverlayInner.className = 'drop-overlay-inner';
+dropOverlay.appendChild(dropOverlayInner);
+document.body.appendChild(dropOverlay);
+let dragDepth = 0;
+
+function isFileDrag(e) {
+    return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+}
+
+// 拖放目标是否落在已打开的文件管理器内
+function dropInFileManager(e) {
+    const fmModal = document.getElementById('file-manager-modal');
+    return fmModal && fmModal.style.display !== 'none' && e.target.closest('#file-manager-modal');
+}
+
+function showDropOverlay(e) {
+    dropOverlayInner.textContent = dropInFileManager(e)
+        ? '松开以上传到当前文件夹'
+        : '松开以上传到工作区';
+    dropOverlay.classList.add('show');
+}
+
+function hideDropOverlay() {
+    dragDepth = 0;
+    dropOverlay.classList.remove('show');
+}
+
+document.addEventListener('dragenter', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    showDropOverlay(e);
+});
+
+document.addEventListener('dragover', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+});
+
+document.addEventListener('dragleave', (e) => {
+    if (!isFileDrag(e)) return;
+    // 指针离开窗口时直接重置，避免覆盖层卡住
+    if (!document.body.contains(e.relatedTarget)) {
+        hideDropOverlay();
+        return;
+    }
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) hideDropOverlay();
+});
+
+document.addEventListener('drop', async (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    hideDropOverlay();
+
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length === 0) return;
+
+    // 目录拖放（webkitGetAsEntry 仅 Chromium 支持），提示打包后上传
+    const hasDir = Array.from(e.dataTransfer.items || []).some((it) => {
+        if (it.kind !== 'file' || !it.webkitGetAsEntry) return false;
+        const entry = it.webkitGetAsEntry();
+        return !!entry && entry.isDirectory;
+    });
+    if (hasDir) {
+        showToast('不支持拖放文件夹，请打包为 zip 后上传');
+        return;
+    }
+
+    if (!currentWorkspace) {
+        showToast('请先选择工作区');
+        return;
+    }
+
+    const inFileManager = dropInFileManager(e);
+    const path = inFileManager ? fmCurrentPath : '';
+    try {
+        const result = await uploadFiles(path, files);
+        const uploaded = result.uploaded || [];
+        const errList = result.errors || [];
+        if (uploaded.length > 0) {
+            // 上传成功后，将带路径的文件名插入对话输入框
+            const lines = uploaded
+                .map((f) => (path ? `${path}/${f.name}` : f.name))
+                .join('\n');
+            const input = document.getElementById('chat-input');
+            if (input) {
+                if (input.value && !input.value.endsWith('\n')) input.value += '\n';
+                input.value += lines;
+                input.focus();
+            }
+            showToast(`✓ 已上传 ${uploaded.length} 个文件，文件名已插入输入框`);
+        }
+        if (errList.length > 0) {
+            const reasons = errList.map((err) => `${err.name}: ${err.error}`).join('；');
+            showToast(`✗ ${errList.length} 个文件上传失败：${reasons}`, 4000);
+        }
+        if (inFileManager && uploaded.length > 0) {
+            await loadFileManagerFiles(fmCurrentPath);
+        }
+    } catch (error) {
+        showToast('✗ 上传失败: ' + (error.message || error), 3000);
+    }
+});

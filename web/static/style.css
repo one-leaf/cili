@@ -3039,3 +3039,33 @@ mjx-container {
     margin-left: auto;
     color: var(--text-color);
 }
+
+/* 全局文件拖放上传覆盖层 */
+.drop-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.05);
+    outline: 3px dashed var(--primary-color);
+    outline-offset: -12px;
+    pointer-events: none;
+}
+
+.drop-overlay.show {
+    display: flex;
+}
+
+.drop-overlay-inner {
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    padding: 14px 28px;
+    border-radius: 8px;
+    font-size: 15px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
