@@ -47,6 +47,7 @@ CLAUDE.md
 workspace/
 data/*
 .tmp/
+.cili/
 .test_tmp/
 *.log
 

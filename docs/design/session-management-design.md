@@ -21,10 +21,13 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
 
 ### 2.1 目录结构
 
-每个工作区有独立的 sessions 目录，每个会话是一个子目录：
+每个工作区有独立的 sessions 目录，每个会话是一个子目录。工作区数据目录统一为 `{workspace_directory}/.cili/`（由 `get_workspace_data_dir(uuid)` 解析）：
 
 ```
-data/projects/{uuid}/
+{workspace_directory}/.cili/
+├── approvals.json            # 写/删越界审批记录
+├── tmp/                      # 工作区临时目录
+├── memory/                   # 记忆系统
 └── sessions/
     ├── a1b2c3d4/                        # 会话 1（8 位十六进制 ID）
     │   ├── messages.jsonl               # 完整消息历史（追加式，UI 数据源）
@@ -594,12 +597,15 @@ def run(agent, user_input):
 ### 10.2 Web API 使用
 
 ```python
-# web/web_api.py
+# web/routes_chat.py
+
+# 数据目录统一经 get_workspace_data_dir() 解析（{workspace}/.cili/）
+from core.config import get_workspace_data_dir
 
 # 获取或创建 Master Agent
 agent = agents.get(workspace_uuid, session_id)
 if agent is None:
-    sessions_dir = workspace_dir / "sessions"
+    sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     session = SessionManager.load_session(session_id, sessions_dir)
     agent = Agent(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid, ...)
     agents[key] = agent
@@ -612,7 +618,7 @@ async def send_message():
 # 获取会话列表
 @app.get("/api/workspaces/{uuid}/sessions")
 def list_sessions(uuid):
-    sessions_dir = workspace_dir / "sessions"
+    sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     return SessionManager.list_sessions(sessions_dir)
 
 # 获取会话详情
@@ -717,7 +723,8 @@ GET /api/workspaces/{uuid}/sessions/{id}/stream/{tool_use_id}?offset=0
 
 ---
 
-**文档版本**: v1.1  
+**文档版本**: v1.2  
 **创建时间**: 2026-08-25  
 **更新时间**: 2026-08-28（外部优先存储架构重构）  
+**更新时间**: 2026-09-21（sessions 目录迁移至 `{workspace}/.cili/sessions/`，经 `get_workspace_data_dir()` 解析）  
 **状态**: 已实现

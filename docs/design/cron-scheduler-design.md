@@ -72,18 +72,26 @@ Agent.run(cron_message, streaming=False)  ← cron 直接执行（master 角色�
 
 ### 2.3 Workspace 结构
 
-```
-System workspace (UUID: "system", cwd: "data/")
-├── sessions/
-│   └── {cron_session_id}/         # "[Cron]" session
-│       └── index.json             # cron 执行结果
-└── setting.json                   # workspace_name: "System", system: true
+工作区数据目录统一为 `{workspace_directory}/.cili/`（经 `get_workspace_data_dir(uuid)` 解析）：
 
-用户 workspace (UUID: "abc123", cwd: "workspace/xxx")
+```
+System workspace (UUID: "system", cwd: "data/") → 数据目录 data/.cili/
+├── approvals.json                # 写/删越界审批记录
+├── tmp/                          # 工作区临时目录
 ├── sessions/
-│   ├── {user_session_1}/          # 用户主对话
-│   └── {cron_session_id}/         # "[Cron]" session
-└── setting.json
+│   └── {cron_session_id}/        # "[Cron]" session
+│       └── index.json            # cron 执行结果
+└── memory/
+
+用户 workspace (UUID: "abc123", cwd: "workspace/xxx") → 数据目录 workspace/xxx/.cili/
+├── approvals.json
+├── tmp/
+├── sessions/
+│   ├── {user_session_1}/         # 用户主对话
+│   └── {cron_session_id}/        # "[Cron]" session
+└── memory/
+
+所有工作区元数据集中存储：data/cili/workspaces.json（工作区索引）
 ```
 
 ### 2.4 生命周期
@@ -92,7 +100,7 @@ System workspace (UUID: "system", cwd: "data/")
 应用启动流程：
 main.py
   └─ _setup_directories()
-       └─ 创建 data/projects/system/sessions/ + setting.json
+       └─ _ensure_system_workspace()   # 注册 "system" → workspaces.json（directory=data/），建 data/.cili/sessions/
   └─ start_scheduler()           # 创建 CronScheduler 单例
        └─ scheduler.start()
             ├─ load_tasks()      # 从 core/cron.d/*.json + user_tasks.json 加载
@@ -120,8 +128,9 @@ System workspace 是一个特殊的 workspace，用于系统维护和定时任�
 | 属性 | 值 |
 |------|-----|
 | UUID | `system` |
-| 目录 | `data/projects/system/` |
+| 数据目录 | `data/.cili/`（cwd=`data/` 下的 `.cili`） |
 | cwd | `data/`（项目数据根目录） |
+| 索引 | `data/cili/workspaces.json` 中 `system: true` 条目 |
 | 用途 | 系统维护、定时清理等 |
 
 ### 3.2 初始化
@@ -129,9 +138,9 @@ System workspace 是一个特殊的 workspace，用于系统维护和定时任�
 `main.py` 启动时自动创建：
 
 ```python
-system_ws_dir = data/projects/system
+# _ensure_system_workspace()：注册 "system" 条目到 workspaces.json（directory=data/）
+system_ws_dir = data/.cili
 system_ws_dir/sessions/         # session 存储
-system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志）
 ```
 
 ### 3.3 管理规则
@@ -160,24 +169,25 @@ system_ws_dir/setting.json      # workspace 配置（含 "system": true 标志�
 
 ```json
 {
-  "name": "extract-user-info",
-  "description": "每天提取用户画像",
+  "name": "memory-consolidation",
+  "description": "每 2 小时整合记忆 journal 到条目（记忆整合）",
   "enabled": true,
-  "one_time": false,
-  "workspace_uuid": "system",
   "schedule": {
-    "type": "cron",
-    "expr": "0 2 * * *"
-  },
-  "config": {
-    "max_executions": 9999
+    "type": "interval",
+    "minutes": 120,
+    "initial_delay_minutes": 30
   },
   "content": {
-    "task": "扫描工作区，提取用户信息到 user-profile.md",
-    "plan": ["列出工作区目录", "逐个提取并写入 profile"]
+    "task": "运行记忆整合：调用 memory(action=\"consolidate\")，把各工作区 journal 中待整合的记忆记录写入条目、刷新 summary、推进游标并 git 提交。完成后简要报告每个工作区处理的记录数与新建/更新条目数。",
+    "plan": [
+      "调用 memory(action=\"consolidate\")",
+      "报告每个工作区处理的记录数、新建/更新条目数、归档数"
+    ]
   }
 }
 ```
+
+> **注**：旧 `extract-user-info` 任务（每天提取用户画像到 user-profile.md）已废弃移除——用户画像由 preference 类型记忆条目承载，经记忆整合流水线维护。
 
 **字段说明**：
 
@@ -306,11 +316,13 @@ def get_tasks() -> list[dict]:
 data/cili/cron.d/
 ├── user_tasks.json              # 用户级定时任务配置
 └── state/                       # 运行时状态（每个任务一个文件）
-    ├── extract-user-info.json   # {"last_run": "...", "run_count": 5, "session_id": "431ea12b"}
+    ├── memory-consolidation.json  # {"last_run": "...", "run_count": 5, "session_id": "431ea12b"}
     └── daily-report.json
 
-data/projects/system/
-├── setting.json                 # System workspace 配置
+data/.cili/                       # System workspace 数据目录
+├── approvals.json               # 写/删越界审批记录
+├── tmp/
+├── memory/
 └── sessions/
     └── {session_id}/            # "[Cron] 任务描述" session
         └── index.json           # cron 执行记录
@@ -389,7 +401,7 @@ CronTask.execute():
 ├─ 遍历任务列表
 │   ├─ 解析目标 workspace（task_item.workspace_uuid > self.workspace_uuid > "system"）
 │   ├─ 调用 _execute_in_session(workspace_uuid, task_item)
-│   │   ├─ _resolve_workspace_dir() — "system" → data/, 其他 → data/projects/{uuid}/
+│   │   ├─ _resolve_workspace_dir() — "system" → data/.cili/, 其他 → get_workspace_data_dir(uuid)
 │   │   ├─ 加载 workspace 配置获取实际工作目录 cwd（非 system 时）
 │   │   ├─ _resolve_cron_session() — 用 state 中的 session_id 定位（不存在则新建）
 │   │   │   └─ 新 session 名字为 "[Cron] 任务描述"
@@ -480,11 +492,11 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。Worker/Li
 请使用 agent 工具执行以下任务：
 
 ## 任务描述
-扫描工作区，提取用户信息到 user-profile.md
+运行记忆整合：调用 memory(action="consolidate")，把各工作区 journal 中待整合的记忆记录写入条目、刷新 summary、推进游标并 git 提交。
 
 ## 执行计划
-1. 列出工作区目录
-2. 逐个提取并写入 profile
+1. 调用 memory(action="consolidate")
+2. 报告每个工作区处理的记录数、新建/更新条目数、归档数
 
 请根据任务描述和计划执行。
 ```
@@ -551,7 +563,7 @@ class CronTask:
 | `execute() -> dict` | 通过 Master Agent 执行所有任务 |
 | `mark_executed(now, result)` | 更新状态并持久化 |
 | `_execute_in_session(ws, item) -> dict` | 在 workspace 的 cron session 中通过 Master Agent 执行 |
-| `_resolve_workspace_dir(uuid) -> str` | 解析 workspace 目录 |
+| `_resolve_workspace_dir(uuid) -> str` | 解析 workspace 数据目录（`get_workspace_data_dir(uuid)` → `{directory}/.cili/`） |
 | `_resolve_cron_session(dir) -> str` | 用 state 中的 session_id 定位，不存在则新建（名字用任务描述） |
 | `_build_cron_message(item) -> str` | 构造 user message |
 | `_calculate_next_run(from_time)` | 支持 interval 和 cron 表达式 |
@@ -628,13 +640,15 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 | `data/cili/cron.d/user_tasks.json` | 用户级任务配置 |
 | `data/cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
 | `data/cili/tools/loop/` | loop 工具状态文件 |
-| `data/projects/system/` | System workspace |
-| `main.py` | 启动调度器，创建 System workspace |
+| `data/cili/workspaces.json` | 工作区索引（含 system 条目） |
+| `data/.cili/` | System workspace 数据目录 |
+| `main.py` | 启动调度器，创建 System workspace（`_ensure_system_workspace()`） |
 | `web/web_api.py` | 停止调度器，System workspace 保护 |
 
 ---
 
-**文档版本**: v2.2
+**文档版本**: v2.3
 **创建时间**: 2026-08-25
 **更新时间**: 2026-09-09
+**更新时间**: 2026-09-21（System workspace 数据目录改为 `data/.cili/`，工作区经 `get_workspace_data_dir()` 解析；extract-user-info 任务废弃移除，用户画像由 memory/preference 承载）
 **状态**: 已实现（Master Agent 执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）

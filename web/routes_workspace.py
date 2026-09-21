@@ -14,7 +14,8 @@ from pydantic import BaseModel
 
 from core.config import (
     validate_workspace_name, PROJECT_ROOT, load_workspace_config,
-    save_workspace_config,
+    save_workspace_config, get_workspace_data_dir, remove_workspace_entry,
+    find_workspace_entry,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
@@ -27,7 +28,7 @@ from core.tools.base import Tool
 from web.deps import (
     agents, _agent_access, _agents_lock, _list_all_workspaces,
     _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
-    _validate_session_id, _validate_workspace_uuid, WORKSPACE_DATA_DIR,
+    _validate_session_id, _validate_workspace_uuid,
     _get_workspace_info,
 )
 
@@ -94,14 +95,6 @@ async def create_workspace(request: CreateWorkspaceRequest):
     else:
         workspace_dir = str(PROJECT_ROOT / "workspace" / request.name)
 
-    # Create workspace data directory
-    ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
-    ws_data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create sessions directory
-    sessions_dir = ws_data_dir / "sessions"
-    sessions_dir.mkdir(exist_ok=True)
-
     # Create working directory
     os.makedirs(workspace_dir, exist_ok=True)
 
@@ -116,6 +109,14 @@ async def create_workspace(request: CreateWorkspaceRequest):
 
     save_workspace_config(workspace_uuid, ws_config)
 
+    # Create .cili data directory (workspace-local, mirrors directory in index)
+    ws_data_dir = get_workspace_data_dir(workspace_uuid)
+    ws_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create sessions directory
+    sessions_dir = ws_data_dir / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+
     return {
         "uuid": workspace_uuid,
         "name": request.name,
@@ -124,11 +125,13 @@ async def create_workspace(request: CreateWorkspaceRequest):
 
 
 def _remove_workspace_data(workspace_uuid: str) -> None:
-    """Remove workspace data directory (filesystem only, does not touch agents dict)."""
-    ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
-    if not ws_data_dir.exists():
+    """Remove workspace .cili data directory (filesystem only, does not touch agents dict or index)."""
+    if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    # Delete workspace data directory
+    ws_data_dir = get_workspace_data_dir(workspace_uuid)
+    if not ws_data_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace data directory not found")
+    # Delete workspace .cili data directory
     shutil.rmtree(ws_data_dir)
 
 
@@ -156,6 +159,7 @@ async def delete_workspace(workspace_uuid: str):
     async with _agents_lock:
         _cleanup_agents_for_workspace(workspace_uuid)
     _remove_workspace_data(workspace_uuid)
+    remove_workspace_entry(workspace_uuid)
     return {"success": True}
 
 
@@ -165,8 +169,7 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
     _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
-    ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
-    if not ws_data_dir.exists():
+    if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     # Load existing config

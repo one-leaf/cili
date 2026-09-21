@@ -6,28 +6,31 @@
 
 ## 与记忆系统的关系
 
-用户画像和记忆系统各司其职：画像内容以 **preference 类型记忆条目**承载，与记忆系统共用存储与提取/整合流水线；user-profile.md 作为迁移回退保留。两者对比：
+用户画像和记忆系统各司其职：画像内容以 **preference 类型记忆条目**承载，与记忆系统共用存储与提取/整合流水线。两者对比：
 
 | 特性 | 用户画像 | 记忆系统 |
 |------|---------|---------|
 | 职责 | 描述"谁在使用" | 记录"做了什么" |
-| 存储位置 | `data/projects/{uuid}/user-profile.md` | `data/projects/{uuid}/memory/` |
-| 文件数量 | 单文件 | 多文件（按类型/主题组织） |
-| 格式 | Markdown（带 YAML frontmatter） | Markdown |
+| 存储位置 | `{directory}/.cili/memory/entries/preference/`（preference 条目） | `{directory}/.cili/memory/` |
+| 文件数量 | 多条目（每维一条 preference） | 多文件（按类型/主题组织） |
+| 格式 | Markdown | Markdown |
 | 加载方式 | 每次对话自动加载到上下文 | 按需检索 |
 | 更新方式 | 经记忆提取/整合流水线维护 | Agent 主动存储 |
 | 维度 | 5 个（身份、表达风格、决策、边界、压力行为） | fact、preference、skill、reference |
+
+> **状态说明**：`user-profile.md` 单文件方案已废弃（v3.1 起移除，不再生成、不再读取）。用户画像完全由 preference 类型记忆条目承载，经记忆提取/整合流水线维护。
 
 ## 存储设计
 
 ### 文件位置
 
 ```
-data/projects/{uuid}/
-├── setting.json            # 工作区配置
-├── user-profile.md         # 用户画像（本系统设计对象）
+{directory}/.cili/
+├── approvals.json          # 写/删越界审批记录
+├── tmp/                    # 工作区临时目录
 ├── sessions/               # 会话存储
 └── memory/                 # 记忆系统（fact、preference、skill、reference）
+    └── entries/preference/ # 用户画像条目（preference 类型）
 ```
 
 ### Markdown 格式
@@ -99,7 +102,7 @@ deadline 前会抱怨但执行力强
 
 ### 自动加载流程
 
-用户画像在 `build_environment_context()` 中自动加载（所有角色相同），作为 `context` user 层注入到每次对话的上下文中。当前实现为 v3 三层记忆注入：preference 常驻 + MEMORY.md 索引 + summary.md 摘要；user-profile.md 仅在 preference 为空时作为迁移回退：
+用户画像在 `build_environment_context()` 中自动加载（所有角色相同），作为 `context` user 层注入到每次对话的上下文中。当前实现为 v3 三层记忆注入：preference 常驻 + MEMORY.md 索引 + summary.md 摘要（preference 为空时不注入任何画像内容，不再有 user-profile.md 回退）：
 
 ```python
 # core/prompts.py
@@ -122,14 +125,6 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
         for p in prefs[:10]:
             stale = " ⚠ stale, verify before applying" if store.is_stale(p) else ""
             lines.append(f"- {p.get('title', p['name'])}: {p.get('description', '')}{stale}")
-    else:
-        # 迁移回退：preference 为空时读 user-profile.md（标题 "### User Preferences (from user-profile.md)"）
-        profile_path = get_user_profile_path(workspace_uuid)
-        if profile_path.is_file():
-            content = profile_path.read_text(encoding="utf-8").strip()
-            if content:
-                lines.append("### User Preferences (from user-profile.md)")
-                lines.append(content)
 
     # 2) MEMORY.md 索引（"### Memory Index (descriptions of all entries)"）
     # 3) summary.md 摘要（"### Memory Summary"，截断 2KB）
@@ -166,12 +161,12 @@ Search/recall: `memory(action="find", query="keyword")` lists matching entries w
 `core/config.py` 提供统一的路径获取函数：
 
 ```python
-def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/projects/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
-    if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / "user-profile.md"
-    return PROJECTS_DIR / workspace_uuid / "user-profile.md"
+def get_workspace_data_dir(workspace_uuid: str) -> Path:
+    """Get the .cili data directory for a workspace: {directory}/.cili/."""
+    ...
 ```
+
+`get_user_profile_path()` 已删除——user-profile.md 不再存在，画像由 preference 条目承载（`{directory}/.cili/memory/entries/preference/{name}.md`，经 `memory(action="read", name=...)` 读取）。
 
 ## 设计原则
 
@@ -203,7 +198,7 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 
 | 文件 | 职责 |
 |------|------|
-| `core/config.py` | 提供 `get_user_profile_path()` 路径函数 |
+| `core/config.py` | 提供 `get_workspace_data_dir()` 路径解析（`{directory}/.cili/`） |
 | `core/prompts.py` | `build_environment_context()` 三层记忆注入（preference 常驻 + MEMORY.md 索引 + summary.md 摘要，context user 层） |
 | `core/memory_store.py` | `MEMORY_TYPES` 含 preference，preference 条目存储/检索 |
 | `core/tools/memory.py` | memory 工具（store/find/read/.../consolidate），preference 类型写入与整合 |
@@ -216,5 +211,5 @@ def get_user_profile_path(workspace_uuid: str) -> Path:
 
 ---
 
-*文档版本: v3.0*
-*最后更新: 2026-09-13*
+*文档版本: v3.1*
+*最后更新: 2026-09-21*（v3.1：user-profile.md 废弃移除，画像统一由 preference 条目承载）

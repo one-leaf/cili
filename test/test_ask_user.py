@@ -58,12 +58,17 @@ def config():
 @pytest.fixture
 def agent(config, test_workspace):
     """创建 Master Agent 实例"""
+    from core.config import upsert_workspace_entry
     test_uuid = secrets.token_hex(4)
+    upsert_workspace_entry({
+        "uuid": test_uuid,
+        "workspace_name": "Ask User Test",
+        "directory": test_workspace,
+    })
     agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
     yield agent_instance
-    # 清理（master Agent 实际写入 data/projects/{uuid}，之前误写成 data/agents 导致目录泄漏）
-    project_dir = Path(__file__).parent.parent
-    ws_dir = project_dir / "data" / "projects" / test_uuid
+    # 清理（Agent 数据写入 {workspace}/.cili/，即本地 test_workspace 目录）
+    ws_dir = Path(test_workspace) / ".cili"
     if ws_dir.exists():
         shutil.rmtree(ws_dir, ignore_errors=True)
 

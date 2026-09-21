@@ -16,8 +16,6 @@ import logging
 import os
 from datetime import datetime
 
-from core.config import get_user_profile_path
-
 logger = logging.getLogger(__name__)
 
 
@@ -76,14 +74,14 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     """构建动态环境变量，作为独立 user 消息段注入。
 
     每次请求都不同（datetime 变化等），作为单独段发送不影响 system prompt 的缓存。
-    包含：Workspace、OS、Shell、Python、Temporary Files、Memory、User Profile、Current Time。
+    包含：Workspace、OS、Shell、Python、Temporary Files、Memory、Current Time。
     """
     import platform
     current_date = datetime.now().strftime("%Y-%m-%d")
     from core.config import get_workspace_data_dir
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
-    # 工作区临时目录：写在 workspace/.tmp 内，受统一路径权限（写/删限工作区）约束
-    tmp_dir = os.path.join(cwd, ".tmp") if cwd else ".tmp"
+    # 工作区临时目录：写在 {workspace}/.cili/tmp 内，受统一路径权限（写/删限工作区）约束
+    tmp_dir = str(get_workspace_data_dir(workspace_uuid) / "tmp")
 
     parts = [
         "## Workspace",
@@ -126,7 +124,8 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
         "Writes/deletes are only allowed inside the workspace; anything outside requires approval.",
-        "For session-scoped temp storage use the `temp` tool — it creates `{cwd}/.tmp/{{session_id}}/`.",
+        "For session-scoped temp storage use the `temp` tool — it creates "
+        "`{workspace}/.cili/tmp/{session_id}/`.",
         "In Python, `tempfile` module is auto-configured to the system temp.",
         "",
         "## Memory",
@@ -163,7 +162,7 @@ _MEMORY_SUMMARY_MAX_BYTES = 2 * 1024  # summary.md 最多截取 2KB
 def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
     """构建记忆注入段（设计 §5 三层注入；记忆系统不可用时降级为提示语，绝不阻塞请求）。
 
-    迁移前 preference 为空时回退注入 user-profile.md，避免丢失原有用户画像。
+    user-profile.md 已废弃（用户画像由 memory/preference 承载），不再回退读取。
     """
     lines: list[str] = []
     try:
@@ -177,22 +176,6 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
                 stale_note = " ⚠ stale, verify before applying" if store.is_stale(p) else ""
                 lines.append(f"- {p.get('title', p['name'])}: {p.get('description', '')}{stale_note}")
             lines.append("")
-        else:
-            # 迁移前回退：user-profile.md → 旧用户画像
-            profile_path = get_user_profile_path(workspace_uuid)
-            if profile_path.is_file():
-                try:
-                    content = profile_path.read_text(encoding="utf-8").strip()
-                    if content.startswith("---"):
-                        end = content.find("---", 3)
-                        if end != -1:
-                            content = content[end + 3:].strip()
-                    if content:
-                        lines.append("### User Preferences (from user-profile.md)")
-                        lines.append(content)
-                        lines.append("")
-                except OSError:
-                    pass
 
         index_path = os.path.join(memory_dir, "MEMORY.md")
         if os.path.isfile(index_path):

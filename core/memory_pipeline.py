@@ -24,7 +24,7 @@ import re
 import threading
 from typing import Any, Callable
 
-from core.config import PROJECTS_DIR, get_workspace_data_dir, load_config, load_workspace_config
+from core.config import get_workspace_data_dir, load_config, load_workspaces_index, load_workspace_config
 from core.llm import Message, create_llm_client
 from core.memory_store import (
     MAX_DESCRIPTION_LEN,
@@ -774,20 +774,22 @@ def run_consolidation(
 
 
 def _iter_workspace_uuids() -> list[str]:
-    """扫描 data/projects/ 下带 memory/ 的工作区 uuid（排除 system）。"""
+    """扫描 workspaces.json 中带 .cili/memory/ 的工作区 uuid（排除 system）。"""
     uuids: list[str] = []
     try:
-        if PROJECTS_DIR.is_dir():
-            for child in sorted(PROJECTS_DIR.iterdir()):
-                if child.is_dir() and child.name != "system" and (child / "memory").is_dir():
-                    uuids.append(child.name)
+        for entry in load_workspaces_index():
+            uuid = entry.get("uuid", "")
+            if uuid == "system":
+                continue
+            if (get_workspace_data_dir(uuid) / "memory").is_dir():
+                uuids.append(uuid)
     except OSError:
         pass
     return uuids
 
 
 def memory_enabled(workspace_uuid: str) -> bool:
-    """记忆功能开关：data/projects/{uuid}/setting.json 的 memory_enabled 字段。
+    """记忆功能开关：workspaces.json 中该工作区条目的 memory_enabled 字段。
 
     缺省为 False——纯工作区隔离，除非用户在记忆管理页显式开启。
     """

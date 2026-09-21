@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.config import load_config
+from core.config import load_config, get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.memory_pipeline import memory_enabled, schedule_extraction
@@ -22,7 +22,6 @@ from web.deps import (
     agents, _get_or_create_agent, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
-    WORKSPACE_DATA_DIR,
 )
 from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
 from web.routes_ask_user import (
@@ -46,7 +45,7 @@ class RevertRequest(BaseModel):
 
 def _get_session_manager(workspace_uuid: str, session_id: str) -> SessionManager | None:
     """Load a SessionManager for the given session (lightweight, no master Agent)."""
-    sessions_dir = WORKSPACE_DATA_DIR / workspace_uuid / "sessions"
+    sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     if not sessions_dir.exists():
         return None
     return SessionManager.load_session(session_id, sessions_dir)

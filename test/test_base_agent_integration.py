@@ -40,7 +40,7 @@ def dgx_config(protocol, dgx_available):
 
 
 @pytest.fixture
-def workspace_uuid():
+def workspace_uuid(tmp_path):
     """测试用独立临时工作区 UUID。
 
     每个测试函数创建全新工作区并整体清理，避免：① 污染真实工作区；
@@ -50,13 +50,19 @@ def workspace_uuid():
     """
     import secrets
     import shutil
-    from core.config import PROJECTS_DIR
+    from core.config import get_workspace_data_dir, upsert_workspace_entry
     test_uuid = secrets.token_hex(4)
-    workspace_dir = PROJECTS_DIR / test_uuid
-    workspace_dir.mkdir(parents=True, exist_ok=True)
+    ws_dir = tmp_path / test_uuid
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    upsert_workspace_entry({
+        "uuid": test_uuid,
+        "workspace_name": "Integration Test",
+        "directory": str(ws_dir),
+    })
     yield test_uuid
     # 整体删除测试工作区（含 sessions/memory），避免残留累积
-    shutil.rmtree(workspace_dir, ignore_errors=True)
+    shutil.rmtree(get_workspace_data_dir(test_uuid), ignore_errors=True)
+    shutil.rmtree(ws_dir, ignore_errors=True)
 
 
 @pytest.fixture

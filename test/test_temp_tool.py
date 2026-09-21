@@ -220,10 +220,20 @@ class TestTempToolIsolation:
 
 
 class TestTempToolWorkspaceDir:
-    """工作区内临时目录测试。"""
+    """工作区内临时目录测试（{workspace}/.cili/tmp/）。"""
 
-    def test_uses_workspace_dot_tmp(self, test_workspace, tmp_env):
-        """测试使用 {cwd}/.tmp 作为基础目录（工作区内）。"""
+    def _register(self, test_workspace, uuid):
+        """将 uuid 注册到测试 workspaces.json 索引，映射到 test_workspace。"""
+        from core.config import upsert_workspace_entry
+        upsert_workspace_entry({
+            "uuid": uuid,
+            "workspace_name": f"Test {uuid}",
+            "directory": test_workspace,
+        })
+
+    def test_uses_workspace_cili_tmp(self, test_workspace, tmp_env):
+        """测试使用 {workspace}/.cili/tmp 作为基础目录（工作区内）。"""
+        self._register(test_workspace, "any-uuid")
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="any-uuid",
@@ -231,14 +241,16 @@ class TestTempToolWorkspaceDir:
         )
         result = tool.execute(action="create_file", name="test.txt", content="data")
         assert not result.is_error
-        # 文件路径应在 {cwd}/.tmp/{session_id} 下
-        assert os.path.join(test_workspace, ".tmp", "session-env") in result.output
+        # 文件路径应在 {workspace}/.cili/tmp/{session_id} 下
+        assert os.path.join(test_workspace, ".cili", "tmp", "session-env") in result.output
 
         # 清理
         tool.execute(action="cleanup")
 
-    def test_workspace_uuid_ignored(self, test_workspace, tmp_env):
-        """测试不同 workspace_uuid 使用同一个 cwd/.tmp 目录。"""
+    def test_same_workspace_dir_shares_tmp(self, test_workspace, tmp_env):
+        """测试映射到同一工作区目录的不同 uuid 共享 .cili/tmp。"""
+        self._register(test_workspace, "uuid-1")
+        self._register(test_workspace, "uuid-2")
         tool1 = TempTool(
             cwd=test_workspace,
             workspace_uuid="uuid-1",
@@ -249,10 +261,10 @@ class TestTempToolWorkspaceDir:
             workspace_uuid="uuid-2",
             session_manager=MockSessionManager("session-same"),
         )
-        # 两个不同 workspace_uuid 的 tool 使用相同的 session 目录
+        # 两个 uuid 都解析到同一工作区目录，因此共享 {cwd}/.cili/tmp/{session_id}
         result1 = tool1.execute(action="create_file", name="a.txt", content="1")
         result2 = tool2.execute(action="create_file", name="b.txt", content="2")
-        # 路径中不应包含 workspace uuid
+        # 路径基于工作区目录而非 uuid
         assert "uuid-1" not in result1.output
         assert "uuid-2" not in result2.output
 

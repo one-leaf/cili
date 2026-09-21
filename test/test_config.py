@@ -40,13 +40,19 @@ class TestConfig:
         assert "invalid characters" in validate_workspace_name("test\\workspace")
         assert "invalid characters" in validate_workspace_name("test\nworkspace")
 
-    def test_get_workspace_data_dir(self):
-        """Test workspace data directory path"""
-        from core.config import get_workspace_data_dir
+    def test_get_workspace_data_dir(self, tmp_path, monkeypatch):
+        """Test workspace data directory path ({directory}/.cili)"""
+        from core import config
 
-        path = get_workspace_data_dir("test-uuid-123")
-        assert "projects" in str(path)
-        assert "test-uuid-123" in str(path)
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        config.upsert_workspace_entry({
+            "uuid": "test-uuid-123",
+            "workspace_name": "Test",
+            "directory": str(tmp_path / "ws"),
+        })
+
+        path = config.get_workspace_data_dir("test-uuid-123")
+        assert path == tmp_path / "ws" / ".cili"
 
     def test_load_global_config_missing(self, tmp_path, monkeypatch):
         """Test loading config when file doesn't exist"""
@@ -172,7 +178,7 @@ class TestConfig:
         """Test saving and loading workspace config"""
         from core import config
 
-        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
 
         workspace_data = {
             "workspace_name": "Test WS",

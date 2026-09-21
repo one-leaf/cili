@@ -44,27 +44,31 @@ v3 与旧版（knowledge / skills 目录 + source_ref + mtime 追踪）在设计
 
 ### 2.1 存储位置与目录布局
 
-每个工作区记忆位于 `data/projects/{uuid}/memory/`（空 uuid 时为 `workspace/memory/`）：
+每个工作区记忆位于 `{workspace_directory}/.cili/memory/`（由 `get_workspace_data_dir(uuid)` 解析；空 uuid 时为 `workspace/.cili/memory/`）：
 
 ```
-data/projects/{uuid}/memory/
-├── entries/                  # 活动条目（四类平铺）
-│   ├── fact/
-│   │   └── rest-api-design.md
-│   ├── preference/
-│   │   └── chinese-replies.md
-│   ├── skill/
-│   │   └── python-async.md
-│   └── reference/
-│       └── faiss-paper.md
-├── archive/                  # 归档条目（不参与检索）
-│   └── {type}/{name}.md
-├── MEMORY.md                 # 索引（MemoryStore 自动维护）
-├── summary.md                # 全局摘要（整合时刷新）
-├── journal.jsonl             # 摄入日志（append-only）
-├── .cursor                   # 整合游标（已整合的最大 cursor）
-└── .extract/                 # 会话级提取指针
-    └── {session_id}.json     # last_msg_id / last_extract_ts
+{workspace_directory}/.cili/
+├── approvals.json            # 写/删越界审批记录
+├── tmp/                      # 工作区临时目录
+├── sessions/                 # 会话存储
+└── memory/
+    ├── entries/              # 活动条目（四类平铺）
+    │   ├── fact/
+    │   │   └── rest-api-design.md
+    │   ├── preference/
+    │   │   └── chinese-replies.md
+    │   ├── skill/
+    │   │   └── python-async.md
+    │   └── reference/
+    │       └── faiss-paper.md
+    ├── archive/              # 归档条目（不参与检索）
+    │   └── {type}/{name}.md
+    ├── MEMORY.md             # 索引（MemoryStore 自动维护）
+    ├── summary.md            # 全局摘要（整合时刷新）
+    ├── journal.jsonl         # 摄入日志（append-only）
+    ├── .cursor               # 整合游标（已整合的最大 cursor）
+    └── .extract/             # 会话级提取指针
+        └── {session_id}.json # last_msg_id / last_extract_ts
 ```
 
 ### 2.2 条目文件格式
@@ -266,7 +270,7 @@ if sm is not None and memory_enabled(agent.workspace_uuid or ""):
 
 ### 4.5 memory_enabled 开关
 
-- 存储于 `data/projects/{uuid}/setting.json`（空 uuid 为 `workspace/setting.json`）的 `memory_enabled` 字段。
+- 存储于 `data/cili/workspaces.json` 索引中对应工作区条目的 `memory_enabled` 字段（`find_workspace_entry()` 读取）。
 - **缺省 False**——纯工作区隔离，除非用户在记忆管理页显式开启。
 - 控制范围：回合后提取钩子（§4.1）、cron/manual 整合 `consolidate_all` 的工作区过滤（§5.1）。关闭时两者都不执行。
 
@@ -282,7 +286,7 @@ if sm is not None and memory_enabled(agent.workspace_uuid or ""):
 | 手动立即整合 | Web 记忆管理页「立即整合」按钮 → `POST /memory/consolidate` | `limit=20, max_batches=4` |
 | 手动工具触发 | `memory(action="consolidate")` → `consolidate_all()` | 全工作区 |
 
-`consolidate_all()` 扫描 `data/projects/` 下带 `memory/` 的工作区，过滤掉 `memory_enabled=false` 的，逐个整合并返回每工作区结果。
+`consolidate_all()` 遍历 `data/cili/workspaces.json` 索引（`load_workspaces_index()`，排除 system），筛出带 `.cili/memory/` 的工作区，过滤掉 `memory_enabled=false` 的，逐个整合并返回每工作区结果。
 
 ### 5.2 输入与结构化输出
 
@@ -427,9 +431,9 @@ memory(action="consolidate")
 
 之后附检索提示：`memory(action="find", query="keyword")` 列匹配条目，`memory(action="read", name="<name>")` 读全文。
 
-### 7.2 user-profile.md 迁移回退
+### 7.2 迁移回退
 
-迁移前（preference 为空）时，回退注入 `user-profile.md` 旧用户画像内容，避免丢失原有用户画像。一旦提取/整合产生 preference 条目即切换到常驻注入。
+~~user-profile.md 回退已移除（v3.1 起）。~~ 用户画像完全由 preference 条目承载；preference 为空时不注入任何画像内容，直接跳过。
 
 ### 7.3 降级策略
 
@@ -464,7 +468,7 @@ memory(action="consolidate")
 | POST | `/api/workspaces/{uuid}/memory/entries/{name}/restore` | 从归档恢复 |
 | POST | `/api/workspaces/{uuid}/memory/entries/{name}/delete` | 永久删除（不可恢复） |
 | POST | `/api/workspaces/{uuid}/memory/consolidate` | 手动整合（max_batches=4） |
-| PUT | `/api/workspaces/{uuid}/memory/settings` | 开/关 `memory_enabled`（写入 setting.json） |
+| PUT | `/api/workspaces/{uuid}/memory/settings` | 开/关 `memory_enabled`（写入 workspaces.json 条目） |
 
 所有写操作经 `_csrf_protect` 防护；name 经正则校验。
 
@@ -524,13 +528,13 @@ memory 目录自管**独立的 git 仓库**（best-effort，失败静默跳过�
 
 ### 核心设计
 
-- **存储位置**：`data/projects/{uuid}/memory/`，纯文件、无数据库。
+- **存储位置**：`{workspace_directory}/.cili/memory/`（`get_workspace_data_dir(uuid)` 解析），纯文件、无数据库。
 - **存储类型**：fact / preference / skill / reference 四类，统一 `entries/{type}/{name}.md` frontmatter 格式。
 - **定位键**：`name`（slug）全局唯一，跨类型不重复；store 按 name 原地替换。
 - **摄入日志**：journal.jsonl append-only + `.cursor` 单调游标，两端去重实现「恰好一次」。
 - **提取流水线**：回合结束后台线程 + Lite 模型结构化提取，失败 RAW 降级绝不丢内容，密钥入库前掩蔽。
 - **整合流水线**：cron 每 2 小时 + 手动立即整合，Lite 模型输出 ops 应用，成功后推游标 + git 提交；容错齐全。
-- **上下文注入**：三层——preference 常驻 + MEMORY.md 索引 + summary.md 摘要；user-profile.md 迁移回退。
+- **上下文注入**：三层——preference 常驻 + MEMORY.md 索引 + summary.md 摘要（user-profile.md 回退已移除）。
 - **检索**：find 匹配 frontmatter 按 usage_count 排序，read 读全文并递增使用计数。
 - **管理 UI**：Web 记忆管理页完整覆盖开关/整合/编辑/归档/恢复/删除/git 记录。
 - **版本控制**：memory 目录自管独立 git 仓库，提交信息为真实 diff 摘要。
@@ -550,5 +554,6 @@ memory 目录自管**独立的 git 仓库**（best-effort，失败静默跳过�
 
 ---
 
-*文档版本: v3*
+*文档版本: v3.1*
 *v3 更新: 2026-09-13 — 重写为 v3 实现：四类条目统一 entries/{type}/{name}.md 布局（替换旧 knowledge/{topic}/{date} 与 skills/{name}/skill.md）、journal + 游标提取/整合流水线、Lite 模型两阶段、git 独立仓库审计、三层上下文注入、Web 记忆管理 UI。*
+*v3.1 更新: 2026-09-21 — 记忆目录迁移至 `{workspace}/.cili/memory/`（workspaces.json 索引解析）；memory_enabled 存入 workspaces.json；user-profile.md 回退移除。*

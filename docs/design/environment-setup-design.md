@@ -10,9 +10,14 @@ Cili Agent 自动管理 Python 运行环境，强制使用 `data/deps/python/` �
 data/
 ├── cili/                # 系统数据
 │   ├── setting.json     # 全局配置
-│   └── cron.d/          # Cron 定时任务数据
-├── agents/              # 每个 agent 的完整状态
-├── tmp/                 # 统一临时目录（TEMP/TMP/TMPDIR/CILI_TMP）
+│   ├── workspaces.json  # 工作区索引（含 system 条目）
+│   ├── cron.d/          # Cron 定时任务数据
+│   └── tools/           # 工具状态数据（loop 等）
+├── .cili/               # System workspace 数据目录（directory=data/）
+│   ├── sessions/
+│   ├── memory/
+│   ├── tmp/
+│   └── approvals.json
 └── deps/
     ├── python/          # Python 运行环境（embeddable 模式）
     │   ├── python.exe   # Python 解释器
@@ -25,6 +30,9 @@ data/
     │   └── tectonic.exe
     ├── fonts/           # HarmonyOS Sans SC 中文字体（matplotlib 使用，自动下载）
     └── browser/         # Chrome profile 数据
+
+注：每个工作区的数据统一放在其 {workspace_directory}/.cili/ 下（approvals/sessions/memory/tmp），
+不再有全局 data/projects/ 与 data/tmp/。
 ```
 
 ## 初始化流程
@@ -63,14 +71,16 @@ data/
 **流程**：
 ```
 1. 创建目录结构和配置文件（_setup_directories）
-   - 创建 data/cili/、data/projects/、data/tmp/ 等目录
-   - 创建 System workspace（data/projects/system/）
-   - 设置临时目录环境变量：TEMP、TMP、TMPDIR、CILI_TMP → data/tmp/
+   - 创建 data/cili/、data/deps/ 等目录
+   - 创建 System workspace（data/.cili/，注册 "system" 条目到 data/cili/workspaces.json）
    - 生成示例配置文件 setting.example.json
 2. 初始化配置（_init_settings）
    - 若 setting.json 不存在，尝试从 ~/.claude/settings.json（或 ~/.claude.json）迁移 API Key
    - 否则创建默认配置
-3. 迁移旧会话格式（migrate_all_sessions）
+3. 迁移旧数据（_migrate_projects_to_cili）
+   - 若 data/projects/ 存在：将各工作区 sessions/memory/approvals 迁移到 {directory}/.cili/，
+     删除 user-profile.md，建 .cili/tmp/，写 workspaces.json，最后重命名 data/projects/ → data/projects.bak/
+   - 逐工作区迁移旧会话格式（migrate_sessions_dir）
 4. 检查 Git Bash（_init_git_bash：deps 优先，缺失时回退系统 Git Bash）
 5. 确保 deps Python 存在且健康（pip 可用）
 6. 安装依赖包（_install_packages）
@@ -156,16 +166,17 @@ pip install --disable-pip-version-check <package>
 - `HARMONY_FONT_DIR`: HarmonyOS Sans SC 字体目录（如果字体存在于 deps 目录，供 matplotlib 使用）
 
 **main.py 设置的变量**：
-- `TEMP`、`TMP`、`TMPDIR`、`CILI_TMP`: 全部设置为 `data/tmp/`（**遗留全局系统临时目录**，供 bash/python/tempfile 子进程环境使用；agent 文件操作请用工作区内 `.tmp/`）
-  - 确保所有工具（bash、python、tempfile 模块）使用同一个临时目录
-  - bash 中可用 `$TEMP` 或 `$TMPDIR`
-  - Python 中 `tempfile` 模块自动配置到此目录
 - `GIT_BASH_PATH`: _init_git_bash() 优先设置为 data/deps/git/bin/bash.exe；deps 缺失时回退系统 Git Bash，仅两者皆无才 FATAL 退出
 - `PYTHONNOUSERSITE`: 设置为 1，禁用用户级 site-packages，避免与系统 Python 混合
 
-**main.py 使用的变量**：
-- `GIT_BASH_PATH`: Git Bash 可执行文件路径（由 main.py 设置为 deps 路径或系统 Git Bash 路径）
-- `CILI_TMP`: 临时目录路径（由 main.py 自身设置）
+**shell.py 注入子进程的变量**（每命令级，随 `_run_bash`/`_run_pwsh` 注入）：
+- `TEMP`、`TMP`、`TMPDIR`: 系统级临时目录（`tempfile.gettempdir()`，data/tmp 已废弃），确保子进程 tempfile 有统一可写目录
+- `CILI_TMP`: 工作区临时目录 `{workspace}/.cili/tmp/`（`_workspace_tmp(workspace_uuid)` 解析，失败回落系统 temp）——技能脚本经 `$CILI_TMP` 引用中间文件
+- `LANG=C.UTF-8`、`PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`
+
+**工作区临时目录**：
+- agent 的 temp 工具写入 `{workspace}/.cili/tmp/{session_id}/`（`core/tools/temp.py`）
+- 不再有全局 `data/tmp/` 目录
 
 ## LaTeX / Tectonic 支持
 

@@ -135,7 +135,6 @@ class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 _CILI_DIR = os.path.join(_PROJECT_ROOT, "data", "cili")
 _DEPS_DIR = os.path.join(_PROJECT_ROOT, "data", "deps")
-_TMP_DIR = os.path.join(_PROJECT_ROOT, "data", "tmp")
 _DEPS_GIT_BASH = os.path.join(_DEPS_DIR, "git", "bin", "bash.exe")
 
 # Runtime Python directory (always use data/deps/python, embeddable mode)
@@ -260,34 +259,40 @@ def _create_example_config() -> None:
         print(f"[setup] Warning: failed to create example config: {e}")
 
 
+def _ensure_system_workspace() -> None:
+    """确保 workspaces.json 中存在 system 工作区条目，并创建 data/.cili/。
+
+    system 工作区：directory = data/（与其他工作区一致，数据放 {directory}/.cili/）。
+    """
+    try:
+        from core.config import find_workspace_entry, upsert_workspace_entry, SYSTEM_DATA_DIR
+        if find_workspace_entry("system"):
+            return
+        system_data = SYSTEM_DATA_DIR
+        (system_data / "sessions").mkdir(parents=True, exist_ok=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        upsert_workspace_entry({
+            "uuid": "system",
+            "workspace_name": "System",
+            "directory": str(Path(_PROJECT_ROOT) / "data"),
+            "created_at": now,
+            "updated_at": now,
+            "system": True,  # Mark as system workspace
+        })
+        print(f"[setup] System workspace created: {system_data}")
+    except Exception as e:
+        print(f"[setup] Warning: failed to create system workspace: {e}")
+
+
 def _setup_directories() -> None:
-    """Create basic directories."""
+    """Create basic directories and ensure workspace index exists."""
     print("[setup] Creating directories...")
     os.makedirs(_CILI_DIR, exist_ok=True)
-    os.makedirs(os.path.join(_PROJECT_ROOT, "data", "projects"), exist_ok=True)
 
-    # System workspace: UUID "system", cwd = data/
-    system_ws_dir = os.path.join(_PROJECT_ROOT, "data", "projects", "system")
-    os.makedirs(os.path.join(system_ws_dir, "sessions"), exist_ok=True)
-    system_config = os.path.join(system_ws_dir, "setting.json")
-    if not os.path.exists(system_config):
-        with open(system_config, "w", encoding="utf-8") as f:
-            json.dump({
-                "workspace_name": "System",
-                "directory": os.path.join(_PROJECT_ROOT, "data"),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "system": True,  # Mark as system workspace
-            }, f, indent=2, ensure_ascii=False)
+    # 工作区索引 + system 工作区（data/.cili/）
+    _ensure_system_workspace()
 
     os.makedirs(os.path.join(_PROJECT_ROOT, "workspace"), exist_ok=True)
-
-    # 统一临时目录：创建 data/tmp 并注入环境变量
-    os.makedirs(_TMP_DIR, exist_ok=True)
-    os.environ["TEMP"] = _TMP_DIR
-    os.environ["TMP"] = _TMP_DIR
-    os.environ["TMPDIR"] = _TMP_DIR
-    os.environ["CILI_TMP"] = _TMP_DIR
 
     _create_example_config()
 
@@ -366,29 +371,122 @@ def _init_settings() -> None:
         print(f"[setup] Warning: failed to create settings: {e}")
 
 
-def _migrate_agents_to_projects() -> None:
-    """迁移旧 data/agents 目录到 data/projects。
+def _move_if_exists(src: str | os.PathLike, dst: str | os.PathLike) -> bool:
+    """移动文件/目录（若源存在）。返回是否移动成功。
 
-    如果 data/agents 存在但 data/projects 不存在，则重命名目录。
-    如果两者都存在，保留 data/projects 并警告用户。
+    若目标目录已存在则逐项合并内容（跳过同名条目，避免覆盖新数据），
+    防止 shutil.move 在目标存在时把源整体移入目标产生嵌套目录。
     """
-    agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
+    if not os.path.exists(src):
+        return False
+    try:
+        if os.path.exists(dst):
+            if os.path.isdir(dst) and os.path.isdir(src):
+                # 目标目录已存在：合并内容（跳过同名条目，避免覆盖新数据），最后删除空源目录
+                moved = False
+                for child in os.listdir(src):
+                    s = os.path.join(src, child)
+                    d = os.path.join(dst, child)
+                    if not os.path.exists(d):
+                        shutil.move(s, d)
+                        moved = True
+                if moved:
+                    try:
+                        os.rmdir(src)  # 仍有被跳过的同名条目时可能失败，忽略即可
+                    except OSError:
+                        pass
+                return moved
+            # 目标已存在（文件或类型不匹配）：跳过，保留现有目标
+            return False
+        shutil.move(src, dst)
+        return True
+    except OSError as e:
+        print(f"[setup] Warning: failed to move {src} -> {dst}: {e}")
+        return False
+
+
+def _migrate_projects_to_cili() -> None:
+    """迁移旧 data/projects/ 到各工作区 {directory}/.cili/（一次性，启动时自动执行）。
+
+    检测 data/projects/ 存在则执行：
+    - 每个 uuid 子目录：读 setting.json 获取 directory
+      - directory 有效：移动 sessions/ memory/ approvals.json → {directory}/.cili/，
+        删除 user-profile.md（已废弃，用户画像由 memory/preference 承载），创建 tmp/
+      - directory 无效：移到 data/cili/orphaned/{uuid}/ 保留数据
+    - system 工作区：directory = data/，数据放 data/.cili/
+    - 汇总写入 data/cili/workspaces.json
+    - 重命名 data/projects/ → data/projects.bak/（保留备份，用户确认后手动删除）
+    """
     projects_dir = os.path.join(_PROJECT_ROOT, "data", "projects")
 
-    if not os.path.exists(agents_dir):
-        return  # 旧目录不存在，无需迁移
+    # 更早的遗留：data/agents → data/projects（若两者都无）
+    agents_dir = os.path.join(_PROJECT_ROOT, "data", "agents")
+    if os.path.isdir(agents_dir) and not os.path.isdir(projects_dir):
+        try:
+            os.rename(agents_dir, projects_dir)
+            print("[setup] Migrated data/agents -> data/projects (legacy)")
+        except OSError as e:
+            print(f"[setup] Warning: failed to migrate data/agents: {e}")
 
-    if os.path.exists(projects_dir):
-        print(f"[setup] Directory data/projects already exists, keeping it.")
-        print(f"[setup] Warning: data/agents also exists. You can remove it manually if no longer needed.")
-        return
+    if not os.path.isdir(projects_dir):
+        return  # 已完成迁移或全新安装
+
+    print("[setup] Detected legacy data/projects/, migrating to workspace .cili/ directories...")
 
     try:
-        os.rename(agents_dir, projects_dir)
-        print(f"[setup] Migrated data/agents -> data/projects")
-    except Exception as e:
-        print(f"[setup] Warning: failed to migrate data/agents to data/projects: {e}")
-        print(f"[setup] You can manually rename data/agents to data/projects")
+        from core.config import upsert_workspace_entry, SYSTEM_DATA_DIR
+    except ImportError:
+        print("[setup] Warning: core.config unavailable, skipping migration")
+        return
+
+    orphaned_dir = os.path.join(_CILI_DIR, "orphaned")
+
+    for item in sorted(os.listdir(projects_dir)):
+        child = os.path.join(projects_dir, item)
+        if not os.path.isdir(child) or item.startswith('.'):
+            continue
+        uuid = item
+        ws_config = {}
+        setting_path = os.path.join(child, "setting.json")
+        if os.path.isfile(setting_path):
+            try:
+                with open(setting_path, "r", encoding="utf-8") as f:
+                    ws_config = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[setup] Warning: failed to read {setting_path}: {e}")
+
+        directory = ws_config.get("directory", "")
+        ws_config["uuid"] = uuid
+
+        # system 工作区：directory = data/，数据放 data/.cili/
+        if uuid == "system":
+            directory = str(Path(_PROJECT_ROOT) / "data")
+            ws_config["directory"] = directory
+            target = SYSTEM_DATA_DIR
+        elif directory and os.path.isdir(directory):
+            target = Path(directory) / ".cili"
+        else:
+            # 孤立数据（directory 无效）：保留到 data/cili/orphaned/{uuid}/
+            target = Path(orphaned_dir) / uuid
+            ws_config["directory"] = ""
+            print(f"[setup] Workspace {uuid} has invalid directory {directory!r}, moved to orphaned")
+
+        target.mkdir(parents=True, exist_ok=True)
+        _move_if_exists(os.path.join(child, "sessions"), target / "sessions")
+        _move_if_exists(os.path.join(child, "memory"), target / "memory")
+        _move_if_exists(os.path.join(child, "approvals.json"), target / "approvals.json")
+        # user-profile.md 已废弃，不迁移
+        (target / "tmp").mkdir(exist_ok=True)
+        upsert_workspace_entry(ws_config)
+        print(f"[setup] Migrated workspace {uuid} -> {target}")
+
+    # 重命名旧目录为备份（非直接删除）
+    backup = os.path.join(_PROJECT_ROOT, "data", "projects.bak")
+    try:
+        os.rename(projects_dir, backup)
+        print("[setup] Legacy data/projects/ renamed to data/projects.bak/ (remove manually after verification)")
+    except OSError as e:
+        print(f"[setup] Warning: failed to rename data/projects/ to data/projects.bak/: {e}")
 
 
 def _check_deps_python_healthy() -> bool:
@@ -993,8 +1091,8 @@ def _prepare_environment(args: argparse.Namespace) -> None:
     _setup_logging()
     logger.info("日志系统已初始化")
 
-    # 迁移旧 data/agents 目录到 data/projects（如需要），须在创建目录前执行
-    _migrate_agents_to_projects()
+    # 迁移旧 data/projects/ 到各工作区 .cili/（如需要），须在创建目录前执行
+    _migrate_projects_to_cili()
 
     # Setup directories and settings
     _setup_directories()
@@ -1002,9 +1100,12 @@ def _prepare_environment(args: argparse.Namespace) -> None:
 
     # Migrate old session format to new format (optional, skip if missing)
     try:
-        from core.migration import migrate_all_sessions
-        projects_dir = os.path.join(_PROJECT_ROOT, "data", "projects")
-        migrated = migrate_all_sessions(Path(projects_dir))
+        from core.migration import migrate_sessions_dir
+        from core.config import load_workspaces_index, get_workspace_data_dir
+        migrated = 0
+        for entry in load_workspaces_index():
+            uuid = entry.get("uuid", "")
+            migrated += migrate_sessions_dir(get_workspace_data_dir(uuid) / "sessions")
         if migrated > 0:
             print(f"[migration] Migrated {migrated} session(s) to new format")
     except ImportError:

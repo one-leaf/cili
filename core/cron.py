@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from core.config import PROJECT_ROOT, DATA_DIR, PROJECTS_DIR
+from core.config import DATA_DIR
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -401,10 +401,9 @@ class CronTask:
 
         # 2. 获取 workspace 的实际工作目录（用于 agent cwd）
         workspace_dir = ws_data_dir  # fallback
-        if ws_uuid != "system":
-            ws_config = load_workspace_config(ws_uuid)
-            if ws_config:
-                workspace_dir = ws_config.get("directory", ws_data_dir)
+        ws_config = load_workspace_config(ws_uuid)
+        if ws_config:
+            workspace_dir = ws_config.get("directory", ws_data_dir)
 
         # 3. 查找或创建 cron session
         cron_session_id = self._resolve_cron_session(sessions_dir)
@@ -444,10 +443,9 @@ class CronTask:
             return {"status": "error", "error": str(e), "workspace_uuid": ws_uuid}
 
     def _resolve_workspace_dir(self, ws_uuid: str) -> str:
-        """解析 workspace 目录。System workspace → data/"""
-        if ws_uuid == "system":
-            return str(DATA_DIR)
-        return str(PROJECTS_DIR / ws_uuid)
+        """解析 workspace 数据目录（{directory}/.cili/，session 存放处）。"""
+        from core.config import get_workspace_data_dir
+        return str(get_workspace_data_dir(ws_uuid))
 
     def _resolve_cron_session(self, sessions_dir: Path) -> str:
         """查找或创建 cron session。

@@ -27,7 +27,8 @@ from core.agent import Agent
 from core.base_agent import RETRY_CLEAR_SENTINEL
 from core.config import (
     load_config, PROJECT_ROOT, load_workspace_config, save_workspace_config,
-    GLOBAL_CONFIG_PATH,
+    GLOBAL_CONFIG_PATH, get_workspace_data_dir, load_workspaces_index,
+    find_workspace_entry,
 )
 from core.event_bus import get_event_bus
 from core.message_bus import get_message_bus
@@ -51,8 +52,6 @@ _agents_lock = asyncio.Lock()
 
 # Base directories
 WEB_DIR = Path(__file__).parent.resolve()
-WORKSPACE_DATA_DIR = PROJECT_ROOT / "data" / "projects"
-WORKSPACE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Working directory for default workspace
 WORKSPACE_DIR = PROJECT_ROOT / "workspace"
@@ -112,15 +111,16 @@ def _csrf_protect(request: Request) -> None:
 
 
 def _require_workspace(workspace_uuid: str) -> Path:
-    """FastAPI dependency: validate workspace exists, return its data dir.
+    """FastAPI dependency: validate workspace exists, return its .cili data dir.
 
     Usage: ws_dir: Path = Depends(_require_workspace)
     """
     if not _SAFE_ID_RE.match(workspace_uuid) or '..' in workspace_uuid:
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
-    ws_dir = WORKSPACE_DATA_DIR / workspace_uuid
-    if not ws_dir.exists():
+    if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    ws_dir = get_workspace_data_dir(workspace_uuid)
+    ws_dir.mkdir(parents=True, exist_ok=True)
     return ws_dir
 
 
@@ -133,21 +133,21 @@ def _ensure_default_workspace() -> str | None:
     """Ensure default workspace exists, create if not. Returns workspace UUID or None on failure."""
     try:
         # Check if any workspace exists with name "Default" or "default" (legacy)
-        for item in WORKSPACE_DATA_DIR.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                config = load_workspace_config(item.name)
-                if config and config.get("workspace_name") in ("Default", "default"):
-                    # Migrate legacy "default" to "Default"
-                    if config.get("workspace_name") == "default":
-                        config["workspace_name"] = "Default"
-                        save_workspace_config(item.name, config)
-                        logger.info(f"Migrated default workspace name: {item.name}")
-                    logger.info(f"Default workspace found: {item.name}")
-                    return item.name
+        for entry in load_workspaces_index():
+            name = entry.get("workspace_name")
+            uuid = entry.get("uuid")
+            if name in ("Default", "default") and uuid:
+                # Migrate legacy "default" to "Default"
+                if name == "default":
+                    entry["workspace_name"] = "Default"
+                    save_workspace_config(uuid, entry)
+                    logger.info(f"Migrated default workspace name: {uuid}")
+                logger.info(f"Default workspace found: {uuid}")
+                return uuid
 
         # Create default workspace
         workspace_uuid = _new_short_id()
-        ws_data_dir = WORKSPACE_DATA_DIR / workspace_uuid
+        ws_data_dir = get_workspace_data_dir(workspace_uuid)
         ws_data_dir.mkdir(parents=True, exist_ok=True)
         (ws_data_dir / "sessions").mkdir(exist_ok=True)
 
@@ -201,21 +201,17 @@ def _get_workspace_info(workspace_uuid: str) -> dict | None:
 
 
 def _list_all_workspaces() -> list[dict]:
-    """Scan data/projects/ and return all workspaces."""
+    """Read all workspaces from workspaces.json index."""
     workspaces = []
-    if not WORKSPACE_DATA_DIR.exists():
-        return workspaces
-    for item in WORKSPACE_DATA_DIR.iterdir():
-        if item.is_dir() and not item.name.startswith('.'):
-            info = _get_workspace_info(item.name)
-            if info:
-                workspaces.append({
-                    "uuid": item.name,
-                    "name": info.get("workspace_name", item.name),
-                    "directory": info.get("directory", ""),
-                    "created_at": info.get("created_at", ""),
-                    "system": info.get("system", False),
-                })
+    for entry in load_workspaces_index():
+        uuid = entry.get("uuid", "")
+        workspaces.append({
+            "uuid": uuid,
+            "name": entry.get("workspace_name", uuid),
+            "directory": entry.get("directory", ""),
+            "created_at": entry.get("created_at", ""),
+            "system": entry.get("system", False),
+        })
     return workspaces
 
 

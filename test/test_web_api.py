@@ -100,32 +100,35 @@ class TestValidateWorkspaceUuid:
 
 
 class TestListAllWorkspaces:
-    """_list_all_workspaces() scans workspace directory."""
+    """_list_all_workspaces() reads workspaces.json index."""
 
-    def test_returns_empty_when_no_workspaces(self, tmp_path):
-        """Empty directory returns empty list."""
+    def test_returns_empty_when_no_workspaces(self, tmp_path, monkeypatch):
+        """Empty index returns empty list."""
+        import core.config as config_mod
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
         import web.deps as api_module
-        original = api_module.WORKSPACE_DATA_DIR
-        try:
-            api_module.WORKSPACE_DATA_DIR = tmp_path
-            result = api_module._list_all_workspaces()
-            assert result == []
-        finally:
-            api_module.WORKSPACE_DATA_DIR = original
+        result = api_module._list_all_workspaces()
+        assert result == []
 
-    def test_skips_hidden_directories(self, tmp_path):
-        """Directories starting with '.' are skipped."""
-        (tmp_path / ".hidden").mkdir()
-        (tmp_path / "visible").mkdir()
+    def test_reads_index_entries(self, tmp_path, monkeypatch):
+        """Index entries are returned with their metadata."""
+        import core.config as config_mod
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        config_mod.upsert_workspace_entry({
+            "uuid": "ws1",
+            "workspace_name": "WS One",
+            "directory": str(tmp_path / "ws1"),
+            "created_at": "2026-09-21 10:00:00",
+        })
         import web.deps as api_module
-        original = api_module.WORKSPACE_DATA_DIR
-        try:
-            api_module.WORKSPACE_DATA_DIR = tmp_path
-            result = api_module._list_all_workspaces()
-            # .hidden should not appear (visible has no config, so also skipped)
-            assert all(w["uuid"] != ".hidden" for w in result)
-        finally:
-            api_module.WORKSPACE_DATA_DIR = original
+        result = api_module._list_all_workspaces()
+        assert result == [{
+            "uuid": "ws1",
+            "name": "WS One",
+            "directory": str(tmp_path / "ws1"),
+            "created_at": "2026-09-21 10:00:00",
+            "system": False,
+        }]
 
 
 class TestEvictIdleAgent:

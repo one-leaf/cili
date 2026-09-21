@@ -17,7 +17,7 @@ from core.tools.background import (
 from core.tools.result import ToolResult
 from core.tools.shell import (
     ShellMixin,
-    _GIT_BASH_PATH, _PROJECT_ROOT, _PWSH_PATH, _TMP_DIR,
+    _GIT_BASH_PATH, _PROJECT_ROOT, _PWSH_PATH,
     _VENV_DIR, _VENV_SCRIPTS,
     _decode_ansi_c, _expand_ansi_c_quotes, _find_git_bash, _find_pwsh,
     _is_word_char, _strip_dq_string, _strip_shell_strings, _to_bash_path,

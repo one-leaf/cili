@@ -9,7 +9,7 @@
 Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原生 JavaScript（无框架）实现交互界面。
 
 **核心特性**：
-- **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置
+- **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置。工作区元数据集中存储在 `data/cili/workspaces.json` 索引（uuid/workspace_name/directory/created_at/updated_at/memory_enabled/system），各工作区数据位于其 `{directory}/.cili/`（sessions/memory/tmp/approvals.json），不再有全局 `data/projects/`
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 Master Agent，自动清理最久未访问的
 - **特殊命令**：/help、/status、/goal 在服务端处理，不经过 LLM
@@ -114,6 +114,8 @@ GET /api/workspaces
   ]
 }
 ```
+
+工作区列表直接读取 `data/cili/workspaces.json` 索引（`load_workspaces_index()`），不再扫描 `data/projects/` 目录。`memory_enabled` 等额外元数据保留在索引条目中，会话数据目录为 `{directory}/.cili/`（`get_workspace_data_dir()` 解析）。
 
 #### 创建工作区
 
@@ -687,7 +689,7 @@ Content-Type: application/json
 }
 ```
 
-开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制），响应 `{"ok": true, "memory_enabled": ...}`。
+开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制），响应 `{"ok": true, "memory_enabled": ...}`。`memory_enabled` 持久化到 `data/cili/workspaces.json` 中对应工作区条目（不再存 setting.json）。
 
 > 上述写端点（PUT/POST）均调用 `_csrf_protect()` 做 CSRF 校验（W6）。
 
@@ -972,9 +974,9 @@ main.py
 
 web_api.py（模块导入时）
 │
-├─ 创建目录结构               # WORKSPACE_DATA_DIR, WORKSPACE_DIR, CHROME_DIR
+├─ 创建目录结构               # WORKSPACE_DIR, CHROME_DIR（数据目录由 get_workspace_data_dir() 按需创建）
 │
-├─ _ensure_default_workspace()  # 创建默认工作区（模块级执行）
+├─ _ensure_default_workspace()  # 创建默认工作区（写 data/cili/workspaces.json 索引 + {directory}/.cili/sessions/）
 │
 ├─ _auto_init_global_config()   # 验证全局配置（模块级执行）
 │
@@ -1172,10 +1174,11 @@ def _mask_api_key(config: dict) -> dict:
 | `web/static/style.css` | 样式 |
 | `core/agent.py` | 统一 Agent（master 角色，被 web_api 调用） |
 | `core/session.py` | SessionManager（数据层） |
+| `core/config.py` | 工作区索引（`load_workspaces_index`/`save_workspaces_index`/`find_workspace_entry`/`get_workspace_data_dir`） |
 
 ---
 
-**文档版本**: v1.3  
+**文档版本**: v1.4  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-13  
+**更新时间**: 2026-09-21  
 **状态**: 已实现

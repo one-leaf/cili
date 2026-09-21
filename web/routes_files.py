@@ -16,11 +16,11 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.config import load_workspace_config
+from core.config import load_workspace_config, load_workspaces_index
 
 from web.deps import (
     _csrf_protect, _get_workspace_info, _LOCALHOST_IPS,
-    _validate_workspace_uuid, WORKSPACE_DATA_DIR,
+    _validate_workspace_uuid,
 )
 
 router = APIRouter()
@@ -57,20 +57,13 @@ class FileUpdateRequest(BaseModel):
 # ----- Workspace Files -----
 
 def _find_workspace_for_file(file_path: str) -> tuple[str, Path] | None:
-    """Scan all workspaces and find which one contains the given relative file path.
+    """Scan all workspaces (from workspaces.json) and find which one contains the given relative file path.
 
     Returns (workspace_uuid, full_file_path) or None if not found in any workspace.
     """
-    if not WORKSPACE_DATA_DIR.exists():
-        return None
-
-    for item in WORKSPACE_DATA_DIR.iterdir():
-        if not item.is_dir() or item.name.startswith('.'):
-            continue
-        info = _get_workspace_info(item.name)
-        if not info:
-            continue
-        workspace_dir = info.get("directory", "")
+    for entry in load_workspaces_index():
+        uuid = entry.get("uuid", "")
+        workspace_dir = entry.get("directory", "")
         if not workspace_dir:
             continue
         workspace_path = Path(workspace_dir).resolve()
@@ -79,7 +72,7 @@ def _find_workspace_for_file(file_path: str) -> tuple[str, Path] | None:
         if not file_full_path.is_relative_to(workspace_path):
             continue
         if file_full_path.exists() and file_full_path.is_file():
-            return (item.name, file_full_path)
+            return (uuid, file_full_path)
     return None
 
 

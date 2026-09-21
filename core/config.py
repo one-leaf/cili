@@ -291,10 +291,18 @@ class Config:
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
 DATA_ROOT = PROJECT_ROOT / "data"
 DATA_DIR = PROJECT_ROOT / "data" / "cili"
-PROJECTS_DIR = PROJECT_ROOT / "data" / "projects"
 
 # Global config path: data/cili/setting.json
 GLOBAL_CONFIG_PATH = DATA_DIR / "setting.json"
+
+# Workspace index: data/cili/workspaces.json (all workspace metadata in one file)
+WORKSPACES_JSON = DATA_DIR / "workspaces.json"
+
+# System workspace data dir (directory = data/, data dir = data/.cili/)
+SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
+
+# Legacy workspace data dir (pre-refactor), used for one-time migration only
+LEGACY_PROJECTS_DIR = PROJECT_ROOT / "data" / "projects"
 
 
 def validate_workspace_name(name: str) -> str | None:
@@ -313,25 +321,77 @@ def validate_workspace_name(name: str) -> str | None:
     return None
 
 
+def load_workspaces_index() -> list[dict]:
+    """Load workspace index from data/cili/workspaces.json. Returns [] if missing."""
+    if not WORKSPACES_JSON.exists():
+        return []
+    try:
+        with open(WORKSPACES_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        logger.warning(f"Invalid workspaces.json format (expected list): {WORKSPACES_JSON}")
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read {WORKSPACES_JSON}: {e}")
+        return []
+
+
+def save_workspaces_index(workspaces: list[dict]) -> bool:
+    """Save workspace index to data/cili/workspaces.json (atomic write)."""
+    try:
+        atomic_write_json(WORKSPACES_JSON, workspaces)
+        return True
+    except OSError as e:
+        logger.warning(f"Failed to save {WORKSPACES_JSON}: {e}")
+        return False
+
+
+def find_workspace_entry(workspace_uuid: str) -> dict | None:
+    """Find a workspace entry by uuid in workspaces.json."""
+    for entry in load_workspaces_index():
+        if entry.get("uuid") == workspace_uuid:
+            return entry
+    return None
+
+
+def upsert_workspace_entry(entry: dict) -> bool:
+    """Add or update a workspace entry in workspaces.json (keyed by uuid)."""
+    workspaces = load_workspaces_index()
+    uuid = entry.get("uuid")
+    for i, e in enumerate(workspaces):
+        if e.get("uuid") == uuid:
+            workspaces[i] = entry
+            break
+    else:
+        workspaces.append(entry)
+    return save_workspaces_index(workspaces)
+
+
+def remove_workspace_entry(workspace_uuid: str) -> bool:
+    """Remove a workspace entry from workspaces.json. Idempotent."""
+    workspaces = load_workspaces_index()
+    filtered = [e for e in workspaces if e.get("uuid") != workspace_uuid]
+    if len(filtered) == len(workspaces):
+        return True  # not found
+    return save_workspaces_index(filtered)
+
+
 def get_workspace_data_dir(workspace_uuid: str) -> Path:
-    """Get the data directory for a workspace: data/projects/{uuid}/ or workspace/ if empty."""
+    """Get the .cili data directory for a workspace: {directory}/.cili/.
+
+    - 空 uuid：PROJECT_ROOT/workspace/.cili/
+    - system：data/.cili/（directory = data/，找不到条目时兜底）
+    - 其他：从 workspaces.json 读 directory，返回 {directory}/.cili/
+    """
     if not workspace_uuid:
-        return PROJECT_ROOT / "workspace"
-    return PROJECTS_DIR / workspace_uuid
-
-
-def get_workspace_config_path(workspace_uuid: str) -> Path:
-    """Get the workspace config path: data/projects/{uuid}/setting.json or workspace/setting.json if empty."""
-    if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / "setting.json"
-    return PROJECTS_DIR / workspace_uuid / "setting.json"
-
-
-def get_user_profile_path(workspace_uuid: str) -> Path:
-    """Get the user profile path: data/projects/{uuid}/user-profile.md or workspace/user-profile.md if empty."""
-    if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / "user-profile.md"
-    return PROJECTS_DIR / workspace_uuid / "user-profile.md"
+        return PROJECT_ROOT / "workspace" / ".cili"
+    entry = find_workspace_entry(workspace_uuid)
+    if entry and entry.get("directory"):
+        return Path(entry["directory"]) / ".cili"
+    if workspace_uuid == "system":
+        return SYSTEM_DATA_DIR
+    return PROJECT_ROOT / "workspace" / ".cili"
 
 
 def load_global_config() -> dict:
@@ -366,31 +426,25 @@ def load_config(model_override: str | None = None) -> Config:
     return Config.from_global_config(global_config, model_override)
 
 
-def load_workspace_config(workspace_uuid: str) -> dict:
-    """Load workspace metadata from data/projects/{uuid}/setting.json.
+def get_workspace_config(workspace_uuid: str) -> dict:
+    """Load workspace metadata from workspaces.json index.
 
-    Returns dict with workspace_name, directory, created_at, updated_at.
+    Returns dict with workspace_name, directory, created_at, updated_at, or {} if not found.
     """
-    config_path = get_workspace_config_path(workspace_uuid)
-    if not config_path.exists():
-        return {}
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to read {config_path}: {e}")
-        return {}
+    entry = find_workspace_entry(workspace_uuid)
+    return entry or {}
 
 
 def save_workspace_config(workspace_uuid: str, config: dict) -> bool:
-    """Save workspace metadata to data/projects/{uuid}/setting.json."""
-    config_path = get_workspace_config_path(workspace_uuid)
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        return True
-    except OSError as e:
-        logger.warning(f"Failed to save {config_path}: {e}")
-        return False
+    """Save workspace metadata into workspaces.json (keyed by uuid)."""
+    config["uuid"] = workspace_uuid
+    return upsert_workspace_entry(config)
+
+
+def load_workspace_config(workspace_uuid: str) -> dict:
+    """Load workspace metadata from workspaces.json index.
+
+    Backward-compatible alias for get_workspace_config(): returns the
+    workspaces.json entry dict, or {} if not found.
+    """
+    return get_workspace_config(workspace_uuid)

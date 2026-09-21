@@ -10,6 +10,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any
@@ -22,7 +23,8 @@ from core.tools.result import ToolResult
 _PROJECT_ROOT = str(PROJECT_ROOT)
 _VENV_DIR = os.path.join(_PROJECT_ROOT, "data", "deps", "python")
 _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
-_TMP_DIR = os.path.join(_PROJECT_ROOT, "data", "tmp")
+# 系统级临时目录（子进程 TEMP）：data/tmp 已废弃，回落系统标准 temp
+_TMP_DIR = tempfile.gettempdir()
 
 
 def _to_bash_path(path: str) -> str:
@@ -278,6 +280,19 @@ class ShellMixin:
     """
 
     @staticmethod
+    def _workspace_tmp(workspace_uuid: str) -> str:
+        """工作区临时目录 {workspace}/.cili/tmp，供 CILI_TMP 注入子进程。
+
+        workspace_uuid 为空或解析失败时回落系统 temp，保证子进程总有一个
+        可写的临时目录（data/tmp 已废弃，技能脚本通过 $CILI_TMP 引用）。
+        """
+        try:
+            from core.config import get_workspace_data_dir
+            return str(get_workspace_data_dir(workspace_uuid) / "tmp")
+        except Exception:
+            return _TMP_DIR
+
+    @staticmethod
     def _kill_process_tree(proc: subprocess.Popen) -> None:
         """Kill a process and all its descendants."""
         pid = proc.pid
@@ -335,6 +350,7 @@ class ShellMixin:
                     paths.append(_VENV_DIR)
                 if _VENV_SCRIPTS:
                     paths.append(_VENV_SCRIPTS)
+                cili_tmp = self._workspace_tmp(self.workspace_uuid)
                 env_setup = ""
                 if paths:
                     path_str = ";".join(paths)
@@ -343,6 +359,7 @@ class ShellMixin:
                     f'$env:TEMP = "{_TMP_DIR}"; '
                     f'$env:TMP = "{_TMP_DIR}"; '
                     f'$env:TMPDIR = "{_TMP_DIR}"; '
+                    f'$env:CILI_TMP = "{cili_tmp}"; '
                     f'$env:LANG = "C.UTF-8"; '
                     f'$env:PYTHONIOENCODING = "utf-8"; '
                     f'$env:PYTHONUTF8 = "1"; '
@@ -357,20 +374,23 @@ class ShellMixin:
                 if _VENV_SCRIPTS:
                     paths.append(_to_bash_path(_VENV_SCRIPTS))
 
-                # 统一临时目录（bash 格式）
+                # 统一临时目录（bash 格式）；CILI_TMP 指向工作区 .cili/tmp
                 tmp_bash = _to_bash_path(_TMP_DIR)
+                cili_tmp_bash = _to_bash_path(self._workspace_tmp(self.workspace_uuid))
 
                 if paths:
                     path_str = ":".join(paths)
                     full_command = (
                         f'export PATH="{path_str}:$PATH" '
                         f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                        f'CILI_TMP="{cili_tmp_bash}" '
                         f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
                         f'&& {command}'
                     )
                 else:
                     full_command = (
                         f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                        f'CILI_TMP="{cili_tmp_bash}" '
                         f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
                         f'&& {command}'
                     )

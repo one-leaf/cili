@@ -426,7 +426,7 @@ for url in urls:
 
 ## Key Rules
 
-1. **Temp files must live under `$CILI_TMP/`** — All split chunks, intermediate results, state files, and temporary text MUST be written inside `$CILI_TMP/{task_id}/` (i.e., `data/tmp/{task_id}/`). Never scatter temp files in the working directory. Only the final output is written to the user-specified path. On failure the user can simply delete the entire `data/tmp/` directory to clean up.
+1. **Temp files must live under `$CILI_TMP/`** — All split chunks, intermediate results, state files, and temporary text MUST be written inside `$CILI_TMP/{task_id}/` (i.e., the workspace `.cili/tmp/{task_id}/` directory; `$CILI_TMP` resolves to `{workspace}/.cili/tmp/`). Never scatter temp files in the working directory. Only the final output is written to the user-specified path. On failure the user can simply delete the workspace `.cili/tmp/` directory to clean up.
 2. **Agent orchestrates, Python manages state** — The agent (Worker) calls tools step by step. Python handles state management, file splitting, and result merging. Never let Python loop over slow external calls.
 3. **Process each chunk in-context** — `read` the chunk, process the text directly (the agent is the LLM), then `write` the result. Never invoke the LLM from within Python code.
 4. **Single external call per Python invocation** — Each Python call processes at most 1 slow external operation (HTTP request, etc.) then returns; the agent handles loop orchestration.

@@ -338,14 +338,13 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
 | **Operating System** | `platform.system() + platform.release()` |
 | **Shell Environment** | bash / pwsh / python 三工具分工表、路径格式转换规则 |
 | **Python Environment** | 必须使用 python 工具，虚拟环境自动激活 |
-| **Temporary Files** | 工作区临时目录（`{cwd}/.tmp`），写/删限工作区、越界审批；`CILI_TMP` 为遗留全局系统临时目录 |
-| **Memory** | 内存目录（workspace 的 memory 目录），v3 三层注入实际内容（preference 常驻 + MEMORY.md 索引 + summary.md 摘要），`memory(action='find')` 检索示例 |
-| **User Profile** | 迁移回退：preference 常驻段为空时，加载 user-profile.md（跳过 YAML frontmatter 取正文） |
+| **Temporary Files** | 工作区临时目录（`{workspace}/.cili/tmp`，经 `get_workspace_data_dir()` 解析），写/删限工作区、越界审批；temp 工具创建 `{workspace}/.cili/tmp/{session_id}/`；子进程 `$CILI_TMP` 指向该工作区 tmp |
+| **Memory** | 内存目录（workspace 的 `.cili/memory/`），v3 三层注入实际内容（preference 常驻 + MEMORY.md 索引 + summary.md 摘要），`memory(action='find')` 检索示例 |
 | **Current Time** | 当前日期，提示用于解释相对/时效性请求 |
 
 每次调用重新生成（含当前时间），作为独立 user 消息（context 层）注入，不进入 system prompt，不影响其缓存。
 
-**记忆注入（v3 三层）**：`_build_memory_sections()` 注入记忆目录的实际内容——① **preference 常驻段**（`### User Preferences (always-on)`，最多 10 条，过期条目附 stale 警告）；② **MEMORY.md 索引**（`### Memory Index`，全部条目的描述）；③ **summary.md 摘要**（`### Memory Summary`，截断至 2KB）。仅当 preference 为空时回退读取 workspace 的 `user-profile.md`（跳过 `---` 包裹的 YAML frontmatter 取正文），注入为 `### User Preferences (from user-profile.md)` 段。记忆系统不可用时降级为提示语，绝不阻塞请求。
+**记忆注入（v3 三层）**：`_build_memory_sections()` 注入记忆目录的实际内容——① **preference 常驻段**（`### User Preferences (always-on)`，最多 10 条，过期条目附 stale 警告）；② **MEMORY.md 索引**（`### Memory Index`，全部条目的描述）；③ **summary.md 摘要**（`### Memory Summary`，截断至 2KB）。preference 为空时不注入画像内容（user-profile.md 回退已移除）。记忆系统不可用时降级为提示语，绝不阻塞请求。
 
 ---
 
@@ -489,5 +488,5 @@ system prompt 由**静态块**构成（无动态内容），配合独立注入�
 
 ---
 
-*文档版本: v2.0*
-*最后更新: 2026-09-10*
+*文档版本: v2.1*
+*最后更新: 2026-09-21*

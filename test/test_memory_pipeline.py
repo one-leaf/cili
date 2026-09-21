@@ -5,10 +5,12 @@ RAW 降级、游标只在成功时推进、memory_enabled 工作区过滤。git 
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 from core import memory_pipeline
+from core.config import upsert_workspace_entry
 from core.memory_pipeline import (
     redact_secrets,
     memory_enabled,
@@ -21,21 +23,35 @@ from core.memory_store import Journal, MemoryStore, _find_git
 
 @pytest.fixture
 def projects_dir(tmp_path, monkeypatch):
-    """把 data/projects 重定向到临时目录，隔离真实工作区。"""
+    """把 workspaces.json 索引重定向到临时文件，隔离真实工作区。
+
+    测试工作区在 {projects_dir}/{uuid} 下，.cili/memory/ 是其记忆目录。
+    """
+    import core.config as config_mod
+    monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
     ad = tmp_path / "projects"
     ad.mkdir()
-    monkeypatch.setattr("core.config.PROJECTS_DIR", ad)
-    monkeypatch.setattr("core.memory_pipeline.PROJECTS_DIR", ad)
     return ad
 
 
 def _ws(projects_dir, uuid, *, enabled=False, has_memory=True):
-    d = projects_dir / uuid
+    """创建测试工作区目录并注册到 workspaces.json，返回工作区目录。"""
+    d = Path(projects_dir) / uuid
     d.mkdir(parents=True, exist_ok=True)
-    (d / "setting.json").write_text(json.dumps({"memory_enabled": enabled}), encoding="utf-8")
+    upsert_workspace_entry({
+        "uuid": uuid,
+        "workspace_name": f"Test {uuid}",
+        "directory": str(d),
+        "memory_enabled": enabled,
+    })
     if has_memory:
-        (d / "memory").mkdir(exist_ok=True)
+        (d / ".cili" / "memory").mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _mem(projects_dir, uuid):
+    """返回该工作区的 .cili/memory 目录路径。"""
+    return Path(projects_dir) / uuid / ".cili" / "memory"
 
 
 def _messages():
@@ -99,7 +115,7 @@ class TestExtraction:
         assert r["raw"] == 0
         assert r["extracted"] == 2
 
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.pending_count() == 2
         recs = journal.read_pending(limit=10)
         assert recs[0]["type_guess"] == "preference"
@@ -118,7 +134,7 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=fake_extractor)
         assert r["skipped"] is True
         assert r["appended"] == 0
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.pending_count() == 1
 
     def test_pointer_continues_from_last_id(self, projects_dir):
@@ -147,7 +163,7 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=broken)
         assert r["raw"] == 1
         assert r["appended"] == 1
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         recs = journal.read_pending(limit=10)
         assert recs[0]["raw"] is True
         # 降级原文同样掩蔽密钥
@@ -165,7 +181,7 @@ class TestExtraction:
 class TestConsolidation:
     def _seed(self, projects_dir, uuid="ws1", content="some durable fact"):
         _ws(projects_dir, uuid, enabled=True)
-        journal = Journal(str(projects_dir / uuid / "memory"))
+        journal = Journal(str(_mem(projects_dir, uuid)))
         journal.append(key="extract:s1:m1:0", type_guess="fact", title="Test Memory",
                        content=content, source="session")
         return journal
@@ -189,26 +205,26 @@ class TestConsolidation:
         assert ops == ["store", "skip"]
         assert r["pending_after"] == 0
 
-        store = MemoryStore(str(projects_dir / "ws1" / "memory"))
+        store = MemoryStore(str(_mem(projects_dir, "ws1")))
         fm, body = store.peek("test-memory")
         assert body.strip() == "consolidated body"
         assert fm["tags"] == ["t"]
         assert fm["source"] == "derived"
 
         # summary 已写入
-        summary = (projects_dir / "ws1" / "memory" / "summary.md").read_text(encoding="utf-8")
+        summary = (_mem(projects_dir, "ws1") / "summary.md").read_text(encoding="utf-8")
         assert "用户偏好简洁回复" in summary
         assert r["summary_len"] > 0
 
         # 游标推进到已处理记录
-        assert Journal(str(projects_dir / "ws1" / "memory")).cursor() == 1
+        assert Journal(str(_mem(projects_dir, "ws1"))).cursor() == 1
         assert "committed" in r
         if _find_git() is not None:
             assert r["committed"] is True
 
     def test_failure_leaves_cursor_untouched(self, projects_dir):
         self._seed(projects_dir)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.cursor() == 0
 
         def broken(prompt, system, schema):
@@ -234,10 +250,10 @@ class TestConsolidation:
 
         （旧行为是记 failed 不推游标，重跑同批记录会产生同样的冲突 → 确定性死锁。）
         """
-        store = MemoryStore(str(projects_dir / "ws1" / "memory"))
+        store = MemoryStore(str(_mem(projects_dir, "ws1")))
         store.store(type_="fact", name="foo", title="Foo fact", content="existing")
         self._seed(projects_dir)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.cursor() == 0
 
         def conflicting(prompt, system, schema):
@@ -249,7 +265,7 @@ class TestConsolidation:
         assert r["failed"] == []
         names = [a["name"] for a in r["applied"]]
         assert "foo-2" in names
-        fm, _ = MemoryStore(str(projects_dir / "ws1" / "memory")).peek("foo-2")
+        fm, _ = MemoryStore(str(_mem(projects_dir, "ws1"))).peek("foo-2")
         assert fm["type"] == "preference"
         assert journal.cursor() == 1
         assert journal.pending_count() == 0
@@ -257,7 +273,7 @@ class TestConsolidation:
     def test_empty_store_op_consumed(self, projects_dir):
         """空 title+content 的 store op → 无可保留内容，视为完成并推进游标，避免死锁。"""
         self._seed(projects_dir)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
 
         def empty_store(prompt, system, schema):
             return {"ops": [{"op": "store", "name": "", "type": "fact", "title": "",
@@ -280,7 +296,7 @@ class TestConsolidation:
     def test_incomplete_ops_keeps_cursor(self, projects_dir):
         """op 数 < 待整合记录数（截断丢尾部/模型少输出）→ 不推游标，记录保留供重跑。"""
         self._seed(projects_dir)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.pending_count() == 1
 
         def few(prompt, system, schema):
@@ -299,7 +315,7 @@ class TestConsolidation:
         不推游标，重跑同批记录产生同样的 op → 待整合永远不降。
         """
         self._seed(projects_dir)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         assert journal.cursor() == 0
 
         def hallucinating(prompt, system, schema):
@@ -314,7 +330,7 @@ class TestConsolidation:
         assert r["failed"] == []
         assert len(r["applied"]) == 3
         # update 退化 store 新建，内容不丢
-        fm, body = MemoryStore(str(projects_dir / "ws1" / "memory")).peek("ghost-update")
+        fm, body = MemoryStore(str(_mem(projects_dir, "ws1"))).peek("ghost-update")
         assert body.strip() == "kept content"
         assert journal.cursor() == 1
         assert journal.pending_count() == 0
@@ -322,7 +338,7 @@ class TestConsolidation:
     def test_max_batches_clears_queue(self, projects_dir):
         """max_batches>1 循环整合至清零，返回跨批聚合计数。"""
         _ws(projects_dir, "ws1", enabled=True)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         for i in range(5):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -342,7 +358,7 @@ class TestConsolidation:
     def test_default_max_batches_one(self, projects_dir):
         """缺省 max_batches=1 只处理一批（limit 条），行为与旧版一致。"""
         _ws(projects_dir, "ws1", enabled=True)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         for i in range(5):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -359,7 +375,7 @@ class TestConsolidation:
     def test_truncated_batch_splits_and_advances(self, projects_dir):
         """整批整合抛错（模拟 max_tokens 截断）时拆半重试，两半各自成功 → 全部应用并推进游标。"""
         _ws(projects_dir, "ws1", enabled=True)
-        journal = Journal(str(projects_dir / "ws1" / "memory"))
+        journal = Journal(str(_mem(projects_dir, "ws1")))
         for i in range(4):
             journal.append(key=f"extract:s1:m{i}:0", type_guess="fact",
                            title=f"Memory {i}", content=f"durable fact {i}", source="session")
@@ -414,7 +430,7 @@ class TestGating:
         _ws(projects_dir, "w2", enabled=True)
         # 两个工作区都有待整合记录，才能让回调真正被调用
         for uuid in ("w1", "w2"):
-            Journal(str(projects_dir / uuid / "memory")).append(
+            Journal(str(_mem(projects_dir, uuid))).append(
                 key=f"extract:{uuid}:m1:0", type_guess="fact", title="T", content="x"
             )
 

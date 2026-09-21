@@ -305,40 +305,45 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
     return True
 
 
-def migrate_all_sessions(workspaces_dir: Path) -> int:
-    """Migrate all session files in the workspaces directory.
+def migrate_sessions_dir(sessions_dir: Path) -> int:
+    """Migrate all session files in a single sessions directory.
 
     Returns the number of sessions migrated.
     """
     migrated = 0
-
-    # Find all workspace directories
-    if not workspaces_dir.exists():
+    if not sessions_dir.exists():
         return 0
 
+    for session_dir in sessions_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+
+        session_file = session_dir / "index.json"
+        if not session_file.exists():
+            continue
+
+        try:
+            if migrate_session_file(session_file):
+                migrated += 1
+            if migrate_session_to_new_layout(session_dir):
+                migrated += 1
+        except Exception as e:
+            logger.warning(f"Failed to migrate session {session_file}: {e}")
+
+    return migrated
+
+
+def migrate_all_sessions(workspaces_dir: Path) -> int:
+    """Legacy: migrate all session files under a workspace data container dir.
+
+    Kept for backward compatibility (e.g. data/projects/ before refactor).
+    New code should call migrate_sessions_dir() per workspace .cili/sessions/.
+    """
+    migrated = 0
+    if not workspaces_dir.exists():
+        return 0
     for workspace_dir in workspaces_dir.iterdir():
         if not workspace_dir.is_dir():
             continue
-
-        sessions_dir = workspace_dir / "sessions"
-        if not sessions_dir.exists():
-            continue
-
-        # Find all session directories
-        for session_dir in sessions_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-
-            session_file = session_dir / "index.json"
-            if not session_file.exists():
-                continue
-
-            try:
-                if migrate_session_file(session_file):
-                    migrated += 1
-                if migrate_session_to_new_layout(session_dir):
-                    migrated += 1
-            except Exception as e:
-                logger.warning(f"Failed to migrate session {session_file}: {e}")
-
+        migrated += migrate_sessions_dir(workspace_dir / "sessions")
     return migrated

@@ -140,4 +140,4 @@ agent(
 - Sub-agent execution is visible in UI (real-time progress)
 - Return format: `{"status": "completed"/"error"/"timeout", "summary": "...", "iterations": N}`
 - Use the context-bounded-processing skill inside the sub-agent for files that exceed the context window
-- **Temp files go under `$CILI_TMP/`** (i.e. `data/tmp/`): Chunks, intermediates, and other temp files created by the sub-agent must be placed under `$CILI_TMP/{task_id}/`, never scattered in the working directory. On success the sub-agent should clean up the directory; on failure the user can delete the entire `data/tmp/` directory.
+- **Temp files go under `$CILI_TMP/`** (i.e. the workspace `.cili/tmp/` directory): Chunks, intermediates, and other temp files created by the sub-agent must be placed under `$CILI_TMP/{task_id}/`, never scattered in the working directory. On success the sub-agent should clean up the directory; on failure the user can delete the workspace `.cili/tmp/` directory.
