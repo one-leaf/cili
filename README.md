@@ -327,7 +327,6 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | [cron-scheduler-design.md](docs/design/cron-scheduler-design.md) | Cron 调度器、任务配置、执行机制 |
 | [memory-system-design.md](docs/design/memory-system-design.md) | 长期记忆：知识存储与技能复用 |
 | [web-api-design.md](docs/design/web-api-design.md) | REST API、SSE 流式、前端架构 |
-| [user-profile-design.md](docs/design/user-profile-design.md) | 用户画像：5 维度、Markdown 格式、Cron 提取 |
 | [todo-write-design.md](docs/design/todo-write-design.md) | TodoWrite 任务规划：整表替换、三态状态 |
 | [system-prompt-design.md](docs/design/system-prompt-design.md) | 系统提示词构建逻辑 |
 | [environment-setup-design.md](docs/design/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
