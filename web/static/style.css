@@ -693,11 +693,26 @@ body {
     word-break: break-all;
 }
 
+/* 文件浏览弹窗（插入文件名）与设置窗口同尺寸 */
+.file-browser-modal-content {
+    width: 50vw;
+    max-width: 90vw;
+    height: 80vh;
+}
+
+.file-browser-modal-content .modal-body {
+    display: flex;
+    flex-direction: column;
+    padding: 16px 24px;
+}
+
 .file-browser-list {
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    max-height: 300px;
+    flex: 1;
+    max-height: none;
     overflow-y: auto;
+    font-size: 13px;
 }
 
 .file-browser-item {

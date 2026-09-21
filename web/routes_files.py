@@ -163,7 +163,7 @@ async def browse_directory(path: str = "", request: Request = None):
                 drive = f"{letter}:\\"
                 if os.path.exists(drive):
                     drives.append({"name": drive, "path": drive})
-            return {"path": "", "directories": drives, "parent": None}
+            return {"path": "", "directories": drives, "files": [], "parent": None}
         else:
             path = "/"
 
@@ -197,15 +197,27 @@ async def browse_directory(path: str = "", request: Request = None):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # List directories
+    # List directories and files
     directories = []
+    files = []
     try:
         for item in sorted(path_obj.iterdir(), key=lambda x: x.name.lower()):
-            if item.is_dir() and not item.name.startswith('.'):
-                directories.append({
-                    "name": item.name,
-                    "path": str(item.resolve())
-                })
+            if item.name.startswith('.'):
+                continue
+            try:
+                if item.is_dir():
+                    directories.append({"name": item.name, "path": str(item.resolve())})
+                elif item.is_file() or item.is_symlink():
+                    stat = item.stat()
+                    files.append({
+                        "name": item.name,
+                        "path": str(item.resolve()),
+                        "is_file": True,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime
+                    })
+            except (OSError, PermissionError):
+                continue
     except PermissionError:
         raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
 
@@ -228,6 +240,7 @@ async def browse_directory(path: str = "", request: Request = None):
     return {
         "path": resolved_path,
         "directories": directories,
+        "files": files,
         "parent": parent
     }
 

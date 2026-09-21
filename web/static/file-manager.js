@@ -135,7 +135,7 @@ function closeDirectoryBrowser() {
     directoryBrowserCallback = null;
 }
 
-// File browser for inserting file paths
+// File browser for inserting file paths（支持浏览任意目录，不限于 workspace）
 
 async function openFileBrowser() {
     if (!currentWorkspace) {
@@ -151,7 +151,7 @@ async function openFileBrowser() {
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-backdrop" onclick="closeFileBrowser()"></div>
-            <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-content file-browser-modal-content">
                 <div class="modal-header">
                     <h2>选择文件</h2>
                     <button class="modal-close" onclick="closeFileBrowser()">&times;</button>
@@ -166,26 +166,28 @@ async function openFileBrowser() {
     }
 
     modal.style.display = 'flex';
-    await loadWorkspaceFiles('');
+    // 默认从工作区目录开始，可随时导航到其他目录
+    await loadFileBrowser(currentWorkspace.directory || '');
 }
 
-async function loadWorkspaceFiles(path) {
+async function loadFileBrowser(path) {
     const listEl = document.getElementById('file-browser-list');
     const pathEl = document.getElementById('file-browser-current-path');
 
     listEl.innerHTML = '<div class="file-browser-loading">加载中...</div>';
-    pathEl.textContent = path || '工作区根目录';
+    pathEl.textContent = path || '选择位置';
 
     try {
-        const response = await fetch(`/api/files?workspace_uuid=${currentWorkspace.uuid}&path=${encodeURIComponent(path)}`);
+        const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${response.status}`);
         }
 
         const data = await response.json();
 
         // 更新当前路径显示
-        pathEl.textContent = data.path || '工作区根目录';
+        pathEl.textContent = data.path || '选择位置';
 
         // 渲染文件列表
         listEl.innerHTML = '';
@@ -195,27 +197,34 @@ async function loadWorkspaceFiles(path) {
             const parentItem = document.createElement('div');
             parentItem.className = 'file-browser-item file-browser-parent';
             parentItem.innerHTML = `<span>⬆️ ..</span>`;
-            parentItem.onclick = () => loadWorkspaceFiles(data.parent);
+            parentItem.onclick = () => loadFileBrowser(data.parent);
             listEl.appendChild(parentItem);
         }
 
-        // 添加文件和目录列表
-        if (data.items.length === 0) {
+        const directories = data.directories || [];
+        const files = data.files || [];
+
+        // 添加目录和文件列表
+        if (directories.length === 0 && files.length === 0) {
             const emptyItem = document.createElement('div');
             emptyItem.className = 'file-browser-item file-browser-empty';
             emptyItem.textContent = '（空目录）';
             listEl.appendChild(emptyItem);
         } else {
-            for (const item of data.items) {
+            for (const dir of directories) {
                 const el = document.createElement('div');
                 el.className = 'file-browser-item';
-                if (item.is_file) {
-                    el.textContent = `📄 ${item.name}`;
-                    el.onclick = () => insertFilePath(item.path);
-                } else {
-                    el.textContent = `📁 ${item.name}`;
-                    el.onclick = () => loadWorkspaceFiles(item.path);
-                }
+                // Windows 驱动器根目录显示为驱动器名，其他目录显示文件夹名
+                const displayName = dir.name.match(/^[A-Z]:\\$/) ? dir.name : `📁 ${dir.name}`;
+                el.textContent = displayName;
+                el.onclick = () => loadFileBrowser(dir.path);
+                listEl.appendChild(el);
+            }
+            for (const file of files) {
+                const el = document.createElement('div');
+                el.className = 'file-browser-item';
+                el.textContent = `📄 ${file.name}`;
+                el.onclick = () => insertFilePath(file.path);
                 listEl.appendChild(el);
             }
         }
@@ -224,17 +233,31 @@ async function loadWorkspaceFiles(path) {
     }
 }
 
+// 工作区内的文件返回相对路径（/ 分隔，与拖放上传一致），工作区外返回绝对路径
+function filePathToInsert(absPath) {
+    const wsDir = currentWorkspace && currentWorkspace.directory;
+    if (!wsDir) return absPath;
+    const normAbs = absPath.replace(/\\/g, '/').toLowerCase();
+    const normWs = wsDir.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    if (normAbs === normWs) return '.';
+    if (normAbs.startsWith(normWs + '/')) {
+        return absPath.slice(wsDir.length).replace(/\\/g, '/').replace(/^\/+/, '');
+    }
+    return absPath;
+}
+
 function insertFilePath(filePath) {
+    const insertText = filePathToInsert(filePath);
     const chatInput = document.getElementById('chat-input');
     const cursorPos = chatInput.selectionStart;
     const textBefore = chatInput.value.substring(0, cursorPos);
     const textAfter = chatInput.value.substring(chatInput.selectionEnd);
 
     // 插入文件路径，后面加一个空格方便继续输入
-    chatInput.value = textBefore + filePath + ' ' + textAfter;
+    chatInput.value = textBefore + insertText + ' ' + textAfter;
 
     // 移动光标到插入位置之后（跳过空格）
-    const newPos = cursorPos + filePath.length + 1;
+    const newPos = cursorPos + insertText.length + 1;
     chatInput.setSelectionRange(newPos, newPos);
     chatInput.focus();
 
