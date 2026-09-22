@@ -19,9 +19,9 @@ from core.config import (
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
-    MESSAGES_FILE, META_FILE, SessionManager, _drop_session_lock,
-    load_history_messages, load_history_meta, preview_from_messages,
-    read_jsonl, read_meta,
+    INLINE_COMPACTED_PLACEHOLDER, MESSAGES_FILE, META_FILE, SessionManager,
+    _drop_session_lock, format_compacted_placeholder, load_history_messages,
+    load_history_meta, preview_from_messages, read_jsonl, read_meta,
 )
 from core.tools.base import Tool
 
@@ -382,11 +382,10 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                 # 处理压缩标记
                 if compacted:
                     if output_path:
-                        tool_use_id = output_path.replace(".txt", "").replace(".json", "")
-                        block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
+                        block["content"] = format_compacted_placeholder(output_path)
                     else:
                         # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
-                        block["content"] = "[Compacted: original content preserved in session history]"
+                        block["content"] = INLINE_COMPACTED_PLACEHOLDER
                     continue
 
                 # 从外部文件读取

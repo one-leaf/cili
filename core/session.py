@@ -55,6 +55,19 @@ def _strip_internal_meta(meta: dict) -> dict | None:
     return stripped or None
 
 
+# 工具输出被压缩后的占位符（runner 解析与 web 会话视图共享，避免双份硬编码）
+INLINE_COMPACTED_PLACEHOLDER = "[Compacted: original content preserved in session history]"
+
+
+def format_compacted_placeholder(output_path: str) -> str:
+    """工具输出被压缩后的占位符：提示模型用 read_tool_result 读取原文。"""
+    tool_use_id = output_path.replace(".txt", "").replace(".json", "")
+    return (
+        f'[Compacted: use `read_tool_result` tool with '
+        f'tool_use_id="{tool_use_id}" to retrieve original content]'
+    )
+
+
 def preview_from_messages(messages: list[dict]) -> str:
     """取最后一条含文本的 user 消息的前 200 字符，用作会话列表预览。
 

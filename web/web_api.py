@@ -47,6 +47,8 @@ async def lifespan(app: FastAPI):
         try:
             cfg = load_config()
             if cfg.mcp_servers:
+                # 局部导入，与 shutdown 路径 stop_mcp_provider 风格一致
+                from core.tools.mcp import get_provider
                 get_provider().ensure_connected(cfg.mcp_servers)
         except Exception as e:
             logger.warning(f"[Server] 连接 MCP 服务器失败: {e}")

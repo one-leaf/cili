@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -258,6 +259,7 @@ def _ensure_self_repo(memory_dir: str | Path) -> bool:
         try:
             os.replace(gitdir, backup)
         except OSError:
+            # best-effort：备份 rename 失败可接受，下面直接重新 init 重建 .git
             pass
     result = _git_cmd(md, ["init", "-q"], timeout=30)
     if result.returncode != 0:
@@ -781,7 +783,15 @@ class MemoryStore:
         while len("\n".join(lines).encode("utf-8")) > INDEX_MAX_BYTES and len(lines) > 5:
             lines.pop()
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 原子写入：先写同目录临时文件再 os.replace，避免崩溃留下半写索引。
+        # 与 Journal._write_cursor 的 tmp + replace 模式一致。
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8",
+            dir=self.index_path.parent, delete=False, suffix=".tmp"
+        ) as tmp:
+            tmp.write("\n".join(lines) + "\n")
+            tmp_path = tmp.name
+        os.replace(tmp_path, self.index_path)
 
 
 # ── Journal（摄入日志 + 游标）─────────────────────────

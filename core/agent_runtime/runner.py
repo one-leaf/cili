@@ -23,7 +23,9 @@ import httpx
 
 from core.agent_runtime.context import INTERNAL_META
 from core.llm import LLMResponse, Message, TextBlock, classify_llm_error, format_llm_error
-from core.session import generate_short_id
+from core.session import (
+    INLINE_COMPACTED_PLACEHOLDER, format_compacted_placeholder, generate_short_id,
+)
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -310,12 +312,10 @@ class Runner:
                 # Handle compacted marker - include filename for read_tool_result
                 if compacted:
                     if output_path:
-                        # Extract tool_use_id from filename (remove extension)
-                        tool_use_id = output_path.replace(".txt", "").replace(".json", "")
-                        block["content"] = f"[Compacted: use `read_tool_result` tool with tool_use_id=\"{tool_use_id}\" to retrieve original content]"
+                        block["content"] = format_compacted_placeholder(output_path)
                     else:
                         # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
-                        block["content"] = "[Compacted: original content preserved in session history]"
+                        block["content"] = INLINE_COMPACTED_PLACEHOLDER
                     continue
 
                 # Read from external file
@@ -323,7 +323,13 @@ class Runner:
                     block["content"] = "[工具输出文件路径缺失]"
                     continue
 
-                file_path = self.agent.session_dir / output_path
+                file_path = (self.agent.session_dir / output_path).resolve()
+                # 防御纵深：output_path 来自会话文件 _meta，篡改可能穿越 session 目录 → 拒绝。
+                # 正常路径创建时已被 _safe_output_filename 消毒，此处与 routes_workspace 的
+                # W10 校验对齐，双保险。
+                if not file_path.is_relative_to(self.agent.session_dir.resolve()):
+                    block["content"] = "[工具输出路径校验失败]"
+                    continue
                 if not file_path.exists():
                     block["content"] = "[工具正在执行中...]"
                     continue

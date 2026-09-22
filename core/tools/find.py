@@ -5,28 +5,7 @@ from __future__ import annotations
 import os
 
 from core.tools.base import Tool, ToolResult
-
-
-# 文件类型 → 扩展名映射（与 grep 共享同一逻辑）
-TYPE_EXTENSIONS: dict[str, list[str]] = {
-    "py":     ["*.py", "*.pyi"],
-    "js":     ["*.js", "*.jsx", "*.mjs", "*.cjs"],
-    "ts":     ["*.ts", "*.tsx", "*.mts", "*.cts"],
-    "md":     ["*.md", "*.mdx"],
-    "json":   ["*.json"],
-    "yaml":   ["*.yaml", "*.yml"],
-    "html":   ["*.html", "*.htm"],
-    "css":    ["*.css", "*.scss", "*.sass", "*.less"],
-    "go":     ["*.go"],
-    "rust":   ["*.rs"],
-    "java":   ["*.java", "*.kt", "*.scala"],
-    "sh":     ["*.sh", "*.bash"],
-    "txt":    ["*.txt"],
-    "xml":    ["*.xml", "*.svg"],
-    "sql":    ["*.sql"],
-    "c":      ["*.c", "*.h"],
-    "cpp":    ["*.cpp", "*.hpp", "*.cc", "*.hh"],
-}
+from core.tools.file_types import TYPE_EXTENSIONS
 
 
 class FindTool(Tool):

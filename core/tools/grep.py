@@ -6,6 +6,7 @@ import os
 import re
 
 from core.tools.base import Tool, ToolResult
+from core.tools.file_types import TYPE_EXTENSIONS
 
 # 嵌套量词检测（ReDoS 风险模式）
 _REDOS_PATTERN = re.compile(
@@ -57,28 +58,6 @@ def _sanitize_regex(pattern: str) -> str:
         out.append(ch)
         i += 1
     return "".join(out)
-
-
-# 文件类型 → 扩展名映射
-TYPE_EXTENSIONS: dict[str, list[str]] = {
-    "py":     ["*.py", "*.pyi"],
-    "js":     ["*.js", "*.jsx", "*.mjs", "*.cjs"],
-    "ts":     ["*.ts", "*.tsx", "*.mts", "*.cts"],
-    "md":     ["*.md", "*.mdx"],
-    "json":   ["*.json"],
-    "yaml":   ["*.yaml", "*.yml"],
-    "html":   ["*.html", "*.htm"],
-    "css":    ["*.css", "*.scss", "*.sass", "*.less"],
-    "go":     ["*.go"],
-    "rust":   ["*.rs"],
-    "java":   ["*.java", "*.kt", "*.scala"],
-    "sh":     ["*.sh", "*.bash"],
-    "txt":    ["*.txt"],
-    "xml":    ["*.xml", "*.svg"],
-    "sql":    ["*.sql"],
-    "c":      ["*.c", "*.h"],
-    "cpp":    ["*.cpp", "*.hpp", "*.cc", "*.hh"],
-}
 
 
 class GrepTool(Tool):

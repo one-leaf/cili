@@ -137,7 +137,7 @@ async def get_workspace_file(workspace_uuid: str, file_path: str):
 # ----- Directory Browser -----
 
 @router.get("/api/browse")
-async def browse_directory(path: str = "", request: Request = None):
+def browse_directory(path: str = "", request: Request = None):
     """Browse directories on the server filesystem.
 
     Args:
@@ -246,7 +246,7 @@ async def browse_directory(path: str = "", request: Request = None):
 
 
 @router.get("/api/files")
-async def list_files(workspace_uuid: str, path: str = ""):
+def list_files(workspace_uuid: str, path: str = ""):
     """List files in workspace directory for file selection.
 
     Args:
@@ -324,7 +324,7 @@ async def list_files(workspace_uuid: str, path: str = ""):
 # ----- File Manager API (统一 /api/files 路径) -----
 
 @router.get("/api/files/{file_path:path}")
-async def read_file(file_path: str, workspace_uuid: str):
+def read_file(file_path: str, workspace_uuid: str):
     """Read a file from workspace.
 
     Args:
@@ -358,7 +358,7 @@ async def read_file(file_path: str, workspace_uuid: str):
 
 
 @router.post("/api/files")
-async def create_file(request: FileCreateRequest, request_raw: Request = None):
+def create_file(request: FileCreateRequest, request_raw: Request = None):
     """Create a new file or folder in workspace.
 
     Args:
@@ -410,7 +410,7 @@ async def create_file(request: FileCreateRequest, request_raw: Request = None):
 
 
 @router.delete("/api/files")
-async def delete_files(request: FileDeleteRequest, request_raw: Request = None):
+def delete_files(request: FileDeleteRequest, request_raw: Request = None):
     """Delete files or folders from workspace.
 
     Args:
@@ -459,7 +459,7 @@ async def delete_files(request: FileDeleteRequest, request_raw: Request = None):
 
 
 @router.put("/api/files")
-async def update_file(request: FileUpdateRequest, request_raw: Request = None):
+def update_file(request: FileUpdateRequest, request_raw: Request = None):
     """Update a file: rename/move or save content.
 
     Args:
@@ -544,7 +544,7 @@ def _sanitize_upload_filename(raw: str) -> str | None:
 
 
 @router.post("/api/files/upload")
-async def upload_files(
+def upload_files(
     workspace_uuid: str = Form(...),
     path: str = Form(""),
     files: list[UploadFile] = File(...),
@@ -604,8 +604,8 @@ async def upload_files(
                 errors.append({"name": file.filename, "error": "Invalid filename"})
                 continue
 
-            # Write file
-            content = await file.read()
+            # Write file（同步端点中 UploadFile 用底层 SpooledTemporaryFile 同步读取）
+            content = file.file.read()
 
             # Double-check size after reading (in case size header was missing)
             if len(content) > _MAX_UPLOAD_SIZE:

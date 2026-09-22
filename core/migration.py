@@ -17,6 +17,13 @@ from core.fs_utils import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
+def _ensure_block_meta(block: dict) -> dict:
+    """确保 block 有 _meta 字典（迁移存储字段时写入），返回之。"""
+    if block.get("_meta") is None:
+        block["_meta"] = {}
+    return block["_meta"]
+
+
 def migrate_session_file(session_file: Path) -> bool:
     """Migrate a single session file from old format to new format.
 
@@ -84,14 +91,6 @@ def migrate_message(msg: dict) -> bool:
     for block in content:
         if not isinstance(block, dict):
             continue
-        block_meta = block.get("_meta")
-
-        def _ensure_block_meta() -> dict:
-            nonlocal block_meta
-            if block_meta is None:
-                block_meta = {}
-                block["_meta"] = block_meta
-            return block_meta
 
         # Block-level _valid → message-level _meta.valid
         # If any block is invalid, the whole message is invalid
@@ -106,24 +105,24 @@ def migrate_message(msg: dict) -> bool:
         if "_compacted" in block:
             needs_migration = True
             if block.pop("_compacted"):
-                _ensure_block_meta()["compacted"] = True
+                _ensure_block_meta(block)["compacted"] = True
 
         if "_output_path" in block:
             needs_migration = True
-            _ensure_block_meta()["output_path"] = block.pop("_output_path")
+            _ensure_block_meta(block)["output_path"] = block.pop("_output_path")
 
         if "_file_size" in block:
             needs_migration = True
-            _ensure_block_meta()["file_size"] = block.pop("_file_size")
+            _ensure_block_meta(block)["file_size"] = block.pop("_file_size")
 
         if "_truncated" in block:
             needs_migration = True
-            _ensure_block_meta()["truncated"] = block.pop("_truncated")
+            _ensure_block_meta(block)["truncated"] = block.pop("_truncated")
 
         # tool_name → block 级 _meta.tool_name
         if "tool_name" in block:
             needs_migration = True
-            _ensure_block_meta()["tool_name"] = block.pop("tool_name")
+            _ensure_block_meta(block)["tool_name"] = block.pop("tool_name")
 
         # _content (old microcompact storage) → remove (content already in external file)
         if "_content" in block:
@@ -157,12 +156,13 @@ def migrate_message(msg: dict) -> bool:
                     block["input"] = {"_raw": args}
 
         # _meta.wait_for_user → block 级 _meta.completed (inverted semantics)
-        if block_meta is not None and "wait_for_user" in block_meta:
+        meta = block.get("_meta")
+        if meta is not None and "wait_for_user" in meta:
             needs_migration = True
-            wfu = block_meta.pop("wait_for_user")
+            wfu = meta.pop("wait_for_user")
             # wait_for_user=True → completed=False (waiting)
             # wait_for_user=False → completed=True (answered)
-            block_meta["completed"] = not wfu
+            meta["completed"] = not wfu
 
         # Recursively migrate tool_result sub-blocks
         if block.get("type") == "tool_result":
