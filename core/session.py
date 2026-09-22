@@ -45,7 +45,7 @@ _TASK_BRIEF_MAX = 100
 _INTERNAL_META_FIELDS = frozenset({
     "valid", "compacted", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
-    "id", "seq", "summary",
+    "id", "seq", "summary", "error_notice",
 })
 
 
@@ -79,6 +79,8 @@ def preview_from_messages(messages: list[dict]) -> str:
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         if (msg.get("_meta") or {}).get("summary"):
+            continue
+        if (msg.get("_meta") or {}).get("error_notice"):
             continue
         content = msg.get("content")
         text = ""
@@ -604,6 +606,8 @@ class SessionManager:
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
                 continue
+            if meta.get("error_notice"):
+                continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
 
             role = msg.get("role")
             content = msg.get("content", "")

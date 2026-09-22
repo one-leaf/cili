@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 INTERNAL_META = {
     "id", "valid", "compacted", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id", "seq",
-    "summary",
+    "summary", "error_notice",
 }
 
 
@@ -93,6 +93,8 @@ class AgentContext:
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
                 continue
+            if meta.get("error_notice"):
+                continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
 
             role = msg.get("role")
             content = msg.get("content", "")

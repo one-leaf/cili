@@ -403,6 +403,14 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     logger.exception("Failed to schedule memory extraction")
             except Exception as e:
                 logger.error(f"master Agent error: {e}")
+                # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
+                try:
+                    sm = getattr(agent, "session_manager", None)
+                    if sm is not None:
+                        sm.add_message("assistant", f"错误: {e}", _meta={"error_notice": True})
+                        sm.save()
+                except Exception:
+                    logger.exception("Failed to persist error message")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
                 event_queue.put(f"data: {err_event}\n\n")
             finally:
