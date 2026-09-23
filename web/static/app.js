@@ -1271,19 +1271,26 @@ function switchWorkspaceSettingsTab(tabName) {
         content.classList.toggle('active', content.id === `tab-${tabName}`);
     });
     // 切换 footer 按钮
-    const saveBtn = document.getElementById('workspace-settings-save-btn');
+    const footerSaveBtn = document.getElementById('workspace-settings-save-btn');
     const deleteBtn = document.getElementById('workspace-delete-btn');
+
     if (tabName === 'ws-instructions') {
-        saveBtn.textContent = '保存提示词';
-        saveBtn.onclick = saveInstructions;
+        // 项目提示词 tab：显示保存提示词按钮（靠右），隐藏删除按钮
+        footerSaveBtn.textContent = '保存提示词';
+        footerSaveBtn.style.display = '';
+        footerSaveBtn.style.marginLeft = 'auto';
+        footerSaveBtn.onclick = saveInstructions;
         deleteBtn.style.display = 'none';
     } else if (tabName === 'ws-git') {
-        saveBtn.style.display = 'none';
+        // 版本管理 tab：隐藏所有按钮
+        footerSaveBtn.style.display = 'none';
         deleteBtn.style.display = 'none';
     } else {
-        saveBtn.textContent = '保存';
-        saveBtn.style.display = '';
-        saveBtn.onclick = saveWorkspaceSettings;
+        // 基本设置 tab：显示 footer 按钮
+        footerSaveBtn.textContent = '保存';
+        footerSaveBtn.style.display = '';
+        footerSaveBtn.style.marginLeft = '';
+        footerSaveBtn.onclick = saveWorkspaceSettings;
         const isSystem = currentWorkspace?.system || currentWorkspace?.uuid === 'system';
         deleteBtn.style.display = isSystem ? 'none' : '';
     }
