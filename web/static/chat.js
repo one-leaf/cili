@@ -297,6 +297,196 @@ function renderAgentRef(msg, idx, msgId) {
     agentCardForMessage(msg, msgId);
 }
 
+// ── 历史消息分页加载 ──
+// 将历史消息插入到聊天区域顶部，保持滚动位置
+function prependMessages(messages) {
+    if (!messages || messages.length === 0) return;
+
+    // 记录当前滚动位置
+    const oldScrollHeight = chatMessages.scrollHeight;
+    const oldScrollTop = chatMessages.scrollTop;
+
+    // 找到第一个可见消息元素（用于在其前面插入）
+    const firstVisibleChild = chatMessages.firstElementChild;
+
+    // 创建临时容器来渲染新消息
+    const fragment = document.createDocumentFragment();
+
+    messages.forEach((msg, idx) => {
+        const role = msg.role;
+        if (role === 'system') return;
+
+        const msgId = msg._meta?.id;
+        const content = msg.content;
+        const blocks = normalizeContent(content);
+
+        if (role === 'user') {
+            const textParts = [];
+            const imageParts = [];
+            const toolResultBlocks = [];
+
+            blocks.forEach(block => {
+                if (block.kind === 'text' && block.text) textParts.push(block.text);
+                else if (block.kind === 'image') imageParts.push(block);
+                else if (block.kind === 'tool_result') toolResultBlocks.push(block);
+            });
+
+            const combinedText = textParts.join('\n');
+            if (combinedText || imageParts.length > 0) {
+                const div = addMessage('user', combinedText, msgId, msg._meta?.created_at, null);
+                if (imageParts.length > 0) {
+                    const contentDiv = div.querySelector('.message-content');
+                    const imgContainer = document.createElement('div');
+                    imgContainer.className = 'user-images';
+                    imageParts.forEach(img => {
+                        const imgEl = document.createElement('img');
+                        imgEl.src = `data:${img.media_type};base64,${img.data}`;
+                        imgEl.alt = '用户图片';
+                        imgContainer.appendChild(imgEl);
+                    });
+                    contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                }
+                fragment.appendChild(div);
+            }
+
+            toolResultBlocks.forEach(block => {
+                if (block._meta && block._meta.exec_id) {
+                    const execId = block._meta.exec_id;
+                    const isCompleted = block._meta.completed === true;
+                    const saMsg = {
+                        exec_id: execId,
+                        task_summary: block._meta.task_summary || '',
+                        status: isCompleted ? 'completed' : 'running',
+                        iterations: block._meta.iterations || 0,
+                        message_count: block._meta.message_count || 0,
+                    };
+                    renderAgentRef(saMsg, idx, msgId);
+                    return;
+                }
+                if (block._meta && block._meta.completed === false) return;
+                const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
+                div.classList.add('tool');
+                if (block.is_error) {
+                    div.classList.add('tool-error');
+                } else {
+                    div.classList.add('tool-result');
+                }
+                const contentDiv = div.querySelector('.message-content');
+                const resultTitle = document.createElement('div');
+                resultTitle.className = 'tool-title';
+                resultTitle.textContent = '[工具结果]';
+                contentDiv.appendChild(resultTitle);
+                const pre = document.createElement('pre');
+                pre.textContent = text.length > 2000 ? text.substring(0, 2000) + '\n... (内容过长已截断)' : text;
+                contentDiv.appendChild(pre);
+                fragment.appendChild(div);
+            });
+
+            return;
+        }
+
+        blocks.forEach(block => {
+            if (block.kind === 'text' && block.text) {
+                const div = addMessage(role, block.text, msgId, msg._meta?.created_at, null);
+                fragment.appendChild(div);
+            } else if (block.kind === 'thinking' && block.text) {
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
+                div.classList.add('thinking');
+                const contentDiv = div.querySelector('.message-content');
+                const thinkTitle = document.createElement('div');
+                thinkTitle.className = 'think-title';
+                thinkTitle.textContent = '💭 思考过程';
+                contentDiv.appendChild(thinkTitle);
+                const thinkDiv = document.createElement('div');
+                thinkDiv.className = 'think-content';
+                thinkDiv.innerHTML = renderMarkdown(block.text);
+                contentDiv.appendChild(thinkDiv);
+                fragment.appendChild(div);
+            } else if (block.kind === 'tool_call') {
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
+                div.classList.add('tool');
+                const contentDiv = div.querySelector('.message-content');
+                const pre = document.createElement('pre');
+                pre.textContent = JSON.stringify(block.input, null, 2);
+                const toolTitle = document.createElement('div');
+                toolTitle.className = 'tool-title';
+                toolTitle.textContent = `[调用工具: ${block.name}]`;
+                contentDiv.appendChild(toolTitle);
+                contentDiv.appendChild(pre);
+                fragment.appendChild(div);
+            } else if (block.kind === 'tool_result') {
+                if (block._meta && block._meta.completed === false) return;
+                const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
+                const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
+                div.classList.add('tool');
+                if (block.is_error) {
+                    div.classList.add('tool-error');
+                } else {
+                    div.classList.add('tool-result');
+                }
+                const contentDiv = div.querySelector('.message-content');
+                const resultTitle = document.createElement('div');
+                resultTitle.className = 'tool-title';
+                resultTitle.textContent = '[工具结果]';
+                contentDiv.appendChild(resultTitle);
+                const pre = document.createElement('pre');
+                pre.textContent = text;
+                contentDiv.appendChild(pre);
+                fragment.appendChild(div);
+            }
+        });
+    });
+
+    // 插入到顶部
+    if (firstVisibleChild) {
+        chatMessages.insertBefore(fragment, firstVisibleChild);
+    } else {
+        chatMessages.appendChild(fragment);
+    }
+
+    // 恢复滚动位置（保持用户看到的内容不变）
+    const newScrollHeight = chatMessages.scrollHeight;
+    chatMessages.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+
+    // 渲染数学公式
+    if (window.MathJax && window.MathJax.typesetPromise) {
+        MathJax.typesetPromise([chatMessages]).catch((err) => console.error('MathJax error:', err));
+    }
+}
+
+// 加载更多历史消息
+async function loadMoreMessages() {
+    if (!currentWorkspace || !currentSession || isLoadingMore || !currentSessionHasMore) return;
+
+    isLoadingMore = true;
+    try {
+        const newOffset = currentSessionLoadedOffset;
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}?limit=50&offset=${newOffset}`);
+        const data = await response.json();
+
+        if (data.messages && data.messages.length > 0) {
+            prependMessages(data.messages);
+            currentSessionLoadedOffset += data.messages.length;
+            currentSessionHasMore = data.has_more;
+        } else {
+            currentSessionHasMore = false;
+        }
+    } catch (error) {
+        console.error('Failed to load more messages:', error);
+    } finally {
+        isLoadingMore = false;
+    }
+}
+
+// 滚动事件监听 - 检测用户滚动到顶部时加载更多消息
+const LOAD_MORE_THRESHOLD = 100; // 距离顶部多少像素时触发加载
+chatMessages.addEventListener('scroll', () => {
+    if (chatMessages.scrollTop <= LOAD_MORE_THRESHOLD && currentSessionHasMore && !isLoadingMore) {
+        loadMoreMessages();
+    }
+});
+
 // 渲染任务清单（Todo List）
 // TodoWrite UI 渲染逻辑
 // 显示在聊天区域顶部，实时更新
@@ -1155,7 +1345,8 @@ function formatMessageTime(isoStr) {
 }
 
 // Add message to UI
-function addMessage(role, content, msgId, createdAt) {
+// container: 可选，指定添加到哪个容器。默认为 chatMessages。传 null 则不添加。
+function addMessage(role, content, msgId, createdAt, container = chatMessages) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
@@ -1214,8 +1405,10 @@ function addMessage(role, content, msgId, createdAt) {
         messageDiv.appendChild(actionsDiv);
     }
 
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    if (container) {
+        container.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
 
     return messageDiv;
 }

@@ -7,6 +7,10 @@ let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
 let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
+// 消息分页加载状态
+let currentSessionLoadedOffset = 0;  // 已加载的消息数（从末尾算起）
+let currentSessionHasMore = false;   // 是否还有更多历史消息
+let isLoadingMore = false;           // 是否正在加载更多消息
 
 
 // DOM elements
@@ -1023,9 +1027,13 @@ async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}`);
+        // 初始加载最近 50 条消息
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}?limit=50&offset=0`);
         const session = await response.json();
         currentSession = session;
+        // 记录已加载的消息偏移量（从末尾算起）
+        currentSessionLoadedOffset = session.messages.length;
+        currentSessionHasMore = session.has_more;
         savePosition({ session_id: sessionId });
 
         console.log('Session switched to:', currentSession.session_id);

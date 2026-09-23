@@ -345,8 +345,22 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
-async def get_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
-    """Get a specific session with all messages."""
+async def get_session(
+    workspace_uuid: str,
+    session_id: str,
+    limit: int | None = None,
+    offset: int = 0,
+    ws_dir: Path = Depends(_require_workspace)
+):
+    """Get a specific session with messages.
+
+    Args:
+        limit: 返回消息数量限制，None 表示返回全部
+        offset: 从末尾向前偏移的消息数（0 = 从末尾开始）
+
+    默认行为：limit=None 返回所有消息（向后兼容）
+    分页加载：limit=50, offset=0 返回最近 50 条消息
+    """
     _validate_session_id(session_id)
     session_dir = ws_dir / "sessions" / session_id
     index_file = session_dir / "index.json"
@@ -358,6 +372,18 @@ async def get_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
         meta = load_history_meta(session_dir)
         messages = load_history_messages(session_dir)
 
+        total_count = len(messages)
+
+        # 分页处理
+        if limit is not None:
+            # offset=0 表示最后 limit 条，offset=limit 表示再往前 limit 条
+            end_idx = total_count - offset
+            start_idx = max(0, end_idx - limit)
+            messages = messages[start_idx:end_idx]
+            has_more = start_idx > 0
+        else:
+            has_more = False
+
         # 从外部文件按需注入工具结果内容（前端渲染需要）
         _resolve_tool_results_for_session(messages, session_dir)
 
@@ -366,6 +392,8 @@ async def get_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
             "name": meta.get("name", "New Session"),
             "metadata": meta.get("metadata", {}),
             "messages": messages,
+            "total_count": total_count,
+            "has_more": has_more,
         }
     except Exception as e:
         logger.error(f"Failed to read session {session_id}: {e}")
