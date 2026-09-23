@@ -284,15 +284,63 @@ def _ensure_system_workspace() -> None:
         print(f"[setup] Warning: failed to create system workspace: {e}")
 
 
+def _ensure_default_workspace() -> None:
+    """确保 workspaces.json 中存在 Default 工作区条目，并创建 workspace/.cili/。
+
+    Default 工作区：directory = workspace/（默认用户工作区）。
+    """
+    try:
+        from core.config import find_workspace_entry, upsert_workspace_entry, get_workspace_data_dir
+
+        # 检查是否已存在 Default 工作区（uuid 可能是随机的，按名称或默认路径查找）
+        default_dir = Path(_PROJECT_ROOT) / "workspace"
+        workspaces = []
+        from core.config import load_workspaces_index
+        workspaces = load_workspaces_index()
+
+        # 查找是否已有指向 workspace/ 目录的工作区
+        default_ws = None
+        for ws in workspaces:
+            ws_dir = ws.get("directory", "")
+            if ws_dir and Path(ws_dir).resolve() == default_dir.resolve():
+                default_ws = ws
+                break
+
+        if default_ws:
+            # 已存在，确保有 .cili 目录
+            ws_data = get_workspace_data_dir(default_ws.get("uuid", ""))
+            ws_data.mkdir(parents=True, exist_ok=True)
+            return
+
+        # 不存在，创建新的 Default 工作区
+        import uuid
+        ws_uuid = uuid.uuid4().hex[:8]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        default_dir.mkdir(parents=True, exist_ok=True)
+        ws_data = default_dir / ".cili"
+        ws_data.mkdir(parents=True, exist_ok=True)
+        (ws_data / "sessions").mkdir(parents=True, exist_ok=True)
+
+        upsert_workspace_entry({
+            "uuid": ws_uuid,
+            "workspace_name": "Default",
+            "directory": str(default_dir),
+            "created_at": now,
+            "updated_at": now,
+        })
+        print(f"[setup] Default workspace created: {default_dir} (uuid: {ws_uuid})")
+    except Exception as e:
+        print(f"[setup] Warning: failed to create default workspace: {e}")
+
+
 def _setup_directories() -> None:
     """Create basic directories and ensure workspace index exists."""
     print("[setup] Creating directories...")
     os.makedirs(_CILI_DIR, exist_ok=True)
 
-    # 工作区索引 + system 工作区（data/.cili/）
+    # 工作区索引 + 默认工作区
     _ensure_system_workspace()
-
-    os.makedirs(os.path.join(_PROJECT_ROOT, "workspace"), exist_ok=True)
+    _ensure_default_workspace()
 
     _create_example_config()
 
