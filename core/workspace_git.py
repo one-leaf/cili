@@ -260,14 +260,16 @@ def _generate_commit_summary(diff_stat: str) -> str:
         return "自动提交"
 
 
-def auto_commit_workspace(workspace_uuid: str, session_id: str = "") -> tuple[bool, str]:
+def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote: bool = False) -> tuple[bool, str]:
     """自动提交工作区变更。
 
     检查是否有文件变更，如有则使用 LLM 生成摘要并提交。
+    如果 sync_remote=True 且配置了远程仓库，自动拉取、推送并解决冲突。
 
     Args:
         workspace_uuid: 工作区 UUID
         session_id: 当前会话 ID（用于日志）
+        sync_remote: 是否同步远程仓库（拉取+推送+自动解决冲突）
 
     Returns:
         (success, message)
@@ -306,11 +308,79 @@ def auto_commit_workspace(workspace_uuid: str, session_id: str = "") -> tuple[bo
             return False, f"git commit 失败: {result.stderr.strip()}"
 
         logger.info(f"[workspace-git] 自动提交成功: {workspace_uuid} - {summary}")
+
+        # 如果配置了远程仓库且需要同步
+        if sync_remote:
+            from core.config import load_workspace_config
+            ws_config = load_workspace_config(workspace_uuid) or {}
+            if ws_config.get("git_remote_url"):
+                sync_ok, sync_msg = _sync_with_remote(workspace_uuid, workspace_dir)
+                if sync_ok:
+                    return True, f"{summary}; {sync_msg}"
+                else:
+                    logger.warning(f"[workspace-git] 远程同步失败: {sync_msg}")
+                    return True, f"{summary}; 但远程同步失败: {sync_msg}"
+
         return True, summary
 
     except Exception as e:
         logger.error(f"[workspace-git] 自动提交失败: {e}")
         return False, f"自动提交失败: {e}"
+
+
+def _sync_with_remote(workspace_uuid: str, workspace_dir: Path) -> tuple[bool, str]:
+    """同步远程仓库：拉取（自动解决冲突）+ 推送。
+
+    冲突解决策略：拉取时使用 rebase，失败时回退到 --strategy-option=ours（本地优先）。
+
+    Returns:
+        (success, message)
+    """
+    from core.config import load_workspace_config
+    ws_config = load_workspace_config(workspace_uuid) or {}
+    if not ws_config.get("git_remote_url"):
+        return False, "未配置远程仓库"
+
+    try:
+        _sync_remote_to_git(workspace_uuid)
+
+        # 先尝试 rebase 方式拉取
+        result = _git_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            # 如果没有上游分支，设置上游
+            if "no tracking information" in stderr.lower() or "there is no tracking information" in stderr.lower():
+                # 首次推送，设置上游分支
+                _git_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
+                return True, "首次同步完成"
+
+            # 如果有冲突，使用 ours 策略解决（保留本地版本）
+            if "conflict" in stderr.lower() or "CONFLICT" in stderr:
+                logger.warning(f"[workspace-git] 检测到冲突，使用 ours 策略解决")
+                # 使用 ours 策略解决冲突（本地优先）
+                _git_cmd(workspace_dir, ["rebase", "--abort"], timeout=30)
+                _git_cmd(workspace_dir, ["pull", "--strategy-option=ours", "origin", "HEAD"], timeout=120)
+
+            # 检查是否只是 "Already up to date"
+            if "Already up to date" in stderr or "Already up-to-date" in stderr:
+                pass  # 继续推送
+            elif result.returncode != 0:
+                return False, f"pull 失败: {stderr}"
+
+        # 推送
+        result = _git_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "Everything up-to-date" in stderr:
+                return True, "已是最新"
+            return False, f"push 失败: {stderr}"
+
+        return True, "同步推送成功"
+
+    except Exception as e:
+        logger.error(f"[workspace-git] 远程同步失败: {e}")
+        return False, f"同步失败: {e}"
 
 
 from urllib.parse import urlparse, urlunparse

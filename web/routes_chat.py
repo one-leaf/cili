@@ -402,7 +402,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 except Exception:
                     logger.exception("Failed to schedule memory extraction")
 
-                # Git 版本管理：回合结束后自动提交（后台线程，不阻塞 SSE 流）
+                # Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞 SSE 流）
                 try:
                     from core.config import load_workspace_config
                     workspace_cfg = load_workspace_config(agent.workspace_uuid or "")
@@ -412,6 +412,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                         threading.Thread(
                             target=auto_commit_workspace,
                             args=(agent.workspace_uuid, agent.current_session_id or ""),
+                            kwargs={"sync_remote": True},
                             daemon=True,
                         ).start()
                 except Exception:

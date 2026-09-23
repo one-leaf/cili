@@ -1269,9 +1269,6 @@ def _start_services(args: argparse.Namespace) -> None:
     from core.cron import start_scheduler
     start_scheduler()
 
-    # 启动 Git 自动同步（每 2 小时）
-    _start_git_auto_sync()
-
     # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
     from core.updater import start_auto_upgrade
     if _auto_update_enabled():

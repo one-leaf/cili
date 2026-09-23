@@ -1,6 +1,6 @@
 {
   "name": "memory-consolidation",
-  "description": "每 2 小时整合记忆 journal 到条目（记忆整合）",
+  "description": "每 2 小时整合记忆 journal 到条目（记忆整合）+ 自动 Git 同步",
   "enabled": true,
   "schedule": {
     "type": "interval",
@@ -8,10 +8,12 @@
     "initial_delay_minutes": 30
   },
   "content": {
-    "task": "运行记忆整合：调用 memory(action=\"consolidate\")，把各工作区 journal 中待整合的记忆记录写入条目、刷新 summary、推进游标并 git 提交。完成后简要报告每个工作区处理的记录数与新建/更新条目数。",
+    "task": "运行记忆整合：调用 memory(action=\"consolidate\")，把各工作区 journal 中待整合的记忆记录写入条目、刷新 summary、推进游标。完成后检查各工作区 Git 配置并自动提交/同步。简要报告每个工作区处理的记录数与新建/更新条目数。",
     "plan": [
       "调用 memory(action=\"consolidate\")",
-      "报告每个工作区处理的记录数、新建/更新条目数、归档数"
+      "报告每个工作区处理的记录数、新建/更新条目数、归档数",
+      "对每个工作区执行 Git 自动提交（如果启用了 Git 版本管理）：检查变更、生成摘要、提交",
+      "对配置了远程仓库的工作区执行 Git 同步：拉取远程变更（自动解决冲突）、推送本地提交"
     ]
   }
 }
