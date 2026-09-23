@@ -555,12 +555,14 @@
                 </div>
                 <!-- 版本管理 Tab -->
                 <div class="tab-content" id="tab-ws-git">
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="git-enabled-toggle">
-                            <span>启用 Git 版本管理</span>
-                        </label>
-                        <small class="form-hint">开启后，每次对话结束会自动提交工作区文件变更</small>
+                    <div class="form-group" style="grid-template-columns: 1fr; align-items: center;">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <label class="checkbox-label" style="grid-column: auto; text-align: left; display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="git-enabled-toggle">
+                                <span>启用 Git 版本管理</span>
+                            </label>
+                            <small class="form-hint" style="margin:0;">开启后，每次对话结束会自动提交工作区文件变更</small>
+                        </div>
                     </div>
                     <div id="git-remote-section" style="display:none;">
                         <div class="git-remote-header">
