@@ -333,6 +333,67 @@ def migrate_sessions_dir(sessions_dir: Path) -> int:
     return migrated
 
 
+def migrate_legacy_data_dir_tools_and_cron() -> None:
+    """Migrate old tools/cron.d data from data/cili/ to workspace-local directories.
+
+    Once-off migration: moves {DATA_DIR}/tools/{todo,loop} and {DATA_DIR}/cron.d
+    into the system workspace's local directories. Idempotent — skips if already done.
+    """
+    from core.config import DATA_DIR, get_system_workspace_data_dir
+
+    old_tools_dir = DATA_DIR / "tools"
+    old_cron_dir = DATA_DIR / "cron.d"
+    system_ws_dir = get_system_workspace_data_dir()
+
+    # Migrate tools (todo, loop)
+    if old_tools_dir.exists():
+        for tool_name in ["todo", "loop"]:
+            src = old_tools_dir / tool_name
+            if not src.exists():
+                continue
+            dst = system_ws_dir / "tools" / tool_name
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                logger.info(f"[migration] Moved {src} → {dst}")
+            else:
+                # Merge: move files from src to dst
+                for f in src.iterdir():
+                    dst_file = dst / f.name
+                    if not dst_file.exists():
+                        shutil.move(str(f), str(dst_file))
+                try:
+                    src.rmdir()
+                except OSError:
+                    pass
+                logger.info(f"[migration] Merged {src} → {dst}")
+        # Try to remove empty old_tools_dir
+        try:
+            if old_tools_dir.exists() and not any(old_tools_dir.iterdir()):
+                old_tools_dir.rmdir()
+                logger.info(f"[migration] Removed empty {old_tools_dir}")
+        except OSError:
+            pass
+
+    # Migrate cron.d
+    if old_cron_dir.exists():
+        dst_cron = system_ws_dir / "cron.d"
+        if not dst_cron.exists():
+            shutil.move(str(old_cron_dir), str(dst_cron))
+            logger.info(f"[migration] Moved {old_cron_dir} → {dst_cron}")
+        else:
+            # Merge
+            for f in old_cron_dir.iterdir():
+                dst_file = dst_cron / f.name
+                if not dst_file.exists():
+                    shutil.move(str(f), str(dst_file))
+            try:
+                old_cron_dir.rmdir()
+            except OSError:
+                pass
+            logger.info(f"[migration] Merged {old_cron_dir} → {dst_cron}")
+
+
 def migrate_all_sessions(workspaces_dir: Path) -> int:
     """Legacy: migrate all session files under a workspace data container dir.
 

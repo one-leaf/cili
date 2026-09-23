@@ -1161,61 +1161,8 @@ def _prepare_environment(args: argparse.Namespace) -> None:
 
     # Migrate old tools/cron.d data from data/cili/ to workspace-local directories
     try:
-        from core.config import PROJECT_ROOT, DATA_DIR, get_system_workspace_data_dir
-        import shutil
-
-        old_tools_dir = DATA_DIR / "tools"
-        old_cron_dir = DATA_DIR / "cron.d"
-        system_ws_dir = get_system_workspace_data_dir()
-
-        # Migrate tools (todo, loop)
-        if old_tools_dir.exists():
-            for tool_name in ["todo", "loop"]:
-                src = old_tools_dir / tool_name
-                if src.exists():
-                    dst = system_ws_dir / "tools" / tool_name
-                    if not dst.exists():
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(src), str(dst))
-                        print(f"[migration] Moved {src} → {dst}")
-                    else:
-                        # Merge: move files from src to dst
-                        for f in src.iterdir():
-                            dst_file = dst / f.name
-                            if not dst_file.exists():
-                                shutil.move(str(f), str(dst_file))
-                        # Remove empty source dir
-                        try:
-                            src.rmdir()
-                        except:
-                            pass
-                        print(f"[migration] Merged {src} → {dst}")
-            # Try to remove empty old_tools_dir
-            try:
-                if old_tools_dir.exists() and not any(old_tools_dir.iterdir()):
-                    old_tools_dir.rmdir()
-                    print(f"[migration] Removed empty {old_tools_dir}")
-            except:
-                pass
-
-        # Migrate cron.d
-        if old_cron_dir.exists():
-            dst_cron = system_ws_dir / "cron.d"
-            if not dst_cron.exists():
-                shutil.move(str(old_cron_dir), str(dst_cron))
-                print(f"[migration] Moved {old_cron_dir} → {dst_cron}")
-            else:
-                # Merge
-                for f in old_cron_dir.iterdir():
-                    dst_file = dst_cron / f.name
-                    if not dst_file.exists():
-                        shutil.move(str(f), str(dst_file))
-                # Remove empty source dir
-                try:
-                    old_cron_dir.rmdir()
-                except:
-                    pass
-                print(f"[migration] Merged {old_cron_dir} → {dst_cron}")
+        from core.migration import migrate_legacy_data_dir_tools_and_cron
+        migrate_legacy_data_dir_tools_and_cron()
     except Exception as e:
         print(f"[migration] Warning: tools/cron.d migration failed: {e}")
 
