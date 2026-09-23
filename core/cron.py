@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from core.config import DATA_DIR
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -105,14 +104,8 @@ def _parse_cron_field(field: str, min_val: int, max_val: int) -> set[int]:
 # Directory containing task JSON configs
 CRON_DIR = Path(__file__).parent / "cron.d"
 
-# Base directory for cron data
-CRON_BASE_DIR = DATA_DIR / "cron.d"
-
 # Directory for task runtime state (last_run, run_count, etc.)
-CRON_STATE_DIR = CRON_BASE_DIR / "state"
-
-# User tasks config file
-USER_TASKS_FILE = CRON_BASE_DIR / "user_tasks.json"
+# Now per-workspace: {workspace}/.cili/cron.d/state/
 
 # 模块级常量
 _FALLBACK_INTERVAL_MINUTES = 60  # 表达式解析失败 / 未知调度类型时的回退间隔（分钟）
@@ -134,14 +127,27 @@ def _get_task_state_lock(task_id: str) -> threading.Lock:
         return lock
 
 
-def update_task_state(task_id: str, **fields) -> None:
+def get_cron_state_dir(workspace_uuid: str = "") -> Path:
+    """Get the cron state directory for a workspace."""
+    from core.config import get_workspace_cron_dir
+    return get_workspace_cron_dir(workspace_uuid) / "state"
+
+
+def get_user_tasks_file(workspace_uuid: str = "") -> Path:
+    """Get the user tasks file for a workspace."""
+    from core.config import get_workspace_cron_dir
+    return get_workspace_cron_dir(workspace_uuid) / "user_tasks.json"
+
+
+def update_task_state(task_id: str, workspace_uuid: str = "", **fields) -> None:
     """线程安全地更新任务状态文件（T13）。
 
     在任务级锁内做 read-modify-write，与 CronTask._save_state 互斥；
     若任务已加载进 scheduler，同步其内存态（如 _remaining）。
     """
     with _get_task_state_lock(task_id):
-        state_path = CRON_STATE_DIR / f"{task_id}.json"
+        state_dir = get_cron_state_dir(workspace_uuid)
+        state_path = state_dir / f"{task_id}.json"
         state = load_json_or_backup(state_path, {})
         state.update(fields)
         atomic_write_json(state_path, state)
@@ -229,9 +235,10 @@ class CronTask:
         self._restore_state()
 
     def _get_state_path(self) -> Path:
-        """获取任务状态文件路径: data/cron.d/state/{task_id}.json"""
-        CRON_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        return CRON_STATE_DIR / f"{self.task_id}.json"
+        """获取任务状态文件路径: {workspace}/.cili/cron.d/state/{task_id}.json"""
+        state_dir = get_cron_state_dir(self.workspace_uuid)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / f"{self.task_id}.json"
 
     def _restore_state(self) -> None:
         """从状态文件恢复任务运行状态。"""
@@ -552,7 +559,7 @@ class CronScheduler:
             return self._workspace_locks[workspace_uuid]
 
     def load_tasks(self) -> int:
-        """Load task configs from core/cron.d/*.json and data/cron/user_tasks.json. Returns count loaded."""
+        """Load task configs from core/cron.d/*.json and per-workspace user_tasks.json. Returns count loaded."""
         self.tasks = []
 
         # Load system-level tasks from core/cron.d/
@@ -573,22 +580,28 @@ class CronScheduler:
         else:
             logger.warning(f"[cron] System task directory not found: {CRON_DIR}")
 
-        # Load user-level tasks from data/cili/cron.d/user_tasks.json
-        if USER_TASKS_FILE.exists():
-            try:
-                with open(USER_TASKS_FILE, "r", encoding="utf-8") as f:
-                    user_configs = json.load(f)
-                for config in user_configs:
-                    # Skip disabled tasks
-                    if not config.get("enabled", True):
-                        continue
-                    task_fn = self._load_user_task_fn(config)
-                    if task_fn:
-                        task = CronTask(config, task_fn=task_fn)
-                        self.tasks.append(task)
-                        logger.debug(f"[cron] Loaded user task: {task.name}")
-            except Exception as e:
-                logger.error(f"[cron] Failed to load user tasks: {e}")
+        # Load user-level tasks from each workspace's cron.d/user_tasks.json
+        from core.config import get_all_workspace_uuids
+        for ws_uuid in get_all_workspace_uuids():
+            user_tasks_file = get_user_tasks_file(ws_uuid)
+            if user_tasks_file.exists():
+                try:
+                    with open(user_tasks_file, "r", encoding="utf-8") as f:
+                        user_configs = json.load(f)
+                    for config in user_configs:
+                        # Skip disabled tasks
+                        if not config.get("enabled", True):
+                            continue
+                        # Ensure workspace_uuid is set
+                        if not config.get("workspace_uuid"):
+                            config["workspace_uuid"] = ws_uuid
+                        task_fn = self._load_user_task_fn(config)
+                        if task_fn:
+                            task = CronTask(config, task_fn=task_fn)
+                            self.tasks.append(task)
+                            logger.debug(f"[cron] Loaded user task: {task.name} (workspace: {ws_uuid})")
+                except Exception as e:
+                    logger.error(f"[cron] Failed to load user tasks from {user_tasks_file}: {e}")
 
         return len(self.tasks)
 
@@ -767,37 +780,43 @@ class CronScheduler:
 
     def _update_task_enabled(self, name: str, enabled: bool) -> None:
         """Update task enabled state in user_tasks.json."""
-        from core.tools.cron_tool import _load_user_tasks, _save_user_tasks
+        from core.tools.cron_tool import _find_task_by_name, _save_user_tasks
 
         try:
-            tasks = _load_user_tasks()
-            for t in tasks:
-                if t["name"] == name:
-                    t["enabled"] = enabled
-                    break
-            _save_user_tasks(tasks)
+            result = _find_task_by_name(name)
+            if result:
+                tasks, task_config, task_ws = result
+                task_config["enabled"] = enabled
+                _save_user_tasks(tasks, task_ws)
         except Exception as e:
             logger.warning(f"[cron] Failed to update task enabled state: {e}")
 
     def _delete_one_time_task(self, name: str) -> None:
         """Remove a one-time task from config and state files."""
-        # Import here to avoid circular dependency
-        from core.tools.cron_tool import _load_user_tasks, _save_user_tasks
+        from core.tools.cron_tool import _find_task_by_name, _save_user_tasks
+
+        # Find the task and its workspace
+        task_ws = ""
+        for t in self.tasks:
+            if t.name == name:
+                task_ws = t.workspace_uuid
+                break
 
         # Remove from user_tasks.json
         try:
-            tasks = _load_user_tasks()
-            original_count = len(tasks)
-            tasks = [t for t in tasks if t["name"] != name]
-            if len(tasks) < original_count:
-                _save_user_tasks(tasks)
+            result = _find_task_by_name(name)
+            if result:
+                tasks, _, ws = result
+                tasks = [t for t in tasks if t["name"] != name]
+                _save_user_tasks(tasks, ws)
                 logger.info(f"[cron] Deleted one-time task '{name}' after execution")
         except Exception as e:
             logger.error(f"[cron] Failed to delete one-time task '{name}' from config: {e}")
 
         # Remove state file
         try:
-            state_path = CRON_STATE_DIR / f"{name}.json"
+            state_dir = get_cron_state_dir(task_ws)
+            state_path = state_dir / f"{name}.json"
             if state_path.exists():
                 state_path.unlink()
                 logger.debug(f"[cron] Deleted state file for task '{name}'")

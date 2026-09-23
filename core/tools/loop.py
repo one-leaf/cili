@@ -20,16 +20,18 @@ import threading
 from pathlib import Path
 
 from core.tools.base import Tool, ToolResult
-from core.config import DATA_DIR
+from core.config import get_workspace_tools_dir
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
-# State file directory
-LOOP_STATE_DIR = DATA_DIR / "tools" / "loop"
-
 # Reserved key prefix for metadata (excluded from item iteration)
 _META_PREFIX = "_"
+
+
+def _get_loop_state_dir(workspace_uuid: str = "") -> Path:
+    """Get the loop state directory for a workspace."""
+    return get_workspace_tools_dir(workspace_uuid) / "loop"
 
 
 def _state_filename(task_id: str) -> str:
@@ -52,20 +54,23 @@ def _get_state_lock(task_id: str) -> threading.Lock:
         return _state_locks[task_id]
 
 
-def _load_state(task_id: str) -> dict:
+def _load_state(task_id: str, workspace_uuid: str = "") -> dict:
     """Load loop state from file."""
     h = _state_filename(task_id)
-    state_path = LOOP_STATE_DIR / f"{h}.json"
+    state_dir = _get_loop_state_dir(workspace_uuid)
+    state_path = state_dir / f"{h}.json"
     return load_json_or_backup(state_path, {})
 
 
-def _save_state(task_id: str, state: dict) -> None:
+def _save_state(task_id: str, state: dict, workspace_uuid: str = "") -> None:
     """Save loop state to file. Includes _source_file for traceability."""
     try:
         # Embed source_file path in state for traceability
         state[f"{_META_PREFIX}source_file"] = task_id
         h = _state_filename(task_id)
-        state_path = LOOP_STATE_DIR / f"{h}.json"
+        state_dir = _get_loop_state_dir(workspace_uuid)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / f"{h}.json"
         atomic_write_json(state_path, state)
     except Exception as e:
         logger.error(f"[loop] Failed to save state for {task_id}: {e}")
@@ -176,8 +181,9 @@ class LoopTool(Tool):
 
     def _next(self, task_id: str, file_path: Path) -> ToolResult:
         """Get next pending item. Auto-loads items from source_file."""
+        ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id)
+            state = _load_state(task_id, ws)
 
             # Auto-sync items from file on first call or when file is newer
             if file_path.exists():
@@ -195,7 +201,7 @@ class LoopTool(Tool):
                         added += 1
 
                 if added > 0:
-                    _save_state(task_id, state)
+                    _save_state(task_id, state, ws)
             elif not state:
                 return ToolResult(f"Error: file not found: {file_path}", error=True)
 
@@ -220,14 +226,15 @@ class LoopTool(Tool):
         if not item:
             return ToolResult("Error: 'item' is required for done action", error=True)
 
+        ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id)
+            state = _load_state(task_id, ws)
 
             if item not in state:
                 return ToolResult(f"Error: item '{item}' not found in state", error=True)
 
             state[item] = "done"
-            _save_state(task_id, state)
+            _save_state(task_id, state, ws)
 
             counts = _count(state)
             return ToolResult(json.dumps(counts, ensure_ascii=False))
@@ -237,8 +244,9 @@ class LoopTool(Tool):
         if not item:
             return ToolResult("Error: 'item' is required for fail action", error=True)
 
+        ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id)
+            state = _load_state(task_id, ws)
 
             if item not in state:
                 return ToolResult(f"Error: item '{item}' not found in state", error=True)
@@ -246,14 +254,14 @@ class LoopTool(Tool):
             # Store as "failed:{reason}"
             reason = error or "unknown"
             state[item] = f"failed:{reason}"
-            _save_state(task_id, state)
+            _save_state(task_id, state, ws)
 
             counts = _count(state)
             return ToolResult(json.dumps(counts, ensure_ascii=False))
 
     def _status(self, task_id: str) -> ToolResult:
         """Get progress statistics."""
-        state = _load_state(task_id)
+        state = _load_state(task_id, self.workspace_uuid)
         counts = _count(state)
         return ToolResult(json.dumps(counts, ensure_ascii=False))
 
@@ -262,11 +270,12 @@ class LoopTool(Tool):
 
         源文件删除/重跑时清理残留状态；下次 next 会按文件重新加载为 pending。
         """
+        ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id)
+            state = _load_state(task_id, ws)
             cleared = len(_iter_items(state))
             state = {k: v for k, v in state.items() if k.startswith(_META_PREFIX)}
-            _save_state(task_id, state)
+            _save_state(task_id, state, ws)
             return ToolResult(
                 f"已重置 {cleared} 项进度（任务元数据保留）"
             )

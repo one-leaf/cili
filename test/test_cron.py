@@ -168,9 +168,9 @@ class TestCronScheduler:
         # 临时替换 CRON_DIR 和 USER_TASKS_FILE
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             count = scheduler.load_tasks()
             assert count == 1
@@ -178,7 +178,7 @@ class TestCronScheduler:
             assert scheduler.tasks[0].name == "test-load"
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_load_multiple_tasks(self, tmp_path):
         """加载多个任务"""
@@ -195,9 +195,9 @@ class TestCronScheduler:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             count = scheduler.load_tasks()
             assert count == 3
@@ -205,7 +205,7 @@ class TestCronScheduler:
             assert names == {"task-0", "task-1", "task-2"}
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_load_invalid_json(self, tmp_path):
         """无效 JSON 文件跳过不崩溃"""
@@ -222,16 +222,16 @@ class TestCronScheduler:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             count = scheduler.load_tasks()
             assert count == 1
             assert scheduler.tasks[0].name == "good"
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_get_task_by_name(self, tmp_path):
         """按名称获取任务"""
@@ -247,9 +247,9 @@ class TestCronScheduler:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             scheduler.load_tasks()
             task = scheduler.get_task("find-me")
@@ -258,7 +258,7 @@ class TestCronScheduler:
             assert scheduler.get_task("nonexistent") is None
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_list_tasks(self, tmp_path):
         """列出所有任务状态"""
@@ -275,9 +275,9 @@ class TestCronScheduler:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             scheduler.load_tasks()
             task_list = scheduler.list_tasks()
@@ -287,7 +287,7 @@ class TestCronScheduler:
             assert names == {"task-0", "task-1"}
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_scheduler_start_stop(self, tmp_path):
         """调度器启动和停止"""
@@ -318,16 +318,16 @@ class TestCronScheduler:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path  # empty dir, no tasks
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             scheduler.start()
             # 没有任务，_running 仍为 False
             assert scheduler._running is False
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
 
 class TestCronCondition:
@@ -390,9 +390,9 @@ class TestCronCondition:
         scheduler = CronScheduler()
         import core.cron as cron_module
         original_dir = cron_module.CRON_DIR
-        original_user_file = cron_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
         cron_module.CRON_DIR = tmp_path
-        cron_module.USER_TASKS_FILE = tmp_path / "nonexistent_user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
         try:
             scheduler.load_tasks()
             assert len(scheduler.tasks) == 1
@@ -403,7 +403,7 @@ class TestCronCondition:
             assert tasks[0]["plan"] == ["步骤一"]
         finally:
             cron_module.CRON_DIR = original_dir
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_load_no_content_field(self, tmp_path):
         """没有 content 字段时无 task_fn"""
@@ -546,7 +546,7 @@ class TestCronTaskRemainingCounter:
         import core.cron as cron_module
 
         # 先创建状态文件
-        state_path = cron_module.CRON_STATE_DIR / "restore-task.json"
+        state_path = cron_module.get_cron_state_dir() / "restore-task.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({
             "remaining": 50,
@@ -577,7 +577,7 @@ class TestCronTaskRemainingCounter:
         task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
 
         # 读取状态文件验证
-        state_path = cron_module.CRON_STATE_DIR / "save-remaining-task.json"
+        state_path = cron_module.get_cron_state_dir() / "save-remaining-task.json"
         with open(state_path, "r", encoding="utf-8") as f:
             state = json.load(f)
 
@@ -597,7 +597,7 @@ class TestCronTaskRemainingCounter:
         task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
 
         # 读取状态文件验证
-        state_path = cron_module.CRON_STATE_DIR / "no-remaining-task.json"
+        state_path = cron_module.get_cron_state_dir() / "no-remaining-task.json"
         with open(state_path, "r", encoding="utf-8") as f:
             state = json.load(f)
 
@@ -624,8 +624,8 @@ class TestCronSchedulerRemainingCounter:
         user_tasks_file = tmp_path / "user_tasks.json"
         user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        cron_module.USER_TASKS_FILE = user_tasks_file
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
 
         try:
             scheduler = CronScheduler()
@@ -645,7 +645,7 @@ class TestCronSchedulerRemainingCounter:
             assert task._remaining == 99
 
         finally:
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_skipped_execution_does_not_decrement_remaining(self, temp_cron_state, tmp_path):
         """T10: _execute_task 中 skipped 结果不计 remaining，真正执行才递减"""
@@ -661,8 +661,8 @@ class TestCronSchedulerRemainingCounter:
         user_tasks_file = tmp_path / "user_tasks.json"
         user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        cron_module.USER_TASKS_FILE = user_tasks_file
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
 
         try:
             scheduler = CronScheduler()
@@ -682,7 +682,7 @@ class TestCronSchedulerRemainingCounter:
                 scheduler._execute_task(task, now)
             assert task._remaining == 2
         finally:
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_run_task_now_reuses_execute_task(self, temp_cron_state, tmp_path):
         """T10: run_task_now 走 _execute_task（尊重 remaining/锁），而非直接 task.execute"""
@@ -698,8 +698,8 @@ class TestCronSchedulerRemainingCounter:
         user_tasks_file = tmp_path / "user_tasks.json"
         user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        cron_module.USER_TASKS_FILE = user_tasks_file
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
 
         try:
             scheduler = CronScheduler()
@@ -721,7 +721,7 @@ class TestCronSchedulerRemainingCounter:
                         if mock_execute_task.call_count == 1 and mock_exec.call_count >= 0:
                             time.sleep(0.05)
         finally:
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
     def test_auto_disable_when_remaining_zero(self, temp_cron_state, tmp_path):
         """remaining <= 0 时自动 disable"""
@@ -740,8 +740,8 @@ class TestCronSchedulerRemainingCounter:
         user_tasks_file = tmp_path / "user_tasks.json"
         user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        cron_module.USER_TASKS_FILE = user_tasks_file
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
 
         try:
             scheduler = CronScheduler()
@@ -764,7 +764,7 @@ class TestCronSchedulerRemainingCounter:
             assert task.enabled is False
 
         finally:
-            cron_module.USER_TASKS_FILE = original_user_file
+            cron_module.get_user_tasks_file = original_get_user_tasks_file
 
 
 class TestCronToolMaxExecutions:
@@ -776,19 +776,19 @@ class TestCronToolMaxExecutions:
         import core.cron as cron_module
         import core.tools.cron_tool as cron_tool_module
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        original_state_dir = cron_module.CRON_STATE_DIR
-        original_tool_user_file = cron_tool_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        original_get_cron_state_dir = cron_module.get_cron_state_dir
+        original_tool_get_user_tasks_file = cron_tool_module.get_user_tasks_file
 
-        cron_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
-        cron_module.CRON_STATE_DIR = tmp_path / "state"
-        cron_tool_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
+        cron_module.get_cron_state_dir = lambda ws="": tmp_path / "state"
+        cron_tool_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
 
         yield tmp_path
 
-        cron_module.USER_TASKS_FILE = original_user_file
-        cron_module.CRON_STATE_DIR = original_state_dir
-        cron_tool_module.USER_TASKS_FILE = original_tool_user_file
+        cron_module.get_user_tasks_file = original_get_user_tasks_file
+        cron_module.get_cron_state_dir = original_get_cron_state_dir
+        cron_tool_module.get_user_tasks_file = original_tool_get_user_tasks_file
 
     def test_create_with_max_executions(self, temp_cron_files):
         """创建任务时设置 max_executions"""
@@ -869,7 +869,7 @@ class TestCronToolMaxExecutions:
         )
 
         # 手动设置 remaining 为较小值
-        state_path = cron_module.CRON_STATE_DIR / "test-enable-reset-remaining.json"
+        state_path = cron_module.get_cron_state_dir() / "test-enable-reset-remaining.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({"remaining": 10}))
 
@@ -892,19 +892,19 @@ class TestCronToolUpdate:
         import core.cron as cron_module
         import core.tools.cron_tool as cron_tool_module
 
-        original_user_file = cron_module.USER_TASKS_FILE
-        original_state_dir = cron_module.CRON_STATE_DIR
-        original_tool_user_file = cron_tool_module.USER_TASKS_FILE
+        original_get_user_tasks_file = cron_module.get_user_tasks_file
+        original_get_cron_state_dir = cron_module.get_cron_state_dir
+        original_tool_get_user_tasks_file = cron_tool_module.get_user_tasks_file
 
-        cron_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
-        cron_module.CRON_STATE_DIR = tmp_path / "state"
-        cron_tool_module.USER_TASKS_FILE = tmp_path / "user_tasks.json"
+        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
+        cron_module.get_cron_state_dir = lambda ws="": tmp_path / "state"
+        cron_tool_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
 
         yield tmp_path
 
-        cron_module.USER_TASKS_FILE = original_user_file
-        cron_module.CRON_STATE_DIR = original_state_dir
-        cron_tool_module.USER_TASKS_FILE = original_tool_user_file
+        cron_module.get_user_tasks_file = original_get_user_tasks_file
+        cron_module.get_cron_state_dir = original_get_cron_state_dir
+        cron_tool_module.get_user_tasks_file = original_tool_get_user_tasks_file
 
     def test_update_task_description(self, temp_cron_files):
         """更新任务描述"""
@@ -1015,7 +1015,7 @@ class TestCronToolUpdate:
         )
 
         # 模拟执行几次，remaining 递减
-        state_path = cron_module.CRON_STATE_DIR / "test-update-max-exec.json"
+        state_path = cron_module.get_cron_state_dir() / "test-update-max-exec.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({"remaining": 50}))
 
@@ -1199,7 +1199,7 @@ class TestCronInitialDelay:
     def test_restore_from_state_uses_regular_interval(self, temp_cron_state):
         """有 last_run 状态文件（服务重启后）→ 按固定间隔续跑，不重置 initial_delay"""
         import core.cron as cron_module
-        state_path = cron_module.CRON_STATE_DIR / "init-delay-restore.json"
+        state_path = cron_module.get_cron_state_dir() / "init-delay-restore.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         last_run = datetime(2026, 9, 11, 10, 0, 0)
         state_path.write_text(json.dumps({

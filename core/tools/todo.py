@@ -4,7 +4,7 @@ Key design decisions:
 1. Whole-list replacement: each call sends the complete list (no partial updates)
 2. Three-state status: pending / in_progress / completed
 3. Single owner: belongs to the agent session that created it
-4. Storage: stored in data/cili/tools/todo/{session_id}.json (per-session isolation)
+4. Storage: stored in {workspace}/.cili/tools/todo/{session_id}.json (per-workspace, per-session)
 """
 
 from __future__ import annotations
@@ -16,24 +16,26 @@ from pathlib import Path
 from typing import Any
 
 from core.tools.base import Tool, ToolResult
-from core.config import DATA_DIR
+from core.config import get_workspace_tools_dir
 
 
 # Valid status values
 VALID_STATUSES = {"pending", "in_progress", "completed"}
 
-# Todo storage directory（绝对路径，进程从其他 CWD 启动时仍写入项目 data 目录）
-TODO_DIR = DATA_DIR / "tools" / "todo"
+
+def _get_todo_dir(workspace_uuid: str = "") -> Path:
+    """Get the todo storage directory for a workspace."""
+    return get_workspace_tools_dir(workspace_uuid) / "todo"
 
 
-def get_todo_file_path(session_id: str) -> Path:
+def get_todo_file_path(session_id: str, workspace_uuid: str = "") -> Path:
     """Get the path to the todo file for a given session."""
-    return TODO_DIR / f"{session_id}.json"
+    return _get_todo_dir(workspace_uuid) / f"{session_id}.json"
 
 
-def read_todos(session_id: str) -> list[dict]:
+def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
     """Read todos from the session's todo file."""
-    todo_file = get_todo_file_path(session_id)
+    todo_file = get_todo_file_path(session_id, workspace_uuid)
     if not todo_file.exists():
         return []
     try:
@@ -43,10 +45,11 @@ def read_todos(session_id: str) -> list[dict]:
         return []
 
 
-def write_todos(session_id: str, todos: list[dict]) -> None:
+def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") -> None:
     """Write todos to the session's todo file."""
-    TODO_DIR.mkdir(parents=True, exist_ok=True)
-    todo_file = get_todo_file_path(session_id)
+    todo_dir = _get_todo_dir(workspace_uuid)
+    todo_dir.mkdir(parents=True, exist_ok=True)
+    todo_file = get_todo_file_path(session_id, workspace_uuid)
     data = {
         "session_id": session_id,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -187,11 +190,11 @@ class TodoWriteTool(Tool):
             })
 
         # Read old todos for verification nudge check
-        old_todos = read_todos(session_id) if session_id else []
+        old_todos = read_todos(session_id, self.workspace_uuid) if session_id else []
 
         # Store in independent file (per-session isolation)
         if session_id:
-            write_todos(session_id, validated_todos)
+            write_todos(session_id, validated_todos, self.workspace_uuid)
 
             # Migrate from session metadata if it exists (backward compatibility)
             if self.session_manager and hasattr(self.session_manager, 'metadata'):
@@ -271,7 +274,7 @@ class TodoWriteTool(Tool):
         return True
 
 
-def get_todos_from_session(session_manager: SessionManager | None) -> list[dict] | None:
+def get_todos_from_session(session_manager: SessionManager | None, workspace_uuid: str = "") -> list[dict] | None:
     """Helper to get current todos from session's todo file.
 
     Supports new format (independent file) and old format (session metadata).
@@ -282,7 +285,7 @@ def get_todos_from_session(session_manager: SessionManager | None) -> list[dict]
     # Try new format: independent todo file
     session_id = getattr(session_manager, 'session_id', None)
     if session_id:
-        todos = read_todos(session_id)
+        todos = read_todos(session_id, workspace_uuid)
         if todos:
             return todos
 
@@ -291,7 +294,7 @@ def get_todos_from_session(session_manager: SessionManager | None) -> list[dict]
         old_todos = session_manager.metadata.get("todos")
         if old_todos:
             # Migrate to new format
-            write_todos(session_id, old_todos)
+            write_todos(session_id, old_todos, workspace_uuid)
             # Remove from session metadata
             del session_manager.metadata["todos"]
             return old_todos

@@ -1,7 +1,7 @@
 """Cron tool - user-level scheduled task management.
 
 Allows users to create, list, delete, and manage scheduled tasks through conversation.
-Tasks are persisted in data/cili/cron.d/user_tasks.json and executed by the CronScheduler.
+Tasks are persisted in {workspace}/.cili/cron.d/user_tasks.json and executed by the CronScheduler.
 
 Usage:
     cron(action="create", name="daily-report", schedule={"type": "interval", "minutes": 1440}, task="Generate daily report")
@@ -20,23 +20,40 @@ import re
 from pathlib import Path
 
 from core.tools.base import Tool, ToolResult
-from core.cron import USER_TASKS_FILE
+from core.cron import get_user_tasks_file
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
 
-def _load_user_tasks() -> list[dict]:
+def _load_user_tasks(workspace_uuid: str = "") -> list[dict]:
     """Load user task configs from JSON file."""
-    return load_json_or_backup(USER_TASKS_FILE, [])
+    user_tasks_file = get_user_tasks_file(workspace_uuid)
+    return load_json_or_backup(user_tasks_file, [])
 
 
-def _save_user_tasks(tasks: list[dict]) -> None:
+def _save_user_tasks(tasks: list[dict], workspace_uuid: str = "") -> None:
     """Save user task configs to JSON file."""
     try:
-        atomic_write_json(USER_TASKS_FILE, tasks)
+        user_tasks_file = get_user_tasks_file(workspace_uuid)
+        user_tasks_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(user_tasks_file, tasks)
     except Exception as e:
         logger.error(f"[cron_tool] Failed to save user tasks: {e}")
+
+
+def _find_task_by_name(name: str) -> tuple[list[dict], dict, str] | None:
+    """Find a task by name across all workspaces.
+
+    Returns: (tasks_list, task_config, workspace_uuid) or None if not found.
+    """
+    from core.config import get_all_workspace_uuids
+    for ws_uuid in get_all_workspace_uuids():
+        tasks = _load_user_tasks(ws_uuid)
+        for t in tasks:
+            if t["name"] == name:
+                return (tasks, t, ws_uuid)
+    return None
 
 
 class CronTool(Tool):
@@ -243,8 +260,9 @@ class CronTool(Tool):
         if max_executions < 1 or max_executions > 9999:
             return ToolResult("Error: 'max_executions' must be between 1 and 9999", error=True)
 
-        # Load existing tasks
-        tasks = _load_user_tasks()
+        # Load existing tasks from the target workspace
+        ws = workspace_uuid or self.workspace_uuid
+        tasks = _load_user_tasks(ws)
 
         # Check for duplicate name
         for t in tasks:
@@ -254,7 +272,7 @@ class CronTool(Tool):
         # Create new task config
         new_task = {
             "name": name,
-            "workspace_uuid": workspace_uuid or self.workspace_uuid,
+            "workspace_uuid": ws,
             "description": description or "",
             "enabled": True,
             "schedule": schedule,
@@ -269,12 +287,12 @@ class CronTool(Tool):
         }
 
         tasks.append(new_task)
-        _save_user_tasks(tasks)
+        _save_user_tasks(tasks, ws)
 
         # Reload scheduler to pick up new task
         self._reload_scheduler()
 
-        ws_label = workspace_uuid or self.workspace_uuid or "system"
+        ws_label = ws or "system"
         task_type = "one-time" if one_time else "recurring"
         return ToolResult(
             f"Created {task_type} scheduled task '{name}' in workspace '{ws_label}'. "
@@ -282,13 +300,21 @@ class CronTool(Tool):
         )
 
     def _list(self) -> ToolResult:
-        """List all scheduled tasks."""
-        tasks = _load_user_tasks()
-        if not tasks:
+        """List all scheduled tasks across all workspaces."""
+        from core.config import get_all_workspace_uuids
+
+        all_tasks = []
+        for ws_uuid in get_all_workspace_uuids():
+            tasks = _load_user_tasks(ws_uuid)
+            for t in tasks:
+                t["_source_workspace"] = ws_uuid
+            all_tasks.extend(tasks)
+
+        if not all_tasks:
             return ToolResult("No scheduled tasks found.")
 
-        lines = [f"Found {len(tasks)} scheduled task(s):\n"]
-        for t in tasks:
+        lines = [f"Found {len(all_tasks)} scheduled task(s):\n"]
+        for t in all_tasks:
             name = t["name"]
             desc = t.get("description", "")
             enabled = t.get("enabled", True)
@@ -296,6 +322,8 @@ class CronTool(Tool):
             schedule_type = schedule.get("type", "unknown")
             ws_uuid = t.get("workspace_uuid", "")
             ws_label = ws_uuid if ws_uuid else "system"
+            source_ws = t.get("_source_workspace", "")
+            source_label = source_ws if source_ws else "system"
 
             status = "enabled" if enabled else "disabled"
             one_time = t.get("one_time", False)
@@ -311,7 +339,7 @@ class CronTool(Tool):
             else:
                 schedule_str = "unknown schedule"
 
-            lines.append(f"• {name} [{status}] [{task_type}] (workspace: {ws_label})")
+            lines.append(f"• {name} [{status}] [{task_type}] (runs in: {ws_label}, config in: {source_label})")
             if desc:
                 lines.append(f"  {desc}")
             lines.append(f"  Schedule: {schedule_str}")
@@ -337,16 +365,11 @@ class CronTool(Tool):
         if not name:
             return ToolResult("Error: 'name' is required for update action", error=True)
 
-        # Load existing tasks
-        tasks = _load_user_tasks()
-        task_config = None
-        for t in tasks:
-            if t["name"] == name:
-                task_config = t
-                break
-
-        if not task_config:
+        # Find the task across all workspaces
+        result = _find_task_by_name(name)
+        if not result:
             return ToolResult(f"Error: task '{name}' not found", error=True)
+        tasks, task_config, task_ws = result
 
         # Validate schedule if provided
         if schedule:
@@ -410,7 +433,7 @@ class CronTool(Tool):
             # Also reset remaining counter in state（T13：经任务级锁 RMW，避免并发丢更新）
             try:
                 from core.cron import update_task_state
-                update_task_state(name, remaining=max_executions)
+                update_task_state(name, task_ws, remaining=max_executions)
             except Exception as e:
                 logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
             updated_fields.append("max_executions")
@@ -418,7 +441,7 @@ class CronTool(Tool):
         if not updated_fields:
             return ToolResult("Error: No fields to update. Specify at least one field to update.", error=True)
 
-        _save_user_tasks(tasks)
+        _save_user_tasks(tasks, task_ws)
         self._reload_scheduler()
 
         return ToolResult(f"Updated task '{name}': {', '.join(updated_fields)}")
@@ -428,14 +451,14 @@ class CronTool(Tool):
         if not name:
             return ToolResult("Error: 'name' is required for delete action", error=True)
 
-        tasks = _load_user_tasks()
-        original_count = len(tasks)
-        tasks = [t for t in tasks if t["name"] != name]
-
-        if len(tasks) == original_count:
+        # Find the task across all workspaces
+        result = _find_task_by_name(name)
+        if not result:
             return ToolResult(f"Error: task '{name}' not found", error=True)
+        tasks, _, task_ws = result
 
-        _save_user_tasks(tasks)
+        tasks = [t for t in tasks if t["name"] != name]
+        _save_user_tasks(tasks, task_ws)
         self._reload_scheduler()
 
         return ToolResult(f"Deleted scheduled task '{name}'.")
@@ -461,20 +484,14 @@ class CronTool(Tool):
             action = "enable" if enabled else "disable"
             return ToolResult(f"Error: 'name' is required for {action} action", error=True)
 
-        tasks = _load_user_tasks()
-        found = False
-        task_config = None
-        for t in tasks:
-            if t["name"] == name:
-                t["enabled"] = enabled
-                task_config = t
-                found = True
-                break
-
-        if not found:
+        # Find the task across all workspaces
+        result = _find_task_by_name(name)
+        if not result:
             return ToolResult(f"Error: task '{name}' not found", error=True)
+        tasks, task_config, task_ws = result
 
-        _save_user_tasks(tasks)
+        task_config["enabled"] = enabled
+        _save_user_tasks(tasks, task_ws)
         self._reload_scheduler()
 
         # If enabling, reset remaining counter
@@ -484,7 +501,7 @@ class CronTool(Tool):
             try:
                 # T13: 经任务级锁 RMW 重置 remaining，避免与 scheduler 写冲突
                 from core.cron import update_task_state
-                update_task_state(name, remaining=max_executions)
+                update_task_state(name, task_ws, remaining=max_executions)
                 logger.info(f"[cron_tool] Reset remaining={max_executions} for task '{name}'")
             except Exception as e:
                 logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")

@@ -25,9 +25,9 @@ class _FakeSession:
 
 @pytest.fixture
 def todo_dir(tmp_path, monkeypatch):
-    """把 TODO_DIR 指到临时目录，避免污染项目 data。"""
+    """把 todo 目录指到临时目录，避免污染项目 data。"""
     import core.tools.todo as todo_mod
-    monkeypatch.setattr(todo_mod, "TODO_DIR", tmp_path)
+    monkeypatch.setattr(todo_mod, "_get_todo_dir", lambda ws="": tmp_path)
     return tmp_path
 
 

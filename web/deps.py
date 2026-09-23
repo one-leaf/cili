@@ -401,7 +401,7 @@ def _make_sse_callbacks(event_queue: queue.Queue[str | None], agent) -> _SSECall
 
         # Check for todo_write tool and push todo update event
         if tool_name == "todo_write" and not is_error:
-            todos = get_todos_from_session(agent.session_manager)
+            todos = get_todos_from_session(agent.session_manager, agent.workspace_uuid or "")
             if todos:
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")

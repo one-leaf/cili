@@ -148,10 +148,14 @@ def agent(config, test_workspace):
 
 
 @pytest.fixture
-def temp_cron_state():
+def temp_cron_state(monkeypatch):
     """临时替换 cron 状态目录，避免测试读取真实状态文件"""
-    original_state_dir = core.cron.CRON_STATE_DIR
     with tempfile.TemporaryDirectory() as temp_dir:
-        core.cron.CRON_STATE_DIR = Path(temp_dir) / "state"
+        temp_path = Path(temp_dir)
+        # Monkeypatch the functions that return cron directories
+        monkeypatch.setattr(core.cron, "get_cron_state_dir", lambda workspace_uuid="": temp_path / "state")
+        monkeypatch.setattr(core.cron, "get_user_tasks_file", lambda workspace_uuid="": temp_path / "user_tasks.json")
+        # Also patch in cron_tool module which imports these
+        import core.tools.cron_tool as cron_tool
+        monkeypatch.setattr(cron_tool, "get_user_tasks_file", lambda workspace_uuid="": temp_path / "user_tasks.json")
         yield temp_dir
-        core.cron.CRON_STATE_DIR = original_state_dir

@@ -18,14 +18,13 @@ class TestLoopTool:
     """Test LoopTool basic functionality."""
 
     @pytest.fixture
-    def temp_loop_state(self):
+    def temp_loop_state(self, monkeypatch):
         """临时替换 loop 状态目录"""
         import core.tools.loop as loop_module
-        original_dir = loop_module.LOOP_STATE_DIR
         with tempfile.TemporaryDirectory() as temp_dir:
-            loop_module.LOOP_STATE_DIR = Path(temp_dir) / "state"
+            temp_path = Path(temp_dir) / "state"
+            monkeypatch.setattr(loop_module, "_get_loop_state_dir", lambda ws="": temp_path)
             yield temp_dir
-            loop_module.LOOP_STATE_DIR = original_dir
 
     def test_next_returns_first_item(self, temp_loop_state):
         """next 从文件加载并返回第一个 pending 项（附带进度）"""
