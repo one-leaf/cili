@@ -557,10 +557,9 @@ body {
     gap: 10px;
     flex-shrink: 0;
 }
-}
 
 .settings-status {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-secondary);
     flex: 1;
 }
