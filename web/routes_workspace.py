@@ -65,6 +65,10 @@ class BatchSessionRequest(BaseModel):
     action: str  # "hide", "unhide", "delete"
 
 
+class GitSettingsRequest(BaseModel):
+    git_enabled: bool
+
+
 # ----- Workspaces -----
 
 @router.get("/api/workspaces")
@@ -199,15 +203,60 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
 
 @router.post("/api/workspaces/{workspace_uuid}/reset")
 async def reset_workspace(workspace_uuid: str):
-    """Reset workspace config and sessions, but keep workspace files intact."""
+    """删除工作区配置（从索引移除），保留 .cili 数据目录和工作区文件。"""
     _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
+    if not find_workspace_entry(workspace_uuid):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     async with _agents_lock:
         _cleanup_agents_for_workspace(workspace_uuid)
-    _remove_workspace_data(workspace_uuid)
-    logger.info(f"Workspace reset: {workspace_uuid} (data removed, user files kept)")
+    remove_workspace_entry(workspace_uuid)
+    logger.info(f"Workspace config removed: {workspace_uuid} (data and files kept)")
     return {"success": True}
+
+
+# ----- Git Version Control -----
+
+@router.put("/api/workspaces/{workspace_uuid}/git/settings")
+async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
+    """更新工作区 Git 版本管理开关。"""
+    _validate_workspace_uuid(workspace_uuid)
+    if workspace_uuid == "system":
+        raise HTTPException(status_code=403, detail="System workspace cannot be modified")
+    if not find_workspace_entry(workspace_uuid):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    config = load_workspace_config(workspace_uuid)
+    config["git_enabled"] = request.git_enabled
+    if not save_workspace_config(workspace_uuid, config):
+        raise HTTPException(status_code=500, detail="Failed to save config")
+
+    # 如果启用且未初始化，自动初始化 Git 仓库
+    init_result = None
+    if request.git_enabled:
+        from core.workspace_git import init_workspace_git, is_git_initialized
+        if not is_git_initialized(workspace_uuid):
+            ok, msg = init_workspace_git(workspace_uuid)
+            init_result = {"success": ok, "message": msg}
+
+    logger.info(f"Git settings updated: {workspace_uuid} enabled={request.git_enabled}")
+    return {
+        "success": True,
+        "git_enabled": request.git_enabled,
+        "init_result": init_result,
+    }
+
+
+@router.get("/api/workspaces/{workspace_uuid}/git/status")
+async def get_git_status(workspace_uuid: str):
+    """获取工作区 Git 状态。"""
+    _validate_workspace_uuid(workspace_uuid)
+    if not find_workspace_entry(workspace_uuid):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    from core.workspace_git import get_workspace_git_status
+    return get_workspace_git_status(workspace_uuid)
 
 
 # ----- Sessions -----

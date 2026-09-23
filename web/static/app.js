@@ -1148,6 +1148,7 @@ async function openWorkspaceSettings() {
     switchWorkspaceSettingsTab('ws-basic');
     loadInstructions();
     loadTemplateList();
+    loadGitSettings();
 }
 
 
@@ -1201,10 +1202,8 @@ async function deleteWorkspaceConfig() {
     const wsName = currentWorkspace.name || currentWorkspace.uuid;
     const confirmed = confirm(
         `确定要删除工作区「${wsName}」的配置吗？\n\n` +
-        `⚠ 将删除以下内容：\n` +
-        `• 工作区配置文件\n` +
-        `• 该工作区下的所有会话记录\n\n` +
-        `✓ 工作区内的文件不会被删除\n\n` +
+        `⚠ 将从工作区列表中移除该配置\n\n` +
+        `✓ 工作区文件和会话数据不会被删除\n\n` +
         `此操作不可恢复！`
     );
 
@@ -1219,8 +1218,14 @@ async function deleteWorkspaceConfig() {
         });
 
         if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || 'Failed to delete');
+            let detail = `服务器错误 (${response.status})`;
+            try {
+                const err = await response.json();
+                detail = err.detail || detail;
+            } catch {
+                // 响应不是 JSON，使用默认错误信息
+            }
+            throw new Error(detail);
         }
 
         statusEl.textContent = '✓ 删除成功';
@@ -1259,8 +1264,12 @@ function switchWorkspaceSettingsTab(tabName) {
         saveBtn.textContent = '保存提示词';
         saveBtn.onclick = saveInstructions;
         deleteBtn.style.display = 'none';
+    } else if (tabName === 'ws-git') {
+        saveBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
     } else {
         saveBtn.textContent = '保存';
+        saveBtn.style.display = '';
         saveBtn.onclick = saveWorkspaceSettings;
         const isSystem = currentWorkspace?.system || currentWorkspace?.uuid === 'system';
         deleteBtn.style.display = isSystem ? 'none' : '';
@@ -1454,6 +1463,87 @@ async function loadTemplate() {
         statusEl.className = 'settings-status error';
     }
 }
+
+// ─── 工作区 Git 版本管理 ─────────────────────────────────────────
+
+async function loadGitSettings() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('git-settings-status');
+    const toggle = document.getElementById('git-enabled-toggle');
+    const statusSection = document.getElementById('git-status-section');
+    const commitsList = document.getElementById('git-commits-list');
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/status`);
+        const data = await response.json();
+
+        toggle.checked = data.enabled;
+        if (data.initialized) {
+            statusSection.style.display = '';
+            renderGitCommits(data.commits);
+        } else {
+            statusSection.style.display = 'none';
+            commitsList.innerHTML = '';
+        }
+        statusEl.textContent = '';
+    } catch (error) {
+        statusEl.textContent = '✗ 加载 Git 设置失败: ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function toggleGitEnabled() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('git-settings-status');
+    const toggle = document.getElementById('git-enabled-toggle');
+    const enabled = toggle.checked;
+
+    statusEl.textContent = enabled ? '正在启用...' : '正在关闭...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/settings`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ git_enabled: enabled })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || '操作失败');
+        }
+
+        const data = await response.json();
+        statusEl.textContent = enabled ? '✓ Git 版本管理已启用' : '✓ Git 版本管理已关闭';
+        statusEl.className = 'settings-status success';
+
+        // 刷新状态
+        await loadGitSettings();
+    } catch (error) {
+        toggle.checked = !enabled;  // 回滚
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+function renderGitCommits(commits) {
+    const list = document.getElementById('git-commits-list');
+    if (!commits || commits.length === 0) {
+        list.innerHTML = '<div class="git-commit-empty">暂无提交记录</div>';
+        return;
+    }
+    list.innerHTML = commits.map(c => `
+        <div class="git-commit-item">
+            <span class="git-commit-hash">${c.hash}</span>
+            <span class="git-commit-date">${c.date}</span>
+            <span class="git-commit-subject">${escapeHtml(c.subject)}</span>
+        </div>
+    `).join('');
+}
+
+// 绑定事件
+document.getElementById('git-enabled-toggle')?.addEventListener('change', toggleGitEnabled);
+document.getElementById('git-refresh-btn')?.addEventListener('click', loadGitSettings);
 
 // ─── 全局文件拖放上传 ─────────────────────────────────────────────
 // 拖放文件到任意窗口，自动上传到当前工作区；若文件管理器已打开且拖放落在其内，则上传到当前文件夹

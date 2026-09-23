@@ -2923,6 +2923,11 @@ mjx-container {
     overflow-y: auto;
 }
 
+/* 版本管理 tab 可滚动 */
+#tab-ws-git {
+    overflow-y: auto;
+}
+
 /* 项目提示词 tab 填充剩余空间 */
 #workspace-settings-modal .tab-content.active {
     flex: 1;
@@ -3017,6 +3022,86 @@ mjx-container {
 
 #instructions-status.info {
     color: var(--primary-color);
+}
+
+/* ─── 工作区 Git 版本管理 ─── */
+
+.git-status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    margin-bottom: 8px;
+}
+
+.git-status-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.git-commits-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.git-commit-item {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 6px 10px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.git-commit-item:last-child {
+    border-bottom: none;
+}
+
+.git-commit-hash {
+    font-family: 'SF Mono', Consolas, monospace;
+    color: var(--primary-color);
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.git-commit-date {
+    color: var(--text-light);
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.git-commit-subject {
+    color: var(--text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.git-commit-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-light);
+    font-size: 12px;
+}
+
+#git-settings-status {
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+#git-settings-status.success { color: #10b981; }
+#git-settings-status.error { color: #ef4444; }
+#git-settings-status.info { color: var(--primary-color); }
+
+[data-theme="dark"] .git-commits-list {
+    border-color: #3f3f46;
+}
+
+[data-theme="dark"] .git-commit-item {
+    border-bottom-color: #3f3f46;
 }
 
 .memory-action-log {

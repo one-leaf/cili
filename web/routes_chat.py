@@ -401,6 +401,21 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                         )
                 except Exception:
                     logger.exception("Failed to schedule memory extraction")
+
+                # Git 版本管理：回合结束后自动提交（后台线程，不阻塞 SSE 流）
+                try:
+                    from core.config import load_workspace_config
+                    workspace_cfg = load_workspace_config(agent.workspace_uuid or "")
+                    if workspace_cfg.get("git_enabled", False):
+                        import threading
+                        from core.workspace_git import auto_commit_workspace
+                        threading.Thread(
+                            target=auto_commit_workspace,
+                            args=(agent.workspace_uuid, agent.current_session_id or ""),
+                            daemon=True,
+                        ).start()
+                except Exception:
+                    logger.exception("Failed to schedule git auto-commit")
             except Exception as e:
                 logger.error(f"master Agent error: {e}")
                 # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
