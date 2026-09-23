@@ -58,7 +58,6 @@ async function loadMemory() {
         memoryEntries = data.entries || [];
         renderMemoryStats(data);
         renderMemoryList();
-        renderMemoryCommits(data.commits || []);
         document.getElementById('memory-enabled-toggle').checked = !!data.enabled;
         const pending = data.pending || 0;
         document.getElementById('memory-pending-label').textContent =
@@ -229,8 +228,7 @@ async function changeMemoryEntryStatus(action) {
             throw new Error(err.detail || '操作失败');
         }
         const result = await response.json();
-        logEl.textContent = result.committed ? `✓ 已${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}（已 git 提交）`
-                                              : `✓ 已${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}`;
+        logEl.textContent = `✓ 已${action === 'archive' ? '归档' : action === 'restore' ? '恢复' : '删除'}`;
         memorySelectedName = null;
         await loadMemory();
     } catch (error) {
@@ -278,7 +276,6 @@ async function consolidateMemory() {
             logEl.textContent = '✗ 整合失败: ' + r.error;
         } else {
             logEl.textContent = `✓ 处理 ${r.processed} 条 · 新建 ${r.applied.filter(a => a.op === 'store').length} / 更新 ${r.applied.filter(a => a.op === 'update').length} · 归档 ${r.archived.length}` +
-                (r.committed ? ' · 已 git 提交' : '') +
                 (r.pending_after > 0 ? ` · 剩余待整合 ${r.pending_after}` : '');
         }
         await loadMemory();
@@ -287,18 +284,6 @@ async function consolidateMemory() {
     } finally {
         btn.disabled = false;
     }
-}
-
-function renderMemoryCommits(commits) {
-    const el = document.getElementById('memory-commits');
-    if (!commits || commits.length === 0) {
-        el.innerHTML = '<span class="memory-commits-title">暂无 git 记录</span>';
-        return;
-    }
-    const items = commits.map(c =>
-        `<span class="memory-commit-item" title="${escapeHtml(c.date)}">${escapeHtml(c.hash)} ${escapeHtml(c.subject)}</span>`
-    ).join('');
-    el.innerHTML = `<span class="memory-commits-title">最近提交:</span>${items}`;
 }
 
 document.addEventListener('DOMContentLoaded', setupMemoryEvents);

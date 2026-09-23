@@ -15,8 +15,6 @@ from core.memory_store import (
     SOURCES,
     Journal,
     MemoryStore,
-    best_effort_commit,
-    git_log_summary,
     slugify,
 )
 from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
@@ -170,9 +168,6 @@ class MemoryTool(Tool):
             pass
         verb = "Updated" if result["replaced"] else "Stored"
         lines = [f"{verb} {result['type']} '{result['name']}' → {result['path']}"]
-        ok, commit_note = best_effort_commit(self.memory_dir, f"{verb.lower()} {result['type']}:{result['name']}")
-        if ok:
-            lines.append(f"git: {commit_note}")
         return ToolResult("\n".join(lines))
 
     # ─── find ──────────────────────────────────────────
@@ -237,9 +232,6 @@ class MemoryTool(Tool):
             status=kwargs.get("status"),
         )
         lines = [f"Updated '{name}' → {result['path']}"]
-        ok, commit_note = best_effort_commit(self.memory_dir, f"update:{name}")
-        if ok:
-            lines.append(f"git: {commit_note}")
         return ToolResult("\n".join(lines))
 
     # ─── delete ────────────────────────────────────────
@@ -249,8 +241,7 @@ class MemoryTool(Tool):
         if not name:
             return ToolResult("Error: name is required for delete", error=True)
         result = self.store.delete(name)
-        best_effort_commit(self.memory_dir, f"delete:{name}")
-        return ToolResult(f"Deleted {result['type']} '{name}' (git history can restore it)")
+        return ToolResult(f"Deleted {result['type']} '{name}'")
 
     # ─── list ──────────────────────────────────────────
 
@@ -279,11 +270,6 @@ class MemoryTool(Tool):
             f"- index: {stats['index_lines']} lines / {stats['index_bytes']} bytes",
             f"- journal: {pending} pending, cursor at {self.journal.cursor()}",
         ]
-        commits = git_log_summary(self.memory_dir, max_commits=5)
-        if commits:
-            lines.append("- recent commits:")
-            for c in commits:
-                lines.append(f"  {c['hash']} {c['date']} {c['subject']}")
         return ToolResult("\n".join(lines))
 
     # ─── consolidate（cron / 手动触发整合）────────────────
@@ -303,10 +289,9 @@ class MemoryTool(Tool):
             stores = sum(1 for a in applied if a["op"] == "store")
             updates = sum(1 for a in applied if a["op"] == "update")
             others = sum(1 for a in applied if a["op"] not in ("store", "update"))
-            committed = "committed" if r.get("committed") else "no git"
             lines.append(
                 f"- {r['workspace_uuid']}: processed {r.get('processed', 0)} record(s), "
                 f"{stores} stored, {updates} updated, {others} other, "
-                f"{r.get('archived', 0)} archived, pending {r.get('pending_after', 0)}, {committed}"
+                f"{r.get('archived', 0)} archived, pending {r.get('pending_after', 0)}"
             )
         return ToolResult("\n".join(lines))

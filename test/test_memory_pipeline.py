@@ -1,7 +1,7 @@
 """记忆管线单元测试：提取（恰好一次 + 降级）+ 整合（原子游标推进）+ 开关门控。
 
 用假 extractor/consolidator 回调替换 LLM，验证 journal 去重、指针接续、
-RAW 降级、游标只在成功时推进、memory_enabled 工作区过滤。git 提交尽力而为。
+RAW 降级、游标只在成功时推进、memory_enabled 工作区过滤。
 """
 
 import json
@@ -18,7 +18,7 @@ from core.memory_pipeline import (
     run_consolidation,
     consolidate_all,
 )
-from core.memory_store import Journal, MemoryStore, _find_git
+from core.memory_store import Journal, MemoryStore
 
 
 @pytest.fixture
@@ -218,9 +218,6 @@ class TestConsolidation:
 
         # 游标推进到已处理记录
         assert Journal(str(_mem(projects_dir, "ws1"))).cursor() == 1
-        assert "committed" in r
-        if _find_git() is not None:
-            assert r["committed"] is True
 
     def test_failure_leaves_cursor_untouched(self, projects_dir):
         self._seed(projects_dir)
@@ -291,7 +288,6 @@ class TestConsolidation:
         _ws(projects_dir, "ws1", enabled=True)
         r = run_consolidation("ws1")
         assert r["processed"] == 0
-        assert r["committed"] is False
 
     def test_incomplete_ops_keeps_cursor(self, projects_dir):
         """op 数 < 待整合记录数（截断丢尾部/模型少输出）→ 不推游标，记录保留供重跑。"""

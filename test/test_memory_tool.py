@@ -9,13 +9,6 @@ import pytest
 from core.tools import get_tool_by_name
 
 
-@pytest.fixture(autouse=True)
-def _no_git(monkeypatch):
-    """工具单元测试不做真实 git 提交（git 行为由 test_memory_store TestGit 覆盖）。
-    否则每次 store/update/delete 都 spawn git 子进程，整个文件会慢 5-10 倍。"""
-    monkeypatch.setattr("core.tools.memory.best_effort_commit", lambda md, subj: (False, "test-skip"))
-
-
 def _memory_tool(tools):
     return get_tool_by_name(tools, "memory")
 

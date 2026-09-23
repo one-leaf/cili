@@ -292,10 +292,15 @@ class TestGlobalEvents:
         import queue
         from web import deps as web_api
         from core.event_bus import get_event_bus
+        from pathlib import Path
 
         ws, sid = "ws-regress", "sess-regress-1"
         (tmp_path / "sessions").mkdir(exist_ok=True)
         monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
+        # Agent._init_interactive 内部通过 get_workspace_data_dir 解析数据目录
+        monkeypatch.setattr("core.config.get_workspace_data_dir", lambda uuid: tmp_path)
+        # 测试结束后清理全局 agents 缓存，避免泄漏
+        monkeypatch.setattr(web_api, "agents", {})
 
         async def run():
             agent = await web_api._get_or_create_agent(ws, sid)

@@ -1,7 +1,7 @@
-"""MemoryStore + Journal + git 隔离 单元测试（v3 记忆存储引擎）。
+"""MemoryStore + Journal 单元测试（v3 记忆存储引擎）。
 
 不依赖 LLM：直接构造 MemoryStore / Journal，验证条目读写、索引、
-检索、老化归档、恰好一次游标，以及 memory 目录 git 与父仓库的隔离。
+检索、老化归档、恰好一次游标。
 """
 
 import datetime as dt
@@ -12,26 +12,14 @@ import pytest
 from core.memory_store import (
     MemoryStore,
     Journal,
-    best_effort_commit,
-    _ensure_self_repo,
-    _find_git,
-    _git_cmd,
+    cleanup_memory_git,
     slugify,
-    git_log_summary,
 )
 
 
 @pytest.fixture
 def store(tmp_path):
     return MemoryStore(str(tmp_path / "memory"))
-
-
-@pytest.fixture
-def git_available():
-    """探测 git 可执行文件；缺失则跳过 git 相关用例。"""
-    if _find_git() is None:
-        pytest.skip("git not available")
-    return True
 
 
 # ── store / 索引 ─────────────────────────────────────
@@ -303,98 +291,41 @@ class TestJournal:
         assert len(records) == 3
 
 
-# ── git 版本控制与隔离 ───────────────────────────────
+# ── memory git 目录清理 ─────────────────────────────────────────────
 
-class TestGit:
-    def test_ensure_self_repo_inside_parent(self, tmp_path, git_available):
-        """memory 目录位于父仓库内时，强制其成为独立仓库（回归：防误提交父仓库）。"""
-        project = tmp_path / "project"
-        project.mkdir()
-        _git_cmd(project, ["init", "-q"])
-        _git_cmd(project, ["config", "user.email", "t@example.com"])
-        _git_cmd(project, ["config", "user.name", "tester"])
-        (project / "tracked.txt").write_text("x", encoding="utf-8")
-        _git_cmd(project, ["add", "-A"])
-        _git_cmd(project, ["commit", "-m", "parent init"])
 
-        mem = project / "data" / "agents" / "w1" / "memory"
-        mem.mkdir(parents=True)
-        (mem / "MEMORY.md").write_text("index", encoding="utf-8")
-
-        assert _ensure_self_repo(mem) is True
-        top = _git_cmd(mem, ["rev-parse", "--show-toplevel"]).stdout.strip()
-        assert os.path.normcase(os.path.abspath(top)) == os.path.normcase(str(mem.resolve()))
-        # 父仓库未被打扰
-        parent_log = _git_cmd(project, ["log", "--oneline"]).stdout.strip().splitlines()
-        assert len(parent_log) == 1
-
-    def test_best_effort_commit_isolated(self, tmp_path, git_available):
-        """best_effort_commit 只提交 memory 目录内容，不触碰父仓库。"""
-        project = tmp_path / "project"
-        project.mkdir()
-        _git_cmd(project, ["init", "-q"])
-        _git_cmd(project, ["config", "user.email", "t@example.com"])
-        _git_cmd(project, ["config", "user.name", "tester"])
-        (project / "tracked.txt").write_text("x", encoding="utf-8")
-        _git_cmd(project, ["add", "-A"])
-        _git_cmd(project, ["commit", "-m", "init"])
-
-        mem = project / "mem"
+class TestCleanupMemoryGit:
+    def test_cleanup_removes_git_dir(self, tmp_path):
+        """cleanup_memory_git 删除 memory/.git 目录，不影响条目文件。"""
+        mem = tmp_path / "memory"
         mem.mkdir()
+        git_dir = mem / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref", encoding="utf-8")
         (mem / "MEMORY.md").write_text("index", encoding="utf-8")
-        (mem / "entries").mkdir()
 
-        ok, note = best_effort_commit(mem, "test commit")
-        assert ok
-        # 父仓库 log 无此提交
-        assert "test commit" not in _git_cmd(project, ["log", "--oneline"]).stdout
-        # memory 仓库有自己的提交
-        assert "test commit" in _git_cmd(mem, ["log", "--oneline"]).stdout
-        assert git_log_summary(mem)
+        removed = cleanup_memory_git(mem)
+        assert removed == 1
+        assert not git_dir.exists()
+        assert (mem / "MEMORY.md").exists()
 
-    def test_git_log_summary_scoped_to_self_repo(self, tmp_path, git_available):
-        """memory 目录未独立成仓库时 git_log_summary 返回 []，绝不泄漏父仓库提交。"""
-        project = tmp_path / "project"
-        project.mkdir()
-        _git_cmd(project, ["init", "-q"])
-        _git_cmd(project, ["config", "user.email", "t@example.com"])
-        _git_cmd(project, ["config", "user.name", "tester"])
-        (project / "tracked.txt").write_text("x", encoding="utf-8")
-        _git_cmd(project, ["add", "-A"])
-        _git_cmd(project, ["commit", "-m", "parent init"])
-
-        mem = project / "mem"
+    def test_cleanup_removes_bak_dirs(self, tmp_path):
+        """cleanup_memory_git 同时清理 .git.bak.* 备份目录。"""
+        mem = tmp_path / "memory"
         mem.mkdir()
-        (mem / "MEMORY.md").write_text("index", encoding="utf-8")
-        (mem / "entries").mkdir()
+        bak1 = mem / ".git.bak.1000"
+        bak2 = mem / ".git.bak.2000"
+        bak1.mkdir()
+        bak2.mkdir()
+        (bak1 / "HEAD").write_text("ref", encoding="utf-8")
 
-        # 尚未独立成仓库：返回空，而非父仓库的项目提交（回归：UI 泄漏全局 git 信息）
-        assert git_log_summary(mem) == []
+        removed = cleanup_memory_git(mem)
+        assert removed == 2
+        assert not bak1.exists()
+        assert not bak2.exists()
 
-        # 独立成仓库并提交后：只读 memory 自己的提交
-        ok, _ = best_effort_commit(mem, "first memory commit")
-        assert ok
-        commits = git_log_summary(mem)
-        assert len(commits) == 1
-        assert "first memory commit" in commits[0]["subject"]
-
-    def test_broken_gitdir_reinitialized(self, tmp_path, git_available):
-        """只有 objects/ 的残缺 .git 会被移走重建，而非回退到父仓库。"""
-        project = tmp_path / "p"
-        project.mkdir()
-        _git_cmd(project, ["init", "-q"])
-        _git_cmd(project, ["config", "user.email", "t@example.com"])
-        _git_cmd(project, ["config", "user.name", "tester"])
-        (project / "f").write_text("x", encoding="utf-8")
-        _git_cmd(project, ["add", "-A"])
-        _git_cmd(project, ["commit", "-m", "init"])
-
-        mem = project / "mem"
+    def test_cleanup_no_git_returns_zero(self, tmp_path):
+        """没有 .git 目录时返回 0。"""
+        mem = tmp_path / "memory"
         mem.mkdir()
-        (mem / ".git" / "objects").mkdir(parents=True)  # 残缺 .git
-        (mem / "MEMORY.md").write_text("index", encoding="utf-8")
-
-        assert _ensure_self_repo(mem) is True
-        assert (mem / ".git" / "HEAD").exists()  # 被重建为完整仓库
-        top = _git_cmd(mem, ["rev-parse", "--show-toplevel"]).stdout.strip()
-        assert os.path.normcase(os.path.abspath(top)) == os.path.normcase(str(mem.resolve()))
+        assert cleanup_memory_git(mem) == 0

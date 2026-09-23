@@ -2,8 +2,7 @@
 
 Extraction (post-turn, background thread) appends structured or [RAW] records to
 the journal; consolidation (cron every 2h or manual) turns pending journal
-records into memory entries, refreshes summary.md, advances .cursor and
-git-commits the real diff.
+records into memory entries, refreshes summary.md, advances .cursor.
 
 Exactly-once is guaranteed by two layers:
 - append side: Journal dedups by key (`extract:{session}:{first_msg_id}:{i}`)
@@ -31,7 +30,6 @@ from core.memory_store import (
     MEMORY_TYPES,
     Journal,
     MemoryStore,
-    best_effort_commit,
     now_str,
 )
 
@@ -128,7 +126,7 @@ CONSOLIDATION_SYSTEM_PROMPT = (
     "- skip: keep pending for later (e.g. needs more context).\n"
     "Rules:\n"
     "- 'name' must be an existing entry name for update/archive/delete; for store it should be empty or a new kebab-case slug.\n"
-    "- When a record contradicts an existing entry, the new fact wins: use update to replace the old content in place (git keeps history).\n"
+    "- When a record contradicts an existing entry, the new fact wins: use update to replace the old content in place.\n"
     f"{_WHAT_NOT_TO_SAVE}\n"
     "- summary: a refreshed global summary of the workspace memory, <= 2KB, written in the language of the memory content."
 )
@@ -684,7 +682,7 @@ def run_consolidation(
     """整合一个工作区 journal 中的待处理记录。
 
     仅当整合正常完成（op 覆盖全部待处理记录且无应用失败）才推进 .cursor
-    （崩溃可安全重跑）；git 提交信息来自真实 diff。op 数不足即视为截断/模型
+    （崩溃可安全重跑）。op 数不足即视为截断/模型
     少输出，不推进游标，记录保持 pending 供重跑。
 
     max_batches>1 时循环整合（手动触发用）：每批最多 limit 条，直至待整合清零、
@@ -707,7 +705,7 @@ def run_consolidation(
         except Exception as e:
             logger.warning("memory consolidation failed for workspace %s: %s", workspace_uuid, e)
             batch_results.append({"processed": 0, "ops": [], "applied": [], "failed": [],
-                                  "archived": [], "committed": False,
+                                  "archived": [],
                                   "pending_after": journal.pending_count(), "error": str(e)})
             break
 
@@ -733,7 +731,6 @@ def run_consolidation(
                 "applied": applied,
                 "failed": failed,
                 "archived": [],
-                "committed": False,
                 "pending_after": journal.pending_count(),
                 "summary_len": len(summary.encode("utf-8")) if summary else 0,
                 "error": f"{reason}; journal cursor not advanced",
@@ -745,15 +742,12 @@ def run_consolidation(
         journal.compact(keep=500)
         archived = store.archive_stale()
 
-        ok, note = best_effort_commit(memory_dir, f"consolidate: {len(applied)} ops, {len(archived)} archived")
         batch_results.append({
             "processed": len(pending),
             "ops": ops,
             "applied": applied,
             "failed": failed,
             "archived": archived,
-            "committed": ok,
-            "commit_note": note if ok else "",
             "pending_after": journal.pending_count(),
             "summary_len": len(summary.encode("utf-8")) if summary else 0,
         })
@@ -761,7 +755,7 @@ def run_consolidation(
             break
 
     if not batch_results:
-        return {"processed": 0, "ops": [], "applied": [], "archived": [], "committed": False,
+        return {"processed": 0, "ops": [], "applied": [], "archived": [],
                 "pending_after": 0, "summary_len": 0}
 
     final = dict(batch_results[-1])

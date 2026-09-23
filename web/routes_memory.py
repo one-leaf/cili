@@ -11,9 +11,7 @@ from pydantic import BaseModel
 
 from core.config import get_workspace_data_dir, load_workspace_config, save_workspace_config
 from core.memory_pipeline import memory_enabled, run_consolidation
-from core.memory_store import (
-    MemoryStore, Journal, best_effort_commit, git_log_summary,
-)
+from core.memory_store import MemoryStore, Journal
 
 from web.deps import _csrf_protect, _SAFE_ID_RE, _validate_workspace_uuid
 
@@ -51,7 +49,7 @@ def _validate_memory_name(name: str) -> None:
 
 @router.get("/api/workspaces/{workspace_uuid}/memory")
 async def list_memory(workspace_uuid: str, type: str = "", status: str = "", q: str = ""):
-    """记忆总览：统计 + 条目列表（可按 type/status/关键词过滤）+ 待整合数 + 开关 + 提交记录。"""
+    """记忆总览：统计 + 条目列表（可按 type/status/关键词过滤）+ 待整合数 + 开关。"""
     _validate_workspace_uuid(workspace_uuid)
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():
@@ -59,7 +57,7 @@ async def list_memory(workspace_uuid: str, type: str = "", status: str = "", q: 
                 "stats": {"total": 0, "archived": 0, "stale": 0,
                           "by_type": {"fact": 0, "preference": 0, "skill": 0, "reference": 0},
                           "index_lines": 0, "index_bytes": 0},
-                "entries": [], "pending": 0, "commits": []}
+                "entries": [], "pending": 0}
     store = MemoryStore(md)
     try:
         entries = store.list(type_=type or None, status=status or None)
@@ -80,7 +78,6 @@ async def list_memory(workspace_uuid: str, type: str = "", status: str = "", q: 
         "stats": store.stat(),
         "entries": entries[:500],
         "pending": journal.pending_count(),
-        "commits": git_log_summary(md, max_commits=10),
     }
 
 
@@ -98,7 +95,7 @@ async def get_memory_entry(workspace_uuid: str, name: str):
 
 @router.put("/api/workspaces/{workspace_uuid}/memory/entries/{name}")
 async def update_memory_entry(workspace_uuid: str, name: str, request: UpdateMemoryEntryRequest, request_raw: Request = None):
-    """编辑条目字段并 git 提交。"""
+    """编辑条目字段。"""
     _csrf_protect(request_raw)
     _validate_memory_name(name)
     md = _memory_dir(workspace_uuid)
@@ -113,8 +110,7 @@ async def update_memory_entry(workspace_uuid: str, name: str, request: UpdateMem
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    committed, note = best_effort_commit(md, f"update memory entry: {name}")
-    return {"ok": True, "committed": committed, "note": note}
+    return {"ok": True}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/archive")
@@ -127,8 +123,7 @@ async def archive_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
         MemoryStore(md).archive(name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    committed, note = best_effort_commit(md, f"archive memory entry: {name}")
-    return {"ok": True, "committed": committed, "note": note}
+    return {"ok": True}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/restore")
@@ -141,8 +136,7 @@ async def restore_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
         MemoryStore(md).restore(name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    committed, note = best_effort_commit(md, f"restore memory entry: {name}")
-    return {"ok": True, "committed": committed, "note": note}
+    return {"ok": True}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/delete")
@@ -155,8 +149,7 @@ async def delete_memory_entry(workspace_uuid: str, name: str, request_raw: Reque
         MemoryStore(md).delete(name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    committed, note = best_effort_commit(md, f"delete memory entry: {name}")
-    return {"ok": True, "committed": committed, "note": note}
+    return {"ok": True}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/consolidate")

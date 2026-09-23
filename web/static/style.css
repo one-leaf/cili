@@ -2900,37 +2900,6 @@ mjx-container {
     gap: 8px;
 }
 
-.memory-commits {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.memory-commits-title {
-    font-weight: 500;
-    font-size: 11px;
-}
-
-.memory-commit-item {
-    background: #fff;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-family: 'SF Mono', Consolas, Menlo, monospace;
-    font-size: 10px;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: default;
-}
-
-[data-theme="dark"] .memory-commit-item {
-    background: #27272a;
-    color: #e4e4e7;
-}
-
 /* ─── Project Instructions Editor ───────────────────────── */
 
 /* 工作区设置固定大小，与系统设置一致 */

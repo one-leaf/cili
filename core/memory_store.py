@@ -5,7 +5,6 @@
 - Journal:     journal.jsonl 摄入日志 + .cursor 游标（恰好一次消费的可靠载体）
 
 命名约定：name 是全局唯一定位键（slug），跨类型不重复。store 按 name 原地替换。
-版本控制：用 data/deps/git 内置 git（best-effort，不可用则静默跳过），commit 信息取真实 diff 摘要。
 """
 
 from __future__ import annotations
@@ -16,10 +15,8 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -203,136 +200,35 @@ def _parse_frontmatter(content: str) -> dict:
     return result
 
 
-# ── 轻量 git（best-effort，用 data/deps/git 内置 git）──
+# ── memory 目录 git 清理（升级时调用，清理历史遗留 .git 目录）──
 
-def _find_git() -> str | None:
-    """定位 git 可执行文件：内置 deps git 优先，其次系统 PATH。"""
-    project_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        project_root / "data" / "deps" / "git" / "cmd" / "git.exe",
-        project_root / "data" / "deps" / "git" / "mingw64" / "bin" / "git.exe",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    return shutil.which("git")
+def cleanup_memory_git(memory_dir: str | Path) -> int:
+    """删除 memory 目录下的 .git 目录（历史版本曾为每个工作区 memory 建立独立 git 仓库）。
 
+    共享工作区场景下 memory 不再使用 git 做版本控制，残留的 .git 目录浪费空间
+    且可能在多用户并发写入时引发锁冲突。本函数仅删除 .git 目录本身，不影响条目文件。
 
-def _git_cmd(memory_dir: str | Path, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-    git = _find_git()
-    if not git:
-        raise FileNotFoundError("git not available")
-    return subprocess.run(
-        [git, *args],
-        cwd=str(memory_dir),
-        capture_output=True,
-        text=True,
-        # git 提交信息/日志为 UTF-8；Windows 默认 locale 是 GBK，需显式指定，否则读线程 UnicodeDecodeError
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-
-def _ensure_self_repo(memory_dir: str | Path) -> bool:
-    """确保 memory 目录是独立的 git 仓库（而非父仓库的子目录）。
-
-    若 memory 目录位于 cili 项目仓库（data/ 在其内）且 .git 缺失/损坏，
-    git 会向上发现父仓库——此时必须重新 init，否则 add -A 会误提交整个项目。
-    损坏的 .git 目录（如只有 objects/）先移为 .git.bak.<ts> 保留，再重建。
+    Returns:
+        int: 删除的 .git 目录数量
     """
     md = Path(memory_dir)
-    try:
-        probe = _git_cmd(md, ["rev-parse", "--show-toplevel"], timeout=10)
-    except Exception:
-        probe = None
-    if probe is not None and probe.returncode == 0:
-        top = os.path.normcase(os.path.abspath(probe.stdout.strip()))
-        if top == os.path.normcase(str(md.resolve())):
-            _git_cmd(md, ["config", "user.email", "cili@localhost"])
-            _git_cmd(md, ["config", "user.name", "cili"])
-            return True
+    removed = 0
     gitdir = md / ".git"
     if gitdir.exists():
-        backup = md / f".git.bak.{int(time.time())}"
         try:
-            os.replace(gitdir, backup)
-        except OSError:
-            # best-effort：备份 rename 失败可接受，下面直接重新 init 重建 .git
+            shutil.rmtree(gitdir, ignore_errors=True)
+            removed += 1
+        except Exception:
             pass
-    result = _git_cmd(md, ["init", "-q"], timeout=30)
-    if result.returncode != 0:
-        return False
-    _git_cmd(md, ["config", "user.email", "cili@localhost"])
-    _git_cmd(md, ["config", "user.name", "cili"])
-    return True
-
-
-def _git_available(memory_dir: str | Path) -> bool:
-    try:
-        return _git_cmd(memory_dir, ["rev-parse", "--is-inside-work-tree"], timeout=10).returncode == 0
-    except Exception:
-        return False
-
-
-def best_effort_commit(memory_dir: str | Path, subject: str) -> tuple[bool, str]:
-    """在 memory 目录初始化/提交 git（尽力而为，失败静默跳过）。
-
-    首次提交前 init + 本地 user 配置，避免全局配置缺失报错。
-    提交信息 = 真实 diff 摘要（非 LLM 自述），满足设计 §8.1 审计要求。
-    """
-    md = Path(memory_dir)
-    try:
-        if not _ensure_self_repo(md):
-            return False, "git init failed"
-        add = _git_cmd(md, ["add", "-A"])
-        if add.returncode != 0:
-            return False, add.stderr.strip()[:200]
-        stat = _git_cmd(md, ["diff", "--cached", "--stat", "-M"])
-        diff_summary = stat.stdout.strip()
-        if not diff_summary:
-            return False, "no changes"
-        message = f"{subject}\n\n{diff_summary}" if diff_summary else subject
-        commit = _git_cmd(md, ["commit", "-m", message])
-        if commit.returncode != 0:
-            return False, (commit.stderr.strip() or commit.stdout.strip())[:200]
-        return True, (commit.stdout.strip().splitlines()[-1] if commit.stdout.strip() else "committed")
-    except Exception as e:
-        return False, str(e)
-
-
-def git_log_summary(memory_dir: str | Path, max_commits: int = 10) -> list[dict]:
-    """读取 memory 仓库最近提交（审计用）。无 git / 未独立成仓库时返回 []。
-
-    只读 memory 目录自身的仓库日志：先校验 --show-toplevel 就是 memory 目录，
-    否则 git 会向上发现父仓库（如 cili 项目仓库）泄漏全局提交。
-    """
-    try:
-        probe = _git_cmd(memory_dir, ["rev-parse", "--show-toplevel"], timeout=10)
-        if probe.returncode != 0:
-            return []
-        top = os.path.normcase(os.path.abspath(probe.stdout.strip()))
-        if top != os.path.normcase(str(Path(memory_dir).resolve())):
-            return []
-        result = _git_cmd(memory_dir, [
-            "log", "--pretty=%h|%ct|%s", "-n", str(max_commits),
-        ])
-        if result.returncode != 0:
-            return []
-        out = []
-        for line in result.stdout.strip().splitlines():
-            if "|" not in line:
-                continue
-            short_hash, ts, *subject_parts = line.split("|")
+    # 也清理旧的 .git.bak.* 备份目录
+    for item in md.iterdir():
+        if item.name.startswith(".git.bak."):
             try:
-                date = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
-            except (ValueError, OSError, OverflowError):
-                date = ""
-            out.append({"hash": short_hash, "date": date, "subject": "|".join(subject_parts)})
-        return out
-    except Exception:
-        return []
+                shutil.rmtree(item, ignore_errors=True)
+                removed += 1
+            except Exception:
+                pass
+    return removed
 
 
 # ── MemoryStore ──────────────────────────────────────

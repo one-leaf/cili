@@ -289,9 +289,13 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                     # 同步工具 session_manager 引用（与 switch_session 一致）
                     for tool in agent.tools:
                         tool.session_manager = new_sm
-                    # 删除空的旧默认会话目录，避免孤立目录
+                    # 删除空的旧默认会话目录，避免孤立目录（仅当目录确实为空时）
                     if old_session_dir.exists() and old_session_dir != new_sm.session_dir:
-                        shutil.rmtree(old_session_dir, ignore_errors=True)
+                        try:
+                            if not any(old_session_dir.iterdir()):
+                                old_session_dir.rmdir()
+                        except OSError:
+                            pass
                     logger.info(f"Creating new session: {session_id}")
 
             agents[key] = agent
