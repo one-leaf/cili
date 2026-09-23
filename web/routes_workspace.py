@@ -67,6 +67,9 @@ class BatchSessionRequest(BaseModel):
 
 class GitSettingsRequest(BaseModel):
     git_enabled: bool
+    git_remote_url: str | None = None
+    git_username: str | None = None
+    git_token: str | None = None
 
 
 # ----- Workspaces -----
@@ -220,7 +223,7 @@ async def reset_workspace(workspace_uuid: str):
 
 @router.put("/api/workspaces/{workspace_uuid}/git/settings")
 async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
-    """更新工作区 Git 版本管理开关。"""
+    """更新工作区 Git 版本管理设置（开关 + 远程仓库）。"""
     _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
@@ -240,23 +243,66 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
             ok, msg = init_workspace_git(workspace_uuid)
             init_result = {"success": ok, "message": msg}
 
+    # 设置远程仓库（三个字段任一变化则更新）
+    remote_result = None
+    if request.git_remote_url is not None or request.git_username is not None or request.git_token is not None:
+        from core.workspace_git import set_git_remote, get_git_remote_info
+        remote_url = request.git_remote_url or ""
+        username = request.git_username or ""
+        token = request.git_token or ""
+        ok, msg = set_git_remote(workspace_uuid, remote_url, username, token)
+        remote_result = {"success": ok, "message": msg}
+        if ok:
+            remote_result["remote_info"] = get_git_remote_info(workspace_uuid)
+
     logger.info(f"Git settings updated: {workspace_uuid} enabled={request.git_enabled}")
     return {
         "success": True,
         "git_enabled": request.git_enabled,
         "init_result": init_result,
+        "remote_result": remote_result,
     }
 
 
 @router.get("/api/workspaces/{workspace_uuid}/git/status")
 async def get_git_status(workspace_uuid: str):
-    """获取工作区 Git 状态。"""
+    """获取工作区 Git 状态（含远程仓库信息）。"""
     _validate_workspace_uuid(workspace_uuid)
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    from core.workspace_git import get_workspace_git_status
-    return get_workspace_git_status(workspace_uuid)
+    from core.workspace_git import get_workspace_git_status, get_git_remote_info
+    status = get_workspace_git_status(workspace_uuid)
+    status["remote_info"] = get_git_remote_info(workspace_uuid)
+    return status
+
+
+@router.post("/api/workspaces/{workspace_uuid}/git/pull")
+async def git_pull(workspace_uuid: str):
+    """从远程拉取变更。"""
+    _validate_workspace_uuid(workspace_uuid)
+    if not find_workspace_entry(workspace_uuid):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    from core.workspace_git import git_pull as do_pull
+    ok, msg = do_pull(workspace_uuid)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+
+@router.post("/api/workspaces/{workspace_uuid}/git/push")
+async def git_push(workspace_uuid: str):
+    """推送到远程仓库。"""
+    _validate_workspace_uuid(workspace_uuid)
+    if not find_workspace_entry(workspace_uuid):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    from core.workspace_git import git_push as do_push
+    ok, msg = do_push(workspace_uuid)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
 
 
 # ----- Sessions -----

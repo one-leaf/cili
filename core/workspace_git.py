@@ -313,6 +313,248 @@ def auto_commit_workspace(workspace_uuid: str, session_id: str = "") -> tuple[bo
         return False, f"自动提交失败: {e}"
 
 
+from urllib.parse import urlparse, urlunparse
+
+
+def _build_auth_url(remote_url: str, username: str = "", token: str = "") -> str:
+    """将用户名和 Token 嵌入远程 URL，返回带凭证的 URL。
+
+    示例: https://github.com/user/repo.git → https://user:token@github.com/user/repo.git
+    已是 SSH 或已包含凭证则原样返回。
+    """
+    if not remote_url:
+        return remote_url
+    # SSH 协议不嵌入凭证
+    if remote_url.startswith(("git@", "ssh://")):
+        return remote_url
+    parsed = urlparse(remote_url)
+    if parsed.username:
+        # 已含凭证，原样返回
+        return remote_url
+    if not username:
+        return remote_url
+    # 嵌入 user:token
+    host = parsed.hostname
+    port = f":{parsed.port}" if parsed.port else ""
+    auth = username
+    if token:
+        auth += f":{token}"
+    netloc = f"{auth}@{host}{port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+
+def _mask_token(token: str) -> str:
+    """脱敏 Token：保留前 4 位 + 后 4 位，中间用 * 替换。"""
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return token[:4] + "*" * (len(token) - 8) + token[-4:]
+
+
+def set_git_remote(workspace_uuid: str, remote_url: str, username: str = "", token: str = "") -> tuple[bool, str]:
+    """设置工作区的 Git 远程仓库。
+
+    将 URL + 用户名 + Token 存入工作区配置，并设置 git remote origin。
+
+    Returns:
+        (success, message)
+    """
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir:
+        return False, "工作区目录不存在"
+
+    try:
+        # 更新工作区配置
+        from core.config import load_workspace_config, save_workspace_config
+        ws_config = load_workspace_config(workspace_uuid)
+        if not ws_config:
+            return False, "工作区配置不存在"
+        ws_config["git_remote_url"] = remote_url
+        ws_config["git_username"] = username
+        ws_config["git_token"] = token
+        if not save_workspace_config(workspace_uuid, ws_config):
+            return False, "保存配置失败"
+
+        if not remote_url:
+            return True, "远程地址已清除"
+
+        # 设置 git remote origin
+        auth_url = _build_auth_url(remote_url, username, token)
+        if not (workspace_dir / ".git").is_dir():
+            ok, msg = init_workspace_git(workspace_uuid)
+            if not ok:
+                return False, f"Git 初始化失败: {msg}"
+
+        # 检查是否已有 origin
+        result = _git_cmd(workspace_dir, ["remote", "get-url", "origin"], timeout=10)
+        if result.returncode == 0:
+            # 已存在，更新
+            result = _git_cmd(workspace_dir, ["remote", "set-url", "origin", auth_url], timeout=10)
+        else:
+            # 不存在，添加
+            result = _git_cmd(workspace_dir, ["remote", "add", "origin", auth_url], timeout=10)
+
+        if result.returncode != 0:
+            return False, f"设置 remote 失败: {result.stderr.strip()}"
+
+        logger.info(f"[workspace-git] 设置远程仓库: {workspace_uuid} → {remote_url}")
+        return True, "远程仓库设置成功"
+
+    except Exception as e:
+        logger.error(f"[workspace-git] 设置远程仓库失败: {e}")
+        return False, f"设置失败: {e}"
+
+
+def get_git_remote_info(workspace_uuid: str) -> dict:
+    """获取工作区 Git 远程仓库信息（脱敏）。
+
+    Returns:
+        {
+            "remote_url": str,      # 原始 URL（不含凭证）
+            "username": str,        # 用户名（明文）
+            "has_token": bool,      # 是否配置了 Token
+            "token_preview": str,   # Token 前 4 后 4 位
+        }
+    """
+    from core.config import load_workspace_config
+    ws_config = load_workspace_config(workspace_uuid) or {}
+    remote_url = ws_config.get("git_remote_url", "")
+    username = ws_config.get("git_username", "")
+    token = ws_config.get("git_token", "")
+
+    return {
+        "remote_url": remote_url,
+        "username": username,
+        "has_token": bool(token),
+        "token_preview": _mask_token(token),
+    }
+
+
+def git_pull(workspace_uuid: str) -> tuple[bool, str]:
+    """从远程拉取变更。
+
+    Returns:
+        (success, message)
+    """
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir:
+        return False, "工作区目录不存在"
+
+    try:
+        # 同步远程地址到 git config
+        _sync_remote_to_git(workspace_uuid)
+
+        result = _git_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+            if "No remote" in stderr or "no tracking" in stderr:
+                return False, "未配置远程仓库"
+            if "Already up to date" in stderr or "Already up-to-date" in stderr:
+                return True, "已是最新"
+            # 首次拉取（没有上游分支），尝试 fetch + merge
+            if "no tracking information" in stderr or "There is no tracking information" in stderr:
+                return True, "远程仓库为空或无对应分支"
+            return False, f"pull 失败: {stderr or stdout}"
+        stdout = result.stdout.strip()
+        return True, stdout or "拉取成功"
+    except Exception as e:
+        logger.error(f"[workspace-git] pull 失败: {e}")
+        return False, f"pull 失败: {e}"
+
+
+def git_push(workspace_uuid: str) -> tuple[bool, str]:
+    """推送到远程仓库。
+
+    Returns:
+        (success, message)
+    """
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir:
+        return False, "工作区目录不存在"
+
+    try:
+        _sync_remote_to_git(workspace_uuid)
+
+        # 首次推送用 -u 设置上游跟踪
+        result = _git_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
+        if result.returncode != 0:
+            # 已有上游时回退到普通 push
+            result = _git_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "No remote" in stderr or "no upstream" in stderr:
+                return False, "未配置远程仓库"
+            if "Everything up-to-date" in stderr:
+                return True, "已是最新，无需推送"
+            return False, f"push 失败: {stderr}"
+        return True, "推送成功"
+    except Exception as e:
+        logger.error(f"[workspace-git] push 失败: {e}")
+        return False, f"push 失败: {e}"
+
+
+def git_sync(workspace_uuid: str) -> tuple[bool, str]:
+    """完整同步：pull → auto_commit → push。
+
+    Returns:
+        (success, message)
+    """
+    from core.config import load_workspace_config
+    ws_config = load_workspace_config(workspace_uuid) or {}
+    if not ws_config.get("git_remote_url"):
+        return False, "未配置远程仓库"
+
+    messages = []
+
+    # 1. pull
+    ok, msg = git_pull(workspace_uuid)
+    messages.append(f"pull: {msg}")
+    if not ok and "未配置远程仓库" not in msg:
+        # pull 失败但有冲突，尝试继续
+        logger.warning(f"[workspace-git] sync pull 失败: {msg}")
+
+    # 2. auto commit
+    ok, msg = auto_commit_workspace(workspace_uuid)
+    if ok and msg != "无变更":
+        messages.append(f"commit: {msg}")
+
+    # 3. push
+    ok, msg = git_push(workspace_uuid)
+    messages.append(f"push: {msg}")
+    if not ok:
+        return False, "; ".join(messages)
+
+    return True, "; ".join(messages)
+
+
+def _sync_remote_to_git(workspace_uuid: str) -> None:
+    """确保 git config 中的 origin URL 与 workspace config 一致。"""
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir or not (workspace_dir / ".git").is_dir():
+        return
+
+    from core.config import load_workspace_config
+    ws_config = load_workspace_config(workspace_uuid) or {}
+    remote_url = ws_config.get("git_remote_url", "")
+    if not remote_url:
+        return
+
+    username = ws_config.get("git_username", "")
+    token = ws_config.get("git_token", "")
+    auth_url = _build_auth_url(remote_url, username, token)
+
+    # 检查当前 remote origin 是否一致
+    result = _git_cmd(workspace_dir, ["remote", "get-url", "origin"], timeout=10)
+    current_url = result.stdout.strip() if result.returncode == 0 else ""
+    if current_url != auth_url:
+        if result.returncode == 0:
+            _git_cmd(workspace_dir, ["remote", "set-url", "origin", auth_url], timeout=10)
+        else:
+            _git_cmd(workspace_dir, ["remote", "add", "origin", auth_url], timeout=10)
+
+
 def get_workspace_git_status(workspace_uuid: str) -> dict:
     """获取工作区 Git 状态。
 

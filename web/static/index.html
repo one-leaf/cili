@@ -562,6 +562,28 @@
                         </label>
                         <small class="form-hint">开启后，每次对话结束会自动提交工作区文件变更</small>
                     </div>
+                    <div id="git-remote-section" style="display:none;">
+                        <div class="git-remote-header">
+                            <span class="git-section-title">远程仓库</span>
+                            <div class="git-remote-actions">
+                                <button type="button" id="git-pull-btn" class="btn btn-small btn-secondary">拉取</button>
+                                <button type="button" id="git-push-btn" class="btn btn-small btn-secondary">推送</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>远程地址:</label>
+                            <input type="text" id="git-remote-url" placeholder="https://github.com/user/repo.git">
+                        </div>
+                        <div class="form-group">
+                            <label>用户名:</label>
+                            <input type="text" id="git-username" placeholder="Git 用户名">
+                        </div>
+                        <div class="form-group">
+                            <label>Token:</label>
+                            <input type="password" id="git-token" placeholder="Personal Access Token">
+                        </div>
+                        <div id="git-remote-info" class="form-hint"></div>
+                    </div>
                     <div id="git-status-section" style="display:none;">
                         <div class="git-status-header">
                             <span class="git-status-label">最近提交</span>

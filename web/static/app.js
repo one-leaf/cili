@@ -1282,8 +1282,11 @@ function switchWorkspaceSettingsTab(tabName) {
         footerSaveBtn.onclick = saveInstructions;
         deleteBtn.style.display = 'none';
     } else if (tabName === 'ws-git') {
-        // 版本管理 tab：隐藏所有按钮
-        footerSaveBtn.style.display = 'none';
+        // 版本管理 tab：显示保存远程按钮，隐藏删除按钮
+        footerSaveBtn.textContent = '保存远程设置';
+        footerSaveBtn.style.display = '';
+        footerSaveBtn.style.marginLeft = 'auto';
+        footerSaveBtn.onclick = saveGitRemote;
         deleteBtn.style.display = 'none';
     } else {
         // 基本设置 tab：显示 footer 按钮
@@ -1492,12 +1495,17 @@ async function loadGitSettings() {
     const toggle = document.getElementById('git-enabled-toggle');
     const statusSection = document.getElementById('git-status-section');
     const commitsList = document.getElementById('git-commits-list');
+    const remoteSection = document.getElementById('git-remote-section');
 
     try {
         const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/status`);
         const data = await response.json();
 
         toggle.checked = data.enabled;
+        // 显示远程仓库区域
+        if (remoteSection) {
+            remoteSection.style.display = data.enabled ? '' : 'none';
+        }
         if (data.initialized) {
             statusSection.style.display = '';
             renderGitCommits(data.commits);
@@ -1505,7 +1513,24 @@ async function loadGitSettings() {
             statusSection.style.display = 'none';
             commitsList.innerHTML = '';
         }
+        // 加载远程仓库信息
+        const remoteInfo = data.remote_info;
+        if (remoteInfo) {
+            const urlInput = document.getElementById('git-remote-url');
+            const usernameInput = document.getElementById('git-username');
+            const tokenInput = document.getElementById('git-token');
+            const infoEl = document.getElementById('git-remote-info');
+            if (urlInput) urlInput.value = remoteInfo.remote_url || '';
+            if (usernameInput) usernameInput.value = remoteInfo.username || '';
+            // Token 不回显明文，只在有值时显示提示
+            if (tokenInput) tokenInput.value = '';
+            if (tokenInput) tokenInput.placeholder = remoteInfo.has_token ? `已配置 (${remoteInfo.token_preview})` : 'Personal Access Token';
+            if (infoEl) {
+                infoEl.textContent = remoteInfo.remote_url ? '已配置远程仓库，设置定时同步后每 2 小时自动拉取/推送' : '';
+            }
+        }
         statusEl.textContent = '';
+        statusEl.className = 'settings-status';
     } catch (error) {
         statusEl.textContent = '✗ 加载 Git 设置失败: ' + error.message;
         statusEl.className = 'settings-status error';
@@ -1546,6 +1571,111 @@ async function toggleGitEnabled() {
     }
 }
 
+async function saveGitRemote() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('git-settings-status');
+    const urlInput = document.getElementById('git-remote-url');
+    const usernameInput = document.getElementById('git-username');
+    const tokenInput = document.getElementById('git-token');
+
+    statusEl.textContent = '保存中...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/settings`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                git_enabled: document.getElementById('git-enabled-toggle').checked,
+                git_remote_url: urlInput.value.trim(),
+                git_username: usernameInput.value.trim(),
+                git_token: tokenInput.value.trim()
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || '保存失败');
+        }
+
+        statusEl.textContent = '✓ 远程仓库设置已保存';
+        statusEl.className = 'settings-status success';
+        // 清空 token 输入框
+        tokenInput.value = '';
+        await loadGitSettings();
+    } catch (error) {
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function gitPull() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('git-settings-status');
+    const pullBtn = document.getElementById('git-pull-btn');
+
+    pullBtn.disabled = true;
+    pullBtn.textContent = '拉取中...';
+    statusEl.textContent = '正在拉取...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/pull`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '拉取失败');
+        statusEl.textContent = '✓ ' + data.message;
+        statusEl.className = 'settings-status success';
+        await loadGitSettings();
+    } catch (error) {
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    } finally {
+        pullBtn.disabled = false;
+        pullBtn.textContent = '拉取';
+    }
+}
+
+async function gitPush() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('git-settings-status');
+    const pushBtn = document.getElementById('git-push-btn');
+
+    pushBtn.disabled = true;
+    pushBtn.textContent = '推送中...';
+    statusEl.textContent = '正在推送...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        // 先静默同步远程地址到 git config
+        const urlInput = document.getElementById('git-remote-url');
+        const usernameInput = document.getElementById('git-username');
+        const tokenInput = document.getElementById('git-token');
+        await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/settings`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                git_enabled: document.getElementById('git-enabled-toggle').checked,
+                git_remote_url: urlInput.value.trim(),
+                git_username: usernameInput.value.trim(),
+                git_token: tokenInput.value.trim()
+            })
+        });
+        // 推送
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/git/push`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '推送失败');
+        statusEl.textContent = '✓ ' + data.message;
+        statusEl.className = 'settings-status success';
+        tokenInput.value = '';
+    } catch (error) {
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    } finally {
+        pushBtn.disabled = false;
+        pushBtn.textContent = '推送';
+    }
+}
+
 function renderGitCommits(commits) {
     const list = document.getElementById('git-commits-list');
     if (!commits || commits.length === 0) {
@@ -1564,6 +1694,8 @@ function renderGitCommits(commits) {
 // 绑定事件
 document.getElementById('git-enabled-toggle')?.addEventListener('change', toggleGitEnabled);
 document.getElementById('git-refresh-btn')?.addEventListener('click', loadGitSettings);
+document.getElementById('git-pull-btn')?.addEventListener('click', gitPull);
+document.getElementById('git-push-btn')?.addEventListener('click', gitPush);
 
 // ─── 全局文件拖放上传 ─────────────────────────────────────────────
 // 拖放文件到任意窗口，自动上传到当前工作区；若文件管理器已打开且拖放落在其内，则上传到当前文件夹

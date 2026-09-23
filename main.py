@@ -1220,11 +1220,57 @@ def _ensure_runtime() -> None:
     _auto_detect_browser()
 
 
+def _start_git_auto_sync() -> None:
+    """启动 Git 自动同步后台线程（每 2 小时同步有远程仓库的工作区）。"""
+    import threading
+    import time
+
+    SYNC_INTERVAL_SECONDS = 2 * 60 * 60  # 2 小时
+
+    def _sync_loop():
+        # 启动后延迟 5 分钟再首次同步，避免刚启动时与其他任务冲突
+        time.sleep(5 * 60)
+        while True:
+            try:
+                _do_git_auto_sync()
+            except Exception as e:
+                logger.warning(f"[git-sync] 自动同步异常: {e}")
+            time.sleep(SYNC_INTERVAL_SECONDS)
+
+    def _do_git_auto_sync():
+        from core.config import get_all_workspace_uuids, load_workspace_config
+        from core.workspace_git import git_sync, is_git_initialized
+
+        for ws_uuid in get_all_workspace_uuids():
+            ws_config = load_workspace_config(ws_uuid) or {}
+            if not ws_config.get("git_remote_url"):
+                continue
+            if not ws_config.get("git_enabled", False):
+                continue
+            if not is_git_initialized(ws_uuid):
+                continue
+            try:
+                ok, msg = git_sync(ws_uuid)
+                if ok:
+                    logger.info(f"[git-sync] {ws_uuid}: {msg}")
+                else:
+                    logger.warning(f"[git-sync] {ws_uuid}: {msg}")
+            except Exception as e:
+                logger.warning(f"[git-sync] {ws_uuid} 同步失败: {e}")
+
+    thread = threading.Thread(target=_sync_loop, daemon=True, name="GitAutoSync")
+    thread.start()
+    logger.info("Git 自动同步已启动（每 2 小时，仅针对配置了远程仓库的工作区）")
+
+
 def _start_services(args: argparse.Namespace) -> None:
     """阶段三：cron、自动升级、浏览器打开、uvicorn。"""
     # Start cron scheduler
     from core.cron import start_scheduler
     start_scheduler()
+
+    # 启动 Git 自动同步（每 2 小时）
+    _start_git_auto_sync()
 
     # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
     from core.updater import start_auto_upgrade

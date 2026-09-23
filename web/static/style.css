@@ -3033,12 +3033,23 @@ mjx-container {
 
 /* ─── 工作区 Git 版本管理 ─── */
 
-.git-status-header {
+.git-remote-header, .git-status-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-top: 16px;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
+}
+
+.git-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.git-remote-actions {
+    display: flex;
+    gap: 6px;
 }
 
 .git-status-label {
