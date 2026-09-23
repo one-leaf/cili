@@ -1379,8 +1379,9 @@ body {
     border: 1px solid var(--border-color);
 }
 
-/* 包含图片的助手消息，最小宽度和工具气泡一致 */
-.message.assistant.has-image {
+/* 包含图片或 mermaid 图表的助手消息，最小宽度和工具气泡一致 */
+.message.assistant.has-image,
+.message.assistant:has(.mermaid) {
     min-width: 80%;
 }
 
