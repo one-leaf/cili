@@ -1131,7 +1131,7 @@ async function openWorkspaceSettings() {
 
     document.getElementById('workspace-settings-modal').style.display = 'flex';
     const statusEl = document.getElementById('workspace-settings-status');
-    statusEl.textContent = `工作区 UUID: ${currentWorkspace.uuid}`;
+    statusEl.textContent = currentWorkspace.uuid;
 
     const nameInput = document.getElementById('ws-setting-name');
     const dirInput = document.getElementById('ws-setting-directory');
@@ -1149,7 +1149,7 @@ async function openWorkspaceSettings() {
     saveBtn.style.display = isSystem ? 'none' : '';
 
     if (isSystem) {
-        statusEl.textContent = `工作区 UUID: ${currentWorkspace.uuid}（系统工作区，不可修改）`;
+        statusEl.textContent = `${currentWorkspace.uuid}（系统工作区，不可修改）`;
     }
 
     // 切换到基本设置 tab 并加载项目提示词
@@ -1165,6 +1165,7 @@ async function saveWorkspaceSettings() {
 
     const statusEl = document.getElementById('workspace-settings-status');
     statusEl.textContent = '保存中...';
+    statusEl.className = 'settings-status';
 
     const name = document.getElementById('ws-setting-name').value.trim();
     const directory = document.getElementById('ws-setting-directory').value.trim();
@@ -1182,6 +1183,7 @@ async function saveWorkspaceSettings() {
         }
 
         statusEl.textContent = '✓ 保存成功';
+        statusEl.className = 'settings-status success';
 
         // Update current workspace info
         currentWorkspace.name = name;
@@ -1198,9 +1200,12 @@ async function saveWorkspaceSettings() {
 
         setTimeout(() => {
             document.getElementById('workspace-settings-modal').style.display = 'none';
+            statusEl.textContent = currentWorkspace.uuid;
+            statusEl.className = 'settings-status';
         }, 1000);
     } catch (error) {
         statusEl.textContent = '✗ 保存失败: ' + error.message;
+        statusEl.className = 'settings-status error';
     }
 }
 

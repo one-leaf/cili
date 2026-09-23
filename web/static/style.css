@@ -564,6 +564,14 @@ body {
     flex: 1;
 }
 
+.settings-status.success {
+    color: #10b981;
+}
+
+.settings-status.error {
+    color: #ef4444;
+}
+
 .form-group {
     display: grid;
     grid-template-columns: 140px 1fr;
