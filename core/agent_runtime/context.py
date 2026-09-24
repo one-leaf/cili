@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,9 @@ class AgentContext:
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
         }
+        # 时间戳用于计算 tokens/s
+        self._first_token_time: float | None = None
+        self._last_token_time: float | None = None
 
     def set_session_manager(self, session_manager: Any) -> None:
         """会话切换等重绑 session_manager 时同步，保持本层引用与 Agent 一致。"""
@@ -334,14 +338,34 @@ class AgentContext:
         self._usage["cache_read_tokens"] += cache_read_tokens
         self._usage["cache_creation_tokens"] += cache_creation_tokens
 
+        # 记录时间戳用于计算 tokens/s
+        current_time = time.time()
+        if self._first_token_time is None:
+            self._first_token_time = current_time
+        self._last_token_time = current_time
+
     def get_usage(self) -> dict[str, int]:
         """返回 usage 快照拷贝。"""
-        return self._usage.copy()
+        usage = self._usage.copy()
+
+        # 计算 tokens/s
+        total_tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        if self._first_token_time and self._last_token_time:
+            duration = self._last_token_time - self._first_token_time
+            if duration > 0:
+                usage["tokens_per_second"] = round(total_tokens / duration, 2)
+            else:
+                usage["tokens_per_second"] = 0
+        else:
+            usage["tokens_per_second"] = 0
+
+        return usage
 
     def sync_to_session_manager(self) -> None:
         """同步 metadata/usage 到 session_manager（无 sm 时为空操作）。"""
         if self.session_manager is None:
             return
         self.session_manager.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.session_manager.metadata["usage"] = self._usage.copy()
+        # 使用 get_usage() 获取包含 tokens_per_second 的完整 usage
+        self.session_manager.metadata["usage"] = self.get_usage()
         self.session_manager.mark_dirty()

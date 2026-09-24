@@ -1014,16 +1014,20 @@ class SessionManager:
 
     def get_usage(self) -> dict:
         """获取使用量统计（返回副本，防止调用方原地修改不触发保存）。"""
-        import time
         usage = copy.deepcopy(self.metadata.get("usage", {
             "input_tokens": 0,
             "output_tokens": 0,
             "api_calls": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
+            "tokens_per_second": 0,
         }))
 
-        # 计算 tokens/s
+        # 如果 metadata 中已经有计算好的 tokens_per_second，直接使用
+        if "tokens_per_second" in usage and usage["tokens_per_second"] > 0:
+            return usage
+
+        # 否则，尝试根据时间戳计算
         total_tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
         first_time = usage.get("first_token_time")
         last_time = usage.get("last_token_time")
