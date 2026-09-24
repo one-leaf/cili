@@ -185,7 +185,21 @@ class BashTool(Tool):
         if deny:
             mode, reason = deny
             if mode == MODE_DENY or not self.approval_store:
-                return ToolResult(f"Error: command blocked by safety check — {reason}", error=True)
+                # 硬拒绝：给出清晰的错误和解决建议
+                if "cross-tool" in reason.lower() or "use the" in reason.lower() and "tool instead" in reason.lower():
+                    return ToolResult(
+                        f"Error: 跨工具调用被禁止（硬拒绝，无法通过用户批准绕过）。\n"
+                        f"原因：{reason}\n"
+                        f"命令：`{command}`\n"
+                        f"解决：请使用对应的专用工具，不要在 bash 中调用其他工具。",
+                        error=True,
+                    )
+                return ToolResult(
+                    f"Error: 命令被安全策略硬拒绝（无法通过用户批准绕过）。\n"
+                    f"原因：{reason}\n"
+                    f"解决：请使用更安全的方式完成相同任务。",
+                    error=True,
+                )
             approval = {
                 "decision_id": approval_decision_id(command),
                 "command": command,

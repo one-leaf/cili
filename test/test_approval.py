@@ -400,7 +400,8 @@ class TestBrowserNavigateKind:
             "kind": "browser:navigate", "reason": "r",
         })
         assert "SSRF" in p
-        assert "原样重发" in p
+        # 新格式告知子代理应向父代理报告，不再包含"原样重发"
+        assert "父代理" in p or "非公网" in p
 
     def test_store_classifies_navigation(self):
         store = ApprovalStore()

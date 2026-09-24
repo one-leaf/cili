@@ -84,22 +84,59 @@ def build_approval_question(approval: dict[str, Any]) -> str:
 def approval_placeholder_text(approval: dict[str, Any]) -> str:
     """工具返回给 LLM 的占位文本（completed=False，等待用户批准）。"""
     kind = approval.get("kind", "command")
+    reason = approval.get("reason", "").lower()
+    command = approval.get("command", "")
+
+    # 1. 检测 bash/pwsh 中调用 python 的情况
+    if "python tool" in reason:
+        return (
+            "Error: 不能在 bash/pwsh 中调用 Python。\n"
+            "原因：该命令需要用户批准，但子代理无法等待用户确认。\n"
+            "解决：直接使用 `python` tool 执行 Python 代码。\n\n"
+            "示例：\n"
+            "- 错误：`bash(command=\"python script.py\")`\n"
+            "- 正确：`python(action=\"execute_file\", file=\"script.py\")`"
+        )
+
+    # 2. 检测跨工具调用（bash调pwsh、pwsh调bash等）
+    if "cross-tool" in reason or ("use the" in reason and "tool instead" in reason):
+        return (
+            f"Error: 跨工具调用被禁止。\n"
+            f"原因：{approval.get('reason', '')}\n"
+            f"命令：`{command}`\n\n"
+            f"解决：请使用对应的专用工具，不要在 shell 中调用其他工具。"
+        )
+
+    # 3. 路径越界操作
+    if kind.startswith("path:"):
+        op = "删除" if kind == "path:delete" else "写入"
+        return (
+            f"Error: 该操作会{op}工作区外的文件，需要用户批准。\n"
+            f"拦截原因：{approval.get('reason', '目标路径不在工作区内')}\n"
+            f"操作目标：`{approval.get('path', approval.get('command', ''))}`\n\n"
+            f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
+            f"1. 改用工作区内的路径\n"
+            f"2. 或向父代理报告，让父代理处理此操作"
+        )
+
+    # 4. 浏览器导航（非公网地址）
     if kind == "browser:navigate":
         return (
-            "该导航被 SSRF 防护拦截，需要用户批准后才能执行。\n"
-            "等待用户选择「允许本次会话」或「拒绝」...\n"
-            "若用户允许，请**原样重发**该 navigate 调用。"
+            f"Error: 该导航地址被 SSRF 防护拦截（非公网地址），需要用户批准。\n"
+            f"地址：`{command}`\n\n"
+            f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
+            f"1. 确认地址是否正确（应使用公网地址）\n"
+            f"2. 或向父代理报告，让父代理处理此导航"
         )
-    if kind.startswith("path:"):
-        return (
-            "该文件操作被路径权限拦截，需要用户批准后才能执行。\n"
-            "等待用户选择「允许本次会话」或「拒绝」...\n"
-            "若用户允许，请**原样重发**该操作执行。"
-        )
+
+    # 5. 通用高风险命令
     return (
-        "该命令被高风险拦截，需要用户批准后才能执行。\n"
-        "等待用户选择「允许本次会话」或「拒绝」...\n"
-        "若用户允许，请**原样重发**该命令执行。"
+        f"Error: 该命令被安全策略拦截，需要用户批准。\n"
+        f"拦截原因：{approval.get('reason', '高风险操作')}\n"
+        f"命令：`{command}`\n\n"
+        f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
+        f"1. 尝试用更安全的方式完成相同任务\n"
+        f"2. 或向父代理报告，让父代理处理此操作"
     )
 
 
