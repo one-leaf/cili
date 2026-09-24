@@ -1006,7 +1006,8 @@ async function showSessionInfo(session) {
                             <tr><td class="info-key">输出Tokens</td><td class="info-value">${(usage.output_tokens || 0).toLocaleString()}</td></tr>
                             <tr><td class="info-key">缓存读取Tokens</td><td class="info-value">${(usage.cache_read_tokens || 0).toLocaleString()}</td></tr>
                             <tr><td class="info-key">缓存创建Tokens</td><td class="info-value">${(usage.cache_creation_tokens || 0).toLocaleString()}</td></tr>
-                            <tr><td class="info-key">处理速度</td><td class="info-value">${usage.tokens_per_second || 0} tokens/s</td></tr>
+                            <tr><td class="info-key">预填充速度</td><td class="info-value">${(usage.prefill_speed || 0).toLocaleString()} tokens/s</td></tr>
+                            <tr><td class="info-key">生成速度</td><td class="info-value">${(usage.generation_speed || 0).toLocaleString()} tokens/s</td></tr>
                         </tbody>
                     </table>
                 </div>

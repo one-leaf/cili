@@ -1020,23 +1020,23 @@ class SessionManager:
             "api_calls": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
-            "tokens_per_second": 0,
         }))
 
-        # 如果 metadata 中已经有计算好的 tokens_per_second，直接使用
-        if "tokens_per_second" in usage and usage["tokens_per_second"] > 0:
+        # 如果已经有预计算的速度，直接返回
+        if "prefill_speed" in usage and "generation_speed" in usage:
             return usage
 
-        # 否则，尝试根据时间戳计算
-        total_tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-        first_time = usage.get("first_token_time")
-        last_time = usage.get("last_token_time")
+        # 否则根据时间戳计算
+        first_time = usage.pop("first_token_time", None)
+        last_time = usage.pop("last_token_time", None)
 
         if first_time and last_time and last_time > first_time:
             duration = last_time - first_time
-            usage["tokens_per_second"] = round(total_tokens / duration, 2) if duration > 0 else 0
+            usage["prefill_speed"] = round(usage.get("input_tokens", 0) / duration, 2)
+            usage["generation_speed"] = round(usage.get("output_tokens", 0) / duration, 2)
         else:
-            usage["tokens_per_second"] = 0
+            usage["prefill_speed"] = 0
+            usage["generation_speed"] = 0
 
         return usage
 

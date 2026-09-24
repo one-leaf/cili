@@ -208,7 +208,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - **输出 tokens：** {usage['output_tokens']:,}
 - **缓存读取：** {usage.get('cache_read_tokens', 0):,} tokens
 - **缓存创建：** {usage.get('cache_creation_tokens', 0):,} tokens
-- **处理速度：** {usage.get('tokens_per_second', 0)} tokens/s
+- **预填充速度：** {usage.get('prefill_speed', 0):,.2f} tokens/s
+- **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
 """
         # Save to session via SessionManager
         agent.session_manager.add_message("user", content, flush=False)

@@ -344,20 +344,22 @@ class AgentContext:
             self._first_token_time = current_time
         self._last_token_time = current_time
 
-    def get_usage(self) -> dict[str, int]:
+    def get_usage(self) -> dict:
         """返回 usage 快照拷贝。"""
         usage = self._usage.copy()
 
-        # 计算 tokens/s
-        total_tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        # 计算速度指标
         if self._first_token_time and self._last_token_time:
             duration = self._last_token_time - self._first_token_time
             if duration > 0:
-                usage["tokens_per_second"] = round(total_tokens / duration, 2)
+                usage["prefill_speed"] = round(usage.get("input_tokens", 0) / duration, 2)
+                usage["generation_speed"] = round(usage.get("output_tokens", 0) / duration, 2)
             else:
-                usage["tokens_per_second"] = 0
+                usage["prefill_speed"] = 0
+                usage["generation_speed"] = 0
         else:
-            usage["tokens_per_second"] = 0
+            usage["prefill_speed"] = 0
+            usage["generation_speed"] = 0
 
         return usage
 
