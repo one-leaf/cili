@@ -36,7 +36,7 @@ core/tools/
 ├── bash.py                  # Shell 命令（Git Bash，会话级审批）
 ├── pwsh.py                  # PowerShell 命令（会话级审批）
 ├── grep.py                  # 正则搜索
-├── find.py                  # 文件查找
+├── glob.py                  # 文件查找（glob 模式）
 ├── browser.py               # 浏览器自动化
 ├── web_search.py            # 网络搜索
 ├── memory.py                # 长期记忆
@@ -74,7 +74,7 @@ TOOL_REGISTRY = {
     "bash": _factory(BashTool, needs_approval=True),
     "pwsh": _factory(PwshTool, needs_approval=True),
     "grep": _factory(GrepTool),
-    "find": _factory(FindTool),
+    "glob": _factory(GlobTool),
     "browser": _factory(BrowserTool),
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),
@@ -130,7 +130,7 @@ def create_tools(
 
 | Agent 角色 | 模式 | 工具数量 | 工具清单 |
 |-----------|------|---------|---------|
-| master | interactive | 26（18 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, find, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
+| master | interactive | 26（18 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, glob, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
 | worker | autonomous | 16 | master 去掉 todo、cron、message_bus、latex、ask_user、agent、browser、loop、pdf2markdown、tool_search |
 | lite | autonomous | 6 | read, write, edit, bash, python, clock |
 
@@ -334,7 +334,7 @@ content = [
 | bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker/lite |
 | pwsh | pwsh.py | PowerShell 命令，支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker |
 | grep | grep.py | 正则搜索（支持 glob/type 过滤） | master/worker |
-| find | find.py | 文件查找（glob 模式） | master/worker |
+| glob | glob.py | 文件查找（glob 模式，按修改时间排序） | master/worker |
 | browser | browser.py | Chrome 自动化（Playwright + CDP） | master |
 | web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） | master/worker |
 | memory | memory.py | 长期记忆（knowledge + skill，支持 find 关键词检索） | master/worker |
@@ -1004,5 +1004,5 @@ ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会�
 
 **文档版本**: v2.0  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-13（工具白名单对齐代码：master 26 个（含 read_image/clock/session_search）、worker 16 个（含 read_image/clock/session_search/temp，无 tool_search）、lite 6 个（含 python/clock）；TOOL_REGISTRY 补 26 键、Tool.__init__ 签名补 approval_store、loop 增加 reset action、find 输出上限改为 100,000 字符、message_bus 标注仅 master 可用）  
+**更新时间**: 2026-09-24（find 工具改名为 glob，改用 Python pathlib.rglob 实现，按修改时间排序，支持 offset 分页）  
 **状态**: 已实现

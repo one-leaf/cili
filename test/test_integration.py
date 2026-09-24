@@ -48,8 +48,8 @@ class TestIntegration:
         write_tool.execute(file_path="myproject/utils.py", content="def helper():\n    pass")
 
         # 2. 验证结构
-        find_tool = get_tool_by_name(tools, "find")
-        result = find_tool.execute(pattern="*.py", path="myproject")
+        glob_tool = get_tool_by_name(tools, "glob")
+        result = glob_tool.execute(pattern="*.py", path="myproject")
         assert not result.error
         assert "__init__.py" in result.output
         assert "main.py" in result.output

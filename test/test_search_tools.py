@@ -32,30 +32,30 @@ class TestSearchTools:
         # 应该找到匹配
         assert "hello" in result.output.lower()
 
-    def test_find_tool_basic(self, tools, test_workspace):
-        """测试 find 工具 - 基本查找"""
+    def test_glob_tool_basic(self, tools, test_workspace):
+        """测试 glob 工具 - 基本查找"""
         from core.tools import get_tool_by_name
 
         write_tool = get_tool_by_name(tools, "write")
         write_tool.execute(file_path="find_me.txt", content="Found me!")
         write_tool.execute(file_path="other.py", content="Not me")
 
-        find_tool = get_tool_by_name(tools, "find")
-        result = find_tool.execute(pattern="*.txt", path=".")
+        glob_tool = get_tool_by_name(tools, "glob")
+        result = glob_tool.execute(pattern="*.txt", path=".")
         assert not result.error
         assert "find_me.txt" in result.output
         assert "other.py" not in result.output
 
-    def test_find_tool_recursive(self, tools, test_workspace):
-        """测试 find 工具 - 递归查找"""
+    def test_glob_tool_recursive(self, tools, test_workspace):
+        """测试 glob 工具 - 递归查找"""
         from core.tools import get_tool_by_name
 
         write_tool = get_tool_by_name(tools, "write")
         write_tool.execute(file_path="level1/file1.txt", content="L1")
         write_tool.execute(file_path="level1/level2/file2.txt", content="L2")
 
-        find_tool = get_tool_by_name(tools, "find")
-        result = find_tool.execute(pattern="*.txt", path=".")
+        glob_tool = get_tool_by_name(tools, "glob")
+        result = glob_tool.execute(pattern="*.txt", path=".")
         assert not result.error
         assert "file1.txt" in result.output
         assert "file2.txt" in result.output

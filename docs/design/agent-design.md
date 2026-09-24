@@ -233,7 +233,7 @@ def run(self, *args, **kwargs):
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 16 个（执行型：read/read_image/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
+| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 16 个（执行型：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -448,7 +448,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 | 维度 | worker | lite |
 |------|--------|------|
-| 工具集 | 16 个（read/read_image/write/edit/bash/pwsh/grep/find/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
+| 工具集 | 16 个（read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
 | 检查阶段 | ✓（`check_phase=True`） | ✗ |
 | 预算预警 | ✓（`budget_notice=True`） | ✗ |
 | 迭代上限 | null → system（默认 200） | 200 |

@@ -244,7 +244,7 @@
     "bash",
     "pwsh",
     "grep",
-    "find",
+    "glob",
     "browser",
     "web_search",
     "memory",

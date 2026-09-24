@@ -18,7 +18,7 @@ from core.tools.browser import BrowserTool
 from core.tools.clock import ClockTool
 from core.tools.cron_tool import CronTool
 from core.tools.edit import EditTool
-from core.tools.find import FindTool
+from core.tools.glob import GlobTool
 from core.tools.grep import GrepTool
 from core.tools.latex import LatexTool
 from core.tools.loop import LoopTool
@@ -72,7 +72,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "bash": _factory(BashTool, needs_approval=True),
     "pwsh": _factory(PwshTool, needs_approval=True),
     "grep": _factory(GrepTool),
-    "find": _factory(FindTool),
+    "glob": _factory(GlobTool),
     "browser": _factory(BrowserTool, needs_approval=True),
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),

@@ -1,6 +1,6 @@
-"""文件类型 → 扩展名映射（find / grep 工具共享的单一真相源）。
+"""文件类型 → 扩展名映射（glob / grep 工具共享的单一真相源）。
 
-新增文件类型时只需改此处，find 与 grep 同步生效。
+新增文件类型时只需改此处，glob 与 grep 同步生效。
 """
 
 from __future__ import annotations
