@@ -995,24 +995,46 @@ class SessionManager:
                      api_calls: int = 0, cache_read_tokens: int = 0,
                      cache_creation_tokens: int = 0) -> None:
         """更新使用量统计。"""
+        import time
         usage = self.metadata.get("usage", {})
         usage["input_tokens"] = usage.get("input_tokens", 0) + input_tokens
         usage["output_tokens"] = usage.get("output_tokens", 0) + output_tokens
         usage["api_calls"] = usage.get("api_calls", 0) + api_calls
         usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cache_read_tokens
         usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation_tokens
+
+        # 记录时间戳用于计算 tokens/s
+        current_time = time.time()
+        if "first_token_time" not in usage:
+            usage["first_token_time"] = current_time
+        usage["last_token_time"] = current_time
+
         self.metadata["usage"] = usage
         self._index_version += 1
 
     def get_usage(self) -> dict:
         """获取使用量统计（返回副本，防止调用方原地修改不触发保存）。"""
-        return copy.deepcopy(self.metadata.get("usage", {
+        import time
+        usage = copy.deepcopy(self.metadata.get("usage", {
             "input_tokens": 0,
             "output_tokens": 0,
             "api_calls": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
         }))
+
+        # 计算 tokens/s
+        total_tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        first_time = usage.get("first_token_time")
+        last_time = usage.get("last_token_time")
+
+        if first_time and last_time and last_time > first_time:
+            duration = last_time - first_time
+            usage["tokens_per_second"] = round(total_tokens / duration, 2) if duration > 0 else 0
+        else:
+            usage["tokens_per_second"] = 0
+
+        return usage
 
     # ========== 工具方法 ==========
 
