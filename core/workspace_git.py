@@ -24,6 +24,7 @@ from core.config import (
     find_workspace_entry,
 )
 from core.llm import create_llm_client
+from core.llm.types import Message, TextBlock
 
 logger = logging.getLogger(__name__)
 
@@ -243,10 +244,10 @@ def _generate_commit_summary(diff_stat: str) -> str:
 只返回摘要文本，不要其他内容。"""
 
         response = client.chat([
-            {"role": "user", "content": prompt}
+            Message(role="user", content=[TextBlock(text=prompt)])
         ], max_tokens=100)
 
-        summary = response.content.strip()
+        summary = response.get_text().strip()
         # 清理可能的引号包裹
         if summary.startswith(("\"", "'", "\"")) and summary.endswith(("\"", "'", "\"")):
             summary = summary[1:-1]
