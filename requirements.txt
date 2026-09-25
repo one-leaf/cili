@@ -1,0 +1,26 @@
+# Cili Agent dependencies
+# Web framework dependencies
+httpx
+fastapi
+uvicorn[standard]
+python-multipart
+# Agent packages
+requests
+beautifulsoup4
+lxml
+numpy
+pandas
+scipy
+matplotlib
+pyyaml
+toml
+Pillow
+openpyxl
+playwright
+playwright-stealth
+python-docx
+python-pptx
+pdfplumber
+pytest
+# MCP (Model Context Protocol) server client
+mcp

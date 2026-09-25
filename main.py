@@ -812,6 +812,26 @@ def _init_mplfonts() -> None:
     print("[setup] matplotlib CJK fonts initialized successfully")
 
 
+def _load_requirements() -> list[str]:
+    """Load dependency list from requirements.txt.
+
+    Returns list of package specs (e.g. ["httpx", "uvicorn[standard]", ...]).
+    Skips comments and blank lines.
+    """
+    req_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+    if not os.path.exists(req_path):
+        print(f"[setup] Error: requirements.txt not found at {req_path}", file=sys.stderr)
+        return []
+    packages = []
+    with open(req_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            packages.append(line)
+    return packages
+
+
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
     """Install only missing dependencies in the venv, with mirror failover.
 
@@ -820,34 +840,12 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
     """
     if pip_mirrors is None:
         pip_mirrors = [""]
-    # All dependencies - no version constraints for flexibility
-    required = [
-        # Web framework dependencies
-        "httpx",
-        "playwright",
-        "playwright-stealth",
-        "fastapi",
-        "uvicorn[standard]",
-        "python-multipart",
-        # Agent packages
-        "requests",
-        "beautifulsoup4",
-        "lxml",
-        "numpy",
-        "pandas",
-        "scipy",
-        "matplotlib",
-        "pyyaml",
-        "toml",
-        "Pillow",
-        "openpyxl",
-        "python-docx",
-        "python-pptx",
-        "pdfplumber",
-        "pytest",
-        # MCP (Model Context Protocol) 服务器客户端
-        "mcp",
-    ]
+
+    # Load dependencies from requirements.txt
+    required = _load_requirements()
+    if not required:
+        print("[setup] Error: no dependencies loaded from requirements.txt", file=sys.stderr)
+        return False, False
 
     pip_exe = os.path.join(_DEPS_PYTHON_SCRIPTS, "pip.exe")
     installed = _check_installed_packages()
