@@ -71,6 +71,26 @@ CHECK_PROMPT = (
     "（type 选 skill 或 fact）\n"
 )
 
+# 循环重复警告（检测到连续相同操作时注入）
+LOOP_REPEAT_WARNING = (
+    "## ⚠️ 操作重复警告\n\n"
+    "检测到你在最近 **{count} 次**连续迭代中执行了完全相同的操作（相同的文字表述和工具调用），"
+    "但未能取得实质进展。\n\n"
+    "**请立即改变策略**：\n"
+    "- 反复搜索无果 → 用 `browser` 工具直接访问目标 URL 获取页面完整内容\n"
+    "- 反复调用同一工具结果相同 → 换一种查询方式或完全不同的工具\n"
+    "- 确实无法继续 → 直接输出当前已知内容的总结报告，**不要继续重复**\n"
+)
+
+LOOP_REPEAT_STRONG_WARNING = (
+    "## 🛑 严重重复警告（第 {strong_count} 次）\n\n"
+    "你已连续 **{count} 次**重复执行相同操作，系统已多次警告但未见改善。\n\n"
+    "**必须立即停止当前策略，重新评估任务**：\n"
+    "1. 停止当前方法，回顾任务目标和已有进展\n"
+    "2. 采用完全不同的工具或方法（例如：用 browser 替代 web_search）\n"
+    "3. 如果判断无法继续，直接输出总结报告，不要再次重复\n"
+)
+
 
 class LoopPolicy:
     """循环行为参数：结构参数冻结，运行参数实时读 agent。
@@ -230,6 +250,8 @@ class Loop:
             "approval": None,
             "wait_for_external": False,
             "external_already": False,
+            "loop_history": [],      # 循环重复检测：[(text_sig, tool_sig), ...]
+            "loop_warned_at": 0,     # 上次警告时的重复次数（避免同一阈值重复警告）
         }
 
         max_iterations = policy.max_iterations
@@ -260,6 +282,9 @@ class Loop:
             n += 1
             if not autonomous:
                 agent._turn_iterations = n  # 同步计数，resume 保留累计
+
+            # ── 循环重复检测（在 LLM 调用前注入警告，使 LLM 可见）──
+            self._check_loop_repetition(state)
 
             # ── LLM 调用 ──
             if autonomous:
@@ -295,6 +320,12 @@ class Loop:
                     return None
 
             tool_calls = response.get_tool_calls()
+
+            # ── 记录本轮签名（循环重复检测用）──
+            if tool_calls:
+                text_sig = response.get_text()[:80] if response.get_text() else ""
+                tool_sig = tuple(sorted(getattr(b, "name", "") for b in tool_calls))
+                state.setdefault("loop_history", []).append((text_sig, tool_sig))
 
             if not tool_calls:
                 # 差异点①：无工具调用 → 交付/转检查（autonomous）或回合完成（interactive）
@@ -355,7 +386,7 @@ class Loop:
             # ── 工具批执行（差异点②：结果 handler 模式专属）──
             if autonomous:
                 phase = "check" if pm.in_check_phase else "running"
-                agent._save_progress(n, status=phase)
+                agent._save_progress(n, status=phase, tool_calls=len(tool_calls))
                 if self._autonomous_tool_batch(tool_calls, n, phase, state):
                     # 连续失败熔断
                     cap = policy.max_consecutive_failures
@@ -423,7 +454,7 @@ class Loop:
         """
         agent = self.agent
         policy = self.policy
-        agent._save_progress(n, status=phase)
+        agent._save_progress(n, status=phase, tool_calls=len(tool_calls))
         parallel = bool(getattr(agent.config, "system", None)
                         and getattr(agent.config.system, "parallel_tools", True))
         results = execute_tool_calls(
@@ -460,6 +491,8 @@ class Loop:
         agent = self.agent
         parallel = bool(getattr(agent.config, "system", None)
                         and getattr(agent.config.system, "parallel_tools", True))
+        # 记录本轮工具调用数（供前端实时显示）
+        agent._save_progress(agent._turn_iterations, status="running", tool_calls=len(tool_calls))
         results = execute_tool_calls(agent, tool_calls, parallel=parallel)
 
         for result in results:
@@ -494,6 +527,42 @@ class Loop:
         return state["wait_for_external"]
 
     # ─── 辅助 ───────────────────────────────────────────────────────
+
+    def _check_loop_repetition(self, state: dict[str, Any]) -> None:
+        """检测连续相同操作并注入警告。
+
+        检测逻辑：比较最近若干轮的 (text_sig, tool_sig) 签名，若连续 N 轮完全相同
+        则认为陷入死循环。在阈值 3/6/10 处分别注入警告，警告信息会作为 user 消息
+        出现在 LLM 下一轮的上下文里，让 LLM 感知并调整策略。
+
+        text_sig 取 assistant 输出文字的前 80 字符；tool_sig 为工具名排序后的元组。
+        """
+        history = state.get("loop_history", [])
+        if len(history) < 3:
+            return
+        last = history[-1]
+        # 计算末尾连续相同签名的次数
+        count = sum(1 for sig in reversed(history) if sig == last)
+        if count < 3:
+            return
+        # 按阈值警告，避免每轮都注入（阈值：3 / 6 / 10）
+        last_warned = state.get("loop_warned_at", 0)
+        thresholds = [3, 6, 10]
+        next_threshold = next((t for t in thresholds if t > last_warned), None)
+        if next_threshold is None or count < next_threshold:
+            return
+        state["loop_warned_at"] = count
+        # 根据严重程度选择不同警告文案
+        if count >= 10:
+            strong_count = count // 5  # 大约第几次强警告
+            warning = LOOP_REPEAT_STRONG_WARNING.format(count=count, strong_count=strong_count)
+        else:
+            warning = LOOP_REPEAT_WARNING.format(count=count)
+        self.agent.add_message("user", warning, meta={"loop_warning": True})
+        logger.warning(
+            f"[Agent:{self.agent.role}] 循环重复检测: 连续 {count} 次相同操作 "
+            f"(exec={getattr(self.agent, '_exec_id', '?')})"
+        )
 
     def _drain_agent_notifications(self) -> None:
         """排空后台子代理完成通知队列，注入为 user 消息供 LLM 下一轮感知。

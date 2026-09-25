@@ -51,8 +51,11 @@ SEARCH_CONFIGS = {
 class WebSearchTool(Tool):
     name = "web_search"
     description = (
-        "Search the web using Bing or Google. Returns search results with titles, URLs, "
-        "and descriptions. Also returns the tab_index of the search results page, "
+        "Search the web using Bing or Google. Returns search result snippets "
+        "(titles, URLs, and brief descriptions) — NOT full page content. "
+        "To read the full content of a specific page, use the browser tool "
+        "to visit the URL directly. "
+        "Also returns the tab_index of the search results page, "
         "which can be used with browser tool for further exploration. "
         "The search engine is configured in system settings (default: Bing). "
         "Use time_range to filter results by recency."
@@ -200,6 +203,14 @@ class WebSearchTool(Tool):
                 body_text = debug.get('bodyText', '')[:300]
                 if body_text:
                     output_lines.append(f"  Page text preview: {body_text}")
+
+            # 提示：以上为搜索结果摘要，如需完整内容请用 browser 工具访问
+            if data.get('results'):
+                urls_hint = (
+                    "\n提示：以上仅为搜索摘要（snippet）。如需获取某页面的完整内容，"
+                    "请使用 browser 工具直接访问对应的 URL。"
+                )
+                output_lines.append(urls_hint.strip())
 
             return ToolResult(
                 UNTRUSTED_DATA_BEGIN + "\n".join(output_lines) + UNTRUSTED_DATA_END
