@@ -10,7 +10,7 @@ from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
 from core.tools.edit import EditTool
 from core.tools.grep import GrepTool
-from core.tools.find import FindTool
+from core.tools.glob import GlobTool
 from core.tools.write import WriteTool
 
 
@@ -344,20 +344,20 @@ class TestGrepToolBoundary:
 # ========== Find Tool ==========
 
 
-class TestFindToolBoundary:
-    """FindTool edge cases."""
+class TestGlobToolBoundary:
+    """GlobTool edge cases."""
 
     @pytest.fixture
-    def find_tool(self, test_workspace):
-        return FindTool(cwd=test_workspace, workspace_uuid="test-workspace")
+    def glob_tool(self, test_workspace):
+        return GlobTool(cwd=test_workspace, workspace_uuid="test-workspace")
 
-    def test_find_nonexistent_directory(self, find_tool, test_workspace):
+    def test_find_nonexistent_directory(self, glob_tool, test_workspace):
         """Find in nonexistent directory returns error or empty."""
-        result = find_tool.execute(path="nonexistent_dir_12345", pattern="*")
+        result = glob_tool.execute(path="nonexistent_dir_12345", pattern="*")
         # Either errors or returns no results
         assert result.error is True or result.output == "" or "not found" in result.output.lower() or "no such" in result.output.lower()
 
-    def test_find_with_pattern_lists_matching_files(self, find_tool, test_workspace):
+    def test_find_with_pattern_lists_matching_files(self, glob_tool, test_workspace):
         """Find with pattern lists matching files."""
         # Create test files
         test_file1 = os.path.join(test_workspace, "test_find1.txt")
@@ -366,12 +366,12 @@ class TestFindToolBoundary:
             with open(f, "w") as fp:
                 fp.write("test")
 
-        result = find_tool.execute(path=test_workspace, pattern="*.py")
+        result = glob_tool.execute(path=test_workspace, pattern="*.py")
         assert result.error is False
         assert "test_find2.py" in result.output
         assert "test_find1.txt" not in result.output
 
-    def test_find_max_results(self, find_tool, test_workspace):
+    def test_find_max_results(self, glob_tool, test_workspace):
         """Find respects max_results limit."""
         # Create many test files
         for i in range(20):
@@ -379,10 +379,10 @@ class TestFindToolBoundary:
             with open(test_file, "w") as f:
                 f.write("test")
 
-        result = find_tool.execute(path=test_workspace, pattern="max_test_*.txt", max_results=5)
+        result = glob_tool.execute(path=test_workspace, pattern="max_test_*.txt", head_limit=5)
         assert result.error is False
-        # Count how many results
-        lines = [l for l in result.output.strip().split('\n') if l.strip()]
+        # Count file results (exclude truncation notice lines)
+        lines = [l for l in result.output.strip().split('\n') if l.strip() and not l.startswith('(Results')]
         assert len(lines) <= 5
 
 
