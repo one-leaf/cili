@@ -111,6 +111,8 @@ class Agent(BaseAgent):
         self._tool_call_count = 0
         # 事件发布回调（由 agent_tool / background 注入，用于广播 agent_progress）
         self._event_publisher = None
+        # agent_progress 事件节流：距上次发送不足 0.5s 则跳过，避免高频 SSE 事件堵塞前端
+        self._last_progress_event_time: float = 0.0
 
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
@@ -691,18 +693,22 @@ class Agent(BaseAgent):
         except Exception as e:
             logger.warning(f"[Agent:{self.role}] Failed to save progress: {e}")
 
-        # 发布进度事件供前端实时更新 header
+        # 发布进度事件供前端实时更新 header（节流：每 0.5s 最多一次）
         if self._event_publisher:
-            try:
-                self._event_publisher("agent_progress",
-                                      exec_id=exec_id,
-                                      iterations=iterations,
-                                      message_count=len(self.messages),
-                                      tool_call_count=self._tool_call_count,
-                                      current_tool=current_tool,
-                                      status=status)
-            except Exception:
-                pass
+            import time
+            now = time.monotonic()
+            if now - self._last_progress_event_time >= 0.5:
+                self._last_progress_event_time = now
+                try:
+                    self._event_publisher("agent_progress",
+                                          exec_id=exec_id,
+                                          iterations=iterations,
+                                          message_count=len(self.messages),
+                                          tool_call_count=self._tool_call_count,
+                                          current_tool=current_tool,
+                                          status=status)
+                except Exception:
+                    pass
 
     def _finalize(self, status: str, summary: str, iterations: int) -> None:
         """Finalize execution: save final log."""
