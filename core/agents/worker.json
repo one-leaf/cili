@@ -36,7 +36,7 @@
           "",
           "Cross-tool invocation is blocked. Use each tool for its intended purpose.",
           "",
-          "**Critical**: Never run Python from `bash` or `pwsh` (e.g. `python script.py`, `python -c "..."`). This will be blocked by the permission system and you cannot proceed. Always use the `python` tool directly for any Python execution.",
+          "**Critical**: Never run Python from `bash` or `pwsh` (e.g. `python script.py`, `python -c \"...\"`). This will be blocked by the permission system and you cannot proceed. Always use the `python` tool directly for any Python execution.",
           "",
           "## Skills - Proactive Usage",
           "",
