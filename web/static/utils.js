@@ -94,9 +94,31 @@ function showToast(message, duration = 2000) {
 }
 
 // ── Markdown 渲染 ──
+
+// 判断 URL 是否指向图片文件（根据扩展名，忽略查询参数）
+function _isImageUrl(url) {
+    const path = url.split('?')[0];
+    return /\.(png|jpe?g|gif|webp|svg|bmp|ico)(\s|$)/i.test(path);
+}
+
+// 将非图片媒体的 ![alt](url) 降级为 [alt](url)（如 .pdf / .docx），避免 marked 渲染为 <img>
+function _convertNonImageMedia(text) {
+    return text.replace(
+        /!\[([^\]]*)\]\(([^)]+)\)/g,
+        (m, alt, url) => {
+            if (url.startsWith('data:')) return m;  // data URI 由 media_type 决定
+            if (_isImageUrl(url)) return m;           // 图片扩展名保留
+            return `[${alt}](${url})`;
+        }
+    );
+}
+
 // 自动为链接注入 workspace_uuid，保护数学公式不被 marked 破坏
 function renderMarkdown(text) {
     if (!text) return '';
+
+    // 将非图片媒体的 ![alt](url) 降级为普通链接，避免 marked 渲染为 <img>
+    text = _convertNonImageMedia(text);
 
     // 获取 workspace_uuid：优先 currentWorkspace，其次 currentSession
     const workspaceUuid = currentWorkspace?.uuid || currentSession?.workspace_uuid;
@@ -188,6 +210,17 @@ function renderMarkdown(text) {
         return '<div class="mermaid">' + decoded + '</div>';
     });
 
+    // 将 PDF <img> 转换为 iframe 内嵌预览（兜底：URL 中已有 workspace_uuid 的 PDF 不会走降级逻辑）
+    html = html.replace(
+        /<img([^>]*)\ssrc="([^"]*\.pdf)(\?[^"]*)?"/g,
+        (match, before, src, query) => {
+            const url = src + (query || '');
+            const altMatch = before.match(/alt="([^"]*)"/);
+            const alt = altMatch ? altMatch[1] : 'PDF 文件';
+            return `<div class="pdf-preview"><iframe src="${url}" title="${alt}"></iframe><a href="${url}" target="_blank" class="pdf-link">📄 ${alt || '查看 PDF'}</a></div>`;
+        }
+    );
+
     // 恢复数学公式
     mathBlocks.forEach((block, idx) => {
         html = html.replace('MATHBLOCK{' + idx + '}', block);
@@ -196,8 +229,8 @@ function renderMarkdown(text) {
     // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
     if (typeof DOMPurify !== 'undefined') {
         html = DOMPurify.sanitize(html, {
-            ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math'],
-            ADD_ATTR: ['encoding', 'display', 'xmlns'],
+            ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math', 'iframe'],
+            ADD_ATTR: ['encoding', 'display', 'xmlns', 'target', 'allowfullscreen'],
         });
     } else {
         // DOMPurify 加载失败时 fail-closed：转义所有标签，阻止原始 HTML 注入。

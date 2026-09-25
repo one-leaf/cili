@@ -206,12 +206,22 @@
                     .replace(/&amp;/g, '&');
                 return '<div class="mermaid">' + decoded + '</div>';
             });
+            // 将 PDF <img> 转换为 iframe 内嵌预览（兼容历史数据中已注入 workspace_uuid 的 PDF）
+            html = html.replace(
+                /<img([^>]*)\ssrc="([^"]*\.pdf)(\?[^"]*)?"/g,
+                (match, before, src, query) => {
+                    const url = src + (query || '');
+                    const altMatch = before.match(/alt="([^"]*)"/);
+                    const alt = altMatch ? altMatch[1] : 'PDF 文件';
+                    return `<div class="pdf-preview"><iframe src="${url}" title="${alt}"></iframe><a href="${url}" target="_blank" class="pdf-link">📄 ${alt || '查看 PDF'}</a></div>`;
+                }
+            );
             mathBlocks.forEach((b, i) => { html = html.replace('MATHBLOCK{' + i + '}', b); });
-            // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
+            // XSS 防护：sanitize HTML（允许 MathJax 所需标签及 PDF iframe）
             if (typeof DOMPurify !== 'undefined') {
                 html = DOMPurify.sanitize(html, {
-                    ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math'],
-                    ADD_ATTR: ['encoding', 'display', 'xmlns'],
+                    ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math', 'iframe'],
+                    ADD_ATTR: ['encoding', 'display', 'xmlns', 'target', 'allowfullscreen'],
                 });
             } else {
                 html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -240,17 +250,25 @@
 
         function injectWorkspaceUuid(text) {
             if (!workspaceUuid) return text;
-            // 匹配 /api/files/xxx 并追加 workspace_uuid
+            // 判断 URL 是否指向图片文件（根据扩展名，忽略查询参数）
+            const isImageUrl = (url) => /\.(png|jpe?g|gif|webp|svg|bmp|ico)(\s|$)/i.test(url.split('?')[0]);
+            // 匹配 /api/files/xxx 并追加 workspace_uuid（非图片降级为普通链接）
             text = text.replace(
                 /!\[([^\]]*)\]\((\/api\/files\/[^)]+)\)/g,
-                (m, alt, url) => url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`
+                (m, alt, url) => {
+                    if (!isImageUrl(url)) return `[${alt}](${url})`;
+                    return url.includes('workspace_uuid=') ? m : `![${alt}](${url}${url.includes('?') ? '&' : '?'}workspace_uuid=${workspaceUuid})`;
+                }
             );
-            // 匹配相对路径图片并转换为 /api/workspaces/{uuid}/files/xxx
+            // 匹配相对路径媒体并转换为 /api/workspaces/{uuid}/files/xxx（非图片降级为普通链接）
             text = text.replace(
                 /!\[([^\]]*)\]\((?!http|\/api|data:)([^)]+)\)/g,
                 (m, alt, url) => {
                     const cleanUrl = url.startsWith('/') ? url.slice(1) : url;
-                    return `![${alt}](/api/workspaces/${workspaceUuid}/files/${cleanUrl})`;
+                    const fullUrl = `/api/workspaces/${workspaceUuid}/files/${cleanUrl}`;
+                    return isImageUrl(url)
+                        ? `![${alt}](${fullUrl})`
+                        : `[${alt}](${fullUrl})`;
                 }
             );
             // 匹配原生 <audio>/<video>/<source> 标签的相对 src 路径并转换为文件服务 URL
