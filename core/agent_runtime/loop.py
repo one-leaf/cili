@@ -14,6 +14,7 @@ LoopPolicy 携带行为参数，PhaseMachine 管理 autonomous 的执行/检查�
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -74,17 +75,17 @@ CHECK_PROMPT = (
 # 循环重复警告（检测到连续相同操作时注入）
 LOOP_REPEAT_WARNING = (
     "## ⚠️ 操作重复警告\n\n"
-    "检测到你在最近 **{count} 次**连续迭代中执行了完全相同的操作（相同的文字表述和工具调用），"
-    "但未能取得实质进展。\n\n"
+    "检测到你在最近 **{count} 次**连续迭代中重复执行了以下操作，但未能取得实质进展：\n\n"
+    "> {detail}\n\n"
     "**请立即改变策略**：\n"
-    "- 反复搜索无果 → 用 `browser` 工具直接访问目标 URL 获取页面完整内容\n"
     "- 反复调用同一工具结果相同 → 换一种查询方式或完全不同的工具\n"
     "- 确实无法继续 → 直接输出当前已知内容的总结报告，**不要继续重复**\n"
 )
 
 LOOP_REPEAT_STRONG_WARNING = (
     "## 🛑 严重重复警告（第 {strong_count} 次）\n\n"
-    "你已连续 **{count} 次**重复执行相同操作，系统已多次警告但未见改善。\n\n"
+    "你已连续 **{count} 次**重复执行以下操作，系统已多次警告但未见改善：\n\n"
+    "> {detail}\n\n"
     "**必须立即停止当前策略，重新评估任务**：\n"
     "1. 停止当前方法，回顾任务目标和已有进展\n"
     "2. 采用完全不同的工具或方法（例如：用 browser 替代 web_search）\n"
@@ -324,7 +325,12 @@ class Loop:
             # ── 记录本轮签名（循环重复检测用）──
             if tool_calls:
                 text_sig = response.get_text()[:80] if response.get_text() else ""
-                tool_sig = tuple(sorted(getattr(b, "name", "") for b in tool_calls))
+                # 工具签名包含 (名称, 参数JSON)，顺序敏感——
+                # 不同参数产生不同签名，避免 Grep("foo") 与 Grep("bar") 被误判为重复
+                tool_sig = tuple(
+                    (getattr(b, "name", ""), getattr(b, "arguments", ""))
+                    for b in tool_calls
+                )
                 state.setdefault("loop_history", []).append((text_sig, tool_sig))
 
             if not tool_calls:
@@ -528,6 +534,33 @@ class Loop:
 
     # ─── 辅助 ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _format_tool_sig(tool_sig: tuple) -> str:
+        """把 tool_sig 格式化为可读描述，用于警告消息。
+
+        tool_sig 格式：((name, args_json), ...) 有序元组。
+        输出示例：`Grep`(pattern="foo", path="src/")
+        """
+        def fmt_one(name: str, args_json: str) -> str:
+            try:
+                args = json.loads(args_json) if args_json else {}
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            if not args:
+                return f"`{name}`"
+            # 格式化每个参数，截断过长值
+            parts = []
+            for k, v in list(args.items())[:5]:
+                vstr = str(v)
+                if len(vstr) > 40:
+                    vstr = vstr[:37] + "..."
+                parts.append(f'{k}="{vstr}"')
+            arg_str = ", ".join(parts)
+            suffix = ", ..." if len(args) > 5 else ""
+            return f"`{name}`({arg_str}{suffix})"
+
+        return "、".join(fmt_one(n, a) for n, a in tool_sig)
+
     def _check_loop_repetition(self, state: dict[str, Any]) -> None:
         """检测连续相同操作并注入警告。
 
@@ -535,7 +568,10 @@ class Loop:
         则认为陷入死循环。在阈值 3/6/10 处分别注入警告，警告信息会作为 user 消息
         出现在 LLM 下一轮的上下文里，让 LLM 感知并调整策略。
 
-        text_sig 取 assistant 输出文字的前 80 字符；tool_sig 为工具名排序后的元组。
+        text_sig 取 assistant 输出文字的前 80 字符；
+        tool_sig 为 (工具名, 参数JSON) 的有序元组——顺序敏感且参数纳入比较，
+        因此 Grep("foo") 与 Grep("bar") 产生不同签名，不会误判为重复。
+        警告消息中包含具体的重复工具及参数，便于 LLM 识别并更换策略。
         """
         history = state.get("loop_history", [])
         if len(history) < 3:
@@ -552,16 +588,20 @@ class Loop:
         if next_threshold is None or count < next_threshold:
             return
         state["loop_warned_at"] = count
+        # 构造重复操作的具體描述（last[1] 为 tool_sig）
+        detail = self._format_tool_sig(last[1])
         # 根据严重程度选择不同警告文案
         if count >= 10:
             strong_count = count // 5  # 大约第几次强警告
-            warning = LOOP_REPEAT_STRONG_WARNING.format(count=count, strong_count=strong_count)
+            warning = LOOP_REPEAT_STRONG_WARNING.format(
+                count=count, strong_count=strong_count, detail=detail
+            )
         else:
-            warning = LOOP_REPEAT_WARNING.format(count=count)
+            warning = LOOP_REPEAT_WARNING.format(count=count, detail=detail)
         self.agent.add_message("user", warning, meta={"loop_warning": True})
         logger.warning(
             f"[Agent:{self.agent.role}] 循环重复检测: 连续 {count} 次相同操作 "
-            f"(exec={getattr(self.agent, '_exec_id', '?')})"
+            f"({detail}, exec={getattr(self.agent, '_exec_id', '?')})"
         )
 
     def _drain_agent_notifications(self) -> None:
