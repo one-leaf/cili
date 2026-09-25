@@ -912,7 +912,7 @@ class Runner:
                 # autonomous 模式写 exec schema（exec_id/task），避免覆盖 exec 日志；
                 # interactive 模式写普通 session schema。
                 if getattr(self.agent, "_mode", "interactive") == "autonomous":
-                    self.agent._save_progress(len(self.agent.messages), status="running")
+                    self.agent._save_progress(self.agent._turn_iterations, status="running")
                 else:
                     self.agent.save_messages()
 

@@ -191,6 +191,7 @@ function renderMessages(messages) {
                         status: isCompleted ? 'completed' : 'running',
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
+                        tool_call_count: block._meta.tool_call_count || 0,
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
                     // 简单处理：用 exec_id 加载详情
@@ -359,6 +360,7 @@ function prependMessages(messages) {
                         status: isCompleted ? 'completed' : 'running',
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
+                        tool_call_count: block._meta.tool_call_count || 0,
                     };
                     renderAgentRef(saMsg, idx, msgId);
                     return;

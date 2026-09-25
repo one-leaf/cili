@@ -306,6 +306,8 @@ class AgentTool(Tool):
         agent._on_tool_output = lambda tool, content, offset, tool_use_id, _id=exec_id: self._publish(
             "tool_output", exec_id=_id, tool=tool, content=content, offset=offset,
             tool_use_id=tool_use_id)
+        # 进度事件发布回调（_save_progress 调用时广播 iterations/message_count/tool_call_count）
+        agent._event_publisher = lambda ev_type, **kw: self._publish(ev_type, **kw)
 
         # Background mode
         if run_in_background:

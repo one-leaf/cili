@@ -109,6 +109,19 @@ function handleBusEvent(e) {
         markAgentComplete(e.exec_id, e.status || 'completed');
         return;
     }
+    // 实时更新子代理卡片 header（iterations/message_count/tool_call_count）
+    if (e.type === 'agent_progress') {
+        const entry = _agentCards[e.exec_id];
+        if (entry) {
+            updateHeaderMeta(entry, {
+                iterations: e.iterations || 0,
+                message_count: e.message_count || 0,
+                tool_call_count: e.tool_call_count || 0,
+                current_tool: e.current_tool || '',
+            });
+        }
+        return;
+    }
 
     // worker 工具输出（无 exec_id）→ master 工具流
     if (e.type === 'tool_output' && !e.exec_id) {
@@ -225,6 +238,7 @@ function agentCardForMessage(msg, msgId) {
         status: msg.status || 'completed',
         iterations: msg.iterations || 0,
         message_count: msg.message_count || 0,
+        tool_call_count: msg.tool_call_count || 0,
     });
     if (msgId) entry.card.dataset.msgId = msgId;
     return entry;
@@ -497,11 +511,13 @@ function renderToolResult(msgsDiv, content, isError) {
 
 function _renderHeader(entry, meta = {}) {
     const task = entry.taskSummary || '';
+    const toolCalls = meta.tool_call_count || 0;
+    const toolCallsDisplay = toolCalls > 0 ? ` · ${toolCalls} 次工具` : '';
     entry.header.innerHTML = `
         <span class="sa-icon">${_STATUS_ICONS[entry.status] || '📋'}</span>
         <span class="sa-title">${entry.status === 'running' ? '子代理执行中' : '子代理执行'}</span>
         <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
-        <span class="sa-meta">${meta.iterations || 0} 轮 · ${meta.message_count || 0} 条消息</span>
+        <span class="sa-meta">${meta.iterations || 0} 轮 · ${meta.message_count || 0} 条消息${toolCallsDisplay}</span>
         <span class="sa-toggle">${entry.expanded ? '▼' : '▶'}</span>
     `;
 }
@@ -509,10 +525,12 @@ function _renderHeader(entry, meta = {}) {
 function updateHeaderMeta(entry, meta = {}) {
     const iters = meta.iterations || 0;
     const msgs = meta.message_count || 0;
+    const toolCalls = meta.tool_call_count || 0;
     const currentTool = meta.current_tool || '';
+    const toolCallsDisplay = toolCalls > 0 ? ` · ${toolCalls} 次工具` : '';
     const toolSuffix = currentTool ? ` · 正在: ${currentTool}` : '';
     const metaEl = entry.header.querySelector('.sa-meta');
-    if (metaEl) metaEl.textContent = `${iters} 轮 · ${msgs} 条消息${toolSuffix}`;
+    if (metaEl) metaEl.textContent = `${iters} 轮 · ${msgs} 条消息${toolCallsDisplay}${toolSuffix}`;
 }
 
 function _updateHeaderToggle(entry) {

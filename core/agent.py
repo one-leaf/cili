@@ -107,6 +107,10 @@ class Agent(BaseAgent):
         # 后台子代理完成通知队列：后台 agent 线程完成时 append，主循环每次迭代前 drain。
         # 解决后台 agent 完成后 master agent 收不到通知、必须靠 LLM 主动轮询 read_task 的问题。
         self._notification_queue: list[dict] = []
+        # 工具调用累计计数（每批工具调用数累加）
+        self._tool_call_count = 0
+        # 事件发布回调（由 agent_tool / background 注入，用于广播 agent_progress）
+        self._event_publisher = None
 
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
@@ -636,14 +640,27 @@ class Agent(BaseAgent):
             return 0.0
         return (datetime.now() - self._started_at).total_seconds()
 
-    def _save_progress(self, iterations: int, status: str = "running", current_tool: str = "") -> None:
+    def _save_progress(self, iterations: int, status: str = "running",
+                       current_tool: str = "", tool_calls: int | None = None) -> None:
         """Save execution progress in real-time.
 
         Writes to {exec_dir}/index.json in the format SessionManager.agent_logs.load_agent_log() expects.
         This ensures the file always has exec_id and task, even before the final save.
+
+        Args:
+            iterations: LLM 调用轮次数
+            status: 当前状态（running/check/completed 等）
+            current_tool: 正在执行的工具名
+            tool_calls: 本批新增的工具调用数（累加到 _tool_call_count）
         """
-        if not self.session_dir or not self._exec_id:
+        # interactive 模式可能没有 _exec_id（只有 autonomous/worker 才有）
+        exec_id = getattr(self, '_exec_id', None)
+        if not self.session_dir or not exec_id:
             return
+
+        # 累加工具调用计数
+        if tool_calls is not None and tool_calls > 0:
+            self._tool_call_count += tool_calls
 
         metadata = {
             "parent_session_id": "",
@@ -656,10 +673,11 @@ class Agent(BaseAgent):
             "max_iterations": self.max_iterations,
             "message_count": len(self.messages),
             "current_tool": current_tool,
+            "tool_call_count": self._tool_call_count,
         }
 
         log_data = {
-            "exec_id": self._exec_id,
+            "exec_id": exec_id,
             "session_id": self._session_id,
             "task": self.task,
             "metadata": metadata,
@@ -672,6 +690,19 @@ class Agent(BaseAgent):
             atomic_write_json(log_file, log_data)
         except Exception as e:
             logger.warning(f"[Agent:{self.role}] Failed to save progress: {e}")
+
+        # 发布进度事件供前端实时更新 header
+        if self._event_publisher:
+            try:
+                self._event_publisher("agent_progress",
+                                      exec_id=exec_id,
+                                      iterations=iterations,
+                                      message_count=len(self.messages),
+                                      tool_call_count=self._tool_call_count,
+                                      current_tool=current_tool,
+                                      status=status)
+            except Exception:
+                pass
 
     def _finalize(self, status: str, summary: str, iterations: int) -> None:
         """Finalize execution: save final log."""
@@ -689,6 +720,7 @@ class Agent(BaseAgent):
                 "iterations": iterations,
                 "max_iterations": self.max_iterations,
                 "message_count": len(self.messages),
+                "tool_call_count": self._tool_call_count,
                 "summary": summary,
             }
 
