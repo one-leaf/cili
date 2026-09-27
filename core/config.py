@@ -301,9 +301,6 @@ WORKSPACES_JSON = DATA_DIR / "workspaces.json"
 # System workspace data dir (directory = data/, data dir = data/.cili/)
 SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
 
-# Legacy workspace data dir (pre-refactor), used for one-time migration only
-LEGACY_PROJECTS_DIR = PROJECT_ROOT / "data" / "projects"
-
 
 def validate_workspace_name(name: str) -> str | None:
     """Validate workspace display name. Returns error message if invalid, None if valid.

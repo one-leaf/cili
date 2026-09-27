@@ -392,19 +392,3 @@ def migrate_legacy_data_dir_tools_and_cron() -> None:
             except OSError:
                 pass
             logger.info(f"[migration] Merged {old_cron_dir} → {dst_cron}")
-
-
-def migrate_all_sessions(workspaces_dir: Path) -> int:
-    """Legacy: migrate all session files under a workspace data container dir.
-
-    Kept for backward compatibility (e.g. data/projects/ before refactor).
-    New code should call migrate_sessions_dir() per workspace .cili/sessions/.
-    """
-    migrated = 0
-    if not workspaces_dir.exists():
-        return 0
-    for workspace_dir in workspaces_dir.iterdir():
-        if not workspace_dir.is_dir():
-            continue
-        migrated += migrate_sessions_dir(workspace_dir / "sessions")
-    return migrated
