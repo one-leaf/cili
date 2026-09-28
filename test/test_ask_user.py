@@ -9,7 +9,6 @@
 """
 
 import json
-import secrets
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,16 +24,7 @@ from core.tools import get_tool_by_name
 
 # ── Fixtures ──
 
-@pytest.fixture
-def test_workspace():
-    """创建临时测试工作目录"""
-    project_dir = Path(__file__).parent.parent
-    test_dir = project_dir / "workspace" / ".test_ask_user_tmp"
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
-    test_dir.mkdir(parents=True, exist_ok=True)
-    yield str(test_dir)
-    shutil.rmtree(test_dir, ignore_errors=True)
+# 使用 conftest.py 中的全局 test_workspace fixture（.test 目录）
 
 
 @pytest.fixture
@@ -58,16 +48,9 @@ def config():
 @pytest.fixture
 def agent(config, test_workspace):
     """创建 Master Agent 实例"""
-    from core.config import upsert_workspace_entry
-    test_uuid = secrets.token_hex(4)
-    upsert_workspace_entry({
-        "uuid": test_uuid,
-        "workspace_name": "Ask User Test",
-        "directory": test_workspace,
-    })
-    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
+    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid="test")
     yield agent_instance
-    # 清理（Agent 数据写入 {workspace}/.cili/，即本地 test_workspace 目录）
+    # 清理（Agent 数据写入 {workspace}/.cili/，即 test_workspace 目录）
     ws_dir = Path(test_workspace) / ".cili"
     if ws_dir.exists():
         shutil.rmtree(ws_dir, ignore_errors=True)

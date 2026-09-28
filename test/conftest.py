@@ -45,9 +45,9 @@ def make_dgx_config(interface_type: str = "anthropic") -> Config:
 
 @pytest.fixture(scope="session")
 def test_workspace():
-    """创建临时测试工作目录"""
+    """创建临时测试工作目录（项目根目录下的 .test）"""
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_dir = os.path.join(project_dir, "workspace", ".test_tmp")
+    test_dir = os.path.join(project_dir, ".test")
     if os.path.exists(test_dir):
         shutil.rmtree(test_dir, ignore_errors=True)
     os.makedirs(test_dir, exist_ok=True)
@@ -69,23 +69,36 @@ def _isolate_workspaces_index():
     import core.config as config_mod
     original = config_mod.WORKSPACES_JSON
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_dir = os.path.join(project_dir, "workspace", ".test_tmp")
-    tmp_index = Path(test_dir).parent / ".test_workspaces.json"
-    if tmp_index.exists():
-        tmp_index.unlink()
+    test_dir = os.path.join(project_dir, ".test")
+    tmp_index = Path(project_dir) / ".test_workspaces.json"
+    if os.path.exists(tmp_index):
+        os.unlink(tmp_index)
     config_mod.WORKSPACES_JSON = tmp_index
     # 注册固定测试工作区（tools/temp 工具 fixture 使用），
     # 未注册 uuid 会回落真实默认工作区（PROJECT_ROOT/workspace/.cili），需避免
-    for test_uuid in ("test-workspace", "test-uuid"):
+    for test_uuid in ("test", "test-workspace", "test-uuid"):
         config_mod.upsert_workspace_entry({
             "uuid": test_uuid,
-            "workspace_name": f"Test {test_uuid}",
+            "workspace_name": "test" if test_uuid == "test" else f"Test {test_uuid}",
             "directory": test_dir,
         })
+    # 补强：拦截 get_workspace_data_dir 的回落路径，
+    # 未注册 uuid 不再回落至真实 Default 工作区，而是指向测试目录
+    _original_get_workspace_data_dir = config_mod.get_workspace_data_dir
+
+    def _safe_get_workspace_data_dir(workspace_uuid: str) -> Path:
+        result = _original_get_workspace_data_dir(workspace_uuid)
+        real_default = config_mod.PROJECT_ROOT / "workspace" / ".cili"
+        if result == real_default:
+            return Path(test_dir) / ".cili"
+        return result
+
+    config_mod.get_workspace_data_dir = _safe_get_workspace_data_dir
     yield
+    config_mod.get_workspace_data_dir = _original_get_workspace_data_dir
     config_mod.WORKSPACES_JSON = original
-    if tmp_index.exists():
-        tmp_index.unlink()
+    if os.path.exists(tmp_index):
+        os.unlink(tmp_index)
 
 
 @pytest.fixture(scope="session")

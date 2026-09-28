@@ -48,7 +48,8 @@ workspace/
 data/*
 .tmp/
 .cili/
-.test_tmp/
+.test/
+.test*
 *.log
 
 # 本地 pytest 配置（仅本地保留，不入库）
