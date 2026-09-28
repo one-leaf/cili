@@ -247,7 +247,8 @@ class TestDeferredToolsSection:
     def test_system_prompt_has_deferred_section(self):
         """master 的 system prompt 包含 Deferred Tools 段。"""
         agent = _make_master_agent()
-        prompt = agent._build_system_prompt()
+        parts = agent._build_system_prompt()
+        prompt = "\n\n".join(parts) if isinstance(parts, list) else parts
 
         assert "## Deferred Tools" in prompt
         assert "tool_search" in prompt

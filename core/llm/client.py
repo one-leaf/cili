@@ -187,7 +187,7 @@ class LLMClient:
     def chat(
         self,
         messages: list[Message],
-        system: str = "",
+        system: str | list[str] = "",
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         session_id: str = "",
@@ -197,7 +197,7 @@ class LLMClient:
 
         Args:
             messages: Conversation messages (list[Message])
-            system: System prompt
+            system: System prompt (str or list[str] with DYNAMIC_BOUNDARY)
             tools: Tool schemas
             max_tokens: Override default max_tokens
             session_id: Optional session ID for proxy routing
@@ -248,7 +248,7 @@ class LLMClient:
     def chat_stream(
         self,
         messages: list[Message],
-        system: str = "",
+        system: str | list[str] = "",
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         on_chunk: Callable[[StreamChunk], None] | None = None,
@@ -266,7 +266,7 @@ class LLMClient:
 
         Args:
             messages: Conversation messages (list[Message])
-            system: System prompt
+            system: System prompt (str or list[str] with DYNAMIC_BOUNDARY)
             tools: Tool schemas
             max_tokens: Override default max_tokens
             on_chunk: Called for every StreamChunk (low-level)
@@ -346,7 +346,7 @@ class LLMClient:
     def chat_structured(
         self,
         messages: list[Message],
-        system: str = "",
+        system: str | list[str] = "",
         output_schema: dict[str, Any] | None = None,
         tool_name: str = "output",
         max_tokens: int | None = None,
@@ -358,7 +358,7 @@ class LLMClient:
 
         Args:
             messages: Conversation messages
-            system: System prompt
+            system: System prompt (str or list[str] with DYNAMIC_BOUNDARY)
             output_schema: JSON Schema for expected output
             tool_name: Name of the synthetic tool
             max_tokens: Override default max_tokens

@@ -73,7 +73,7 @@ class OpenAIAdapter(Adapter):
             for t in tools
         ]
 
-    def _convert_messages(self, messages: list[Message], system: str) -> list[dict[str, Any]]:
+    def _convert_messages(self, messages: list[Message], system: str | list[str]) -> list[dict[str, Any]]:
         """Convert internal messages to OpenAI native format.
 
         Conversion rules:
@@ -84,6 +84,11 @@ class OpenAIAdapter(Adapter):
         openai_messages: list[dict[str, Any]] = []
 
         if system:
+            # OpenAI 不支持 cache_control，list[str] 直接 join 为单字符串
+            # 过滤掉 DYNAMIC_BOUNDARY 标记（仅 Anthropic 使用）
+            from core.prompt_builder import DYNAMIC_BOUNDARY
+            if isinstance(system, list):
+                system = "\n\n".join(s for s in system if s != DYNAMIC_BOUNDARY)
             openai_messages.append({"role": "system", "content": system})
 
         for msg in messages:
@@ -291,7 +296,7 @@ class OpenAIAdapter(Adapter):
     def serialize(
         self,
         messages: list[Message],
-        system: str,
+        system: str | list[str],
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,

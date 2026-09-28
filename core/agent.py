@@ -176,6 +176,8 @@ class Agent(BaseAgent):
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
+        # prompt section 缓存：context 块等动态内容 session 内只算一次
+        self._prompt_section_cache: dict[str, str] = {}
         # autonomous 用缓存的 system prompt（interactive 每轮在 run 入口重建）
         self._system_prompt = self._build_system_prompt()
 
@@ -307,14 +309,18 @@ class Agent(BaseAgent):
 
     # ─── system prompt / 上下文 ─────────────────────────────────────
 
-    def _build_system_prompt(self) -> str:
-        """按角色 JSON 的 blocks 拼装 system prompt。"""
+    def _build_system_prompt(self) -> list[str]:
+        """按角色 JSON 的 blocks 拼装 system prompt，返回字符串列表。
+
+        列表含 DYNAMIC_BOUNDARY 分隔标记，adapter 层按此分割设置 cache_control。
+        """
         return build_system_prompt(self)
 
     def _get_messages_with_header(self) -> list[dict]:
-        """BaseAgent 版 + 注入型 user 层（claude_md/context）+ 防连续合并。
+        """BaseAgent 版 + 注入型 user 层（claude_md）+ 防连续合并。
 
-        注入层每次从磁盘/环境动态生成，不持久化到 self.messages（会话文件保持干净）。
+        注入层每次从磁盘动态生成（claude_md），不持久化到 self.messages（会话文件保持干净）。
+        context 已迁移至 system prompt 的动态区（session 内缓存），不再在此注入。
         合并后连续 user 消息自动合成一条，保证角色交替（OpenAI/Bedrock 约束）。
         """
         messages = self.context.get_messages_with_header()
@@ -519,6 +525,10 @@ class Agent(BaseAgent):
             # Update tools' session_manager reference
             for tool in self.tools:
                 tool.session_manager = loaded
+            # 切换会话后清除 prompt section 缓存（不同会话可能有不同上下文）
+            self._prompt_section_cache.clear()
+            # 重置缓存基线（不同会话的 cache_read 不可比），但保留累计统计
+            self.cache_state.reset_after_compact()
             logger.info(f"Switched to session: {session_id}")
         else:
             logger.warning(f"Session not found: {session_id}")
@@ -527,6 +537,10 @@ class Agent(BaseAgent):
         """Clear conversation history."""
         self.messages.clear()
         self.session_manager.clear()
+        # 清除 prompt section 缓存，下次构建时重新计算
+        self._prompt_section_cache.clear()
+        # 重置缓存状态追踪（新会话无历史基线）
+        self.cache_state.reset()
 
     def get_usage(self) -> dict[str, int]:
         """Return usage statistics synced with session."""
@@ -535,7 +549,13 @@ class Agent(BaseAgent):
 
     def compact(self) -> tuple[int, int]:
         """Manually compress conversation history."""
-        return self._perform_full_compact(3)
+        result = self._perform_full_compact(3)
+        # 压缩后清除 prompt section 缓存
+        self._prompt_section_cache.clear()
+        # 手动 compact 等同于 L2，重置缓存基线后标记 L2 供下次失效诊断
+        self.cache_state.reset_after_compact()
+        self.cache_state.on_compression(2)
+        return result
 
     def cleanup(self) -> None:
         """Clean up resources before exit."""

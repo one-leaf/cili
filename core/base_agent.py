@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from core.agent_runtime.context import AgentContext
 from core.agent_runtime.runner import Runner, RETRY_CLEAR_SENTINEL
+from core.cache_state import CacheState
 from core.config import Config
 from core.llm import LLMClient, LLMResponse, Message
 from core.tools.base import Tool
@@ -67,6 +68,9 @@ class BaseAgent:
 
         # 执行层：持本 agent 引用，压缩/LLM 调用/工具执行在回合运行时访问共享状态
         self.runner = Runner(self)
+
+        # Prompt cache 状态追踪（压缩事件 + 缓存命中统计）
+        self.cache_state = CacheState()
 
         # Message management (property → context.messages)
         self.messages: list[dict] = []
@@ -240,7 +244,7 @@ class BaseAgent:
 
     # ========== LLM Calling ==========
 
-    def _call_llm(self, streaming: bool = False, system_prompt: str = "") -> LLMResponse:
+    def _call_llm(self, streaming: bool = False, system_prompt: str | list[str] = "") -> LLMResponse:
         """Call LLM with optional streaming.
 
         转发到 Runner.run_round：每轮先压缩再调用 LLM（压缩入口收敛在此，
@@ -267,11 +271,11 @@ class BaseAgent:
             resolve_results=resolve_results,
         )
 
-    def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
+    def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Non-streaming LLM call (delegated to Runner)."""
         return self.runner._call_llm_non_streaming(system_prompt)
 
-    def _call_llm_streaming(self, system_prompt: str) -> LLMResponse:
+    def _call_llm_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Streaming LLM call. Think content passes through as-is (delegated to Runner)."""
         return self.runner._call_llm_streaming(system_prompt)
 

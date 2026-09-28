@@ -82,8 +82,9 @@ class TestLiteConstruction:
     def test_system_prompt_no_skills_section(self):
         """Lite 无 skills 块：system prompt 不含技能列表，只含固定 role 文案。"""
         agent = _make_agent(task="t")
-        assert "## Available Skills" not in agent._system_prompt
-        assert "autonomous task-execution agent" in agent._system_prompt
+        prompt = "\n\n".join(agent._system_prompt) if isinstance(agent._system_prompt, list) else agent._system_prompt
+        assert "## Available Skills" not in prompt
+        assert "autonomous task-execution agent" in prompt
 
     def test_pinned_task_message(self):
         """任务消息首条 pinned 且含目标描述。"""

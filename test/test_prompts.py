@@ -80,12 +80,12 @@ class TestPrompts:
     # -- build_system_prompt (块拼装) --
 
     def test_system_prompt_text_block_only(self):
-        """纯 text 块：按 content 原样输出。"""
+        """纯 text 块：按 content 原样输出（返回 list[str]）。"""
         from core.prompt_builder import build_system_prompt
         agent = self._make_fake_agent([
             {"id": "role", "type": "text", "content": "你是通用助手。"},
         ])
-        assert build_system_prompt(agent) == "你是通用助手。"
+        assert build_system_prompt(agent) == ["你是通用助手。"]
 
     def test_system_prompt_text_block_lines(self):
         """text 块 content 为行数组时按行拼装。"""
@@ -93,7 +93,7 @@ class TestPrompts:
         agent = self._make_fake_agent([
             {"id": "role", "type": "text", "content": ["line one", "line two"]},
         ])
-        assert build_system_prompt(agent) == "line one\nline two"
+        assert build_system_prompt(agent) == ["line one\nline two"]
 
     def test_system_prompt_disabled_block_skipped(self):
         """enabled=false 的块被跳过。"""
@@ -102,16 +102,16 @@ class TestPrompts:
             {"id": "a", "type": "text", "content": "A", "enabled": False},
             {"id": "b", "type": "text", "content": "B"},
         ])
-        assert build_system_prompt(agent) == "B"
+        assert build_system_prompt(agent) == ["B"]
 
     def test_system_prompt_joins_blocks(self):
-        """多个启用块按顺序用空行拼接。"""
+        """多个启用块按顺序放入列表（不再拼接为单字符串）。"""
         from core.prompt_builder import build_system_prompt
         agent = self._make_fake_agent([
             {"id": "a", "type": "text", "content": "AAA"},
             {"id": "b", "type": "text", "content": "BBB"},
         ])
-        assert build_system_prompt(agent) == "AAA\n\nBBB"
+        assert build_system_prompt(agent) == ["AAA", "BBB"]
 
     def test_system_prompt_tools_block(self):
         """tools 块列出工具名与首行描述。"""
@@ -121,7 +121,8 @@ class TestPrompts:
         tool2 = SimpleNamespace(name="bash", description="run commands")
         agent = self._make_fake_agent(
             [{"id": "tools", "type": "tools"}], tools=[tool1, tool2])
-        prompt = build_system_prompt(agent)
+        parts = build_system_prompt(agent)
+        prompt = "\n\n".join(parts)
         assert "## Tools" in prompt
         assert "- **read** — read a file" in prompt
         assert "- **bash** — run commands" in prompt
@@ -131,7 +132,8 @@ class TestPrompts:
         from core.prompt_builder import build_system_prompt
         agent = self._make_fake_agent(
             [{"id": "skills", "type": "skills"}], role="master")
-        prompt = build_system_prompt(agent)
+        parts = build_system_prompt(agent)
+        prompt = "\n\n".join(parts)
         assert "## Available Skills" in prompt
         assert "grilling" in prompt
 
@@ -142,7 +144,7 @@ class TestPrompts:
             {"id": "x", "type": "bogus", "content": "X"},
             {"id": "role", "type": "text", "content": "OK"},
         ])
-        assert build_system_prompt(agent) == "OK"
+        assert build_system_prompt(agent) == ["OK"]
 
     def test_system_prompt_master_has_no_placeholders(self):
         """master 固定文案不含动态占位符（动态内容走 context 层）。"""
@@ -153,7 +155,11 @@ class TestPrompts:
                                  system=SimpleNamespace(max_iterations=50))
         role_cfg = load_agent_role("master", config)
         agent = self._make_fake_agent(role_cfg.system_prompt["blocks"])
-        prompt = build_system_prompt(agent)
+        # context 块需要 workspace_uuid 和 cwd
+        agent.workspace_uuid = "test-workspace"
+        agent.cwd = "/test/cwd"
+        parts = build_system_prompt(agent)
+        prompt = "\n\n".join(parts)
         assert "{date}" not in prompt
         assert "{workspace_uuid}" not in prompt
         assert "{cwd}" not in prompt

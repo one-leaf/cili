@@ -4,10 +4,14 @@
 - ``text``：固定文案（block.content，原模板常量迁入 JSON）
 - ``tools``：从实际加载的工具实例生成工具列表段
 - ``skills``：从角色可见技能生成技能列表段
+- ``context``：动态环境上下文（日期/workspace/内存等），session 内缓存
+
+``dynamic_boundary`` 块标记静态区与动态区的分界：
+- 分界之前的内容 scope='global'，跨用户共享（Anthropic 服务端缓存）
+- 分界之后的内容 session 特定，不 global 缓存
 
 ``user_layers`` 声明需要注入的 user 消息层：
 - ``claude_md``：每次从磁盘重读项目指令（agent.md/CLAUDE.md），不持久化
-- ``context``：动态环境上下文（日期/workspace/内存等），不持久化
 - ``task`` / ``runtime``：autonomous 运行时写入历史（pinned 任务消息、预算/检查/
   超时提示），由 Agent 按 role_cfg 布尔开关处理，不在生成器表内
 
@@ -18,6 +22,11 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+
+
+# ─── system prompt 动态边界标记 ──────────────────────────────────────
+
+DYNAMIC_BOUNDARY = "__CILI_DYNAMIC_BOUNDARY__"
 
 
 # ─── system prompt 块生成器 ──────────────────────────────────────────
@@ -50,26 +59,82 @@ def _gen_skills(block: dict, agent) -> str:
     return _build_skills_section(agent.role)
 
 
+def _gen_context(block: dict, agent) -> str:
+    """context 块：动态环境上下文（session 内缓存，不每轮重算）。
+
+    从 agent._prompt_section_cache 读取缓存；未命中则计算并写入。
+    缓存仅在 /clear、/compact 时清除（clear_prompt_section_cache）。
+    """
+    cache = getattr(agent, "_prompt_section_cache", None)
+    if cache is None:
+        cache = {}
+        agent._prompt_section_cache = cache
+
+    key = "env_context"
+    if key not in cache:
+        from core.prompts import build_environment_context
+        cache[key] = build_environment_context(agent.workspace_uuid, agent.cwd)
+    return cache[key]
+
+
 SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
     "text": _gen_text,
     "tools": _gen_tools,
     "skills": _gen_skills,
+    "context": _gen_context,
 }
 
 
-def build_system_prompt(agent) -> str:
-    """按角色配置的 blocks 顺序拼装 system prompt（仅启用且非空的块）。"""
-    parts = []
+def build_system_prompt(agent) -> list[str]:
+    """按角色配置的 blocks 顺序拼装 system prompt，返回字符串列表。
+
+    列表元素按 DYNAMIC_BOUNDARY 分割：
+    - boundary 之前：静态区（跨用户共享，scope='global'）
+    - boundary 之后：动态区（session 特定，不 global 缓存）
+
+    adapter 层（anthropic.py）负责按 boundary 切分并设置 cache_control。
+    """
+    static_parts: list[str] = []
+    dynamic_parts: list[str] = []
+    past_boundary = False
+
     for block in agent.role_cfg.system_prompt.get("blocks", []):
         if not block.get("enabled", True):
             continue
-        gen = SYSTEM_BLOCK_GENERATORS.get(block.get("type"))
+
+        block_type = block.get("type")
+
+        # 动态边界标记：切换分区
+        if block_type == "dynamic_boundary":
+            past_boundary = True
+            continue
+
+        gen = SYSTEM_BLOCK_GENERATORS.get(block_type)
         if gen is None:
             continue
         content = gen(block, agent)
-        if content:
-            parts.append(str(content).strip())
-    return "\n\n".join(parts)
+        if not content:
+            continue
+        content = str(content).strip()
+        if not content:
+            continue
+
+        if past_boundary:
+            dynamic_parts.append(content)
+        else:
+            static_parts.append(content)
+
+    result = static_parts
+    if dynamic_parts:
+        result = result + [DYNAMIC_BOUNDARY] + dynamic_parts
+
+    return result
+
+
+def clear_prompt_section_cache(agent) -> None:
+    """清除 session 内的 prompt section 缓存（/clear、/compact 时调用）。"""
+    if hasattr(agent, "_prompt_section_cache"):
+        agent._prompt_section_cache.clear()
 
 
 # ─── user 层注入生成器（返回 "user" 消息 dict 或 None）───────────────
@@ -81,18 +146,9 @@ def _gen_claude_md(agent) -> dict | None:
     return build_instructions_message(agent.cwd)
 
 
-def _gen_context(agent) -> dict | None:
-    """context 层：动态环境上下文（每次调用重新生成，含当前时间）。"""
-    from core.prompts import build_environment_context
-    return {
-        "role": "user",
-        "content": build_environment_context(agent.workspace_uuid, agent.cwd),
-    }
-
-
+# context 层已迁移至 system prompt 的 context 块（动态区），不再作为 user 层注入
 USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
     "claude_md": _gen_claude_md,
-    "context": _gen_context,
 }
 
 

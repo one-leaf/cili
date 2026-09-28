@@ -62,7 +62,7 @@ class AnthropicAdapter(Adapter):
     def serialize(
         self,
         messages: list[Message],
-        system: str,
+        system: str | list[str],
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,
@@ -74,6 +74,8 @@ class AnthropicAdapter(Adapter):
 
         Converts internal tool_call format to Anthropic's tool_use format.
         Merges consecutive same-role messages for Bedrock compatibility.
+
+        system 支持 list[str]（含 DYNAMIC_BOUNDARY，用于缓存分块）。
         """
         # Merge consecutive same-role messages (Bedrock rejects them)
         messages = merge_consecutive_same_role(messages)
@@ -88,12 +90,14 @@ class AnthropicAdapter(Adapter):
         self._apply_thinking_config(body, temperature)
         # LiteLLM proxy support
         self._apply_litellm_extras(body, session_id)
-        self._apply_prompt_cache(body, system, anthropic_messages)
 
-        if system and "system" not in body:
-            body["system"] = system
         if tools:
             body["tools"] = tools
+
+        # prompt cache 需在 tools 放入 body 后调用（它要给 tools[-1] 加 cache_control）
+        # system 由 _apply_prompt_cache 内部处理（支持 str / list[str]）
+        self._apply_prompt_cache(body, system, anthropic_messages)
+
         if stream:
             body["stream"] = True
 
@@ -155,24 +159,76 @@ class AnthropicAdapter(Adapter):
     def _apply_prompt_cache(
         self,
         body: dict[str, Any],
-        system: str,
+        system: str | list[str],
         anthropic_messages: list[dict[str, Any]],
     ) -> None:
-        """Prompt cache：两个断点——system+tools 之后、最后一条消息之后。
+        """Prompt cache：4 断点布局——system 静态区 + tools + messages[-3] + messages[-1]。
 
-        长 system prompt + 递增历史下，增量缓存可大幅降低重复 input 计费。
+        system 支持 list[str]（含 DYNAMIC_BOUNDARY）或 str（向后兼容）。
+        静态区用 scope='global' 跨用户共享，动态区不缓存。
         非官方端点（中转/网关）不识别 cache_control 会直接 400，由
         _prompt_cache_enabled 统一关闭。
         """
         if not self._prompt_cache_enabled:
+            # 非官方端点：system 直接 join 为字符串（或透传 str）
+            if isinstance(system, list):
+                body["system"] = "\n\n".join(s for s in system
+                                              if s != "__CILI_DYNAMIC_BOUNDARY__")
+            elif system:
+                body["system"] = system
             return
-        if system:
-            body["system"] = [{
+
+        from core.prompt_builder import DYNAMIC_BOUNDARY
+
+        # ── system 分块：按 DYNAMIC_BOUNDARY 分割静态/动态区 ──────────────
+        static_parts: list[str] = []
+        dynamic_parts: list[str] = []
+        past_boundary = False
+
+        blocks = system if isinstance(system, list) else ([system] if system else [])
+        for block in blocks:
+            if block == DYNAMIC_BOUNDARY:
+                past_boundary = True
+                continue
+            if not block:
+                continue
+            if past_boundary:
+                dynamic_parts.append(block)
+            else:
+                static_parts.append(block)
+
+        system_list: list[dict[str, Any]] = []
+        if static_parts:
+            system_list.append({
                 "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }]
-        if anthropic_messages:
+                "text": "\n\n".join(static_parts),
+                "cache_control": {"type": "ephemeral", "scope": "global"},
+            })
+        if dynamic_parts:
+            # 动态区不标 cache_control（session 特定，不 global）
+            system_list.append({
+                "type": "text",
+                "text": "\n\n".join(dynamic_parts),
+            })
+        if system_list:
+            body["system"] = system_list
+
+        # ── tools 断点：最后一个 tool schema 加 cache_control ──────────────
+        tools = body.get("tools")
+        if tools and isinstance(tools, list):
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+
+        # ── 消息断点：messages[-3]（稳定区尾部）+ messages[-1]（最新尾部）──
+        n = len(anthropic_messages)
+        # messages[-3] 断点：tool-use loop 中，这条之前的内容在多轮内稳定
+        if n >= 3:
+            third_last_content = anthropic_messages[-3].get("content")
+            if isinstance(third_last_content, list) and third_last_content:
+                last_block = third_last_content[-1]
+                if last_block.get("type") in self._CACHEABLE_BLOCK_TYPES:
+                    last_block["cache_control"] = {"type": "ephemeral"}
+        # messages[-1] 断点：捕获最新上下文
+        if n >= 1:
             last_content = anthropic_messages[-1].get("content")
             if isinstance(last_content, list) and last_content:
                 last_block = last_content[-1]

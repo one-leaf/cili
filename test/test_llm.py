@@ -328,15 +328,16 @@ class TestAnthropicAdapter:
         messages = [Message(role="user", content=[TextBlock(text="hi")])]
         tools = [{"name": "read", "description": "read files"}]
         body = adapter.serialize(messages, system="You are helpful", tools=tools, model="claude-sonnet-4-6", max_tokens=4096, stream=True)
-        # 官方端点启用 prompt cache：system 转为带 cache_control 的块列表
+        # 官方端点启用 prompt cache：system 静态区带 scope='global' 缓存
         assert body["system"] == [{
             "type": "text",
             "text": "You are helpful",
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "scope": "global"},
         }]
-        # 最后一条消息的最后一块打上第二个缓存断点
+        # tools 最后一项打 cache_control 断点
+        assert body["tools"][-1].get("cache_control") == {"type": "ephemeral"}
+        # 最后一条消息的最后一块打 messages 尾部缓存断点
         assert body["messages"][-1]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert body["tools"] == tools
         assert body["stream"] is True
 
     def test_serialize_string_content_untouched(self, adapter):

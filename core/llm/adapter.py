@@ -172,7 +172,7 @@ class Adapter(ABC):
     def serialize(
         self,
         messages: list[Message],
-        system: str,
+        system: str | list[str],
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,
@@ -184,7 +184,8 @@ class Adapter(ABC):
 
         Args:
             messages: List of messages to send
-            system: System prompt
+            system: System prompt (str for single block, list[str] for
+                multi-block with DYNAMIC_BOUNDARY for cache scope separation)
             tools: Tool schemas (provider-specific format)
             model: Model name
             max_tokens: Maximum output tokens

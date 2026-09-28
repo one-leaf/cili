@@ -55,7 +55,7 @@ class Runner:
 
     # ========== 回合单位 ==========
 
-    def run_round(self, streaming: bool = False, system_prompt: str = "") -> LLMResponse:
+    def run_round(self, streaming: bool = False, system_prompt: str | list[str] = "") -> LLMResponse:
         """执行一个完整回合：先压缩，再调用 LLM。"""
         self._check_and_compress()
         return self._call_llm(streaming=streaming, system_prompt=system_prompt)
@@ -446,6 +446,7 @@ class Runner:
         if saved > 0:
             logger.debug(f"[Microcompact] 压缩旧工具结果，节省约 {saved:,} 字节")
             self.agent._invalidate_message_cache()
+            self.agent.cache_state.on_compression(1)
 
         # Calculate tokens
         messages = self.agent._get_messages_with_header()
@@ -461,6 +462,8 @@ class Runner:
             )
             try:
                 self._perform_full_compact(KEEP_USER_MESSAGES)
+                self.agent.cache_state.reset_after_compact()   # 先清旧状态（含 last_cache_read 基线）
+                self.agent.cache_state.on_compression(2)       # 再标记 L2，供下次失效诊断
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
 
@@ -488,6 +491,7 @@ class Runner:
             if saved > 0:
                 messages = self.agent._get_messages_with_header()
                 logger.info(f"[上下文] 工具调用标记完成，节省 {saved} 字节")
+                self.agent.cache_state.on_compression(3)
 
             body_size = self._estimate_request_body_size(messages)
             if body_size > MAX_BODY_SIZE:
@@ -862,7 +866,7 @@ class Runner:
             messages = self._strip_images_from_messages(messages)
         return self._convert_to_message_objects(messages)
 
-    def _call_llm(self, streaming: bool = False, system_prompt: str = "") -> LLMResponse:
+    def _call_llm(self, streaming: bool = False, system_prompt: str | list[str] = "") -> LLMResponse:
         """Call LLM with optional streaming.
 
         Args:
@@ -883,7 +887,7 @@ class Runner:
         else:
             return self._call_llm_non_streaming(system_prompt)
 
-    def _call_llm_non_streaming(self, system_prompt: str) -> LLMResponse:
+    def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Non-streaming LLM call."""
         message_objects = self._prepare_messages_for_llm()
 
@@ -902,6 +906,11 @@ class Runner:
                     api_calls=1,
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
+                )
+                self.agent.cache_state.on_llm_response(
+                    cache_read=response.usage.cache_read_tokens,
+                    cache_write=response.usage.cache_write_tokens,
+                    input_tokens=response.usage.input_tokens,
                 )
             return response
         except Exception as e:
@@ -935,6 +944,11 @@ class Runner:
                             cache_read_tokens=response.usage.cache_read_tokens,
                             cache_creation_tokens=response.usage.cache_write_tokens,
                         )
+                        self.agent.cache_state.on_llm_response(
+                            cache_read=response.usage.cache_read_tokens,
+                            cache_write=response.usage.cache_write_tokens,
+                            input_tokens=response.usage.input_tokens,
+                        )
                     return response
                 except Exception as retry_e:
                     err_msg = format_llm_error(retry_e, self.agent.client.base_url if self.agent.client else "")
@@ -945,7 +959,7 @@ class Runner:
             logger.error(f"[LLM] {err_msg}")
             raise RuntimeError(err_msg) from e
 
-    def _call_llm_streaming(self, system_prompt: str) -> LLMResponse:
+    def _call_llm_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Streaming LLM call. Think content passes through as-is."""
         text_parts: list[str] = []
 
@@ -1034,6 +1048,11 @@ class Runner:
                 api_calls=1,
                 cache_read_tokens=response.usage.cache_read_tokens,
                 cache_creation_tokens=response.usage.cache_write_tokens,
+            )
+            self.agent.cache_state.on_llm_response(
+                cache_read=response.usage.cache_read_tokens,
+                cache_write=response.usage.cache_write_tokens,
+                input_tokens=response.usage.input_tokens,
             )
 
         return response
