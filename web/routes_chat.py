@@ -477,6 +477,84 @@ async def stop_agent(workspace_uuid: str, session_id: str):
     return {"success": True, "message": "已发送停止信号"}
 
 
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/resume")
+async def resume_agent(workspace_uuid: str, session_id: str):
+    """Resume agent processing if there are pending notifications.
+
+    Called by frontend when background agent completes and master is idle.
+    Drains notifications from message_bus and continues the agent loop.
+    """
+    from web.deps import _claim_session_run, _release_session_run, _make_sse_callbacks, _is_session_idle
+    import asyncio
+
+    key = f"{workspace_uuid}:{session_id}"
+
+    # Check if session is idle
+    if not _is_session_idle(key):
+        return {"success": False, "message": "会话正在运行"}
+
+    # Check if there are pending notifications in message_bus
+    agent = agents.get(key)
+    if not agent:
+        return {"success": False, "message": "会话不存在"}
+
+    session_id_check = getattr(agent, "_session_id", None)
+    if not session_id_check:
+        return {"success": False, "message": "会话 ID 不存在"}
+
+    try:
+        from core.message_bus import get_message_bus
+        mbus = get_message_bus()
+        has_unread = mbus.has_unread(session_id_check)
+    except Exception:
+        has_unread = False
+
+    if not has_unread:
+        return {"success": False, "message": "没有待处理的通知"}
+
+    # Claim the session
+    if not _claim_session_run(key):
+        return {"success": False, "message": "无法认领会话"}
+
+    # Run agent in background thread
+    async def run_and_stream():
+        event_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
+        callbacks = _make_sse_callbacks(event_queue, agent)
+
+        def run_agent():
+            try:
+                agent.run(
+                    on_text=callbacks.on_text,
+                    on_thinking=callbacks.on_thinking,
+                    on_tool_call=callbacks.on_tool_call,
+                    on_tool_result=callbacks.on_tool_result,
+                    on_agent_start=callbacks.on_agent_start,
+                    on_agent_complete=callbacks.on_agent_complete,
+                )
+            except Exception as e:
+                logger.error(f"Resume agent error: {e}")
+            finally:
+                _release_session_run(key)
+                event_queue.put(None)
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, run_agent)
+
+        # Drain remaining events
+        while True:
+            try:
+                event = event_queue.get_nowait()
+                if event is None:
+                    break
+            except queue.Empty:
+                break
+
+    # Start background task
+    asyncio.create_task(run_and_stream())
+
+    return {"success": True, "message": "已触发继续"}
+
+
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert")
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""

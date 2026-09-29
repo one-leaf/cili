@@ -45,7 +45,7 @@ _TASK_BRIEF_MAX = 100
 _INTERNAL_META_FIELDS = frozenset({
     "valid", "compacted", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
-    "id", "seq", "summary", "error_notice",
+    "id", "seq", "summary", "error_notice", "background_notification",
 })
 
 

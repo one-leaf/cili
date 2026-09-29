@@ -316,6 +316,53 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
 
             agent._on_tool_output = _on_tool_output
 
+            # 设置默认 SSE 回调（发布到全局事件总线），用于后台 agent 完成后自动恢复循环
+            bus = get_event_bus()
+
+            def _default_on_text(text: str) -> None:
+                bus.publish({
+                    "type": "text",
+                    "workspace_uuid": workspace_uuid,
+                    "session_id": session_id,
+                    "content": text,
+                })
+
+            def _default_on_thinking(text: str) -> None:
+                bus.publish({
+                    "type": "thinking",
+                    "workspace_uuid": workspace_uuid,
+                    "session_id": session_id,
+                    "content": text,
+                })
+
+            def _default_on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
+                bus.publish({
+                    "type": "tool_use",
+                    "workspace_uuid": workspace_uuid,
+                    "session_id": session_id,
+                    "tool": tool_name,
+                    "input": tool_input,
+                    "tool_use_id": tool_use_id,
+                })
+
+            def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
+                if tool_name in ("ask_user", "agent"):
+                    return
+                bus.publish({
+                    "type": "tool_result",
+                    "workspace_uuid": workspace_uuid,
+                    "session_id": session_id,
+                    "tool": tool_name,
+                    "content": output,
+                    "is_error": is_error,
+                    "tool_use_id": tool_use_id,
+                })
+
+            agent._default_on_text = _default_on_text
+            agent._default_on_thinking = _default_on_thinking
+            agent._default_on_tool_call = _default_on_tool_call
+            agent._default_on_tool_result = _default_on_tool_result
+
             # Register session with MessageBus for cross-session messaging
             # （注意：不能复用变量名 bus——上方 _on_tool_output 闭包晚绑定捕获，
             #  改名 mbus 防止把事件总线遮蔽成 MessageBus，导致 publish 属性缺失）
@@ -359,6 +406,17 @@ def _release_session_run(key: str) -> None:
     """释放会话执行权认领。"""
     with _session_run_claims_lock:
         _session_run_claims.discard(key)
+
+
+def _is_session_idle(key: str) -> bool:
+    """检查会话是否空闲（没有被认领且 agent 没有运行）。"""
+    with _session_run_claims_lock:
+        if key in _session_run_claims:
+            return False
+        agent = agents.get(key)
+        if agent is not None and agent.is_running():
+            return False
+        return True
 
 
 # ---------- SSE 回调组 / 事件流（send_message 与 answer_ask_user 共用） ----------

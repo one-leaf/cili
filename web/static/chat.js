@@ -144,6 +144,8 @@ function renderMessages(messages) {
     messages.forEach((msg, idx) => {
         const role = msg.role;
         if (role === 'system') return;
+        // 后台 agent 完成通知：LLM 上下文需要但前端不显示
+        if (msg._meta?.background_notification) return;
 
         const msgId = msg._meta?.id;  // 消息唯一 ID，用于分享链接
         const content = msg.content;
@@ -192,6 +194,7 @@ function renderMessages(messages) {
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
                         tool_call_count: block._meta.tool_call_count || 0,
+                        background: block._meta.background || false,
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
                     // 简单处理：用 exec_id 加载详情
@@ -316,6 +319,8 @@ function prependMessages(messages) {
     messages.forEach((msg, idx) => {
         const role = msg.role;
         if (role === 'system') return;
+        // 后台 agent 完成通知：LLM 上下文需要但前端不显示
+        if (msg._meta?.background_notification) return;
 
         const msgId = msg._meta?.id;
         const content = msg.content;
@@ -361,6 +366,7 @@ function prependMessages(messages) {
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
                         tool_call_count: block._meta.tool_call_count || 0,
+                        background: block._meta.background || false,
                     };
                     renderAgentRef(saMsg, idx, msgId);
                     return;

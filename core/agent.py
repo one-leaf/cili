@@ -104,9 +104,6 @@ class Agent(BaseAgent):
         self._mode = self.role_cfg.mode
         self.delegation_depth = delegation_depth
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/agent resume 不重置）
-        # 后台子代理完成通知队列：后台 agent 线程完成时 append，主循环每次迭代前 drain。
-        # 解决后台 agent 完成后 master agent 收不到通知、必须靠 LLM 主动轮询 read_task 的问题。
-        self._notification_queue: list[dict] = []
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
         # 事件发布回调（由 agent_tool / background 注入，用于广播 agent_progress）
@@ -163,6 +160,11 @@ class Agent(BaseAgent):
             self._usage = self.session_manager.get_usage()
             self._on_agent_start: Callable[[str, str], None] | None = None
             self._on_agent_complete: Callable[[str], None] | None = None
+            # 默认 SSE 回调（由 web/deps.py 设置），用于后台 agent 完成后自动恢复循环
+            self._default_on_text: Callable[[str], None] | None = None
+            self._default_on_thinking: Callable[[str], None] | None = None
+            self._default_on_tool_call: Callable[[str, dict, str], None] | None = None
+            self._default_on_tool_result: Callable[[str, str, bool, str], None] | None = None
         else:
             self.approval_store = approval_store
             self.max_consecutive_failures = (
@@ -207,6 +209,14 @@ class Agent(BaseAgent):
             self._create_default_session()
 
         self._session_id = self.current_session_id
+
+        # Register master with message_bus so sub-agents can send messages to it
+        try:
+            from core.message_bus import get_message_bus
+            mbus = get_message_bus()
+            mbus.register_agent(self.current_session_id, self.current_session_id)
+        except Exception as e:
+            logger.warning(f"Failed to register master with MessageBus: {e}")
 
     def _init_autonomous(
         self,
@@ -271,8 +281,6 @@ class Agent(BaseAgent):
         agent_tool = get_tool_by_name(self.tools, "agent")
         if agent_tool:
             agent_tool.delegation_depth = self.delegation_depth
-            # 把 master 的通知队列传给 AgentTool，后台子代理完成时写入通知
-            agent_tool._notification_queue = self._notification_queue
 
         if self._mode == "interactive":
             # Wire agent callbacks
@@ -286,6 +294,8 @@ class Agent(BaseAgent):
                     self._on_agent_complete(exec_id)
                     if self._on_agent_complete else None
                 )
+                # 后台 agent 完成后自动恢复 master 循环
+                agent_tool.on_background_complete = self._handle_background_agent_complete
 
     def _activate_tools(self, names: list[str]) -> None:
         """Move named tools from deferred to active and rebuild tool_schemas."""
@@ -504,6 +514,37 @@ class Agent(BaseAgent):
             on_tool_result=on_tool_result,
             on_agent_start=on_agent_start,
             on_agent_complete=on_agent_complete,
+        )
+
+    def _handle_background_agent_complete(self, exec_id: str, status: str) -> None:
+        """后台 agent 完成后自动恢复 master 循环（如果 master 空闲）。
+
+        由 AgentTool.on_background_complete 回调触发。
+        检查 message_bus 是否有未读通知，如果有且 master 空闲，则自动恢复循环。
+        使用 _default_on_* 回调发布 SSE 事件到全局事件总线。
+        """
+        if self._mode != "interactive":
+            return
+        if self.is_running():
+            # master 正在运行，不需要恢复（循环会在下次迭代时拾取通知）
+            return
+        # 检查 message_bus 是否有未读通知
+        try:
+            from core.message_bus import get_message_bus
+            mbus = get_message_bus()
+            if not mbus.has_unread(self._session_id):
+                return  # 没有未读通知，不需要恢复
+        except Exception:
+            return
+        # 使用默认 SSE 回调（发布到全局事件总线）或回退到无回调
+        logger.info(f"[Agent:{self.role}] 后台 agent {exec_id} 完成，自动恢复 master 循环")
+        self._resume_loop(
+            on_text=self._default_on_text,
+            on_thinking=self._default_on_thinking,
+            on_tool_call=self._default_on_tool_call,
+            on_tool_result=self._default_on_tool_result,
+            on_agent_start=self._on_agent_start,
+            on_agent_complete=self._on_agent_complete,
         )
 
     def switch_session(self, session_id: str) -> None:

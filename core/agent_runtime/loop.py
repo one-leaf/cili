@@ -271,8 +271,9 @@ class Loop:
                 return None
 
             # ── 后台子代理完成通知排空（interactive 模式）──
-            # 后台 agent 线程完成时往 agent._notification_queue 写入通知，
-            # 此处每轮迭代前排空并注入为 user 消息，使 LLM 无需轮询 read_task 即可感知完成。
+            # 后台 agent 线程完成时通过 message_bus 发送通知给 master session；
+            # 此处每轮迭代前排空通知队列，注入为 user 消息并标记
+            # _meta.background_notification=True（LLM 可见但前端跳过渲染）。
             if not autonomous:
                 self._drain_agent_notifications()
 
@@ -605,27 +606,38 @@ class Loop:
         )
 
     def _drain_agent_notifications(self) -> None:
-        """排空后台子代理完成通知队列，注入为 user 消息供 LLM 下一轮感知。
+        """排空后台子代理完成通知（通过 message_bus）。
 
-        后台 agent 线程完成时由 AgentTool._notify_agent_complete /
-        background.py 的 run_agent 往 agent._notification_queue 写入通知；
-        本方法在每次 LLM 调用前（loop 迭代顶部 + run_interactive 入口）排空，
-        使 master agent 无需主动调 read_task 即可感知后台子代理完成。
-        列表 append/pop(0) 在 CPython GIL 下是线程安全的。
+        后台 agent 线程完成时通过 message_bus 发送通知给 master session；
+        本方法在每次 LLM 调用前（loop 迭代顶部 + run_interactive 入口）排空。
+
+        通知注入为 user 消息并标记 _meta.background_notification=True：
+        - LLM 可见：作为继续对话的上下文（避免 LLM 凭空编造"用户说继续"）
+        - 前端跳过渲染：renderMessages 检查 _meta.background_notification 后跳过
         """
         agent = self.agent
-        queue = getattr(agent, "_notification_queue", None)
-        if not queue:
+        session_id = getattr(agent, "_session_id", None)
+        if not session_id:
             return
-        while queue:
-            notif = queue.pop(0)
-            exec_id = notif.get("exec_id", "")
-            status = notif.get("status", "completed")
-            summary = notif.get("summary", "")
-            parts = [f"[子代理完成通知] exec_id={exec_id}, status={status}"]
-            if summary:
-                parts.append(f"summary: {summary}")
-            agent.add_message("user", "\n".join(parts), meta={"notification": "agent_complete"})
+
+        try:
+            from core.message_bus import get_message_bus
+            mbus = get_message_bus()
+            if mbus.has_unread(session_id):
+                # 读取所有未读通知并标记为已读
+                unread = mbus.receive(session_id, mark_read=True)
+                if unread:
+                    # 合并所有通知内容，注入为单条 user 消息
+                    notifications = [m.get("content", "") for m in unread if m.get("content")]
+                    if notifications:
+                        combined = "\n".join(notifications)
+                        agent.add_message(
+                            "user",
+                            combined,
+                            _meta={"background_notification": True},
+                        )
+        except Exception:
+            pass  # message_bus 不可用时静默跳过
 
     def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
         """组装 autonomous 结果 dict（usage 恒取当前快照）。"""
@@ -633,6 +645,8 @@ class Loop:
             "status": status,
             "summary": summary,
             "iterations": iterations,
+            "message_count": len(self.agent.messages),
+            "tool_call_count": self.agent._tool_call_count,
             "usage": self.agent._usage,
         }
         result.update(extra)

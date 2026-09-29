@@ -93,6 +93,7 @@
     "edit",
     "bash",
     "python",
+    "message_bus",
     "clock"
   ],
   "skills": [],

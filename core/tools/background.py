@@ -60,6 +60,7 @@ class BackgroundTask:
     agent: Any = None  # Agent instance
     session_manager: Any = None  # SessionManager reference
     result: dict | None = None  # Agent execution result
+    exec_id: str | None = None  # Agent execution ID for UI card rendering
 
 
 class BackgroundTaskManager:
@@ -528,25 +529,48 @@ class BackgroundMixin:
                         logging.getLogger(__name__).warning(
                             f"Failed to forward usage for background Agent {task_id}: {e}"
                         )
-                # 全局事件流：后台模式补发 agent_complete（修复原先缺失）+ 保留 on_agent_complete 回调
-                # + 写入 master 通知队列（使主循环下一轮迭代自动感知，无需 LLM 轮询 read_task）
+                # 后台 agent 完成：先计算 status
+                status = (task.result or {}).get("status", "completed")
+                # 全局事件流：后台模式补发 agent_complete + 保留 on_agent_complete 回调
+                # + 通过 message_bus 发送通知给 master（使其在空闲时也能收到通知）
                 try:
-                    status = (task.result or {}).get("status", "completed")
                     publish = getattr(self, "_publish", None)
                     if publish:
                         publish("agent_complete", exec_id=exec_id, status=status)
-                    # 写入 master 通知队列
-                    queue = getattr(self, "_notification_queue", None)
-                    if queue is not None:
-                        summary = ""
-                        if task.result:
-                            summary = (task.result.get("summary")
-                                       or task.result.get("message") or "")
-                        queue.append({
-                            "exec_id": exec_id,
-                            "status": status,
-                            "summary": summary[:200],
-                        })
+                    # 通过 message_bus 发送通知给 master，使其在空闲时也能收到通知
+                    sm = getattr(self, "session_manager", None)
+                    master_session_id = getattr(sm, "session_id", None) if sm else None
+                    if master_session_id:
+                        try:
+                            from core.message_bus import get_message_bus
+                            mbus = get_message_bus()
+                            summary_text = ""
+                            if task.result:
+                                summary_text = (task.result.get("summary")
+                                                or task.result.get("message") or "")
+                            mbus.send_to_agent(
+                                exec_id,
+                                master_session_id,
+                                f"[子代理完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
+                                message_type="notification",
+                            )
+                            # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）
+                            try:
+                                from core.event_bus import get_event_bus
+                                get_event_bus().publish({
+                                    "type": "background_agent_resume",
+                                    "workspace_uuid": self.workspace_uuid,
+                                    "session_id": master_session_id,
+                                    "exec_id": exec_id,
+                                    "status": status,
+                                })
+                            except Exception:
+                                pass  # 事件发布失败不影响主流程
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).debug(
+                                f"Failed to send notification via message_bus: {e}"
+                            )
                     if getattr(self, "on_agent_complete", None):
                         self.on_agent_complete(exec_id)
                 except Exception as e:
@@ -554,6 +578,15 @@ class BackgroundMixin:
                     logging.getLogger(__name__).warning(
                         f"Failed to notify background Agent complete {task_id}: {e}"
                     )
+                # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）
+                if getattr(self, "on_background_complete", None):
+                    try:
+                        self.on_background_complete(exec_id, status)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"on_background_complete callback error {task_id}: {e}"
+                        )
 
         # Create background task entry
         task = BackgroundTask(
@@ -563,6 +596,7 @@ class BackgroundMixin:
             agent=agent,
             session_manager=session_manager,
             status="running",
+            exec_id=exec_id,
         )
 
         BackgroundTaskManager.register(task)
@@ -578,7 +612,8 @@ class BackgroundMixin:
             f"Task: {task_summary}\n\n"
             f"You will receive an automatic notification when it completes — do NOT poll with "
             f"action=\"read\" or sleep to wait. Continue your other work in the meantime.\n"
-            f"Use action=\"kill\", task_id=\"{task_id}\" only if you need to terminate it early."
+            f"Use action=\"kill\", task_id=\"{task_id}\" only if you need to terminate it early.",
+            meta={"exec_id": exec_id, "completed": False, "task_id": task_id, "background": True},
         )
 
     def _read_background_agent(self, task_id: str) -> ToolResult:
@@ -601,22 +636,27 @@ class BackgroundMixin:
             status = result.get("status", "unknown")
             summary = result.get("summary") or result.get("message") or ""
             iterations = result.get("iterations", 0)
+            message_count = result.get("message_count", 0)
+            tool_call_count = result.get("tool_call_count", 0)
 
             # Clean up completed task
             BackgroundTaskManager.remove(task_id)
 
+            meta = {"exec_id": task.exec_id, "completed": True, "iterations": iterations, "message_count": message_count, "tool_call_count": tool_call_count, "background": True}
             if summary:
                 return ToolResult(
                     f"Agent {task_id} completed.\n"
                     f"Status: {status}\n"
                     f"Iterations: {iterations}\n\n"
-                    f"Summary:\n{summary}"
+                    f"Summary:\n{summary}",
+                    meta=meta,
                 )
             else:
                 return ToolResult(
                     f"Agent {task_id} completed.\n"
                     f"Status: {status}\n"
-                    f"Iterations: {iterations}"
+                    f"Iterations: {iterations}",
+                    meta=meta,
                 )
         else:
             # Still running
@@ -624,7 +664,8 @@ class BackgroundMixin:
             return ToolResult(
                 f"Agent {task_id} still running.\n"
                 f"Estimated iterations: {iterations}\n"
-                f"Current tool: {getattr(agent, '_current_tool', 'none')}"
+                f"Current tool: {getattr(agent, '_current_tool', 'none')}",
+                meta={"exec_id": task.exec_id, "completed": False, "background": True},
             )
 
     def _kill_background_agent(self, task_id: str) -> ToolResult:
@@ -648,7 +689,10 @@ class BackgroundMixin:
             # Clean up
             BackgroundTaskManager.remove(task_id)
 
-            return ToolResult(f"Agent {task_id} terminated")
+            return ToolResult(
+                f"Agent {task_id} terminated",
+                meta={"exec_id": task.exec_id, "completed": True, "status": "killed", "background": True},
+            )
 
         except Exception as e:
             return ToolResult(f"Error killing Agent {task_id}: {e}", error=True)

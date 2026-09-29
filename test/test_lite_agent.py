@@ -70,9 +70,9 @@ class TestLiteConstruction:
         assert agent.role_cfg.streaming is True
 
     def test_tool_whitelist(self):
-        """Lite 白名单含 read/write/edit/bash/python/clock。"""
+        """Lite 白名单含 read/write/edit/bash/python/message_bus/clock。"""
         agent = _make_agent(task="t")
-        assert agent.role_cfg.tools == ["read", "write", "edit", "bash", "python", "clock"]
+        assert agent.role_cfg.tools == ["read", "write", "edit", "bash", "python", "message_bus", "clock"]
 
     def test_tools_instantiated(self):
         tools = [MagicMock() for _ in range(4)]
@@ -179,4 +179,4 @@ class TestLiteRunFlow:
         with patch("core.agent.create_llm_client", return_value=MagicMock()):
             agent = Agent(config, role="lite", task="t", cwd=".")
         names = {t.name for t in agent.tools}
-        assert names == {"read", "write", "edit", "bash", "python", "clock"}
+        assert names == {"read", "write", "edit", "bash", "python", "message_bus", "clock"}

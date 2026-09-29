@@ -9,6 +9,9 @@ let _eventSource = null;          // 当前 EventSource
 let _esWasDisconnected = false;   // 曾断线（onopen 时用于对齐）
 const _agentCards = {};           // exec_id -> entry（worker 卡片状态机）
 
+// master 自动恢复流式渲染（后台 agent 完成后 master 继续执行，text 逐 token 推送）
+let _masterResumeOpenBlock = null; // {kind:'text'|'thinking', text, el}
+
 const _STATUS_ICONS = {
     'completed': '✅',
     'error': '❌',
@@ -102,11 +105,22 @@ function handleBusEvent(e) {
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
     if (e.type === 'agent_start') {
-        ensureAgentCard(e.exec_id, e.task_summary || '', { status: 'running' });
+        ensureAgentCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
         return;
     }
     if (e.type === 'agent_complete') {
         markAgentComplete(e.exec_id, e.status || 'completed');
+        return;
+    }
+    // 后台 agent 完成后，如果 master 空闲，自动触发 master 继续处理通知
+    if (e.type === 'background_agent_resume') {
+        // 检查 master 是否空闲（通过 isSending 标志）
+        if (typeof isSending !== 'undefined' && !isSending) {
+            // 延迟一点再触发，确保事件流稳定
+            setTimeout(() => {
+                triggerResumeForBackgroundAgent();
+            }, 100);
+        }
         return;
     }
     // 实时更新子代理卡片 header（iterations/message_count/tool_call_count）
@@ -129,11 +143,19 @@ function handleBusEvent(e) {
         return;
     }
 
-    // goal 级状态文本（无 exec_id：完成/暂停/错误）→ 主聊天直渲；
-    // goal 轮次事件带 exec_id=exec_*，走下方 worker 卡路径
+    // 无 exec_id 的事件：master 自动恢复循环产生的 text/thinking/tool_use/tool_result
+    // text 是逐 token 推送，需累积到同一个气泡（类似 worker 的 openBlock 模式）
     if (!e.exec_id) {
         if (e.type === 'text') {
-            handleMasterBusEvent(e);
+            _handleMasterResumeText(e.content || '');
+        } else if (e.type === 'thinking') {
+            _handleMasterResumeThinking(e.content || '');
+        } else if (e.type === 'tool_use') {
+            _finalizeMasterResumeBlock();
+            _handleMasterResumeToolUse(e);
+        } else if (e.type === 'tool_result') {
+            _finalizeMasterResumeBlock();
+            _handleMasterResumeToolResult(e);
         }
         return;
     }
@@ -190,6 +212,7 @@ function ensureAgentCard(execId, taskSummary, opts = {}) {
         execId,
         taskSummary: task,
         status: opts.status || 'running',
+        background: opts.background || false,
         card, header, detail,
         msgsDiv: null,
         expanded: false,
@@ -239,6 +262,7 @@ function agentCardForMessage(msg, msgId) {
         iterations: msg.iterations || 0,
         message_count: msg.message_count || 0,
         tool_call_count: msg.tool_call_count || 0,
+        background: msg.background || false,
     });
     if (msgId) entry.card.dataset.msgId = msgId;
     return entry;
@@ -513,9 +537,11 @@ function _renderHeader(entry, meta = {}) {
     const task = entry.taskSummary || '';
     const toolCalls = meta.tool_call_count || 0;
     const toolCallsDisplay = toolCalls > 0 ? ` · ${toolCalls} 次工具` : '';
+    const modeBadge = entry.background ? '<span class="sa-mode-badge">异步</span>' : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
     entry.header.innerHTML = `
         <span class="sa-icon">${_STATUS_ICONS[entry.status] || '📋'}</span>
         <span class="sa-title">${entry.status === 'running' ? '子代理执行中' : '子代理执行'}</span>
+        ${modeBadge}
         <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
         <span class="sa-meta">${meta.iterations || 0} 轮 · ${meta.message_count || 0} 条消息${toolCallsDisplay}</span>
         <span class="sa-toggle">${entry.expanded ? '▼' : '▶'}</span>
@@ -590,14 +616,91 @@ function ensureMasterToolBubble(toolUseId, toolName) {
     entry.pre = pre;
 }
 
-// ── goal 级状态文本（无 exec_id → 主聊天）──
-// goal 轮次由每轮 worker 卡承载（exec_id），此处仅处理 goal 循环级
-// 状态文本（完成/暂停/错误），以普通 assistant 气泡进主聊天。
+// ── master 自动恢复流式渲染 ──
+// 后台 agent 完成后 master 自动恢复循环，text 逐 token 推送到事件总线。
+// 用 openBlock 模式累积：连续 text 追加到同一个气泡，遇到 thinking/tool 则定稿开新块。
 
-function handleMasterBusEvent(e) {
-    if (!e || e.type !== 'text') return;
-    addMessage('assistant', e.content || '');
+function _handleMasterResumeText(content) {
+    if (_masterResumeOpenBlock && _masterResumeOpenBlock.kind === 'text') {
+        _masterResumeOpenBlock.text += content;
+        if (_masterResumeOpenBlock.el) {
+            const contentEl = _masterResumeOpenBlock.el.querySelector('.message-content');
+            if (contentEl) contentEl.innerHTML = renderMarkdown(_masterResumeOpenBlock.text);
+        }
+    } else {
+        _finalizeMasterResumeBlock();
+        _masterResumeOpenBlock = { kind: 'text', text: content, el: null };
+        const div = addMessage('assistant', content);
+        _masterResumeOpenBlock.el = div;
+    }
     _scrollChatIfNearBottom();
+}
+
+function _handleMasterResumeThinking(content) {
+    if (_masterResumeOpenBlock && _masterResumeOpenBlock.kind === 'thinking') {
+        _masterResumeOpenBlock.text += content;
+        if (_masterResumeOpenBlock.el) {
+            const tc = _masterResumeOpenBlock.el.querySelector('.think-content');
+            if (tc) tc.innerHTML = renderMarkdown(_masterResumeOpenBlock.text);
+        }
+    } else {
+        _finalizeMasterResumeBlock();
+        _masterResumeOpenBlock = { kind: 'thinking', text: content, el: null };
+        // 复用 master 的 thinking 渲染逻辑
+        const div = addMessage('assistant', '');
+        div.classList.add('thinking');
+        const contentDiv = div.querySelector('.message-content');
+        const thinkTitle = document.createElement('div');
+        thinkTitle.className = 'think-title';
+        thinkTitle.textContent = '💭 思考过程';
+        contentDiv.appendChild(thinkTitle);
+        const thinkDiv = document.createElement('div');
+        thinkDiv.className = 'think-content';
+        thinkDiv.innerHTML = renderMarkdown(content);
+        contentDiv.appendChild(thinkDiv);
+        _masterResumeOpenBlock.el = div;
+    }
+    _scrollChatIfNearBottom();
+}
+
+function _handleMasterResumeToolUse(e) {
+    _finalizeMasterResumeBlock();
+    // 复用 master 的 tool_call 渲染逻辑
+    const div = addMessage('assistant', '');
+    div.classList.add('tool');
+    const contentDiv = div.querySelector('.message-content');
+    const pre = document.createElement('pre');
+    pre.textContent = typeof e.input === 'string' ? e.input : JSON.stringify(e.input, null, 2);
+    const toolTitle = document.createElement('div');
+    toolTitle.className = 'tool-title';
+    toolTitle.textContent = `[调用工具: ${e.tool}]`;
+    contentDiv.appendChild(toolTitle);
+    contentDiv.appendChild(pre);
+}
+
+function _handleMasterResumeToolResult(e) {
+    _finalizeMasterResumeBlock();
+    // 复用 master 的 tool_result 渲染逻辑
+    const text = typeof e.content === 'string' ? e.content : JSON.stringify(e.content, null, 2);
+    const div = addMessage('assistant', '');
+    div.classList.add('tool');
+    if (e.is_error) {
+        div.classList.add('tool-error');
+    } else {
+        div.classList.add('tool-result');
+    }
+    const contentDiv = div.querySelector('.message-content');
+    const resultTitle = document.createElement('div');
+    resultTitle.className = 'tool-title';
+    resultTitle.textContent = '[工具结果]';
+    contentDiv.appendChild(resultTitle);
+    const pre = document.createElement('pre');
+    pre.textContent = text;
+    contentDiv.appendChild(pre);
+}
+
+function _finalizeMasterResumeBlock() {
+    _masterResumeOpenBlock = null;
 }
 
 // 重连时按已应用 offset 补拉 master 工具流（/stream 增量，事件流丢失兜底）
@@ -669,4 +772,29 @@ function _scrollChatIfNearBottom() {
     if (!el) return;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     if (near) el.scrollTop = el.scrollHeight;
+}
+
+// ── 后台 agent 完成后触发 master 继续 ──
+
+async function triggerResumeForBackgroundAgent() {
+    // 再次检查 master 是否空闲
+    if (typeof isSending !== 'undefined' && isSending) return;
+    if (!currentWorkspace || !currentSession) return;
+
+    const wsUuid = currentWorkspace.uuid;
+    const sessionId = currentSession.session_id;
+
+    try {
+        // 发送一个特殊请求来触发 master 继续处理通知
+        const resp = await fetch(`/api/workspaces/${wsUuid}/sessions/${sessionId}/resume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!resp.ok) {
+            console.log('Resume request failed:', resp.status);
+        }
+    } catch (e) {
+        console.log('Resume request error:', e);
+    }
 }

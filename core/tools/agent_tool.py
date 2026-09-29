@@ -50,6 +50,7 @@ class AgentTool(Tool):
         self.stop_check = None  # Set by master Agent after tool creation
         self.on_agent_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_agent_complete = None  # Callback(exec_id) fired when sub-agent finishes
+        self.on_background_complete = None  # Callback(exec_id, status) fired when background agent completes (for auto-resume)
         # Pending synchronous agents: exec_id -> {thread, event, result, exec_id, agent, task}
         self._pending_agents: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
@@ -74,7 +75,7 @@ class AgentTool(Tool):
         except Exception:
             logger.debug(f"event publish failed: {ev_type}", exc_info=True)
 
-    def _notify_agent_start(self, exec_id: str, task_summary: str) -> None:
+    def _notify_agent_start(self, exec_id: str, task_summary: str, background: bool = False) -> None:
         """广播 agent_start：保留 on_agent_start 回调（master POST SSE）+ 全局事件流。"""
         if self.on_agent_start and exec_id:
             try:
@@ -82,30 +83,12 @@ class AgentTool(Tool):
             except Exception as e:
                 logger.warning(f"on_agent_start callback error: {e}")
         if exec_id:
-            self._publish("agent_start", exec_id=exec_id, task_summary=task_summary)
+            self._publish("agent_start", exec_id=exec_id, task_summary=task_summary, background=background)
 
     def _notify_agent_complete(self, exec_id: str, status: str = "completed") -> None:
-        """广播 agent_complete：保留 on_agent_complete 回调 + 全局事件流 + 通知队列。"""
+        """广播 agent_complete：保留 on_agent_complete 回调 + 全局事件流。"""
         if exec_id:
             self._publish("agent_complete", exec_id=exec_id, status=status)
-        # 写入 master 的通知队列，使主循环下一轮迭代自动感知子代理完成（无需轮询 read_task）
-        queue = getattr(self, "_notification_queue", None)
-        if queue is not None and exec_id:
-            # 从 BackgroundTaskManager 取结果摘要（后台路径已写入 task.result）
-            summary = ""
-            try:
-                from core.tools.background import BackgroundTaskManager
-                bg_task = BackgroundTaskManager.get(exec_id)
-                if bg_task and bg_task.result:
-                    summary = (bg_task.result.get("summary")
-                               or bg_task.result.get("message") or "")
-            except Exception:
-                pass
-            queue.append({
-                "exec_id": exec_id,
-                "status": status,
-                "summary": summary[:200],
-            })
         if self.on_agent_complete:
             try:
                 self.on_agent_complete(exec_id)
@@ -268,7 +251,7 @@ class AgentTool(Tool):
 
         # Fire callback + 全局事件流广播（before blocking on agent.run()）
         task_summary = task[:100]
-        self._notify_agent_start(exec_id, task_summary)
+        self._notify_agent_start(exec_id, task_summary, background=bool(run_in_background))
 
         # Create exec directory for sub-agent logs and tool output files
         exec_dir = None
@@ -425,7 +408,7 @@ class AgentTool(Tool):
             self._pending_agents.pop(exec_id, None)
 
         result_json = json.dumps(result, ensure_ascii=False, indent=2)
-        meta = {"exec_id": exec_id, "completed": True, "iterations": result.get("iterations", 0), "message_count": result.get("message_count", 0)}
+        meta = {"exec_id": exec_id, "completed": True, "iterations": result.get("iterations", 0), "message_count": result.get("message_count", 0), "tool_call_count": result.get("tool_call_count", 0), "background": False}
         if label:
             meta["label"] = label[:64]
         return ToolResult(result_json, completed=True, meta=meta)
