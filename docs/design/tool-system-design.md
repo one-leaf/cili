@@ -131,7 +131,7 @@ def create_tools(
 | Agent 角色 | 模式 | 工具数量 | 工具清单 |
 |-----------|------|---------|---------|
 | master | interactive | 26（18 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, glob, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search |
-| worker | autonomous | 16 | master 去掉 todo、cron、message_bus、latex、ask_user、agent、browser、loop、pdf2markdown、tool_search |
+| worker | autonomous | 24 | master 去掉 cron、ask_user |
 | lite | autonomous | 6 | read, write, edit, bash, python, clock |
 
 **延迟工具加载（deferred）**：master 的 8 个低频工具（browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown）schema 默认不发送给 LLM，仅名称+摘要出现在 system prompt 的 "Deferred Tools" 段。模型通过 `tool_search` 按需获取完整 schema 并激活，激活后加入后续 API 调用。工具实例仍全部实例化，执行路径不受影响。
@@ -139,7 +139,7 @@ def create_tools(
 **设计要点**：
 - **ask_user 仅 master**：master 是交互式（interactive），可向用户提问；worker/lite 是自主后台模式（autonomous），不含交互工具
 - **agent 委派（仅 master）**：委派工具只由 master 持有——委派深度仅 1 层，只有 master(0) 可委派 worker/lite(1)；worker 是叶子节点，无 agent 工具（depth≥1 调用会直接报错，故白名单不含）；lite 是纯执行角色，亦无 agent 工具
-- **todo/cron/message_bus/latex 仅 master**：任务规划、定时任务、跨会话消息、LaTeX 渲染属于主代理的编排职责，worker 不持有
+- **cron/ask_user 仅 master**：定时任务调度和用户交互属于主代理的编排职责，worker 不持有
 - **worker 执行型精简集**：去 master 中编排/长会话类工具（agent/browser/loop/pdf2markdown）——worker 是有界自主执行，不应启动浏览器长会话、不做 cron 配套的 loop 迭代
 - **lite 精简集**：只保留 read/write/edit/bash/python/clock，无 skill、无 web_search 等，适合快速文件处理类子任务
 - 修改某角色工具集只需编辑对应 JSON，无需改动注册表代码
@@ -323,7 +323,7 @@ content = [
 
 ## 四、工具列表
 
-全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 26 个（18 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 todo/cron/message_bus/latex/ask_user/agent/browser/loop/pdf2markdown/tool_search 的 16 个（执行型精简集）；lite 仅 read/write/edit/bash/python/clock。
+全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 26 个（18 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 cron/ask_user 的 24 个（执行型全集）；lite 仅 read/write/edit/bash/python/clock。
 
 | 工具 | 文件 | 说明 | 可用角色 |
 |------|------|------|---------|
@@ -341,7 +341,7 @@ content = [
 | python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker/lite |
 | todo | todo.py | 任务规划（整表替换，三态状态） | master |
 | latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master |
-| message_bus | message_bus_tool.py | 跨会话消息传递（发送/接收/检查消息） | master |
+| message_bus | message_bus_tool.py | 跨会话/跨 agent 消息传递（send/send_to_agent/receive/list_agents） | master/worker |
 | cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master |
 | clock | clock.py | 当前日期/时间查询（含指定时区）与短时等待（sleep） | master/worker/lite |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） | master/worker |
@@ -354,7 +354,7 @@ content = [
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 | tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master |
 
-**延迟工具**：browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown 8 个为 deferred（schema 按需加载，见 2.4 节；其中 temp 对 master/worker 开放，其余仅 master），其余为 core 常驻。
+**延迟工具**：browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown 8 个为 deferred（schema 按需加载，见 2.4 节；其中 temp/message_bus 对 master/worker 开放，其余仅 master），其余为 core 常驻。
 
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，LLM schema 使用类属性 name）
@@ -559,20 +559,34 @@ agent(list_tasks=True)
 `MessageBus` 是一个轻量级的跨会话消息传递机制，模块级别单例（与 BrowserService/CronScheduler 同模式）。
 
 **核心模块**：`core/message_bus.py`
-**工具**：`core/tools/message_bus_tool.py`（仅 master 可用，worker/lite 白名单均无 message_bus）
+**工具**：`core/tools/message_bus_tool.py`（master/worker 可用，lite 白名单无 message_bus）
 
 **功能**：
-- `send(to_session, message)` — 发送消息到指定会话
+- `send(to_session, message)` — 发送消息到指定会话（按 session_id 寻址）
+- `send_to_agent(to_agent, message)` — 发送消息到指定 agent（按 agent 名字寻址：exec_id 或 label）
 - `receive` — 接收当前会话的所有待读消息
 - `check` — 检查是否有未读消息（不消费）
 - `list_sessions` — 列出所有注册会话
+- `list_agents` — 列出所有注册 agent（含名字、session_id、未读计数）
 - `clear` — 清除当前会话的所有消息
+
+**Agent 级消息传递**（路径 A）：
+- **名字注册表**：`_agent_registry: dict[agent_name, session_id]`，支持多名字映射同一 session（exec_id + label 别名）
+- **反向映射**：`_session_to_agents: dict[session_id, set[agent_name]]`，用于清理和反查
+- **生命周期**：
+  - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
+  - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
+  - 后台子代理：`background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
+- **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑
+- **Pull 模型不变**：消息不自动注入 agent 循环，agent 需主动 `receive` 读取
 
 **设计要点**：
 - **轻量级**：纯内存实现，无持久化，服务器重启后消息丢失
-- **线程安全**：使用 `threading.Lock` 保护消息队列
+- **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
 - **按需读取**：消息不自动注入 agent 循环，agent 需主动调用 `message_bus(action="receive")` 检查
-- **会话注册**：`web_api.py` 在创建 agent 时自动注册到 MessageBus
+- **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 MessageBus
+- **子代理注册**：`agent_tool.py` / `background.py` 在子代理生命周期自动注册/注销
+- **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
 
 ### 7.6 read_tool_result — 检索压缩的工具结果
 

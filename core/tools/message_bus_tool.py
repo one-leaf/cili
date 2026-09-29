@@ -9,17 +9,20 @@ from core.message_bus import get_message_bus
 class MessageBusTool(Tool):
     name = "message_bus"
     description = (
-        "**Cross-session message passing.**\n"
-        "Send and receive messages between different chat sessions.\n\n"
+        "**Cross-session and cross-agent message passing.**\n"
+        "Send and receive messages between different chat sessions or agents by name.\n\n"
         "## Actions:\n"
-        "- **send**: Send a message to another session\n"
+        "- **send**: Send a message to another session (by session_id)\n"
+        "- **send_to_agent**: Send a message to an agent by name (agent_name/exec_id/label)\n"
         "- **receive**: Receive all pending messages for current session\n"
         "- **check**: Check if there are unread messages (non-consuming)\n"
         "- **list_sessions**: List all registered sessions\n"
+        "- **list_agents**: List all registered agents (by name, with unread counts)\n"
         "- **clear**: Clear all messages for current session\n\n"
         "## Use cases:\n"
         "- Background Worker/Lite sub-agent reports results to main session\n"
         "- Cross-session coordination (one session needs data from another)\n"
+        "- Agent-to-agent messaging (master sends instructions to worker by label/exec_id)\n"
         "- Status notifications between sessions\n\n"
         "## Note:\n"
         "- Messages are ephemeral (in-memory only, not persisted)\n"
@@ -34,16 +37,24 @@ class MessageBusTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["send", "receive", "check", "list_sessions", "clear"],
+                    "enum": ["send", "send_to_agent", "receive", "check",
+                             "list_sessions", "list_agents", "clear"],
                     "description": "Action to perform.",
                 },
                 "to_session": {
                     "type": "string",
                     "description": "Target session ID (required for 'send' action).",
                 },
+                "to_agent": {
+                    "type": "string",
+                    "description": (
+                        "Target agent name (required for 'send_to_agent' action). "
+                        "Can be an exec_id (e.g. 'agent-1') or a label (e.g. 'translate-doc')."
+                    ),
+                },
                 "message": {
                     "type": "string",
-                    "description": "Message content (required for 'send' action).",
+                    "description": "Message content (required for 'send' and 'send_to_agent' actions).",
                 },
                 "message_type": {
                     "type": "string",
@@ -59,6 +70,7 @@ class MessageBusTool(Tool):
         self,
         action: str = "receive",
         to_session: str | None = None,
+        to_agent: str | None = None,
         message: str | None = None,
         message_type: str = "text",
     ) -> ToolResult:
@@ -83,6 +95,28 @@ class MessageBusTool(Tool):
                     error=True,
                 )
             return ToolResult(f"Message sent to session '{to_session}'")
+
+        elif action == "send_to_agent":
+            if not to_agent:
+                return ToolResult(
+                    "Error: 'to_agent' is required for 'send_to_agent' action",
+                    error=True,
+                )
+            if not message:
+                return ToolResult(
+                    "Error: 'message' is required for 'send_to_agent' action",
+                    error=True,
+                )
+            # 获取当前 agent 名字（优先用注册的 agent name，回退 session_id）
+            from_agent = bus.get_session_agent(current_session_id) or current_session_id
+            sent = bus.send_to_agent(from_agent, to_agent, message, message_type)
+            if not sent:
+                return ToolResult(
+                    f"Error: target agent '{to_agent}' is not registered. "
+                    "Check available agents (list_agents action) — the message was not sent.",
+                    error=True,
+                )
+            return ToolResult(f"Message sent to agent '{to_agent}'")
 
         elif action == "receive":
             messages = bus.receive(current_session_id, mark_read=True)
@@ -115,6 +149,19 @@ class MessageBusTool(Tool):
                 unread = s["unread_count"]
                 marker = f" [{unread} unread]" if unread > 0 else ""
                 lines.append(f"  - {sid} ({name}){marker}")
+            return ToolResult("\n".join(lines))
+
+        elif action == "list_agents":
+            agents = bus.list_agents()
+            if not agents:
+                return ToolResult("No registered agents")
+            lines = [f"Registered agents ({len(agents)}):"]
+            for a in agents:
+                name = a["agent_name"]
+                sid = a["session_id"]
+                unread = a["unread_count"]
+                marker = f" [{unread} unread]" if unread > 0 else ""
+                lines.append(f"  - {name} (session: {sid}){marker}")
             return ToolResult("\n".join(lines))
 
         elif action == "clear":

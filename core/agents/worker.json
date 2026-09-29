@@ -208,6 +208,7 @@
     "python",
     "todo",
     "latex",
+    "message_bus",
     "clock",
     "read_tool_result",
     "session_search",
@@ -222,6 +223,7 @@
     "browser",
     "todo_write",
     "latex",
+    "message_bus",
     "temp",
     "loop",
     "pdf2markdown"

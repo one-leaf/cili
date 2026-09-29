@@ -302,7 +302,7 @@ def assemble_context(messages, inject_messages):
 |------|--------|--------|------|
 | mode | interactive | autonomous | autonomous |
 | 角色定义 | 通用交互助手 | 自主任务执行 Agent | 极简自主 Agent |
-| 工具白名单 | shared + agent/ask_user | shared（去 agent/todo/cron/message_bus/latex/ask_user） | read/write/edit/bash/python/clock |
+| 工具白名单 | shared + agent/ask_user | shared（去 cron/ask_user） | read/write/edit/bash/python/clock |
 | system prompt 块 | role/tools/skills/security | role/tools/skills/security | role/tools/security |
 | user 层 | claude_md / context | task / context / runtime | task |
 | 项目指令注入 | ✅ | ❌ | ❌ |

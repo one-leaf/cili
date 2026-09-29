@@ -495,6 +495,17 @@ class BackgroundMixin:
                     pass
                 with _background_agents_cond:
                     _background_agents_cond.notify_all()
+                # 注销子代理的 MessageBus 注册（exec_id + 所有别名如 label）
+                try:
+                    from core.message_bus import get_message_bus
+                    mbus = get_message_bus()
+                    for agent_name in mbus.get_session_agents(exec_id):
+                        mbus.unregister_agent(agent_name)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Failed to unregister background Agent from MessageBus {task_id}: {e}"
+                    )
                 # T18: 资源/统计对称 —— 后台子代理结束也 close LLM client 并转发 usage，
                 # 与同步委派（agent_tool.py）保持一致。
                 try:

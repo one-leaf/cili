@@ -260,7 +260,7 @@ class TestWorkerLiteDeferred:
     def test_worker_deferred_tools(self):
         """worker 的 deferred_tools 覆盖非交互工具，不含交互三件套。"""
         role_cfg = load_agent_role("worker")
-        expected = {"browser", "todo_write", "latex", "temp", "loop", "pdf2markdown"}
+        expected = {"browser", "todo_write", "latex", "message_bus", "temp", "loop", "pdf2markdown"}
         assert set(role_cfg.deferred_tools) == expected
 
     def test_lite_no_deferred_tools(self):

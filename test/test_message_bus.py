@@ -109,6 +109,110 @@ class TestMessageBusModule:
         assert ok is True
         assert len(bus.receive("b")) == 1
 
+    # ========== Agent 级测试 ==========
+
+    def test_register_agent(self):
+        bus = MessageBus()
+        bus.register_agent("worker-1", "session-1")
+        assert bus.get_agent_session("worker-1") == "session-1"
+        assert "worker-1" in bus.get_session_agents("session-1")
+
+    def test_register_agent_creates_session_queue(self):
+        """register_agent 应自动创建 session 消息队列。"""
+        bus = MessageBus()
+        bus.register_agent("worker-1", "session-1")
+        # session 应该存在且可接收消息
+        agents = bus.list_agents()
+        assert len(agents) == 1
+        assert agents[0]["agent_name"] == "worker-1"
+        assert agents[0]["session_id"] == "session-1"
+
+    def test_register_multiple_agents_same_session(self):
+        """exec_id 和 label 可以同时映射到同一个 session。"""
+        bus = MessageBus()
+        bus.register_agent("agent-1", "session-1")
+        bus.register_agent("translate-doc", "session-1")
+        assert bus.get_agent_session("agent-1") == "session-1"
+        assert bus.get_agent_session("translate-doc") == "session-1"
+        agents = bus.get_session_agents("session-1")
+        assert set(agents) == {"agent-1", "translate-doc"}
+
+    def test_unregister_agent(self):
+        bus = MessageBus()
+        bus.register_agent("worker-1", "session-1")
+        bus.unregister_agent("worker-1")
+        assert bus.get_agent_session("worker-1") is None
+        assert bus.get_session_agents("session-1") == []
+
+    def test_unregister_agent_preserves_session(self):
+        """unregister_agent 不应清除 session 消息队列。"""
+        bus = MessageBus()
+        bus.register_agent("worker-1", "session-1")
+        bus.send_to_agent("master", "worker-1", "hello")
+        bus.unregister_agent("worker-1")
+        # session 消息仍在
+        msgs = bus.receive("session-1")
+        assert len(msgs) == 1
+
+    def test_send_to_agent(self):
+        bus = MessageBus()
+        bus.register_agent("master", "sess-master")
+        bus.register_agent("worker-1", "sess-worker")
+        ok = bus.send_to_agent("master", "worker-1", "do task")
+        assert ok is True
+        msgs = bus.receive("sess-worker")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "do task"
+        assert msgs[0]["sender_session_id"] == "sess-master"
+
+    def test_send_to_agent_with_label_alias(self):
+        """通过 label 别名发送消息。"""
+        bus = MessageBus()
+        bus.register_agent("master", "sess-master")
+        bus.register_agent("agent-1", "sess-worker")
+        bus.register_agent("translate-doc", "sess-worker")
+        ok = bus.send_to_agent("master", "translate-doc", "start now")
+        assert ok is True
+        msgs = bus.receive("sess-worker")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "start now"
+
+    def test_send_to_unregistered_agent_fails(self):
+        bus = MessageBus()
+        bus.register_agent("master", "sess-master")
+        ok = bus.send_to_agent("master", "nonexistent", "hello")
+        assert ok is False
+
+    def test_list_agents(self):
+        bus = MessageBus()
+        bus.register_agent("master", "sess-master")
+        bus.register_agent("worker-1", "sess-worker")
+        bus.send_to_agent("master", "worker-1", "task 1")
+        agents = bus.list_agents()
+        assert len(agents) == 2
+        names = {a["agent_name"] for a in agents}
+        assert names == {"master", "worker-1"}
+        # worker-1 有 1 条未读
+        worker_entry = [a for a in agents if a["agent_name"] == "worker-1"][0]
+        assert worker_entry["unread_count"] == 1
+        # master 无未读
+        master_entry = [a for a in agents if a["agent_name"] == "master"][0]
+        assert master_entry["unread_count"] == 0
+
+    def test_get_session_agent(self):
+        bus = MessageBus()
+        bus.register_agent("worker-1", "sess-1")
+        assert bus.get_session_agent("sess-1") == "worker-1"
+        assert bus.get_session_agent("nonexistent") is None
+
+    def test_unregister_session_cleans_agent_registry(self):
+        """unregister_session 应同时清理 agent 注册表。"""
+        bus = MessageBus()
+        bus.register_agent("worker-1", "sess-1")
+        bus.unregister_session("sess-1")
+        assert bus.get_agent_session("worker-1") is None
+        assert bus.list_agents() == []
+
 
 class TestMessageBusTool:
     """MessageBusTool actions."""
@@ -176,3 +280,47 @@ class TestMessageBusTool:
         tool = self._make_tool()
         result = tool.execute(action="list_sessions")
         assert not result.error
+
+    def test_send_to_agent_action(self):
+        self.bus.register_agent("test-session", "test-session")
+        self.bus.register_agent("worker-1", "worker-session")
+        tool = self._make_tool()
+        result = tool.execute(action="send_to_agent", to_agent="worker-1", message="hello")
+        assert not result.error
+        assert "sent" in result.output.lower()
+        msgs = self.bus.receive("worker-session")
+        assert len(msgs) == 1
+
+    def test_send_to_agent_missing_to_agent(self):
+        self.bus.register_agent("test-session", "test-session")
+        tool = self._make_tool()
+        result = tool.execute(action="send_to_agent", message="hello")
+        assert result.error
+
+    def test_send_to_agent_missing_message(self):
+        self.bus.register_agent("test-session", "test-session")
+        tool = self._make_tool()
+        result = tool.execute(action="send_to_agent", to_agent="worker-1")
+        assert result.error
+
+    def test_send_to_agent_unregistered(self):
+        self.bus.register_agent("test-session", "test-session")
+        tool = self._make_tool()
+        result = tool.execute(action="send_to_agent", to_agent="nonexistent", message="hi")
+        assert result.error
+
+    def test_list_agents_action(self):
+        self.bus.register_agent("master", "sess-1")
+        self.bus.register_agent("worker-1", "sess-2")
+        tool = self._make_tool()
+        result = tool.execute(action="list_agents")
+        assert not result.error
+        assert "2" in result.output
+        assert "master" in result.output
+        assert "worker-1" in result.output
+
+    def test_list_agents_empty(self):
+        tool = self._make_tool()
+        result = tool.execute(action="list_agents")
+        assert not result.error
+        assert "no registered" in result.output.lower()

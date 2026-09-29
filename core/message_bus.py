@@ -67,6 +67,10 @@ class MessageBus:
         self._messages: dict[str, list[Message]] = {}
         # session_id -> display name (optional, for listing)
         self._session_names: dict[str, str] = {}
+        # agent_name -> session_id（agent 名字注册表，支持名字寻址）
+        self._agent_registry: dict[str, str] = {}
+        # session_id -> agent_name（反向映射，一个 session 可能对应多个 agent 名字，取最新）
+        self._session_to_agents: dict[str, set[str]] = {}
 
     def register_session(self, session_id: str, name: str = "") -> None:
         """Register a session with the message bus."""
@@ -77,8 +81,12 @@ class MessageBus:
                 self._session_names[session_id] = name
 
     def unregister_session(self, session_id: str) -> None:
-        """Unregister a session, clearing all its messages."""
+        """Unregister a session, clearing all its messages and agent mappings."""
         with self._lock:
+            # 清理该 session 关联的所有 agent 名字
+            for agent_name in list(self._session_to_agents.get(session_id, set())):
+                self._agent_registry.pop(agent_name, None)
+            self._session_to_agents.pop(session_id, None)
             self._messages.pop(session_id, None)
             self._session_names.pop(session_id, None)
 
@@ -164,6 +172,97 @@ class MessageBus:
             count = len(messages)
             self._messages[session_id] = []
             return count
+
+    # ========== Agent 级方法 ==========
+
+    def register_agent(self, agent_name: str, session_id: str) -> None:
+        """Register an agent name mapped to a session.
+
+        Ensures the session is also registered in the message queue.
+        Multiple agent names can map to the same session (e.g. exec_id + label).
+        """
+        with self._lock:
+            self._agent_registry[agent_name] = session_id
+            self._session_to_agents.setdefault(session_id, set()).add(agent_name)
+            # 确保目标 session 有消息队列
+            if session_id not in self._messages:
+                self._messages[session_id] = []
+
+    def unregister_agent(self, agent_name: str) -> None:
+        """Unregister an agent name. Does NOT clear the session's messages."""
+        with self._lock:
+            session_id = self._agent_registry.pop(agent_name, None)
+            if session_id:
+                agents_for_session = self._session_to_agents.get(session_id)
+                if agents_for_session:
+                    agents_for_session.discard(agent_name)
+                    if not agents_for_session:
+                        del self._session_to_agents[session_id]
+
+    def send_to_agent(
+        self, from_agent: str, to_agent: str,
+        content: str, message_type: str = "text",
+    ) -> bool:
+        """Send a message to an agent by name.
+
+        Resolves both names to session IDs via the agent registry.
+        Returns False if the target agent is not registered.
+        """
+        with self._lock:
+            target_session = self._agent_registry.get(to_agent)
+            if target_session is None:
+                logger.warning(
+                    f"Agent drop: target agent '{to_agent}' not registered "
+                    f"(sender: {from_agent})"
+                )
+                return False
+            from_session = self._agent_registry.get(from_agent, from_agent)
+            msg = Message(
+                sender_session_id=from_session,
+                content=content,
+                message_type=message_type,
+            )
+            queue = self._messages.get(target_session, [])
+            queue.append(msg)
+            if len(queue) > self.MAX_MESSAGES_PER_SESSION:
+                del queue[: len(queue) - self.MAX_MESSAGES_PER_SESSION]
+        logger.info(
+            f"Agent message sent: {from_agent} -> {to_agent}: "
+            f"{content[:self.LOG_CONTENT_TRUNCATE]}"
+            f"{'...' if len(content) > self.LOG_CONTENT_TRUNCATE else ''}"
+        )
+        return True
+
+    def list_agents(self) -> list[dict]:
+        """List all registered agents with their session info and unread counts."""
+        with self._lock:
+            result = []
+            for agent_name, session_id in self._agent_registry.items():
+                messages = self._messages.get(session_id, [])
+                unread = sum(1 for m in messages if not m.read)
+                result.append({
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                    "total_messages": len(messages),
+                    "unread_count": unread,
+                })
+            return result
+
+    def get_agent_session(self, agent_name: str) -> str | None:
+        """Get the session_id for an agent name. Returns None if not registered."""
+        with self._lock:
+            return self._agent_registry.get(agent_name)
+
+    def get_session_agents(self, session_id: str) -> list[str]:
+        """Get all agent names registered for a session."""
+        with self._lock:
+            return list(self._session_to_agents.get(session_id, set()))
+
+    def get_session_agent(self, session_id: str) -> str | None:
+        """Get the primary agent name for a session. Returns None if none registered."""
+        with self._lock:
+            agents = self._session_to_agents.get(session_id, set())
+            return next(iter(agents)) if agents else None
 
 
 # ========== Module-level singleton ==========

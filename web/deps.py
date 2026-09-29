@@ -322,6 +322,8 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
             try:
                 mbus = get_message_bus()
                 mbus.register_session(session_id, agent.session_manager.name)
+                # 同时注册为 agent（master 用 session_id 作为 agent 名字）
+                mbus.register_agent(session_id, session_id)
             except Exception as e:
                 logger.warning(f"Failed to register session with MessageBus: {e}")
 

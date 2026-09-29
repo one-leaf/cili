@@ -309,6 +309,18 @@ class AgentTool(Tool):
         # 进度事件发布回调（_save_progress 调用时广播 iterations/message_count/tool_call_count）
         agent._event_publisher = lambda ev_type, **kw: self._publish(ev_type, **kw)
 
+        # 注册子代理到 MessageBus（支持 agent 级消息传递）
+        # exec_id 作为主地址，label 作为可选别名
+        sub_agent_session_id = exec_id  # autonomous 模式 session_id = exec_id
+        try:
+            from core.message_bus import get_message_bus
+            mbus = get_message_bus()
+            mbus.register_agent(exec_id, sub_agent_session_id)
+            if label and label != exec_id:
+                mbus.register_agent(label, sub_agent_session_id)
+        except Exception as e:
+            logger.warning(f"Failed to register sub-agent with MessageBus: {e}")
+
         # Background mode
         if run_in_background:
             return self._start_background_agent(
@@ -369,6 +381,14 @@ class AgentTool(Tool):
                 entry["result"] = {"status": "error", "summary": str(e), "iterations": 0}
             finally:
                 agent.close()
+                # 注销子代理的 MessageBus 注册（exec_id + 所有别名如 label）
+                try:
+                    from core.message_bus import get_message_bus
+                    mbus = get_message_bus()
+                    for agent_name in mbus.get_session_agents(exec_id):
+                        mbus.unregister_agent(agent_name)
+                except Exception as e:
+                    logger.warning(f"Failed to unregister sub-agent from MessageBus: {e}")
                 # Persist main session after sub-agent writes.
                 # worker/lite 的 _SessionIdRef 无 save()：此处若抛异常，
                 # 下方 event.set() 永不执行，委派方会永久阻塞在 event.wait(3600)。
