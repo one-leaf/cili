@@ -13,6 +13,8 @@ import hashlib
 import os
 from dataclasses import dataclass
 
+from core.fs_utils import normalize_bash_path
+
 OP_WRITE = "write"
 OP_DELETE = "delete"
 
@@ -63,7 +65,12 @@ class PathPolicy:
         self.approval_store = approval_store
 
     def resolve(self, path: str) -> str:
-        """展开 ~ → 相对路径 join cwd → realpath。不做边界抛错。"""
+        """展开 ~ → 相对路径 join cwd → realpath。不做边界抛错。
+
+        自动处理 bash 风格路径（/c/... -> C:/...），LLM 从 shell 输出复制路径时
+        常遇到这种格式。
+        """
+        path = normalize_bash_path(path)
         p = os.path.expanduser(path)
         if not os.path.isabs(p):
             p = os.path.join(self.cwd, p)

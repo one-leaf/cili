@@ -22,6 +22,28 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def normalize_bash_path(path: str) -> str:
+    """把 bash 风格路径（/c/...）转为 Windows 路径（C:/...）。
+
+    LLM 经常从 shell 输出中复制 /e/AI/... 风格路径，
+    而 Windows Python 不识别这种绝对路径（os.path.isabs 返回 False），
+    需提前转换，否则会被错误地当作相对路径拼到 cwd。
+
+    Examples:
+        /e/AI/cili -> E:/AI/cili
+        /c/Users/x -> C:/Users/x
+        E:/AI/cili -> E:/AI/cili  (已是 Windows 路径，不变)
+        ./src/main -> ./src/main  (相对路径，不变)
+    """
+    if not path or not path.startswith('/'):
+        return path
+    # 检测 /x/ 格式（x 是单字母盘符，紧跟 /）
+    if len(path) >= 3 and path[2] == '/' and path[1].isalpha():
+        drive = path[1].upper()
+        return f"{drive}:{path[2:]}"
+    return path
+
+
 def _atomic_temp_path(path: Path) -> Path:
     """生成目标文件唯一的临时路径（随机后缀，避免并发写互踩，SEC-23）。"""
     return path.with_name(f"{path.name}.tmp.{secrets.token_hex(3)}")

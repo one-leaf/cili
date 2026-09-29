@@ -8,6 +8,7 @@ import threading
 from typing import Any, Callable
 
 from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy
+from core.fs_utils import normalize_bash_path
 from core.tools.approval import META_KEY, approval_placeholder_text
 from core.tools.background import (
     BackgroundMixin, BackgroundTask, BackgroundTaskManager,
@@ -135,7 +136,11 @@ class Tool(ShellMixin, BackgroundMixin):
         Uses realpath（解析 `..`、符号链接与 junction）。写/删是否越界由
         各工具的 _path_gate 统一判定（PathPolicy），这里不再抛边界错误；
         read_only 参数保留为读工具的语义提示，无行为分支。
+
+        自动处理 bash 风格路径（/c/... -> C:/...），LLM 从 shell 输出复制路径时
+        常遇到这种格式。
         """
+        path = normalize_bash_path(path)
         if not os.path.isabs(path):
             path = os.path.join(self.cwd, path)
         return os.path.realpath(path)
