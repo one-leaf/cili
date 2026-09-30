@@ -247,6 +247,15 @@
                         </select>
                         <small class="form-hint">仅对推理模型生效（如 Qwen、DeepSeek）。启用后温度设置失效；不启用则由 API 决定</small>
                     </div>
+                    <div class="form-group">
+                        <label>缓存控制:</label>
+                        <select id="setting-cache-control">
+                            <option value="auto">自动（推荐）</option>
+                            <option value="true">强制启用</option>
+                            <option value="false">禁用</option>
+                        </select>
+                        <small class="form-hint">Anthropic 协议默认启用；OpenAI 协议默认禁用（仅部分兼容网关支持）。强制启用可能在不支持的网关上失败</small>
+                    </div>
                     <div class="form-group" style="margin-top: 12px;">
                         <label></label>
                         <button id="model-test-btn" class="btn btn-small">测试连接</button>
@@ -321,6 +330,15 @@
                         </select>
                         <small class="form-hint">仅对推理模型生效（如 Qwen、DeepSeek）。启用后温度设置失效；不启用则由 API 决定</small>
                     </div>
+                    <div class="form-group">
+                        <label>缓存控制:</label>
+                        <select id="worker-cache-control">
+                            <option value="auto">自动（推荐）</option>
+                            <option value="true">强制启用</option>
+                            <option value="false">禁用</option>
+                        </select>
+                        <small class="form-hint">Anthropic 协议默认启用；OpenAI 协议默认禁用</small>
+                    </div>
                     <div class="form-group" style="margin-top: 12px;">
                         <label></label>
                         <button id="worker-test-btn" class="btn btn-small">测试连接</button>
@@ -387,6 +405,15 @@
                             <option value="high">高（深度推理）</option>
                         </select>
                         <small class="form-hint">仅对推理模型生效（如 Qwen、DeepSeek）。启用后温度设置失效；不启用则由 API 决定</small>
+                    </div>
+                    <div class="form-group">
+                        <label>缓存控制:</label>
+                        <select id="lite-cache-control">
+                            <option value="auto">自动（推荐）</option>
+                            <option value="true">强制启用</option>
+                            <option value="false">禁用</option>
+                        </select>
+                        <small class="form-hint">Anthropic 协议默认启用；OpenAI 协议默认禁用</small>
                     </div>
                     <div class="form-group" style="margin-top: 12px;">
                         <label></label>

@@ -72,6 +72,7 @@ class ModelConfig:
     multimodal: bool = True  # Whether this model supports image input
     temperature: float = 0.2  # 0.1(古板) ~ 1.0(跳脱)
     reasoning_effort: str = ""  # Reasoning effort for reasoning models: "low" | "medium" | "high" (empty = API default)
+    cache_control: str = "auto"  # Prompt cache: "auto" (protocol default) | "true" (force) | "false" (disable)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelConfig":
@@ -86,6 +87,7 @@ class ModelConfig:
             multimodal=bool(data.get("multimodal", True)),
             temperature=float(data.get("temperature", 0.2)),
             reasoning_effort=data.get("reasoning_effort", ""),
+            cache_control=data.get("cache_control", "auto"),
         )
 
     def to_dict(self) -> dict:
@@ -100,6 +102,7 @@ class ModelConfig:
             "multimodal": self.multimodal,
             "temperature": self.temperature,
             "reasoning_effort": self.reasoning_effort,
+            "cache_control": self.cache_control,
         }
 
     def merged_with(self, override: dict) -> "ModelConfig":

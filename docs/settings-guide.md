@@ -52,7 +52,8 @@ Cili Agent/
   "max_context_tokens": 256000,
   "multimodal": true,
   "temperature": 0.2,
-  "reasoning_effort": ""
+  "reasoning_effort": "",
+  "cache_control": "auto"
 }
 ```
 
@@ -275,6 +276,51 @@ Cili Agent/
 - **日常使用**：保持 `""` 空字符串，配合 temperature 0.2 使用
 - **复杂编程/数学问题**：设为 `"medium"` 或 `"high"`，牺牲速度换取质量
 - **简单问答**：设为 `"low"` 加快响应
+
+---
+
+### cache_control — 缓存控制
+
+**作用**：控制是否启用 Prompt Cache，通过显式缓存标记降低 API 调用成本。
+
+**可选值**：
+
+| 值 | 行为 | 适用场景 |
+|----|------|----------|
+| `"auto"` | 根据接口类型自动决定（推荐） | 大多数情况 |
+| `"true"` | 强制启用显式缓存 | 使用支持 cache_control 的兼容网关 |
+| `"false"` | 禁用显式缓存 | 使用不兼容的网关或遇到问题时 |
+
+**自动模式行为**：
+
+| 接口类型 | 自动模式行为 | 说明 |
+|----------|--------------|------|
+| Anthropic | ✅ 启用 | 使用 Anthropic 协议即启用 cache_control |
+| OpenAI | ❌ 禁用 | OpenAI 标准 API 使用隐式前缀缓存，不支持显式标记 |
+
+**成本分析**（Anthropic API）：
+- 缓存写入：1.25x 基础价格
+- 缓存读取：0.1x 基础价格
+- **单次复用即盈利**：只要在 5 分钟内复用一次即可回本
+
+**注意事项**：
+- 部分中转站/网关可能不支持 cache_control，如遇到错误可设为 `"false"` 禁用
+- 支持 cache_control 的兼容网关（如 OpenRouter 上的 Anthropic 模型）可设为 `"true"` 强制启用
+
+**配置示例**：
+```json
+{
+  "name": "claude-sonnet-4-6",
+  "interface_type": "anthropic",
+  "api_key": "sk-xxx",
+  "max_tokens": 4096,
+  "max_context_tokens": 256000,
+  "multimodal": true,
+  "temperature": 0.2,
+  "reasoning_effort": "",
+  "cache_control": "auto"
+}
+```
 
 ---
 

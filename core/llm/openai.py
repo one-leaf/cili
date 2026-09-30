@@ -293,6 +293,61 @@ class OpenAIAdapter(Adapter):
         """提取 Google Gemini thought_signature（位于 extra_content.google）。"""
         return tc.get("extra_content", {}).get("google", {}).get("thought_signature", "")
 
+    def _prompt_cache_enabled(self) -> bool:
+        """根据 cache_control 配置决定是否启用 prompt cache。
+
+        OpenAI 标准 API 不支持显式 cache_control，但部分兼容网关（如 OpenRouter 上的 Anthropic 模型）支持。
+
+        cache_control 值：
+        - "auto"（默认）：不启用（OpenAI 标准 API 使用隐式前缀缓存）
+        - "true"：强制启用（适用于支持 cache_control 的兼容网关）
+        - "false"：强制禁用
+        """
+        setting = self.config.cache_control
+        if setting == "true":
+            return True
+        # auto 和 false 都不启用
+        return False
+
+    def _apply_prompt_cache(
+        self,
+        body: dict[str, Any],
+        system: str | list[str],
+        openai_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> None:
+        """Prompt cache：对支持 cache_control 的兼容网关启用缓存。
+
+        使用 Anthropic 格式的 cache_control，在 system 最后一段、tools 最后一个、messages 最后一条
+        的最后一个 text content 上添加 cache_control 标记。
+
+        注意：标准 OpenAI API 不支持此字段，只有部分兼容网关（如 OpenRouter 上的 Anthropic 模型）支持。
+        """
+        if not self._prompt_cache_enabled():
+            return
+
+        # system 最后一段加 cache_control
+        if "system" in body and isinstance(body["system"], list) and body["system"]:
+            last_sys = body["system"][-1]
+            if isinstance(last_sys, dict) and "text" in last_sys:
+                last_sys["cache_control"] = {"type": "ephemeral"}
+
+        # tools 最后一个加 cache_control
+        if tools and isinstance(tools, list):
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+            body["tools"] = tools
+
+        # messages 最后一条的最后一个 text content 加 cache_control
+        if openai_messages:
+            last_msg = openai_messages[-1]
+            content = last_msg.get("content")
+            if isinstance(content, list) and content:
+                # 找到最后一个 text 类型的 content
+                for i in range(len(content) - 1, -1, -1):
+                    if content[i].get("type") == "text":
+                        content[i]["cache_control"] = {"type": "ephemeral"}
+                        break
+
     def serialize(
         self,
         messages: list[Message],
@@ -308,11 +363,28 @@ class OpenAIAdapter(Adapter):
         # Merge consecutive same-role messages (OpenAI requires alternating roles)
         messages = merge_consecutive_same_role(messages)
 
+        # 处理 system 消息：如果启用 cache_control，转为 list 格式
+        if self._prompt_cache_enabled():
+            from core.prompt_builder import DYNAMIC_BOUNDARY
+            if isinstance(system, list):
+                sys_list = [{"type": "text", "text": s} for s in system if s != DYNAMIC_BOUNDARY and s]
+            elif system:
+                sys_list = [{"type": "text", "text": system}]
+            else:
+                sys_list = []
+            converted_messages = self._convert_messages(messages, "")  # 不传 system，后面单独处理
+        else:
+            sys_list = None
+            converted_messages = self._convert_messages(messages, system)
+
         body: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": self._convert_messages(messages, system),
+            "messages": converted_messages,
         }
+
+        if sys_list is not None:
+            body["system"] = sys_list
 
         # Reasoning effort for reasoning models
         # Only send if explicitly configured; otherwise let API decide
@@ -331,6 +403,9 @@ class OpenAIAdapter(Adapter):
         if stream:
             body["stream"] = True
             body["stream_options"] = {"include_usage": True}
+
+        # 应用 prompt cache（如果启用）
+        self._apply_prompt_cache(body, system, body["messages"], body.get("tools"))
 
         return body
 

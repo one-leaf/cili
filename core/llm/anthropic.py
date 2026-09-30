@@ -40,16 +40,20 @@ class AnthropicAdapter(Adapter):
 
     @property
     def _prompt_cache_enabled(self) -> bool:
-        """仅对 Anthropic 官方端点启用 prompt cache。
+        """根据 cache_control 配置决定是否启用 prompt cache。
 
-        cache_control 是标准字段，但部分第三方中转/网关不识别会直接 400，
-        非官方 base_url 时关闭以保证兼容性。
+        cache_control 值：
+        - "auto"：使用 Anthropic 协议即启用（默认）
+        - "true"：强制启用
+        - "false"：强制禁用
         """
-        base = (self.config.base_url or "").strip()
-        if not base:
+        setting = self.config.cache_control
+        if setting == "false":
+            return False
+        if setting == "true":
             return True
-        host = urlparse(base).hostname or ""
-        return host == "api.anthropic.com"
+        # auto：使用 Anthropic 协议即启用
+        return True
 
     def build_headers(self) -> dict[str, str]:
         """Build headers for Anthropic API."""

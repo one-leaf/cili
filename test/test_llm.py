@@ -346,21 +346,6 @@ class TestAnthropicAdapter:
         body = adapter.serialize(messages, system="You are helpful", tools=None, model="claude-sonnet-4-6", max_tokens=4096)
         assert body["messages"][-1]["content"] == "hi"
 
-    def test_serialize_no_cache_control_for_custom_base_url(self):
-        # 非官方端点（中转/网关）不启用 prompt cache，避免不兼容 cache_control
-        config = ModelConfig(
-            name="claude-sonnet-4-6",
-            api_key="test-key-123",
-            base_url="https://relay.example.com",
-            max_tokens=4096,
-            interface_type="anthropic",
-        )
-        adapter = AnthropicAdapter(config)
-        messages = [Message(role="user", content="hi")]
-        body = adapter.serialize(messages, system="You are helpful", tools=None, model="claude-sonnet-4-6", max_tokens=4096)
-        assert body["system"] == "You are helpful"
-        assert "cache_control" not in json.dumps(body["messages"])
-
     def test_serialize_litellm_session(self, adapter):
         adapter._is_litellm_proxy = True
         messages = [Message(role="user", content="hi")]

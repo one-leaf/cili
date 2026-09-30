@@ -32,6 +32,7 @@ class ModelConfigRequest(BaseModel):
     multimodal: bool | None = None
     temperature: float | None = None
     reasoning_effort: str | None = None
+    cache_control: str | None = None
 
 
 class UpdateConfigRequest(BaseModel):

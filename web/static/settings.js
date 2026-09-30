@@ -240,6 +240,7 @@ function loadRoleModel(prefix, cfg, masterKeyMasked) {
     document.getElementById(`${prefix}-temperature`).value = tempVal;
     document.getElementById(`${prefix}-temperature-value`).textContent = tempVal;
     document.getElementById(`${prefix}-reasoning-effort`).value = cfg.reasoning_effort || '';
+    document.getElementById(`${prefix}-cache-control`).value = cfg.cache_control || 'auto';
 
     const hint = document.getElementById(`${prefix}-api-key-masked`);
     if (cfg.api_key_masked) {
@@ -275,6 +276,7 @@ function collectRoleModel(prefix, roleKey, payload) {
     payload[roleKey].multimodal = document.getElementById(`${prefix}-multimodal`).checked;
     payload[roleKey].temperature = parseFloat(document.getElementById(`${prefix}-temperature`).value);
     payload[roleKey].reasoning_effort = document.getElementById(`${prefix}-reasoning-effort`).value;
+    payload[roleKey].cache_control = document.getElementById(`${prefix}-cache-control`).value;
 
     if (!payload[roleKey].name) {
         payload[roleKey] = { name: '', api_key: '' };  // Signal to backend to remove (fall back to Master)
@@ -593,6 +595,9 @@ async function openSettings() {
         // Reasoning effort
         document.getElementById('setting-reasoning-effort').value = modelCfg.reasoning_effort || '';
 
+        // Cache control
+        document.getElementById('setting-cache-control').value = modelCfg.cache_control || 'auto';
+
         // Show masked key
         const maskedHint = document.getElementById('setting-api-key-masked');
         if (modelCfg.api_key_masked) {
@@ -663,6 +668,7 @@ async function saveSettings() {
     payload.model.multimodal = document.getElementById('setting-multimodal').checked;
     payload.model.temperature = parseFloat(document.getElementById('setting-temperature').value);
     payload.model.reasoning_effort = document.getElementById('setting-reasoning-effort').value;
+    payload.model.cache_control = document.getElementById('setting-cache-control').value;
 
     // ── Worker/Lite model settings（name 留空移除 → 回退继承 Master） ──
     collectRoleModel('worker', 'worker_model', payload);
