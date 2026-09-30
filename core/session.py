@@ -43,7 +43,7 @@ _TASK_BRIEF_MAX = 100
 
 # _meta 中的内部字段（发送到 API 前剥离，包括消息级别和 block 级别）
 _INTERNAL_META_FIELDS = frozenset({
-    "valid", "compacted", "output_path", "file_size", "truncated",
+    "valid", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
 })
@@ -53,19 +53,6 @@ def _strip_internal_meta(meta: dict) -> dict | None:
     """剥离 _meta 中的内部字段；无剩余字段时返回 None。"""
     stripped = {k: v for k, v in meta.items() if k not in _INTERNAL_META_FIELDS}
     return stripped or None
-
-
-# 工具输出被压缩后的占位符（runner 解析与 web 会话视图共享，避免双份硬编码）
-INLINE_COMPACTED_PLACEHOLDER = "[Compacted: original content preserved in session history]"
-
-
-def format_compacted_placeholder(output_path: str) -> str:
-    """工具输出被压缩后的占位符：提示模型用 read_tool_result 读取原文。"""
-    tool_use_id = output_path.replace(".txt", "").replace(".json", "")
-    return (
-        f'[Compacted: use `read_tool_result` tool with '
-        f'tool_use_id="{tool_use_id}" to retrieve original content]'
-    )
 
 
 def preview_from_messages(messages: list[dict]) -> str:
@@ -279,8 +266,8 @@ def _message_from_summary_commit(commit: dict) -> dict:
 
 
 def _apply_model_content_rules(msg: dict) -> None:
-    """模型视图重建：压缩/已回答的 tool_result 清空内联内容，交给
-    _resolve_tool_results 从外部文件读取（否则 jsonl 原始内容会跳过文件读取）。"""
+    """模型视图重建：已回答的 tool_result 清空内联内容，交给
+    _load_external_tool_results 从外部文件读取（否则 jsonl 原始内容会跳过文件读取）。"""
     content = msg.get("content")
     if not isinstance(content, list):
         return
@@ -288,10 +275,8 @@ def _apply_model_content_rules(msg: dict) -> None:
         if block.get("type") != "tool_result":
             continue
         bm = block.get("_meta") or {}
-        # compacted 无论有无 output_path 都清空内容（内联压缩结果无外置文件，
-        # 原文在 jsonl，模型视图交给 _resolve_tool_results 注入占位符）；
         # completed（已回答的 ask_user）需 output_path 才读答案文件
-        if bm.get("compacted") or (bm.get("output_path") and bm.get("completed")):
+        if bm.get("output_path") and bm.get("completed"):
             block["content"] = None
 
 

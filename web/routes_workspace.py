@@ -19,8 +19,8 @@ from core.config import (
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
-    INLINE_COMPACTED_PLACEHOLDER, MESSAGES_FILE, META_FILE, SessionManager,
-    _drop_session_lock, format_compacted_placeholder, load_history_messages,
+    MESSAGES_FILE, META_FILE, SessionManager,
+    _drop_session_lock, load_history_messages,
     load_history_meta, preview_from_messages, read_jsonl, read_meta,
 )
 from core.tools.base import Tool
@@ -491,7 +491,6 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 
                 # 从 block 级别的 _meta 读取内部元数据
                 block_meta = block.get("_meta", {})
-                compacted = block_meta.get("compacted", False)
                 output_path = block_meta.get("output_path", "")
                 truncated = block_meta.get("truncated", False)
 
@@ -501,15 +500,6 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                 if block.get("content") and not answered:
                     continue
                 file_size = block_meta.get("file_size", 0)
-
-                # 处理压缩标记
-                if compacted:
-                    if output_path:
-                        block["content"] = format_compacted_placeholder(output_path)
-                    else:
-                        # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
-                        block["content"] = INLINE_COMPACTED_PLACEHOLDER
-                    continue
 
                 # 从外部文件读取
                 if not output_path:

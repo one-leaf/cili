@@ -88,8 +88,8 @@ class AgentContext:
     def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
         """过滤无效消息；strip_meta=True 时剥除内部 _meta 字段。
 
-        Thinking 块保留（Anthropic 多轮上下文要求）；_meta.compacted 在此保留，
-        序列化阶段再过滤。strip_meta=False 供 _resolve_tool_results 等中间处理。
+        Thinking 块保留（Anthropic 多轮上下文要求）。strip_meta=False 供
+        _load_external_tool_results 等中间处理。
         """
         result = []
 

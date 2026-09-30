@@ -11,101 +11,142 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ─── 压缩阈值与 token 估算常量 ────────────────────────────────────────
-_MIN_COMPACT_SIZE = 200  # 小于此字符数的工具结果不压缩（保留原文）
+_ERROR_RESULT_KEEP_RECENT = 10  # 错误结果对保留最近 10 条
+_IMAGE_KEEP_RECENT = 3  # Emergency 层保留最近 3 张图片
 _IMAGE_BASE_TOKENS = 750  # 单张图片的基准 token 估算
 _IMAGE_DATA_BYTES_PER_TOKEN = 100  # 图片 base64 数据每 100 字节折合 1 token
 _CHINESE_CHARS_PER_TOKEN = 2.5  # 中文约 2.5 字符/token
-_OTHER_CHARS_PER_TOKEN = 4  # 英文等其他字符约 4 字符/token
+_OTHER_CHARS_PER_TOKEN = 4  # 英文等其他约 4 字符/token
 
 
-def microcompact_tool_results(
+def microcompact_mark_orphans_and_errors(
     messages: list[dict],
-    keep_recent: int = 6,
 ) -> int:
-    """标记旧的工具结果为已压缩。
+    """标记孤立 tool_result 和旧错误结果对为无效。
 
-    轻量压缩，不调用 LLM。保留最近 keep_recent 条工具结果消息，更早的：
-    - 标记 _meta.compacted = True（消息级别）
-    - 发送 LLM 时由 _resolve_tool_results() 注入占位符
+    轻量压缩，不调用 LLM。
 
-    外部文件结果（file_size > 0）：内容已在文件里，仅标记 compacted。
-    内联结果（file_size = 0）：内容由 messages.jsonl 持久化（新布局 UI 数据源），
-    压缩只标记 compacted + 清空内存内容，不再 spill 外置文件；原文保留在
-    jsonl 中，UI 可直接查看。消息尚未持久化（无 _meta.seq）时跳过，
-    避免清空后 jsonl 也丢失原文。
+    任务 1 - 孤立 tool_result 标记：
+    扫描所有 role=user 消息中的 tool_result 块，若其 tool_use_id 在有效消息中
+    找不到对应的 tool_use，则将该 user 消息标记为 _meta.valid=False。
+    孤立检测依赖前序 Layer 2/3 已标记的消息（跨轮生效）。
 
-    向后兼容：检测旧格式的 block._compacted 并自动迁移。
+    任务 2 - 错误结果对标记：
+    统计所有含 is_error=True 的 tool_result，保留最近 ERROR_RESULT_KEEP_RECENT 条，
+    更早的错误结果对（包含 tool_use 的 assistant 消息 + 包含 tool_result 的 user 消息）
+    整对标记为 _meta.valid=False。
 
     Args:
         messages: 消息列表（会被原地修改）
-        keep_recent: 保留最近多少条工具结果消息
 
     Returns:
-        节省的字节数（估算）
+        标记失效的消息数
     """
-    saved = 0
+    invalidated_count = 0
 
-    # 找到所有包含 tool_result 的 user 消息索引
-    tool_result_msg_indices: list[int] = []
-    for i, msg in enumerate(messages):
+    # ─── 任务 1：孤立 tool_result 标记 ─────────────────────────────────
+    # 收集所有有效消息中的 tool_use_id
+    valid_tool_use_ids: set[str] = set()
+    for msg in messages:
+        # 跳过已标记失效的消息
+        if msg.get("_meta", {}).get("valid") is False:
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") == "tool_use":
+                tool_id = block.get("id", "")
+                if tool_id:
+                    valid_tool_use_ids.add(tool_id)
+
+    # 检查所有 user 消息中的 tool_result，标记孤立的
+    for msg in messages:
+        if msg.get("_meta", {}).get("valid") is False:
+            continue  # 已标记失效，跳过
         if msg.get("role") != "user":
             continue
         content = msg.get("content", "")
         if not isinstance(content, list):
             continue
-        if any(b.get("type") == "tool_result" for b in content):
-            tool_result_msg_indices.append(i)
 
-    # 保留最近 keep_recent 条，标记更早的
-    if len(tool_result_msg_indices) <= keep_recent:
-        return 0
-
-    indices_to_compact = tool_result_msg_indices[:-keep_recent]
-
-    for idx in indices_to_compact:
-        msg = messages[idx]
-        content = msg["content"]
-
-        # 处理每个 tool_result block
+        has_orphan = False
         for block in content:
             if block.get("type") != "tool_result":
                 continue
+            tool_use_id = block.get("tool_use_id", "")
+            if tool_use_id and tool_use_id not in valid_tool_use_ids:
+                has_orphan = True
+                break
 
-            # 从 block 级别的 _meta 读取
-            block_meta = block.get("_meta", {})
-            if block_meta.get("compacted", False):
+        if has_orphan:
+            if "_meta" not in msg:
+                msg["_meta"] = {}
+            msg["_meta"]["valid"] = False
+            invalidated_count += 1
+
+    # ─── 任务 2：错误结果对标记 ─────────────────────────────────────────
+    # 收集所有错误 tool_result 及其对应的 tool_use 消息索引
+    error_pairs: list[tuple[int, int]] = []  # (tool_use_msg_idx, tool_result_msg_idx)
+
+    # 先建立 tool_use_id → msg_idx 的映射（只遍历有效 assistant 消息）
+    tool_use_id_to_msg_idx: dict[str, int] = {}
+    for i, msg in enumerate(messages):
+        if msg.get("_meta", {}).get("valid") is False:
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") == "tool_use":
+                tool_id = block.get("id", "")
+                if tool_id:
+                    tool_use_id_to_msg_idx[tool_id] = i
+
+    # 再遍历 user 消息找错误结果
+    for i, msg in enumerate(messages):
+        if msg.get("_meta", {}).get("valid") is False:
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") != "tool_result":
                 continue
-
-            # 跳过小于 _MIN_COMPACT_SIZE 字符的工具结果（保留原文，不压缩）
-            file_size = block_meta.get("file_size", 0)
-            if file_size > 0 and file_size < _MIN_COMPACT_SIZE:
+            if not block.get("is_error"):
                 continue
+            tool_use_id = block.get("tool_use_id", "")
+            if tool_use_id in tool_use_id_to_msg_idx:
+                tool_use_idx = tool_use_id_to_msg_idx[tool_use_id]
+                error_pairs.append((tool_use_idx, i))
 
-            if "_meta" not in block:
-                block["_meta"] = {}
-            block_meta = block["_meta"]
+    # 保留最近 ERROR_RESULT_KEEP_RECENT 条，标记更早的
+    if len(error_pairs) > _ERROR_RESULT_KEEP_RECENT:
+        pairs_to_invalidate = error_pairs[:-_ERROR_RESULT_KEEP_RECENT]
+        for tool_use_idx, tool_result_idx in pairs_to_invalidate:
+            # 标记 assistant 消息（tool_use）
+            msg_use = messages[tool_use_idx]
+            if msg_use.get("_meta", {}).get("valid") is not False:
+                if "_meta" not in msg_use:
+                    msg_use["_meta"] = {}
+                msg_use["_meta"]["valid"] = False
+                invalidated_count += 1
 
-            # 外部文件结果：内容已在文件里，仅标记
-            if file_size > 0:
-                block_meta["compacted"] = True
-                saved += file_size
-                continue
+            # 标记 user 消息（tool_result）
+            msg_result = messages[tool_result_idx]
+            if msg_result.get("_meta", {}).get("valid") is not False:
+                if "_meta" not in msg_result:
+                    msg_result["_meta"] = {}
+                msg_result["_meta"]["valid"] = False
+                invalidated_count += 1
 
-            # 内联结果：内容由 messages.jsonl 持久化（UI 数据源），压缩只标记
-            # compacted + 清空内存内容，不再 spill 外置文件（原文保留在 jsonl）。
-            content = block.get("content", "")
-            if not isinstance(content, str) or not content:
-                continue
-            if len(content) < _MIN_COMPACT_SIZE:
-                continue  # 小结果保留原文，不压缩
-            if "seq" not in (msg.get("_meta") or {}):
-                continue  # 尚未持久化，清空会丢失原文
-
-            block_meta["compacted"] = True
-            block["content"] = None  # 清空内联内容（_resolve_tool_results 注入占位符）
-            saved += len(content)
-
-    return saved
+    return invalidated_count
 
 
 def count_tokens_approx(text: str) -> int:
@@ -147,5 +188,3 @@ def count_messages_tokens(messages: list[dict]) -> int:
                 elif block.get("type") in ("reasoning", "thinking"):
                     total += count_tokens_approx(block.get("thinking", "") or block.get("text", ""))
     return total
-
-

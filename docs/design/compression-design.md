@@ -4,8 +4,7 @@
 
 ## 一、设计目标
 
-- **渐进式**：先轻量压缩，不够再完整压缩
-- **可恢复**：压缩后的工具结果可通过 `read_tool_result` 工具重新获取
+- **渐进式**：先标记无效消息，不够再完整压缩
 - **可靠性**：紧急压缩防止 413 Payload Too Large 错误
 - **无感知**：LLM 看到的消息格式保持一致
 
@@ -18,19 +17,14 @@
 │                        BaseAgent._check_and_compress()           │
 │                                                                   │
 │   Layer 1: Microcompact  ──────────────────────────────────┐     │
-│   每轮都运行，标记旧工具结果为 _meta.compacted=True          │     │
+│   每轮都运行，标记孤立 tool_result 和旧错误结果对           │     │
 │                                                              │     │
 │   Layer 2: Full Compact  ───────────────────────────────┐  │     │
 │   token > 80% 阈值时，LLM 摘要旧消息                     │  │     │
 │                                                          │  │     │
 │   Layer 3: Emergency  ───────────────────────────────┐  │  │     │
-│   body > 3MB 时，标记旧工具调用为 valid=False       │  │  │     │
-│   旧图片替换为文本占位符                            │  │  │     │
+│   body > 3MB 时，旧图片替换为文本占位符              │  │  │     │
 └───────────────────────────────────────────────────────┴──┴──┴─────┘
-                              │
-                              ▼
-              _resolve_tool_results() 注入占位符
-              compacted 的工具结果 → "[Compacted: use read_tool_result...]"
 ```
 
 ---
@@ -41,38 +35,31 @@
 
 **触发条件**：每轮 LLM 调用前都运行
 
-**实现位置**：`core/compression.py::microcompact_tool_results()`
+**实现位置**：`core/compression.py::microcompact_mark_orphans_and_errors()`
 
 **策略**：
-- 保留最近 6 条工具结果（`keep_recent=6`）
-- 更早的工具结果标记为 `_meta.compacted = True`
-- 跳过外部存储且小于 200 字节的工具结果（依据 `_meta.file_size` 判断，压缩收益低）
+1. **孤立 tool_result 标记**：扫描所有 `role=user` 消息中的 `tool_result` 块，若其 `tool_use_id` 在有效消息中找不到对应的 `tool_use`（例如对应 assistant 消息已被 Layer 2/3 标记失效），则将该 user 消息标记为 `_meta.valid=False`
+2. **错误结果对标记**：统计所有含 `is_error=True` 的 tool_result，保留最近 **10 条**，更早的错误结果对（包含 tool_use 的 assistant 消息 + 包含 tool_result 的 user 消息）整对标记为 `_meta.valid=False`
 
-**元数据字段**（`tool_result._meta`）：
+**元数据字段**（消息级 `_meta`）：
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `compacted` | bool | 是否被压缩 |
-| `output_path` | str | 外部存储文件路径 |
-| `file_size` | int | 原始文件大小（字节） |
+| `valid` | bool | 消息是否有效（false = 发送给 API 时过滤） |
 
 **示例**：
 ```json
 {
-  "type": "tool_result",
-  "tool_use_id": "call_abc123",
+  "role": "user",
+  "content": [{"type": "tool_result", "tool_use_id": "call_abc123", ...}],
   "_meta": {
-    "compacted": true,
-    "output_path": "call_abc123.txt",
-    "file_size": 15234
+    "valid": false
   }
 }
 ```
 
-**LLM 视角**：
-压缩后的工具结果在发送给 LLM 时，由 `_resolve_tool_results()` 注入占位符：
-```
-[Compacted: use `read_tool_result` tool with tool_use_id="call_abc123" to retrieve original content]
-```
+**注意**：
+- 本层不再对 tool_result 内容进行压缩或清空，所有内容保持原样
+- 孤立检测依赖前序 Layer 2/3 已标记的消息（跨轮生效）
 
 ---
 
@@ -122,21 +109,13 @@
 
 **触发条件**：请求体 > 3MB（`MAX_BODY_SIZE = 3_000_000`）
 
-**实现位置**：`core/base_agent.py::_mark_old_tool_calls_invalid()`、`_mark_old_images_invalid()`
+**实现位置**：`core/base_agent.py::_mark_old_images_invalid()`
 
 **策略**：
-1. 优先将包含旧工具调用的**整条消息**标记为 `_meta.valid=False`（消息级标记），保留最近 3 轮
-2. 若仍超限，将更早的旧图片**就地替换为文本占位符**（`[image removed to reduce request size]`），保留最近 3 张
+将图片**从旧到新依次替换为文本占位符**（`[image removed to reduce request size]`），每替换一张重新计算请求体大小，直到小于 3MB 或所有图片都已替换。
 
-**标记方式**（工具调用为消息级 `_meta.valid=False`；图片则就地替换子块为文本占位符，不做消息级无效，避免 tool_use/tool_result 配对断裂）：
+**标记方式**（图片就地替换 tool_result 内的 image 子块为文本占位符，不做消息级无效，避免 tool_use/tool_result 配对断裂）：
 ```python
-# 工具调用：整条消息标记 valid=False
-{
-  "role": "assistant",  # 或包含 tool_result 的 user 消息
-  "content": [{"type": "tool_use", "id": "call_xyz", ...}],
-  "_meta": {"valid": false}
-}
-
 # 图片：就地替换 tool_result 内的 image 子块为文本占位符
 {
   "type": "tool_result",
@@ -147,7 +126,7 @@
 }
 ```
 
-**注意**：此层压缩会丢失工具调用信息，LLM 无法恢复。
+**注意**：此层压缩会丢失图片信息，LLM 无法恢复。不再标记旧工具调用无效。
 
 ---
 
@@ -172,31 +151,11 @@
 
 ### 4.2 按需读取
 
-`_resolve_tool_results()` 在发送 LLM 前读取外部文件：
-- 未压缩：读取文件内容（truncated 的超长输出会中段截断并附引导语）
-- 已压缩：注入占位符
+`_load_external_tool_results()` 在发送 LLM 前读取外部文件，获取完整的工具输出内容。
 
 ---
 
-## 五、`read_tool_result` 工具
-
-当 LLM 需要重新获取被压缩的工具结果时，使用此工具。
-
-**参数**：
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `tool_use_id` | str | 工具调用的唯一 ID |
-
-**实现位置**：`core/tools/read_tool_result.py`
-
-**示例调用**：
-```python
-read_tool_result(tool_use_id="call_abc123")
-```
-
----
-
-## 六、Token 估算
+## 五、Token 估算
 
 ### 6.1 估算算法
 
@@ -226,10 +185,9 @@ total += max(750, len(data) // 100)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `MICROCOMPACT_KEEP_RECENT` | 6 | Microcompact 保留的最近工具结果数 |
+| `ERROR_RESULT_KEEP_RECENT` | 10 | Microcompact 保留的最近错误结果数 |
 | `FULL_COMPACT_TOKEN_RATIO` | 0.80 | 触发 Full Compact 的 token 比例 |
 | `MAX_BODY_SIZE` | 3_000_000 | 触发 Emergency 的字节数（3MB） |
-| `KEEP_USER_MESSAGES` | 3 | Full Compact 保留的用户消息数 |
 
 ---
 
@@ -247,17 +205,17 @@ Agent.run()（master 交互式 / worker、lite 自主式）
             │
             ├── _check_and_compress()
             │       │
-            │       ├── Layer 1: microcompact_tool_results()
+            │       ├── Layer 1: microcompact_mark_orphans_and_errors()
             │       │
             │       ├── Layer 2: (token > 阈值) _perform_full_compact()
             │       │
-            │       └── Layer 3: (body > 3MB) _mark_old_*_invalid()
+            │       └── Layer 3: (body > 3MB) _mark_old_images_invalid()
             │
             ├── _call_llm()
             │       │
             │       ├── _get_messages_with_header()
             │       │
-            │       ├── _resolve_tool_results()  ← 注入占位符
+            │       ├── _load_external_tool_results()  ← 读取外部文件
             │       │
             │       └── HTTP 请求
             │
@@ -270,33 +228,35 @@ Agent.run()（master 交互式 / worker、lite 自主式）
 
 | 文件 | 职责 |
 |------|------|
-| `core/compression.py` | 压缩函数（microcompact、token 计数、LLM 摘要） |
-| `core/base_agent.py` | 三层压缩调用逻辑、`_resolve_tool_results()` |
-| `core/tools/read_tool_result.py` | 重新获取压缩的工具结果 |
+| `core/compression.py` | 压缩函数（microcompact 标记、token 计数） |
+| `core/base_agent.py` | 三层压缩调用逻辑、`_load_external_tool_results()`、图片替换 |
+| `core/agent_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现 |
+| `core/tools/read.py` | 读取工具输出文件（替代旧的 `read_tool_result` 工具） |
 | `core/tools/base.py` | 工具输出外部存储 |
 
 ---
 
 ## 十、设计决策
 
-### 10.1 为什么用标记而非替换？
+### 10.1 为什么 Layer 1 不再压缩内容？
 
-Microcompact 使用 `_meta.compacted = True` 标记，而非直接替换内容为占位符。
+Microcompact 不再对 tool_result 内容进行压缩或清空，只标记消息有效性。
 
 **原因**：
-- 保留原始数据，支持 `read_tool_result` 恢复
-- 发送 LLM 时再注入占位符，避免 Session 存储冗余
+- 简化逻辑，减少 `_load_external_tool_results` 的复杂性
+- 内容保留在消息中，前端可直接展示完整历史
+- 错误结果对的整对标记保持 tool_use/tool_result 配对完整性
 
-### 10.2 为什么保留最近 6 条？
+### 10.2 为什么错误结果对保留最近 10 条？
 
 经验值：
-- 太少：LLM 频繁调用 `read_tool_result`，增加延迟
-- 太多：压缩效果差，token 消耗高
+- 错误结果通常需要 LLM 记住以调整策略
+- 太早的错误（超过 10 条）参考价值低，可安全移除
 
 ### 10.3 为什么 Full Compact 用 LLM 摘要？
 
 简单截断会丢失关键上下文（如已完成的工作、关键决策）。LLM 摘要能保留语义，但增加一次 API 调用。
 
-### 10.4 为什么需要 Emergency 层？
+### 10.4 为什么 Emergency 只替换图片？
 
-某些场景（如大文件读取、多图片）可能使请求体远超 token 限制。Emergency 层是最后防线，防止 413 错误。
+图片体积大（数千至数万 token），是请求体超限的主要原因。只替换图片而不标记工具调用失效，可保留工具执行的完整历史，LLM 仍能了解之前做了什么操作。

@@ -199,13 +199,9 @@ class BaseAgent:
         """Use LLM to summarize messages (delegated to Runner)."""
         return self.runner._summarize_messages(messages)
 
-    def _mark_old_tool_calls_invalid(self, keep_recent_rounds: int = 5) -> int:
-        """Mark old tool calls as invalid to reduce body size (delegated to Runner)."""
-        return self.runner._mark_old_tool_calls_invalid(keep_recent_rounds)
-
-    def _mark_old_images_invalid(self, keep_recent: int = 5) -> int:
-        """Replace old tool_result images with text placeholders (delegated to Runner)."""
-        return self.runner._mark_old_images_invalid(keep_recent)
+    def _mark_old_images_invalid(self, max_body_size: int = 3_000_000) -> int:
+        """Replace old tool_result images until body < max_body_size (delegated to Runner)."""
+        return self.runner._mark_old_images_invalid(max_body_size)
 
     def _mark_all_images_invalid(self) -> None:
         """Replace all tool_result images with text placeholders for 413 retry (delegated to Runner)."""

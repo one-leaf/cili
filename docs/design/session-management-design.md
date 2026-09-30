@@ -104,12 +104,11 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
 | `commit.seq` | int | 普通消息：引用 messages.jsonl 中同 seq 行的内容 |
 | `commit.summary` | string | 压缩摘要消息：内嵌摘要内容（无 seq，不进 jsonl） |
 | `commit.role` | string | 摘要消息角色（assistant/user） |
-| `commit.msg_meta` | object | 消息级 `_meta`（`valid`、`compacted` 等，不含 `id/seq`） |
+| `commit.msg_meta` | object | 消息级 `_meta`（`valid` 等，不含 `id/seq`） |
 | `commit.blocks` | object | block 级 `_meta`，键为 block id（`tool_use_id`/`tool_call_id`/`id`） |
 | `commit.blocks[].tool_name` | string | 工具名称（如 bash、read、write） |
 | `commit.blocks[].file_size` | int | 外部输出文件的字节数（仅外部存储时有） |
 | `commit.blocks[].truncated` | bool | 输出是否被截断（>10K 字符） |
-| `commit.blocks[].compacted` | bool | 是否被 microcompact 压缩过 |
 | `commit.blocks[].output_path` | string | 外部输出文件相对路径（如 toolu_123.txt） |
 
 **双读路径**：
@@ -186,11 +185,10 @@ Agent 执行日志独立存储在子目录中：
 2. `_run_bash()` 逐字符读取子进程输出，同时 append 写入 output_file（每块 flush）
 3. 前端通过 stream API 轮询文件新增内容，实现实时显示
 4. **Session 只保存元信息**（`_meta.file_size`、`_meta.truncated`、`_meta.output_path` 等），内容按需内联或外部存储
-5. 发送 LLM 前，`_resolve_tool_results()` 从外部文件按需读取内容注入消息中
-6. 处理三种情况：
+5. 发送 LLM 前，`_load_external_tool_results()` 从外部文件按需读取内容注入消息中
+6. 处理两种情况：
    - 正常输出：直接读取文件内容
    - 截断输出（>10K 字符）：读取后截断 + 引导语
-   - 压缩输出（`_meta.compacted=True`）：注入占位符
 
 **文件生命周期**：随会话删除自动清理（`shutil.rmtree`）。
 
@@ -237,9 +235,8 @@ class SessionManager:
 | `rename(new_name)` | 重命名会话 |
 | `update_usage(...)` | 更新使用量统计 |
 | `get_usage()` | 获取使用量统计 |
-| `microcompact_tool_results(keep_recent)` | Microcompact 压缩（core/compression.py 模块级函数，替换内容为占位符） |
-| `mark_old_tool_calls_invalid(keep_recent_rounds)` | 标记旧工具调用为无效（BaseAgent 方法） |
-| `mark_old_images_invalid(keep_recent)` | 标记旧图片为无效（BaseAgent 方法） |
+| `microcompact_mark_orphans_and_errors()` | Microcompact 压缩（core/compression.py 模块级函数，标记孤立 tool_result 和旧错误结果对） |
+| `mark_old_images_invalid(max_body_size)` | 替换旧图片为占位符直到请求体小于阈值（BaseAgent 方法） |
 | `save_agent_log(...)` | 保存 Agent 执行日志 |
 | `load_agent_log(exec_id)` | 加载 Agent 执行日志 |
 | `list_agent_logs()` | 列出所有执行日志 |

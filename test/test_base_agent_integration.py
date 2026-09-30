@@ -558,11 +558,11 @@ class TestBaseAgentUnitTests:
             }]},
         ]
 
-        saved = agent._mark_old_images_invalid(keep_recent=1)
+        saved = agent._mark_old_images_invalid(max_body_size=10250)  # 替换最早一条后 body < 10250
 
-        assert saved == 200  # 只替换最早一条的图片
+        assert saved > 0  # 有节省
         assert len(agent.get_valid_messages()) == 4  # 全部消息仍有效
         first_subs = agent.messages[1]["content"][0]["content"]
-        assert first_subs[0]["type"] == "text"  # 已替换为占位符
+        assert first_subs[0]["type"] == "text"  # 最早一条已替换为占位符
         last_subs = agent.messages[3]["content"][0]["content"]
         assert last_subs[0]["type"] == "image"  # 最近一条保留

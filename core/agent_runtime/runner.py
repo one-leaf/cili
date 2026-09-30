@@ -23,9 +23,7 @@ import httpx
 
 from core.agent_runtime.context import INTERNAL_META
 from core.llm import LLMResponse, Message, TextBlock, classify_llm_error, format_llm_error
-from core.session import (
-    INLINE_COMPACTED_PLACEHOLDER, format_compacted_placeholder, generate_short_id,
-)
+from core.session import generate_short_id
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -286,8 +284,8 @@ class Runner:
         - .txt: 纯文本
         - .json: 多模态内容（包含图片和文本块）
 
-        Uses new _meta format: _meta.output_path, _meta.compacted, etc.
-        Backward compatible with old _output_path, _compacted format.
+        Uses new _meta format: _meta.output_path, etc.
+        Backward compatible with old _output_path format.
         """
         for msg in messages:
             if msg.get("role") != "user":
@@ -304,19 +302,9 @@ class Runner:
 
                 # 从 block 级别的 _meta 读取内部元数据
                 block_meta = block.get("_meta", {})
-                compacted = block_meta.get("compacted", False)
                 output_path = block_meta.get("output_path", "")
                 file_size = block_meta.get("file_size", 0)
                 truncated = block_meta.get("truncated", False)
-
-                # Handle compacted marker - include filename for read_tool_result
-                if compacted:
-                    if output_path:
-                        block["content"] = format_compacted_placeholder(output_path)
-                    else:
-                        # 内联压缩结果：无外置文件，原文保留在 messages.jsonl（会话历史）
-                        block["content"] = INLINE_COMPACTED_PLACEHOLDER
-                    continue
 
                 # Read from external file
                 if not output_path or not self.agent.session_dir:
@@ -427,24 +415,20 @@ class Runner:
     def _check_and_compress(self) -> None:
         """3-layer compression before LLM call.
 
-        Layer 1: Microcompact (replace old tool results with placeholder)
+        Layer 1: Microcompact (mark orphan tool_results and old error pairs)
         Layer 2: Full compact (LLM summary when tokens > 80% threshold)
-        Layer 3: Emergency body size (mark old tool calls/images as invalid)
+        Layer 3: Emergency body size (replace old images with placeholders)
         """
-        from core.compression import microcompact_tool_results, count_messages_tokens
+        from core.compression import microcompact_mark_orphans_and_errors, count_messages_tokens
 
         MAX_TOKENS = self.agent.model.max_context_tokens
-        MICROCOMPACT_KEEP_RECENT = 6
         FULL_COMPACT_TOKEN_RATIO = 0.80
         MAX_BODY_SIZE = 3_000_000
 
         # Layer 1: Microcompact
-        saved = microcompact_tool_results(
-            self.agent.messages,
-            keep_recent=MICROCOMPACT_KEEP_RECENT,
-        )
-        if saved > 0:
-            logger.debug(f"[Microcompact] 压缩旧工具结果，节省约 {saved:,} 字节")
+        invalidated = microcompact_mark_orphans_and_errors(self.agent.messages)
+        if invalidated > 0:
+            logger.debug(f"[Microcompact] 标记 {invalidated} 条消息为无效")
             self.agent._invalidate_message_cache()
             self.agent.cache_state.on_compression(1)
 
@@ -467,7 +451,7 @@ class Runner:
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
 
-        # Layer 3: Emergency body size
+        # Layer 3: Emergency body size (only images)
         messages = self.agent._get_messages_with_header()
         body_size = self._estimate_request_body_size(messages)
         logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
@@ -486,19 +470,11 @@ class Runner:
                     image_size += len(data)
             logger.debug(f"[上下文] 大小分布: 文本={text_size:,}B, 图片={image_size:,}B, 工具={tool_size:,}B")
 
-            logger.info("[上下文] 请求体过大，正在标记旧工具调用为无效...")
-            saved = self._mark_old_tool_calls_invalid(keep_recent_rounds=3)
+            logger.info("[上下文] 请求体过大，正在替换旧图片为占位符...")
+            saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
             if saved > 0:
-                messages = self.agent._get_messages_with_header()
-                logger.info(f"[上下文] 工具调用标记完成，节省 {saved} 字节")
+                logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
                 self.agent.cache_state.on_compression(3)
-
-            body_size = self._estimate_request_body_size(messages)
-            if body_size > MAX_BODY_SIZE:
-                logger.info("[上下文] 正在替换旧图片为占位符...")
-                saved = self._mark_old_images_invalid(keep_recent=3)
-                if saved > 0:
-                    logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
 
         # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
         self.agent._invalidate_message_cache()
@@ -626,59 +602,12 @@ class Runner:
             logger.error("[上下文] 摘要生成失败")
             return "（摘要生成失败，请查看完整历史）"
 
-    def _mark_old_tool_calls_invalid(self, keep_recent_rounds: int = 5) -> int:
-        """Mark old tool calls as invalid to reduce body size."""
-        saved = 0
-        tool_calls = []
-        round_number = 0
+    def _mark_old_images_invalid(self, max_body_size: int = 3_000_000) -> int:
+        """Replace old tool_result images with text placeholders until body < max_body_size.
 
-        for msg in self.agent.messages:
-            # Check validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
-                continue
-
-            role = msg.get("role")
-            content = msg.get("content", [])
-
-            if not isinstance(content, list):
-                continue
-
-            if role == "assistant":
-                round_number += 1
-
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type in ("tool_use", "tool_result"):
-                    tool_calls.append({"block": block, "round": round_number, "msg": msg})
-
-        if round_number <= keep_recent_rounds:
-            return 0
-
-        for call in tool_calls:
-            if call["round"] <= round_number - keep_recent_rounds:
-                msg = call["msg"]
-                # Check if already marked invalid
-                meta = msg.get("_meta", {})
-                if meta.get("valid") is False:
-                    continue
-
-                block = call["block"]
-                content = block.get("input", {}) if block.get("type") == "tool_use" else block.get("content", "")
-                size = len(str(content))
-
-                # Mark message-level _meta.valid = False
-                if "_meta" not in msg:
-                    msg["_meta"] = {}
-                msg["_meta"]["valid"] = False
-                saved += size
-
-        return saved
-
-    def _mark_old_images_invalid(self, keep_recent: int = 5) -> int:
-        """Replace old tool_result images with text placeholders to reduce body size.
+        Replaces images in order from oldest to newest, recalculating body size
+        after each replacement. Stops when body size is under the limit or all
+        images have been replaced.
 
         Replaces images in place (instead of invalidating whole messages) so the
         tool_use/tool_result pairing with the preceding assistant message stays
@@ -687,7 +616,9 @@ class Runner:
         Returns the number of image bytes removed.
         """
         saved = 0
-        image_refs = []  # (msg_idx, block_idx, sub_idx, data_len)
+
+        # Collect all image references with their positions (oldest first)
+        image_refs: list[tuple[int, int, int, int]] = []  # (msg_idx, block_idx, sub_idx, data_len)
 
         for i, msg in enumerate(self.agent.messages):
             # Check validity
@@ -709,13 +640,25 @@ class Runner:
                         data_len = len(sub.get("source", {}).get("data", ""))
                         image_refs.append((i, block_idx, sub_idx, data_len))
 
-        if len(image_refs) <= keep_recent:
+        if not image_refs:
             return 0
 
-        for msg_idx, block_idx, sub_idx, data_len in image_refs[:-keep_recent]:
+        # Replace images from oldest to newest until body < max_body_size
+        placeholder_bytes = len("[image removed to reduce request size]".encode('utf-8'))
+
+        for msg_idx, block_idx, sub_idx, data_len in image_refs:
+            # Check current body size
+            messages = self.agent._get_messages_with_header()
+            body_size = self._estimate_request_body_size(messages)
+
+            if body_size <= max_body_size:
+                break  # Done
+
+            # Replace this image
             rc = self.agent.messages[msg_idx]["content"][block_idx]["content"]
             rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
-            saved += data_len
+            # Net savings = image data - placeholder text
+            saved += data_len - placeholder_bytes
 
         return saved
 

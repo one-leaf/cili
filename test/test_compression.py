@@ -8,7 +8,7 @@ import pytest
 from core.compression import (
     count_messages_tokens,
     count_tokens_approx,
-    microcompact_tool_results,
+    microcompact_mark_orphans_and_errors,
 )
 
 
@@ -89,158 +89,112 @@ class TestCountMessagesTokens:
         assert tokens > 0
 
 
-class TestMicrocompactToolResults:
-    """microcompact_tool_results() 保留最近 N 条，标记更早的为已压缩。"""
+class TestMicrocompactOrphans:
+    """microcompact_mark_orphans_and_errors() 任务1：标记孤立 tool_result。"""
 
-    def _make_tool_result_msg(self, content: str, file_size: int = 0) -> dict:
-        """创建工具结果消息。file_size 模拟外部文件大小。
-
-        使用新格式：block 级别的 _meta.file_size, _meta.compacted
-        """
-        block = {
-            "type": "tool_result",
-            "tool_use_id": "x",
+    def _make_tool_use_msg(self, tool_use_id: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": tool_use_id, "name": "bash", "input": {}}],
         }
-        if file_size > 0:
-            block["_meta"] = {"file_size": file_size}
+
+    def _make_tool_result_msg(self, tool_use_id: str, is_error: bool = False) -> dict:
         return {
             "role": "user",
-            "content": [block],
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": "output", "is_error": is_error}],
         }
 
-    def _make_text_msg(self, role: str, text: str) -> dict:
-        return {"role": role, "content": text}
-
-    def test_no_compression_when_few_results(self):
-        """工具结果数 <= keep_recent 时不压缩。"""
+    def test_orphan_marked_invalid(self):
+        """tool_result 无对应 tool_use 时，整条 user 消息标记 valid=False。"""
         messages = [
-            self._make_text_msg("user", "question"),
-            self._make_tool_result_msg("output 1"),
-            self._make_tool_result_msg("output 2"),
+            self._make_tool_result_msg("orphan_1"),  # 无对应 tool_use
         ]
-        saved = microcompact_tool_results(messages, keep_recent=6)
-        assert saved == 0
-        # 内容未被标记为压缩（新格式：block 级别 _meta.compacted）
-        assert not messages[1]["content"][0].get("_meta", {}).get("compacted")
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 1
+        assert messages[0]["_meta"]["valid"] is False
 
-    def test_compresses_old_results(self):
-        """超过 keep_recent 的旧工具结果被标记为已压缩。"""
+    def test_paired_not_invalidated(self):
+        """有对应 tool_use 的 tool_result 不被标记。"""
         messages = [
-            self._make_text_msg("user", "question"),
-            self._make_tool_result_msg("old output", file_size=200),  # 要压缩
-            self._make_text_msg("assistant", "reply"),
-            self._make_tool_result_msg("recent output"),  # 保留
+            self._make_tool_use_msg("call_1"),
+            self._make_tool_result_msg("call_1"),
         ]
-        saved = microcompact_tool_results(messages, keep_recent=1)
-        assert saved == 200  # 基于 block 级别 _meta.file_size
-        # 旧的被标记为已压缩（新格式：block 级别 _meta.compacted）
-        assert messages[1]["content"][0]["_meta"]["compacted"] is True
-        # 最近的不被压缩
-        assert not messages[3]["content"][0].get("_meta", {}).get("compacted")
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 0
+        assert not messages[1].get("_meta", {}).get("valid")
 
-    def test_already_compacted_skipped(self):
-        """已压缩的消息不重复压缩。"""
+    def test_orphan_after_tool_use_invalidated(self):
+        """当 tool_use 所在 assistant 消息已被标记失效，tool_result 成为孤立。"""
         messages = [
-            self._make_tool_result_msg("old output", file_size=100),
-            self._make_tool_result_msg("recent output"),
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "bash", "input": {}}],
+             "_meta": {"valid": False}},
+            self._make_tool_result_msg("call_1"),  # 对应 tool_use 已失效 → 孤立
         ]
-        # 先压缩一次
-        microcompact_tool_results(messages, keep_recent=1)
-        # 再压缩一次，saved 应该为 0（已压缩过的跳过）
-        saved2 = microcompact_tool_results(messages, keep_recent=1)
-        assert saved2 == 0
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 1
+        assert messages[1]["_meta"]["valid"] is False
 
-    def test_no_tool_results(self):
-        """没有工具结果消息时返回 0。"""
+    def test_already_invalidated_skipped(self):
+        """已标记失效的消息不重复计数。"""
         messages = [
-            self._make_text_msg("user", "hello"),
-            self._make_text_msg("assistant", "hi"),
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": ""}],
+             "_meta": {"valid": False}},
         ]
-        saved = microcompact_tool_results(messages)
-        assert saved == 0
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 0
+
+
+class TestMicrocompactErrors:
+    """microcompact_mark_orphans_and_errors() 任务2：标记旧错误结果对。"""
+
+    def _make_pair(self, tool_use_id: str, is_error: bool = False) -> tuple[dict, dict]:
+        use_msg = {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": tool_use_id, "name": "bash", "input": {}}],
+        }
+        result_msg = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": "err" if is_error else "ok", "is_error": is_error}],
+        }
+        return use_msg, result_msg
+
+    def test_error_pairs_within_limit_not_invalidated(self):
+        """错误结果对数量 <= 10 时不标记。"""
+        messages = []
+        for i in range(5):
+            use, result = self._make_pair(f"call_{i}", is_error=True)
+            messages.extend([use, result])
+        count = microcompact_mark_orphans_and_errors(messages)
+        # 这5对错误结果都在保留范围内，不标记（但注意：它们都有对应的有效 tool_use，不会成为孤立）
+        assert count == 0
+
+    def test_error_pairs_over_limit_invalidated(self):
+        """超过10对的错误结果对，最早的被整对标记失效。"""
+        messages = []
+        for i in range(12):
+            use, result = self._make_pair(f"call_{i}", is_error=True)
+            messages.extend([use, result])
+        count = microcompact_mark_orphans_and_errors(messages)
+        # 12对 > 10，最早的2对被标记（每对2条消息 = 4条）
+        assert count == 4
+        assert messages[0]["_meta"]["valid"] is False   # call_0 tool_use
+        assert messages[1]["_meta"]["valid"] is False   # call_0 tool_result
+        assert messages[2]["_meta"]["valid"] is False   # call_1 tool_use
+        assert messages[3]["_meta"]["valid"] is False   # call_1 tool_result
+        # 第3对及之后保留
+        assert not messages[4].get("_meta", {}).get("valid")
+
+    def test_non_error_results_not_affected(self):
+        """非错误结果不参与错误对标记。"""
+        messages = []
+        for i in range(12):
+            use, result = self._make_pair(f"call_{i}", is_error=False)
+            messages.extend([use, result])
+        count = microcompact_mark_orphans_and_errors(messages)
+        # 无错误结果，不标记（也无孤立）
+        assert count == 0
 
     def test_empty_messages(self):
-        saved = microcompact_tool_results([])
-        assert saved == 0
+        assert microcompact_mark_orphans_and_errors([]) == 0
 
-
-class TestMicrocompactInline:
-    """内联结果（file_size=0）压缩只标记 compacted，不 spill 外置文件（jsonl 保留原文）。"""
-
-    def _make_inline_msg(self, tool_use_id: str, content: str, seq: int | None = 0) -> dict:
-        msg = {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": content,
-                }
-            ],
-        }
-        if seq is not None:
-            msg["_meta"] = {"seq": seq}
-        return msg
-
-    def test_inline_compacted_no_file_created(self, tmp_path):
-        """内联结果（已持久化）压缩：标记 compacted + 清 content，不写外置文件。"""
-        messages = [
-            self._make_inline_msg("toolu_abc", "long inline output " * 50, seq=0),
-            self._make_inline_msg("toolu_recent", "recent", seq=1),
-        ]
-        saved = microcompact_tool_results(messages, keep_recent=1)
-
-        old = messages[0]["content"][0]
-        assert old["_meta"]["compacted"] is True
-        assert "output_path" not in old["_meta"]
-        assert old.get("content") is None
-        assert saved == len("long inline output " * 50)
-
-        # 不生成外置文件
-        assert list(tmp_path.iterdir()) == []
-
-        # 最近一条不压缩
-        recent = messages[1]["content"][0]
-        assert not recent.get("_meta", {}).get("compacted")
-        assert recent["content"] == "recent"
-
-    def test_inline_unpersisted_skipped(self):
-        """未持久化（无 _meta.seq）的内联结果跳过压缩，避免清空后原文丢失。"""
-        messages = [
-            self._make_inline_msg("toolu_abc", "inline output " * 20, seq=None),
-            self._make_inline_msg("toolu_recent", "recent", seq=1),
-        ]
-        saved = microcompact_tool_results(messages, keep_recent=1)
-
-        assert saved == 0
-        old = messages[0]["content"][0]
-        assert not old.get("_meta", {}).get("compacted")
-        assert old["content"] == "inline output " * 20
-
-    def test_inline_small_result_skipped(self):
-        """小于 200 字符的内联结果保留原文，不压缩。"""
-        messages = [
-            self._make_inline_msg("toolu_abc", "small", seq=0),
-            self._make_inline_msg("toolu_recent", "recent", seq=1),
-        ]
-        saved = microcompact_tool_results(messages, keep_recent=1)
-
-        assert saved == 0
-        old = messages[0]["content"][0]
-        assert not old.get("_meta", {}).get("compacted")
-        assert old["content"] == "small"
-
-    def test_file_backed_marks_only(self):
-        """外部文件结果（file_size>0）：只标记 compacted，content 保持原样。"""
-        messages = [
-            self._make_inline_msg("toolu_abc", "ignored", seq=0),
-            self._make_inline_msg("toolu_recent", "recent", seq=1),
-        ]
-        messages[0]["content"][0]["_meta"] = {"file_size": 300}
-        saved = microcompact_tool_results(messages, keep_recent=1)
-
-        assert saved == 300
-        old = messages[0]["content"][0]
-        assert old["_meta"]["compacted"] is True
-        assert old["content"] == "ignored"
 
