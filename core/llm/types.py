@@ -351,11 +351,15 @@ class UsageData:
         cached = details.get("cached_tokens", 0) or 0
         if not cached:
             cached = data.get("prompt_cache_hit_tokens", 0) or 0
+
+        # 尝试提取 cache_write（如果网关支持）
+        cache_write = details.get("cache_write_tokens", 0) or 0
+
         return cls(
             input_tokens=data.get("prompt_tokens", 0),
             output_tokens=data.get("completion_tokens", 0),
             cache_read_tokens=cached,
-            cache_write_tokens=0,  # OpenAI doesn't report cache write
+            cache_write_tokens=cache_write,
         )
 
 
