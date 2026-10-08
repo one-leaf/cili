@@ -1,11 +1,11 @@
-"""Runner - agent 单回合执行层（Step 3 抽取）。
+"""Runner - runner 单回合执行层（Step 3 抽取）。
 
-从 BaseAgent 抽出的执行逻辑：LLM 调用（streaming/non-streaming + 413 去图重试）、
-工具执行与外部文件存储、三层压缩。持 agent 引用访问共享状态（messages/client/
-tools/回调），不自己持有会话状态 —— 会话状态归 AgentContext。
+从 BaseSessionRunner 抽出的执行逻辑：LLM 调用（streaming/non-streaming + 413 去图重试）、
+工具执行与外部文件存储、三层压缩。持 runner 引用访问共享状态（messages/client/
+tools/回调），不自己持有会话状态 —— 会话状态归 SessionContext。
 
-`run_round()` = 压缩 + LLM 调用，是 Loop 的回合单位；BaseAgent 的 `_call_llm`
-转发至此，保证 loop 每轮 LLM 前触发压缩的语义不变，且测试对 `agent._call_llm`
+`run_round()` = 压缩 + LLM 调用，是 Loop 的回合单位；BaseSessionRunner 的 `_call_llm`
+转发至此，保证 loop 每轮 LLM 前触发压缩的语义不变，且测试对 `runner._call_llm`
 的 patch 仍生效（patch 会整体替换转发入口）。
 """
 
@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from core.agent_runtime.context import INTERNAL_META
+from core.session_runner_runtime.context import INTERNAL_META
 from core.llm import LLMResponse, Message, TextBlock, classify_llm_error, format_llm_error
 from core.session import generate_short_id
 from core.tools.base import Tool, ToolResult
@@ -48,8 +48,8 @@ _SYSTEM_OVERHEAD_BYTES = 10_000
 class Runner:
     """单回合执行层：压缩 → LLM 调用 → 工具执行。"""
 
-    def __init__(self, agent: Any) -> None:
-        self.agent = agent
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
 
     # ========== 回合单位 ==========
 
@@ -74,7 +74,7 @@ class Runner:
 
     def _get_tool_by_name(self, name: str) -> Tool | None:
         """Find tool by name."""
-        for tool in self.agent.tools:
+        for tool in self.runner.tools:
             if tool.name == name:
                 return tool
         return None
@@ -109,7 +109,7 @@ class Runner:
         # Tools that need external file for streaming (frontend polling)
         _STREAMING_TOOLS = {"bash", "python"}
         # Placeholder tools: output goes directly in content, no external file
-        _PLACEHOLDER_TOOLS = {"ask_user", "agent"}
+        _PLACEHOLDER_TOOLS = {"ask_user", "session"}
 
         if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
             return self._execute_tool_impl(
@@ -139,8 +139,8 @@ class Runner:
         # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
         output_filename = self._safe_output_filename(tool_use_id)
         output_file_path = ""
-        if self.agent.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
-            output_file_path = str(self.agent.session_dir / output_filename)
+        if self.runner.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
+            output_file_path = str(self.runner.session_dir / output_filename)
             # 仅流式工具（bash/python）需要实例属性实时写 + 前端轮询文件；
             # 并发安全工具（纯读）execute 不读 output_file，不设实例属性防互覆。
             if name in _STREAMING_TOOLS:
@@ -152,18 +152,18 @@ class Runner:
                         f.write("")
                 except Exception:
                     pass
-                # 全局事件流：流式工具的实时输出增量 → agent._on_tool_output
-                if self.agent._on_tool_output:
+                # 全局事件流：流式工具的实时输出增量 → runner._on_tool_output
+                if self.runner._on_tool_output:
                     tool.on_output = (
                         lambda chunk, offset, _n=name, _id=tool_use_id:
-                        self.agent._on_tool_output(_n, chunk, offset, _id)
+                        self.runner._on_tool_output(_n, chunk, offset, _id)
                     )
                 else:
                     tool.on_output = None
 
         # Notify callback
-        if self.agent._on_tool_call:
-            self.agent._on_tool_call(name, input_data, tool_use_id)
+        if self.runner._on_tool_call:
+            self.runner._on_tool_call(name, input_data, tool_use_id)
 
         # Execute tool
         start_time = time.perf_counter()
@@ -206,8 +206,8 @@ class Runner:
         logger.debug(f"[工具结果] {name} {status} ({elapsed:.2f}s)")
 
         # Notify callback
-        if self.agent._on_tool_result:
-            self.agent._on_tool_result(name, output_preview, result.error, tool_use_id)
+        if self.runner._on_tool_result:
+            self.runner._on_tool_result(name, output_preview, result.error, tool_use_id)
 
         # Build _meta with internal fields
         file_size = len(result.output.encode('utf-8', errors='replace'))
@@ -221,7 +221,7 @@ class Runner:
         needs_external_file = truncated or is_multimodal
         if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
             # 显式路径调用 save_output_to_file，避免并行时实例属性互覆
-            save_path = str(self.agent.session_dir / output_filename) if self.agent.session_dir else None
+            save_path = str(self.runner.session_dir / output_filename) if self.runner.session_dir else None
             if save_path:
                 saved_path = tool.save_output_to_file(result, output_file=save_path)
                 # Update filename if changed to .json (multimodal)
@@ -247,7 +247,7 @@ class Runner:
             "is_error": result.error,
         }
 
-        # Add completed=False to block-level _meta for placeholder tools (ask_user, agent)
+        # Add completed=False to block-level _meta for placeholder tools (ask_user, session)
         if result.completed is False:
             if "_meta" not in result_dict:
                 result_dict["_meta"] = {}
@@ -264,8 +264,8 @@ class Runner:
         # (not truncated, not multimodal) the file becomes unnecessary.
         # _resolve_tool_results skips blocks with inline content, so it never
         # needs this file. Delete it now to avoid orphaned files on disk.
-        if not needs_external_file and self.agent.session_dir and output_filename:
-            orphan_path = self.agent.session_dir / output_filename
+        if not needs_external_file and self.runner.session_dir and output_filename:
+            orphan_path = self.runner.session_dir / output_filename
             try:
                 if orphan_path.exists():
                     orphan_path.unlink()
@@ -307,15 +307,15 @@ class Runner:
                 truncated = block_meta.get("truncated", False)
 
                 # Read from external file
-                if not output_path or not self.agent.session_dir:
+                if not output_path or not self.runner.session_dir:
                     block["content"] = "[工具输出文件路径缺失]"
                     continue
 
-                file_path = (self.agent.session_dir / output_path).resolve()
+                file_path = (self.runner.session_dir / output_path).resolve()
                 # 防御纵深：output_path 来自会话文件 _meta，篡改可能穿越 session 目录 → 拒绝。
                 # 正常路径创建时已被 _safe_output_filename 消毒，此处与 routes_workspace 的
                 # W10 校验对齐，双保险。
-                if not file_path.is_relative_to(self.agent.session_dir.resolve()):
+                if not file_path.is_relative_to(self.runner.session_dir.resolve()):
                     block["content"] = "[工具输出路径校验失败]"
                     continue
                 if not file_path.exists():
@@ -421,20 +421,20 @@ class Runner:
         """
         from core.compression import microcompact_mark_orphans_and_errors, count_messages_tokens
 
-        MAX_TOKENS = self.agent.model.max_context_tokens
+        MAX_TOKENS = self.runner.model.max_context_tokens
         FULL_COMPACT_TOKEN_RATIO = 0.80
         MAX_BODY_SIZE = 3_000_000
 
         # Layer 1: Microcompact
-        invalidated = microcompact_mark_orphans_and_errors(self.agent.messages)
+        invalidated = microcompact_mark_orphans_and_errors(self.runner.messages)
         if invalidated > 0:
             logger.debug(f"[Microcompact] 标记 {invalidated} 条消息为无效")
-            self.agent._invalidate_message_cache()
-            self.agent.cache_state.on_compression(1)
+            self.runner._invalidate_message_cache()
+            self.runner.cache_state.on_compression(1)
 
         # Calculate tokens
-        messages = self.agent._get_messages_with_header()
-        total_tokens = self.agent._count_messages_tokens(messages)
+        messages = self.runner._get_messages_with_header()
+        total_tokens = self.runner._count_messages_tokens(messages)
 
         # Layer 2: Full compact
         full_compact_threshold = int(MAX_TOKENS * FULL_COMPACT_TOKEN_RATIO)
@@ -446,13 +446,13 @@ class Runner:
             )
             try:
                 self._perform_full_compact(KEEP_USER_MESSAGES)
-                self.agent.cache_state.reset_after_compact()   # 先清旧状态（含 last_cache_read 基线）
-                self.agent.cache_state.on_compression(2)       # 再标记 L2，供下次失效诊断
+                self.runner.cache_state.reset_after_compact()   # 先清旧状态（含 last_cache_read 基线）
+                self.runner.cache_state.on_compression(2)       # 再标记 L2，供下次失效诊断
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
 
         # Layer 3: Emergency body size (only images)
-        messages = self.agent._get_messages_with_header()
+        messages = self.runner._get_messages_with_header()
         body_size = self._estimate_request_body_size(messages)
         logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
 
@@ -474,10 +474,10 @@ class Runner:
             saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
             if saved > 0:
                 logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
-                self.agent.cache_state.on_compression(3)
+                self.runner.cache_state.on_compression(3)
 
         # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
-        self.agent._invalidate_message_cache()
+        self.runner._invalidate_message_cache()
 
     def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
@@ -486,12 +486,12 @@ class Runner:
         """
         from core.compression import count_messages_tokens
 
-        all_messages = self.agent.messages
-        total_tokens = self.agent._count_messages_tokens(self.agent.get_valid_messages())
+        all_messages = self.runner.messages
+        total_tokens = self.runner._count_messages_tokens(self.runner.get_valid_messages())
 
         # Find split point
-        valid_messages = self.agent.get_valid_messages()
-        split_idx = self.agent._find_split_by_user_messages(valid_messages, keep_user_messages)
+        valid_messages = self.runner.get_valid_messages()
+        split_idx = self.runner._find_split_by_user_messages(valid_messages, keep_user_messages)
         if split_idx <= 0:
             raise ValueError("Not enough messages to compress")
 
@@ -503,9 +503,9 @@ class Runner:
             # Nothing to summarize
             return total_tokens, total_tokens
 
-        # 经 agent 转发调用：测试 patch agent._summarize_messages 时生效，且
+        # 经 runner 转发调用：测试 patch runner._summarize_messages 时生效，且
         # 未被 patch 时经转发落到 Runner 真实实现（可覆写 seam 与 _get_messages_with_header 同理）
-        summary = self.agent._summarize_messages(old_messages)
+        summary = self.runner._summarize_messages(old_messages)
         if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
             logger.error("摘要生成失败，跳过压缩")
             return total_tokens, total_tokens
@@ -532,16 +532,16 @@ class Runner:
 
         # Add summary messages（summary=True：进 commits 视图内嵌摘要，不进 jsonl，
         # UI 完整历史保留压缩前原始消息，不展示摘要）
-        self.agent.add_message(
+        self.runner.add_message(
             "user",
             "[Our previous conversation has been compacted due to context length.]",
             meta={"summary": True},
         )
-        self.agent.add_message("assistant", summary, meta={"summary": True})
+        self.runner.add_message("assistant", summary, meta={"summary": True})
 
-        self.agent._invalidate_message_cache()
+        self.runner._invalidate_message_cache()
 
-        new_tokens = self.agent._count_messages_tokens(self.agent.get_valid_messages())
+        new_tokens = self.runner._count_messages_tokens(self.runner.get_valid_messages())
         logger.info(f"[Full Compact] 完成: {total_tokens:,} → {new_tokens:,} tokens")
         return total_tokens, new_tokens
 
@@ -566,7 +566,7 @@ class Runner:
                     conversation_parts.append(f"{role}: {' '.join(texts)}")
 
         conversation_text = "\n".join(conversation_parts)
-        max_chars = min(50000, self.agent.model.max_context_tokens * 2)
+        max_chars = min(50000, self.runner.model.max_context_tokens * 2)
         if len(conversation_text) > max_chars:
             conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
 
@@ -582,14 +582,14 @@ class Runner:
 请用 200-400 字总结："""
 
         try:
-            response = self.agent.client.chat(
+            response = self.runner.client.chat(
                 messages=[Message(role="user", content=summary_prompt)],
                 system="你是一个对话总结助手。请用中文简洁地总结对话要点。",
-                session_id=self.agent._session_id,
+                session_id=self.runner._session_id,
             )
             # Track usage (UsageData object)
             if response.usage:
-                self.agent._update_usage(
+                self.runner._update_usage(
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     api_calls=1,
@@ -620,7 +620,7 @@ class Runner:
         # Collect all image references with their positions (oldest first)
         image_refs: list[tuple[int, int, int, int]] = []  # (msg_idx, block_idx, sub_idx, data_len)
 
-        for i, msg in enumerate(self.agent.messages):
+        for i, msg in enumerate(self.runner.messages):
             # Check validity
             meta = msg.get("_meta", {})
             if meta.get("valid") is False:
@@ -648,14 +648,14 @@ class Runner:
 
         for msg_idx, block_idx, sub_idx, data_len in image_refs:
             # Check current body size
-            messages = self.agent._get_messages_with_header()
+            messages = self.runner._get_messages_with_header()
             body_size = self._estimate_request_body_size(messages)
 
             if body_size <= max_body_size:
                 break  # Done
 
             # Replace this image
-            rc = self.agent.messages[msg_idx]["content"][block_idx]["content"]
+            rc = self.runner.messages[msg_idx]["content"][block_idx]["content"]
             rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
             # Net savings = image data - placeholder text
             saved += data_len - placeholder_bytes
@@ -669,7 +669,7 @@ class Runner:
         invalidating a user message here would leave the preceding assistant
         tool_use dangling, and the API would reject the next request with 400.
         """
-        for msg in self.agent.messages:
+        for msg in self.runner.messages:
             content = msg.get("content", "")
             if not isinstance(content, list):
                 continue
@@ -792,7 +792,7 @@ class Runner:
         pad_dangling: bool = True,
         resolve_results: bool = True,
     ) -> list[Message]:
-        """Build Message objects for the LLM API from agent.messages.
+        """Build Message objects for the LLM API from runner.messages.
 
         共享的消息预处理管道（non-streaming / streaming / 413 重试 / 超时兜底）。
         ``pad_dangling``：为悬挂 tool_use 补占位（重试或超时兜底路径已修补过，跳过）。
@@ -800,12 +800,12 @@ class Runner:
         （non-streaming 413 重试路径首轮已解析过，跳过）。
         """
         if pad_dangling:
-            self.agent._pad_dangling_tool_results()
-        messages = self.agent._get_messages_with_header()
+            self.runner._pad_dangling_tool_results()
+        messages = self.runner._get_messages_with_header()
         if resolve_results:
             messages = self._resolve_tool_results(messages)
             messages = self._strip_meta_from_messages(messages)
-        if not self.agent.model.multimodal:
+        if not self.runner.model.multimodal:
             messages = self._strip_images_from_messages(messages)
         return self._convert_to_message_objects(messages)
 
@@ -835,22 +835,22 @@ class Runner:
         message_objects = self._prepare_messages_for_llm()
 
         try:
-            response = self.agent.client.chat(
+            response = self.runner.client.chat(
                 messages=message_objects,
                 system=system_prompt,
-                tools=self.agent.tool_schemas,
-                session_id=self.agent._session_id,
+                tools=self.runner.tool_schemas,
+                session_id=self.runner._session_id,
             )
             # Track usage (UsageData object)
             if response.usage:
-                self.agent._update_usage(
+                self.runner._update_usage(
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     api_calls=1,
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
                 )
-                self.agent.cache_state.on_llm_response(
+                self.runner.cache_state.on_llm_response(
                     cache_read=response.usage.cache_read_tokens,
                     cache_write=response.usage.cache_write_tokens,
                     input_tokens=response.usage.input_tokens,
@@ -863,42 +863,42 @@ class Runner:
                 self._mark_all_images_invalid()
                 # autonomous 模式写 exec schema（exec_id/task），避免覆盖 exec 日志；
                 # interactive 模式写普通 session schema。
-                if getattr(self.agent, "_mode", "interactive") == "autonomous":
-                    self.agent._save_progress(self.agent._turn_iterations, status="running")
+                if getattr(self.runner, "_mode", "interactive") == "autonomous":
+                    self.runner._save_progress(self.runner._turn_iterations, status="running")
                 else:
-                    self.agent.save_messages()
+                    self.runner.save_messages()
 
                 # 首轮已 pad/解析过工具输出，重试仅重新组装并去图
                 retry_message_objects = self._prepare_messages_for_llm(
                     pad_dangling=False, resolve_results=False
                 )
                 try:
-                    response = self.agent.client.chat(
+                    response = self.runner.client.chat(
                         messages=retry_message_objects,
                         system=system_prompt,
-                        tools=self.agent.tool_schemas,
-                        session_id=self.agent._session_id,
+                        tools=self.runner.tool_schemas,
+                        session_id=self.runner._session_id,
                     )
                     if response.usage:
-                        self.agent._update_usage(
+                        self.runner._update_usage(
                             input_tokens=response.usage.input_tokens,
                             output_tokens=response.usage.output_tokens,
                             api_calls=1,
                             cache_read_tokens=response.usage.cache_read_tokens,
                             cache_creation_tokens=response.usage.cache_write_tokens,
                         )
-                        self.agent.cache_state.on_llm_response(
+                        self.runner.cache_state.on_llm_response(
                             cache_read=response.usage.cache_read_tokens,
                             cache_write=response.usage.cache_write_tokens,
                             input_tokens=response.usage.input_tokens,
                         )
                     return response
                 except Exception as retry_e:
-                    err_msg = format_llm_error(retry_e, self.agent.client.base_url if self.agent.client else "")
+                    err_msg = format_llm_error(retry_e, self.runner.client.base_url if self.runner.client else "")
                     logger.error(f"[LLM] {err_msg}")
                     raise RuntimeError(err_msg) from retry_e
 
-            err_msg = format_llm_error(e, self.agent.client.base_url if self.agent.client else "")
+            err_msg = format_llm_error(e, self.runner.client.base_url if self.runner.client else "")
             logger.error(f"[LLM] {err_msg}")
             raise RuntimeError(err_msg) from e
 
@@ -908,13 +908,13 @@ class Runner:
 
         def on_text_delta(text: str):
             text_parts.append(text)
-            if text and self.agent._on_text:
+            if text and self.runner._on_text:
                 safe = text.encode("utf-8", errors="replace").decode("utf-8")
-                self.agent._on_text(safe)
+                self.runner._on_text(safe)
 
         def on_thinking_delta(thinking: str):
-            if self.agent._on_thinking:
-                self.agent._on_thinking(thinking)
+            if self.runner._on_thinking:
+                self.runner._on_thinking(thinking)
 
         message_objects = self._prepare_messages_for_llm()
 
@@ -925,14 +925,14 @@ class Runner:
 
         for attempt in range(max_retries + 1):
             try:
-                response = self.agent.client.chat_stream(
+                response = self.runner.client.chat_stream(
                     messages=message_objects,
                     system=system_prompt,
-                    tools=self.agent.tool_schemas,
+                    tools=self.runner.tool_schemas,
                     on_text=on_text_delta,
                     on_thinking=on_thinking_delta,
-                    stop_check=lambda: self.agent._stopped,
-                    session_id=self.agent._session_id,
+                    stop_check=lambda: self.runner._stopped,
+                    session_id=self.runner._session_id,
                 )
                 # 成功，跳出重试循环
                 break
@@ -945,7 +945,7 @@ class Runner:
             except Exception as e:
                 # 最后一次重试仍失败
                 if attempt == max_retries:
-                    err_msg = format_llm_error(e, self.agent.client.base_url if self.agent.client else "")
+                    err_msg = format_llm_error(e, self.runner.client.base_url if self.runner.client else "")
                     logger.error(f"[LLM] {err_msg}")
                     raise RuntimeError(err_msg) from e
 
@@ -953,9 +953,9 @@ class Runner:
                 if self._is_413_error(e) and not images_stripped:
                     logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
                     self._mark_all_images_invalid()
-                    self.agent.save_messages()
-                    if self.agent._on_text:
-                        self.agent._on_text(RETRY_CLEAR_SENTINEL)
+                    self.runner.save_messages()
+                    if self.runner._on_text:
+                        self.runner._on_text(RETRY_CLEAR_SENTINEL)
                     text_parts.clear()
                     images_stripped = True
 
@@ -964,7 +964,7 @@ class Runner:
                 else:
                     # 统一 taxonomy（三态之二/三）：非瞬态（quota/auth/context_length/
                     # bad_request）立即放弃，不消耗剩余重试次数——原来 quota 429 也会空等 3 次。
-                    info = classify_llm_error(e, self.agent.client.base_url if self.agent.client else "")
+                    info = classify_llm_error(e, self.runner.client.base_url if self.runner.client else "")
                     if not info.should_retry:
                         logger.error(f"[LLM] {info.message}")
                         raise RuntimeError(info.message) from e
@@ -973,26 +973,26 @@ class Runner:
                     delay = info.retry_after_s if info.retry_after_s is not None else retry_delays[attempt]
                     logger.warning(f"[LLM] 请求失败 ({info.kind}，尝试 {attempt + 1}/{max_retries + 1})，{delay:.0f}s 后重试")
                     for _ in range(int(delay * 10)):
-                        if self.agent._stopped:
+                        if self.runner._stopped:
                             return LLMResponse(
                                 content=[TextBlock(text="".join(text_parts))],
                                 stop_reason="stopped",
                             )
                         time.sleep(0.1)
                     text_parts.clear()
-                    if self.agent._on_text:
-                        self.agent._on_text(RETRY_CLEAR_SENTINEL)
+                    if self.runner._on_text:
+                        self.runner._on_text(RETRY_CLEAR_SENTINEL)
 
         # Track usage (UsageData object)
         if response.usage:
-            self.agent._update_usage(
+            self.runner._update_usage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 api_calls=1,
                 cache_read_tokens=response.usage.cache_read_tokens,
                 cache_creation_tokens=response.usage.cache_write_tokens,
             )
-            self.agent.cache_state.on_llm_response(
+            self.runner.cache_state.on_llm_response(
                 cache_read=response.usage.cache_read_tokens,
                 cache_write=response.usage.cache_write_tokens,
                 input_tokens=response.usage.input_tokens,

@@ -48,9 +48,9 @@ _SHELL_TOKENS = ("bash", "pwsh", "powershell")
 class PythonTool(Tool):
     name = "python"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None, config=None,
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,
                  approval_store=None):
-        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
         self._config = config
         self.description = self._build_description()
 

@@ -19,7 +19,7 @@ from core.memory_pipeline import memory_enabled, schedule_extraction
 from core.session import SessionManager
 
 from web.deps import (
-    agents, _get_or_create_agent, _require_workspace,
+    sessions, _get_or_create_runner, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
 )
@@ -43,7 +43,7 @@ class RevertRequest(BaseModel):
     msg_id: str  # 要撤销到的消息 ID
 
 
-def _get_session_manager(workspace_uuid: str, session_id: str) -> SessionManager | None:
+def _get_session(workspace_uuid: str, session_id: str) -> SessionManager | None:
     """Load a SessionManager for the given session (lightweight, no master Agent)."""
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     if not sessions_dir.exists():
@@ -176,7 +176,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
 """
         # Save to session via SessionManager
-        sm = _get_session_manager(workspace_uuid, session_id)
+        sm = _get_session(workspace_uuid, session_id)
         if sm:
             sm.add_message("user", content, flush=False)
             sm.add_message("assistant", [{"type": "text", "text": help_text}], flush=False)
@@ -184,13 +184,13 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         return StreamingResponse(_sse_stream({"type": "text", "content": help_text}), media_type="text/event-stream")
 
     if content == "/status":
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        usage = agent.get_usage()
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        usage = runner.get_usage()
 
         # 使用 agent 内部的 token 计数方法（更准确）
-        messages = agent.session_manager.get_valid_messages()
-        context_tokens = agent._count_messages_tokens(messages)
-        body_size = agent._estimate_request_body_size(messages)
+        messages = runner.session.get_valid_messages()
+        context_tokens = runner._count_messages_tokens(messages)
+        body_size = runner._estimate_request_body_size(messages)
 
         # Format body size
         if body_size > 1_000_000:
@@ -200,7 +200,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
         status_text = f"""**当前会话状态：**
 
-- **模型：** {agent.config.model.name} ({agent.config.model.interface_type})
+- **模型：** {runner.config.model.name} ({runner.config.model.interface_type})
 - **上下文长度：** ~{context_tokens} tokens
 - **请求体大小：** {body_size_str}
 - **API 调用次数：** {usage['api_calls']}
@@ -212,68 +212,68 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
 """
         # Save to session via SessionManager
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
+        runner.session.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
     if content == "/goal" or content == "/goal status":
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        manager = get_goal_manager(agent.session_manager.session_dir)
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        manager = get_goal_manager(runner.session.session_dir)
         goal_text = format_goal_status(manager)
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": goal_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": goal_text}], flush=False)
+        runner.session.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
 
     if content == "/goal clear":
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        manager = get_goal_manager(agent.session_manager.session_dir)
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        manager = get_goal_manager(runner.session.session_dir)
         stop_goal_runner(f"{workspace_uuid}:{session_id}")  # 请求轮间停止（不中断进行中的单轮）
         manager.clear()
         result_text = "🗑️ 目标已清除，目标循环已停止。"
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        runner.session.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
     if content == "/goal pause":
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        manager = get_goal_manager(agent.session_manager.session_dir)
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        manager = get_goal_manager(runner.session.session_dir)
         if not manager.exists():
             result_text = "当前没有目标，无需暂停。"
         else:
             stop_goal_runner(f"{workspace_uuid}:{session_id}")
             manager.pause()
             result_text = "⏸️ 目标循环已暂停，可用 `/goal resume` 恢复。"
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+        runner.session.save()
         return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
     if content == "/goal resume":
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        manager = get_goal_manager(agent.session_manager.session_dir)
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        manager = get_goal_manager(runner.session.session_dir)
         if not manager.exists():
             result_text = "当前没有已保存的目标，请先用 `/goal <目标>` 设置目标。"
-            agent.session_manager.add_message("user", content, flush=False)
-            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            agent.session_manager.save()
+            runner.session.add_message("user", content, flush=False)
+            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            runner.session.save()
             return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         manager.resume()
         # 同 /goal <目标>：先落恢复确认，再启动循环，保证顺序「命令 → 恢复确认 → 下一轮卡片」
         confirm_text = "▶️ 已恢复目标循环，进度实时显示。"
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
+        runner.session.save()
         loop = asyncio.get_running_loop()
         runner = await loop.run_in_executor(None, lambda: start_goal_runner(
-            workspace_uuid, session_id, agent, manager))
+            workspace_uuid, session_id, runner, manager))
         if runner is None:
             result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
-            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            agent.session_manager.save()
+            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            runner.session.save()
             return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
@@ -281,34 +281,34 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         objective = content[len("/goal "):].strip()
         if not objective:
             result_text = "请输入目标内容，例如：`/goal 把 README 翻译成中文`"
-            agent = await _get_or_create_agent(workspace_uuid, session_id)
-            agent.session_manager.add_message("user", content, flush=False)
-            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            agent.session_manager.save()
+            runner = await _get_or_create_runner(workspace_uuid, session_id)
+            runner.session.add_message("user", content, flush=False)
+            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            runner.session.save()
             return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
-        agent = await _get_or_create_agent(workspace_uuid, session_id)
-        manager = get_goal_manager(agent.session_manager.session_dir)
+        runner = await _get_or_create_runner(workspace_uuid, session_id)
+        manager = get_goal_manager(runner.session.session_dir)
         manager.set(objective)
         # 先落用户目标 + 确认文本，再启动循环：若先启动 runner，daemon 线程可能
         # 抢先落占位消息，导致会话顺序变成「轮次卡片 → 用户目标 → 已设置」（显示错乱）
         confirm_text = (f"🎯 已设置目标并开始执行：{objective}\n"
                         "进度实时显示，`/goal status` 查看状态，`/goal pause` 暂停。")
-        agent.session_manager.add_message("user", content, flush=False)
-        agent.session_manager.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
-        agent.session_manager.save()
+        runner.session.add_message("user", content, flush=False)
+        runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
+        runner.session.save()
         loop = asyncio.get_running_loop()
         runner = await loop.run_in_executor(None, lambda: start_goal_runner(
-            workspace_uuid, session_id, agent, manager))
+            workspace_uuid, session_id, runner, manager))
         if runner is None:
             result_text = (f"🎯 目标已设置：{objective}\n"
                            "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
-            agent.session_manager.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            agent.session_manager.save()
+            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
+            runner.session.save()
             return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
     # Normal message - send to agent
-    agent = await _get_or_create_agent(workspace_uuid, session_id)
+    runner = await _get_or_create_runner(workspace_uuid, session_id)
 
     # Prevent concurrent execution on the same session
     session_key = f"{workspace_uuid}:{session_id}"
@@ -326,15 +326,15 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     pending_ask_user_id: str | None = None
     ask_user_answer: str | None = None
     if content:
-        pending_ask_user_id = _find_pending_ask_user(agent.session_manager)
+        pending_ask_user_id = _find_pending_ask_user(runner)
         if pending_ask_user_id:
-            ask_user_answer = _build_other_answer(agent.session_manager, pending_ask_user_id, content)
-            if not _inject_ask_user_answer(agent, pending_ask_user_id, ask_user_answer):
+            ask_user_answer = _build_other_answer(runner, pending_ask_user_id, content)
+            if not _inject_ask_user_answer(runner, pending_ask_user_id, ask_user_answer):
                 pending_ask_user_id = None  # 竞态：占位符已消失，回退普通消息
 
     # Use a queue to bridge sync agent callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
-    cb = _make_sse_callbacks(event_queue, agent)
+    cb = _make_sse_callbacks(event_queue, runner)
 
     async def generate():
         # Run the agent loop in a background thread
@@ -355,13 +355,13 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     }, ensure_ascii=False)
                     event_queue.put(f"data: {close_event}\n\n")
 
-                    agent.resume_after_ask_user(
+                    runner.resume_after_ask_user(
                         on_text=cb.on_text,
                         on_thinking=cb.on_thinking,
                         on_tool_call=cb.on_tool_call,
                         on_tool_result=cb.on_tool_result,
-                        on_agent_start=cb.on_agent_start,
-                        on_agent_complete=cb.on_agent_complete,
+                        on_session_start=cb.on_session_start,
+                        on_session_complete=cb.on_session_complete,
                     )
                 else:
                     # Build user_input: str or list[dict] for multimodal
@@ -382,23 +382,23 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                             })
                         user_input = content_blocks
 
-                    agent.run(
+                    runner.run(
                         user_input=user_input,
                         on_text=cb.on_text,
                         on_thinking=cb.on_thinking,
                         on_tool_call=cb.on_tool_call,
                         on_tool_result=cb.on_tool_result,
-                        on_agent_start=cb.on_agent_start,
-                        on_agent_complete=cb.on_agent_complete,
+                        on_session_start=cb.on_session_start,
+                        on_session_complete=cb.on_session_complete,
                     )
 
                 # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
                 try:
-                    sm = getattr(agent, "session_manager", None)
-                    if sm is not None and memory_enabled(agent.workspace_uuid or ""):
+                    sm = getattr(runner, "session", None)
+                    if sm is not None and memory_enabled(runner.workspace_uuid or ""):
                         schedule_extraction(
-                            agent.workspace_uuid or "",
-                            agent.current_session_id or "",
+                            runner.workspace_uuid or "",
+                            runner.current_session_id or "",
                             list(sm.messages),
                         )
                 except Exception:
@@ -407,13 +407,13 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 # Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞 SSE 流）
                 try:
                     from core.config import load_workspace_config
-                    workspace_cfg = load_workspace_config(agent.workspace_uuid or "")
+                    workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
                     if workspace_cfg.get("git_enabled", False):
                         import threading
                         from core.workspace_git import auto_commit_workspace
                         threading.Thread(
                             target=auto_commit_workspace,
-                            args=(agent.workspace_uuid, agent.current_session_id or ""),
+                            args=(runner.workspace_uuid, runner.current_session_id or ""),
                             kwargs={"sync_remote": True},
                             daemon=True,
                         ).start()
@@ -423,7 +423,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 logger.error(f"master Agent error: {e}")
                 # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
                 try:
-                    sm = getattr(agent, "session_manager", None)
+                    sm = getattr(runner, "session", None)
                     if sm is not None:
                         sm.add_message("assistant", f"错误: {e}", _meta={"error_notice": True})
                         sm.save()
@@ -466,14 +466,14 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 async def stop_agent(workspace_uuid: str, session_id: str):
     """Stop the currently running agent for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in agents:
+    if key not in sessions:
         return {"success": False, "message": "没有正在运行的 master Agent"}
 
-    agent = agents[key]
-    if not agent.is_running():
+    runner = sessions[key]
+    if not runner.is_running():
         return {"success": False, "message": "master Agent 当前未在运行"}
 
-    agent.stop()
+    runner.stop()
     return {"success": True, "message": "已发送停止信号"}
 
 
@@ -494,11 +494,11 @@ async def resume_agent(workspace_uuid: str, session_id: str):
         return {"success": False, "message": "会话正在运行"}
 
     # Check if there are pending notifications in message_bus
-    agent = agents.get(key)
-    if not agent:
+    runner = sessions.get(key)
+    if not runner:
         return {"success": False, "message": "会话不存在"}
 
-    session_id_check = getattr(agent, "_session_id", None)
+    session_id_check = getattr(runner, "_session_id", None)
     if not session_id_check:
         return {"success": False, "message": "会话 ID 不存在"}
 
@@ -519,17 +519,17 @@ async def resume_agent(workspace_uuid: str, session_id: str):
     # Run agent in background thread
     async def run_and_stream():
         event_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
-        callbacks = _make_sse_callbacks(event_queue, agent)
+        callbacks = _make_sse_callbacks(event_queue, runner)
 
         def run_agent():
             try:
-                agent.run(
+                runner.run(
                     on_text=callbacks.on_text,
                     on_thinking=callbacks.on_thinking,
                     on_tool_call=callbacks.on_tool_call,
                     on_tool_result=callbacks.on_tool_result,
-                    on_agent_start=callbacks.on_agent_start,
-                    on_agent_complete=callbacks.on_agent_complete,
+                    on_session_start=callbacks.on_session_start,
+                    on_session_complete=callbacks.on_session_complete,
                 )
             except Exception as e:
                 logger.error(f"Resume agent error: {e}")
@@ -559,18 +559,18 @@ async def resume_agent(workspace_uuid: str, session_id: str):
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = f"{workspace_uuid}:{session_id}"
-    agent = agents.get(key)
+    runner = sessions.get(key)
 
     # 如果 agent 存在且正在运行，拒绝操作
-    if agent and agent.is_running():
+    if runner.is_running():
         raise HTTPException(400, "Agent 正在运行中，无法撤销")
 
     msg_id = request.msg_id
 
     # 优先使用内存中的 agent（revert 会原地截断共享 messages 并物理截断 jsonl）
-    if agent:
+    if runner:
         try:
-            deleted_count = agent.session_manager.revert_to_message(msg_id)
+            deleted_count = runner.session.revert_to_message(msg_id)
         except ValueError as e:
             raise HTTPException(404, str(e))
     # 如果 agent 不在内存中，直接从磁盘读取并迁移/重建
@@ -590,8 +590,8 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
 async def get_agent_status(workspace_uuid: str, session_id: str):
     """Check if an agent is running for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in agents:
+    if key not in sessions:
         return {"running": False}
 
-    agent = agents[key]
-    return {"running": agent.is_running()}
+    runner = sessions[key]
+    return {"running": runner.is_running()}

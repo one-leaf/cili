@@ -19,12 +19,12 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from core.agent_runtime.tool_batch import execute_tool_calls
+from core.session_runner_runtime.tool_batch import execute_tool_calls
 from core.tools.approval import META_KEY
 
 logger = logging.getLogger(__name__)
 
-# ─── autonomous 运行时常量（原 core/agent.py 模块级，迁移至此避免循环导入）───
+# ─── autonomous 运行时常量（原 core/session_runner.py 模块级，迁移至此避免循环导入）───
 
 BUDGET_WARN_RATIO = 0.8  # 迭代额度使用率达到 80% 时注入一次预警提示
 BUDGET_FINAL_RATIO = 0.95  # 达到 95% 时跳过检查阶段，直接兜底总结交付
@@ -94,49 +94,49 @@ LOOP_REPEAT_STRONG_WARNING = (
 
 
 class LoopPolicy:
-    """循环行为参数：结构参数冻结，运行参数实时读 agent。
+    """循环行为参数：结构参数冻结，运行参数实时读 runner。
 
-    结构参数（mode / on_max_iterations）由 Agent 构造时固定；
-    运行参数（迭代/检查/预算/流式）读 agent 与 role_cfg 的实时值——
-    运行时改 agent.max_iterations / role_cfg.check_iterations 立即生效
+    结构参数（mode / on_max_iterations）由 SessionRunner 构造时固定；
+    运行参数（迭代/检查/预算/流式）读 runner 与 role_cfg 的实时值——
+    运行时改 runner.max_iterations / role_cfg.check_iterations 立即生效
     （测试与 config 热重载均依赖此行为）。
     """
 
     def __init__(
         self,
-        agent: Any,
+        runner: Any,
         mode: str = "interactive",
         on_max_iterations: str = "soft",
     ):
-        self.agent = agent
+        self.runner = runner
         self.mode = mode
         self.on_max_iterations = on_max_iterations  # "soft" 提示 / "hard" 兜底总结
 
     @property
     def max_iterations(self) -> int:
-        return self.agent.max_iterations
+        return self.runner.max_iterations
 
     @property
     def check_phase(self) -> bool:
-        return self.agent.role_cfg.check_phase
+        return self.runner.role_cfg.check_phase
 
     @property
     def check_iterations(self) -> int | None:
-        return self.agent.role_cfg.check_iterations
+        return self.runner.role_cfg.check_iterations
 
     @property
     def budget_notice(self) -> bool:
-        return self.agent.role_cfg.budget_notice
+        return self.runner.role_cfg.budget_notice
 
     @property
     def max_consecutive_failures(self) -> int | None:
-        return getattr(self.agent, "max_consecutive_failures", None)
+        return getattr(self.runner, "max_consecutive_failures", None)
 
     @property
     def streaming(self) -> bool:
         if self.mode == "interactive":
-            return bool(getattr(self.agent, "_streaming", True))
-        return self.agent.role_cfg.streaming
+            return bool(getattr(self.runner, "_streaming", True))
+        return self.runner.role_cfg.streaming
 
 
 class NoToolCallOutcome:
@@ -198,8 +198,8 @@ class PhaseMachine:
 class Loop:
     """统一循环编排：交互与自主共用同一 while 骨架。"""
 
-    def __init__(self, agent: Any, policy: LoopPolicy):
-        self.agent = agent
+    def __init__(self, runner: Any, policy: LoopPolicy):
+        self.runner = runner
         self.policy = policy
         self.phase_machine = PhaseMachine(policy)
 
@@ -207,27 +207,27 @@ class Loop:
 
     def run_interactive(self) -> None:
         """交互回合循环主体（run()/resume_* 薄入口调用）。"""
-        agent = self.agent
+        runner = self.runner
         # 入口排空：用户发新消息前后台子代理已完成的通知，注入到 messages，LLM 第一轮即可见
-        self._drain_agent_notifications()
-        agent._sync_to_session_manager()
-        agent.session_manager.save()
+        self._drain_session_notifications()
+        runner._sync_to_session()
+        runner.session.save()
         self._run_loop(autonomous=False)
 
     def run_autonomous(self) -> dict[str, Any]:
         """自主执行循环，返回结构化结果。"""
-        agent = self.agent
-        agent._started_at = datetime.now()
-        agent._stopped = False
-        agent._running = True
-        agent._budget_warn_triggered = False
-        agent._budget_final_triggered = False
+        runner = self.runner
+        runner._started_at = datetime.now()
+        runner._stopped = False
+        runner._running = True
+        runner._budget_warn_triggered = False
+        runner._budget_final_triggered = False
         # 构建 pinned 任务消息（任务+计划，压缩免疫）
-        agent.add_message("user", agent._build_task_message(), meta={"pinned": True})
+        runner.add_message("user", runner._build_task_message(), meta={"pinned": True})
         try:
             return self._run_loop(autonomous=True) or {}
         finally:
-            agent._running = False
+            runner._running = False
 
     # ─── 统一骨架 ───────────────────────────────────────────────────
 
@@ -237,13 +237,13 @@ class Loop:
         各 break 出口均用 return，因此 while 正常结束（条件为假）等价于
         迭代额度耗尽 → on_max_iterations（soft 提示 / hard 兜底总结）。
         """
-        agent = self.agent
+        runner = self.runner
         policy = self.policy
         pm = self.phase_machine
 
-        # 迭代计数：interactive 用 agent._turn_iterations（resume 累计基准），
+        # 迭代计数：interactive 用 runner._turn_iterations（resume 累计基准），
         # autonomous 用局部 n 从 0 起（每执行独立）
-        n = 0 if autonomous else agent._turn_iterations
+        n = 0 if autonomous else runner._turn_iterations
 
         # 批处理跨轮状态（熔断计数跨轮累计；审批/等待每轮重置）
         state: dict[str, Any] = {
@@ -259,31 +259,31 @@ class Loop:
 
         while n < max_iterations:
             # ── stop 检查（父代理停止或流式中断标记）──
-            if agent._stopped or (autonomous and agent.stop_check and agent.stop_check()):
+            if runner._stopped or (autonomous and runner.stop_check and runner.stop_check()):
                 if autonomous:
-                    agent._finalize("stopped", "Stopped by user", n)
+                    runner._finalize("stopped", "Stopped by user", n)
                     return self._autonomous_result("stopped", "Stopped by user", n)
-                logger.info(f"[Agent:{agent.role}] 已停止")
-                agent._sync_to_session_manager()
-                agent.session_manager.save()
-                if agent._on_text:
-                    agent._on_text("\n\n[已停止]")
+                logger.info(f"[SessionRunner:{runner.role}] 已停止")
+                runner._sync_to_session()
+                runner.session.save()
+                if runner._on_text:
+                    runner._on_text("\n\n[已停止]")
                 return None
 
             # ── 后台子代理完成通知排空（interactive 模式）──
-            # 后台 agent 线程完成时通过 message_bus 发送通知给 master session；
+            # 后台 session 线程完成时通过 message_bus 发送通知给 master session；
             # 此处每轮迭代前排空通知队列，注入为 user 消息并标记
             # _meta.background_notification=True（LLM 可见但前端跳过渲染）。
             if not autonomous:
-                self._drain_agent_notifications()
+                self._drain_session_notifications()
 
             # ── 额度预警（autonomous，stop 已排除）──
             if autonomous and policy.budget_notice:
-                agent._inject_budget_notice(n)
+                runner._inject_budget_notice(n)
 
             n += 1
             if not autonomous:
-                agent._turn_iterations = n  # 同步计数，resume 保留累计
+                runner._turn_iterations = n  # 同步计数，resume 保留累计
 
             # ── 循环重复检测（在 LLM 调用前注入警告，使 LLM 可见）──
             self._check_loop_repetition(state)
@@ -291,34 +291,34 @@ class Loop:
             # ── LLM 调用 ──
             if autonomous:
                 try:
-                    response = agent._call_llm(
+                    response = runner._call_llm(
                         streaming=policy.streaming,
-                        system_prompt=agent._system_prompt,
+                        system_prompt=runner._system_prompt,
                     )
                 except Exception as e:
                     # runner 已抛用户可读 RuntimeError（统一 taxonomy 文案），直接取 str(e)，
                     # 避免二次 format_llm_error 把文案再包一层「LLM 请求失败: ...」。
                     summary = str(e)
-                    task_brief = agent.task[:50].replace("\n", " ")
+                    task_brief = runner.task[:50].replace("\n", " ")
                     logger.error(
-                        f"[Agent:{agent.role}] LLM 错误 (iter={n - 1}, exec={agent._exec_id}, "
+                        f"[SessionRunner:{runner.role}] LLM 错误 (iter={n - 1}, exec={runner._exec_id}, "
                         f"task='{task_brief}'): {summary}"
                     )
-                    agent._finalize("error", summary, n - 1)
+                    runner._finalize("error", summary, n - 1)
                     return self._autonomous_result("error", summary, n - 1)
-                if agent._stopped:
-                    agent._finalize("stopped", "Stopped by user", n - 1)
+                if runner._stopped:
+                    runner._finalize("stopped", "Stopped by user", n - 1)
                     return self._autonomous_result("stopped", "Stopped by user", n - 1)
             else:
-                system_prompt = agent._build_system_prompt()
-                response = agent._call_llm(
+                system_prompt = runner._build_system_prompt()
+                response = runner._call_llm(
                     streaming=policy.streaming,
                     system_prompt=system_prompt,
                 )
-                if agent._stopped:
-                    logger.info(f"[Agent:{agent.role}] 已停止")
-                    agent._sync_to_session_manager()
-                    agent.session_manager.save()
+                if runner._stopped:
+                    logger.info(f"[SessionRunner:{runner.role}] 已停止")
+                    runner._sync_to_session()
+                    runner.session.save()
                     return None
 
             tool_calls = response.get_tool_calls()
@@ -337,50 +337,50 @@ class Loop:
             if not tool_calls:
                 # 差异点①：无工具调用 → 交付/转检查（autonomous）或回合完成（interactive）
                 if not autonomous:
-                    agent.add_message("assistant", response.content_as_dicts())
-                    agent._sync_to_session_manager()
-                    agent.session_manager.save()
+                    runner.add_message("assistant", response.content_as_dicts())
+                    runner._sync_to_session()
+                    runner.session.save()
                     return None
 
-                outcome = pm.decide_no_tool_calls(agent._budget_final_triggered)
+                outcome = pm.decide_no_tool_calls(runner._budget_final_triggered)
                 if outcome.done:
                     if outcome.action == "budget_wrapup":
                         summary = response.get_text() or "预算耗尽，模型未输出总结"
-                        agent.add_message("assistant", response.content_as_dicts())
-                        agent._finalize("completed", summary, n)
+                        runner.add_message("assistant", response.content_as_dicts())
+                        runner._finalize("completed", summary, n)
                         return self._autonomous_result("completed", summary, n, budget_wrapup=True)
                     if outcome.action == "deliver":
                         summary = response.get_text()
-                        agent.add_message("assistant", response.content_as_dicts())
-                        agent._finalize("completed", summary, n)
+                        runner.add_message("assistant", response.content_as_dicts())
+                        runner._finalize("completed", summary, n)
                         return self._autonomous_result("completed", summary, n)
                     # check_complete：检查阶段文本收尾 → 任务真正完成
                     pm.mark_check_complete()
                     summary = response.get_text()
-                    agent.add_message("assistant", response.content_as_dicts())
-                    agent._finalize("completed", summary, n)
+                    runner.add_message("assistant", response.content_as_dicts())
+                    runner._finalize("completed", summary, n)
                     return self._autonomous_result(
                         "completed", summary, n, check_iterations=pm.check_iters
                     )
 
                 # enter_check：主阶段结束 → 注入检查提示转检查
                 summary = response.get_text()
-                agent.add_message("assistant", response.content_as_dicts())
-                agent.add_message("user", CHECK_PROMPT, meta={"pinned": True})
+                runner.add_message("assistant", response.content_as_dicts())
+                runner.add_message("user", CHECK_PROMPT, meta={"pinned": True})
                 pm.enter_check(n - 1)
                 logger.debug(
-                    f"[Agent:{agent.role}] 进入检查阶段 (iter={n - 1}, "
-                    f"max_check={pm.max_check_iterations}, exec={agent._exec_id})"
+                    f"[SessionRunner:{runner.role}] 进入检查阶段 (iter={n - 1}, "
+                    f"max_check={pm.max_check_iterations}, exec={runner._exec_id})"
                 )
                 continue
 
             # ── 检查阶段轮次上限（autonomous 工具调用轮）──
             if autonomous and pm.on_tool_round():
                 summary = response.get_text() or "检查阶段超出最大迭代次数"
-                agent.add_message("assistant", response.content_as_dicts())
-                agent._finalize("completed", summary, n)
+                runner.add_message("assistant", response.content_as_dicts())
+                runner._finalize("completed", summary, n)
                 logger.warning(
-                    f"[Agent:{agent.role}] 检查阶段超出迭代上限 "
+                    f"[SessionRunner:{runner.role}] 检查阶段超出迭代上限 "
                     f"(iter={n - 1}, max={pm.max_check_iterations})"
                 )
                 return self._autonomous_result(
@@ -388,40 +388,40 @@ class Loop:
                 )
 
             # ── 添加 assistant 消息（工具调用轮）──
-            agent.add_message("assistant", response.content_as_dicts())
+            runner.add_message("assistant", response.content_as_dicts())
 
             # ── 工具批执行（差异点②：结果 handler 模式专属）──
             if autonomous:
                 phase = "check" if pm.in_check_phase else "running"
-                agent._save_progress(n, status=phase, tool_calls=len(tool_calls))
+                runner._save_progress(n, status=phase, tool_calls=len(tool_calls))
                 if self._autonomous_tool_batch(tool_calls, n, phase, state):
                     # 连续失败熔断
                     cap = policy.max_consecutive_failures
                     summary = f"Exceeded max consecutive failures ({cap})"
-                    agent._finalize("failed", summary, n)
+                    runner._finalize("failed", summary, n)
                     return self._autonomous_result("failed", summary, n)
             else:
                 if self._interactive_tool_batch(tool_calls, state):
-                    # 等待外部输入（ask_user/agent 占位或审批卡）
-                    logger.info(f"[Agent:{agent.role}] Waiting for external input (user or agent)")
-                    agent._sync_to_session_manager()
-                    agent.session_manager.save()
+                    # 等待外部输入（ask_user/session 占位或审批卡）
+                    logger.info(f"[SessionRunner:{runner.role}] Waiting for external input (user or session)")
+                    runner._sync_to_session()
+                    runner.session.save()
                     return None
-                if agent._stopped:
-                    logger.info(f"[Agent:{agent.role}] 已停止")
+                if runner._stopped:
+                    logger.info(f"[SessionRunner:{runner.role}] 已停止")
                     # 中途停止可能留下未回应的 tool_use，补占位避免下次调用 400
-                    agent._pad_dangling_tool_results()
-                    agent._sync_to_session_manager()
-                    agent.session_manager.save()
+                    runner._pad_dangling_tool_results()
+                    runner._sync_to_session()
+                    runner.session.save()
                     return None
 
         # 迭代额度耗尽 → on_max_iterations
         if not autonomous:
-            logger.warning(f"[Agent:{agent.role}] 达到最大调用次数 ({max_iterations})")
-            agent._sync_to_session_manager()
-            agent.session_manager.save()
-            if agent._on_text:
-                agent._on_text(
+            logger.warning(f"[SessionRunner:{runner.role}] 达到最大调用次数 ({max_iterations})")
+            runner._sync_to_session()
+            runner.session.save()
+            if runner._on_text:
+                runner._on_text(
                     f"\n\n[已达到最大工具调用次数限制 ({max_iterations})，请继续提问以继续对话]"
                 )
             return None
@@ -429,15 +429,15 @@ class Loop:
         status = "timeout"
         summary = f"Exceeded max iterations ({max_iterations})"
         wrapped_up = False
-        if not (agent.stop_check and agent.stop_check()):
+        if not (runner.stop_check and runner.stop_check()):
             try:
-                wrapup = agent._wrapup_timeout_summary()
+                wrapup = runner._wrapup_timeout_summary()
                 if wrapup:
                     summary = wrapup
                     wrapped_up = True
             except Exception as e:
-                logger.warning(f"[Agent:{agent.role}] 兜底总结失败: {e}")
-        agent._finalize(status, summary, max_iterations)
+                logger.warning(f"[SessionRunner:{runner.role}] 兜底总结失败: {e}")
+        runner._finalize(status, summary, max_iterations)
         result = self._autonomous_result(status, summary, max_iterations)
         if wrapped_up:
             result["wrapped_up"] = True
@@ -459,21 +459,21 @@ class Loop:
         并发安全工具批内并行执行（execute_tool_calls），结果按输入顺序返回；
         _save_progress 降到批级（批前/批后各一次），避免逐工具写 index.json 竞态。
         """
-        agent = self.agent
+        runner = self.runner
         policy = self.policy
-        agent._save_progress(n, status=phase, tool_calls=len(tool_calls))
-        parallel = bool(getattr(agent.config, "system", None)
-                        and getattr(agent.config.system, "parallel_tools", True))
+        runner._save_progress(n, status=phase, tool_calls=len(tool_calls))
+        parallel = bool(getattr(runner.config, "system", None)
+                        and getattr(runner.config.system, "parallel_tools", True))
         results = execute_tool_calls(
-            agent, tool_calls,
+            runner, tool_calls,
             parallel=parallel,
-            on_execute=lambda names: agent._save_progress(n, status=phase, current_tool=names),
+            on_execute=lambda names: runner._save_progress(n, status=phase, current_tool=names),
         )
 
         for result in results:
             # autonomous 无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问
-            agent._downgrade_approval_result(result)
-            agent.add_message("user", [result])
+            runner._downgrade_approval_result(result)
+            runner.add_message("user", [result])
 
             if result.get("is_error"):
                 state["consecutive_failures"] += 1
@@ -484,23 +484,23 @@ class Loop:
                     return True
             else:
                 state["consecutive_failures"] = 0
-        agent._save_progress(n, status=phase)
+        runner._save_progress(n, status=phase)
         return False
 
     def _interactive_tool_batch(self, tool_calls: list, state: dict[str, Any]) -> bool:
         """interactive 工具批：审批/占位标注 + 批后合成 ask_user 卡。
 
-        返回 True 表示需等待外部输入（ask_user/agent 占位或审批卡）。
+        返回 True 表示需等待外部输入（ask_user/session 占位或审批卡）。
 
         并发安全工具批内并行执行（execute_tool_calls），结果按输入顺序返回；
         审批单槽/占位等顺序相关逻辑在结果循环中保持输入顺序处理。
         """
-        agent = self.agent
-        parallel = bool(getattr(agent.config, "system", None)
-                        and getattr(agent.config.system, "parallel_tools", True))
+        runner = self.runner
+        parallel = bool(getattr(runner.config, "system", None)
+                        and getattr(runner.config.system, "parallel_tools", True))
         # 记录本轮工具调用数（供前端实时显示）
-        agent._save_progress(agent._turn_iterations, status="running", tool_calls=len(tool_calls))
-        results = execute_tool_calls(agent, tool_calls, parallel=parallel)
+        runner._save_progress(runner._turn_iterations, status="running", tool_calls=len(tool_calls))
+        results = execute_tool_calls(runner, tool_calls, parallel=parallel)
 
         for result in results:
             placeholder = result.get("_meta", {}).get("completed") is False
@@ -517,20 +517,20 @@ class Loop:
                 result["_meta"].pop(META_KEY, None)
                 result["_meta"].pop("completed", None)
             elif placeholder:
-                # 模型自发的 ask_user/agent 占位：正常等待，不叠加审批卡
+                # 模型自发的 ask_user/session 占位：正常等待，不叠加审批卡
                 state["wait_for_external"] = True
                 state["external_already"] = True
-            agent.add_message("user", [result])
-            agent._sync_to_session_manager()
+            runner.add_message("user", [result])
+            runner._sync_to_session()
 
         # 合成 ask_user 卡询问用户是否批准（放在所有工具结果之后，保持消息配对正确；
         # 本批已有模型自发的占位时不合成，避免与 pending 单槽冲突）
-        if state["approval"] and not state["external_already"] and not agent._stopped:
-            agent._handle_approval_required(state["approval"])
+        if state["approval"] and not state["external_already"] and not runner._stopped:
+            runner._handle_approval_required(state["approval"])
             state["wait_for_external"] = True
         # 迭代边界批量落盘一次：本批工具结果已入内存，一次性追加 jsonl + fsync（非逐条）。
         # 已由 _handle_approval_required 的 save() 落盘时此处为幂等 no-op。
-        agent.session_manager.flush()
+        runner.session.flush()
         return state["wait_for_external"]
 
     # ─── 辅助 ───────────────────────────────────────────────────────
@@ -599,24 +599,24 @@ class Loop:
             )
         else:
             warning = LOOP_REPEAT_WARNING.format(count=count, detail=detail)
-        self.agent.add_message("user", warning, meta={"loop_warning": True})
+        self.runner.add_message("user", warning, meta={"loop_warning": True})
         logger.warning(
-            f"[Agent:{self.agent.role}] 循环重复检测: 连续 {count} 次相同操作 "
-            f"({detail}, exec={getattr(self.agent, '_exec_id', '?')})"
+            f"[SessionRunner:{self.runner.role}] 循环重复检测: 连续 {count} 次相同操作 "
+            f"({detail}, exec={getattr(self.runner, '_exec_id', '?')})"
         )
 
-    def _drain_agent_notifications(self) -> None:
+    def _drain_session_notifications(self) -> None:
         """排空后台子代理完成通知（通过 message_bus）。
 
-        后台 agent 线程完成时通过 message_bus 发送通知给 master session；
+        后台 session 线程完成时通过 message_bus 发送通知给 master session；
         本方法在每次 LLM 调用前（loop 迭代顶部 + run_interactive 入口）排空。
 
         通知注入为 user 消息并标记 _meta.background_notification=True：
         - LLM 可见：作为继续对话的上下文（避免 LLM 凭空编造"用户说继续"）
         - 前端跳过渲染：renderMessages 检查 _meta.background_notification 后跳过
         """
-        agent = self.agent
-        session_id = getattr(agent, "_session_id", None)
+        runner = self.runner
+        session_id = getattr(runner, "_session_id", None)
         if not session_id:
             return
 
@@ -631,7 +631,7 @@ class Loop:
                     notifications = [m.get("content", "") for m in unread if m.get("content")]
                     if notifications:
                         combined = "\n".join(notifications)
-                        agent.add_message(
+                        runner.add_message(
                             "user",
                             combined,
                             _meta={"background_notification": True},
@@ -645,9 +645,9 @@ class Loop:
             "status": status,
             "summary": summary,
             "iterations": iterations,
-            "message_count": len(self.agent.messages),
-            "tool_call_count": self.agent._tool_call_count,
-            "usage": self.agent._usage,
+            "message_count": len(self.runner.messages),
+            "tool_call_count": self.runner._tool_call_count,
+            "usage": self.runner._usage,
         }
         result.update(extra)
         return result

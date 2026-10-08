@@ -79,8 +79,8 @@ class MessageBusTool(Tool):
 
         # Determine current session ID
         current_session_id = ""
-        if self.session_manager:
-            current_session_id = self.session_manager.session_id
+        if self.session:
+            current_session_id = self.session.session_id
 
         if action == "send":
             if not to_session:

@@ -17,7 +17,7 @@ import pytest
 
 from core.config import Config, ModelConfig, SystemConfig
 from core.llm.types import LLMResponse, TextBlock, ToolCallBlock
-from core.agent import Agent
+from core.session_runner import SessionRunner
 from core.tools.base import ToolResult
 from core.tools import get_tool_by_name
 
@@ -46,9 +46,9 @@ def config():
 
 
 @pytest.fixture
-def agent(config, test_workspace):
+def runner(config, test_workspace):
     """创建 Master Agent 实例"""
-    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid="test")
+    agent_instance = SessionRunner(config, role="master", cwd=test_workspace, workspace_uuid="test")
     yield agent_instance
     # 清理（Agent 数据写入 {workspace}/.cili/，即 test_workspace 目录）
     ws_dir = Path(test_workspace) / ".cili"
@@ -76,9 +76,9 @@ def make_test_questions():
 class TestAskUserToolExecution:
     """AskUserTool 工具执行测试"""
 
-    def test_execute_returns_not_completed(self, agent):
+    def test_execute_returns_not_completed(self, runner):
         """execute() 返回 ToolResult，completed=False"""
-        ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
+        ask_user_tool = get_tool_by_name(runner.tools, "ask_user")
         assert ask_user_tool is not None, "ask_user 工具必须存在"
 
         questions = make_test_questions()
@@ -88,9 +88,9 @@ class TestAskUserToolExecution:
         assert result.completed is False
         # 不再在 _meta 中重复存储 questions（已在 tool_use input 中）
 
-    def test_execute_output_is_placeholder(self, agent):
+    def test_execute_output_is_placeholder(self, runner):
         """execute() 的 output 是占位文本"""
-        ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
+        ask_user_tool = get_tool_by_name(runner.tools, "ask_user")
         questions = make_test_questions()
         result = ask_user_tool.execute(questions=questions)
 
@@ -103,13 +103,13 @@ class TestAskUserToolExecution:
 class TestExecuteToolMetadata:
     """_execute_tool() 生成的 dict 结构测试"""
 
-    def test_execute_tool_returns_not_completed_flag(self, agent):
+    def test_execute_tool_returns_not_completed_flag(self, runner):
         """_execute_tool() 返回的 dict 包含 _meta.completed=False（新格式）"""
-        ask_user_tool = get_tool_by_name(agent.tools, "ask_user")
+        ask_user_tool = get_tool_by_name(runner.tools, "ask_user")
         questions = make_test_questions()
         tool_use_id = "test_toolu_001"
 
-        result_dict = agent._execute_tool("ask_user", {"questions": questions}, tool_use_id)
+        result_dict = runner._execute_tool("ask_user", {"questions": questions}, tool_use_id)
 
         assert result_dict["type"] == "tool_result"
         # 新格式：使用 tool_use_id（Anthropic 格式）
@@ -120,14 +120,14 @@ class TestExecuteToolMetadata:
         assert result_dict["_meta"]["completed"] is False
         # 不再在 _meta 中重复存储 questions（已在 tool_use input 中）
 
-    def test_execute_tool_no_external_file(self, agent):
+    def test_execute_tool_no_external_file(self, runner):
         """_execute_tool() 对 ask_user 不创建外部文件（占位符直接放 content）"""
         tool_use_id = "test_toolu_002"
         questions = make_test_questions()
 
-        result_dict = agent._execute_tool("ask_user", {"questions": questions}, tool_use_id)
+        result_dict = runner._execute_tool("ask_user", {"questions": questions}, tool_use_id)
 
-        output_path = agent.session_dir / f"{tool_use_id}.txt"
+        output_path = runner.session_dir / f"{tool_use_id}.txt"
         assert not output_path.exists(), f"ask_user 不应创建外部文件: {output_path}"
         # content 应该直接是占位符文本
         assert result_dict["content"] == "Waiting for user input..."
@@ -138,7 +138,7 @@ class TestExecuteToolMetadata:
 class TestAgentLoopWaitForExternal:
     """Agent loop 遇到外部等待（completed=False）时退出测试"""
 
-    def test_loop_exits_on_not_completed(self, agent):
+    def test_loop_exits_on_not_completed(self, runner):
         """LLM 返回 ask_user tool_call 后，agent loop 应退出"""
         tool_use_id = "test_toolu_003"
         questions = make_test_questions()
@@ -155,11 +155,11 @@ class TestAgentLoopWaitForExternal:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试 ask user 单选工具")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试 ask user 单选工具")
 
         # 验证 messages 状态
-        messages = agent.messages
+        messages = runner.messages
 
         # 应该有一条 user 消息（用户输入）
         user_msgs = [m for m in messages if m["role"] == "user"]
@@ -201,7 +201,7 @@ class TestAgentLoopWaitForExternal:
             if b.get("type") in ("tool_call", "tool_use") and b.get("id") == tool_use_id:
                 assert b.get("_meta", {}).get("answered") is not True, "用户未回答前不应有 _meta.answered 标记"
 
-    def test_tool_result_has_placeholder_content(self, agent):
+    def test_tool_result_has_placeholder_content(self, runner):
         """ask_user 的 tool_result 直接包含占位符内容"""
         tool_use_id = "test_toolu_004"
         questions = make_test_questions()
@@ -217,12 +217,12 @@ class TestAgentLoopWaitForExternal:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试 ask user 单选工具")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试 ask user 单选工具")
 
         # 找到 ask_user 的 tool_result
         tool_result_block = None
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -247,7 +247,7 @@ class TestAgentLoopWaitForExternal:
 class TestAnswerAskUserEndpointLogic:
     """模拟 web_api.py 中 answer-ask-user 端点的核心逻辑"""
 
-    def _setup_ask_user_state(self, agent):
+    def _setup_ask_user_state(self, runner):
         """设置 agent 到 ask_user 等待状态，返回 tool_use_id"""
         tool_use_id = "test_toolu_answer_001"
         questions = make_test_questions()
@@ -263,20 +263,20 @@ class TestAnswerAskUserEndpointLogic:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试 ask user 单选工具")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试 ask user 单选工具")
 
         return tool_use_id
 
-    def test_answer_injects_tool_result_content(self, agent):
+    def test_answer_injects_tool_result_content(self, runner):
         """模拟端点：注入 answer 到 tool_result.content"""
-        tool_use_id = self._setup_ask_user_state(agent)
+        tool_use_id = self._setup_ask_user_state(runner)
         user_answer = "红色"
 
         # === 模拟 answer-ask-user 端点逻辑 ===
         # Phase A: 找到并替换占位符 tool_result
         found_placeholder = False
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -294,7 +294,7 @@ class TestAnswerAskUserEndpointLogic:
         assert found_placeholder, "应找到占位符 tool_result"
 
         # 验证 content 已注入
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -304,13 +304,13 @@ class TestAnswerAskUserEndpointLogic:
                 if block.get("type") == "tool_result" and block.get("tool_call_id") == tool_use_id:
                     assert block["content"] == user_answer
 
-    def test_answer_marks_tool_call_as_answered(self, agent):
+    def test_answer_marks_tool_call_as_answered(self, runner):
         """模拟端点：在 tool_call 块上标记 _meta.answered=True"""
-        tool_use_id = self._setup_ask_user_state(agent)
+        tool_use_id = self._setup_ask_user_state(runner)
         user_answer = "蓝色"
 
         # Phase A: 注入 answer
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -324,7 +324,7 @@ class TestAnswerAskUserEndpointLogic:
 
         # Phase B: 标记 tool_call 为 _meta.answered
         found_tool_call = False
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "assistant":
                 continue
             content = msg.get("content", [])
@@ -341,7 +341,7 @@ class TestAnswerAskUserEndpointLogic:
         assert found_tool_call, "应找到对应的 tool_call 块"
 
         # 验证 _meta.answered 标记
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "assistant":
                 continue
             content = msg.get("content", [])
@@ -351,13 +351,13 @@ class TestAnswerAskUserEndpointLogic:
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
                     assert block["_meta"]["answered"] is True, "tool_call 应被标记为 _meta.answered"
 
-    def test_wrong_tool_use_id_not_found(self, agent):
+    def test_wrong_tool_use_id_not_found(self, runner):
         """错误的 tool_use_id 应找不到占位符"""
-        self._setup_ask_user_state(agent)
+        self._setup_ask_user_state(runner)
 
         wrong_id = "nonexistent_tool_id"
         found = False
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -377,7 +377,7 @@ class TestAnswerAskUserEndpointLogic:
 class TestResumeAfterAskUser:
     """resume_after_ask_user() 继续 agent loop 测试"""
 
-    def test_resume_continues_loop(self, agent):
+    def test_resume_continues_loop(self, runner):
         """注入 answer 后，resume 继续 loop，LLM 收到 tool_result 后给出最终回复"""
         tool_use_id = "test_toolu_resume_001"
         questions = make_test_questions()
@@ -394,14 +394,14 @@ class TestResumeAfterAskUser:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=first_response):
-            agent.run("测试 ask user 单选工具")
+        with patch.object(runner, '_call_llm', return_value=first_response):
+            runner.run("测试 ask user 单选工具")
 
         # 验证 agent 已退出
-        assert not agent.is_running()
+        assert not runner.is_running()
 
         # 注入 answer（模拟端点逻辑）
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -414,7 +414,7 @@ class TestResumeAfterAskUser:
                     break
 
         # 标记 _meta.answered
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "assistant":
                 continue
             content = msg.get("content", [])
@@ -433,12 +433,12 @@ class TestResumeAfterAskUser:
             stop_reason="end_turn",
         )
 
-        with patch.object(agent, '_call_llm', return_value=second_response):
-            agent.resume_after_ask_user()
+        with patch.object(runner, '_call_llm', return_value=second_response):
+            runner.resume_after_ask_user()
 
         # 验证最终消息包含 LLM 的回复
         text_blocks = []
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg["role"] != "assistant":
                 continue
             content = msg.get("content", [])
@@ -450,7 +450,7 @@ class TestResumeAfterAskUser:
         assert any("红色" in t for t in text_blocks), \
             f"LLM 回复应包含用户选择的内容。实际 text_blocks: {text_blocks}"
 
-    def test_resume_exits_on_no_tool_calls(self, agent):
+    def test_resume_exits_on_no_tool_calls(self, runner):
         """resume 后 LLM 不再调用工具 → loop 正常退出"""
         tool_use_id = "test_toolu_resume_002"
         questions = make_test_questions()
@@ -466,11 +466,11 @@ class TestResumeAfterAskUser:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=first_response):
-            agent.run("测试")
+        with patch.object(runner, '_call_llm', return_value=first_response):
+            runner.run("测试")
 
         # 注入 answer
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -488,15 +488,15 @@ class TestResumeAfterAskUser:
             stop_reason="end_turn",
         )
 
-        with patch.object(agent, '_call_llm', return_value=final_response):
-            agent.resume_after_ask_user()
+        with patch.object(runner, '_call_llm', return_value=final_response):
+            runner.resume_after_ask_user()
 
         # agent 不再运行
-        assert not agent.is_running()
+        assert not runner.is_running()
 
         # 最后一条 assistant 消息应是纯文本
         last_assistant = None
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] == "assistant":
                 last_assistant = msg
                 break
@@ -551,7 +551,7 @@ class TestResolveToolResultsForSession:
                         block["_meta"] = {}
                     block["_meta"]["answered"] = True
 
-    def test_pre_scan_marks_answered_when_completed_true(self, agent):
+    def test_pre_scan_marks_answered_when_completed_true(self, runner):
         """预扫描：_meta.completed=True 且有 content → 对应 tool_call 标记 _answered"""
         tool_use_id = "test_toolu_prescan_001"
         questions = make_test_questions()
@@ -568,11 +568,11 @@ class TestResolveToolResultsForSession:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试")
 
         # 模拟用户已回答：设置 _meta.completed=True + 实际答案 content
-        for msg in reversed(agent.messages):
+        for msg in reversed(runner.messages):
             if msg["role"] != "user":
                 continue
             content = msg.get("content", [])
@@ -588,22 +588,22 @@ class TestResolveToolResultsForSession:
                     break
 
         # 执行预扫描
-        answered_ids = self._simulate_pre_scan(agent.messages)
+        answered_ids = self._simulate_pre_scan(runner.messages)
         assert tool_use_id in answered_ids, \
             f"completed=True 时应被收集。收集到: {answered_ids}"
 
         # 执行标记
-        self._simulate_mark_answered(agent.messages, answered_ids)
+        self._simulate_mark_answered(runner.messages, answered_ids)
 
         # 验证 tool_call 被标记 _meta.answered=True
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg.get("role") != "assistant":
                 continue
             for block in msg.get("content", []):
                 if block.get("type") in ("tool_call", "tool_use") and block.get("id") == tool_use_id:
                     assert block["_meta"]["answered"] is True, "已回答的 tool_call 应标记 _meta.answered=True"
 
-    def test_pre_scan_does_not_mark_when_not_completed(self, agent):
+    def test_pre_scan_does_not_mark_when_not_completed(self, runner):
         """预扫描：_meta.completed=False（占位符状态）→ 不标记 _answered"""
         tool_use_id = "test_toolu_prescan_002"
         questions = make_test_questions()
@@ -619,19 +619,19 @@ class TestResolveToolResultsForSession:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试")
 
         # ask_user 执行后 _meta.completed=False，content="Waiting for user input..."
         # 这是占位符状态，不应被标记为已回答
 
         # 执行预扫描
-        answered_ids = self._simulate_pre_scan(agent.messages)
+        answered_ids = self._simulate_pre_scan(runner.messages)
         assert tool_use_id not in answered_ids, \
             f"completed=False（占位符）不应被收集。收集到: {answered_ids}"
 
         # 验证 tool_call 没有被标记 _meta.answered
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg.get("role") != "assistant":
                 continue
             for block in msg.get("content", []):
@@ -639,7 +639,7 @@ class TestResolveToolResultsForSession:
                     assert not block.get("_meta", {}).get("answered"), \
                         "未回答的 tool_call 不应标记 _meta.answered"
 
-    def test_frontend_will_render_interactive_card_when_unanswered(self, agent):
+    def test_frontend_will_render_interactive_card_when_unanswered(self, runner):
         """前端逻辑：未回答时（_answered 非 true），应渲染交互式问题卡片"""
         tool_use_id = "test_toolu_prescan_003"
         questions = make_test_questions()
@@ -655,11 +655,11 @@ class TestResolveToolResultsForSession:
             stop_reason="tool_use",
         )
 
-        with patch.object(agent, '_call_llm', return_value=mock_response):
-            agent.run("测试")
+        with patch.object(runner, '_call_llm', return_value=mock_response):
+            runner.run("测试")
 
         # 模拟前端 normalizeContent 处理
-        for msg in agent.messages:
+        for msg in runner.messages:
             if msg.get("role") != "assistant":
                 continue
             for block in msg.get("content", []):

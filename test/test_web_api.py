@@ -1,6 +1,7 @@
 """Tests for web_api.py — access control middleware, API key masking, helpers."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -132,72 +133,72 @@ class TestListAllWorkspaces:
 
 
 class TestEvictIdleAgent:
-    """_evict_idle_agent() LRU eviction logic."""
+    """_evict_idle_runner() LRU eviction logic."""
 
     def test_no_eviction_when_under_limit(self):
-        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
-        original_agents = dict(agents)
-        original_access = dict(_agent_access)
+        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
+        original_agents = dict(sessions)
+        original_access = dict(_runner_access)
         try:
-            agents.clear()
-            _agent_access.clear()
-            _evict_idle_agent()  # Should not raise
+            sessions.clear()
+            _runner_access.clear()
+            _evict_idle_runner()  # Should not raise
         finally:
-            agents.clear()
-            agents.update(original_agents)
-            _agent_access.clear()
-            _agent_access.update(original_access)
+            sessions.clear()
+            sessions.update(original_agents)
+            _runner_access.clear()
+            _runner_access.update(original_access)
 
     def test_evicts_oldest_idle(self):
-        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
-        original_agents = dict(agents)
-        original_access = dict(_agent_access)
+        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
+        original_agents = dict(sessions)
+        original_access = dict(_runner_access)
         try:
-            agents.clear()
-            _agent_access.clear()
+            sessions.clear()
+            _runner_access.clear()
 
             mock_agents = {}
-            for i in range(_MAX_AGENTS + 3):
+            for i in range(_MAX_RUNNERS + 3):
                 agent = MagicMock()
                 agent.is_running.return_value = False
                 agent.cleanup.return_value = None
                 key = f"test-{i}"
-                agents[key] = agent
-                _agent_access[key] = 1000 + i
+                sessions[key] = agent
+                _runner_access[key] = 1000 + i
 
-            _evict_idle_agent()
+            _evict_idle_runner()
 
-            assert "test-0" not in agents
-            assert len(agents) == _MAX_AGENTS + 2
+            assert "test-0" not in sessions
+            assert len(sessions) == _MAX_RUNNERS + 2
         finally:
-            agents.clear()
-            agents.update(original_agents)
-            _agent_access.clear()
-            _agent_access.update(original_access)
+            sessions.clear()
+            sessions.update(original_agents)
+            _runner_access.clear()
+            _runner_access.update(original_access)
 
     def test_does_not_evict_running_agent(self):
-        from web.deps import _evict_idle_agent, agents, _agent_access, _MAX_AGENTS
-        original_agents = dict(agents)
-        original_access = dict(_agent_access)
+        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
+        original_agents = dict(sessions)
+        original_access = dict(_runner_access)
         try:
-            agents.clear()
-            _agent_access.clear()
+            sessions.clear()
+            _runner_access.clear()
 
-            for i in range(_MAX_AGENTS + 2):
+            for i in range(_MAX_RUNNERS + 2):
                 agent = MagicMock()
                 agent.is_running.return_value = True
                 key = f"test-{i}"
-                agents[key] = agent
-                _agent_access[key] = 1000 + i
+                sessions[key] = agent
+                _runner_access[key] = 1000 + i
 
-            _evict_idle_agent()
+            _evict_idle_runner()
 
-            assert len(agents) == _MAX_AGENTS + 2
+            assert len(sessions) == _MAX_RUNNERS + 2
         finally:
-            agents.clear()
-            agents.update(original_agents)
-            _agent_access.clear()
-            _agent_access.update(original_access)
+            sessions.clear()
+            sessions.update(original_agents)
+            _runner_access.clear()
+            _runner_access.update(original_access)
 
 
 class TestGlobalEvents:
@@ -284,7 +285,7 @@ class TestGlobalEvents:
     def test_master_on_tool_output_publishes_to_event_bus(self, monkeypatch, tmp_path):
         """回归：master 的 _on_tool_output 必须发布到事件总线。
 
-        此前 _get_or_create_agent 里 event bus 变量被后面的 get_message_bus() 闭包
+        此前 _get_or_create_runner 里 event bus 变量被后面的 get_message_bus() 闭包
         晚绑定遮蔽成 MessageBus，publish 抛 AttributeError 被静默吞掉，
         导致前端收不到 master 执行 bash/python 的 tool_output 推流。
         """
@@ -299,11 +300,11 @@ class TestGlobalEvents:
         monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
         # Agent._init_interactive 内部通过 get_workspace_data_dir 解析数据目录
         monkeypatch.setattr("core.config.get_workspace_data_dir", lambda uuid: tmp_path)
-        # 测试结束后清理全局 agents 缓存，避免泄漏
-        monkeypatch.setattr(web_api, "agents", {})
+        # 测试结束后清理全局 sessions 缓存，避免泄漏
+        monkeypatch.setattr(web_api, "sessions", {})
 
         async def run():
-            agent = await web_api._get_or_create_agent(ws, sid)
+            agent = await web_api._get_or_create_runner(ws, sid)
             q = queue.Queue()
             get_event_bus().subscribe(q, ws, sid)
             try:
@@ -363,25 +364,25 @@ class TestAskUserDirectInput:
     def test_find_pending_ask_user(self, tmp_path):
         from web.routes_ask_user import _find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        assert _find_pending_ask_user(sm) == tool_use_id
+        assert _find_pending_ask_user(SimpleNamespace(session=sm)) == tool_use_id
 
     def test_find_pending_ask_user_none_when_answered(self, tmp_path):
         from web.routes_ask_user import _find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         sm.messages[-1]["content"][0]["_meta"]["completed"] = True
-        assert _find_pending_ask_user(sm) is None
+        assert _find_pending_ask_user(SimpleNamespace(session=sm)) is None
 
     def test_build_other_answer_formats_questions(self, tmp_path):
         from web.routes_ask_user import _build_other_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        answer = _build_other_answer(sm, tool_use_id, "我选 Python")
+        answer = _build_other_answer(SimpleNamespace(session=sm), tool_use_id, "我选 Python")
         assert answer == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
 
     def test_inject_ask_user_answer(self, tmp_path):
         from types import SimpleNamespace
         from web.routes_ask_user import _inject_ask_user_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        agent = SimpleNamespace(session_manager=sm, approval_store=None)
+        agent = SimpleNamespace(session=sm, approval_store=None)
         ok = _inject_ask_user_answer(agent, tool_use_id, "你喜欢哪种语言？ Python")
         assert ok is True
         placeholder = sm.messages[-1]["content"][0]
@@ -398,7 +399,7 @@ class TestAskUserDirectInput:
         from types import SimpleNamespace
         from web.routes_ask_user import _inject_ask_user_answer
         sm, _ = self._placeholder_session(tmp_path)
-        agent = SimpleNamespace(session_manager=sm, approval_store=None)
+        agent = SimpleNamespace(session=sm, approval_store=None)
         assert _inject_ask_user_answer(agent, "call_missing", "x") is False
 
     # ─── 审批分支三态 ─────────────────────────────────────────────
@@ -415,7 +416,7 @@ class TestAskUserDirectInput:
             "command": "rm -rf /tmp/x",
             "reason": "destructive recursive delete",
         })
-        agent = SimpleNamespace(session_manager=sm, approval_store=store)
+        agent = SimpleNamespace(session=sm, approval_store=store)
         return agent, tool_use_id, store
 
     def test_inject_answer_remember_persists_rule(self, tmp_path):
@@ -457,7 +458,7 @@ class TestAskUserDirectInput:
             "reason": "工作区外写入",
             "kind": "path:write",
         })
-        agent = SimpleNamespace(session_manager=sm, approval_store=store)
+        agent = SimpleNamespace(session=sm, approval_store=store)
         assert _inject_ask_user_answer(agent, tool_use_id, f"批准写入 {REMEMBER_LABEL}") is True
         assert store.is_approved("pathwrite1234567890ab")
         assert store.pending is None
@@ -492,7 +493,7 @@ class TestAskUserDirectInput:
 
         sm, tool_use_id = self._placeholder_session(tmp_path)
         agent = SimpleNamespace(
-            session_manager=sm,
+            session=sm,
             approval_store=None,
             workspace_uuid="ws-ask",
             current_session_id="sess-ask",
@@ -505,7 +506,7 @@ class TestAskUserDirectInput:
         async def fake_get_agent(ws, sid):
             return agent
 
-        monkeypatch.setattr(web_api, "_get_or_create_agent", fake_get_agent)
+        monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
         monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
 
         request = SimpleNamespace(content="我选 Python", images=None)

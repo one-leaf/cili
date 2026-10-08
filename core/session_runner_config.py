@@ -1,4 +1,4 @@
-"""Agent role configuration - load core/agents/{role}.json into AgentRoleConfig."""
+"""Runner role configuration - load core/agents/{role}.json into RunnerRoleConfig."""
 
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ _DEFAULTS = {
 
 
 @dataclass
-class AgentRoleConfig:
-    """A single agent role loaded from core/agents/{role}.json."""
+class RunnerRoleConfig:
+    """A single runner role loaded from core/agents/{role}.json."""
 
     name: str
     label: str = ""
@@ -77,7 +77,7 @@ def list_roles() -> list[str]:
     return sorted(p.stem for p in ROLE_DIR.glob("*.json"))
 
 
-def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
+def load_runner_role(role: str, config: Config | None = None) -> RunnerRoleConfig:
     """Load role definition from core/agents/{role}.json with defaults.
 
     ``max_iterations`` falls back to ``config.system.max_iterations`` when
@@ -85,21 +85,21 @@ def load_agent_role(role: str, config: Config | None = None) -> AgentRoleConfig:
     """
     path = _role_file(role)
     if not path.is_file():
-        raise ValueError(f"Unknown agent role: {role!r} (no {path})")
+        raise ValueError(f"Unknown runner role: {role!r} (no {path})")
 
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        raise ValueError(f"Failed to load agent role {role!r}: {e}") from e
+        raise ValueError(f"Failed to load runner role {role!r}: {e}") from e
 
     merged = {**_DEFAULTS, **data}
     if merged["name"] != role:
-        logger.warning(f"[agent_config] role file {path} name={merged['name']!r} != requested {role!r}")
+        logger.warning(f"[session_runner_config] role file {path} name={merged['name']!r} != requested {role!r}")
     if merged["mode"] not in VALID_MODES:
         raise ValueError(f"Role {role!r} has invalid mode {merged['mode']!r} (valid: {VALID_MODES})")
 
-    role_cfg = AgentRoleConfig(
+    role_cfg = RunnerRoleConfig(
         name=role,
         label=merged["label"],
         mode=merged["mode"],

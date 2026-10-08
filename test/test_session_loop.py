@@ -7,8 +7,8 @@ PhaseMachine 检查开关/检查轮次上限/额度兜底跳过检查。
 
 from unittest.mock import MagicMock, patch
 
-from core.agent import Agent
-from core.agent_runtime.loop import LoopPolicy, PhaseMachine
+from core.session_runner import SessionRunner
+from core.session_runner_runtime.loop import LoopPolicy, PhaseMachine
 
 
 # ─── 通用 mock 构造（与 test_worker_agent 一致）────────────────────────
@@ -23,11 +23,11 @@ def _make_mock_config(max_iterations=200):
 def _make_agent(role="worker", **kwargs):
     """构造指定角色 Agent，mock 掉工具实例化与 LLM client。"""
     config = kwargs.pop("config", None) or _make_mock_config()
-    with patch("core.agent.create_tools") as mock_tools, \
-         patch("core.agent.create_llm_client") as mock_client:
+    with patch("core.session_runner.create_tools") as mock_tools, \
+         patch("core.session_runner.create_llm_client") as mock_client:
         mock_tools.return_value = []
         mock_client.return_value = MagicMock()
-        return Agent(config, role=role, **kwargs)
+        return SessionRunner(config, role=role, **kwargs)
 
 
 def _make_tool_call_response(call_id="toolu_1", name="bash"):
@@ -145,31 +145,31 @@ class TestPhaseMachine:
 # ─── LoopPolicy 实时读 agent 属性 ─────────────────────────────────────
 
 class TestLoopPolicyLiveReads:
-    def test_max_iterations_live(self, agent):
-        """运行时改 agent.max_iterations 立即生效（不冻结策略快照）。"""
-        policy = agent.loop.policy
-        agent.max_iterations = 10
+    def test_max_iterations_live(self, runner):
+        """运行时改 runner.max_iterations 立即生效（不冻结策略快照）。"""
+        policy = runner.loop.policy
+        runner.max_iterations = 10
         assert policy.max_iterations == 10
-        agent.max_iterations = 3
+        runner.max_iterations = 3
         assert policy.max_iterations == 3
 
-    def test_check_iterations_live(self, agent):
+    def test_check_iterations_live(self, runner):
         """运行时改 role_cfg.check_iterations 立即生效。"""
-        policy = agent.loop.policy
-        agent.role_cfg.check_iterations = None
+        policy = runner.loop.policy
+        runner.role_cfg.check_iterations = None
         assert policy.check_iterations is None
-        agent.role_cfg.check_iterations = 5
+        runner.role_cfg.check_iterations = 5
         assert policy.check_iterations == 5
 
-    def test_streaming_interactive_reads_agent(self, agent):
-        """interactive 流式开关读 agent._streaming（run() 参数可覆盖）。"""
-        policy = agent.loop.policy
-        agent._streaming = False
+    def test_streaming_interactive_reads_agent(self, runner):
+        """interactive 流式开关读 runner._streaming（run() 参数可覆盖）。"""
+        policy = runner.loop.policy
+        runner._streaming = False
         assert policy.streaming is False
 
-    def test_circuit_breaker_off_for_interactive(self, agent):
+    def test_circuit_breaker_off_for_interactive(self, runner):
         """熔断仅 autonomous：interactive 策略 max_consecutive_failures=None。"""
-        assert agent.loop.policy.max_consecutive_failures is None
+        assert runner.loop.policy.max_consecutive_failures is None
 
     def test_circuit_breaker_on_for_autonomous(self):
         """worker（autonomous）熔断阈值从角色配置读取。"""
@@ -180,10 +180,10 @@ class TestLoopPolicyLiveReads:
 # ─── Loop 统一骨架 ────────────────────────────────────────────────────
 
 class TestLoopUnifiedSkeleton:
-    def test_both_entries_drive_shared_run_loop(self, agent):
+    def test_both_entries_drive_shared_run_loop(self, runner):
         """run_interactive/run_autonomous 共用同一 _run_loop 骨架。"""
-        with patch.object(agent.loop, "_run_loop") as m:
-            agent.loop.run_interactive()
+        with patch.object(runner.loop, "_run_loop") as m:
+            runner.loop.run_interactive()
         m.assert_called_once_with(autonomous=False)
 
     def test_autonomous_entry_drives_run_loop(self):
@@ -192,11 +192,11 @@ class TestLoopUnifiedSkeleton:
             worker.loop.run_autonomous()
         m.assert_called_once_with(autonomous=True)
 
-    def test_budget_injection_only_autonomous(self, agent):
+    def test_budget_injection_only_autonomous(self, runner):
         """预算注入是 autonomous 专属槽：interactive 循环不调用 _inject_budget_notice。"""
-        with patch.object(agent, "_call_llm", return_value=_make_text_response("hi")), \
-             patch.object(agent, "_inject_budget_notice") as spy:
-            agent.run("hello")
+        with patch.object(runner, "_call_llm", return_value=_make_text_response("hi")), \
+             patch.object(runner, "_inject_budget_notice") as spy:
+            runner.run("hello")
         spy.assert_not_called()
 
     def test_worker_budget_injection_happens(self):
@@ -208,14 +208,14 @@ class TestLoopUnifiedSkeleton:
             worker.run()
         assert spy.call_count >= 1
 
-    def test_interactive_phase_machine_is_single_phase(self, agent):
+    def test_interactive_phase_machine_is_single_phase(self, runner):
         """interactive 模式 PhaseMachine 恒返回 complete，无检查阶段转移。"""
-        outcome = agent.loop.phase_machine.decide_no_tool_calls(False)
+        outcome = runner.loop.phase_machine.decide_no_tool_calls(False)
         assert outcome.action == "complete"
 
-    def test_interactive_loop_driven_by_loop(self, agent):
+    def test_interactive_loop_driven_by_loop(self, runner):
         """交互回合经 Loop 统一骨架执行（run 入口直接委托 loop）。"""
-        with patch.object(agent, "_check_and_compress"), \
-             patch.object(agent, "_call_llm", return_value=_make_text_response("ok")) as call_mock:
-            agent.run("hi")
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_call_llm", return_value=_make_text_response("ok")) as call_mock:
+            runner.run("hi")
         assert call_mock.call_count == 1

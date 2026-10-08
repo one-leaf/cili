@@ -1,6 +1,6 @@
-# Agent 架构设计文档
+# SessionRunner 架构设计文档
 
-本文档描述 Cili Agent 的核心 Agent 架构设计，包括 BaseAgent 基础设施、统一 Agent 类（`core/agent.py`）以及角色 JSON 配置驱动的行为分叉。
+本文档描述 Cili 的核心 SessionRunner 架构设计，包括 BaseSessionRunner 基础设施、统一 SessionRunner 类（`core/session_runner.py`）以及角色 JSON 配置驱动的行为分叉。
 
 > **LLM API 接口细节**请参考 [LLM API 参考文档](llm-api-reference.md)
 >
@@ -13,7 +13,7 @@
 ## 目录
 
 - [一、整体架构](#一整体架构)
-- [二、BaseAgent 设计](#二baseagent-设计)
+- [二、BaseSessionRunner 设计](#二baseagent-设计)
 - [三、统一 Agent 与角色配置](#三统一-agent-与角色配置)
 - [四、interactive 模式（master）](#四interactive-模式master)
 - [五、autonomous 模式（worker/lite）](#五autonomous-模式workerlite)
@@ -32,8 +32,8 @@
 └──────────────────────────────┬──────────────────────────────────┘
                                │ SSE / REST API
 ┌──────────────────────────────▼──────────────────────────────────┐
-│                         BaseAgent                               │
-│                     core/base_agent.py                          │
+│                         BaseSessionRunner                               │
+│                     core/base_session_runner.py                          │
 │                                                                  │
 │   统一基础设施:                                                   │
 │   - self.messages (消息管理)                                     │
@@ -45,12 +45,12 @@
                            │ 继承
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                       Agent（统一类）                            │
-│                      core/agent.py                               │
+│                      core/session_runner.py                               │
 │   run() 按 role_cfg.mode 分叉：                                   │
 │   - interactive → _run_interactive（master，Web 聊天入口）         │
 │   - autonomous → _run_autonomous（worker/lite，自主执行）         │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ load_agent_role() 加载
+                           │ load_runner_role() 加载
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                      角色 JSON 配置                               │
 │              core/agents/master.json / worker.json / lite.json   │
@@ -68,11 +68,11 @@
 
 ---
 
-## 二、BaseAgent 设计
+## 二、BaseSessionRunner 设计
 
 ### 2.1 职责
 
-BaseAgent 是统一 Agent 类的基类，提供所有角色共用的执行基础设施：
+BaseSessionRunner 是统一 Agent 类的基类，提供所有角色共用的执行基础设施：
 - 消息管理（`self.messages` 列表）
 - 工具执行（外部文件存储）
 - 3 层自动压缩
@@ -84,7 +84,7 @@ BaseAgent 是统一 Agent 类的基类，提供所有角色共用的执行基础
 ### 2.2 核心方法
 
 ```python
-class BaseAgent:
+class BaseSessionRunner:
     def __init__(
         self,
         config: Config,
@@ -125,7 +125,7 @@ class BaseAgent:
 
 ### 2.3 消息压缩
 
-BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design/compression-design.md`](./compression-design.md)。`pinned` 标记的消息（任务、检查提示等核心锚点）在完整压缩中永不标记失效。
+BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design/compression-design.md`](./compression-design.md)。`pinned` 标记的消息（任务、检查提示等核心锚点）在完整压缩中永不标记失效。
 
 ### 2.4 执行循环
 
@@ -143,13 +143,13 @@ BaseAgent 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design
 
 ### 3.1 职责与 mode 分叉
 
-统一 `Agent` 类（`core/agent.py`）继承 BaseAgent，构造时加载角色配置，`role_cfg.mode` 决定运行分叉：
+统一 `Agent` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`role_cfg.mode` 决定运行分叉：
 
 - `interactive`（master）→ `run(user_input, on_text=..., ...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
 - `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `iterations` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
 
 ```python
-class Agent(BaseAgent):
+class SessionRunner(BaseSessionRunner):
     def __init__(
         self,
         config: Config,
@@ -166,7 +166,7 @@ class Agent(BaseAgent):
         max_consecutive_failures: int | None = None,  # None 时取角色配置
     ):
         self.role = role
-        self.role_cfg = load_agent_role(role, config)
+        self.role_cfg = load_runner_role(role, config)
         self.model = getattr(config, f"{role}_model", None) or config.model
         self._mode = self.role_cfg.mode
 
@@ -202,9 +202,9 @@ def run(self, *args, **kwargs):
 
 ### 3.2 角色 JSON 配置
 
-角色定义位于 `core/agents/{role}.json`（系统级、随代码库提交），由 `core/agent_config.py` 的 `load_agent_role(role, config)` 加载为 `AgentRoleConfig`。任何 JSON 缺失的字段使用 `_DEFAULTS` 兜底。
+角色定义位于 `core/agents/{role}.json`（系统级、随代码库提交），由 `core/session_runner_config.py` 的 `load_runner_role(role, config)` 加载为 `RunnerRoleConfig`。任何 JSON 缺失的字段使用 `_DEFAULTS` 兜底。
 
-`AgentRoleConfig` 字段：
+`RunnerRoleConfig` 字段：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -269,7 +269,7 @@ def run(self, *args, **kwargs):
 - `context`：动态环境上下文（日期/workspace/内存等），每次调用重新生成，**不持久化**
 - `task` / `runtime`：由 `Agent` 按 `role_cfg` 布尔开关运行时写入历史（pinned 任务消息、预算/检查/超时提示），不在生成器表内
 
-`Agent._get_messages_with_header()` 在 BaseAgent 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
+`Agent._get_messages_with_header()` 在 BaseSessionRunner 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
 
 - 注入消息恒排在最前；若历史第一条也是 user（如 pinned 任务消息），二者合并为一条
 - 合并后**连续 user 消息自动合成一条**，保证角色交替（满足 OpenAI/Bedrock 约束）
@@ -541,7 +541,7 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 ### 8.1 为什么用「统一 Agent + 角色 JSON」取代三层类？
 
-- 原 RootAgent/Agent 共享 90% 的执行基础设施（BaseAgent），差异仅在于模式开关；硬编码成两个类导致重复与分支蔓延
+- 原 RootAgent/Agent 共享 90% 的执行基础设施（BaseSessionRunner），差异仅在于模式开关；硬编码成两个类导致重复与分支蔓延
 - 行为差异收敛到一份 JSON：工具白名单、行为开关、prompt、迭代上限一目了然，新增角色只需加一个 JSON 文件
 - `mode` 分叉（interactive/autonomous）是唯一的关键分支点，其余行为全部由开关控制
 
@@ -561,7 +561,7 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ### 8.4 为什么 Agent 持有消息而不是 SessionManager？
 
 - Agent 自己管理消息生命周期，保存时机由 Agent 控制
-- BaseAgent 层仅依赖 `session_dir` 持久化；interactive 模式中 SessionManager 只负责会话元数据与磁盘保存（messages 共享同一引用）
+- BaseSessionRunner 层仅依赖 `session_dir` 持久化；interactive 模式中 SessionManager 只负责会话元数据与磁盘保存（messages 共享同一引用）
 - autonomous 模式可以传入 `session_dir` 直接持久化（`exec_{id}/index.json`），无需 SessionManager
 
 ### 8.5 为什么注入型 user 层不持久化 + 防连续合并？

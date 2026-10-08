@@ -25,7 +25,7 @@ class TestReadToolResult:
         mock_sm = MagicMock()
         mock_sm.session_dir = session_dir
 
-        tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=mock_sm)
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
         result = tool.execute(tool_use_id=tool_use_id)
 
         assert not result.is_error
@@ -42,7 +42,7 @@ class TestReadToolResult:
         mock_sm = MagicMock()
         mock_sm.session_dir = session_dir
 
-        tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=mock_sm)
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
         result = tool.execute(tool_use_id="nonexistent_id")
 
         assert result.is_error
@@ -65,7 +65,7 @@ class TestReadToolResult:
         mock_sm = MagicMock()
         mock_sm.session_dir = session_dir
 
-        tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=mock_sm)
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
         result = tool.execute(tool_use_id=tool_use_id)
 
         assert not result.is_error
@@ -86,7 +86,7 @@ class TestReadToolResult:
         mock_sm = MagicMock()
         mock_sm.session_dir = session_dir
 
-        tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=mock_sm)
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
         result = tool.execute(tool_use_id=tool_use_id)
 
         assert not result.is_error
@@ -97,7 +97,7 @@ class TestReadToolResult:
         from core.tools.read_tool_result import ReadToolResultTool
 
         test_workspace = Path(test_workspace)
-        tool = ReadToolResultTool(cwd=str(test_workspace), session_manager=None)
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=None)
         result = tool.execute(tool_use_id="toolu_test")
 
         assert result.is_error

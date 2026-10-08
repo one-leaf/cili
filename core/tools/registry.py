@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from core.agent_config import AgentRoleConfig, load_agent_role
+from core.session_runner_config import RunnerRoleConfig, load_runner_role
 from core.config import Config
 from core.tools.base import Tool
 from core.tools.ask_user import AskUserTool
@@ -32,7 +32,7 @@ from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.session_search import SessionSearchTool
 from core.tools.skill import SkillTool
-from core.tools.agent_tool import AgentTool
+from core.tools.session_tool import SessionTool
 from core.tools.temp import TempTool
 from core.tools.todo import TodoWriteTool
 from core.tools.web_search import WebSearchTool
@@ -41,20 +41,20 @@ from core.tools.tool_search import ToolSearchTool
 
 logger = logging.getLogger(__name__)
 
-Factory = Callable[[AgentRoleConfig, str, str, Any, Config | None, Any], Tool]
+Factory = Callable[[RunnerRoleConfig, str, str, Any, Config | None, Any], Tool]
 
 
-def _make_skill(role_cfg, cwd, workspace_uuid, session_manager, config, approval_store) -> Tool:
+def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store) -> Tool:
     return SkillTool(
         role=role_cfg.name,
-        cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
+        cwd=cwd, workspace_uuid=workspace_uuid, session=session,
     )
 
 
 def _factory(cls: type, *, needs_config: bool = False, needs_approval: bool = False) -> Factory:
-    def factory(role_cfg, cwd, workspace_uuid, session_manager, config, approval_store) -> Tool:
+    def factory(role_cfg, cwd, workspace_uuid, session, config, approval_store) -> Tool:
         kwargs: dict[str, Any] = dict(
-            cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager,
+            cwd=cwd, workspace_uuid=workspace_uuid, session=session,
         )
         if needs_config:
             kwargs["config"] = config
@@ -90,28 +90,28 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_approval=True),
     "skill": _make_skill,
-    "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
+    "session": _factory(SessionTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
 }
 
 
 def create_tools(
-    role_cfg: AgentRoleConfig | None = None,
+    role_cfg: RunnerRoleConfig | None = None,
     cwd: str = ".",
     workspace_uuid: str = "",
-    session_manager=None,
+    session=None,
     config: Config | None = None,
     approval_store=None,
     role: str | None = None,
 ) -> list[Tool]:
     """按角色工具白名单实例化工具。
 
-    role_cfg 缺省时回退到 load_agent_role(role or "master")，便于旧调用点
+    role_cfg 缺省时回退到 load_runner_role(role or "master", config)，便于旧调用点
     （conftest / prompts）不显式传角色配置即可获得 master 全量工具。
     """
     if role_cfg is None:
-        role_cfg = load_agent_role(role or "master", config)
+        role_cfg = load_runner_role(role or "master", config)
 
     tools: list[Tool] = []
     for name in role_cfg.tools:
@@ -120,7 +120,7 @@ def create_tools(
             logger.warning(f"[registry] 角色 {role_cfg.name!r} 白名单中的工具 {name!r} 未注册，已跳过")
             continue
         try:
-            tools.append(factory(role_cfg, cwd, workspace_uuid, session_manager, config, approval_store))
+            tools.append(factory(role_cfg, cwd, workspace_uuid, session, config, approval_store))
         except Exception as e:
             logger.warning(f"[registry] 实例化工具 {name!r} 失败: {e}")
     return tools

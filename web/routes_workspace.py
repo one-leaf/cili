@@ -26,7 +26,7 @@ from core.session import (
 from core.tools.base import Tool
 
 from web.deps import (
-    agents, _agent_access, _agents_lock, _list_all_workspaces,
+    sessions, _runner_access, _sessions_lock, _list_all_workspaces,
     _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
     _validate_session_id, _validate_workspace_uuid,
     _get_workspace_info,
@@ -132,7 +132,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
 
 
 def _remove_workspace_data(workspace_uuid: str) -> None:
-    """Remove workspace .cili data directory (filesystem only, does not touch agents dict or index)."""
+    """Remove workspace .cili data directory (filesystem only, does not touch sessions dict or index)."""
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
     ws_data_dir = get_workspace_data_dir(workspace_uuid)
@@ -143,14 +143,14 @@ def _remove_workspace_data(workspace_uuid: str) -> None:
 
 
 def _cleanup_agents_for_workspace(workspace_uuid: str) -> None:
-    """Remove agents belonging to the given workspace from the agents dict.
+    """Remove sessions belonging to the given workspace from the sessions dict.
 
-    Must be called under _agents_lock.
+    Must be called under _sessions_lock.
     """
-    keys_to_remove = [k for k in agents if k.startswith(f"{workspace_uuid}:")]
+    keys_to_remove = [k for k in sessions if k.startswith(f"{workspace_uuid}:")]
     for key in keys_to_remove:
-        evicted = agents.pop(key)
-        _agent_access.pop(key, None)
+        evicted = sessions.pop(key)
+        _runner_access.pop(key, None)
         try:
             evicted.cleanup()
         except Exception as e:
@@ -163,7 +163,7 @@ async def delete_workspace(workspace_uuid: str):
     _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
-    async with _agents_lock:
+    async with _sessions_lock:
         _cleanup_agents_for_workspace(workspace_uuid)
     _remove_workspace_data(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
@@ -212,7 +212,7 @@ async def reset_workspace(workspace_uuid: str):
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    async with _agents_lock:
+    async with _sessions_lock:
         _cleanup_agents_for_workspace(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
     logger.info(f"Workspace config removed: {workspace_uuid} (data and files kept)")
@@ -571,12 +571,12 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     shutil.rmtree(session_dir)
     _drop_session_lock(session_dir)
 
-    # Remove from agents dict (under lock)
+    # Remove from sessions dict (under lock)
     key = f"{workspace_uuid}:{session_id}"
-    async with _agents_lock:
-        if key in agents:
-            evicted = agents.pop(key)
-            _agent_access.pop(key, None)
+    async with _sessions_lock:
+        if key in sessions:
+            evicted = sessions.pop(key)
+            _runner_access.pop(key, None)
             try:
                 evicted.cleanup()
             except Exception:
@@ -597,10 +597,10 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        agent = agents.get(key)
-        if agent:
+        runner = sessions.get(key)
+        if runner:
             # agent 已加载：经 rename() 改内存并置脏（递增版本号），落盘不短路
-            agent.session_manager.rename(request.name)
+            runner.session.rename(request.name)
             return {"success": True}
 
         meta = read_meta(session_dir)
@@ -625,9 +625,9 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        agent = agents.get(key)
-        if agent:
-            agent.session_manager.set_hidden(request.hidden)
+        runner = sessions.get(key)
+        if runner:
+            runner.session.set_hidden(request.hidden)
             return {"success": True}
 
         meta = read_meta(session_dir)
@@ -731,7 +731,7 @@ async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, w
 # ----- Project Instructions (AGENTS.md / CLAUDE.md) -----
 
 # 支持的项目指令文件（按优先级排序，与 core/prompts.py 保持一致）
-_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]
+_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "runner.md", "CLAUDE.md", "claude.md"]
 
 # 模板目录
 _TEMPLATES_DIR = PROJECT_ROOT / "core" / "templates" / "prompts"
@@ -814,21 +814,21 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
     # 构造任务描述
     task = (
         "Scan the project in the current working directory and generate an AGENTS.md file.\n\n"
-        "First, use skill(action='read', skill_id='generate-agents-md') to get the detailed instructions.\n"
+        "First, use skill(action='read', skill_id='generate-sessions-md') to get the detailed instructions.\n"
         "Then follow the skill instructions to scan the project and generate AGENTS.md.\n\n"
         "Write the generated AGENTS.md to the workspace root directory using the write tool."
     )
 
     try:
         from core.config import load_config
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
         import secrets
 
         config = load_config()
         exec_id = f"gen-{secrets.token_hex(4)}"
 
         # 创建 worker agent
-        agent = Agent(
+        runner = SessionRunner(
             config=config,
             role="worker",
             task=task,
@@ -843,7 +843,7 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
 
         def run_agent():
             try:
-                result = agent.run()
+                result = runner.run()
                 result_holder["status"] = result.get("status", "completed")
                 result_holder["summary"] = result.get("summary", "")
             except Exception as e:
@@ -864,7 +864,7 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
         return {"task_id": exec_id, "status": "running"}
 
     except Exception as e:
-        logger.error(f"Failed to start generate agent: {e}")
+        logger.error(f"Failed to start generate runner: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start: {e}")
 
 

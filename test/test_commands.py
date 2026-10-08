@@ -9,15 +9,15 @@ from core.config import ModelConfig
 class TestCommands:
     """命令行命令测试"""
 
-    def test_help_command_exists(self, agent):
+    def test_help_command_exists(self, runner):
         """测试 /help 命令处理存在"""
         # /help 在 web_api.py 中处理，验证 agent 可以正常创建
-        assert agent is not None
-        assert hasattr(agent, 'run')
+        assert runner is not None
+        assert hasattr(runner, 'run')
 
-    def test_session_manager_available(self, agent):
+    def test_session_available(self, runner):
         """测试会话管理器可用"""
-        session_mgr = agent.session_manager
+        session_mgr = runner.session
         # 验证所有会话管理方法存在
         assert hasattr(session_mgr, 'add_message')
         assert hasattr(session_mgr, 'get_messages')
@@ -31,9 +31,9 @@ class TestCommands:
         assert hasattr(session_mgr, 'get_usage')
         assert hasattr(session_mgr, 'get_message_count')
 
-    def test_llm_client_is_pure_api(self, agent):
+    def test_llm_client_is_pure_api(self, runner):
         """测试 LLMClient 是纯 API 客户端"""
-        client = agent.client
+        client = runner.client
         # 应该是 LLMClient 实例
         assert isinstance(client, LLMClient)
         # API 方法应该存在

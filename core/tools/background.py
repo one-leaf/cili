@@ -1,6 +1,6 @@
-"""后台任务管理：BackgroundTask/BackgroundTaskManager + 后台命令与后台 Agent mixin。
+"""后台任务管理：BackgroundTask/BackgroundTaskManager + 后台命令与后台 Runner mixin。
 
-从 base.py 抽取的后台域：进程注册表、全局活跃 Agent 跟踪、并发槽位控制，
+从 base.py 抽取的后台域：进程注册表、全局活跃 Runner 跟踪、并发槽位控制，
 以及 Tool 的 10 个后台方法（以 BackgroundMixin 继承，经 MRO 解析到 Tool 实例）。
 """
 
@@ -19,33 +19,33 @@ from core.tools.result import ToolResult
 from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH
 
 
-# 全局跟踪所有活跃的后台 Agent，用于进程退出时清理 + 并发上限控制
-_active_background_agents: list = []
-_background_agents_cond = threading.Condition()
+# 全局跟踪所有活跃的后台 Runner，用于进程退出时清理 + 并发上限控制
+_active_background_runners: list = []
+_background_runners_cond = threading.Condition()
 _atexit_registered = False
 
 
-def _atexit_cleanup_agents() -> None:
-    """进程退出时停止所有活跃的后台 Agent"""
-    for agent in list(_active_background_agents):
+def _atexit_cleanup_runners() -> None:
+    """进程退出时停止所有活跃的后台 Runner"""
+    for runner in list(_active_background_runners):
         try:
-            if hasattr(agent, 'stop'):
-                agent.stop()
+            if hasattr(runner, 'stop'):
+                runner.stop()
         except Exception:
             pass
-    _active_background_agents.clear()
+    _active_background_runners.clear()
 
 
 @dataclass
 class BackgroundTask:
-    """A background task (shell command or Agent).
+    """A background task (shell command or SessionRunner).
 
     Supports two task types:
     - "shell": subprocess.Popen (command execution)
-    - "agent": Agent instance (autonomous agent loop)
+    - "session": SessionRunner instance (autonomous runner loop)
     """
     task_id: str
-    task_type: str = "shell"  # "shell" or "agent"
+    task_type: str = "shell"  # "shell" or "session"
     command: str = ""  # For shell tasks
     process: subprocess.Popen | None = None  # For shell tasks
     output_file: str | None = None
@@ -56,15 +56,15 @@ class BackgroundTask:
     created_at: float = field(default_factory=time.time)
     stdin_pipe: Any = None  # subprocess.PIPE for write_stdin
 
-    # Agent-specific fields
-    agent: Any = None  # Agent instance
-    session_manager: Any = None  # SessionManager reference
-    result: dict | None = None  # Agent execution result
-    exec_id: str | None = None  # Agent execution ID for UI card rendering
+    # Runner-specific fields
+    runner: Any = None  # SessionRunner instance
+    session: Any = None  # Session reference
+    result: dict | None = None  # Runner execution result
+    exec_id: str | None = None  # Runner execution ID for UI card rendering
 
 
 class BackgroundTaskManager:
-    """Manages background tasks (shell commands and Agents) across all tool instances.
+    """Manages background tasks (shell commands and Runners) across all tool instances.
 
     Thread-safe singleton that maintains a registry of background processes.
     """
@@ -107,14 +107,14 @@ class BackgroundTaskManager:
                     if task.process.poll() is not None:
                         task.status = "completed"
                         task.exit_code = task.process.returncode
-                elif task.task_type == "agent" and task.agent:
-                    if not task.agent._running and task.status == "running":
+                elif task.task_type == "session" and task.runner:
+                    if not task.runner._running and task.status == "running":
                         task.status = "completed"
 
                 result.append({
                     "task_id": task_id,
                     "task_type": task.task_type,
-                    "command": task.command or (task.agent.task[:100] if task.agent else ""),
+                    "command": task.command or (task.runner.task[:100] if task.runner else ""),
                     "status": task.status,
                     "exit_code": task.exit_code,
                     "created_at": task.created_at,
@@ -123,11 +123,11 @@ class BackgroundTaskManager:
 
 
 class BackgroundMixin:
-    """后台命令/Agent 方法族，经 Tool(ShellMixin, BackgroundMixin) MRO 挂到 Tool 实例。
+    """后台命令/Runner 方法族，经 Tool(ShellMixin, BackgroundMixin) MRO 挂到 Tool 实例。
 
     依赖宿主 Tool 提供的 self.cwd / self.output_file / self.on_output /
     self._emit_output / self._kill_process_tree（来自 ShellMixin）/ self.config /
-    self.stop_check / self._publish / self.on_agent_complete。
+    self.stop_check / self._publish / self.on_session_complete。
     """
 
     def _start_background_task(
@@ -388,12 +388,12 @@ class BackgroundMixin:
             lines.append(f"  {t['task_id']}: [{task_type}][{status}] {t['command']}")
         return ToolResult("\n".join(lines))
 
-    def _acquire_background_agent_slot(self, agent: Any) -> ToolResult | None:
-        """等待后台 Agent 并发槽位并预留。
+    def _acquire_background_runner_slot(self, runner: Any) -> ToolResult | None:
+        """等待后台 Runner 并发槽位并预留。
 
         超过 config.system.max_concurrent_agents（默认 2，范围 1-10）时阻塞等待，
         直到有子代理结束释放槽位、任务被停止、或等待超时（1 小时）。
-        返回 None 表示获得槽位（agent 已加入活跃列表）；否则返回错误 ToolResult。
+        返回 None 表示获得槽位（runner 已加入活跃列表）；否则返回错误 ToolResult。
         """
         config = getattr(self, "config", None)
         system = getattr(config, "system", None)
@@ -404,37 +404,37 @@ class BackgroundMixin:
             limit = 2
         stop_check = getattr(self, "stop_check", None)
         deadline = time.time() + 3600
-        with _background_agents_cond:
-            while len(_active_background_agents) >= limit:
+        with _background_runners_cond:
+            while len(_active_background_runners) >= limit:
                 if stop_check and stop_check():
                     return ToolResult(
-                        f"Error: 后台 Agent 并发已达上限（{len(_active_background_agents)}/{limit}）"
+                        f"Error: 后台 Runner 并发已达上限（{len(_active_background_runners)}/{limit}）"
                         "且任务已停止，本次委派未启动。",
                         error=True,
                     )
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     return ToolResult(
-                        f"Error: 等待后台 Agent 并发槽位超时（{len(_active_background_agents)}/{limit} 仍在运行）。"
+                        f"Error: 等待后台 Runner 并发槽位超时（{len(_active_background_runners)}/{limit} 仍在运行）。"
                         "请稍后重试，或用 action=\"kill\" 终止占用任务。",
                         error=True,
                     )
-                _background_agents_cond.wait(timeout=min(1.0, remaining))
-            _active_background_agents.append(agent)
+                _background_runners_cond.wait(timeout=min(1.0, remaining))
+            _active_background_runners.append(runner)
             return None
 
-    def _start_background_agent(
+    def _start_background_runner(
         self,
-        agent: Any,
-        session_manager: Any,
+        runner: Any,
+        session: Any,
         exec_id: str,
         task_summary: str,
     ) -> ToolResult:
-        """Start a Agent in background and return task_id.
+        """Start a Runner in background and return task_id.
 
         Args:
-            agent: Agent instance to run in background.
-            session_manager: SessionManager reference.
+            runner: SessionRunner instance to run in background.
+            session: Session reference.
             exec_id: Execution ID.
             task_summary: Task summary for display.
         """
@@ -443,60 +443,60 @@ class BackgroundMixin:
 
         # Register atexit handler (once)
         if not _atexit_registered:
-            atexit.register(_atexit_cleanup_agents)
+            atexit.register(_atexit_cleanup_runners)
             _atexit_registered = True
 
-        # 并发上限控制：等待空余槽位（全局计数），并预留当前 agent 的槽位
-        slot_error = self._acquire_background_agent_slot(agent)
+        # 并发上限控制：等待空余槽位（全局计数），并预留当前 runner 的槽位
+        slot_error = self._acquire_background_runner_slot(runner)
         if slot_error is not None:
             return slot_error
 
-        def run_agent():
-            """Run Agent in background thread."""
+        def run_runner():
+            """Run Runner in background thread."""
             try:
-                result = agent.run()
+                result = runner.run()
                 task.result = result
                 task.status = "completed"
 
-                # Save Agent log
-                if session_manager and exec_id:
+                # Save Runner log
+                if session and exec_id:
                     from datetime import datetime
                     try:
-                        session_manager.agent_logs.save_agent_log(
+                        session.agent_logs.save_agent_log(
                             exec_id=exec_id,
-                            task=agent.task,
-                            messages=agent.messages,
+                            task=runner.task,
+                            messages=runner.messages,
                             metadata={
-                                "started_at": agent._started_at.strftime("%Y-%m-%d %H:%M:%S") if agent._started_at else "",
+                                "started_at": runner._started_at.strftime("%Y-%m-%d %H:%M:%S") if runner._started_at else "",
                                 "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "duration_seconds": agent._elapsed_seconds(),
+                                "duration_seconds": runner._elapsed_seconds(),
                                 "status": result.get("status", "completed"),
                                 "iterations": result.get("iterations", 0),
-                                "message_count": len(agent.messages),
-                                "max_iterations": agent.max_iterations,
+                                "message_count": len(runner.messages),
+                                "max_iterations": runner.max_iterations,
                             },
                             summary=result.get("summary") or result.get("message") or "",
                         )
-                        session_manager.save()
+                        session.save()
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(
-                            f"Failed to save Agent log for {task_id}: {e}"
+                            f"Failed to save Runner log for {task_id}: {e}"
                         )
 
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).error(f"Background Agent {task_id} error: {e}")
+                logging.getLogger(__name__).error(f"Background Runner {task_id} error: {e}")
                 task.status = "error"
                 task.result = {"status": "error", "message": str(e)}
             finally:
                 try:
-                    _active_background_agents.remove(agent)
+                    _active_background_runners.remove(runner)
                 except ValueError:
                     pass
-                with _background_agents_cond:
-                    _background_agents_cond.notify_all()
-                # 注销子代理的 MessageBus 注册（exec_id + 所有别名如 label）
+                with _background_runners_cond:
+                    _background_runners_cond.notify_all()
+                # 注销子 runner 的 MessageBus 注册（exec_id + 所有别名如 label）
                 try:
                     from core.message_bus import get_message_bus
                     mbus = get_message_bus()
@@ -505,40 +505,40 @@ class BackgroundMixin:
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(
-                        f"Failed to unregister background Agent from MessageBus {task_id}: {e}"
+                        f"Failed to unregister background Runner from MessageBus {task_id}: {e}"
                     )
-                # T18: 资源/统计对称 —— 后台子代理结束也 close LLM client 并转发 usage，
-                # 与同步委派（agent_tool.py）保持一致。
+                # T18: 资源/统计对称 —— 后台子 runner 结束也 close LLM client 并转发 usage，
+                # 与同步委派（session_tool.py）保持一致。
                 try:
-                    agent.close()
+                    runner.close()
                 except Exception:
                     pass
                 usage = (task.result or {}).get("usage", {})
-                if session_manager and usage:
+                if session and usage:
                     try:
-                        session_manager.update_usage(
+                        session.update_usage(
                             input_tokens=usage.get("input_tokens", 0),
                             output_tokens=usage.get("output_tokens", 0),
                             api_calls=0,
                             cache_read_tokens=usage.get("cache_read_tokens", 0),
                             cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                         )
-                        session_manager.save()
+                        session.save()
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(
-                            f"Failed to forward usage for background Agent {task_id}: {e}"
+                            f"Failed to forward usage for background Runner {task_id}: {e}"
                         )
-                # 后台 agent 完成：先计算 status
+                # 后台 runner 完成：先计算 status
                 status = (task.result or {}).get("status", "completed")
-                # 全局事件流：后台模式补发 agent_complete + 保留 on_agent_complete 回调
+                # 全局事件流：后台模式补发 session_complete + 保留 on_session_complete 回调
                 # + 通过 message_bus 发送通知给 master（使其在空闲时也能收到通知）
                 try:
                     publish = getattr(self, "_publish", None)
                     if publish:
-                        publish("agent_complete", exec_id=exec_id, status=status)
+                        publish("session_complete", exec_id=exec_id, status=status)
                     # 通过 message_bus 发送通知给 master，使其在空闲时也能收到通知
-                    sm = getattr(self, "session_manager", None)
+                    sm = getattr(self, "session", None)
                     master_session_id = getattr(sm, "session_id", None) if sm else None
                     if master_session_id:
                         try:
@@ -551,14 +551,14 @@ class BackgroundMixin:
                             mbus.send_to_agent(
                                 exec_id,
                                 master_session_id,
-                                f"[子代理完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
+                                f"[子 Runner 完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
                                 message_type="notification",
                             )
                             # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）
                             try:
                                 from core.event_bus import get_event_bus
                                 get_event_bus().publish({
-                                    "type": "background_agent_resume",
+                                    "type": "background_runner_resume",
                                     "workspace_uuid": self.workspace_uuid,
                                     "session_id": master_session_id,
                                     "exec_id": exec_id,
@@ -571,12 +571,12 @@ class BackgroundMixin:
                             logging.getLogger(__name__).debug(
                                 f"Failed to send notification via message_bus: {e}"
                             )
-                    if getattr(self, "on_agent_complete", None):
-                        self.on_agent_complete(exec_id)
+                    if getattr(self, "on_session_complete", None):
+                        self.on_session_complete(exec_id)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(
-                        f"Failed to notify background Agent complete {task_id}: {e}"
+                        f"Failed to notify background Runner complete {task_id}: {e}"
                     )
                 # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）
                 if getattr(self, "on_background_complete", None):
@@ -591,23 +591,23 @@ class BackgroundMixin:
         # Create background task entry
         task = BackgroundTask(
             task_id=task_id,
-            task_type="agent",
+            task_type="session",
             command=task_summary,
-            agent=agent,
-            session_manager=session_manager,
+            runner=runner,
+            session=session,
             status="running",
             exec_id=exec_id,
         )
 
         BackgroundTaskManager.register(task)
 
-        # Start Agent in background thread
-        thread = threading.Thread(target=run_agent, daemon=True)
+        # Start Runner in background thread
+        thread = threading.Thread(target=run_runner, daemon=True)
         thread.start()
         task.reader_thread = thread
 
         return ToolResult(
-            f"Background Agent started.\n"
+            f"Background Runner started.\n"
             f"Task ID: {task_id}\n"
             f"Task: {task_summary}\n\n"
             f"You will receive an automatic notification when it completes — do NOT poll with "
@@ -616,18 +616,18 @@ class BackgroundMixin:
             meta={"exec_id": exec_id, "completed": False, "task_id": task_id, "background": True},
         )
 
-    def _read_background_agent(self, task_id: str) -> ToolResult:
-        """Read status and output from a background Agent."""
+    def _read_background_runner(self, task_id: str) -> ToolResult:
+        """Read status and output from a background Runner."""
         task = BackgroundTaskManager.get(task_id)
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
-        if task.task_type != "agent":
-            return ToolResult(f"Error: task '{task_id}' is not a Agent", error=True)
+        if task.task_type != "session":
+            return ToolResult(f"Error: task '{task_id}' is not a Runner", error=True)
 
-        agent = task.agent
-        if not agent:
-            return ToolResult(f"Error: Agent for '{task_id}' not found", error=True)
+        runner = task.runner
+        if not runner:
+            return ToolResult(f"Error: Runner for '{task_id}' not found", error=True)
 
         # Check status
         if task.result:
@@ -645,7 +645,7 @@ class BackgroundMixin:
             meta = {"exec_id": task.exec_id, "completed": True, "iterations": iterations, "message_count": message_count, "tool_call_count": tool_call_count, "background": True}
             if summary:
                 return ToolResult(
-                    f"Agent {task_id} completed.\n"
+                    f"Runner {task_id} completed.\n"
                     f"Status: {status}\n"
                     f"Iterations: {iterations}\n\n"
                     f"Summary:\n{summary}",
@@ -653,46 +653,46 @@ class BackgroundMixin:
                 )
             else:
                 return ToolResult(
-                    f"Agent {task_id} completed.\n"
+                    f"Runner {task_id} completed.\n"
                     f"Status: {status}\n"
                     f"Iterations: {iterations}",
                     meta=meta,
                 )
         else:
             # Still running
-            iterations = len(agent.messages) // 2  # Rough estimate
+            iterations = len(runner.messages) // 2  # Rough estimate
             return ToolResult(
-                f"Agent {task_id} still running.\n"
+                f"Runner {task_id} still running.\n"
                 f"Estimated iterations: {iterations}\n"
-                f"Current tool: {getattr(agent, '_current_tool', 'none')}",
+                f"Current tool: {getattr(runner, '_current_tool', 'none')}",
                 meta={"exec_id": task.exec_id, "completed": False, "background": True},
             )
 
-    def _kill_background_agent(self, task_id: str) -> ToolResult:
-        """Terminate a background Agent."""
+    def _kill_background_runner(self, task_id: str) -> ToolResult:
+        """Terminate a background Runner."""
         task = BackgroundTaskManager.get(task_id)
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
-        if task.task_type != "agent":
-            return ToolResult(f"Error: task '{task_id}' is not a Agent", error=True)
+        if task.task_type != "session":
+            return ToolResult(f"Error: task '{task_id}' is not a Runner", error=True)
 
-        agent = task.agent
-        if not agent:
-            return ToolResult(f"Error: Agent for '{task_id}' not found", error=True)
+        runner = task.runner
+        if not runner:
+            return ToolResult(f"Error: Runner for '{task_id}' not found", error=True)
 
         try:
             # Set stop flag
-            agent._stopped = True
+            runner._stopped = True
             task.status = "killed"
 
             # Clean up
             BackgroundTaskManager.remove(task_id)
 
             return ToolResult(
-                f"Agent {task_id} terminated",
+                f"Runner {task_id} terminated",
                 meta={"exec_id": task.exec_id, "completed": True, "status": "killed", "background": True},
             )
 
         except Exception as e:
-            return ToolResult(f"Error killing Agent {task_id}: {e}", error=True)
+            return ToolResult(f"Error killing Runner {task_id}: {e}", error=True)

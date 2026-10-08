@@ -1,13 +1,13 @@
-"""BaseAgent 纯逻辑单测（不依赖 DGX）：full compact 切分点等。"""
+"""BaseSessionRunner 纯逻辑单测（不依赖 DGX）：full compact 切分点等。"""
 
 import pytest
 
-from core.base_agent import BaseAgent
+from core.base_session_runner import BaseSessionRunner
 
 
 def _agent():
     """绕过 __init__ 创建实例，调用不依赖实例状态的纯方法。"""
-    return object.__new__(BaseAgent)
+    return object.__new__(BaseSessionRunner)
 
 
 def _user_text(text, pinned=False):

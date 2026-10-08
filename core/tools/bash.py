@@ -62,9 +62,9 @@ _DENY_PATTERNS = [
 class BashTool(Tool):
     name = "bash"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
                  approval_store=None):
-        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
         # 动态注入当前工作目录到描述中
         self.description = self._build_description()
 

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from core.tools.approval import APPROVE_LABEL, REMEMBER_LABEL
 
 from web.deps import (
-    agents, _SAFE_ID_RE, _new_short_id, _claim_session_run,
+    sessions, _SAFE_ID_RE, _new_short_id, _claim_session_run,
     _release_session_run, _make_sse_callbacks, _sse_stream,
 )
 
@@ -34,13 +34,13 @@ def _safe_ask_user_filename(tool_use_id: str) -> str:
     return f"{_new_short_id()}.txt"
 
 
-def _find_pending_ask_user(session_manager) -> str | None:
+def _find_pending_ask_user(runner) -> str | None:
     """查找最后一个待回答的 ask_user 占位 tool_result，返回其 tool_use_id（无则 None）。
 
     占位符由 _execute_tool 生成：user 消息中的 tool_result 块带
     `_meta.completed=False` 且 `_meta.tool_name="ask_user"`。
     """
-    for msg in reversed(session_manager.messages):
+    for msg in reversed(runner.session.messages):
         if msg["role"] != "user":
             continue
         content = msg.get("content", [])
@@ -54,9 +54,9 @@ def _find_pending_ask_user(session_manager) -> str | None:
     return None
 
 
-def _build_other_answer(session_manager, ask_user_tool_use_id: str, content: str) -> str:
+def _build_other_answer(runner, ask_user_tool_use_id: str, content: str) -> str:
     """以用户输入作为 ask_user 的"其他"回复，按卡片 formatAnswers 格式组装（`问题 答案`）。"""
-    for msg in session_manager.messages:
+    for msg in runner.session.messages:
         if msg["role"] != "assistant":
             continue
         blocks = msg.get("content", [])
@@ -70,15 +70,15 @@ def _build_other_answer(session_manager, ask_user_tool_use_id: str, content: str
     return content
 
 
-def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bool:
+def _inject_ask_user_answer(runner, ask_user_tool_use_id: str, answer: str) -> bool:
     """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
 
-    返回是否找到占位符。消息块是 agent 与 session_manager 的共享引用，就地修改
+    返回是否找到占位符。消息块是 agent 与 session 的共享引用，就地修改
     对两者都生效（answer_ask_user 与 send_message 共用）。
     """
     logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
     found_placeholder = False
-    for msg in reversed(agent.session_manager.messages):
+    for msg in reversed(runner.session.messages):
         if msg["role"] != "user":
             continue
         content = msg.get("content", [])
@@ -104,7 +104,7 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
                     "file_size": len(answer.encode("utf-8")),
                 })
                 try:
-                    ext_file = agent.session_manager.session_dir / output_path
+                    ext_file = runner.session.session_dir / output_path
                     ext_file.write_text(answer, encoding="utf-8")
                     logger.info(f"[ask-user] 已写入答案文件: {output_path}")
                 except Exception as e:
@@ -119,7 +119,7 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
 
     # 在对应的 tool_use/tool_call 块上添加 _answered 标记
     found_tool_use = False
-    for msg in agent.session_manager.messages:
+    for msg in runner.session.messages:
         if msg["role"] != "assistant":
             continue
         content = msg.get("content", [])
@@ -142,7 +142,7 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
 
     # 会话级审批：若本次 ask_user 是高风险命令批准卡，按答案记录批准/拒绝并清空待批槽
     # 答案格式为 "{question} {label}"，用 label 后缀精确匹配区分三档（避免子串误判）
-    store = getattr(agent, "approval_store", None)
+    store = getattr(runner, "approval_store", None)
     if store and store.pending:
         stripped = answer.rstrip()
         kind = store.pending.get("kind", "command")
@@ -163,8 +163,8 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
         store.clear_pending()
 
     # 就地修改了共享消息块（未走 add_message），须置脏否则 save 短路不落盘
-    agent.session_manager.mark_dirty()
-    agent.session_manager.save()
+    runner.session.mark_dirty()
+    runner.session.save()
     return True
 
 
@@ -172,8 +172,8 @@ def _inject_ask_user_answer(agent, ask_user_tool_use_id: str, answer: str) -> bo
 async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
     """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 agent 循环"""
     key = f"{workspace_uuid}:{session_id}"
-    agent = agents.get(key)
-    if not agent:
+    runner = sessions.get(key)
+    if not runner:
         raise HTTPException(404, "Agent not found")
 
     # 与 send_message 相同的原子认领，防止两个请求并发 resume 同一 agent 双循环改写 messages
@@ -184,25 +184,25 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     ask_user_tool_use_id = request.tool_use_id
     logger.info(f"[ask-user] 尝试为 tool_use_id={ask_user_tool_use_id} 提交答案")
 
-    if not _inject_ask_user_answer(agent, ask_user_tool_use_id, request.answer):
+    if not _inject_ask_user_answer(runner, ask_user_tool_use_id, request.answer):
         raise HTTPException(400, f"Placeholder tool_result not found for tool_use_id: {ask_user_tool_use_id}")
 
     # 继续 agent 循环
     event_queue: queue.Queue[str | None] = queue.Queue()
-    cb = _make_sse_callbacks(event_queue, agent)
+    cb = _make_sse_callbacks(event_queue, runner)
 
     async def generate():
         loop = asyncio.get_running_loop()
 
         def run_agent():
             try:
-                agent.resume_after_ask_user(
+                runner.resume_after_ask_user(
                     on_text=cb.on_text,
                     on_thinking=cb.on_thinking,
                     on_tool_call=cb.on_tool_call,
                     on_tool_result=cb.on_tool_result,
-                    on_agent_start=cb.on_agent_start,
-                    on_agent_complete=cb.on_agent_complete,
+                    on_session_start=cb.on_session_start,
+                    on_session_complete=cb.on_session_complete,
                 )
             except Exception as e:
                 logger.error(f"master Agent error: {e}")

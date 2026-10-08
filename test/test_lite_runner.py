@@ -1,4 +1,4 @@
-"""Tests for core/agent.py — Lite（最小 autonomous 角色）构造与行为。
+"""Tests for core/runner.py — Lite（最小 autonomous 角色）构造与行为。
 
 Lite 由 core/agents/lite.json 定义：只读 read/write/edit/bash 四工具、
 无检查阶段、无预算预警、streaming。验证配置驱动行为分叉与流式中断路径。
@@ -8,7 +8,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from core.agent import Agent
+from core.session_runner import SessionRunner
 
 
 def _make_mock_config(max_iterations=200):
@@ -18,15 +18,15 @@ def _make_mock_config(max_iterations=200):
     return config
 
 
-def _make_agent(config=None, tools=None, **kwargs):
+def _make_runner(config=None, tools=None, **kwargs):
     """构造 Lite Agent，mock 掉工具实例化与 LLM client。"""
     if config is None:
         config = _make_mock_config()
-    with patch("core.agent.create_tools") as mock_tools, \
-         patch("core.agent.create_llm_client") as mock_client:
+    with patch("core.session_runner.create_tools") as mock_tools, \
+         patch("core.session_runner.create_llm_client") as mock_client:
         mock_tools.return_value = tools if tools is not None else []
         mock_client.return_value = MagicMock()
-        return Agent(config, role="lite", **kwargs)
+        return SessionRunner(config, role="lite", **kwargs)
 
 
 def _make_tool_call_response(call_id="toolu_1", name="read"):
@@ -58,94 +58,94 @@ class TestLiteConstruction:
     """Lite 角色构造：白名单/行为开关从 JSON 加载。"""
 
     def test_construction(self):
-        agent = _make_agent(task="read file")
-        assert agent.role == "lite"
-        assert agent._mode == "autonomous"
-        assert agent.task == "read file"
+        runner = _make_runner(task="read file")
+        assert runner.role == "lite"
+        assert runner._mode == "autonomous"
+        assert runner.task == "read file"
         # lite.json 显式 max_iterations=200，支持批量循环，不继承 config 默认
-        assert agent.max_iterations == 200
-        assert agent.max_consecutive_failures == 5  # 缺省
-        assert agent.role_cfg.check_phase is False
-        assert agent.role_cfg.budget_notice is False
-        assert agent.role_cfg.streaming is True
+        assert runner.max_iterations == 200
+        assert runner.max_consecutive_failures == 5  # 缺省
+        assert runner.role_cfg.check_phase is False
+        assert runner.role_cfg.budget_notice is False
+        assert runner.role_cfg.streaming is True
 
     def test_tool_whitelist(self):
         """Lite 白名单含 read/write/edit/bash/python/message_bus/clock。"""
-        agent = _make_agent(task="t")
-        assert agent.role_cfg.tools == ["read", "write", "edit", "bash", "python", "message_bus", "clock"]
+        runner = _make_runner(task="t")
+        assert runner.role_cfg.tools == ["read", "write", "edit", "bash", "python", "message_bus", "clock"]
 
     def test_tools_instantiated(self):
         tools = [MagicMock() for _ in range(4)]
-        agent = _make_agent(task="t", tools=tools)
-        assert len(agent.tools) == 4
+        runner = _make_runner(task="t", tools=tools)
+        assert len(runner.tools) == 4
 
     def test_system_prompt_no_skills_section(self):
         """Lite 无 skills 块：system prompt 不含技能列表，只含固定 role 文案。"""
-        agent = _make_agent(task="t")
-        prompt = "\n\n".join(agent._system_prompt) if isinstance(agent._system_prompt, list) else agent._system_prompt
+        runner = _make_runner(task="t")
+        prompt = "\n\n".join(runner._system_prompt) if isinstance(runner._system_prompt, list) else runner._system_prompt
         assert "## Available Skills" not in prompt
         assert "autonomous task-execution agent" in prompt
 
     def test_pinned_task_message(self):
         """任务消息首条 pinned 且含目标描述。"""
-        agent = _make_agent(task="读取 a.txt 并追加一行")
-        section = agent._build_task_message()
+        runner = _make_runner(task="读取 a.txt 并追加一行")
+        section = runner._build_task_message()
         assert "读取 a.txt 并追加一行" in section
 
 
 class TestLiteRunFlow:
     """Lite autonomous 执行流：无检查阶段、直接交付。"""
 
-    def _make_agent(self):
-        return _make_agent(task="read file")
+    def _make_runner(self):
+        return _make_runner(task="read file")
 
     def test_delivers_directly_no_check_phase(self):
         """工具调用后模型输出文本 → 直接 completed，无检查阶段与预算消息。"""
-        agent = self._make_agent()
+        runner = self._make_runner()
         responses = [_make_tool_call_response(), _make_text_response("已完成")]
-        with patch.object(agent, "_check_and_compress"), \
-             patch.object(agent, "_execute_tool", return_value=_make_tool_result()), \
-             patch.object(agent, "_call_llm", side_effect=responses):
-            result = agent.run()
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_execute_tool", return_value=_make_tool_result()), \
+             patch.object(runner, "_call_llm", side_effect=responses):
+            result = runner.run()
 
         assert result["status"] == "completed"
         assert result["summary"] == "已完成"
         assert result["iterations"] == 2
         assert "check_iterations" not in result
-        assert not any(m.get("_meta", {}).get("budget") for m in agent.messages)
+        assert not any(m.get("_meta", {}).get("budget") for m in runner.messages)
         assert not any(
             isinstance(m.get("content"), str) and "检查阶段" in m["content"]
-            for m in agent.messages
+            for m in runner.messages
         )
 
     def test_stop_check_immediate(self):
         """stop_check 恒真 → 循环顶部直接返回 stopped。"""
-        agent = _make_agent(task="t", stop_check=lambda: True)
-        with patch.object(agent, "_check_and_compress"), \
-             patch.object(agent, "_call_llm") as mock_call:
-            result = agent.run()
+        runner = _make_runner(task="t", stop_check=lambda: True)
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_call_llm") as mock_call:
+            result = runner.run()
 
         assert result["status"] == "stopped"
         mock_call.assert_not_called()
 
     def test_stopped_after_llm_call(self):
         """流式中断后检查：LLM 返回时 _stopped 已置位 → stopped（不误判完成）。"""
-        agent = self._make_agent()
+        runner = self._make_runner()
 
         def interrupt(*args, **kwargs):
-            agent._stopped = True
+            runner._stopped = True
             return _make_text_response("done")
 
-        with patch.object(agent, "_check_and_compress"), \
-             patch.object(agent, "_call_llm", side_effect=interrupt):
-            result = agent.run()
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_call_llm", side_effect=interrupt):
+            result = runner.run()
 
         assert result["status"] == "stopped"
         assert result["iterations"] == 0
 
     def test_stop_from_background_thread(self):
-        """后台线程 run + agent.stop() → 返回 stopped。"""
-        agent = self._make_agent()
+        """后台线程 run + runner.stop() → 返回 stopped。"""
+        runner = self._make_runner()
         release = threading.Event()
         results: list[dict] = []
 
@@ -153,12 +153,12 @@ class TestLiteRunFlow:
             release.wait(timeout=5)
             return _make_text_response("done")
 
-        with patch.object(agent, "_check_and_compress"), \
-             patch.object(agent, "_call_llm", side_effect=slow_llm):
-            thread = threading.Thread(target=lambda: results.append(agent.run()))
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_call_llm", side_effect=slow_llm):
+            thread = threading.Thread(target=lambda: results.append(runner.run()))
             thread.start()
             time.sleep(0.2)
-            agent.stop()
+            runner.stop()
             release.set()
             thread.join(timeout=5)
 
@@ -176,7 +176,7 @@ class TestLiteRunFlow:
         config.system.max_iterations = 50
         config.workspaces = []
         config.system.approval = None
-        with patch("core.agent.create_llm_client", return_value=MagicMock()):
-            agent = Agent(config, role="lite", task="t", cwd=".")
-        names = {t.name for t in agent.tools}
+        with patch("core.session_runner.create_llm_client", return_value=MagicMock()):
+            runner = SessionRunner(config, role="lite", task="t", cwd=".")
+        names = {t.name for t in runner.tools}
         assert names == {"read", "write", "edit", "bash", "python", "message_bus", "clock"}

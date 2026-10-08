@@ -130,9 +130,9 @@ class TodoWriteTool(Tool):
         self,
         cwd: str = ".",
         workspace_uuid: str = "",
-        session_manager=None,
+        session=None,
     ):
-        super().__init__(cwd, workspace_uuid, session_manager)
+        super().__init__(cwd, workspace_uuid, session)
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the todo_write tool.
@@ -144,8 +144,8 @@ class TodoWriteTool(Tool):
 
         # Get session_id for storage
         session_id = ""
-        if self.session_manager and hasattr(self.session_manager, 'session_id'):
-            session_id = self.session_manager.session_id
+        if self.session and hasattr(self.session, 'session_id'):
+            session_id = self.session.session_id
 
         # Validate input
         if not isinstance(todos, list):
@@ -197,10 +197,10 @@ class TodoWriteTool(Tool):
             write_todos(session_id, validated_todos, self.workspace_uuid)
 
             # Migrate from session metadata if it exists (backward compatibility)
-            if self.session_manager and hasattr(self.session_manager, 'metadata'):
-                if "todos" in self.session_manager.metadata:
+            if self.session and hasattr(self.session, 'metadata'):
+                if "todos" in self.session.metadata:
                     # Remove old todos from session metadata
-                    del self.session_manager.metadata["todos"]
+                    del self.session.metadata["todos"]
 
         # Calculate counts for response
         counts = self._calculate_counts(validated_todos)
@@ -274,29 +274,29 @@ class TodoWriteTool(Tool):
         return True
 
 
-def get_todos_from_session(session_manager: SessionManager | None, workspace_uuid: str = "") -> list[dict] | None:
+def get_todos_from_session(session: SessionManager | None, workspace_uuid: str = "") -> list[dict] | None:
     """Helper to get current todos from session's todo file.
 
     Supports new format (independent file) and old format (session metadata).
     """
-    if session_manager is None:
+    if session is None:
         return None
 
     # Try new format: independent todo file
-    session_id = getattr(session_manager, 'session_id', None)
+    session_id = getattr(session, 'session_id', None)
     if session_id:
         todos = read_todos(session_id, workspace_uuid)
         if todos:
             return todos
 
     # Fall back to old format: session metadata (for backward compatibility)
-    if hasattr(session_manager, 'metadata'):
-        old_todos = session_manager.metadata.get("todos")
+    if hasattr(session, 'metadata'):
+        old_todos = session.metadata.get("todos")
         if old_todos:
             # Migrate to new format
             write_todos(session_id, old_todos, workspace_uuid)
             # Remove from session metadata
-            del session_manager.metadata["todos"]
+            del session.metadata["todos"]
             return old_todos
 
     return None

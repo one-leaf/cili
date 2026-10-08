@@ -7,7 +7,7 @@
 // ── 全局状态 ──
 let _eventSource = null;          // 当前 EventSource
 let _esWasDisconnected = false;   // 曾断线（onopen 时用于对齐）
-const _agentCards = {};           // exec_id -> entry（worker 卡片状态机）
+const _sessionCards = {};           // exec_id -> entry（worker 卡片状态机）
 
 // master 自动恢复流式渲染（后台 agent 完成后 master 继续执行，text 逐 token 推送）
 let _masterResumeOpenBlock = null; // {kind:'text'|'thinking', text, el}
@@ -88,8 +88,8 @@ function closeEventSource() {
 
 // 重连对齐：running 卡片的展开内容增量补拉 + master 工具流按 offset 补拉
 async function alignAfterReconnect() {
-    for (const execId of Object.keys(_agentCards)) {
-        const entry = _agentCards[execId];
+    for (const execId of Object.keys(_sessionCards)) {
+        const entry = _sessionCards[execId];
         if (entry.expanded && entry.status === 'running') {
             await loadExecutionFull(entry, { fresh: false });
         }
@@ -104,16 +104,16 @@ function handleBusEvent(e) {
     // 只处理当前会话的事件，防止切会话后旧流串入
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
-    if (e.type === 'agent_start') {
-        ensureAgentCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
+    if (e.type === 'session_start') {
+        ensureSessionCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
         return;
     }
-    if (e.type === 'agent_complete') {
+    if (e.type === 'session_complete') {
         markAgentComplete(e.exec_id, e.status || 'completed');
         return;
     }
     // 后台 agent 完成后，如果 master 空闲，自动触发 master 继续处理通知
-    if (e.type === 'background_agent_resume') {
+    if (e.type === 'background_runner_resume') {
         // 检查 master 是否空闲（通过 isSending 标志）
         if (typeof isSending !== 'undefined' && !isSending) {
             // 延迟一点再触发，确保事件流稳定
@@ -124,8 +124,8 @@ function handleBusEvent(e) {
         return;
     }
     // 实时更新子代理卡片 header（iterations/message_count/tool_call_count）
-    if (e.type === 'agent_progress') {
-        const entry = _agentCards[e.exec_id];
+    if (e.type === 'session_progress') {
+        const entry = _sessionCards[e.exec_id];
         if (entry) {
             updateHeaderMeta(entry, {
                 iterations: e.iterations || 0,
@@ -160,7 +160,7 @@ function handleBusEvent(e) {
         return;
     }
 
-    const entry = _agentCards[e.exec_id];
+    const entry = _sessionCards[e.exec_id];
     if (!entry) return;  // agent_start 先于一切 worker 事件，卡片未建则忽略
 
     // 折叠期：只缓冲，展开时一次性重放（避免展开前状态重复累积）
@@ -186,21 +186,21 @@ function handleBusEvent(e) {
 // ── worker 卡片创建 / 完成（幂等，POST SSE 与事件流共用）──
 
 // 创建占位卡片（或返回已存在的 entry）。opts: {status, iterations, message_count}
-function ensureAgentCard(execId, taskSummary, opts = {}) {
+function ensureSessionCard(execId, taskSummary, opts = {}) {
     if (!execId || !currentSession) return null;
-    const existing = _agentCards[execId];
+    const existing = _sessionCards[execId];
     if (existing) return existing;
 
     const task = taskSummary || '';
     const card = document.createElement('div');
-    card.className = 'message assistant agent-card';
+    card.className = 'message assistant session-card';
     card.dataset.execId = execId;
 
     const header = document.createElement('div');
-    header.className = 'agent-header';
+    header.className = 'session-header';
 
     const detail = document.createElement('div');
-    detail.className = 'agent-detail';
+    detail.className = 'session-detail';
     detail.style.display = 'none';
 
     card.appendChild(header);
@@ -224,13 +224,13 @@ function ensureAgentCard(execId, taskSummary, opts = {}) {
         logBlocksRendered: 0,
         toolStreams: {},
     };
-    _agentCards[execId] = entry;
+    _sessionCards[execId] = entry;
 
     _renderHeader(entry, {
         iterations: opts.iterations || 0,
         message_count: opts.message_count || 0,
     });
-    header.addEventListener('click', () => toggleAgentEntry(execId));
+    header.addEventListener('click', () => toggleSessionEntry(execId));
     return entry;
 }
 
@@ -238,7 +238,7 @@ function ensureAgentCard(execId, taskSummary, opts = {}) {
 // 状态不降级：事件流带真实 status（error/timeout/failed），POST SSE 固定 completed；
 // 两者到达顺序不定，用 rank 保证错误状态不被 completed 覆盖
 async function markAgentComplete(execId, status) {
-    const entry = _agentCards[execId];
+    const entry = _sessionCards[execId];
     if (!entry) return;
     const nextStatus = status || 'completed';
     const rank = { 'completed': 0, 'stopped': 1, 'error': 2, 'failed': 2, 'timeout': 2 };
@@ -256,8 +256,8 @@ async function markAgentComplete(execId, status) {
 }
 
 // chat.js renderAgentRef 委托：按历史消息渲染静态卡并注册状态机
-function agentCardForMessage(msg, msgId) {
-    const entry = ensureAgentCard(msg.exec_id, msg.task_summary || msg.task || '', {
+function sessionCardForMessage(msg, msgId) {
+    const entry = ensureSessionCard(msg.exec_id, msg.task_summary || msg.task || '', {
         status: msg.status || 'completed',
         iterations: msg.iterations || 0,
         message_count: msg.message_count || 0,
@@ -269,17 +269,17 @@ function agentCardForMessage(msg, msgId) {
 }
 
 // 展开/折叠卡片（chat.js 与卡片头部点击共用）
-async function toggleAgentEntry(execId) {
-    const entry = _agentCards[execId];
+async function toggleSessionEntry(execId) {
+    const entry = _sessionCards[execId];
     if (!entry) return;
     if (entry.expanded) {
-        closeAgentEntry(entry);
+        closeSessionEntry(entry);
     } else {
         await openAgentEntry(entry);
     }
 }
 
-function closeAgentEntry(entry) {
+function closeSessionEntry(entry) {
     entry.expanded = false;
     entry.detail.style.display = 'none';
     _updateHeaderToggle(entry);
@@ -726,11 +726,11 @@ async function syncMasterToolStreams() {
 
 // 清空 worker 卡片状态与 DOM（app.js 切会话时调用，修复现存泄漏）
 function clearAllAgentStreaming() {
-    for (const execId of Object.keys(_agentCards)) {
-        const entry = _agentCards[execId];
+    for (const execId of Object.keys(_sessionCards)) {
+        const entry = _sessionCards[execId];
         if (entry.card && entry.card.parentNode) entry.card.remove();
     }
-    for (const k of Object.keys(_agentCards)) delete _agentCards[k];
+    for (const k of Object.keys(_sessionCards)) delete _sessionCards[k];
 }
 
 // 加载会话时若该会话有运行中的 worker，恢复 running 卡片
@@ -747,7 +747,7 @@ async function recoverRunningCards() {
             const execId = log.exec_id;
             const status = log.metadata && log.metadata.status;
             if (execId && status === 'running') {
-                ensureAgentCard(execId, log.task || log.summary || '', {
+                ensureSessionCard(execId, log.task || log.summary || '', {
                     status: 'running',
                     iterations: (log.metadata && log.metadata.iterations) || 0,
                 });

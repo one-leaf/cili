@@ -234,14 +234,14 @@ class TestExecuteApprovalFlow:
 
 class TestAgentDowngrade:
     def test_downgrade_approval_result(self):
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
         result = {
             "type": "tool_result",
             "is_error": False,
             "content": "等待批准...",
             "_meta": {"completed": False, META_KEY: {"decision_id": "x", "command": "c", "reason": "r"}},
         }
-        Agent._downgrade_approval_result(result)
+        SessionRunner._downgrade_approval_result(result)
         assert result["is_error"] is True
         assert META_KEY not in result["_meta"]
         assert "completed" not in result["_meta"]

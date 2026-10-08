@@ -232,7 +232,7 @@ class TestMessageBusTool:
         from pathlib import Path
         tmp = Path(tempfile.mkdtemp())
         sm = SessionManager(session_id, tmp)
-        return MessageBusTool(session_manager=sm)
+        return MessageBusTool(session=sm)
 
     def test_send_action(self):
         self.bus.register_session("test-session")

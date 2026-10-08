@@ -180,22 +180,22 @@ def test_agent_injection_deferred(tmp_path, echo_server_url):
         cfg = make_dgx_config()
         cfg.mcp_servers = {"echo": make_echo_config(echo_server_url)}
 
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
         ws_uuid = secrets.token_hex(4)
-        agent = Agent(cfg, role="master", cwd=str(tmp_path), workspace_uuid=ws_uuid)
+        runner = SessionRunner(cfg, role="master", cwd=str(tmp_path), workspace_uuid=ws_uuid)
         try:
             # MCP 工具默认进 deferred，不污染 LLM 上下文
-            assert any(t.name == "mcp_echo_echo" for t in agent._deferred_tools)
-            assert not any(t.name == "mcp_echo_echo" for t in agent._active_tools)
+            assert any(t.name == "mcp_echo_echo" for t in runner._deferred_tools)
+            assert not any(t.name == "mcp_echo_echo" for t in runner._active_tools)
 
             # tool_search 激活后进入 active，schema 出现在 tool_schemas
-            agent._activate_tools(["mcp_echo_echo"])
-            assert any(t.name == "mcp_echo_echo" for t in agent._active_tools)
-            names = [s["name"] for s in agent.tool_schemas]
+            runner._activate_tools(["mcp_echo_echo"])
+            assert any(t.name == "mcp_echo_echo" for t in runner._active_tools)
+            names = [s["name"] for s in runner.tool_schemas]
             assert "mcp_echo_echo" in names
         finally:
-            agent.cleanup()
+            runner.cleanup()
             base = os.path.join(project_dir, "data", "projects", ws_uuid)
             if os.path.exists(base):
                 shutil.rmtree(base, ignore_errors=True)

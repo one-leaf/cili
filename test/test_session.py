@@ -157,10 +157,10 @@ class TestCopySemantics:
 class TestCacheInvalidation:
     """C1: 压缩等原地修改共享消息后，session valid 缓存必须失效重建。"""
 
-    def test_invalidate_message_cache_rebuilds_valid_cache(self, agent):
+    def test_invalidate_message_cache_rebuilds_valid_cache(self, runner):
         """agent 原地修改共享消息后，_invalidate_message_cache() 使缓存重建。"""
-        sm = agent.session_manager
-        # 交互模式：agent.messages 与 sm.messages 是同一引用
+        sm = runner.session
+        # 交互模式：runner.messages 与 sm.messages 是同一引用
         sm.add_message("user", "Hello")
         sm.add_message("assistant", "Hi")
 
@@ -174,6 +174,6 @@ class TestCacheInvalidation:
         assert len(sm.get_valid_messages()) == 2
 
         # 压缩入口调用 _invalidate_message_cache 后 → 重建
-        agent._invalidate_message_cache()
+        runner._invalidate_message_cache()
         assert sm._messages_dirty is True
         assert len(sm.get_valid_messages()) == 1

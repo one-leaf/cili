@@ -44,7 +44,7 @@ def partition_tool_batches(tools: list[Tool], tool_calls: list) -> list[list]:
 
 
 def execute_tool_calls(
-    agent,
+    runner,
     tool_calls: list,
     *,
     parallel: bool = True,
@@ -62,11 +62,11 @@ def execute_tool_calls(
 
     # 批前预激活 deferred 工具（消除并行激活 tool_schemas 竞态）
     deferred = [tc.name for tc in tool_calls
-                if tc.name in getattr(agent, "_deferred_names", set())]
+                if tc.name in getattr(runner, "_deferred_names", set())]
     if deferred:
-        agent._activate_tools(deferred)
+        runner._activate_tools(deferred)
 
-    batches = partition_tool_batches(agent.tools, tool_calls)
+    batches = partition_tool_batches(runner.tools, tool_calls)
     if not parallel:
         batches = [[tc] for batch in batches for tc in batch]
 
@@ -78,11 +78,11 @@ def execute_tool_calls(
             with ThreadPoolExecutor(max_workers=len(batch)) as pool:
                 results.extend(
                     pool.map(
-                        lambda tc: agent._execute_tool(tc.name, tc.parse_arguments(), tc.id),
+                        lambda tc: runner._execute_tool(tc.name, tc.parse_arguments(), tc.id),
                         batch,
                     )
                 )
         else:
             tc = batch[0]
-            results.append(agent._execute_tool(tc.name, tc.parse_arguments(), tc.id))
+            results.append(runner._execute_tool(tc.name, tc.parse_arguments(), tc.id))
     return results

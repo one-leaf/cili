@@ -368,8 +368,8 @@ class AgentLogStore:
     SessionManager 引用访问 session_dir/session_id。
     """
 
-    def __init__(self, session_manager: SessionManager):
-        self._sm = session_manager
+    def __init__(self, session: SessionManager):
+        self._sm = session
 
     @property
     def session_dir(self) -> Path:

@@ -103,8 +103,8 @@ class MemoryTool(Tool):
         "required": ["action"],
     }
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None):
-        super().__init__(cwd, workspace_uuid, session_manager)
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None):
+        super().__init__(cwd, workspace_uuid, session)
         self.memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
         self.store = MemoryStore(self.memory_dir)
         self.journal = Journal(self.memory_dir)

@@ -1,4 +1,4 @@
-"""统一 Agent 类：合并原 RootAgent（交互式）+ Agent（自主式）。
+"""统一 SessionRunner 类：合并原交互式/自主式执行引擎。
 
 行为差异由角色 JSON（core/agents/{role}.json）驱动：
 - ``mode=interactive``（master）→ 会话持久化、流式输出、ask_user/审批、可恢复循环
@@ -21,10 +21,10 @@ from typing import Callable
 from core.config import Config, PROJECT_ROOT
 from core.llm import create_llm_client, format_llm_error
 from core.fs_utils import atomic_write_json
-from core.base_agent import BaseAgent
+from core.base_session_runner import BaseSessionRunner
 from core.session import SessionManager, generate_short_id
-from core.agent_config import load_agent_role
-from core.agent_runtime.loop import (
+from core.session_runner_config import load_runner_role
+from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
     BUDGET_FINAL_RATIO,
     BUDGET_WARN_PROMPT,
@@ -49,7 +49,7 @@ from core.tools.approval import (
 logger = logging.getLogger(__name__)
 
 
-class _SessionIdRef:
+class _SessionRef:
     """简单的 session 引用，供工具获取 session 标识和目录。
 
     autonomous 模式使用 exec_id 作为 session 标识。
@@ -60,8 +60,8 @@ class _SessionIdRef:
         self.session_dir = session_dir
 
 
-class Agent(BaseAgent):
-    """统一 Agent：interactive（master）/ autonomous（worker/lite）由角色配置分叉。"""
+class SessionRunner(BaseSessionRunner):
+    """统一 SessionRunner：interactive（master）/ autonomous（worker/lite）由角色配置分叉。"""
 
     def __init__(
         self,
@@ -79,7 +79,7 @@ class Agent(BaseAgent):
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
     ):
-        """Initialize Agent.
+        """Initialize SessionRunner.
 
         Args:
             config: 全局配置
@@ -97,18 +97,18 @@ class Agent(BaseAgent):
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
         """
         self.role = role
-        self.role_cfg = load_agent_role(role, config)
+        self.role_cfg = load_runner_role(role, config)
         self.model = getattr(config, f"{role}_model", None) or config.model
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
         self._temperature = temperature
         self._mode = self.role_cfg.mode
         self.delegation_depth = delegation_depth
-        self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/agent resume 不重置）
+        self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
-        # 事件发布回调（由 agent_tool / background 注入，用于广播 agent_progress）
+        # 事件发布回调（由 session_tool / background 注入，用于广播 session_progress）
         self._event_publisher = None
-        # agent_progress 事件节流：距上次发送不足 0.5s 则跳过，避免高频 SSE 事件堵塞前端
+        # session_progress 事件节流：距上次发送不足 0.5s 则跳过，避免高频 SSE 事件堵塞前端
         self._last_progress_event_time: float = 0.0
 
         if self._mode == "interactive":
@@ -129,11 +129,11 @@ class Agent(BaseAgent):
 
         self.model = getattr(config, f"{role}_model", None) or config.model
 
-        # 统一循环编排层（Step 4）：交互/自主共用同一骨架，参数实时读 agent/role_cfg
+        # 统一循环编排层（Step 4）：交互/自主共用同一骨架，参数实时读 runner/role_cfg
         self.loop = Loop(
             self,
             LoopPolicy(
-                agent=self,
+                runner=self,
                 mode=self._mode,
                 on_max_iterations="soft" if self._mode == "interactive" else "hard",
             ),
@@ -155,12 +155,12 @@ class Agent(BaseAgent):
             self.approval_store = ApprovalStore(
                 rules_path=get_workspace_data_dir(self.workspace_uuid) / "approvals.json"
             )
-            # IMPORTANT: Share messages list with session_manager (not copy!)
-            self.messages = self.session_manager.messages
-            self._usage = self.session_manager.get_usage()
-            self._on_agent_start: Callable[[str, str], None] | None = None
-            self._on_agent_complete: Callable[[str], None] | None = None
-            # 默认 SSE 回调（由 web/deps.py 设置），用于后台 agent 完成后自动恢复循环
+            # IMPORTANT: Share messages list with session (not copy!)
+            self.messages = self.session.messages
+            self._usage = self.session.get_usage()
+            self._on_session_start: Callable[[str, str], None] | None = None
+            self._on_session_complete: Callable[[str], None] | None = None
+            # 默认 SSE 回调（由 web/deps.py 设置），用于后台 session 完成后自动恢复循环
             self._default_on_text: Callable[[str], None] | None = None
             self._default_on_thinking: Callable[[str], None] | None = None
             self._default_on_tool_call: Callable[[str, dict, str], None] | None = None
@@ -191,7 +191,7 @@ class Agent(BaseAgent):
         self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        self.session_manager = SessionManager("", self.sessions_dir)
+        self.session = SessionManager("", self.sessions_dir)
         self.current_session_id: str = ""
 
         # Load or create session
@@ -201,7 +201,7 @@ class Agent(BaseAgent):
             sid = latest["session_id"]
             loaded = SessionManager.load_session(sid, self.sessions_dir)
             if loaded:
-                self.session_manager = loaded
+                self.session = loaded
                 self.current_session_id = sid
             else:
                 self._create_default_session()
@@ -232,23 +232,23 @@ class Agent(BaseAgent):
         self._exec_id = exec_id
         self._session_id = exec_id
         # 创建 session 引用，供工具获取 session_id 和 session_dir
-        self._session_ref = _SessionIdRef(exec_id, session_dir)
-        logger.debug(f"[Agent:{self.role}] Session ID set to: {exec_id}")
+        self._session_ref = _SessionRef(exec_id, session_dir)
+        logger.debug(f"[SessionRunner:{self.role}] Session ID set to: {exec_id}")
 
     def _create_default_session(self) -> None:
         """Create a new default session."""
         session = SessionManager.create_new_session(self.sessions_dir, "Default")
-        self.session_manager = session
+        self.session = session
         self.current_session_id = session.session_id
 
     def _rebuild_tools(self) -> None:
         """Create tool instances from role whitelist and wire callbacks."""
-        session_manager = self.session_manager if self._mode == "interactive" else self._session_ref
+        sm = self.session if self._mode == "interactive" else self._session_ref
         self.tools = create_tools(
             self.role_cfg,
             cwd=self.cwd,
             workspace_uuid=self.workspace_uuid,
-            session_manager=session_manager,
+            session=sm,
             config=self.config,
             approval_store=self.approval_store,
         )
@@ -277,25 +277,25 @@ class Agent(BaseAgent):
             ts.deferred_tools = self._deferred_tools
             ts.on_load = self._activate_tools
 
-        # Wire agent tool: set delegation depth for all modes
-        agent_tool = get_tool_by_name(self.tools, "agent")
-        if agent_tool:
-            agent_tool.delegation_depth = self.delegation_depth
+        # Wire session tool: set delegation depth for all modes
+        session_tool = get_tool_by_name(self.tools, "session")
+        if session_tool:
+            session_tool.delegation_depth = self.delegation_depth
 
         if self._mode == "interactive":
-            # Wire agent callbacks
-            if agent_tool:
-                agent_tool.stop_check = lambda: self._stopped
-                agent_tool.on_agent_start = lambda exec_id, task_summary: (
-                    self._on_agent_start(exec_id, task_summary)
-                    if self._on_agent_start else None
+            # Wire session callbacks
+            if session_tool:
+                session_tool.stop_check = lambda: self._stopped
+                session_tool.on_session_start = lambda exec_id, task_summary: (
+                    self._on_session_start(exec_id, task_summary)
+                    if self._on_session_start else None
                 )
-                agent_tool.on_agent_complete = lambda exec_id: (
-                    self._on_agent_complete(exec_id)
-                    if self._on_agent_complete else None
+                session_tool.on_session_complete = lambda exec_id: (
+                    self._on_session_complete(exec_id)
+                    if self._on_session_complete else None
                 )
-                # 后台 agent 完成后自动恢复 master 循环
-                agent_tool.on_background_complete = self._handle_background_agent_complete
+                # 后台 session 完成后自动恢复 master 循环
+                session_tool.on_background_complete = self._handle_background_session_complete
 
     def _activate_tools(self, names: list[str]) -> None:
         """Move named tools from deferred to active and rebuild tool_schemas."""
@@ -327,7 +327,7 @@ class Agent(BaseAgent):
         return build_system_prompt(self)
 
     def _get_messages_with_header(self) -> list[dict]:
-        """BaseAgent 版 + 注入型 user 层（claude_md）+ 防连续合并。
+        """BaseSessionRunner 版 + 注入型 user 层（claude_md）+ 防连续合并。
 
         注入层每次从磁盘动态生成（claude_md），不持久化到 self.messages（会话文件保持干净）。
         context 已迁移至 system prompt 的动态区（session 内缓存），不再在此注入。
@@ -350,19 +350,19 @@ class Agent(BaseAgent):
 
     # ─── interactive（master）：会话管理 ────────────────────────────
 
-    def _sync_to_session_manager(self) -> None:
-        """Sync metadata and usage to session_manager (delegated to AgentContext).
+    def _sync_to_session(self) -> None:
+        """Sync metadata and usage to session (delegated to SessionContext).
 
         Note: messages are shared (same reference), no need to sync them.
         """
-        self.context.sync_to_session_manager()
+        self.context.sync_to_session()
 
     def reload_config(self) -> None:
         """Reload config from disk and recreate LLM client."""
         from core.config import load_config
         try:
             new_config = load_config()
-            self.role_cfg = load_agent_role(self.role, new_config)
+            self.role_cfg = load_runner_role(self.role, new_config)
             self.max_iterations = self.role_cfg.max_iterations
             # 先创建新客户端，成功后再替换并关闭旧的；
             # 否则创建失败后 self.client 指向已关闭的客户端，后续调用全部失败
@@ -375,7 +375,7 @@ class Agent(BaseAgent):
             old_client.close()
             self._rebuild_tools()
         except Exception as e:
-            logger.warning(f"[Agent:{self.role}] 重新加载配置失败: {e}")
+            logger.warning(f"[SessionRunner:{self.role}] 重新加载配置失败: {e}")
 
     def run(self, *args, **kwargs):
         """统一入口：按角色 mode 分派。
@@ -394,11 +394,11 @@ class Agent(BaseAgent):
         on_thinking: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_agent_start: Callable[[str, str], None] | None = None,
-        on_agent_complete: Callable[[str], None] | None = None,
+        on_session_start: Callable[[str, str], None] | None = None,
+        on_session_complete: Callable[[str], None] | None = None,
         streaming: bool = True,
     ) -> None:
-        """Run one turn of the interactive agent loop."""
+        """Run one turn of the interactive session loop."""
         self._stopped = False
         self._running = True
         self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
@@ -407,8 +407,8 @@ class Agent(BaseAgent):
         self._on_thinking = on_thinking
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
-        self._on_agent_start = on_agent_start
-        self._on_agent_complete = on_agent_complete
+        self._on_session_start = on_session_start
+        self._on_session_complete = on_session_complete
 
         try:
             # Add user message（loop.run_interactive 在回合前做 checkpoint save）
@@ -418,9 +418,9 @@ class Agent(BaseAgent):
         finally:
             self._running = False
             # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
-            if getattr(self, "session_manager", None) is not None:
-                self._sync_to_session_manager()
-                self.session_manager.save()
+            if getattr(self, "session", None) is not None:
+                self._sync_to_session()
+                self.session.save()
 
     def _handle_approval_required(self, approval: dict) -> None:
         """合成 ask_user 卡询问用户是否批准高风险命令，随后暂停循环等待回答。
@@ -447,8 +447,8 @@ class Agent(BaseAgent):
         # 手动补 assistant tool_use 块，避免悬挂 tool_result（否则 API 400 或触发 _pad_dangling_tool_results）
         self.add_message("assistant", [{"type": "tool_use", "id": ask_id, "name": "ask_user", "input": ask_input}])
         self.add_message("user", [self._execute_tool("ask_user", ask_input, ask_id)])
-        self._sync_to_session_manager()
-        self.session_manager.save()
+        self._sync_to_session()
+        self.session.save()
 
     def _resume_loop(
         self,
@@ -456,8 +456,8 @@ class Agent(BaseAgent):
         on_thinking: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_agent_start: Callable[[str, str], None] | None = None,
-        on_agent_complete: Callable[[str], None] | None = None,
+        on_session_start: Callable[[str, str], None] | None = None,
+        on_session_complete: Callable[[str], None] | None = None,
     ) -> None:
         """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。"""
         self._stopped = False
@@ -466,8 +466,8 @@ class Agent(BaseAgent):
         self._on_thinking = on_thinking
         self._on_tool_call = on_tool_call
         self._on_tool_result = on_tool_result
-        self._on_agent_start = on_agent_start
-        self._on_agent_complete = on_agent_complete
+        self._on_session_start = on_session_start
+        self._on_session_complete = on_session_complete
 
         try:
             # loop.run_interactive 在回合前做 checkpoint save
@@ -475,8 +475,8 @@ class Agent(BaseAgent):
         finally:
             self._running = False
             # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
-            self._sync_to_session_manager()
-            self.session_manager.save()
+            self._sync_to_session()
+            self.session.save()
 
     def resume_after_ask_user(
         self,
@@ -484,17 +484,17 @@ class Agent(BaseAgent):
         on_thinking: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_agent_start: Callable[[str, str], None] | None = None,
-        on_agent_complete: Callable[[str], None] | None = None,
+        on_session_start: Callable[[str, str], None] | None = None,
+        on_session_complete: Callable[[str], None] | None = None,
     ) -> None:
-        """Resume agent loop after ask_user tool result has been injected."""
+        """Resume session loop after ask_user tool result has been injected."""
         self._resume_loop(
             on_text=on_text,
             on_thinking=on_thinking,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
-            on_agent_start=on_agent_start,
-            on_agent_complete=on_agent_complete,
+            on_session_start=on_session_start,
+            on_session_complete=on_session_complete,
         )
 
     def resume_loop(
@@ -503,23 +503,23 @@ class Agent(BaseAgent):
         on_thinking: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, dict, str], None] | None = None,
         on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_agent_start: Callable[[str, str], None] | None = None,
-        on_agent_complete: Callable[[str], None] | None = None,
+        on_session_start: Callable[[str, str], None] | None = None,
+        on_session_complete: Callable[[str], None] | None = None,
     ) -> None:
-        """Resume agent loop after a agent (or other placeholder) completes."""
+        """Resume session loop after a session (or other placeholder) completes."""
         self._resume_loop(
             on_text=on_text,
             on_thinking=on_thinking,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
-            on_agent_start=on_agent_start,
-            on_agent_complete=on_agent_complete,
+            on_session_start=on_session_start,
+            on_session_complete=on_session_complete,
         )
 
-    def _handle_background_agent_complete(self, exec_id: str, status: str) -> None:
-        """后台 agent 完成后自动恢复 master 循环（如果 master 空闲）。
+    def _handle_background_session_complete(self, exec_id: str, status: str) -> None:
+        """后台 session 完成后自动恢复 master 循环（如果 master 空闲）。
 
-        由 AgentTool.on_background_complete 回调触发。
+        由 SessionTool.on_background_complete 回调触发。
         检查 message_bus 是否有未读通知，如果有且 master 空闲，则自动恢复循环。
         使用 _default_on_* 回调发布 SSE 事件到全局事件总线。
         """
@@ -537,14 +537,14 @@ class Agent(BaseAgent):
         except Exception:
             return
         # 使用默认 SSE 回调（发布到全局事件总线）或回退到无回调
-        logger.info(f"[Agent:{self.role}] 后台 agent {exec_id} 完成，自动恢复 master 循环")
+        logger.info(f"[SessionRunner:{self.role}] 后台 session {exec_id} 完成，自动恢复 master 循环")
         self._resume_loop(
             on_text=self._default_on_text,
             on_thinking=self._default_on_thinking,
             on_tool_call=self._default_on_tool_call,
             on_tool_result=self._default_on_tool_result,
-            on_agent_start=self._on_agent_start,
-            on_agent_complete=self._on_agent_complete,
+            on_session_start=self._on_session_start,
+            on_session_complete=self._on_session_complete,
         )
 
     def switch_session(self, session_id: str) -> None:
@@ -555,17 +555,17 @@ class Agent(BaseAgent):
         # Try to load existing session
         loaded = SessionManager.load_session(session_id, self.sessions_dir)
         if loaded:
-            self.session_manager = loaded
-            self.context.set_session_manager(loaded)  # 同步 context 引用，保持一致
+            self.session = loaded
+            self.context.set_session(loaded)  # 同步 context 引用，保持一致
             self.current_session_id = session_id
             self._session_id = session_id
             self.session_dir = self.sessions_dir / session_id
             # Update messages reference to point to new session's messages
-            self.messages = self.session_manager.messages
-            self._usage = self.session_manager.get_usage()
-            # Update tools' session_manager reference
+            self.messages = self.session.messages
+            self._usage = self.session.get_usage()
+            # Update tools' session reference
             for tool in self.tools:
-                tool.session_manager = loaded
+                tool.session = loaded
             # 切换会话后清除 prompt section 缓存（不同会话可能有不同上下文）
             self._prompt_section_cache.clear()
             # 重置缓存基线（不同会话的 cache_read 不可比），但保留累计统计
@@ -577,7 +577,7 @@ class Agent(BaseAgent):
     def reset(self) -> None:
         """Clear conversation history."""
         self.messages.clear()
-        self.session_manager.clear()
+        self.session.clear()
         # 清除 prompt section 缓存，下次构建时重新计算
         self._prompt_section_cache.clear()
         # 重置缓存状态追踪（新会话无历史基线）
@@ -585,8 +585,8 @@ class Agent(BaseAgent):
 
     def get_usage(self) -> dict[str, int]:
         """Return usage statistics synced with session."""
-        self._sync_to_session_manager()
-        return self.session_manager.get_usage()
+        self._sync_to_session()
+        return self.session.get_usage()
 
     def compact(self) -> tuple[int, int]:
         """Manually compress conversation history."""
@@ -601,8 +601,8 @@ class Agent(BaseAgent):
     def cleanup(self) -> None:
         """Clean up resources before exit."""
         if self._mode == "interactive":
-            self._sync_to_session_manager()
-            self.session_manager.save()
+            self._sync_to_session()
+            self.session.save()
         super().close()
 
     # ─── autonomous（worker/lite）：自主执行 ────────────────────────
@@ -752,7 +752,7 @@ class Agent(BaseAgent):
             log_file = self.session_dir / "index.json"
             atomic_write_json(log_file, log_data)
         except Exception as e:
-            logger.warning(f"[Agent:{self.role}] Failed to save progress: {e}")
+            logger.warning(f"[SessionRunner:{self.role}] Failed to save progress: {e}")
 
         # 发布进度事件供前端实时更新 header（节流：每 0.5s 最多一次）
         if self._event_publisher:
@@ -761,7 +761,7 @@ class Agent(BaseAgent):
             if now - self._last_progress_event_time >= 0.5:
                 self._last_progress_event_time = now
                 try:
-                    self._event_publisher("agent_progress",
+                    self._event_publisher("session_progress",
                                           exec_id=exec_id,
                                           iterations=iterations,
                                           message_count=len(self.messages),
@@ -805,4 +805,4 @@ class Agent(BaseAgent):
                 log_file = self.session_dir / "index.json"
                 atomic_write_json(log_file, log_data)
             except Exception as e:
-                logger.warning(f"[Agent:{self.role}] Failed to finalize: {e}")
+                logger.warning(f"[SessionRunner:{self.role}] Failed to finalize: {e}")

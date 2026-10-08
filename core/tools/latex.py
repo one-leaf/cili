@@ -95,9 +95,9 @@ class LatexTool(Tool):
         ".synctex.gz", ".synctex.gz(busy)",
     }
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
                  approval_store=None):
-        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
         self._compiler_cache: str | None = None
 
     def execute(

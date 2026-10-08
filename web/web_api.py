@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from core.config import load_config, PROJECT_ROOT
 
-from web.deps import agents, _LOCALHOST_IPS, WEB_DIR
+from web.deps import sessions, _LOCALHOST_IPS, WEB_DIR
 from web.routes_workspace import router as workspace_router
 from web.routes_chat import router as chat_router
 from web.routes_ask_user import router as ask_user_router
@@ -80,14 +80,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Server] 停止 cron 调度器失败: {e}")
     # 关闭时清理所有 master Agent 资源
-    logger.info(f"[Server] 正在关闭，清理 {len(agents)} 个 master Agent...")
-    for key, agent in list(agents.items()):
+    logger.info(f"[Server] 正在关闭，清理 {len(sessions)} 个 master Agent...")
+    for key, runner in list(sessions.items()):
         try:
-            agent.stop()
-            agent.cleanup()
+            runner.stop()
+            runner.cleanup()
         except Exception as e:
             logger.warning(f"[Server] 清理 master Agent {key} 失败: {e}")
-    agents.clear()
+    sessions.clear()
     logger.info("[Server] 资源清理完成")
 
 
@@ -232,7 +232,7 @@ async def health_check():
     """健康检查端点"""
     return {
         "status": "ok",
-        "active_agents": len(agents),
+        "active_sessions": len(sessions),
         "timestamp": datetime.now().isoformat()
     }
 

@@ -1,9 +1,9 @@
-"""AgentContext - agent 消息状态层（Step 2 抽取）。
+"""SessionContext - runner 消息状态层（Step 2 抽取）。
 
-从 BaseAgent 抽出的纯消息逻辑：messages 所有权、序列化、pad、invalidate、
+从 BaseSessionRunner 抽出的纯消息逻辑：messages 所有权、序列化、pad、invalidate、
 usage 存储。不持有 LLM client / tools / 回调 —— 这些属 Runner 与 Loop。
 
-交互模式下 `messages` 与 `session_manager.messages` 共享同一引用，
+交互模式下 `messages` 与 `session.messages` 共享同一引用，
 本层只做原地修改，持久化时机（flush/checkpoint）由调用方决策。
 """
 
@@ -29,18 +29,18 @@ INTERNAL_META = {
 }
 
 
-class AgentContext:
+class SessionContext:
     """消息状态与序列化逻辑，与执行层（Runner/Loop）解耦。"""
 
     def __init__(
         self,
         messages: list[dict] | None = None,
-        session_manager: Any = None,
+        session: Any = None,
         session_dir: Path | None = None,
     ):
         self.messages: list[dict] = messages if messages is not None else []
-        # 可空：interactive 由 Agent 注入 SessionManager，autonomous/直连 BaseAgent 为 None
-        self.session_manager = session_manager
+        # 可空：interactive 由 SessionRunner 注入 SessionManager，autonomous/直连 BaseSessionRunner 为 None
+        self.session = session
         self.session_dir = session_dir
         self._usage: dict[str, int] = {
             "input_tokens": 0,
@@ -53,16 +53,16 @@ class AgentContext:
         self._first_token_time: float | None = None
         self._last_token_time: float | None = None
 
-    def set_session_manager(self, session_manager: Any) -> None:
-        """会话切换等重绑 session_manager 时同步，保持本层引用与 Agent 一致。"""
-        self.session_manager = session_manager
+    def set_session(self, session: Any) -> None:
+        """会话切换等重绑 session 时同步，保持本层引用与 SessionRunner 一致。"""
+        self.session = session
 
     # ─── 消息写入 ─────────────────────────────────────────────────
 
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """追加一条消息；交互模式下仅置脏，落盘由迭代/回合边界的 flush()/save() 批量完成。
 
-        消息引用与 session_manager.messages 共享（同一 list），mark_dirty 递增版本号，
+        消息引用与 session.messages 共享（同一 list），mark_dirty 递增版本号，
         jsonl 追加推迟到 _interactive_tool_batch 末尾 flush / 回合退出点 save，
         崩溃窗口从"消息级"放宽到"迭代级"（工具输出内容已外置文件不丢）。
         """
@@ -71,8 +71,8 @@ class AgentContext:
             meta["id"] = generate_short_id()
         msg = {"role": role, "content": content, "_meta": meta}
         self.messages.append(msg)
-        if self.session_manager is not None:
-            self.session_manager.mark_dirty()
+        if self.session is not None:
+            self.session.mark_dirty()
 
     def invalidate_all_messages(self) -> int:
         """标记全部消息无效（_meta.valid=False）。返回标记数。"""
@@ -209,10 +209,10 @@ class AgentContext:
         """保存消息到磁盘。
 
         interactive 统一由 SessionManager 按 3 文件布局持久化（commits 视图）；
-        无 session_manager（worker/lite / 直连 BaseAgent）走旧 index.json 格式。
+        无 session（worker/lite / 直连 BaseAgent）走旧 index.json 格式。
         """
-        if self.session_manager is not None:
-            self.session_manager.save()
+        if self.session is not None:
+            self.session.save()
             return
 
         if not self.session_dir:
@@ -260,14 +260,14 @@ class AgentContext:
             return False
 
     def invalidate_message_cache(self) -> None:
-        """压缩等原地修改 messages 后，失效 session_manager 的 valid 缓存。
+        """压缩等原地修改 messages 后，失效 session 的 valid 缓存。
 
-        interactive 下 messages 与 session_manager.messages 共享同一引用，
+        interactive 下 messages 与 session.messages 共享同一引用，
         压缩直接改 block/_meta 不经过 add_message，必须手动 mark_dirty，
         否则 web_api 的 token 估算一直拿到过期快照（C1）。
         """
-        if self.session_manager is not None:
-            self.session_manager.mark_dirty()
+        if self.session is not None:
+            self.session.mark_dirty()
 
     def pad_dangling_tool_results(self) -> None:
         """为悬挂的 tool_use 补充占位 tool_result（原地修改 messages）。
@@ -363,11 +363,11 @@ class AgentContext:
 
         return usage
 
-    def sync_to_session_manager(self) -> None:
-        """同步 metadata/usage 到 session_manager（无 sm 时为空操作）。"""
-        if self.session_manager is None:
+    def sync_to_session(self) -> None:
+        """同步 metadata/usage 到 session（无 sm 时为空操作）。"""
+        if self.session is None:
             return
-        self.session_manager.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.session.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # 使用 get_usage() 获取包含 tokens_per_second 的完整 usage
-        self.session_manager.metadata["usage"] = self.get_usage()
-        self.session_manager.mark_dirty()
+        self.session.metadata["usage"] = self.get_usage()
+        self.session.mark_dirty()

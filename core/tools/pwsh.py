@@ -78,9 +78,9 @@ _DENY_PATTERNS = [
 class PwshTool(Tool):
     name = "pwsh"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
                  approval_store=None):
-        super().__init__(cwd, workspace_uuid, session_manager, approval_store=approval_store)
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
         self.description = self._build_description()
 
     def _build_description(self) -> str:

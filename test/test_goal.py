@@ -9,13 +9,13 @@ from core.goal import COMPLETE_MARKER, GoalManager
 from web.goal_runner import GoalRunner, format_goal_status, start_goal_runner, stop_goal_runner
 
 
-class FakeAgentTool:
+class FakeSessionTool:
     """最小 agent 工具替身：记录 execute 调用，按序返回 worker 结果。
 
     after_execute(idx) 在每次 execute 返回后回调（供测试在轮间注入 pause/stop）。
     """
 
-    name = "agent"
+    name = "session"
 
     def __init__(self, summaries=("进展中",), after_execute=None):
         self.summaries = list(summaries)
@@ -42,9 +42,9 @@ class FakeAgentTool:
 class FakeAgent:
     """最小 master agent 替身：带 agent 工具 + 会话引用。"""
 
-    def __init__(self, agent_tool, session_manager=None):
-        self.tools = [agent_tool]
-        self.session_manager = session_manager
+    def __init__(self, session_tool, session=None):
+        self.tools = [session_tool]
+        self.session = session
         self._stopped = False
 
 
@@ -190,15 +190,15 @@ class TestGoalRunner:
     """GoalRunner 轮次循环：master 经 agent 工具委派 worker——完成即停 / 轮次上限 / 暂停 / 停止 / 事件序列。"""
 
     @staticmethod
-    def _make_runner(agent, manager, ws="ws1", sess="s1"):
-        return GoalRunner(ws, sess, agent, manager, agent_tool=agent.tools[0])
+    def _make_runner(runner, manager, ws="ws1", sess="s1"):
+        return GoalRunner(ws, sess, runner, manager, session_tool=runner.tools[0])
 
     def test_completes_on_marker(self, tmp_path):
-        tool = FakeAgentTool(summaries=[f"目标已达成\n{COMPLETE_MARKER}"])
-        agent = FakeAgent(tool)
+        tool = FakeSessionTool(summaries=[f"目标已达成\n{COMPLETE_MARKER}"])
+        runner = FakeAgent(tool)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
-        runner = self._make_runner(agent, m)
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert not runner.is_running()
@@ -208,13 +208,13 @@ class TestGoalRunner:
         assert "测试目标" in tool.calls[0]
 
     def test_round_limit_blocks(self, tmp_path):
-        tool = FakeAgentTool(summaries=["进展", "还是进展"])
-        agent = FakeAgent(tool)
+        tool = FakeSessionTool(summaries=["进展", "还是进展"])
+        runner = FakeAgent(tool)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
         m.state.max_rounds = 2
         m.save()
-        runner = self._make_runner(agent, m)
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert not runner.is_running()
@@ -223,13 +223,13 @@ class TestGoalRunner:
         assert len(tool.calls) == 2
 
     def test_continues_until_marker(self, tmp_path):
-        tool = FakeAgentTool(summaries=["第一轮", "第二轮", f"第三轮完成\n{COMPLETE_MARKER}"])
-        agent = FakeAgent(tool)
+        tool = FakeSessionTool(summaries=["第一轮", "第二轮", f"第三轮完成\n{COMPLETE_MARKER}"])
+        runner = FakeAgent(tool)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
         m.state.max_rounds = 5
         m.save()
-        runner = self._make_runner(agent, m)
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert m.state.status == "complete"
@@ -241,9 +241,9 @@ class TestGoalRunner:
         m.set("测试目标")
         m.state.max_rounds = 10
         m.save()
-        tool = FakeAgentTool(summaries=["进展"], after_execute=lambda idx: m.pause() if idx == 1 else None)
-        agent = FakeAgent(tool)
-        runner = self._make_runner(agent, m)
+        tool = FakeSessionTool(summaries=["进展"], after_execute=lambda idx: m.pause() if idx == 1 else None)
+        runner = FakeAgent(tool)
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert not runner.is_running()
@@ -263,9 +263,9 @@ class TestGoalRunner:
                 first_done.set()
                 stop_now.wait(timeout=5)
 
-        tool = FakeAgentTool(summaries=["进展"], after_execute=after_execute)
-        agent = FakeAgent(tool)
-        runner = self._make_runner(agent, m)
+        tool = FakeSessionTool(summaries=["进展"], after_execute=after_execute)
+        runner = FakeAgent(tool)
+        runner = self._make_runner(runner, m)
         runner.start()
         assert first_done.wait(timeout=5)
         runner.request_stop()
@@ -280,10 +280,10 @@ class TestGoalRunner:
         m.set("测试目标")
         m.state.max_rounds = 10
         m.save()
-        tool = FakeAgentTool(summaries=["进展"])
-        agent = FakeAgent(tool)
-        agent._stopped = True
-        runner = self._make_runner(agent, m)
+        tool = FakeSessionTool(summaries=["进展"])
+        runner = FakeAgent(tool)
+        runner._stopped = True
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert not runner.is_running()
@@ -291,11 +291,11 @@ class TestGoalRunner:
         assert len(tool.calls) == 0
 
     def test_event_sequence_on_bus(self, tmp_path):
-        tool = FakeAgentTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
-        agent = FakeAgent(tool)
+        tool = FakeSessionTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
+        runner = FakeAgent(tool)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
-        runner = self._make_runner(agent, m)
+        runner = self._make_runner(runner, m)
         bus = FakeBus()
         with patch("web.goal_runner.get_event_bus", return_value=bus):
             runner.start()
@@ -315,11 +315,11 @@ class TestGoalRunner:
         _meta.exec_id 重建 worker 卡；若 goal runner 不落该消息，worker 卡会消失。
         """
         sm = FakeSessionManager("exec_goal_7")
-        tool = FakeAgentTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
-        agent = FakeAgent(tool, session_manager=sm)
+        tool = FakeSessionTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
+        runner = FakeAgent(tool, session=sm)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
-        runner = self._make_runner(agent, m)
+        runner = self._make_runner(runner, m)
         runner.start()
         runner.thread.join(timeout=5)
         assert m.state.status == "complete"
@@ -336,7 +336,7 @@ class TestGoalRunner:
             msg for msg in sm.messages
             if msg["role"] == "user" and msg["content"][0].get("type") == "tool_result"
         )
-        assert asst["content"][0]["name"] == "agent"
+        assert asst["content"][0]["name"] == "session"
         assert asst["content"][0]["id"] == "goal-exec_goal_7"
         block = user["content"][0]
         assert block["_meta"]["exec_id"] == "exec_goal_7"
@@ -346,11 +346,11 @@ class TestGoalRunner:
         assert sm.saves.count(True) >= 1
 
     def test_start_stop_registry(self, tmp_path):
-        tool = FakeAgentTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
-        agent = FakeAgent(tool)
+        tool = FakeSessionTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
+        runner = FakeAgent(tool)
         m = GoalManager(tmp_path / "s")
         m.set("测试目标")
-        runner = start_goal_runner("ws9", "s9", agent, m)
+        runner = start_goal_runner("ws9", "s9", runner, m)
         assert runner is not None
         runner.thread.join(timeout=5)
         assert m.state.status == "complete"

@@ -23,8 +23,8 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
-from core.agent import Agent
-from core.base_agent import RETRY_CLEAR_SENTINEL
+from core.session_runner import SessionRunner
+from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.config import (
     load_config, PROJECT_ROOT, load_workspace_config, save_workspace_config,
     GLOBAL_CONFIG_PATH, get_workspace_data_dir, load_workspaces_index,
@@ -42,13 +42,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global agents dict: session_id -> Agent (master)
-agents: dict[str, Agent] = {}
+# Global sessions dict: session_id -> SessionRunner (master)
+sessions: dict[str, SessionRunner] = {}
 # LRU tracking: key -> last access timestamp
-_agent_access: dict[str, float] = {}
-_MAX_AGENTS = 20  # Maximum number of agents to keep in memory
-# Lock for concurrent access to agents dict
-_agents_lock = asyncio.Lock()
+_runner_access: dict[str, float] = {}
+_MAX_RUNNERS = 20  # Maximum number of runners to keep in memory
+# Lock for concurrent access to sessions dict
+_sessions_lock = asyncio.Lock()
 
 # Base directories
 WEB_DIR = Path(__file__).parent.resolve()
@@ -215,32 +215,32 @@ def _list_all_workspaces() -> list[dict]:
     return workspaces
 
 
-def _evict_idle_agent() -> None:
-    """Evict the oldest non-running agent if agent count exceeds limit."""
-    if len(agents) <= _MAX_AGENTS:
+def _evict_idle_runner() -> None:
+    """Evict the oldest non-running runner if runner count exceeds limit."""
+    if len(sessions) <= _MAX_RUNNERS:
         return
-    # Find the oldest non-running agent
+    # Find the oldest non-running runner
     idle_keys = [
-        k for k in agents
-        if not agents[k].is_running()
+        k for k in sessions
+        if not sessions[k].is_running()
     ]
     if not idle_keys:
         return
-    oldest = min(idle_keys, key=lambda k: _agent_access.get(k, 0))
+    oldest = min(idle_keys, key=lambda k: _runner_access.get(k, 0))
     logger.info(f"[master Agent LRU] 淘汰闲置 master Agent: {oldest}")
-    evicted = agents.pop(oldest)
-    _agent_access.pop(oldest, None)
+    evicted = sessions.pop(oldest)
+    _runner_access.pop(oldest, None)
     try:
         evicted.cleanup()
     except Exception as e:
         logger.warning(f"[master Agent LRU] 清理被淘汰的 master Agent 失败: {e}")
 
 
-async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
-    """Get or create an agent for a given workspace and session.
+async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:
+    """Get or create a runner for a given workspace and session.
 
-    Thread-safe: acquires _agents_lock to prevent concurrent creation of
-    duplicate agents for the same workspace:session key.
+    Thread-safe: acquires _sessions_lock to prevent concurrent creation of
+    duplicate runners for the same workspace:session key.
     """
     info = _get_workspace_info(workspace_uuid)
     if not info:
@@ -252,43 +252,43 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
 
     key = f"{workspace_uuid}:{session_id}"
 
-    async with _agents_lock:
-        _agent_access[key] = time.time()
+    async with _sessions_lock:
+        _runner_access[key] = time.time()
 
-        if key not in agents:
-            _evict_idle_agent()
+        if key not in sessions:
+            _evict_idle_runner()
             try:
                 config = load_config()  # 全局配置，不需要 workspace 参数
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to load config: {e}")
 
-            agent = Agent(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid)
+            runner = SessionRunner(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid)
 
             # Load the requested session if different from default
-            if session_id != agent.current_session_id:
-                session_dir = agent.sessions_dir / session_id
+            if session_id != runner.current_session_id:
+                session_dir = runner.sessions_dir / session_id
                 index_file = session_dir / "index.json"
                 if index_file.exists():
                     # Load existing session
-                    agent.switch_session(session_id)
+                    runner.switch_session(session_id)
                     logger.info(f"Loaded existing session: {session_id}")
                 else:
                     # 新会话：为请求的 id 直接新建 SessionManager 并立即落盘，
                     # 避免默认会话 index.json 不迁移、旧目录 rmdir 静默失败残留（W15）
-                    old_session_dir = agent.session_manager.session_dir
-                    new_sm = SessionManager(session_id, agent.sessions_dir)
+                    old_session_dir = runner.session.session_dir
+                    new_sm = SessionManager(session_id, runner.sessions_dir)
                     new_sm.name = f"Session {session_id[:8]}"
                     new_sm.save(force=True)  # 新会话首次落盘：跳过脏标记短路
-                    agent.session_manager = new_sm
-                    agent.context.set_session_manager(new_sm)  # 同步 context 引用，保持一致
-                    agent.current_session_id = session_id
-                    agent._session_id = session_id
-                    agent.session_dir = new_sm.session_dir
-                    agent.messages = new_sm.messages  # Update reference
-                    agent._usage = new_sm.get_usage()
-                    # 同步工具 session_manager 引用（与 switch_session 一致）
-                    for tool in agent.tools:
-                        tool.session_manager = new_sm
+                    runner.session = new_sm
+                    runner.context.set_session(new_sm)  # 同步 context 引用，保持一致
+                    runner.current_session_id = session_id
+                    runner._session_id = session_id
+                    runner.session_dir = new_sm.session_dir
+                    runner.messages = new_sm.messages  # Update reference
+                    runner._usage = new_sm.get_usage()
+                    # 同步工具 session 引用（与 switch_session 一致）
+                    for tool in runner.tools:
+                        tool.session = new_sm
                     # 删除空的旧默认会话目录，避免孤立目录（仅当目录确实为空时）
                     if old_session_dir.exists() and old_session_dir != new_sm.session_dir:
                         try:
@@ -298,7 +298,7 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                             pass
                     logger.info(f"Creating new session: {session_id}")
 
-            agents[key] = agent
+            sessions[key] = runner
 
             # 全局事件流：master 工具实时输出 → 事件总线（无 exec_id 表示 master 工具）
             bus = get_event_bus()
@@ -314,9 +314,9 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                     "tool_use_id": tool_use_id,
                 })
 
-            agent._on_tool_output = _on_tool_output
+            runner._on_tool_output = _on_tool_output
 
-            # 设置默认 SSE 回调（发布到全局事件总线），用于后台 agent 完成后自动恢复循环
+            # 设置默认 SSE 回调（发布到全局事件总线），用于后台 runner 完成后自动恢复循环
             bus = get_event_bus()
 
             def _default_on_text(text: str) -> None:
@@ -346,7 +346,7 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                 })
 
             def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-                if tool_name in ("ask_user", "agent"):
+                if tool_name in ("ask_user", "session"):
                     return
                 bus.publish({
                     "type": "tool_result",
@@ -358,29 +358,29 @@ async def _get_or_create_agent(workspace_uuid: str, session_id: str) -> Agent:
                     "tool_use_id": tool_use_id,
                 })
 
-            agent._default_on_text = _default_on_text
-            agent._default_on_thinking = _default_on_thinking
-            agent._default_on_tool_call = _default_on_tool_call
-            agent._default_on_tool_result = _default_on_tool_result
+            runner._default_on_text = _default_on_text
+            runner._default_on_thinking = _default_on_thinking
+            runner._default_on_tool_call = _default_on_tool_call
+            runner._default_on_tool_result = _default_on_tool_result
 
             # Register session with MessageBus for cross-session messaging
             # （注意：不能复用变量名 bus——上方 _on_tool_output 闭包晚绑定捕获，
             #  改名 mbus 防止把事件总线遮蔽成 MessageBus，导致 publish 属性缺失）
             try:
                 mbus = get_message_bus()
-                mbus.register_session(session_id, agent.session_manager.name)
-                # 同时注册为 agent（master 用 session_id 作为 agent 名字）
+                mbus.register_session(session_id, runner.session.name)
+                # 同时注册为 runner（master 用 session_id 作为 runner 名字）
                 mbus.register_agent(session_id, session_id)
             except Exception as e:
                 logger.warning(f"Failed to register session with MessageBus: {e}")
 
-        return agents[key]
+        return sessions[key]
 
 
 # ---------- 会话运行认领（防 send_message/answer_ask_user 双循环 TOCTOU） ----------
 
 # 每个会话的执行中 claim（防 send_message 的 is_running 检查 TOCTOU）：
-# 检查与 run 实际启动之间第二个请求可能并发通过检查，导致同一 agent 双循环
+# 检查与 run 实际启动之间第二个请求可能并发通过检查，导致同一 runner 双循环
 # 同时改写 messages。用 set 在请求入口原子认领，run 结束后释放。
 _session_run_claims: set[str] = set()
 _session_run_claims_lock = threading.Lock()
@@ -390,13 +390,13 @@ def _claim_session_run(key: str) -> bool:
     """原子认领会话执行权，返回是否认领成功。
 
     在锁内 check-and-set，关闭 is_running 检查到 run 启动之间的 TOCTOU 窗口；
-    agent.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
+    runner.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
     """
     with _session_run_claims_lock:
         if key in _session_run_claims:
             return False
-        agent = agents.get(key)
-        if agent is not None and agent.is_running():
+        runner = sessions.get(key)
+        if runner is not None and runner.is_running():
             return False
         _session_run_claims.add(key)
         return True
@@ -409,12 +409,12 @@ def _release_session_run(key: str) -> None:
 
 
 def _is_session_idle(key: str) -> bool:
-    """检查会话是否空闲（没有被认领且 agent 没有运行）。"""
+    """检查会话是否空闲（没有被认领且 runner 没有运行）。"""
     with _session_run_claims_lock:
         if key in _session_run_claims:
             return False
-        agent = agents.get(key)
-        if agent is not None and agent.is_running():
+        runner = sessions.get(key)
+        if runner is not None and runner.is_running():
             return False
         return True
 
@@ -428,12 +428,12 @@ class _SSECallbacks:
     on_thinking: Callable[[str], None]
     on_tool_call: Callable[[str, dict, str], None]
     on_tool_result: Callable[[str, str, bool, str], None]
-    on_agent_start: Callable[[str, str], None]
-    on_agent_complete: Callable[[str], None]
+    on_session_start: Callable[[str, str], None]
+    on_session_complete: Callable[[str], None]
 
 
-def _make_sse_callbacks(event_queue: queue.Queue[str | None], agent) -> _SSECallbacks:
-    """构造统一的 SSE 回调组，同步 agent 回调 → 队列，供两个 Agent 运行入口复用。"""
+def _make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> _SSECallbacks:
+    """构造统一的 SSE 回调组，同步 runner 回调 → 队列，供两个 SessionRunner 运行入口复用。"""
 
     def on_text(text: str) -> None:
         # Sentinel: 413 retry needs frontend to clear already-streamed text
@@ -454,26 +454,26 @@ def _make_sse_callbacks(event_queue: queue.Queue[str | None], agent) -> _SSECall
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
         # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "agent"):
+        if tool_name in ("ask_user", "session"):
             return
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
         # Check for todo_write tool and push todo update event
         if tool_name == "todo_write" and not is_error:
-            todos = get_todos_from_session(agent.session_manager, agent.workspace_uuid or "")
+            todos = get_todos_from_session(runner.session, runner.workspace_uuid or "")
             if todos:
                 todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
                 event_queue.put(f"data: {todo_event}\n\n")
 
-    def on_agent_start(exec_id: str, task_summary: str) -> None:
+    def on_session_start(exec_id: str, task_summary: str) -> None:
         # Send SSE event for real-time UI update
-        event = json.dumps({"type": "agent_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event = json.dumps({"type": "session_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
-    def on_agent_complete(exec_id: str) -> None:
+    def on_session_complete(exec_id: str) -> None:
         # Push SSE event for real-time UI update
-        event = json.dumps({"type": "agent_complete", "exec_id": exec_id}, ensure_ascii=False)
+        event = json.dumps({"type": "session_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     return _SSECallbacks(
@@ -481,8 +481,8 @@ def _make_sse_callbacks(event_queue: queue.Queue[str | None], agent) -> _SSECall
         on_thinking=on_thinking,
         on_tool_call=on_tool_call,
         on_tool_result=on_tool_result,
-        on_agent_start=on_agent_start,
-        on_agent_complete=on_agent_complete,
+        on_session_start=on_session_start,
+        on_session_complete=on_session_complete,
     )
 
 

@@ -298,7 +298,7 @@ function renderMessages(messages) {
 
 // 渲染子代理引用（可折叠卡片）——委托 sse-client.js 卡片状态机
 function renderAgentRef(msg, idx, msgId) {
-    agentCardForMessage(msg, msgId);
+    sessionCardForMessage(msg, msgId);
 }
 
 // ── 历史消息分页加载 ──
@@ -553,12 +553,12 @@ function renderTodoList(todos) {
 
 // 子代理开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
 // 委托 sse-client.js 幂等 ensureAgentCard（POST SSE 与事件流双源共用）
-function renderAgentStart(execId, taskSummary) {
+function renderSessionStart(execId, taskSummary) {
     ensureAgentCard(execId, taskSummary, { status: 'running' });
 }
 
 // 子代理完成时更新卡片状态——委托 sse-client.js 幂等 markAgentComplete
-function renderAgentComplete(execId) {
+function renderSessionComplete(execId) {
     markAgentComplete(execId, 'completed');
 }
 
@@ -849,10 +849,10 @@ function renderAskUserQuestions(container, input, toolUseId) {
                             contentDiv.appendChild(pre);
                             assistantDiv = null;
                             assistantContent = '';
-                        } else if (event.type === 'agent_start') {
-                            renderAgentStart(event.exec_id, event.task_summary);
-                        } else if (event.type === 'agent_complete') {
-                            renderAgentComplete(event.exec_id);
+                        } else if (event.type === 'session_start') {
+                            renderSessionStart(event.exec_id, event.task_summary);
+                        } else if (event.type === 'session_complete') {
+                            renderSessionComplete(event.exec_id);
                         } else if (event.type === 'todo_update') {
                             renderTodoList(event.todos);
                         } else if (event.type === 'retry_clear') {
@@ -1165,12 +1165,12 @@ async function sendMessage() {
                         // 重置 assistantDiv 用于后续文本
                         assistantDiv = null;
                         assistantContent = '';
-                    } else if (event.type === 'agent_start') {
+                    } else if (event.type === 'session_start') {
                         // 子代理开始执行，立即渲染占位卡片
-                        renderAgentStart(event.exec_id, event.task_summary);
-                    } else if (event.type === 'agent_complete') {
+                        renderSessionStart(event.exec_id, event.task_summary);
+                    } else if (event.type === 'session_complete') {
                         // 子代理完成，更新卡片状态
-                        renderAgentComplete(event.exec_id);
+                        renderSessionComplete(event.exec_id);
                     } else if (event.type === 'todo_update') {
                         // Todo 列表更新，渲染任务清单
                         renderTodoList(event.todos);

@@ -33,7 +33,7 @@ def todo_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def tool():
-    return TodoWriteTool(cwd=".", workspace_uuid="test-ws", session_manager=_FakeSession())
+    return TodoWriteTool(cwd=".", workspace_uuid="test-ws", session=_FakeSession())
 
 
 class TestValidation:
@@ -93,9 +93,9 @@ class TestStorage:
     def test_per_session_isolation(self, todo_dir):
         """不同 session 写入互不影响，各存各的文件。"""
         a = TodoWriteTool(cwd=".", workspace_uuid="test-ws",
-                          session_manager=_FakeSession("sess-a"))
+                          session=_FakeSession("sess-a"))
         b = TodoWriteTool(cwd=".", workspace_uuid="test-ws",
-                          session_manager=_FakeSession("sess-b"))
+                          session=_FakeSession("sess-b"))
         a.execute(todos=[{"content": "a 的任务", "status": "pending"}])
         b.execute(todos=[{"content": "b 的任务", "status": "pending"}])
         b.execute(todos=[{"content": "b 的任务2", "status": "pending"}])
@@ -105,9 +105,9 @@ class TestStorage:
 
     def test_removes_legacy_metadata_todos(self, tool, todo_dir):
         """迁移旧格式：metadata.todos 被清掉，不再双写。"""
-        tool.session_manager.metadata["todos"] = [{"task": "旧任务", "status": "pending"}]
+        tool.session.metadata["todos"] = [{"task": "旧任务", "status": "pending"}]
         tool.execute(todos=[{"content": "新任务", "status": "pending"}])
-        assert "todos" not in tool.session_manager.metadata
+        assert "todos" not in tool.session.metadata
 
     def test_get_todo_file_path(self, todo_dir):
         assert get_todo_file_path("abc").name == "abc.json"

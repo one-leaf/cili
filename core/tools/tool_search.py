@@ -27,8 +27,8 @@ class ToolSearchTool(Tool):
     deferred_tools: list[Tool] = []
     on_load: Any = None  # Callable[[list[str]], None] | None
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None, **_kwargs):
-        super().__init__(cwd, workspace_uuid, session_manager)
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, **_kwargs):
+        super().__init__(cwd, workspace_uuid, session)
 
     @property
     def parameters(self) -> dict[str, Any]:

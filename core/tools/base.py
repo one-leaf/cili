@@ -12,8 +12,8 @@ from core.fs_utils import normalize_bash_path
 from core.tools.approval import META_KEY, approval_placeholder_text
 from core.tools.background import (
     BackgroundMixin, BackgroundTask, BackgroundTaskManager,
-    _active_background_agents, _atexit_cleanup_agents, _atexit_registered,
-    _background_agents_cond,
+    _active_background_runners, _atexit_cleanup_runners, _atexit_registered,
+    _background_runners_cond,
 )
 from core.tools.result import ToolResult
 from core.tools.shell import (
@@ -112,11 +112,11 @@ class Tool(ShellMixin, BackgroundMixin):
             truncated = truncated[:last_newline]
         return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
 
-    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session_manager=None,
+    def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
                  approval_store=None):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
-        self.session_manager = session_manager  # For accessing session info (e.g., in python tool)
+        self.session = session  # For accessing session info (e.g., in python tool)
         # 会话级高风险命令审批存储（内存，根/子代理共享），由 agent 注入
         self.approval_store = approval_store
         # 工具输出文件路径：由 agent 在 execute() 前设置

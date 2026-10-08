@@ -12,7 +12,7 @@ from datetime import datetime
 class TestPrompts:
     """配置化 prompt 构建测试：system prompt 块拼装 + user 层注入/合并 + 环境上下文。"""
 
-    def _make_fake_agent(self, blocks, tools=None, role="master"):
+    def _make_fake_runner(self, blocks, tools=None, role="master"):
         """构造 build_system_prompt 所需的轻量 agent 替身。"""
         from types import SimpleNamespace
         return SimpleNamespace(
@@ -82,36 +82,36 @@ class TestPrompts:
     def test_system_prompt_text_block_only(self):
         """纯 text 块：按 content 原样输出（返回 list[str]）。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent([
+        runner = self._make_fake_runner([
             {"id": "role", "type": "text", "content": "你是通用助手。"},
         ])
-        assert build_system_prompt(agent) == ["你是通用助手。"]
+        assert build_system_prompt(runner) == ["你是通用助手。"]
 
     def test_system_prompt_text_block_lines(self):
         """text 块 content 为行数组时按行拼装。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent([
+        runner = self._make_fake_runner([
             {"id": "role", "type": "text", "content": ["line one", "line two"]},
         ])
-        assert build_system_prompt(agent) == ["line one\nline two"]
+        assert build_system_prompt(runner) == ["line one\nline two"]
 
     def test_system_prompt_disabled_block_skipped(self):
         """enabled=false 的块被跳过。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent([
+        runner = self._make_fake_runner([
             {"id": "a", "type": "text", "content": "A", "enabled": False},
             {"id": "b", "type": "text", "content": "B"},
         ])
-        assert build_system_prompt(agent) == ["B"]
+        assert build_system_prompt(runner) == ["B"]
 
     def test_system_prompt_joins_blocks(self):
         """多个启用块按顺序放入列表（不再拼接为单字符串）。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent([
+        runner = self._make_fake_runner([
             {"id": "a", "type": "text", "content": "AAA"},
             {"id": "b", "type": "text", "content": "BBB"},
         ])
-        assert build_system_prompt(agent) == ["AAA", "BBB"]
+        assert build_system_prompt(runner) == ["AAA", "BBB"]
 
     def test_system_prompt_tools_block(self):
         """tools 块列出工具名与首行描述。"""
@@ -119,9 +119,9 @@ class TestPrompts:
         from core.prompt_builder import build_system_prompt
         tool1 = SimpleNamespace(name="read", description="read a file\nmultiline")
         tool2 = SimpleNamespace(name="bash", description="run commands")
-        agent = self._make_fake_agent(
+        runner = self._make_fake_runner(
             [{"id": "tools", "type": "tools"}], tools=[tool1, tool2])
-        parts = build_system_prompt(agent)
+        parts = build_system_prompt(runner)
         prompt = "\n\n".join(parts)
         assert "## Tools" in prompt
         assert "- **read** — read a file" in prompt
@@ -130,9 +130,9 @@ class TestPrompts:
     def test_system_prompt_skills_block(self):
         """skills 块列出角色可见技能（master 可见 grilling）。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent(
+        runner = self._make_fake_runner(
             [{"id": "skills", "type": "skills"}], role="master")
-        parts = build_system_prompt(agent)
+        parts = build_system_prompt(runner)
         prompt = "\n\n".join(parts)
         assert "## Available Skills" in prompt
         assert "grilling" in prompt
@@ -140,25 +140,25 @@ class TestPrompts:
     def test_system_prompt_unknown_block_type_skipped(self):
         """未知块类型跳过，不影响其他块。"""
         from core.prompt_builder import build_system_prompt
-        agent = self._make_fake_agent([
+        runner = self._make_fake_runner([
             {"id": "x", "type": "bogus", "content": "X"},
             {"id": "role", "type": "text", "content": "OK"},
         ])
-        assert build_system_prompt(agent) == ["OK"]
+        assert build_system_prompt(runner) == ["OK"]
 
     def test_system_prompt_master_has_no_placeholders(self):
         """master 固定文案不含动态占位符（动态内容走 context 层）。"""
         from core.prompt_builder import build_system_prompt
-        from core.agent_config import load_agent_role
+        from core.session_runner_config import load_runner_role
         from types import SimpleNamespace
         config = SimpleNamespace(model=SimpleNamespace(),
                                  system=SimpleNamespace(max_iterations=50))
-        role_cfg = load_agent_role("master", config)
-        agent = self._make_fake_agent(role_cfg.system_prompt["blocks"])
+        role_cfg = load_runner_role("master", config)
+        runner = self._make_fake_runner(role_cfg.system_prompt["blocks"])
         # context 块需要 workspace_uuid 和 cwd
-        agent.workspace_uuid = "test-workspace"
-        agent.cwd = "/test/cwd"
-        parts = build_system_prompt(agent)
+        runner.workspace_uuid = "test-workspace"
+        runner.cwd = "/test/cwd"
+        parts = build_system_prompt(runner)
         prompt = "\n\n".join(parts)
         assert "{date}" not in prompt
         assert "{workspace_uuid}" not in prompt

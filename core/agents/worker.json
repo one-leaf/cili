@@ -216,7 +216,7 @@
     "loop",
     "pdf2markdown",
     "skill",
-    "agent",
+    "session",
     "tool_search"
   ],
   "deferred_tools": [

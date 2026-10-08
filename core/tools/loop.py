@@ -111,9 +111,9 @@ class LoopTool(Tool):
         self,
         cwd: str = ".",
         workspace_uuid: str = "",
-        session_manager=None,
+        session=None,
     ):
-        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session_manager=session_manager)
+        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session=session)
 
     @property
     def parameters(self) -> dict:

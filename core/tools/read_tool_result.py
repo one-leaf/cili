@@ -31,10 +31,10 @@ class ReadToolResultTool(Tool):
         if not self._SAFE_ID_PATTERN.match(tool_use_id):
             return ToolResult(f"Error: invalid tool_use_id format: {tool_use_id}", error=True)
 
-        if not self.session_manager:
+        if not self.session:
             return ToolResult("Error: session manager not available", error=True)
 
-        session_dir = self.session_manager.session_dir
+        session_dir = self.session.session_dir
 
         # Try main session directory first
         filename = f"{tool_use_id}.txt"

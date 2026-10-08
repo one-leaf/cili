@@ -15,7 +15,7 @@ project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
 from core.config import Config, ModelConfig, SystemConfig
-from core.agent import Agent
+from core.session_runner import SessionRunner
 from core.tools import create_tools, get_tool_by_name
 import core.cron
 
@@ -142,18 +142,18 @@ def tools(test_workspace):
 
 
 @pytest.fixture
-def agent(config, test_workspace):
-    """创建 Master Agent 实例"""
+def runner(config, test_workspace):
+    """创建 Master SessionRunner 实例"""
     import core.config as config_mod
     # 使用唯一的 workspace_uuid 避免测试冲突，并注册到临时索引
     test_uuid = secrets.token_hex(4)
     config_mod.upsert_workspace_entry({
         "uuid": test_uuid,
-        "workspace_name": "Test Agent Workspace",
+        "workspace_name": "Test Runner Workspace",
         "directory": test_workspace,
     })
-    agent_instance = Agent(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
-    yield agent_instance
+    runner_instance = SessionRunner(config, role="master", cwd=test_workspace, workspace_uuid=test_uuid)
+    yield runner_instance
     # 清理测试生成的 .cili 数据目录
     test_data_dir = os.path.join(test_workspace, ".cili")
     if os.path.exists(test_data_dir):

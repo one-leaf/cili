@@ -1,4 +1,4 @@
-"""Integration tests for BaseAgent architecture.
+"""Integration tests for BaseSessionRunner architecture.
 
 使用 DGX 本地端点测试，同时覆盖 Anthropic 和 OpenAI 两种协议。
 DGX 端点：http://192.168.3.3:8080（本地推理，不消耗 API 配额）。
@@ -87,32 +87,32 @@ class TestMasterAgentIntegration:
 
     def test_basic_conversation(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """基本对话：2+2=4"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
-        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         outputs = []
 
-        agent.run(
+        runner.run(
             "What is 2 + 2? Reply with just the number.",
             on_text=lambda t: outputs.append(t),
         )
 
         full_output = "".join(outputs)
         assert "4" in full_output, f"[{protocol}] Expected '4' in output, got: {full_output}"
-        assert len(agent.messages) >= 2
-        assert agent.messages[0]["role"] == "user"
-        assert agent.messages[1]["role"] == "assistant"
-        agent.cleanup()
+        assert len(runner.messages) >= 2
+        assert runner.messages[0]["role"] == "user"
+        assert runner.messages[1]["role"] == "assistant"
+        runner.cleanup()
 
     def test_tool_execution(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """工具调用：执行 bash 命令。"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
-        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         tool_calls = []
         tool_results = []
 
-        agent.run(
+        runner.run(
             "Run the command 'echo Hello Test' and show me the output.",
             on_text=lambda t: None,
             on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
@@ -128,26 +128,26 @@ class TestMasterAgentIntegration:
         assert "Hello Test" in bash_results[0][1], f"[{protocol}] Output: {bash_results[0][1]}"
 
         # 小输出内联到消息，不残留外部 .txt（见 test_tool_execution_creates_files）
-        agent.cleanup()
+        runner.cleanup()
 
     def test_session_persistence(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """会话持久化：跨 agent 实例加载消息。"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
-        agent1 = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent1 = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         session_id = agent1.current_session_id
 
         agent1.run(
             "Remember this: The secret word is 'pineapple'.",
             on_text=lambda t: None,
         )
-        agent1._sync_to_session_manager()
-        agent1.session_manager.save()
+        agent1._sync_to_session()
+        agent1.session.save()
         msg_count_1 = len(agent1.messages)
         assert msg_count_1 >= 2
         agent1.cleanup()
 
-        agent2 = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        agent2 = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
         agent2.switch_session(session_id)
 
         assert len(agent2.messages) == msg_count_1, \
@@ -163,39 +163,39 @@ class TestMasterAgentIntegration:
 
     def test_usage_tracking(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """使用量追踪。"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
-        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
-        agent.run("Say 'hello'", on_text=lambda t: None)
+        runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        runner.run("Say 'hello'", on_text=lambda t: None)
 
-        usage = agent.get_usage()
+        usage = runner.get_usage()
         assert usage["api_calls"] >= 1, f"[{protocol}] Should have at least 1 API call"
         assert usage["input_tokens"] > 0
         assert usage["output_tokens"] > 0
-        agent.cleanup()
+        runner.cleanup()
 
     def test_session_switch(self, dgx_config, workspace_uuid, test_workspace_dir, protocol):
         """会话切换。"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
-        agent = Agent(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
+        runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
 
-        session1_id = agent.current_session_id
-        agent.run("Session 1 message", on_text=lambda t: None)
-        agent._sync_to_session_manager()
-        agent.session_manager.save()
-        session1_msg_count = len(agent.messages)
+        session1_id = runner.current_session_id
+        runner.run("Session 1 message", on_text=lambda t: None)
+        runner._sync_to_session()
+        runner.session.save()
+        session1_msg_count = len(runner.messages)
 
-        new_session = SessionManager.create_new_session(agent.sessions_dir, "Test Session 2")
-        agent.switch_session(new_session.session_id)
-        assert len(agent.messages) == 0, f"[{protocol}] New session should be empty"
+        new_session = SessionManager.create_new_session(runner.sessions_dir, "Test Session 2")
+        runner.switch_session(new_session.session_id)
+        assert len(runner.messages) == 0, f"[{protocol}] New session should be empty"
 
-        agent.run("Session 2 message", on_text=lambda t: None)
+        runner.run("Session 2 message", on_text=lambda t: None)
 
-        agent.switch_session(session1_id)
-        assert len(agent.messages) == session1_msg_count, \
+        runner.switch_session(session1_id)
+        assert len(runner.messages) == session1_msg_count, \
             f"[{protocol}] Expected {session1_msg_count} messages after switch back"
-        agent.cleanup()
+        runner.cleanup()
 
 
 # ── Agent 集成测试（mock load_config 注入 DGX）─────────────────────────────
@@ -217,7 +217,7 @@ class TestAgentIntegration:
 
     def _run_agent(self, task, test_workspace_dir, protocol, exec_id=None):
         """创建并运行 Worker Agent（DGX 配置直传）。"""
-        from core.agent import Agent
+        from core.session_runner import SessionRunner
 
         dgx_config = make_dgx_config(protocol)
         session_dir = test_workspace_dir / f"agent_{secrets.token_hex(4)}"
@@ -231,9 +231,9 @@ class TestAgentIntegration:
         if exec_id:
             kwargs["exec_id"] = exec_id
 
-        agent = Agent(dgx_config, role="worker", **kwargs)
-        result = agent.run()
-        agent.close()
+        runner = SessionRunner(dgx_config, role="worker", **kwargs)
+        result = runner.run()
+        runner.close()
 
         return result, session_dir
 
@@ -294,8 +294,8 @@ class TestAgentIntegration:
         session_dir.mkdir(parents=True, exist_ok=True)
 
         dgx_config = make_dgx_config(protocol)
-        from core.agent import Agent
-        agent = Agent(
+        from core.session_runner import SessionRunner
+        runner = SessionRunner(
             dgx_config,
             role="worker",
             task="Run 'echo Cron Test' and report the output.",
@@ -303,8 +303,8 @@ class TestAgentIntegration:
             session_dir=session_dir,
             exec_id=exec_id,
         )
-        result = agent.run()
-        agent.close()
+        result = runner.run()
+        runner.close()
 
         index_file = session_dir / "index.json"
         assert index_file.exists(), f"index.json should exist at {index_file}"
@@ -331,44 +331,44 @@ def _read_agent_messages(session_dir):
 # ── 单元测试（不依赖 DGX，纯逻辑）─────────────────────────────────────────────
 
 
-class TestBaseAgentUnitTests:
-    """BaseAgent 单元测试：纯逻辑，不调用 LLM。"""
+class TestBaseSessionRunnerUnitTests:
+    """BaseSessionRunner 单元测试：纯逻辑，不调用 LLM。"""
 
     def test_add_message_with_valid_flag(self):
         """add_message 不再添加 block 级别的 _valid（新格式使用 message 级别的 _meta.valid）。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config)
-        agent.add_message("user", [{"type": "text", "text": "hello"}])
+        runner = BaseSessionRunner(config=config)
+        runner.add_message("user", [{"type": "text", "text": "hello"}])
 
-        assert len(agent.messages) == 1
-        assert agent.messages[0]["role"] == "user"
+        assert len(runner.messages) == 1
+        assert runner.messages[0]["role"] == "user"
         # 新格式：不再自动添加 block 级别的 _valid
         # 消息级别的 _meta.valid 由其他逻辑设置
 
     def test_get_valid_messages_filters_invalid(self):
         """get_valid_messages 过滤无效消息（使用新格式 _meta.valid）。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config)
+        runner.messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
             # 使用新格式：消息级别的 _meta.valid = False
             {"role": "assistant", "content": [{"type": "thinking", "thinking": "test"}], "_meta": {"valid": False}},
         ]
 
-        valid = agent.get_valid_messages()
+        valid = runner.get_valid_messages()
         assert len(valid) == 2  # user message + valid assistant message
 
     def test_count_tokens(self):
         """_count_messages_tokens 委托 compression.count_messages_tokens（含 reasoning 块）。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config)
+        runner = BaseSessionRunner(config=config)
 
         messages = [
             {"role": "user", "content": "hello"},
@@ -378,12 +378,12 @@ class TestBaseAgentUnitTests:
             ]},
         ]
 
-        assert agent._count_messages_tokens(messages) > 0
-        assert agent._count_messages_tokens([]) == 0
+        assert runner._count_messages_tokens(messages) > 0
+        assert runner._count_messages_tokens([]) == 0
 
     def test_iter_content_blocks(self):
         """iter_content_blocks 产出正确类型。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         messages = [
             {"role": "user", "content": "hello"},
@@ -396,7 +396,7 @@ class TestBaseAgentUnitTests:
             ]},
         ]
 
-        blocks = list(BaseAgent.iter_content_blocks(messages))
+        blocks = list(BaseSessionRunner.iter_content_blocks(messages))
         types = [b[0] for b in blocks]
 
         assert "text" in types
@@ -405,11 +405,11 @@ class TestBaseAgentUnitTests:
 
     def test_full_compact_failure_does_not_invalidate(self, tmp_path):
         """摘要生成失败时旧消息不应被标记无效（防止历史永久丢失）。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config, session_dir=tmp_path)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config, session_dir=tmp_path)
+        runner.messages = [
             {"role": "user", "content": "question 1"},
             {"role": "assistant", "content": "answer 1"},
             {"role": "user", "content": "question 2"},
@@ -417,20 +417,20 @@ class TestBaseAgentUnitTests:
             {"role": "user", "content": "recent question"},
         ]
 
-        with patch.object(agent, "_summarize_messages", return_value="（摘要生成失败，请查看完整历史）"):
-            before, after = agent._perform_full_compact(keep_user_messages=1)
+        with patch.object(runner, "_summarize_messages", return_value="（摘要生成失败，请查看完整历史）"):
+            before, after = runner._perform_full_compact(keep_user_messages=1)
 
         # 摘要失败后所有消息仍有效
-        assert all(m.get("_meta", {}).get("valid") is not False for m in agent.messages)
-        assert len(agent.get_valid_messages()) == len(agent.messages)
+        assert all(m.get("_meta", {}).get("valid") is not False for m in runner.messages)
+        assert len(runner.get_valid_messages()) == len(runner.messages)
 
     def test_full_compact_success_invalidates_old(self, tmp_path):
         """摘要成功后旧消息才被标记无效。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config, session_dir=tmp_path)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config, session_dir=tmp_path)
+        runner.messages = [
             {"role": "user", "content": "question 1"},
             {"role": "assistant", "content": "answer 1"},
             {"role": "user", "content": "question 2"},
@@ -438,22 +438,22 @@ class TestBaseAgentUnitTests:
             {"role": "user", "content": "recent question"},
         ]
 
-        with patch.object(agent, "_summarize_messages", return_value="之前的对话摘要内容"):
-            agent._perform_full_compact(keep_user_messages=1)
+        with patch.object(runner, "_summarize_messages", return_value="之前的对话摘要内容"):
+            runner._perform_full_compact(keep_user_messages=1)
 
         # 摘要成功：旧消息被标记无效，摘要消息已插入
-        valid = agent.get_valid_messages()
-        assert len(valid) < len(agent.messages)
+        valid = runner.get_valid_messages()
+        assert len(valid) < len(runner.messages)
         assert any("摘要" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
-                   for m in agent.messages)
+                   for m in runner.messages)
 
     def test_full_compact_preserves_pinned_messages(self, tmp_path):
         """full compact 不标记 pinned 消息失效，也不影响其后续消息的对齐。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config, session_dir=tmp_path)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config, session_dir=tmp_path)
+        runner.messages = [
             {"role": "user", "content": "pinned task", "_meta": {"pinned": True}},
             {"role": "user", "content": "question 1"},
             {"role": "assistant", "content": "answer 1"},
@@ -462,27 +462,27 @@ class TestBaseAgentUnitTests:
             {"role": "user", "content": "pinned check", "_meta": {"pinned": True}},
         ]
 
-        with patch.object(agent, "_summarize_messages", return_value="对话摘要"):
-            agent._perform_full_compact(keep_user_messages=1)
+        with patch.object(runner, "_summarize_messages", return_value="对话摘要"):
+            runner._perform_full_compact(keep_user_messages=1)
 
         # pinned 消息永不失效
-        for m in agent.messages:
+        for m in runner.messages:
             if m.get("_meta", {}).get("pinned"):
                 assert m["_meta"].get("valid") is not False
         # pinned 之后的普通消息仍可被正常压缩
         assert any(
             m.get("content") == "answer 1" and m.get("_meta", {}).get("valid") is False
-            for m in agent.messages
+            for m in runner.messages
         )
 
     def test_save_messages_preserves_metadata(self, tmp_path):
         """save_messages 不应覆盖 SessionManager 写入的 name/metadata。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
         session_dir = tmp_path / "sess"
-        agent = BaseAgent(config=config, session_dir=session_dir)
-        agent._session_id = "sess123"
+        runner = BaseSessionRunner(config=config, session_dir=session_dir)
+        runner._session_id = "sess123"
 
         # 预写一个带 name/metadata 的会话文件（模拟 SessionManager.save()）
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -499,22 +499,22 @@ class TestBaseAgentUnitTests:
             json.dumps(existing, ensure_ascii=False), encoding="utf-8"
         )
 
-        agent.messages = [{"role": "user", "content": "hi"}]
-        agent.save_messages()
+        runner.messages = [{"role": "user", "content": "hi"}]
+        runner.save_messages()
 
         data = json.loads((session_dir / "index.json").read_text(encoding="utf-8"))
         assert data["name"] == "我的会话"
         assert data["metadata"]["usage"]["input_tokens"] == 100
         assert data["metadata"]["agent_count"] == 3
-        assert data["messages"] == agent.messages
+        assert data["messages"] == runner.messages
 
     def test_mark_all_images_invalid_preserves_pairing(self):
         """图片失效改为占位符替换，tool_use/tool_result 配对不被破坏。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config)
+        runner.messages = [
             {"role": "assistant", "content": [
                 {"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "a"}},
             ]},
@@ -526,20 +526,20 @@ class TestBaseAgentUnitTests:
             }]},
         ]
 
-        agent._mark_all_images_invalid()
+        runner._mark_all_images_invalid()
 
         # 消息仍有效（不被整条过滤），图片被替换为文本占位符
-        assert len(agent.get_valid_messages()) == 2
-        subs = agent.messages[1]["content"][0]["content"]
+        assert len(runner.get_valid_messages()) == 2
+        subs = runner.messages[1]["content"][0]["content"]
         assert [s["type"] for s in subs] == ["text", "text"]
 
     def test_mark_old_images_invalid_replaces_not_invalidates(self):
         """_mark_old_images_invalid 替换旧图片，保留消息有效性。"""
-        from core.base_agent import BaseAgent
+        from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
-        agent = BaseAgent(config=config)
-        agent.messages = [
+        runner = BaseSessionRunner(config=config)
+        runner.messages = [
             {"role": "assistant", "content": [
                 {"type": "tool_use", "id": "t1", "name": "read", "input": {}},
             ]},
@@ -558,11 +558,11 @@ class TestBaseAgentUnitTests:
             }]},
         ]
 
-        saved = agent._mark_old_images_invalid(max_body_size=10250)  # 替换最早一条后 body < 10250
+        saved = runner._mark_old_images_invalid(max_body_size=10250)  # 替换最早一条后 body < 10250
 
         assert saved > 0  # 有节省
-        assert len(agent.get_valid_messages()) == 4  # 全部消息仍有效
-        first_subs = agent.messages[1]["content"][0]["content"]
+        assert len(runner.get_valid_messages()) == 4  # 全部消息仍有效
+        first_subs = runner.messages[1]["content"][0]["content"]
         assert first_subs[0]["type"] == "text"  # 最早一条已替换为占位符
-        last_subs = agent.messages[3]["content"][0]["content"]
+        last_subs = runner.messages[3]["content"][0]["content"]
         assert last_subs[0]["type"] == "image"  # 最近一条保留

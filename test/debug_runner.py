@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 使用 DGX 本地端点（不消耗真实 API 配额）
 from test.conftest import make_dgx_config
-from core.agent import Agent
+from core.session_runner import SessionRunner
 from core.session import SessionManager
 
 
@@ -53,31 +53,31 @@ def main():
         print(f"  Test dir: {test_dir}")
 
         print("\nCreating master Agent...")
-        agent = Agent(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
+        runner = SessionRunner(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
 
         # Create a NEW session
-        new_session = SessionManager.create_new_session(agent.sessions_dir, "Debug Test")
-        agent.switch_session(new_session.session_id)
+        new_session = SessionManager.create_new_session(runner.sessions_dir, "Debug Test")
+        runner.switch_session(new_session.session_id)
 
-        print(f"  NEW Session ID: {agent.current_session_id}")
-        print(f"  Session dir: {agent.session_dir}")
-        print(f"  Initial messages: {len(agent.messages)}")
-        print(f"  Tools: {len(agent.tools)}")
+        print(f"  NEW Session ID: {runner.current_session_id}")
+        print(f"  Session dir: {runner.session_dir}")
+        print(f"  Initial messages: {len(runner.messages)}")
+        print(f"  Tools: {len(runner.tools)}")
 
         print("\n=== Test 1: Simple conversation ===")
         outputs = []
         print("  Sending: 'What is 2+2? Reply with just the number.'")
-        agent.run(
+        runner.run(
             "What is 2+2? Reply with just the number.",
             on_text=lambda t: outputs.append(t),
         )
 
         full_output = "".join(outputs)
         print(f"  Response: {full_output}")
-        print(f"  Messages after: {len(agent.messages)}")
+        print(f"  Messages after: {len(runner.messages)}")
 
         # Verify
-        assert len(agent.messages) == 2, f"Expected 2 messages, got {len(agent.messages)}"
+        assert len(runner.messages) == 2, f"Expected 2 messages, got {len(runner.messages)}"
         assert "4" in full_output, f"Expected '4' in output"
         print("  [PASS] Test 1 passed!")
 
@@ -87,7 +87,7 @@ def main():
         outputs2 = []
 
         print("  Sending: 'Run echo Hello Test and show output.'")
-        agent.run(
+        runner.run(
             "Run 'echo Hello Test' and show me the output.",
             on_text=lambda t: outputs2.append(t),
             on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
@@ -104,21 +104,21 @@ def main():
             print("  [PASS] Test 2 passed!")
 
         # Check output files
-        output_files = list(agent.session_dir.glob("*.txt"))
+        output_files = list(runner.session_dir.glob("*.txt"))
         print(f"  Output files: {len(output_files)}")
         if output_files:
             print(f"  First file: {output_files[0].name}")
 
         print("\n=== Test 3: Session persistence ===")
         # Save current state
-        agent._sync_to_session_manager()
-        agent.session_manager.save()
-        saved_msg_count = len(agent.messages)
-        saved_session_id = agent.current_session_id
+        runner._sync_to_session()
+        runner.session.save()
+        saved_msg_count = len(runner.messages)
+        saved_session_id = runner.current_session_id
         print(f"  Saved {saved_msg_count} messages to session {saved_session_id}")
 
         # Create a new agent and load the session
-        agent2 = Agent(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
+        agent2 = SessionRunner(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
         agent2.switch_session(saved_session_id)
 
         print(f"  Loaded session: {agent2.current_session_id}")
@@ -129,7 +129,7 @@ def main():
         print("  [PASS] Test 3 passed!")
 
         agent2.cleanup()
-        agent.cleanup()
+        runner.cleanup()
 
         print("\n=== All tests passed! ===")
 

@@ -282,7 +282,7 @@ class TestToolRegistration:
         """工具在工厂中正确注册"""
         from core.tools import create_tools
 
-        tools = create_tools(cwd=".test", workspace_uuid="test", session_manager=None, config=None)
+        tools = create_tools(cwd=".test", workspace_uuid="test", session=None, config=None)
         tool_names = [t.name for t in tools]
         assert "pdf2markdown" in tool_names
 

@@ -60,8 +60,8 @@ Examples:
         tmp_base = get_workspace_data_dir(self.workspace_uuid) / "tmp"
 
         session_id = "no-session"
-        if self.session_manager and hasattr(self.session_manager, "session_id"):
-            session_id = self.session_manager.session_id or "no-session"
+        if self.session and hasattr(self.session, "session_id"):
+            session_id = self.session.session_id or "no-session"
 
         temp_dir = tmp_base / session_id
         temp_dir.mkdir(parents=True, exist_ok=True)

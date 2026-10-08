@@ -95,14 +95,14 @@ class TestPythonToolBoundary:
         result = python_tool.execute(action="execute")
         assert result.error is True
 
-    def test_unknown_parameter_rejected(self, python_tool):
-        """未知参数（如把 bash 的 timeout 张冠李戴）在 coerce_input 拦截，而非 execute 抛 TypeError。"""
+    def test_unknown_parameter_silently_ignored(self, python_tool):
+        """未知参数（如把 bash 的 timeout 张冠李戴）在 coerce_input 静默过滤，返回合法参数 dict。"""
         result = python_tool.coerce_input({"code": "print(1)", "timeout": "120"})
-        assert isinstance(result, ToolResult)
-        assert result.error is True
-        assert "timeout" in result.output
-        assert "无效参数" in result.output
-        assert "code" in result.output  # 报错里列出合法参数
+        # 静默忽略未知参数，返回 dict（不是 ToolResult）
+        assert isinstance(result, dict)
+        assert "timeout" not in result  # 未知参数被过滤
+        assert "code" in result  # 合法参数保留
+        assert result["code"] == "print(1)"
 
     def test_valid_parameters_pass_coerce(self, python_tool):
         """合法参数正常通过 coerce_input（类型转换后返回 dict）。"""
@@ -486,7 +486,7 @@ class TestToolSchemaConsistency:
 class TestEmptyOutputGuard:
     """任何工具返回空结果时，_execute_tool 统一补非空哨兵，杜绝占位符 bug。"""
 
-    def test_empty_tool_output_gets_sentinel(self, agent):
+    def test_empty_tool_output_gets_sentinel(self, runner):
         """空输出补 "(no output)"，会话重载 hydration 不出现"[工具输出文件路径缺失]"。
 
         回归：_execute_tool 对空输出既不留 content 也不写外置文件，重载时
@@ -503,12 +503,12 @@ class TestEmptyOutputGuard:
             def execute(self, **kwargs):
                 return ToolResult("")
 
-        agent.tools.append(EmptyTool(cwd=agent.cwd, workspace_uuid=agent.workspace_uuid))
+        runner.tools.append(EmptyTool(cwd=runner.cwd, workspace_uuid=runner.workspace_uuid))
 
-        result_dict = agent._execute_tool("test_empty_output", {}, "tooluse_empty1")
+        result_dict = runner._execute_tool("test_empty_output", {}, "tooluse_empty1")
         assert result_dict["content"] == "(no output)"
         assert "output_path" not in result_dict.get("_meta", {})
 
         # 模拟会话重载 hydration：非空 content 会被跳过，不被占位符覆盖
-        agent._resolve_tool_results([{"role": "user", "content": [result_dict]}])
+        runner._resolve_tool_results([{"role": "user", "content": [result_dict]}])
         assert result_dict["content"] == "(no output)"

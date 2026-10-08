@@ -159,7 +159,7 @@ ul, ol {
 [data-theme="dark"] .tool-streaming-output { color: #e4e4e7; }
 
 /* 代理卡片悬停 */
-[data-theme="dark"] .agent-header:hover { background-color: #3f3f46; }
+[data-theme="dark"] .session-header:hover { background-color: #3f3f46; }
 [data-theme="dark"] .sa-title { color: #e4e4e7; }
 [data-theme="dark"] .sa-task { color: #a1a1aa; }
 [data-theme="dark"] .sa-meta { color: #71717a; }
@@ -214,7 +214,7 @@ ul, ol {
 [data-theme="dark"] .file-preview-image { background: #27272a; }
 
 /* 子代理卡片 */
-[data-theme="dark"] .agent-card {
+[data-theme="dark"] .session-card {
     background-color: #292524;
     border-color: #3f3f46;
     border-left-color: #f97316;
@@ -2054,7 +2054,7 @@ mjx-container {
 }
 
 /* Sub-agent card styles */
-.agent-card {
+.session-card {
     background-color: #f0f4f8;
     border: 1px solid #d1d9e0;
     border-left: 4px solid #4a90d9;
@@ -2065,7 +2065,7 @@ mjx-container {
     max-width: 80% !important;
 }
 
-.agent-header {
+.session-header {
     display: flex;
     align-items: center;
     padding: 10px 12px;
@@ -2073,7 +2073,7 @@ mjx-container {
     gap: 8px;
 }
 
-.agent-header:hover {
+.session-header:hover {
     background-color: #e6edf5;
 }
 
@@ -2133,13 +2133,13 @@ mjx-container {
     color: #a1a1aa;
 }
 
-.agent-detail {
+.session-detail {
     border-top: 1px solid #d1d9e0;
     padding: 12px;
     background-color: #fafbfc;
 }
 
-[data-theme="dark"] .agent-detail {
+[data-theme="dark"] .session-detail {
     border-top-color: #3f3f46;
     background-color: #27272a;
 }
