@@ -228,7 +228,7 @@ append-only 日志，记录每次提取/手动写入的候选。记录字段：
 
 ### 4.1 触发时机
 
-Web SSE 回合结束后，若该工作区 `memory_enabled` 且存在 session_manager，则在**后台守护线程**（`memory-extract`）触发 `schedule_extraction`：
+Web SSE 回合结束后，若该工作区 `memory_enabled` 且存在 session，则在**后台守护线程**（`memory-extract`）触发 `schedule_extraction`：
 
 ```python
 if sm is not None and memory_enabled(agent.workspace_uuid or ""):

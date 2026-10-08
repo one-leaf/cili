@@ -13,8 +13,8 @@
 ## 目录
 
 - [一、整体架构](#一整体架构)
-- [二、BaseSessionRunner 设计](#二baseagent-设计)
-- [三、统一 Agent 与角色配置](#三统一-agent-与角色配置)
+- [二、BaseSessionRunner 设计](#二basesessionrunner-设计)
+- [三、统一 SessionRunner 与角色配置](#三统一-sessionrunner-与角色配置)
 - [四、interactive 模式（master）](#四interactive-模式master)
 - [五、autonomous 模式（worker/lite）](#五autonomous-模式workerlite)
 - [六、委派会话消息结构](#六委派会话消息结构)
@@ -44,7 +44,7 @@
 └──────────────────────────┬───────────────────────────────────────┘
                            │ 继承
 ┌──────────────────────────▼───────────────────────────────────────┐
-│                       Agent（统一类）                            │
+│                       SessionRunner（统一类）                     │
 │                      core/session_runner.py                               │
 │   run() 按 role_cfg.mode 分叉：                                   │
 │   - interactive → _run_interactive（master，Web 聊天入口）         │
@@ -61,7 +61,7 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-核心变化：**不再有 RootAgent / Agent 两个子类**。二者合并为一个统一 `Agent` 类，行为差异完全由角色 JSON（`mode` 字段）驱动：
+核心变化：**不再有 RootAgent / SessionRunner 两个子类**。二者合并为一个统一 `SessionRunner` 类，行为差异完全由角色 JSON（`mode` 字段）驱动：
 
 - `mode="interactive"`（master）→ 原 RootAgent 行为：Web 聊天入口、会话持久化、流式回调、ask_user/审批、可恢复循环
 - `mode="autonomous"`（worker/lite）→ 原子代理行为：pinned 任务消息 → 自主执行循环 → 可选检查阶段 → 兜底总结，`run()` 返回结构化 dict
@@ -72,14 +72,14 @@
 
 ### 2.1 职责
 
-BaseSessionRunner 是统一 Agent 类的基类，提供所有角色共用的执行基础设施：
+BaseSessionRunner 是统一 SessionRunner 类的基类，提供所有角色共用的执行基础设施：
 - 消息管理（`self.messages` 列表）
 - 工具执行（外部文件存储）
 - 3 层自动压缩
 - LLM 调用（流式/非流式）
 - usage 追踪
 
-子类（统一 `Agent`）通过角色配置定制：工具白名单、系统提示拼装、行为开关。
+子类（统一 `SessionRunner`）通过角色配置定制：工具白名单、系统提示拼装、行为开关。
 
 ### 2.2 核心方法
 
@@ -92,7 +92,7 @@ class BaseSessionRunner:
         cwd: str = "",
         session_dir: Path | None = None,  # 持久化路径
         stop_check: Callable[[], bool] | None = None,
-        max_iterations: int = 50,  # 由 Agent 传入角色配置的 max_iterations
+        max_iterations: int = 50,  # 由 SessionRunner 传入角色配置的 max_iterations
     ):
         self.messages: list[dict] = []       # 消息列表（权威源）
         self.session_dir = session_dir       # 保存路径
@@ -139,11 +139,11 @@ BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`doc
 
 ---
 
-## 三、统一 Agent 与角色配置
+## 三、统一 SessionRunner 与角色配置
 
 ### 3.1 职责与 mode 分叉
 
-统一 `Agent` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`role_cfg.mode` 决定运行分叉：
+统一 `SessionRunner` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`role_cfg.mode` 决定运行分叉：
 
 - `interactive`（master）→ `run(user_input, on_text=..., ...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
 - `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `iterations` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
@@ -249,7 +249,7 @@ def run(self, *args, **kwargs):
 
 ### 3.4 模型选择
 
-- 角色 JSON **不含 model 字段**。`Agent` 构造时取 `getattr(config, f"{role}_model", None) or config.model`。
+- 角色 JSON **不含 model 字段**。`SessionRunner` 构造时取 `getattr(config, f"{role}_model", None) or config.model`。
 - `Config.model` 为 master 主模型；`worker_model` / `lite_model` 可选，未配置（或只填了部分字段）时通过 `ModelConfig.merged_with(override)` **继承 master 模型的其他字段**（例如只填 `name` 则其余字段全部沿用 master）。
 - `reload_config()` 从磁盘重载配置、重建 LLM 客户端与工具集（先创建新客户端，成功后再关闭旧客户端，避免失败后 `self.client` 指向已关闭的实例）。
 
@@ -261,15 +261,15 @@ def run(self, *args, **kwargs):
   - `text`：返回固定文案（`block.content`，字符串或字符串数组按行拼装）
   - `tools`：从实际加载的工具实例生成工具列表段
   - `skills`：从角色可见技能生成技能列表段
-- `build_system_prompt(agent)`：按 blocks 顺序拼接「启用且非空」的块。`Agent._build_system_prompt()` 委托给它。
+- `build_system_prompt(runner)`：按 blocks 顺序拼接「启用且非空」的块。`SessionRunner._build_system_prompt()` 委托给它。
 
 注入型 user 层（`USER_LAYER_GENERATORS`）：
 
 - `claude_md`：每次从磁盘重读项目指令（agent.md/CLAUDE.md），**不持久化**到消息历史
 - `context`：动态环境上下文（日期/workspace/内存等），每次调用重新生成，**不持久化**
-- `task` / `runtime`：由 `Agent` 按 `role_cfg` 布尔开关运行时写入历史（pinned 任务消息、预算/检查/超时提示），不在生成器表内
+- `task` / `runtime`：由 `SessionRunner` 按 `role_cfg` 布尔开关运行时写入历史（pinned 任务消息、预算/检查/超时提示），不在生成器表内
 
-`Agent._get_messages_with_header()` 在 BaseSessionRunner 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
+`SessionRunner._get_messages_with_header()` 在 BaseSessionRunner 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
 
 - 注入消息恒排在最前；若历史第一条也是 user（如 pinned 任务消息），二者合并为一条
 - 合并后**连续 user 消息自动合成一条**，保证角色交替（满足 OpenAI/Bedrock 约束）
@@ -283,9 +283,9 @@ def run(self, *args, **kwargs):
 
 `mode="interactive"` 即 master 角色（原 RootAgent 行为），用于 Web 聊天交互：
 - 流式输出（`streaming=True`，可通过 `run(streaming=...)` 关闭）
-- SessionManager 会话持久化
+- Session 会话持久化
 - 最多 `max_iterations` 次迭代（取自角色配置，master 为 `config.system.max_iterations`）
-- 回调支持（on_text, on_thinking, on_tool_call, on_tool_result, on_agent_start, on_agent_complete）
+- 回调支持（on_text, on_thinking, on_tool_call, on_tool_result, on_session_start, on_session_complete）
 
 ### 4.2 初始化与接口
 
@@ -295,11 +295,11 @@ def _init_interactive(self, workspace_uuid: str) -> None:
     self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     self.sessions_dir.mkdir(parents=True, exist_ok=True)
     # 会话管理器：加载已有会话或创建默认会话
-    self.session_manager = SessionManager("", self.sessions_dir)
+    self.session = Session("", self.sessions_dir)
     ...
     # 共享消息列表（同一引用，非拷贝）
-    self.messages = self.session_manager.messages
-    self._usage = self.session_manager.get_usage()
+    self.messages = self.session.messages
+    self._usage = self.session.get_usage()
     # 会话级高风险命令审批存储（内存，不持久化），根/子代理共享
     self.approval_store = ApprovalStore()
 
@@ -336,8 +336,8 @@ def _run_interactive(
 
     try:
         # 保存上一轮
-        self._sync_to_session_manager()
-        self.session_manager.save()
+        self._sync_to_session()
+        self.session.save()
         # 添加用户消息（项目指令不在此注入，而在 _get_messages_with_header()
         # 中每次 LLM 调用时从磁盘重读并动态注入，不持久化到消息历史）
         self.add_message("user", user_input)
@@ -374,8 +374,8 @@ def _agent_loop(self) -> None:
             if result.get("_meta", {}).get("completed") is False:
                 wait_for_external = True
             self.add_message("user", [result])
-            self._sync_to_session_manager()
-            self.session_manager.save()
+            self._sync_to_session()
+            self.session.save()
         if wait_for_external:
             break  # 退出循环等待用户输入或 agent 完成
 ```
@@ -441,7 +441,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 ### 5.4 行为开关
 
 - **budget_notice**（worker）：`_inject_budget_notice(i)` 在迭代进行到 `max_iterations * 0.8`（额度预警）与 `* 0.95`（额度即将耗尽）时各注入一次 user 预警消息。用 **list content** 注入（而非 string），避免 `_find_split_by_user_messages` 的 string 计数被推过阈值、导致 full compact 挤掉 pinned 任务消息。预算兜底（final 已触发）时跳过检查阶段，直接交付总结。
-- **progress_persistence**（worker/lite）：`_save_progress()` 每轮实时写 `{exec_dir}/index.json`，保证文件始终有 `exec_id` 和 `task`（`SessionManager.load_agent_log()` 可直接读取，前端可实时查看进度）。
+- **progress_persistence**（worker/lite）：`_save_progress()` 每轮实时写 `{exec_dir}/index.json`，保证文件始终有 `exec_id` 和 `task`（`Session.load_agent_log()` 可直接读取，前端可实时查看进度）。
 - **无 ask_user/审批**：worker/lite 无 ask_user 工具，`_downgrade_approval_result()` 把「需用户批准」的结果降级为普通错误（提示换用非拦截命令），不挂起不询问。主代理批准过的命令通过共享 `ApprovalStore` 直接下放执行。
 
 ### 5.5 worker 与 lite 的差异
@@ -458,21 +458,21 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 ## 六、委派会话消息结构
 
-主会话通过 tool_use + tool_result 消息对存储 `agent` 调用，子代理自己的完整执行日志存储在独立目录。
+主会话通过 tool_use + tool_result 消息对存储 `session` 调用，子会话自己的完整执行日志存储在独立目录。
 
-`agent` 工具（`core/tools/agent_tool.py`）委派逻辑：
+`session` 工具（`core/tools/session_tool.py`）委派逻辑：
 
-- 生成 `exec_id`（`exec_{8位hex}`，`SessionManager._generate_exec_id()`）
+- 生成 `exec_id`（`exec_{8位hex}`，`Session._generate_exec_id()`）
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
-- 构造统一 Agent：`Agent(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, temperature, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
-- **同步模式**（默认）：后台线程运行 `agent.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用 `read_task`/`kill_task`/`list_tasks` 管理
-- 子代理 usage 转发到主会话；完成后保存执行日志并触发 `on_agent_start`/`on_agent_complete` 回调（推送 SSE 事件）
+- 构造统一 SessionRunner：`SessionRunner(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, temperature, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
+- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用 `read_task`/`kill_task`/`list_tasks` 管理
+- 子会话 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
 ```
 主会话 index.json:
   messages: [
     {role: "user", content: "处理这个大文件"},
-    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "agent", input: {task: "处理文件...", agent_type: "worker"}}]},
+    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "session", input: {task: "处理文件...", agent_type: "worker"}}]},
     {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_001",
      _meta: {exec_id: "exec_abc123", completed: true, iterations: 15, message_count: 42}}]},
     {role: "assistant", content: "处理完成！"}
@@ -539,9 +539,9 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 ## 八、关键设计决策
 
-### 8.1 为什么用「统一 Agent + 角色 JSON」取代三层类？
+### 8.1 为什么用「统一 SessionRunner + 角色 JSON」取代三层类？
 
-- 原 RootAgent/Agent 共享 90% 的执行基础设施（BaseSessionRunner），差异仅在于模式开关；硬编码成两个类导致重复与分支蔓延
+- 原 RootAgent/SessionRunner 共享 90% 的执行基础设施（BaseSessionRunner），差异仅在于模式开关；硬编码成两个类导致重复与分支蔓延
 - 行为差异收敛到一份 JSON：工具白名单、行为开关、prompt、迭代上限一目了然，新增角色只需加一个 JSON 文件
 - `mode` 分叉（interactive/autonomous）是唯一的关键分支点，其余行为全部由开关控制
 
@@ -558,11 +558,11 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 - `ModelConfig.merged_with(override)`：只填 `name` 时其余字段（接口类型、温度、上下文窗口等）自动继承 master，避免重复配置
 - 支持并行执行多个不同模型的子代理
 
-### 8.4 为什么 Agent 持有消息而不是 SessionManager？
+### 8.4 为什么 SessionRunner 持有消息而不是 Session？
 
-- Agent 自己管理消息生命周期，保存时机由 Agent 控制
-- BaseSessionRunner 层仅依赖 `session_dir` 持久化；interactive 模式中 SessionManager 只负责会话元数据与磁盘保存（messages 共享同一引用）
-- autonomous 模式可以传入 `session_dir` 直接持久化（`exec_{id}/index.json`），无需 SessionManager
+- SessionRunner 自己管理消息生命周期，保存时机由 SessionRunner 控制
+- BaseSessionRunner 层仅依赖 `session_dir` 持久化；interactive 模式中 Session 只负责会话元数据与磁盘保存（messages 共享同一引用）
+- autonomous 模式可以传入 `session_dir` 直接持久化（`exec_{id}/index.json`），无需 Session
 
 ### 8.5 为什么注入型 user 层不持久化 + 防连续合并？
 

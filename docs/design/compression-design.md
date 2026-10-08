@@ -14,7 +14,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        BaseAgent._check_and_compress()           │
+│                        BaseSessionRunner._check_and_compress()           │
 │                                                                   │
 │   Layer 1: Microcompact  ──────────────────────────────────┐     │
 │   每轮都运行，标记孤立 tool_result 和旧错误结果对           │     │
@@ -67,7 +67,7 @@
 
 **触发条件**：`total_tokens > max_context_tokens * 0.80`
 
-**实现位置**：`core/base_agent.py::_perform_full_compact()`
+**实现位置**：`core/base_session_runner.py::_perform_full_compact()`
 
 **策略**：
 1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 3`）
@@ -109,7 +109,7 @@
 
 **触发条件**：请求体 > 3MB（`MAX_BODY_SIZE = 3_000_000`）
 
-**实现位置**：`core/base_agent.py::_mark_old_images_invalid()`
+**实现位置**：`core/base_session_runner.py::_mark_old_images_invalid()`
 
 **策略**：
 将图片**从旧到新依次替换为文本占位符**（`[image removed to reduce request size]`），每替换一张重新计算请求体大小，直到小于 3MB 或所有图片都已替换。
@@ -197,7 +197,7 @@ total += max(750, len(data) // 100)
 用户输入
     │
     ▼
-Agent.run()（master 交互式 / worker、lite 自主式）
+SessionRunner.run()（master 交互式 / worker、lite 自主式）
     │
     ├── 添加用户消息
     │
@@ -229,8 +229,8 @@ Agent.run()（master 交互式 / worker、lite 自主式）
 | 文件 | 职责 |
 |------|------|
 | `core/compression.py` | 压缩函数（microcompact 标记、token 计数） |
-| `core/base_agent.py` | 三层压缩调用逻辑、`_load_external_tool_results()`、图片替换 |
-| `core/agent_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现 |
+| `core/base_session_runner.py` | 三层压缩调用逻辑、`_load_external_tool_results()`、图片替换 |
+| `core/session_runner_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现 |
 | `core/tools/read.py` | 读取工具输出文件（替代旧的 `read_tool_result` 工具） |
 | `core/tools/base.py` | 工具输出外部存储 |
 

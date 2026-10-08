@@ -2,7 +2,7 @@
 
 本文档描述 Cili Agent 系统提示词（System Prompt）的设计原则、构建流程和结构。
 
-> **Agent 架构**请参考 [Agent 设计文档](agent-design.md)
+> **SessionRunner 架构**请参考 [SessionRunner 设计文档](session-runner-design.md)
 >
 > **技能系统**请参考 [工具系统设计文档](tool-system-design.md)
 
@@ -75,7 +75,7 @@ system prompt（静态块，可缓存）             user 消息（动态层，�
 | `task` | —（无生成器） | autonomous 运行时写入历史：pinned 任务消息（`_build_task_message`） |
 | `runtime` | —（无生成器） | autonomous 运行时写入历史：预算预警/检查阶段/超时总结 |
 
-> `task` 与 `runtime` 不在 `USER_LAYER_GENERATORS` 表中：它们由 Agent 在 autonomous 执行过程中直接写入消息历史（带 pinned/预算标记），而非每次 LLM 调用时注入。
+> `task` 与 `runtime` 不在 `USER_LAYER_GENERATORS` 表中：它们由 SessionRunner 在 autonomous 执行过程中直接写入消息历史（带 pinned/预算标记），而非每次 LLM 调用时注入。
 
 ---
 
@@ -83,7 +83,7 @@ system prompt（静态块，可缓存）             user 消息（动态层，�
 
 ### 3.1 块拼装（build_system_prompt）
 
-`Agent._build_system_prompt()`（`core/agent.py`）委托给 `core/prompt_builder.build_system_prompt()`：
+`SessionRunner._build_system_prompt()`（`core/session_runner.py`）委托给 `core/prompt_builder.build_system_prompt()`：
 
 ```python
 def build_system_prompt(agent) -> str:
@@ -155,7 +155,7 @@ Agent 通过 `skill(action='read', skill_id='...')` 按需读取完整技能内�
 
 ## 四、角色 JSON 结构
 
-角色定义位于 `core/agents/{role}.json`，由 `core/agent_config.load_agent_role()` 加载为 `AgentRoleConfig`。与提示词相关的两个字段：
+角色定义位于 `core/agents/{role}.json`，由 `core/session_runner_config.load_runner_role()` 加载为 `RunnerRoleConfig`。与提示词相关的两个字段：
 
 ### 4.1 system_prompt.blocks
 
@@ -232,7 +232,7 @@ USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
 
 ### 5.4 task 层（pinned 任务消息）
 
-`task` 层不在生成器表中。autonomous（worker/lite）启动时由 `Agent._build_task_message()` 构建任务消息，作为**第一条 user 消息**写入历史并带 `_meta.pinned=True`（免疫压缩），内容为：
+`task` 层不在生成器表中。autonomous（worker/lite）启动时由 `SessionRunner._build_task_message()` 构建任务消息，作为**第一条 user 消息**写入历史并带 `_meta.pinned=True`（免疫压缩），内容为：
 
 - `## Assigned Task` 标题；
 - `### Objective`：任务目标（`self.task`）；
@@ -242,7 +242,7 @@ USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
 
 ### 5.5 runtime 层（运行时提示）
 
-`runtime` 层同样不在生成器表中。autonomous 执行过程中由 Agent 直接写入历史（均为 user 消息）：
+`runtime` 层同样不在生成器表中。autonomous 执行过程中由 SessionRunner 直接写入历史（均为 user 消息）：
 
 | 提示 | 触发时机 | 阈值/说明 |
 |------|----------|-----------|
@@ -255,7 +255,7 @@ USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
 
 ## 六、防连续合并
 
-注入型 user 层与消息历史在 `Agent._get_messages_with_header()` 中合并：
+注入型 user 层与消息历史在 `SessionRunner._get_messages_with_header()` 中合并：
 
 ```python
 messages = super()._get_messages_with_header()

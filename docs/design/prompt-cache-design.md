@@ -125,7 +125,7 @@ dynamic_blocks[]         ← BOUNDARY 之后：env_context
 
 ### 5.1 CacheState 类
 
-新增 `core/cache_state.py`，每个 Agent 持有一个实例，追踪缓存状态：
+新增 `core/cache_state.py`，每个 SessionRunner 持有一个实例，追踪缓存状态：
 
 **属性**：
 
@@ -240,9 +240,9 @@ dynamic_blocks[]         ← BOUNDARY 之后：env_context
 | `core/llm/openai.py` | `list[str]` system 过滤 BOUNDARY 并 join 为字符串 |
 | `core/llm/adapter.py` | `serialize()` 签名统一为 `system: str | list[str]` |
 | `core/llm/client.py` | `chat()` / `chat_stream()` / `chat_structured()` 签名同步更新 |
-| `core/agent.py` | `_build_system_prompt()` 返回 `list[str]`、`_prompt_section_cache` 初始化、`reset()`/`compact()`/`switch_session()` 集成 |
-| `core/agent_runtime/runner.py` | `_check_and_compress()` 通知压缩事件、LLM 响应后更新缓存统计 |
-| `core/base_agent.py` | `CacheState` 初始化、`system` 参数类型同步更新 |
+| `core/session_runner.py` | `_build_system_prompt()` 返回 `list[str]`、`_prompt_section_cache` 初始化、`reset()`/`compact()`/`switch_session()` 集成 |
+| `core/session_runner_runtime/runner.py` | `_check_and_compress()` 通知压缩事件、LLM 响应后更新缓存统计 |
+| `core/base_session_runner.py` | `CacheState` 初始化、`system` 参数类型同步更新 |
 | `core/agents/master.json` | system_prompt.blocks 末尾追加 `dynamic_boundary` + `context`，user_layers 移除 `context` |
 | `core/agents/worker.json` | 同上，user_layers 移除 `context`，保留 `task_message` + `runtime_prompts` |
 | `core/agents/lite.json` | system_prompt.blocks 末尾追加 `dynamic_boundary` + `context` |

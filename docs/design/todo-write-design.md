@@ -289,13 +289,13 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
 
     # Check for todo_write tool and push todo update event
     if tool_name == "todo_write" and not is_error:
-        todos = get_todos_from_session(agent.session_manager)
+        todos = get_todos_from_session(runner.session)
         if todos:
             todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
             event_queue.put(f"data: {todo_event}\n\n")
 ```
 
-`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session_manager 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
+`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
 
 ### 7.4 前端渲染
 

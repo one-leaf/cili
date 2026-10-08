@@ -6,7 +6,7 @@
 
 ## 一、功能概述
 
-SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Master Agent 和 Web API 之间的数据层，负责：
+SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Master SessionRunner 和 Web API 之间的数据层，负责：
 
 - **消息管理**：添加、获取、过滤消息
 - **持久化**：自动保存到磁盘，支持恢复
@@ -33,7 +33,7 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
     │   ├── messages.jsonl               # 完整消息历史（追加式，UI 数据源）
     │   ├── index.json                   # 模型提交视图（schema_version/next_seq/commits[]）
     │   ├── meta.json                    # 会话属性（session_id/name/metadata）
-    │   ├── toolu_abc123.txt             # Master Agent 工具输出（实时流式写入）
+    │   ├── toolu_abc123.txt             # Master SessionRunner 工具输出（实时流式写入）
     │   ├── toolu_def456.txt
     │   ├── exec_a1b2c3d4/               # Agent 1
     │   │   ├── index.json               # Agent 执行日志
@@ -53,7 +53,7 @@ SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Maste
 - **完整消息历史**：固定为 `messages.jsonl`（追加式，UI 直接读取，保留压缩前会话）
 - **模型提交视图**：固定为 `index.json`（`{schema_version, next_seq, commits[]}`，不再存消息正文）
 - **会话属性**：固定为 `meta.json`（`session_id/name/metadata`）
-- **工具输出文件**：`{tool_use_id}.txt`，与会话目录内其他文件同级（Master Agent）或在 Agent 子目录内
+- **工具输出文件**：`{tool_use_id}.txt`，与会话目录内其他文件同级（Master SessionRunner）或在 Agent 子目录内
 - **Agent 目录**：`exec_{id}/`，内含 `index.json` 和该 Agent 调用的所有工具输出文件
 
 ### 2.2 三文件布局（messages.jsonl / index.json / meta.json）
@@ -177,7 +177,7 @@ Agent 执行日志独立存储在子目录中：
 流式工具（bash/python）执行时，完整输出实时写入外部 `.txt` 文件，供前端轮询实时显示，也作为 LLM 获取内容的唯一来源。
 
 **存储路径**：
-- Master Agent 工具：`{session_dir}/{tool_use_id}.txt`
+- Master SessionRunner 工具：`{session_dir}/{tool_use_id}.txt`
 - Agent 工具：`{session_dir}/{exec_dir}/{tool_use_id}.txt`
 
 **工作机制**：
@@ -236,7 +236,7 @@ class SessionManager:
 | `update_usage(...)` | 更新使用量统计 |
 | `get_usage()` | 获取使用量统计 |
 | `microcompact_mark_orphans_and_errors()` | Microcompact 压缩（core/compression.py 模块级函数，标记孤立 tool_result 和旧错误结果对） |
-| `mark_old_images_invalid(max_body_size)` | 替换旧图片为占位符直到请求体小于阈值（BaseAgent 方法） |
+| `mark_old_images_invalid(max_body_size)` | 替换旧图片为占位符直到请求体小于阈值（BaseSessionRunner 方法） |
 | `save_agent_log(...)` | 保存 Agent 执行日志 |
 | `load_agent_log(exec_id)` | 加载 Agent 执行日志 |
 | `list_agent_logs()` | 列出所有执行日志 |
@@ -456,7 +456,7 @@ session.add_message("user", "你好")
 session.save()
 ```
 
-**Master Agent 集成**：
+**Master SessionRunner 集成**：
 - 每轮 LLM 调用后自动保存
 - Agent 执行日志实时保存（每轮迭代后）
 
@@ -558,37 +558,37 @@ usage = session.get_usage()
 
 ---
 
-## 十、与 Master Agent 集成
+## 十、与 Master SessionRunner 集成
 
-### 10.1 Master Agent 使用 SessionManager
+### 10.1 Master SessionRunner 使用 SessionManager
 
 ```python
 # 统一 Agent（master 角色，interactive 模式）
 agent = Agent(config, role="master", cwd=cwd, workspace_uuid=workspace_uuid)
-# 内部：agent.session_manager = SessionManager(session_id, sessions_dir)
+# 内部：runner.session = SessionManager(session_id, sessions_dir)
 
 def run(agent, user_input):
     # 1. 添加用户消息
-    agent.session_manager.add_message("user", user_input)
+    runner.session.add_message("user", user_input)
 
     # 2. 自动压缩
     agent._check_and_compress()
 
     # 3. 调用 LLM（注入工具结果内容）
-    messages = agent.session_manager.get_valid_messages()
+    messages = runner.session.get_valid_messages()
     messages = agent._resolve_tool_results(messages)  # 从外部文件按需读取内容
     response = agent._call_llm(streaming=True, ...)
 
     # 4. 添加助手消息
-    agent.session_manager.add_message("assistant", response.content)
+    runner.session.add_message("assistant", response.content)
 
     # 5. 执行工具（只存元信息到 session）
     for tool_use in response.tool_uses:
         result = agent._execute_tool(tool_use)  # 返回 tool_result 元信息
-        agent.session_manager.add_message("user", [result])
+        runner.session.add_message("user", [result])
 
     # 6. 保存会话
-    agent.session_manager.save()
+    runner.session.save()
 ```
 
 ### 10.2 Web API 使用
@@ -599,7 +599,7 @@ def run(agent, user_input):
 # 数据目录统一经 get_workspace_data_dir() 解析（{workspace}/.cili/）
 from core.config import get_workspace_data_dir
 
-# 获取或创建 Master Agent
+# 获取或创建 Master SessionRunner
 agent = agents.get(workspace_uuid, session_id)
 if agent is None:
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
@@ -651,7 +651,7 @@ def get_session(uuid, id):
 ### 11.4 为什么 Agent 使用子目录而非扁平文件？
 
 - **工具输出隔离**：Agent 的 `{tool_use_id}.txt` 和 `index.json` 放在同一目录，便于管理和清理
-- **避免命名冲突**：Agent 和 Master Agent 的工具输出可能使用相同的 `tool_use_id` 格式，子目录天然隔离
+- **避免命名冲突**：Agent 和 Master SessionRunner 的工具输出可能使用相同的 `tool_use_id` 格式，子目录天然隔离
 - **完整性**：删除 Agent 时整个目录一起删除，不会遗留孤立文件
 
 ### 11.5 为什么工具输出使用外部文件？
@@ -669,7 +669,7 @@ def get_session(uuid, id):
 |------|------|
 | `core/session.py` | SessionManager 实现（三件套持久化、消息/使用量管理、Agent 日志） |
 | `core/compression.py` | 独立压缩模块（共享压缩函数，各角色共用） |
-| `core/agent.py` | 统一 Agent（master 交互式使用 SessionManager；worker/lite 自主式使用子目录日志） |
+| `core/session_runner.py` | 统一 Agent（master 交互式使用 SessionManager；worker/lite 自主式使用子目录日志） |
 | `web/web_api.py` | 提供会话管理 API |
 | `web/static/app.js` | 前端会话列表和消息展示 |
 

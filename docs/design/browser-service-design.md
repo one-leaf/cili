@@ -24,7 +24,7 @@ Cili Agent 提供两个浏览器相关工具：
 - **Tab 池自动管理**：每次 navigate 开新 tab 并返回 tab_index，10 分钟无活动自动关闭
 - **Chrome 锁文件清理**：启动前删除 SingletonLock/Socket/Cookie，防止 profile 锁定
 - **增强错误诊断**：操作失败时收集 Playwright/Browser/Chrome/CDP 状态信息
-- 线程安全（支持 Agent executor 和 Cron 后台线程并发使用）
+- 线程安全（支持 SessionRunner executor 和 Cron 后台线程并发使用）
 - 工具层与服务层分离（工具只负责接口适配，不管理底层连接）
 
 ---
@@ -97,7 +97,7 @@ web_api.py lifespan startup
                                   # Playwright 不在此处启动！
                                   # Chrome 也不在此处启动！
 
-首次工具调用（在 Agent 线程中执行）
+首次工具调用（在 SessionRunner 线程中执行）
   └─ service.navigate(url)
        └─ _ensure_connected()
             └─ _ensure_playwright()       # 首次调用时启动 Playwright
@@ -330,7 +330,7 @@ if not skip_ssrf:
 
 | 调用方 | 线程 |
 |--------|------|
-| Agent executor | 主线程池（每个 Agent 一个线程） |
+| SessionRunner executor | 主线程池（每个 SessionRunner 一个线程） |
 | Cron scheduler | 后台调度线程 |
 | Web UI | async 事件循环（通过 run_in_executor） |
 
@@ -1068,7 +1068,7 @@ switch_tab(1)                          → 切回登录后的网站 A
 execute_script("document.querySelector('#input').value='...'")
 ```
 
-**为什么是 10 分钟**：Agent 的一次完整浏览器操作（navigate → 提取数据 → 后续处理）通常在 1-2 分钟内完成。10 分钟给了足够的缓冲，同时避免长时间空闲 tab 积累。
+**为什么是 10 分钟**：SessionRunner 的一次完整浏览器操作（navigate → 提取数据 → 后续处理）通常在 1-2 分钟内完成。10 分钟给了足够的缓冲，同时避免长时间空闲 tab 积累。
 
 ### 10.6 为什么需要工作线程？
 

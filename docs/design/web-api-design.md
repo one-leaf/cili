@@ -11,7 +11,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 **核心特性**：
 - **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置。工作区元数据集中存储在 `data/cili/workspaces.json` 索引（uuid/workspace_name/directory/created_at/updated_at/memory_enabled/system），各工作区数据位于其 `{directory}/.cili/`（sessions/memory/tmp/approvals.json），不再有全局 `data/projects/`
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
-- **LRU 淘汰**：内存中最多保留 20 个 Master Agent，自动清理最久未访问的
+- **LRU 淘汰**：内存中最多保留 20 个 Master SessionRunner，自动清理最久未访问的
 - **特殊命令**：/help、/status、/goal 在服务端处理，不经过 LLM
 - **统一数据访问**：消息收发等核心写入通过 SessionManager；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionManager 原子落盘
 
@@ -37,7 +37,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
 │         │                 │                                  │
 │  ┌──────▼─────────────────▼───────────────────────────────┐ │
-│  │                  Master Agent                              │ │
+│  │                  Master SessionRunner                              │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │ │
 │  │  │SessionManager│  │  LLM Client  │  │   Tools      │  │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘  │ │
@@ -324,7 +324,7 @@ data: {"type": "done"}
 - `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
 - `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
 - `agent_complete`：Agent 后台执行完成时发送，前端据此更新 Agent 卡片状态。
-- `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session_manager.metadata.todos`），前端实时更新任务清单。
+- `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session.metadata.todos`），前端实时更新任务清单。
 
 ### 3.5 Agent 控制
 
@@ -796,7 +796,7 @@ Content-Type: application/json
 
 ### 5.1 同步到异步桥接
 
-Master Agent 的回调是同步的，但 FastAPI 的 SSE 是异步的。使用 `queue.Queue` 桥接：
+Master SessionRunner 的回调是同步的，但 FastAPI 的 SSE 是异步的。使用 `queue.Queue` 桥接：
 
 ```python
 def send_message():
@@ -892,7 +892,7 @@ except asyncio.CancelledError:
 
 #### 设置弹窗
 
-- Master Agent 模型配置
+- Master SessionRunner 模型配置
 - LLM 模型配置（可选）
 - 测试连接按钮
 - 系统配置（pip 镜像、浏览器路径等）
@@ -1000,7 +1000,7 @@ lifespan exit
 │
 ├─ stop_scheduler()          # 停止 Cron 调度器
 │
-└─ 清理所有 Master Agent
+└─ 清理所有 Master SessionRunner
     └─ for agent in agents.values():
         ├─ agent.stop()      # 发送停止信号
         └─ agent.cleanup()   # 释放资源（浏览器、HTTP 客户端）
@@ -1140,7 +1140,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ### 9.2 为什么 Agents Dict 用 LRU 淘汰？
 
-- **内存控制**：每个 Master Agent 占用内存（工具、浏览器实例）
+- **内存控制**：每个 Master SessionRunner 占用内存（工具、浏览器实例）
 - **性能**：避免创建过多 Agent 实例
 - **简单**：基于时间戳的 LRU 算法简单可靠
 
@@ -1172,7 +1172,7 @@ def _mask_api_key(config: dict) -> dict:
 | `web/static/utils.js` | 通用工具函数 |
 | `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
 | `web/static/style.css` | 样式 |
-| `core/agent.py` | 统一 Agent（master 角色，被 web_api 调用） |
+| `core/session_runner.py` | 统一 SessionRunner（master 角色，被 web_api 调用） |
 | `core/session.py` | SessionManager（数据层） |
 | `core/config.py` | 工作区索引（`load_workspaces_index`/`save_workspaces_index`/`find_workspace_entry`/`get_workspace_data_dir`） |
 

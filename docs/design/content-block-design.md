@@ -317,9 +317,9 @@ class ToolResult:
 | `core/llm/assembler.py` | BlockAssembler |
 | `core/llm/client.py` | LLMClient（公共 API） |
 | `core/llm/__init__.py` | 导出、create_llm_client 工厂 |
-| `core/base_agent.py` | BaseAgent（消息管理、工具执行、压缩） |
-| `core/agent.py` | 统一 Agent（mode 分叉：master 交互 / worker、lite 自主） |
-| `core/agent_config.py` | AgentRoleConfig + load_agent_role |
+| `core/base_session_runner.py` | BaseSessionRunner（消息管理、工具执行、压缩） |
+| `core/session_runner.py` | 统一 SessionRunner（mode 分叉：master 交互 / worker、lite 自主） |
+| `core/session_runner_config.py` | RunnerRoleConfig + load_runner_role |
 | `core/tools/base.py` | Tool 基类、ToolResult |
 
 ## 参考

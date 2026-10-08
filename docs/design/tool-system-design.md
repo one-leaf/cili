@@ -52,7 +52,7 @@ core/tools/
 ├── loop.py                  # 循环任务进度追踪（配合 cron 使用）
 ├── pdf2markdown.py          # PDF 转 Markdown（MinerU API）
 ├── skill.py                 # 技能工具（SkillTool，按角色 frontmatter roles 过滤）
-├── agent_tool.py         # 子代理委派（AgentTool）
+├── session_tool.py         # 子代理委派（SessionTool）
 ├── ask_user.py              # 用户交互（AskUserTool）
 ├── tool_search.py           # 延迟工具搜索与激活（ToolSearchTool）
 └── mcp.py                   # MCP 服务器桥接（MCPProvider，非注册工具）
@@ -63,8 +63,8 @@ core/tools/
 `core/tools/registry.py` 定义 `TOOL_REGISTRY: dict[str, Factory]`，把工具名映射到工厂函数：
 
 ```python
-Factory = Callable[[AgentRoleConfig, str, str, Any, Config | None, Any], Tool]
-# 参数依次为：(role_cfg, cwd, workspace_uuid, session_manager, config, approval_store)
+Factory = Callable[[RunnerRoleConfig, str, str, Any, Config | None, Any], Tool]
+# 参数依次为：(role_cfg, cwd, workspace_uuid, session, config, approval_store)
 
 TOOL_REGISTRY = {
     "read": _factory(ReadTool),
@@ -90,13 +90,13 @@ TOOL_REGISTRY = {
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True),
     "skill": _make_skill,
-    "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
+    "agent": _factory(SessionTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
 }
 ```
 
-`_factory(cls, *, needs_config, needs_approval)` 是通用工厂包装器，统一注入工具公共参数（cwd / workspace_uuid / session_manager），并按需附加**特殊参数**：
+`_factory(cls, *, needs_config, needs_approval)` 是通用工厂包装器，统一注入工具公共参数（cwd / workspace_uuid / session），并按需附加**特殊参数**：
 
 | 工具 | 特殊参数 | 用途 |
 |------|---------|------|
@@ -109,17 +109,17 @@ TOOL_REGISTRY = {
 
 ```python
 def create_tools(
-    role_cfg: AgentRoleConfig | None = None,
+    role_cfg: RunnerRoleConfig | None = None,
     cwd: str = ".",
     workspace_uuid: str = "",
-    session_manager=None,
+    session=None,
     config: Config | None = None,
     approval_store=None,
     role: str | None = None,
 ) -> list[Tool]:
 ```
 
-1. `role_cfg` 缺省时回退到 `load_agent_role(role or "master", config)`，便于旧调用点（conftest / prompts）不显式传角色配置即可获得 master 全量工具
+1. `role_cfg` 缺省时回退到 `load_runner_role(role or "master", config)`，便于旧调用点（conftest / prompts）不显式传角色配置即可获得 master 全量工具
 2. 遍历 `role_cfg.tools` 白名单（保持 JSON 中声明顺序），逐个查 `TOOL_REGISTRY`
 3. 未注册的工具跳过并告警；实例化失败的单个工具捕获异常并告警，不中断整体流程
 4. 返回按白名单顺序排列的工具列表
@@ -150,7 +150,7 @@ def create_tools(
 
 ```python
 # 创建 master（默认角色）的完整工具集
-tools = create_tools(cwd="/workspace", workspace_uuid="abc123", session_manager=sm, config=cfg)
+tools = create_tools(cwd="/workspace", workspace_uuid="abc123", session=sm, config=cfg)
 
 # 按名称查找工具（O(1) 缓存查找）
 tool = get_tool_by_name(tools, "bash")
@@ -180,10 +180,10 @@ class Tool:
     BYTES_PER_TOKEN: int = 4                      # Token 估算系数
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session_manager=None, approval_store=None):
+                 session=None, approval_store=None):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
-        self.session_manager = session_manager
+        self.session = session
         self.approval_store = approval_store  # 会话级审批存储（根/子代理共享）
         self.output_file: str | None = None  # 输出文件路径（agent 在 execute 前设置）
 
@@ -350,7 +350,7 @@ content = [
 | loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master |
 | skill | skill.py | 技能工具（按角色 frontmatter roles 过滤，见 8.1） | master/worker |
-| agent | agent_tool.py | 委派复杂任务给子代理（AgentTool，见 8.2） | master |
+| agent | session_tool.py | 委派复杂任务给子代理（SessionTool，见 8.2） | master |
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 | tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master |
 
@@ -359,7 +359,7 @@ content = [
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，LLM schema 使用类属性 name）
 - `skill` 工具由注册表工厂传入 `role=role_cfg.name`，每个角色实例化独立 SkillTool，可见技能集合不同
-- `agent` 工具注册名仍为 `agent`，类名为 `AgentTool`
+- `session` 工具注册名仍为 `agent`，类名为 `SessionTool`
 
 ---
 
@@ -484,7 +484,7 @@ class BackgroundTask:
     stdin_pipe: Any                 # stdin 管道（供 write_stdin 使用）
     # Agent 专用字段
     agent: Any                   # Agent 实例
-    session_manager: Any            # SessionManager 实例
+    session: Any            # SessionManager 实例
     result: dict | None             # Agent 执行结果
 ```
 
@@ -575,7 +575,7 @@ agent(list_tasks=True)
 - **反向映射**：`_session_to_agents: dict[session_id, set[agent_name]]`，用于清理和反查
 - **生命周期**：
   - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
-  - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
+  - 子代理（worker/lite）：`session_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
   - 后台子代理：`background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
 - **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑
 - **Pull 模型不变**：消息不自动注入 agent 循环，agent 需主动 `receive` 读取
@@ -585,7 +585,7 @@ agent(list_tasks=True)
 - **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
 - **按需读取**：消息不自动注入 agent 循环，agent 需主动调用 `message_bus(action="receive")` 检查
 - **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 MessageBus
-- **子代理注册**：`agent_tool.py` / `background.py` 在子代理生命周期自动注册/注销
+- **子代理注册**：`session_tool.py` / `background.py` 在子代理生命周期自动注册/注销
 - **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
 
 ### 7.6 read_tool_result — 检索压缩的工具结果
@@ -600,7 +600,7 @@ read_tool_result(tool_use_id="toolu_01ABC123")
 ```
 
 **设计要点**：
-- **自动定位文件**：通过 `self.session_manager.session_dir` 找到正确的会话目录
+- **自动定位文件**：通过 `self.session.session_dir` 找到正确的会话目录
 - **Agent 支持**：自动搜索 `exec_*` 子目录中的文件
 - **无需路径知识**：LLM 只需传入 `tool_use_id`，无需知道文件存储位置
 
@@ -694,9 +694,9 @@ skill(action="read", skill_id="large-file-processing")
 - **actions**：`list`（列出技能）、`read`（读取全文）
 - **不再有 `shared/` 前缀 id**：技能 id 即目录名，统一目录平铺
 
-### 8.2 agent 工具 — 任务委派（AgentTool）
+### 8.2 agent 工具 — 任务委派（SessionTool）
 
-`agent` 工具在独立的子代理（Worker/Lite）中执行复杂任务。工具注册名 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），仅 master 白名单包含（委派深度仅 1 层，见下）。
+`session` 工具在独立的子代理（Worker/Lite）中执行复杂任务。工具注册名 `session`，类名为 `SessionTool`（`core/tools/session_tool.py`），仅 master 白名单包含（委派深度仅 1 层，见下）。
 
 **调用方式**：
 ```python
@@ -747,7 +747,7 @@ agent(list_tasks=True)
 "Agent started in background. Task ID: agent-1"
 ```
 
-**子代理构造**：`AgentTool` 使用统一 `Agent`（`core/agent.py`），按 `agent_type` 选择角色：
+**子代理构造**：`SessionTool` 使用统一 `SessionRunner`（`core/session_runner.py`），按 `agent_type` 选择角色：
 
 ```python
 agent = Agent(
@@ -772,7 +772,7 @@ agent.run()
 - **独立工具集**：worker 16 个 / lite 6 个（取决于 agent_type）
 - **结构化任务**：task + plan 拼接到 system prompt 末尾（不可压缩）
 - **1 小时超时**
-- **委派深度限制（仅 1 层）**：只有 master(0) 可委派 worker/lite(1)；depth≥1 的子代理再调用 `agent` 工具直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
+- **委派深度限制（仅 1 层）**：只有 master(0) 可委派 worker/lite(1)；depth≥1 的子代理再调用 `session` 工具直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
 - **后台执行**：`run_in_background=true` 在独立线程中运行子代理
 - **懒加载 UI**：Agent 结果通过 tool_result 中的 exec_id 懒加载渲染
 
@@ -788,14 +788,14 @@ agent.run()
 
 **回调链路**：
 ```
-web_api.py 注入 on_agent_start / on_agent_complete 回调
-  → Agent._on_agent_start / _on_agent_complete
-    → AgentTool.on_agent_start / on_agent_complete
+web_api.py 注入 on_session_start / on_session_complete 回调
+  → Agent._on_session_start / _on_session_complete
+    → SessionTool.on_session_start / on_session_complete
       → 推送 SSE 事件（agent_start / agent_complete）
         → 前端渲染卡片 / 更新状态
 ```
 
-**实现**：`core/tools/agent_tool.py`（AgentTool），子代理由 `core/agent.py` 的统一 `Agent`（autonomous 模式）驱动。
+**实现**：`core/tools/session_tool.py`（SessionTool），子代理由 `core/session_runner.py` 的统一 `SessionRunner`（autonomous 模式）驱动。
 
 ### 8.3 temp — 临时文件/目录管理
 
@@ -982,20 +982,20 @@ deny 黑名单分两档：**ask**（破坏性操作，可询问用户）与 **de
 ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会话级批准"流程：
 
 1. **工具层**（bash/pwsh）：查 `ApprovalStore.is_approved(decision_id)` → 已批准放行执行；未批准返回 `completed=False` 占位符 + `meta.approval_required`（decision_id 为规范化命令的 sha256 前 16 位，确定性）
-2. **Master 循环**（`core/agent.py`）：把首个 approval_required 降级为错误提示、记录 pending，批处理完后**合成一张 ask_user 卡**（选项"允许本次会话"/"拒绝"）→ 占位 break；同批多条只问一条，其余拒绝
+2. **Master 循环**（`core/session_runner.py`）：把首个 approval_required 降级为错误提示、记录 pending，批处理完后**合成一张 ask_user 卡**（选项"允许本次会话"/"拒绝"）→ 占位 break；同批多条只问一条，其余拒绝
 3. **answer 端点**（web_api.py）：答案含"允许本次会话" → `store.approve(did, cmd)`；否则仅清 pending（自定义输入视为拒绝）
 4. **模型重发**：resume 后模型读到批准，原样重发命令 → `is_approved` 命中 → 放行；此后**本会话内**（含子代理）同命令不再询问
 
 **会话级、内存不持久化**：`ApprovalStore` 由 master Agent 持有（`_approved: decision_id→command`，不按次数消费 + 单槽 `pending`），服务器重启即失效，不写配置不落盘。
 
-**子代理共享**：根/子代理的 bash/pwsh 与 AgentTool 构造时透传同一 `ApprovalStore` 实例——
+**子代理共享**：根/子代理的 bash/pwsh 与 SessionTool 构造时透传同一 `ApprovalStore` 实例——
 - 已批准命令子代理可直接执行（工具层共享放行）
 - 已批准命令列表注入子代理 pinned 任务消息（`build_approved_commands_section`，approval.py），子模型知晓可直接执行
-- 子代理无 ask_user：未批准命令的占位符被子循环 `_downgrade_approval_result`（`core/agent.py`）降级为普通 error，不挂起不询问
+- 子代理无 ask_user：未批准命令的占位符被子循环 `_downgrade_approval_result`（`core/session_runner.py`）降级为普通 error，不挂起不询问
 
 **消息配对**：合成 ask_user 需手动补 `assistant` tool_use 块（`generate_short_id()` 生成 id），且全部工具结果处理完后再追加，避免悬挂 tool_result 或打断本批其他 tool_use 的配对。
 
-相关文件：`core/tools/approval.py`（ApprovalStore、ask/deny 常量、decision_id 与文案）、`core/tools/bash.py`、`core/tools/pwsh.py`、`core/agent.py`（`_handle_approval_required`、`_downgrade_approval_result`）、`core/tools/agent_tool.py`（透传）、`web/web_api.py`（answer_ask_user 记录批准）。
+相关文件：`core/tools/approval.py`（ApprovalStore、ask/deny 常量、decision_id 与文案）、`core/tools/bash.py`、`core/tools/pwsh.py`、`core/session_runner.py`（`_handle_approval_required`、`_downgrade_approval_result`）、`core/tools/session_tool.py`（透传）、`web/web_api.py`（answer_ask_user 记录批准）。
 
 ---
 
@@ -1009,9 +1009,9 @@ ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会�
 | `core/tools/approval.py` | 会话级审批（ApprovalStore、ask/deny 常量、文案与 decision_id） |
 | `core/tools/*.py` | 全部工具实现（平铺） |
 | `core/agents/*.json` | 角色定义：工具白名单（tools）、行为开关、system prompt 块 |
-| `core/agent_config.py` | AgentRoleConfig + `load_agent_role`（读取角色 JSON） |
-| `core/base_agent.py` | 工具执行循环（`_execute_tool`）+ `_resolve_tool_results()` |
-| `core/agent.py` | 统一 Agent（master 交互 / worker/lite 自主）、审批合成与降级 |
+| `core/session_runner_config.py` | RunnerRoleConfig + `load_runner_role`（读取角色 JSON） |
+| `core/base_session_runner.py` | 工具执行循环（`_execute_tool`）+ `_resolve_tool_results()` |
+| `core/session_runner.py` | 统一 Agent（master 交互 / worker/lite 自主）、审批合成与降级 |
 | `core/skills/` | 全局内置技能（平铺目录，frontmatter roles 声明适用角色） |
 
 ---
