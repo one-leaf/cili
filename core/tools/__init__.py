@@ -8,20 +8,13 @@ from core.tools.registry import TOOL_REGISTRY, create_tools
 
 
 def get_tool_by_name(tools: list[Tool], name: str) -> Tool | None:
-    """Find a tool by name (O(1) via dict lookup)."""
-    return _tool_map(tools).get(name)
+    """Find a tool by name in a role's tool list.
 
-
-# Cache the tool map per tools list to avoid rebuilding every call.
-# Uses id(tools) as key — the list reference is stable within an agent's lifetime.
-_tool_map_cache: dict[int, dict[str, Tool]] = {}
-
-
-def _tool_map(tools: list[Tool]) -> dict[str, Tool]:
-    """Build or return cached {name: tool} mapping."""
-    key = id(tools)
-    m = _tool_map_cache.get(key)
-    if m is None:
-        m = {t.name: t for t in tools}
-        _tool_map_cache[key] = m
-    return m
+    线性扫描即可：工具数约 26，且仅在工具集重建与每次工具执行时调用一次。
+    （此前用 id(tools) 缓存映射，但列表被 GC 后新列表可能复用同一地址，
+    导致返回陈旧映射，故移除。）
+    """
+    for tool in tools:
+        if tool.name == name:
+            return tool
+    return None

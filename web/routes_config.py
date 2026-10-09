@@ -13,7 +13,7 @@ from core.config import (
 )
 from core.tools.mcp import get_provider
 
-from web.deps import sessions, _sessions_lock
+from web.deps import master_runners, _sessions_lock
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,9 +37,9 @@ class ModelConfigRequest(BaseModel):
 
 class UpdateConfigRequest(BaseModel):
     """Request model for updating global configuration."""
-    model: ModelConfigRequest | None = None          # master Agent model
-    worker_model: ModelConfigRequest | None = None   # worker Agent model (optional, inherits master)
-    lite_model: ModelConfigRequest | None = None     # lite Agent model (optional, inherits master)
+    model: ModelConfigRequest | None = None          # master 角色模型
+    worker_model: ModelConfigRequest | None = None   # worker 角色模型 (optional, inherits master)
+    lite_model: ModelConfigRequest | None = None     # lite 角色模型 (optional, inherits master)
     system: dict | None = None                       # System parameters (pip_mirror, etc.)
     mcp_servers: dict | None = None                  # MCP 服务器配置 {name: {...}}
 
@@ -134,7 +134,7 @@ async def update_config(request: UpdateConfigRequest):
     """Update global model configuration."""
     config = load_global_config()
 
-    # Update agent model config (multi-turn)
+    # Update master model config (multi-turn)
     if request.model is not None:
         existing_model = config.get("model", {})
         config["model"] = _update_model_config(existing_model, request.model)
@@ -184,11 +184,11 @@ async def update_config(request: UpdateConfigRequest):
     except Exception as e:
         logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
 
-    # 通知所有缓存的 master Agent 重新加载配置（新的 API key / model 等）
+    # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）
     async with _sessions_lock:
-        for key, runner in list(sessions.items()):
+        for key, runner in list(master_runners.items()):
             runner.reload_config()
-            logger.info(f"[Config] 已通知 master Agent {key} 重新加载配置")
+            logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
 
@@ -217,12 +217,12 @@ async def get_mcp_servers():
 
 @router.post("/api/mcp/reload")
 async def reload_mcp():
-    """强制重连所有 MCP 服务器，并刷新缓存的 master Agent（deferred 工具重建）。"""
+    """强制重连所有 MCP 服务器，并刷新缓存的 master runner（deferred 工具重建）。"""
     cfg = load_config()
     provider = get_provider()
     provider.reload(cfg.mcp_servers, force=True)
     async with _sessions_lock:
-        for key, runner in list(sessions.items()):
+        for key, runner in list(master_runners.items()):
             runner.reload_config()
     return {"success": True, "servers": provider.status()}
 

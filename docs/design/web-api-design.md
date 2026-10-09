@@ -13,7 +13,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 Master SessionRunner，自动清理最久未访问的
 - **特殊命令**：/help、/status、/goal 在服务端处理，不经过 LLM
-- **统一数据访问**：消息收发等核心写入通过 SessionManager；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionManager 原子落盘
+- **统一数据访问**：消息收发等核心写入通过 SessionStore；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionStore 原子落盘
 
 ---
 
@@ -29,47 +29,50 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
                      │ SSE / REST API
 ┌────────────────────▼────────────────────────────────────────┐
 │                  FastAPI Backend                             │
-│                    web/web_api.py                           │
+│  web/web_api.py（装配入口：app / 中间件 / 静态文件 / 路由挂载）│
+│  web/routes_*.py（各资源域路由）· web/deps.py（共享状态/helper）│
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │ Agents Dict  │  │ SSE Bridge   │  │ SessionManager   │  │
+│  │master_runners│  │ SSE Bridge   │  │ SessionStore     │  │
 │  │ (LRU cache)  │  │ (Queue)      │  │ (Data layer)     │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
 │         │                 │                                  │
 │  ┌──────▼─────────────────▼───────────────────────────────┐ │
-│  │                  Master SessionRunner                              │ │
+│  │                  Master SessionRunner                  │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │ │
-│  │  │SessionManager│  │  LLM Client  │  │   Tools      │  │ │
+│  │  │SessionStore  │  │  LLM Client  │  │   Tools      │  │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘  │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Agents Dict（LRU 缓存）
+### 2.2 master_runners（runner 池，LRU 缓存）
 
 ```python
-# 全局变量
-agents: dict[str, Agent] = {}              # key = "workspace_uuid:session_id"
-_agent_access: dict[str, float] = {}       # key -> 最后访问时间戳
-_MAX_AGENTS = 20                           # 最大缓存数量
-_agents_lock = asyncio.Lock()              # 并发访问锁
+# 全局变量（web/deps.py）
+master_runners: dict[str, SessionRunner] = {}  # key = "workspace_uuid:session_id"
+_runner_access: dict[str, float] = {}      # key -> 最后访问时间戳
+_MAX_RUNNERS = 20                          # 最大缓存数量
+_sessions_lock = asyncio.Lock()            # 并发访问锁
 ```
 
-**工作原理**：
-- 每次访问会话时，更新 `_agent_access[key]` 为当前时间
-- 创建新 Agent 前，如果超过 20 个，淘汰最久未访问的非运行中 Agent
-- 被淘汰的 Agent 调用 `cleanup()` 释放资源（浏览器、HTTP 客户端）
+> 注：`master_runners` 存的是 master **runner 实例**（不是会话数据）；会话数据由 `SessionStore`（`core/session.py`）持有。
+
+**工作原理**（`_get_or_create_runner()`，`web/deps.py`）：
+- 每次访问会话时，更新 `_runner_access[key]` 为当前时间
+- 创建新 SessionRunner 前，如果超过 20 个，淘汰最久未访问的非运行中 runner
+- 被淘汰的 runner 调用 `cleanup()` 释放资源（浏览器、HTTP 客户端）
 
 ```python
-def _evict_idle_agent() -> None:
-    if len(agents) <= _MAX_AGENTS:
+def _evict_idle_runner() -> None:
+    if len(master_runners) <= _MAX_RUNNERS:
         return
-    idle_keys = [k for k in agents if not agents[k].is_running()]
+    idle_keys = [k for k in master_runners if not master_runners[k].is_running()]
     if not idle_keys:
         return
-    oldest = min(idle_keys, key=lambda k: _agent_access.get(k, 0))
-    evicted = agents.pop(oldest)
-    _agent_access.pop(oldest, None)
+    oldest = min(idle_keys, key=lambda k: _runner_access.get(k, 0))
+    evicted = master_runners.pop(oldest)
+    _runner_access.pop(oldest, None)
     evicted.cleanup()
 ```
 
@@ -313,8 +316,8 @@ data: {"type": "done"}
 | `text` | 文本输出 | `content` |
 | `tool_use` | 工具调用 | `tool`, `input`, `tool_use_id` |
 | `tool_result` | 工具结果 | `tool`, `content`, `is_error`, `tool_use_id` |
-| `agent_start` | Agent 启动 | `exec_id`, `task_summary` |
-| `agent_complete` | Agent 执行完成 | `exec_id` |
+| `session_start` | 子代理会话启动 | `exec_id`, `task_summary` |
+| `session_complete` | 子代理会话执行完成 | `exec_id` |
 | `todo_update` | todo_write 工具后的待办列表更新 | `todos` |
 | `retry_clear` | 413 重试清除 | （无） |
 | `error` | 错误 | `content` |
@@ -323,10 +326,10 @@ data: {"type": "done"}
 **事件说明**：
 - `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
 - `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
-- `agent_complete`：Agent 后台执行完成时发送，前端据此更新 Agent 卡片状态。
+- `session_complete`：子代理会话后台执行完成时发送，前端据此更新子代理卡片状态。
 - `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session.metadata.todos`），前端实时更新任务清单。
 
-### 3.5 Agent 控制
+### 3.5 Runner 控制
 
 #### 检查运行状态
 
@@ -376,7 +379,7 @@ Content-Type: application/json
 }
 ```
 
-Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent（`revert_to_message()` 原地截断），否则直接从磁盘加载 SessionManager 处理——物理截断 `messages.jsonl`，并原子重写 `index.json`（commits 视图）与 `meta.json`。
+Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent（`revert_to_message()` 原地截断），否则直接从磁盘加载 SessionStore 处理——物理截断 `messages.jsonl`，并原子重写 `index.json`（commits 视图）与 `meta.json`。
 
 #### AskUser 交互流程
 
@@ -941,7 +944,7 @@ function handleEvent(event) {
         case 'tool_result':
             appendToolResult(event.tool, event.content, event.is_error);
             break;
-        case 'agent_start':
+        case 'session_start':
             appendAgentCard(event.exec_id, event.task_summary);
             break;
         case 'retry_clear':
@@ -982,7 +985,7 @@ web_api.py（模块导入时）
 │
 └─ lifespan 进入
     ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
-    ├─ start_message_bus()   # 初始化 MessageBus 跨会话消息总线
+    ├─ start_agent_mailbox()   # 初始化 AgentMailbox 跨会话消息总线
     └─ 后台线程连接 MCP 服务器 # threading.Thread(daemon=True)：load_config 后调用
                              # core/tools/mcp 的 get_provider().ensure_connected()，不阻塞启动
 ```
@@ -992,7 +995,7 @@ web_api.py（模块导入时）
 ```
 lifespan exit
 │
-├─ stop_message_bus()        # 停止 MessageBus
+├─ stop_agent_mailbox()        # 停止 AgentMailbox
 │
 ├─ stop_browser_service()    # 停止浏览器服务（Playwright + Chrome）
 │
@@ -1162,7 +1165,14 @@ def _mask_api_key(config: dict) -> dict:
 
 | 文件 | 职责 |
 |------|------|
-| `web/web_api.py` | FastAPI 后端，所有 API 端点 |
+| `web/web_api.py` | FastAPI 装配入口（lifespan、中间件、`/`、`/s/{ws}/{session}`、`/api/health`） |
+| `web/routes_chat.py` | 聊天/SSE 流/Runner 控制（`/messages`、`/stop`、`/resume`、`/revert`、`/status`、`/stream/{tool_use_id}`、`/api/events`） |
+| `web/routes_ask_user.py` | ask_user 答案提交（`/answer-ask-user`） |
+| `web/routes_workspace.py` | 工作区/会话/执行日志/项目指令（`/api/workspaces*`、`/git/*`、`/instructions*`） |
+| `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
+| `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/browse`） |
+| `web/routes_memory.py` | 记忆管理（`/api/workspaces/{uuid}/memory*`） |
+| `web/deps.py` | runner 池（LRU）+ 会话认领 + SSE 回调构造 + workspace 解析 |
 | `web/static/index.html` | 主页面 |
 | `web/static/app.js` | 前端状态与工作区/会话管理 |
 | `web/static/chat.js` | 聊天界面与 SSE 事件处理、Markdown 渲染 |
@@ -1173,12 +1183,12 @@ def _mask_api_key(config: dict) -> dict:
 | `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
 | `web/static/style.css` | 样式 |
 | `core/session_runner.py` | 统一 SessionRunner（master 角色，被 web_api 调用） |
-| `core/session.py` | SessionManager（数据层） |
+| `core/session.py` | SessionStore（数据层） |
 | `core/config.py` | 工作区索引（`load_workspaces_index`/`save_workspaces_index`/`find_workspace_entry`/`get_workspace_data_dir`） |
 
 ---
 
-**文档版本**: v1.4  
+**文档版本**: v1.5  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-09-21  
+**更新时间**: 2026-10-09（同步代码：`agents`→`sessions`/`_MAX_RUNNERS`/`_get_or_create_runner`、SSE 事件 `agent_start/complete`→`session_start/complete`、端点已拆分到 `web/routes_*.py`）  
 **状态**: 已实现

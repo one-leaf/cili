@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.session_runner import SessionRunner
-from core.session_runner_config import load_runner_role
-from core.prompts import _build_deferred_tools_section
+from core.role_config import load_role
+from core.prompt_sections import _build_deferred_tools_section
 from core.tools import create_tools, get_tool_by_name
 from core.tools.tool_search import ToolSearchTool
 
@@ -41,7 +41,7 @@ class TestDeferredToolSplit:
 
     def test_master_has_deferred_tools(self):
         """master 角色声明了 deferred_tools。"""
-        role_cfg = load_runner_role("master")
+        role_cfg = load_role("master")
         assert len(role_cfg.deferred_tools) == 8
         assert "browser" in role_cfg.deferred_tools
         assert "latex" in role_cfg.deferred_tools
@@ -49,7 +49,7 @@ class TestDeferredToolSplit:
 
     def test_tool_search_is_core(self):
         """tool_search 在 tools 列表中，不在 deferred_tools 中。"""
-        role_cfg = load_runner_role("master")
+        role_cfg = load_role("master")
         assert "tool_search" in role_cfg.tools
         assert "tool_search" not in role_cfg.deferred_tools
 
@@ -259,11 +259,11 @@ class TestWorkerLiteDeferred:
 
     def test_worker_deferred_tools(self):
         """worker 的 deferred_tools 覆盖非交互工具，不含交互三件套。"""
-        role_cfg = load_runner_role("worker")
+        role_cfg = load_role("worker")
         expected = {"browser", "todo_write", "latex", "message_bus", "temp", "loop", "pdf2markdown"}
         assert set(role_cfg.deferred_tools) == expected
 
     def test_lite_no_deferred_tools(self):
         """lite 的 deferred_tools 为空。"""
-        role_cfg = load_runner_role("lite")
+        role_cfg = load_role("lite")
         assert role_cfg.deferred_tools == []

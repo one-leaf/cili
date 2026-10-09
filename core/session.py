@@ -361,14 +361,14 @@ def generate_short_id() -> str:
     return secrets.token_hex(4)
 
 
-class AgentLogStore:
+class ExecLogStore:
     """Agent 执行日志存储：{session_dir}/exec_{id}/index.json 的读写。
 
-    从 SessionManager 抽出的独立职责（避免 God Object），通过持有
-    SessionManager 引用访问 session_dir/session_id。
+    从 SessionStore 抽出的独立职责（避免 God Object），通过持有
+    SessionStore 引用访问 session_dir/session_id。
     """
 
-    def __init__(self, session: SessionManager):
+    def __init__(self, session: SessionStore):
         self._sm = session
 
     @property
@@ -478,7 +478,7 @@ class AgentLogStore:
         return False
 
 
-class SessionManager:
+class SessionStore:
     """独立管理会话数据，与 LLMClient 解耦。
 
     负责：
@@ -487,7 +487,7 @@ class SessionManager:
     - 有效消息过滤（get_valid_messages）
     - 压缩逻辑
     - 使用量追踪
-    （Agent 执行日志由 AgentLogStore 承担，见 self.agent_logs）
+    （Agent 执行日志由 ExecLogStore 承担，见 self.agent_logs）
 
     Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
     """
@@ -530,8 +530,8 @@ class SessionManager:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
-        # Agent 执行日志是独立职责，抽到 AgentLogStore
-        self.agent_logs = AgentLogStore(self)
+        # Agent 执行日志是独立职责，抽到 ExecLogStore
+        self.agent_logs = ExecLogStore(self)
 
     # ========== 消息管理 ==========
 
@@ -1028,22 +1028,22 @@ class SessionManager:
     # ========== 工具方法 ==========
 
     @staticmethod
-    def create_new_session(sessions_dir: Path, name: str = "New Session") -> SessionManager:
+    def create_new_session(sessions_dir: Path, name: str = "New Session") -> SessionStore:
         """创建新会话（使用短 ID）。"""
         session_id = generate_short_id()
-        session = SessionManager(session_id, sessions_dir)
+        session = SessionStore(session_id, sessions_dir)
         session.name = name
         # force：新会话无脏标记也需写出初始三件套文件
         session.save(force=True)
         return session
 
     @staticmethod
-    def load_session(session_id: str, sessions_dir: Path) -> SessionManager | None:
+    def load_session(session_id: str, sessions_dir: Path) -> SessionStore | None:
         """加载已存在的会话。
 
         返回 None 表示会话不存在。
         """
-        session = SessionManager(session_id, sessions_dir)
+        session = SessionStore(session_id, sessions_dir)
         if session.load():
             return session
         return None

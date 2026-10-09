@@ -50,7 +50,7 @@
 │   - interactive → _run_interactive（master，Web 聊天入口）         │
 │   - autonomous → _run_autonomous（worker/lite，自主执行）         │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ load_runner_role() 加载
+                           │ load_role() 加载
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                      角色 JSON 配置                               │
 │              core/agents/master.json / worker.json / lite.json   │
@@ -166,7 +166,7 @@ class SessionRunner(BaseSessionRunner):
         max_consecutive_failures: int | None = None,  # None 时取角色配置
     ):
         self.role = role
-        self.role_cfg = load_runner_role(role, config)
+        self.role_cfg = load_role(role, config)
         self.model = getattr(config, f"{role}_model", None) or config.model
         self._mode = self.role_cfg.mode
 
@@ -202,9 +202,9 @@ def run(self, *args, **kwargs):
 
 ### 3.2 角色 JSON 配置
 
-角色定义位于 `core/agents/{role}.json`（系统级、随代码库提交），由 `core/session_runner_config.py` 的 `load_runner_role(role, config)` 加载为 `RunnerRoleConfig`。任何 JSON 缺失的字段使用 `_DEFAULTS` 兜底。
+角色定义位于 `core/agents/{role}.json`（系统级、随代码库提交），由 `core/role_config.py` 的 `load_role(role, config)` 加载为 `RoleConfig`。任何 JSON 缺失的字段使用 `_DEFAULTS` 兜底。
 
-`RunnerRoleConfig` 字段：
+`RoleConfig` 字段：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -233,7 +233,7 @@ def run(self, *args, **kwargs):
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 16 个（执行型：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
+| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 24 个（17 常驻 + 7 deferred；read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/session/tool_search，延迟 browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -244,8 +244,8 @@ def run(self, *args, **kwargs):
 | **progress_persistence** | ✗ | ✓ | ✓ |
 | **max_iterations** | null → system（200） | null → system（200） | 200 |
 | **max_tokens** | 16384 | 16384 | 8192 |
-| **system_prompt.blocks** | text(role) + tools + skills | text(role) + tools + skills | text(role) + tools |
-| **user_layers** | claude_md + context | task + context + runtime | task |
+| **system_prompt.blocks** | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + text(security) + dynamic_boundary + context |
+| **user_layers** | claude_md | task + runtime | task |
 
 ### 3.4 模型选择
 
@@ -261,13 +261,16 @@ def run(self, *args, **kwargs):
   - `text`：返回固定文案（`block.content`，字符串或字符串数组按行拼装）
   - `tools`：从实际加载的工具实例生成工具列表段
   - `skills`：从角色可见技能生成技能列表段
+  - `context`：动态环境上下文（日期/workspace/内存等），session 内缓存
+- `dynamic_boundary`：静态区/动态区分界标记，`adapter` 层据此设置 `cache_control`
 - `build_system_prompt(runner)`：按 blocks 顺序拼接「启用且非空」的块。`SessionRunner._build_system_prompt()` 委托给它。
 
 注入型 user 层（`USER_LAYER_GENERATORS`）：
 
 - `claude_md`：每次从磁盘重读项目指令（agent.md/CLAUDE.md），**不持久化**到消息历史
-- `context`：动态环境上下文（日期/workspace/内存等），每次调用重新生成，**不持久化**
 - `task` / `runtime`：由 `SessionRunner` 按 `role_cfg` 布尔开关运行时写入历史（pinned 任务消息、预算/检查/超时提示），不在生成器表内
+
+> 注：`context`（动态环境上下文）已迁移为 system prompt 的 `context` 块（动态区，session 内缓存），不再作为 user 层注入。
 
 `SessionRunner._get_messages_with_header()` 在 BaseSessionRunner 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
 
@@ -306,7 +309,6 @@ def _init_interactive(self, workspace_uuid: str) -> None:
 # 其他接口
 def reload_config()          # 重载配置并重建 LLM 客户端/工具集
 def resume_after_ask_user()  # ask_user 工具返回后恢复循环
-def resume_loop()            # 外部占位完成后的恢复接口（保留兼容）
 def switch_session()         # 切换会话
 def reset()                  # 清空对话历史
 def get_usage()              # 返回 usage 统计（与会话同步）
@@ -324,61 +326,51 @@ def _run_interactive(
     on_thinking: Callable[[str], None] | None = None,
     on_tool_call: Callable[[str, dict, str], None] | None = None,
     on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-    on_agent_start: Callable[[str, str], None] | None = None,
-    on_agent_complete: Callable[[str], None] | None = None,
+    on_session_start: Callable[[str, str], None] | None = None,
+    on_session_complete: Callable[[str], None] | None = None,
     streaming: bool = True,
 ) -> None:
     """执行一轮 agent 循环"""
     self._stopped = False
     self._running = True
+    self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
+    self._streaming = streaming
     self._on_text = on_text
     # ... 保存所有回调 ...
 
     try:
-        # 保存上一轮
-        self._sync_to_session()
-        self.session.save()
         # 添加用户消息（项目指令不在此注入，而在 _get_messages_with_header()
         # 中每次 LLM 调用时从磁盘重读并动态注入，不持久化到消息历史）
         self.add_message("user", user_input)
         # 进入 agent 循环
-        self._agent_loop()
+        self.loop.run_interactive()
     finally:
         self._running = False
-
-def _agent_loop(self) -> None:
-    """共享循环体（run/resume_after_ask_user/resume_loop 均调用此方法）"""
-    # self._turn_iterations 为实例级累计：仅 _run_interactive（用户新轮次）清零，
-    # resume_after_ask_user / resume_loop 沿用不重置，继续累加
-    while self._turn_iterations < self.max_iterations:
-        if self._stopped:
-            break
-        self._turn_iterations += 1
-        # 自动压缩检查
-        self._check_and_compress()
-        # 调用 LLM（每轮重建 system prompt，注入型 user 层动态生成）
-        system_prompt = self._build_system_prompt()
-        response = self._call_llm(streaming=self._streaming, system_prompt=system_prompt)
-        # 添加 assistant 响应
-        self.add_message("assistant", response.content_as_dicts())
-        # 解析工具调用
-        tool_call_blocks = response.get_tool_calls()
-        if not tool_call_blocks:
-            break  # 没有工具调用，结束本轮
-        # 执行工具，每个工具执行后都同步到 session
-        wait_for_external = False
-        for block in tool_call_blocks:
-            input_data = block.parse_arguments()
-            result = self._execute_tool(block.name, input_data, block.id)
-            # 检查是否需要暂停等待外部输入（ask_user/agent 占位）
-            if result.get("_meta", {}).get("completed") is False:
-                wait_for_external = True
-            self.add_message("user", [result])
+        # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
+        if getattr(self, "session", None) is not None:
             self._sync_to_session()
             self.session.save()
-        if wait_for_external:
-            break  # 退出循环等待用户输入或 agent 完成
 ```
+
+循环编排在 `core/session_runner_runtime/loop.py`：`_run_interactive()` 调用
+`self.loop.run_interactive()` → `Loop._run_loop(autonomous=False)`。交互与自主共用
+同一 while 骨架，仅两处分叉：无工具调用时的出口（交互 → 回合结束；自主 → 交付/转检查）
+与工具批 handler（交互 → 审批/占位；自主 → 降级审批/熔断/进度落盘）。
+
+```python
+class Loop:
+    def run_interactive(self) -> None:
+        """交互回合循环主体（run()/resume_* 薄入口调用）。"""
+        # 入口排空：用户发新消息前后台子会话已完成的通知，注入 messages
+        self._drain_session_notifications()
+        runner._sync_to_session()
+        runner.session.save()
+        self._run_loop(autonomous=False)
+```
+
+- 迭代计数用 `runner._turn_iterations`（resume 路径累计不重置），达 `max_iterations` 时提示用户继续
+- 每轮 `_call_llm()`（`Runner.run_round` 内部先压缩）→ 添加 assistant 消息 → 有工具调用则批执行并落盘，无工具调用则回合结束
+- `ask_user`/`session` 占位（`_meta.completed=False`）或合成审批卡时，批处理完退出等待外部输入
 
 ### 4.4 审批（approval）
 
@@ -448,7 +440,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 | 维度 | worker | lite |
 |------|--------|------|
-| 工具集 | 16 个（read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/read_tool_result/temp/clock/session_search/skill） | 6 个（read/write/edit/bash/python/clock） |
+| 工具集 | 24 个（17 常驻：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/session/tool_search；7 延迟：browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
 | 检查阶段 | ✓（`check_phase=True`） | ✗ |
 | 预算预警 | ✓（`budget_notice=True`） | ✗ |
 | 迭代上限 | null → system（默认 200） | 200 |
@@ -462,10 +454,10 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 `session` 工具（`core/tools/session_tool.py`）委派逻辑：
 
-- 生成 `exec_id`（`exec_{8位hex}`，`Session._generate_exec_id()`）
+- 生成 `exec_id`（`exec_{8位hex}`，`ExecLogStore._generate_exec_id()`，`core/session.py`）
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
 - 构造统一 SessionRunner：`SessionRunner(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, temperature, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
-- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用 `read_task`/`kill_task`/`list_tasks` 管理
+- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用统一 `action` 枚举管理（`action="read"` 查状态、`action="kill"` 终止、`action="list"` 列出）
 - 子会话 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
 ```
@@ -578,4 +570,5 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 ---
 
 *文档版本: v3.0*
-*最后更新: 2026-09-13（worker 精简为 16 个执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
+*最后更新: 2026-09-13（worker 精简为执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
+*最后更新: 2026-10-09（同步代码：worker 24 个工具 / lite 7 个；会话回调更名 on_session_start/on_session_complete；循环编排迁至 session_runner_runtime/loop.py；session 工具统一 action 枚举）*

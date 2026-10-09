@@ -496,16 +496,16 @@ class BackgroundMixin:
                     pass
                 with _background_runners_cond:
                     _background_runners_cond.notify_all()
-                # 注销子 runner 的 MessageBus 注册（exec_id + 所有别名如 label）
+                # 注销子 runner 的 AgentMailbox 注册（exec_id + 所有别名如 label）
                 try:
-                    from core.message_bus import get_message_bus
-                    mbus = get_message_bus()
+                    from core.agent_mailbox import get_agent_mailbox
+                    mbus = get_agent_mailbox()
                     for agent_name in mbus.get_session_agents(exec_id):
                         mbus.unregister_agent(agent_name)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(
-                        f"Failed to unregister background Runner from MessageBus {task_id}: {e}"
+                        f"Failed to unregister background Runner from AgentMailbox {task_id}: {e}"
                     )
                 # T18: 资源/统计对称 —— 后台子 runner 结束也 close LLM client 并转发 usage，
                 # 与同步委派（session_tool.py）保持一致。
@@ -542,8 +542,8 @@ class BackgroundMixin:
                     master_session_id = getattr(sm, "session_id", None) if sm else None
                     if master_session_id:
                         try:
-                            from core.message_bus import get_message_bus
-                            mbus = get_message_bus()
+                            from core.agent_mailbox import get_agent_mailbox
+                            mbus = get_agent_mailbox()
                             summary_text = ""
                             if task.result:
                                 summary_text = (task.result.get("summary")

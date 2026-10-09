@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.session_runner import SessionRunner
-from core.session_runner_config import load_runner_role
+from core.role_config import load_role
 from core.config import Config, ModelConfig, SystemConfig
 
 
@@ -27,7 +27,7 @@ class TestRoleConfigDefaults:
 
     @pytest.mark.parametrize("role", ["master", "worker", "lite"])
     def test_role_default(self, role):
-        role_cfg = load_runner_role(role)
+        role_cfg = load_role(role)
         assert role_cfg.max_tokens == ROLE_DEFAULTS[role]
 
 

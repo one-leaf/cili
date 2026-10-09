@@ -42,8 +42,8 @@ def _gen_text(block: dict, agent) -> str:
 
 def _gen_tools(block: dict, agent) -> str:
     """tools 块：从 agent 的 active tools 生成工具列表段，附延迟工具摘要。"""
-    # 延迟导入：避免与 core.prompts 的循环依赖
-    from core.prompts import _build_tools_section, _build_deferred_tools_section
+    # 延迟导入：避免与 core.prompt_sections 的循环依赖
+    from core.prompt_sections import _build_tools_section, _build_deferred_tools_section
     active = getattr(agent, "_active_tools", None) or agent.tools
     section = _build_tools_section(active)
     deferred = getattr(agent, "_deferred_tools", None) or []
@@ -54,8 +54,8 @@ def _gen_tools(block: dict, agent) -> str:
 
 def _gen_skills(block: dict, agent) -> str:
     """skills 块：从角色可见技能生成技能列表段。"""
-    # 延迟导入：避免与 core.prompts 的循环依赖
-    from core.prompts import _build_skills_section
+    # 延迟导入：避免与 core.prompt_sections 的循环依赖
+    from core.prompt_sections import _build_skills_section
     return _build_skills_section(agent.role)
 
 
@@ -72,7 +72,7 @@ def _gen_context(block: dict, agent) -> str:
 
     key = "env_context"
     if key not in cache:
-        from core.prompts import build_environment_context
+        from core.prompt_sections import build_environment_context
         cache[key] = build_environment_context(agent.workspace_uuid, agent.cwd)
     return cache[key]
 
@@ -142,7 +142,7 @@ def clear_prompt_section_cache(agent) -> None:
 
 def _gen_claude_md(agent) -> dict | None:
     """claude_md 层：从磁盘重读项目指令文件。"""
-    from core.prompts import build_instructions_message
+    from core.prompt_sections import build_instructions_message
     return build_instructions_message(agent.cwd)
 
 

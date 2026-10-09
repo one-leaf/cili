@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # 使用 DGX 本地端点（不消耗真实 API 配额）
 from test.conftest import make_dgx_config
 from core.session_runner import SessionRunner
-from core.session import SessionManager
+from core.session import SessionStore
 
 
 def get_default_workspace_uuid() -> str:
@@ -56,7 +56,7 @@ def main():
         runner = SessionRunner(config, role="master", cwd=str(test_dir), workspace_uuid=workspace_uuid)
 
         # Create a NEW session
-        new_session = SessionManager.create_new_session(runner.sessions_dir, "Debug Test")
+        new_session = SessionStore.create_new_session(runner.sessions_dir, "Debug Test")
         runner.switch_session(new_session.session_id)
 
         print(f"  NEW Session ID: {runner.current_session_id}")

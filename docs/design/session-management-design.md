@@ -6,7 +6,7 @@
 
 ## 一、功能概述
 
-SessionManager 独立于 LLM 客户端，专门管理对话数据。它是 Master SessionRunner 和 Web API 之间的数据层，负责：
+SessionStore 独立于 LLM 客户端，专门管理对话数据。它是 Master SessionRunner 和 Web API 之间的数据层，负责：
 
 - **消息管理**：添加、获取、过滤消息
 - **持久化**：自动保存到磁盘，支持恢复
@@ -185,7 +185,7 @@ Agent 执行日志独立存储在子目录中：
 2. `_run_bash()` 逐字符读取子进程输出，同时 append 写入 output_file（每块 flush）
 3. 前端通过 stream API 轮询文件新增内容，实现实时显示
 4. **Session 只保存元信息**（`_meta.file_size`、`_meta.truncated`、`_meta.output_path` 等），内容按需内联或外部存储
-5. 发送 LLM 前，`_load_external_tool_results()` 从外部文件按需读取内容注入消息中
+5. 发送 LLM 前，`_resolve_tool_results()`（`core/session_runner_runtime/runner.py`）从外部文件按需读取内容注入消息中
 6. 处理两种情况：
    - 正常输出：直接读取文件内容
    - 截断输出（>10K 字符）：读取后截断 + 引导语
@@ -202,12 +202,12 @@ Agent 执行日志独立存储在子目录中：
 
 ## 三、核心类
 
-### 3.1 SessionManager
+### 3.1 SessionStore
 
 会话管理器，每个会话对应一个实例。
 
 ```python
-class SessionManager:
+class SessionStore:
     session_id: str                 # 8 位十六进制 ID
     sessions_dir: Path              # 工作区级 sessions 目录
     session_dir: Path               # 当前会话目录
@@ -276,13 +276,13 @@ def add_message(self, ...):
 
 ```python
 # 创建新会话
-session = SessionManager.create_new_session(sessions_dir, name="新会话")
+session = SessionStore.create_new_session(sessions_dir, name="新会话")
 
 # 加载已存在的会话
-session = SessionManager.load_session(session_id, sessions_dir)
+session = SessionStore.load_session(session_id, sessions_dir)
 
 # 列出所有会话
-sessions = SessionManager.list_sessions(sessions_dir)
+sessions = SessionStore.list_sessions(sessions_dir)
 # 返回: [{"session_id": "...", "name": "...", "created_at": "...", "updated_at": "...", "usage": {...}, "agent_count": 0, ...}]
 # 注意：metadata 中的所有字段会被展开到顶层（**metadata）
 ```
@@ -349,7 +349,7 @@ Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与�
         {
             "type": "tool_use",
             "id": "toolu_sub_001",
-            "name": "agent",
+            "name": "session",
             "input": {"task": "优化爬虫性能"}
         }
     ]
@@ -364,7 +364,7 @@ Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与�
             "tool_use_id": "toolu_sub_001",
             "content": "{\"status\": \"completed\", ...}",
             "_meta": {
-                "tool_name": "agent",
+                "tool_name": "session",
                 "exec_id": "exec_a1b2c3d4",
                 "completed": true
             }
@@ -446,7 +446,7 @@ def _persist(self) -> None:
 
 ### 6.2 加载时机
 
-SessionManager 不会自动保存，需要显式调用 `save()`：
+SessionStore 不会自动保存，需要显式调用 `save()`：
 
 ```python
 # 添加消息
@@ -463,7 +463,7 @@ session.save()
 ### 6.3 加载会话
 
 ```python
-session = SessionManager.load_session(session_id, sessions_dir)
+session = SessionStore.load_session(session_id, sessions_dir)
 if session is None:
     print("会话不存在")
 ```
@@ -560,12 +560,12 @@ usage = session.get_usage()
 
 ## 十、与 Master SessionRunner 集成
 
-### 10.1 Master SessionRunner 使用 SessionManager
+### 10.1 Master SessionRunner 使用 SessionStore
 
 ```python
-# 统一 Agent（master 角色，interactive 模式）
-agent = Agent(config, role="master", cwd=cwd, workspace_uuid=workspace_uuid)
-# 内部：runner.session = SessionManager(session_id, sessions_dir)
+# 统一 SessionRunner（master 角色，interactive 模式）
+agent = SessionRunner(config, role="master", cwd=cwd, workspace_uuid=workspace_uuid)
+# 内部：runner.session = SessionStore(session_id, sessions_dir)
 
 def run(agent, user_input):
     # 1. 添加用户消息
@@ -603,8 +603,8 @@ from core.config import get_workspace_data_dir
 agent = agents.get(workspace_uuid, session_id)
 if agent is None:
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
-    session = SessionManager.load_session(session_id, sessions_dir)
-    agent = Agent(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid, ...)
+    session = SessionStore.load_session(session_id, sessions_dir)
+    agent = SessionRunner(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid, ...)
     agents[key] = agent
 
 # 发送消息
@@ -616,13 +616,13 @@ async def send_message():
 @app.get("/api/workspaces/{uuid}/sessions")
 def list_sessions(uuid):
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
-    return SessionManager.list_sessions(sessions_dir)
+    return SessionStore.list_sessions(sessions_dir)
 
 # 获取会话详情
 @app.get("/api/workspaces/{uuid}/sessions/{id}")
 def get_session(uuid, id):
     sessions_dir = workspace_dir / "sessions"
-    session = SessionManager.load_session(id, sessions_dir)
+    session = SessionStore.load_session(id, sessions_dir)
     return session.to_dict()
 ```
 
@@ -667,10 +667,12 @@ def get_session(uuid, id):
 
 | 文件 | 职责 |
 |------|------|
-| `core/session.py` | SessionManager 实现（三件套持久化、消息/使用量管理、Agent 日志） |
+| `core/session.py` | SessionStore 实现（三件套持久化、消息/使用量管理、Agent 日志） |
 | `core/compression.py` | 独立压缩模块（共享压缩函数，各角色共用） |
-| `core/session_runner.py` | 统一 Agent（master 交互式使用 SessionManager；worker/lite 自主式使用子目录日志） |
-| `web/web_api.py` | 提供会话管理 API |
+| `core/session_runner.py` | 统一 SessionRunner（master 交互式使用 SessionStore；worker/lite 自主式使用子目录日志） |
+| `web/routes_workspace.py` | 会话/工作区管理 API（列表、创建、详情、重命名、删除、executions） |
+| `web/routes_chat.py` | 消息发送 + SSE 流式 + 工具输出实时流 |
+| `web/deps.py` | 共享依赖（runner 获取、工具结果注入、SSE 事件推送） |
 | `web/static/app.js` | 前端会话列表和消息展示 |
 
 ---

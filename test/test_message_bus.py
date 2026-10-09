@@ -1,32 +1,32 @@
-"""Tests for MessageBus tool and module."""
+"""Tests for AgentMailbox tool and module."""
 
 import pytest
-from core.message_bus import MessageBus, get_message_bus, stop_message_bus
+from core.agent_mailbox import AgentMailbox, get_agent_mailbox, stop_agent_mailbox
 
 
 class TestMessageBusModule:
-    """MessageBus singleton and core operations."""
+    """AgentMailbox singleton and core operations."""
 
     def setup_method(self):
         """Reset singleton before each test."""
-        stop_message_bus()
+        stop_agent_mailbox()
 
     def teardown_method(self):
-        stop_message_bus()
+        stop_agent_mailbox()
 
-    def test_get_message_bus_singleton(self):
-        bus1 = get_message_bus()
-        bus2 = get_message_bus()
+    def test_get_agent_mailbox_singleton(self):
+        bus1 = get_agent_mailbox()
+        bus2 = get_agent_mailbox()
         assert bus1 is bus2
 
     def test_stop_and_recreate(self):
-        bus1 = get_message_bus()
-        stop_message_bus()
-        bus2 = get_message_bus()
+        bus1 = get_agent_mailbox()
+        stop_agent_mailbox()
+        bus2 = get_agent_mailbox()
         assert bus1 is not bus2
 
     def test_send_and_receive(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("sess_a")
         bus.register_session("sess_b")
         bus.send("sess_a", "sess_b", "Hello!")
@@ -36,7 +36,7 @@ class TestMessageBusModule:
         assert messages[0]["sender_session_id"] == "sess_a"
 
     def test_receive_marks_read(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.register_session("b")
         bus.send("a", "b", "msg1")
@@ -45,7 +45,7 @@ class TestMessageBusModule:
         assert bus.receive("b") == []
 
     def test_has_unread(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.register_session("b")
         assert not bus.has_unread("b")
@@ -55,7 +55,7 @@ class TestMessageBusModule:
         assert not bus.has_unread("b")
 
     def test_unread_count(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.register_session("b")
         bus.send("a", "b", "msg1")
@@ -65,7 +65,7 @@ class TestMessageBusModule:
         assert bus.unread_count("b") == 0
 
     def test_list_sessions(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a", "Session A")
         bus.register_session("b", "Session B")
         bus.send("a", "b", "hello")
@@ -76,7 +76,7 @@ class TestMessageBusModule:
         assert "b" in names
 
     def test_clear_messages(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.send("a", "a", "msg1")
         bus.send("a", "a", "msg2")
@@ -85,7 +85,7 @@ class TestMessageBusModule:
         assert bus.receive("a") == []
 
     def test_unregister_session(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.send("a", "a", "msg")
         bus.unregister_session("a")
@@ -93,7 +93,7 @@ class TestMessageBusModule:
 
     def test_send_to_unregistered_is_dropped(self):
         """T21：未注册目标不自动建队列，send 返回 False，消息被丢弃。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         ok = bus.send("a", "b", "hello")
         assert ok is False
@@ -102,7 +102,7 @@ class TestMessageBusModule:
         assert bus.receive("b") == []
 
     def test_send_to_registered_succeeds(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_session("a")
         bus.register_session("b")
         ok = bus.send("a", "b", "hello")
@@ -112,14 +112,14 @@ class TestMessageBusModule:
     # ========== Agent 级测试 ==========
 
     def test_register_agent(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
         assert bus.get_agent_session("worker-1") == "session-1"
         assert "worker-1" in bus.get_session_agents("session-1")
 
     def test_register_agent_creates_session_queue(self):
         """register_agent 应自动创建 session 消息队列。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
         # session 应该存在且可接收消息
         agents = bus.list_agents()
@@ -129,7 +129,7 @@ class TestMessageBusModule:
 
     def test_register_multiple_agents_same_session(self):
         """exec_id 和 label 可以同时映射到同一个 session。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("agent-1", "session-1")
         bus.register_agent("translate-doc", "session-1")
         assert bus.get_agent_session("agent-1") == "session-1"
@@ -138,7 +138,7 @@ class TestMessageBusModule:
         assert set(agents) == {"agent-1", "translate-doc"}
 
     def test_unregister_agent(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
         bus.unregister_agent("worker-1")
         assert bus.get_agent_session("worker-1") is None
@@ -146,7 +146,7 @@ class TestMessageBusModule:
 
     def test_unregister_agent_preserves_session(self):
         """unregister_agent 不应清除 session 消息队列。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
         bus.send_to_agent("master", "worker-1", "hello")
         bus.unregister_agent("worker-1")
@@ -155,7 +155,7 @@ class TestMessageBusModule:
         assert len(msgs) == 1
 
     def test_send_to_agent(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("master", "sess-master")
         bus.register_agent("worker-1", "sess-worker")
         ok = bus.send_to_agent("master", "worker-1", "do task")
@@ -167,7 +167,7 @@ class TestMessageBusModule:
 
     def test_send_to_agent_with_label_alias(self):
         """通过 label 别名发送消息。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("master", "sess-master")
         bus.register_agent("agent-1", "sess-worker")
         bus.register_agent("translate-doc", "sess-worker")
@@ -178,13 +178,13 @@ class TestMessageBusModule:
         assert msgs[0]["content"] == "start now"
 
     def test_send_to_unregistered_agent_fails(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("master", "sess-master")
         ok = bus.send_to_agent("master", "nonexistent", "hello")
         assert ok is False
 
     def test_list_agents(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("master", "sess-master")
         bus.register_agent("worker-1", "sess-worker")
         bus.send_to_agent("master", "worker-1", "task 1")
@@ -200,14 +200,14 @@ class TestMessageBusModule:
         assert master_entry["unread_count"] == 0
 
     def test_get_session_agent(self):
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "sess-1")
         assert bus.get_session_agent("sess-1") == "worker-1"
         assert bus.get_session_agent("nonexistent") is None
 
     def test_unregister_session_cleans_agent_registry(self):
         """unregister_session 应同时清理 agent 注册表。"""
-        bus = MessageBus()
+        bus = AgentMailbox()
         bus.register_agent("worker-1", "sess-1")
         bus.unregister_session("sess-1")
         assert bus.get_agent_session("worker-1") is None
@@ -218,20 +218,20 @@ class TestMessageBusTool:
     """MessageBusTool actions."""
 
     def setup_method(self):
-        stop_message_bus()
-        from core.message_bus import get_message_bus
-        self.bus = get_message_bus()
+        stop_agent_mailbox()
+        from core.agent_mailbox import get_agent_mailbox
+        self.bus = get_agent_mailbox()
 
     def teardown_method(self):
-        stop_message_bus()
+        stop_agent_mailbox()
 
     def _make_tool(self, session_id="test-session"):
-        from core.session import SessionManager
+        from core.session import SessionStore
         from core.tools.message_bus_tool import MessageBusTool
         import tempfile
         from pathlib import Path
         tmp = Path(tempfile.mkdtemp())
-        sm = SessionManager(session_id, tmp)
+        sm = SessionStore(session_id, tmp)
         return MessageBusTool(session=sm)
 
     def test_send_action(self):

@@ -1,4 +1,4 @@
-"""Chat / SSE 流 / Agent 控制 路由域（ask_user 答案处理见 routes_ask_user）。"""
+"""Chat / SSE 流 / Runner 控制 路由域（ask_user 答案处理见 routes_ask_user）。"""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from core.config import load_config, get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.memory_pipeline import memory_enabled, schedule_extraction
-from core.session import SessionManager
+from core.session import SessionStore
 
 from web.deps import (
-    sessions, _get_or_create_runner, _require_workspace,
+    master_runners, _get_or_create_runner, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
 )
@@ -43,12 +43,12 @@ class RevertRequest(BaseModel):
     msg_id: str  # 要撤销到的消息 ID
 
 
-def _get_session(workspace_uuid: str, session_id: str) -> SessionManager | None:
-    """Load a SessionManager for the given session (lightweight, no master Agent)."""
+def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
+    """Load a SessionStore for the given session (lightweight, no master runner)."""
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
     if not sessions_dir.exists():
         return None
-    return SessionManager.load_session(session_id, sessions_dir)
+    return SessionStore.load_session(session_id, sessions_dir)
 
 
 # ----- Tool Output Streaming -----
@@ -83,7 +83,7 @@ async def stream_tool_output(
         raise HTTPException(status_code=404, detail="Session not found")
 
     # 查找匹配 {tool_use_id}.txt 或 {tool_use_id}_*.txt 的文件
-    # 同时在 session 目录和 exec_* 子目录中搜索（Agent 的输出在 exec_* 目录）
+    # 同时在 session 目录和 exec_* 子目录中搜索（子代理的输出在 exec_* 目录）
     matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
     # 搜索 exec_* 子目录
     for exec_dir in session_dir.glob("exec_*"):
@@ -120,7 +120,7 @@ async def stream_tool_output(
 
 @router.get("/api/events")
 async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
-    """全局 SSE 事件流：实时推送 worker 子 agent 消息与工具输出增量。
+    """全局 SSE 事件流：实时推送 worker 子代理消息与工具输出增量。
 
     与现有 POST SSE（request-scoped，只能推 master 同步事件）互补——事件总线
     广播后台线程产生的异步事件（worker 逐 token 消息、工具实时输出），
@@ -175,7 +175,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 **工具使用：**
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
 """
-        # Save to session via SessionManager
+        # Save to session via SessionStore
         sm = _get_session(workspace_uuid, session_id)
         if sm:
             sm.add_message("user", content, flush=False)
@@ -187,7 +187,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         usage = runner.get_usage()
 
-        # 使用 agent 内部的 token 计数方法（更准确）
+        # 使用 runner 内部的 token 计数方法（更准确）
         messages = runner.session.get_valid_messages()
         context_tokens = runner._count_messages_tokens(messages)
         body_size = runner._estimate_request_body_size(messages)
@@ -211,7 +211,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - **预填充速度：** {usage.get('prefill_speed', 0):,.2f} tokens/s
 - **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
 """
-        # Save to session via SessionManager
+        # Save to session via SessionStore
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
         runner.session.save()
@@ -307,7 +307,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
-    # Normal message - send to agent
+    # Normal message - send to runner
     runner = await _get_or_create_runner(workspace_uuid, session_id)
 
     # Prevent concurrent execution on the same session
@@ -332,15 +332,15 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             if not _inject_ask_user_answer(runner, pending_ask_user_id, ask_user_answer):
                 pending_ask_user_id = None  # 竞态：占位符已消失，回退普通消息
 
-    # Use a queue to bridge sync agent callbacks → async SSE generator
+    # Use a queue to bridge sync runner callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
     cb = _make_sse_callbacks(event_queue, runner)
 
     async def generate():
-        # Run the agent loop in a background thread
+        # Run the runner loop in a background thread
         loop = asyncio.get_running_loop()
 
-        def run_agent():
+        def run_runner():
             try:
                 if pending_ask_user_id is not None:
                     # 用户输入已作为 ask_user 的"其他"回复注入占位 tool_result。
@@ -420,7 +420,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 except Exception:
                     logger.exception("Failed to schedule git auto-commit")
             except Exception as e:
-                logger.error(f"master Agent error: {e}")
+                logger.error(f"master runner error: {e}")
                 # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
                 try:
                     sm = getattr(runner, "session", None)
@@ -435,7 +435,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 _release_session_run(session_key)
                 event_queue.put(None)  # sentinel: done
 
-        task = asyncio.ensure_future(loop.run_in_executor(None, run_agent))
+        task = asyncio.ensure_future(loop.run_in_executor(None, run_runner))
 
         # Stream events from queue to client (use to_thread to avoid blocking the event loop)
         try:
@@ -449,11 +449,11 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 except queue.Empty:
                     continue
         except asyncio.CancelledError:
-            # Client disconnected — let the agent keep running in the background.
-            # The agent only stops when the user explicitly clicks the stop button
+            # Client disconnected — let the runner keep running in the background.
+            # The runner only stops when the user explicitly clicks the stop button
             # (which calls the /stop endpoint). This prevents browser refresh or
             # network glitches from aborting long-running tasks.
-            logger.info("Client disconnected, agent continues running in background")
+            logger.info("Client disconnected, runner continues running in background")
             return
 
         # Send done signal
@@ -463,26 +463,26 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop")
-async def stop_agent(workspace_uuid: str, session_id: str):
-    """Stop the currently running agent for a session."""
+async def stop_runner(workspace_uuid: str, session_id: str):
+    """Stop the currently running runner for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in sessions:
-        return {"success": False, "message": "没有正在运行的 master Agent"}
+    if key not in master_runners:
+        return {"success": False, "message": "没有正在运行的 master runner"}
 
-    runner = sessions[key]
+    runner = master_runners[key]
     if not runner.is_running():
-        return {"success": False, "message": "master Agent 当前未在运行"}
+        return {"success": False, "message": "master runner 当前未在运行"}
 
     runner.stop()
     return {"success": True, "message": "已发送停止信号"}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/resume")
-async def resume_agent(workspace_uuid: str, session_id: str):
-    """Resume agent processing if there are pending notifications.
+async def resume_runner(workspace_uuid: str, session_id: str):
+    """Resume runner processing if there are pending notifications.
 
-    Called by frontend when background agent completes and master is idle.
-    Drains notifications from message_bus and continues the agent loop.
+    Called by frontend when a background sub-agent completes and master is idle.
+    Drains notifications from message_bus and continues the runner loop.
     """
     from web.deps import _claim_session_run, _release_session_run, _make_sse_callbacks, _is_session_idle
     import asyncio
@@ -494,7 +494,7 @@ async def resume_agent(workspace_uuid: str, session_id: str):
         return {"success": False, "message": "会话正在运行"}
 
     # Check if there are pending notifications in message_bus
-    runner = sessions.get(key)
+    runner = master_runners.get(key)
     if not runner:
         return {"success": False, "message": "会话不存在"}
 
@@ -503,8 +503,8 @@ async def resume_agent(workspace_uuid: str, session_id: str):
         return {"success": False, "message": "会话 ID 不存在"}
 
     try:
-        from core.message_bus import get_message_bus
-        mbus = get_message_bus()
+        from core.agent_mailbox import get_agent_mailbox
+        mbus = get_agent_mailbox()
         has_unread = mbus.has_unread(session_id_check)
     except Exception:
         has_unread = False
@@ -516,12 +516,12 @@ async def resume_agent(workspace_uuid: str, session_id: str):
     if not _claim_session_run(key):
         return {"success": False, "message": "无法认领会话"}
 
-    # Run agent in background thread
+    # Run runner in background thread
     async def run_and_stream():
         event_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
         callbacks = _make_sse_callbacks(event_queue, runner)
 
-        def run_agent():
+        def run_runner():
             try:
                 runner.run(
                     on_text=callbacks.on_text,
@@ -532,13 +532,13 @@ async def resume_agent(workspace_uuid: str, session_id: str):
                     on_session_complete=callbacks.on_session_complete,
                 )
             except Exception as e:
-                logger.error(f"Resume agent error: {e}")
+                logger.error(f"Resume runner error: {e}")
             finally:
                 _release_session_run(key)
                 event_queue.put(None)
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_agent)
+        await loop.run_in_executor(None, run_runner)
 
         # Drain remaining events
         while True:
@@ -559,23 +559,23 @@ async def resume_agent(workspace_uuid: str, session_id: str):
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = f"{workspace_uuid}:{session_id}"
-    runner = sessions.get(key)
+    runner = master_runners.get(key)
 
-    # 如果 agent 存在且正在运行，拒绝操作
-    if runner.is_running():
-        raise HTTPException(400, "Agent 正在运行中，无法撤销")
+    # 如果 runner 存在且正在运行，拒绝操作
+    if runner and runner.is_running():
+        raise HTTPException(400, "Runner 正在运行中，无法撤销")
 
     msg_id = request.msg_id
 
-    # 优先使用内存中的 agent（revert 会原地截断共享 messages 并物理截断 jsonl）
+    # 优先使用内存中的 runner（revert 会原地截断共享 messages 并物理截断 jsonl）
     if runner:
         try:
             deleted_count = runner.session.revert_to_message(msg_id)
         except ValueError as e:
             raise HTTPException(404, str(e))
-    # 如果 agent 不在内存中，直接从磁盘读取并迁移/重建
+    # 如果 runner 不在内存中，直接从磁盘读取并迁移/重建
     else:
-        sm = SessionManager(session_id, ws_dir / "sessions")
+        sm = SessionStore(session_id, ws_dir / "sessions")
         if not sm.load():
             raise HTTPException(404, "Session not found")
         try:
@@ -587,11 +587,11 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/status")
-async def get_agent_status(workspace_uuid: str, session_id: str):
-    """Check if an agent is running for a session."""
+async def get_runner_status(workspace_uuid: str, session_id: str):
+    """Check if a runner is running for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in sessions:
+    if key not in master_runners:
         return {"running": False}
 
-    runner = sessions[key]
+    runner = master_runners[key]
     return {"running": runner.is_running()}

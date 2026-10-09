@@ -292,17 +292,17 @@ class SessionTool(Tool):
         # 进度事件发布回调（_save_progress 调用时广播 iterations/message_count/tool_call_count）
         runner._event_publisher = lambda ev_type, **kw: self._publish(ev_type, **kw)
 
-        # 注册子 runner 到 MessageBus（支持 runner 级消息传递）
+        # 注册子 runner 到 AgentMailbox（支持 runner 级消息传递）
         # exec_id 作为主地址，label 作为可选别名
         sub_runner_session_id = exec_id  # autonomous 模式 session_id = exec_id
         try:
-            from core.message_bus import get_message_bus
-            mbus = get_message_bus()
+            from core.agent_mailbox import get_agent_mailbox
+            mbus = get_agent_mailbox()
             mbus.register_agent(exec_id, sub_runner_session_id)
             if label and label != exec_id:
                 mbus.register_agent(label, sub_runner_session_id)
         except Exception as e:
-            logger.warning(f"Failed to register sub-runner with MessageBus: {e}")
+            logger.warning(f"Failed to register sub-runner with AgentMailbox: {e}")
 
         # Background mode
         if run_in_background:
@@ -323,7 +323,7 @@ class SessionTool(Tool):
                 result["message_count"] = len(runner.messages)
                 entry["result"] = result
 
-                # Save Agent execution log via SessionManager
+                # Save Agent execution log via SessionStore
                 # worker/lite 的 session 是 _SessionRef（无 agent_logs），跳过
                 if self.session and exec_id and hasattr(self.session, "agent_logs"):
                     try:
@@ -364,14 +364,14 @@ class SessionTool(Tool):
                 entry["result"] = {"status": "error", "summary": str(e), "iterations": 0}
             finally:
                 runner.close()
-                # 注销子代理的 MessageBus 注册（exec_id + 所有别名如 label）
+                # 注销子代理的 AgentMailbox 注册（exec_id + 所有别名如 label）
                 try:
-                    from core.message_bus import get_message_bus
-                    mbus = get_message_bus()
+                    from core.agent_mailbox import get_agent_mailbox
+                    mbus = get_agent_mailbox()
                     for agent_name in mbus.get_session_agents(exec_id):
                         mbus.unregister_agent(agent_name)
                 except Exception as e:
-                    logger.warning(f"Failed to unregister sub-runner from MessageBus: {e}")
+                    logger.warning(f"Failed to unregister sub-runner from AgentMailbox: {e}")
                 # Persist main session after sub-runner writes.
                 # worker/lite 的 _SessionRef 无 save()：此处若抛异常，
                 # 下方 event.set() 永不执行，委派方会永久阻塞在 event.wait(3600)。

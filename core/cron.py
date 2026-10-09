@@ -460,7 +460,7 @@ class CronTask:
         优先使用 state 中保存的 session_id；如果 session 已不存在，创建新的。
         新建 session 名字为 "[Cron] 任务描述"。
         """
-        from core.session import SessionManager
+        from core.session import SessionStore
 
         # 1. 尝试使用已保存的 session_id
         if self._session_id:
@@ -474,7 +474,7 @@ class CronTask:
 
         # 2. 创建新 session，名字用任务描述
         session_name = f"[Cron] {self.description}" if self.description else f"[Cron] {self.name}"
-        session_mgr = SessionManager.create_new_session(sessions_dir, name=session_name)
+        session_mgr = SessionStore.create_new_session(sessions_dir, name=session_name)
         self._session_id = session_mgr.session_id
         logger.info(f"[cron] Task {self.name}: created new session {self._session_id} ({session_name})")
         return self._session_id

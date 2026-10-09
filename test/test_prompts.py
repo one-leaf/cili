@@ -25,7 +25,7 @@ class TestPrompts:
 
     def test_environment_context_basic(self):
         """context 层包含 workspace/cwd 与当前日期。"""
-        from core.prompts import build_environment_context
+        from core.prompt_sections import build_environment_context
         ctx = build_environment_context("test-uuid-123", "/test/workspace")
         assert "test-uuid-123" in ctx
         assert "/test/workspace" in ctx
@@ -33,7 +33,7 @@ class TestPrompts:
 
     def test_environment_context_contains_memory_dir(self):
         """context 层包含 memory/knowledge/skills 说明。"""
-        from core.prompts import build_environment_context
+        from core.prompt_sections import build_environment_context
         ctx = build_environment_context("test-uuid", "/cwd")
         assert "memory" in ctx.lower()
         assert "knowledge" in ctx.lower()
@@ -42,7 +42,7 @@ class TestPrompts:
 
     def test_environment_context_shell_table(self):
         """context 层含三个 shell 环境的区分表格。"""
-        from core.prompts import build_environment_context
+        from core.prompt_sections import build_environment_context
         ctx = build_environment_context("u", "/cwd")
         assert "bash" in ctx
         assert "pwsh" in ctx
@@ -52,19 +52,19 @@ class TestPrompts:
 
     def test_find_instructions_none(self, tmp_path):
         """无指令文件时返回 None。"""
-        from core.prompts import find_project_instructions
+        from core.prompt_sections import find_project_instructions
         assert find_project_instructions(str(tmp_path)) is None
 
     def test_find_instructions_priority(self, tmp_path):
         """agent.md 优先于 CLAUDE.md。"""
-        from core.prompts import find_project_instructions
+        from core.prompt_sections import find_project_instructions
         (tmp_path / "CLAUDE.md").write_text("claude content", encoding="utf-8")
         (tmp_path / "agent.md").write_text("agent content", encoding="utf-8")
         assert find_project_instructions(str(tmp_path)) == "agent content"
 
     def test_build_instructions_message_wraps(self, tmp_path):
         """指令文件被 <system-reminder> 包装为 user 消息。"""
-        from core.prompts import build_instructions_message
+        from core.prompt_sections import build_instructions_message
         (tmp_path / "CLAUDE.md").write_text("do the thing", encoding="utf-8")
         msg = build_instructions_message(str(tmp_path))
         assert msg is not None
@@ -74,7 +74,7 @@ class TestPrompts:
 
     def test_build_instructions_message_none(self, tmp_path):
         """无指令文件时返回 None。"""
-        from core.prompts import build_instructions_message
+        from core.prompt_sections import build_instructions_message
         assert build_instructions_message(str(tmp_path)) is None
 
     # -- build_system_prompt (块拼装) --
@@ -149,11 +149,11 @@ class TestPrompts:
     def test_system_prompt_master_has_no_placeholders(self):
         """master 固定文案不含动态占位符（动态内容走 context 层）。"""
         from core.prompt_builder import build_system_prompt
-        from core.session_runner_config import load_runner_role
+        from core.role_config import load_role
         from types import SimpleNamespace
         config = SimpleNamespace(model=SimpleNamespace(),
                                  system=SimpleNamespace(max_iterations=50))
-        role_cfg = load_runner_role("master", config)
+        role_cfg = load_role("master", config)
         runner = self._make_fake_runner(role_cfg.system_prompt["blocks"])
         # context 块需要 workspace_uuid 和 cwd
         runner.workspace_uuid = "test-workspace"

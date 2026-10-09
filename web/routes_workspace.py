@@ -1,4 +1,4 @@
-"""Workspace + Session + Agent Execution 路由域。"""
+"""Workspace + Session + 子代理执行日志 路由域。"""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ from core.config import (
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
-    MESSAGES_FILE, META_FILE, SessionManager,
+    MESSAGES_FILE, META_FILE, SessionStore,
     _drop_session_lock, load_history_messages,
     load_history_meta, preview_from_messages, read_jsonl, read_meta,
 )
 from core.tools.base import Tool
 
 from web.deps import (
-    sessions, _runner_access, _sessions_lock, _list_all_workspaces,
+    master_runners, _runner_access, _sessions_lock, _list_all_workspaces,
     _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
     _validate_session_id, _validate_workspace_uuid,
     _get_workspace_info,
@@ -142,19 +142,19 @@ def _remove_workspace_data(workspace_uuid: str) -> None:
     shutil.rmtree(ws_data_dir)
 
 
-def _cleanup_agents_for_workspace(workspace_uuid: str) -> None:
-    """Remove sessions belonging to the given workspace from the sessions dict.
+def _cleanup_runners_for_workspace(workspace_uuid: str) -> None:
+    """Remove runners belonging to the given workspace from master_runners.
 
     Must be called under _sessions_lock.
     """
-    keys_to_remove = [k for k in sessions if k.startswith(f"{workspace_uuid}:")]
+    keys_to_remove = [k for k in master_runners if k.startswith(f"{workspace_uuid}:")]
     for key in keys_to_remove:
-        evicted = sessions.pop(key)
+        evicted = master_runners.pop(key)
         _runner_access.pop(key, None)
         try:
             evicted.cleanup()
         except Exception as e:
-            logger.warning(f"[master Agent] 清理 master Agent {key} 失败: {e}")
+            logger.warning(f"[master runner] 清理 master runner {key} 失败: {e}")
 
 
 @router.delete("/api/workspaces/{workspace_uuid}")
@@ -164,7 +164,7 @@ async def delete_workspace(workspace_uuid: str):
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
     async with _sessions_lock:
-        _cleanup_agents_for_workspace(workspace_uuid)
+        _cleanup_runners_for_workspace(workspace_uuid)
     _remove_workspace_data(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
     return {"success": True}
@@ -213,7 +213,7 @@ async def reset_workspace(workspace_uuid: str):
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
     async with _sessions_lock:
-        _cleanup_agents_for_workspace(workspace_uuid)
+        _cleanup_runners_for_workspace(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
     logger.info(f"Workspace config removed: {workspace_uuid} (data and files kept)")
     return {"success": True}
@@ -336,7 +336,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
     if not sessions_dir.exists():
         return {"sessions": []}
 
-    sessions = []
+    session_list = []
     for session_dir in sessions_dir.iterdir():
         if not session_dir.is_dir():
             continue
@@ -354,7 +354,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
                 message_count = meta.get("message_count", 0)
                 if "preview" not in meta or "message_count" not in meta:
                     preview, message_count = _scan_session_brief(session_dir)
-                sessions.append({
+                session_list.append({
                     "session_id": meta.get("session_id") or session_dir.name,
                     "name": meta.get("name", "Unnamed"),
                     "created_at": metadata.get("created_at", ""),
@@ -372,7 +372,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
                 if not isinstance(old_messages, list):
                     old_messages = []
                 metadata = old.get("metadata", {})
-                sessions.append({
+                session_list.append({
                     "session_id": old.get("session_id") or session_dir.name,
                     "name": old.get("name", "Unnamed"),
                     "created_at": metadata.get("created_at", ""),
@@ -386,8 +386,8 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
         except Exception as e:
             logger.error(f"Failed to read session {index_file}: {e}")
 
-    sessions.sort(key=lambda s: s.pop("_mtime"), reverse=True)
-    return {"sessions": sessions}
+    session_list.sort(key=lambda s: s.pop("_mtime"), reverse=True)
+    return {"sessions": session_list}
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
@@ -512,7 +512,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                     block["content"] = f"[非法 output_path: {output_path}]"
                     continue
                 if not file_path.exists():
-                    # 尝试在 Agent 执行目录中查找（exec_* 位于 session 目录内）
+                    # 尝试在子代理执行目录中查找（exec_* 位于 session 目录内）
                     exec_dirs = list(session_dir.glob("exec_*"))
                     found = False
                     for exec_dir in exec_dirs:
@@ -552,7 +552,7 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
     """Create a new session."""
     sessions_dir = ws_dir / "sessions"
     try:
-        session = SessionManager.create_new_session(sessions_dir, request.name)
+        session = SessionStore.create_new_session(sessions_dir, request.name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {e}")
 
@@ -571,11 +571,11 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     shutil.rmtree(session_dir)
     _drop_session_lock(session_dir)
 
-    # Remove from sessions dict (under lock)
+    # Remove from master_runners dict (under lock)
     key = f"{workspace_uuid}:{session_id}"
     async with _sessions_lock:
-        if key in sessions:
-            evicted = sessions.pop(key)
+        if key in master_runners:
+            evicted = master_runners.pop(key)
             _runner_access.pop(key, None)
             try:
                 evicted.cleanup()
@@ -597,9 +597,9 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        runner = sessions.get(key)
+        runner = master_runners.get(key)
         if runner:
-            # agent 已加载：经 rename() 改内存并置脏（递增版本号），落盘不短路
+            # runner 已加载：经 rename() 改内存并置脏（递增版本号），落盘不短路
             runner.session.rename(request.name)
             return {"success": True}
 
@@ -625,7 +625,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        runner = sessions.get(key)
+        runner = master_runners.get(key)
         if runner:
             runner.session.set_hidden(request.hidden)
             return {"success": True}
@@ -677,13 +677,13 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
     return {"success": True, "results": results}
 
 
-# ----- Agent Executions -----
+# ----- 子代理执行日志 -----
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions")
 async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """List all sub-agent executions for a session."""
     sessions_dir = ws_dir / "sessions"
-    sm = SessionManager.load_session(session_id, sessions_dir)
+    sm = SessionStore.load_session(session_id, sessions_dir)
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -697,7 +697,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     _validate_session_id(session_id)
     _validate_exec_id(exec_id)
     sessions_dir = ws_dir / "sessions"
-    sm = SessionManager.load_session(session_id, sessions_dir)
+    sm = SessionStore.load_session(session_id, sessions_dir)
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -719,7 +719,7 @@ async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, w
     _validate_session_id(session_id)
     _validate_exec_id(exec_id)
     sessions_dir = ws_dir / "sessions"
-    sm = SessionManager.load_session(session_id, sessions_dir)
+    sm = SessionStore.load_session(session_id, sessions_dir)
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -827,7 +827,7 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
         config = load_config()
         exec_id = f"gen-{secrets.token_hex(4)}"
 
-        # 创建 worker agent
+        # 创建 worker 子代理
         runner = SessionRunner(
             config=config,
             role="worker",

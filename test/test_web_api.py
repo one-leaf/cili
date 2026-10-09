@@ -136,25 +136,25 @@ class TestEvictIdleAgent:
     """_evict_idle_runner() LRU eviction logic."""
 
     def test_no_eviction_when_under_limit(self):
-        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
-        original_agents = dict(sessions)
+        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
+        original_agents = dict(master_runners)
         original_access = dict(_runner_access)
         try:
-            sessions.clear()
+            master_runners.clear()
             _runner_access.clear()
             _evict_idle_runner()  # Should not raise
         finally:
-            sessions.clear()
-            sessions.update(original_agents)
+            master_runners.clear()
+            master_runners.update(original_agents)
             _runner_access.clear()
             _runner_access.update(original_access)
 
     def test_evicts_oldest_idle(self):
-        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
-        original_agents = dict(sessions)
+        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
+        original_agents = dict(master_runners)
         original_access = dict(_runner_access)
         try:
-            sessions.clear()
+            master_runners.clear()
             _runner_access.clear()
 
             mock_agents = {}
@@ -163,40 +163,40 @@ class TestEvictIdleAgent:
                 agent.is_running.return_value = False
                 agent.cleanup.return_value = None
                 key = f"test-{i}"
-                sessions[key] = agent
+                master_runners[key] = agent
                 _runner_access[key] = 1000 + i
 
             _evict_idle_runner()
 
-            assert "test-0" not in sessions
-            assert len(sessions) == _MAX_RUNNERS + 2
+            assert "test-0" not in master_runners
+            assert len(master_runners) == _MAX_RUNNERS + 2
         finally:
-            sessions.clear()
-            sessions.update(original_agents)
+            master_runners.clear()
+            master_runners.update(original_agents)
             _runner_access.clear()
             _runner_access.update(original_access)
 
     def test_does_not_evict_running_agent(self):
-        from web.deps import _evict_idle_runner, sessions, _runner_access, _MAX_RUNNERS
-        original_agents = dict(sessions)
+        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
+        original_agents = dict(master_runners)
         original_access = dict(_runner_access)
         try:
-            sessions.clear()
+            master_runners.clear()
             _runner_access.clear()
 
             for i in range(_MAX_RUNNERS + 2):
                 agent = MagicMock()
                 agent.is_running.return_value = True
                 key = f"test-{i}"
-                sessions[key] = agent
+                master_runners[key] = agent
                 _runner_access[key] = 1000 + i
 
             _evict_idle_runner()
 
-            assert len(sessions) == _MAX_RUNNERS + 2
+            assert len(master_runners) == _MAX_RUNNERS + 2
         finally:
-            sessions.clear()
-            sessions.update(original_agents)
+            master_runners.clear()
+            master_runners.update(original_agents)
             _runner_access.clear()
             _runner_access.update(original_access)
 
@@ -285,8 +285,8 @@ class TestGlobalEvents:
     def test_master_on_tool_output_publishes_to_event_bus(self, monkeypatch, tmp_path):
         """回归：master 的 _on_tool_output 必须发布到事件总线。
 
-        此前 _get_or_create_runner 里 event bus 变量被后面的 get_message_bus() 闭包
-        晚绑定遮蔽成 MessageBus，publish 抛 AttributeError 被静默吞掉，
+        此前 _get_or_create_runner 里 event bus 变量被后面的 get_agent_mailbox() 闭包
+        晚绑定遮蔽成 AgentMailbox，publish 抛 AttributeError 被静默吞掉，
         导致前端收不到 master 执行 bash/python 的 tool_output 推流。
         """
         import asyncio
@@ -300,15 +300,15 @@ class TestGlobalEvents:
         monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
         # Agent._init_interactive 内部通过 get_workspace_data_dir 解析数据目录
         monkeypatch.setattr("core.config.get_workspace_data_dir", lambda uuid: tmp_path)
-        # 测试结束后清理全局 sessions 缓存，避免泄漏
-        monkeypatch.setattr(web_api, "sessions", {})
+        # 测试结束后清理全局 master_runners 缓存，避免泄漏
+        monkeypatch.setattr(web_api, "master_runners", {})
 
         async def run():
             agent = await web_api._get_or_create_runner(ws, sid)
             q = queue.Queue()
             get_event_bus().subscribe(q, ws, sid)
             try:
-                # 直接调用 master 工具输出回调，验证走事件总线而非 MessageBus
+                # 直接调用 master 工具输出回调，验证走事件总线而非 AgentMailbox
                 agent._on_tool_output("bash", "行 1\n", 7, "call_regress_1")
                 ev = q.get(timeout=1)
                 assert ev["type"] == "tool_output"

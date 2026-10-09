@@ -31,8 +31,8 @@ from core.config import (
     find_workspace_entry,
 )
 from core.event_bus import get_event_bus
-from core.message_bus import get_message_bus
-from core.session import SessionManager
+from core.agent_mailbox import get_agent_mailbox
+from core.session import SessionStore
 from core.tools.todo import get_todos_from_session
 
 # Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
@@ -42,12 +42,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global sessions dict: session_id -> SessionRunner (master)
-sessions: dict[str, SessionRunner] = {}
+# Global master_runners dict: session_id -> SessionRunner (master)
+master_runners: dict[str, SessionRunner] = {}
 # LRU tracking: key -> last access timestamp
 _runner_access: dict[str, float] = {}
 _MAX_RUNNERS = 20  # Maximum number of runners to keep in memory
-# Lock for concurrent access to sessions dict
+# Lock for concurrent access to master_runners dict
 _sessions_lock = asyncio.Lock()
 
 # Base directories
@@ -187,8 +187,8 @@ def _auto_init_global_config() -> None:
         logger.warning(f"Config error: {e}")
 
 
-# Initialize default workspace on startup
-DEFAULT_WORKSPACE_UUID = _ensure_default_workspace()
+# Initialize default workspace on startup (side effect only; return value unused)
+_ensure_default_workspace()
 
 # Auto-configure global model config on startup
 _auto_init_global_config()
@@ -217,23 +217,23 @@ def _list_all_workspaces() -> list[dict]:
 
 def _evict_idle_runner() -> None:
     """Evict the oldest non-running runner if runner count exceeds limit."""
-    if len(sessions) <= _MAX_RUNNERS:
+    if len(master_runners) <= _MAX_RUNNERS:
         return
     # Find the oldest non-running runner
     idle_keys = [
-        k for k in sessions
-        if not sessions[k].is_running()
+        k for k in master_runners
+        if not master_runners[k].is_running()
     ]
     if not idle_keys:
         return
     oldest = min(idle_keys, key=lambda k: _runner_access.get(k, 0))
-    logger.info(f"[master Agent LRU] 淘汰闲置 master Agent: {oldest}")
-    evicted = sessions.pop(oldest)
+    logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
+    evicted = master_runners.pop(oldest)
     _runner_access.pop(oldest, None)
     try:
         evicted.cleanup()
     except Exception as e:
-        logger.warning(f"[master Agent LRU] 清理被淘汰的 master Agent 失败: {e}")
+        logger.warning(f"[master runner LRU] 清理被淘汰的 master runner 失败: {e}")
 
 
 async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:
@@ -255,7 +255,7 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
     async with _sessions_lock:
         _runner_access[key] = time.time()
 
-        if key not in sessions:
+        if key not in master_runners:
             _evict_idle_runner()
             try:
                 config = load_config()  # 全局配置，不需要 workspace 参数
@@ -273,10 +273,10 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
                     runner.switch_session(session_id)
                     logger.info(f"Loaded existing session: {session_id}")
                 else:
-                    # 新会话：为请求的 id 直接新建 SessionManager 并立即落盘，
+                    # 新会话：为请求的 id 直接新建 SessionStore 并立即落盘，
                     # 避免默认会话 index.json 不迁移、旧目录 rmdir 静默失败残留（W15）
                     old_session_dir = runner.session.session_dir
-                    new_sm = SessionManager(session_id, runner.sessions_dir)
+                    new_sm = SessionStore(session_id, runner.sessions_dir)
                     new_sm.name = f"Session {session_id[:8]}"
                     new_sm.save(force=True)  # 新会话首次落盘：跳过脏标记短路
                     runner.session = new_sm
@@ -298,7 +298,7 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
                             pass
                     logger.info(f"Creating new session: {session_id}")
 
-            sessions[key] = runner
+            master_runners[key] = runner
 
             # 全局事件流：master 工具实时输出 → 事件总线（无 exec_id 表示 master 工具）
             bus = get_event_bus()
@@ -363,18 +363,18 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
             runner._default_on_tool_call = _default_on_tool_call
             runner._default_on_tool_result = _default_on_tool_result
 
-            # Register session with MessageBus for cross-session messaging
+            # Register session with AgentMailbox for cross-session messaging
             # （注意：不能复用变量名 bus——上方 _on_tool_output 闭包晚绑定捕获，
-            #  改名 mbus 防止把事件总线遮蔽成 MessageBus，导致 publish 属性缺失）
+            #  改名 mbus 防止把事件总线遮蔽成 AgentMailbox，导致 publish 属性缺失）
             try:
-                mbus = get_message_bus()
+                mbus = get_agent_mailbox()
                 mbus.register_session(session_id, runner.session.name)
                 # 同时注册为 runner（master 用 session_id 作为 runner 名字）
                 mbus.register_agent(session_id, session_id)
             except Exception as e:
-                logger.warning(f"Failed to register session with MessageBus: {e}")
+                logger.warning(f"Failed to register session with AgentMailbox: {e}")
 
-        return sessions[key]
+        return master_runners[key]
 
 
 # ---------- 会话运行认领（防 send_message/answer_ask_user 双循环 TOCTOU） ----------
@@ -395,7 +395,7 @@ def _claim_session_run(key: str) -> bool:
     with _session_run_claims_lock:
         if key in _session_run_claims:
             return False
-        runner = sessions.get(key)
+        runner = master_runners.get(key)
         if runner is not None and runner.is_running():
             return False
         _session_run_claims.add(key)
@@ -413,7 +413,7 @@ def _is_session_idle(key: str) -> bool:
     with _session_run_claims_lock:
         if key in _session_run_claims:
             return False
-        runner = sessions.get(key)
+        runner = master_runners.get(key)
         if runner is not None and runner.is_running():
             return False
         return True

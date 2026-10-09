@@ -67,7 +67,7 @@
 
 **触发条件**：`total_tokens > max_context_tokens * 0.80`
 
-**实现位置**：`core/base_session_runner.py::_perform_full_compact()`
+**实现位置**：`core/session_runner_runtime/runner.py::_perform_full_compact()`
 
 **策略**：
 1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 3`）
@@ -109,7 +109,7 @@
 
 **触发条件**：请求体 > 3MB（`MAX_BODY_SIZE = 3_000_000`）
 
-**实现位置**：`core/base_session_runner.py::_mark_old_images_invalid()`
+**实现位置**：`core/session_runner_runtime/runner.py::_mark_old_images_invalid()`
 
 **策略**：
 将图片**从旧到新依次替换为文本占位符**（`[image removed to reduce request size]`），每替换一张重新计算请求体大小，直到小于 3MB 或所有图片都已替换。
@@ -143,7 +143,7 @@
 
 **存储位置**：
 - Master（交互会话）：`{session_dir}/{tool_use_id}.txt` 或 `.json`
-- Worker/Lite（委派执行）：`{session_dir}/{exec_dir}/{tool_use_id}.txt` 或 `.json`
+- Worker/Lite（委派执行）：`{session_dir}/{tool_use_id}.txt` 或 `.json`（其 `session_dir` 本身即 `{主会话 session_dir}/{exec_id}/`，无额外 exec_dir 子层）
 
 **存储时机**：`Tool.execute()` 返回 `ToolResult` 时
 
@@ -151,7 +151,7 @@
 
 ### 4.2 按需读取
 
-`_load_external_tool_results()` 在发送 LLM 前读取外部文件，获取完整的工具输出内容。
+`core/session_runner_runtime/runner.py::_resolve_tool_results()` 在发送 LLM 前读取外部文件，获取完整的工具输出内容。
 
 ---
 
@@ -185,7 +185,7 @@ total += max(750, len(data) // 100)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `ERROR_RESULT_KEEP_RECENT` | 10 | Microcompact 保留的最近错误结果数 |
+| `_ERROR_RESULT_KEEP_RECENT` | 10 | Microcompact 保留的最近错误结果数（`core/compression.py`） |
 | `FULL_COMPACT_TOKEN_RATIO` | 0.80 | 触发 Full Compact 的 token 比例 |
 | `MAX_BODY_SIZE` | 3_000_000 | 触发 Emergency 的字节数（3MB） |
 
@@ -215,7 +215,7 @@ SessionRunner.run()（master 交互式 / worker、lite 自主式）
             │       │
             │       ├── _get_messages_with_header()
             │       │
-            │       ├── _load_external_tool_results()  ← 读取外部文件
+            │       ├── _resolve_tool_results()  ← 读取外部文件
             │       │
             │       └── HTTP 请求
             │
@@ -229,9 +229,10 @@ SessionRunner.run()（master 交互式 / worker、lite 自主式）
 | 文件 | 职责 |
 |------|------|
 | `core/compression.py` | 压缩函数（microcompact 标记、token 计数） |
-| `core/base_session_runner.py` | 三层压缩调用逻辑、`_load_external_tool_results()`、图片替换 |
-| `core/session_runner_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现 |
-| `core/tools/read.py` | 读取工具输出文件（替代旧的 `read_tool_result` 工具） |
+| `core/session_runner_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现、`_resolve_tool_results()`、图片替换 |
+| `core/base_session_runner.py` | 同名薄转发方法（委托给 `session_runner_runtime/runner.py`） |
+| `core/tools/read.py` | 读取工具输出文件（截断输出的完整内容按路径分批读取） |
+| `core/tools/read_tool_result.py` | 检索被压缩（microcompact）的旧工具结果（按 `tool_use_id`） |
 | `core/tools/base.py` | 工具输出外部存储 |
 
 ---
@@ -243,7 +244,7 @@ SessionRunner.run()（master 交互式 / worker、lite 自主式）
 Microcompact 不再对 tool_result 内容进行压缩或清空，只标记消息有效性。
 
 **原因**：
-- 简化逻辑，减少 `_load_external_tool_results` 的复杂性
+- 简化逻辑，减少 `_resolve_tool_results` 的复杂性
 - 内容保留在消息中，前端可直接展示完整历史
 - 错误结果对的整对标记保持 tool_use/tool_result 配对完整性
 

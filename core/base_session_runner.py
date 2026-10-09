@@ -1,7 +1,7 @@
 """BaseSessionRunner - unified runner loop shared by the single SessionRunner class.
 
 Provides shared infrastructure for runner execution:
-- Message management (self.messages, delegated to SessionContext)
+- Message management (self.messages, delegated to ConversationStore)
 - Tool execution / LLM calling / compression (delegated to Runner)
 
 `core.session_runner.SessionRunner` subclasses this and customizes behavior via role JSON
@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from core.session_runner_runtime.context import SessionContext
+from core.session_runner_runtime.context import ConversationStore
 from core.session_runner_runtime.runner import Runner, RETRY_CLEAR_SENTINEL
 from core.cache_state import CacheState
 from core.config import Config
@@ -60,7 +60,7 @@ class BaseSessionRunner:
 
         # 消息状态层：先建 context（Agent 的 _init_interactive 已在此前注入 session），
         # messages/_usage 属性转发到 context，保证后续所有直接赋值/读取一致
-        self.context = SessionContext(
+        self.context = ConversationStore(
             messages=[],
             session=getattr(self, "session", None),
             session_dir=session_dir,
@@ -134,15 +134,15 @@ class BaseSessionRunner:
         return Runner._convert_to_message_objects(messages)
 
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
-        """Add a message to internal message list (delegated to SessionContext)."""
+        """Add a message to internal message list (delegated to ConversationStore)."""
         self.context.add_message(role, content, meta)
 
     def save_messages(self, metadata: dict | None = None) -> None:
-        """Save messages (delegated to SessionContext)."""
+        """Save messages (delegated to ConversationStore)."""
         self.context.save_messages(metadata, session_id=getattr(self, "_session_id", ""))
 
     def load_messages(self) -> bool:
-        """Load messages from session_dir/index.json (delegated to SessionContext)."""
+        """Load messages from session_dir/index.json (delegated to ConversationStore)."""
         return self.context.load_messages()
 
     def invalidate_all_messages(self) -> int:
@@ -150,7 +150,7 @@ class BaseSessionRunner:
         return self.context.invalidate_all_messages()
 
     def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
-        """Get messages with _meta.valid=False filtered out (delegated to SessionContext)."""
+        """Get messages with _meta.valid=False filtered out (delegated to ConversationStore)."""
         return self.context.get_valid_messages(strip_meta=strip_meta)
 
     # ========== Tool Execution ==========
@@ -192,8 +192,8 @@ class BaseSessionRunner:
 
     @staticmethod
     def _find_split_by_user_messages(messages: list[dict], keep_user_count: int) -> int:
-        """Find split point keeping last N user messages (delegated to SessionContext)."""
-        return SessionContext.find_split_by_user_messages(messages, keep_user_count)
+        """Find split point keeping last N user messages (delegated to ConversationStore)."""
+        return ConversationStore.find_split_by_user_messages(messages, keep_user_count)
 
     def _summarize_messages(self, messages: list[dict]) -> str:
         """Use LLM to summarize messages (delegated to Runner)."""
@@ -215,7 +215,7 @@ class BaseSessionRunner:
         return Runner.iter_content_blocks(messages)
 
     def _count_messages_tokens(self, messages: list[dict]) -> int:
-        """Count total tokens in messages (delegated to SessionContext)."""
+        """Count total tokens in messages (delegated to ConversationStore)."""
         return self.context.count_messages_tokens(messages)
 
     def _estimate_request_body_size(self, messages: list[dict]) -> int:
@@ -227,7 +227,7 @@ class BaseSessionRunner:
         return self.runner._strip_images_from_messages(messages)
 
     def _get_messages_with_header(self) -> list[dict]:
-        """Get valid messages for LLM call (delegated to SessionContext).
+        """Get valid messages for LLM call (delegated to ConversationStore).
 
         Returns messages with _meta intact; _meta is stripped later
         by _strip_meta_from_messages() after _resolve_tool_results() runs.
@@ -290,7 +290,7 @@ class BaseSessionRunner:
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
     ) -> None:
-        """Update usage statistics (delegated to SessionContext)."""
+        """Update usage statistics (delegated to ConversationStore)."""
         self.context.update_usage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -300,7 +300,7 @@ class BaseSessionRunner:
         )
 
     def get_usage(self) -> dict[str, int]:
-        """Get accumulated usage statistics (delegated to SessionContext)."""
+        """Get accumulated usage statistics (delegated to ConversationStore)."""
         return self.context.get_usage()
 
     # ========== Lifecycle ==========

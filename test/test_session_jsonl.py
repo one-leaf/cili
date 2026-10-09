@@ -11,7 +11,7 @@ from pathlib import Path
 
 from core.session import (
     MESSAGES_FILE,
-    SessionManager,
+    SessionStore,
     build_model_messages,
     load_history_messages,
     read_jsonl,
@@ -23,7 +23,7 @@ from core.migration import migrate_session_to_new_layout
 
 def _new_session(test_workspace, name="RT"):
     sessions_dir = Path(test_workspace) / ".sess_jsonl"
-    return SessionManager.create_new_session(sessions_dir, name), sessions_dir
+    return SessionStore.create_new_session(sessions_dir, name), sessions_dir
 
 
 def _session_dir(sessions_dir, session_id):
@@ -66,7 +66,7 @@ class TestRoundTrip:
         assert lines[2]["id"] == hist[2]["_meta"]["id"]
 
         # 模型视图与内存消息逐字段相等
-        loaded = SessionManager.load_session(sm.session_id, sessions_dir)
+        loaded = SessionStore.load_session(sm.session_id, sessions_dir)
         assert loaded is not None
         assert [m["role"] for m in loaded.messages] == ["user", "assistant", "user"]
         assert [m["content"] for m in loaded.messages] == [m["content"] for m in sm.messages]
@@ -150,7 +150,7 @@ class TestAskUserAnswer:
         sm.save()
 
         # 模型视图：content 被 _apply_model_content_rules 清空，等待 _resolve_tool_results 读文件
-        loaded = SessionManager.load_session(sm.session_id, sessions_dir)
+        loaded = SessionStore.load_session(sm.session_id, sessions_dir)
         b = loaded.messages[-1]["content"][0]
         assert b["content"] is None
         assert b["_meta"]["completed"] is True
@@ -254,7 +254,7 @@ class TestSaveFrequency:
         assert len(read_view(sdir)["commits"]) == 3  # index 落后于 jsonl
 
         # 模拟崩溃重启：只从磁盘加载
-        loaded = SessionManager.load_session(sm.session_id, sessions_dir)
+        loaded = SessionStore.load_session(sm.session_id, sessions_dir)
         assert loaded is not None
         assert [m["content"] for m in loaded.messages] == ["m0", "m1", "m2", "tail-0", "tail-1"]
         assert [m["_meta"]["seq"] for m in loaded.messages] == [0, 1, 2, 3, 4]
@@ -279,22 +279,22 @@ class TestSaveFrequency:
         monkeypatch.setattr("core.session.datetime", _FakeClock)
 
         sessions_dir = Path(test_workspace) / ".sess_list"
-        a = SessionManager.create_new_session(sessions_dir, "A")
+        a = SessionStore.create_new_session(sessions_dir, "A")
         a.add_message("user", "a1")
         a.save()
         _FakeClock.t = _real_datetime(2026, 1, 1, 12, 0, 5)  # 快进 5 秒
-        b = SessionManager.create_new_session(sessions_dir, "B")
+        b = SessionStore.create_new_session(sessions_dir, "B")
         b.add_message("user", "b1")
         b.save()
 
-        sessions = SessionManager.list_sessions(sessions_dir)
+        sessions = SessionStore.list_sessions(sessions_dir)
         assert [s["name"] for s in sessions] == ["B", "A"]
 
         # 旧会话 A 新增消息 + checkpoint：updated_at 反超 B，排序随之更新
         _FakeClock.t = _real_datetime(2026, 1, 1, 12, 0, 6)
         a.add_message("user", "a2")
         a.save()
-        sessions = SessionManager.list_sessions(sessions_dir)
+        sessions = SessionStore.list_sessions(sessions_dir)
         assert [s["name"] for s in sessions] == ["A", "B"]
 
 
@@ -345,7 +345,7 @@ class TestMigration:
         assert (session_dir / "meta.json").exists()
         assert (session_dir / "index.json.legacy").exists()
 
-        sm = SessionManager.load_session(sid, sessions_dir)
+        sm = SessionStore.load_session(sid, sessions_dir)
         assert sm is not None
         assert sm.name == "Old"
         assert len(sm.messages) == 3

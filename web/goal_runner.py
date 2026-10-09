@@ -1,6 +1,6 @@
-"""GoalRunner — master 经 agent 工具逐轮委派 worker 的目标循环后台编排。
+"""GoalRunner — master 经 session 工具逐轮委派 worker 的目标循环后台编排。
 
-/goal 命令设置目标后，后台 daemon 线程逐轮调用 master 的 agent 工具
+/goal 命令设置目标后，后台 daemon 线程逐轮调用 master 的 session 工具
 委派一个 worker 执行轮次提示（与用户手动委派 / master LLM 循环内委派
 走同一条路径）。每轮完成后检查完成标记 / 轮次上限 / 手动暂停，
 未完成则重注入续跑提示进入下一轮。
@@ -135,7 +135,7 @@ class GoalRunner:
                 break
             if getattr(self.runner, "_stopped", False):
                 m.pause()
-                self._round_finish("⏸️ 目标循环已暂停（agent 已停止）。")
+                self._round_finish("⏸️ 目标循环已暂停（runner 已停止）。")
                 break
 
             m.state.round += 1
@@ -149,7 +149,7 @@ class GoalRunner:
             prompt = m.next_round_prompt()
             if session_tool is None:
                 m.block("runner_error")
-                self._round_finish("❌ 未找到 master 的 agent 工具，无法委派 worker 执行目标。")
+                self._round_finish("❌ 未找到 master 的 session 工具，无法委派 worker 执行目标。")
                 break
 
             # 委派 worker：事件/卡片/日志/exec_id 全部由 SessionTool 完成，
@@ -206,7 +206,7 @@ class GoalRunner:
 
     @staticmethod
     def _parse_result(tr) -> dict:
-        """从 agent 工具 ToolResult 解析结果 dict（{status, summary, iterations, ...}）。"""
+        """从 session 工具 ToolResult 解析结果 dict（{status, summary, iterations, ...}）。"""
         output = getattr(tr, "output", None) or ""
         if isinstance(output, str) and output.strip().startswith("{"):
             try:

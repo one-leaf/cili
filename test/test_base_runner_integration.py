@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.config import Config, ModelConfig, SystemConfig
-from core.session import SessionManager
+from core.session import SessionStore
 
 # 从 conftest 导入 DGX 配置工具
 from test.conftest import make_dgx_config
@@ -186,7 +186,7 @@ class TestMasterAgentIntegration:
         runner.session.save()
         session1_msg_count = len(runner.messages)
 
-        new_session = SessionManager.create_new_session(runner.sessions_dir, "Test Session 2")
+        new_session = SessionStore.create_new_session(runner.sessions_dir, "Test Session 2")
         runner.switch_session(new_session.session_id)
         assert len(runner.messages) == 0, f"[{protocol}] New session should be empty"
 
@@ -476,7 +476,7 @@ class TestBaseSessionRunnerUnitTests:
         )
 
     def test_save_messages_preserves_metadata(self, tmp_path):
-        """save_messages 不应覆盖 SessionManager 写入的 name/metadata。"""
+        """save_messages 不应覆盖 SessionStore 写入的 name/metadata。"""
         from core.base_session_runner import BaseSessionRunner
 
         config = make_dgx_config("anthropic")
@@ -484,7 +484,7 @@ class TestBaseSessionRunnerUnitTests:
         runner = BaseSessionRunner(config=config, session_dir=session_dir)
         runner._session_id = "sess123"
 
-        # 预写一个带 name/metadata 的会话文件（模拟 SessionManager.save()）
+        # 预写一个带 name/metadata 的会话文件（模拟 SessionStore.save()）
         session_dir.mkdir(parents=True, exist_ok=True)
         existing = {
             "session_id": "sess123",

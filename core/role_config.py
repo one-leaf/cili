@@ -1,4 +1,4 @@
-"""Runner role configuration - load core/agents/{role}.json into RunnerRoleConfig."""
+"""Runner role configuration - load core/agents/{role}.json into RoleConfig."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ _DEFAULTS = {
 
 
 @dataclass
-class RunnerRoleConfig:
+class RoleConfig:
     """A single runner role loaded from core/agents/{role}.json."""
 
     name: str
@@ -77,7 +77,7 @@ def list_roles() -> list[str]:
     return sorted(p.stem for p in ROLE_DIR.glob("*.json"))
 
 
-def load_runner_role(role: str, config: Config | None = None) -> RunnerRoleConfig:
+def load_role(role: str, config: Config | None = None) -> RoleConfig:
     """Load role definition from core/agents/{role}.json with defaults.
 
     ``max_iterations`` falls back to ``config.system.max_iterations`` when
@@ -99,7 +99,7 @@ def load_runner_role(role: str, config: Config | None = None) -> RunnerRoleConfi
     if merged["mode"] not in VALID_MODES:
         raise ValueError(f"Role {role!r} has invalid mode {merged['mode']!r} (valid: {VALID_MODES})")
 
-    role_cfg = RunnerRoleConfig(
+    role_cfg = RoleConfig(
         name=role,
         label=merged["label"],
         mode=merged["mode"],

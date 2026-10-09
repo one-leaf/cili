@@ -2,7 +2,7 @@
 
 从 BaseSessionRunner 抽出的执行逻辑：LLM 调用（streaming/non-streaming + 413 去图重试）、
 工具执行与外部文件存储、三层压缩。持 runner 引用访问共享状态（messages/client/
-tools/回调），不自己持有会话状态 —— 会话状态归 SessionContext。
+tools/回调），不自己持有会话状态 —— 会话状态归 ConversationStore。
 
 `run_round()` = 压缩 + LLM 调用，是 Loop 的回合单位；BaseSessionRunner 的 `_call_llm`
 转发至此，保证 loop 每轮 LLM 前触发压缩的语义不变，且测试对 `runner._call_llm`

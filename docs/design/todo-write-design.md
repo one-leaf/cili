@@ -16,7 +16,7 @@
 - **整表替换**：每次调用发送完整列表
 - **三态状态**：`pending` / `in_progress` / `completed`
 - **验证提醒**：完成多任务时提醒验证
-- **存储方式**：独立文件（`data/cili/tools/todo/{session_id}.json`，按 session 隔离）
+- **存储方式**：独立文件（`{workspace}/.cili/tools/todo/{session_id}.json`，按 workspace + session 隔离）
 
 ---
 
@@ -40,7 +40,7 @@
 
 ### 2.2 存储格式
 
-Todos 存储在独立文件中（按 session 隔离），路径为 `data/cili/tools/todo/{session_id}.json`：
+Todos 存储在独立文件中（按 workspace + session 隔离），路径为 `{workspace}/.cili/tools/todo/{session_id}.json`（经 `get_workspace_tools_dir(uuid)` 解析）：
 
 ```json
 {
@@ -258,7 +258,8 @@ Agent：直接执行，不需要任务列表
 |------|------|
 | `core/tools/todo.py` | TodoWrite 工具实现 |
 | `core/tools/registry.py` | 统一工具注册表（`"todo"` 条目） |
-| `web/web_api.py` | SSE 事件推送 |
+| `web/deps.py` | SSE 事件推送（`todo_update`） |
+| `web/routes_chat.py` | SSE 流式响应 |
 | `web/static/chat.js` | 前端渲染 |
 | `web/static/style.css` | 样式定义 |
 
@@ -281,7 +282,7 @@ TOOL_REGISTRY = {
 ### 7.3 SSE 推送
 
 ```python
-# web/web_api.py
+# web/deps.py
 
 def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
     event = json.dumps({"type": "tool_result", ...})
@@ -295,7 +296,7 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
             event_queue.put(f"data: {todo_event}\n\n")
 ```
 
-`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session 的 session_id 读取独立文件 `data/cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
+`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session 的 session_id 读取独立文件 `{workspace}/.cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
 
 ### 7.4 前端渲染
 
@@ -333,7 +334,7 @@ function renderTodoList(todos) {
 ### Q: 为什么存储在独立文件而不是 session metadata 或事件日志？
 
 **A**: 三种方案各有优劣：
-- **独立文件**（Cili 选择）：按 session 隔离（每个 session 一个文件 `data/cili/tools/todo/{session_id}.json`），与消息数据分离
+- **独立文件**（Cili 选择）：按 session 隔离（每个 session 一个文件 `{workspace}/.cili/tools/todo/{session_id}.json`），与消息数据分离
 - **Session metadata**（旧方案）：简单、随 session 持久化，但 todos 与大量消息数据混在一起
 - **事件日志**（Harness 选择）：支持回放、历史追踪
 

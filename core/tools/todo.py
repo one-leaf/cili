@@ -274,7 +274,7 @@ class TodoWriteTool(Tool):
         return True
 
 
-def get_todos_from_session(session: SessionManager | None, workspace_uuid: str = "") -> list[dict] | None:
+def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "") -> list[dict] | None:
     """Helper to get current todos from session's todo file.
 
     Supports new format (independent file) and old format (session metadata).
@@ -305,4 +305,4 @@ def get_todos_from_session(session: SessionManager | None, workspace_uuid: str =
 # Type hint for session manager (avoid circular import)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from core.session import SessionManager
+    from core.session import SessionStore

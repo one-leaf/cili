@@ -10,7 +10,7 @@ import pytest
 from core.tools.temp import TempTool
 
 
-class MockSessionManager:
+class MockSessionStore:
     """模拟 session_manager，提供 session_id。"""
 
     def __init__(self, session_id: str = "test-session-123"):
@@ -40,7 +40,7 @@ class TestTempToolCreateFile:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-abc"),
+            session=MockSessionStore("session-abc"),
         )
         result = tool.execute(action="create_file", name="test.txt", content="hello world")
 
@@ -53,7 +53,7 @@ class TestTempToolCreateFile:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-empty"),
+            session=MockSessionStore("session-empty"),
         )
         result = tool.execute(action="create_file", name="empty.txt")
 
@@ -77,7 +77,7 @@ class TestTempToolCreateDir:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-dir"),
+            session=MockSessionStore("session-dir"),
         )
         result = tool.execute(action="create_dir", name="downloads")
 
@@ -101,7 +101,7 @@ class TestTempToolList:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-list-empty"),
+            session=MockSessionStore("session-list-empty"),
         )
         result = tool.execute(action="list")
 
@@ -113,7 +113,7 @@ class TestTempToolList:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-list-files"),
+            session=MockSessionStore("session-list-files"),
         )
         # 创建一些文件
         tool.execute(action="create_file", name="file1.txt", content="content1")
@@ -136,7 +136,7 @@ class TestTempToolCleanup:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-cleanup"),
+            session=MockSessionStore("session-cleanup"),
         )
         # 创建文件
         tool.execute(action="create_file", name="temp.txt", content="data")
@@ -159,7 +159,7 @@ class TestTempToolCleanup:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-cleanup-empty"),
+            session=MockSessionStore("session-cleanup-empty"),
         )
         result = tool.execute(action="cleanup")
 
@@ -168,7 +168,7 @@ class TestTempToolCleanup:
         assert "Cleaned up" in result.output
 
 
-class TestTempToolNoSessionManager:
+class TestTempToolNoSessionStore:
     """没有 session_manager 时的行为。"""
 
     def test_no_session_manager(self, test_workspace, tmp_env):
@@ -191,12 +191,12 @@ class TestTempToolIsolation:
         tool1 = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-1"),
+            session=MockSessionStore("session-1"),
         )
         tool2 = TempTool(
             cwd=test_workspace,
             workspace_uuid="test-uuid",
-            session=MockSessionManager("session-2"),
+            session=MockSessionStore("session-2"),
         )
 
         # 在 session-1 创建文件
@@ -237,7 +237,7 @@ class TestTempToolWorkspaceDir:
         tool = TempTool(
             cwd=test_workspace,
             workspace_uuid="any-uuid",
-            session=MockSessionManager("session-env"),
+            session=MockSessionStore("session-env"),
         )
         result = tool.execute(action="create_file", name="test.txt", content="data")
         assert not result.is_error
@@ -254,12 +254,12 @@ class TestTempToolWorkspaceDir:
         tool1 = TempTool(
             cwd=test_workspace,
             workspace_uuid="uuid-1",
-            session=MockSessionManager("session-same"),
+            session=MockSessionStore("session-same"),
         )
         tool2 = TempTool(
             cwd=test_workspace,
             workspace_uuid="uuid-2",
-            session=MockSessionManager("session-same"),
+            session=MockSessionStore("session-same"),
         )
         # 两个 uuid 都解析到同一工作区目录，因此共享 {cwd}/.cili/tmp/{session_id}
         result1 = tool1.execute(action="create_file", name="a.txt", content="1")

@@ -1,8 +1,8 @@
-"""会话管理测试 - 使用 SessionManager"""
+"""会话管理测试 - 使用 SessionStore"""
 
 import os
 from pathlib import Path
-from core.session import SessionManager
+from core.session import SessionStore
 
 
 class TestSessionManagement:
@@ -11,26 +11,26 @@ class TestSessionManagement:
     def test_session_creation(self, test_workspace):
         """测试会话创建"""
         sessions_dir = Path(test_workspace) / ".sessions"
-        session = SessionManager.create_new_session(sessions_dir, "Test")
-        sessions = SessionManager.list_sessions(sessions_dir)
+        session = SessionStore.create_new_session(sessions_dir, "Test")
+        sessions = SessionStore.list_sessions(sessions_dir)
         assert len(sessions) >= 1
         assert sessions[0]["session_id"] == session.session_id
 
     def test_session_new(self, test_workspace):
         """测试创建新会话"""
         sessions_dir = Path(test_workspace) / ".sessions_new"
-        SessionManager.create_new_session(sessions_dir, "Session 1")
-        initial_count = len(SessionManager.list_sessions(sessions_dir))
+        SessionStore.create_new_session(sessions_dir, "Session 1")
+        initial_count = len(SessionStore.list_sessions(sessions_dir))
 
-        SessionManager.create_new_session(sessions_dir, "Test Session")
-        sessions = SessionManager.list_sessions(sessions_dir)
+        SessionStore.create_new_session(sessions_dir, "Test Session")
+        sessions = SessionStore.list_sessions(sessions_dir)
         assert len(sessions) == initial_count + 1
         assert any(s["name"] == "Test Session" for s in sessions)
 
     def test_session_messages(self, test_workspace):
         """测试会话消息管理"""
         sessions_dir = Path(test_workspace) / ".sessions_msgs"
-        session = SessionManager.create_new_session(sessions_dir, "Msg Test")
+        session = SessionStore.create_new_session(sessions_dir, "Msg Test")
 
         session.add_message("user", "Hello")
         session.add_message("assistant", [{"type": "text", "text": "Hi!"}])
@@ -45,29 +45,29 @@ class TestSessionManagement:
         sessions_dir = Path(test_workspace) / ".sessions_persist"
 
         # 创建会话并添加消息
-        session1 = SessionManager.create_new_session(sessions_dir, "Persist Test")
+        session1 = SessionStore.create_new_session(sessions_dir, "Persist Test")
         session1.add_message("user", "Test message")
         session1.save()
         session_id = session1.session_id
 
         # 从磁盘加载（模拟重启）
-        session2 = SessionManager.load_session(session_id, sessions_dir)
+        session2 = SessionStore.load_session(session_id, sessions_dir)
         assert session2 is not None
         assert session2.get_message_count() == 1
 
         # 列出会话应该能找到
-        sessions = SessionManager.list_sessions(sessions_dir)
+        sessions = SessionStore.list_sessions(sessions_dir)
         assert any(s["session_id"] == session_id for s in sessions)
 
     def test_session_delete(self, test_workspace):
         """测试会话删除"""
         sessions_dir = Path(test_workspace) / ".sessions_del"
-        session = SessionManager.create_new_session(sessions_dir, "To Delete")
+        session = SessionStore.create_new_session(sessions_dir, "To Delete")
         session_id = session.session_id
 
-        initial_count = len(SessionManager.list_sessions(sessions_dir))
+        initial_count = len(SessionStore.list_sessions(sessions_dir))
         session.delete()
-        sessions = SessionManager.list_sessions(sessions_dir)
+        sessions = SessionStore.list_sessions(sessions_dir)
 
         assert len(sessions) == initial_count - 1
         assert not any(s["session_id"] == session_id for s in sessions)
@@ -75,7 +75,7 @@ class TestSessionManagement:
     def test_session_clear(self, test_workspace):
         """测试清空会话"""
         sessions_dir = Path(test_workspace) / ".sessions_clear"
-        session = SessionManager.create_new_session(sessions_dir, "Clear Test")
+        session = SessionStore.create_new_session(sessions_dir, "Clear Test")
         session.add_message("user", "Message 1")
         session.add_message("user", "Message 2")
 
@@ -87,7 +87,7 @@ class TestSessionManagement:
     def test_valid_messages_filter(self, test_workspace):
         """测试有效消息过滤（消息级别 _meta.valid=False）"""
         sessions_dir = Path(test_workspace) / ".sessions_filter"
-        session = SessionManager.create_new_session(sessions_dir, "Filter Test")
+        session = SessionStore.create_new_session(sessions_dir, "Filter Test")
 
         session.add_message("user", "Hello")
         session.add_message("assistant", [
@@ -104,7 +104,7 @@ class TestSessionManagement:
     def test_usage_tracking(self, test_workspace):
         """测试使用量追踪"""
         sessions_dir = Path(test_workspace) / ".sessions_usage"
-        session = SessionManager.create_new_session(sessions_dir, "Usage Test")
+        session = SessionStore.create_new_session(sessions_dir, "Usage Test")
 
         session.update_usage(input_tokens=100, output_tokens=50, api_calls=1)
         session.update_usage(input_tokens=200, output_tokens=100, api_calls=1)
@@ -117,13 +117,13 @@ class TestSessionManagement:
     def test_rename_session(self, test_workspace):
         """测试会话重命名"""
         sessions_dir = Path(test_workspace) / ".sessions_rename"
-        session = SessionManager.create_new_session(sessions_dir, "Old Name")
+        session = SessionStore.create_new_session(sessions_dir, "Old Name")
 
         session.rename("New Name")
         assert session.name == "New Name"
 
         session.save()
-        loaded = SessionManager.load_session(session.session_id, sessions_dir)
+        loaded = SessionStore.load_session(session.session_id, sessions_dir)
         assert loaded.name == "New Name"
 
 
@@ -133,7 +133,7 @@ class TestCopySemantics:
     def test_get_usage_returns_copy(self, test_workspace):
         """修改 get_usage() 返回值不影响内部 usage。"""
         sessions_dir = Path(test_workspace) / ".sessions_copy_usage"
-        session = SessionManager.create_new_session(sessions_dir, "Copy Test")
+        session = SessionStore.create_new_session(sessions_dir, "Copy Test")
         session.update_usage(input_tokens=100)
 
         usage = session.get_usage()
@@ -143,7 +143,7 @@ class TestCopySemantics:
     def test_to_dict_returns_copy(self, test_workspace):
         """修改 to_dict() 返回值不影响内部 messages/metadata。"""
         sessions_dir = Path(test_workspace) / ".sessions_copy_dict"
-        session = SessionManager.create_new_session(sessions_dir, "Copy Test")
+        session = SessionStore.create_new_session(sessions_dir, "Copy Test")
         session.add_message("user", "Hello")
 
         d = session.to_dict()

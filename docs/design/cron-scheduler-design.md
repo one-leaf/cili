@@ -287,7 +287,7 @@ def get_tasks() -> list[dict]:
 
 ### 4.5 用户级任务
 
-用户通过 `cron` 工具创建的任务保存在 `data/cili/cron.d/user_tasks.json`：
+用户通过 `cron` 工具创建的任务保存在该 workspace 的 `{workspace}/.cili/cron.d/user_tasks.json`（经 `get_workspace_cron_dir(uuid)` 解析；System workspace 为 `data/.cili/cron.d/user_tasks.json`）：
 
 ```json
 [
@@ -313,8 +313,8 @@ def get_tasks() -> list[dict]:
 ### 5.1 目录结构
 
 ```
-data/cili/cron.d/
-├── user_tasks.json              # 用户级定时任务配置
+{workspace}/.cili/cron.d/          # 每个 workspace 一份（System workspace 即 data/.cili/cron.d/）
+├── user_tasks.json              # 用户级定时任务配置（该 workspace 的）
 └── state/                       # 运行时状态（每个任务一个文件）
     ├── memory-consolidation.json  # {"last_run": "...", "run_count": 5, "session_id": "431ea12b"}
     └── daily-report.json
@@ -328,11 +328,11 @@ data/.cili/                       # System workspace 数据目录
         └── index.json           # cron 执行记录
 ```
 
-> **注意**：不再有独立的 `log/` 目录。Cron 执行结果保存在 workspace 的 session 中，与其他对话统一由 SessionManager 管理。
+> **注意**：不再有独立的 `log/` 目录。Cron 执行结果保存在 workspace 的 session 中，与其他对话统一由 SessionStore 管理。
 
 ### 5.2 状态文件格式
 
-**文件位置**：`data/cili/cron.d/state/{task_id}.json`
+**文件位置**：`{workspace}/.cili/cron.d/state/{task_id}.json`
 
 每个任务一个独立的状态文件，用于重启后恢复调度：
 
@@ -427,7 +427,7 @@ CronTask.execute():
  "iterations": 所有任务迭代数之和}
 ```
 
-- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；Master SessionRunner 忙 → `{"status": "skipped", "message": "master SessionRunner is busy", "workspace_uuid": "..."}`
+- `skipped`：无任务可执行 → `{"status": "skipped", "message": "No tasks to execute", "iterations": 0}`；Master Runner 忙 → `{"status": "skipped", "message": "master Runner is busy", "workspace_uuid": "..."}`
 - `completed`：所有任务成功；`partial`：至少一个任务失败或部分成功
 - `results` 中每个条目来自 `_execute_in_session()`，成功时含 `workspace_uuid`/`session_id`/`iterations`（cron 直接运行 Master SessionRunner，固定为 0），异常时含 `error`
 
@@ -592,9 +592,9 @@ tasks = scheduler.list_tasks() -> list[dict]
 # [{"name": "...", "workspace_uuid": "...", "enabled": true, 
 #   "schedule": {...}, "last_run": "...", "next_run": "...", "run_count": 5}]
 
-task = scheduler.get_task("extract-user-info") -> CronTask | None
-result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不存在返回 None
-# {"status": "triggered", "message": "Task extract-user-info triggered"}
+task = scheduler.get_task("memory-consolidation") -> CronTask | None
+result = scheduler.run_task_now("memory-consolidation") -> dict | None  # 任务不存在返回 None
+# {"status": "triggered", "message": "Task memory-consolidation triggered"}
 ```
 
 ---
@@ -637,9 +637,9 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 | `core/cron.d/*.json` | 系统级任务配置 |
 | `core/tools/cron_tool.py` | 用户级 cron 管理工具（含 max_executions 参数） |
 | `core/tools/loop.py` | 循环任务进度追踪（配合 cron 实现自循环任务） |
-| `data/cili/cron.d/user_tasks.json` | 用户级任务配置 |
-| `data/cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
-| `data/cili/tools/loop/` | loop 工具状态文件 |
+| `{workspace}/.cili/cron.d/user_tasks.json` | 用户级任务配置（每个 workspace 一份；System 为 `data/.cili/cron.d/`） |
+| `{workspace}/.cili/cron.d/state/` | 任务状态追踪（含 remaining 计数器） |
+| `{workspace}/.cili/tools/loop/` | loop 工具状态文件 |
 | `data/cili/workspaces.json` | 工作区索引（含 system 条目） |
 | `data/.cili/` | System workspace 数据目录 |
 | `main.py` | 启动调度器，创建 System workspace（`_ensure_system_workspace()`） |
@@ -651,4 +651,5 @@ result = scheduler.run_task_now("extract-user-info") -> dict | None  # 任务不
 **创建时间**: 2026-08-25
 **更新时间**: 2026-09-09
 **更新时间**: 2026-09-21（System workspace 数据目录改为 `data/.cili/`，工作区经 `get_workspace_data_dir()` 解析；extract-user-info 任务废弃移除，用户画像由 memory/preference 承载）
+**更新时间**: 2026-10-09（同步代码：user_tasks.json / state/ / loop 状态均为 per-workspace `{workspace}/.cili/` 下；busy 文案改为 "master Runner is busy"）
 **状态**: 已实现（Master SessionRunner 执行、System workspace、cron 表达式支持、remaining 计数器、loop 工具集成）

@@ -6,7 +6,7 @@
 
 import pytest
 
-from core.session_runner_config import load_runner_role
+from core.role_config import load_role
 from core.tools.base import Tool
 from core.tools.registry import TOOL_REGISTRY, create_tools
 
@@ -18,14 +18,14 @@ class TestRegistryCompleteness:
     @pytest.mark.parametrize("role", ROLES)
     def test_all_whitelist_names_registered(self, role):
         """每个角色的工具白名单都必须能在注册表里解析。"""
-        role_cfg = load_runner_role(role)
+        role_cfg = load_role(role)
         missing = [name for name in role_cfg.tools if name not in TOOL_REGISTRY]
         assert not missing, f"角色 {role} 白名单中未注册: {missing}"
 
     def test_master_has_full_toolset(self):
-        master = load_runner_role("master").tools
+        master = load_role("master").tools
         for role in ("worker", "lite"):
-            subset = load_runner_role(role).tools
+            subset = load_role(role).tools
             assert set(subset) <= set(master), (
                 f"{role} 有 master 之外的工具: {set(subset) - set(master)}"
             )
@@ -33,7 +33,7 @@ class TestRegistryCompleteness:
     def test_no_duplicate_factories(self):
         """不同注册键不指向同一工具类（除有意别名外）。"""
         from core.tools.todo import TodoWriteTool
-        todo_tool = TOOL_REGISTRY["todo"](load_runner_role("master"), ".", "", None, None, None)
+        todo_tool = TOOL_REGISTRY["todo"](load_role("master"), ".", "", None, None, None)
         assert isinstance(todo_tool, TodoWriteTool)
         assert todo_tool.name == "todo_write"  # T26：注册键 "todo" 与工具名不同，属有意设计
 
@@ -58,7 +58,7 @@ class TestCreateTools:
 
     def test_names_match_registry_keys(self):
         """工具 name 与注册键一致（T26 中的 todo 除外）。"""
-        role_cfg = load_runner_role("master")
+        role_cfg = load_role("master")
         for name in role_cfg.tools:
             if name == "todo":
                 continue  # 有意差异：注册键 "todo" → 工具名 "todo_write"

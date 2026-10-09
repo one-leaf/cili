@@ -621,8 +621,8 @@ class Loop:
             return
 
         try:
-            from core.message_bus import get_message_bus
-            mbus = get_message_bus()
+            from core.agent_mailbox import get_agent_mailbox
+            mbus = get_agent_mailbox()
             if mbus.has_unread(session_id):
                 # 读取所有未读通知并标记为已读
                 unread = mbus.receive(session_id, mark_read=True)

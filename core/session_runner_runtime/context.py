@@ -1,4 +1,4 @@
-"""SessionContext - runner 消息状态层（Step 2 抽取）。
+"""ConversationStore - runner 消息状态层（Step 2 抽取）。
 
 从 BaseSessionRunner 抽出的纯消息逻辑：messages 所有权、序列化、pad、invalidate、
 usage 存储。不持有 LLM client / tools / 回调 —— 这些属 Runner 与 Loop。
@@ -29,7 +29,7 @@ INTERNAL_META = {
 }
 
 
-class SessionContext:
+class ConversationStore:
     """消息状态与序列化逻辑，与执行层（Runner/Loop）解耦。"""
 
     def __init__(
@@ -39,7 +39,7 @@ class SessionContext:
         session_dir: Path | None = None,
     ):
         self.messages: list[dict] = messages if messages is not None else []
-        # 可空：interactive 由 SessionRunner 注入 SessionManager，autonomous/直连 BaseSessionRunner 为 None
+        # 可空：interactive 由 SessionRunner 注入 SessionStore，autonomous/直连 BaseSessionRunner 为 None
         self.session = session
         self.session_dir = session_dir
         self._usage: dict[str, int] = {
@@ -208,7 +208,7 @@ class SessionContext:
     def save_messages(self, metadata: dict | None = None, session_id: str = "") -> None:
         """保存消息到磁盘。
 
-        interactive 统一由 SessionManager 按 3 文件布局持久化（commits 视图）；
+        interactive 统一由 SessionStore 按 3 文件布局持久化（commits 视图）；
         无 session（worker/lite / 直连 BaseAgent）走旧 index.json 格式。
         """
         if self.session is not None:

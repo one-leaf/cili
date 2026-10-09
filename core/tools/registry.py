@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from core.session_runner_config import RunnerRoleConfig, load_runner_role
+from core.role_config import RoleConfig, load_role
 from core.config import Config
 from core.tools.base import Tool
 from core.tools.ask_user import AskUserTool
@@ -41,7 +41,7 @@ from core.tools.tool_search import ToolSearchTool
 
 logger = logging.getLogger(__name__)
 
-Factory = Callable[[RunnerRoleConfig, str, str, Any, Config | None, Any], Tool]
+Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any], Tool]
 
 
 def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store) -> Tool:
@@ -97,7 +97,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
 
 
 def create_tools(
-    role_cfg: RunnerRoleConfig | None = None,
+    role_cfg: RoleConfig | None = None,
     cwd: str = ".",
     workspace_uuid: str = "",
     session=None,
@@ -107,11 +107,11 @@ def create_tools(
 ) -> list[Tool]:
     """按角色工具白名单实例化工具。
 
-    role_cfg 缺省时回退到 load_runner_role(role or "master", config)，便于旧调用点
+    role_cfg 缺省时回退到 load_role(role or "master", config)，便于旧调用点
     （conftest / prompts）不显式传角色配置即可获得 master 全量工具。
     """
     if role_cfg is None:
-        role_cfg = load_runner_role(role or "master", config)
+        role_cfg = load_role(role or "master", config)
 
     tools: list[Tool] = []
     for name in role_cfg.tools:

@@ -1,4 +1,4 @@
-"""MessageBus - cross-session message passing.
+"""AgentMailbox - cross-session message passing.
 
 Module-level singleton (following BrowserService/CronScheduler pattern).
 Thread-safe: all operations protected by threading.Lock.
@@ -7,13 +7,13 @@ Design goals:
 - Lightweight in-memory message queue per session
 - No persistence needed (messages are ephemeral)
 - Sessions can send/receive messages asynchronously
-- MessageBus does NOT inject messages into agent loops;
+- AgentMailbox does NOT inject messages into agent loops;
   agents must use the message_bus tool to check for messages
 
 Usage:
-    from core.message_bus import get_message_bus
+    from core.agent_mailbox import get_agent_mailbox
 
-    bus = get_message_bus()
+    bus = get_agent_mailbox()
     bus.send("session_a", "session_b", "Hello from A!")
     messages = bus.receive("session_b")
 """
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Message:
+class BusMessage:
     """A single cross-session message."""
     sender_session_id: str
     content: str
@@ -48,7 +48,7 @@ class Message:
         }
 
 
-class MessageBus:
+class AgentMailbox:
     """Cross-session message bus.
 
     Thread-safe singleton. Messages are stored per session as a list.
@@ -63,8 +63,8 @@ class MessageBus:
 
     def __init__(self):
         self._lock = threading.Lock()
-        # session_id -> list[Message]
-        self._messages: dict[str, list[Message]] = {}
+        # session_id -> list[BusMessage]
+        self._messages: dict[str, list[BusMessage]] = {}
         # session_id -> display name (optional, for listing)
         self._session_names: dict[str, str] = {}
         # agent_name -> session_id（agent 名字注册表，支持名字寻址）
@@ -96,7 +96,7 @@ class MessageBus:
 
         Returns True if sent successfully, False if target session not registered.
         """
-        msg = Message(
+        msg = BusMessage(
             sender_session_id=from_session_id,
             content=content,
             message_type=message_type,
@@ -106,7 +106,7 @@ class MessageBus:
                 # 目标未注册（不存在/拼错）不静默积压，返回 False 让发送方感知
                 # 跨会话消息丢失（T21）
                 logger.warning(
-                    f"Message drop: target session '{to_session_id}' not registered "
+                    f"BusMessage drop: target session '{to_session_id}' not registered "
                     f"(sender: {from_session_id})"
                 )
                 return False
@@ -115,7 +115,7 @@ class MessageBus:
             if len(queue) > self.MAX_MESSAGES_PER_SESSION:
                 del queue[: len(queue) - self.MAX_MESSAGES_PER_SESSION]
         logger.info(
-            f"Message sent: {from_session_id} -> {to_session_id}: "
+            f"BusMessage sent: {from_session_id} -> {to_session_id}: "
             f"{content[:self.LOG_CONTENT_TRUNCATE]}"
             f"{'...' if len(content) > self.LOG_CONTENT_TRUNCATE else ''}"
         )
@@ -217,7 +217,7 @@ class MessageBus:
                 )
                 return False
             from_session = self._agent_registry.get(from_agent, from_agent)
-            msg = Message(
+            msg = BusMessage(
                 sender_session_id=from_session,
                 content=content,
                 message_type=message_type,
@@ -267,28 +267,28 @@ class MessageBus:
 
 # ========== Module-level singleton ==========
 
-_message_bus: MessageBus | None = None
+_agent_mailbox: AgentMailbox | None = None
 _bus_lock = threading.Lock()
 
 
-def get_message_bus() -> MessageBus:
-    """Get the global MessageBus singleton."""
-    global _message_bus
-    if _message_bus is None:
+def get_agent_mailbox() -> AgentMailbox:
+    """Get the global AgentMailbox singleton."""
+    global _agent_mailbox
+    if _agent_mailbox is None:
         with _bus_lock:
-            if _message_bus is None:
-                _message_bus = MessageBus()
-    return _message_bus
+            if _agent_mailbox is None:
+                _agent_mailbox = AgentMailbox()
+    return _agent_mailbox
 
 
-def start_message_bus() -> MessageBus:
-    """Initialize and return the global MessageBus (called at startup)."""
-    return get_message_bus()
+def start_agent_mailbox() -> AgentMailbox:
+    """Initialize and return the global AgentMailbox (called at startup)."""
+    return get_agent_mailbox()
 
 
-def stop_message_bus() -> None:
-    """Clean up the global MessageBus."""
-    global _message_bus
+def stop_agent_mailbox() -> None:
+    """Clean up the global AgentMailbox."""
+    global _agent_mailbox
     with _bus_lock:
-        if _message_bus is not None:
-            _message_bus = None
+        if _agent_mailbox is not None:
+            _agent_mailbox = None

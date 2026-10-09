@@ -315,14 +315,14 @@ class TestEnhancedDispatch:
         self.approval_store 恒为 None，即使规则已写入 approvals.json，
         navigate 门也永远返回审批占位（用户批准后反复弹卡）。
         """
-        from core.session_runner_config import load_runner_role
+        from core.role_config import load_role
         from core.tools.approval import ApprovalStore, approval_decision_id
         from core.tools.registry import create_tools
         url = "http://127.0.0.1:8000/"
         store = ApprovalStore()
         store.approve(approval_decision_id(url), url, kind="browser:navigate")
         tools = create_tools(
-            load_runner_role("master"),
+            load_role("master"),
             cwd=".", workspace_uuid="d1b45267",
             config=None, approval_store=store,
         )

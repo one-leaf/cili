@@ -48,8 +48,8 @@ class FakeAgent:
         self._stopped = False
 
 
-class FakeSessionManager:
-    """模拟 SessionManager 的消息接口：记录 add_message/save（含 force）。"""
+class FakeSessionStore:
+    """模拟 SessionStore 的消息接口：记录 add_message/save（含 force）。"""
 
     def __init__(self, exec_id="exec_goal_1"):
         self.messages: list[dict] = []
@@ -314,7 +314,7 @@ class TestGoalRunner:
         回归：前端 loadSession 重渲染 / 重载时 renderMessages 按 user tool_result 的
         _meta.exec_id 重建 worker 卡；若 goal runner 不落该消息，worker 卡会消失。
         """
-        sm = FakeSessionManager("exec_goal_7")
+        sm = FakeSessionStore("exec_goal_7")
         tool = FakeSessionTool(summaries=[f"完成\n{COMPLETE_MARKER}"])
         runner = FakeAgent(tool, session=sm)
         m = GoalManager(tmp_path / "s")

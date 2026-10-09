@@ -22,8 +22,8 @@ from core.config import Config, PROJECT_ROOT
 from core.llm import create_llm_client, format_llm_error
 from core.fs_utils import atomic_write_json
 from core.base_session_runner import BaseSessionRunner
-from core.session import SessionManager, generate_short_id
-from core.session_runner_config import load_runner_role
+from core.session import SessionStore, generate_short_id
+from core.role_config import load_role
 from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
     BUDGET_FINAL_RATIO,
@@ -97,7 +97,7 @@ class SessionRunner(BaseSessionRunner):
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
         """
         self.role = role
-        self.role_cfg = load_runner_role(role, config)
+        self.role_cfg = load_role(role, config)
         self.model = getattr(config, f"{role}_model", None) or config.model
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
         self._temperature = temperature
@@ -186,20 +186,20 @@ class SessionRunner(BaseSessionRunner):
     # ─── mode 专属初始化 ────────────────────────────────────────────
 
     def _init_interactive(self, workspace_uuid: str) -> None:
-        """interactive（master）：会话持久化 + SessionManager。"""
+        """interactive（master）：会话持久化 + SessionStore。"""
         from core.config import get_workspace_data_dir
         self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        self.session = SessionManager("", self.sessions_dir)
+        self.session = SessionStore("", self.sessions_dir)
         self.current_session_id: str = ""
 
         # Load or create session
-        sessions = SessionManager.list_sessions(self.sessions_dir)
+        sessions = SessionStore.list_sessions(self.sessions_dir)
         if sessions:
             latest = max(sessions, key=lambda s: s.get("updated_at", ""))
             sid = latest["session_id"]
-            loaded = SessionManager.load_session(sid, self.sessions_dir)
+            loaded = SessionStore.load_session(sid, self.sessions_dir)
             if loaded:
                 self.session = loaded
                 self.current_session_id = sid
@@ -212,11 +212,11 @@ class SessionRunner(BaseSessionRunner):
 
         # Register master with message_bus so sub-agents can send messages to it
         try:
-            from core.message_bus import get_message_bus
-            mbus = get_message_bus()
+            from core.agent_mailbox import get_agent_mailbox
+            mbus = get_agent_mailbox()
             mbus.register_agent(self.current_session_id, self.current_session_id)
         except Exception as e:
-            logger.warning(f"Failed to register master with MessageBus: {e}")
+            logger.warning(f"Failed to register master with AgentMailbox: {e}")
 
     def _init_autonomous(
         self,
@@ -237,7 +237,7 @@ class SessionRunner(BaseSessionRunner):
 
     def _create_default_session(self) -> None:
         """Create a new default session."""
-        session = SessionManager.create_new_session(self.sessions_dir, "Default")
+        session = SessionStore.create_new_session(self.sessions_dir, "Default")
         self.session = session
         self.current_session_id = session.session_id
 
@@ -270,6 +270,17 @@ class SessionRunner(BaseSessionRunner):
         self._deferred_tools = [t for t in self.tools if t.name in self._deferred_names]
         self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
         self.tool_schemas = [t.to_schema() for t in self._active_tools]
+
+        # 校验 deferred_tools 白名单：deferred_tools 按「工具 name」匹配（非注册键），
+        # 未匹配到任何已加载工具的条目会静默失效，故显式告警。
+        # 注意：role JSON 的 tools 用注册键（如 "todo"），deferred_tools 用工具名（如 "todo_write"）。
+        matched_deferred = {t.name for t in self._deferred_tools}
+        for name in self.role_cfg.deferred_tools:
+            if name not in matched_deferred:
+                logger.warning(
+                    f"[SessionRunner:{self.role}] deferred_tools 中的 {name!r} 未匹配到任何已加载工具"
+                    f"（按工具 name 匹配；注册键与工具名可能不同，如 'todo' vs 'todo_write'）"
+                )
 
         # Wire tool_search: inject deferred list + activation callback
         ts = get_tool_by_name(self.tools, "tool_search")
@@ -351,7 +362,7 @@ class SessionRunner(BaseSessionRunner):
     # ─── interactive（master）：会话管理 ────────────────────────────
 
     def _sync_to_session(self) -> None:
-        """Sync metadata and usage to session (delegated to SessionContext).
+        """Sync metadata and usage to session (delegated to ConversationStore).
 
         Note: messages are shared (same reference), no need to sync them.
         """
@@ -362,7 +373,7 @@ class SessionRunner(BaseSessionRunner):
         from core.config import load_config
         try:
             new_config = load_config()
-            self.role_cfg = load_runner_role(self.role, new_config)
+            self.role_cfg = load_role(self.role, new_config)
             self.max_iterations = self.role_cfg.max_iterations
             # 先创建新客户端，成功后再替换并关闭旧的；
             # 否则创建失败后 self.client 指向已关闭的客户端，后续调用全部失败
@@ -497,25 +508,6 @@ class SessionRunner(BaseSessionRunner):
             on_session_complete=on_session_complete,
         )
 
-    def resume_loop(
-        self,
-        on_text: Callable[[str], None] | None = None,
-        on_thinking: Callable[[str], None] | None = None,
-        on_tool_call: Callable[[str, dict, str], None] | None = None,
-        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_session_start: Callable[[str, str], None] | None = None,
-        on_session_complete: Callable[[str], None] | None = None,
-    ) -> None:
-        """Resume session loop after a session (or other placeholder) completes."""
-        self._resume_loop(
-            on_text=on_text,
-            on_thinking=on_thinking,
-            on_tool_call=on_tool_call,
-            on_tool_result=on_tool_result,
-            on_session_start=on_session_start,
-            on_session_complete=on_session_complete,
-        )
-
     def _handle_background_session_complete(self, exec_id: str, status: str) -> None:
         """后台 session 完成后自动恢复 master 循环（如果 master 空闲）。
 
@@ -530,8 +522,8 @@ class SessionRunner(BaseSessionRunner):
             return
         # 检查 message_bus 是否有未读通知
         try:
-            from core.message_bus import get_message_bus
-            mbus = get_message_bus()
+            from core.agent_mailbox import get_agent_mailbox
+            mbus = get_agent_mailbox()
             if not mbus.has_unread(self._session_id):
                 return  # 没有未读通知，不需要恢复
         except Exception:
@@ -553,7 +545,7 @@ class SessionRunner(BaseSessionRunner):
         Called by web_api.py when user switches sessions.
         """
         # Try to load existing session
-        loaded = SessionManager.load_session(session_id, self.sessions_dir)
+        loaded = SessionStore.load_session(session_id, self.sessions_dir)
         if loaded:
             self.session = loaded
             self.context.set_session(loaded)  # 同步 context 引用，保持一致
@@ -707,7 +699,7 @@ class SessionRunner(BaseSessionRunner):
                        current_tool: str = "", tool_calls: int | None = None) -> None:
         """Save execution progress in real-time.
 
-        Writes to {exec_dir}/index.json in the format SessionManager.agent_logs.load_agent_log() expects.
+        Writes to {exec_dir}/index.json in the format SessionStore.agent_logs.load_agent_log() expects.
         This ensures the file always has exec_id and task, even before the final save.
 
         Args:

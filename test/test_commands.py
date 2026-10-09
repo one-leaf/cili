@@ -41,7 +41,7 @@ class TestCommands:
         assert hasattr(client, 'chat_stream')
         assert hasattr(client, 'test_connection')
         assert hasattr(client, 'close')
-        # 会话管理方法不应该存在（已移到 SessionManager）
+        # 会话管理方法不应该存在（已移到 SessionStore）
         assert not hasattr(client, 'list_sessions')
         assert not hasattr(client, 'new_session')
         assert not hasattr(client, 'load_session')

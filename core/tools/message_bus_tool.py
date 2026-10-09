@@ -1,9 +1,9 @@
-"""MessageBus tool - cross-session message passing."""
+"""AgentMailbox tool - cross-session message passing."""
 
 from __future__ import annotations
 
 from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
-from core.message_bus import get_message_bus
+from core.agent_mailbox import get_agent_mailbox
 
 
 class MessageBusTool(Tool):
@@ -75,7 +75,7 @@ class MessageBusTool(Tool):
         message_type: str = "text",
     ) -> ToolResult:
         """Execute message_bus action."""
-        bus = get_message_bus()
+        bus = get_agent_mailbox()
 
         # Determine current session ID
         current_session_id = ""
