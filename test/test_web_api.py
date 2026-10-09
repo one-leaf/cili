@@ -362,28 +362,26 @@ class TestAskUserDirectInput:
         return sm, tool_use_id
 
     def test_find_pending_ask_user(self, tmp_path):
-        from web.routes_ask_user import _find_pending_ask_user
+        from core.tools.ask_user import find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        assert _find_pending_ask_user(SimpleNamespace(session=sm)) == tool_use_id
+        assert find_pending_ask_user(sm) == tool_use_id
 
     def test_find_pending_ask_user_none_when_answered(self, tmp_path):
-        from web.routes_ask_user import _find_pending_ask_user
+        from core.tools.ask_user import find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         sm.messages[-1]["content"][0]["_meta"]["completed"] = True
-        assert _find_pending_ask_user(SimpleNamespace(session=sm)) is None
+        assert find_pending_ask_user(sm) is None
 
     def test_build_other_answer_formats_questions(self, tmp_path):
-        from web.routes_ask_user import _build_other_answer
+        from core.tools.ask_user import build_other_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        answer = _build_other_answer(SimpleNamespace(session=sm), tool_use_id, "我选 Python")
+        answer = build_other_answer(sm, tool_use_id, "我选 Python")
         assert answer == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
 
     def test_inject_ask_user_answer(self, tmp_path):
-        from types import SimpleNamespace
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
-        agent = SimpleNamespace(session=sm, approval_store=None)
-        ok = _inject_ask_user_answer(agent, tool_use_id, "你喜欢哪种语言？ Python")
+        ok = inject_ask_user_answer(sm, tool_use_id, "你喜欢哪种语言？ Python", None)
         assert ok is True
         placeholder = sm.messages[-1]["content"][0]
         assert placeholder["content"] == "你喜欢哪种语言？ Python"
@@ -396,11 +394,9 @@ class TestAskUserDirectInput:
         assert sm.saved
 
     def test_inject_ask_user_answer_unknown_id_returns_false(self, tmp_path):
-        from types import SimpleNamespace
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         sm, _ = self._placeholder_session(tmp_path)
-        agent = SimpleNamespace(session=sm, approval_store=None)
-        assert _inject_ask_user_answer(agent, "call_missing", "x") is False
+        assert inject_ask_user_answer(sm, "call_missing", "x", None) is False
 
     # ─── 审批分支三态 ─────────────────────────────────────────────
 
@@ -421,10 +417,10 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_remember_persists_rule(self, tmp_path):
         from core.tools.approval import REMEMBER_LABEL, approval_decision_id
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
-        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REMEMBER_LABEL}") is True
+        assert inject_ask_user_answer(agent.session, tool_use_id, f"批准命令 {REMEMBER_LABEL}", store) is True
         assert store.is_approved(did)
         assert store.pending is None
         # 规则已落盘（含命令），新实例回灌后仍放行
@@ -436,10 +432,10 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_approve_session_only(self, tmp_path):
         from core.tools.approval import APPROVE_LABEL, approval_decision_id
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
-        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {APPROVE_LABEL}") is True
+        assert inject_ask_user_answer(agent.session, tool_use_id, f"批准命令 {APPROVE_LABEL}", store) is True
         assert store.is_approved(did)
         assert store.pending is None
         # 仅会话级：不落盘
@@ -449,7 +445,7 @@ class TestAskUserDirectInput:
         """路径审批（kind=path:write）经「允许并记住」后，kind 落盘并回灌为路径规则。"""
         from types import SimpleNamespace
         from core.tools.approval import REMEMBER_LABEL, ApprovalStore
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
         store = ApprovalStore(rules_path=tmp_path / "approvals.json")
         store.set_pending({
@@ -458,8 +454,7 @@ class TestAskUserDirectInput:
             "reason": "工作区外写入",
             "kind": "path:write",
         })
-        agent = SimpleNamespace(session=sm, approval_store=store)
-        assert _inject_ask_user_answer(agent, tool_use_id, f"批准写入 {REMEMBER_LABEL}") is True
+        assert inject_ask_user_answer(sm, tool_use_id, f"批准写入 {REMEMBER_LABEL}", store) is True
         assert store.is_approved("pathwrite1234567890ab")
         assert store.pending is None
         # 规则已落盘（含 kind），路径规则可被 approved_path_rules() 枚举
@@ -475,10 +470,10 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_reject_does_not_approve(self, tmp_path):
         from core.tools.approval import REJECT_LABEL, approval_decision_id
-        from web.routes_ask_user import _inject_ask_user_answer
+        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store = self._approval_agent(tmp_path)
         did = approval_decision_id("rm -rf /tmp/x")
-        assert _inject_ask_user_answer(agent, tool_use_id, f"批准命令 {REJECT_LABEL}") is True
+        assert inject_ask_user_answer(agent.session, tool_use_id, f"批准命令 {REJECT_LABEL}", store) is True
         assert not store.is_approved(did)
         assert store.pending is None
         assert not (tmp_path / "approvals.json").exists()

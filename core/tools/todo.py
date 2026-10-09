@@ -274,6 +274,19 @@ class TodoWriteTool(Tool):
         return True
 
 
+def todo_update_event(tool_name: str, is_error: bool, session: SessionStore | None,
+                      workspace_uuid: str = "") -> dict | None:
+    """工具执行后可能产生的 todo 更新事件（接口无关）。
+
+    传输层（Web SSE / QQ / ...）只需把返回值序列化后下发，无需知道 todo 工具的名字
+    与数据来源——原先这段逻辑硬编码在 web 的 SSE 回调里。
+    """
+    if tool_name != "todo_write" or is_error:
+        return None
+    todos = get_todos_from_session(session, workspace_uuid)
+    return {"type": "todo_update", "todos": todos} if todos else None
+
+
 def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "") -> list[dict] | None:
     """Helper to get current todos from session's todo file.
 

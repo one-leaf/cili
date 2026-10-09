@@ -847,6 +847,26 @@ web/deps.py 注入 on_session_start / on_session_complete 回调
 
 **实现**：`core/tools/temp.py`
 
+### 8.4 ask_user — 用户交互与占位符流程
+
+`AskUserTool.execute()` 返回 `completed=False` 的 `ToolResult`，Agent 循环退出等待用户输入。
+
+**占位符流程**（接口无关，Web / QQ 等接入端共用，位于 `core/tools/ask_user.py`）：
+
+| 函数 | 职责 |
+|------|------|
+| `find_pending_ask_user(session)` | 查找最后一个待回答的占位 tool_result，返回其 `tool_use_id` |
+| `build_other_answer(session, tool_use_id, content)` | 把用户自由输入组装为「其他」回复（`问题 答案` 格式） |
+| `inject_ask_user_answer(session, tool_use_id, answer, approval_store)` | 注入答案、写答案文件、标记 `_meta.answered`，并按答案后缀判定审批三态（批准本次/记住/拒绝）后落盘 |
+
+接入端只需：渲染问题卡 → 拿到用户答案 → 调 `inject_ask_user_answer` → 恢复 runner 循环。
+
+> 这些函数原先住在 `web/routes_ask_user.py`（Web 专属），第二个接入端只能复制一份；
+> 现已下沉 core，Web 与 QQ 共用。
+
+**相关**：`todo_update_event()`（`core/tools/todo.py`）同理——把「哪个工具触发、数据从哪取」
+的判断收进 core，传输层只负责序列化。
+
 ---
 
 ## 九、添加新工具

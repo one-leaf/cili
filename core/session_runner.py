@@ -390,9 +390,9 @@ class SessionRunner(BaseSessionRunner):
             logger.warning(f"[SessionRunner:{self.role}] 重新加载配置失败: {e}")
 
     def run(self, *args, **kwargs):
-        """统一入口：按角色 mode 分派。
+        """统一入口：按 run_mode 分派。
 
-        interactive → run(user_input, on_text=..., ...)（Web 聊天入口）
+        interactive → run(user_input, sink=OutputSink(...))（交互式聊天入口）
         autonomous → run() → dict（pinned 任务 → 循环 → 检查 → 兜底总结）
         """
         if self._mode == "interactive":
@@ -469,6 +469,13 @@ class SessionRunner(BaseSessionRunner):
 
     def resume_after_ask_user(self, sink: OutputSink | None = None) -> None:
         """Resume session loop after ask_user tool result has been injected."""
+        self._resume_loop(sink=sink)
+
+    def resume_from_notification(self, sink: OutputSink | None = None) -> None:
+        """恢复 interactive 循环以处理待处理的后台通知（不追加新用户消息）。
+
+        供接口层在后台子代理完成、master 空闲时继续循环（/resume 端点）。
+        """
         self._resume_loop(sink=sink)
 
     def _handle_background_session_complete(self, exec_id: str, status: str) -> None:

@@ -1164,8 +1164,7 @@ def _prepare_environment(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"[migration] Warning: tools/cron.d migration failed: {e}")
 
-    # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网
-    _check_web_auth(args.host)
+    # 安全校验（_check_web_auth）是 Web 专属，移至 _start_web_interface。
 
 
 def _maybe_restart_after_install() -> None:
@@ -1261,9 +1260,11 @@ def _start_git_auto_sync() -> None:
     logger.info("Git 自动同步已启动（每 2 小时，仅针对配置了远程仓库的工作区）")
 
 
-def _start_services(args: argparse.Namespace) -> None:
-    """阶段三：核心服务、自动升级、浏览器打开、uvicorn。"""
-    # 启动接口无关的服务（cron / 浏览器 / MCP / AgentMailbox）。
+def _start_core_services() -> None:
+    """启动接口无关的服务（cron / 浏览器 / MCP / AgentMailbox / 自动升级）。
+
+    其他接入端（如将来的 QQ bot 入口）复用本函数，只需替换 _start_web_interface。
+    """
     # 幂等：uvicorn lifespan 会再次调用，此时为空操作。
     from core.app_context import app_context
     app_context.startup()
@@ -1275,6 +1276,12 @@ def _start_services(args: argparse.Namespace) -> None:
         logger.info("自动升级检查已启动（可在 setting.json 设 system.auto_update=false 关闭）")
     else:
         logger.info("自动升级已关闭（system.auto_update=false）")
+
+
+def _start_web_interface(args: argparse.Namespace) -> None:
+    """启动 Web 接入端：鉴权校验 + 自动开浏览器 + uvicorn。"""
+    # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网（Web 专属）
+    _check_web_auth(args.host)
 
     print(f"Starting Cili Agent web server on http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop")
@@ -1307,6 +1314,12 @@ def _start_services(args: argparse.Namespace) -> None:
         )
     except KeyboardInterrupt:
         pass  # Ctrl+C: exit silently
+
+
+def _start_services(args: argparse.Namespace) -> None:
+    """阶段三：核心服务 + Web 接入端。"""
+    _start_core_services()
+    _start_web_interface(args)
 
 
 def main() -> None:

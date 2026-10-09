@@ -324,6 +324,7 @@ def _init_interactive(self, workspace_uuid: str) -> None:
 # 其他接口
 def reload_config()          # 重载配置并重建 LLM 客户端/工具集
 def resume_after_ask_user(sink=None)  # ask_user 工具返回后恢复循环
+def resume_from_notification(sink=None)  # 后台通知待处理时恢复循环（不追加用户消息）
 def attach_session(store)    # 附着到 SessionStore（切换/新建会话共用）
 def switch_session(sid)      # 切换会话（加载已存在的）
 def reset()                  # 清空对话历史

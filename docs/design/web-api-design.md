@@ -791,55 +791,39 @@ Content-Type: application/json
 
 ### 5.1 同步到异步桥接
 
-Master SessionRunner 的回调是同步的，但 FastAPI 的 SSE 是异步的。使用 `queue.Queue` 桥接：
+Master SessionRunner 的回调是同步的，但 FastAPI 的 SSE 是异步的。统一由
+`web/sse.py` 的两个函数完成桥接（send_message 与 answer_ask_user 共用，不再各自手写）：
 
 ```python
-def send_message():
-    event_queue: queue.Queue[str | None] = queue.Queue()
-    
-    # 同步回调
-    def on_text(text: str) -> None:
-        # 413 重试时，Agent 发送特殊标记，前端需清除已输出文本
-        if text == "\x00RETRY_CLEAR\x00":
-            event = json.dumps({"type": "retry_clear"})
-            event_queue.put(f"data: {event}\n\n")
-            return
-        event = json.dumps({"type": "text", "content": text})
-        event_queue.put(f"data: {event}\n\n")
-    
-    # 异步生成器
-    async def generate():
-        loop = asyncio.get_running_loop()
-        
-        # 在后台线程运行 Agent
-        def run_agent():
-            agent.run(user_input=..., on_text=on_text, ...)
-            event_queue.put(None)  # 结束信号
-        
-        task = asyncio.ensure_future(loop.run_in_executor(None, run_agent))
-        
-        # 从队列读取事件
-        while True:
-            event = await asyncio.to_thread(event_queue.get, True, 0.5)
-            if event is None:
-                break
-            yield event
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
+# web/sse.py
+def make_sse_callbacks(event_queue, runner) -> OutputSink:
+    """runner 的同步回调 → 队列中的 SSE 帧字符串。"""
+    ...
+
+def sse_run_response(run_fn, event_queue, *, cancel_on_disconnect=False,
+                     poll_timeout=0.5) -> StreamingResponse:
+    """在后台线程执行 run_fn（写入 event_queue，以 None 作结束哨兵），
+    主协程从队列读取并 yield 为 SSE 流。"""
 ```
+
+调用方只需构造 `event_queue` + `make_sse_callbacks`，定义 `run_fn`，然后
+`return sse_run_response(run_fn, event_queue)`。
 
 ### 5.2 客户端断开处理
 
-客户端断开连接时，Agent 继续在后台运行：
+`sse_run_response` 默认在客户端断开时让 runner 继续在后台运行
+（`cancel_on_disconnect=False`）——浏览器刷新或网络抖动不中断长任务：
 
 ```python
 except asyncio.CancelledError:
-    # 客户端断开，Agent 继续在后台运行
-    logger.info("Client disconnected, agent continues running in background")
+    if cancel_on_disconnect:
+        task.cancel()
+    else:
+        logger.info("Client disconnected, runner continues running in background")
     return
 ```
 
-用户需要显式点击"停止"按钮（调用 `/stop` 端点）才能中断 Agent。
+用户需要显式点击"停止"按钮（调用 `/stop` 端点）才能中断 runner。
 
 > **例外（answer-ask-user）**：`POST /api/workspaces/{uuid}/sessions/{id}/answer-ask-user` 的 SSE 生成器在客户端断开（`asyncio.CancelledError`）时调用 `task.cancel()` 终止恢复中的 Agent 循环——该端点用于继续同一会话的问答流程，客户端断开后没有新的输入来源，继续后台运行没有意义。
 
@@ -1161,7 +1145,8 @@ def _mask_api_key(config: dict) -> dict:
 | `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
 | `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/browse`） |
 | `web/routes_memory.py` | 记忆管理（`/api/workspaces/{uuid}/memory*`） |
-| `web/deps.py` | runner 池（LRU）+ 会话认领 + SSE 回调构造 + workspace 解析 |
+| `web/deps.py` | 共享依赖：registry 引用 + 会话认领封装 + workspace 解析 + 默认 sink 绑定 |
+| `web/sse.py` | SSE 适配层：`make_sse_callbacks`（回调→SSE 帧）、`sse_stream`、`sse_run_response`（同步执行→SSE 流执行壳） |
 | `web/static/index.html` | 主页面 |
 | `web/static/app.js` | 前端状态与工作区/会话管理 |
 | `web/static/chat.js` | 聊天界面与 SSE 事件处理、Markdown 渲染 |
@@ -1177,7 +1162,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ---
 
-**文档版本**: v1.6  
+**文档版本**: v1.7  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-10-09（同步代码：runner 池下沉 `core/session_registry.py`、单例生命周期统一 `core/app_context.py`、`OutputSink` 收敛回调；此前已同步 `agents`→`sessions`、SSE 事件 `agent_*`→`session_*`、端点拆分）  
+**更新时间**: 2026-10-09（同步代码：SSE 适配抽至 `web/sse.py` + `sse_run_response` 执行壳、ask_user/todo 领域逻辑下沉 core；此前已同步 runner 池下沉、`core/app_context.py`、`OutputSink`、端点拆分）  
 **状态**: 已实现

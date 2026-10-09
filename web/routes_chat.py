@@ -21,11 +21,12 @@ from core.session import SessionStore
 from web.deps import (
     registry, _get_or_create_runner, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
-    _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
+    _claim_session_run, _release_session_run,
 )
+from web.sse import make_sse_callbacks, sse_run_response, sse_stream
 from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
-from web.routes_ask_user import (
-    _find_pending_ask_user, _build_other_answer, _inject_ask_user_answer,
+from core.tools.ask_user import (
+    build_other_answer, find_pending_ask_user, inject_ask_user_answer,
 )
 
 router = APIRouter()
@@ -181,7 +182,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             sm.add_message("user", content, flush=False)
             sm.add_message("assistant", [{"type": "text", "text": help_text}], flush=False)
             sm.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": help_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": help_text}), media_type="text/event-stream")
 
     if content == "/status":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -215,7 +216,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
     if content == "/goal" or content == "/goal status":
@@ -225,7 +226,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": goal_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
 
     if content == "/goal clear":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -236,7 +237,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
     if content == "/goal pause":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -250,7 +251,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
 
     if content == "/goal resume":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -260,7 +261,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             runner.session.add_message("user", content, flush=False)
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         manager.resume()
         # 同 /goal <目标>：先落恢复确认，再启动循环，保证顺序「命令 → 恢复确认 → 下一轮卡片」
         confirm_text = "▶️ 已恢复目标循环，进度实时显示。"
@@ -274,8 +275,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
-        return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
     if content.startswith("/goal "):
         objective = content[len("/goal "):].strip()
@@ -285,7 +286,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             runner.session.add_message("user", content, flush=False)
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         manager = get_goal_manager(runner.session.session_dir)
         manager.set(objective)
@@ -304,8 +305,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                            "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(_sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
-        return StreamingResponse(_sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
 
     # Normal message - send to runner
     runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -318,7 +319,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
         else:
             error_text = "当前会话正在执行中，请等待完成后再发送消息"
-        return StreamingResponse(_sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
 
     # ask_user 待回答时：直接把用户输入作为"其他"回复提交（等价于在卡片输入"其他"）。
     # 输入不会作为新 user message 追加，而是注入占位 tool_result 后恢复循环；
@@ -326,125 +327,99 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     pending_ask_user_id: str | None = None
     ask_user_answer: str | None = None
     if content:
-        pending_ask_user_id = _find_pending_ask_user(runner)
+        pending_ask_user_id = find_pending_ask_user(runner.session)
         if pending_ask_user_id:
-            ask_user_answer = _build_other_answer(runner, pending_ask_user_id, content)
-            if not _inject_ask_user_answer(runner, pending_ask_user_id, ask_user_answer):
+            ask_user_answer = build_other_answer(runner.session, pending_ask_user_id, content)
+            if not inject_ask_user_answer(runner.session, pending_ask_user_id, ask_user_answer,
+                                          runner.approval_store):
                 pending_ask_user_id = None  # 竞态：占位符已消失，回退普通消息
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
-    cb = _make_sse_callbacks(event_queue, runner)
+    cb = make_sse_callbacks(event_queue, runner)
 
-    async def generate():
-        # Run the runner loop in a background thread
-        loop = asyncio.get_running_loop()
-
-        def run_runner():
-            try:
-                if pending_ask_user_id is not None:
-                    # 用户输入已作为 ask_user 的"其他"回复注入占位 tool_result。
-                    # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），
-                    # 再恢复循环；不追加新 user message，避免 LLM 双重处理输入。
-                    close_event = json.dumps({
-                        "type": "tool_result",
-                        "tool": "ask_user",
-                        "content": ask_user_answer,
-                        "is_error": False,
-                        "tool_use_id": pending_ask_user_id,
-                    }, ensure_ascii=False)
-                    event_queue.put(f"data: {close_event}\n\n")
-
-                    runner.resume_after_ask_user(sink=cb)
-                else:
-                    # Build user_input: str or list[dict] for multimodal
-                    user_input = request.content
-                    if request.images:
-                        content_blocks: list[dict] = [
-                            {"type": "text", "text": request.content, "_valid": True}
-                        ]
-                        for img in request.images:
-                            content_blocks.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": img.get("media_type", "image/png"),
-                                    "data": img.get("data", ""),
-                                },
-                                "_valid": True,
-                            })
-                        user_input = content_blocks
-
-                    runner.run(user_input=user_input, sink=cb)
-
-                # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
-                try:
-                    sm = getattr(runner, "session", None)
-                    if sm is not None and memory_enabled(runner.workspace_uuid or ""):
-                        schedule_extraction(
-                            runner.workspace_uuid or "",
-                            runner.current_session_id or "",
-                            list(sm.messages),
-                        )
-                except Exception:
-                    logger.exception("Failed to schedule memory extraction")
-
-                # Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞 SSE 流）
-                try:
-                    from core.config import load_workspace_config
-                    workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
-                    if workspace_cfg.get("git_enabled", False):
-                        import threading
-                        from core.workspace_git import auto_commit_workspace
-                        threading.Thread(
-                            target=auto_commit_workspace,
-                            args=(runner.workspace_uuid, runner.current_session_id or ""),
-                            kwargs={"sync_remote": True},
-                            daemon=True,
-                        ).start()
-                except Exception:
-                    logger.exception("Failed to schedule git auto-commit")
-            except Exception as e:
-                logger.error(f"master runner error: {e}")
-                # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
-                try:
-                    sm = getattr(runner, "session", None)
-                    if sm is not None:
-                        sm.add_message("assistant", f"错误: {e}", _meta={"error_notice": True})
-                        sm.save()
-                except Exception:
-                    logger.exception("Failed to persist error message")
-                err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
-                event_queue.put(f"data: {err_event}\n\n")
-            finally:
-                _release_session_run(session_key)
-                event_queue.put(None)  # sentinel: done
-
-        task = asyncio.ensure_future(loop.run_in_executor(None, run_runner))
-
-        # Stream events from queue to client (use to_thread to avoid blocking the event loop)
+    def run_runner():
         try:
-            while True:
-                try:
-                    # Use to_thread so the blocking queue.get() doesn't block the async loop
-                    event = await asyncio.to_thread(event_queue.get, True, 0.5)
-                    if event is None:
-                        break
-                    yield event
-                except queue.Empty:
-                    continue
-        except asyncio.CancelledError:
-            # Client disconnected — let the runner keep running in the background.
-            # The runner only stops when the user explicitly clicks the stop button
-            # (which calls the /stop endpoint). This prevents browser refresh or
-            # network glitches from aborting long-running tasks.
-            logger.info("Client disconnected, runner continues running in background")
-            return
+            if pending_ask_user_id is not None:
+                # 用户输入已作为 ask_user 的"其他"回复注入占位 tool_result。
+                # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），
+                # 再恢复循环；不追加新 user message，避免 LLM 双重处理输入。
+                close_event = json.dumps({
+                    "type": "tool_result",
+                    "tool": "ask_user",
+                    "content": ask_user_answer,
+                    "is_error": False,
+                    "tool_use_id": pending_ask_user_id,
+                }, ensure_ascii=False)
+                event_queue.put(f"data: {close_event}\n\n")
 
-        # Send done signal
-        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                runner.resume_after_ask_user(sink=cb)
+            else:
+                # Build user_input: str or list[dict] for multimodal
+                user_input = request.content
+                if request.images:
+                    content_blocks: list[dict] = [
+                        {"type": "text", "text": request.content, "_valid": True}
+                    ]
+                    for img in request.images:
+                        content_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.get("media_type", "image/png"),
+                                "data": img.get("data", ""),
+                            },
+                            "_valid": True,
+                        })
+                    user_input = content_blocks
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+                runner.run(user_input=user_input, sink=cb)
+
+            # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
+            try:
+                sm = getattr(runner, "session", None)
+                if sm is not None and memory_enabled(runner.workspace_uuid or ""):
+                    schedule_extraction(
+                        runner.workspace_uuid or "",
+                        runner.current_session_id or "",
+                        list(sm.messages),
+                    )
+            except Exception:
+                logger.exception("Failed to schedule memory extraction")
+
+            # Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞 SSE 流）
+            try:
+                from core.config import load_workspace_config
+                workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
+                if workspace_cfg.get("git_enabled", False):
+                    import threading
+                    from core.workspace_git import auto_commit_workspace
+                    threading.Thread(
+                        target=auto_commit_workspace,
+                        args=(runner.workspace_uuid, runner.current_session_id or ""),
+                        kwargs={"sync_remote": True},
+                        daemon=True,
+                    ).start()
+            except Exception:
+                logger.exception("Failed to schedule git auto-commit")
+        except Exception as e:
+            logger.error(f"master runner error: {e}")
+            # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
+            try:
+                sm = getattr(runner, "session", None)
+                if sm is not None:
+                    sm.add_message("assistant", f"错误: {e}", _meta={"error_notice": True})
+                    sm.save()
+            except Exception:
+                logger.exception("Failed to persist error message")
+            err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
+            event_queue.put(f"data: {err_event}\n\n")
+        finally:
+            _release_session_run(session_key)
+            event_queue.put(None)  # sentinel: done
+
+    # 客户端断开时 runner 继续后台执行，仅 /stop 能中断
+    return sse_run_response(run_runner, event_queue)
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop")
@@ -469,7 +444,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     Called by frontend when a background sub-agent completes and master is idle.
     Drains notifications from message_bus and continues the runner loop.
     """
-    from web.deps import _claim_session_run, _release_session_run, _make_sse_callbacks, _is_session_idle
+    from web.deps import _claim_session_run, _release_session_run, _is_session_idle
     import asyncio
 
     key = f"{workspace_uuid}:{session_id}"
@@ -504,11 +479,12 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     # Run runner in background thread
     async def run_and_stream():
         event_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
-        callbacks = _make_sse_callbacks(event_queue, runner)
+        callbacks = make_sse_callbacks(event_queue, runner)
 
         def run_runner():
             try:
-                runner.run(sink=callbacks)
+                # 恢复循环处理后台通知（不追加新用户消息）
+                runner.resume_from_notification(sink=callbacks)
             except Exception as e:
                 logger.error(f"Resume runner error: {e}")
             finally:

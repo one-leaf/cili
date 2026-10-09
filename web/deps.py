@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
 import re
 import secrets
 from datetime import datetime
@@ -17,7 +16,6 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, Request
 
 from core.session_runner import SessionRunner
-from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.config import (
     load_config, PROJECT_ROOT, load_workspace_config, save_workspace_config,
     GLOBAL_CONFIG_PATH, get_workspace_data_dir, load_workspaces_index,
@@ -26,7 +24,6 @@ from core.config import (
 from core.event_bus import get_event_bus
 from core.output_sink import OutputSink
 from core.session_registry import registry
-from core.tools.todo import get_todos_from_session
 
 # Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
 logging.basicConfig(
@@ -317,64 +314,4 @@ def _is_session_idle(key: str) -> bool:
     return registry.is_idle(key)
 
 
-# ---------- SSE 回调组 / 事件流（send_message 与 answer_ask_user 共用） ----------
-
-def _make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSink:
-    """构造 SSE 输出接收端（OutputSink），同步 runner 回调 → 队列，供各运行入口复用。"""
-
-    def on_text(text: str) -> None:
-        # Sentinel: 413 retry needs frontend to clear already-streamed text
-        if text == RETRY_CLEAR_SENTINEL:
-            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
-            event_queue.put(f"data: {event}\n\n")
-            return
-        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "session"):
-            return
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-        # Check for todo_write tool and push todo update event
-        if tool_name == "todo_write" and not is_error:
-            todos = get_todos_from_session(runner.session, runner.workspace_uuid or "")
-            if todos:
-                todo_event = json.dumps({"type": "todo_update", "todos": todos}, ensure_ascii=False)
-                event_queue.put(f"data: {todo_event}\n\n")
-
-    def on_session_start(exec_id: str, task_summary: str) -> None:
-        # Send SSE event for real-time UI update
-        event = json.dumps({"type": "session_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    def on_session_complete(exec_id: str) -> None:
-        # Push SSE event for real-time UI update
-        event = json.dumps({"type": "session_complete", "exec_id": exec_id}, ensure_ascii=False)
-        event_queue.put(f"data: {event}\n\n")
-
-    return OutputSink(
-        on_text=on_text,
-        on_thinking=on_thinking,
-        on_tool_call=on_tool_call,
-        on_tool_result=on_tool_result,
-        on_session_start=on_session_start,
-        on_session_complete=on_session_complete,
-    )
-
-
-async def _sse_stream(*events: dict):
-    """Yield SSE events followed by a done event."""
-    for event in events:
-        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+# SSE 适配（回调组 / 事件流 / 执行壳）已移至 web/sse.py —— 与 core 解耦。
