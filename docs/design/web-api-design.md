@@ -33,7 +33,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 │  web/routes_*.py（各资源域路由）· web/deps.py（共享状态/helper）│
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │master_runners│  │ SSE Bridge   │  │ SessionStore     │  │
+│  │  registry    │  │ SSE Bridge   │  │ SessionStore     │  │
 │  │ (LRU cache)  │  │ (Queue)      │  │ (Data layer)     │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
 │         │                 │                                  │
@@ -46,35 +46,27 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 master_runners（runner 池，LRU 缓存）
+### 2.2 SessionRegistry（runner 池，LRU 缓存）
+
+runner 池已下沉至 core（接口无关），使 Web / QQ 等接入端共享同一份池与会话运行权：
 
 ```python
-# 全局变量（web/deps.py）
-master_runners: dict[str, SessionRunner] = {}  # key = "workspace_uuid:session_id"
-_runner_access: dict[str, float] = {}      # key -> 最后访问时间戳
-_MAX_RUNNERS = 20                          # 最大缓存数量
-_sessions_lock = asyncio.Lock()            # 并发访问锁
+# core/session_registry.py
+registry = SessionRegistry()      # 模块级单例
+#   .get(key) / .keys() / .items() / len(registry) / key in registry
+#   .get_or_create(ws_uuid, session_id, workspace_dir, on_create=...)   # 懒创建
+#   .evict_idle()                 # 超过 max_runners(20) 时淘汰最久未访问的非运行中 runner
+#   .claim(key) / .release(key) / .is_idle(key)   # 运行权认领（防双循环）
+#   .remove(key) / .remove_workspace(uuid) / .shutdown_all()
+#   .attach(key, interface, attachment_id) / .detach(attachment_id)     # 多接口附着
 ```
 
-> 注：`master_runners` 存的是 master **runner 实例**（不是会话数据）；会话数据由 `SessionStore`（`core/session.py`）持有。
+`web/deps.py` 只做薄封装：`registry` 直接引用；`_get_or_create_runner()` 校验 workspace 后
+调 `registry.get_or_create(..., on_create=_bind_default_sink)`（`on_create` 回调绑定 Web 专属的
+`default_sink`：工具实时输出 + 后台恢复 → 全局事件总线）。
 
-**工作原理**（`_get_or_create_runner()`，`web/deps.py`）：
-- 每次访问会话时，更新 `_runner_access[key]` 为当前时间
-- 创建新 SessionRunner 前，如果超过 20 个，淘汰最久未访问的非运行中 runner
-- 被淘汰的 runner 调用 `cleanup()` 释放资源（浏览器、HTTP 客户端）
-
-```python
-def _evict_idle_runner() -> None:
-    if len(master_runners) <= _MAX_RUNNERS:
-        return
-    idle_keys = [k for k in master_runners if not master_runners[k].is_running()]
-    if not idle_keys:
-        return
-    oldest = min(idle_keys, key=lambda k: _runner_access.get(k, 0))
-    evicted = master_runners.pop(oldest)
-    _runner_access.pop(oldest, None)
-    evicted.cleanup()
-```
+> 注：池中存的是 master **runner 实例**（不是会话数据）；会话数据由 `SessionStore`（`core/session.py`）持有。
+> key 统一由 `core.session_registry.session_key(ws_uuid, session_id)` 构造。
 
 ---
 
@@ -970,8 +962,11 @@ main.py
 ├─ _init_settings()          # 初始化全局配置
 │   └─ 初始化配置（如需要）
 │
-├─ start_scheduler()         # 启动 Cron 调度器
-│   └─ 加载 core/cron.d/*.json
+├─ app_context.startup()     # 启动接口无关服务（幂等）
+│   ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
+│   ├─ start_agent_mailbox() # 初始化 AgentMailbox
+│   ├─ 后台线程连接 MCP 服务器
+│   └─ start_scheduler()     # 启动 Cron 调度器
 │
 └─ uvicorn.run(app)          # 启动 FastAPI
 
@@ -984,29 +979,23 @@ web_api.py（模块导入时）
 ├─ _auto_init_global_config()   # 验证全局配置（模块级执行）
 │
 └─ lifespan 进入
-    ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
-    ├─ start_agent_mailbox()   # 初始化 AgentMailbox 跨会话消息总线
-    └─ 后台线程连接 MCP 服务器 # threading.Thread(daemon=True)：load_config 后调用
-                             # core/tools/mcp 的 get_provider().ensure_connected()，不阻塞启动
+    └─ app_context.startup()  # 幂等：main.py 已启动时为空操作
 ```
+
+> 单例生命周期统一由 `core/app_context.py` 的 `AppContext` 持有（`startup()`/`shutdown()`），
+> 解决原先「cron 在 main.py 启动、却在 web_api 关闭」的跨文件归属问题；各接入端进程都调它。
 
 ### 7.2 关闭流程
 
 ```
 lifespan exit
 │
-├─ stop_agent_mailbox()        # 停止 AgentMailbox
-│
-├─ stop_browser_service()    # 停止浏览器服务（Playwright + Chrome）
-│
-├─ stop_mcp_provider()       # 停止 MCP provider（断开所有服务器连接）
-│
-├─ stop_scheduler()          # 停止 Cron 调度器
-│
-└─ 清理所有 Master SessionRunner
-    └─ for agent in agents.values():
-        ├─ agent.stop()      # 发送停止信号
-        └─ agent.cleanup()   # 释放资源（浏览器、HTTP 客户端）
+└─ app_context.shutdown()
+    ├─ stop_agent_mailbox()     # 停止 AgentMailbox
+    ├─ stop_browser_service()   # 停止浏览器服务（Playwright + Chrome）
+    ├─ stop_mcp_provider()      # 停止 MCP provider（断开所有服务器连接）
+    ├─ stop_scheduler()         # 停止 Cron 调度器
+    └─ registry.shutdown_all()  # 遍历 runner 池：runner.stop() + runner.cleanup()
 ```
 
 ---
@@ -1188,7 +1177,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ---
 
-**文档版本**: v1.5  
+**文档版本**: v1.6  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-10-09（同步代码：`agents`→`sessions`/`_MAX_RUNNERS`/`_get_or_create_runner`、SSE 事件 `agent_start/complete`→`session_start/complete`、端点已拆分到 `web/routes_*.py`）  
+**更新时间**: 2026-10-09（同步代码：runner 池下沉 `core/session_registry.py`、单例生命周期统一 `core/app_context.py`、`OutputSink` 收敛回调；此前已同步 `agents`→`sessions`、SSE 事件 `agent_*`→`session_*`、端点拆分）  
 **状态**: 已实现

@@ -17,16 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from core.fs_utils import atomic_write_json
-from core.session import generate_short_id
+from core.session import INTERNAL_META_FIELDS as INTERNAL_META, generate_short_id
 
 logger = logging.getLogger(__name__)
-
-# 内部元数据字段：序列化/送 LLM 前剥除，不发给 API
-INTERNAL_META = {
-    "id", "valid", "compacted", "output_path", "file_size", "truncated",
-    "tool_name", "multimodal", "completed", "answered", "exec_id", "seq",
-    "summary", "error_notice",
-}
 
 
 class ConversationStore:
@@ -62,17 +55,15 @@ class ConversationStore:
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """追加一条消息；交互模式下仅置脏，落盘由迭代/回合边界的 flush()/save() 批量完成。
 
-        消息引用与 session.messages 共享（同一 list），mark_dirty 递增版本号，
-        jsonl 追加推迟到 _interactive_tool_batch 末尾 flush / 回合退出点 save，
-        崩溃窗口从"消息级"放宽到"迭代级"（工具输出内容已外置文件不丢）。
+        有 session 时委托 ``SessionStore.add_message``（唯一实现，统一注入 id/created_at
+        与脏标记语义）；无 session（autonomous 直连）时本地追加。
         """
-        meta = dict(meta) if meta else {}
-        if "id" not in meta:
-            meta["id"] = generate_short_id()
-        msg = {"role": role, "content": content, "_meta": meta}
-        self.messages.append(msg)
         if self.session is not None:
-            self.session.mark_dirty()
+            self.session.add_message(role, content, _meta=meta)
+            return
+        meta = dict(meta) if meta else {}
+        meta.setdefault("id", generate_short_id())
+        self.messages.append({"role": role, "content": content, "_meta": meta})
 
     def invalidate_all_messages(self) -> int:
         """标记全部消息无效（_meta.valid=False）。返回标记数。"""

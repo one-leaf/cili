@@ -20,6 +20,7 @@ from typing import Any, Callable
 from core.session_runner_runtime.context import ConversationStore
 from core.session_runner_runtime.runner import Runner, RETRY_CLEAR_SENTINEL
 from core.cache_state import CacheState
+from core.output_sink import OutputSink
 from core.config import Config
 from core.llm import LLMClient, LLMResponse, Message
 from core.tools.base import Tool
@@ -95,13 +96,10 @@ class BaseSessionRunner:
             "cache_creation_tokens": 0,
         }
 
-        # Callbacks (set by run())
-        self._on_text: Callable[[str], None] | None = None
-        self._on_thinking: Callable[[str], None] | None = None
-        self._on_tool_call: Callable[[str, dict, str], None] | None = None
-        self._on_tool_result: Callable[[str, str, bool, str], None] | None = None
-        # 工具实时输出增量：(tool_name, content, written_bytes, tool_use_id)
-        self._on_tool_output: Callable[[str, str, int, str], None] | None = None
+        # 输出接收端：default_sink 随 runner 存活（如工具实时输出→全局事件总线），
+        # sink 为本次运行的活动 sink（run/resume 时设置，未设置时回退 default_sink）。
+        self.default_sink: OutputSink = OutputSink()
+        self.sink: OutputSink = self.default_sink
 
         # Session ID for LLM routing — the unified Agent sets this before
         # super().__init__ (interactive: current session; autonomous: exec_id).

@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from core.llm import LLMResponse, TextBlock
+from core.output_sink import OutputSink
 from core.llm.errors import (
     LLMErrorInfo,
     StreamErrorEvent,
@@ -216,8 +217,7 @@ class TestRunnerStreamingRetry:
         agent.client = MagicMock()
         agent.client.base_url = "http://fake"
         agent.client.chat_stream.side_effect = chat_stream_impl
-        agent._on_text = None
-        agent._on_thinking = None
+        agent.sink = OutputSink()
         agent._stopped = False
         agent._session_id = "sess"
         agent.tool_schemas = []

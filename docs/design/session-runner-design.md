@@ -143,10 +143,14 @@ BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`doc
 
 ### 3.1 职责与 mode 分叉
 
-统一 `SessionRunner` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`role_cfg.mode` 决定运行分叉：
+统一 `SessionRunner` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`run_mode`（默认取 `role_cfg.mode`）决定运行分叉：
 
-- `interactive`（master）→ `run(user_input, on_text=..., ...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
+- `interactive`（master）→ `run(user_input, sink=...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
 - `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `iterations` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
+
+> **role 与 run_mode 解耦**：`role` 决定画像（工具白名单/提示/预算），`run_mode` 决定循环行为
+> （interactive/autonomous）。默认 `run_mode=None` 时取角色 JSON 的 `mode`；接口层可显式覆盖
+> （例如 QQ 接口想要 interactive 行为但非 master 画像）。
 
 ```python
 class SessionRunner(BaseSessionRunner):
@@ -164,11 +168,12 @@ class SessionRunner(BaseSessionRunner):
         temperature: float | None = None,  # 可选 LLM temperature 覆盖
         approval_store=None,        # autonomous 模式共享的会话级审批存储
         max_consecutive_failures: int | None = None,  # None 时取角色配置
+        run_mode: str | None = None,  # 运行模式覆盖；None 时取角色 JSON 的 mode
     ):
         self.role = role
         self.role_cfg = load_role(role, config)
-        self.model = getattr(config, f"{role}_model", None) or config.model
-        self._mode = self.role_cfg.mode
+        self.model = config.model_for_role(role)   # 未知角色回退 master 并告警
+        self._mode = run_mode or self.role_cfg.mode
 
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
@@ -190,15 +195,25 @@ class SessionRunner(BaseSessionRunner):
 
 ```python
 def run(self, *args, **kwargs):
-    """统一入口：按角色 mode 分派。
+    """统一入口：按 run_mode 分派。
 
-    interactive → run(user_input, on_text=..., ...)（Web 聊天入口）
+    interactive → run(user_input, sink=OutputSink(...))（Web 聊天入口）
     autonomous → run() → dict（pinned 任务 → 循环 → 检查 → 兜底总结）
     """
     if self._mode == "interactive":
         return self._run_interactive(*args, **kwargs)
-    return self._run_autonomous(*args, **kwargs)
+    return self.loop.run_autonomous()
 ```
+
+### 3.1.1 输出接收端（OutputSink）
+
+runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（`core/output_sink.py`）：
+
+- `runner.default_sink`：随 runner 存活（Web 设为「工具实时输出 + 后台恢复 → 全局事件总线」）
+- `run(sink=...)` / `resume_after_ask_user(sink=...)`：本次运行的活动 sink；未传时回退 `default_sink`，
+  传入时用 `layer_sink()` 以 default_sink 为底、仅覆盖显式设置的字段（保留 `on_tool_output` 等）
+
+各接入端（Web SSE / QQ / ...）各自构造一个 OutputSink；`web/deps.py::_make_sse_callbacks()` 即 SSE 版。
 
 ### 3.2 角色 JSON 配置
 
@@ -308,8 +323,9 @@ def _init_interactive(self, workspace_uuid: str) -> None:
 
 # 其他接口
 def reload_config()          # 重载配置并重建 LLM 客户端/工具集
-def resume_after_ask_user()  # ask_user 工具返回后恢复循环
-def switch_session()         # 切换会话
+def resume_after_ask_user(sink=None)  # ask_user 工具返回后恢复循环
+def attach_session(store)    # 附着到 SessionStore（切换/新建会话共用）
+def switch_session(sid)      # 切换会话（加载已存在的）
 def reset()                  # 清空对话历史
 def get_usage()              # 返回 usage 统计（与会话同步）
 def compact()                # 手动压缩（_perform_full_compact(3)）
@@ -322,12 +338,7 @@ def cleanup()                # 清理资源并保存会话
 def _run_interactive(
     self,
     user_input: str | list[dict],
-    on_text: Callable[[str], None] | None = None,
-    on_thinking: Callable[[str], None] | None = None,
-    on_tool_call: Callable[[str, dict, str], None] | None = None,
-    on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-    on_session_start: Callable[[str, str], None] | None = None,
-    on_session_complete: Callable[[str], None] | None = None,
+    sink: OutputSink | None = None,
     streaming: bool = True,
 ) -> None:
     """执行一轮 agent 循环"""
@@ -335,8 +346,7 @@ def _run_interactive(
     self._running = True
     self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
     self._streaming = streaming
-    self._on_text = on_text
-    # ... 保存所有回调 ...
+    self.sink = layer_sink(self.default_sink, sink)  # 未覆盖的字段继承 default_sink
 
     try:
         # 添加用户消息（项目指令不在此注入，而在 _get_messages_with_header()

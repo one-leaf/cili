@@ -21,7 +21,9 @@ from typing import Callable
 from core.config import Config, PROJECT_ROOT
 from core.llm import create_llm_client, format_llm_error
 from core.fs_utils import atomic_write_json
+from core.session import build_exec_log_data
 from core.base_session_runner import BaseSessionRunner
+from core.output_sink import OutputSink, layer_sink
 from core.session import SessionStore, generate_short_id
 from core.role_config import load_role
 from core.session_runner_runtime.loop import (
@@ -78,6 +80,7 @@ class SessionRunner(BaseSessionRunner):
         approval_store=None,
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
+        run_mode: str | None = None,
     ):
         """Initialize SessionRunner.
 
@@ -95,13 +98,16 @@ class SessionRunner(BaseSessionRunner):
             approval_store: autonomous 模式共享的会话级审批存储
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
+            run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
         """
         self.role = role
         self.role_cfg = load_role(role, config)
-        self.model = getattr(config, f"{role}_model", None) or config.model
+        self.model = config.model_for_role(role)
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
         self._temperature = temperature
-        self._mode = self.role_cfg.mode
+        # run_mode 与 role 解耦：默认取角色 JSON 的 mode，接口层可显式覆盖
+        # （例如将来 QQ 接口用 interactive 行为但非 master 画像）。
+        self._mode = run_mode or self.role_cfg.mode
         self.delegation_depth = delegation_depth
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
         # 工具调用累计计数（每批工具调用数累加）
@@ -127,7 +133,7 @@ class SessionRunner(BaseSessionRunner):
             max_iterations=self.role_cfg.max_iterations,
         )
 
-        self.model = getattr(config, f"{role}_model", None) or config.model
+        self.model = config.model_for_role(role)
 
         # 统一循环编排层（Step 4）：交互/自主共用同一骨架，参数实时读 runner/role_cfg
         self.loop = Loop(
@@ -158,13 +164,10 @@ class SessionRunner(BaseSessionRunner):
             # IMPORTANT: Share messages list with session (not copy!)
             self.messages = self.session.messages
             self._usage = self.session.get_usage()
-            self._on_session_start: Callable[[str, str], None] | None = None
-            self._on_session_complete: Callable[[str], None] | None = None
-            # 默认 SSE 回调（由 web/deps.py 设置），用于后台 session 完成后自动恢复循环
-            self._default_on_text: Callable[[str], None] | None = None
-            self._default_on_thinking: Callable[[str], None] | None = None
-            self._default_on_tool_call: Callable[[str, dict, str], None] | None = None
-            self._default_on_tool_result: Callable[[str, str, bool, str], None] | None = None
+            # default_sink 由 web 层在创建 runner 时设置（工具实时输出 + 事件总线广播），
+            # 用于后台 session 完成后自动恢复循环。sink 为本次运行的活动 sink。
+            self.default_sink = OutputSink()
+            self.sink = self.default_sink
         else:
             self.approval_store = approval_store
             self.max_consecutive_failures = (
@@ -297,13 +300,11 @@ class SessionRunner(BaseSessionRunner):
             # Wire session callbacks
             if session_tool:
                 session_tool.stop_check = lambda: self._stopped
-                session_tool.on_session_start = lambda exec_id, task_summary: (
-                    self._on_session_start(exec_id, task_summary)
-                    if self._on_session_start else None
+                session_tool.on_session_start = (
+                    lambda exec_id, task_summary: self.sink.on_session_start(exec_id, task_summary)
                 )
-                session_tool.on_session_complete = lambda exec_id: (
-                    self._on_session_complete(exec_id)
-                    if self._on_session_complete else None
+                session_tool.on_session_complete = (
+                    lambda exec_id: self.sink.on_session_complete(exec_id)
                 )
                 # 后台 session 完成后自动恢复 master 循环
                 session_tool.on_background_complete = self._handle_background_session_complete
@@ -377,7 +378,7 @@ class SessionRunner(BaseSessionRunner):
             self.max_iterations = self.role_cfg.max_iterations
             # 先创建新客户端，成功后再替换并关闭旧的；
             # 否则创建失败后 self.client 指向已关闭的客户端，后续调用全部失败
-            new_model = getattr(new_config, f"{self.role}_model", None) or new_config.model
+            new_model = new_config.model_for_role(self.role)
             new_client = create_llm_client(new_model)
             old_client = self.client
             self.client = new_client
@@ -401,12 +402,7 @@ class SessionRunner(BaseSessionRunner):
     def _run_interactive(
         self,
         user_input: str | list[dict],
-        on_text: Callable[[str], None] | None = None,
-        on_thinking: Callable[[str], None] | None = None,
-        on_tool_call: Callable[[str, dict, str], None] | None = None,
-        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_session_start: Callable[[str, str], None] | None = None,
-        on_session_complete: Callable[[str], None] | None = None,
+        sink: OutputSink | None = None,
         streaming: bool = True,
     ) -> None:
         """Run one turn of the interactive session loop."""
@@ -414,12 +410,7 @@ class SessionRunner(BaseSessionRunner):
         self._running = True
         self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
         self._streaming = streaming
-        self._on_text = on_text
-        self._on_thinking = on_thinking
-        self._on_tool_call = on_tool_call
-        self._on_tool_result = on_tool_result
-        self._on_session_start = on_session_start
-        self._on_session_complete = on_session_complete
+        self.sink = layer_sink(self.default_sink, sink)
 
         try:
             # Add user message（loop.run_interactive 在回合前做 checkpoint save）
@@ -461,24 +452,11 @@ class SessionRunner(BaseSessionRunner):
         self._sync_to_session()
         self.session.save()
 
-    def _resume_loop(
-        self,
-        on_text: Callable[[str], None] | None = None,
-        on_thinking: Callable[[str], None] | None = None,
-        on_tool_call: Callable[[str, dict, str], None] | None = None,
-        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_session_start: Callable[[str, str], None] | None = None,
-        on_session_complete: Callable[[str], None] | None = None,
-    ) -> None:
+    def _resume_loop(self, sink: OutputSink | None = None) -> None:
         """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。"""
         self._stopped = False
         self._running = True
-        self._on_text = on_text
-        self._on_thinking = on_thinking
-        self._on_tool_call = on_tool_call
-        self._on_tool_result = on_tool_result
-        self._on_session_start = on_session_start
-        self._on_session_complete = on_session_complete
+        self.sink = layer_sink(self.default_sink, sink)
 
         try:
             # loop.run_interactive 在回合前做 checkpoint save
@@ -489,31 +467,16 @@ class SessionRunner(BaseSessionRunner):
             self._sync_to_session()
             self.session.save()
 
-    def resume_after_ask_user(
-        self,
-        on_text: Callable[[str], None] | None = None,
-        on_thinking: Callable[[str], None] | None = None,
-        on_tool_call: Callable[[str, dict, str], None] | None = None,
-        on_tool_result: Callable[[str, str, bool, str], None] | None = None,
-        on_session_start: Callable[[str, str], None] | None = None,
-        on_session_complete: Callable[[str], None] | None = None,
-    ) -> None:
+    def resume_after_ask_user(self, sink: OutputSink | None = None) -> None:
         """Resume session loop after ask_user tool result has been injected."""
-        self._resume_loop(
-            on_text=on_text,
-            on_thinking=on_thinking,
-            on_tool_call=on_tool_call,
-            on_tool_result=on_tool_result,
-            on_session_start=on_session_start,
-            on_session_complete=on_session_complete,
-        )
+        self._resume_loop(sink=sink)
 
     def _handle_background_session_complete(self, exec_id: str, status: str) -> None:
         """后台 session 完成后自动恢复 master 循环（如果 master 空闲）。
 
         由 SessionTool.on_background_complete 回调触发。
         检查 message_bus 是否有未读通知，如果有且 master 空闲，则自动恢复循环。
-        使用 _default_on_* 回调发布 SSE 事件到全局事件总线。
+        使用 default_sink（发布事件到全局事件总线）。
         """
         if self._mode != "interactive":
             return
@@ -528,40 +491,35 @@ class SessionRunner(BaseSessionRunner):
                 return  # 没有未读通知，不需要恢复
         except Exception:
             return
-        # 使用默认 SSE 回调（发布到全局事件总线）或回退到无回调
+        # 使用 default_sink（发布到全局事件总线）
         logger.info(f"[SessionRunner:{self.role}] 后台 session {exec_id} 完成，自动恢复 master 循环")
-        self._resume_loop(
-            on_text=self._default_on_text,
-            on_thinking=self._default_on_thinking,
-            on_tool_call=self._default_on_tool_call,
-            on_tool_result=self._default_on_tool_result,
-            on_session_start=self._on_session_start,
-            on_session_complete=self._on_session_complete,
-        )
+        self._resume_loop(sink=self.default_sink)
+
+    def attach_session(self, session_store: SessionStore) -> None:
+        """把 runner 附着到一个 SessionStore（切换会话 / 新建会话共用）。
+
+        同步 session/context 引用、messages、工具 session 引用、usage 与缓存基线，
+        避免切换与新建两条路径各自重复实现（曾各写一份、易漏）。
+        """
+        self.session = session_store
+        self.context.set_session(session_store)  # 同步 context 引用，保持一致
+        self.current_session_id = session_store.session_id
+        self._session_id = session_store.session_id
+        self.session_dir = session_store.session_dir
+        self.messages = session_store.messages
+        self._usage = session_store.get_usage()
+        for tool in self.tools:
+            tool.session = session_store
+        # 切换会话后清除 prompt section 缓存（不同会话可能有不同上下文）
+        self._prompt_section_cache.clear()
+        # 重置缓存基线（不同会话的 cache_read 不可比），但保留累计统计
+        self.cache_state.reset_after_compact()
 
     def switch_session(self, session_id: str) -> None:
-        """Switch to a different session.
-
-        Called by web_api.py when user switches sessions.
-        """
-        # Try to load existing session
+        """Switch to a different (existing) session."""
         loaded = SessionStore.load_session(session_id, self.sessions_dir)
         if loaded:
-            self.session = loaded
-            self.context.set_session(loaded)  # 同步 context 引用，保持一致
-            self.current_session_id = session_id
-            self._session_id = session_id
-            self.session_dir = self.sessions_dir / session_id
-            # Update messages reference to point to new session's messages
-            self.messages = self.session.messages
-            self._usage = self.session.get_usage()
-            # Update tools' session reference
-            for tool in self.tools:
-                tool.session = loaded
-            # 切换会话后清除 prompt section 缓存（不同会话可能有不同上下文）
-            self._prompt_section_cache.clear()
-            # 重置缓存基线（不同会话的 cache_read 不可比），但保留累计统计
-            self.cache_state.reset_after_compact()
+            self.attach_session(loaded)
             logger.info(f"Switched to session: {session_id}")
         else:
             logger.warning(f"Session not found: {session_id}")
@@ -731,14 +689,14 @@ class SessionRunner(BaseSessionRunner):
             "tool_call_count": self._tool_call_count,
         }
 
-        log_data = {
-            "exec_id": exec_id,
-            "session_id": self._session_id,
-            "task": self.task,
-            "metadata": metadata,
-            "summary": "",
-            "messages": self.messages,
-        }
+        log_data = build_exec_log_data(
+            exec_id=exec_id,
+            session_id=self._session_id,
+            task=self.task,
+            metadata=metadata,
+            summary="",
+            messages=self.messages,
+        )
 
         try:
             log_file = self.session_dir / "index.json"
@@ -783,14 +741,14 @@ class SessionRunner(BaseSessionRunner):
                 "summary": summary,
             }
 
-            log_data = {
-                "exec_id": self._exec_id,
-                "session_id": self._session_id,
-                "task": self.task,
-                "metadata": metadata,
-                "summary": summary,
-                "messages": self.messages,
-            }
+            log_data = build_exec_log_data(
+                exec_id=self._exec_id,
+                session_id=self._session_id,
+                task=self.task,
+                metadata=metadata,
+                summary=summary,
+                messages=self.messages,
+            )
 
             try:
                 self.session_dir.mkdir(parents=True, exist_ok=True)

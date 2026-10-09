@@ -1262,10 +1262,11 @@ def _start_git_auto_sync() -> None:
 
 
 def _start_services(args: argparse.Namespace) -> None:
-    """阶段三：cron、自动升级、浏览器打开、uvicorn。"""
-    # Start cron scheduler
-    from core.cron import start_scheduler
-    start_scheduler()
+    """阶段三：核心服务、自动升级、浏览器打开、uvicorn。"""
+    # 启动接口无关的服务（cron / 浏览器 / MCP / AgentMailbox）。
+    # 幂等：uvicorn lifespan 会再次调用，此时为空操作。
+    from core.app_context import app_context
+    app_context.startup()
 
     # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
     from core.updater import start_auto_upgrade

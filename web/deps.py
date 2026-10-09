@@ -5,20 +5,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import queue
 import re
 import secrets
-import shutil
-import threading
-import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
@@ -31,8 +24,8 @@ from core.config import (
     find_workspace_entry,
 )
 from core.event_bus import get_event_bus
-from core.agent_mailbox import get_agent_mailbox
-from core.session import SessionStore
+from core.output_sink import OutputSink
+from core.session_registry import registry
 from core.tools.todo import get_todos_from_session
 
 # Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
@@ -42,13 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global master_runners dict: session_id -> SessionRunner (master)
-master_runners: dict[str, SessionRunner] = {}
-# LRU tracking: key -> last access timestamp
-_runner_access: dict[str, float] = {}
-_MAX_RUNNERS = 20  # Maximum number of runners to keep in memory
-# Lock for concurrent access to master_runners dict
-_sessions_lock = asyncio.Lock()
+# master runner 池下沉至 core（接口无关），Web/QQ 等接入端共享同一份
+_MAX_RUNNERS = registry.max_runners
+_sessions_lock = registry.lock  # 多步操作（workspace 删除/重置、配置重载）持锁
 
 # Base directories
 WEB_DIR = Path(__file__).parent.resolve()
@@ -217,30 +206,80 @@ def _list_all_workspaces() -> list[dict]:
 
 def _evict_idle_runner() -> None:
     """Evict the oldest non-running runner if runner count exceeds limit."""
-    if len(master_runners) <= _MAX_RUNNERS:
-        return
-    # Find the oldest non-running runner
-    idle_keys = [
-        k for k in master_runners
-        if not master_runners[k].is_running()
-    ]
-    if not idle_keys:
-        return
-    oldest = min(idle_keys, key=lambda k: _runner_access.get(k, 0))
-    logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
-    evicted = master_runners.pop(oldest)
-    _runner_access.pop(oldest, None)
-    try:
-        evicted.cleanup()
-    except Exception as e:
-        logger.warning(f"[master runner LRU] 清理被淘汰的 master runner 失败: {e}")
+    registry.evict_idle()
+
+
+def _bind_default_sink(runner: SessionRunner, workspace_uuid: str, session_id: str) -> None:
+    """绑定 runner 的持久输出接收端：工具实时输出 + 后台恢复循环 → 全局事件总线。
+
+    这是 Web 接入端专属的 default_sink（发布到 /api/events 全局流）。
+    """
+    bus = get_event_bus()
+
+    def _on_tool_output(tool_name: str, content: str, offset: int, tool_use_id: str) -> None:
+        bus.publish({
+            "type": "tool_output",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            "tool": tool_name,
+            "content": content,
+            "offset": offset,
+            "tool_use_id": tool_use_id,
+        })
+
+    def _default_on_text(text: str) -> None:
+        bus.publish({
+            "type": "text",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            "content": text,
+        })
+
+    def _default_on_thinking(text: str) -> None:
+        bus.publish({
+            "type": "thinking",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            "content": text,
+        })
+
+    def _default_on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
+        bus.publish({
+            "type": "tool_use",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            "tool": tool_name,
+            "input": tool_input,
+            "tool_use_id": tool_use_id,
+        })
+
+    def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
+        if tool_name in ("ask_user", "session"):
+            return
+        bus.publish({
+            "type": "tool_result",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            "tool": tool_name,
+            "content": output,
+            "is_error": is_error,
+            "tool_use_id": tool_use_id,
+        })
+
+    runner.default_sink = OutputSink(
+        on_text=_default_on_text,
+        on_thinking=_default_on_thinking,
+        on_tool_call=_default_on_tool_call,
+        on_tool_result=_default_on_tool_result,
+        on_tool_output=_on_tool_output,
+    )
+    runner.sink = runner.default_sink
 
 
 async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:
     """Get or create a runner for a given workspace and session.
 
-    Thread-safe: acquires _sessions_lock to prevent concurrent creation of
-    duplicate runners for the same workspace:session key.
+    池与生命周期由 core.session_registry 统一管理（接口无关）。
     """
     info = _get_workspace_info(workspace_uuid)
     if not info:
@@ -250,190 +289,38 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
     if not workspace_dir or not Path(workspace_dir).exists():
         raise HTTPException(status_code=404, detail="Workspace directory not found")
 
-    key = f"{workspace_uuid}:{session_id}"
-
-    async with _sessions_lock:
-        _runner_access[key] = time.time()
-
-        if key not in master_runners:
-            _evict_idle_runner()
-            try:
-                config = load_config()  # 全局配置，不需要 workspace 参数
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to load config: {e}")
-
-            runner = SessionRunner(config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid)
-
-            # Load the requested session if different from default
-            if session_id != runner.current_session_id:
-                session_dir = runner.sessions_dir / session_id
-                index_file = session_dir / "index.json"
-                if index_file.exists():
-                    # Load existing session
-                    runner.switch_session(session_id)
-                    logger.info(f"Loaded existing session: {session_id}")
-                else:
-                    # 新会话：为请求的 id 直接新建 SessionStore 并立即落盘，
-                    # 避免默认会话 index.json 不迁移、旧目录 rmdir 静默失败残留（W15）
-                    old_session_dir = runner.session.session_dir
-                    new_sm = SessionStore(session_id, runner.sessions_dir)
-                    new_sm.name = f"Session {session_id[:8]}"
-                    new_sm.save(force=True)  # 新会话首次落盘：跳过脏标记短路
-                    runner.session = new_sm
-                    runner.context.set_session(new_sm)  # 同步 context 引用，保持一致
-                    runner.current_session_id = session_id
-                    runner._session_id = session_id
-                    runner.session_dir = new_sm.session_dir
-                    runner.messages = new_sm.messages  # Update reference
-                    runner._usage = new_sm.get_usage()
-                    # 同步工具 session 引用（与 switch_session 一致）
-                    for tool in runner.tools:
-                        tool.session = new_sm
-                    # 删除空的旧默认会话目录，避免孤立目录（仅当目录确实为空时）
-                    if old_session_dir.exists() and old_session_dir != new_sm.session_dir:
-                        try:
-                            if not any(old_session_dir.iterdir()):
-                                old_session_dir.rmdir()
-                        except OSError:
-                            pass
-                    logger.info(f"Creating new session: {session_id}")
-
-            master_runners[key] = runner
-
-            # 全局事件流：master 工具实时输出 → 事件总线（无 exec_id 表示 master 工具）
-            bus = get_event_bus()
-
-            def _on_tool_output(tool_name: str, content: str, offset: int, tool_use_id: str) -> None:
-                bus.publish({
-                    "type": "tool_output",
-                    "workspace_uuid": workspace_uuid,
-                    "session_id": session_id,
-                    "tool": tool_name,
-                    "content": content,
-                    "offset": offset,
-                    "tool_use_id": tool_use_id,
-                })
-
-            runner._on_tool_output = _on_tool_output
-
-            # 设置默认 SSE 回调（发布到全局事件总线），用于后台 runner 完成后自动恢复循环
-            bus = get_event_bus()
-
-            def _default_on_text(text: str) -> None:
-                bus.publish({
-                    "type": "text",
-                    "workspace_uuid": workspace_uuid,
-                    "session_id": session_id,
-                    "content": text,
-                })
-
-            def _default_on_thinking(text: str) -> None:
-                bus.publish({
-                    "type": "thinking",
-                    "workspace_uuid": workspace_uuid,
-                    "session_id": session_id,
-                    "content": text,
-                })
-
-            def _default_on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-                bus.publish({
-                    "type": "tool_use",
-                    "workspace_uuid": workspace_uuid,
-                    "session_id": session_id,
-                    "tool": tool_name,
-                    "input": tool_input,
-                    "tool_use_id": tool_use_id,
-                })
-
-            def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-                if tool_name in ("ask_user", "session"):
-                    return
-                bus.publish({
-                    "type": "tool_result",
-                    "workspace_uuid": workspace_uuid,
-                    "session_id": session_id,
-                    "tool": tool_name,
-                    "content": output,
-                    "is_error": is_error,
-                    "tool_use_id": tool_use_id,
-                })
-
-            runner._default_on_text = _default_on_text
-            runner._default_on_thinking = _default_on_thinking
-            runner._default_on_tool_call = _default_on_tool_call
-            runner._default_on_tool_result = _default_on_tool_result
-
-            # Register session with AgentMailbox for cross-session messaging
-            # （注意：不能复用变量名 bus——上方 _on_tool_output 闭包晚绑定捕获，
-            #  改名 mbus 防止把事件总线遮蔽成 AgentMailbox，导致 publish 属性缺失）
-            try:
-                mbus = get_agent_mailbox()
-                mbus.register_session(session_id, runner.session.name)
-                # 同时注册为 runner（master 用 session_id 作为 runner 名字）
-                mbus.register_agent(session_id, session_id)
-            except Exception as e:
-                logger.warning(f"Failed to register session with AgentMailbox: {e}")
-
-        return master_runners[key]
+    try:
+        return await registry.get_or_create(
+            workspace_uuid, session_id, workspace_dir,
+            on_create=lambda runner: _bind_default_sink(runner, workspace_uuid, session_id),
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load config: {e}")
 
 
 # ---------- 会话运行认领（防 send_message/answer_ask_user 双循环 TOCTOU） ----------
-
-# 每个会话的执行中 claim（防 send_message 的 is_running 检查 TOCTOU）：
-# 检查与 run 实际启动之间第二个请求可能并发通过检查，导致同一 runner 双循环
-# 同时改写 messages。用 set 在请求入口原子认领，run 结束后释放。
-_session_run_claims: set[str] = set()
-_session_run_claims_lock = threading.Lock()
+# 认领状态随 runner 池一起下沉至 core.session_registry（接口无关）。
 
 
 def _claim_session_run(key: str) -> bool:
-    """原子认领会话执行权，返回是否认领成功。
-
-    在锁内 check-and-set，关闭 is_running 检查到 run 启动之间的 TOCTOU 窗口；
-    runner.is_running() 作为兜底（历史请求 claim 泄漏时仍能挡住）。
-    """
-    with _session_run_claims_lock:
-        if key in _session_run_claims:
-            return False
-        runner = master_runners.get(key)
-        if runner is not None and runner.is_running():
-            return False
-        _session_run_claims.add(key)
-        return True
+    """原子认领会话执行权，返回是否认领成功。"""
+    return registry.claim(key)
 
 
 def _release_session_run(key: str) -> None:
     """释放会话执行权认领。"""
-    with _session_run_claims_lock:
-        _session_run_claims.discard(key)
+    registry.release(key)
 
 
 def _is_session_idle(key: str) -> bool:
     """检查会话是否空闲（没有被认领且 runner 没有运行）。"""
-    with _session_run_claims_lock:
-        if key in _session_run_claims:
-            return False
-        runner = master_runners.get(key)
-        if runner is not None and runner.is_running():
-            return False
-        return True
+    return registry.is_idle(key)
 
 
 # ---------- SSE 回调组 / 事件流（send_message 与 answer_ask_user 共用） ----------
 
-@dataclass
-class _SSECallbacks:
-    """SSE 事件回调组：send_message 与 answer_ask_user 共用同一套实现。"""
-    on_text: Callable[[str], None]
-    on_thinking: Callable[[str], None]
-    on_tool_call: Callable[[str, dict, str], None]
-    on_tool_result: Callable[[str, str, bool, str], None]
-    on_session_start: Callable[[str, str], None]
-    on_session_complete: Callable[[str], None]
-
-
-def _make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> _SSECallbacks:
-    """构造统一的 SSE 回调组，同步 runner 回调 → 队列，供两个 SessionRunner 运行入口复用。"""
+def _make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSink:
+    """构造 SSE 输出接收端（OutputSink），同步 runner 回调 → 队列，供各运行入口复用。"""
 
     def on_text(text: str) -> None:
         # Sentinel: 413 retry needs frontend to clear already-streamed text
@@ -476,7 +363,7 @@ def _make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> _SSECal
         event = json.dumps({"type": "session_complete", "exec_id": exec_id}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
-    return _SSECallbacks(
+    return OutputSink(
         on_text=on_text,
         on_thinking=on_thinking,
         on_tool_call=on_tool_call,

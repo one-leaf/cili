@@ -42,17 +42,39 @@ _EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 _TASK_BRIEF_MAX = 100
 
 # _meta 中的内部字段（发送到 API 前剥离，包括消息级别和 block 级别）
-_INTERNAL_META_FIELDS = frozenset({
+# 内部元数据字段的唯一真源：序列化/送 LLM 前剥除，不发给 API。
+# ConversationStore（runner 消息层）从此处导入，避免两处白名单各自演化而漏剥字段。
+INTERNAL_META_FIELDS = frozenset({
     "valid", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
+    "compacted",
 })
+# 兼容旧名（模块内引用）
+_INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
 
 
 def _strip_internal_meta(meta: dict) -> dict | None:
     """剥离 _meta 中的内部字段；无剩余字段时返回 None。"""
     stripped = {k: v for k, v in meta.items() if k not in _INTERNAL_META_FIELDS}
     return stripped or None
+
+
+def build_exec_log_data(*, exec_id: str, session_id: str, task: str,
+                        metadata: dict, summary: str, messages: list[dict]) -> dict:
+    """构造 exec 日志（{exec_dir}/index.json）的统一 schema。
+
+    ``SessionStore.save_agent_log`` 与 ``SessionRunner`` 自主模式的进度/收尾写盘共用，
+    避免两处各自拼 schema 而漂移。
+    """
+    return {
+        "exec_id": exec_id,
+        "session_id": session_id,
+        "task": task,
+        "metadata": metadata,
+        "summary": summary,
+        "messages": messages,
+    }
 
 
 def preview_from_messages(messages: list[dict]) -> str:
@@ -396,14 +418,14 @@ class ExecLogStore:
         exec_dir = self.session_dir / exec_id
         exec_dir.mkdir(parents=True, exist_ok=True)
         log_file = exec_dir / "index.json"
-        data = {
-            "exec_id": exec_id,
-            "session_id": self._sm.session_id,
-            "task": task,
-            "metadata": metadata,
-            "summary": summary,
-            "messages": messages,
-        }
+        data = build_exec_log_data(
+            exec_id=exec_id,
+            session_id=self._sm.session_id,
+            task=task,
+            metadata=metadata,
+            summary=summary,
+            messages=messages,
+        )
         try:
             atomic_write_json(log_file, data)
         except Exception as e:
@@ -554,11 +576,13 @@ class SessionStore:
         if extra:
             message.update(extra)
 
-        # 注入消息创建时间（已有则保留，兼容重建/重放场景）
+        # 注入消息 id 与创建时间（已有则保留，兼容重建/重放场景）
         msg_meta = message.get("_meta") or {}
+        if "id" not in msg_meta:
+            msg_meta["id"] = generate_short_id()
         if "created_at" not in msg_meta:
             msg_meta["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            message["_meta"] = msg_meta
+        message["_meta"] = msg_meta
 
         self.messages.append(message)
         self._messages_dirty = True

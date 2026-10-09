@@ -8,6 +8,7 @@ import secrets
 import threading
 from datetime import datetime
 
+from core.output_sink import OutputSink
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -276,19 +277,21 @@ class SessionTool(Tool):
         )
 
         # 全局事件流：worker 逐 token 消息与工具增量 → 事件总线（实时推送，去前端轮询）。
-        # 这些是 BaseSessionRunner 的普通实例属性（默认 None），run() 前赋值即可，无需改 runner 循环。
-        runner._on_text = lambda content, _id=exec_id: self._publish(
-            "text", exec_id=_id, content=content)
-        runner._on_thinking = lambda content, _id=exec_id: self._publish(
-            "thinking", exec_id=_id, content=content)
-        runner._on_tool_call = lambda tool, input_data, tool_use_id, _id=exec_id: self._publish(
-            "tool_use", exec_id=_id, tool=tool, input=input_data, tool_use_id=tool_use_id)
-        runner._on_tool_result = lambda tool, content, is_error, tool_use_id, _id=exec_id: self._publish(
-            "tool_result", exec_id=_id, tool=tool, content=content, is_error=is_error,
-            tool_use_id=tool_use_id)
-        runner._on_tool_output = lambda tool, content, offset, tool_use_id, _id=exec_id: self._publish(
-            "tool_output", exec_id=_id, tool=tool, content=content, offset=offset,
-            tool_use_id=tool_use_id)
+        # 通过 OutputSink 绑定，run() 前赋值即可，无需改 runner 循环。
+        sink = OutputSink(
+            on_text=lambda content, _id=exec_id: self._publish("text", exec_id=_id, content=content),
+            on_thinking=lambda content, _id=exec_id: self._publish("thinking", exec_id=_id, content=content),
+            on_tool_call=lambda tool, input_data, tool_use_id, _id=exec_id: self._publish(
+                "tool_use", exec_id=_id, tool=tool, input=input_data, tool_use_id=tool_use_id),
+            on_tool_result=lambda tool, content, is_error, tool_use_id, _id=exec_id: self._publish(
+                "tool_result", exec_id=_id, tool=tool, content=content, is_error=is_error,
+                tool_use_id=tool_use_id),
+            on_tool_output=lambda tool, content, offset, tool_use_id, _id=exec_id: self._publish(
+                "tool_output", exec_id=_id, tool=tool, content=content, offset=offset,
+                tool_use_id=tool_use_id),
+        )
+        runner.sink = sink
+        runner.default_sink = sink
         # 进度事件发布回调（_save_progress 调用时广播 iterations/message_count/tool_call_count）
         runner._event_publisher = lambda ev_type, **kw: self._publish(ev_type, **kw)
 

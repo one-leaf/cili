@@ -19,7 +19,7 @@ from core.memory_pipeline import memory_enabled, schedule_extraction
 from core.session import SessionStore
 
 from web.deps import (
-    master_runners, _get_or_create_runner, _require_workspace,
+    registry, _get_or_create_runner, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
     _claim_session_run, _release_session_run, _make_sse_callbacks, _sse_stream,
 )
@@ -355,14 +355,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                     }, ensure_ascii=False)
                     event_queue.put(f"data: {close_event}\n\n")
 
-                    runner.resume_after_ask_user(
-                        on_text=cb.on_text,
-                        on_thinking=cb.on_thinking,
-                        on_tool_call=cb.on_tool_call,
-                        on_tool_result=cb.on_tool_result,
-                        on_session_start=cb.on_session_start,
-                        on_session_complete=cb.on_session_complete,
-                    )
+                    runner.resume_after_ask_user(sink=cb)
                 else:
                     # Build user_input: str or list[dict] for multimodal
                     user_input = request.content
@@ -382,15 +375,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                             })
                         user_input = content_blocks
 
-                    runner.run(
-                        user_input=user_input,
-                        on_text=cb.on_text,
-                        on_thinking=cb.on_thinking,
-                        on_tool_call=cb.on_tool_call,
-                        on_tool_result=cb.on_tool_result,
-                        on_session_start=cb.on_session_start,
-                        on_session_complete=cb.on_session_complete,
-                    )
+                    runner.run(user_input=user_input, sink=cb)
 
                 # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
                 try:
@@ -466,10 +451,10 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 async def stop_runner(workspace_uuid: str, session_id: str):
     """Stop the currently running runner for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in master_runners:
+    if key not in registry:
         return {"success": False, "message": "没有正在运行的 master runner"}
 
-    runner = master_runners[key]
+    runner = registry.get(key)
     if not runner.is_running():
         return {"success": False, "message": "master runner 当前未在运行"}
 
@@ -494,7 +479,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
         return {"success": False, "message": "会话正在运行"}
 
     # Check if there are pending notifications in message_bus
-    runner = master_runners.get(key)
+    runner = registry.get(key)
     if not runner:
         return {"success": False, "message": "会话不存在"}
 
@@ -523,14 +508,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
 
         def run_runner():
             try:
-                runner.run(
-                    on_text=callbacks.on_text,
-                    on_thinking=callbacks.on_thinking,
-                    on_tool_call=callbacks.on_tool_call,
-                    on_tool_result=callbacks.on_tool_result,
-                    on_session_start=callbacks.on_session_start,
-                    on_session_complete=callbacks.on_session_complete,
-                )
+                runner.run(sink=callbacks)
             except Exception as e:
                 logger.error(f"Resume runner error: {e}")
             finally:
@@ -559,7 +537,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = f"{workspace_uuid}:{session_id}"
-    runner = master_runners.get(key)
+    runner = registry.get(key)
 
     # 如果 runner 存在且正在运行，拒绝操作
     if runner and runner.is_running():
@@ -590,8 +568,8 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
 async def get_runner_status(workspace_uuid: str, session_id: str):
     """Check if a runner is running for a session."""
     key = f"{workspace_uuid}:{session_id}"
-    if key not in master_runners:
+    if key not in registry:
         return {"running": False}
 
-    runner = master_runners[key]
+    runner = registry.get(key)
     return {"running": runner.is_running()}

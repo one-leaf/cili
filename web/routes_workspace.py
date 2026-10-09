@@ -26,7 +26,7 @@ from core.session import (
 from core.tools.base import Tool
 
 from web.deps import (
-    master_runners, _runner_access, _sessions_lock, _list_all_workspaces,
+    registry, _sessions_lock, _list_all_workspaces,
     _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
     _validate_session_id, _validate_workspace_uuid,
     _get_workspace_info,
@@ -143,18 +143,11 @@ def _remove_workspace_data(workspace_uuid: str) -> None:
 
 
 def _cleanup_runners_for_workspace(workspace_uuid: str) -> None:
-    """Remove runners belonging to the given workspace from master_runners.
+    """Remove runners belonging to the given workspace from the registry.
 
     Must be called under _sessions_lock.
     """
-    keys_to_remove = [k for k in master_runners if k.startswith(f"{workspace_uuid}:")]
-    for key in keys_to_remove:
-        evicted = master_runners.pop(key)
-        _runner_access.pop(key, None)
-        try:
-            evicted.cleanup()
-        except Exception as e:
-            logger.warning(f"[master runner] 清理 master runner {key} 失败: {e}")
+    registry.remove_workspace(workspace_uuid)
 
 
 @router.delete("/api/workspaces/{workspace_uuid}")
@@ -571,16 +564,10 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     shutil.rmtree(session_dir)
     _drop_session_lock(session_dir)
 
-    # Remove from master_runners dict (under lock)
+    # Remove from registry (under lock)
     key = f"{workspace_uuid}:{session_id}"
     async with _sessions_lock:
-        if key in master_runners:
-            evicted = master_runners.pop(key)
-            _runner_access.pop(key, None)
-            try:
-                evicted.cleanup()
-            except Exception:
-                pass
+        registry.remove(key)
 
     return {"success": True}
 
@@ -597,7 +584,7 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        runner = master_runners.get(key)
+        runner = registry.get(key)
         if runner:
             # runner 已加载：经 rename() 改内存并置脏（递增版本号），落盘不短路
             runner.session.rename(request.name)
@@ -625,7 +612,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     key = f"{workspace_uuid}:{session_id}"
 
     try:
-        runner = master_runners.get(key)
+        runner = registry.get(key)
         if runner:
             runner.session.set_hidden(request.hidden)
             return {"success": True}

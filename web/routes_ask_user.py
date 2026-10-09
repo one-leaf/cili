@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from core.tools.approval import APPROVE_LABEL, REMEMBER_LABEL
 
 from web.deps import (
-    master_runners, _SAFE_ID_RE, _new_short_id, _claim_session_run,
+    registry, _SAFE_ID_RE, _new_short_id, _claim_session_run,
     _release_session_run, _make_sse_callbacks, _sse_stream,
 )
 
@@ -172,7 +172,7 @@ def _inject_ask_user_answer(runner, ask_user_tool_use_id: str, answer: str) -> b
 async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
     """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 runner 循环"""
     key = f"{workspace_uuid}:{session_id}"
-    runner = master_runners.get(key)
+    runner = registry.get(key)
     if not runner:
         raise HTTPException(404, "Session runner not found")
 
@@ -196,14 +196,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
         def run_agent():
             try:
-                runner.resume_after_ask_user(
-                    on_text=cb.on_text,
-                    on_thinking=cb.on_thinking,
-                    on_tool_call=cb.on_tool_call,
-                    on_tool_result=cb.on_tool_result,
-                    on_session_start=cb.on_session_start,
-                    on_session_complete=cb.on_session_complete,
-                )
+                runner.resume_after_ask_user(sink=cb)
             except Exception as e:
                 logger.error(f"master runner error: {e}")
                 err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)

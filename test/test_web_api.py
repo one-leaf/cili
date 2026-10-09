@@ -133,72 +133,71 @@ class TestListAllWorkspaces:
 
 
 class TestEvictIdleAgent:
-    """_evict_idle_runner() LRU eviction logic."""
+    """SessionRegistry.evict_idle() LRU eviction logic."""
+
+    def _snapshot(self):
+        from core.session_registry import registry
+        return dict(registry._hosted), dict(registry._access)
+
+    def _restore(self, snapshot):
+        from core.session_registry import registry
+        hosted, access = snapshot
+        registry._hosted.clear()
+        registry._hosted.update(hosted)
+        registry._access.clear()
+        registry._access.update(access)
 
     def test_no_eviction_when_under_limit(self):
-        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
-        original_agents = dict(master_runners)
-        original_access = dict(_runner_access)
+        from core.session_registry import registry
+        snap = self._snapshot()
         try:
-            master_runners.clear()
-            _runner_access.clear()
-            _evict_idle_runner()  # Should not raise
+            registry._hosted.clear()
+            registry._access.clear()
+            registry.evict_idle()  # Should not raise
         finally:
-            master_runners.clear()
-            master_runners.update(original_agents)
-            _runner_access.clear()
-            _runner_access.update(original_access)
+            self._restore(snap)
 
     def test_evicts_oldest_idle(self):
-        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
-        original_agents = dict(master_runners)
-        original_access = dict(_runner_access)
+        from core.session_registry import registry, HostedSession
+        snap = self._snapshot()
         try:
-            master_runners.clear()
-            _runner_access.clear()
+            registry._hosted.clear()
+            registry._access.clear()
 
-            mock_agents = {}
-            for i in range(_MAX_RUNNERS + 3):
+            for i in range(registry.max_runners + 3):
                 agent = MagicMock()
                 agent.is_running.return_value = False
                 agent.cleanup.return_value = None
                 key = f"test-{i}"
-                master_runners[key] = agent
-                _runner_access[key] = 1000 + i
+                registry._hosted[key] = HostedSession(key=key, runner=agent)
+                registry._access[key] = 1000 + i
 
-            _evict_idle_runner()
+            registry.evict_idle()
 
-            assert "test-0" not in master_runners
-            assert len(master_runners) == _MAX_RUNNERS + 2
+            assert "test-0" not in registry._hosted
+            assert len(registry._hosted) == registry.max_runners + 2
         finally:
-            master_runners.clear()
-            master_runners.update(original_agents)
-            _runner_access.clear()
-            _runner_access.update(original_access)
+            self._restore(snap)
 
     def test_does_not_evict_running_agent(self):
-        from web.deps import _evict_idle_runner, master_runners, _runner_access, _MAX_RUNNERS
-        original_agents = dict(master_runners)
-        original_access = dict(_runner_access)
+        from core.session_registry import registry, HostedSession
+        snap = self._snapshot()
         try:
-            master_runners.clear()
-            _runner_access.clear()
+            registry._hosted.clear()
+            registry._access.clear()
 
-            for i in range(_MAX_RUNNERS + 2):
+            for i in range(registry.max_runners + 2):
                 agent = MagicMock()
                 agent.is_running.return_value = True
                 key = f"test-{i}"
-                master_runners[key] = agent
-                _runner_access[key] = 1000 + i
+                registry._hosted[key] = HostedSession(key=key, runner=agent)
+                registry._access[key] = 1000 + i
 
-            _evict_idle_runner()
+            registry.evict_idle()
 
-            assert len(master_runners) == _MAX_RUNNERS + 2
+            assert len(registry._hosted) == registry.max_runners + 2
         finally:
-            master_runners.clear()
-            master_runners.update(original_agents)
-            _runner_access.clear()
-            _runner_access.update(original_access)
+            self._restore(snap)
 
 
 class TestGlobalEvents:
@@ -300,8 +299,9 @@ class TestGlobalEvents:
         monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
         # Agent._init_interactive 内部通过 get_workspace_data_dir 解析数据目录
         monkeypatch.setattr("core.config.get_workspace_data_dir", lambda uuid: tmp_path)
-        # 测试结束后清理全局 master_runners 缓存，避免泄漏
-        monkeypatch.setattr(web_api, "master_runners", {})
+        # 测试结束后清理全局 runner 池，避免泄漏
+        from core.session_registry import registry
+        monkeypatch.setattr(registry, "_hosted", {})
 
         async def run():
             agent = await web_api._get_or_create_runner(ws, sid)
@@ -309,7 +309,7 @@ class TestGlobalEvents:
             get_event_bus().subscribe(q, ws, sid)
             try:
                 # 直接调用 master 工具输出回调，验证走事件总线而非 AgentMailbox
-                agent._on_tool_output("bash", "行 1\n", 7, "call_regress_1")
+                agent.default_sink.on_tool_output("bash", "行 1\n", 7, "call_regress_1")
                 ev = q.get(timeout=1)
                 assert ev["type"] == "tool_output"
                 assert ev["tool"] == "bash"

@@ -152,18 +152,17 @@ class Runner:
                         f.write("")
                 except Exception:
                     pass
-                # 全局事件流：流式工具的实时输出增量 → runner._on_tool_output
-                if self.runner._on_tool_output:
+                # 全局事件流：流式工具的实时输出增量 → sink.on_tool_output
+                if self.runner.sink.on_tool_output:
                     tool.on_output = (
                         lambda chunk, offset, _n=name, _id=tool_use_id:
-                        self.runner._on_tool_output(_n, chunk, offset, _id)
+                        self.runner.sink.on_tool_output(_n, chunk, offset, _id)
                     )
                 else:
                     tool.on_output = None
 
         # Notify callback
-        if self.runner._on_tool_call:
-            self.runner._on_tool_call(name, input_data, tool_use_id)
+        self.runner.sink.on_tool_call(name, input_data, tool_use_id)
 
         # Execute tool
         start_time = time.perf_counter()
@@ -206,8 +205,7 @@ class Runner:
         logger.debug(f"[工具结果] {name} {status} ({elapsed:.2f}s)")
 
         # Notify callback
-        if self.runner._on_tool_result:
-            self.runner._on_tool_result(name, output_preview, result.error, tool_use_id)
+        self.runner.sink.on_tool_result(name, output_preview, result.error, tool_use_id)
 
         # Build _meta with internal fields
         file_size = len(result.output.encode('utf-8', errors='replace'))
@@ -908,13 +906,12 @@ class Runner:
 
         def on_text_delta(text: str):
             text_parts.append(text)
-            if text and self.runner._on_text:
+            if text:
                 safe = text.encode("utf-8", errors="replace").decode("utf-8")
-                self.runner._on_text(safe)
+                self.runner.sink.on_text(safe)
 
         def on_thinking_delta(thinking: str):
-            if self.runner._on_thinking:
-                self.runner._on_thinking(thinking)
+            self.runner.sink.on_thinking(thinking)
 
         message_objects = self._prepare_messages_for_llm()
 
@@ -954,8 +951,7 @@ class Runner:
                     logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
                     self._mark_all_images_invalid()
                     self.runner.save_messages()
-                    if self.runner._on_text:
-                        self.runner._on_text(RETRY_CLEAR_SENTINEL)
+                    self.runner.sink.on_text(RETRY_CLEAR_SENTINEL)
                     text_parts.clear()
                     images_stripped = True
 
@@ -980,8 +976,7 @@ class Runner:
                             )
                         time.sleep(0.1)
                     text_parts.clear()
-                    if self.runner._on_text:
-                        self.runner._on_text(RETRY_CLEAR_SENTINEL)
+                    self.runner.sink.on_text(RETRY_CLEAR_SENTINEL)
 
         # Track usage (UsageData object)
         if response.usage:

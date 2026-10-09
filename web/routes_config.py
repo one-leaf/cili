@@ -13,7 +13,7 @@ from core.config import (
 )
 from core.tools.mcp import get_provider
 
-from web.deps import master_runners, _sessions_lock
+from web.deps import registry, _sessions_lock
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ async def update_config(request: UpdateConfigRequest):
 
     # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）
     async with _sessions_lock:
-        for key, runner in list(master_runners.items()):
+        for key, runner in registry.items():
             runner.reload_config()
             logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
 
@@ -222,7 +222,7 @@ async def reload_mcp():
     provider = get_provider()
     provider.reload(cfg.mcp_servers, force=True)
     async with _sessions_lock:
-        for key, runner in list(master_runners.items()):
+        for key, runner in registry.items():
             runner.reload_config()
     return {"success": True, "servers": provider.status()}
 

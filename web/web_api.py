@@ -9,19 +9,18 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
-import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from core.app_context import app_context
 from core.config import load_config, PROJECT_ROOT
 
-from web.deps import master_runners, _LOCALHOST_IPS, WEB_DIR
+from web.deps import registry, _LOCALHOST_IPS, WEB_DIR
 from web.routes_workspace import router as workspace_router
 from web.routes_chat import router as chat_router
 from web.routes_ask_user import router as ask_user_router
@@ -34,61 +33,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理 - 优雅关闭时清理资源"""
-    # 确保浏览器服务实例已创建（Playwright 延迟到首次操作时启动）
-    from core.browser_service import get_service
-    get_service()
-    # 初始化 AgentMailbox
-    from core.agent_mailbox import start_agent_mailbox
-    start_agent_mailbox()
-
-    # 启动 MCP provider 并在后台连接已配置的服务器（不阻塞启动）
-    def _connect_mcp_servers() -> None:
-        try:
-            cfg = load_config()
-            if cfg.mcp_servers:
-                # 局部导入，与 shutdown 路径 stop_mcp_provider 风格一致
-                from core.tools.mcp import get_provider
-                get_provider().ensure_connected(cfg.mcp_servers)
-        except Exception as e:
-            logger.warning(f"[Server] 连接 MCP 服务器失败: {e}")
-
-    threading.Thread(target=_connect_mcp_servers, daemon=True).start()
+    """应用生命周期管理 - 启动/优雅关闭各全局单例（统一由 AppContext 持有）。"""
+    app_context.startup()
     yield
-    # 关闭时停止 AgentMailbox
-    try:
-        from core.agent_mailbox import stop_agent_mailbox
-        stop_agent_mailbox()
-    except Exception as e:
-        logger.warning(f"[Server] 停止 AgentMailbox 失败: {e}")
-    # 关闭时停止浏览器服务
-    try:
-        from core.browser_service import stop_browser_service
-        stop_browser_service()
-    except Exception as e:
-        logger.warning(f"[Server] 停止浏览器服务失败: {e}")
-    # 关闭时停止 MCP provider（断开所有服务器连接）
-    try:
-        from core.tools.mcp import stop_mcp_provider
-        stop_mcp_provider()
-    except Exception as e:
-        logger.warning(f"[Server] 停止 MCP provider 失败: {e}")
-    # 关闭时停止 cron 调度器
-    try:
-        from core.cron import stop_scheduler
-        stop_scheduler()
-    except Exception as e:
-        logger.warning(f"[Server] 停止 cron 调度器失败: {e}")
-    # 关闭时清理所有 master runner 资源
-    logger.info(f"[Server] 正在关闭，清理 {len(master_runners)} 个 master runner...")
-    for key, runner in list(master_runners.items()):
-        try:
-            runner.stop()
-            runner.cleanup()
-        except Exception as e:
-            logger.warning(f"[Server] 清理 master runner {key} 失败: {e}")
-    master_runners.clear()
-    logger.info("[Server] 资源清理完成")
+    app_context.shutdown()
 
 
 # Initialize FastAPI app with lifespan
@@ -232,7 +180,7 @@ async def health_check():
     """健康检查端点"""
     return {
         "status": "ok",
-        "active_sessions": len(master_runners),
+        "active_sessions": len(registry),
         "timestamp": datetime.now().isoformat()
     }
 

@@ -266,8 +266,7 @@ class Loop:
                 logger.info(f"[SessionRunner:{runner.role}] 已停止")
                 runner._sync_to_session()
                 runner.session.save()
-                if runner._on_text:
-                    runner._on_text("\n\n[已停止]")
+                runner.sink.on_text("\n\n[已停止]")
                 return None
 
             # ── 后台子代理完成通知排空（interactive 模式）──
@@ -420,10 +419,9 @@ class Loop:
             logger.warning(f"[SessionRunner:{runner.role}] 达到最大调用次数 ({max_iterations})")
             runner._sync_to_session()
             runner.session.save()
-            if runner._on_text:
-                runner._on_text(
-                    f"\n\n[已达到最大工具调用次数限制 ({max_iterations})，请继续提问以继续对话]"
-                )
+            runner.sink.on_text(
+                f"\n\n[已达到最大工具调用次数限制 ({max_iterations})，请继续提问以继续对话]"
+            )
             return None
 
         status = "timeout"

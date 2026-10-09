@@ -222,7 +222,7 @@ class SessionStore:
 
 | 方法 | 说明 |
 |------|------|
-| `add_message(role, content, *, flush=True, extra=None, _meta=None)` | 添加消息（flush 保留兼容，不会自动保存；_meta 设置消息级 `_meta` 字段） |
+| `add_message(role, content, *, extra=None, _meta=None, flush=False)` | 添加消息（自动注入 `_meta.id` 与 `_meta.created_at`；flush=True 立即追加 jsonl）。**消息写入的唯一实现**——`ConversationStore.add_message` 有 session 时委托至此 |
 | `get_messages()` | 获取所有消息 |
 | `get_valid_messages()` | 获取有效消息（过滤 _valid=False，支持缓存） |
 | `clear()` | 清空所有消息 |
@@ -315,6 +315,9 @@ valid_messages = session.get_valid_messages()
 **过滤规则**：
 1. 跳过整条消息标记 `_meta.valid=False` 的（消息级过滤，不做 block 级 valid 过滤）
 2. 剥离 block 级别 `_meta` 中的内部字段（`valid`、`compacted`、`output_path`、`file_size`、`truncated`、`tool_name`、`exec_id` 等），block 本身全部保留
+
+> 内部字段的**唯一真源**是 `core/session.py::INTERNAL_META_FIELDS`（frozenset），
+> `ConversationStore` 从此处导入（原两处各维护一份白名单，已出现 `compacted`/`background_notification` 漏剥分歧）。
 
 **示例**：
 

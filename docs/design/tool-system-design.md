@@ -167,6 +167,18 @@ tool = get_tool_by_name(tools, "bash")
 
 ## 三、Tool 基类
 
+### 3.0 构造协议与 SessionHandle
+
+- **统一构造协议**：基类 `__init__` 接受 `**kwargs` 容错。子类若重写 `__init__`，应显式声明所需参数
+  并透传 `**kwargs`；否则 `registry._factory` 注入的 `config`/`approval_store` 会导致实例化失败——
+  而 `create_tools()` 会跳过失败的工具，只留一条 `logger.exception`（保留堆栈便于定位）。
+- **`SessionHandle` 协议**（`core/tools/base.py`）：工具持有的 session 引用契约，只保证
+  `session_id` 与 `session_dir` 两个属性。interactive 模式传入 `SessionStore`（额外具备
+  `save()`/`agent_logs`），autonomous 模式传入 `_SessionRef`。工具**不应**用 `hasattr` 探测能力，
+  以免换一种载体时静默走错分支。
+- **有意例外**：`MCPToolWrapper` 不接收 session/workspace_uuid（它每次经 provider 现取当前 session，
+  以便 server 重连后自动使用新连接），仅通过 `**kwargs` 容忍统一协议注入。
+
 ### 3.1 Tool 类定义
 
 ```python
@@ -185,7 +197,8 @@ class Tool:
     BYTES_PER_TOKEN: int = 4                      # Token 估算系数
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session=None, approval_store=None):
+                 session: SessionHandle | None = None,
+                 approval_store=None, **kwargs):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session = session

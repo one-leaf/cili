@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # 使用 DGX 本地端点（不消耗真实 API 配额）
 from test.conftest import make_dgx_config
 from core.session_runner import SessionRunner
+from core.output_sink import OutputSink
 from core.session import SessionStore
 
 
@@ -69,7 +70,7 @@ def main():
         print("  Sending: 'What is 2+2? Reply with just the number.'")
         runner.run(
             "What is 2+2? Reply with just the number.",
-            on_text=lambda t: outputs.append(t),
+            sink=OutputSink(on_text=lambda t: outputs.append(t)),
         )
 
         full_output = "".join(outputs)
@@ -89,9 +90,11 @@ def main():
         print("  Sending: 'Run echo Hello Test and show output.'")
         runner.run(
             "Run 'echo Hello Test' and show me the output.",
-            on_text=lambda t: outputs2.append(t),
-            on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
-            on_tool_result=lambda name, out, err, tid: tool_results.append((name, out, err, tid)),
+            sink=OutputSink(
+                on_text=lambda t: outputs2.append(t),
+                on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
+                on_tool_result=lambda name, out, err, tid: tool_results.append((name, out, err, tid)),
+            ),
         )
 
         print(f"  Tool calls: {len(tool_calls)}")

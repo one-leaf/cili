@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.config import Config, ModelConfig, SystemConfig
+from core.output_sink import OutputSink
 from core.session import SessionStore
 
 # 从 conftest 导入 DGX 配置工具
@@ -94,7 +95,7 @@ class TestMasterAgentIntegration:
 
         runner.run(
             "What is 2 + 2? Reply with just the number.",
-            on_text=lambda t: outputs.append(t),
+            sink=OutputSink(on_text=lambda t: outputs.append(t)),
         )
 
         full_output = "".join(outputs)
@@ -114,9 +115,11 @@ class TestMasterAgentIntegration:
 
         runner.run(
             "Run the command 'echo Hello Test' and show me the output.",
-            on_text=lambda t: None,
-            on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
-            on_tool_result=lambda name, out, err, tid: tool_results.append((name, out, err, tid)),
+            sink=OutputSink(
+                on_text=lambda t: None,
+                on_tool_call=lambda name, inp, tid: tool_calls.append((name, inp, tid)),
+                on_tool_result=lambda name, out, err, tid: tool_results.append((name, out, err, tid)),
+            ),
         )
 
         assert len(tool_calls) > 0, f"[{protocol}] Should have called at least one tool"
@@ -139,7 +142,7 @@ class TestMasterAgentIntegration:
 
         agent1.run(
             "Remember this: The secret word is 'pineapple'.",
-            on_text=lambda t: None,
+            sink=OutputSink(on_text=lambda t: None),
         )
         agent1._sync_to_session()
         agent1.session.save()
@@ -166,7 +169,7 @@ class TestMasterAgentIntegration:
         from core.session_runner import SessionRunner
 
         runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
-        runner.run("Say 'hello'", on_text=lambda t: None)
+        runner.run("Say 'hello'", sink=OutputSink(on_text=lambda t: None))
 
         usage = runner.get_usage()
         assert usage["api_calls"] >= 1, f"[{protocol}] Should have at least 1 API call"
@@ -181,7 +184,7 @@ class TestMasterAgentIntegration:
         runner = SessionRunner(dgx_config, role="master", cwd=str(test_workspace_dir), workspace_uuid=workspace_uuid)
 
         session1_id = runner.current_session_id
-        runner.run("Session 1 message", on_text=lambda t: None)
+        runner.run("Session 1 message", sink=OutputSink(on_text=lambda t: None))
         runner._sync_to_session()
         runner.session.save()
         session1_msg_count = len(runner.messages)
@@ -190,7 +193,7 @@ class TestMasterAgentIntegration:
         runner.switch_session(new_session.session_id)
         assert len(runner.messages) == 0, f"[{protocol}] New session should be empty"
 
-        runner.run("Session 2 message", on_text=lambda t: None)
+        runner.run("Session 2 message", sink=OutputSink(on_text=lambda t: None))
 
         runner.switch_session(session1_id)
         assert len(runner.messages) == session1_msg_count, \

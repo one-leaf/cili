@@ -121,6 +121,8 @@ def create_tools(
             continue
         try:
             tools.append(factory(role_cfg, cwd, workspace_uuid, session, config, approval_store))
-        except Exception as e:
-            logger.warning(f"[registry] 实例化工具 {name!r} 失败: {e}")
+        except Exception:
+            # 用 exception 保留堆栈：工具构造失败（如子类 __init__ 未透传 **kwargs）
+            # 会让该工具静默缺席，只有堆栈能定位根因。
+            logger.exception(f"[registry] 实例化工具 {name!r} 失败，已跳过")
     return tools

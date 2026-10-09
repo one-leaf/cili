@@ -261,8 +261,12 @@ class MCPToolWrapper(Tool):
         description: str,
         parameters: dict,
         tool_timeout: int = 30,
+        cwd: str = ".",
+        **kwargs,
     ):
-        super().__init__(cwd=".")
+        # 有意例外：不接收 session/workspace_uuid（见类 docstring，session 每次经
+        # provider 现取）。**kwargs 仅用于容忍统一构造协议注入的额外参数。
+        super().__init__(cwd=cwd)
         self._provider = provider
         self._server_name = server_name
         self._tool_name = tool_name  # 原始 MCP 工具名（call_tool 用）

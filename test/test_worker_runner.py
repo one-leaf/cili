@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core.output_sink import OutputSink
 from core.session_runner import SessionRunner
 
 
@@ -361,8 +362,7 @@ class TestWorkerEventCallbacks:
         runner = _make_runner(task="test task")
         texts = []
         thinkings = []
-        runner._on_text = texts.append
-        runner._on_thinking = thinkings.append
+        runner.sink = OutputSink(on_text=texts.append, on_thinking=thinkings.append)
 
         mock_resp = MagicMock()
         mock_resp.get_tool_calls.return_value = []
@@ -395,8 +395,10 @@ class TestWorkerEventCallbacks:
         runner = _make_runner(task="test task", tools=[tool])
         calls = []
         results = []
-        runner._on_tool_call = lambda name, inp, tid: calls.append((name, inp, tid))
-        runner._on_tool_result = lambda name, content, is_error, tid: results.append((name, content, is_error))
+        runner.sink = OutputSink(
+            on_tool_call=lambda name, inp, tid: calls.append((name, inp, tid)),
+            on_tool_result=lambda name, content, is_error, tid: results.append((name, content, is_error)),
+        )
 
         resp_tool = MagicMock()
         tc = MagicMock()
@@ -432,7 +434,7 @@ class TestWorkerEventCallbacks:
         tool.execute.return_value = ToolResult(big_output, completed=True, meta={})
         runner = _make_runner(task="test task", tools=[tool])
         results = []
-        runner._on_tool_result = lambda name, content, is_error, tid: results.append(content)
+        runner.sink = OutputSink(on_tool_result=lambda name, content, is_error, tid: results.append(content))
 
         resp_tool = MagicMock()
         tc = MagicMock()

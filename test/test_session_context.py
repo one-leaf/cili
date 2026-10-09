@@ -26,6 +26,13 @@ class _FakeSM:
     def mark_dirty(self):
         self.mark_dirty_count += 1
 
+    def add_message(self, role, content, _meta=None, flush=False):
+        """对齐 SessionStore.add_message 契约（ConversationStore 委托调用）。"""
+        meta = dict(_meta) if _meta else {}
+        meta.setdefault("id", "fake-id")
+        self.messages.append({"role": role, "content": content, "_meta": meta})
+        self.mark_dirty()
+
     def flush(self):
         self.flush_count += 1
 

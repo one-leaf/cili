@@ -204,6 +204,30 @@ class Config:
     system: SystemConfig = field(default_factory=SystemConfig)  # System parameters
     mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)  # MCP 服务器配置
 
+    @property
+    def role_models(self) -> dict[str, ModelConfig]:
+        """角色名 → 模型配置的显式映射（未单独配置的角色回退 master 模型）。"""
+        return {
+            "master": self.model,
+            "worker": self.worker_model or self.model,
+            "lite": self.lite_model or self.model,
+        }
+
+    def model_for_role(self, role: str) -> ModelConfig:
+        """取角色模型；未知角色回退 master 模型并告警。
+
+        取代原先 `getattr(config, f"{role}_model", None) or config.model` 的静默回退
+        （角色名拼错会无提示地使用 master 模型）。
+        """
+        models = self.role_models
+        if role in models:
+            return models[role]
+        logger.warning(
+            f"[Config] 未知角色 {role!r}，回退 master 模型；"
+            f"如需独立模型请在 setting.json 中配置 {role}_model"
+        )
+        return self.model
+
     @classmethod
     def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
         """Build Config from raw global config dict with CLI/env overrides."""
