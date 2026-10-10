@@ -15,6 +15,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -833,6 +834,74 @@ def _load_requirements() -> list[str]:
     return packages
 
 
+def _find_broken_packages(pip_exe: str) -> list[str]:
+    """用 ``pip check`` 找出**装了但装坏了**的包（缺传递依赖 / 版本冲突）。
+
+    为什么需要这一步：``_check_installed_packages`` 只按**发行名**判断在不在，
+    看不见「包在、但它要求的依赖不在」。典型症状是 ``import fastapi`` 直接抛
+    ``ModuleNotFoundError: No module named 'annotated_doc'``（fastapi 0.14x 要求
+    annotated-doc），而名字检查认为一切正常，于是永远不会自愈。
+
+    返回有问题的包名列表（取 ``pip check`` 输出里被指向的那个包）。
+    """
+    try:
+        env = os.environ.copy()
+        env["PYTHONNOUSERSITE"] = "1"
+        result = subprocess.run(
+            [pip_exe, "check"],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+    except Exception as e:
+        print(f"[setup] pip check 失败（跳过一致性检查）: {e}")
+        return []
+
+    if result.returncode == 0:
+        return []
+
+    broken: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        # 形如：
+        #   fastapi 0.141.1 requires annotated-doc, which is not installed.
+        #   pkg 1.0 has requirement x>=2, but you have x 1.0.
+        m = re.match(r"^(\S+)\s+\S+\s+(?:requires|has requirement)\b", line.strip())
+        if not m:
+            continue
+        name = m.group(1)
+        if name and name not in broken:
+            broken.append(name)
+    return broken
+
+
+def _pip_install_one(
+    pip_exe: str, pkg: str, pip_mirrors: list[str], start_idx: int
+) -> tuple[bool, int]:
+    """装一个包，按 mirror 顺序失败转移。返回 (是否成功, 最终用的 mirror 下标)。"""
+    idx = start_idx
+    while idx < len(pip_mirrors):
+        mirror = pip_mirrors[idx]
+        mirror_name = mirror or "PyPI official"
+        print(f"[setup] Installing {pkg} from {mirror_name}...")
+        cmd = [pip_exe, "install", "--disable-pip-version-check"]
+        if mirror:
+            cmd += ["-i", mirror]
+        cmd.append(pkg)
+        try:
+            # Pass environment with PYTHONNOUSERSITE to isolate from system Python
+            env = os.environ.copy()
+            env["PYTHONNOUSERSITE"] = "1"
+            result = subprocess.run(cmd, timeout=300, env=env)
+            if result.returncode == 0:
+                return True, idx
+            print(f"[setup] Failed with {mirror_name}")
+        except Exception as e:
+            print(f"[setup] Failed with {mirror_name}: {e}")
+
+        idx += 1
+        if idx < len(pip_mirrors):
+            print("[setup] Trying next mirror...")
+    return False, idx
+
+
 def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
     """Install only missing dependencies in the venv, with mirror failover.
 
@@ -871,50 +940,40 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
             missing.append(pkg)
 
     if not missing:
-        print("[setup] All packages OK.")
-        return True, False
+        # 名字齐全 ≠ 装得好：查一遍依赖一致性，把「装了但缺传递依赖」的包重装修好
+        broken = _find_broken_packages(pip_exe)
+        if not broken:
+            print("[setup] All packages OK.")
+            return True, False
+
+        print(f"[setup] Detected {len(broken)} package(s) with broken dependencies: {', '.join(broken)}")
+        print("[setup] Repairing (reinstall with dependencies)...")
+        current_mirror_idx = 0
+        for name in broken:
+            ok, current_mirror_idx = _pip_install_one(
+                pip_exe, name, pip_mirrors, current_mirror_idx
+            )
+            if not ok:
+                print(f"[setup] Error: all mirrors failed for {name}")
+                return False, False
+        _save_pip_mirror(pip_mirrors[min(current_mirror_idx, len(pip_mirrors) - 1)])
+        print("[setup] Broken dependencies repaired.")
+        return True, True  # 装过东西 → 让调用方重启进程，确保干净解释器
 
     print(f"[setup] Missing {len(missing)} package(s): {', '.join(missing)}")
     print("[setup] Installing...")
 
-    # Install each package with mirror failover
     current_mirror_idx = 0
-    for i, pkg in enumerate(missing, 1):
-        pkg_installed = False
-        # Try each mirror in sequence
-        while current_mirror_idx < len(pip_mirrors):
-            mirror = pip_mirrors[current_mirror_idx]
-            mirror_name = mirror or "PyPI official"
-            print(f"[setup] ({i}/{len(missing)}) Installing {pkg} from {mirror_name}...")
-            cmd = [pip_exe, "install", "--disable-pip-version-check"]
-            if mirror:
-                cmd += ["-i", mirror]
-            cmd.append(pkg)
-
-            try:
-                # Pass environment with PYTHONNOUSERSITE to isolate from system Python
-                env = os.environ.copy()
-                env["PYTHONNOUSERSITE"] = "1"
-                result = subprocess.run(cmd, timeout=300, env=env)
-                if result.returncode == 0:
-                    pkg_installed = True
-                    break  # Package installed successfully
-                print(f"[setup] Failed with {mirror_name}")
-            except Exception as e:
-                print(f"[setup] Failed with {mirror_name}: {e}")
-
-            # Try next mirror
-            current_mirror_idx += 1
-            if current_mirror_idx < len(pip_mirrors):
-                print(f"[setup] Trying next mirror...")
-
-        if not pkg_installed:
+    for pkg in missing:
+        ok, current_mirror_idx = _pip_install_one(
+            pip_exe, pkg, pip_mirrors, current_mirror_idx
+        )
+        if not ok:
             print(f"[setup] Error: all mirrors failed for {pkg}")
             return False, False
 
     # Save the working mirror to config
-    working_mirror = pip_mirrors[current_mirror_idx]
-    _save_pip_mirror(working_mirror)
+    _save_pip_mirror(pip_mirrors[min(current_mirror_idx, len(pip_mirrors) - 1)])
     print("[setup] All packages installed.")
     return True, True  # 安装了新包
 
