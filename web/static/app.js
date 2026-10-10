@@ -11,10 +11,6 @@ let isSending = false;
 // 必须是 session 作用域而非布尔：切到 B 会话时 A 的流仍在读，若用布尔值，
 // 会把 B 会话自己的全局事件也误判为「已有前台流」而去重掉。
 let foregroundStreamSessionId = null;
-// 消息列表的「渲染代际」：renderMessages 每次清空重建都会自增。
-// 在飞的请求级流据此发现自己持有的 DOM 已脱离文档，改按累积内容重建气泡
-// （否则切会话/重拉之后，后续 token 会写进已脱离文档的节点，界面看不到）。
-let viewGeneration = 0;
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
@@ -1049,13 +1045,6 @@ async function loadSession(sessionId) {
         currentSessionLoadedOffset = session.messages.length;
         currentSessionHasMore = session.has_more;
         savePosition({ session_id: sessionId });
-
-        // 切到别的会话：本页的前台流不再承担渲染（它的 DOM 已被重渲染替换），
-        // 交回全局事件流。与「刷新页面」后的路径一致：切走期间漏掉的输出由
-        // 回合结束时的重拉补齐。
-        if (foregroundStreamSessionId && foregroundStreamSessionId !== sessionId) {
-            foregroundStreamSessionId = null;
-        }
 
         console.log('Session switched to:', currentSession.session_id);
 

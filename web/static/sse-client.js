@@ -608,6 +608,8 @@ function handleMasterToolOutput(e) {
 function ensureMasterToolBubble(toolUseId, toolName) {
     const entry = _toolStreamTimers[toolUseId];
     if (!entry || entry.div) return;
+    // 只在仍查看该工具所属会话时创建：切走后创建会把气泡塞进别的会话界面
+    if (!currentSession || entry.sessionId !== currentSession.session_id) return;
 
     const div = document.createElement('div');
     div.className = 'message assistant tool-streaming-bubble';
@@ -627,8 +629,13 @@ function ensureMasterToolBubble(toolUseId, toolName) {
     contentDiv.appendChild(pre);
 
     div.appendChild(contentDiv);
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    // 渲染进本会话在飞回合的专属容器（若有），与同回合的正文/工具卡片同属一块；
+    // 容器脱离文档时（用户切走）不滚动，避免拽动别人正在看的会话
+    const container = _activeTurnContainers.get(entry.sessionId) || chatMessages;
+    container.appendChild(div);
+    if (chatMessages.contains(div)) {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
 
     entry.div = div;
     entry.pre = pre;
