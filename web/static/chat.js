@@ -135,6 +135,12 @@ function normalizeContent(content) {
 // Render messages
 function renderMessages(messages) {
     chatMessages.innerHTML = '';
+    // 清空重建 → 在飞的流持有的 DOM 引用全部失效，代际自增通知它们重建
+    viewGeneration++;
+    // 全局事件流那条路的渲染器也持有 DOM 引用，一并重置
+    if (typeof resetMasterStreamBlocks === 'function') {
+        resetMasterStreamBlocks();
+    }
 
     if (!messages || messages.length === 0) {
         chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
@@ -703,13 +709,19 @@ function renderAskUserQuestions(container, input, toolUseId) {
         const answer = formatAnswers();
         if (!answer.trim()) return;
 
+        // 捕获提交时刻的会话：本流的帧要按它过滤，期间用户可能切走
+        const sessionId = currentSession.session_id;
         submitBtn.textContent = '提交中...';
         submitBtn.disabled = true;
+        // 提交答案同样会跑一个前台回合：置位两个标志，让事件流那边的
+        // 同名渲染器让位（否则本回合正文会被请求级流与全局流各渲染一遍）
+        isSending = true;
+        foregroundStreamSessionId = sessionId;
 
         try {
             // 调用 answer-ask-user API
             const response = await fetch(
-                `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/answer-ask-user`,
+                `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/answer-ask-user`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -736,6 +748,8 @@ function renderAskUserQuestions(container, input, toolUseId) {
             let assistantContent = '';
             let thinkDiv = null;
             let thinkContent = '';
+            // 本流开始时的渲染代际：被 renderMessages 重建后据此丢弃旧 DOM 引用
+            let myViewGen = viewGeneration;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -752,6 +766,21 @@ function renderAskUserQuestions(container, input, toolUseId) {
 
                     try {
                         const event = JSON.parse(dataStr);
+
+                        // 丢弃不属于本流的帧
+                        if (event.session_id && event.session_id !== sessionId) continue;
+
+                        // 本页已不再由这条流承担渲染（用户切走过会话）：整段跳过，
+                        // 由全局事件流接手 —— 与「刷新页面」后的行为一致。
+                        if (foregroundStreamSessionId !== sessionId) continue;
+
+                        // 视图被重渲染过（同会话内重拉）：本流持有的 DOM 已脱离文档，
+                        // 丢掉引用让下一帧按累积内容重建气泡。
+                        if (myViewGen !== viewGeneration) {
+                            myViewGen = viewGeneration;
+                            assistantDiv = null;
+                            thinkDiv = null;
+                        }
 
                         if (event.type === 'thinking') {
                             if (!thinkDiv) {
@@ -876,14 +905,28 @@ function renderAskUserQuestions(container, input, toolUseId) {
                 }
             }
 
-            // Refresh session to get persisted state
-            await loadSession(currentSession.session_id);
+            // Refresh session to get persisted state（仅当仍停留在该会话时，
+            // 避免切走后把用户拉回旧会话）
+            if (currentSession && currentSession.session_id === sessionId) {
+                await loadSession(sessionId);
+            }
 
         } catch (error) {
             console.error('Failed to submit answer:', error);
             submitBtn.textContent = '提交失败';
             submitBtn.disabled = false;
-            addMessage('assistant', '提交答案失败: ' + error.message);
+            if (currentSession && currentSession.session_id === sessionId) {
+                addMessage('assistant', '提交答案失败: ' + error.message);
+            }
+        } finally {
+            // 只清理属于本会话的标志：期间可能已切走（此时 isSending 由切会话
+            // 时的 loadSession 按新会话 /status 重置）或已在别的会话发起新请求
+            if (currentSession && currentSession.session_id === sessionId) {
+                isSending = false;
+            }
+            if (foregroundStreamSessionId === sessionId) {
+                foregroundStreamSessionId = null;
+            }
         }
     });
 
@@ -986,6 +1029,7 @@ async function sendMessage() {
     pendingImages = [];
     renderImagePreviews();
     isSending = true;
+    foregroundStreamSessionId = sessionId;
     sendBtn.textContent = '停止';
     sendBtn.classList.remove('btn-primary');
     sendBtn.classList.add('btn-danger');
@@ -1010,6 +1054,8 @@ async function sendMessage() {
     let assistantContent = '';
     let thinkDiv = null;
     let thinkContent = '';
+    // 本流开始时的渲染代际：被 renderMessages 重建后据此丢弃旧 DOM 引用
+    let myViewGen = viewGeneration;
 
     // Close the current think block (shared by text, tool_use, tool_result handlers)
     function finalizeThinkBlock() {
@@ -1064,6 +1110,23 @@ async function sendMessage() {
 
                 try {
                     const event = JSON.parse(dataStr);
+
+                    // 丢弃不属于本流的帧
+                    if (event.session_id && event.session_id !== sessionId) continue;
+
+                    // 本页已不再由这条流承担渲染（用户切走过会话）：整段跳过，
+                    // 由全局事件流接手 —— 与「刷新页面」后的行为一致。
+                    // 少了这一条，切到 B 后 A 的流会在代际变化时把气泡重建进 B 的界面。
+                    if (foregroundStreamSessionId !== sessionId) continue;
+
+                    // 视图被重渲染过（同会话内重拉）：本流持有的 DOM 已脱离文档，
+                    // 丢掉引用让下一帧按累积内容重建气泡。assistantContent 保留，
+                    // 重建出来的是本回合完整正文。
+                    if (myViewGen !== viewGeneration) {
+                        myViewGen = viewGeneration;
+                        assistantDiv = null;
+                        thinkDiv = null;
+                    }
 
                     if (event.type === 'thinking') {
                         // 创建或更新 think 块
@@ -1205,6 +1268,10 @@ async function sendMessage() {
         addMessage('assistant', '发送消息失败: ' + error.message);
     } finally {
         clearTimeout(window._stopPendingTimer);
+        // 前台流已结束：无论是否还停留在该会话，本页都不再持有请求级流
+        if (foregroundStreamSessionId === sessionId) {
+            foregroundStreamSessionId = null;
+        }
         // 仅当仍在查看本会话时才重置发送/停止状态，
         // 避免旧会话流结束时覆盖新会话的运行状态
         if (currentSession && currentSession.session_id === sessionId) {

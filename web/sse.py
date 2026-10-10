@@ -23,30 +23,46 @@ logger = logging.getLogger(__name__)
 
 
 def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSink:
-    """构造 SSE 输出接收端（OutputSink），同步 runner 回调 → 队列。"""
+    """构造 SSE 输出接收端（OutputSink），同步 runner 回调 → 队列。
+
+    正文/思考/工具卡片**同时扇出**到 ``runner.default_sink``（全局事件流）：
+    请求级流是临时的，页面一刷新即断，届时界面只能靠全局流继续渲染本回合输出。
+    前端以 isSending 去重——有前台请求流时不重复渲染全局流的同类事件。
+    """
+    # 持久 sink（Web 层绑到 /api/events）；runner 未绑定时退化为 no-op
+    base = getattr(runner, "default_sink", None) or OutputSink()
+    # 帧里带上 session_id：请求级流不会因前端切会话而中断，前端据此丢弃
+    # 不属于当前会话的帧，否则切走后本回合输出会渲染到另一个会话界面上
+    sid = getattr(runner, "current_session_id", "") or ""
 
     def on_text(text: str) -> None:
         # Sentinel: 413 retry needs frontend to clear already-streamed text
         if text == RETRY_CLEAR_SENTINEL:
-            event = json.dumps({"type": "retry_clear"}, ensure_ascii=False)
+            # 控制信号只走请求级流：刷新后已渲染的正文会在回合结束时由
+            # 重拉会话覆盖，不值得为这个罕见路径再引入一套全局清理协议
+            event = json.dumps({"type": "retry_clear", "session_id": sid}, ensure_ascii=False)
             event_queue.put(f"data: {event}\n\n")
             return
-        event = json.dumps({"type": "text", "content": text}, ensure_ascii=False)
+        base.on_text(text)
+        event = json.dumps({"type": "text", "content": text, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_thinking(text: str) -> None:
-        event = json.dumps({"type": "thinking", "content": text}, ensure_ascii=False)
+        base.on_thinking(text)
+        event = json.dumps({"type": "thinking", "content": text, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id}, ensure_ascii=False)
+        base.on_tool_call(tool_name, tool_input, tool_use_id)
+        event = json.dumps({"type": "tool_use", "tool": tool_name, "input": tool_input, "tool_use_id": tool_use_id, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
         # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
         if tool_name in ("ask_user", "session"):
             return
-        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id}, ensure_ascii=False)
+        base.on_tool_result(tool_name, output, is_error, tool_use_id)
+        event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
         # todo 更新事件（工具名判断与数据提取在 core，传输层只做序列化）
@@ -55,11 +71,11 @@ def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSi
             event_queue.put(f"data: {json.dumps(todo_ev, ensure_ascii=False)}\n\n")
 
     def on_session_start(exec_id: str, task_summary: str) -> None:
-        event = json.dumps({"type": "session_start", "exec_id": exec_id, "task_summary": task_summary}, ensure_ascii=False)
+        event = json.dumps({"type": "session_start", "exec_id": exec_id, "task_summary": task_summary, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_session_complete(exec_id: str) -> None:
-        event = json.dumps({"type": "session_complete", "exec_id": exec_id}, ensure_ascii=False)
+        event = json.dumps({"type": "session_complete", "exec_id": exec_id, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     return OutputSink(

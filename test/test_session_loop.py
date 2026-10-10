@@ -270,3 +270,44 @@ class TestSessionNotificationInjection:
         # 二次排空不应重复注入
         runner.loop._drain_session_notifications()
         assert len(self._injected(runner)) == 1
+
+
+class TestTurnCompleteSignal:
+    """interactive 回合结束（run / resume）必须发出 on_turn_complete。
+
+    回归：此前没有任何「回合结束」信号，页面刷新后请求级流已断，
+    界面无从知道该重拉会话，答案落盘了也不显示。
+    """
+
+    def _run_with(self, runner, call):
+        from core.output_sink import OutputSink
+
+        done = []
+        sink = OutputSink(on_turn_complete=lambda: done.append(True))
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "_call_llm", return_value=_make_text_response("ok")):
+            call(runner, sink)
+        return done
+
+    def test_run_signals_turn_complete(self, runner):
+        done = self._run_with(runner, lambda r, s: r.run("hi", sink=s))
+        assert done == [True]
+
+    def test_resume_signals_turn_complete(self, runner):
+        done = self._run_with(runner, lambda r, s: r.resume_from_notification(sink=s))
+        assert done == [True]
+
+    def test_signal_fires_even_when_loop_raises(self, runner):
+        """异常路径也必须发信号，否则界面永远停在旧状态。"""
+        from core.output_sink import OutputSink
+
+        done = []
+        sink = OutputSink(on_turn_complete=lambda: done.append(True))
+        with patch.object(runner, "_check_and_compress"), \
+             patch.object(runner, "loop") as loop_mock:
+            loop_mock.run_interactive.side_effect = RuntimeError("boom")
+            try:
+                runner.run("hi", sink=sink)
+            except RuntimeError:
+                pass
+        assert done == [True]

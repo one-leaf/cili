@@ -264,12 +264,22 @@ def _bind_default_sink(runner: SessionRunner, workspace_uuid: str, session_id: s
             "tool_use_id": tool_use_id,
         })
 
+    def _default_on_turn_complete() -> None:
+        # 回合已落盘：前端据此重拉会话。刷新页面后请求级流已断开，
+        # 这条全局事件是界面唯一能知道「本回合结束了」的途径。
+        bus.publish({
+            "type": "turn_complete",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+        })
+
     runner.default_sink = OutputSink(
         on_text=_default_on_text,
         on_thinking=_default_on_thinking,
         on_tool_call=_default_on_tool_call,
         on_tool_result=_default_on_tool_result,
         on_tool_output=_on_tool_output,
+        on_turn_complete=_default_on_turn_complete,
     )
     runner.sink = runner.default_sink
 

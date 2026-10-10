@@ -196,7 +196,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         # Save to session via SessionStore
         sm = _get_session(workspace_uuid, session_id)
         _persist_command_exchange(sm, f"{workspace_uuid}:{session_id}", content, help_text)
-        return StreamingResponse(sse_stream({"type": "text", "content": help_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": help_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content == "/status":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -230,7 +230,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         _persist_command_exchange(
             runner.session, f"{workspace_uuid}:{session_id}", content, status_text
         )
-        return StreamingResponse(sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": status_text, "session_id": session_id}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
     if content == "/goal" or content == "/goal status":
@@ -240,7 +240,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         _persist_command_exchange(
             runner.session, f"{workspace_uuid}:{session_id}", content, goal_text
         )
-        return StreamingResponse(sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": goal_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content == "/goal clear":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -251,7 +251,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content == "/goal pause":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -265,7 +265,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("user", content, flush=False)
         runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
         runner.session.save()
-        return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content == "/goal resume":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -275,7 +275,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             runner.session.add_message("user", content, flush=False)
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
         manager.resume()
         # 同 /goal <目标>：先落恢复确认，再启动循环，保证顺序「命令 → 恢复确认 → 下一轮卡片」
         confirm_text = "▶️ 已恢复目标循环，进度实时显示。"
@@ -290,8 +290,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
-        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content.startswith("/goal "):
         objective = content[len("/goal "):].strip()
@@ -301,7 +301,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             runner.session.add_message("user", content, flush=False)
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         manager = get_goal_manager(runner.session.session_dir)
         manager.set(objective)
@@ -321,8 +321,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                            "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text}), media_type="text/event-stream")
-        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text}), media_type="text/event-stream")
+            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text, "session_id": session_id}), media_type="text/event-stream")
 
     # Normal message - send to runner
     runner = await _get_or_create_runner(workspace_uuid, session_id)
@@ -335,7 +335,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
         else:
             error_text = "当前会话正在执行中，请等待完成后再发送消息"
-        return StreamingResponse(sse_stream({"type": "error", "content": error_text}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
 
     # ask_user 待回答时：直接把用户输入作为"其他"回复提交（等价于在卡片输入"其他"）。
     # 输入不会作为新 user message 追加，而是注入占位 tool_result 后恢复循环；

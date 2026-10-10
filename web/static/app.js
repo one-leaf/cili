@@ -3,6 +3,18 @@ let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
 let sessions = [];
 let isSending = false;
+// 本页持有的前台请求级 SSE 流属于哪个 session（null = 本页未持有）。
+// 用途一：事件流的渲染去重 —— 本页正用请求级流渲染该会话时，忽略全局流的
+//   同名事件，避免双份渲染。用 isSending 不行：loadSession 查到 /status.running
+//   也会把它置 true（刷新页面后即如此），会把刷新后的全局渲染一并挡掉。
+// 用途二：切走后旧流仍在推送，据此丢弃不属于当前会话的帧。
+// 必须是 session 作用域而非布尔：切到 B 会话时 A 的流仍在读，若用布尔值，
+// 会把 B 会话自己的全局事件也误判为「已有前台流」而去重掉。
+let foregroundStreamSessionId = null;
+// 消息列表的「渲染代际」：renderMessages 每次清空重建都会自增。
+// 在飞的请求级流据此发现自己持有的 DOM 已脱离文档，改按累积内容重建气泡
+// （否则切会话/重拉之后，后续 token 会写进已脱离文档的节点，界面看不到）。
+let viewGeneration = 0;
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
@@ -1037,6 +1049,13 @@ async function loadSession(sessionId) {
         currentSessionLoadedOffset = session.messages.length;
         currentSessionHasMore = session.has_more;
         savePosition({ session_id: sessionId });
+
+        // 切到别的会话：本页的前台流不再承担渲染（它的 DOM 已被重渲染替换），
+        // 交回全局事件流。与「刷新页面」后的路径一致：切走期间漏掉的输出由
+        // 回合结束时的重拉补齐。
+        if (foregroundStreamSessionId && foregroundStreamSessionId !== sessionId) {
+            foregroundStreamSessionId = null;
+        }
 
         console.log('Session switched to:', currentSession.session_id);
 

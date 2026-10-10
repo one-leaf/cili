@@ -137,6 +137,19 @@ function handleBusEvent(e) {
         return;
     }
 
+    // 本回合已落盘（master run / resume 结束）
+    // 前台请求流还在时由它自己重拉会话，这里跳过；页面刷新后请求流已断，
+    // 这条全局事件是界面唯一能知道「本回合结束了」的途径。
+    if (e.type === 'turn_complete') {
+        // 本页正持有该会话的前台流时由它自己重拉，否则（典型：刷新过页面）靠这里自愈。
+        // 用 foregroundStreamSessionId 而非 isSending —— 后者在刷新后也为 true
+        // （loadSession 查到 /status.running），会把自愈也一起挡掉。
+        if (foregroundStreamSessionId !== currentSession.session_id) {
+            loadSession(currentSession.session_id);
+        }
+        return;
+    }
+
     // worker 工具输出（无 exec_id）→ master 工具流
     if (e.type === 'tool_output' && !e.exec_id) {
         handleMasterToolOutput(e);
@@ -146,6 +159,11 @@ function handleBusEvent(e) {
     // 无 exec_id 的事件：master 自动恢复循环产生的 text/thinking/tool_use/tool_result
     // text 是逐 token 推送，需累积到同一个气泡（类似 worker 的 openBlock 模式）
     if (!e.exec_id) {
+        // 本页正用请求级流（POST SSE）渲染「当前会话」的本回合：忽略全局流的
+        // 同类事件，避免双份渲染。刷新页面后本页没有前台流，由下面这些渲染器
+        // 接手 —— 这正是刷新后正文不丢的原因。切到别的会话时本页持有的前台流
+        // 属于旧会话，不等于 currentSession，故不会误伤当前会话的全局事件。
+        if (foregroundStreamSessionId === currentSession.session_id) return;
         if (e.type === 'text') {
             _handleMasterResumeText(e.content || '');
         } else if (e.type === 'thinking') {
@@ -619,6 +637,12 @@ function ensureMasterToolBubble(toolUseId, toolName) {
 // ── master 自动恢复流式渲染 ──
 // 后台 agent 完成后 master 自动恢复循环，text 逐 token 推送到事件总线。
 // 用 openBlock 模式累积：连续 text 追加到同一个气泡，遇到 thinking/tool 则定稿开新块。
+
+// 视图被重渲染（切会话 / 重拉消息）后调用：丢弃已脱离文档的气泡引用，
+// 让下一个事件重建气泡。否则后续 token 会写进不再显示的元素里。
+function resetMasterStreamBlocks() {
+    _masterResumeOpenBlock = null;
+}
 
 function _handleMasterResumeText(content) {
     if (_masterResumeOpenBlock && _masterResumeOpenBlock.kind === 'text') {

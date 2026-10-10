@@ -421,6 +421,8 @@ class SessionRunner(BaseSessionRunner):
             if getattr(self, "session", None) is not None:
                 self._sync_to_session()
                 self.session.save()
+            # 落盘之后再通知，接入端重拉时才能拿到完整状态
+            self.sink.on_turn_complete()
 
     def _handle_approval_required(self, approval: dict) -> None:
         """合成 ask_user 卡询问用户是否批准高风险命令，随后暂停循环等待回答。
@@ -464,6 +466,8 @@ class SessionRunner(BaseSessionRunner):
             # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
             self._sync_to_session()
             self.session.save()
+            # 落盘之后再通知，接入端重拉时才能拿到完整状态
+            self.sink.on_turn_complete()
 
     def resume_after_ask_user(self, sink: OutputSink | None = None) -> None:
         """Resume session loop after ask_user tool result has been injected."""

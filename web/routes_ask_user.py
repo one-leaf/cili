@@ -37,7 +37,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
 
     # 与 send_message 相同的原子认领，防止两个请求并发 resume 同一 runner 双循环改写 messages
     if not _claim_session_run(key):
-        return StreamingResponse(sse_stream({"type": "error", "content": "当前会话正在执行中，请等待完成后再提交答案"}), media_type="text/event-stream")
+        return StreamingResponse(sse_stream({"type": "error", "content": "当前会话正在执行中，请等待完成后再提交答案", "session_id": session_id}), media_type="text/event-stream")
 
     # 使用前端提供的 tool_use_id
     ask_user_tool_use_id = request.tool_use_id
