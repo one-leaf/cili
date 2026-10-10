@@ -1066,10 +1066,13 @@ async function sendMessage() {
 
     // 本回合的助手侧输出全部渲染进专属容器（用户消息仍在消息区直接显示）。
     // 容器随会话可见性挂载/脱离：切走后内容留着，切回时 renderMessages 挂回。
+    //
+    // ⚠️ 容器必须**在用户消息之后**才挂进消息区。DOM 顺序即显示顺序，若先挂容器
+    // 再 append 用户消息，本回合的流式输出就会渲染在用户刚发的那条消息**上方**。
+    // （renderMessages 重建时是先渲染历史、最后 _reattachTurnContainer 挂容器，
+    //   所以这里保持「用户消息 → 容器」的顺序才与重建结果一致。）
     const turnContainer = document.createElement('div');
     turnContainer.className = 'turn-stream';
-    chatMessages.appendChild(turnContainer);
-    _activeTurnContainers.set(sessionId, turnContainer);
     const addTurnMessage = (role, content) =>
         addMessage(role, content, undefined, undefined, turnContainer);
     const scrollIfViewing = () => {
@@ -1077,6 +1080,10 @@ async function sendMessage() {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
     };
+
+    // 清掉新会话的欢迎语：它是 app.js 用 innerHTML 直接设的，不在消息数组里，
+    // 因此 renderMessages 不会覆盖它；不清就会一直停在用户第一条消息上方。
+    chatMessages.querySelector('.welcome-message')?.remove();
 
     // Add user message to UI (with images if any)
     const userDiv = addMessage('user', message);
@@ -1092,6 +1099,10 @@ async function sendMessage() {
         });
         contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
     }
+
+    // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
+    chatMessages.appendChild(turnContainer);
+    _activeTurnContainers.set(sessionId, turnContainer);
 
     // Create placeholder for assistant response
     let assistantDiv = null;
