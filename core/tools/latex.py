@@ -41,9 +41,9 @@ class LatexTool(Tool):
         "- **check**: Check available LaTeX compilers\n\n"
         "## Usage:\n"
         "```\n"
-        "latex(action='compile', file='document.tex')\n"
-        "latex(action='compile', file='document.tex', output='output.pdf')\n"
-        "latex(action='compile', file='document.tex', compiler='xelatex')\n"
+        "latex(action='compile', tex_file='document.tex')\n"
+        "latex(action='compile', tex_file='document.tex', output='output.pdf')\n"
+        "latex(action='compile', tex_file='document.tex', compiler='xelatex')\n"
         "latex(action='check')\n"
         "```\n\n"
         "## Supported compilers:\n"
@@ -65,7 +65,7 @@ class LatexTool(Tool):
                 "description": "Action: compile (default) or check available compilers",
                 "default": "compile",
             },
-            "file": {
+            "tex_file": {
                 "type": "string",
                 "description": "Path to the .tex file to compile. Required for compile action.",
             },
@@ -103,7 +103,7 @@ class LatexTool(Tool):
     def execute(
         self,
         action: str = "compile",
-        file: str | None = None,
+        tex_file: str | None = None,
         output: str | None = None,
         compiler: str | None = None,
         clean: bool = True,
@@ -112,9 +112,9 @@ class LatexTool(Tool):
         if action == "check":
             return self._check_compilers()
         elif action == "compile":
-            if not file:
-                return ToolResult("Error: 'file' is required for 'compile' action", error=True)
-            return self._compile(file, output, compiler, clean)
+            if not tex_file:
+                return ToolResult("Error: 'tex_file' is required for 'compile' action", error=True)
+            return self._compile(tex_file, output, compiler, clean)
         else:
             return ToolResult(f"Error: Unknown action '{action}'", error=True)
 
@@ -180,14 +180,14 @@ class LatexTool(Tool):
 
     def _compile(
         self,
-        file: str,
+        tex_file: str,
         output: str | None,
         compiler: str | None,
         clean: bool,
     ) -> ToolResult:
         """Compile a LaTeX file to PDF."""
         # Resolve input file path
-        tex_path = self._resolve_path(file, read_only=True)
+        tex_path = self._resolve_path(tex_file, read_only=True)
         if not os.path.exists(tex_path):
             return ToolResult(f"Error: File not found: {tex_path}", error=True)
 
@@ -315,10 +315,10 @@ class LatexTool(Tool):
             )
 
         # Verify PDF was created
-        expected_pdf = pdf_path
-        if compiler == "tectonic":
-            # Tectonic creates PDF in same directory as tex file
-            expected_pdf = tex_path[:-4] + ".pdf"
+        # 两种编译器的产物都落在 tex_dir：传统编译器由 -output-directory 指定，
+        # tectonic 输出到 cwd，而 cwd 也是 tex_dir。此前默认取 pdf_path，
+        # 导致用户把 output 指到别的目录时误报「PDF 未创建」。
+        expected_pdf = os.path.join(tex_dir, os.path.splitext(tex_name)[0] + ".pdf")
 
         if not os.path.exists(expected_pdf):
             return ToolResult("Error: PDF file was not created", error=True)
@@ -355,7 +355,7 @@ class LatexTool(Tool):
                 return line
 
         # Return last few lines if no specific error found
-        relevant = [l for l in lines if l.strip()][-5:]
+        relevant = [ln for ln in lines if ln.strip()][-5:]
         return "\n".join(relevant) if relevant else "Unknown error"
 
     def _clean_aux_files(self, tex_path: str) -> None:

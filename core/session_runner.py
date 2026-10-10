@@ -11,14 +11,13 @@ blocks 拼装；注入型 user 层（claude_md/context）在 ``_get_messages_wit
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from core.config import Config, PROJECT_ROOT
+from core.config import Config
 from core.llm import create_llm_client, format_llm_error
 from core.fs_utils import atomic_write_json
 from core.session import build_exec_log_data
@@ -31,7 +30,6 @@ from core.session_runner_runtime.loop import (
     BUDGET_FINAL_RATIO,
     BUDGET_WARN_PROMPT,
     BUDGET_WARN_RATIO,
-    CHECK_PROMPT,
     TIMEOUT_WRAPUP_PROMPT,
     Loop,
     LoopPolicy,

@@ -72,7 +72,7 @@ For complex tables or no text layer, hand off to the `pdf2markdown` tool (strong
 
 ## Creating PDFs
 
-**Formal reports/papers/formulas → `latex` tool**: write a `.tex` (Chinese uses `ctexart`; compile with `xelatex`) → `latex(action='compile', file='report.tex')`. TOC/references need multiple compile passes. See the template in file-processing §25.
+**Formal reports/papers/formulas → `latex` tool**: write a `.tex` (Chinese uses `ctexart`; compile with `xelatex`) → `latex(action='compile', tex_file='report.tex')`. TOC/references need multiple compile passes. See the template in file-processing §25.
 
 **Programmatic simple PDFs → `reportlab`**:
 

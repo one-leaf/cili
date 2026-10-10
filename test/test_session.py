@@ -93,7 +93,7 @@ class TestSessionManagement:
         session.add_message("assistant", [
             {"type": "thinking", "thinking": "Let me think..."},
             {"type": "text", "text": "Response"},
-        ], _meta={"valid": False})  # 整条消息无效
+        ], meta={"valid": False})  # 整条消息无效
         session.add_message("assistant", "Valid response")
 
         valid = session.get_valid_messages()

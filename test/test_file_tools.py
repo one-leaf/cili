@@ -193,3 +193,64 @@ class TestReadPages:
         import pytest
         with pytest.raises(ValueError):
             self._parse_pages("1-10,20-30")  # 21 页 > 20
+
+
+class TestEditEncodingDetection:
+    """edit 工具的编码探测：UTF-8 优先，非 UTF-8 按 gb18030 兜底并原样写回。
+
+    回归背景：此前严格按 utf-8 读取，GBK 中文源码文件直接报
+    "Error editing file: 'utf-8' codec can't decode..."，无法编辑。
+    """
+
+    def _edit(self, tools):
+        from core.tools import get_tool_by_name
+        return get_tool_by_name(tools, "edit")
+
+    def test_gbk_file_edits_and_stays_gbk(self, tools, test_workspace):
+        from pathlib import Path
+
+        path = Path(test_workspace) / "gbk.txt"
+        path.write_bytes("中文内容 old\n".encode("gb18030"))
+
+        result = self._edit(tools).execute(
+            file_path="gbk.txt", old_text="old", new_text="new"
+        )
+
+        assert not result.error
+        raw = path.read_bytes()
+        assert raw.decode("gb18030") == "中文内容 new\n"
+        # 未被整体转码为 UTF-8
+        try:
+            raw.decode("utf-8")
+            utf8_ok = True
+        except UnicodeDecodeError:
+            utf8_ok = False
+        assert not utf8_ok
+
+    def test_gbk_crlf_preserved(self, tools, test_workspace):
+        from pathlib import Path
+
+        path = Path(test_workspace) / "gbk_crlf.txt"
+        path.write_bytes("第一行\r\nold 行\r\n".encode("gb18030"))
+
+        result = self._edit(tools).execute(
+            file_path="gbk_crlf.txt", old_text="old", new_text="new"
+        )
+
+        assert not result.error
+        assert path.read_bytes().decode("gb18030") == "第一行\r\nnew 行\r\n"
+
+    def test_undecodable_file_reports_clear_error(self, tools, test_workspace):
+        from pathlib import Path
+
+        path = Path(test_workspace) / "bad.bin"
+        path.write_bytes(b"\xff\xfe\xff\xfe")
+
+        result = self._edit(tools).execute(
+            file_path="bad.bin", old_text="a", new_text="b"
+        )
+
+        assert result.error
+        assert "UTF-8" in result.output and "GB18030" in result.output
+        # 原文件不得被改写
+        assert path.read_bytes() == b"\xff\xfe\xff\xfe"

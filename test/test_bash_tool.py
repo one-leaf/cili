@@ -51,3 +51,50 @@ class TestBashTool:
         # 应该包含测试工作目录的路径
         assert test_workspace.replace("\\", "/") in result.output or \
                Path(test_workspace).name in result.output
+
+
+class TestBashOutputStreaming:
+    """stdout 读取改为分块后，输出内容与实时性必须与逐字符读取一致。
+
+    回归背景：reader 从文本层 read(1) 改为底层 buffer.read1(8192) 后，
+    绕过了文本层的 universal newlines 转换，需自行把 CRLF/孤立 CR 归一为 LF。
+    """
+
+    def _bash(self, tools):
+        from core.tools import get_tool_by_name
+        return get_tool_by_name(tools, "bash")
+
+    def test_crlf_normalized_to_lf(self, tools):
+        result = self._bash(tools).execute(command="printf 'a\r\nb\r\nc\r\n'")
+        assert not result.error
+        assert result.output.strip() == "a\nb\nc"
+        assert "\r" not in result.output
+
+    def test_lone_cr_normalized(self, tools):
+        result = self._bash(tools).execute(command="printf 'x\ry\r'")
+        assert not result.error
+        assert "\r" not in result.output
+
+    def test_large_output_not_lost_across_chunks(self, tools):
+        """大输出跨多个读取块时不得丢内容（按流式回调统计行数，绕开工具截断）。"""
+        tool = self._bash(tools)
+        received: list[str] = []
+        tool.on_output = lambda text, written: received.append(text)
+        try:
+            result = tool.execute(command="seq 1 20000", timeout=60)
+        finally:
+            tool.on_output = None
+        assert not result.error
+        assert "".join(received).count("\n") == 20000
+
+    def test_streaming_callback_receives_output(self, tools):
+        """on_output 回调仍能收到增量输出（实时流式不退化）。"""
+        tool = self._bash(tools)
+        chunks: list[str] = []
+        tool.on_output = lambda text, written: chunks.append(text)
+        try:
+            result = tool.execute(command="echo streamed-line")
+        finally:
+            tool.on_output = None
+        assert not result.error
+        assert "streamed-line" in "".join(chunks)

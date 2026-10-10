@@ -19,6 +19,13 @@ _CHINESE_CHARS_PER_TOKEN = 2.5  # 中文约 2.5 字符/token
 _OTHER_CHARS_PER_TOKEN = 4  # 英文等其他约 4 字符/token
 
 
+def _image_block_tokens(block: dict) -> int:
+    """图片块的 token 估算：base64 数据按字节/token 折算，并保底 _IMAGE_BASE_TOKENS。"""
+    src = block.get("source", {})
+    data = src.get("data", "") if isinstance(src, dict) else ""
+    return max(_IMAGE_BASE_TOKENS, len(data) // _IMAGE_DATA_BYTES_PER_TOKEN)
+
+
 def microcompact_mark_orphans_and_errors(
     messages: list[dict],
 ) -> int:
@@ -149,14 +156,32 @@ def microcompact_mark_orphans_and_errors(
     return invalidated_count
 
 
+def _is_wide_char(c: str) -> bool:
+    """是否按「宽字符」计价（约 2.5 字符/token）。
+
+    覆盖 CJK 统一表意文字及其扩展、兼容表意文字、平假名/片假名、
+    CJK 符号与标点、全角字符。此前只判 U+4E00–9FFF，中文标点与全角符号
+    被当成 4 字符/token 的窄字符，整体低估。
+    """
+    o = ord(c)
+    return (
+        0x3000 <= o <= 0x303F      # CJK 符号与标点（。、「」等）
+        or 0x3040 <= o <= 0x30FF   # 平假名 / 片假名
+        or 0x3400 <= o <= 0x4DBF   # CJK 扩展 A
+        or 0x4E00 <= o <= 0x9FFF   # CJK 统一表意文字
+        or 0xF900 <= o <= 0xFAFF   # CJK 兼容表意文字
+        or 0xFF00 <= o <= 0xFFEF   # 全角字符
+    )
+
+
 def count_tokens_approx(text: str) -> int:
     """估算文本的 token 数量（粗略近似）。
 
     中文约 2.5 字符/token，英文约 4 字符/token。
     """
-    chinese_chars = sum(1 for c in text if '一' <= c <= '鿿')
-    other_chars = len(text) - chinese_chars
-    return int(chinese_chars / _CHINESE_CHARS_PER_TOKEN + other_chars / _OTHER_CHARS_PER_TOKEN)
+    wide_chars = sum(1 for c in text if _is_wide_char(c))
+    other_chars = len(text) - wide_chars
+    return int(wide_chars / _CHINESE_CHARS_PER_TOKEN + other_chars / _OTHER_CHARS_PER_TOKEN)
 
 
 def count_messages_tokens(messages: list[dict]) -> int:
@@ -177,12 +202,12 @@ def count_messages_tokens(messages: list[dict]) -> int:
                             if sub.get("type") == "text":
                                 total += count_tokens_approx(sub.get("text", ""))
                             elif sub.get("type") == "image":
-                                # 图片约 _IMAGE_BASE_TOKENS+ tokens
-                                src = sub.get("source", {})
-                                data = src.get("data", "") if isinstance(src, dict) else ""
-                                total += max(_IMAGE_BASE_TOKENS, len(data) // _IMAGE_DATA_BYTES_PER_TOKEN)
+                                total += _image_block_tokens(sub)
                     else:
                         total += count_tokens_approx(str(rc))
+                elif block.get("type") == "image":
+                    # 顶层图片（用户上传的多模态消息）
+                    total += _image_block_tokens(block)
                 elif block.get("type") == "tool_use":
                     total += count_tokens_approx(json.dumps(block.get("input", {}), ensure_ascii=False))
                 elif block.get("type") in ("reasoning", "thinking"):

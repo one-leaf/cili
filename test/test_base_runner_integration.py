@@ -478,6 +478,40 @@ class TestBaseSessionRunnerUnitTests:
             for m in runner.messages
         )
 
+    def test_full_compact_aligns_across_error_notice(self, tmp_path):
+        """error_notice 消息（仅 UI 展示、不进上下文）不得让压缩游标错位。
+
+        回归：游标此前只跳过 _meta.valid is False，而 get_valid_messages 还跳过
+        error_notice，导致其后消息整体漂移一位 —— pinned 锚点被误标失效、
+        尾部应压缩的消息漏标。
+        """
+        from core.base_session_runner import BaseSessionRunner
+
+        config = make_dgx_config("anthropic")
+        runner = BaseSessionRunner(config=config, session_dir=tmp_path)
+        runner.messages = [
+            {"role": "assistant", "content": "错误: 网络超时", "_meta": {"error_notice": True}},
+            {"role": "user", "content": "pinned task", "_meta": {"pinned": True}},
+            {"role": "user", "content": "question 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "question 2"},
+            {"role": "assistant", "content": "answer 2"},
+            {"role": "user", "content": "pinned check", "_meta": {"pinned": True}},
+        ]
+
+        with patch.object(runner, "_summarize_messages", return_value="对话摘要"):
+            runner._perform_full_compact(keep_user_messages=1)
+
+        # pinned 消息永不失效（漂移会让第一条 pinned 被误标）
+        for m in runner.messages:
+            if m.get("_meta", {}).get("pinned"):
+                assert m["_meta"].get("valid") is not False
+        # split 之前的普通消息仍被正常压缩（漂移会让它漏标）
+        assert any(
+            m.get("content") == "answer 1" and m.get("_meta", {}).get("valid") is False
+            for m in runner.messages
+        )
+
     def test_save_messages_preserves_metadata(self, tmp_path):
         """save_messages 不应覆盖 SessionStore 写入的 name/metadata。"""
         from core.base_session_runner import BaseSessionRunner

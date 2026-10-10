@@ -24,11 +24,12 @@ class ToolSearchTool(Tool):
     )
 
     # Injected by Agent._rebuild_tools after instantiation
-    deferred_tools: list[Tool] = []
     on_load: Any = None  # Callable[[list[str]], None] | None
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, **_kwargs):
         super().__init__(cwd, workspace_uuid, session)
+        # 实例级：类级可变默认值会被所有实例共享
+        self.deferred_tools: list[Tool] = []
 
     @property
     def parameters(self) -> dict[str, Any]:

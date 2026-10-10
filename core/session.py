@@ -28,7 +28,7 @@ import re
 import secrets
 import shutil
 import threading
-import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -430,6 +430,7 @@ class ExecLogStore:
             atomic_write_json(log_file, data)
         except Exception as e:
             logger.error(f"Failed to save agent log {exec_id}: {e}")
+            return ""  # 落盘失败不得返回 exec_id，否则调用方误以为已保存
         return exec_id
 
     def load_agent_log(self, exec_id: str) -> dict | None:
@@ -472,7 +473,8 @@ class ExecLogStore:
                 # 只返回元数据，不返回完整消息
                 logs.append({
                     "exec_id": data.get("exec_id"),
-                    "task": data.get("task", "")[:_TASK_BRIEF_MAX],  # 截断长任务描述
+                    # task 可能为 null（旧日志），None[:n] 会抛 TypeError
+                    "task": (data.get("task") or "")[:_TASK_BRIEF_MAX],  # 截断长任务描述
                     "summary": data.get("summary", ""),
                     "metadata": data.get("metadata", {}),
                 })
@@ -557,24 +559,22 @@ class SessionStore:
 
     # ========== 消息管理 ==========
 
-    def add_message(self, role: str, content: Any, *, extra: dict | None = None,
-                    _meta: dict | None = None, flush: bool = False) -> None:
+    def add_message(self, role: str, content: Any, *, meta: dict | None = None,
+                    flush: bool = False) -> None:
         """添加消息到会话。
 
         Args:
             role: 消息角色
             content: 消息内容
-            extra: 额外字段，会合并到消息中
-            _meta: 消息级别的 _meta 字段
+            meta: 消息级别的 _meta 字段（存进 message["_meta"]）。
+                与 BaseSessionRunner/ConversationStore 的 add_message 同名同义
             flush: True 时立即追加 jsonl（崩溃不丢），False 仅内存 + 置脏，
                 由后续 save() checkpoint 统一落盘（web_api 批量场景用 False）
         """
         message = {"role": role, "content": content}
 
-        if _meta:
-            message["_meta"] = dict(_meta)
-        if extra:
-            message.update(extra)
+        if meta:
+            message["_meta"] = dict(meta)
 
         # 注入消息 id 与创建时间（已有则保留，兼容重建/重放场景）
         msg_meta = message.get("_meta") or {}
@@ -607,7 +607,9 @@ class SessionStore:
         使用脏标记缓存：仅在消息变更时重建。
         """
         if not self._messages_dirty and self._valid_messages_cache is not None:
-            return list(self._valid_messages_cache)  # Return shallow copy to prevent cache mutation
+            # 浅拷贝只防调用方增删列表元素，内层 dict 仍与缓存共享 —— 调用方
+            # 必须只读（当前调用点均只读；改内层会污染缓存）
+            return list(self._valid_messages_cache)
 
         result = []
         for msg in self.messages:
@@ -855,7 +857,10 @@ class SessionStore:
         tail_recovered = self._append_uncommitted_tail(session_dir)
         meta = read_meta(session_dir)
         self.name = meta.get("name", "New Session")
-        self.metadata = meta.get("metadata", self.metadata)
+        # 类型校验：meta.json 里该键可能被写成 null/非 dict，直接赋值会让后续 .get 崩溃
+        loaded_meta = meta.get("metadata")
+        if isinstance(loaded_meta, dict):
+            self.metadata = loaded_meta
         self._messages_dirty = True
         self._persisted_version = self._index_version
         if tail_recovered:
@@ -1004,7 +1009,6 @@ class SessionStore:
                      api_calls: int = 0, cache_read_tokens: int = 0,
                      cache_creation_tokens: int = 0) -> None:
         """更新使用量统计。"""
-        import time
         usage = self.metadata.get("usage", {})
         usage["input_tokens"] = usage.get("input_tokens", 0) + input_tokens
         usage["output_tokens"] = usage.get("output_tokens", 0) + output_tokens

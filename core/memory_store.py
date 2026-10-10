@@ -94,10 +94,10 @@ def slugify(title: str) -> str:
         if not name:
             name = "untitled"
     else:
-        h = hashlib.md5(title.encode("utf-8")).hexdigest()[:8]
+        h = hashlib.md5(title.encode("utf-8")).hexdigest()[:12]
         name = f"memory-{h}"
     if len(name) > 96:
-        h = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
         name = f"{name[:88]}-{h}"
     return name
 
@@ -129,7 +129,7 @@ def validate_name(name: str) -> None:
 
 # ── frontmatter 序列化 / 解析 ─────────────────────────
 
-def _serialize_frontmatter(fm: dict) -> list[str]:
+def serialize_frontmatter(fm: dict) -> list[str]:
     """条目 frontmatter 规范序列化（块状列表，标量双引号）。"""
     lines = ["---"]
     for key in _FM_ORDER:
@@ -269,7 +269,7 @@ class MemoryStore:
 
     def _save_file(self, path: Path, fm: dict, body: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = "\n".join(_serialize_frontmatter(fm))
+        content = "\n".join(serialize_frontmatter(fm))
         if body:
             content += "\n\n" + body
         if not content.endswith("\n"):
@@ -704,6 +704,10 @@ class Journal:
         self.journal_path = self.memory_dir / "journal.jsonl"
         self.cursor_path = self.memory_dir / ".cursor"
         self._lock = _dir_lock(str(self.memory_dir))
+        # append 去重用的 key → cursor 索引（惰性构建；compact 重写文件后失效）。
+        # 没有它时每次 append 都要全量扫描 journal，记录变多后退化为线性。
+        self._key_index: dict[str, int] | None = None
+        self._last_cursor: int = 0
 
     # ── 游标 ──
 
@@ -739,11 +743,17 @@ class Journal:
         if not key:
             raise ValueError("key is required for journal append")
         with self._lock:
-            records = self._read_records()
-            for record in records:
-                if record.get("key") == key:
-                    return int(record.get("cursor", 0))
-            cursor = int(records[-1].get("cursor", 0)) + 1 if records else 1
+            if self._key_index is None:
+                records = self._read_records()
+                self._key_index = {
+                    str(r["key"]): int(r.get("cursor", 0)) for r in records if r.get("key")
+                }
+                self._last_cursor = int(records[-1].get("cursor", 0)) if records else 0
+            existing = self._key_index.get(key)
+            if existing is not None:
+                return existing
+            cursor = self._last_cursor + 1
+            self._last_cursor = cursor
             record = {
                 "cursor": cursor,
                 "key": key,
@@ -762,6 +772,7 @@ class Journal:
             self.memory_dir.mkdir(parents=True, exist_ok=True)
             with open(self.journal_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._key_index[key] = cursor
             return cursor
 
     # ── 读取 / 消费 ──
@@ -812,4 +823,6 @@ class Journal:
                 for record in keep_records:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
             os.replace(tmp, self.journal_path)
+            # 文件已重写，缓存的 key 索引失效
+            self._key_index = None
             return len(records) - len(keep_records)

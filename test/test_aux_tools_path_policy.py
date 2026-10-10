@@ -21,7 +21,7 @@ class TestLatexGate:
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
         tool = self._tool(test_workspace, ApprovalStore())
         outside = tmp_path / "out.pdf"
-        result = tool.execute(action="compile", file="doc.tex", output=str(outside))
+        result = tool.execute(action="compile", tex_file="doc.tex", output=str(outside))
         assert result.completed is False
         assert not result.error
         assert result.meta[META_KEY]["kind"] == "path:write"
@@ -30,7 +30,7 @@ class TestLatexGate:
     def test_inside_output_passes_gate(self, test_workspace):
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
         tool = self._tool(test_workspace, ApprovalStore())
-        result = tool.execute(action="compile", file="doc.tex", output="out.pdf")
+        result = tool.execute(action="compile", tex_file="doc.tex", output="out.pdf")
         # 门放行后进入编译逻辑（无编译器报错），不应返回审批占位
         assert result.completed is not False
 
@@ -38,7 +38,7 @@ class TestLatexGate:
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
         tool = self._tool(test_workspace)
         outside = tmp_path / "out.pdf"
-        result = tool.execute(action="compile", file="doc.tex", output=str(outside))
+        result = tool.execute(action="compile", tex_file="doc.tex", output=str(outside))
         assert result.error is True
 
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +36,23 @@ from web.deps import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# AGENTS.md 生成任务表：exec_id → {status, thread, result, workspace_dir}。
+# 条目持有线程与 runner 结果，不设上限会随每次生成累积，故保留最近 N 条已结束任务。
+_generate_tasks: dict[str, dict] = {}
+_generate_tasks_lock = threading.Lock()
+_GENERATE_TASKS_MAX = 20
+
+
+def _evict_finished_generate_tasks_locked() -> None:
+    """淘汰最旧的已结束生成任务。调用方须持 _generate_tasks_lock。"""
+    finished = [
+        tid for tid, t in _generate_tasks.items()
+        if t["result"].get("status") != "running"
+    ]
+    excess = len(finished) - _GENERATE_TASKS_MAX
+    for tid in finished[:excess]:
+        _generate_tasks.pop(tid, None)
 
 
 # ---------- Models ----------
@@ -158,7 +177,8 @@ async def delete_workspace(workspace_uuid: str):
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
     async with _sessions_lock:
         _cleanup_runners_for_workspace(workspace_uuid)
-    _remove_workspace_data(workspace_uuid)
+    # rmtree 属阻塞 IO（大工作区可达数秒），放线程里执行
+    await asyncio.to_thread(_remove_workspace_data, workspace_uuid)
     remove_workspace_entry(workspace_uuid)
     return {"success": True}
 
@@ -329,6 +349,18 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
     if not sessions_dir.exists():
         return {"sessions": []}
 
+    # 逐会话读 meta 属阻塞 IO（会话多时可达数百 ms），放线程里避免卡住事件循环
+    session_list = await asyncio.to_thread(_collect_session_list, sessions_dir)
+
+    # 先排序再剥离内部字段：把 pop 写进 sort 的 key 里带副作用，难读
+    session_list.sort(key=lambda s: s.get("_mtime", 0), reverse=True)
+    for s in session_list:
+        s.pop("_mtime", None)
+    return {"sessions": session_list}
+
+
+def _collect_session_list(sessions_dir: Path) -> list[dict]:
+    """遍历会话目录收集 meta 摘要（同步实现，供 list_sessions 丢进线程执行）。"""
     session_list = []
     for session_dir in sessions_dir.iterdir():
         if not session_dir.is_dir():
@@ -379,8 +411,7 @@ async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_wor
         except Exception as e:
             logger.error(f"Failed to read session {index_file}: {e}")
 
-    session_list.sort(key=lambda s: s.pop("_mtime"), reverse=True)
-    return {"sessions": session_list}
+    return session_list
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
@@ -563,6 +594,9 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     # 删除整个 session 目录
     shutil.rmtree(session_dir)
     _drop_session_lock(session_dir)
+    # 会话目录已删，丢弃缓存的 GoalManager（否则 _managers 长期累积）
+    from core.goal import release_goal_manager
+    release_goal_manager(session_dir)
 
     # Remove from registry (under lock)
     key = f"{workspace_uuid}:{session_id}"
@@ -772,10 +806,22 @@ async def save_instructions(workspace_uuid: str, request: SaveInstructionsReques
 
     # 验证文件名（只允许已知指令文件名）
     filename = request.filename
+    # 先拒绝路径成分：白名单/后缀校验挡不住 "../../x.md" 或 "C:/x.md" 逃出工作区
+    if (
+        not filename
+        or filename != os.path.basename(filename)
+        or filename in (".", "..")
+        or "/" in filename
+        or "\\" in filename
+    ):
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
     if filename not in _PROJECT_INSTRUCTION_FILES and not filename.endswith(".md"):
         raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
 
     filepath = os.path.join(workspace_dir, filename)
+    # 纵深防御：解析后仍须落在工作区内（防符号链接等）
+    if not Path(filepath).resolve().is_relative_to(Path(workspace_dir).resolve()):
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(request.content)
@@ -840,13 +886,15 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
         thread = threading.Thread(target=run_agent, daemon=True)
         thread.start()
 
-        # 存储任务状态（简单实现：用全局字典）
-        _generate_tasks[exec_id] = {
-            "status": "running",
-            "thread": thread,
-            "result": result_holder,
-            "workspace_dir": workspace_dir,
-        }
+        # 存储任务状态（用全局字典，读写均在锁内）
+        with _generate_tasks_lock:
+            _generate_tasks[exec_id] = {
+                "status": "running",
+                "thread": thread,
+                "result": result_holder,
+                "workspace_dir": workspace_dir,
+            }
+            _evict_finished_generate_tasks_locked()
 
         return {"task_id": exec_id, "status": "running"}
 
@@ -855,14 +903,11 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
         raise HTTPException(status_code=500, detail=f"Failed to start: {e}")
 
 
-# 存储生成任务状态（简单实现）
-_generate_tasks: dict[str, dict] = {}
-
-
 @router.get("/api/workspaces/{workspace_uuid}/instructions/generate/{task_id}")
 async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = Depends(_require_workspace)):
     """查询 AGENTS.md 生成任务状态。"""
-    task = _generate_tasks.get(task_id)
+    with _generate_tasks_lock:
+        task = _generate_tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -896,7 +941,7 @@ async def load_instruction_template(workspace_uuid: str, template_name: str, ws_
     """加载指定模板的内容。"""
     # 安全检查：防止路径穿越，支持中文文件名
     # 只允许字母、数字、中文、下划线、连字符
-    if not re.match(r'^[\w一-鿿-]+$', template_name):
+    if not re.match(r'^[\w-]+$', template_name):
         raise HTTPException(status_code=400, detail="Invalid template name")
 
     template_file = _TEMPLATES_DIR / f"{template_name}.md"

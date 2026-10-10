@@ -35,9 +35,9 @@ class GlobTool(Tool):
                 "type": "string",
                 "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided.",
             },
-            "type": {
+            "file_type": {
                 "type": "string",
-                "description": "File type shortcut: 'py', 'js', 'ts', 'md', 'json', 'yaml', 'html', 'css', 'go', 'rust', 'java', 'sh', 'txt', 'xml', 'sql', 'c', 'cpp'. Overrides pattern.",
+                "description": "File type shortcut: 'py', 'js', 'ts', 'md', 'json', 'yaml', 'html', 'css', 'go', 'rust', 'java', 'kotlin', 'scala', 'sh', 'txt', 'xml', 'svg', 'sql', 'c', 'cpp'. Overrides pattern.",
             },
             "head_limit": {
                 "type": "integer",
@@ -48,7 +48,7 @@ class GlobTool(Tool):
                 "description": "Skip first N results before applying head_limit, equivalent to \"| tail -n +N | head -N\". Defaults to 0.",
             },
         },
-        "required": [],  # pattern or type must be provided; execute() validates
+        "required": [],  # pattern or file_type must be provided; execute() validates
     }
 
     MAX_RESULT_SIZE_CHARS = 100_000
@@ -58,13 +58,13 @@ class GlobTool(Tool):
         self,
         pattern: str | None = None,
         path: str | None = None,
-        type: str | None = None,
+        file_type: str | None = None,
         head_limit: int | None = None,
         offset: int = 0,
     ) -> ToolResult:
-        # Validate: at least one of pattern or type must be provided
-        if not pattern and not type:
-            return ToolResult("Error: either 'pattern' or 'type' must be provided.", error=True)
+        # Validate: at least one of pattern or file_type must be provided
+        if not pattern and not file_type:
+            return ToolResult("Error: either 'pattern' or 'file_type' must be provided.", error=True)
 
         # Resolve to absolute path
         search_dir = Path(self._resolve_path(path, read_only=True)) if path else Path(self.cwd)
@@ -72,11 +72,11 @@ class GlobTool(Tool):
             return ToolResult(f"Error: path is not a directory: {search_dir}", error=True)
 
         # Build glob patterns
-        if type:
-            exts = TYPE_EXTENSIONS.get(type.lower())
+        if file_type:
+            exts = TYPE_EXTENSIONS.get(file_type.lower())
             if not exts:
                 return ToolResult(
-                    f"Error: unknown type '{type}'. Available: {', '.join(sorted(TYPE_EXTENSIONS))}",
+                    f"Error: unknown file_type '{file_type}'. Available: {', '.join(sorted(TYPE_EXTENSIONS))}",
                     error=True,
                 )
             glob_patterns = exts
@@ -86,13 +86,18 @@ class GlobTool(Tool):
         # Collect matching files, avoiding duplicates
         seen: set[str] = set()
         matched_files: list[Path] = []
+        search_root = search_dir.resolve()
 
         for gp in glob_patterns:
             try:
                 for p in search_dir.rglob(gp):
                     if not p.is_file():
                         continue
-                    resolved = str(p.resolve())
+                    resolved_path = p.resolve()
+                    # 符号链接可能把搜索引出 workspace：解析后必须仍在根目录内
+                    if not resolved_path.is_relative_to(search_root):
+                        continue
+                    resolved = str(resolved_path)
                     if resolved in seen:
                         continue
                     # Check ignore dirs
@@ -103,8 +108,15 @@ class GlobTool(Tool):
             except Exception:
                 continue
 
+        def _mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                # 断链/无权限文件：排到末尾，而不是让整个 glob 抛错终止
+                return 0.0
+
         # Sort by modification time (newest first)
-        matched_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        matched_files.sort(key=_mtime, reverse=True)
 
         total_count = len(matched_files)
 
@@ -114,9 +126,14 @@ class GlobTool(Tool):
         if offset > 0:
             matched_files = matched_files[offset:]
 
-        # Apply head_limit
-        limit = head_limit if head_limit is not None and head_limit > 0 else self.DEFAULT_LIMIT
-        truncated = len(matched_files) > limit
+        # Apply head_limit（schema 约定：0 = 不限条数；仍受 MAX_RESULT_SIZE_CHARS 兜底）
+        if head_limit is None:
+            limit = self.DEFAULT_LIMIT
+        elif head_limit > 0:
+            limit = head_limit
+        else:
+            limit = None
+        truncated = limit is not None and len(matched_files) > limit
         if truncated:
             matched_files = matched_files[:limit]
 
@@ -135,8 +152,11 @@ class GlobTool(Tool):
 
         output = "\n".join(lines)
 
-        if truncated:
-            output += f"\n\n(Results are truncated: showing first {limit} of {total_count} results. Consider using a more specific path or pattern.)"
+        # 条数不限时仍限总量，避免一次 glob 撑爆上下文
+        if len(output) > self.MAX_RESULT_SIZE_CHARS:
+            output = output[:self.MAX_RESULT_SIZE_CHARS] + "\n\n... (output truncated)"
+        elif truncated:
+            output += f"\n\n(Results are truncated: showing first {len(matched_files)} of {total_count} results. Consider using a more specific path or pattern.)"
         elif offset > 0:
             output += f"\n\n(Showing results {offset + 1}–{offset + len(lines)} of {total_count}.)"
 
@@ -148,7 +168,7 @@ class GlobTool(Tool):
             rel = file_path.relative_to(search_dir)
             parts = rel.parts
             for part in parts[:-1]:  # Check directory parts only (not the file itself)
-                if part in self.IGNORE_DIRS:
+                if part in self.IGNORE_DIRS or part.endswith(self.IGNORE_DIR_SUFFIXES):
                     return True
         except ValueError:
             pass

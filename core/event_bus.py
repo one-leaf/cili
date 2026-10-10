@@ -11,9 +11,6 @@ import queue
 import threading
 from typing import Any
 
-# 订阅者积压上限：publish 用 put_nowait，满则静默丢弃，绝不阻塞发布线程
-_QUEUE_MAX = 512
-
 
 class EventBus:
     def __init__(self) -> None:

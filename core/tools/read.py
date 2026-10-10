@@ -113,8 +113,7 @@ class ReadTool(Tool):
             output = "".join(parts)
 
             # Token 预算截断（保留开头+结尾，中间用标记替代）
-            import os as _os
-            max_tokens = int(_os.environ.get("CILI_FILE_READ_MAX_OUTPUT_TOKENS", str(self.MAX_OUTPUT_TOKENS)))
+            max_tokens = int(os.environ.get("CILI_FILE_READ_MAX_OUTPUT_TOKENS", str(self.MAX_OUTPUT_TOKENS)))
             output = self.truncate_middle(output, max_tokens)
 
             # 如果仍然超长（极端情况），再按字符截断
@@ -272,8 +271,7 @@ class ReadTool(Tool):
                 pool.shutdown(wait=False)
 
             # Token budget truncation
-            import os as _os
-            max_tokens = int(_os.environ.get("CILI_FILE_READ_MAX_OUTPUT_TOKENS", str(self.MAX_OUTPUT_TOKENS)))
+            max_tokens = int(os.environ.get("CILI_FILE_READ_MAX_OUTPUT_TOKENS", str(self.MAX_OUTPUT_TOKENS)))
             output = self.truncate_middle(output, max_tokens)
 
             return ToolResult(output)

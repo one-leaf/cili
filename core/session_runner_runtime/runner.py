@@ -38,6 +38,11 @@ _LARGE_OUTPUT_THRESHOLD = 10_000
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
 _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+# 需要外部文件做流式读取的工具（前端轮询用）
+_STREAMING_TOOLS = frozenset({"bash", "python"})
+# 占位符工具：输出直接内联在 content，不落外部文件
+_PLACEHOLDER_TOOLS = frozenset({"ask_user", "session"})
+
 # on_text 回调哨兵：413 去图/延迟重试时发出，通知前端清空已流式输出的文本
 RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
 
@@ -105,11 +110,6 @@ class Runner:
             }
 
         logger.debug(f"[工具调用] {name}")
-
-        # Tools that need external file for streaming (frontend polling)
-        _STREAMING_TOOLS = {"bash", "python"}
-        # Placeholder tools: output goes directly in content, no external file
-        _PLACEHOLDER_TOOLS = {"ask_user", "session"}
 
         if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
             return self._execute_tool_impl(
@@ -238,10 +238,14 @@ class Runner:
             meta.update(result.meta)
 
         # Build result dict (Anthropic format)
+        # 内联 content 仅适用于纯文本结果：多模态结果（含图片）必须留空，
+        # 由 _resolve_tool_results 从 .json 读回完整块列表 —— 否则带文本的图文结果
+        # 会因 content 非空被跳过，图片静默丢失
+        inline_content = result.output if not truncated and not is_multimodal else None
         result_dict = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
-            "content": result.output if not truncated else None,
+            "content": inline_content,
             "is_error": result.error,
         }
 
@@ -512,6 +516,7 @@ class Runner:
         # valid_messages 是 get_valid_messages() 的保序拷贝（非引用），
         # 用游标在 all_messages 中按 valid_messages 索引对齐后标记；
         # pinned 消息永不标记失效（任务/检查提示等核心锚点）。
+        # 跳过条件必须与 get_valid_messages 完全一致（共用谓词），否则游标漂移。
         pinned_positions = {
             pos for pos, msg in enumerate(valid_messages[:split_idx])
             if msg.get("_meta", {}).get("pinned")
@@ -520,7 +525,7 @@ class Runner:
         for msg in all_messages:
             if cursor >= split_idx:
                 break
-            if msg.get("_meta", {}).get("valid") is False:
+            if not self.runner.context.is_message_in_context(msg):
                 continue
             if cursor not in pinned_positions:
                 if "_meta" not in msg:
@@ -1000,5 +1005,7 @@ class Runner:
         """Check if exception is a 413 Entity Too Large error."""
         if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 413:
             return True
-        # Fallback for wrapped exceptions
-        return "413" in str(e) or "Entity Too Large" in str(e)
+        # Fallback for wrapped exceptions。用词边界匹配，避免 "toolu_413..." 之类
+        # 的 id 子串被误判成 413（会触发无谓的去图压缩）
+        text = str(e)
+        return re.search(r"\b413\b", text) is not None or "Entity Too Large" in text

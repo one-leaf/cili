@@ -219,3 +219,54 @@ class TestLoopUnifiedSkeleton:
              patch.object(runner, "_call_llm", return_value=_make_text_response("ok")) as call_mock:
             runner.run("hi")
         assert call_mock.call_count == 1
+
+
+class TestSessionNotificationInjection:
+    """后台子代理完成通知注入为 LLM 可见的 user 消息。
+
+    回归：注入时把参数名写成 _meta=（add_message 的签名是 meta=），TypeError
+    被外层 except 吞掉，而通知在上一步已被 mark_read=True 消费 —— 通知永久丢失，
+    该分支完全失效。
+    """
+
+    def _injected(self, runner):
+        return [
+            m for m in runner.messages
+            if m.get("_meta", {}).get("background_notification")
+        ]
+
+    def test_drain_injects_context_visible_message(self, runner):
+        from core.agent_mailbox import get_agent_mailbox
+
+        session_id = runner._session_id
+        assert session_id
+        mbus = get_agent_mailbox()
+        mbus.register_session(session_id, "test-master")
+        assert mbus.send(session_id, session_id, "子代理已完成：结果摘要")
+
+        runner.loop._drain_session_notifications()
+
+        injected = self._injected(runner)
+        assert len(injected) == 1
+        assert injected[0]["role"] == "user"
+        assert "结果摘要" in injected[0]["content"]
+        # 注入内容必须进入 LLM 上下文
+        assert any(
+            m.get("content") == injected[0]["content"]
+            for m in runner.get_valid_messages()
+        )
+
+    def test_drain_consumes_notifications_once(self, runner):
+        from core.agent_mailbox import get_agent_mailbox
+
+        session_id = runner._session_id
+        mbus = get_agent_mailbox()
+        mbus.register_session(session_id, "test-master")
+        mbus.send(session_id, session_id, "通知一")
+
+        runner.loop._drain_session_notifications()
+        assert not mbus.has_unread(session_id)
+
+        # 二次排空不应重复注入
+        runner.loop._drain_session_notifications()
+        assert len(self._injected(runner)) == 1

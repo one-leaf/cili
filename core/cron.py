@@ -112,19 +112,24 @@ _FALLBACK_INTERVAL_MINUTES = 60  # 表达式解析失败 / 未知调度类型时
 _POLL_INTERVAL_SECONDS = 60      # 调度循环轮询间隔（秒）
 _DEFAULT_MAX_EXECUTIONS = 9999   # 未配置 max_executions 时的默认执行次数
 
-# 每个任务的 state 文件写锁（T13：scheduler 线程与 cron_tool 并发写互斥，避免 RMW 丢更新）
-_state_locks: dict[str, threading.Lock] = {}
-_state_locks_guard = threading.Lock()
+# cron 配置/状态文件的进程级可重入锁，覆盖：
+# - state 文件 {task_id}.json 的读-改-写
+# - user_tasks.json 的读-改-写（cron_tool 经 user_tasks_lock 复用同一把）
+#
+# 用单把锁而非 per-task 锁：_execute_task 会在持锁期间经 _update_task_enabled 写
+# user_tasks.json，而 cron 工具会持 user_tasks 锁调用 update_task_state ——
+# per-task 锁会让两处锁序相反，构成潜在死锁。涉及的都只是短文件 IO，粗粒度无碍。
+_cron_config_lock = threading.RLock()
 
 
-def _get_task_state_lock(task_id: str) -> threading.Lock:
-    """获取任务的 state 文件锁（按 task_id 惰性创建，进程级）。"""
-    with _state_locks_guard:
-        lock = _state_locks.get(task_id)
-        if lock is None:
-            lock = threading.Lock()
-            _state_locks[task_id] = lock
-        return lock
+def cron_config_lock() -> threading.RLock:
+    """cron 配置/状态文件的进程级可重入锁（scheduler 与 cron_tool 共用）。"""
+    return _cron_config_lock
+
+
+def _get_task_state_lock(task_id: str) -> threading.RLock:
+    """获取 cron 配置/状态锁（进程级可重入）；task_id 保留以标识调用意图。"""
+    return _cron_config_lock
 
 
 def get_cron_state_dir(workspace_uuid: str = "") -> Path:
@@ -151,17 +156,17 @@ def update_task_state(task_id: str, workspace_uuid: str = "", **fields) -> None:
         state = load_json_or_backup(state_path, {})
         state.update(fields)
         atomic_write_json(state_path, state)
-    # 同步已加载任务的内存态
-    try:
-        from core.cron import get_scheduler
-        scheduler = get_scheduler()
-        for task in scheduler.tasks:
-            if task.task_id == task_id:
-                if "remaining" in fields:
-                    task._remaining = fields["remaining"]
-                break
-    except Exception as e:
-        logger.warning(f"[cron] Failed to sync in-memory state for task {task_id}: {e}")
+        # 同步已加载任务的内存态：必须在同一把锁内，否则与 _execute_task 的
+        # remaining 递减交错，落盘值与内存值会不一致
+        if "remaining" in fields:
+            try:
+                from core.cron import get_scheduler
+                for task in get_scheduler().tasks:
+                    if task.task_id == task_id:
+                        task._remaining = fields["remaining"]
+                        break
+            except Exception as e:
+                logger.warning(f"[cron] Failed to sync in-memory state for task {task_id}: {e}")
 
 # Cron runner cache: workspace_uuid → master SessionRunner (reused across cron runs)
 _cron_sessions: dict[str, Any] = {}
@@ -734,25 +739,34 @@ class CronScheduler:
             return
 
         try:
-            # Check and decrement remaining counter
             max_exec = task.runtime_config.get("max_executions", _DEFAULT_MAX_EXECUTIONS)
-            remaining = task._remaining if task._remaining is not None else max_exec
 
-            # Check if should auto-disable BEFORE decrementing
-            if remaining <= 0:
-                task.enabled = False
-                logger.info(f"[cron] Task {task.name}: remaining=0, auto-disabled")
-                # Save state with enabled=False
-                task._save_state(now, None)
-                # Update user_tasks.json to reflect disabled state
-                self._update_task_enabled(task.name, False)
-                return
+            # remaining 的读-改-写与 cron_tool.update_task_state 共用任务级锁，
+            # 否则并发下丢更新（state 文件与内存态不一致）。
+            # 临界区只覆盖状态读写，不覆盖 task.execute()——后者可能跑几分钟，
+            # 持锁会让 enable/disable 卡住。
+            with _get_task_state_lock(task.task_id):
+                remaining = task._remaining if task._remaining is not None else max_exec
+
+                # Check if should auto-disable BEFORE decrementing
+                if remaining <= 0:
+                    task.enabled = False
+                    logger.info(f"[cron] Task {task.name}: remaining=0, auto-disabled")
+                    # Save state with enabled=False
+                    task._save_state(now, None)
+                    # Update user_tasks.json to reflect disabled state
+                    self._update_task_enabled(task.name, False)
+                    return
 
             result = task.execute()
-            # T10: skipped（如 master 忙返回 skipped）不计 remaining，仅真正执行后递减
-            if result.get("status") != "skipped":
-                task._remaining = remaining - 1
-            task.mark_executed(now, result)
+
+            with _get_task_state_lock(task.task_id):
+                # T10: skipped（如 master 忙返回 skipped）不计 remaining，仅真正执行后递减
+                if result.get("status") != "skipped":
+                    # 锁内重读：execute() 期间 remaining 可能已被 update_task_state 改过
+                    cur = task._remaining if task._remaining is not None else max_exec
+                    task._remaining = cur - 1
+                task.mark_executed(now, result)
 
             # Log result
             if result.get("status") == "completed":
@@ -783,11 +797,12 @@ class CronScheduler:
         from core.tools.cron_tool import _find_task_by_name, _save_user_tasks
 
         try:
-            result = _find_task_by_name(name)
-            if result:
-                tasks, task_config, task_ws = result
-                task_config["enabled"] = enabled
-                _save_user_tasks(tasks, task_ws)
+            with cron_config_lock():
+                result = _find_task_by_name(name)
+                if result:
+                    tasks, task_config, task_ws = result
+                    task_config["enabled"] = enabled
+                    _save_user_tasks(tasks, task_ws)
         except Exception as e:
             logger.warning(f"[cron] Failed to update task enabled state: {e}")
 
@@ -804,12 +819,13 @@ class CronScheduler:
 
         # Remove from user_tasks.json
         try:
-            result = _find_task_by_name(name)
-            if result:
-                tasks, _, ws = result
-                tasks = [t for t in tasks if t["name"] != name]
-                _save_user_tasks(tasks, ws)
-                logger.info(f"[cron] Deleted one-time task '{name}' after execution")
+            with cron_config_lock():
+                result = _find_task_by_name(name)
+                if result:
+                    tasks, _, ws = result
+                    tasks = [t for t in tasks if t["name"] != name]
+                    _save_user_tasks(tasks, ws)
+                    logger.info(f"[cron] Deleted one-time task '{name}' after execution")
         except Exception as e:
             logger.error(f"[cron] Failed to delete one-time task '{name}' from config: {e}")
 

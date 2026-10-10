@@ -363,7 +363,7 @@ description 一律截断到 200 字上限（journal 记录截断 300，直接透
 | 参数 | 说明 |
 |------|------|
 | `action` | 操作类型（必填） |
-| `type` | 记忆类型（store 必填；find/list 可选过滤） |
+| `memory_type` | 记忆类型（store 必填；find/list 可选过滤） |
 | `name` | 全局唯一 kebab-case slug（read/update/delete 必填；store 缺省由 title 派生） |
 | `query` | find 关键词（必填，匹配 name/title/description/tags/refs） |
 | `status` | find/list 状态过滤（active/stale/archived） |
@@ -397,20 +397,20 @@ description 一律截断到 200 字上限（journal 记录截断 300，直接透
 ```yaml
 # 检索（按关键词匹配 frontmatter，按使用频率排序）
 memory(action="find", query="asyncio")
-memory(action="find", query="部署", type="skill", status="active")
+memory(action="find", query="部署", memory_type="skill", status="active")
 
 # 读取全文（递增 usage_count）
 memory(action="read", name="python-async")
 
 # 存储（name 缺省由 title 派生）
-memory(action="store", type="preference", title="中文回复",
+memory(action="store", memory_type="preference", title="中文回复",
        description="用户偏好使用中文回复", tags=["沟通"], source="user")
 
 # 更新（refs 累积去重，created/usage_count 保留）
 memory(action="update", name="python-async", content="…新正文…", tags=["python"])
 
 # 列出与统计
-memory(action="list", type="fact")
+memory(action="list", memory_type="fact")
 memory(action="stat")
 
 # 手动触发全工作区整合
@@ -461,7 +461,7 @@ memory(action="consolidate")
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/workspaces/{uuid}/memory` | 记忆总览：enabled + stats + 条目列表（≤500，可按 type/status/关键词过滤）+ 待整合数 + 最近 10 次提交 |
+| GET | `/api/workspaces/{uuid}/memory` | 记忆总览：enabled + stats + 条目列表（≤500，可按 memory_type/status/关键词过滤）+ 待整合数 + 最近 10 次提交 |
 | GET | `/api/workspaces/{uuid}/memory/entries/{name}` | 查看条目全文（peek，只读不递增 usage） |
 | PUT | `/api/workspaces/{uuid}/memory/entries/{name}` | 编辑条目（title/description/tags/content）+ git 提交 |
 | POST | `/api/workspaces/{uuid}/memory/entries/{name}/archive` | 归档条目（移出索引与检索） |

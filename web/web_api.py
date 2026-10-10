@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - 启动/优雅关闭各全局单例（统一由 AppContext 持有）。"""
+    # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
+    # 隐式执行，改为在生命周期入口显式调用（幂等）。
+    from web.deps import init_web_deps
+    init_web_deps()
+
     app_context.startup()
     yield
     app_context.shutdown()
@@ -195,5 +200,9 @@ app.include_router(memory_router)
 
 
 if __name__ == "__main__":
+    # 直接运行本模块时的便捷入口：只绑 localhost。
+    # 需要对外监听请走 `python main.py --host ...`——那条路径会先执行
+    # _check_web_auth 强制要求 access_token，此处绕开它，故不得绑非 localhost。
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)

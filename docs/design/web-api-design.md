@@ -632,10 +632,10 @@ POST   /api/files/upload                          # 上传文件（multipart for
 #### 记忆总览
 
 ```
-GET /api/workspaces/{uuid}/memory?type=&status=&q=
+GET /api/workspaces/{uuid}/memory?memory_type=&status=&q=
 ```
 
-返回统计、条目列表（可按 type/status/关键词过滤）、待整合数与 git 提交记录。
+返回统计、条目列表（可按 memory_type/status/关键词过滤）、待整合数与 git 提交记录。
 
 **响应**：
 ```json

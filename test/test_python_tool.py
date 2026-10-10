@@ -152,3 +152,43 @@ class TestPythonDeny:
 
     def test_syntax_error_reported(self):
         assert "语法错误" in (self._check("def broken(") or "")
+
+
+class TestPipNoticeFilter:
+    """pip [notice] 行过滤。
+
+    回归：ToolResult.output 是只读 property（由 blocks 推导），此前实现直接给
+    output 赋值，只要 pip 输出含 [notice] 就抛 AttributeError，install/uninstall/
+    upgrade 全部失败。
+    """
+
+    def _filter(self, text):
+        from core.tools.python_tool import PythonTool
+        from core.tools.result import ToolResult
+
+        return PythonTool._filter_notices(ToolResult(output=text))
+
+    def test_notice_lines_stripped(self):
+        raw = (
+            "[notice] A new release of pip is available: 24.0 -> 24.1\n"
+            "Successfully installed flask-3.0.0\n"
+            "[notice] To update, run: python.exe -m pip install --upgrade pip\n"
+        )
+        result = self._filter(raw)
+
+        assert "Successfully installed flask-3.0.0" in result.output
+        assert "[notice]" not in result.output
+
+    def test_output_without_notice_untouched(self):
+        result = self._filter("Requirement already satisfied: flask")
+
+        assert result.output == "Requirement already satisfied: flask"
+
+    def test_empty_stderr_block_removed(self):
+        result = self._filter(
+            "Successfully installed flask-3.0.0\n[notice] x\n"
+            "\n--- stderr ---\n\n--- end stderr ---\n"
+        )
+
+        assert "stderr" not in result.output
+        assert "Successfully installed flask-3.0.0" in result.output

@@ -31,17 +31,17 @@ class TestActionDispatch:
     def test_compile_requires_file(self, tool):
         result = tool.execute(action="compile")
         assert result.error
-        assert "'file' is required" in result.output
+        assert "'tex_file' is required" in result.output
 
     def test_missing_file(self, tool, tmp_path):
-        result = tool.execute(action="compile", file="nope.tex")
+        result = tool.execute(action="compile", tex_file="nope.tex")
         assert result.error
         assert "not found" in result.output.lower()
 
     def test_non_tex_extension(self, tool, tmp_path):
         f = tmp_path / "doc.txt"
         f.write_text("hello", encoding="utf-8")
-        result = tool.execute(action="compile", file=str(f))
+        result = tool.execute(action="compile", tex_file=str(f))
         assert result.error
         assert ".tex" in result.output
 
@@ -92,7 +92,7 @@ class TestCompilerDiscovery:
         monkeypatch.setattr(tool, "_find_compiler", lambda name: None)
         f = tool.cwd and Path(tool.cwd) / "doc.tex"
         f.write_text("\\documentclass{article}", encoding="utf-8")
-        result = tool.execute(action="compile", file=str(f), compiler="xelatex")
+        result = tool.execute(action="compile", tex_file=str(f), compiler="xelatex")
         assert result.error
         assert "not found" in result.output.lower()
 
@@ -200,7 +200,7 @@ class TestCompileFlow:
             tool, "_run_compiler",
             lambda c, p, t, out: ToolResult("OK"),
         )
-        result = tool.execute(action="compile", file=str(tex))
+        result = tool.execute(action="compile", tex_file=str(tex))
         assert not result.error
         assert "Compiled successfully" in result.output
         assert result.meta["compiler"] is not None
@@ -210,6 +210,6 @@ class TestCompileFlow:
         tex = tmp_path / "doc.tex"
         tex.write_text("x", encoding="utf-8")
         monkeypatch.setattr(tool, "_get_best_compiler", lambda: None)
-        result = tool.execute(action="compile", file=str(tex))
+        result = tool.execute(action="compile", tex_file=str(tex))
         assert result.error
         assert "No LaTeX compiler found" in result.output

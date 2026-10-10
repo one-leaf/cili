@@ -114,10 +114,8 @@ class HttpTransport:
             timeout: Optional timeout override
 
         Returns:
-            (status_code, response_headers, response_body)
-
-        Raises:
-            httpx.HTTPStatusError: If response status >= 400
+            (status_code, response_headers, response_body)。status >= 400 时
+            不抛异常，由调用方（client.do_request）自行构造并抛 HTTPStatusError。
         """
         resp = self._client.post(
             url,
@@ -205,7 +203,10 @@ class HttpTransport:
                     if payload == "[DONE]":
                         yield from flush()  # 先刷新之前的累积，再结束
                         break
-                    data_lines.append(payload)
+                    if payload:
+                        # 空的 data: 行（心跳/网关填充）不参与累积：若成为该事件
+                        # 唯一内容，flush 时 json.loads("") 抛错会中断整条流
+                        data_lines.append(payload)
                     continue
 
                 # Ignore other SSE fields (id:, retry:, comments)
@@ -241,7 +242,8 @@ class HttpTransport:
         """
         if retry_after:
             try:
-                return max(0.0, float(retry_after)) + random.uniform(0, 0.5)
+                # 与指数退避共用上限：异常大的 Retry-After 不得让调用长时间挂起
+                return min(_MAX_DELAY, max(0.0, float(retry_after))) + random.uniform(0, 0.5)
             except (ValueError, TypeError):
                 pass
         delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)

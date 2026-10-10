@@ -27,6 +27,7 @@ router = APIRouter()
 
 # 单次上传文件大小上限
 _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 上传分块大小（流式写盘，不整文件入内存）
 
 
 # ---------- Models ----------
@@ -137,7 +138,7 @@ async def get_workspace_file(workspace_uuid: str, file_path: str):
 # ----- Directory Browser -----
 
 @router.get("/api/browse")
-def browse_directory(path: str = "", request: Request = None):
+def browse_directory(request: Request, path: str = ""):
     """Browse directories on the server filesystem.
 
     Args:
@@ -148,7 +149,7 @@ def browse_directory(path: str = "", request: Request = None):
     """
     # W8: 目录浏览限本机——工作区文件夹选择是本地管理操作，
     # 避免 LAN/网络攻击者枚举服务器任意磁盘目录结构
-    client_ip = request.client.host if request and request.client else ""
+    client_ip = request.client.host if request.client else ""
     if client_ip not in _LOCALHOST_IPS:
         raise HTTPException(
             status_code=403,
@@ -548,7 +549,6 @@ def upload_files(
     workspace_uuid: str = Form(...),
     path: str = Form(""),
     files: list[UploadFile] = File(...),
-    request: Request = None,
 ):
     """Upload files to workspace.
 
@@ -604,16 +604,27 @@ def upload_files(
                 errors.append({"name": file.filename, "error": "Invalid filename"})
                 continue
 
-            # Write file（同步端点中 UploadFile 用底层 SpooledTemporaryFile 同步读取）
-            content = file.file.read()
+            # 流式写盘：边写边校验大小。此前整文件 read() 入内存（100MB 上限
+            # 形同虚设：size 头缺失时先吃满内存才做校验）
+            written = 0
+            too_large = False
+            with open(file_path, "wb") as out:
+                while True:
+                    chunk = file.file.read(_UPLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > _MAX_UPLOAD_SIZE:
+                        too_large = True
+                        break
+                    out.write(chunk)
 
-            # Double-check size after reading (in case size header was missing)
-            if len(content) > _MAX_UPLOAD_SIZE:
-                errors.append({"name": file.filename, "error": f"File too large (max 100MB)"})
+            if too_large:
+                file_path.unlink(missing_ok=True)
+                errors.append({"name": file.filename, "error": "File too large (max 100MB)"})
                 continue
 
-            file_path.write_bytes(content)
-            uploaded.append({"name": file.filename, "size": len(content)})
+            uploaded.append({"name": file.filename, "size": written})
         except Exception as e:
             errors.append({"name": file.filename, "error": str(e)})
 

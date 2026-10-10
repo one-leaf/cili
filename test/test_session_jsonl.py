@@ -41,7 +41,7 @@ class TestRoundTrip:
                  "_meta": {"tool_name": "bash", "completed": False}},
             ]},
         ]:
-            sm.add_message(m["role"], m["content"], _meta=m.get("_meta"))
+            sm.add_message(m["role"], m["content"], meta=m.get("_meta"))
         sm.save()
 
         sdir = _session_dir(sessions_dir, sm.session_id)
@@ -89,7 +89,7 @@ class TestCompaction:
         sm, sessions_dir = _new_session(test_workspace)
         for i in range(5):
             sm.add_message("user", f"msg{i}")
-        sm.add_message("assistant", "summary here", _meta={"summary": True})
+        sm.add_message("assistant", "summary here", meta={"summary": True})
         for m in sm.messages[:3]:
             m.setdefault("_meta", {})["valid"] = False
         sm.save()
@@ -404,7 +404,7 @@ class TestMetaPreview:
         sm.add_message("user", "问题")
         sm.add_message("assistant", "回答")
         sm.add_message("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "res"}])
-        sm.add_message("user", "后面的总结", _meta={"summary": True})
+        sm.add_message("user", "后面的总结", meta={"summary": True})
         sm.save()
 
         sdir = _session_dir(sessions_dir, sm.session_id)

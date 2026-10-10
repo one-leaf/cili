@@ -62,8 +62,11 @@ class Tool(ShellMixin, BackgroundMixin):
     IGNORE_DIRS: set[str] = {
         ".git", "node_modules", "__pycache__", ".venv", "venv",
         ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-        ".egg-info", ".next", ".nuxt", "target",
+        ".next", ".nuxt", "target",
     }
+
+    # 目录名后缀匹配（egg-info 实际叫 foo.egg-info，精确名匹配永不命中）
+    IGNORE_DIR_SUFFIXES: tuple[str, ...] = (".egg-info",)
 
     # ── 工具输出限制 ──────────────────────────────────────────────────────
     # 默认单工具结果上限（字符数），各工具可按需覆盖
@@ -99,13 +102,10 @@ class Tool(ShellMixin, BackgroundMixin):
         head_bytes = int(max_bytes * 0.4)
         tail_bytes = int(max_bytes * 0.4)
 
-        # 按 UTF-8 安全截断
+        # 按 UTF-8 安全截断：errors="ignore" 已丢弃切片起始处的半个字符，
+        # 无需再手动补偿（此前那段比较会在字符边界恰好对齐时误删一个有效首字符）
         head = text.encode("utf-8", errors="replace")[:head_bytes].decode("utf-8", errors="ignore")
-        tail_bytes_data = text.encode("utf-8", errors="replace")[-tail_bytes:]
-        tail = tail_bytes_data.decode("utf-8", errors="ignore")
-        # 确保 tail 从完整字符开始（跳过可能的截断字符）
-        if tail and tail[0].encode("utf-8", errors="replace") != tail_bytes_data[:len(tail[0].encode("utf-8", errors="replace"))]:
-            tail = tail[1:]
+        tail = text.encode("utf-8", errors="replace")[-tail_bytes:].decode("utf-8", errors="ignore")
 
         removed_tokens = tokens - max_tokens
         marker = f"\n\n…{removed_tokens:,} tokens truncated…\n\n"
@@ -342,7 +342,10 @@ class Tool(ShellMixin, BackgroundMixin):
                     f"Error: 参数 '{key}' 应为 string 类型，实际为 {type(value).__name__}",
                     error=True,
                 )
-            elif prop_type in ("integer", "number") and not isinstance(value, (int, float)):
+            # bool 是 int 的子类，须显式排除，否则 true/false 会被当作合法 integer
+            elif prop_type in ("integer", "number") and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
                 return ToolResult(
                     f"Error: 参数 '{key}' 应为 {prop_type} 类型，实际为 {type(value).__name__}",
                     error=True,

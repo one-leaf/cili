@@ -725,6 +725,48 @@ class TestRetryDefaults:
         with pytest.raises(httpx.HTTPStatusError):
             transport.with_retry(op, max_retries=0)
 
+    def test_with_retry_total_timeout_aborts(self, monkeypatch):
+        """总时长上限生效：重试之间累计超限即放弃。
+
+        此前 chat() 从不传 total_timeout，该分支不可达 —— 网络持续抖动时
+        重试会一路叠加。
+        """
+        from core.llm.transport import HttpTransport
+        transport = HttpTransport()
+        monkeypatch.setattr(transport, "interruptible_sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+
+        def op():
+            calls["n"] += 1
+            raise _make_http_error(503)
+
+        # 上限 0.001s：首次失败后 base delay(~1s) 已超限
+        with pytest.raises(RuntimeError, match="Total retry time exceeded"):
+            transport.with_retry(op, total_timeout=0.001, max_retries=3)
+        assert calls["n"] == 1, "超限后不应再重试"
+
+    def test_chat_wires_total_retry_timeout(self):
+        """chat() 必须把总时长上限传给 with_retry（防参数被摘掉）。"""
+        from unittest.mock import MagicMock
+        from core.llm.client import LLMClient, _TOTAL_RETRY_TIMEOUT_S
+
+        client = LLMClient.__new__(LLMClient)
+        client.max_tokens = 1024
+        client.temperature = 0.2
+        client.model_name = "test-model"
+        client.adapter = MagicMock()
+        client.adapter.api_url = "http://example.invalid"
+        client.transport = MagicMock()
+        client.transport.post.return_value = (200, {}, {})
+        client.transport.with_retry.return_value = {}
+        client.adapter.parse_response.return_value = ([], "end_turn", MagicMock())
+
+        client.chat(messages=[])
+
+        _, kwargs = client.transport.with_retry.call_args
+        assert _TOTAL_RETRY_TIMEOUT_S > 0
+        assert kwargs.get("total_timeout") == _TOTAL_RETRY_TIMEOUT_S
+
     # ---- 统一 taxonomy：429 语义细分（quota 不可重试 / rate_limit 可重试）----
 
     def test_quota_429_not_retried(self, monkeypatch):

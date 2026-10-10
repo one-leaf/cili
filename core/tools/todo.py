@@ -306,10 +306,12 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
     if hasattr(session, 'metadata'):
         old_todos = session.metadata.get("todos")
         if old_todos:
-            # Migrate to new format
-            write_todos(session_id, old_todos, workspace_uuid)
-            # Remove from session metadata
-            del session.metadata["todos"]
+            if session_id:
+                # Migrate to new format（无 session_id 时跳过迁移，
+                # 否则文件名会变成字面量 "None.json"）
+                write_todos(session_id, old_todos, workspace_uuid)
+                # Remove from session metadata
+                del session.metadata["todos"]
             return old_todos
 
     return None

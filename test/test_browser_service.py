@@ -266,6 +266,29 @@ class TestValidateNavigateUrl:
         reason = self._validate("https:///path")
         assert reason and "主机名" in reason
 
+    # ─── 批准（allow_non_public）只解锁私网判定 ───────────────────
+
+    def test_private_allowed_when_approved(self):
+        from core.browser_service import _validate_navigate_url
+        for url in ("http://127.0.0.1:8080/", "http://192.168.1.5/", "http://localhost:9000/"):
+            assert _validate_navigate_url(url, allow_non_public=True) is None
+
+    def test_scheme_still_rejected_when_approved(self):
+        from core.browser_service import _validate_navigate_url
+        for url in ("file:///etc/passwd", "data:text/html,x", "javascript:alert(1)"):
+            reason = _validate_navigate_url(url, allow_non_public=True)
+            assert reason and "scheme" in reason
+
+    def test_metadata_endpoints_rejected_even_when_approved(self):
+        from core.browser_service import _validate_navigate_url
+        for url in (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://metadata.google.internal/",
+            "http://100.100.100.200/latest/meta-data/",
+        ):
+            reason = _validate_navigate_url(url, allow_non_public=True)
+            assert reason and "硬拒绝" in reason
+
 
 class TestCdpPortFallback:
     """W11/W12: CDP 端口占用/冲突处理（不启动真实 Chrome）。"""
@@ -399,7 +422,11 @@ class TestEnhancedActions:
         service._active_tab_index = 0
         service._dialog_buffers = {}
         service._request_buffers = {}
+        service._console_buffers = {}
+        service._listener_pages = set()
         service._project_root = str(tmp_path)
+        service._free_tab_indices = []
+        service._next_tab_index = 1
         return service
 
     @staticmethod
@@ -834,6 +861,23 @@ class TestEnhancedActions:
         assert 1 not in service._request_buffers
         assert service._active_tab_index is None
 
+    def test_closed_tab_index_is_reused(self):
+        """关闭的 tab 编号归还并复用于新 tab（编号不再只增不减）。"""
+        service = self._service()
+        page = MagicMock()
+        page.is_closed.return_value = True
+        service._page_pool = {3: (page, 0.0)}
+        service._listener_pages = {id(page)}
+        service._active_tab_index = 3
+        service._close_page_internal(3, page)
+        assert 3 in service._free_tab_indices
+
+        service._context = MagicMock()
+        service._context.new_page.return_value = MagicMock()
+        service._touch_page = MagicMock()
+        assert service._open_new_page() == 3
+        assert service._free_tab_indices == []
+
     # ─── navigate SSRF 预检 / skip 参数 ───────────────────────────
 
     def test_navigate_private_rejects_without_skip(self):
@@ -852,12 +896,25 @@ class TestEnhancedActions:
         assert result.output == "navigated"
         service._run_in_worker.assert_called_once()
 
-    def test_navigate_skip_ssrf_bypasses_validation(self):
+    def test_navigate_approved_non_public_allows_private(self):
+        """已批准的非公网导航：跳过私网判定并真正执行。"""
         from core.tools.base import ToolResult
         service = self._service()
         service._run_in_worker = MagicMock(return_value=ToolResult("navigated"))
-        with patch("core.browser_service._validate_navigate_url") as mv:
-            mv.return_value = "环回地址"
-            result = service.navigate("http://127.0.0.1:8885/tcmp-war/", skip_ssrf=True)
+        result = service.navigate("http://127.0.0.1:8885/tcmp-war/", approved_non_public=True)
         assert result.output == "navigated"
-        mv.assert_not_called()
+        service._run_in_worker.assert_called_once()
+
+    def test_navigate_approved_still_blocks_hard_deny(self):
+        """回归：用户批准不得连带绕过 scheme 白名单与云元数据端点。
+
+        此前 skip_ssrf=True 跳过的是整段校验（含 scheme），批准一个
+        file:///... 即可让 Playwright 读本地文件。
+        """
+        from core.tools.base import ToolResult
+        service = self._service()
+        service._run_in_worker = MagicMock(return_value=ToolResult("navigated"))
+        for url in ("file:///etc/passwd", "http://169.254.169.254/latest/meta-data/"):
+            result = service.navigate(url, approved_non_public=True)
+            assert result.error
+        service._run_in_worker.assert_not_called()

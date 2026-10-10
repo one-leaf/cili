@@ -13,6 +13,7 @@ agent 委派共享同一实例：Master 批准的会话级命令在 Worker/Lite 
 from __future__ import annotations
 
 import hashlib
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,8 @@ class ApprovalStore:
         self._approved: dict[str, dict[str, str]] = {}
         self.pending: dict[str, Any] | None = None
         self._rules_path = Path(rules_path) if rules_path is not None else None
+        # 规则文件的读-改-写锁（多 agent 并发「允许并记住」时避免丢更新）
+        self._rules_lock = threading.Lock()
         self._load_rules()
 
     def _load_rules(self) -> None:
@@ -228,17 +231,19 @@ class ApprovalStore:
     def _persist_rule(self, decision_id: str, command: str, reason: str, kind: str) -> None:
         if self._rules_path is None:
             return
-        data = load_json_or_backup(self._rules_path, {"rules": []})
-        rules = [r for r in data.get("rules", []) if r.get("decision_id") != decision_id]
-        rules.append({
-            "decision_id": decision_id,
-            "command": command,
-            "reason": reason or "",
-            "kind": kind,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        data["rules"] = rules
-        atomic_write_json(self._rules_path, data)
+        # 读-改-写整体加锁：atomic_write 只保证单次写原子，不防并发丢更新
+        with self._rules_lock:
+            data = load_json_or_backup(self._rules_path, {"rules": []})
+            rules = [r for r in data.get("rules", []) if r.get("decision_id") != decision_id]
+            rules.append({
+                "decision_id": decision_id,
+                "command": command,
+                "reason": reason or "",
+                "kind": kind,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            data["rules"] = rules
+            atomic_write_json(self._rules_path, data)
 
     def approved_commands(self) -> list[str]:
         """仅命令类规则（kind == "command"），供现有调用/测试保持语义。"""

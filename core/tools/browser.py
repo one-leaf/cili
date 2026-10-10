@@ -219,7 +219,9 @@ Use web_search for simple lookups; use browser when search results are insuffici
     ) -> ToolResult:
         """执行浏览器操作，委托给 BrowserService。"""
         # 懒导入避免 core.browser_service → core.tools.base 触发 registry 的循环依赖
-        from core.browser_service import _validate_navigate_url, get_service
+        from core.browser_service import (
+            _navigate_hard_deny, _validate_navigate_url, get_service,
+        )
 
         service = get_service()
         if not service.is_running():
@@ -237,6 +239,13 @@ Use web_search for simple lookups; use browser when search results are insuffici
         if action == "navigate":
             if not url:
                 return ToolResult("Error: 'url' is required for navigate action", error=True)
+            # 硬拒绝项（scheme 白名单、云元数据端点）不提供批准通道：
+            # 批准卡只用于「访问非公网地址」，不能连带解锁 file:// 读取本地文件
+            # 或云元数据端点。
+            hard_deny = _navigate_hard_deny(url)
+            if hard_deny:
+                return ToolResult(f"Error: 导航被拒绝 — {hard_deny}", error=True)
+
             # SSRF 防护：非公网地址导航走审批门（ask 档）——master 弹卡询问、
             # worker/lite 由循环降级为硬拒绝；已批准（含「允许并记住」）后放行。
             block_reason = _validate_navigate_url(url)
@@ -253,7 +262,7 @@ Use web_search for simple lookups; use browser when search results are insuffici
                         completed=False,
                         meta={META_KEY: approval},
                     )
-                return service.navigate(url, tab_index=tab_index, skip_ssrf=True)
+                return service.navigate(url, tab_index=tab_index, approved_non_public=True)
             return service.navigate(url, tab_index=tab_index)
 
         elif action == "snapshot":

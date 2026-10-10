@@ -59,7 +59,7 @@ class ConversationStore:
         与脏标记语义）；无 session（autonomous 直连）时本地追加。
         """
         if self.session is not None:
-            self.session.add_message(role, content, _meta=meta)
+            self.session.add_message(role, content, meta=meta)
             return
         meta = dict(meta) if meta else {}
         meta.setdefault("id", generate_short_id())
@@ -76,6 +76,24 @@ class ConversationStore:
 
     # ─── 序列化 ──────────────────────────────────────────────────
 
+    @staticmethod
+    def is_message_in_context(msg: dict) -> bool:
+        """该消息是否进入 LLM 上下文（``get_valid_messages`` 的过滤规则，单一定义）。
+
+        游标对齐（``Runner._perform_full_compact`` 按 valid_messages 索引在
+        all_messages 中定位待压缩消息）依赖同一谓词：两处规则一旦漂移，
+        会误标 pinned 消息失效、或漏标本应压缩的旧消息。
+        """
+        meta = msg.get("_meta", {})
+        if meta.get("valid") is False:
+            return False
+        if meta.get("error_notice"):
+            return False  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
+        content = msg.get("content", "")
+        if isinstance(content, list) and not content:
+            return False
+        return True
+
     def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
         """过滤无效消息；strip_meta=True 时剥除内部 _meta 字段。
 
@@ -85,11 +103,9 @@ class ConversationStore:
         result = []
 
         for msg in self.messages:
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
+            if not self.is_message_in_context(msg):
                 continue
-            if meta.get("error_notice"):
-                continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
+            meta = msg.get("_meta", {})
 
             role = msg.get("role")
             content = msg.get("content", "")

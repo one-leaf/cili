@@ -27,13 +27,16 @@ _atexit_registered = False
 
 def _atexit_cleanup_runners() -> None:
     """进程退出时停止所有活跃的后台 Runner"""
-    for runner in list(_active_background_runners):
+    # 与 append/remove 共用 cond：否则可能遍历到正在被移除的列表
+    with _background_runners_cond:
+        runners = list(_active_background_runners)
+        _active_background_runners.clear()
+    for runner in runners:
         try:
             if hasattr(runner, 'stop'):
                 runner.stop()
         except Exception:
             pass
-    _active_background_runners.clear()
 
 
 @dataclass
@@ -71,6 +74,9 @@ class BackgroundTaskManager:
     _tasks: dict[str, BackgroundTask] = {}
     _counter: int = 0
     _lock = threading.Lock()
+    # 已完成任务的保留上限：read/kill 是唯一的移除路径，不设上限时完成的任务
+    # （各自持有 runner 引用与输出缓冲）会随进程生命周期持续累积
+    _MAX_COMPLETED_RETAINED = 50
 
     @classmethod
     def allocate_task_id(cls, prefix: str = "bg") -> str:
@@ -84,6 +90,31 @@ class BackgroundTaskManager:
         """Register a background task."""
         with cls._lock:
             cls._tasks[task.task_id] = task
+            cls._evict_completed_locked()
+
+    @staticmethod
+    def _is_finished(task: BackgroundTask) -> bool:
+        """任务是否已结束（不依赖 list_tasks 的轮询刷新）。"""
+        if task.status in ("completed", "killed", "error"):
+            return True
+        if task.task_type == "shell" and task.process is not None:
+            return task.process.poll() is not None
+        if task.task_type == "session":
+            return task.result is not None
+        return False
+
+    @classmethod
+    def _evict_completed_locked(cls) -> None:
+        """淘汰最旧的已完成任务，只保留最近 _MAX_COMPLETED_RETAINED 条。
+
+        调用方须持有 ``_lock``。
+        """
+        finished = [t for t in cls._tasks.values() if cls._is_finished(t)]
+        excess = len(finished) - cls._MAX_COMPLETED_RETAINED
+        if excess <= 0:
+            return
+        for task in sorted(finished, key=lambda t: t.created_at)[:excess]:
+            cls._tasks.pop(task.task_id, None)
 
     @classmethod
     def get(cls, task_id: str) -> BackgroundTask | None:
@@ -490,11 +521,12 @@ class BackgroundMixin:
                 task.status = "error"
                 task.result = {"status": "error", "message": str(e)}
             finally:
-                try:
-                    _active_background_runners.remove(runner)
-                except ValueError:
-                    pass
+                # 与 append / atexit 遍历共用同一把 cond 锁
                 with _background_runners_cond:
+                    try:
+                        _active_background_runners.remove(runner)
+                    except ValueError:
+                        pass
                     _background_runners_cond.notify_all()
                 # 注销子 runner 的 AgentMailbox 注册（exec_id + 所有别名如 label）
                 try:

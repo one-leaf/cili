@@ -9,6 +9,9 @@ from core.tools.base import Tool, ToolResult
 
 class EditTool(Tool):
     name = "edit"
+
+    # 结果文本上限（与 WriteTool.MAX_RESULT_SIZE_CHARS 一致）
+    MAX_RESULT_SIZE_CHARS = 100_000
     description = (
         "Make precise edits to a file by replacing exact text matches. "
         "Each edit specifies old_text (to find) and new_text (to replace with). "
@@ -78,12 +81,32 @@ class EditTool(Tool):
         clean_new = self._clean_surrogates(new_text)
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            # 一次性读原始字节：同时用于编码探测与行尾风格判定
+            with open(file_path, "rb") as f:
+                raw = f.read()
+
+            # 编码探测：UTF-8 优先，非 UTF-8（常见 GBK/GB18030 中文源码）按
+            # gb18030 兜底。写回时沿用同一编码 —— 此前用 errors="replace" 之外的
+            # 严格 utf-8 读会让 GBK 文件直接报错，而改用 replace 又会在写回时
+            # 静默损坏内容。
+            try:
+                content = raw.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                try:
+                    content = raw.decode("gb18030")
+                    encoding = "gb18030"
+                except UnicodeDecodeError as e:
+                    return ToolResult(
+                        f"Error: 文件既不是 UTF-8 也不是 GB18030 编码，无法安全编辑: {e}",
+                        error=True,
+                    )
 
             # 记录原文件行尾风格：写回时保持不变，避免 LF 文件被改成 CRLF
-            with open(file_path, "rb") as f:
-                had_crlf = b"\r\n" in f.read()
+            had_crlf = b"\r\n" in raw
+            # 对齐文本模式读取的 universal newlines：\r\n 与孤立 \r 统一为 \n，
+            # 写回时再由 newline 参数还原原风格（否则 \r\n 会被二次翻译成 \r\r\n）
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
 
             count = content.count(clean_old)
             if count == 0:
@@ -121,15 +144,19 @@ class EditTool(Tool):
                 content = content.replace(clean_old, clean_new, 1)
 
             # Atomic write；newline 按原文件行尾风格写入：CRLF 文件保持 CRLF，LF 文件保持 LF
-            atomic_write_text(file_path, content, newline=("\r\n" if had_crlf else ""))
+            atomic_write_text(
+                file_path, content,
+                newline=("\r\n" if had_crlf else ""),
+                encoding=encoding,
+            )
 
             result_text = f"Successfully edited {file_path}"
-            return ToolResult(self.truncate_result(result_text, 100_000))
+            return ToolResult(self.truncate_result(result_text, self.MAX_RESULT_SIZE_CHARS))
         except FileNotFoundError:
             return ToolResult(f"Error: file not found: {file_path}", error=True)
         except Exception as e:
             error_text = f"Error editing file: {e}"
-            return ToolResult(self.truncate_result(error_text, 100_000), error=True)
+            return ToolResult(self.truncate_result(error_text, self.MAX_RESULT_SIZE_CHARS), error=True)
 
     @staticmethod
     def _replace_nth(content: str, old: str, new: str, n: int) -> str:

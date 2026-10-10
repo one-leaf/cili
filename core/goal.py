@@ -150,10 +150,6 @@ class GoalManager:
     def set_last_summary(self, summary: str) -> None:
         self.state.last_summary = summary
 
-    def save_round_progress(self) -> None:
-        """每轮结束后推进轮次计数并落盘（round 计数由 runner 自增后调用）。"""
-        self.save()
-
     # ── 轮次提示 / 完成检测 ──────────────────────────────
 
     def next_round_prompt(self) -> str:
@@ -186,3 +182,14 @@ def get_goal_manager(session_dir: Path | str) -> GoalManager:
         if key not in _managers:
             _managers[key] = GoalManager(key)
         return _managers[key]
+
+
+def release_goal_manager(session_dir: Path | str) -> None:
+    """丢弃缓存的 GoalManager（会话/工作区被删除时调用，避免 _managers 长期累积）。
+
+    只在会话目录确实被删除时调用：重建 manager 会按 _load 的语义 disarm，
+    若在 LRU 淘汰等「会话仍存在」的场景调用，会让进行中的目标循环静默停止。
+    """
+    key = str(Path(session_dir))
+    with _managers_lock:
+        _managers.pop(key, None)

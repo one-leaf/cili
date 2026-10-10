@@ -6,6 +6,7 @@ _run_shell/_run_bash/_run_pwsh 命令执行族（Tool 以 ShellMixin 继承）�
 
 from __future__ import annotations
 
+import codecs
 import os
 import queue
 import subprocess
@@ -25,6 +26,9 @@ _VENV_DIR = os.path.join(_PROJECT_ROOT, "data", "deps", "python")
 _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
 # 系统级临时目录（子进程 TEMP）：data/tmp 已废弃，回落系统标准 temp
 _TMP_DIR = tempfile.gettempdir()
+
+# stdout 读取块大小（字节）。read1 只要有数据就返回，故块大小不影响实时性
+_READ_CHUNK_BYTES = 8192
 
 
 def _to_bash_path(path: str) -> str:
@@ -412,13 +416,36 @@ class ShellMixin:
 
             def _reader_thread():
                 try:
-                    # 使用 read(1) 逐字符读取，确保实时流式显示
-                    # 这比 read(1024) 更能保证实时性，即使输出没有换行符
+                    # 按块读取：read1 有数据就返回（不像 read(n) 要凑满 n 字节），
+                    # 实时性与逐字符 read(1) 一致，但省掉大输出时百万次的
+                    # Python 层单字符循环 + 队列操作。
+                    #
+                    # 读原始字节会绕过文本层的 universal newlines 转换，
+                    # 故在此手工归一化（\r\n 与孤立 \r → \n），保持与原来
+                    # 文本模式读取一致的输出内容；跨块的 \r 需携带到下一块。
+                    buf = getattr(proc.stdout, "buffer", None) or proc.stdout
+                    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                    pending_cr = False
                     while True:
-                        char = proc.stdout.read(1)
-                        if not char:
+                        raw = buf.read1(_READ_CHUNK_BYTES)
+                        if not raw:
                             break
-                        chunk_queue.put(char)
+                        text = decoder.decode(raw)
+                        if not text:
+                            continue
+                        if pending_cr:
+                            text = "\r" + text
+                            pending_cr = False
+                        if text.endswith("\r"):
+                            pending_cr = True
+                            text = text[:-1]
+                        if text:
+                            chunk_queue.put(text.replace("\r\n", "\n").replace("\r", "\n"))
+                    tail = decoder.decode(b"", final=True)
+                    if pending_cr:
+                        tail = "\r" + tail
+                    if tail:
+                        chunk_queue.put(tail.replace("\r\n", "\n").replace("\r", "\n"))
                 except Exception:
                     pass
                 finally:
@@ -451,6 +478,7 @@ class ShellMixin:
                     f_out = None  # 写入失败不影响命令执行
             # 实时输出缓冲：按换行或达到阈值批量 emit，减少事件数又保持实时
             out_buf: list[str] = []
+            out_buf_chars = 0
 
             try:
                 while True:
@@ -474,12 +502,15 @@ class ShellMixin:
                             pass
                     if self.on_output:
                         out_buf.append(chunk)
+                        out_buf_chars += len(chunk)
                         # 文本模式写 Windows 下 \n -> \r\n（多 1 字节），
-                        # 补偿后 written_bytes 才是文件真实字节数（与 /stream 端点契约一致）
-                        written_bytes += len(chunk.encode("utf-8", "replace")) + (1 if chunk == "\n" else 0)
-                        if chunk in ("\n", "\r") or len(out_buf) >= 32:
+                        # 补偿后 written_bytes 才是文件真实字节数（与 /stream 端点契约一致）。
+                        # chunk 现在是多字符块，按块内换行数补偿。
+                        written_bytes += len(chunk.encode("utf-8", "replace")) + chunk.count("\n")
+                        if "\n" in chunk or out_buf_chars >= 32:
                             self._emit_output("".join(out_buf), written_bytes)
                             out_buf.clear()
+                            out_buf_chars = 0
             finally:
                 if self.on_output and out_buf:
                     self._emit_output("".join(out_buf), written_bytes)
@@ -498,6 +529,13 @@ class ShellMixin:
                 except subprocess.TimeoutExpired:
                     self._kill_process_tree(proc)
                     proc.wait()
+            else:
+                # 超时路径已在上面 kill；此处补 wait，否则 returncode 仍是 None，
+                # 结果会退化成 "[exit code: None]" 的部分输出
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
             output = "".join(output_parts).strip() or "(no output)"
 
@@ -521,16 +559,14 @@ class ShellMixin:
             bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", "10000"))
             output = self.truncate_middle(output, bash_token_budget)
 
-            if proc.returncode != 0:
+            if timed_out:
+                # 明确标注超时：此前只有 [exit code: None] 的部分输出，
+                # 模型无法区分「超时」与「命令失败」
+                output = f"[timed out after {timeout}s]\n{output}"
+            elif proc.returncode != 0:
                 output = f"[exit code: {proc.returncode}]\n{output}"
 
-            return ToolResult(output, error=(proc.returncode != 0))
-        except subprocess.TimeoutExpired:
-            # Kill the process and all children
-            if proc:
-                proc.kill()
-                proc.wait()
-            return ToolResult(f"Error: command timed out after {timeout} seconds", error=True)
+            return ToolResult(output, error=(timed_out or proc.returncode != 0))
         except Exception as e:
             if proc:
                 try:

@@ -1554,7 +1554,7 @@ print("LaTeX 文件已生成：report.tex")
 
 ```bash
 # latex tool: Compile to PDF
-latex(action='compile', file='report.tex')
+latex(action='compile', tex_file='report.tex')
 ```
 
 ## Chinese Document Support
@@ -1595,9 +1595,9 @@ with open('references.bib', 'w', encoding='utf-8') as f:
 
 Compile sequence for BibTeX:
 ```bash
-latex(action='compile', file='report.tex')
-latex(action='compile', file='report.tex')  # Second pass for references
-latex(action='compile', file='report.tex')  # Third pass for TOC
+latex(action='compile', tex_file='report.tex')
+latex(action='compile', tex_file='report.tex')  # Second pass for references
+latex(action='compile', tex_file='report.tex')  # Third pass for TOC
 ```
 
 ## Decision Flow

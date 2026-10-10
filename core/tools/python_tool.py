@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
-from core.tools.base import Tool, ToolResult, _VENV_DIR, _VENV_SCRIPTS
+from core.tools.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS
 
 
 # 后台执行临时脚本的前缀（用于过期清理）
@@ -59,7 +59,7 @@ class PythonTool(Tool):
         return (
             "**Execute Python code or manage packages** in the managed venv.\n"
             "## Actions:\n"
-            "- execute / execute_file: run code (code='...') or a script file (file='path/script.py')\n"
+            "- execute / execute_file: run code (code='...') or a script file (script_file='path/script.py')\n"
             "- install / uninstall / upgrade / check: pip package management (packages='pkg1 pkg2')\n"
             "- info: show environment info and installed packages\n\n"
             "## Pre-installed:\n"
@@ -103,13 +103,13 @@ class PythonTool(Tool):
                     "type": "string",
                     "description": "Python code to execute. Required when action='execute'.",
                 },
-                "file": {
+                "script_file": {
                     "type": "string",
                     "description": "Path to a Python script file to run. Required when action='execute_file'.",
                 },
                 "args": {
                     "type": "string",
-                    "description": "Command-line arguments to pass to the script. Optional, used with action='execute_file'. Example: '--input data.txt --verbose'",
+                    "description": "Space-separated command-line arguments to pass to the script. Optional, used with action='execute_file'. Example: '--input data.txt --verbose'",
                 },
                 "packages": {
                     "type": "string",
@@ -140,7 +140,7 @@ class PythonTool(Tool):
         self,
         action: str = "execute",
         code: str | None = None,
-        file: str | None = None,
+        script_file: str | None = None,
         args: str | None = None,
         packages: str | None = None,
         run_in_background: bool | None = None,
@@ -181,9 +181,9 @@ class PythonTool(Tool):
                 return ToolResult("Error: 'code' is required for 'execute' action", error=True)
             return self._execute_code(code, run_in_background=bool(run_in_background))
         elif action == "execute_file":
-            if not file:
-                return ToolResult("Error: 'file' is required for 'execute_file' action", error=True)
-            return self._execute_file(file, args, run_in_background=bool(run_in_background))
+            if not script_file:
+                return ToolResult("Error: 'script_file' is required for 'execute_file' action", error=True)
+            return self._execute_file(script_file, args, run_in_background=bool(run_in_background))
         elif action == "install":
             packages = (packages or "").strip()
             if not packages:
@@ -209,12 +209,12 @@ class PythonTool(Tool):
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
-    def _execute_file(self, file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
+    def _execute_file(self, script_file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
         """Execute a Python script file."""
         python_exe = os.path.join(_VENV_DIR, "python.exe")
-        path = self._resolve_path(file, read_only=True)
+        path = self._resolve_path(script_file, read_only=True)
         if not os.path.isfile(path):
-            return ToolResult(f"Error: script file not found: {file}", error=True)
+            return ToolResult(f"Error: script file not found: {script_file}", error=True)
 
         # Check file content for cross-tool invocations（读取失败 fail-closed，不跳过检查）
         try:
@@ -235,7 +235,8 @@ class PythonTool(Tool):
         mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
         cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
-            cmd += f" {shlex.quote(args)}"
+            # 逐个 token 引用：整体 quote 会把整串当成单个参数传给脚本
+            cmd += " " + " ".join(shlex.quote(a) for a in args.split())
 
         if run_in_background:
             return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
@@ -305,18 +306,25 @@ class PythonTool(Tool):
 
     @staticmethod
     def _filter_notices(result: ToolResult) -> ToolResult:
-        """Strip pip [notice] lines from a ToolResult in place, returning it."""
+        """Strip pip [notice] lines from a ToolResult, returning it.
+
+        ``output`` 是只读 property（由 blocks 推导），故重写 blocks 而非赋值 output。
+        """
         if '[notice]' not in result.output:
             return result
+        from core.llm.types import TextBlock
+
         lines = result.output.split('\n')
         filtered = [l for l in lines if not l.strip().startswith('[notice]')]
-        result.output = '\n'.join(filtered)
-        result.output = result.output.replace(
+        text = '\n'.join(filtered).replace(
             '\n--- stderr ---\n\n--- end stderr ---', ''
         ).replace(
             '--- stderr ---\n\n--- end stderr ---\n', ''
         ).strip()
-        result.output = result.output or '(no output)'
+        # 保留非文本块，文本统一收敛为单块
+        result.blocks = [TextBlock(text=text or '(no output)')] + [
+            b for b in result.blocks if not isinstance(b, TextBlock)
+        ]
         return result
 
     def _run_pip(self, subcmd: str, timeout: int = 300) -> ToolResult:
@@ -512,6 +520,3 @@ except Exception as e:
             return ToolResult(output)
         return result
 
-
-# Import for background execution
-from core.tools.base import _GIT_BASH_PATH

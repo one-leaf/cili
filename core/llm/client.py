@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Callable
 
@@ -31,17 +32,22 @@ from core.llm.adapter import Adapter
 from core.llm.assembler import BlockAssembler
 from core.llm.transport import HttpTransport
 from core.llm.types import (
-    ContentBlock,
     Message,
     StreamChunk,
     TextBlock,
     ToolCallBlock,
-    UsageData,
     LLMResponse,
     format_llm_error,
 )
 
 logger = logging.getLogger(__name__)
+
+# 非流式调用的重试总时长上限（秒）：限制「重试」的累计时长，避免网络持续抖动时
+# 多次重试叠加到几十分钟。判定点在两次重试之间，不会打断单次进行中的请求。
+# 环境变量 CILI_LLM_TOTAL_RETRY_TIMEOUT 覆盖；设为 0 表示不限制。
+# 流式路径（chat_stream）由上层 base_agent 统一管理重试（max_retries=0），
+# 该上限对其无意义，故只接在 chat() 上。
+_TOTAL_RETRY_TIMEOUT_S = float(os.environ.get("CILI_LLM_TOTAL_RETRY_TIMEOUT", "300"))
 
 
 def _extract_json_dict(text: str) -> dict | None:
@@ -227,16 +233,20 @@ class LLMClient:
         def do_request():
             status, resp_headers, data = self.transport.post(url, headers, body, timeout=timeout)
             if status >= 400:
-                # Raise for retry logic
-                resp = httpx.Response(status_code=status, request=httpx.Request("POST", url))
-                resp._content = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                # Raise for retry logic。用公开的 content= 构造，不直接写私有
+                # resp._content（依赖 httpx 内部实现，升级即可能失效）
+                resp = httpx.Response(
+                    status_code=status,
+                    content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                    request=httpx.Request("POST", url),
+                )
                 resp.headers.update(resp_headers)
                 raise httpx.HTTPStatusError(
                     f"HTTP {status}", request=resp.request, response=resp
                 )
             return data
 
-        data = self.transport.with_retry(do_request)
+        data = self.transport.with_retry(do_request, total_timeout=_TOTAL_RETRY_TIMEOUT_S or None)
         content_blocks, stop_reason, usage = self.adapter.parse_response(data)
 
         return LLMResponse(

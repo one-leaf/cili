@@ -139,7 +139,7 @@ class SystemConfig:
         max_concurrent_agents = max(1, min(10, max_concurrent_agents))
         return cls(
             pip_mirror=data.get("pip_mirror", "https://repo.huaweicloud.com/repository/pypi/simple/"),
-            allowed_ips=data.get("allowed_ips", []),
+            allowed_ips=data.get("allowed_ips") or [],
             browser_path=data.get("browser_path", ""),
             search_engine=data.get("search_engine", "bing"),
             mineru_api_key=data.get("mineru_api_key", ""),
@@ -415,6 +415,10 @@ def get_workspace_data_dir(workspace_uuid: str) -> Path:
         return Path(entry["directory"]) / ".cili"
     if workspace_uuid == "system":
         return SYSTEM_DATA_DIR
+    # 未知 uuid 静默兜底到默认工作区会让调用方读写到错误位置，明确告警
+    logger.warning(
+        f"[config] 未知 workspace_uuid={workspace_uuid!r}，回退到默认工作区数据目录"
+    )
     return PROJECT_ROOT / "workspace" / ".cili"
 
 

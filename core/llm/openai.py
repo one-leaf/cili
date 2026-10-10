@@ -412,7 +412,8 @@ class OpenAIAdapter(Adapter):
     def parse_response(self, data: dict[str, Any]) -> tuple[list[ContentBlock], str, UsageData]:
         """Parse OpenAI API response."""
         content_blocks: list[ContentBlock] = []
-        choice = data.get("choices", [{}])[0]
+        # "choices" 存在但为空列表时，默认值 [{}] 不生效 → 用 or 兜底避免 IndexError
+        choice = (data.get("choices") or [{}])[0]
         message = choice.get("message", {})
 
         # Reasoning content (for o1, o3 models; or DGX which uses 'reasoning')

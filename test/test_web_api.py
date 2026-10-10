@@ -628,3 +628,57 @@ class TestListSessionsMetaOnly:
         meta_after = json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
         assert "preview" not in meta_after
         assert "message_count" not in meta_after
+
+
+class TestSaveInstructionsFilenameGuard:
+    """save_instructions 文件名校验：拒绝逃出工作区的路径。
+
+    回归：此前只校验「白名单文件名 or .md 后缀」，"../../evil.md" 与
+    绝对路径 "C:/evil.md" 都能通过，os.path.join 后可写出工作区外。
+    """
+
+    def _prepare(self, tmp_path, monkeypatch):
+        import core.config as config_mod
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        config_mod.upsert_workspace_entry({
+            "uuid": "wstraverse",
+            "workspace_name": "Traverse",
+            "directory": str(ws_dir),
+        })
+        return ws_dir
+
+    def _call(self, filename, ws_dir):
+        import asyncio
+        from fastapi import HTTPException
+        from web.routes_workspace import save_instructions, SaveInstructionsRequest
+        return asyncio.run(save_instructions(
+            "wstraverse",
+            SaveInstructionsRequest(filename=filename, content="x"),
+            ws_dir=ws_dir,
+        ))
+
+    @pytest.mark.parametrize("bad", [
+        "../../evil.md",
+        "../evil.md",
+        "sub/evil.md",
+        "sub\\evil.md",
+        "..",
+        "",
+    ])
+    def test_rejects_path_escapes(self, tmp_path, monkeypatch, bad):
+        from fastapi import HTTPException
+
+        ws_dir = self._prepare(tmp_path, monkeypatch)
+        with pytest.raises(HTTPException) as exc:
+            self._call(bad, ws_dir)
+        assert exc.value.status_code == 400
+        # 工作区外不得留下任何文件
+        assert not (tmp_path / "evil.md").exists()
+
+    def test_accepts_plain_markdown_name(self, tmp_path, monkeypatch):
+        ws_dir = self._prepare(tmp_path, monkeypatch)
+        result = self._call("NOTES.md", ws_dir)
+        assert result["success"] is True
+        assert (ws_dir / "NOTES.md").read_text(encoding="utf-8") == "x"

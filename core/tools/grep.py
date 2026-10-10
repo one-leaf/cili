@@ -83,11 +83,11 @@ class GrepTool(Tool):
             },
             "glob": {
                 "type": "string",
-                "description": "Glob pattern to filter files (e.g. '*.py', '*.ts'). Superseded by 'type' if both set.",
+                "description": "Glob pattern to filter files (e.g. '*.py', '*.ts'). Superseded by 'file_type' if both set.",
             },
-            "type": {
+            "file_type": {
                 "type": "string",
-                "description": "File type shortcut: 'py', 'js', 'ts', 'md', 'json', 'yaml', 'html', 'css', 'go', 'rust', 'java', 'sh', 'txt', 'xml', 'sql', 'c', 'cpp'. Overrides glob.",
+                "description": "File type shortcut: 'py', 'js', 'ts', 'md', 'json', 'yaml', 'html', 'css', 'go', 'rust', 'java', 'kotlin', 'scala', 'sh', 'txt', 'xml', 'svg', 'sql', 'c', 'cpp'. Overrides glob.",
             },
             "case_insensitive": {
                 "type": "boolean",
@@ -124,7 +124,7 @@ class GrepTool(Tool):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-        type: str | None = None,
+        file_type: str | None = None,
         case_insensitive: bool = False,
         fixed_strings: bool = False,
         output_mode: str = "content",
@@ -156,7 +156,7 @@ class GrepTool(Tool):
                 pattern=pattern,
                 path=path,
                 glob=glob,
-                type=type,
+                file_type=file_type,
                 case_insensitive=case_insensitive,
                 fixed_strings=fixed_strings,
             )
@@ -199,7 +199,7 @@ class GrepTool(Tool):
         pattern: str,
         path: str,
         glob: str | None,
-        type: str | None,
+        file_type: str | None,
         case_insensitive: bool,
         fixed_strings: bool,
     ) -> list[str]:
@@ -215,8 +215,8 @@ class GrepTool(Tool):
             cmd_parts.append("-i")
 
         # File filtering
-        if type:
-            exts = TYPE_EXTENSIONS.get(type.lower())
+        if file_type:
+            exts = TYPE_EXTENSIONS.get(file_type.lower())
             if not exts:
                 return []
             for ext in exts:
@@ -230,6 +230,9 @@ class GrepTool(Tool):
         # Exclude ignored directories
         for d in self.IGNORE_DIRS:
             cmd_parts.extend(["--exclude-dir", d])
+        # 后缀型忽略项（egg-info 目录名带包名前缀，如 foo.egg-info）
+        for suffix in self.IGNORE_DIR_SUFFIXES:
+            cmd_parts.extend(["--exclude-dir", f"*{suffix}"])
 
         cmd_parts.extend([pattern, path])
         cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
@@ -302,8 +305,12 @@ class GrepTool(Tool):
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             cmd += " || true"
             result = self._run_bash(cmd, max_chars=self.MAX_COUNT_OUTPUT_CHARS)
-            # 多文件时 grep -c 输出 "path:count"；单文件块只输出 count，需补文件名
-            lines = [line for line in result.output.strip().split('\n') if line] if result.output else []
+            # 多文件时 grep -c 输出 "path:count"；单文件块只输出 count，需补文件名。
+            # 同时丢弃 "grep: ..." 诊断（与 _find_matching_files 一致）
+            lines = [
+                line for line in (result.output or "").strip().split('\n')
+                if line and not line.startswith("grep:")
+            ]
             if len(chunk) == 1 and lines and ":" not in lines[0]:
                 output_lines.append(f"{chunk[0]}:{lines[0]}")
             else:
@@ -350,7 +357,9 @@ class GrepTool(Tool):
                 for line in result.output.strip().split('\n'):
                     if total_lines >= max_results:
                         break
-                    if line:
+                    # 与 _find_matching_files 一致：丢弃 "grep: ..." 诊断
+                    # （路径不存在/权限/非法正则），否则会混进匹配行
+                    if line and not line.startswith("grep:"):
                         output_lines.append(line)
                         total_lines += 1
 

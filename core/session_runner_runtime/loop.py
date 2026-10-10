@@ -392,7 +392,8 @@ class Loop:
             # ── 工具批执行（差异点②：结果 handler 模式专属）──
             if autonomous:
                 phase = "check" if pm.in_check_phase else "running"
-                runner._save_progress(n, status=phase, tool_calls=len(tool_calls))
+                # 不再在此处 _save_progress：_autonomous_tool_batch 批前会以同样的
+                # 参数调用一次，重复调用会让 _tool_call_count 翻倍
                 if self._autonomous_tool_batch(tool_calls, n, phase, state):
                     # 连续失败熔断
                     cap = policy.max_consecutive_failures
@@ -576,8 +577,13 @@ class Loop:
         if len(history) < 3:
             return
         last = history[-1]
-        # 计算末尾连续相同签名的次数
-        count = sum(1 for sig in reversed(history) if sig == last)
+        # 末尾「连续」相同签名的次数：中途夹了其他操作即中断计数
+        # （此前统计的是历史中等于 last 的全部出现次数，会误报死循环）
+        count = 0
+        for sig in reversed(history):
+            if sig != last:
+                break
+            count += 1
         if count < 3:
             return
         # 按阈值警告，避免每轮都注入（阈值：3 / 6 / 10）
@@ -632,10 +638,12 @@ class Loop:
                         runner.add_message(
                             "user",
                             combined,
-                            _meta={"background_notification": True},
+                            meta={"background_notification": True},
                         )
-        except Exception:
-            pass  # message_bus 不可用时静默跳过
+        except Exception as e:
+            # message_bus 不可用时跳过；但不可静默——通知已在上方 mark_read=True 消费，
+            # 静默失败会让通知永久丢失（曾因参数名写错而整条路径失效）
+            logger.warning(f"[Loop] 后台通知注入失败: {e}")
 
     def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
         """组装 autonomous 结果 dict（usage 恒取当前快照）。"""
@@ -645,7 +653,8 @@ class Loop:
             "iterations": iterations,
             "message_count": len(self.runner.messages),
             "tool_call_count": self.runner._tool_call_count,
-            "usage": self.runner._usage,
+            # 拷贝：调用方改动不得污染 runner 的内部 usage
+            "usage": dict(self.runner._usage),
         }
         result.update(extra)
         return result

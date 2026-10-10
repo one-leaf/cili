@@ -507,10 +507,9 @@ class PDF2MarkdownTool(Tool):
         try:
             resp = requests.get(zip_url, timeout=(15, 120), proxies=no_proxy)
             resp.raise_for_status()
-        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
-            # Fallback: try with verify=False
-            resp = requests.get(zip_url, timeout=(15, 120), verify=False, proxies=no_proxy)
-            resp.raise_for_status()
+        except requests.exceptions.SSLError as e:
+            # 不回退到 verify=False：关闭证书校验会让下载的 markdown 可被中间人篡改
+            raise RuntimeError(f"SSL 校验失败，请检查系统证书或代理配置: {e}") from e
 
         # Extract full.md from ZIP
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
@@ -527,20 +526,19 @@ class PDF2MarkdownTool(Tool):
                 raise Exception(f"ZIP 中无 .md 文件，文件列表: {zf.namelist()}")
 
     def _download_markdown(self, url: str) -> str:
-        """Download markdown content from URL with SSL fallback.
+        """Download markdown content from URL.
 
-        Agent API 返回的 CDN 链接可能因 SSL 代理问题失败
+        Agent API 返回的 CDN 链接可能因 SSL 代理问题失败；失败时直接报错，
+        不做 verify=False 回退（否则下载内容可被中间人篡改）。
         """
         no_proxy = {"http": None, "https": None}
         try:
             resp = requests.get(url, timeout=(15, 60), proxies=no_proxy)
             resp.raise_for_status()
-            # T11: 显式 UTF-8 解码，避免 requests 按 ISO-8859-1 回退导致中文乱码
-            return resp.content.decode("utf-8")
-        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
-            resp = requests.get(url, timeout=(15, 60), verify=False, proxies=no_proxy)
-            resp.raise_for_status()
-            return resp.content.decode("utf-8")
+        except requests.exceptions.SSLError as e:
+            raise RuntimeError(f"SSL 校验失败，请检查系统证书或代理配置: {e}") from e
+        # T11: 显式 UTF-8 解码，避免 requests 按 ISO-8859-1 回退导致中文乱码
+        return resp.content.decode("utf-8")
 
 
 class _AgentLimitError(Exception):

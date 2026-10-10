@@ -15,6 +15,7 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse, urlunparse
 
 from core.config import (
     PROJECT_ROOT,
@@ -96,8 +97,9 @@ def _find_git() -> str | None:
     return shutil.which("git")
 
 
-def _git_cmd(workspace_dir: str | Path, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-    """执行 git 命令。"""
+def _git_cmd(workspace_dir: str | Path, args: list[str], timeout: int = 60,
+             env: dict | None = None) -> subprocess.CompletedProcess:
+    """执行 git 命令。env=None 时继承当前环境。"""
     git = _find_git()
     if not git:
         raise FileNotFoundError("git not available")
@@ -109,6 +111,7 @@ def _git_cmd(workspace_dir: str | Path, args: list[str], timeout: int = 60) -> s
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
@@ -346,31 +349,35 @@ def _sync_with_remote(workspace_uuid: str, workspace_dir: Path) -> tuple[bool, s
         _sync_remote_to_git(workspace_uuid)
 
         # 先尝试 rebase 方式拉取
-        result = _git_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
+        result = _git_net_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
             # 如果没有上游分支，设置上游
             if "no tracking information" in stderr.lower() or "there is no tracking information" in stderr.lower():
                 # 首次推送，设置上游分支
-                _git_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
+                _git_net_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
                 return True, "首次同步完成"
 
             # 如果有冲突，使用 ours 策略解决（保留本地版本）
             if "conflict" in stderr.lower() or "CONFLICT" in stderr:
                 logger.warning(f"[workspace-git] 检测到冲突，使用 ours 策略解决")
-                # 使用 ours 策略解决冲突（本地优先）
+                # 使用 ours 策略解决冲突（本地优先）。
+                # 必须检查重试结果：此前返回值被丢弃，代码随后仍用旧的失败 result
+                # 判定 → 冲突自动解决形同虚设，即使解决成功也直接报 pull 失败。
                 _git_cmd(workspace_dir, ["rebase", "--abort"], timeout=30)
-                _git_cmd(workspace_dir, ["pull", "--strategy-option=ours", "origin", "HEAD"], timeout=120)
-
-            # 检查是否只是 "Already up to date"
-            if "Already up to date" in stderr or "Already up-to-date" in stderr:
+                retry = _git_net_cmd(
+                    workspace_dir, ["pull", "--strategy-option=ours", "origin", "HEAD"], timeout=120
+                )
+                if retry.returncode != 0:
+                    return False, f"冲突自动解决失败: {retry.stderr.strip()}"
+            elif "Already up to date" in stderr or "Already up-to-date" in stderr:
                 pass  # 继续推送
-            elif result.returncode != 0:
+            else:
                 return False, f"pull 失败: {stderr}"
 
         # 推送
-        result = _git_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
+        result = _git_net_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "Everything up-to-date" in stderr:
@@ -384,34 +391,92 @@ def _sync_with_remote(workspace_uuid: str, workspace_dir: Path) -> tuple[bool, s
         return False, f"同步失败: {e}"
 
 
-from urllib.parse import urlparse, urlunparse
+
+# 凭证文件名（放在 .git/ 内：不会被提交，也不会被 `git remote -v` / `.git/config` 打印）
+_CREDENTIALS_FILENAME = "cili-credentials"
 
 
-def _build_auth_url(remote_url: str, username: str = "", token: str = "") -> str:
-    """将用户名和 Token 嵌入远程 URL，返回带凭证的 URL。
+def _clean_remote_url(remote_url: str) -> str:
+    """去掉 URL 中的 userinfo，返回不含凭证的远程地址。
 
-    示例: https://github.com/user/repo.git → https://user:token@github.com/user/repo.git
-    已是 SSH 或已包含凭证则原样返回。
+    origin 里存明文 token 会被 `git remote -v`、`.git/config`、各类 git 日志
+    直接暴露；凭证改由 .git/cili-credentials + credential.helper 提供。
+    SSH 地址无 userinfo，原样返回。
     """
-    if not remote_url:
-        return remote_url
-    # SSH 协议不嵌入凭证
-    if remote_url.startswith(("git@", "ssh://")):
+    if not remote_url or remote_url.startswith(("git@", "ssh://")):
         return remote_url
     parsed = urlparse(remote_url)
-    if parsed.username:
-        # 已含凭证，原样返回
+    if not parsed.username and not parsed.password:
         return remote_url
-    if not username:
-        return remote_url
-    # 嵌入 user:token
-    host = parsed.hostname
-    port = f":{parsed.port}" if parsed.port else ""
-    auth = username
-    if token:
-        auth += f":{token}"
-    netloc = f"{auth}@{host}{port}"
-    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params,
+                       parsed.query, parsed.fragment))
+
+
+def _credentials_path(workspace_dir: str | Path) -> Path:
+    return Path(workspace_dir) / ".git" / _CREDENTIALS_FILENAME
+
+
+def _write_credentials_file(workspace_dir: str | Path, remote_url: str,
+                            username: str, token: str) -> None:
+    """把凭证写入 .git/cili-credentials（git credential-store 格式）。
+
+    仅 HTTP(S) 远程需要；SSH 或未配置凭证时删除该文件，避免残留旧凭证。
+    """
+    path = _credentials_path(workspace_dir)
+    if (not remote_url or remote_url.startswith(("git@", "ssh://"))
+            or not (username or token)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+
+    parsed = urlparse(remote_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return
+    netloc = parsed.hostname
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    # credential-store 解析时做百分号解码，故用户名/口令需转义
+    line = f"{parsed.scheme}://{quote(username, safe='')}:{quote(token, safe='')}@{netloc}\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(line)
+        try:
+            os.chmod(path, 0o600)  # Windows 上基本无效，类 Unix 上限制为仅本人可读
+        except OSError:
+            pass
+    except OSError as e:
+        logger.warning(f"[workspace-git] 写入凭证文件失败: {e}")
+
+
+def _git_net_cmd(workspace_dir: str | Path, args: list[str],
+                 timeout: int = 60) -> subprocess.CompletedProcess:
+    """执行需要访问远程的 git 命令（pull/push/fetch），凭证取自 .git/cili-credentials。
+
+    origin 不再保存带 token 的 URL，故这些命令必须显式挂 credential.helper。
+    用相对路径 `.git/xxx` 传 --file：_git_cmd 已把 cwd 设为工作区目录，
+    这样即使工作区路径含空格也不会破坏 helper 参数解析。
+    """
+    if _credentials_path(workspace_dir).is_file():
+        helper = f"store --file=.git/{_CREDENTIALS_FILENAME}"
+        # 先用空值 `credential.helper=` 清空 helper 链，再挂本工作区的 store：
+        # 只写 `-c credential.helper=store --file=...` 是「追加」，用户全局配置的
+        # helper（store/manager）会先命中，取到的是全局凭据而非工作区 token。
+        # GIT_TERMINAL_PROMPT=0：凭证缺失/失效时直接失败，避免后台服务里
+        # 转为交互式提示而挂住。
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        return _git_cmd(
+            workspace_dir,
+            ["-c", "credential.helper=", "-c", f"credential.helper={helper}", *args],
+            timeout=timeout,
+            env=env,
+        )
+    return _git_cmd(workspace_dir, args, timeout=timeout)
 
 
 def _mask_token(token: str) -> str:
@@ -450,21 +515,23 @@ def set_git_remote(workspace_uuid: str, remote_url: str, username: str = "", tok
         if not remote_url:
             return True, "远程地址已清除"
 
-        # 设置 git remote origin
-        auth_url = _build_auth_url(remote_url, username, token)
+        # 设置 git remote origin：URL 不含凭证，凭证另存 .git/cili-credentials
         if not (workspace_dir / ".git").is_dir():
             ok, msg = init_workspace_git(workspace_uuid)
             if not ok:
                 return False, f"Git 初始化失败: {msg}"
 
+        _write_credentials_file(workspace_dir, remote_url, username, token)
+        clean_url = _clean_remote_url(remote_url)
+
         # 检查是否已有 origin
         result = _git_cmd(workspace_dir, ["remote", "get-url", "origin"], timeout=10)
         if result.returncode == 0:
             # 已存在，更新
-            result = _git_cmd(workspace_dir, ["remote", "set-url", "origin", auth_url], timeout=10)
+            result = _git_cmd(workspace_dir, ["remote", "set-url", "origin", clean_url], timeout=10)
         else:
             # 不存在，添加
-            result = _git_cmd(workspace_dir, ["remote", "add", "origin", auth_url], timeout=10)
+            result = _git_cmd(workspace_dir, ["remote", "add", "origin", clean_url], timeout=10)
 
         if result.returncode != 0:
             return False, f"设置 remote 失败: {result.stderr.strip()}"
@@ -516,7 +583,7 @@ def git_pull(workspace_uuid: str) -> tuple[bool, str]:
         # 同步远程地址到 git config
         _sync_remote_to_git(workspace_uuid)
 
-        result = _git_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
+        result = _git_net_cmd(workspace_dir, ["pull", "--rebase", "origin", "HEAD"], timeout=120)
         if result.returncode != 0:
             stderr = result.stderr.strip()
             stdout = result.stdout.strip()
@@ -549,10 +616,10 @@ def git_push(workspace_uuid: str) -> tuple[bool, str]:
         _sync_remote_to_git(workspace_uuid)
 
         # 首次推送用 -u 设置上游跟踪
-        result = _git_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
+        result = _git_net_cmd(workspace_dir, ["push", "-u", "origin", "HEAD"], timeout=120)
         if result.returncode != 0:
             # 已有上游时回退到普通 push
-            result = _git_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
+            result = _git_net_cmd(workspace_dir, ["push", "origin", "HEAD"], timeout=120)
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "No remote" in stderr or "no upstream" in stderr:
@@ -564,40 +631,6 @@ def git_push(workspace_uuid: str) -> tuple[bool, str]:
     except Exception as e:
         logger.error(f"[workspace-git] push 失败: {e}")
         return False, f"push 失败: {e}"
-
-
-def git_sync(workspace_uuid: str) -> tuple[bool, str]:
-    """完整同步：pull → auto_commit → push。
-
-    Returns:
-        (success, message)
-    """
-    from core.config import load_workspace_config
-    ws_config = load_workspace_config(workspace_uuid) or {}
-    if not ws_config.get("git_remote_url"):
-        return False, "未配置远程仓库"
-
-    messages = []
-
-    # 1. pull
-    ok, msg = git_pull(workspace_uuid)
-    messages.append(f"pull: {msg}")
-    if not ok and "未配置远程仓库" not in msg:
-        # pull 失败但有冲突，尝试继续
-        logger.warning(f"[workspace-git] sync pull 失败: {msg}")
-
-    # 2. auto commit
-    ok, msg = auto_commit_workspace(workspace_uuid)
-    if ok and msg != "无变更":
-        messages.append(f"commit: {msg}")
-
-    # 3. push
-    ok, msg = git_push(workspace_uuid)
-    messages.append(f"push: {msg}")
-    if not ok:
-        return False, "; ".join(messages)
-
-    return True, "; ".join(messages)
 
 
 def _sync_remote_to_git(workspace_uuid: str) -> None:
@@ -614,16 +647,19 @@ def _sync_remote_to_git(workspace_uuid: str) -> None:
 
     username = ws_config.get("git_username", "")
     token = ws_config.get("git_token", "")
-    auth_url = _build_auth_url(remote_url, username, token)
+
+    # 凭证写 .git/cili-credentials；origin 只存不含凭证的 URL
+    _write_credentials_file(workspace_dir, remote_url, username, token)
+    clean_url = _clean_remote_url(remote_url)
 
     # 检查当前 remote origin 是否一致
     result = _git_cmd(workspace_dir, ["remote", "get-url", "origin"], timeout=10)
     current_url = result.stdout.strip() if result.returncode == 0 else ""
-    if current_url != auth_url:
+    if current_url != clean_url:
         if result.returncode == 0:
-            _git_cmd(workspace_dir, ["remote", "set-url", "origin", auth_url], timeout=10)
+            _git_cmd(workspace_dir, ["remote", "set-url", "origin", clean_url], timeout=10)
         else:
-            _git_cmd(workspace_dir, ["remote", "add", "origin", auth_url], timeout=10)
+            _git_cmd(workspace_dir, ["remote", "add", "origin", clean_url], timeout=10)
 
 
 def get_workspace_git_status(workspace_uuid: str) -> dict:

@@ -47,7 +47,7 @@ class MemoryTool(Tool):
                     "into entries across all workspaces (cron/manual trigger)."
                 ),
             },
-            "type": {
+            "memory_type": {
                 "type": "string",
                 "enum": list(MEMORY_TYPES),
                 "description": (
@@ -137,10 +137,10 @@ class MemoryTool(Tool):
     # ─── store ─────────────────────────────────────────
 
     def _store(self, kwargs: dict) -> ToolResult:
-        type_ = kwargs.get("type")
+        type_ = kwargs.get("memory_type")
         if not type_:
             return ToolResult(
-                "Error: type is required for store (fact | preference | skill | reference)",
+                "Error: memory_type is required for store (fact | preference | skill | reference)",
                 error=True,
             )
         result = self.store.store(
@@ -178,7 +178,7 @@ class MemoryTool(Tool):
             return ToolResult("Error: query is required for find", error=True)
         results = self.store.find(
             query=query,
-            type_=kwargs.get("type"),
+            type_=kwargs.get("memory_type"),
             status=kwargs.get("status"),
         )
         if not results:
@@ -208,8 +208,8 @@ class MemoryTool(Tool):
         if not name:
             return ToolResult("Error: name is required for read", error=True)
         fm, body = self.store.read(name)
-        from core.memory_store import _serialize_frontmatter
-        text = "\n".join(_serialize_frontmatter(fm)) + "\n\n" + body
+        from core.memory_store import serialize_frontmatter
+        text = "\n".join(serialize_frontmatter(fm)) + "\n\n" + body
         note = self.store.stale_note(fm)
         if note:
             text += f"\n\n{note}"
@@ -246,7 +246,7 @@ class MemoryTool(Tool):
     # ─── list ──────────────────────────────────────────
 
     def _list(self, kwargs: dict) -> ToolResult:
-        results = self.store.list(type_=kwargs.get("type"), status=kwargs.get("status"))
+        results = self.store.list(type_=kwargs.get("memory_type"), status=kwargs.get("status"))
         if not results:
             return ToolResult("No memory entries.")
         lines = [f"{len(results)} memory entr{'y' if len(results) == 1 else 'ies'}:"]

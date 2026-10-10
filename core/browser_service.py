@@ -44,8 +44,11 @@ _RANDOM_CDP_PORT_TRIES = 50
 # 端口释放等待的重试次数与轮询间隔（秒）
 _PORT_RELEASE_RETRIES = 20
 _POLL_INTERVAL_S = 0.5
-# Chrome 启动等待的重试次数（间隔 1s，约 20 秒上限）
-_CHROME_START_RETRIES = 20
+# Chrome 启动等待：总上限与轮询粒度。粒度取 0.25s——Chrome 通常 1~3s 起来，
+# 1s 粒度会让就绪最多晚 1s 才被发现，期间所有浏览器操作排队。
+_CHROME_START_TIMEOUT_S = 20.0
+_CHROME_POLL_INTERVAL_S = 0.25
+_CHROME_PROGRESS_EVERY_TICKS = int(5 / _CHROME_POLL_INTERVAL_S)  # 每 5 秒打一次进度
 # CDP 连接重试次数
 _CDP_CONNECT_RETRIES = 3
 # 页面交互超时（ms）：导航 / 前进后退刷新 / 单击与输入
@@ -74,17 +77,23 @@ except ImportError:
 # navigate 仅允许 http/https scheme（拒绝 file://、data:、javascript: 等）
 _NAVIGATE_SAFE_SCHEMES = frozenset({"http", "https"})
 
+# 云元数据端点：即使用户批准了非公网导航也硬拒绝 —— 批准的语义是「访问内网
+# 服务」，不应连带解锁云凭证获取端点（169.254.169.254 等可换取实例凭证）
+_NAVIGATE_METADATA_HOSTS = frozenset({
+    "169.254.169.254",           # AWS / GCP / Azure / OpenStack
+    "fd00:ec2::254",             # AWS IMDSv2（IPv6）
+    "metadata.google.internal",  # GCP
+    "metadata.goog",
+    "100.100.100.200",           # 阿里云
+})
 
-def _validate_navigate_url(url: str) -> str | None:
-    """校验浏览器导航 URL（A30/SEC-17）。
 
-    Returns:
-        None 表示可导航；否则返回拒绝原因（供 ToolResult error 展示）。
+def _navigate_hard_deny(url: str) -> str | None:
+    """任何情况下都不放行的拒绝项（含用户已批准）：scheme 白名单 + 云元数据端点。
 
-    策略：
-    - scheme 白名单：仅 http/https，硬拒绝 file://、data:、javascript: 等
-    - 私网/环回/链路本地/保留地址拦截（SSRF 防护）：字面 IP 判定 + localhost 特判。
-      配合网页内容提示注入，防止恶意网页诱导浏览器读取本地文件或探测内网。
+    与 _validate_navigate_url 的私网判定分开，是为了让「用户批准非公网导航」
+    只解锁私网/环回地址，而不会连带绕过 scheme 白名单（否则批准一个
+    file:/// 就能读本地文件）。
     """
     parsed = urlparse(url)
     if parsed.scheme not in _NAVIGATE_SAFE_SCHEMES:
@@ -93,6 +102,34 @@ def _validate_navigate_url(url: str) -> str | None:
     host = parsed.hostname
     if not host:
         return "URL 缺少主机名"
+    if host.lower() in _NAVIGATE_METADATA_HOSTS:
+        return f"{host} 是云元数据端点，不允许导航（SSRF 硬拒绝，用户批准亦不放行）"
+    return None
+
+
+def _validate_navigate_url(url: str, *, allow_non_public: bool = False) -> str | None:
+    """校验浏览器导航 URL（A30/SEC-17）。
+
+    Args:
+        allow_non_public: 用户已批准该非公网导航时为 True —— 只跳过
+            「私网/环回/链路本地」判定；scheme 白名单与云元数据端点属硬拒绝，
+            不受此参数影响。
+
+    Returns:
+        None 表示可导航；否则返回拒绝原因（供 ToolResult error 展示）。
+
+    策略：
+    - scheme 白名单：仅 http/https，硬拒绝 file://、data:、javascript: 等
+    - 云元数据端点硬拒绝（见 _navigate_hard_deny）
+    - 私网/环回/链路本地/保留地址拦截（SSRF 防护）：字面 IP 判定 + localhost 特判。
+      配合网页内容提示注入，防止恶意网页诱导浏览器读取本地文件或探测内网。
+    """
+    reason = _navigate_hard_deny(url)
+    if reason:
+        return reason
+    if allow_non_public:
+        return None
+    host = urlparse(url).hostname
     if host.lower() == "localhost":
         return "localhost（环回地址）不允许导航（SSRF 防护）"
     try:
@@ -270,6 +307,10 @@ class BrowserService:
         # Tab 池：tab_index → (page, 最后活动时间戳)
         self._page_pool: dict[int, tuple] = {}
         self._next_tab_index = 1
+        # 已关闭 tab 释放出的 index，新 tab 优先复用（否则编号只增不减，
+        # 长时间运行后不便排查）。关闭时已清理该 index 的全部附属状态，
+        # 见 _close_page_internal。
+        self._free_tab_indices: list[int] = []
         self._active_tab_index: int | None = None
 
         # Chrome 进程（全局唯一）
@@ -494,6 +535,9 @@ class BrowserService:
                 pass
         self._page_pool.clear()
         self._active_tab_index = None
+        # 池已清空，编号可从 1 重新开始
+        self._free_tab_indices.clear()
+        self._next_tab_index = 1
 
         try:
             if self._browser:
@@ -536,6 +580,12 @@ class BrowserService:
             port = random.randint(*_RANDOM_CDP_PORT_RANGE)
             if not self._is_port_listening(port):
                 return port
+        # 随机取样全部撞车（或探测本身失败）时退化为顺序扫描：直接返回
+        # DEFAULT_CDP_PORT + 1 很可能同样被占用，等于没有回退
+        for port in range(DEFAULT_CDP_PORT + 1, DEFAULT_CDP_PORT + 101):
+            if not self._is_port_listening(port):
+                return port
+        logger.warning("[BrowserService] 未找到空闲 CDP 端口，回退到默认端口+1")
         return DEFAULT_CDP_PORT + 1
 
     def _find_pid_by_port(self, port: int) -> int | None:
@@ -753,9 +803,12 @@ class BrowserService:
 
             logger.debug(f"[BrowserService] Chrome started, PID: {self._chrome_process.pid}")
 
-            # 等待 Chrome 启动并监听 CDP 端口（最多 20 秒）
-            for i in range(_CHROME_START_RETRIES):
-                time.sleep(1)
+            # 等待 Chrome 启动并监听 CDP 端口（最多 _CHROME_START_TIMEOUT_S 秒）
+            start = time.monotonic()
+            ticks = 0
+            while time.monotonic() - start < _CHROME_START_TIMEOUT_S:
+                time.sleep(_CHROME_POLL_INTERVAL_S)
+                ticks += 1
 
                 # 先检查进程是否还活着
                 if self._chrome_process.poll() is not None:
@@ -763,18 +816,23 @@ class BrowserService:
 
                 # 尝试 CDP 连接
                 if self._try_cdp_connect():
-                    logger.debug(f"[BrowserService] Chrome CDP connected after {i+1}s")
+                    logger.debug(
+                        f"[BrowserService] Chrome CDP connected after {time.monotonic() - start:.1f}s"
+                    )
                     return True, ""
 
-                # 每秒输出进度
-                if i % 5 == 4:
-                    logger.debug(f"[BrowserService] Waiting for CDP... {i+1}s")
+                # 每 5 秒输出一次进度
+                if ticks % _CHROME_PROGRESS_EVERY_TICKS == 0:
+                    logger.debug(f"[BrowserService] Waiting for CDP... {time.monotonic() - start:.0f}s")
 
             # 超时 - 检查进程状态
             if self._chrome_process.poll() is not None:
                 return False, f"Chrome exited with code {self._chrome_process.returncode} after timeout"
             else:
-                return False, f"Chrome running (PID {self._chrome_process.pid}) but CDP not ready after 20s"
+                return False, (
+                    f"Chrome running (PID {self._chrome_process.pid}) but CDP not ready "
+                    f"after {_CHROME_START_TIMEOUT_S:.0f}s"
+                )
 
         except Exception as e:
             return False, f"Failed to start Chrome: {e}"
@@ -896,20 +954,30 @@ class BrowserService:
                     return False
             return False
 
+        def _invalidate_connection():
+            # 必须走工作线程：_context/_browser 由工作线程的
+            # _do_connect/_disconnect/_open_new_page 读写，在主调线程直接赋值
+            # 会与之竞争（无锁）
+            self._context = None
+            self._browser = None
+
         try:
             is_valid = self._run_in_worker(_check_connection)
             if is_valid:
                 logger.debug(f"[BrowserService] Existing browser connection is valid")
                 return None  # 已有有效连接
-            else:
-                logger.debug(f"[BrowserService] Existing browser connection invalid, reconnecting...")
-                # 连接已失效，清理后重新连接
-                self._context = None
-                self._browser = None
+            logger.debug(f"[BrowserService] Existing browser connection invalid, reconnecting...")
+            # 连接已失效，清理后重新连接
+            self._run_in_worker(_invalidate_connection)
         except Exception as e:
             logger.warning(f"[BrowserService] Error checking connection: {e}")
-            self._context = None
-            self._browser = None
+            try:
+                self._run_in_worker(_invalidate_connection)
+            except Exception as inner:
+                # 工作线程已不可用：此时不存在并发写，直接清空
+                logger.debug(f"[BrowserService] 清理连接状态失败: {inner}")
+                self._context = None
+                self._browser = None
 
         # 尝试连接到现有的 Chrome
         if self._connect_browser():
@@ -1037,8 +1105,11 @@ class BrowserService:
                 self._context = self._browser.new_context()
 
         new_page = self._context.new_page()
-        tab_index = self._next_tab_index
-        self._next_tab_index += 1
+        if self._free_tab_indices:
+            tab_index = self._free_tab_indices.pop()
+        else:
+            tab_index = self._next_tab_index
+            self._next_tab_index += 1
 
         self._touch_page(tab_index, new_page)
         return tab_index
@@ -1201,8 +1272,10 @@ class BrowserService:
                         f"{len(self._page_pool)} remaining")
 
     def _close_page_internal(self, tab_index: int, page) -> None:
-        """关闭单个 page 并从池中移除。"""
+        """关闭单个 page 并从池中移除（index 归还给 _free_tab_indices 复用）。"""
         self._page_pool.pop(tab_index, None)
+        if tab_index not in self._free_tab_indices:
+            self._free_tab_indices.append(tab_index)
         if self._active_tab_index == tab_index:
             self._active_tab_index = None
         self._listener_pages.discard(id(page))
@@ -1298,26 +1371,25 @@ class BrowserService:
         except Exception as e:
             return ToolResult(f"Browser {operation_name} failed with worker error: {e}", error=True)
 
-    def navigate(self, url: str, tab_index: int | None = None, skip_ssrf: bool = False) -> ToolResult:
+    def navigate(self, url: str, tab_index: int | None = None,
+                 approved_non_public: bool = False) -> ToolResult:
         """导航到 URL 并返回页面文本内容。
 
         Args:
             url: 目标 URL
             tab_index: 指定 tab 编号，None 表示创建新 tab
-            skip_ssrf: 内部参数，True 时跳过 SSRF 预检（仅工具层用户批准后调用；
-                      非公网地址对直接调用者仍保持防护，纵深防御）
+            approved_non_public: 用户已批准该非公网导航（由浏览器工具在批准后传入）。
+                只跳过私网/环回判定；scheme 白名单与云元数据端点仍硬拒绝。
 
         Returns:
             ToolResult，data 包含 tab_index 字段
         """
-        # A30: scheme/私网过滤（SSRF 防护），先于任何浏览器操作快速失败。
-        # skip_ssrf=True 由浏览器工具在用户批准非公网导航后传入。
-        if not skip_ssrf:
-            block_reason = _validate_navigate_url(url)
-            if block_reason:
-                return ToolResult(
-                    f"Error: 导航被拒绝 — {block_reason}", error=True
-                )
+        # A30: SSRF 防护，先于任何浏览器操作快速失败
+        block_reason = _validate_navigate_url(url, allow_non_public=approved_non_public)
+        if block_reason:
+            return ToolResult(
+                f"Error: 导航被拒绝 — {block_reason}", error=True
+            )
         def _do_navigate(page, current_tab_index):
             page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
             # 等待 JavaScript 渲染和重定向

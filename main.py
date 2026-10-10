@@ -374,7 +374,8 @@ def _init_settings() -> None:
                 config_found = path
                 break
             except Exception as e:
-                print(f"[setup] Warning: failed to read {path}: {e}")    # Also check environment variables directly
+                print(f"[setup] Warning: failed to read {path}: {e}")
+    # Also check environment variables directly
     # Support both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY
     api_key = (claude_env.get("ANTHROPIC_AUTH_TOKEN") or
                claude_env.get("ANTHROPIC_API_KEY") or
@@ -1217,49 +1218,6 @@ def _ensure_runtime() -> None:
     _auto_detect_browser()
 
 
-def _start_git_auto_sync() -> None:
-    """启动 Git 自动同步后台线程（每 2 小时同步有远程仓库的工作区）。"""
-    import threading
-    import time
-
-    SYNC_INTERVAL_SECONDS = 2 * 60 * 60  # 2 小时
-
-    def _sync_loop():
-        # 启动后延迟 5 分钟再首次同步，避免刚启动时与其他任务冲突
-        time.sleep(5 * 60)
-        while True:
-            try:
-                _do_git_auto_sync()
-            except Exception as e:
-                logger.warning(f"[git-sync] 自动同步异常: {e}")
-            time.sleep(SYNC_INTERVAL_SECONDS)
-
-    def _do_git_auto_sync():
-        from core.config import get_all_workspace_uuids, load_workspace_config
-        from core.workspace_git import git_sync, is_git_initialized
-
-        for ws_uuid in get_all_workspace_uuids():
-            ws_config = load_workspace_config(ws_uuid) or {}
-            if not ws_config.get("git_remote_url"):
-                continue
-            if not ws_config.get("git_enabled", False):
-                continue
-            if not is_git_initialized(ws_uuid):
-                continue
-            try:
-                ok, msg = git_sync(ws_uuid)
-                if ok:
-                    logger.info(f"[git-sync] {ws_uuid}: {msg}")
-                else:
-                    logger.warning(f"[git-sync] {ws_uuid}: {msg}")
-            except Exception as e:
-                logger.warning(f"[git-sync] {ws_uuid} 同步失败: {e}")
-
-    thread = threading.Thread(target=_sync_loop, daemon=True, name="GitAutoSync")
-    thread.start()
-    logger.info("Git 自动同步已启动（每 2 小时，仅针对配置了远程仓库的工作区）")
-
-
 def _start_core_services() -> None:
     """启动接口无关的服务（cron / 浏览器 / MCP / AgentMailbox / 自动升级）。
 
@@ -1282,6 +1240,12 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     """启动 Web 接入端：鉴权校验 + 自动开浏览器 + uvicorn。"""
     # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网（Web 专属）
     _check_web_auth(args.host)
+
+    # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
+    # 隐式执行，改为在此显式调用；web_api 的 lifespan 也会调一次（幂等）。
+    from web.deps import init_web_deps
+    init_web_deps()
+
 
     print(f"Starting Cili Agent web server on http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop")

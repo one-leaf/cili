@@ -33,6 +33,9 @@ from core.tools.base import (
 
 logger = logging.getLogger(__name__)
 
+# 后台 loop 线程启动等待上限（秒）。此前是无超时忙等，线程启动失败会永久挂住。
+_LOOP_START_TIMEOUT_S = 5.0
+
 # 临时连接错误：单次重试。通常是 MCP server 重启或网络瞬时中断。
 _TRANSIENT_EXC_NAMES: frozenset[str] = frozenset((
     "ClosedResourceError",
@@ -148,7 +151,6 @@ def _rewrite_local_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
                     while isinstance(existing_defs, dict) and name in existing_defs:
                         name += "_"
                     rewritten_refs[ref] = name
-                    generated_defs[name] = {}
                     generated_defs[name] = rewrite(target)
             if name is not None:
                 rewritten["$ref"] = f"#/$defs/{name}"
@@ -329,7 +331,14 @@ class MCPProvider:
             return
         self._thread = threading.Thread(target=self._run_loop, name="mcp-provider", daemon=True)
         self._thread.start()
+        deadline = time.monotonic() + _LOOP_START_TIMEOUT_S
         while self._loop is None:
+            if not self._thread.is_alive():
+                raise RuntimeError("MCP provider 线程在 event loop 就绪前退出")
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"MCP provider event loop 在 {_LOOP_START_TIMEOUT_S}s 内未就绪"
+                )
             time.sleep(0.01)
 
     def _run_loop(self) -> None:
@@ -383,7 +392,12 @@ class MCPProvider:
     def ensure_connected(self, servers: dict[str, MCPConfig]) -> None:
         """确保按给定配置连接；配置签名无变化则 no-op（避免 agent 每次 rebuild 重连）。"""
         if self._loop is None or not self._loop.is_running():
-            self.start()
+            try:
+                self.start()
+            except RuntimeError as exc:
+                # MCP 是可选能力：启动失败降级为「本次无 MCP 工具」，不阻断会话
+                logger.warning(f"[MCP] provider 启动失败，本次跳过 MCP: {exc}")
+                return
         sig = {name: cfg.to_dict() for name, cfg in servers.items()}
         if self._configured_sig == sig:
             return

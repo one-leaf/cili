@@ -32,7 +32,7 @@ DYNAMIC_BOUNDARY = "__CILI_DYNAMIC_BOUNDARY__"
 # ─── system prompt 块生成器 ──────────────────────────────────────────
 
 
-def _gen_text(block: dict, agent) -> str:
+def _gen_text(block: dict, runner) -> str:
     """text 块：直接返回固定文案。content 为字符串或字符串数组（按行拼装）。"""
     content = block.get("content", "")
     if isinstance(content, list):
@@ -40,40 +40,40 @@ def _gen_text(block: dict, agent) -> str:
     return content
 
 
-def _gen_tools(block: dict, agent) -> str:
-    """tools 块：从 agent 的 active tools 生成工具列表段，附延迟工具摘要。"""
+def _gen_tools(block: dict, runner) -> str:
+    """tools 块：从 runner 的 active tools 生成工具列表段，附延迟工具摘要。"""
     # 延迟导入：避免与 core.prompt_sections 的循环依赖
     from core.prompt_sections import _build_tools_section, _build_deferred_tools_section
-    active = getattr(agent, "_active_tools", None) or agent.tools
+    active = getattr(runner, "_active_tools", None) or runner.tools
     section = _build_tools_section(active)
-    deferred = getattr(agent, "_deferred_tools", None) or []
+    deferred = getattr(runner, "_deferred_tools", None) or []
     if deferred:
         section += "\n\n" + _build_deferred_tools_section(deferred)
     return section
 
 
-def _gen_skills(block: dict, agent) -> str:
+def _gen_skills(block: dict, runner) -> str:
     """skills 块：从角色可见技能生成技能列表段。"""
     # 延迟导入：避免与 core.prompt_sections 的循环依赖
     from core.prompt_sections import _build_skills_section
-    return _build_skills_section(agent.role)
+    return _build_skills_section(runner.role)
 
 
-def _gen_context(block: dict, agent) -> str:
+def _gen_context(block: dict, runner) -> str:
     """context 块：动态环境上下文（session 内缓存，不每轮重算）。
 
-    从 agent._prompt_section_cache 读取缓存；未命中则计算并写入。
+    从 runner._prompt_section_cache 读取缓存；未命中则计算并写入。
     缓存仅在 /clear、/compact 时清除（clear_prompt_section_cache）。
     """
-    cache = getattr(agent, "_prompt_section_cache", None)
+    cache = getattr(runner, "_prompt_section_cache", None)
     if cache is None:
         cache = {}
-        agent._prompt_section_cache = cache
+        runner._prompt_section_cache = cache
 
     key = "env_context"
     if key not in cache:
         from core.prompt_sections import build_environment_context
-        cache[key] = build_environment_context(agent.workspace_uuid, agent.cwd)
+        cache[key] = build_environment_context(runner.workspace_uuid, runner.cwd)
     return cache[key]
 
 
@@ -85,7 +85,7 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
 }
 
 
-def build_system_prompt(agent) -> list[str]:
+def build_system_prompt(runner) -> list[str]:
     """按角色配置的 blocks 顺序拼装 system prompt，返回字符串列表。
 
     列表元素按 DYNAMIC_BOUNDARY 分割：
@@ -98,7 +98,7 @@ def build_system_prompt(agent) -> list[str]:
     dynamic_parts: list[str] = []
     past_boundary = False
 
-    for block in agent.role_cfg.system_prompt.get("blocks", []):
+    for block in runner.role_cfg.system_prompt.get("blocks", []):
         if not block.get("enabled", True):
             continue
 
@@ -112,7 +112,7 @@ def build_system_prompt(agent) -> list[str]:
         gen = SYSTEM_BLOCK_GENERATORS.get(block_type)
         if gen is None:
             continue
-        content = gen(block, agent)
+        content = gen(block, runner)
         if not content:
             continue
         content = str(content).strip()
@@ -131,19 +131,19 @@ def build_system_prompt(agent) -> list[str]:
     return result
 
 
-def clear_prompt_section_cache(agent) -> None:
+def clear_prompt_section_cache(runner) -> None:
     """清除 session 内的 prompt section 缓存（/clear、/compact 时调用）。"""
-    if hasattr(agent, "_prompt_section_cache"):
-        agent._prompt_section_cache.clear()
+    if hasattr(runner, "_prompt_section_cache"):
+        runner._prompt_section_cache.clear()
 
 
 # ─── user 层注入生成器（返回 "user" 消息 dict 或 None）───────────────
 
 
-def _gen_claude_md(agent) -> dict | None:
+def _gen_claude_md(runner) -> dict | None:
     """claude_md 层：从磁盘重读项目指令文件。"""
     from core.prompt_sections import build_instructions_message
-    return build_instructions_message(agent.cwd)
+    return build_instructions_message(runner.cwd)
 
 
 # context 层已迁移至 system prompt 的 context 块（动态区），不再作为 user 层注入

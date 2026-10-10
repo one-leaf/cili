@@ -84,6 +84,7 @@ def sse_run_response(
     event_queue: queue.Queue[str | None],
     *,
     cancel_on_disconnect: bool = False,
+    on_disconnect: Callable[[], None] | None = None,
     poll_timeout: float = 0.5,
 ) -> StreamingResponse:
     """把一次同步 runner 执行（run_fn，经 event_queue 推帧）桥接为 SSE 流响应。
@@ -92,8 +93,11 @@ def sse_run_response(
         run_fn: 在后台线程执行 runner 的同步入口（内部负责把事件写入 event_queue，
             并以 None 作结束哨兵）。
         event_queue: run_fn 写入 SSE 帧字符串的队列。
-        cancel_on_disconnect: 客户端断开时是否取消后台执行。默认 False（长任务继续跑，
+        cancel_on_disconnect: 客户端断开时是否请求停止后台执行。默认 False（长任务继续跑，
             需用户显式 /stop）；answer-ask-user 等无后续输入来源的场景传 True。
+            注意：run_in_executor 的工作线程不可取消，``task.cancel()`` 只能取消
+            future 本身，真正停止执行要靠 ``on_disconnect``。
+        on_disconnect: 客户端断开时调用的停止回调（如 ``runner.stop``）。
         poll_timeout: 队列轮询间隔（秒）。
     """
     async def generate():
@@ -103,6 +107,7 @@ def sse_run_response(
             while True:
                 try:
                     # to_thread：避免阻塞的 queue.get 卡住事件循环
+                    # （走默认 executor，线程复用，不是每轮新建）
                     event = await asyncio.to_thread(event_queue.get, True, poll_timeout)
                     if event is None:
                         break
@@ -112,6 +117,11 @@ def sse_run_response(
         except asyncio.CancelledError:
             if cancel_on_disconnect:
                 task.cancel()
+                if on_disconnect is not None:
+                    try:
+                        on_disconnect()
+                    except Exception as e:
+                        logger.warning(f"[sse] on_disconnect 回调失败: {e}")
             else:
                 # 客户端断开 → runner 继续在后台跑，仅 /stop 能中断
                 logger.info("Client disconnected, runner continues running in background")

@@ -69,7 +69,8 @@ class SessionSearchTool(Tool):
         results = []
         scanned = 0
         for sdir, meta in sessions:
-            if len(results) >= max_results:
+            # 扫描预算耗尽后必须跳出外层，否则内层 break 后仍空转遍历剩余会话
+            if len(results) >= max_results or scanned >= self.MAX_MESSAGES_SCANNED:
                 break
             matches = []
             for line in read_jsonl(sdir / MESSAGES_FILE):

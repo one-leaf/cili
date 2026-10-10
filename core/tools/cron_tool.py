@@ -17,13 +17,25 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 from core.tools.base import Tool, ToolResult
-from core.cron import get_user_tasks_file
+from core.cron import cron_config_lock, get_user_tasks_file
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def user_tasks_lock():
+    """串行化 user_tasks.json 的读-改-写。
+
+    与 scheduler 的 state 写入共用同一把可重入锁（core.cron.cron_config_lock），
+    避免两处锁序相反造成死锁。
+    """
+    with cron_config_lock():
+        yield
 
 
 def _load_user_tasks(workspace_uuid: str = "") -> list[dict]:
@@ -198,15 +210,20 @@ class CronTool(Tool):
         elif action == "list":
             return self._list()
         elif action == "update":
-            return self._update(name, description, schedule, task, plan, workspace_uuid, one_time, max_executions)
+            # find → 改 → 落盘须在同一锁内，否则并发写丢更新
+            with user_tasks_lock():
+                return self._update(name, description, schedule, task, plan, workspace_uuid, one_time, max_executions)
         elif action == "delete":
-            return self._delete(name)
+            with user_tasks_lock():
+                return self._delete(name)
         elif action == "run":
             return self._run(name)
         elif action == "enable":
-            return self._set_enabled(name, True)
+            with user_tasks_lock():
+                return self._set_enabled(name, True)
         elif action == "disable":
-            return self._set_enabled(name, False)
+            with user_tasks_lock():
+                return self._set_enabled(name, False)
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
@@ -262,32 +279,35 @@ class CronTool(Tool):
 
         # Load existing tasks from the target workspace
         ws = workspace_uuid or self.workspace_uuid
-        tasks = _load_user_tasks(ws)
 
-        # Check for duplicate name
-        for t in tasks:
-            if t["name"] == name:
-                return ToolResult(f"Error: task '{name}' already exists. Delete it first or use a different name.", error=True)
+        # 去重检查 + 追加 + 落盘须在同一锁内，否则并发创建会丢任务
+        with user_tasks_lock():
+            tasks = _load_user_tasks(ws)
 
-        # Create new task config
-        new_task = {
-            "name": name,
-            "workspace_uuid": ws,
-            "description": description or "",
-            "enabled": True,
-            "schedule": schedule,
-            "one_time": one_time,
-            "config": {
-                "max_executions": max_executions,
-            },
-            "content": {
-                "task": task,
-                "plan": plan or [],
-            },
-        }
+            # Check for duplicate name
+            for t in tasks:
+                if t["name"] == name:
+                    return ToolResult(f"Error: task '{name}' already exists. Delete it first or use a different name.", error=True)
 
-        tasks.append(new_task)
-        _save_user_tasks(tasks, ws)
+            # Create new task config
+            new_task = {
+                "name": name,
+                "workspace_uuid": ws,
+                "description": description or "",
+                "enabled": True,
+                "schedule": schedule,
+                "one_time": one_time,
+                "config": {
+                    "max_executions": max_executions,
+                },
+                "content": {
+                    "task": task,
+                    "plan": plan or [],
+                },
+            }
+
+            tasks.append(new_task)
+            _save_user_tasks(tasks, ws)
 
         # Reload scheduler to pick up new task
         self._reload_scheduler()

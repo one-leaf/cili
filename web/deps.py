@@ -33,7 +33,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # master runner 池下沉至 core（接口无关），Web/QQ 等接入端共享同一份
-_MAX_RUNNERS = registry.max_runners
 _sessions_lock = registry.lock  # 多步操作（workspace 删除/重置、配置重载）持锁
 
 # Base directories
@@ -101,7 +100,7 @@ def _require_workspace(workspace_uuid: str) -> Path:
 
     Usage: ws_dir: Path = Depends(_require_workspace)
     """
-    if not _SAFE_ID_RE.match(workspace_uuid) or '..' in workspace_uuid:
+    if not _SAFE_ID_RE.match(workspace_uuid):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -173,11 +172,18 @@ def _auto_init_global_config() -> None:
         logger.warning(f"Config error: {e}")
 
 
-# Initialize default workspace on startup (side effect only; return value unused)
-_ensure_default_workspace()
+def init_web_deps() -> None:
+    """Web 接入端的显式初始化：确保默认工作区存在 + 全局配置自检。
 
-# Auto-configure global model config on startup
-_auto_init_global_config()
+    此前在模块导入时直接执行，任何 ``import web.deps``（含测试收集、只读工具）
+    都会产生建目录/读配置的副作用。改为由入口显式调用：
+    - ``main.py`` 启动 Web 接口前
+    - ``web_api.py`` 的 lifespan（直接跑 uvicorn / 直接执行本模块的路径）
+
+    幂等，可重复调用。
+    """
+    _ensure_default_workspace()
+    _auto_init_global_config()
 
 
 def _get_workspace_info(workspace_uuid: str) -> dict | None:
@@ -199,11 +205,6 @@ def _list_all_workspaces() -> list[dict]:
             "system": entry.get("system", False),
         })
     return workspaces
-
-
-def _evict_idle_runner() -> None:
-    """Evict the oldest non-running runner if runner count exceeds limit."""
-    registry.evict_idle()
 
 
 def _bind_default_sink(runner: SessionRunner, workspace_uuid: str, session_id: str) -> None:

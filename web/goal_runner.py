@@ -339,10 +339,10 @@ def start_goal_runner(
             if old.is_running():
                 logger.warning(f"[goal] 上一轮目标 60s 内未收尾，暂不启动新循环: {key}")
                 return None
-        runner = GoalRunner(workspace_uuid, session_id, runner, manager)
-        _register_runner(key, runner)
-        runner.start()
-        return runner
+        goal_runner = GoalRunner(workspace_uuid, session_id, runner, manager)
+        _register_runner(key, goal_runner)
+        goal_runner.start()
+        return goal_runner
 
 
 def stop_goal_runner(key: str) -> None:

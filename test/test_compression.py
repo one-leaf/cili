@@ -81,6 +81,21 @@ class TestCountMessagesTokens:
         tokens = count_messages_tokens(messages)
         assert tokens > 0
 
+    def test_top_level_image(self):
+        """顶层 image 块（用户上传的多模态消息）必须计入 token。
+
+        回归：block 循环此前只覆盖 text/tool_result/tool_use/reasoning，
+        顶层图片不计 token，导致多模态会话严重低估、压缩触发过晚。
+        """
+        text_only = [{"role": "user", "content": [
+            {"type": "text", "text": "看图"},
+        ]}]
+        with_image = [{"role": "user", "content": [
+            {"type": "text", "text": "看图"},
+            {"type": "image", "source": {"data": "base64data" * 100}},
+        ]}]
+        assert count_messages_tokens(with_image) > count_messages_tokens(text_only)
+
     def test_tool_use(self):
         messages = [{"role": "assistant", "content": [
             {"type": "tool_use", "name": "bash", "input": {"command": "ls -la"}},

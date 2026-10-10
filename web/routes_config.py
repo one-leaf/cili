@@ -184,11 +184,14 @@ async def update_config(request: UpdateConfigRequest):
     except Exception as e:
         logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
 
-    # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）
+    # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）。
+    # reload_config 会重建工具/发起网络探测，属阻塞操作：只在锁内取快照，
+    # 调用放到锁外，避免卡住事件循环
     async with _sessions_lock:
-        for key, runner in registry.items():
-            runner.reload_config()
-            logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
+        cached = list(registry.items())
+    for key, runner in cached:
+        runner.reload_config()
+        logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
 
@@ -228,11 +231,13 @@ async def reload_mcp():
 
 
 @router.post("/api/mcp/test")
-async def test_mcp_server(request: McpTestRequest = McpTestRequest()):
+async def test_mcp_server(request: McpTestRequest | None = None):
     """测试单个 MCP 服务器连接并枚举工具（不保存配置，测完即断开）。
 
     优先用请求体 config（表单新增场景，含真实 headers）；否则按 name 用已保存配置。
     """
+    if request is None:
+        request = McpTestRequest()
     mcfg = None
     if request.config:
         try:
@@ -252,11 +257,13 @@ async def test_mcp_server(request: McpTestRequest = McpTestRequest()):
 
 
 @router.post("/api/config/test")
-async def test_config(request: TestConfigRequest = TestConfigRequest()):
+async def test_config(request: TestConfigRequest | None = None):
     """Test model configuration by connecting to the API.
 
     如果 request.config 有值，则用传入的参数测试；否则用已保存的主模型配置。
     """
+    if request is None:
+        request = TestConfigRequest()
     try:
         if request.config is not None:
             # 用传入的配置临时测试
@@ -291,9 +298,12 @@ async def test_config(request: TestConfigRequest = TestConfigRequest()):
 
         from core.llm import create_llm_client
         client = create_llm_client(model_cfg)
-        success, message = client.test_connection()
+        try:
+            success, message = client.test_connection()
+        finally:
+            # 必须放 finally：test_connection 抛异常时否则会泄漏 httpx 客户端
+            client.close()
         interface_type = model_cfg.interface_type
-        client.close()
 
         return {
             "success": success,

@@ -156,7 +156,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
 
 # 记忆注入限额：控制 system prompt 体积，避免无限膨胀
 _MEMORY_PREFERENCE_CAP = 10  # 最多注入 10 条 preference
-_MEMORY_SUMMARY_MAX_BYTES = 2 * 1024  # summary.md 最多截取 2KB
+_MEMORY_SUMMARY_MAX_CHARS = 2 * 1024  # summary.md 最多截取 2048 个字符（中文时约 6KB）
 
 
 def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
@@ -189,7 +189,7 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
         summary_path = os.path.join(memory_dir, "summary.md")
         if os.path.isfile(summary_path):
             with open(summary_path, encoding="utf-8") as f:
-                summary_text = f.read().strip()[:_MEMORY_SUMMARY_MAX_BYTES]
+                summary_text = f.read().strip()[:_MEMORY_SUMMARY_MAX_CHARS]
             if summary_text:
                 lines.append("### Memory Summary")
                 lines.append(summary_text)

@@ -131,7 +131,7 @@
           "1. **Search memory**: Use `memory(action=\"find\", query=\"keyword\")` — lists matching entries (name/title/description/tags) with updated time and usage count. No usage is counted for find.",
           "2. **Read details**: Use `memory(action=\"read\", name=\"<name>\")` to load the full body of a chosen entry (counts one use).",
           "",
-          "When you learn a durable fact, a user preference, a reusable technique, or a useful external reference, save it with `memory(action=\"store\", type=..., title=..., description=..., content=..., tags=...)`. Do NOT store temporary or irrelevant information.",
+          "When you learn a durable fact, a user preference, a reusable technique, or a useful external reference, save it with `memory(action=\"store\", memory_type=..., title=..., description=..., content=..., tags=...)`. Do NOT store temporary or irrelevant information.",
           "",
           "Memory can go stale. Entries older than 30 days carry a staleness note — treat it as a warning to verify before relying on the fact. If the fact is cheap to verify, verify it; if it cannot be verified, present it as memory-derived and possibly outdated rather than confirmed-current, and offer to refresh it.",
           "",

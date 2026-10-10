@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.config import load_config, get_workspace_data_dir
+from core.config import get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.memory_pipeline import memory_enabled, schedule_extraction
@@ -21,7 +21,7 @@ from core.session import SessionStore
 from web.deps import (
     registry, _get_or_create_runner, _require_workspace,
     _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
-    _claim_session_run, _release_session_run,
+    _claim_session_run, _release_session_run, _is_session_idle,
 )
 from web.sse import make_sse_callbacks, sse_run_response, sse_stream
 from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
@@ -30,6 +30,23 @@ from core.tools.ask_user import (
 )
 
 router = APIRouter()
+
+# 后台恢复任务的强引用集合（asyncio 只持弱引用，见 resume_runner）
+_resume_tasks: set[asyncio.Task] = set()
+
+
+def _persist_command_exchange(sm, session_key: str, content: str, reply: str) -> None:
+    """信息类命令（/help、/status、/goal status）落盘 user/assistant 两条消息。
+
+    仅在会话空闲时写：运行中的 runner 循环正在改写同一份 messages，并发
+    add_message 会打乱消息顺序。这里不认领会话 —— 控制类命令（/stop、
+    /goal pause）需要能在运行中生效，不能因为它们而阻塞。
+    """
+    if sm is None or not _is_session_idle(session_key):
+        return
+    sm.add_message("user", content, flush=False)
+    sm.add_message("assistant", [{"type": "text", "text": reply}], flush=False)
+    sm.save()
 logger = logging.getLogger(__name__)
 
 
@@ -178,10 +195,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 """
         # Save to session via SessionStore
         sm = _get_session(workspace_uuid, session_id)
-        if sm:
-            sm.add_message("user", content, flush=False)
-            sm.add_message("assistant", [{"type": "text", "text": help_text}], flush=False)
-            sm.save()
+        _persist_command_exchange(sm, f"{workspace_uuid}:{session_id}", content, help_text)
         return StreamingResponse(sse_stream({"type": "text", "content": help_text}), media_type="text/event-stream")
 
     if content == "/status":
@@ -213,9 +227,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
 """
         # Save to session via SessionStore
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": status_text}], flush=False)
-        runner.session.save()
+        _persist_command_exchange(
+            runner.session, f"{workspace_uuid}:{session_id}", content, status_text
+        )
         return StreamingResponse(sse_stream({"type": "text", "content": status_text}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
@@ -223,9 +237,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         manager = get_goal_manager(runner.session.session_dir)
         goal_text = format_goal_status(manager)
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": goal_text}], flush=False)
-        runner.session.save()
+        _persist_command_exchange(
+            runner.session, f"{workspace_uuid}:{session_id}", content, goal_text
+        )
         return StreamingResponse(sse_stream({"type": "text", "content": goal_text}), media_type="text/event-stream")
 
     if content == "/goal clear":
@@ -269,9 +283,10 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
         runner.session.save()
         loop = asyncio.get_running_loop()
-        runner = await loop.run_in_executor(None, lambda: start_goal_runner(
+        # 不要覆盖 runner：start_goal_runner 返回 None（上一轮 60s 未收尾）时仍需它落提示
+        resumed = await loop.run_in_executor(None, lambda: start_goal_runner(
             workspace_uuid, session_id, runner, manager))
-        if runner is None:
+        if resumed is None:
             result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
             runner.session.save()
@@ -298,9 +313,10 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
         runner.session.save()
         loop = asyncio.get_running_loop()
-        runner = await loop.run_in_executor(None, lambda: start_goal_runner(
+        # 同 /goal resume：不要覆盖 runner，None 分支仍需它落提示
+        resumed = await loop.run_in_executor(None, lambda: start_goal_runner(
             workspace_uuid, session_id, runner, manager))
-        if runner is None:
+        if resumed is None:
             result_text = (f"🎯 目标已设置：{objective}\n"
                            "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
             runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
@@ -408,7 +424,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             try:
                 sm = getattr(runner, "session", None)
                 if sm is not None:
-                    sm.add_message("assistant", f"错误: {e}", _meta={"error_notice": True})
+                    sm.add_message("assistant", f"错误: {e}", meta={"error_notice": True})
                     sm.save()
             except Exception:
                 logger.exception("Failed to persist error message")
@@ -444,9 +460,6 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     Called by frontend when a background sub-agent completes and master is idle.
     Drains notifications from message_bus and continues the runner loop.
     """
-    from web.deps import _claim_session_run, _release_session_run, _is_session_idle
-    import asyncio
-
     key = f"{workspace_uuid}:{session_id}"
 
     # Check if session is idle
@@ -458,7 +471,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     if not runner:
         return {"success": False, "message": "会话不存在"}
 
-    session_id_check = getattr(runner, "_session_id", None)
+    session_id_check = runner.current_session_id
     if not session_id_check:
         return {"success": False, "message": "会话 ID 不存在"}
 
@@ -477,34 +490,25 @@ async def resume_runner(workspace_uuid: str, session_id: str):
         return {"success": False, "message": "无法认领会话"}
 
     # Run runner in background thread
-    async def run_and_stream():
-        event_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
-        callbacks = make_sse_callbacks(event_queue, runner)
-
+    async def run_resume():
         def run_runner():
             try:
-                # 恢复循环处理后台通知（不追加新用户消息）
-                runner.resume_from_notification(sink=callbacks)
+                # 恢复循环处理后台通知（不追加新用户消息）。
+                # 不传 sink：输出走 runner.default_sink（web 层绑定到 /api/events 全局流），
+                # 本端点只负责触发，不需要转发流。
+                runner.resume_from_notification()
             except Exception as e:
                 logger.error(f"Resume runner error: {e}")
             finally:
                 _release_session_run(key)
-                event_queue.put(None)
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run_runner)
 
-        # Drain remaining events
-        while True:
-            try:
-                event = event_queue.get_nowait()
-                if event is None:
-                    break
-            except queue.Empty:
-                break
-
-    # Start background task
-    asyncio.create_task(run_and_stream())
+    # 必须持有任务引用：create_task 的返回值若无人引用，任务可能被 GC 回收而中断
+    task = asyncio.create_task(run_resume())
+    _resume_tasks.add(task)
+    task.add_done_callback(_resume_tasks.discard)
 
     return {"success": True, "message": "已触发继续"}
 

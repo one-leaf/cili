@@ -48,8 +48,8 @@ def _validate_memory_name(name: str) -> None:
 
 
 @router.get("/api/workspaces/{workspace_uuid}/memory")
-async def list_memory(workspace_uuid: str, type: str = "", status: str = "", q: str = ""):
-    """记忆总览：统计 + 条目列表（可按 type/status/关键词过滤）+ 待整合数 + 开关。"""
+async def list_memory(workspace_uuid: str, memory_type: str = "", status: str = "", q: str = ""):
+    """记忆总览：统计 + 条目列表（可按 memory_type/status/关键词过滤）+ 待整合数 + 开关。"""
     _validate_workspace_uuid(workspace_uuid)
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():
@@ -60,7 +60,7 @@ async def list_memory(workspace_uuid: str, type: str = "", status: str = "", q: 
                 "entries": [], "pending": 0}
     store = MemoryStore(md)
     try:
-        entries = store.list(type_=type or None, status=status or None)
+        entries = store.list(type_=memory_type or None, status=status or None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if q:

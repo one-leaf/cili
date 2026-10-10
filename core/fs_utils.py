@@ -49,19 +49,26 @@ def _atomic_temp_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.tmp.{secrets.token_hex(3)}")
 
 
-def atomic_write_text(path: Path | str, content: str, newline: str = "") -> None:
+def atomic_write_text(path: Path | str, content: str, newline: str = "",
+                      encoding: str = "utf-8") -> None:
     """原子写入任意文本文件：唯一临时文件 + fsync + os.replace。
 
-    newline="" 禁用换行翻译（保持 LF）；传 "\r\n" 可保留 CRLF 风格。
+    newline="" 禁用换行翻译（保持 LF）；传 "\\r\\n" 可保留 CRLF 风格。
+    encoding 默认 utf-8；edit 工具按原文件编码传入，避免把 GBK 文件整体转码。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = _atomic_temp_path(path)
-    with open(tmp_path, "w", encoding="utf-8", newline=newline) as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, path)
+    try:
+        with open(tmp_path, "w", encoding=encoding, newline=newline) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        # 失败时清理临时文件，避免残留（.tmp 后缀文件会一直留在目录里）
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def atomic_write_json(path: Path | str, data: Any, indent: int = 2) -> None:
@@ -73,11 +80,16 @@ def atomic_write_json(path: Path | str, data: Any, indent: int = 2) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = _atomic_temp_path(path)
-    with open(tmp_path, "w", encoding="utf-8", newline="") as f:
-        json.dump(data, f, ensure_ascii=False, indent=indent)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, path)
+    try:
+        with open(tmp_path, "w", encoding="utf-8", newline="") as f:
+            json.dump(data, f, ensure_ascii=False, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        # 失败时清理临时文件（序列化失败会留下带随机后缀的 .tmp）
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_json_or_backup(path: Path | str, default: Any) -> Any:

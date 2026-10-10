@@ -434,7 +434,7 @@ class TestBrowserNavigateKind:
         assert reloaded.approved_navigations() == [self.URL]
 
     def test_browser_tool_placeholder_and_gate(self):
-        """浏览器工具 navigate 到非公网地址：未批准返回占位，已批准 skip_ssrf 放行。"""
+        """浏览器工具 navigate 到非公网地址：未批准返回占位，已批准放行。"""
         from unittest.mock import MagicMock, patch
         from core.tools.approval import META_KEY
         from core.tools.browser import BrowserTool
@@ -458,8 +458,8 @@ class TestBrowserNavigateKind:
         assert result.completed is False
         svc.navigate.assert_not_called()
 
-        # 已批准 → 真正导航（skip_ssrf=True）
+        # 已批准 → 真正导航（approved_non_public=True）
         store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
         with patch("core.browser_service.get_service", return_value=svc):
             BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
-        svc.navigate.assert_called_once_with(self.URL, tab_index=None, skip_ssrf=True)
+        svc.navigate.assert_called_once_with(self.URL, tab_index=None, approved_non_public=True)

@@ -299,13 +299,33 @@ class TestEnhancedDispatch:
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
             BrowserTool(approval_store=store).execute(action="navigate", url=url)
-        svc.navigate.assert_called_once_with(url, tab_index=None, skip_ssrf=True)
+        svc.navigate.assert_called_once_with(url, tab_index=None, approved_non_public=True)
 
     def test_navigate_private_url_no_store_hard_placeholder(self):
         """无 approval_store（独立/worker 无共享实例）时仍返回占位而非放行。"""
         svc = self._service()
         result = self._execute(svc, action="navigate", url="http://192.168.1.5/")
         assert result.completed is False
+        svc.navigate.assert_not_called()
+
+    def test_hard_deny_url_gets_no_approval_card(self):
+        """回归：scheme 白名单与云元数据端点不提供批准通道。
+
+        此前工具层对任何被拦截的 URL 都弹批准卡，批准后 skip_ssrf=True
+        跳过整段校验 —— 批准 file:/// 或元数据端点即可绕过防护。
+        """
+        from core.tools.approval import ApprovalStore, META_KEY, approval_decision_id
+        from core.tools.browser import BrowserTool
+
+        svc = self._service()
+        store = ApprovalStore()
+        for url in ("file:///etc/passwd", "http://169.254.169.254/latest/meta-data/"):
+            # 即便规则已批准，也应直接硬拒绝、不调用 service
+            store.approve(approval_decision_id(url), url, kind="browser:navigate")
+            with patch("core.browser_service.get_service", return_value=svc):
+                result = BrowserTool(approval_store=store).execute(action="navigate", url=url)
+            assert result.error
+            assert META_KEY not in (result.meta or {})
         svc.navigate.assert_not_called()
 
     def test_create_tools_wires_approval_store_to_browser(self):
@@ -331,5 +351,5 @@ class TestEnhancedDispatch:
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
             bt.execute(action="navigate", url=url)
-        svc.navigate.assert_called_once_with(url, tab_index=None, skip_ssrf=True)
+        svc.navigate.assert_called_once_with(url, tab_index=None, approved_non_public=True)
 

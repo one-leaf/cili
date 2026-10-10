@@ -19,7 +19,7 @@ class TestMemoryToolStore:
     def test_store_fact(self, tools, test_workspace):
         result = _memory_tool(tools).execute(
             action="store",
-            type="fact",
+            memory_type="fact",
             name="rest-api",
             title="REST API Design",
             description="Use plural nouns for resource names",
@@ -32,22 +32,22 @@ class TestMemoryToolStore:
 
     def test_store_derives_name_from_title(self, tools, test_workspace):
         result = _memory_tool(tools).execute(
-            action="store", type="skill", title="Python Async", content="use asyncio"
+            action="store", memory_type="skill", title="Python Async", content="use asyncio"
         )
         assert not result.error
         assert "'python-async'" in result.output
 
     def test_store_chinese_title_hash_name(self, tools, test_workspace):
         result = _memory_tool(tools).execute(
-            action="store", type="preference", title="用户偏好简洁回复", content="用简洁中文回复"
+            action="store", memory_type="preference", title="用户偏好简洁回复", content="用简洁中文回复"
         )
         assert not result.error
         assert "memory-" in result.output
 
     def test_store_replaces_same_name(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="same", title="V1", content="v1")
-        result = t.execute(action="store", type="fact", name="same", title="V2", content="v2")
+        t.execute(action="store", memory_type="fact", name="same", title="V1", content="v1")
+        result = t.execute(action="store", memory_type="fact", name="same", title="V2", content="v2")
         assert not result.error
         assert "Updated fact 'same'" in result.output
 
@@ -57,13 +57,13 @@ class TestMemoryToolStore:
         assert "type is required" in result.output
 
     def test_store_invalid_type(self, tools, test_workspace):
-        result = _memory_tool(tools).execute(action="store", type="bogus", title="X", content="Y")
+        result = _memory_tool(tools).execute(action="store", memory_type="bogus", title="X", content="Y")
         assert result.error
         assert "Unknown memory type" in result.output
 
     def test_store_reject_uuid_name(self, tools, test_workspace):
         result = _memory_tool(tools).execute(
-            action="store", type="fact", name="550e8400-e29b-41d4-a716-446655440000",
+            action="store", memory_type="fact", name="550e8400-e29b-41d4-a716-446655440000",
             title="X", content="Y",
         )
         assert result.error
@@ -72,15 +72,15 @@ class TestMemoryToolStore:
     def test_store_reject_path_traversal_name(self, tools, test_workspace):
         for evil in ("..", "../../../evil", "a/../b", "C:\\Users\\evil", "C:/Users/evil"):
             result = _memory_tool(tools).execute(
-                action="store", type="fact", name=evil, title="X", content="Y"
+                action="store", memory_type="fact", name=evil, title="X", content="Y"
             )
             assert result.error, f"name={evil!r} 应被拒绝"
 
     def test_store_global_name_uniqueness(self, tools, test_workspace):
         """同一 name 不能跨类型复用。"""
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="dup", title="A", content="x")
-        result = t.execute(action="store", type="skill", name="dup", title="B", content="y")
+        t.execute(action="store", memory_type="fact", name="dup", title="A", content="x")
+        result = t.execute(action="store", memory_type="skill", name="dup", title="B", content="y")
         assert result.error
         assert "globally unique" in result.output
 
@@ -91,7 +91,7 @@ class TestMemoryToolFind:
     def test_find_by_title_keyword(self, tools, test_workspace):
         t = _memory_tool(tools)
         t.execute(
-            action="store", type="fact", name="k8s-guide", title="Kubernetes Deploy Guide",
+            action="store", memory_type="fact", name="k8s-guide", title="Kubernetes Deploy Guide",
             description="Deploy apps to kubernetes clusters", content="steps", tags=["k8s"],
         )
         result = t.execute(action="find", query="kubernetes")
@@ -102,18 +102,18 @@ class TestMemoryToolFind:
 
     def test_find_by_tag_and_case_insensitive(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="x", title="X Entry", content="c", tags=["FastAPI"])
+        t.execute(action="store", memory_type="fact", name="x", title="X Entry", content="c", tags=["FastAPI"])
         result = t.execute(action="find", query="FASTAPI")
         assert not result.error
         assert "[fact]" in result.output
 
     def test_find_type_filter(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="dep-fact", title="Deploy Fact",
+        t.execute(action="store", memory_type="fact", name="dep-fact", title="Deploy Fact",
                   description="blue-green deploy pipeline", content="x")
-        t.execute(action="store", type="skill", name="dep-skill", title="Deploy Skill",
+        t.execute(action="store", memory_type="skill", name="dep-skill", title="Deploy Skill",
                   description="blue-green deploy for prod", content="x")
-        result = t.execute(action="find", query="deploy", type="skill")
+        result = t.execute(action="find", query="deploy", memory_type="skill")
         assert not result.error
         assert "[skill]" in result.output
         assert "[fact]" not in result.output
@@ -131,7 +131,7 @@ class TestMemoryToolFind:
     def test_find_does_not_increment_usage(self, tools, test_workspace):
         """find 只检索不递增 usage（真实使用以 read 为准）。"""
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="counter", title="C", content="body")
+        t.execute(action="store", memory_type="fact", name="counter", title="C", content="body")
         t.execute(action="find", query="counter")
         result = t.execute(action="find", query="counter")
         assert "uses: 0" in result.output
@@ -140,7 +140,7 @@ class TestMemoryToolFind:
 class TestMemoryToolReadUpdateDelete:
     def test_read_increments_usage(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="counter", title="C", content="the body text")
+        t.execute(action="store", memory_type="fact", name="counter", title="C", content="the body text")
         result = t.execute(action="read", name="counter")
         assert not result.error
         assert "the body text" in result.output
@@ -160,7 +160,7 @@ class TestMemoryToolReadUpdateDelete:
 
     def test_update_entry(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="up", title="Old", content="v1")
+        t.execute(action="store", memory_type="fact", name="up", title="Old", content="v1")
         result = t.execute(action="update", name="up", title="New", content="v2")
         assert not result.error
         assert "Updated 'up'" in result.output
@@ -175,7 +175,7 @@ class TestMemoryToolReadUpdateDelete:
 
     def test_delete_entry(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="del", title="X", content="y")
+        t.execute(action="store", memory_type="fact", name="del", title="X", content="y")
         result = t.execute(action="delete", name="del")
         assert not result.error
         assert "Deleted fact 'del'" in result.output
@@ -191,7 +191,7 @@ class TestMemoryToolReadUpdateDelete:
 class TestMemoryToolListStat:
     def test_list_entries(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="one", title="One Entry", content="x")
+        t.execute(action="store", memory_type="fact", name="one", title="One Entry", content="x")
         result = t.execute(action="list")
         assert not result.error
         assert "1 memory entry" in result.output
@@ -204,7 +204,7 @@ class TestMemoryToolListStat:
 
     def test_stat_shows_counts(self, tools, test_workspace):
         t = _memory_tool(tools)
-        t.execute(action="store", type="fact", name="f", title="F", content="x")
+        t.execute(action="store", memory_type="fact", name="f", title="F", content="x")
         result = t.execute(action="stat")
         assert not result.error
         assert "entries: 1" in result.output

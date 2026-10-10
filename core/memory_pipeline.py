@@ -240,6 +240,17 @@ def _new_messages(messages: list[dict], last_id: str) -> list[dict]:
     return new_msgs
 
 
+def _advance_pointer(pointer: "_ExtractPointer", last_id: str) -> None:
+    """推进会话级提取指针（只在拿到真实消息 id 时）。
+
+    不能退化到 key_base：它要么是「本批首条消息 id」——会把游标停在已处理区间
+    之前，下一轮重放整批（重复提取）；要么是无 id 时的 "b{n}"——_new_messages
+    永远匹配不上，提取将永久停滞。
+    """
+    if last_id:
+        pointer.save(last_id, now_str())
+
+
 def _read_index_text(memory_dir: str) -> str:
     index_path = os.path.join(memory_dir, "MEMORY.md")
     try:
@@ -302,7 +313,7 @@ def run_extraction(
 
         prompt = _build_extraction_input(new_msgs, _read_index_text(memory_dir))
         if not prompt:
-            pointer.save(last_id or key_base, now_str())
+            _advance_pointer(pointer, last_id)
             return {"appended": 0, "raw": 0, "extracted": 0, "skipped": True}
 
         raw_records: list[dict] = []
@@ -327,7 +338,7 @@ def run_extraction(
                 integrated=False,
                 raw=True,
             )
-            pointer.save(last_id or key_base, now_str())
+            _advance_pointer(pointer, last_id)
             return {"appended": 1, "raw": 1, "extracted": 0}
 
         appended = 0
@@ -359,7 +370,7 @@ def run_extraction(
             )
             appended += 1
 
-        pointer.save(last_id or key_base, now_str())
+        _advance_pointer(pointer, last_id)
         return {"appended": appended, "raw": 0, "extracted": len(raw_records)}
 
 

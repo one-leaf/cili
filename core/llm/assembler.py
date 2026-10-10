@@ -97,6 +97,9 @@ class BlockAssembler:
             # events, each carrying only some fields (e.g. Anthropic's
             # message_start has the full usage but message_delta only has
             # output_tokens). Overwriting would zero out input/cache tokens.
+            # 注意：UsageData 各字段是 int = 0（非 Optional），无法区分「上报 0」与
+            # 「未上报」，故这里只能按真值合并。改成 `is not None` 会让每次 usage
+            # 事件都整体覆盖，message_delta 只带 output_tokens 时会把 input_tokens 清零。
             self._usage = UsageData(
                 input_tokens=u.input_tokens if u.input_tokens else self._usage.input_tokens,
                 output_tokens=u.output_tokens if u.output_tokens else self._usage.output_tokens,

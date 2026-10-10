@@ -62,4 +62,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
             _release_session_run(key)
             event_queue.put(None)  # sentinel: done
 
-    return sse_run_response(run_runner, event_queue, cancel_on_disconnect=True)
+    # 断连时显式让 runner 停下：线程不可取消，仅 task.cancel() 不起作用
+    return sse_run_response(
+        run_runner, event_queue, cancel_on_disconnect=True, on_disconnect=runner.stop
+    )

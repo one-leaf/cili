@@ -60,6 +60,10 @@ class SessionRegistry:
         self._claims_lock = threading.Lock()
         # 接入端对注册表做多步操作（如遍历重载配置、删除工作区）时持此锁
         self.lock = asyncio.Lock()
+        # 保护 _hosted/_access/_attachment_index 的同步变更。
+        # 不能用 asyncio.Lock：remove/attach/detach 等同步方法（含非事件循环
+        # 线程调用）无法 await；临界区内不得出现 await。
+        self._data_lock = threading.RLock()
         self._attachment_index: dict[str, str] = {}  # attachment_id -> session_key
 
     # ---------- 查询 ----------
@@ -103,19 +107,20 @@ class SessionRegistry:
         """
         key = session_key(workspace_uuid, session_id)
         async with self.lock:
-            self._access[key] = time.time()
-            if key not in self._hosted:
-                self.evict_idle()
-                config = load_config()
-                runner = SessionRunner(
-                    config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid
-                )
-                self._attach_requested_session(runner, session_id)
-                if on_create is not None:
-                    on_create(runner)
-                self._register_mailbox(runner, session_id)
-                self._hosted[key] = HostedSession(key=key, runner=runner)
-            return self._hosted[key].runner
+            with self._data_lock:
+                self._access[key] = time.time()
+                if key not in self._hosted:
+                    self.evict_idle()
+                    config = load_config()
+                    runner = SessionRunner(
+                        config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid
+                    )
+                    self._attach_requested_session(runner, session_id)
+                    if on_create is not None:
+                        on_create(runner)
+                    self._register_mailbox(runner, session_id)
+                    self._hosted[key] = HostedSession(key=key, runner=runner)
+                return self._hosted[key].runner
 
     def _attach_requested_session(self, runner: SessionRunner, session_id: str) -> None:
         """把 runner 从默认会话切到请求的 session_id（已存在则加载，否则新建）。"""
@@ -153,31 +158,42 @@ class SessionRegistry:
             logger.warning(f"Failed to register session with AgentMailbox: {e}")
 
     def evict_idle(self) -> None:
-        """超过上限时淘汰最久未访问的非运行中 runner。"""
-        if len(self._hosted) <= self.max_runners:
-            return
-        idle_keys = [k for k, h in self._hosted.items() if not h.runner.is_running()]
-        if not idle_keys:
-            return
-        oldest = min(idle_keys, key=lambda k: self._access.get(k, 0))
-        logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
-        hosted = self._hosted.pop(oldest)
-        self._access.pop(oldest, None)
-        for aid in list(hosted.attachments):
-            self._attachment_index.pop(aid, None)
+        """超过上限时淘汰最久未访问的非运行中 runner。
+
+        跳过已 claim 但尚未进入 is_running 的 runner —— 否则会在「认领成功」
+        与「循环真正启动」之间的窗口里把它淘汰掉。
+        """
+        with self._data_lock:
+            if len(self._hosted) <= self.max_runners:
+                return
+            with self._claims_lock:
+                claimed = set(self._claims)
+            idle_keys = [
+                k for k, h in self._hosted.items()
+                if k not in claimed and not h.runner.is_running()
+            ]
+            if not idle_keys:
+                return
+            oldest = min(idle_keys, key=lambda k: self._access.get(k, 0))
+            logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
+            hosted = self._hosted.pop(oldest)
+            self._access.pop(oldest, None)
+            for aid in list(hosted.attachments):
+                self._attachment_index.pop(aid, None)
         try:
             hosted.runner.cleanup()
         except Exception as e:
             logger.warning(f"[master runner LRU] 清理被淘汰的 master runner 失败: {e}")
 
     def remove(self, key: str) -> SessionRunner | None:
-        """移除并清理单个会话（供删除会话使用）。调用方持有 _lock。"""
-        hosted = self._hosted.pop(key, None)
-        self._access.pop(key, None)
-        if hosted is None:
-            return None
-        for aid in list(hosted.attachments):
-            self._attachment_index.pop(aid, None)
+        """移除并清理单个会话（供删除会话使用）。"""
+        with self._data_lock:
+            hosted = self._hosted.pop(key, None)
+            self._access.pop(key, None)
+            if hosted is None:
+                return None
+            for aid in list(hosted.attachments):
+                self._attachment_index.pop(aid, None)
         try:
             hosted.runner.cleanup()
         except Exception as e:
@@ -187,20 +203,24 @@ class SessionRegistry:
     def remove_workspace(self, workspace_uuid: str) -> None:
         """移除某工作区的全部会话（供删除/重置工作区使用）。"""
         prefix = f"{workspace_uuid}:"
-        for key in [k for k in self._hosted if k.startswith(prefix)]:
+        with self._data_lock:
+            keys = [k for k in self._hosted if k.startswith(prefix)]
+        for key in keys:
             self.remove(key)
 
     def shutdown_all(self) -> None:
         """停止并清理全部 runner（供各接入端进程退出时调用）。"""
-        for key, hosted in list(self._hosted.items()):
+        with self._data_lock:
+            hosted_list = list(self._hosted.items())
+            self._hosted.clear()
+            self._access.clear()
+            self._attachment_index.clear()
+        for key, hosted in hosted_list:
             try:
                 hosted.runner.stop()
                 hosted.runner.cleanup()
             except Exception as e:
                 logger.warning(f"[SessionRegistry] 清理 master runner {key} 失败: {e}")
-        self._hosted.clear()
-        self._access.clear()
-        self._attachment_index.clear()
 
     # ---------- 运行权认领 ----------
 
@@ -231,21 +251,23 @@ class SessionRegistry:
     # ---------- Attachment（多接口附着；D 阶段接入路由） ----------
 
     def attach(self, key: str, interface: str, attachment_id: str) -> Attachment:
-        hosted = self._hosted.get(key)
-        if hosted is None:
-            raise KeyError(f"Session not hosted: {key}")
-        att = Attachment(attachment_id=attachment_id, interface=interface, session_key=key)
-        hosted.attachments[attachment_id] = att
-        self._attachment_index[attachment_id] = key
-        return att
+        with self._data_lock:
+            hosted = self._hosted.get(key)
+            if hosted is None:
+                raise KeyError(f"Session not hosted: {key}")
+            att = Attachment(attachment_id=attachment_id, interface=interface, session_key=key)
+            hosted.attachments[attachment_id] = att
+            self._attachment_index[attachment_id] = key
+            return att
 
     def detach(self, attachment_id: str) -> None:
-        key = self._attachment_index.pop(attachment_id, None)
-        if key is None:
-            return
-        hosted = self._hosted.get(key)
-        if hosted is not None:
-            hosted.attachments.pop(attachment_id, None)
+        with self._data_lock:
+            key = self._attachment_index.pop(attachment_id, None)
+            if key is None:
+                return
+            hosted = self._hosted.get(key)
+            if hosted is not None:
+                hosted.attachments.pop(attachment_id, None)
 
     def attachments(self, key: str) -> list[Attachment]:
         hosted = self._hosted.get(key)
