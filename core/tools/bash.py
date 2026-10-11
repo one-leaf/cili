@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from core.security.path_policy import OP_WRITE, PathTarget
-from core.security.shell_paths import extract_shell_targets
+from core.security.shell_paths import extract_shell_targets, normalize_shell_path
 from core.tools.approval import (
     META_KEY,
     MODE_ASK,
@@ -218,7 +218,9 @@ class BashTool(Tool):
 
         # Apply working_dir override
         if working_dir:
-            resolved = policy.resolve(working_dir)
+            # bash 语义归一化（/tmp → usertemp 挂载点），policy.resolve 会把
+            # 无盘符根路径解析到当前盘根，与 Git Bash 实际 cd 的位置不符
+            resolved = normalize_shell_path(working_dir, self.cwd, "bash")
             # 区外 working_dir 也需审批/拒绝
             gate = self._path_gate([PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)])
             if gate:

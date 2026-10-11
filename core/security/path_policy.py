@@ -4,19 +4,37 @@
 但越界不是硬拒绝而是审批：main agent 弹 ask_user 卡，worker/lite 查共享
 ApprovalStore（未批准则降级为权限拒绝）。读取不经过本模块（任意放行）。
 
-approval_store 为 None 时 fail-closed：越界一律 deny，不询问。
+安全区例外：workspace 之外，系统临时目录（os_temp_root，即 Git Bash /tmp
+的 usertemp 挂载点、pwsh $env:TEMP 的真实落点）也视为区内——临时文件
+不持久化，写入/删除免审批。
+
+approval_store 为 None 时 fail-closed：越界（临时目录除外）一律 deny，不询问。
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 
 from core.fs_utils import normalize_bash_path
 
 OP_WRITE = "write"
 OP_DELETE = "delete"
+
+
+def os_temp_root() -> str:
+    """进程环境下的临时目录根（realpath 后），作为路径白名单安全区。
+
+    与 shell_paths._os_temp_dir 同源（TMP → TEMP → gettempdir），覆盖
+    Git Bash /tmp 的 usertemp 挂载落点与 pwsh $env:TEMP 的真实位置。
+    """
+    for var in ("TMP", "TEMP"):
+        v = os.environ.get(var)
+        if v:
+            return os.path.realpath(v)
+    return os.path.realpath(tempfile.gettempdir())
 
 # 动态目标（变量/通配符/$(...) 等无法静态解析）的 decision_id 前缀。
 # 动态目标 resolved=None，按原始串生成稳定 ID，保证"原样重发"命中同一 ID。
@@ -62,6 +80,7 @@ class PathPolicy:
                  approval_store=None):
         self.cwd = os.path.abspath(cwd or workspace_root)
         self.workspace_root = os.path.realpath(workspace_root)
+        self.temp_root = os_temp_root()
         self.approval_store = approval_store
 
     def resolve(self, path: str) -> str:
@@ -77,7 +96,10 @@ class PathPolicy:
         return os.path.realpath(p)
 
     def is_inside(self, resolved: str) -> bool:
-        return is_path_within(resolved, self.workspace_root)
+        """workspace 内，或系统临时目录内（临时文件不落盘持久化，视为安全区）。"""
+        if is_path_within(resolved, self.workspace_root):
+            return True
+        return is_path_within(resolved, self.temp_root)
 
     def decision_id(self, target: PathTarget) -> str:
         """路径 → 审批判定 ID。静态按 op+resolved（normcase 保证大小写无关）；

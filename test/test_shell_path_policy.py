@@ -259,3 +259,90 @@ class TestPwshExecuteGate:
         result = tool.execute(command="New-Item -ItemType File out.txt", timeout=5)
         assert result.output == "ran"
         assert not result.error
+
+
+# ─── 临时目录安全区：bash /tmp（usertemp 挂载）────────────────────
+
+
+class TestTempZoneBash:
+    def _t(self, command, cwd):
+        return extract_shell_targets(command, "bash", cwd=cwd, initial_dir=cwd)
+
+    def test_redirect_tmp_maps_to_temp(self, tmp_path):
+        targets = self._t("echo hi > /tmp/out.txt", str(tmp_path))
+        assert len(targets) == 1
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "out.txt"))
+
+    def test_tmp_bare_target(self, tmp_path):
+        targets = self._t("cp a.txt /tmp", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(os.environ["TEMP"])
+
+    def test_tmp_nested(self, tmp_path):
+        targets = self._t("rm -rf /tmp/build/x", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "build", "x"))
+
+    def test_cd_tmp_then_relative(self, tmp_path):
+        targets = self._t("cd /tmp && touch a.txt", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "a.txt"))
+
+    def test_tmp_delete_allowed(self, tmp_path):
+        targets = self._t("rm -rf /tmp/build", str(tmp_path))
+        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        assert policy.status(targets[0]) == "allow"
+
+    def test_tmpx_not_mapped_still_gated(self, tmp_path):
+        targets = self._t("echo hi > /tmpx/out.txt", str(tmp_path))
+        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        assert policy.status(targets[0]) == "needs_approval"
+
+    def test_working_dir_tmp_allowed(self, test_workspace, monkeypatch):
+        tool = BashTool(cwd=test_workspace, approval_store=ApprovalStore())
+        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran"))
+        result = tool.execute(command="ls", working_dir="/tmp", timeout=5)
+        assert result.output == "ran"
+        assert not result.error
+
+
+# ─── 临时目录安全区：pwsh $env:TEMP ──────────────────────────────
+
+
+class TestTempZonePwsh:
+    def _t(self, command, cwd):
+        return extract_shell_targets(command, "pwsh", cwd=cwd, initial_dir=cwd)
+
+    def test_env_temp_static(self, tmp_path):
+        targets = self._t("Set-Content -Path $env:TEMP\\foo.txt -Value x", str(tmp_path))
+        assert len(targets) == 1
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "foo.txt"))
+
+    def test_braced_env_temp(self, tmp_path):
+        targets = self._t("Set-Content -Path ${env:TEMP}\\foo.txt -Value x", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "foo.txt"))
+
+    def test_env_tmp_alias(self, tmp_path):
+        targets = self._t("Out-File -FilePath $env:TMP\\out.log", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(
+            os.path.join(os.environ["TEMP"], "out.log"))
+
+    def test_env_temp_bare(self, tmp_path):
+        targets = self._t("Copy-Item a.txt -Destination $env:TEMP", str(tmp_path))
+        assert targets[0].resolved == os.path.realpath(os.environ["TEMP"])
+
+    def test_env_temp_with_var_stays_dynamic(self, tmp_path):
+        targets = self._t("Set-Content -Path $env:TEMP\\$name.txt", str(tmp_path))
+        assert targets[0].dynamic is True
+        assert targets[0].resolved is None
+
+    def test_env_temperature_prefix_not_matched(self, tmp_path):
+        targets = self._t("Set-Content -Path $env:TEMPERATURE\\x.txt", str(tmp_path))
+        assert targets[0].dynamic is True
+
+    def test_env_temp_status_allow(self, tmp_path):
+        targets = self._t("Set-Content -Path $env:TEMP\\foo.txt -Value x", str(tmp_path))
+        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        assert policy.status(targets[0]) == "allow"

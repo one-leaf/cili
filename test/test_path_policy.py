@@ -134,6 +134,36 @@ class TestStatus:
         assert p.status(t) == "deny"
 
 
+class TestTempRootAllowlist:
+    """系统临时目录安全区：bash /tmp、pwsh $env:TEMP 的真实落点免审批。"""
+
+    def test_temp_write_allowed(self, tmp_path):
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        t = PathTarget(OP_WRITE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
+        assert p.status(t) == "allow"
+
+    def test_temp_delete_allowed(self, tmp_path):
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        t = PathTarget(OP_DELETE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
+        assert p.status(t) == "allow"
+
+    def test_temp_root_matches_env(self, tmp_path):
+        p = PathPolicy(workspace_root=str(tmp_path))
+        assert os.path.normcase(p.temp_root) == os.path.normcase(
+            os.path.realpath(os.environ["TEMP"]))
+
+    def test_temp_deny_without_store(self, tmp_path):
+        # 安全区判定走 is_inside，先于 approval_store 检查 → 无 store 也放行
+        p = PathPolicy(workspace_root=str(tmp_path))
+        t = PathTarget(OP_WRITE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
+        assert p.status(t) == "allow"
+
+    def test_outside_still_gated(self, tmp_path):
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
+        assert p.status(t) == "needs_approval"
+
+
 class TestAggregation:
     def test_first_pending_skips_allow_and_approved(self, tmp_path):
         store = ApprovalStore()

@@ -101,6 +101,20 @@ def _isolate_workspaces_index():
         os.unlink(tmp_index)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_policy_temp_root(tmp_path_factory, monkeypatch):
+    """把进程 TMP/TEMP 重定向到 pytest 隔离目录。
+
+    PathPolicy 把系统临时目录列为写/删安全区（bash /tmp、pwsh $env:TEMP 的
+    真实落点），而 pytest 的 tmp_path 就在系统 %TEMP% 下——不隔离的话，
+    「区外待审」用例的目标会被白名单吞掉。重定向后 tmp_path 与白名单根
+    互不为祖先，路径门测试语义保持。
+    """
+    root = tmp_path_factory.mktemp("policy-temp-root")
+    monkeypatch.setenv("TMP", str(root))
+    monkeypatch.setenv("TEMP", str(root))
+
+
 @pytest.fixture(scope="session")
 def config():
     """加载测试配置（使用 DGX 本地端点，Anthropic 协议）。"""
