@@ -1,6 +1,6 @@
 ---
 name: TikZ 科学绘图
-description: 用 TikZ/PGFplots 生成出版级科学图表：流程图、神经网络、架构图、数据可视化。Use when user mentions TikZ、LaTeX 图、流程图、架构图、神经网络图、科学绘图、PGFplots、矢量图、立体几何图。
+description: 用 TikZ/PGFplots 生成出版级科学图表：数据可视化、神经网络图、立体几何图。Use when user mentions TikZ、LaTeX 图、PGFplots、科学绘图、出版级图表、论文配图、矢量图、立体几何图、神经网络图。
 roles: [master, worker, lite]
 ---
 

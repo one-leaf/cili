@@ -2,6 +2,7 @@
 
 import os
 import json
+import re
 import pytest
 from datetime import datetime
 
@@ -231,6 +232,55 @@ class TestSkillTool:
         assert "code-review" in ids
         assert "file-processing" in ids
         assert "context-bounded-processing" not in ids  # worker-only
+
+    def test_skill_files_are_lowercase(self):
+        """技能文件名必须是小写 ``skill.md``。
+
+        加载器只找小写（``core/tools/skill.py`` 里的 ``os.path.join(dir, "skill.md")``）。
+        在**大小写敏感**的文件系统上（Linux/macOS），`SKILL.md` 会被**静默跳过**——
+        技能不出现在列表里，也不报任何错，极难排查。Windows 大小写不敏感所以看不出来，
+        这个断言就是替代那条看不见的失败。
+        """
+        from core.tools.skill import _SKILLS_DIR
+
+        offenders = []
+        for entry in os.listdir(_SKILLS_DIR):
+            d = os.path.join(_SKILLS_DIR, entry)
+            if not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                if f.lower() == "skill.md" and f != "skill.md":
+                    offenders.append(f"{entry}/{f}")
+        assert not offenders, f"技能文件名必须是小写 skill.md：{offenders}"
+
+    def test_diagram_skills_have_disjoint_triggers(self):
+        """两个画图技能的触发词必须互斥。
+
+        技能选择**没有优先级机制**——模型只看到 system prompt 里平铺的
+        `- **名称** (id): 描述`，靠描述自己挑。两个技能若都声称「流程图/架构图」，
+        模型可能挑中较重的那个（TikZ 要 LaTeX 工具链、输出 PDF），
+        而 Mermaid 更轻、且前端直接渲染成 SVG。
+
+        分工：mermaid = 通用流程图/架构图（默认路径）；tikz = 出版级/科学绘图。
+        """
+        from core.tools.skill import list_skills
+
+        skills = {s["id"]: s["description"] for s in list_skills("master")}
+        assert "mermaid-diagram" in skills and "tikz-diagram" in skills
+
+        def triggers(desc: str) -> set[str]:
+            m = re.search(r"Use when user mentions ([^。\n]+)", desc)
+            return {t.strip() for t in re.split(r"[、,，]", m.group(1))} if m else set()
+
+        mermaid = triggers(skills["mermaid-diagram"])
+        tikz = triggers(skills["tikz-diagram"])
+
+        assert not (mermaid & tikz), f"触发词重叠: {sorted(mermaid & tikz)}"
+        # 通用流程图/架构图归 mermaid（唯一命中 → 必然出 SVG）
+        assert "流程图" in mermaid and "流程图" not in tikz
+        assert "架构图" in mermaid and "架构图" not in tikz
+        # tikz 仍要能被它自己的领域发现
+        assert "TikZ" in tikz and "PGFplots" in tikz
 
     def test_list_skills_worker(self):
         """worker 可见 worker-only 与 file-processing，看不到 master-only。"""
