@@ -177,3 +177,68 @@ class TestCacheInvalidation:
         runner._invalidate_message_cache()
         assert sm._messages_dirty is True
         assert len(sm.get_valid_messages()) == 1
+
+
+class TestSessionDisplayName:
+    """会话展示名（core/session.py::session_display_name）—— Web 与 QQ 共用的唯一一份。"""
+
+    def test_placeholder_name_falls_back_to_preview(self):
+        from core.session import session_display_name
+        assert session_display_name("新会话", "帮我看下这个报错") == "帮我看下这个报错"
+
+    def test_placeholder_without_preview_keeps_name(self):
+        """刚建、还没说话的会话没有预览，此时「新会话」就是最准确的展示名。"""
+        from core.session import session_display_name
+        assert session_display_name("新会话", "") == "新会话"
+
+    def test_explicit_name_wins_over_preview(self):
+        from core.session import session_display_name
+        assert session_display_name("我的项目", "随便一句话") == "我的项目"
+
+    def test_empty_name_uses_preview(self):
+        from core.session import session_display_name
+        assert session_display_name("", "预览文本") == "预览文本"
+
+    def test_all_empty_is_unnamed(self):
+        from core.session import session_display_name
+        assert session_display_name("", "") == "未命名"
+
+    def test_whitespace_is_normalized(self):
+        """浏览器原逻辑不 strip，空白预览会渲染出一个空白条目——这里规范化掉。"""
+        from core.session import session_display_name
+        assert session_display_name("  项目  ", "") == "项目"
+        assert session_display_name("新会话", "   ") == "新会话"
+
+    def test_none_inputs_are_tolerated(self):
+        from core.session import session_display_name
+        assert session_display_name(None, None) == "未命名"
+
+    def test_list_sessions_exposes_display_name(self, tmp_path):
+        """list_sessions 必须带上 display_name —— QQ 的 /session 直接用它。
+
+        preview 由消息推导（meta.json 里是顶层 preview 字段，不是 metadata 里的），
+        所以要真加一条 user 消息，不能直接塞 metadata。
+        """
+        from core.session import SessionStore
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        s = SessionStore.create_new_session(sessions_dir, "新会话")
+        s.add_message("user", "第一句话", flush=False)
+        s.save(force=True)
+
+        listed = SessionStore.list_sessions(sessions_dir)
+        assert listed
+        assert listed[0]["preview"].startswith("第一句话")
+        assert listed[0]["display_name"] == listed[0]["preview"]
+
+    def test_list_sessions_order_is_deterministic(self, tmp_path):
+        """同一秒创建的会话，排序必须稳定（否则「按序号切换」会切错）。"""
+        from core.session import SessionStore
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        for name in ("甲", "乙", "丙"):
+            SessionStore.create_new_session(sessions_dir, name).save(force=True)
+
+        a = [s["session_id"] for s in SessionStore.list_sessions(sessions_dir)]
+        b = [s["session_id"] for s in SessionStore.list_sessions(sessions_dir)]
+        assert a == b

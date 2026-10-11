@@ -7,6 +7,7 @@ import json
 import logging
 import queue
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,8 +16,8 @@ from pydantic import BaseModel
 from core.config import get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
-from core.memory_pipeline import memory_enabled, schedule_extraction
 from core.session import SessionStore
+from core.turn_dispatch import execute_turn, prepare_turn
 
 from web.deps import (
     registry, _get_or_create_runner, _require_workspace,
@@ -25,9 +26,6 @@ from web.deps import (
 )
 from web.sse import make_sse_callbacks, sse_run_response, sse_stream
 from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
-from core.tools.ask_user import (
-    build_other_answer, find_pending_ask_user, inject_ask_user_answer,
-)
 
 router = APIRouter()
 
@@ -337,99 +335,53 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             error_text = "当前会话正在执行中，请等待完成后再发送消息"
         return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
 
-    # ask_user 待回答时：直接把用户输入作为"其他"回复提交（等价于在卡片输入"其他"）。
-    # 输入不会作为新 user message 追加，而是注入占位 tool_result 后恢复循环；
-    # 前端无需改动，靠推送 tool_result(ask_user) 事件让问题卡片立即关闭。
-    pending_ask_user_id: str | None = None
-    ask_user_answer: str | None = None
-    if content:
-        pending_ask_user_id = find_pending_ask_user(runner.session)
-        if pending_ask_user_id:
-            ask_user_answer = build_other_answer(runner.session, pending_ask_user_id, content)
-            if not inject_ask_user_answer(runner.session, pending_ask_user_id, ask_user_answer,
-                                          runner.approval_store):
-                pending_ask_user_id = None  # 竞态：占位符已消失，回退普通消息
+    # 本轮是「普通消息」还是「ask_user 的答案」——判定与注入逻辑在 core.turn_dispatch
+    # （接口无关，Web 与 QQ 共用）。多模态入参在这里构造好一并传入。
+    user_input: Any = request.content
+    if request.images:
+        content_blocks: list[dict] = [
+            {"type": "text", "text": request.content, "_valid": True}
+        ]
+        for img in request.images:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.get("media_type", "image/png"),
+                    "data": img.get("data", ""),
+                },
+                "_valid": True,
+            })
+        user_input = content_blocks
+
+    prepared = prepare_turn(runner, content=content, user_input=user_input)
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
     cb = make_sse_callbacks(event_queue, runner)
 
+    def _on_ask_user_answered(tool_use_id: str, answer: str) -> None:
+        # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），再恢复循环
+        close_event = json.dumps({
+            "type": "tool_result",
+            "tool": "ask_user",
+            "content": answer,
+            "is_error": False,
+            "tool_use_id": tool_use_id,
+        }, ensure_ascii=False)
+        event_queue.put(f"data: {close_event}\n\n")
+
+    def _on_error(msg: str) -> None:
+        err_event = json.dumps({"type": "error", "content": msg}, ensure_ascii=False)
+        event_queue.put(f"data: {err_event}\n\n")
+
     def run_runner():
         try:
-            if pending_ask_user_id is not None:
-                # 用户输入已作为 ask_user 的"其他"回复注入占位 tool_result。
-                # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），
-                # 再恢复循环；不追加新 user message，避免 LLM 双重处理输入。
-                close_event = json.dumps({
-                    "type": "tool_result",
-                    "tool": "ask_user",
-                    "content": ask_user_answer,
-                    "is_error": False,
-                    "tool_use_id": pending_ask_user_id,
-                }, ensure_ascii=False)
-                event_queue.put(f"data: {close_event}\n\n")
-
-                runner.resume_after_ask_user(sink=cb)
-            else:
-                # Build user_input: str or list[dict] for multimodal
-                user_input = request.content
-                if request.images:
-                    content_blocks: list[dict] = [
-                        {"type": "text", "text": request.content, "_valid": True}
-                    ]
-                    for img in request.images:
-                        content_blocks.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": img.get("media_type", "image/png"),
-                                "data": img.get("data", ""),
-                            },
-                            "_valid": True,
-                        })
-                    user_input = content_blocks
-
-                runner.run(user_input=user_input, sink=cb)
-
-            # v3 记忆：回合结束后后台提取（不阻塞 SSE 流；失败只记日志）
-            try:
-                sm = getattr(runner, "session", None)
-                if sm is not None and memory_enabled(runner.workspace_uuid or ""):
-                    schedule_extraction(
-                        runner.workspace_uuid or "",
-                        runner.current_session_id or "",
-                        list(sm.messages),
-                    )
-            except Exception:
-                logger.exception("Failed to schedule memory extraction")
-
-            # Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞 SSE 流）
-            try:
-                from core.config import load_workspace_config
-                workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
-                if workspace_cfg.get("git_enabled", False):
-                    import threading
-                    from core.workspace_git import auto_commit_workspace
-                    threading.Thread(
-                        target=auto_commit_workspace,
-                        args=(runner.workspace_uuid, runner.current_session_id or ""),
-                        kwargs={"sync_remote": True},
-                        daemon=True,
-                    ).start()
-            except Exception:
-                logger.exception("Failed to schedule git auto-commit")
-        except Exception as e:
-            logger.error(f"master runner error: {e}")
-            # 持久化错误消息到会话（error_notice → UI 可见但不发给 LLM）
-            try:
-                sm = getattr(runner, "session", None)
-                if sm is not None:
-                    sm.add_message("assistant", f"错误: {e}", meta={"error_notice": True})
-                    sm.save()
-            except Exception:
-                logger.exception("Failed to persist error message")
-            err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
-            event_queue.put(f"data: {err_event}\n\n")
+            execute_turn(
+                prepared, cb,
+                on_ask_user_answered=_on_ask_user_answered,
+                on_error=_on_error,
+            )
         finally:
             _release_session_run(session_key)
             event_queue.put(None)  # sentinel: done

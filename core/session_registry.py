@@ -18,9 +18,14 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from core.config import load_config
+from core.interface import Attachment
 from core.output_sink import OutputSink
 from core.session import SessionStore
 from core.session_runner import SessionRunner
+
+# Attachment 定义已迁至 core/interface.py（与 Interface ABC 同处，二者配套使用）；
+# 此处再导出，避免打断既有 ``from core.session_registry import Attachment`` 调用方。
+__all__ = ["Attachment", "HostedSession", "SessionRegistry", "registry", "session_key"]
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +35,6 @@ DEFAULT_MAX_RUNNERS = 20
 def session_key(workspace_uuid: str, session_id: str) -> str:
     """会话键的单一构造入口（原散落在 web 各处各自拼装 ``f"{ws}:{sid}"``）。"""
     return f"{workspace_uuid}:{session_id}"
-
-
-@dataclass
-class Attachment:
-    """一个接入端对某会话的附着记录（供多接口共享会话时做输出路由/生命周期）。"""
-    attachment_id: str
-    interface: str
-    session_key: str
 
 
 @dataclass
@@ -250,12 +247,23 @@ class SessionRegistry:
 
     # ---------- Attachment（多接口附着；D 阶段接入路由） ----------
 
-    def attach(self, key: str, interface: str, attachment_id: str) -> Attachment:
+    def attach(
+        self,
+        key: str,
+        interface: str,
+        attachment_id: str,
+        meta: dict | None = None,
+    ) -> Attachment:
         with self._data_lock:
             hosted = self._hosted.get(key)
             if hosted is None:
                 raise KeyError(f"Session not hosted: {key}")
-            att = Attachment(attachment_id=attachment_id, interface=interface, session_key=key)
+            att = Attachment(
+                attachment_id=attachment_id,
+                interface=interface,
+                session_key=key,
+                meta=dict(meta or {}),
+            )
             hosted.attachments[attachment_id] = att
             self._attachment_index[attachment_id] = key
             return att

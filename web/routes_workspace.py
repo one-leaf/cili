@@ -24,6 +24,7 @@ from core.session import (
     MESSAGES_FILE, META_FILE, SessionStore,
     _drop_session_lock, load_history_messages,
     load_history_meta, preview_from_messages, read_jsonl, read_meta,
+    session_display_name,
 )
 from core.tools.base import Tool
 
@@ -387,6 +388,7 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                     "message_count": message_count,
                     "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
                     "preview": preview,
+                    "display_name": session_display_name(meta.get("name", ""), preview),
                     "hidden": metadata.get("hidden", False),
                     "_mtime": mtime,
                 })
@@ -405,6 +407,9 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                     "message_count": len(old_messages),
                     "agent_count": metadata.get("agent_count", metadata.get("subagent_count", 0)),
                     "preview": preview_from_messages(old_messages),
+                    "display_name": session_display_name(
+                        old.get("name", ""), preview_from_messages(old_messages)
+                    ),
                     "hidden": metadata.get("hidden", False),
                     "_mtime": index_file.stat().st_mtime,
                 })

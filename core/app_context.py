@@ -53,6 +53,14 @@ class AppContext:
         except Exception as e:
             logger.warning(f"[AppContext] 启动 cron 调度器失败: {e}")
 
+        # QQ 接入端（未启用 / 未装 SDK 时静默跳过；放最后——回合会用到上面的单例）
+        try:
+            from interfaces.qq import start_qq_interface
+            if start_qq_interface():
+                logger.info("[AppContext] QQ 接入端已启动")
+        except Exception as e:
+            logger.warning(f"[AppContext] 启动 QQ 接入端失败: {e}")
+
     @staticmethod
     def _connect_mcp_servers() -> None:
         try:
@@ -73,6 +81,7 @@ class AppContext:
         self._shutdown = True
 
         for name, stop in (
+            ("QQ 接入端", self._stop_qq),
             ("AgentMailbox", self._stop_mailbox),
             ("浏览器服务", self._stop_browser),
             ("MCP provider", self._stop_mcp),
@@ -96,6 +105,11 @@ class AppContext:
     def _stop_mailbox() -> None:
         from core.agent_mailbox import stop_agent_mailbox
         stop_agent_mailbox()
+
+    @staticmethod
+    def _stop_qq() -> None:
+        from interfaces.qq import stop_qq_interface
+        stop_qq_interface()
 
     @staticmethod
     def _stop_browser() -> None:

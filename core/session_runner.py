@@ -49,6 +49,29 @@ from core.tools.approval import (
 logger = logging.getLogger(__name__)
 
 
+# ─── 接口专属工具（按回合门控） ────────────────────────────────────────
+# 只有对应接入端驱动回合时，这些工具才对模型可见。
+#
+# 为什么门控必须按回合、不能按 runner：runner 创建一次就缓存在
+# ``core/session_registry`` 里，而会话在 Web/QQ 之间**共享**——同一个 runner
+# 可能这回合被 Web 驱动、下回合被 QQ 驱动。
+#
+# 为什么非本接口的专属工具要「既不在 active 也不在 deferred」：``tool_search``
+# 的 ``deferred_tools`` 就是 ``_deferred_tools``，一旦落进去，模型在 Web 上也能
+# 自己把它激活。所以要从可见集合里彻底摘掉。
+INTERFACE_TOOLS: dict[str, frozenset[str]] = {
+    "qq": frozenset({"send_file"}),
+}
+
+
+def _all_interface_scoped_tools() -> frozenset[str]:
+    """全部受接口门控的工具名（任一接口的并集）。"""
+    out: set[str] = set()
+    for names in INTERFACE_TOOLS.values():
+        out |= names
+    return frozenset(out)
+
+
 class _SessionRef:
     """简单的 session 引用，供工具获取 session 标识和目录。
 
@@ -107,6 +130,9 @@ class SessionRunner(BaseSessionRunner):
         # （例如将来 QQ 接口用 interactive 行为但非 master 画像）。
         self._mode = run_mode or self.role_cfg.mode
         self.delegation_depth = delegation_depth
+        # 本次 run/resume 的驱动接口（"web"/"qq"/None）。None 等价于「无接口专属工具」，
+        # 由接口层在 run() 前设置；决定 INTERFACE_TOOLS 的可见性。
+        self._turn_interface: str | None = None
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
@@ -264,13 +290,13 @@ class SessionRunner(BaseSessionRunner):
             provider.ensure_connected(self.config.mcp_servers)
             self.tools.extend(provider.get_wrappers())
 
-        # Split into active (schema sent to LLM) vs deferred (schema hidden)
-        self._deferred_names: set[str] = set(self.role_cfg.deferred_tools) | {
+        # 基础 deferred 集合：角色声明的 + MCP 动态工具（后者默认 deferred，
+        # 由 tool_search 按需激活）。接口专属工具的过滤在 _apply_tool_visibility 里做。
+        self._base_deferred_names: set[str] = set(self.role_cfg.deferred_tools) | {
             t.name for t in self.tools if isinstance(t, MCPToolWrapper)
         }
-        self._deferred_tools = [t for t in self.tools if t.name in self._deferred_names]
-        self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
-        self.tool_schemas = [t.to_schema() for t in self._active_tools]
+        self._deferred_names: set[str] = set(self._base_deferred_names)
+        self._apply_tool_visibility()
 
         # 校验 deferred_tools 白名单：deferred_tools 按「工具 name」匹配（非注册键），
         # 未匹配到任何已加载工具的条目会静默失效，故显式告警。
@@ -283,10 +309,9 @@ class SessionRunner(BaseSessionRunner):
                     f"（按工具 name 匹配；注册键与工具名可能不同，如 'todo' vs 'todo_write'）"
                 )
 
-        # Wire tool_search: inject deferred list + activation callback
+        # Wire tool_search: activation callback（deferred 列表由 _apply_tool_visibility 维护）
         ts = get_tool_by_name(self.tools, "tool_search")
         if ts:
-            ts.deferred_tools = self._deferred_tools
             ts.on_load = self._activate_tools
 
         # Wire session tool: set delegation depth for all modes
@@ -307,22 +332,74 @@ class SessionRunner(BaseSessionRunner):
                 # 后台 session 完成后自动恢复 master 循环
                 session_tool.on_background_complete = self._handle_background_session_complete
 
+    def _eligible_tools(self) -> list:
+        """本回合可用的工具：接口专属工具只在自己的接口下出现。"""
+        scoped = _all_interface_scoped_tools()
+        if not scoped:
+            return list(self.tools)
+        allowed = INTERFACE_TOOLS.get(self._turn_interface or "", frozenset())
+        return [t for t in self.tools if t.name not in scoped or t.name in allowed]
+
+    def _apply_tool_visibility(self) -> None:
+        """按当前驱动接口重算 eligible → active/deferred → tool_schemas。
+
+        接口专属工具若不属于当前接口，**既不在 active 也不在 deferred**——
+        放进 deferred 会被 tool_search 激活（其 deferred_tools 就是 _deferred_tools），
+        模型就能在 Web 上把 QQ 专属工具调起来。
+        """
+        eligible = self._eligible_tools()
+        self._deferred_tools = [t for t in eligible if t.name in self._deferred_names]
+        self._active_tools = [t for t in eligible if t.name not in self._deferred_names]
+        self.tool_schemas = [t.to_schema() for t in self._active_tools]
+        # tool_search 的可见 deferred 列表随接口变化
+        ts = get_tool_by_name(self.tools, "tool_search")
+        if ts:
+            ts.deferred_tools = self._deferred_tools
+
+    def set_turn_interface(self, interface: str | None) -> None:
+        """设置本次 run/resume 的驱动接口（接口层在 run() 前调用）。
+
+        默认 ``None`` = 无接口专属工具，等价 Web 的既有行为。``tool_schemas``
+        是每次 LLM 调用现读的，所以回合开始时重算立刻生效。
+        """
+        if interface == self._turn_interface:
+            return
+        self._turn_interface = interface
+        self._apply_tool_visibility()
+        logger.debug(
+            f"[SessionRunner:{self.role}] 驱动接口 → {interface!r}；"
+            f"active={[t.name for t in self._active_tools]}"
+        )
+
     def _activate_tools(self, names: list[str]) -> None:
         """Move named tools from deferred to active and rebuild tool_schemas."""
         newly = [n for n in names if n in self._deferred_names]
         if not newly:
             return
         self._deferred_names -= set(newly)
-        self._deferred_tools = [t for t in self._deferred_tools if t.name in self._deferred_names]
-        self._active_tools = [t for t in self.tools if t.name not in self._deferred_names]
-        self.tool_schemas = [t.to_schema() for t in self._active_tools]
-        # Update tool_search's deferred list
-        ts = get_tool_by_name(self.tools, "tool_search")
-        if ts:
-            ts.deferred_tools = self._deferred_tools
+        self._apply_tool_visibility()
 
     def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
-        """Override: auto-activate deferred tools if called directly."""
+        """Override: 拒绝非本接口的专属工具；否则自动激活 deferred 工具。
+
+        纵深防御：模型若硬调（例如历史消息里带过这个 tool_use），也直接拒绝，
+        而不是让它在一个没有对应接入端的回合里执行。
+        """
+        scoped = _all_interface_scoped_tools()
+        if name in scoped and name not in INTERFACE_TOOLS.get(
+            self._turn_interface or "", frozenset()
+        ):
+            logger.warning(
+                f"[SessionRunner:{self.role}] 拒绝调用接口专属工具 {name!r}"
+                f"（当前驱动接口 {self._turn_interface!r}）"
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": f"Error: tool '{name}' is not available in this context",
+                "is_error": True,
+                "_meta": {"tool_name": name},
+            }
         if name in getattr(self, "_deferred_names", set()):
             self._activate_tools([name])
         return super()._execute_tool(name, input_data, tool_use_id)

@@ -16,6 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from core.fs_utils import safe_upload_filename
 from core.config import load_workspace_config, load_workspaces_index
 
 from web.deps import (
@@ -522,26 +523,11 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
 
 
 def _sanitize_upload_filename(raw: str) -> str | None:
-    """净化上传文件名：取 basename，拒绝 NTFS ADS 与 Windows 保留名/字符（W14）。
+    """净化上传文件名（实现已下沉 ``core/fs_utils.safe_upload_filename``）。
 
-    返回净化后的安全文件名；非法时返回 None（调用方记为错误）。
+    QQ 入站附件下载要用同一套规则，故下沉共用；此处保留同名薄封装。
     """
-    if not raw:
-        return None
-    name = os.path.basename(raw.replace("\\", "/")).strip()
-    if not name or name in (".", ".."):
-        return None
-    # NTFS 备用数据流（file.txt:stream）与 Windows 保留字符
-    if ":" in name or any(c in name for c in '<>"|?*'):
-        return None
-    # Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9
-    stem = name.split(".")[0].upper()
-    if stem in {"CON", "PRN", "AUX", "NUL"}:
-        return None
-    if (stem.startswith("COM") and stem[3:].isdigit()) or \
-       (stem.startswith("LPT") and stem[3:].isdigit()):
-        return None
-    return name
+    return safe_upload_filename(raw)
 
 
 @router.post("/api/files/upload")

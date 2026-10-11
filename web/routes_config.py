@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -42,6 +43,7 @@ class UpdateConfigRequest(BaseModel):
     lite_model: ModelConfigRequest | None = None     # lite 角色模型 (optional, inherits master)
     system: dict | None = None                       # System parameters (pip_mirror, etc.)
     mcp_servers: dict | None = None                  # MCP 服务器配置 {name: {...}}
+    qq: dict | None = None                           # QQ 接入端配置
 
 
 class McpTestRequest(BaseModel):
@@ -51,6 +53,13 @@ class McpTestRequest(BaseModel):
 
 class TestConfigRequest(BaseModel):
     config: ModelConfigRequest | None = None
+
+
+class QQTestRequest(BaseModel):
+    """测试 QQ 凭据（未提供 secret 时用已保存的）。"""
+    app_id: str | None = None
+    secret: str | None = None
+    use_sandbox: bool | None = None
 
 
 # ---------- 掩码 helpers ----------
@@ -101,6 +110,14 @@ def _mask_api_key(config: dict) -> dict:
         result["mcp_servers"] = {
             name: _mask_mcp_server(cfg) for name, cfg in result["mcp_servers"].items()
         }
+    # Mask QQ secret
+    if "qq" in result and isinstance(result["qq"], dict):
+        qq_copy = result["qq"].copy()
+        secret = qq_copy.get("secret", "")
+        if secret:
+            qq_copy["secret_masked"] = _mask_secret(secret)
+        qq_copy.pop("secret", None)
+        result["qq"] = qq_copy
     return result
 
 
@@ -113,6 +130,21 @@ def _update_model_config(existing: dict, update: ModelConfigRequest) -> dict:
         else:
             result[key] = value
     return result
+
+
+def _apply_qq_enabled(enabled: bool) -> None:
+    """按开关启停 QQ 接入端（阻塞操作，调用方需丢线程池）。"""
+    try:
+        from interfaces.qq import start_qq_interface, stop_qq_interface
+
+        if enabled:
+            started = start_qq_interface()
+            if not started:
+                logger.warning("[Config] QQ 已启用但未启动（凭据缺失或 SDK 未安装）")
+        else:
+            stop_qq_interface()
+    except Exception as e:  # noqa: BLE001 — 启停失败不该让保存请求失败
+        logger.warning(f"[Config] 切换 QQ 接入端失败: {e}")
 
 
 # ---------- Config ----------
@@ -174,8 +206,30 @@ async def update_config(request: UpdateConfigRequest):
         else:
             config.pop("mcp_servers", None)
 
+    # Update QQ 接入端配置
+    qq_toggled = False
+    qq_enabled = False
+    if request.qq is not None:
+        existing_qq = config.get("qq", {})
+        if not isinstance(existing_qq, dict):
+            existing_qq = {}
+        new_qq = dict(existing_qq)
+        incoming = dict(request.qq)
+        # secret 留空 = 不修改（前端只回显掩码，不回传明文）
+        if not incoming.get("secret"):
+            incoming.pop("secret", None)
+        new_qq.update(incoming)
+        config["qq"] = new_qq
+        qq_enabled = bool(new_qq.get("enabled"))
+        qq_toggled = qq_enabled != bool(existing_qq.get("enabled"))
+
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
+
+    # 开关变化 → 就地启停 QQ 接入端（不必重启 Cili）。
+    # start/stop 会等宿主线程就绪/退出（数秒），属阻塞操作 → 丢线程池。
+    if qq_toggled:
+        await asyncio.to_thread(_apply_qq_enabled, qq_enabled)
 
     # 重连 MCP 服务器（签名变化才真正重连）
     try:
@@ -316,3 +370,35 @@ async def test_config(request: TestConfigRequest | None = None):
             "message": str(e),
             "interface_type": "unknown",
         }
+
+
+@router.post("/api/config/test-qq")
+async def test_qq_connection(request: QQTestRequest | None = None):
+    """测试 QQ 凭据：能否拿到 access token 与网关地址。
+
+    未提供 ``secret`` 时用已保存的（前端只回显掩码，不回传明文）。
+    不触碰正在运行的接口——用独立临时客户端，测完即关。
+    """
+    if request is None:
+        request = QQTestRequest()
+
+    app_id = (request.app_id or "").strip()
+    secret = (request.secret or "").strip()
+    use_sandbox = request.use_sandbox
+
+    saved = load_global_config().get("qq") or {}
+    if not app_id:
+        app_id = str(saved.get("app_id") or "")
+    if not secret:
+        secret = str(saved.get("secret") or "")
+    if use_sandbox is None:
+        use_sandbox = bool(saved.get("use_sandbox", True))
+
+    try:
+        from interfaces.qq.gateway import test_connection
+
+        ok, message = await test_connection(app_id, secret, bool(use_sandbox))
+        return {"success": ok, "message": message}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Config] 测试 QQ 连接失败: {e}")
+        return {"success": False, "message": str(e)[:200]}

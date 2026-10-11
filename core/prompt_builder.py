@@ -59,6 +59,22 @@ def _gen_skills(block: dict, runner) -> str:
     return _build_skills_section(runner.role)
 
 
+def _gen_interface_hint(block: dict, runner) -> str:
+    """interface_hint 块：仅当驱动接口与块声明的 ``interface`` 匹配时注入。
+
+    与 ``build_approved_commands_section``（无批准时返回 ""）是同一模式——不适用
+    就返回空串，由 ``build_system_prompt`` 跳过。用于给接口专属工具配使用说明
+    （如 QQ 的 send_file），避免在 Web 回合里向模型描述一个它没有的工具。
+
+    interactive 模式的 system prompt 每轮重建（``loop.py`` 在 run_interactive
+    内调用 ``runner._build_system_prompt()``），所以接口切换后立刻生效。
+    """
+    want = block.get("interface")
+    if want != getattr(runner, "_turn_interface", None):
+        return ""
+    return _gen_text(block, runner)
+
+
 def _gen_context(block: dict, runner) -> str:
     """context 块：动态环境上下文（session 内缓存，不每轮重算）。
 
@@ -82,6 +98,7 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
     "tools": _gen_tools,
     "skills": _gen_skills,
     "context": _gen_context,
+    "interface_hint": _gen_interface_hint,
 }
 
 

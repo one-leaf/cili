@@ -501,3 +501,42 @@ def load_workspace_config(workspace_uuid: str) -> dict:
     workspaces.json entry dict, or {} if not found.
     """
     return get_workspace_config(workspace_uuid)
+
+
+def ensure_default_workspace() -> str | None:
+    """确保存在名为 "Default" 的工作区，返回其 uuid（失败返回 None）。
+
+    原先私有在 ``web/deps.py``；QQ 接入端启动时也要确定「当前工作区」的兜底，
+    故下沉 core。幂等。
+    """
+    import secrets
+
+    try:
+        # 已存在 Default / legacy default → 直接返回（顺手迁移名字）
+        for entry in load_workspaces_index():
+            name = entry.get("workspace_name")
+            uuid = entry.get("uuid")
+            if name in ("Default", "default") and uuid:
+                if name == "default":
+                    entry["workspace_name"] = "Default"
+                    save_workspace_config(uuid, entry)
+                return uuid
+
+        workspace_uuid = secrets.token_hex(4)
+        ws_data_dir = get_workspace_data_dir(workspace_uuid)
+        ws_data_dir.mkdir(parents=True, exist_ok=True)
+        (ws_data_dir / "sessions").mkdir(exist_ok=True)
+
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_workspace_config(workspace_uuid, {
+            "workspace_name": "Default",
+            "directory": str(PROJECT_ROOT / "workspace"),
+            "created_at": now,
+            "updated_at": now,
+        })
+        logger.info(f"[config] 已创建默认工作区: {workspace_uuid}")
+        return workspace_uuid
+    except (OSError, PermissionError) as e:
+        logger.error(f"[config] 创建默认工作区失败: {e}")
+        return None

@@ -657,8 +657,9 @@ function renderSessions() {
             div.appendChild(checkbox);
         }
 
-        // 显示逻辑：如果name是"新会话"，则显示最后一句对话；否则显示name
-        const displayName = (session.name === '新会话' && session.preview) ? session.preview : (session.name || session.preview || '未命名');
+        // 展示名由后端统一给出（core/session.py 的 session_display_name），
+        // 保证 Web 与 QQ 的 /session 列表口径一致；缺失时退回本地兜底。
+        const displayName = session.display_name || session.name || session.preview || '未命名';
         const preview = document.createElement('div');
         preview.className = 'session-preview';
         preview.textContent = displayName;
@@ -1790,7 +1791,9 @@ document.addEventListener('drop', async (e) => {
     }
 
     const inFileManager = dropInFileManager(e);
-    const path = inFileManager ? fmCurrentPath : '';
+    // 主界面拖放统一落到 uploads/（与 QQ 入站附件同目录，便于两边一致）；
+    // 文件管理器面板内的拖放仍落在当前浏览目录。
+    const path = inFileManager ? fmCurrentPath : 'uploads';
     try {
         const result = await uploadFiles(path, files);
         const uploaded = result.uploaded || [];

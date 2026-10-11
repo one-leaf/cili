@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.tools.ask_user import inject_ask_user_answer
+from core.turn_dispatch import PreparedTurn, execute_turn
 
 from web.deps import (
     registry, _claim_session_run, _release_session_run,
@@ -51,13 +52,21 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     event_queue: queue.Queue[str | None] = queue.Queue()
     cb = make_sse_callbacks(event_queue, runner)
 
+    def _on_error(msg: str) -> None:
+        err_event = json.dumps({"type": "error", "content": msg}, ensure_ascii=False)
+        event_queue.put(f"data: {err_event}\n\n")
+
+    # 复用 core 的回合执行（resume 分流 + 异常落盘），但按历史行为不跑收尾钩子
+    prepared = PreparedTurn(
+        runner=runner,
+        mode="resume",
+        pending_ask_user_id=ask_user_tool_use_id,
+        answer=request.answer,
+    )
+
     def run_runner():
         try:
-            runner.resume_after_ask_user(sink=cb)
-        except Exception as e:
-            logger.error(f"master runner error: {e}")
-            err_event = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
-            event_queue.put(f"data: {err_event}\n\n")
+            execute_turn(prepared, cb, on_error=_on_error, after_turn_hooks=False)
         finally:
             _release_session_run(key)
             event_queue.put(None)  # sentinel: done

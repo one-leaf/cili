@@ -17,12 +17,12 @@ from fastapi import HTTPException, Request
 
 from core.session_runner import SessionRunner
 from core.config import (
+    ensure_default_workspace,
     load_config, PROJECT_ROOT, load_workspace_config, save_workspace_config,
     GLOBAL_CONFIG_PATH, get_workspace_data_dir, load_workspaces_index,
     find_workspace_entry,
 )
-from core.event_bus import get_event_bus
-from core.output_sink import OutputSink
+from core.default_sink import bind_default_sink
 from core.session_registry import registry
 
 # Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
@@ -115,41 +115,11 @@ def _new_short_id() -> str:
 
 
 def _ensure_default_workspace() -> str | None:
-    """Ensure default workspace exists, create if not. Returns workspace UUID or None on failure."""
-    try:
-        # Check if any workspace exists with name "Default" or "default" (legacy)
-        for entry in load_workspaces_index():
-            name = entry.get("workspace_name")
-            uuid = entry.get("uuid")
-            if name in ("Default", "default") and uuid:
-                # Migrate legacy "default" to "Default"
-                if name == "default":
-                    entry["workspace_name"] = "Default"
-                    save_workspace_config(uuid, entry)
-                    logger.info(f"Migrated default workspace name: {uuid}")
-                logger.info(f"Default workspace found: {uuid}")
-                return uuid
+    """确保默认工作区存在（实现已下沉 ``core.config.ensure_default_workspace``）。
 
-        # Create default workspace
-        workspace_uuid = _new_short_id()
-        ws_data_dir = get_workspace_data_dir(workspace_uuid)
-        ws_data_dir.mkdir(parents=True, exist_ok=True)
-        (ws_data_dir / "sessions").mkdir(exist_ok=True)
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ws_config = {
-            "workspace_name": "Default",
-            "directory": str(WORKSPACE_DIR),
-            "created_at": now,
-            "updated_at": now,
-        }
-
-        save_workspace_config(workspace_uuid, ws_config)
-        logger.info(f"Created default workspace: {workspace_uuid}")
-        return workspace_uuid
-    except (OSError, PermissionError) as e:
-        logger.error(f"Failed to create default workspace: {e}")
-        return None
+    QQ 接入端启动时也要做同一件事，故下沉共用；此处保留同名薄封装。
+    """
+    return ensure_default_workspace()
 
 
 def _auto_init_global_config() -> None:
@@ -208,80 +178,13 @@ def _list_all_workspaces() -> list[dict]:
 
 
 def _bind_default_sink(runner: SessionRunner, workspace_uuid: str, session_id: str) -> None:
-    """绑定 runner 的持久输出接收端：工具实时输出 + 后台恢复循环 → 全局事件总线。
+    """绑定 runner 的持久输出接收端（发布到全局事件总线）。
 
-    这是 Web 接入端专属的 default_sink（发布到 /api/events 全局流）。
+    实现已下沉 ``core/default_sink.py``——它本就是接口无关的（只往 core 的
+    EventBus 发事件），第二个接入端 QQ 也用同一个，从而 QQ 驱动的回合在 Web
+    的 /api/events 全局流里同样可见。此处保留同名薄封装，兼容既有调用方。
     """
-    bus = get_event_bus()
-
-    def _on_tool_output(tool_name: str, content: str, offset: int, tool_use_id: str) -> None:
-        bus.publish({
-            "type": "tool_output",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-            "tool": tool_name,
-            "content": content,
-            "offset": offset,
-            "tool_use_id": tool_use_id,
-        })
-
-    def _default_on_text(text: str) -> None:
-        bus.publish({
-            "type": "text",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-            "content": text,
-        })
-
-    def _default_on_thinking(text: str) -> None:
-        bus.publish({
-            "type": "thinking",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-            "content": text,
-        })
-
-    def _default_on_tool_call(tool_name: str, tool_input: dict, tool_use_id: str) -> None:
-        bus.publish({
-            "type": "tool_use",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-            "tool": tool_name,
-            "input": tool_input,
-            "tool_use_id": tool_use_id,
-        })
-
-    def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        if tool_name in ("ask_user", "session"):
-            return
-        bus.publish({
-            "type": "tool_result",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-            "tool": tool_name,
-            "content": output,
-            "is_error": is_error,
-            "tool_use_id": tool_use_id,
-        })
-
-    def _default_on_turn_complete() -> None:
-        # 回合已落盘：前端据此重拉会话。刷新页面后请求级流已断开，
-        # 这条全局事件是界面唯一能知道「本回合结束了」的途径。
-        bus.publish({
-            "type": "turn_complete",
-            "workspace_uuid": workspace_uuid,
-            "session_id": session_id,
-        })
-
-    runner.default_sink = OutputSink(
-        on_text=_default_on_text,
-        on_thinking=_default_on_thinking,
-        on_tool_call=_default_on_tool_call,
-        on_tool_result=_default_on_tool_result,
-        on_tool_output=_on_tool_output,
-        on_turn_complete=_default_on_turn_complete,
-    )
-    runner.sink = runner.default_sink
+    bind_default_sink(runner, workspace_uuid, session_id)
 
 
 async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:

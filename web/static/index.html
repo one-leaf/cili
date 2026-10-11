@@ -181,6 +181,7 @@
                 <button class="settings-tab" data-tab="llm">Worker/Lite 模型</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
+                <button class="settings-tab" data-tab="qq">QQ 接入端</button>
             </div>
             <div class="modal-body">
                 <!-- Master Model Tab (Multi-turn conversation) -->
@@ -521,6 +522,90 @@
                         <button id="mcp-test-new-btn" class="btn btn-small">测试连接</button>
                         <button id="mcp-add-btn" class="btn btn-small btn-primary">添加服务器</button>
                         <span id="mcp-test-new-result" class="form-hint" style="margin-left: 8px;"></span>
+                    </div>
+                </div>
+
+                <!-- QQ 接入端 Tab -->
+                <div class="tab-content" id="tab-qq">
+                    <div class="model-description">
+                        <strong>QQ 接入端</strong> — 用官方 QQ 机器人与 Cili 对话，与网页端
+                        <b>共享同一会话</b>。
+                    </div>
+
+                    <div class="form-group">
+                        <label>启用:</label>
+                        <input type="checkbox" id="qq-enabled">
+                        <small class="form-hint">关闭时不加载 SDK、不占资源；开启后会立即尝试连接</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>AppID:</label>
+                        <input type="text" id="qq-app-id" placeholder="在 QQ 开放平台创建机器人后获取">
+                    </div>
+
+                    <div class="form-group">
+                        <label>AppSecret:</label>
+                        <div>
+                            <div class="input-with-icon">
+                                <input type="password" id="qq-secret" placeholder="留空保持不变">
+                                <button type="button" class="toggle-password" data-target="qq-secret">
+                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small class="form-hint" id="qq-secret-masked">未配置</small>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>沙箱环境:</label>
+                        <input type="checkbox" id="qq-use-sandbox">
+                        <small class="form-hint">未过审的机器人只能在沙箱收发，建议先保持开启</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>消息格式:</label>
+                        <select id="qq-msg-format">
+                            <option value="markdown">Markdown（推荐）</option>
+                            <option value="plain">纯文本</option>
+                        </select>
+                        <small class="form-hint">单聊自定义 Markdown 已对所有机器人开放，无需申请模板</small>
+                    </div>
+
+                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
+                    <div class="model-description"><strong>高级参数</strong></div>
+
+                    <div class="form-group">
+                        <label>流式节流（秒）:</label>
+                        <input type="number" id="qq-flush-interval" min="0.2" max="10" step="0.1" value="1.5">
+                        <small class="form-hint">正文累积多久推一次（默认 1.5s，对齐官方实现的 1500ms）</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>单轮文件上限:</label>
+                        <input type="number" id="qq-max-outbound-files" min="0" max="3" value="3">
+                        <small class="form-hint">QQ 单聊每条用户消息只能被动回复 4 次，流式消息已占 1 次，故上限 3</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>入站附件上限（MB）:</label>
+                        <input type="number" id="qq-max-inbound-mb" min="1" max="200" value="100">
+                        <small class="form-hint">与网页端拖放上传的上限一致</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label></label>
+                        <button id="qq-test-btn" class="btn btn-small">测试连接</button>
+                        <span id="qq-test-result" class="form-hint" style="margin-left: 8px;"></span>
+                    </div>
+
+                    <div class="model-description" style="margin-top: 12px;">
+                        <small class="form-hint">
+                            保存后即刻生效（无需重启）。开启后，<code>send_file</code> 工具及其说明
+                            只会在 QQ 驱动的回合里对模型可见。
+                        </small>
                     </div>
                 </div>
 

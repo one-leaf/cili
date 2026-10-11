@@ -229,6 +229,21 @@
       {
         "type": "context",
         "enabled": true
+      },
+      {
+        "id": "qq_send_file",
+        "type": "interface_hint",
+        "interface": "qq",
+        "enabled": true,
+        "content": [
+          "## Sending files to the user",
+          "",
+          "You are replying through a QQ private chat. When the user asks for a file",
+          "(a report, an image, an export, an archive) and you have written it into the",
+          "workspace, call the `send_file` tool to deliver it. Files are uploaded and sent",
+          "after your current turn finishes, so do not wait for confirmation in the same turn.",
+          "Only files inside the workspace can be sent, and each file must be at most 200MB."
+        ]
       }
     ]
   },
@@ -265,7 +280,8 @@
     "skill",
     "session",
     "ask_user",
-    "tool_search"
+    "tool_search",
+    "send_file"
   ],
   "deferred_tools": [
     "browser",

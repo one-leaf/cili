@@ -562,6 +562,86 @@ async function testNewMcp() {
 })();
 
 // 打开全局设置弹窗
+// ─── QQ 接入端设置 ───────────────────────────────────────────────────
+
+const QQ_MAX_INBOUND_MB_DEFAULT = 100;
+
+function loadQQConfig(qqCfg) {
+    qqCfg = qqCfg || {};
+    document.getElementById('qq-enabled').checked = qqCfg.enabled === true;
+    document.getElementById('qq-app-id').value = qqCfg.app_id || '';
+    document.getElementById('qq-secret').value = '';
+    // 沙箱默认开启（未过审机器人只能沙箱收发）
+    document.getElementById('qq-use-sandbox').checked = qqCfg.use_sandbox !== false;
+    document.getElementById('qq-msg-format').value = qqCfg.msg_format || 'markdown';
+    document.getElementById('qq-flush-interval').value =
+        qqCfg.flush_interval_seconds != null ? qqCfg.flush_interval_seconds : 1.5;
+    document.getElementById('qq-max-outbound-files').value =
+        qqCfg.max_outbound_files != null ? qqCfg.max_outbound_files : 3;
+    const bytes = qqCfg.max_inbound_bytes != null
+        ? qqCfg.max_inbound_bytes : QQ_MAX_INBOUND_MB_DEFAULT * 1024 * 1024;
+    document.getElementById('qq-max-inbound-mb').value = Math.round(bytes / 1024 / 1024);
+
+    const masked = document.getElementById('qq-secret-masked');
+    masked.textContent = qqCfg.secret_masked
+        ? `当前: ${qqCfg.secret_masked}（留空保持不变）`
+        : '未配置';
+    document.getElementById('qq-test-result').textContent = '';
+}
+
+function collectQQConfig() {
+    const cfg = {
+        enabled: document.getElementById('qq-enabled').checked,
+        app_id: document.getElementById('qq-app-id').value.trim(),
+        use_sandbox: document.getElementById('qq-use-sandbox').checked,
+        msg_format: document.getElementById('qq-msg-format').value,
+        flush_interval_seconds: parseFloat(document.getElementById('qq-flush-interval').value) || 1.5,
+        max_outbound_files: parseInt(document.getElementById('qq-max-outbound-files').value, 10),
+        max_inbound_bytes: (parseInt(document.getElementById('qq-max-inbound-mb').value, 10) || QQ_MAX_INBOUND_MB_DEFAULT) * 1024 * 1024,
+    };
+    if (Number.isNaN(cfg.max_outbound_files)) cfg.max_outbound_files = 3;
+    // secret 留空 = 不修改（后端据此保留原值）
+    const secret = document.getElementById('qq-secret').value.trim();
+    if (secret) cfg.secret = secret;
+    return cfg;
+}
+
+async function testQQConnection() {
+    const resultEl = document.getElementById('qq-test-result');
+    const btn = document.getElementById('qq-test-btn');
+    resultEl.textContent = '测试中…';
+    btn.disabled = true;
+    try {
+        const body = {
+            app_id: document.getElementById('qq-app-id').value.trim(),
+            use_sandbox: document.getElementById('qq-use-sandbox').checked,
+        };
+        const secret = document.getElementById('qq-secret').value.trim();
+        if (secret) body.secret = secret;   // 留空则后端用已保存的
+
+        const response = await fetch('/api/config/test-qq', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        resultEl.textContent = (data.success ? '✓ ' : '✗ ') + (data.message || '');
+        resultEl.style.color = data.success ? 'var(--success-color, #2e7d32)' : 'var(--error-color, #c62828)';
+    } catch (error) {
+        resultEl.textContent = '✗ ' + error.message;
+        resultEl.style.color = 'var(--error-color, #c62828)';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+(function initQQSettings() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('qq-test-btn');
+        if (btn) btn.addEventListener('click', testQQConnection);
+    });
+})();
+
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
@@ -632,6 +712,9 @@ async function openSettings() {
 
         // ── MCP servers ──
         await loadMcpServers();
+
+        // ── QQ 接入端 ──
+        loadQQConfig(cfg.qq || {});
     } catch (error) {
         document.getElementById('settings-status').textContent = '加载失败: ' + error.message;
     }
@@ -703,6 +786,9 @@ async function saveSettings() {
         return;
     }
     payload.mcp_servers = mcpServersPayload;
+
+    // ── QQ 接入端 ──
+    payload.qq = collectQQConfig();
 
     try {
         const response = await fetch('/api/config', {

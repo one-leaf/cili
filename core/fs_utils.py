@@ -110,3 +110,28 @@ def load_json_or_backup(path: Path | str, default: Any) -> Any:
         except Exception:
             logger.error(f"[fs] JSON 文件损坏且备份失败: {e} ({path})")
         return default
+
+
+def safe_upload_filename(raw: str) -> str | None:
+    """净化上传/下载文件名：取 basename，拒绝 NTFS ADS 与 Windows 保留名/字符。
+
+    返回净化后的安全文件名；非法时返回 None（调用方记为错误）。
+
+    原先私有在 ``web/routes_files.py``；QQ 入站附件与 Web 上传共用同一份规则，
+    故下沉到此处。
+    """
+    if not raw:
+        return None
+    name = os.path.basename(raw.replace("\\", "/")).strip()
+    if not name or name in (".", ".."):
+        return None
+    # NTFS 备用数据流（file.txt:stream）与 Windows 保留字符
+    if ":" in name or any(c in name for c in '<>"|?*'):
+        return None
+    # Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9
+    stem = name.split(".")[0].upper()
+    if stem in {"CON", "PRN", "AUX", "NUL"}:
+        return None
+    if (stem.startswith("COM") and stem[3:].isdigit()) or        (stem.startswith("LPT") and stem[3:].isdigit()):
+        return None
+    return name

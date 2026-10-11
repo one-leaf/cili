@@ -24,3 +24,5 @@ pdfplumber
 pytest
 # MCP (Model Context Protocol) server client
 mcp
+# QQ 接入端（官方 QQ 机器人，仅私聊；未启用时不加载）
+qqbot-agent-sdk

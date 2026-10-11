@@ -314,6 +314,28 @@ def read_meta(session_dir: Path | str) -> dict:
     return load_json_or_backup(Path(session_dir) / META_FILE, {}) or {}
 
 
+# 新建会话时的占位名：此时展示名应改用首条消息预览（见 session_display_name）
+PLACEHOLDER_SESSION_NAME = "新会话"
+UNNAMED_SESSION_NAME = "未命名"
+
+
+def session_display_name(name: str, preview: str = "") -> str:
+    """会话的**展示名**——Web 与 QQ 共用这一份，避免各写一套而漂移。
+
+    规则：
+    - 名字仍是占位名（新建会话时的「新会话」）且有首条消息预览 → 用**预览**
+    - 否则 → 名字，再退到预览，最后退到「未命名」
+
+    为什么占位名要换掉：列表里几条会话全叫「新会话」等于没有信息量；用户认得出的是
+    自己说的第一句话。
+    """
+    name = (name or "").strip()
+    preview = (preview or "").strip()
+    if name == PLACEHOLDER_SESSION_NAME and preview:
+        return preview
+    return name or preview or UNNAMED_SESSION_NAME
+
+
 def build_model_messages(session_dir: Path | str) -> list[dict]:
     """按 index.json 的 commits 重建模型视图消息（含 _meta、应用内容规则）。"""
     view = read_view(session_dir)
@@ -371,9 +393,13 @@ def load_history_meta(session_dir: Path | str) -> dict:
     """会话属性（UI/列表数据源），含迁移保障。"""
     ensure_new_format(session_dir)
     meta = read_meta(session_dir)
+    name = meta.get("name", "New Session")
+    preview = meta.get("preview", "")
     return {
         "session_id": meta.get("session_id") or Path(session_dir).name,
-        "name": meta.get("name", "New Session"),
+        "name": name,
+        "preview": preview,
+        "display_name": session_display_name(name, preview),
         "metadata": meta.get("metadata", {}),
     }
 
@@ -977,14 +1003,23 @@ class SessionStore:
                 sessions.append({
                     "session_id": meta.get("session_id", session_dir.name),
                     "name": meta.get("name", "Unnamed"),
+                    "preview": meta.get("preview", ""),
                     **metadata,
+                    # 派生值放最后，避免被 metadata 里的同名键覆盖
+                    "display_name": meta.get("display_name")
+                    or session_display_name(meta.get("name", ""), meta.get("preview", "")),
                 })
             except Exception as e:
                 logger.warning(f"Failed to load session {session_dir}: {e}")
                 continue
 
-        # 按更新时间倒序
-        sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        # 按更新时间倒序。updated_at 只精确到秒，同一秒建的两个会话会并列，
+        # 并列时顺序取决于目录遍历次序 —— 对「列出序号 → 按序号切换」是致命的
+        # （两次调用的序号可能指向不同会话）。用 session_id 兜底，保证确定性。
+        sessions.sort(
+            key=lambda x: (x.get("updated_at", ""), x.get("session_id", "")),
+            reverse=True,
+        )
         return sessions
 
     def rename(self, new_name: str) -> None:
