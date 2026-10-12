@@ -177,9 +177,9 @@ iLink 不支持更新已发消息——QQ 的「单条流式 transcript」（前
    在 poller 层就丢弃——官方插件能力元数据只声明单聊
 2. **去重**：`message_id`（缺省 `from_user_id + create_time_ms`）LRU 1000；**游标
    `get_updates_buf` 每轮落盘**——丢了重启会把服务端积压消息重收一遍
-3. **owner 自动绑定**（同 QQ）：任何能给该微信号发私聊的人都会成为 owner。⚠️ 微信
-   **没有** QQ 那种「未认证机器人只有管理员能用」的平台限制——**建议小号当 bot、
-   主号当 owner**。owner 只作状态记录与日志，不是访问闸门
+3. **owner 自动绑定**（同 QQ）：ClawBot 形态下与 bot 私聊的就是**绑定微信的主人本人**，
+   owner 即绑定者。若将来把 bot 入口分享给他人（或产品开放好友对话），第一个发送者会
+   成为 owner——届时需要加白名单。owner 只作状态记录与日志，不是访问闸门
 4. **媒体**：AES-128-ECB 解密。key 两种形态——图片在 item 顶层 `aeskey`（hex）、其余在
    `media.aes_key`（base64，解出 raw16 或 hex 串）；**非图片必须带 key**。下载经
    `core/media_fetch` 的 `transform` 钩子**边下边解**（不落密文中间文件）；图片按魔数
