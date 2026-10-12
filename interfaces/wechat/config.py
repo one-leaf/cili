@@ -74,10 +74,14 @@ class WechatConfig:
 
     enabled: bool = False
 
-    # 「正在输入…」是微信侧唯一的进度反馈——iLink 不支持更新已发消息，
+    # 「正在输入…」+ 工具进度节拍是微信侧的进度反馈——iLink 不支持更新已发消息，
     # 所以 QQ 那种流式 transcript 在这里做不出来（见 sink.py）。
     typing_enabled: bool = True
     typing_keepalive_seconds: float = 5.0
+
+    # 工具进度节拍：累计 1/2/4/8/16/32/64 次工具调用时各发一条进度消息，
+    # 正文最后一次性发出。进度与正文共享 context_token 预算（见 sink.py）。
+    tool_progress: bool = True
 
     # context_token 的发送预算与刷新阈值
     context_message_budget: int = DEFAULT_CONTEXT_MESSAGE_BUDGET

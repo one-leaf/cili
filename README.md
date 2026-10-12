@@ -2,7 +2,7 @@
 
 # 草履虫 Cili Agent
 
-**Agent Harness · 浏览器自动化 · 学习工作一体 · 开箱即用**
+**Agent Harness · 多端接入 · 浏览器自动化 · 学习工作一体 · 开箱即用**
 
 ![草履虫](web/static/favicon.png)
 
@@ -16,7 +16,7 @@
 
 ---
 
-Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时：工具系统、会话管理、浏览器自动化、定时任务。将大模型转化为可编排、可扩展、可自动化的执行引擎。
+Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时：工具系统、会话管理、浏览器自动化、定时任务。将大模型转化为可编排、可扩展、可自动化的执行引擎，并可通过 Web、QQ 机器人、个人微信与同一个 Agent 对话。
 
 ## 为什么是草履虫
 
@@ -47,6 +47,7 @@ Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时
   ![记忆管理](docs/images/workspace-memory.png)
 
   </details>
+- **多端接入** — Web 之外，QQ 官方机器人（WebSocket 长连接、单条流式消息、被动回复配额）与个人微信（iLink 协议、扫码登录、工具进度节拍）都能与同一个 Agent 对话；多端共享同一会话，在设置页扫码或填凭据即用
 - **Windows 专属** — 针对 Windows 优化，Git Bash 执行 Shell，双击即可运行
 
 ## 快速开始
@@ -281,6 +282,9 @@ cili/
 │   │   ├── registry.py         # TOOL_REGISTRY + create_tools(role_config, ...)
 │   │   └── *.py                # 全部工具平铺（read/write/edit/bash/.../agent/ask_user）
 │   └── skills/                 # 技能层（每技能一个目录，skill.md + roles frontmatter）
+├── interfaces/                 # 接入端（与 Web 共享同一会话与 runner）
+│   ├── qq/                     # QQ 接入端（官方机器人 SDK，WebSocket + 单条流式消息）
+│   └── wechat/                 # 微信接入端（iLink 个人微信，HTTP 长轮询 + 进度节拍）
 ├── web/
 │   ├── web_api.py              # FastAPI 服务（REST + SSE 流式 + 记忆管理 API）
 │   └── static/                 # 前端静态文件
@@ -292,7 +296,7 @@ cili/
 │       ├── file-manager.js     # 文件管理
 │       ├── utils.js            # 工具函数
 │       └── style.css           # 样式
-├── docs/                       # 设计文档 + 设置说明（15 篇）
+├── docs/                       # 设计文档 + 设置说明 + 使用指南
 ├── test/                       # 测试（52 文件）
 └── workspace/                  # 默认工作目录
 ```
@@ -310,7 +314,7 @@ python -m pytest test/test_bash_tool.py -v
 python -m pytest test/ --cov=core --cov-report=term-missing
 ```
 
-测试覆盖：BaseAgent、Agent（master/worker/lite 三角色）、LLM Adapter、Transport、统一工具/技能系统、Session、Compression、Config、BrowserService、Cron、MessageBus、Web API 等核心模块。
+测试覆盖：BaseAgent、Agent（master/worker/lite 三角色）、LLM Adapter、Transport、统一工具/技能系统、Session、Compression、Config、BrowserService、Cron、MessageBus、Web API、QQ 接入端、微信接入端等核心模块。
 
 ## 设计文档
 
@@ -318,7 +322,7 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 
 | 文档 | 内容 |
 |------|------|
-| [agent-design.md](docs/design/agent-design.md) | Agent 架构、循环机制、消息管理 |
+| [session-runner-design.md](docs/design/session-runner-design.md) | Agent 架构、循环机制、消息管理 |
 | [content-block-design.md](docs/design/content-block-design.md) | LLM 底层：Adapter 分层、ContentBlock 类型、StreamChunk 协议 |
 | [compression-design.md](docs/design/compression-design.md) | 三层消息压缩：Microcompact、Full Compact、Emergency |
 | [tool-system-design.md](docs/design/tool-system-design.md) | 统一工具注册表、执行流程、全部工具说明 |
@@ -330,6 +334,8 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | [todo-write-design.md](docs/design/todo-write-design.md) | TodoWrite 任务规划：整表替换、三态状态 |
 | [system-prompt-design.md](docs/design/system-prompt-design.md) | 系统提示词构建逻辑 |
 | [environment-setup-design.md](docs/design/environment-setup-design.md) | Python 环境初始化、embeddable 模式 |
+| [qq-interface-design.md](docs/design/qq-interface-design.md) | QQ 接入端：官方机器人、单条流式消息、被动回复配额 |
+| [wechat-interface-design.md](docs/design/wechat-interface-design.md) | 微信接入端：iLink 协议、扫码登录、进度节拍、context_token 预算 |
 | [llm-api-reference.md](docs/design/llm-api-reference.md) | LLM API 参考文档 |
 | [settings-guide.md](docs/settings-guide.md) | 配置项说明（模型、角色模型、鉴权、MinerU 等） |
 
@@ -343,6 +349,7 @@ python -m pytest test/ --cov=core --cov-report=term-missing
 | 前端 | 原生 HTML/CSS/JS | 零框架依赖，轻量快速 |
 | 数学渲染 | MathJax | LaTeX 公式支持 |
 | Markdown | marked.js | 消息 Markdown 渲染 |
+| 消息接入端 | qqbot-agent-sdk / httpx | QQ 官方机器人 SDK；微信 iLink 协议直连（扫码登录、AES 媒体加密） |
 
 ## 完整使用指南
 

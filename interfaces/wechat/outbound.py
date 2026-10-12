@@ -76,16 +76,18 @@ class OutboundSender:
         *,
         client_id: str = "",
         reserve: int = 0,
+        defer: bool = True,
     ) -> bool:
         """发一条文本。返回是否真的发出去了。
 
-        配额不足或服务端受限时返回 False，并把这条转入 defer（不丢内容）。
+        配额不足或服务端受限时：``defer=True``（默认）转入 defer 队列等下一条
+        用户消息补发；``defer=False`` 直接丢弃——进度心跳这类可丢内容用它。
         """
         if not text:
             return True
         item = {"type": ITEM_TEXT, "text_item": {"text": text}}
         return await self._send_item(
-            user_id, item, client_id=client_id, reserve=reserve, defer=True,
+            user_id, item, client_id=client_id, reserve=reserve, defer=defer,
         )
 
     async def send_media_item(

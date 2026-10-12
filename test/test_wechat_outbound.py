@@ -267,9 +267,11 @@ class TestTypingManager:
 
 
 class _FakeOutbound:
-    def __init__(self, *, budget: int = 8):
+    def __init__(self, *, budget: int = 8, progress_fails: bool = False):
         self.sent: list[str] = []
+        self.defers: list[bool] = []
         self.budget = budget
+        self.progress_fails = progress_fails
 
     def budget_left(self, user_id: str, *, reserve: int = 0) -> int:
         return max(0, self.budget - reserve)
@@ -278,11 +280,16 @@ class _FakeOutbound:
         return 0
 
     async def send_text(self, user_id: str, text: str, *, client_id: str = "",
-                        reserve: int = 0) -> bool:
+                        reserve: int = 0, defer: bool = True) -> bool:
+        if self.progress_fails and not defer:
+            # 进度心跳路径：模拟服务端 -2
+            from interfaces.wechat.protocol import WechatQuotaError
+            raise WechatQuotaError("sendmessage", ret=-2)
         if self.budget <= 0:
             return False
         self.budget -= 1
         self.sent.append(text)
+        self.defers.append(defer)
         return True
 
 
@@ -297,7 +304,7 @@ class _FakeTyping:
         self.stops += 1
 
 
-def _sink(*, budget: int = 8, chunk_limit: int = 1800):
+def _sink(*, budget: int = 8, chunk_limit: int = 1800, cfg: dict | None = None):
     from interfaces.wechat.account import WechatAccount
     from interfaces.wechat.config import WechatConfig
     from interfaces.wechat.runtime import WechatRuntime
@@ -308,7 +315,7 @@ def _sink(*, budget: int = 8, chunk_limit: int = 1800):
     outbound = _FakeOutbound(budget=budget)
     typing = _FakeTyping()
     rt = WechatRuntime(
-        cfg=WechatConfig(text_chunk_limit=chunk_limit),
+        cfg=WechatConfig(text_chunk_limit=chunk_limit, **(cfg or {})),
         state=WechatState(),
         account=WechatAccount(),
         tokens=_tokens(),
@@ -352,16 +359,57 @@ class TestWechatSink:
         assert len(outbound.sent) == 3
         assert "".join(outbound.sent) == "x" * 250
 
-    def test_tool_lines_dedupe_consecutive(self):
+    def test_progress_beats_exponential(self):
+        """进度按 1/2/4 次工具调用的节拍发：4 次调用 → 3 条进度。"""
         sink, outbound, _, loop = _sink()
-        sink.on_tool_call("read", {}, "t1")
-        sink.on_tool_call("read", {}, "t2")      # 连续同名 → 只记一次
-        sink.on_tool_call("grep", {}, "t3")
+        for name in ("read", "read", "grep", "bash"):
+            sink.on_tool_call(name, {}, "t")
+        sink.on_text("答案")
         sink.on_turn_complete()
         _flush_loop(loop)
-        text = outbound.sent[0]
-        assert text.count("正在调用 read 工具") == 1
-        assert text.count("正在调用 grep 工具") == 1
+
+        progress = [t for t, d in zip(outbound.sent, outbound.defers) if not d]
+        answer = [t for t, d in zip(outbound.sent, outbound.defers) if d]
+        assert progress == [
+            "🔧 已调用 1 次工具（read），仍在进行…",
+            "🔧 已调用 2 次工具（read），仍在进行…",
+            "🔧 已调用 4 次工具（grep、bash），仍在进行…",
+        ]
+        assert answer == ["答案"]          # 工具轨迹由进度承载，正文只装回答
+
+    def test_progress_capped_and_tail_counted(self):
+        """超过 64 次后不再发进度；剩余调用在正文前补一行累计数。"""
+        sink, outbound, _, loop = _sink()
+        for i in range(70):
+            sink.on_tool_call(f"t{i}", {}, f"t{i}")
+        sink.on_text("结论")
+        sink.on_turn_complete()
+        _flush_loop(loop)
+
+        progress = [t for t, d in zip(outbound.sent, outbound.defers) if not d]
+        assert len(progress) == 7
+        assert "已调用 64 次" in progress[-1]
+        assert outbound.sent[-1].startswith("🔧 累计 70 次工具调用")
+        assert "结论" in outbound.sent[-1]
+
+    def test_progress_disabled_by_config(self):
+        sink, outbound, _, loop = _sink(cfg={"tool_progress": False})
+        sink.on_tool_call("read", {}, "t1")
+        sink.on_text("答案")
+        sink.on_turn_complete()
+        _flush_loop(loop)
+        assert outbound.sent == ["答案"]
+
+    def test_progress_failure_dropped_answer_intact(self):
+        """进度是心跳：发送失败直接丢弃，不进 defer、不影响正文。"""
+        sink, outbound, _, loop = _sink()
+        outbound.progress_fails = True
+        sink.on_tool_call("read", {}, "t1")       # 触发进度（会失败）
+        sink.on_tool_call("grep", {}, "t2")
+        sink.on_text("正文回答")
+        sink.on_turn_complete()
+        _flush_loop(loop)
+        assert outbound.sent == ["正文回答"]       # 正文走 defer 路径，完好
 
     def test_ask_user_folded_into_text(self):
         sink, outbound, _, loop = _sink()
