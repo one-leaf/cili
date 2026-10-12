@@ -13,11 +13,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
-import mimetypes
 from pathlib import Path
 
+from core.multimodal import build_user_input
 from core.outbox import drain_files
 from core.session_registry import registry, session_key
 from core.turn_dispatch import execute_turn, prepare_turn
@@ -165,7 +164,7 @@ class InboundHandler:
 
         try:
             content = self._resolve_answer(runner, text) if text else ""
-            user_input = self._build_user_input(content, media_items, runner)
+            user_input = build_user_input(content, media_items, runner)
             if user_input is None:
                 await self._send_text(openid, msg_id, "暂不支持该消息类型。")
                 return
@@ -190,49 +189,7 @@ class InboundHandler:
 
     # ── 入参构造 ────────────────────────────────────────────────────
 
-    def _build_user_input(
-        self,
-        content: str,
-        media_items: list[InboundMedia],
-        runner,
-    ):
-        """构造 ``runner.run(user_input=...)`` 的入参。
-
-        - 图片 → multimodal block（**与 Web 的图片上传路径一致**）；模型不支持
-          多模态时退化为给路径（cili 有 ``read_image`` 工具）
-        - 其余文件 / 语音转写 → 把路径与转写文本拼进正文
-        """
-        if not media_items:
-            return content
-
-        text_parts = [content] if content else []
-        blocks: list[dict] = []
-        if content:
-            blocks.append({"type": "text", "text": content, "_valid": True})
-
-        multimodal = bool(getattr(getattr(runner, "model", None), "multimodal", False))
-        for item in media_items:
-            if item.kind == "image" and multimodal:
-                data, mime = _read_image_base64(item)
-                if data:
-                    blocks.append({
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": mime, "data": data},
-                        "_valid": True,
-                    })
-                    continue
-            if item.kind == "voice" and item.transcript:
-                text_parts.append(f"[语音转写] {item.transcript}")
-            else:
-                text_parts.append(f"[附件] {item.rel_path}")
-
-        body = "\n".join(p for p in text_parts if p).strip()
-        if len(blocks) <= 1:
-            # 没有可用的图片块 → 退回纯文本（含附件路径）
-            return body
-        if body:
-            blocks[0] = {"type": "text", "text": body, "_valid": True}
-        return blocks
+    # ── 入参构造 ────────────────────────────────────────────────────
 
     @staticmethod
     def _resolve_answer(runner, content: str) -> str:
@@ -326,17 +283,6 @@ def _bind_default_sink(runner, workspace_uuid: str, session_id: str) -> None:
     from core.default_sink import bind_default_sink
 
     bind_default_sink(runner, workspace_uuid, session_id)
-
-
-def _read_image_base64(item: InboundMedia) -> tuple[str, str]:
-    """读图片为 base64（失败返回空串）。"""
-    try:
-        data = Path(item.path).read_bytes()
-    except OSError as e:
-        logger.warning(f"[qq/inbound] 读取图片失败 {item.path}: {e}")
-        return "", ""
-    mime = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
-    return base64.b64encode(data).decode("ascii"), mime
 
 
 def _questions_of(session, tool_use_id: str) -> list[dict]:

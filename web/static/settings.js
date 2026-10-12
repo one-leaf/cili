@@ -642,6 +642,174 @@ async function testQQConnection() {
     });
 })();
 
+// ─── 微信接入端设置 ───────────────────────────────────────────────────
+
+const WECHAT_MAX_INBOUND_MB_DEFAULT = 100;
+let wechatPollTimer = null;
+let wechatSessionId = '';
+
+function loadWechatConfig(wechatCfg) {
+    wechatCfg = wechatCfg || {};
+    document.getElementById('wechat-enabled').checked = wechatCfg.enabled === true;
+    document.getElementById('wechat-chunk-limit').value =
+        wechatCfg.text_chunk_limit != null ? wechatCfg.text_chunk_limit : 1800;
+    document.getElementById('wechat-budget').value =
+        wechatCfg.context_message_budget != null ? wechatCfg.context_message_budget : 8;
+    document.getElementById('wechat-max-outbound-files').value =
+        wechatCfg.max_outbound_files != null ? wechatCfg.max_outbound_files : 3;
+    const bytes = wechatCfg.max_inbound_bytes != null
+        ? wechatCfg.max_inbound_bytes : WECHAT_MAX_INBOUND_MB_DEFAULT * 1024 * 1024;
+    document.getElementById('wechat-max-inbound-mb').value = Math.round(bytes / 1024 / 1024);
+    document.getElementById('wechat-typing').checked = wechatCfg.typing_enabled !== false;
+    hideWechatQr();
+    refreshWechatStatus();
+}
+
+function collectWechatConfig() {
+    const cfg = {
+        enabled: document.getElementById('wechat-enabled').checked,
+        typing_enabled: document.getElementById('wechat-typing').checked,
+        text_chunk_limit: parseInt(document.getElementById('wechat-chunk-limit').value, 10) || 1800,
+        context_message_budget: parseInt(document.getElementById('wechat-budget').value, 10) || 8,
+        max_outbound_files: parseInt(document.getElementById('wechat-max-outbound-files').value, 10),
+        max_inbound_bytes: (parseInt(document.getElementById('wechat-max-inbound-mb').value, 10)
+            || WECHAT_MAX_INBOUND_MB_DEFAULT) * 1024 * 1024,
+    };
+    if (Number.isNaN(cfg.max_outbound_files)) cfg.max_outbound_files = 3;
+    return cfg;
+}
+
+async function refreshWechatStatus() {
+    const el = document.getElementById('wechat-status-text');
+    if (!el) return;
+    try {
+        const resp = await fetch('/api/wechat/status');
+        const data = await resp.json();
+        const parts = [data.logged_in ? '已登录' : '未登录'];
+        if (data.logged_in && data.ilink_user_id) parts.push(`账号 ${data.ilink_user_id}`);
+        if (data.running) parts.push('运行中');
+        el.textContent = parts.join(' · ');
+    } catch (e) {
+        el.textContent = '状态查询失败';
+    }
+}
+
+function hideWechatQr() {
+    document.getElementById('wechat-qr-wrap').style.display = 'none';
+    document.getElementById('wechat-verify-wrap').style.display = 'none';
+    document.getElementById('wechat-qr-img').style.display = 'none';
+    document.getElementById('wechat-qr-fallback').style.display = 'none';
+    document.getElementById('wechat-login-msg').textContent = '';
+}
+
+function stopWechatPolling() {
+    if (wechatPollTimer) {
+        clearInterval(wechatPollTimer);
+        wechatPollTimer = null;
+    }
+}
+
+function renderWechatQr(data) {
+    document.getElementById('wechat-qr-wrap').style.display = '';
+    document.getElementById('wechat-login-msg').textContent = data.message || '';
+
+    const img = document.getElementById('wechat-qr-img');
+    const fallback = document.getElementById('wechat-qr-fallback');
+    if (data.qr_png_data_url) {
+        img.src = data.qr_png_data_url;
+        img.style.display = '';
+        fallback.style.display = 'none';
+    } else {
+        // 服务端没装 qrcode → 退化成展示原始内容串
+        img.style.display = 'none';
+        fallback.style.display = '';
+        fallback.textContent = data.qr_content || '';
+    }
+
+    const needCode = data.challenge === 'verify_code';
+    document.getElementById('wechat-verify-wrap').style.display = needCode ? '' : 'none';
+    if (needCode) document.getElementById('wechat-verify-code').focus();
+}
+
+async function wechatStartLogin() {
+    stopWechatPolling();
+    wechatSessionId = '';
+    hideWechatQr();
+    // 总是 force=true：用户点「扫码登录」就是要扫码；而且若服务端那侧凭证已失效，
+    // 走「已登录」短路会让人卡在「显示已登录、实际用不了」的状态。
+    try {
+        const resp = await fetch('/api/wechat/login/start?force=true', { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || '取二维码失败');
+        if (data.status === 'succeeded') {
+            await refreshWechatStatus();
+            showToast(data.message || '微信已登录');
+            return;
+        }
+        wechatSessionId = data.session_id;
+        renderWechatQr(data);
+        wechatPollTimer = setInterval(pollWechatLogin, data.interval_ms || 2000);
+    } catch (e) {
+        document.getElementById('wechat-qr-wrap').style.display = '';
+        document.getElementById('wechat-login-msg').textContent = '✗ ' + e.message;
+    }
+}
+
+async function pollWechatLogin(verifyCode) {
+    if (!wechatSessionId) return;
+    let url = `/api/wechat/login/status?session_id=${encodeURIComponent(wechatSessionId)}`;
+    if (verifyCode) url += `&verify_code=${encodeURIComponent(verifyCode)}`;
+    try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.status === 'pending') {
+            renderWechatQr(data);
+            return;
+        }
+        stopWechatPolling();
+        wechatSessionId = '';
+        if (data.status === 'succeeded') {
+            hideWechatQr();
+            await refreshWechatStatus();
+            showToast(data.message || '微信已连接');
+        } else {
+            document.getElementById('wechat-login-msg').textContent =
+                '✗ ' + (data.message || '登录失败');
+        }
+    } catch (e) {
+        // 网络抖动：不清会话，下一轮继续轮询
+    }
+}
+
+async function wechatLogout() {
+    stopWechatPolling();
+    wechatSessionId = '';
+    hideWechatQr();
+    try {
+        const resp = await fetch('/api/wechat/logout', { method: 'POST' });
+        const data = await resp.json();
+        showToast(data.message || '已登出');
+        await refreshWechatStatus();
+    } catch (e) {
+        showToast('登出失败：' + e.message);
+    }
+}
+
+(function initWechatSettings() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const loginBtn = document.getElementById('wechat-login-btn');
+        const logoutBtn = document.getElementById('wechat-logout-btn');
+        const verifyBtn = document.getElementById('wechat-verify-btn');
+        if (loginBtn) loginBtn.addEventListener('click', () => wechatStartLogin());
+        if (logoutBtn) logoutBtn.addEventListener('click', wechatLogout);
+        if (verifyBtn) {
+            verifyBtn.addEventListener('click', () => {
+                pollWechatLogin(document.getElementById('wechat-verify-code').value.trim());
+            });
+        }
+    });
+})();
+
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
@@ -715,6 +883,9 @@ async function openSettings() {
 
         // ── QQ 接入端 ──
         loadQQConfig(cfg.qq || {});
+
+        // ── 微信接入端 ──
+        loadWechatConfig(cfg.wechat || {});
     } catch (error) {
         document.getElementById('settings-status').textContent = '加载失败: ' + error.message;
     }
@@ -789,6 +960,9 @@ async function saveSettings() {
 
     // ── QQ 接入端 ──
     payload.qq = collectQQConfig();
+
+    // ── 微信接入端 ──
+    payload.wechat = collectWechatConfig();
 
     try {
         const response = await fetch('/api/config', {

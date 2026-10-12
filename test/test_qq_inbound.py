@@ -173,27 +173,33 @@ class TestDownloadUrlCheck:
         assert check_download_url("https:///nohost") is not None
 
     def test_rejects_domain_resolving_to_private(self, monkeypatch):
-        """关键：域名指向内网也必须拦（DNS 解析后判定）。"""
+        """关键：域名指向内网也必须拦（DNS 解析后判定）。
+
+        实现已提到 ``core/media_fetch.py``，所以补丁要打在那边的 ``socket``；
+        ``check_download_url`` 仍是同一个函数对象，QQ 侧的重导出照常生效。
+        """
         import socket
 
-        import interfaces.qq.attachment as att
+        import core.media_fetch as mf
+        from interfaces.qq.attachment import check_download_url
 
         def fake_getaddrinfo(host, port, *a, **kw):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0))]
 
-        monkeypatch.setattr(att.socket, "getaddrinfo", fake_getaddrinfo)
-        assert att.check_download_url("https://evil.example.com/a") is not None
+        monkeypatch.setattr(mf.socket, "getaddrinfo", fake_getaddrinfo)
+        assert check_download_url("https://evil.example.com/a") is not None
 
     def test_allows_domain_resolving_to_public(self, monkeypatch):
         import socket
 
-        import interfaces.qq.attachment as att
+        import core.media_fetch as mf
+        from interfaces.qq.attachment import check_download_url
 
         def fake_getaddrinfo(host, port, *a, **kw):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
-        monkeypatch.setattr(att.socket, "getaddrinfo", fake_getaddrinfo)
-        assert att.check_download_url("https://example.com/a") is None
+        monkeypatch.setattr(mf.socket, "getaddrinfo", fake_getaddrinfo)
+        assert check_download_url("https://example.com/a") is None
 
     def test_classify(self):
         from interfaces.qq.attachment import classify

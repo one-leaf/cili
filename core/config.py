@@ -415,7 +415,13 @@ def get_workspace_data_dir(workspace_uuid: str) -> Path:
         return Path(entry["directory"]) / ".cili"
     if workspace_uuid == "system":
         return SYSTEM_DATA_DIR
-    # 未知 uuid 静默兜底到默认工作区会让调用方读写到错误位置，明确告警
+    # 未知 uuid 兜底到「Default 工作区」：优先取索引里 Default 的目录，没有才退回
+    # 硬编码路径。必须查索引而不是直接用 PROJECT_ROOT/workspace——session_search、
+    # memory 等工具是 from core.config import 本函数的直接导入方，测试环境靠重定向
+    # 后的索引把它们兜到 .test，硬编码会让隔离失效（测试数据写进真实工作区）。
+    for entry in load_workspaces_index():
+        if entry.get("workspace_name") in ("Default", "default") and entry.get("directory"):
+            return Path(entry["directory"]) / ".cili"
     logger.warning(
         f"[config] 未知 workspace_uuid={workspace_uuid!r}，回退到默认工作区数据目录"
     )

@@ -182,6 +182,7 @@
                 <button class="settings-tab" data-tab="system">系统参数</button>
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
+                <button class="settings-tab" data-tab="wechat">微信接入端</button>
             </div>
             <div class="modal-body">
                 <!-- Master Model Tab (Multi-turn conversation) -->
@@ -228,7 +229,11 @@
                         <input type="number" id="setting-max-context-tokens" min="1" max="1000000" step="1000">
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="setting-multimodal"> 支持多模态 (图片输入)</label>
+                        <label>多模态:</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="setting-multimodal">
+                            <small class="form-hint" style="margin: 0;">支持图片输入</small>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>性格 (温度): <span id="setting-temperature-value">0.2</span></label>
@@ -311,7 +316,11 @@
                         <input type="number" id="worker-max-context-tokens" min="1" max="1000000" step="1000">
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="worker-multimodal"> 支持多模态 (图片输入)</label>
+                        <label>多模态:</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="worker-multimodal">
+                            <small class="form-hint" style="margin: 0;">支持图片输入</small>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>性格 (温度): <span id="worker-temperature-value">0.2</span></label>
@@ -387,7 +396,11 @@
                         <input type="number" id="lite-max-context-tokens" min="1" max="1000000" step="1000">
                     </div>
                     <div class="form-group">
-                        <label><input type="checkbox" id="lite-multimodal"> 支持多模态 (图片输入)</label>
+                        <label>多模态:</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="lite-multimodal">
+                            <small class="form-hint" style="margin: 0;">支持图片输入</small>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>性格 (温度): <span id="lite-temperature-value">0.2</span></label>
@@ -532,6 +545,26 @@
                         <b>共享同一会话</b>。
                     </div>
 
+                    <details style="margin: 10px 0; padding: 8px 14px; border: 1px solid var(--border-color, #ddd); border-radius: 6px; background: rgba(0,0,0,0.02);">
+                        <summary style="cursor: pointer; font-weight: 600;">📖 对接帮助（如何拿到 AppID / AppSecret）</summary>
+                        <div class="model-description" style="margin-top: 10px;">
+                            <p><strong>1. 创建机器人：</strong>前往
+                            <a href="https://q.qq.com/" target="_blank" rel="noopener">QQ 开放平台（q.qq.com）</a>，
+                            用手机 QQ 扫码登录，点击「创建机器人」。</p>
+                            <p><strong>2. 复制凭据：</strong>在机器人的设置页找到 <b>AppID</b> 与 <b>AppSecret</b> 填到本页。
+                            ⚠️ AppSecret 只在页面上明文显示一次，离开前没保存就得重新生成。</p>
+                            <p><strong>3. 沙箱先跑通：</strong>未发布的机器人只能和沙箱环境互通，保持「沙箱环境」勾选；
+                            正式发布后可取消勾选。</p>
+                            <p><strong>4. 开始对话：</strong>勾选「启用」并保存，在手机 QQ 里给机器人发<b>私聊</b>消息——
+                            第一位发消息的人会自动绑定为 owner。发 <code>/h</code> 可查看全部指令。</p>
+                            <p><strong>配额提醒：</strong>单聊里每条用户消息只能被动回复 <b>4 次</b>（流式回复占 1 次，
+                            所以单轮最多再发 3 个文件）。看到「回复次数已用尽」属于正常限制，不是故障。</p>
+                            <p><strong>排查：</strong>连接失败先用「测试连接」核对凭据；收不到消息请确认机器人已发布、
+                            或你的 QQ 在沙箱白名单里。更多说明见
+                            <a href="https://docs.openclaw.ai/zh-CN/channels/qqbot" target="_blank" rel="noopener">QQ Bot 渠道文档</a>。</p>
+                        </div>
+                    </details>
+
                     <div class="form-group">
                         <label>启用:</label>
                         <input type="checkbox" id="qq-enabled">
@@ -605,6 +638,106 @@
                         <small class="form-hint">
                             保存后即刻生效（无需重启）。开启后，<code>send_file</code> 工具及其说明
                             只会在 QQ 驱动的回合里对模型可见。
+                        </small>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-wechat">
+                    <div class="model-description">
+                        <strong>微信接入端</strong> — 用个人微信（iLink）与 Cili 对话，与网页端
+                        <b>共享同一会话</b>。仅支持私聊。
+                    </div>
+
+                    <details style="margin: 10px 0; padding: 8px 14px; border: 1px solid var(--border-color, #ddd); border-radius: 6px; background: rgba(0,0,0,0.02);">
+                        <summary style="cursor: pointer; font-weight: 600;">📖 对接帮助（扫码即可，无需注册平台）</summary>
+                        <div class="model-description" style="margin-top: 10px;">
+                            <p><strong>1. 扫码登录：</strong>点「扫码登录」，用<b>手机微信</b>扫码并确认；
+                            需要时输入微信里显示的数字验证码。整个过程不需要注册任何开放平台。</p>
+                            <p><strong>2. 开始对话：</strong>勾选「启用」并保存，然后用<b>另一个微信号</b>给扫码的号发私聊——
+                            第一位发消息的人会自动绑定为 owner。发 <code>/h</code> 查看指令、<code>/w</code> 切换工作区、
+                            <code>/s</code> 切换会话。</p>
+                            <p><strong>3. 限制：</strong>仅支持<b>私聊</b>（协议未开放群聊）；每个 context_token 只能发
+                            约 <b>8 条</b>消息、约 90 秒就过期（发送前会自动续期，超配额的回复会自动推迟、
+                            等你下一条消息时补发）；不支持流式更新——回合内只显示「正在输入…」，答完一次性发出。</p>
+                            <p><strong>4. 安全：</strong>任何能给这个微信号发私聊的人都会成为 owner——
+                            建议用<b>小号</b>当 bot、主号当 owner，不要用常用号扫码。</p>
+                            <p><strong>排查：</strong>提示「登录已失效」就重新扫码；回复迟迟不来先发 <code>/status</code>
+                            看剩余发送条数；媒体收发依赖 AES 加密通道，个别文件发送失败会降级为文字提示。更多说明见
+                            <a href="https://docs.openclaw.ai/zh-CN/channels/wechat" target="_blank" rel="noopener">微信 ClawBot 渠道文档</a>。</p>
+                        </div>
+                    </details>
+
+                    <div class="form-group">
+                        <label>启用:</label>
+                        <input type="checkbox" id="wechat-enabled">
+                        <small class="form-hint">关闭时不连接微信、不占资源；开启后需先扫码登录</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>登录状态:</label>
+                        <div>
+                            <span id="wechat-status-text" class="form-hint">未登录</span>
+                            <button id="wechat-login-btn" class="btn btn-small" type="button">扫码登录</button>
+                            <button id="wechat-logout-btn" class="btn btn-small" type="button">登出</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="wechat-qr-wrap" style="display:none;">
+                        <label>扫码:</label>
+                        <div>
+                            <img id="wechat-qr-img" alt="微信登录二维码"
+                                 style="width:200px;height:200px;display:none;">
+                            <div id="wechat-qr-fallback" class="form-hint"
+                                 style="display:none;word-break:break-all;"></div>
+                            <small class="form-hint" id="wechat-login-msg"></small>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="wechat-verify-wrap" style="display:none;">
+                        <label>验证码:</label>
+                        <div>
+                            <input type="text" id="wechat-verify-code" placeholder="微信上显示的数字">
+                            <button id="wechat-verify-btn" class="btn btn-small" type="button">提交</button>
+                        </div>
+                    </div>
+
+                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
+                    <div class="model-description"><strong>高级参数</strong></div>
+
+                    <div class="form-group">
+                        <label>单条文本上限:</label>
+                        <input type="number" id="wechat-chunk-limit" min="200" max="1800" value="1800">
+                        <small class="form-hint">iLink 单条消息的硬限制是 1800 字符，超长会切分</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>每轮发送预算:</label>
+                        <input type="number" id="wechat-budget" min="1" max="10" value="8">
+                        <small class="form-hint">每个 context_token 的可发条数（服务端未公开，经验值约 8）</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>单轮文件上限:</label>
+                        <input type="number" id="wechat-max-outbound-files" min="0" max="3" value="3">
+                        <small class="form-hint">文本分片与出站文件共享上面的发送预算</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>入站附件上限（MB）:</label>
+                        <input type="number" id="wechat-max-inbound-mb" min="1" max="200" value="100">
+                        <small class="form-hint">与网页端拖放上传的上限一致</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>「正在输入」提示:</label>
+                        <input type="checkbox" id="wechat-typing" checked>
+                        <small class="form-hint">iLink 不支持更新已发消息，这是回合内唯一的进度反馈</small>
+                    </div>
+
+                    <div class="model-description" style="margin-top: 12px;">
+                        <small class="form-hint">
+                            凭证来自扫码，不写进设置文件；保存后即刻生效（无需重启）。
+                            开启后 <code>send_file</code> 工具只会在微信驱动的回合里对模型可见。
                         </small>
                     </div>
                 </div>

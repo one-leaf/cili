@@ -61,6 +61,14 @@ class AppContext:
         except Exception as e:
             logger.warning(f"[AppContext] 启动 QQ 接入端失败: {e}")
 
+        # 微信接入端（未启用 / 未扫码登录时静默跳过）
+        try:
+            from interfaces.wechat import start_wechat_interface
+            if start_wechat_interface():
+                logger.info("[AppContext] 微信接入端已启动")
+        except Exception as e:
+            logger.warning(f"[AppContext] 启动微信接入端失败: {e}")
+
     @staticmethod
     def _connect_mcp_servers() -> None:
         try:
@@ -82,6 +90,7 @@ class AppContext:
 
         for name, stop in (
             ("QQ 接入端", self._stop_qq),
+            ("微信接入端", self._stop_wechat),
             ("AgentMailbox", self._stop_mailbox),
             ("浏览器服务", self._stop_browser),
             ("MCP provider", self._stop_mcp),
@@ -110,6 +119,11 @@ class AppContext:
     def _stop_qq() -> None:
         from interfaces.qq import stop_qq_interface
         stop_qq_interface()
+
+    @staticmethod
+    def _stop_wechat() -> None:
+        from interfaces.wechat import stop_wechat_interface
+        stop_wechat_interface()
 
     @staticmethod
     def _stop_browser() -> None:

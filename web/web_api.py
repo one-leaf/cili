@@ -27,6 +27,7 @@ from web.routes_ask_user import router as ask_user_router
 from web.routes_config import router as config_router
 from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
+from web.routes_wechat import router as wechat_router
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,7 @@ app.include_router(ask_user_router)
 app.include_router(config_router)
 app.include_router(files_router)
 app.include_router(memory_router)
+app.include_router(wechat_router)
 
 
 if __name__ == "__main__":

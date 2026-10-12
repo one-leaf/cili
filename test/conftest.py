@@ -82,6 +82,15 @@ def _isolate_workspaces_index():
             "workspace_name": "test" if test_uuid == "test" else f"Test {test_uuid}",
             "directory": test_dir,
         })
+    # 再注册一个名为 Default 的工作区（目录同为 .test）：
+    # - ensure_default_workspace() 按名字命中它直接返回，不再往真实
+    #   PROJECT_ROOT/workspace 建工作区（QQ/微信指令测试经它解析）；
+    # - 未知 uuid 的回落（get_workspace_data_dir 的 Default 兜底）也因此全部落 .test。
+    config_mod.upsert_workspace_entry({
+        "uuid": "test-default",
+        "workspace_name": "Default",
+        "directory": test_dir,
+    })
     # 补强：拦截 get_workspace_data_dir 的回落路径，
     # 未注册 uuid 不再回落至真实 Default 工作区，而是指向测试目录
     _original_get_workspace_data_dir = config_mod.get_workspace_data_dir

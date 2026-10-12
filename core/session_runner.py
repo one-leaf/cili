@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 # 自己把它激活。所以要从可见集合里彻底摘掉。
 INTERFACE_TOOLS: dict[str, frozenset[str]] = {
     "qq": frozenset({"send_file"}),
+    "wechat": frozenset({"send_file"}),
 }
 
 

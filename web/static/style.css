@@ -595,6 +595,14 @@ body {
     gap: 8px;
 }
 
+/* 勾选框作为 label 的兄弟节点时（QQ/微信设置页的写法）：
+   浏览器对 grid 里默认 stretch 的 checkbox 会把控件画在 1fr 格子中间，
+   显式靠左，让它贴着 140px 栏的右边线。 */
+.form-group input[type="checkbox"] {
+    justify-self: start;
+    margin: 0;
+}
+
 .form-group input[type="text"],
 .form-group input[type="password"],
 .form-group input[type="number"] {

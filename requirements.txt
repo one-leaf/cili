@@ -26,3 +26,8 @@ pytest
 mcp
 # QQ 接入端（官方 QQ 机器人，仅私聊；未启用时不加载）
 qqbot-agent-sdk
+# 微信接入端（iLink 个人微信，仅私聊；未启用时不加载）
+# cryptography：媒体 AES-128-ECB 加解密（iLink 的图片/文件是加密传输的）
+# qrcode：扫码登录用，服务端生成二维码 PNG（复用已有的 Pillow）
+cryptography
+qrcode

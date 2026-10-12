@@ -44,6 +44,7 @@ class UpdateConfigRequest(BaseModel):
     system: dict | None = None                       # System parameters (pip_mirror, etc.)
     mcp_servers: dict | None = None                  # MCP 服务器配置 {name: {...}}
     qq: dict | None = None                           # QQ 接入端配置
+    wechat: dict | None = None                       # 微信接入端配置（凭证走扫码，不在这里）
 
 
 class McpTestRequest(BaseModel):
@@ -147,6 +148,21 @@ def _apply_qq_enabled(enabled: bool) -> None:
         logger.warning(f"[Config] 切换 QQ 接入端失败: {e}")
 
 
+def _apply_wechat_enabled(enabled: bool) -> None:
+    """按开关启停微信接入端（阻塞操作，调用方需丢线程池）。"""
+    try:
+        from interfaces.wechat import start_wechat_interface, stop_wechat_interface
+
+        if enabled:
+            started = start_wechat_interface()
+            if not started:
+                logger.warning("[Config] 微信已启用但未启动（未扫码登录或配置不完整）")
+        else:
+            stop_wechat_interface()
+    except Exception as e:  # noqa: BLE001 — 启停失败不该让保存请求失败
+        logger.warning(f"[Config] 切换微信接入端失败: {e}")
+
+
 # ---------- Config ----------
 
 @router.get("/api/config")
@@ -223,6 +239,19 @@ async def update_config(request: UpdateConfigRequest):
         qq_enabled = bool(new_qq.get("enabled"))
         qq_toggled = qq_enabled != bool(existing_qq.get("enabled"))
 
+    # Update 微信接入端配置（凭证走扫码、不在配置里，所以这里只有参数与开关）
+    wechat_toggled = False
+    wechat_enabled = False
+    if request.wechat is not None:
+        existing_wechat = config.get("wechat", {})
+        if not isinstance(existing_wechat, dict):
+            existing_wechat = {}
+        new_wechat = dict(existing_wechat)
+        new_wechat.update(dict(request.wechat))
+        config["wechat"] = new_wechat
+        wechat_enabled = bool(new_wechat.get("enabled"))
+        wechat_toggled = wechat_enabled != bool(existing_wechat.get("enabled"))
+
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
@@ -230,6 +259,8 @@ async def update_config(request: UpdateConfigRequest):
     # start/stop 会等宿主线程就绪/退出（数秒），属阻塞操作 → 丢线程池。
     if qq_toggled:
         await asyncio.to_thread(_apply_qq_enabled, qq_enabled)
+    if wechat_toggled:
+        await asyncio.to_thread(_apply_wechat_enabled, wechat_enabled)
 
     # 重连 MCP 服务器（签名变化才真正重连）
     try:
