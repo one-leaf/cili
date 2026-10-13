@@ -8,12 +8,26 @@ from __future__ import annotations
 import ast
 import os
 import shlex
+import sys
 import tempfile
 import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
-from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS, Tool, ToolResult
+from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, Tool, ToolResult
+
+
+def _resolve_python_exe() -> str:
+    """deps Python（embeddable 部署）存在时优先，否则回落当前解释器（CI/开发机）。"""
+    exe = os.path.join(_VENV_DIR, "python.exe")
+    return exe if os.path.isfile(exe) else sys.executable
+
+
+def _resolve_mpl_config_dir() -> str:
+    """matplotlib 配置目录：deps 布局存在时用 deps，否则用系统临时目录。"""
+    if os.path.isdir(_VENV_DIR):
+        return os.path.join(_VENV_DIR, "matplotlib")
+    return os.path.join(tempfile.gettempdir(), "cili-matplotlib")
 
 # 后台执行临时脚本的前缀（用于过期清理）
 _BG_SCRIPT_PREFIX = "cili_bg_"
@@ -210,7 +224,7 @@ class PythonTool(Tool):
 
     def _execute_file(self, script_file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
         """Execute a Python script file."""
-        python_exe = os.path.join(_VENV_DIR, "python.exe")
+        python_exe = _resolve_python_exe()
         path = self._resolve_path(script_file, read_only=True)
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {script_file}", error=True)
@@ -231,7 +245,7 @@ class PythonTool(Tool):
             return gate
 
         # Set MPLCONFIGDIR to use Cili's matplotlib config
-        mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
+        mpl_config_dir = _resolve_mpl_config_dir()
         cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             # 逐个 token 引用：整体 quote 会把整串当成单个参数传给脚本
@@ -253,9 +267,9 @@ class PythonTool(Tool):
         if gate:
             return gate
 
-        python_exe = os.path.join(_VENV_DIR, "python.exe")
+        python_exe = _resolve_python_exe()
         # Set MPLCONFIGDIR to use Cili's matplotlib config
-        mpl_config_dir = os.path.join(_VENV_DIR, "matplotlib")
+        mpl_config_dir = _resolve_mpl_config_dir()
 
         if run_in_background:
             # For background execution, write code to temp file and execute
@@ -328,8 +342,7 @@ class PythonTool(Tool):
 
     def _run_pip(self, subcmd: str, timeout: int = 300) -> ToolResult:
         """Run a pip command with mirror + notice filtering."""
-        pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
-        cmd = f'"{pip_exe}" {subcmd} --disable-pip-version-check'
+        cmd = f'"{_resolve_python_exe()}" -m pip {subcmd} --disable-pip-version-check'
         return self._filter_notices(self._run_bash(cmd, timeout=timeout))
 
     @staticmethod
@@ -461,7 +474,7 @@ class PythonTool(Tool):
 
     def _check_packages(self, packages: str) -> ToolResult:
         """Check if packages are installed and show their versions."""
-        python_exe = os.path.join(_VENV_DIR, "python.exe")
+        python_exe = _resolve_python_exe()
         pkg_list = packages.split()
         check_names = ', '.join(f'"{p}"' for p in pkg_list)
         code = f"""
@@ -479,7 +492,7 @@ for name in targets:
 
     def _show_info(self) -> ToolResult:
         """Show Python environment information."""
-        python_exe = os.path.join(_VENV_DIR, "python.exe")
+        python_exe = _resolve_python_exe()
 
         # Get Python version and installed packages
         code = """
@@ -509,8 +522,7 @@ except Exception as e:
         result = self._run_bash(f'"{python_exe}" -', timeout=30, stdin=code)
 
         # Also show pip version
-        pip_exe = os.path.join(_VENV_SCRIPTS, "pip.exe")
-        pip_version = self._run_bash(f'"{pip_exe}" --version', timeout=10)
+        pip_version = self._run_bash(f'"{_resolve_python_exe()}" -m pip --version', timeout=10)
 
         if not result.error:
             output = result.output

@@ -63,6 +63,9 @@ jobs:
         env:
           # Use system Python for CI (not embedded deps)
           CILI_CI_MODE: "1"
+          # config 构造要求存在 API key；CI 无真实密钥，注入占位值
+          # （真正调用 LLM 的集成测试已按 integration 标记在服务器不可达时自动跳过）
+          ANTHROPIC_API_KEY: "ci-dummy-key-not-real"
 
   lint:
     name: Code quality

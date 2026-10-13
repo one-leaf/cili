@@ -196,6 +196,9 @@ class TestCompileFlow:
         pdf = tmp_path / "doc.pdf"
         pdf.write_text("%PDF-fake", encoding="utf-8")
 
+        # CI/无 LaTeX 环境下也稳定：mock 编译器发现与执行
+        monkeypatch.setattr(tool, "_get_best_compiler", lambda: "pdflatex")
+        monkeypatch.setattr(tool, "_find_compiler", lambda name: f"/fake/{name}")
         monkeypatch.setattr(
             tool, "_run_compiler",
             lambda c, p, t, out: ToolResult("OK"),
