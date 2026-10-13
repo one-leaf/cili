@@ -28,8 +28,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Disable user site-packages to avoid mixing with system Python
+# Disable user site-packages to avoid mixing with system Python.
+# PYTHONNOUSERSITE 仅在解释器启动时（site 模块）被读取，这里设置已太晚，
+# user site 已经进入 sys.path；需在此显式移除，保证第三方包只来自程序自带环境。
 os.environ["PYTHONNOUSERSITE"] = "1"
+import site as _site
+_user_site = _site.getusersitepackages()
+if _user_site and _user_site in sys.path:
+    sys.path.remove(_user_site)
 
 # Ensure deps Python site-packages is in sys.path (fix for embeddable Python).
 # 仅当当前解释器就是 deps Python 时才插入：site-packages 里的二进制扩展
