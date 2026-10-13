@@ -14,15 +14,13 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from contextlib import contextmanager
-from pathlib import Path
 
-from core.tools.base import Tool, ToolResult
 from core.cron import cron_config_lock, get_user_tasks_file
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 

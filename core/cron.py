@@ -17,7 +17,10 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.session_runner import SessionRunner
 
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
@@ -403,7 +406,7 @@ class CronTask:
         5. Runner 自主调用 session 工具执行任务，工具内部同步等待结果
         6. Runner loop 正常完成后返回
         """
-        from core.config import load_config, load_workspace_config
+        from core.config import load_workspace_config
 
         # 1. 解析 workspace（数据目录用于 session）
         ws_uuid = workspace_uuid or "system"
@@ -422,7 +425,6 @@ class CronTask:
 
         # 3. 构造任务信息
         task_desc = task_item.get("task", "")
-        plan = task_item.get("plan", [])
         task_brief = task_desc[:200]
 
         logger.info(f"[cron] [{self.name}] Starting master Runner in session {cron_session_id}: {task_brief[:50]}...")

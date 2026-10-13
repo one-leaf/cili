@@ -10,14 +10,12 @@ Key design decisions:
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from core.tools.base import Tool, ToolResult
 from core.config import get_workspace_tools_dir
-
+from core.tools.base import Tool, ToolResult
 
 # Valid status values
 VALID_STATUSES = {"pending", "in_progress", "completed"}
@@ -318,6 +316,6 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
 
 
 # Type hint for session manager (avoid circular import)
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from core.session import SessionStore

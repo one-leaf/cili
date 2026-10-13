@@ -16,13 +16,12 @@ from core.tools.approval import (
     approval_placeholder_text,
 )
 from core.tools.base import (
-    Tool,
-    ToolResult,
     _VENV_DIR,
     _VENV_SCRIPTS,
+    Tool,
+    ToolResult,
     _strip_shell_strings,
 )
-
 
 # PowerShell 危险命令黑名单（大小写不敏感）
 # 扫描前先剥掉字符串字面量（见 _check_deny_patterns），只扫代码部分。

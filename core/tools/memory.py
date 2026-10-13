@@ -15,9 +15,8 @@ from core.memory_store import (
     SOURCES,
     Journal,
     MemoryStore,
-    slugify,
 )
-from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
 _STALE_NOTE = "⚠ 此为历史观察（>30 天未更新），使用前请对照当前代码/事实验证"
 

@@ -12,7 +12,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from core.config import ModelConfig
 from core.llm.adapter import Adapter, merge_consecutive_same_role
 from core.llm.types import (
     ContentBlock,

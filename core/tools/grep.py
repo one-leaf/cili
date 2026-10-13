@@ -250,9 +250,9 @@ class GrepTool(Tool):
         # stderr 与 stdout 合并输出：grep 的诊断（路径不存在/权限/非法正则）以
         # "grep: ..." 开头，须与真实匹配文件行区分开——全为诊断时报错（由调用方
         # 捕获转成错误结果），否则静默丢弃
-        lines = [l for l in result.output.strip().split('\n') if l]
-        diagnostics = [l for l in lines if l.startswith("grep:")]
-        files = [l for l in lines if not l.startswith("grep:")]
+        lines = [line for line in result.output.strip().split('\n') if line]
+        diagnostics = [line for line in lines if line.startswith("grep:")]
+        files = [line for line in lines if not line.startswith("grep:")]
         if not files and diagnostics:
             raise ValueError("; ".join(diagnostics))
         return files

@@ -21,9 +21,15 @@ from typing import Any
 
 import httpx
 
-from core.session_runner_runtime.context import INTERNAL_META
-from core.llm import LLMResponse, Message, TextBlock, classify_llm_error, format_llm_error
+from core.llm import (
+    LLMResponse,
+    Message,
+    TextBlock,
+    classify_llm_error,
+    format_llm_error,
+)
 from core.session import generate_short_id
+from core.session_runner_runtime.context import INTERNAL_META
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -421,7 +427,9 @@ class Runner:
         Layer 2: Full compact (LLM summary when tokens > 80% threshold)
         Layer 3: Emergency body size (replace old images with placeholders)
         """
-        from core.compression import microcompact_mark_orphans_and_errors, count_messages_tokens
+        from core.compression import (
+            microcompact_mark_orphans_and_errors,
+        )
 
         MAX_TOKENS = self.runner.model.max_context_tokens
         FULL_COMPACT_TOKEN_RATIO = 0.80
@@ -486,7 +494,6 @@ class Runner:
 
         Returns (before_tokens, after_tokens) tuple.
         """
-        from core.compression import count_messages_tokens
 
         all_messages = self.runner.messages
         total_tokens = self.runner._count_messages_tokens(self.runner.get_valid_messages())
@@ -601,7 +608,7 @@ class Runner:
                 )
             # Use the new get_text() method for typed content blocks
             return response.get_text() or "（摘要生成失败）"
-        except Exception as e:
+        except Exception:
             logger.error("[上下文] 摘要生成失败")
             return "（摘要生成失败，请查看完整历史）"
 

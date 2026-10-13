@@ -18,7 +18,6 @@ from typing import Any
 from core.tools.result import ToolResult
 from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH
 
-
 # 全局跟踪所有活跃的后台 Runner，用于进程退出时清理 + 并发上限控制
 _active_background_runners: list = []
 _background_runners_cond = threading.Condition()

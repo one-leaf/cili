@@ -6,8 +6,6 @@ Sorted by modification time (newest first), supports pagination with offset/limi
 
 from __future__ import annotations
 
-import fnmatch
-import os
 from pathlib import Path
 
 from core.tools.base import Tool, ToolResult

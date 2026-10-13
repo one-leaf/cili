@@ -80,9 +80,9 @@ def parse_version(version: str) -> tuple[int, ...]:
 
 def is_newer_version(remote: str, local: str) -> bool:
     """remote > local 返回 True（长度不足的段按 0 对齐比较）。"""
-    r, l = parse_version(remote), parse_version(local)
-    n = max(len(r), len(l))
-    return r + (0,) * (n - len(r)) > l + (0,) * (n - len(l))
+    rv, lv = parse_version(remote), parse_version(local)
+    n = max(len(rv), len(lv))
+    return rv + (0,) * (n - len(rv)) > lv + (0,) * (n - len(lv))
 
 
 def _download_text(urls: list[str], timeout: float = 30) -> str | None:
@@ -279,7 +279,11 @@ def _cleanup_memory_git_dirs() -> int:
     """
     removed = 0
     try:
-        from core.config import SYSTEM_DATA_DIR, get_workspace_data_dir, load_workspaces_index
+        from core.config import (
+            SYSTEM_DATA_DIR,
+            get_workspace_data_dir,
+            load_workspaces_index,
+        )
 
         # 系统工作区
         system_memory = SYSTEM_DATA_DIR / "memory"

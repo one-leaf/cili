@@ -19,7 +19,6 @@ from typing import Callable
 
 from core.config import load_config
 from core.interface import Attachment
-from core.output_sink import OutputSink
 from core.session import SessionStore
 from core.session_runner import SessionRunner
 

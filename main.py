@@ -8,7 +8,6 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 import argparse
 import copy
 import glob
@@ -17,7 +16,9 @@ import logging
 import os
 import re
 import shutil
+import site as _site
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -32,7 +33,6 @@ logger = logging.getLogger(__name__)
 # PYTHONNOUSERSITE 仅在解释器启动时（site 模块）被读取，这里设置已太晚，
 # user site 已经进入 sys.path；需在此显式移除，保证第三方包只来自程序自带环境。
 os.environ["PYTHONNOUSERSITE"] = "1"
-import site as _site
 _user_site = _site.getusersitepackages()
 if _user_site and _user_site in sys.path:
     sys.path.remove(_user_site)
@@ -272,7 +272,11 @@ def _ensure_system_workspace() -> None:
     system 工作区：directory = data/（与其他工作区一致，数据放 {directory}/.cili/）。
     """
     try:
-        from core.config import find_workspace_entry, upsert_workspace_entry, SYSTEM_DATA_DIR
+        from core.config import (
+            SYSTEM_DATA_DIR,
+            find_workspace_entry,
+            upsert_workspace_entry,
+        )
         if find_workspace_entry("system"):
             return
         system_data = SYSTEM_DATA_DIR
@@ -297,7 +301,10 @@ def _ensure_default_workspace() -> None:
     Default 工作区：directory = workspace/（默认用户工作区）。
     """
     try:
-        from core.config import find_workspace_entry, upsert_workspace_entry, get_workspace_data_dir
+        from core.config import (
+            get_workspace_data_dir,
+            upsert_workspace_entry,
+        )
 
         # 检查是否已存在 Default 工作区（uuid 可能是随机的，按名称或默认路径查找）
         default_dir = Path(_PROJECT_ROOT) / "workspace"
@@ -394,12 +401,12 @@ def _init_settings() -> None:
     if config_found:
         print(f"[setup] Found existing config: {config_found}")
         if api_key:
-            print(f"[setup] Migrating account:")
+            print("[setup] Migrating account:")
             if base_url:
                 print(f"[setup]   - Base URL: {base_url}")
             if model:
                 print(f"[setup]   - Model: {model}")
-            print(f"[setup] Copying config to Cili Agent...")
+            print("[setup] Copying config to Cili Agent...")
 
     if api_key:
         settings = {
@@ -490,7 +497,7 @@ def _migrate_projects_to_cili() -> None:
     print("[setup] Detected legacy data/projects/, migrating to workspace .cili/ directories...")
 
     try:
-        from core.config import upsert_workspace_entry, SYSTEM_DATA_DIR
+        from core.config import SYSTEM_DATA_DIR, upsert_workspace_entry
     except ImportError:
         print("[setup] Warning: core.config unavailable, skipping migration")
         return
@@ -671,7 +678,7 @@ def _install_deps_python() -> bool:
             timeout=120,
         )
         if result.returncode != 0 or not os.path.exists(get_pip_path):
-            print(f"[setup] Error: pip download failed")
+            print("[setup] Error: pip download failed")
             return False
 
         # 使用华为云源安装 pip
@@ -1212,8 +1219,8 @@ def _prepare_environment(args: argparse.Namespace) -> None:
 
     # Migrate old session format to new format (optional, skip if missing)
     try:
+        from core.config import get_workspace_data_dir, load_workspaces_index
         from core.migration import migrate_sessions_dir
-        from core.config import load_workspaces_index, get_workspace_data_dir
         migrated = 0
         for entry in load_workspaces_index():
             uuid = entry.get("uuid", "")

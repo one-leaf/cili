@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.config import Config, PROJECT_ROOT
+from core.config import PROJECT_ROOT, Config
 
 logger = logging.getLogger(__name__)
 

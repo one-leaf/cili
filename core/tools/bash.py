@@ -16,15 +16,14 @@ from core.tools.approval import (
     approval_placeholder_text,
 )
 from core.tools.base import (
-    Tool,
-    ToolResult,
     _GIT_BASH_PATH,
     _VENV_DIR,
     _VENV_SCRIPTS,
+    Tool,
+    ToolResult,
     _strip_shell_strings,
     _to_bash_path,
 )
-
 
 # 危险命令黑名单（大小写不敏感），三档：ask（破坏性操作，询问用户）/ deny（硬拒绝）
 # 扫描前先剥掉字符串字面量（见 _check_deny_patterns），只扫代码部分；
@@ -213,7 +212,6 @@ class BashTool(Tool):
                 )
             keyword_approved = True  # 整条命令已批准，跳过路径门
 
-        policy = self._path_policy()
         initial_dir = self.cwd
 
         # Apply working_dir override

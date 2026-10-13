@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from core.fs_utils import atomic_write_json
-from core.session import INTERNAL_META_FIELDS as INTERNAL_META, generate_short_id
+from core.session import INTERNAL_META_FIELDS as INTERNAL_META
+from core.session import generate_short_id
 
 logger = logging.getLogger(__name__)
 

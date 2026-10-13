@@ -131,7 +131,12 @@ def start_qq_interface() -> bool:
 
         # ⚠️ 环境变量必须在 import SDK **之前**设置：API_BASE 在模块导入时求值。
         # 之后再由 apply_api_base 给模块里那份按值导入的副本打补丁（运行时切换用）。
-        from interfaces.qq.gateway import PROD_API_BASE, SANDBOX_API_BASE, apply_api_base, effective_api_base
+        from interfaces.qq.gateway import (
+            PROD_API_BASE,
+            SANDBOX_API_BASE,
+            apply_api_base,
+            effective_api_base,
+        )
 
         os.environ["QQ_API_BASE"] = SANDBOX_API_BASE if cfg.use_sandbox else PROD_API_BASE
         apply_api_base(cfg.use_sandbox)

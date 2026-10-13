@@ -22,11 +22,14 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
+
 from core.config import PROJECT_ROOT
-from core.tools.base import ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -865,14 +868,14 @@ class BrowserService:
                     try:
                         self._chrome_process.wait(timeout=3)
                     except subprocess.TimeoutExpired:
-                        logger.warning(f"[BrowserService] terminate() timeout, using kill()")
+                        logger.warning("[BrowserService] terminate() timeout, using kill()")
                         self._chrome_process.kill()
             else:
                 self._chrome_process.terminate()
                 try:
                     self._chrome_process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"[BrowserService] terminate() timeout, using kill()")
+                    logger.warning("[BrowserService] terminate() timeout, using kill()")
                     self._chrome_process.kill()
 
             logger.debug(f"[BrowserService] Chrome PID {pid} killed")
@@ -924,7 +927,7 @@ class BrowserService:
             self._browser = self._playwright.chromium.connect_over_cdp(
                 f"http://localhost:{self._cdp_port}"
             )
-            logger.debug(f"[BrowserService] CDP connected successfully")
+            logger.debug("[BrowserService] CDP connected successfully")
             return True
 
         try:
@@ -964,9 +967,9 @@ class BrowserService:
         try:
             is_valid = self._run_in_worker(_check_connection)
             if is_valid:
-                logger.debug(f"[BrowserService] Existing browser connection is valid")
+                logger.debug("[BrowserService] Existing browser connection is valid")
                 return None  # 已有有效连接
-            logger.debug(f"[BrowserService] Existing browser connection invalid, reconnecting...")
+            logger.debug("[BrowserService] Existing browser connection invalid, reconnecting...")
             # 连接已失效，清理后重新连接
             self._run_in_worker(_invalidate_connection)
         except Exception as e:
@@ -993,7 +996,7 @@ class BrowserService:
                 if self._connect_browser():
                     return None
             # 全部失败，杀死并重启
-            logger.warning(f"[BrowserService] CDP retry failed, restarting Chrome")
+            logger.warning("[BrowserService] CDP retry failed, restarting Chrome")
             self._kill_chrome_internal()
             # _kill_chrome_internal 已等待端口释放并清理锁文件
         else:
@@ -1425,7 +1428,7 @@ class BrowserService:
                 actual_tab_index = self._open_new_page()
             page = self._get_page(actual_tab_index)
             if not page:
-                return ToolResult(f"Browser navigate failed: could not open tab", error=True)
+                return ToolResult("Browser navigate failed: could not open tab", error=True)
             self._apply_stealth()
             return _do_navigate(page, actual_tab_index)
 
@@ -1531,7 +1534,7 @@ class BrowserService:
             """)
             if not links:
                 return ToolResult("No links found on page")
-            lines = [f"- [{l['text'][:50]}]({l['href']})" for l in links]
+            lines = [f"- [{it['text'][:50]}]({it['href']})" for it in links]
             return ToolResult(f"Found {len(links)} links:\n\n" + "\n".join(lines))
 
         return self._execute_operation("get_links", _do_get_links, tab_index=tab_index)

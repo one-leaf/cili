@@ -25,10 +25,10 @@ from typing import Any
 
 from core.config import MCPConfig
 from core.tools.base import (
-    Tool,
-    ToolResult,
     UNTRUSTED_DATA_BEGIN,
     UNTRUSTED_DATA_END,
+    Tool,
+    ToolResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -478,7 +478,7 @@ class MCPProvider:
     async def _open_session(self, name: str, cfg: MCPConfig, stack: AsyncExitStack) -> Any:
         """建立 streamableHttp 传输 + ClientSession 并 initialize，返回 session。"""
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client, httpx2
+        from mcp.client.streamable_http import httpx2, streamable_http_client
 
         if not cfg.url:
             raise ValueError(f"MCP server '{name}': streamableHttp 需要 url")

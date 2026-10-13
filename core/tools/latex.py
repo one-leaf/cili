@@ -12,12 +12,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 from core.config import PROJECT_ROOT
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
-
 
 # Tectonic directory under data/deps/
 _TECTONIC_DIR = str(PROJECT_ROOT / "data" / "deps" / "tectonic")

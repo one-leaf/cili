@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Iterable
-from urllib.parse import urlparse
 
-from core.config import ModelConfig
 from core.llm.adapter import Adapter, merge_consecutive_same_role
 from core.llm.types import (
     ContentBlock,
@@ -270,7 +268,6 @@ class AnthropicAdapter(Adapter):
     def translate_stream(self, events: Iterable[dict[str, Any]]) -> Iterable[StreamChunk]:
         """Translate Anthropic SSE events to StreamChunks."""
         current_block_index = -1
-        current_block_type = ""
 
         for event in events:
             evt_type = event.get("type", "")
@@ -286,7 +283,6 @@ class AnthropicAdapter(Adapter):
                 current_block_index += 1
                 block = event.get("content_block", {})
                 block_type = block.get("type", "")
-                current_block_type = block_type
 
                 if block_type == "text":
                     yield StreamChunk.block_start(current_block_index, "text")

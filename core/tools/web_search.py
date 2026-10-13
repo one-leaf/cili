@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote_plus
 
-from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
-
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
 # 搜索引擎配置
 SEARCH_CONFIGS = {

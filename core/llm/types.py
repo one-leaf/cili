@@ -20,7 +20,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.llm.errors import format_llm_error
+# 显式 re-export：历史入口，大量模块从 core.llm.types 导入 format_llm_error
+from core.llm.errors import format_llm_error as format_llm_error
 
 # ========== Content Block Types ==========
 

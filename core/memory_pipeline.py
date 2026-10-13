@@ -21,9 +21,14 @@ import logging
 import os
 import re
 import threading
-from typing import Any, Callable
+from typing import Callable
 
-from core.config import get_workspace_data_dir, load_config, load_workspaces_index, load_workspace_config
+from core.config import (
+    get_workspace_data_dir,
+    load_config,
+    load_workspace_config,
+    load_workspaces_index,
+)
 from core.llm import Message, create_llm_client
 from core.memory_store import (
     MAX_DESCRIPTION_LEN,

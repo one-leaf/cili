@@ -27,10 +27,10 @@ SDK_AVAILABLE = False
 _IMPORT_ERROR: str = ""
 try:  # pragma: no cover - 取决于环境是否装了 SDK
     from qqbot_agent_sdk import (  # type: ignore
+        EventParser,
         QQApiClient,
         QQWebSocket,
         WSCallbacks,
-        EventParser,
     )
     from qqbot_agent_sdk.media_loader import MediaUploader  # type: ignore
     from qqbot_agent_sdk.session_store import WSSessionStore  # type: ignore

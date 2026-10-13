@@ -220,7 +220,9 @@ Use web_search for simple lookups; use browser when search results are insuffici
         """执行浏览器操作，委托给 BrowserService。"""
         # 懒导入避免 core.browser_service → core.tools.base 触发 registry 的循环依赖
         from core.browser_service import (
-            _navigate_hard_deny, _validate_navigate_url, get_service,
+            _navigate_hard_deny,
+            _validate_navigate_url,
+            get_service,
         )
 
         service = get_service()

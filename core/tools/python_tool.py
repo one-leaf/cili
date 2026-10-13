@@ -13,8 +13,7 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
-from core.tools.base import Tool, ToolResult, _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS
-
+from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, _VENV_SCRIPTS, Tool, ToolResult
 
 # 后台执行临时脚本的前缀（用于过期清理）
 _BG_SCRIPT_PREFIX = "cili_bg_"
@@ -315,7 +314,7 @@ class PythonTool(Tool):
         from core.llm.types import TextBlock
 
         lines = result.output.split('\n')
-        filtered = [l for l in lines if not l.strip().startswith('[notice]')]
+        filtered = [line for line in lines if not line.strip().startswith('[notice]')]
         text = '\n'.join(filtered).replace(
             '\n--- stderr ---\n\n--- end stderr ---', ''
         ).replace(

@@ -12,17 +12,14 @@ import logging
 import os
 import shutil
 import subprocess
-import threading
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 from core.config import (
     PROJECT_ROOT,
-    get_workspace_data_dir,
+    find_workspace_entry,
     load_config,
     load_workspace_config,
-    find_workspace_entry,
 )
 from core.llm import create_llm_client
 from core.llm.types import Message, TextBlock
@@ -156,7 +153,7 @@ def _sanitize_gitignore(workspace_dir: Path) -> None:
 
         if len(cleaned) != len(lines) or not has_cili_tmp:
             gitignore_path.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
-            logger.info(f"[workspace-git] 已更新 .gitignore")
+            logger.info("[workspace-git] 已更新 .gitignore")
     except Exception as e:
         logger.warning(f"[workspace-git] 清理 .gitignore 失败: {e}")
 
@@ -361,7 +358,7 @@ def _sync_with_remote(workspace_uuid: str, workspace_dir: Path) -> tuple[bool, s
 
             # 如果有冲突，使用 ours 策略解决（保留本地版本）
             if "conflict" in stderr.lower() or "CONFLICT" in stderr:
-                logger.warning(f"[workspace-git] 检测到冲突，使用 ours 策略解决")
+                logger.warning("[workspace-git] 检测到冲突，使用 ours 策略解决")
                 # 使用 ours 策略解决冲突（本地优先）。
                 # 必须检查重试结果：此前返回值被丢弃，代码随后仍用旧的失败 result
                 # 判定 → 冲突自动解决形同虚设，即使解决成功也直接报 pull 失败。

@@ -9,7 +9,7 @@ Cili 是同步/线程模型，故用 ThreadPoolExecutor 而非 asyncio.gather。
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Callable
 
 from core.tools.base import Tool
 

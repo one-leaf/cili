@@ -23,7 +23,7 @@ import requests
 
 from core.config import Config
 from core.security.path_policy import OP_WRITE, PathTarget
-from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 

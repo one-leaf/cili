@@ -1,0 +1,10 @@
+# Ruff 配置：与 CI（.github/workflows/ci.yml 的 `ruff check core/ main.py`）一致
+target-version = "py311"
+
+[lint]
+# E4/E7/E9: pycodestyle 错误；F: pyflakes；I: import 排序
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = [
+    # 存量风格：单行多语句（a = 1; b = 2）约 87 处，纯风格无风险，暂不批量改写
+    "E702",
+]

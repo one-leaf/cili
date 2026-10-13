@@ -32,11 +32,11 @@ from core.llm.adapter import Adapter
 from core.llm.assembler import BlockAssembler
 from core.llm.transport import HttpTransport
 from core.llm.types import (
+    LLMResponse,
     Message,
     StreamChunk,
     TextBlock,
     ToolCallBlock,
-    LLMResponse,
     format_llm_error,
 )
 
@@ -441,7 +441,7 @@ class LLMClient:
             (success, message) tuple
         """
         try:
-            response = self.chat(
+            self.chat(
                 messages=[Message(role="user", content="Hi")],
                 max_tokens=10,
             )

@@ -8,21 +8,33 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy
 from core.fs_utils import normalize_bash_path
+from core.security.path_policy import OP_DELETE, PathPolicy
 from core.tools.approval import META_KEY, approval_placeholder_text
 from core.tools.background import (
-    BackgroundMixin, BackgroundTask, BackgroundTaskManager,
-    _active_background_runners, _atexit_cleanup_runners, _atexit_registered,
-    _background_runners_cond,
+    BackgroundMixin,
+)
+from core.tools.background import (
+    BackgroundTaskManager as BackgroundTaskManager,
 )
 from core.tools.result import ToolResult
 from core.tools.shell import (
+    _GIT_BASH_PATH as _GIT_BASH_PATH,
+)
+from core.tools.shell import (
+    _VENV_DIR as _VENV_DIR,
+)
+from core.tools.shell import (
+    _VENV_SCRIPTS as _VENV_SCRIPTS,
+)
+from core.tools.shell import (
     ShellMixin,
-    _GIT_BASH_PATH, _PROJECT_ROOT, _PWSH_PATH,
-    _VENV_DIR, _VENV_SCRIPTS,
-    _decode_ansi_c, _expand_ansi_c_quotes, _find_git_bash, _find_pwsh,
-    _is_word_char, _strip_dq_string, _strip_shell_strings, _to_bash_path,
+)
+from core.tools.shell import (
+    _strip_shell_strings as _strip_shell_strings,
+)
+from core.tools.shell import (
+    _to_bash_path as _to_bash_path,
 )
 
 # 提示注入防护（SEC-18）：外部来源内容进入上下文前的「不可信数据」定界标签。

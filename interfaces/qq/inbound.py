@@ -25,7 +25,7 @@ from interfaces.qq.access import OwnerTracker
 from interfaces.qq.attachment import InboundMedia, process_attachments
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.sink import QQSink
-from interfaces.qq.state import QQState, resolve_current, save_state
+from interfaces.qq.state import resolve_current
 
 logger = logging.getLogger(__name__)
 

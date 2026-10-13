@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from core.tools.base import Tool, ToolResult, UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 from core.agent_mailbox import get_agent_mailbox
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
 
 class MessageBusTool(Tool):

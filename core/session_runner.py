@@ -17,14 +17,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from core.config import Config
-from core.llm import create_llm_client, format_llm_error
-from core.fs_utils import atomic_write_json
-from core.session import build_exec_log_data
 from core.base_session_runner import BaseSessionRunner
+from core.config import Config
+from core.fs_utils import atomic_write_json
+from core.llm import create_llm_client
 from core.output_sink import OutputSink, layer_sink
-from core.session import SessionStore, generate_short_id
+from core.prompt_builder import (
+    USER_LAYER_GENERATORS,
+    assemble_context,
+    build_system_prompt,
+)
 from core.role_config import load_role
+from core.session import SessionStore, build_exec_log_data, generate_short_id
 from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
     BUDGET_FINAL_RATIO,
@@ -34,7 +38,6 @@ from core.session_runner_runtime.loop import (
     Loop,
     LoopPolicy,
 )
-from core.prompt_builder import USER_LAYER_GENERATORS, assemble_context, build_system_prompt
 from core.tools import create_tools, get_tool_by_name
 from core.tools.approval import (
     APPROVE_LABEL,
@@ -42,8 +45,8 @@ from core.tools.approval import (
     REJECT_LABEL,
     REMEMBER_LABEL,
     ApprovalStore,
-    build_approved_commands_section,
     build_approval_question,
+    build_approved_commands_section,
 )
 
 logger = logging.getLogger(__name__)

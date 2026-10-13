@@ -10,7 +10,11 @@
 """
 
 from interfaces.wechat.account import WechatAccount, load_account, save_account
-from interfaces.wechat.config import WechatConfig, load_wechat_config, save_wechat_config
+from interfaces.wechat.config import (
+    WechatConfig,
+    load_wechat_config,
+    save_wechat_config,
+)
 from interfaces.wechat.service import (
     start_wechat_interface,
     stop_wechat_interface,

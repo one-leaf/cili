@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-
 # ─── system prompt 动态边界标记 ──────────────────────────────────────
 
 DYNAMIC_BOUNDARY = "__CILI_DYNAMIC_BOUNDARY__"
@@ -43,7 +42,7 @@ def _gen_text(block: dict, runner) -> str:
 def _gen_tools(block: dict, runner) -> str:
     """tools 块：从 runner 的 active tools 生成工具列表段，附延迟工具摘要。"""
     # 延迟导入：避免与 core.prompt_sections 的循环依赖
-    from core.prompt_sections import _build_tools_section, _build_deferred_tools_section
+    from core.prompt_sections import _build_deferred_tools_section, _build_tools_section
     active = getattr(runner, "_active_tools", None) or runner.tools
     section = _build_tools_section(active)
     deferred = getattr(runner, "_deferred_tools", None) or []
