@@ -14,11 +14,9 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
 
 from core.config import PROJECT_ROOT
 from core.tools.result import ToolResult
-
 
 # Python venv path: data/deps/python (relative to project root)
 _PROJECT_ROOT = str(PROJECT_ROOT)
@@ -62,8 +60,30 @@ def _find_git_bash() -> str:
     if os.path.isfile(deps_bash):
         return deps_bash
 
-    # Final fallback: assume bash is in PATH
-    return "bash"
+    import shutil as _shutil
+    if sys.platform == "win32":
+        # Probe well-known Git install locations before PATH: on CI runners
+        # System32 precedes Git in PATH, where bash.exe is the WSL stub
+        # (fails with "WSL has no installed distributions")
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates = [
+            os.path.join(program_files, "Git", "bin", "bash.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+        ]
+        for cand in candidates:
+            if cand and os.path.isfile(cand):
+                return cand
+
+        which = _shutil.which("bash")
+        if which:
+            lowered = which.lower()
+            if "\\windows\\system32\\" not in lowered and "\\windowsapps\\" not in lowered:
+                return which
+
+        return "bash"
+
+    return _shutil.which("bash") or "bash"
 
 
 def _find_pwsh() -> str:

@@ -62,7 +62,7 @@ class ReplyLimiter:
             tracked = self._messages.get(msg_id)
             if tracked is None:
                 return LimitCheck(allowed=True, remaining=self.limit)
-            if time.time() - tracked.first_seen > self.ttl:
+            if time.time() - tracked.first_seen >= self.ttl:
                 self._messages.pop(msg_id, None)
                 return LimitCheck(allowed=False, remaining=0, fallback_reason="expired")
             remaining = max(0, self.limit - tracked.count)
