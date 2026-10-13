@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,10 @@ from core.session import INTERNAL_META_FIELDS as INTERNAL_META
 from core.session import generate_short_id
 
 logger = logging.getLogger(__name__)
+
+# 速度滚动平均的权重上限（秒）：达到上限后旧样本按比例衰减，
+# 均值反映近期调用的实际速度而非全会话历史
+SPEED_WEIGHT_CAP = 120.0
 
 
 class ConversationStore:
@@ -36,16 +39,13 @@ class ConversationStore:
         # 可空：interactive 由 SessionRunner 注入 SessionStore，autonomous/直连 BaseSessionRunner 为 None
         self.session = session
         self.session_dir = session_dir
-        self._usage: dict[str, int] = {
+        self._usage: dict[str, float] = {
             "input_tokens": 0,
             "output_tokens": 0,
             "api_calls": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
         }
-        # 时间戳用于计算 tokens/s
-        self._first_token_time: float | None = None
-        self._last_token_time: float | None = None
 
     def set_session(self, session: Any) -> None:
         """会话切换等重绑 session 时同步，保持本层引用与 SessionRunner 一致。"""
@@ -338,37 +338,47 @@ class ConversationStore:
         api_calls: int = 0,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        duration: float | None = None,
+        ttft: float | None = None,
     ) -> None:
-        """累计 usage 统计。"""
+        """累计 usage 统计；带 duration 时按单次调用更新速度滚动平均。
+
+        duration 为本次 LLM 调用墙钟时长，ttft 为流式首 token 延迟。
+        速度 = tokens / 对应时段（有 ttft 时预填充用 ttft、生成用其余时长），
+        按时长加权并入 _usage 内的滚动平均（prefill_speed_weight /
+        generation_speed_weight 为各自支撑均值的有效权重秒数，上限
+        SPEED_WEIGHT_CAP）。速度随 _usage 持久化与恢复，不依赖进程存活的时间戳。
+        """
         self._usage["input_tokens"] += input_tokens
         self._usage["output_tokens"] += output_tokens
         self._usage["api_calls"] += api_calls
         self._usage["cache_read_tokens"] += cache_read_tokens
         self._usage["cache_creation_tokens"] += cache_creation_tokens
 
-        # 记录时间戳用于计算 tokens/s
-        current_time = time.time()
-        if self._first_token_time is None:
-            self._first_token_time = current_time
-        self._last_token_time = current_time
+        if not api_calls or not duration or duration <= 0:
+            return
+        prefill_window = ttft if ttft and 0 < ttft < duration else duration
+        self._merge_speed("prefill_speed", input_tokens / prefill_window, prefill_window)
+        gen_window = duration - (ttft or 0)
+        if gen_window > 0:
+            self._merge_speed("generation_speed", output_tokens / gen_window, gen_window)
+
+    def _merge_speed(self, key: str, sample: float, window: float) -> None:
+        """单次调用速度样本按时长加权并入滚动平均（各速度键独立维护权重）。"""
+        if sample <= 0 or window <= 0:
+            return
+        weight_key = f"{key}_weight"
+        weight = self._usage.get(weight_key, 0.0)
+        mean = self._usage.get(key, 0.0)
+        mean = (mean * weight + sample * window) / (weight + window)
+        self._usage[key] = round(mean, 2)
+        self._usage[weight_key] = round(min(weight + window, SPEED_WEIGHT_CAP), 3)
 
     def get_usage(self) -> dict:
-        """返回 usage 快照拷贝。"""
+        """返回 usage 快照拷贝（速度为按调用计速的滚动平均，无样本时为 0）。"""
         usage = self._usage.copy()
-
-        # 计算速度指标
-        if self._first_token_time and self._last_token_time:
-            duration = self._last_token_time - self._first_token_time
-            if duration > 0:
-                usage["prefill_speed"] = round(usage.get("input_tokens", 0) / duration, 2)
-                usage["generation_speed"] = round(usage.get("output_tokens", 0) / duration, 2)
-            else:
-                usage["prefill_speed"] = 0
-                usage["generation_speed"] = 0
-        else:
-            usage["prefill_speed"] = 0
-            usage["generation_speed"] = 0
-
+        usage.setdefault("prefill_speed", 0)
+        usage.setdefault("generation_speed", 0)
         return usage
 
     def sync_to_session(self) -> None:
@@ -376,6 +386,5 @@ class ConversationStore:
         if self.session is None:
             return
         self.session.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 使用 get_usage() 获取包含 tokens_per_second 的完整 usage
         self.session.metadata["usage"] = self.get_usage()
         self.session.mark_dirty()

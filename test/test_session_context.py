@@ -167,6 +167,70 @@ class TestContextUnit:
         ctx.update_usage(input_tokens=3)
         assert ctx.get_usage()["input_tokens"] == 13
 
+    def test_speed_computed_per_call_with_duration(self):
+        """带 duration 的调用按单次时段计速：ttft 拆分预填充与生成窗口。"""
+        ctx = ConversationStore()
+        ctx.update_usage(
+            input_tokens=60000, output_tokens=300, api_calls=1,
+            duration=3.0, ttft=1.0,
+        )
+        usage = ctx.get_usage()
+        # 预填充 = 60000 / 1.0s，生成 = 300 / 2.0s
+        assert usage["prefill_speed"] == 60000.0
+        assert usage["generation_speed"] == 150.0
+
+        # 第二次调用并入滚动平均（时长加权）
+        ctx.update_usage(
+            input_tokens=10000, output_tokens=100, api_calls=1,
+            duration=2.0, ttft=1.0,
+        )
+        merged = ctx.get_usage()
+        # 预填充：(60000*1 + 10000*1) / 2 = 35000；生成：(150*2 + 100*1) / 3 ≈ 133.33
+        assert merged["prefill_speed"] == 35000.0
+        assert merged["generation_speed"] == round((150 * 2 + 100 * 1) / 3, 2)
+
+    def test_no_duration_keeps_speeds(self):
+        """不带 duration 的调用只累计计数器，不影响已有速度。"""
+        ctx = ConversationStore()
+        ctx.update_usage(
+            input_tokens=60000, output_tokens=300, api_calls=1,
+            duration=3.0, ttft=1.0,
+        )
+        before = ctx.get_usage()
+        ctx.update_usage(input_tokens=10, output_tokens=5, api_calls=1)
+        after = ctx.get_usage()
+        assert after["prefill_speed"] == before["prefill_speed"]
+        assert after["generation_speed"] == before["generation_speed"]
+        assert after["input_tokens"] == 60010
+
+    def test_speeds_survive_restore_no_zero_overwrite(self):
+        """回归：重启后恢复的 runner 读取 usage 不得把速度归零（183a9ad0 bug）。
+
+        旧实现速度由进程内首尾时间戳推导，恢复后的 runner 时间戳为空，
+        一次 sync/get_usage 就把持久化速度覆盖为 0。
+        """
+        ctx = ConversationStore()
+        ctx.update_usage(
+            input_tokens=546084, output_tokens=35156, api_calls=47,
+            duration=10.0, ttft=1.0,
+        )
+        persisted = ctx.get_usage()
+        assert persisted["prefill_speed"] > 0
+
+        # 模拟重启：新 runner 从 session 恢复 _usage（含速度），无任何时间戳
+        restored = ConversationStore()
+        restored._usage = dict(persisted)
+        # 只读路径（/status 等）多次读取，速度保持不变
+        for _ in range(3):
+            assert restored.get_usage()["prefill_speed"] == persisted["prefill_speed"]
+            assert restored.get_usage()["generation_speed"] == persisted["generation_speed"]
+
+        # sync 回写也不丢速度
+        sm = _FakeSM()
+        restored.session = sm
+        restored.sync_to_session()
+        assert sm.metadata["usage"]["prefill_speed"] == persisted["prefill_speed"]
+
     def test_sync_to_session(self):
         sm = _FakeSM()
         ctx = ConversationStore(session=sm)

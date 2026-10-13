@@ -28,7 +28,6 @@ import re
 import secrets
 import shutil
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1043,19 +1042,13 @@ class SessionStore:
     def update_usage(self, input_tokens: int = 0, output_tokens: int = 0,
                      api_calls: int = 0, cache_read_tokens: int = 0,
                      cache_creation_tokens: int = 0) -> None:
-        """更新使用量统计。"""
+        """更新使用量统计（仅计数器；速度由 ConversationStore 按调用计速并随 sync 持久化）。"""
         usage = self.metadata.get("usage", {})
         usage["input_tokens"] = usage.get("input_tokens", 0) + input_tokens
         usage["output_tokens"] = usage.get("output_tokens", 0) + output_tokens
         usage["api_calls"] = usage.get("api_calls", 0) + api_calls
         usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cache_read_tokens
         usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation_tokens
-
-        # 记录时间戳用于计算 tokens/s
-        current_time = time.time()
-        if "first_token_time" not in usage:
-            usage["first_token_time"] = current_time
-        usage["last_token_time"] = current_time
 
         self.metadata["usage"] = usage
         self._index_version += 1
@@ -1070,21 +1063,12 @@ class SessionStore:
             "cache_creation_tokens": 0,
         }))
 
-        # 如果已经有预计算的速度，直接返回
-        if "prefill_speed" in usage and "generation_speed" in usage:
-            return usage
+        # 旧版按首尾时间戳计速的字段已废弃（累计分子 / 进程窗口分母错配），读出时剥离
+        usage.pop("first_token_time", None)
+        usage.pop("last_token_time", None)
 
-        # 否则根据时间戳计算
-        first_time = usage.pop("first_token_time", None)
-        last_time = usage.pop("last_token_time", None)
-
-        if first_time and last_time and last_time > first_time:
-            duration = last_time - first_time
-            usage["prefill_speed"] = round(usage.get("input_tokens", 0) / duration, 2)
-            usage["generation_speed"] = round(usage.get("output_tokens", 0) / duration, 2)
-        else:
-            usage["prefill_speed"] = 0
-            usage["generation_speed"] = 0
+        usage.setdefault("prefill_speed", 0)
+        usage.setdefault("generation_speed", 0)
 
         return usage
 

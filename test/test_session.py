@@ -114,6 +114,25 @@ class TestSessionManagement:
         assert usage["output_tokens"] == 150
         assert usage["api_calls"] == 2
 
+    def test_usage_legacy_timestamps_stripped(self, test_workspace):
+        """旧版 first_token_time/last_token_time 字段读出时剥离，不再参与计速。"""
+        sessions_dir = Path(test_workspace) / ".sessions_legacy_usage"
+        session = SessionStore.create_new_session(sessions_dir, "Legacy Test")
+        session.metadata["usage"] = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "api_calls": 1,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "first_token_time": 1000.0,
+            "last_token_time": 1010.0,
+        }
+
+        usage = session.get_usage()
+        assert "first_token_time" not in usage
+        assert "last_token_time" not in usage
+        assert usage["input_tokens"] == 100
+
     def test_rename_session(self, test_workspace):
         """测试会话重命名"""
         sessions_dir = Path(test_workspace) / ".sessions_rename"

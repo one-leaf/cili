@@ -592,6 +592,7 @@ class Runner:
 请用 200-400 字总结："""
 
         try:
+            call_start = time.monotonic()
             response = self.runner.client.chat(
                 messages=[Message(role="user", content=summary_prompt)],
                 system="你是一个对话总结助手。请用中文简洁地总结对话要点。",
@@ -605,6 +606,7 @@ class Runner:
                     api_calls=1,
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
+                    duration=time.monotonic() - call_start,
                 )
             # Use the new get_text() method for typed content blocks
             return response.get_text() or "（摘要生成失败）"
@@ -845,6 +847,7 @@ class Runner:
         message_objects = self._prepare_messages_for_llm()
 
         try:
+            call_start = time.monotonic()
             response = self.runner.client.chat(
                 messages=message_objects,
                 system=system_prompt,
@@ -859,6 +862,7 @@ class Runner:
                     api_calls=1,
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
+                    duration=time.monotonic() - call_start,
                 )
                 self.runner.cache_state.on_llm_response(
                     cache_read=response.usage.cache_read_tokens,
@@ -883,6 +887,7 @@ class Runner:
                     pad_dangling=False, resolve_results=False
                 )
                 try:
+                    retry_start = time.monotonic()
                     response = self.runner.client.chat(
                         messages=retry_message_objects,
                         system=system_prompt,
@@ -896,6 +901,7 @@ class Runner:
                             api_calls=1,
                             cache_read_tokens=response.usage.cache_read_tokens,
                             cache_creation_tokens=response.usage.cache_write_tokens,
+                            duration=time.monotonic() - retry_start,
                         )
                         self.runner.cache_state.on_llm_response(
                             cache_read=response.usage.cache_read_tokens,
@@ -915,14 +921,20 @@ class Runner:
     def _call_llm_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Streaming LLM call. Think content passes through as-is."""
         text_parts: list[str] = []
+        # 首 token 时刻（thinking/text 任一 delta 先到者），用于拆分预填充与生成时段
+        first_delta_at: list[float | None] = [None]
 
         def on_text_delta(text: str):
+            if first_delta_at[0] is None:
+                first_delta_at[0] = time.monotonic()
             text_parts.append(text)
             if text:
                 safe = text.encode("utf-8", errors="replace").decode("utf-8")
                 self.runner.sink.on_text(safe)
 
         def on_thinking_delta(thinking: str):
+            if first_delta_at[0] is None:
+                first_delta_at[0] = time.monotonic()
             self.runner.sink.on_thinking(thinking)
 
         message_objects = self._prepare_messages_for_llm()
@@ -931,9 +943,12 @@ class Runner:
         max_retries = 3
         retry_delays = [5, 10, 20]
         images_stripped = False
+        attempt_start = time.monotonic()
 
         for attempt in range(max_retries + 1):
             try:
+                attempt_start = time.monotonic()
+                first_delta_at[0] = None
                 response = self.runner.client.chat_stream(
                     messages=message_objects,
                     system=system_prompt,
@@ -992,12 +1007,18 @@ class Runner:
 
         # Track usage (UsageData object)
         if response.usage:
+            call_duration = time.monotonic() - attempt_start
+            ttft = None
+            if first_delta_at[0] is not None:
+                ttft = first_delta_at[0] - attempt_start
             self.runner._update_usage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 api_calls=1,
                 cache_read_tokens=response.usage.cache_read_tokens,
                 cache_creation_tokens=response.usage.cache_write_tokens,
+                duration=call_duration,
+                ttft=ttft,
             )
             self.runner.cache_state.on_llm_response(
                 cache_read=response.usage.cache_read_tokens,

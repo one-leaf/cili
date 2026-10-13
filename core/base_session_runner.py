@@ -93,7 +93,7 @@ class BaseSessionRunner:
         self._running = False
 
         # Usage tracking
-        self._usage: dict[str, int] = {
+        self._usage: dict[str, float] = {
             "input_tokens": 0,
             "output_tokens": 0,
             "api_calls": 0,
@@ -123,12 +123,12 @@ class BaseSessionRunner:
         self.context.messages = value
 
     @property
-    def _usage(self) -> dict[str, int]:
+    def _usage(self) -> dict[str, float]:
         """usage 统计（转发到 context._usage）。"""
         return self.context._usage
 
     @_usage.setter
-    def _usage(self, value: dict[str, int]) -> None:
+    def _usage(self, value: dict[str, float]) -> None:
         self.context._usage = value
 
     @staticmethod
@@ -292,6 +292,8 @@ class BaseSessionRunner:
         api_calls: int = 0,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        duration: float | None = None,
+        ttft: float | None = None,
     ) -> None:
         """Update usage statistics (delegated to ConversationStore)."""
         self.context.update_usage(
@@ -300,9 +302,11 @@ class BaseSessionRunner:
             api_calls=api_calls,
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            duration=duration,
+            ttft=ttft,
         )
 
-    def get_usage(self) -> dict[str, int]:
+    def get_usage(self) -> dict[str, float]:
         """Get accumulated usage statistics (delegated to ConversationStore)."""
         return self.context.get_usage()
 
