@@ -23,12 +23,16 @@ class TestClock:
         assert "UTC time:" in r.output
 
     def test_sleep(self, tools):
-        """clock sleep 至少等待指定秒数。"""
+        """clock sleep 至少等待指定秒数。
+
+        容忍 Windows 定时器分辨率（~15.6ms tick）：time.sleep(0.2) 可能
+        提前一个 tick 醒来，monotonic 实测 0.188s 属正常，故下界取 0.15。
+        """
         t0 = time.monotonic()
         r = _tool(tools, "clock").execute(action="sleep", seconds=0.2)
         assert not r.error
         assert "Slept" in r.output
-        assert time.monotonic() - t0 >= 0.2
+        assert time.monotonic() - t0 >= 0.15
 
     def test_sleep_capped(self, tools, monkeypatch):
         """超出上限的 sleep 被截断到 60s 而非报错。"""
