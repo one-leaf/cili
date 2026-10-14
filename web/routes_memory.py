@@ -9,11 +9,14 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.config import get_workspace_data_dir, load_workspace_config, save_workspace_config
+from core.config import (
+    get_workspace_data_dir,
+    load_workspace_config,
+    save_workspace_config,
+)
 from core.memory_pipeline import memory_enabled, run_consolidation
-from core.memory_store import MemoryStore, Journal
-
-from web.deps import _csrf_protect, _SAFE_ID_RE, _validate_workspace_uuid
+from core.memory_store import Journal, MemoryStore
+from web.deps import _SAFE_ID_RE, _csrf_protect, _validate_workspace_uuid
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

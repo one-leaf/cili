@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -54,8 +53,12 @@ class SessionRegistry:
         # 执行中认领（防 send_message / answer_ask_user 并发双循环改写 messages）
         self._claims: set[str] = set()
         self._claims_lock = threading.Lock()
-        # 接入端对注册表做多步操作（如遍历重载配置、删除工作区）时持此锁
-        self.lock = asyncio.Lock()
+        # 接入端对注册表做多步操作（如遍历重载配置、删除工作区）时持此锁。
+        # 必须用 threading 锁而非 asyncio.Lock（P0-2）：Web/QQ/WeChat 三个独立
+        # event loop 共用本注册表，asyncio.Lock 被占用时另一 loop 的获取会抛
+        # "is bound to a different event loop"（竞争路径触发，实测确认）。
+        # 临界区内不得出现 await；调用方的 `async with` 已全部改为 `with`。
+        self.lock = threading.RLock()
         # 保护 _hosted/_access/_attachment_index 的同步变更。
         # 不能用 asyncio.Lock：remove/attach/detach 等同步方法（含非事件循环
         # 线程调用）无法 await；临界区内不得出现 await。
@@ -102,7 +105,7 @@ class SessionRegistry:
         调用方负责 workspace 存在性校验（接口相关，不在此层）。
         """
         key = session_key(workspace_uuid, session_id)
-        async with self.lock:
+        with self.lock:
             with self._data_lock:
                 self._access[key] = time.time()
                 if key not in self._hosted:
@@ -159,27 +162,35 @@ class SessionRegistry:
         跳过已 claim 但尚未进入 is_running 的 runner —— 否则会在「认领成功」
         与「循环真正启动」之间的窗口里把它淘汰掉。
         """
+        evicted: list[HostedSession] = []
         with self._data_lock:
-            if len(self._hosted) <= self.max_runners:
-                return
+            # 快照、选择与 pop 全程持 _claims_lock：claim() 需拿同一把锁，无法
+            # 插进「快照之后、pop 之前」的窗口（TOCTOU，审查 P1-31）。pop 前
+            # 再显式复核目标 key，防御未来重构重新拉开窗口。
+            # 循环淘汰直至回落上限（审查 P1-3：一次只淘汰一个，突发负载后会
+            # 长期超限）
             with self._claims_lock:
-                claimed = set(self._claims)
-            idle_keys = [
-                k for k, h in self._hosted.items()
-                if k not in claimed and not h.runner.is_running()
-            ]
-            if not idle_keys:
-                return
-            oldest = min(idle_keys, key=lambda k: self._access.get(k, 0))
-            logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
-            hosted = self._hosted.pop(oldest)
-            self._access.pop(oldest, None)
-            for aid in list(hosted.attachments):
-                self._attachment_index.pop(aid, None)
-        try:
-            hosted.runner.cleanup()
-        except Exception as e:
-            logger.warning(f"[master runner LRU] 清理被淘汰的 master runner 失败: {e}")
+                while len(self._hosted) > self.max_runners:
+                    idle_keys = [
+                        k for k, h in self._hosted.items()
+                        if k not in self._claims and not h.runner.is_running()
+                    ]
+                    if not idle_keys:
+                        break
+                    oldest = min(idle_keys, key=lambda k: self._access.get(k, 0))
+                    if oldest in self._claims:
+                        break
+                    logger.info(f"[master runner LRU] 淘汰闲置 master runner: {oldest}")
+                    hosted = self._hosted.pop(oldest)
+                    self._access.pop(oldest, None)
+                    for aid in list(hosted.attachments):
+                        self._attachment_index.pop(aid, None)
+                    evicted.append(hosted)
+        for hosted in evicted:
+            try:
+                hosted.runner.cleanup()
+            except Exception as e:
+                logger.warning(f"[master runner LRU] 清理被淘汰的 master runner 失败: {e}")
 
     def remove(self, key: str) -> SessionRunner | None:
         """移除并清理单个会话（供删除会话使用）。"""

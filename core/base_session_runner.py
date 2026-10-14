@@ -57,7 +57,10 @@ class BaseSessionRunner:
             max_iterations: Maximum tool call iterations
         """
         self.config = config
-        self.model = config.model
+        # 子类可能已按角色解析过 model（SessionRunner 在 super().__init__ 前设置），
+        # 此时不得用全局默认覆盖（审查 P1-1：三处赋值需一致）
+        if not getattr(self, "model", None):
+            self.model = config.model
         self.workspace_uuid = workspace_uuid
         self.cwd = cwd or os.getcwd()
         self.session_dir = session_dir

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 
+from core.config import PROJECT_ROOT
+from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.approval import (
     META_KEY,
     approval_decision_id,
@@ -360,6 +362,12 @@ Use web_search for simple lookups; use browser when search results are insuffici
                 return ToolResult("Error: 'path' is required for upload action", error=True)
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)
+            # P1-23：upload 把本地文件内容交给网页（外传向量），与其他写工具
+            # 一样接入路径审批门：工作区内放行，越界需审批/拒绝
+            resolved = self._path_policy().resolve(path)
+            gate = self._path_gate([PathTarget(OP_WRITE, path, "browser.upload", resolved=resolved)])
+            if gate:
+                return gate
             return service.upload(ref, path, frame=frame, tab_index=tab_index)
 
         elif action == "fill_form":
@@ -395,6 +403,22 @@ Use web_search for simple lookups; use browser when search results are insuffici
                 return ToolResult("Error: download requires 'ref' (trigger) or 'url'", error=True)
             if save_path and not os.path.isabs(save_path):
                 save_path = os.path.join(self.cwd, save_path)
+            # P1-23：download 落盘路径接入审批门。未提供 save_path 时服务层默认
+            # 写项目根（工作区外），按越界目标一并送审批
+            if save_path:
+                target = PathTarget(
+                    OP_WRITE, save_path, "browser.download",
+                    resolved=self._path_policy().resolve(save_path),
+                )
+            else:
+                default_dir = str(PROJECT_ROOT)
+                target = PathTarget(
+                    OP_WRITE, default_dir, "browser.download(默认项目根)",
+                    resolved=self._path_policy().resolve(default_dir),
+                )
+            gate = self._path_gate([target])
+            if gate:
+                return gate
             return service.download(ref=ref, url=dl_url, save_path=save_path, tab_index=tab_index)
 
         elif action == "dialogs":

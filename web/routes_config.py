@@ -9,12 +9,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from core.config import (
-    load_global_config, save_global_config, load_config,
-    ModelConfig, MCPConfig, GLOBAL_CONFIG_PATH,
+    GLOBAL_CONFIG_PATH,
+    MCPConfig,
+    ModelConfig,
+    load_config,
+    load_global_config,
+    save_global_config,
 )
 from core.tools.mcp import get_provider
-
-from web.deps import registry, _sessions_lock
+from web.deps import _sessions_lock, registry
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -272,7 +275,7 @@ async def update_config(request: UpdateConfigRequest):
     # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）。
     # reload_config 会重建工具/发起网络探测，属阻塞操作：只在锁内取快照，
     # 调用放到锁外，避免卡住事件循环
-    async with _sessions_lock:
+    with _sessions_lock:
         cached = list(registry.items())
     for key, runner in cached:
         runner.reload_config()
@@ -309,7 +312,7 @@ async def reload_mcp():
     cfg = load_config()
     provider = get_provider()
     provider.reload(cfg.mcp_servers, force=True)
-    async with _sessions_lock:
+    with _sessions_lock:
         for key, runner in registry.items():
             runner.reload_config()
     return {"success": True, "servers": provider.status()}

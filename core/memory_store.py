@@ -215,19 +215,14 @@ def cleanup_memory_git(memory_dir: str | Path) -> int:
     removed = 0
     gitdir = md / ".git"
     if gitdir.exists():
-        try:
-            shutil.rmtree(gitdir, ignore_errors=True)
-            removed += 1
-        except Exception:
-            pass
+        # ignore_errors=True 已吞异常，外层 try/except 是死代码（审查 P2）
+        shutil.rmtree(gitdir, ignore_errors=True)
+        removed += 1
     # 也清理旧的 .git.bak.* 备份目录
     for item in md.iterdir():
         if item.name.startswith(".git.bak."):
-            try:
-                shutil.rmtree(item, ignore_errors=True)
-                removed += 1
-            except Exception:
-                pass
+            shutil.rmtree(item, ignore_errors=True)
+            removed += 1
     return removed
 
 
@@ -419,13 +414,15 @@ class MemoryStore:
             existing_title = str(existing[1].get("title", "")).strip()
             if existing_title and existing_title != title:
                 n = 2
-                while True:
+                while n < 1000:  # 护栏：碰撞风暴不无限循环（审查 P2）
                     candidate = f"{name}-{n}"
                     ex = self._locate(candidate)
                     if ex is None:
                         name = candidate
                         break
                     n += 1
+                else:
+                    raise ValueError(f"name collision exhausted for {name!r}")
                 existing = self._locate(name)
         if existing and existing[1].get("type") and existing[1]["type"] != type_:
             raise ValueError(
@@ -772,6 +769,9 @@ class Journal:
             self.memory_dir.mkdir(parents=True, exist_ok=True)
             with open(self.journal_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                # 掉电安全（审查 P1-8）：journal 是恰好一次语义的载体，追加后强制落盘
+                f.flush()
+                os.fsync(f.fileno())
             self._key_index[key] = cursor
             return cursor
 
@@ -804,8 +804,10 @@ class Journal:
         return [r for r in records if int(r.get("cursor", 0)) > cur and not r.get("integrated")][:limit]
 
     def pending_count(self) -> int:
-        cur = self.cursor()
-        return sum(1 for r in self._read_records()
+        with self._lock:  # 与 read_pending 一致（审查 P1-7：cursor 与读取需同锁）
+            cur = self.cursor()
+            records = self._read_records()
+        return sum(1 for r in records
                    if int(r.get("cursor", 0)) > cur and not r.get("integrated"))
 
     def compact(self, keep: int = 500) -> int:

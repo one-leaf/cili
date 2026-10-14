@@ -277,3 +277,58 @@ class TestRunnerStreamingRetry:
         resp = runner._call_llm_streaming("sys")
         assert resp.get_text() == "ok"
         assert calls["n"] == 2
+
+
+class TestRetryAfterCap:
+    """P1-19 回归：Retry-After（classify 提取的 retry_after_s）必须有上限。
+
+    此前 transport 对 info.retry_after_s 直接使用，服务端给多大睡多久——
+    _MAX_DELAY 上限只在指数退避分支生效，在这条路径上形同虚设。
+    """
+
+    @staticmethod
+    def _transport_with_recorder(delays):
+        from core.llm.transport import HttpTransport
+
+        t = HttpTransport()
+        t.interruptible_sleep = lambda duration, stop_check=None: delays.append(duration)
+        return t
+
+    def test_retry_after_capped_at_max_delay(self):
+        from core.llm.transport import _MAX_DELAY
+
+        delays = []
+        t = self._transport_with_recorder(delays)
+        calls = {"n": 0}
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _http_error(
+                    429,
+                    '{"error": {"type": "rate_limit_exceeded"}}',
+                    {"retry-after": "99999"},
+                )
+            return "ok"
+
+        assert t.with_retry(operation, max_retries=2) == "ok"
+        assert delays, "应发生一次重试等待"
+        assert _MAX_DELAY <= delays[0] <= _MAX_DELAY + 0.5
+
+    def test_normal_retry_after_respected(self):
+        delays = []
+        t = self._transport_with_recorder(delays)
+        calls = {"n": 0}
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _http_error(
+                    429,
+                    '{"error": {"type": "rate_limit_exceeded"}}',
+                    {"retry-after": "2"},
+                )
+            return "ok"
+
+        assert t.with_retry(operation, max_retries=2) == "ok"
+        assert 2.0 <= delays[0] <= 2.5

@@ -16,11 +16,12 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.fs_utils import safe_upload_filename
 from core.config import load_workspace_config, load_workspaces_index
-
+from core.fs_utils import safe_upload_filename
 from web.deps import (
-    _csrf_protect, _get_workspace_info, _LOCALHOST_IPS,
+    _LOCALHOST_IPS,
+    _csrf_protect,
+    _get_workspace_info,
     _validate_workspace_uuid,
 )
 
@@ -149,7 +150,11 @@ def browse_directory(request: Request, path: str = ""):
         List of directories with their names and full paths.
     """
     # W8: 目录浏览限本机——工作区文件夹选择是本地管理操作，
-    # 避免 LAN/网络攻击者枚举服务器任意磁盘目录结构
+    # 避免 LAN/网络攻击者枚举服务器任意磁盘目录结构。
+    # 注意（P1-25）：反代部署下此守卫会失效——request.client.host 是代理
+    # IP（通常为本机回环），所有经代理的请求都会被视为 localhost。
+    # 勿把 /api/browse 暴露到反代公网侧；远程使用需在反代层单独封禁该路径
+    # （见 docs/design/web-api-design.md「八、安全考虑」）。
     client_ip = request.client.host if request.client else ""
     if client_ip not in _LOCALHOST_IPS:
         raise HTTPException(
@@ -532,6 +537,7 @@ def _sanitize_upload_filename(raw: str) -> str | None:
 
 @router.post("/api/files/upload")
 def upload_files(
+    request: Request,
     workspace_uuid: str = Form(...),
     path: str = Form(""),
     files: list[UploadFile] = File(...),
@@ -575,7 +581,7 @@ def upload_files(
         try:
             # Check file size before reading
             if file.size is not None and file.size > _MAX_UPLOAD_SIZE:
-                errors.append({"name": file.filename, "error": f"File too large (max 100MB)"})
+                errors.append({"name": file.filename, "error": "File too large (max 100MB)"})
                 continue
 
             safe_name = _sanitize_upload_filename(file.filename or "")

@@ -26,6 +26,10 @@ from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
+# 任务描述/日志摘要截断上限（原散落的魔法数字，审查 P2）
+_TASK_DESC_MAX = 200
+_TASK_LOG_MAX = 50
+
 
 def _next_cron_time(from_time: datetime, expr: str) -> datetime:
     """Calculate next run time from a 5-field cron expression.
@@ -190,6 +194,16 @@ def _normalize_task_item(item: Any, default_ws_uuid: str = "") -> dict | None:
     }
 
 
+def _normalize_items(items, default_ws_uuid: str = "") -> list[dict]:
+    """批量规范化任务项并过滤无效项（_inline_task_fn / CronTask.get_tasks 共用）。"""
+    normalized = []
+    for item in items:
+        norm = _normalize_task_item(item, default_ws_uuid)
+        if norm:
+            normalized.append(norm)
+    return normalized
+
+
 def _inline_task_fn(content: Any, label: str, ws_uuid: str):
     """从内联 content（dict 单任务 / list 多任务）构造 task_fn lambda；无效返回 None。"""
     if isinstance(content, dict):
@@ -201,11 +215,7 @@ def _inline_task_fn(content: Any, label: str, ws_uuid: str):
         return lambda: [item]
 
     if isinstance(content, list):
-        tasks = []
-        for item in content:
-            norm = _normalize_task_item(item, ws_uuid)
-            if norm:
-                tasks.append(norm)
+        tasks = _normalize_items(content, ws_uuid)
         if not tasks:
             logger.warning(f"[cron] {label} content list has no valid tasks")
             return None
@@ -316,12 +326,7 @@ class CronTask:
                 return []
             # 支持返回单个任务或任务列表，统一规范化
             items = result if isinstance(result, list) else [result]
-            tasks = []
-            for item in items:
-                norm = _normalize_task_item(item)
-                if norm:
-                    tasks.append(norm)
-            return tasks
+            return _normalize_items(items)
         except Exception as e:
             logger.error(f"[cron] get_tasks() failed for {self.name}: {e}")
             return []
@@ -423,28 +428,28 @@ class CronTask:
         # 3. 查找或创建 cron session
         cron_session_id = self._resolve_cron_session(sessions_dir)
 
-        # 3. 构造任务信息
+        # 4. 构造任务信息
         task_desc = task_item.get("task", "")
-        task_brief = task_desc[:200]
+        task_brief = task_desc[:_TASK_DESC_MAX]
 
-        logger.info(f"[cron] [{self.name}] Starting master Runner in session {cron_session_id}: {task_brief[:50]}...")
+        logger.info(f"[cron] [{self.name}] Starting master Runner in session {cron_session_id}: {task_brief[:_TASK_LOG_MAX]}...")
 
-        # 4. 获取或创建 master Runner（cwd 是 workspace 实际工作目录，不是数据目录）
+        # 5. 获取或创建 master Runner（cwd 是 workspace 实际工作目录，不是数据目录）
         runner = _get_or_create_master_runner(ws_uuid, workspace_dir)
         if runner is None:
             logger.warning(f"[cron] [{self.name}] master Runner is busy for workspace {ws_uuid}, skipping")
             return {"status": "skipped", "message": "master Runner is busy", "workspace_uuid": ws_uuid}
 
         try:
-            # 5. 切换到 cron session（sessions_dir 在数据目录下，cwd 已正确指向 workspace）
+            # 6. 切换到 cron session（sessions_dir 在数据目录下，cwd 已正确指向 workspace）
             if runner.current_session_id != cron_session_id:
                 runner.switch_session(cron_session_id)
 
-            # 6. 标记旧消息无效（每次 cron 运行上下文干净）
+            # 7. 标记旧消息无效（每次 cron 运行上下文干净）
             runner.invalidate_all_messages()
             runner.session.mark_dirty()
 
-            # 7. 运行 runner loop（非流式，无回调）
+            # 8. 运行 runner loop（非流式，无回调）
             cron_message = self._build_cron_message(task_item)
             runner.run(cron_message, streaming=False)
 
@@ -567,7 +572,8 @@ class CronScheduler:
 
     def load_tasks(self) -> int:
         """Load task configs from core/cron.d/*.json and per-workspace user_tasks.json. Returns count loaded."""
-        self.tasks = []
+        # 先在局部构建，最后锁内一次性替换（审查 P1-16：_run_loop 持锁迭代 self.tasks）
+        new_tasks: list[CronTask] = []
 
         # Load system-level tasks from core/cron.d/
         if CRON_DIR.exists():
@@ -580,7 +586,7 @@ class CronScheduler:
                         continue
                     task_fn = self._load_task_fn(json_file, config)
                     task = CronTask(config, task_fn=task_fn)
-                    self.tasks.append(task)
+                    new_tasks.append(task)
                     logger.debug(f"[cron] Loaded system task: {task.name}")
                 except Exception as e:
                     logger.error(f"[cron] Failed to load {json_file}: {e}")
@@ -605,12 +611,14 @@ class CronScheduler:
                         task_fn = self._load_user_task_fn(config)
                         if task_fn:
                             task = CronTask(config, task_fn=task_fn)
-                            self.tasks.append(task)
+                            new_tasks.append(task)
                             logger.debug(f"[cron] Loaded user task: {task.name} (workspace: {ws_uuid})")
                 except Exception as e:
                     logger.error(f"[cron] Failed to load user tasks from {user_tasks_file}: {e}")
 
-        return len(self.tasks)
+        with self._lock:
+            self.tasks = new_tasks
+        return len(new_tasks)
 
     def _load_user_task_fn(self, config: dict):
         """Load task function from user task config (inline task/plan in 'content' field)."""
@@ -786,9 +794,12 @@ class CronScheduler:
                 self._delete_one_time_task(task.name)
         except Exception as e:
             logger.error(f"[cron] Task {task.name} error: {e}")
-            # Update _next_run even on failure to prevent rapid re-triggering
+            # Update _next_run even on failure to prevent rapid re-triggering;
+            # 失败不计入 run_count（审查 P1-14：成功计数不被失败污染）
             try:
-                task.mark_executed(now, None)
+                with _get_task_state_lock(task.task_id):
+                    task._calculate_next_run(now)
+                    task._save_state(now, None)
             except Exception as state_e:
                 logger.warning(f"[cron] Task {task.name} failed to update state after error: {state_e}")
         finally:
@@ -842,7 +853,8 @@ class CronScheduler:
             logger.warning(f"[cron] Failed to delete state file for task '{name}': {e}")
 
         # Remove from in-memory tasks list
-        self.tasks = [t for t in self.tasks if t.name != name]
+        with self._lock:
+            self.tasks = [t for t in self.tasks if t.name != name]
 
     def list_tasks(self) -> list[dict]:
         """List all tasks with their state."""

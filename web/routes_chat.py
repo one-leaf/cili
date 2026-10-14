@@ -18,14 +18,24 @@ from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.session import SessionStore
 from core.turn_dispatch import execute_turn, prepare_turn
-
 from web.deps import (
-    registry, _get_or_create_runner, _require_workspace,
-    _SAFE_ID_RE, _validate_session_id, _validate_workspace_uuid,
-    _claim_session_run, _release_session_run, _is_session_idle,
+    _SAFE_ID_RE,
+    _claim_session_run,
+    _get_or_create_runner,
+    _is_session_idle,
+    _release_session_run,
+    _require_workspace,
+    _validate_session_id,
+    _validate_workspace_uuid,
+    registry,
+)
+from web.goal_runner import (
+    format_goal_status,
+    get_runner,
+    start_goal_runner,
+    stop_goal_runner,
 )
 from web.sse import make_sse_callbacks, sse_run_response, sse_stream
-from web.goal_runner import format_goal_status, get_runner, start_goal_runner, stop_goal_runner
 
 router = APIRouter()
 
@@ -431,7 +441,8 @@ async def resume_runner(workspace_uuid: str, session_id: str):
         from core.agent_mailbox import get_agent_mailbox
         mbus = get_agent_mailbox()
         has_unread = mbus.has_unread(session_id_check)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[mailbox] has_unread 检查失败 ({session_id_check}): {e}")
         has_unread = False
 
     if not has_unread:

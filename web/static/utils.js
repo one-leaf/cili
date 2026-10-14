@@ -323,17 +323,28 @@ function formatFileSize(bytes) {
 
 // ── 访问令牌 (access_token) ──
 // 服务端配置 access_token 后（多用于非 localhost 绑定），前端需携带令牌访问。
-// URL ?token=xxx 支持首次页面加载与静态资源（浏览器无法给静态资源加请求头），
-// 之后所有 fetch 请求自动注入 X-Access-Token 头（含 SSE 流式请求）。
+// URL ?token=xxx 仅作首次引导：读取后立即存入 localStorage 并从地址栏移除
+// （避免令牌滞留在历史记录/Referer 中，P1-32）；服务端在首次 ?token= 鉴权时
+// 同步下发 HttpOnly cookie，供静态资源与页面刷新使用。之后所有 fetch 请求
+// 自动注入 X-Access-Token 头（含 SSE 流式请求）。
 const TOKEN_KEY = 'cili_access_token';
+
+// 启动时消费一次 URL 令牌：入 localStorage、抹掉地址栏 ?token=
+function consumeUrlToken() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get('token');
+        if (!urlToken) return;
+        localStorage.setItem(TOKEN_KEY, urlToken);
+        params.delete('token');
+        const qs = params.toString();
+        history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    } catch (e) { /* localStorage 不可用等：保持 URL 原样 */ }
+}
+consumeUrlToken();
 
 function getAccessToken() {
     try {
-        const urlToken = new URLSearchParams(window.location.search).get('token');
-        if (urlToken) {
-            localStorage.setItem(TOKEN_KEY, urlToken);
-            return urlToken;
-        }
         return localStorage.getItem(TOKEN_KEY) || '';
     } catch (e) { return ''; }
 }

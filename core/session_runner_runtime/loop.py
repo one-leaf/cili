@@ -628,8 +628,9 @@ class Loop:
             from core.agent_mailbox import get_agent_mailbox
             mbus = get_agent_mailbox()
             if mbus.has_unread(session_id):
-                # 读取所有未读通知并标记为已读
-                unread = mbus.receive(session_id, mark_read=True)
+                # 先读不标记，注入成功后再确认消费：add_message 失败时通知保持
+                # 未读、下轮重投，不再「消费后失败即丢失」（审查 P2）
+                unread = mbus.receive(session_id, mark_read=False)
                 if unread:
                     # 合并所有通知内容，注入为单条 user 消息
                     notifications = [m.get("content", "") for m in unread if m.get("content")]
@@ -640,9 +641,10 @@ class Loop:
                             combined,
                             meta={"background_notification": True},
                         )
+                        mbus.mark_read(session_id)
         except Exception as e:
-            # message_bus 不可用时跳过；但不可静默——通知已在上方 mark_read=True 消费，
-            # 静默失败会让通知永久丢失（曾因参数名写错而整条路径失效）
+            # message_bus 不可用时跳过；但不可静默——失败要留痕
+            # （曾因参数名写错而整条路径失效）
             logger.warning(f"[Loop] 后台通知注入失败: {e}")
 
     def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:

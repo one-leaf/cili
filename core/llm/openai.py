@@ -113,7 +113,9 @@ class OpenAIAdapter(Adapter):
         parts = self._classify_blocks(content)
 
         # Assistant message: text + reasoning_content + tool_calls
-        if parts.tool_calls or (role == "assistant" and (parts.text or parts.tool_calls)):
+        # P1-20：纯 reasoning 助手消息也必须发，否则整条静默丢失（原条件
+        # 末尾的 parts.tool_calls 是冗余分支，由 parts.reasoning 取代）
+        if parts.tool_calls or (role == "assistant" and (parts.text or parts.reasoning)):
             out.append(self._build_assistant_message(parts))
 
         # Tool results: each becomes a separate role=tool message；其中的图片收集

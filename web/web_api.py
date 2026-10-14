@@ -12,22 +12,21 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.app_context import app_context
-from core.config import load_config, PROJECT_ROOT
-
-from web.deps import registry, _LOCALHOST_IPS, WEB_DIR
-from web.routes_workspace import router as workspace_router
-from web.routes_chat import router as chat_router
+from core.config import PROJECT_ROOT, load_config
+from web.deps import _LOCALHOST_IPS, WEB_DIR, registry
 from web.routes_ask_user import router as ask_user_router
+from web.routes_chat import router as chat_router
 from web.routes_config import router as config_router
 from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
 from web.routes_wechat import router as wechat_router
+from web.routes_workspace import router as workspace_router
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -78,6 +77,11 @@ def _ip_matches(client_ip: str, allowed: list[str]) -> bool:
     return False
 
 
+# P1-32：?token= 首次鉴权成功后下发的 HttpOnly cookie 名（与前端 localStorage
+# 键同名但用途不同：localStorage 供 JS 注入请求头，cookie 供服务端校验静态资源）
+_ACCESS_TOKEN_COOKIE = "cili_access_token"
+
+
 @app.middleware("http")
 async def check_access_control(request: Request, call_next):
     """Middleware to enforce access control.
@@ -86,8 +90,8 @@ async def check_access_control(request: Request, call_next):
     - No access_token configured: IP-based access control. Granted if client
       IP is localhost (always allowed) or in the allowed_ips whitelist.
     - access_token configured: ALL requests (including localhost) must carry a
-      valid token via X-Access-Token header or ?token= query param (the latter
-      lets the browser load static assets on first page load).
+      valid token via X-Access-Token header, ?token= query param, or the
+      HttpOnly cookie issued after the first successful ?token= auth.
 
     Only trusts request.client.host (the real TCP connection IP).
     Host header is NOT checked because it can be spoofed by attackers.
@@ -109,11 +113,28 @@ async def check_access_control(request: Request, call_next):
 
     access_token = config.system.access_token or ""
 
-    # access_token 已配置：鉴权优先于 IP 白名单，任何来源都必须带有效令牌
+    # access_token 已配置：鉴权优先于 IP 白名单，任何来源都必须带有效令牌。
+    # 令牌来源优先级：X-Access-Token 头 > ?token= 查询参数 > cookie
     if access_token:
-        provided = request.headers.get("X-Access-Token") or request.query_params.get("token") or ""
+        header_token = request.headers.get("X-Access-Token") or ""
+        query_token = request.query_params.get("token") or ""
+        cookie_token = request.cookies.get(_ACCESS_TOKEN_COOKIE) or ""
+        provided = header_token or query_token or cookie_token
         if provided and hmac.compare_digest(provided, access_token):
-            return await call_next(request)
+            response = await call_next(request)
+            # P1-32：?token= 首次鉴权成功即下发 HttpOnly cookie，此后静态资源、
+            # 页面刷新不再依赖 URL 携带令牌，收敛 Referer/浏览器历史泄露面
+            if query_token and hmac.compare_digest(query_token, access_token):
+                response.set_cookie(
+                    _ACCESS_TOKEN_COOKIE,
+                    access_token,
+                    max_age=7 * 24 * 3600,
+                    httponly=True,
+                    samesite="lax",
+                    secure=request.url.scheme == "https",
+                    path="/",
+                )
+            return response
         logger.warning(f"Blocked access from {client_ip}: missing/invalid access_token")
         return JSONResponse(
             status_code=403,

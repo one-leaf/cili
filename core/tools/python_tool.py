@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -28,6 +29,19 @@ def _resolve_mpl_config_dir() -> str:
     if os.path.isdir(_VENV_DIR):
         return os.path.join(_VENV_DIR, "matplotlib")
     return os.path.join(tempfile.gettempdir(), "cili-matplotlib")
+
+
+# pip 包名白名单（PEP 508 名称字符集）：双引号挡不住 bash 的 `$(...)` 命令
+# 替换，也挡不住 pip 把 "--index-url" 当选项（审查 P2-工具层），源头校验
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+
+def _first_invalid_package(packages: str) -> str | None:
+    """返回第一个非法包名；全部合法返回 None。"""
+    for p in packages.split():
+        if not _PKG_NAME_RE.match(p):
+            return p
+    return None
 
 # 后台执行临时脚本的前缀（用于过期清理）
 _BG_SCRIPT_PREFIX = "cili_bg_"
@@ -454,6 +468,9 @@ class PythonTool(Tool):
 
     def _install_packages(self, packages: str) -> ToolResult:
         """Install Python packages using pip."""
+        bad = _first_invalid_package(packages)
+        if bad:
+            return ToolResult(f"Error: invalid package name '{bad}'", error=True)
         # 每个包单独引号，防止 "pkg1 pkg2" 被 pip 当成单个包名
         quoted = " ".join(f'"{p}"' for p in packages.split())
         mirror = self._get_pip_mirror()
@@ -462,11 +479,17 @@ class PythonTool(Tool):
 
     def _uninstall_packages(self, packages: str) -> ToolResult:
         """Uninstall Python packages."""
+        bad = _first_invalid_package(packages)
+        if bad:
+            return ToolResult(f"Error: invalid package name '{bad}'", error=True)
         quoted = " ".join(f'"{p}"' for p in packages.split())
         return self._run_pip(f'uninstall -y {quoted}')
 
     def _upgrade_packages(self, packages: str) -> ToolResult:
         """Upgrade Python packages to the latest version."""
+        bad = _first_invalid_package(packages)
+        if bad:
+            return ToolResult(f"Error: invalid package name '{bad}'", error=True)
         quoted = " ".join(f'"{p}"' for p in packages.split())
         mirror = self._get_pip_mirror()
         mirror_arg = f'-i {mirror} ' if mirror else ''

@@ -540,6 +540,10 @@ class MCPProvider:
             if _is_transient(exc):
                 logger.warning(f"[MCP] tool 调用遇临时错误 ({type(exc).__name__})，重试一次")
                 await asyncio.sleep(1)
+                # 等待期间可能已重连并替换 session：重试前重新取用（审查 P2）
+                session = self._connections.get(server_name)
+                if session is None:
+                    return ToolResult(f"Error: MCP server '{server_name}' 已断开", error=True)
                 try:
                     result = await asyncio.wait_for(
                         session.call_tool(tool_name, arguments=kwargs), timeout=timeout

@@ -175,7 +175,10 @@ class TestEvictIdleAgent:
             registry.evict_idle()
 
             assert "test-0" not in registry._hosted
-            assert len(registry._hosted) == registry.max_runners + 2
+            assert "test-2" not in registry._hosted
+            # P1-3：evict 循环淘汰直至回落上限（旧语义一次只淘汰一个，
+            # 突发负载后会长期超限）
+            assert len(registry._hosted) == registry.max_runners
         finally:
             self._restore(snap)
 
@@ -682,3 +685,99 @@ class TestSaveInstructionsFilenameGuard:
         result = self._call("NOTES.md", ws_dir)
         assert result["success"] is True
         assert (ws_dir / "NOTES.md").read_text(encoding="utf-8") == "x"
+
+
+class TestUploadEndpointRequest:
+    """P0-1 回归：upload_files 必须声明 request: Request 形参。
+
+    此前函数体调用 _csrf_protect(request) 但签名无此参数，上传端点必抛
+    NameError → 500，上传功能完全不可用。
+    """
+
+    def _prepare(self, tmp_path, monkeypatch):
+        import core.config as config_mod
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        config_mod.upsert_workspace_entry({
+            "uuid": "wstraverse",
+            "workspace_name": "Traverse",
+            "directory": str(ws_dir),
+        })
+        return ws_dir
+
+    @staticmethod
+    def _fake_request():
+        from starlette.requests import Request as StarletteRequest
+        scope = {
+            "type": "http", "method": "POST", "path": "/api/files/upload",
+            "headers": [], "query_string": b"", "client": ("127.0.0.1", 1),
+        }
+        return StarletteRequest(scope)
+
+    def test_upload_writes_file(self, tmp_path, monkeypatch):
+        import io
+
+        from fastapi import UploadFile
+
+        from web.routes_files import upload_files
+
+        ws_dir = self._prepare(tmp_path, monkeypatch)
+        upload = UploadFile(file=io.BytesIO(b"hello"), filename="a.txt")
+        result = upload_files(self._fake_request(), "wstraverse", "", [upload])
+        assert (ws_dir / "a.txt").read_text(encoding="utf-8") == "hello"
+        assert not result.get("errors")
+
+
+class TestTokenCookieAuth:
+    """P1-32：?token= 首次鉴权成功后下发 HttpOnly cookie；cookie 可单独通过鉴权。"""
+
+    @staticmethod
+    def _request(headers=None, query=""):
+        from starlette.requests import Request as StarletteRequest
+        raw = []
+        for k, v in (headers or {}).items():
+            raw.append((k.lower().encode("latin-1"), v.encode("latin-1")))
+        scope = {
+            "type": "http", "method": "GET", "path": "/",
+            "headers": raw, "query_string": query.encode(),
+            "client": ("127.0.0.1", 1), "scheme": "http",
+            "server": ("127.0.0.1", 80),
+        }
+        return StarletteRequest(scope)
+
+    def _run_middleware(self, monkeypatch, request):
+        import asyncio
+
+        import web.web_api as wa
+
+        cfg = SimpleNamespace(system=SimpleNamespace(access_token="secret", allowed_ips=[]))
+        monkeypatch.setattr(wa, "load_config", lambda: cfg)
+
+        async def call_next(req):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"ok": True})
+
+        return asyncio.run(wa.check_access_control(request, call_next))
+
+    def test_query_token_sets_httponly_cookie(self, monkeypatch):
+        resp = self._run_middleware(monkeypatch, self._request(query="token=secret"))
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "cili_access_token=secret" in set_cookie
+        assert "httponly" in set_cookie.lower()
+
+    def test_cookie_alone_authenticates(self, monkeypatch):
+        resp = self._run_middleware(
+            monkeypatch, self._request(headers={"Cookie": "cili_access_token=secret"}))
+        assert resp.status_code == 200
+
+    def test_invalid_token_rejected(self, monkeypatch):
+        resp = self._run_middleware(monkeypatch, self._request(query="token=wrong"))
+        assert resp.status_code == 403
+
+    def test_header_token_does_not_set_cookie(self, monkeypatch):
+        resp = self._run_middleware(
+            monkeypatch, self._request(headers={"X-Access-Token": "secret"}))
+        assert resp.status_code == 200
+        assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}

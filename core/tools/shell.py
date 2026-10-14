@@ -7,6 +7,7 @@ _run_shell/_run_bash/_run_pwsh 命令执行族（Tool 以 ShellMixin 继承）�
 from __future__ import annotations
 
 import codecs
+import logging
 import os
 import queue
 import subprocess
@@ -466,8 +467,8 @@ class ShellMixin:
                         tail = "\r" + tail
                     if tail:
                         chunk_queue.put(tail.replace("\r\n", "\n").replace("\r", "\n"))
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logging.getLogger(__name__).debug(f"[shell reader] ended: {e}")
                 finally:
                     chunk_queue.put(None)  # sentinel: EOF
 

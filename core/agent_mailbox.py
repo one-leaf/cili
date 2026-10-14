@@ -136,6 +136,12 @@ class AgentMailbox:
                         msg.read = True
             return unread
 
+    def mark_read(self, session_id: str) -> None:
+        """将会话全部待读消息标记为已读（配合 receive(mark_read=False) 延迟确认）。"""
+        with self._lock:
+            for msg in self._messages.get(session_id, []):
+                msg.read = True
+
     def has_unread(self, session_id: str) -> bool:
         """Check if a session has unread messages."""
         with self._lock:

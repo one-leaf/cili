@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -453,20 +454,44 @@ def get_all_workspace_uuids() -> list[str]:
     return uuids
 
 
+# 全局配置 mtime 缓存（审查 P1-33）：check_access_control 中间件每请求调用
+# load_config()，原实现每次 open+json.load 读盘。以 (路径, mtime_ns, size) 为
+# 指纹，变更才重读，保住「改配置即生效」语义；返回深拷贝，调用方（如
+# update_config）的就地改写不会污染缓存。
+_GLOBAL_CONFIG_CACHE: dict = {}
+_GLOBAL_CONFIG_SIG: tuple | None = None
+
+
 def load_global_config() -> dict:
     """Load global model configuration from data/cili/setting.json.
 
     Returns empty dict if file doesn't exist or can't be read.
+    Result is cached by (path, mtime_ns, size); a deep copy is returned so
+    callers may mutate the result freely without poisoning the cache.
     """
-    if not GLOBAL_CONFIG_PATH.exists():
-        return {}
+    global _GLOBAL_CONFIG_CACHE, _GLOBAL_CONFIG_SIG
 
+    path_key = str(GLOBAL_CONFIG_PATH)
     try:
-        with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to read {GLOBAL_CONFIG_PATH}: {e}")
-        return {}
+        st = GLOBAL_CONFIG_PATH.stat()
+        sig = (path_key, st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = None
+
+    if sig is not None and sig == _GLOBAL_CONFIG_SIG:
+        return copy.deepcopy(_GLOBAL_CONFIG_CACHE)
+
+    data: dict = {}
+    if sig is not None:
+        try:
+            with open(GLOBAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to read {GLOBAL_CONFIG_PATH}: {e}")
+            data = {}
+    _GLOBAL_CONFIG_CACHE = data
+    _GLOBAL_CONFIG_SIG = sig
+    return copy.deepcopy(data)
 
 
 def save_global_config(config: dict) -> bool:

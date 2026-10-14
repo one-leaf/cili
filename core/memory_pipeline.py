@@ -365,7 +365,7 @@ def run_extraction(
                 session_key=session_id,
                 type_guess=type_guess,
                 title=title[:200],
-                description=description[:300],
+                description=description[:MAX_DESCRIPTION_LEN],
                 content=content,
                 tags=tags,
                 refs=refs,
@@ -485,8 +485,9 @@ def _store_with_retry(store: MemoryStore, op: dict, name: str | None) -> dict:
     except ValueError as e:
         if "name must be globally unique" not in str(e):
             raise
-        n = 2
-        while True:
+        # 护栏（审查 P1-6）：连续数百次命名碰撞已属异常，不无限循环
+        max_attempts = 500
+        for n in range(2, 2 + max_attempts):
             candidate = f"{name}-{n}"
             try:
                 return store.store(
@@ -502,7 +503,7 @@ def _store_with_retry(store: MemoryStore, op: dict, name: str | None) -> dict:
             except ValueError as e2:
                 if "name must be globally unique" not in str(e2):
                     raise
-                n += 1
+        raise ValueError(f"name collision exhausted {max_attempts} suffix attempts for {name!r}")
 
 
 def _apply_store(store: MemoryStore, op: dict) -> dict:

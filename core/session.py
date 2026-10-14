@@ -558,6 +558,8 @@ class SessionStore:
         # _persist 开头捕获、结尾写回，避免并发下 boolean 脏标记被覆盖丢变更
         self._index_version: int = 0
         self._persisted_version: int = 0
+        # 版本号递增锁：并发 append/revert 下 `+=` 非原子（审查 P1-2）
+        self._counter_lock = threading.Lock()
         # 磁盘 jsonl 已知最大 seq（load 时扫描一次；崩溃自愈防新消息序号碰撞）
         self._jsonl_max_seq: int = -1
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -611,12 +613,17 @@ class SessionStore:
 
         self.messages.append(message)
         self._messages_dirty = True
-        self._index_version += 1
+        self._bump_index_version()
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if flush:
             lock = _get_session_lock(self.session_dir)
             with lock:
                 self._append_pending_messages()
+
+    def _bump_index_version(self) -> None:
+        """线程安全递增 _index_version（并发 append/revert 下 `+=` 非原子，审查 P1-2）。"""
+        with self._counter_lock:
+            self._index_version += 1
 
     def get_messages(self) -> list[dict]:
         """获取所有消息。"""
@@ -721,7 +728,7 @@ class SessionStore:
 
     def mark_dirty(self) -> None:
         """标记 index.json/meta.json 已与内存不同步（供外部就地修改消息后调用）。"""
-        self._index_version += 1
+        self._bump_index_version()
         self._messages_dirty = True
 
     def flush(self) -> None:
@@ -734,7 +741,7 @@ class SessionStore:
         lock = _get_session_lock(self.session_dir)
         with lock:
             if self._append_pending_messages():
-                self._index_version += 1
+                self._bump_index_version()
 
     def save(self, force: bool = False) -> None:
         """Checkpoint 持久化：追加新消息 + 原子重写 index.json/meta.json。
@@ -890,7 +897,7 @@ class SessionStore:
         self._persisted_version = self._index_version
         if tail_recovered:
             # 恢复了未 checkpoint 的尾部：index 提交视图确实落后，下次 save 应收敛
-            self._index_version += 1
+            self._bump_index_version()
         return True
 
     def _append_uncommitted_tail(self, session_dir: Path) -> bool:
@@ -1025,13 +1032,13 @@ class SessionStore:
         """重命名会话。"""
         self.name = new_name
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._index_version += 1
+        self._bump_index_version()
 
     def set_hidden(self, hidden: bool) -> None:
         """设置会话隐藏状态。"""
         self.metadata["hidden"] = hidden
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._index_version += 1
+        self._bump_index_version()
 
     def is_hidden(self) -> bool:
         """获取会话隐藏状态。"""
@@ -1051,7 +1058,7 @@ class SessionStore:
         usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation_tokens
 
         self.metadata["usage"] = usage
-        self._index_version += 1
+        self._bump_index_version()
 
     def get_usage(self) -> dict:
         """获取使用量统计（返回副本，防止调用方原地修改不触发保存）。"""

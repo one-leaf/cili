@@ -15,24 +15,39 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.config import (
-    validate_workspace_name, PROJECT_ROOT, load_workspace_config,
-    save_workspace_config, get_workspace_data_dir, remove_workspace_entry,
+    PROJECT_ROOT,
     find_workspace_entry,
+    get_workspace_data_dir,
+    load_workspace_config,
+    remove_workspace_entry,
+    save_workspace_config,
+    validate_workspace_name,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
-    MESSAGES_FILE, META_FILE, SessionStore,
-    _drop_session_lock, load_history_messages,
-    load_history_meta, preview_from_messages, read_jsonl, read_meta,
+    MESSAGES_FILE,
+    META_FILE,
+    SessionStore,
+    _drop_session_lock,
+    load_history_messages,
+    load_history_meta,
+    preview_from_messages,
+    read_jsonl,
+    read_meta,
     session_display_name,
 )
 from core.tools.base import Tool
-
 from web.deps import (
-    registry, _sessions_lock, _list_all_workspaces,
-    _new_short_id, _require_workspace, _SAFE_ID_RE, _validate_exec_id,
-    _validate_session_id, _validate_workspace_uuid,
+    _SAFE_ID_RE,
     _get_workspace_info,
+    _list_all_workspaces,
+    _new_short_id,
+    _require_workspace,
+    _sessions_lock,
+    _validate_exec_id,
+    _validate_session_id,
+    _validate_workspace_uuid,
+    registry,
 )
 
 router = APIRouter()
@@ -52,8 +67,11 @@ def _evict_finished_generate_tasks_locked() -> None:
         if t["result"].get("status") != "running"
     ]
     excess = len(finished) - _GENERATE_TASKS_MAX
-    for tid in finished[:excess]:
-        _generate_tasks.pop(tid, None)
+    # excess 可能为负（finished 未超上限）；负数切片会反向多删（审查第三轮
+    # 修正：len=19 时会删 18 条），必须加正数守卫
+    if excess > 0:
+        for tid in finished[:excess]:
+            _generate_tasks.pop(tid, None)
 
 
 # ---------- Models ----------
@@ -176,7 +194,7 @@ async def delete_workspace(workspace_uuid: str):
     _validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
-    async with _sessions_lock:
+    with _sessions_lock:
         _cleanup_runners_for_workspace(workspace_uuid)
     # rmtree 属阻塞 IO（大工作区可达数秒），放线程里执行
     await asyncio.to_thread(_remove_workspace_data, workspace_uuid)
@@ -226,7 +244,7 @@ async def reset_workspace(workspace_uuid: str):
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    async with _sessions_lock:
+    with _sessions_lock:
         _cleanup_runners_for_workspace(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
     logger.info(f"Workspace config removed: {workspace_uuid} (data and files kept)")
@@ -260,7 +278,7 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
     # 设置远程仓库（三个字段任一变化则更新）
     remote_result = None
     if request.git_remote_url is not None or request.git_username is not None or request.git_token is not None:
-        from core.workspace_git import set_git_remote, get_git_remote_info
+        from core.workspace_git import get_git_remote_info, set_git_remote
         remote_url = request.git_remote_url or ""
         username = request.git_username or ""
         token = request.git_token or ""
@@ -285,7 +303,7 @@ async def get_git_status(workspace_uuid: str):
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    from core.workspace_git import get_workspace_git_status, get_git_remote_info
+    from core.workspace_git import get_git_remote_info, get_workspace_git_status
     status = get_workspace_git_status(workspace_uuid)
     status["remote_info"] = get_git_remote_info(workspace_uuid)
     return status
@@ -459,8 +477,9 @@ async def get_session(
         else:
             has_more = False
 
-        # 从外部文件按需注入工具结果内容（前端渲染需要）
-        _resolve_tool_results_for_session(messages, session_dir)
+        # 从外部文件按需注入工具结果内容（前端渲染需要）；
+        # 同步读多文件，放线程池避免阻塞事件循环（审查 P2）
+        await asyncio.to_thread(_resolve_tool_results_for_session, messages, session_dir)
 
         return {
             "session_id": meta.get("session_id", session_id),
@@ -605,7 +624,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
 
     # Remove from registry (under lock)
     key = f"{workspace_uuid}:{session_id}"
-    async with _sessions_lock:
+    with _sessions_lock:
         registry.remove(key)
 
     return {"success": True}
@@ -731,10 +750,11 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     if not log:
         raise HTTPException(status_code=404, detail="Execution not found")
 
-    # 从外部文件按需注入工具结果内容（前端渲染需要）
+    # 从外部文件按需注入工具结果内容（前端渲染需要）；
+    # 同步读多文件，放线程池避免阻塞事件循环（审查 P2）
     messages = log.get("messages", [])
     exec_dir = sessions_dir / session_id / exec_id
-    _resolve_tool_results_for_session(messages, exec_dir)
+    await asyncio.to_thread(_resolve_tool_results_for_session, messages, exec_dir)
 
     return log
 
@@ -858,9 +878,10 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
     )
 
     try:
+        import secrets
+
         from core.config import load_config
         from core.session_runner import SessionRunner
-        import secrets
 
         config = load_config()
         exec_id = f"gen-{secrets.token_hex(4)}"

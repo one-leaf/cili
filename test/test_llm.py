@@ -506,6 +506,17 @@ class TestOpenAIAdapter:
         assert tc["function"]["name"] == "read"
         assert json.loads(tc["function"]["arguments"]) == {"path": "a.py"}
 
+    def test_convert_messages_reasoning_only_assistant(self, adapter):
+        """P1-20 回归：纯 reasoning 助手消息不得被静默丢弃。"""
+        from core.llm.types import ReasoningBlock
+
+        messages = [Message(role="assistant", content=[ReasoningBlock(text="思考过程")])]
+        result = adapter._convert_messages(messages, system="")
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert result[0]["content"] is None
+        assert result[0]["reasoning_content"] == "思考过程"
+
     def test_convert_messages_user_with_tool_result(self, adapter):
         messages = [Message(
             role="user",

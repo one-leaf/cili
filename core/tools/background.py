@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import queue
 import subprocess
@@ -18,10 +19,14 @@ from typing import Any
 from core.tools.result import ToolResult
 from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH
 
+logger = logging.getLogger(__name__)
+
 # 全局跟踪所有活跃的后台 Runner，用于进程退出时清理 + 并发上限控制
 _active_background_runners: list = []
 _background_runners_cond = threading.Condition()
 _atexit_registered = False
+# 并发注册 atexit 的 check-then-set 需要锁（审查 P2）
+_atexit_guard_lock = threading.Lock()
 
 
 def _atexit_cleanup_runners() -> None:
@@ -250,8 +255,8 @@ class BackgroundMixin:
                             # 文本模式写 Windows 下 \n -> \r\n，按行内换行数补偿字节数
                             written_bytes += len(line.encode("utf-8", "replace")) + line.count("\n")
                             self._emit_output(line, written_bytes)
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"[bg reader] reader loop ended: {e}")
                 finally:
                     if f_out:
                         try:
@@ -313,6 +318,10 @@ class BackgroundMixin:
         except queue.Empty:
             pass
 
+        # Session 型任务没有 process（审查 P1-21：误传 session 任务 ID 会崩溃）
+        if task.process is None:
+            return ToolResult(f"Error: task '{task_id}' is a session/agent task (no process)", error=True)
+
         # Check process status
         if task.process.poll() is not None:
             # Process completed
@@ -355,6 +364,9 @@ class BackgroundMixin:
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
+        if task.process is None:
+            return ToolResult(f"Error: task '{task_id}' is a session/agent task (no process)", error=True)
+
         try:
             # Kill process tree
             self._kill_process_tree(task.process)
@@ -386,6 +398,10 @@ class BackgroundMixin:
         task = BackgroundTaskManager.get(task_id)
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
+
+        # Session 型任务没有 process（审查 P1-22）
+        if task.process is None:
+            return ToolResult(f"Error: task '{task_id}' is a session/agent task (no process)", error=True)
 
         # Check if process is still running
         if task.process.poll() is not None:
@@ -471,10 +487,11 @@ class BackgroundMixin:
         global _atexit_registered
         task_id = BackgroundTaskManager.allocate_task_id(prefix="agent")
 
-        # Register atexit handler (once)
-        if not _atexit_registered:
-            atexit.register(_atexit_cleanup_runners)
-            _atexit_registered = True
+        # Register atexit handler (once)——加锁防并发 check-then-set 竞态（审查 P2）
+        with _atexit_guard_lock:
+            if not _atexit_registered:
+                atexit.register(_atexit_cleanup_runners)
+                _atexit_registered = True
 
         # 并发上限控制：等待空余槽位（全局计数），并预留当前 runner 的槽位
         slot_error = self._acquire_background_runner_slot(runner)

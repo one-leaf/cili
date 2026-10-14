@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -800,7 +801,6 @@ class SessionRunner(BaseSessionRunner):
 
         # 发布进度事件供前端实时更新 header（节流：每 0.5s 最多一次）
         if self._event_publisher:
-            import time
             now = time.monotonic()
             if now - self._last_progress_event_time >= 0.5:
                 self._last_progress_event_time = now

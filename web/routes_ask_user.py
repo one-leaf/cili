@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import queue
@@ -13,9 +12,10 @@ from pydantic import BaseModel
 
 from core.tools.ask_user import inject_ask_user_answer
 from core.turn_dispatch import PreparedTurn, execute_turn
-
 from web.deps import (
-    registry, _claim_session_run, _release_session_run,
+    _claim_session_run,
+    _release_session_run,
+    registry,
 )
 from web.sse import make_sse_callbacks, sse_run_response, sse_stream
 

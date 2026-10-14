@@ -328,7 +328,8 @@ class HttpTransport:
                     raise
 
                 if info.retry_after_s is not None:
-                    delay = info.retry_after_s + random.uniform(0, 0.5)
+                    # 与指数退避共用上限：服务端给的 Retry-After 不得让调用长时间挂起
+                    delay = min(_MAX_DELAY, max(0.0, info.retry_after_s)) + random.uniform(0, 0.5)
                 else:
                     delay = self.retry_delay(attempt, e.response.headers.get("retry-after"))
 
