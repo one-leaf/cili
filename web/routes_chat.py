@@ -35,7 +35,12 @@ from web.goal_runner import (
     start_goal_runner,
     stop_goal_runner,
 )
-from web.sse import make_sse_callbacks, sse_run_response, sse_stream
+from web.sse import (
+    drain_outbox_events,
+    make_sse_callbacks,
+    sse_run_response,
+    sse_stream,
+)
 
 router = APIRouter()
 
@@ -386,14 +391,24 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         event_queue.put(f"data: {err_event}\n\n")
 
     def run_runner():
+        # 按回合声明驱动接口：能力档案（Response Surface）与专属工具随它切换。
+        # duck-typing：测试替身/极简 runner 可能没有该方法，跳过即可——
+        # 真正的不变量是 finally 里「复位 → 释放认领 → 结束哨兵」必须全部执行，
+        # 任何一步异常都会让 SSE 流永久挂起（无哨兵）。
+        set_iface = getattr(runner, "set_turn_interface", None)
         try:
+            if set_iface is not None:
+                set_iface("web")
             execute_turn(
                 prepared, cb,
                 on_ask_user_answered=_on_ask_user_answered,
                 on_error=_on_error,
             )
         finally:
+            if set_iface is not None:
+                set_iface(None)
             _release_session_run(session_key)
+            drain_outbox_events(runner, event_queue)
             event_queue.put(None)  # sentinel: done
 
     # 客户端断开时 runner 继续后台执行，仅 /stop 能中断

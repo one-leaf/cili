@@ -6,7 +6,9 @@ roles: [master, worker, lite]
 
 # Mermaid Diagram Generator
 
-Generate valid Mermaid diagram code from text descriptions. Output is wrapped in ` ```mermaid ` code blocks and rendered as SVG by the frontend.
+Generate valid Mermaid diagram code from text descriptions. Output is wrapped in ` ```mermaid ` code blocks.
+
+Rendering depends on the current interface: the Web UI renders mermaid blocks as diagrams natively; chat-only interfaces (QQ, WeChat) show the raw code as plain text. When replying through a chat interface and the user needs an actual image, save the diagram source to the workspace (e.g. `diagram.mmd`) and deliver it with `send_file` (render it to `.svg`/`.png` first if a renderer is available), and do not rely on the code block being displayed graphically.
 
 ## Diagram Type Selection
 

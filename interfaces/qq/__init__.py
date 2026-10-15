@@ -8,6 +8,7 @@ SDK 是**延迟导入**的（``service.py`` 内部导入 ``gateway``），所以
 ``qqbot-agent-sdk`` 时，import 本包不会报错，也不会加载 SDK。
 """
 
+from interfaces.qq import profile as _profile  # noqa: F401  —— import 副作用：注册 QQ 能力档案
 from interfaces.qq.config import QQConfig, load_qq_config, save_qq_config
 from interfaces.qq.service import (
     qq_interface_running,

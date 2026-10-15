@@ -17,7 +17,12 @@ from web.deps import (
     _release_session_run,
     registry,
 )
-from web.sse import make_sse_callbacks, sse_run_response, sse_stream
+from web.sse import (
+    drain_outbox_events,
+    make_sse_callbacks,
+    sse_run_response,
+    sse_stream,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -65,10 +70,17 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     )
 
     def run_runner():
+        # 与 routes_chat 相同的按回合接口声明；duck-typing 与不变量见彼处注释
+        set_iface = getattr(runner, "set_turn_interface", None)
         try:
+            if set_iface is not None:
+                set_iface("web")
             execute_turn(prepared, cb, on_error=_on_error, after_turn_hooks=False)
         finally:
+            if set_iface is not None:
+                set_iface(None)
             _release_session_run(key)
+            drain_outbox_events(runner, event_queue)
             event_queue.put(None)  # sentinel: done
 
     # 断连时显式让 runner 停下：线程不可取消，仅 task.cancel() 不起作用

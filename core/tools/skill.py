@@ -56,18 +56,33 @@ def _parse_skill_frontmatter(content: str) -> dict:
     return result
 
 
-def _visible_for_role(meta: dict, role: str) -> bool:
-    """frontmatter roles 过滤：缺省视为全部角色可见。"""
+def _as_frontmatter_list(value) -> list[str]:
+    """frontmatter 列表字段归一化：list 或逗号分隔字符串 → str 列表。"""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [s.strip() for s in str(value).split(",") if s.strip()]
+
+
+def _visible_for(meta: dict, role: str, interface: str | None = None) -> bool:
+    """frontmatter roles + interfaces 过滤：缺省视为全部可见。
+
+    ``interfaces`` 语义：声明了 ``interfaces`` 的技能只在列出的接口可见。
+    接口未声明（None：cron 回合 / 未设置接口的交互回合 / 子代理）时一律
+    不可见——宁缺勿猜，与 ``interface_caps`` 的未声明语义一致。
+
+    roles 维度语义与原 ``_visible_for_role`` 相同。
+    """
     roles = meta.get("roles")
-    if not roles:
-        return True
-    if isinstance(roles, list):
-        return role in roles
-    return role in [r.strip() for r in str(roles).split(",")]
+    if roles and role not in _as_frontmatter_list(roles):
+        return False
+    interfaces = meta.get("interfaces")
+    if interfaces and (interface is None or interface not in _as_frontmatter_list(interfaces)):
+        return False
+    return True
 
 
-def list_skills(role: str) -> list[dict]:
-    """Scan core/skills/ for skill directories visible to *role*.
+def list_skills(role: str, interface: str | None = None) -> list[dict]:
+    """Scan core/skills/ for skill directories visible to *role* + *interface*.
 
     Returns list of dicts with: id, name, description.
     """
@@ -85,7 +100,7 @@ def list_skills(role: str) -> list[dict]:
         try:
             with open(skill_file, encoding="utf-8") as f:
                 meta = _parse_skill_frontmatter(f.read())
-            if not _visible_for_role(meta, role):
+            if not _visible_for(meta, role, interface):
                 continue
             skills.append({
                 "id": entry,
@@ -98,11 +113,11 @@ def list_skills(role: str) -> list[dict]:
     return skills
 
 
-def read_skill(role: str, skill_id: str) -> str | None:
+def read_skill(role: str, skill_id: str, interface: str | None = None) -> str | None:
     """Read the full content of a skill by its directory name.
 
     Returns the full skill.md content, or None if not found or the skill is
-    not visible to *role* (frontmatter roles filter).
+    not visible to *role*/*interface* (frontmatter roles + interfaces filter).
     """
     if not re.match(r'^[a-zA-Z0-9_-]+$', skill_id):
         return None
@@ -114,7 +129,7 @@ def read_skill(role: str, skill_id: str) -> str | None:
     try:
         with open(skill_file, encoding="utf-8") as f:
             content = f.read()
-        if not _visible_for_role(_parse_skill_frontmatter(content), role):
+        if not _visible_for(_parse_skill_frontmatter(content), role, interface):
             return None
         return content
     except Exception:
@@ -146,6 +161,7 @@ class SkillTool(Tool):
         """role: agent 角色名（master/worker/lite），决定可见技能集合。"""
         super().__init__(**kwargs)
         self._role = role
+        self._interface: str | None = None  # 当前驱动接口，由 set_interface_profile 推送
         self.description = (
             f"Access built-in skills for the {role} role.\n\n"
             "**IMPORTANT: Always check available skills FIRST when user requests match these patterns:**\n"
@@ -170,8 +186,12 @@ class SkillTool(Tool):
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
+    def set_interface_profile(self, profile) -> None:
+        """接收当前回合的能力档案：技能按档案的接口名过滤。"""
+        self._interface = profile.name if profile is not None else None
+
     def _list_skills(self) -> ToolResult:
-        skills = list_skills(self._role)
+        skills = list_skills(self._role, self._interface)
         if not skills:
             return ToolResult(f"No skills available for role '{self._role}'.")
 
@@ -185,9 +205,9 @@ class SkillTool(Tool):
         return ToolResult("\n".join(lines))
 
     def _read_skill(self, skill_id: str) -> ToolResult:
-        content = read_skill(self._role, skill_id)
+        content = read_skill(self._role, skill_id, self._interface)
         if content is None:
-            available = [s["id"] for s in list_skills(self._role)]
+            available = [s["id"] for s in list_skills(self._role, self._interface)]
             return ToolResult(
                 f"Error: skill '{skill_id}' not found. "
                 f"Available: {', '.join(available) if available else 'none'}",

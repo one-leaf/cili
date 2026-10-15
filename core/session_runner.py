@@ -21,6 +21,7 @@ from typing import Callable
 from core.base_session_runner import BaseSessionRunner
 from core.config import Config
 from core.fs_utils import atomic_write_json
+from core.interface_profile import resolve_profile
 from core.llm import create_llm_client
 from core.output_sink import OutputSink, layer_sink
 from core.prompt_builder import (
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
 # 的 ``deferred_tools`` 就是 ``_deferred_tools``，一旦落进去，模型在 Web 上也能
 # 自己把它激活。所以要从可见集合里彻底摘掉。
 INTERFACE_TOOLS: dict[str, frozenset[str]] = {
+    "web": frozenset({"send_file"}),   # Web 交付形态是下载卡片（web/sse.drain_outbox_events）
     "qq": frozenset({"send_file"}),
     "wechat": frozenset({"send_file"}),
 }
@@ -364,17 +366,34 @@ class SessionRunner(BaseSessionRunner):
     def set_turn_interface(self, interface: str | None) -> None:
         """设置本次 run/resume 的驱动接口（接口层在 run() 前调用）。
 
-        默认 ``None`` = 无接口专属工具，等价 Web 的既有行为。``tool_schemas``
-        是每次 LLM 调用现读的，所以回合开始时重算立刻生效。
+        ``None`` = 未声明：不注入接口能力段（``interface_caps`` 块输出空），
+        也无接口专属工具。早期「None 等价 Web」的说法已废弃——Web 路由显式传
+        ``"web"``，未声明就保持沉默，否则「接口层忘了设置」会被默认值掩盖。
+
+        顺序注意：先推送能力档案给接口感知的工具（``send_file`` 的 description
+        随档案变化），再重建 ``tool_schemas``——schema 在重建时读工具描述，
+        顺序反了会带上过期描述。
         """
         if interface == self._turn_interface:
             return
         self._turn_interface = interface
+        self._push_interface_profile()
         self._apply_tool_visibility()
         logger.debug(
             f"[SessionRunner:{self.role}] 驱动接口 → {interface!r}；"
             f"active={[t.name for t in self._active_tools]}"
         )
+
+    def _push_interface_profile(self) -> None:
+        """把当前回合的能力档案推给全部工具（含 deferred）。
+
+        接口感知的工具覆写 ``Tool.set_interface_profile`` 消费档案；其余工具
+        用基类的空实现。``self.tools`` 是全量实例列表，deferred 工具被
+        ``_activate_tools`` 激活时描述已是最新。
+        """
+        profile = resolve_profile(self)
+        for tool in self.tools:
+            tool.set_interface_profile(profile)
 
     def _activate_tools(self, names: list[str]) -> None:
         """Move named tools from deferred to active and rebuild tool_schemas."""

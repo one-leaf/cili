@@ -50,11 +50,15 @@ def _build_deferred_tools_section(deferred_tools: list) -> str:
     return "\n".join(lines)
 
 
-def _build_skills_section(role: str) -> str:
-    """按角色可见技能生成技能列表段落（通用）。"""
+def _build_skills_section(role: str, interface: str | None = None) -> str:
+    """按角色 + 接口可见技能生成技能列表段落（通用）。
+
+    ``interface`` 为当前驱动接口（解析后的档案名）；None 表示未声明——
+    声明了 ``interfaces`` 的技能在此情形一律不可见。
+    """
     from core.tools.skill import list_skills
 
-    skills = list_skills(role)
+    skills = list_skills(role, interface)
     if not skills:
         return ""
 

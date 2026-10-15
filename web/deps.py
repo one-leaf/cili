@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
+import web.profile  # noqa: F401  —— import 副作用：注册 web 能力档案（Response Surface 用）
 from core.config import (
     GLOBAL_CONFIG_PATH,
     PROJECT_ROOT,

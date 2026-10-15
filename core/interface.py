@@ -52,6 +52,12 @@ class Interface(ABC):
 
     name: str = "base"
 
+    # 能力档案名（core.interface_profile 注册表的键）。接入端在自己模块里
+    # 声明，与 make_sink 同处——能力与渲染路径一体。None 表示无档案
+    # （cron 等无客户端驱动方）。当前 web/qq/wechat 尚未以 Interface 子类
+    # 形态落地（各自是路由/inbound 模块），此属性供新接入端（如终端）遵循。
+    profile: str | None = None
+
     @abstractmethod
     def make_sink(self, attachment: Attachment, runner: "SessionRunner") -> OutputSink:
         """构造本次 run/resume 的活动 sink（渲染会话状态到该 attachment）。"""

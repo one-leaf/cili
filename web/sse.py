@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 from typing import Callable
 
@@ -20,6 +21,60 @@ from core.output_sink import OutputSink
 from core.tools.todo import todo_update_event
 
 logger = logging.getLogger(__name__)
+
+
+def drain_outbox_events(runner, event_queue: queue.Queue[str | None]) -> None:
+    """回合末取走出站文件（``core.outbox``）：推 ``file`` 帧 + 落 ``file_card`` 消息。
+
+    由两条 web 路径的 ``run_runner`` 在 ``execute_turn`` 之后、结束哨兵之前调用。
+    QQ/微信走各自的 ``_send_outbox_files``（富媒体上传），不经这里——outbox 是
+    接口无关的交接点，谁驱动回合谁取走。
+
+    - **file 帧**：请求级流的即时反馈（流式期间就能看到）。
+    - **file_card 消息**：``_meta={"file_card": {...}}`` 落盘，刷新后经
+      renderMessages 仍可见（与 ``error_notice`` 同一「UI 可见、不进 LLM」机制，
+      过滤点在 ``core/session.py`` 与 ``context.is_message_in_context``）。
+
+    内容用工作区相对路径的 markdown 链接，前端 ``renderMarkdown`` 会自动改写成
+    ``/api/workspaces/{uuid}/files/...`` 下载地址。
+    """
+    session_key = f"{runner.workspace_uuid}:{runner.current_session_id}"
+    try:
+        from core.outbox import drain_files
+        files = drain_files(session_key)
+    except Exception:  # noqa: BLE001 —— 取件失败绝不能影响回合收尾（哨兵在调用方）
+        logger.exception("[sse] drain outbox 失败")
+        return
+
+    for f in files:
+        name = os.path.basename(f.path)
+        try:
+            rel = os.path.relpath(f.path, runner.cwd).replace("\\", "/")
+        except ValueError:
+            # 不同盘符（理论不可达：send_file 已做工作区边界校验）；退化为裸文件名
+            rel = name
+        # 空格会截断 markdown 链接，URL 编码之（文件路由按解码后的 path 服务）
+        link = rel.replace(" ", "%20")
+        note = f" —— {f.note}" if f.note else ""
+        content = f"📎 [{name}]({link}){note}"
+
+        size = None
+        try:
+            size = os.path.getsize(f.path)
+        except OSError:
+            pass
+        event_queue.put("data: " + json.dumps({
+            "type": "file", "name": name, "path": link, "size": size,
+            "note": f.note, "session_id": runner.current_session_id,
+        }, ensure_ascii=False) + "\n\n")
+
+        try:
+            runner.session.add_message(
+                "assistant", content,
+                meta={"file_card": {"name": name, "path": link, "note": f.note}},
+            )
+        except Exception:  # noqa: BLE001 —— 落盘失败只记日志，帧已发出
+            logger.exception("[sse] file_card 消息落盘失败")
 
 
 def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSink:

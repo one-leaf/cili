@@ -5,6 +5,9 @@
 - ``tools``：从实际加载的工具实例生成工具列表段
 - ``skills``：从角色可见技能生成技能列表段
 - ``context``：动态环境上下文（日期/workspace/内存等），session 内缓存
+- ``interface_hint``：接口专属散文（仅在 block.interface == 当前驱动接口时注入）
+- ``interface_caps``：接口能力段（Response Surface），由 core.interface_profile
+  的能力档案按当前驱动接口生成；未声明接口时不注入
 
 ``dynamic_boundary`` 块标记静态区与动态区的分界：
 - 分界之前的内容 scope='global'，跨用户共享（Anthropic 服务端缓存）
@@ -21,7 +24,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # ─── system prompt 动态边界标记 ──────────────────────────────────────
 
@@ -52,10 +58,16 @@ def _gen_tools(block: dict, runner) -> str:
 
 
 def _gen_skills(block: dict, runner) -> str:
-    """skills 块：从角色可见技能生成技能列表段。"""
+    """skills 块：从角色可见技能生成技能列表段。
+
+    技能除按角色过滤外还按接口过滤（frontmatter ``interfaces``）：接口取
+    当前回合解析出的能力档案名（未声明 → None，接口限定技能不可见）。
+    """
     # 延迟导入：避免与 core.prompt_sections 的循环依赖
+    from core.interface_profile import resolve_profile
     from core.prompt_sections import _build_skills_section
-    return _build_skills_section(runner.role)
+    profile = resolve_profile(runner)
+    return _build_skills_section(runner.role, profile.name if profile else None)
 
 
 def _gen_interface_hint(block: dict, runner) -> str:
@@ -72,6 +84,23 @@ def _gen_interface_hint(block: dict, runner) -> str:
     if want != getattr(runner, "_turn_interface", None):
         return ""
     return _gen_text(block, runner)
+
+
+def _gen_interface_caps(block: dict, runner) -> str:
+    """interface_caps 块：按当前驱动接口的能力档案生成渲染面说明段。
+
+    与 ``interface_hint``（接口专属散文）互补：本块输出的是
+    ``core/interface_profile`` 从传输层常量生成的**事实**（渲染面、消息上限、
+    文件交付方式）。驱动接口未声明（None）时不注入——宁缺勿猜，避免用错误的
+    默认值掩盖「接口层忘了设置」。
+    """
+    # 延迟导入：interface_profile 只依赖 stdlib，但保持与其他生成器一致的导入姿势
+    from core.interface_profile import render_capability_section, resolve_profile
+    profile = resolve_profile(runner)
+    if profile is None:
+        logger.debug("[prompt_builder] 驱动接口未声明，跳过 interface_caps 段")
+        return ""
+    return render_capability_section(profile)
 
 
 def _gen_context(block: dict, runner) -> str:
@@ -98,6 +127,7 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
     "skills": _gen_skills,
     "context": _gen_context,
     "interface_hint": _gen_interface_hint,
+    "interface_caps": _gen_interface_caps,
 }
 
 

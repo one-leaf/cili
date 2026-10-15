@@ -259,7 +259,11 @@ agent 生成报告/图片后显式调用 `send_file(path, note="")`：校验（�
 1. **工具 schema 层**（硬约束）：非当前接口的专属工具**既不在 active 也不在 deferred**——
    放进 deferred 会被 `tool_search` 激活，模型就能在 Web 上把它调起来。`_execute_tool`
    另加一道拒绝做纵深防御。
-2. **system prompt 层**：`interface_hint` 块只在匹配接口时注入。
+2. **system prompt 层**：`interface_caps` 块按当前接口生成「Response Surface」能力段
+   （渲染面 / 消息上限 / 文件交付方式），事实由 `core/interface_profile.py` 从传输层
+   常量生成，QQ 档案在 `interfaces/qq/profile.py`（`__init__` import 时注册）；接口未
+   声明（cron 等无客户端回合）时不注入。`interface_hint` 块保留为接口专属散文的逃生口
+   ——原两块 send_file 散文已并入档案 guidance，master.json 不再持有。
 3. **skill 层**（本次未用）。
 
 ---

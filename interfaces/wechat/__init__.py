@@ -9,6 +9,7 @@
 函数内部延迟导入）。
 """
 
+from interfaces.wechat import profile as _profile  # noqa: F401  —— import 副作用：注册微信能力档案
 from interfaces.wechat.account import WechatAccount, load_account, save_account
 from interfaces.wechat.config import (
     WechatConfig,

@@ -137,6 +137,17 @@ class Tool(ShellMixin, BackgroundMixin):
             truncated = truncated[:last_newline]
         return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
 
+    # ── 接口能力档案钩子 ────────────────────────────────────────────────
+
+    def set_interface_profile(self, profile) -> None:
+        """接收当前回合的接口能力档案（InterfaceProfile | None）。
+
+        ``SessionRunner.set_turn_interface`` 在接口切换时对**全部**工具调用；
+        接口感知的工具（如 send_file）覆写本方法按档案调整描述/行为，其余工具
+        用这个空实现。``profile`` 为 None 表示驱动接口未声明。
+        """
+        return None
+
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session: SessionHandle | None = None,
                  approval_store=None, **kwargs):
         """统一构造协议。

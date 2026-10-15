@@ -47,7 +47,7 @@ INTERNAL_META_FIELDS = frozenset({
     "valid", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
-    "compacted",
+    "compacted", "file_card",
 })
 # 兼容旧名（模块内引用）
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
@@ -651,6 +651,8 @@ class SessionStore:
                 continue
             if meta.get("error_notice"):
                 continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
+            if meta.get("file_card"):
+                continue  # send_file 的出站文件卡片（下载链接），仅 UI 展示
 
             role = msg.get("role")
             content = msg.get("content", "")

@@ -139,6 +139,8 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
     "tools": _gen_tools,
     "skills": _gen_skills,
     "context": _gen_context,
+    "interface_hint": _gen_interface_hint,
+    "interface_caps": _gen_interface_caps,
 }
 ```
 
@@ -146,6 +148,8 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
 - `_gen_tools(block, agent)`：从 `agent._active_tools`（启用工具，排除延迟工具 `_deferred_names`）调用 `core.prompt_sections._build_tools_section` 生成工具列表段，再叠加 `core.prompt_sections._build_deferred_tools_section` 的延迟工具摘要。
 - `_gen_skills(block, agent)`：调用 `core.prompt_sections._build_skills_section(agent.role)`。
 - `_gen_context(block, agent)`：调用 `core.prompt_sections.build_environment_context(agent.workspace_uuid, agent.cwd)`，结果缓存在 `agent._prompt_section_cache["env_context"]`（session 内复用，`/clear`、`/compact`、切换会话时清除）。
+- `_gen_interface_hint(block, agent)`：接口专属散文，仅当 `block["interface"]` 与当前驱动接口（`agent._turn_interface`）匹配时注入，否则返回空串（escape-hatch 性质，当前 master.json 未使用）。
+- `_gen_interface_caps(block, agent)`：接口能力段（`## Response Surface`），由 `core.interface_profile.resolve_profile(agent)` 取当前驱动接口的档案渲染生成；未声明接口时返回空串。档案（渲染面/消息上限/文件交付方式）定义在各接入端模块（`web/profile.py`、`interfaces/qq/profile.py`、`interfaces/wechat/profile.py`、core 自带 `agent` 档案），事实从传输层常量导入。详见 `workspace/cili-interface-capability-plan-2026-10-15.md`。
 - `dynamic_boundary` 不是生成器：`build_system_prompt()` 在循环中特判该类型以切换分区。
 
 ### 3.3 工具列表生成（_build_tools_section）
@@ -515,7 +519,11 @@ system prompt 以 `dynamic_boundary` 分为静态区（`scope=global`，可跨�
 
 系统提示词发送给 LLM（Claude/GPT 等），英文指令对模型更友好，遵循效果更好。用户界面文本和工具输出使用中文。
 
+### 11.7 为什么接口能力段放动态区、事实由代码生成而文案在档案里？
+
+Web/QQ/微信共享同一份会话，接口按**回合**变化，所以能力段（`interface_caps`）放 `dynamic_boundary` 之后——与 11.4 同理。但驱动接口未声明（None，如 cron 回合）时**不注入**：不猜默认值，否则「接口层忘了设置」会被掩盖（对齐 Claude-Code `questionPreviewFormat` 的 undefined 语义）。事实（4000/1800 字符上限、png/jpg 内联等）从各传输层常量导入生成，避免手抄漂移；「该怎么写」的行为指令（guidance）是文案，跟档案放在接入端模块——改动协议常量，提示词自动跟随。
+
 ---
 
-*文档版本: v2.2*
-*最后更新: 2026-10-09*
+*文档版本: v2.3*
+*最后更新: 2026-10-15*

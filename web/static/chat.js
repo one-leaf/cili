@@ -909,6 +909,10 @@ function renderAskUserQuestions(container, input, toolUseId) {
                             renderSessionComplete(event.exec_id);
                         } else if (event.type === 'todo_update') {
                             renderTodoList(event.todos);
+                        } else if (event.type === 'file') {
+                            // send_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
+                            const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
+                            addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
                         } else if (event.type === 'retry_clear') {
                             if (assistantDiv) {
                                 assistantDiv.remove();
@@ -1276,6 +1280,10 @@ async function sendMessage() {
                     } else if (event.type === 'todo_update') {
                         // Todo 列表更新，渲染任务清单
                         renderTodoList(event.todos);
+                    } else if (event.type === 'file') {
+                        // send_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
+                        const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
+                        addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
                     } else if (event.type === 'retry_clear') {
                         // 413 重试：清除已流式输出的文本，防止用户看到重复内容
                         if (assistantDiv) {

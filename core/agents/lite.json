@@ -77,6 +77,11 @@
       {
         "type": "context",
         "enabled": true
+      },
+      {
+        "id": "interface_caps",
+        "type": "interface_caps",
+        "enabled": true
       }
     ]
   },

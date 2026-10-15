@@ -90,6 +90,8 @@ class ConversationStore:
             return False
         if meta.get("error_notice"):
             return False  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
+        if meta.get("file_card"):
+            return False  # send_file 的出站文件卡片（下载链接），仅 UI 展示
         content = msg.get("content", "")
         if isinstance(content, list) and not content:
             return False

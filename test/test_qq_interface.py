@@ -13,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
+# 注册副作用：interface_caps 能力段断言依赖 QQ/web 档案已注册
+import interfaces.qq.profile  # noqa: F401
+import web.profile  # noqa: F401
 from core import outbox
 from core.interface import Attachment
 from core.session_runner import INTERFACE_TOOLS, SessionRunner
 from core.turn_dispatch import PreparedTurn, prepare_turn
-
 
 # ─── 接口门控（共享会话下的核心回归点） ───────────────────────────────
 
@@ -75,28 +77,46 @@ class TestInterfaceToolGating:
         assert "not available" in result["content"]
 
     def test_interface_tools_mapping_shape(self):
+        assert "web" in INTERFACE_TOOLS
         assert "qq" in INTERFACE_TOOLS
         assert "send_file" in INTERFACE_TOOLS["qq"]
+        assert "send_file" in INTERFACE_TOOLS["web"]  # Web 交付形态：下载卡片
 
 
-class TestInterfaceHintPromptBlock:
-    """interface_hint 块只在匹配接口时进入 system prompt。"""
+class TestInterfaceCapsPromptBlock:
+    """interface_caps 块按驱动接口注入能力段。
+
+    原 ``interface_hint`` 的两块 send_file 散文已并入接口能力档案
+    （``core/interface_profile.py``），QQ 的提示词断言随之改为能力段内容。
+    """
 
     def _prompt_text(self, runner) -> str:
         return "\n".join(runner._build_system_prompt())
 
-    def test_absent_for_web(self, runner):
-        assert "Sending files to the user" not in self._prompt_text(runner)
+    def test_absent_when_undeclared(self, runner):
+        """交互态未声明接口：不注入任何能力段（宁缺勿猜）。"""
+        # "You are replying through" 是能力段独有的标识行（静态区不含）
+        assert "You are replying through" not in self._prompt_text(runner)
 
     def test_present_for_qq(self, runner):
         runner.set_turn_interface("qq")
-        assert "Sending files to the user" in self._prompt_text(runner)
+        text = self._prompt_text(runner)
+        assert "Response Surface" in text
+        assert "QQ private chat" in text
+
+    def test_present_for_web(self, runner):
+        runner.set_turn_interface("web")
+        text = self._prompt_text(runner)
+        assert "Response Surface" in text
+        assert "Web UI (browser client)" in text
+        # 首要修复点：告诉模型前端原生渲染 SVG，禁止栅格化
+        assert "rasterize" in text.lower()
 
     def test_disappears_after_switch_back(self, runner):
         runner.set_turn_interface("qq")
-        assert "Sending files to the user" in self._prompt_text(runner)
+        assert "Response Surface" in self._prompt_text(runner)
         runner.set_turn_interface(None)
-        assert "Sending files to the user" not in self._prompt_text(runner)
+        assert "You are replying through" not in self._prompt_text(runner)
 
 
 # ─── outbox ───────────────────────────────────────────────────────────
