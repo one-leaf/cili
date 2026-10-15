@@ -68,6 +68,9 @@ logger = logging.getLogger(__name__)
 class SendMessageRequest(BaseModel):
     content: str
     images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
+    # 驱动客户端类型（web/tui/...）：run_runner 按它 set_turn_interface，
+    # 能力档案（Response Surface）与接口专属工具随回合切换。缺省视为 web。
+    interface: str | None = None
 
 
 class RevertRequest(BaseModel):
@@ -369,6 +372,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             })
         user_input = content_blocks
 
+    # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
+    # 若留到 run_runner（executor 线程）里取，异常会吞掉结束哨兵把流挂死。
+    # getattr duck-typing：web 路由测试广泛用 SimpleNamespace 伪造 request，
+    # 缺属性时按缺省处理（与下方 set_iface 的 duck-typing 同一约定）。
+    iface = getattr(request, "interface", None) or "web"
+
     prepared = prepare_turn(runner, content=content, user_input=user_input)
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
@@ -398,7 +407,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         set_iface = getattr(runner, "set_turn_interface", None)
         try:
             if set_iface is not None:
-                set_iface("web")
+                set_iface(iface)
             execute_turn(
                 prepared, cb,
                 on_ask_user_answered=_on_ask_user_answered,

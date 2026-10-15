@@ -538,6 +538,86 @@ class TestAskUserDirectInput:
         assert events[-1]["type"] == "done"
 
 
+class TestSendMessageInterface:
+    """interface 字段：run_runner 按 request.interface 调 set_turn_interface（TUI 客户端接入点）。"""
+
+    def test_interface_passed_to_set_turn_interface(self, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
+        from web import routes_chat as web_api
+
+        calls = []
+        agent = SimpleNamespace(
+            session=SimpleNamespace(messages=[]),
+            approval_store=None,
+            workspace_uuid="ws-if",
+            current_session_id="sess-if",
+        )
+        agent.is_running = lambda: False
+        agent.set_turn_interface = lambda name: calls.append(name)
+        agent.run = lambda **kw: None
+
+        async def fake_get_agent(ws, sid):
+            return agent
+
+        monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
+        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+
+        request = SimpleNamespace(content="hi", images=None, interface="tui")
+
+        async def run():
+            resp = await web_api.send_message("ws-if", "sess-if", request)
+            text = ""
+            agen = resp.body_iterator
+            while True:
+                try:
+                    chunk = await agen.__anext__()
+                except StopAsyncIteration:
+                    break
+                text += chunk if isinstance(chunk, str) else chunk.decode()
+            return text
+
+        text = asyncio.run(run())
+
+        # 回合内置为 tui，finally 复位为 None
+        assert calls == ["tui", None]
+        assert '"done"' in text
+
+    def test_interface_defaults_to_web(self, monkeypatch):
+        """缺省 interface（旧前端不带该字段）→ 行为不变，仍按 web 驱动。"""
+        import asyncio
+        from types import SimpleNamespace
+        from web import routes_chat as web_api
+
+        calls = []
+        agent = SimpleNamespace(
+            session=SimpleNamespace(messages=[]),
+            approval_store=None,
+            workspace_uuid="ws-if",
+            current_session_id="sess-if",
+        )
+        agent.is_running = lambda: False
+        agent.set_turn_interface = lambda name: calls.append(name)
+        agent.run = lambda **kw: None
+
+        async def fake_get_agent(ws, sid):
+            return agent
+
+        monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
+        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+
+        request = SimpleNamespace(content="hi", images=None)  # 无 interface 属性 → 缺省 web（getattr 约定）
+
+        async def run():
+            resp = await web_api.send_message("ws-if", "sess-if", request)
+            agen = resp.body_iterator
+            async for _ in agen:
+                pass
+
+        asyncio.run(run())
+        assert calls == ["web", None]
+
+
 class TestListSessionsMetaOnly:
     """list_sessions 双分支只读：新格式纯 meta 读不扫 jsonl；旧格式直读不迁移。"""
 

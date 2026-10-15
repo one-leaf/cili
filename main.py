@@ -1340,6 +1340,21 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     )
     log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
 
+    # 服务端发现锚点：TUI 客户端（cli.cmd）据此连接，兼容自定义 --port。
+    # uvicorn.run 返回（含 Ctrl+C）后删除，避免留下过期端口信息。
+    server_info_path = os.path.join(_PROJECT_ROOT, "data", "cili", "server.json")
+    try:
+        os.makedirs(os.path.dirname(server_info_path), exist_ok=True)
+        with open(server_info_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "host": args.host,
+                "port": args.port,
+                "pid": os.getpid(),
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }, f)
+    except OSError:
+        pass  # 落盘失败只影响 TUI 自动发现，服务端照常启动
+
     try:
         uvicorn.run(
             "web.web_api:app",
@@ -1350,6 +1365,11 @@ def _start_web_interface(args: argparse.Namespace) -> None:
         )
     except KeyboardInterrupt:
         pass  # Ctrl+C: exit silently
+    finally:
+        try:
+            os.remove(server_info_path)
+        except OSError:
+            pass
 
 
 def _start_services(args: argparse.Namespace) -> None:
