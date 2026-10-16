@@ -2,7 +2,7 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -76,6 +76,7 @@ class TestRequireWorkspace:
 
     def test_nonexistent_workspace_raises_404(self):
         from fastapi import HTTPException
+
         from web.deps import _require_workspace
         with pytest.raises(HTTPException) as exc_info:
             # _require_workspace is an async dependency
@@ -93,6 +94,7 @@ class TestValidateWorkspaceUuid:
 
     def test_path_traversal_rejected(self):
         from fastapi import HTTPException
+
         from web.deps import _validate_workspace_uuid
         for evil in ("..", "../..", "a/b", "C:\\evil", "a%2Fb"):
             with pytest.raises(HTTPException) as exc_info:
@@ -158,7 +160,7 @@ class TestEvictIdleAgent:
             self._restore(snap)
 
     def test_evicts_oldest_idle(self):
-        from core.session_registry import registry, HostedSession
+        from core.session_registry import HostedSession, registry
         snap = self._snapshot()
         try:
             registry._hosted.clear()
@@ -183,7 +185,7 @@ class TestEvictIdleAgent:
             self._restore(snap)
 
     def test_does_not_evict_running_agent(self):
-        from core.session_registry import registry, HostedSession
+        from core.session_registry import HostedSession, registry
         snap = self._snapshot()
         try:
             registry._hosted.clear()
@@ -213,8 +215,9 @@ class TestGlobalEvents:
     def test_event_delivery_and_session_filter(self):
         """事件按 session_id 过滤投递；不匹配的事件被过滤"""
         import asyncio
-        from web.routes_chat import stream_global_events
+
         from core.event_bus import get_event_bus
+        from web.routes_chat import stream_global_events
 
         async def run():
             resp = await stream_global_events(session_id="sess-a")
@@ -245,8 +248,9 @@ class TestGlobalEvents:
     def test_unsubscribe_on_close(self):
         """流关闭后退订（finally unsubscribe），新订阅不受影响"""
         import asyncio
-        from web.routes_chat import stream_global_events
+
         from core.event_bus import get_event_bus
+        from web.routes_chat import stream_global_events
 
         async def run():
             resp = await stream_global_events(session_id="sess-b")
@@ -276,8 +280,10 @@ class TestGlobalEvents:
     def test_invalid_session_id_raises_400(self):
         """非法 session_id 返回 400（防注入）"""
         import asyncio
+
         import pytest
         from fastapi import HTTPException
+
         from web.routes_chat import stream_global_events
 
         with pytest.raises(HTTPException) as exc_info:
@@ -293,9 +299,9 @@ class TestGlobalEvents:
         """
         import asyncio
         import queue
-        from web import deps as web_api
+
         from core.event_bus import get_event_bus
-        from pathlib import Path
+        from web import deps as web_api
 
         ws, sid = "ws-regress", "sess-regress-1"
         (tmp_path / "sessions").mkdir(exist_ok=True)
@@ -407,6 +413,7 @@ class TestAskUserDirectInput:
     def _approval_agent(tmp_path):
         """构造带待批准命令的 agent（approval_store.pending 非空）。"""
         from types import SimpleNamespace
+
         from core.tools.approval import ApprovalStore, approval_decision_id
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
         store = ApprovalStore(rules_path=tmp_path / "approvals.json")
@@ -446,7 +453,6 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_remember_persists_path_kind(self, tmp_path):
         """路径审批（kind=path:write）经「允许并记住」后，kind 落盘并回灌为路径规则。"""
-        from types import SimpleNamespace
         from core.tools.approval import REMEMBER_LABEL, ApprovalStore
         from core.tools.ask_user import inject_ask_user_answer
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
@@ -487,6 +493,7 @@ class TestAskUserDirectInput:
         import asyncio
         import json
         from types import SimpleNamespace
+
         from web import routes_chat as web_api
 
         sm, tool_use_id = self._placeholder_session(tmp_path)
@@ -544,6 +551,7 @@ class TestSendMessageInterface:
     def test_interface_passed_to_set_turn_interface(self, monkeypatch):
         import asyncio
         from types import SimpleNamespace
+
         from web import routes_chat as web_api
 
         calls = []
@@ -587,6 +595,7 @@ class TestSendMessageInterface:
         """缺省 interface（旧前端不带该字段）→ 行为不变，仍按 web 驱动。"""
         import asyncio
         from types import SimpleNamespace
+
         from web import routes_chat as web_api
 
         calls = []
@@ -642,6 +651,7 @@ class TestListSessionsMetaOnly:
     def test_new_format_pure_meta_read_no_jsonl(self, monkeypatch, tmp_path):
         """meta.json 含 preview/message_count → 纯 meta 读，不触发 jsonl 扫描。"""
         import asyncio
+
         from web import routes_workspace as web_api
 
         self._make_new_session(tmp_path)
@@ -659,6 +669,7 @@ class TestListSessionsMetaOnly:
     def test_old_format_reads_index_no_migration(self, tmp_path):
         """旧格式（仅 index.json）直读显示，不生成 meta.json/messages.jsonl。"""
         import asyncio
+
         from web import routes_workspace as web_api
 
         sdir = tmp_path / "sessions" / "s2"
@@ -691,8 +702,9 @@ class TestListSessionsMetaOnly:
     def test_missing_meta_fields_falls_back_to_jsonl_scan(self, tmp_path):
         """升级前写的 meta.json 缺 preview/message_count → 一次性回退 jsonl 扫描，不回写。"""
         import asyncio
-        from web import routes_workspace as web_api
+
         from core.session import MESSAGES_FILE
+        from web import routes_workspace as web_api
 
         sdir = self._make_new_session(tmp_path)
         meta = json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
@@ -734,8 +746,8 @@ class TestSaveInstructionsFilenameGuard:
 
     def _call(self, filename, ws_dir):
         import asyncio
-        from fastapi import HTTPException
-        from web.routes_workspace import save_instructions, SaveInstructionsRequest
+
+        from web.routes_workspace import SaveInstructionsRequest, save_instructions
         return asyncio.run(save_instructions(
             "wstraverse",
             SaveInstructionsRequest(filename=filename, content="x"),

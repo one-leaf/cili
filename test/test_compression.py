@@ -1,9 +1,6 @@
 """Tests for core/compression.py."""
 
-import json
-from unittest.mock import MagicMock
 
-import pytest
 
 from core.compression import (
     count_messages_tokens,

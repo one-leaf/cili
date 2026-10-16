@@ -6,7 +6,7 @@
 
 from pathlib import Path
 
-from core.tools.approval import ApprovalStore, META_KEY
+from core.tools.approval import META_KEY, ApprovalStore
 from core.tools.latex import LatexTool
 from core.tools.pdf2markdown import PDF2MarkdownTool
 

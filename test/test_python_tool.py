@@ -1,6 +1,5 @@
 """Python 工具测试"""
 
-import sys
 
 
 class TestPythonTool:

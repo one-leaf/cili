@@ -6,19 +6,16 @@
 - config.system.parallel_tools 开关默认值
 """
 
-import threading
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
+from core.config import SystemConfig
+from core.llm.types import ToolCallBlock
 from core.session_runner_runtime.tool_batch import (
     execute_tool_calls,
     is_concurrency_safe,
     partition_tool_batches,
 )
-from core.config import SystemConfig
-from core.llm.types import ToolCallBlock
 from core.tools.base import Tool
 
 

@@ -8,8 +8,7 @@ PhaseMachine 检查开关/检查轮次上限/额度兜底跳过检查。
 from unittest.mock import MagicMock, patch
 
 from core.session_runner import SessionRunner
-from core.session_runner_runtime.loop import LoopPolicy, PhaseMachine
-
+from core.session_runner_runtime.loop import PhaseMachine
 
 # ─── 通用 mock 构造（与 test_worker_agent 一致）────────────────────────
 

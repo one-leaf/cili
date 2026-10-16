@@ -11,16 +11,15 @@
 import json
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from core.config import Config, ModelConfig, SystemConfig
 from core.llm.types import LLMResponse, TextBlock, ToolCallBlock
 from core.session_runner import SessionRunner
-from core.tools.base import ToolResult
 from core.tools import get_tool_by_name
-
+from core.tools.base import ToolResult
 
 # ── Fixtures ──
 
@@ -105,7 +104,7 @@ class TestExecuteToolMetadata:
 
     def test_execute_tool_returns_not_completed_flag(self, runner):
         """_execute_tool() 返回的 dict 包含 _meta.completed=False（新格式）"""
-        ask_user_tool = get_tool_by_name(runner.tools, "ask_user")
+        assert get_tool_by_name(runner.tools, "ask_user") is not None
         questions = make_test_questions()
         tool_use_id = "test_toolu_001"
 

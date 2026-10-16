@@ -37,7 +37,7 @@ MAX_DESCRIPTION_LEN = 200
 STALE_AFTER_DAYS = 30
 ARCHIVE_AFTER_DAYS = 90
 
-# MEMORY.md 常驻注入上限（claude-code 验证过的双截断）
+# MEMORY.md 常驻注入上限（行数 / 字节双截断）
 INDEX_MAX_LINES = 200
 INDEX_MAX_BYTES = 25 * 1024
 
@@ -626,7 +626,7 @@ class MemoryStore:
         return (datetime.now() - parse_ts(fm.get("updated"))).days > STALE_AFTER_DAYS
 
     def stale_note(self, fm: dict) -> str | None:
-        """>30 天未更新 → "请验证" 时效标注（仿 claude-code memoryAge）。"""
+        """>30 天未更新 → "请验证" 时效标注。"""
         if self.is_stale(fm):
             return "⚠ 此为历史观察（>30 天未更新），使用前请对照当前代码/事实验证"
         return None
@@ -658,7 +658,7 @@ class MemoryStore:
     # ── MEMORY.md 索引 ──
 
     def _rebuild_index(self) -> None:
-        """按 updated 倒序重建索引；200 行 / 25KB 双截断（claude-code 验证过的控制手段）。"""
+        """按 updated 倒序重建索引；200 行 / 25KB 双截断。"""
         entries = [fm for fm in self._iter_entries() if fm.get("status") != STATUS_ARCHIVED]
         entries.sort(key=lambda e: str(e.get("updated", "")), reverse=True)
         lines = [

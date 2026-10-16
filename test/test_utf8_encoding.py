@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
 """测试 Windows UTF-8 编码修复"""
 
-import pytest
-import sys
 import os
-import tempfile
 import shutil
+import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.tools.read import ReadTool
-from core.tools.write import WriteTool
 from core.tools.edit import EditTool
 from core.tools.python_tool import PythonTool
+from core.tools.read import ReadTool
+from core.tools.write import WriteTool
 
 
 class TestUTF8Encoding:

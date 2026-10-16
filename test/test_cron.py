@@ -1,13 +1,11 @@
 """Tests for cron scheduler (core/cron.py)."""
 
 import json
-import os
-import tempfile
 from datetime import datetime, timedelta
 
 import pytest
 
-from core.cron import CronTask, CronScheduler
+from core.cron import CronScheduler, CronTask
 
 
 class TestCronTask:
@@ -854,6 +852,7 @@ class TestCronToolMaxExecutions:
     def test_enable_resets_remaining(self, temp_cron_files):
         """enable 时重置 remaining 为 max_executions"""
         import json
+
         import core.cron as cron_module
         from core.tools.cron_tool import CronTool
 
@@ -1000,6 +999,7 @@ class TestCronToolUpdate:
     def test_update_max_executions(self, temp_cron_files):
         """更新 max_executions 时重置 remaining"""
         import json
+
         import core.cron as cron_module
         from core.tools.cron_tool import CronTool
 

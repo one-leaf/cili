@@ -7,8 +7,8 @@ resolve/strip 经 agent 与经 runner 产物一致、_execute_tool 经转发正�
 
 from unittest.mock import patch
 
-from core.session_runner_runtime.runner import Runner
 from core.base_session_runner import BaseSessionRunner
+from core.session_runner_runtime.runner import Runner
 from core.tools.base import ToolResult
 
 

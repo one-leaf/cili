@@ -10,11 +10,10 @@ import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 from core.security.shell_paths import extract_shell_targets
-from core.tools.approval import ApprovalStore, META_KEY, approval_decision_id
+from core.tools.approval import META_KEY, ApprovalStore, approval_decision_id
 from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.pwsh import PwshTool
-
 
 # ─── 单元：bash 提取 ─────────────────────────────────────────────
 

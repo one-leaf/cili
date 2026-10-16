@@ -1,6 +1,5 @@
 """搜索工具测试"""
 
-import os
 
 
 class TestSearchTools:

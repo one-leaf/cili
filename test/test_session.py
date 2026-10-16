@@ -1,7 +1,7 @@
 """会话管理测试 - 使用 SessionStore"""
 
-import os
 from pathlib import Path
+
 from core.session import SessionStore
 
 

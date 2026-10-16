@@ -1,27 +1,24 @@
 """LLM client tests - covers factory, adapters, retry logic, response parsing."""
 
 import json
-import pytest
-from unittest.mock import patch
 
 import httpx
+import pytest
 
 from core.config import ModelConfig
 from core.llm import (
+    AnthropicAdapter,
     LLMClient,
     LLMResponse,
-    AnthropicAdapter,
-    OpenAIAdapter,
     Message,
+    OpenAIAdapter,
     TextBlock,
     ToolCallBlock,
     ToolResultBlock,
     UsageData,
     create_llm_client,
-    _RETRY_STATUS_CODES,
 )
 from core.llm.transport import HttpTransport
-
 
 # ========== LLMResponse ==========
 
@@ -759,7 +756,8 @@ class TestRetryDefaults:
     def test_chat_wires_total_retry_timeout(self):
         """chat() 必须把总时长上限传给 with_retry（防参数被摘掉）。"""
         from unittest.mock import MagicMock
-        from core.llm.client import LLMClient, _TOTAL_RETRY_TIMEOUT_S
+
+        from core.llm.client import _TOTAL_RETRY_TIMEOUT_S, LLMClient
 
         client = LLMClient.__new__(LLMClient)
         client.max_tokens = 1024
@@ -1223,7 +1221,7 @@ class TestChatStructuredTextFallback:
 
 # ========== DGX 集成测试（真实 LLM 调用） ==========
 
-from test.conftest import DGX_BASE_URL, DGX_API_KEY, DGX_MODEL, make_dgx_config
+from test.conftest import make_dgx_config
 
 
 @pytest.mark.integration

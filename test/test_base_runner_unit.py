@@ -1,6 +1,5 @@
 """BaseSessionRunner 纯逻辑单测（不依赖 DGX）：full compact 切分点等。"""
 
-import pytest
 
 from core.base_session_runner import BaseSessionRunner
 

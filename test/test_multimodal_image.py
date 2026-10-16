@@ -6,31 +6,26 @@
 import base64
 import json
 import os
-import secrets
 import shutil
 import tempfile
-from pathlib import Path
 
 import pytest
 
 # ── 项目根目录 ──
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+from core.llm import create_llm_client
 from core.llm.types import (
-    TextBlock,
     ImageBlock,
+    Message,
+    TextBlock,
     ToolResultBlock,
     block_from_dict,
-    blocks_from_dicts,
-    Message,
 )
 from core.tools.base import Tool, ToolResult
 
-
 # ── DGX 本地 LLM 端点 ──
-from test.conftest import DGX_BASE_URL, DGX_API_KEY, DGX_MODEL, make_dgx_config
-from core.llm import LLMClient, create_llm_client
-
+from test.conftest import make_dgx_config
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 辅助工具
@@ -322,8 +317,8 @@ class TestAdapterImageSerialization:
         )
 
     def test_anthropic_adapter_serializes_image(self):
-        from core.llm.anthropic import AnthropicAdapter
         from core.config import ModelConfig
+        from core.llm.anthropic import AnthropicAdapter
 
         config = ModelConfig(name="claude-sonnet-4-6", api_key="test", interface_type="anthropic")
         adapter = AnthropicAdapter(config)
@@ -345,8 +340,8 @@ class TestAdapterImageSerialization:
         assert has_image, f"Anthropic adapter 未传递图片: {tool_result['content']}"
 
     def test_openai_adapter_handles_image_in_tool_result(self):
-        from core.llm.openai import OpenAIAdapter
         from core.config import ModelConfig
+        from core.llm.openai import OpenAIAdapter
 
         config = ModelConfig(name="gpt-4o", api_key="test", interface_type="openai")
         adapter = OpenAIAdapter(config)
@@ -404,14 +399,6 @@ class TestMultimodalDGX:
         b64_data = base64.b64encode(raw_png).decode()
 
         # 构造含图片的消息
-        image_block = {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": b64_data,
-            },
-        }
         text_block = {
             "type": "text",
             "text": "请描述这张图片的内容。图片中有什么颜色和形状？请简短回答。",

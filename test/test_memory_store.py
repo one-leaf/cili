@@ -5,13 +5,12 @@
 """
 
 import datetime as dt
-import os
 
 import pytest
 
 from core.memory_store import (
-    MemoryStore,
     Journal,
+    MemoryStore,
     cleanup_memory_git,
     slugify,
 )

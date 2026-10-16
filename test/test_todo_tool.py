@@ -8,10 +8,10 @@ import pytest
 
 from core.tools.todo import (
     TodoWriteTool,
+    get_todo_file_path,
+    get_todos_from_session,
     read_todos,
     write_todos,
-    get_todos_from_session,
-    get_todo_file_path,
 )
 
 

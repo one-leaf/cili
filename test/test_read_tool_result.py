@@ -1,6 +1,5 @@
 """Tests for read_tool_result tool."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 

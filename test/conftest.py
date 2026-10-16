@@ -1,24 +1,23 @@
 """Shared test fixtures."""
 
 import os
+import secrets
+import shutil
 import socket
 import sys
-import shutil
-import secrets
-import uuid
 import tempfile
 from pathlib import Path
+
 import pytest
 
 # 添加项目根目录到路径
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
+import core.cron
 from core.config import Config, ModelConfig, SystemConfig
 from core.session_runner import SessionRunner
-from core.tools import create_tools, get_tool_by_name
-import core.cron
-
+from core.tools import create_tools
 
 # ── DGX 本地 LLM 端点（同时支持 Anthropic 和 OpenAI 协议）──
 DGX_BASE_URL = "http://192.168.3.3:8080"

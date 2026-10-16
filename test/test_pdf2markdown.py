@@ -1,7 +1,6 @@
 """pdf2markdown 工具测试"""
 
 import os
-import tempfile
 from unittest.mock import Mock, patch
 
 import pytest
@@ -90,7 +89,6 @@ class TestPDF2MarkdownToolErrors:
 
     def test_agent_limit_error(self):
         """Agent 限制异常"""
-        tool = PDF2MarkdownTool(cwd=".")
         try:
             raise _AgentLimitError("test limit")
         except _AgentLimitError as e:
@@ -98,7 +96,6 @@ class TestPDF2MarkdownToolErrors:
 
     def test_auth_error(self):
         """认证异常"""
-        tool = PDF2MarkdownTool(cwd=".")
         try:
             raise _AuthError("token expired")
         except _AuthError as e:
@@ -106,7 +103,6 @@ class TestPDF2MarkdownToolErrors:
 
     def test_quota_exceeded_error(self):
         """配额超限异常"""
-        tool = PDF2MarkdownTool(cwd=".")
         try:
             raise _QuotaExceededError("daily limit")
         except _QuotaExceededError as e:

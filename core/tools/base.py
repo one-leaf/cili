@@ -101,7 +101,6 @@ class Tool(ShellMixin, BackgroundMixin):
     def truncate_middle(text: str, max_tokens: int) -> str:
         """Token 预算截断：保留开头和结尾，删除中间内容。
 
-        与 Codex 的 truncate_middle_with_token_budget 策略一致：
         - 若文本在预算内，直接返回
         - 否则保留前 40% + 后 40%，中间用标记替代
         """

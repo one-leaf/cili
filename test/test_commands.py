@@ -2,8 +2,8 @@
 
 from unittest.mock import patch
 
-from core.llm import LLMClient, AnthropicAdapter, OpenAIAdapter, create_llm_client
 from core.config import ModelConfig
+from core.llm import AnthropicAdapter, LLMClient, OpenAIAdapter, create_llm_client
 
 
 class TestCommands:
@@ -84,7 +84,7 @@ class TestCommands:
             base_url="https://api.test.com",
         )
         try:
-            client = create_llm_client(config)
+            create_llm_client(config)
             assert False, "Should have raised ValueError"
         except ValueError as e:
             assert "Unsupported interface_type" in str(e)

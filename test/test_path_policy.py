@@ -6,9 +6,9 @@
 """
 
 import os
+
 import pytest
 
-from core.tools.approval import ApprovalStore
 from core.security.path_policy import (
     OP_DELETE,
     OP_WRITE,
@@ -16,6 +16,7 @@ from core.security.path_policy import (
     PathTarget,
     is_path_within,
 )
+from core.tools.approval import ApprovalStore
 
 
 class TestIsPathWithin:

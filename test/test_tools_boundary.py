@@ -1,18 +1,17 @@
 """Tests for tool boundary conditions — bash, python_tool, read, edit, grep, browser."""
 
 import os
-import tempfile
+
 import pytest
 
 from core.tools.base import ToolResult
 from core.tools.bash import BashTool
+from core.tools.edit import EditTool
+from core.tools.glob import GlobTool
+from core.tools.grep import GrepTool
 from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
-from core.tools.edit import EditTool
-from core.tools.grep import GrepTool
-from core.tools.glob import GlobTool
 from core.tools.write import WriteTool
-
 
 # ========== Bash Tool ==========
 
@@ -131,7 +130,7 @@ class TestReadToolBoundary:
     def test_read_empty_file(self, read_tool, test_workspace):
         """Reading empty file."""
         empty_file = os.path.join(test_workspace, "empty.txt")
-        with open(empty_file, "w") as f:
+        with open(empty_file, "w"):
             pass  # Create empty file
 
         result = read_tool.execute(file_path="empty.txt")
@@ -382,7 +381,7 @@ class TestGlobToolBoundary:
         result = glob_tool.execute(path=test_workspace, pattern="max_test_*.txt", head_limit=5)
         assert result.error is False
         # Count file results (exclude truncation notice lines)
-        lines = [l for l in result.output.strip().split('\n') if l.strip() and not l.startswith('(Results')]
+        lines = [line for line in result.output.strip().split('\n') if line.strip() and not line.startswith('(Results')]
         assert len(lines) <= 5
 
 
@@ -493,7 +492,7 @@ class TestEmptyOutputGuard:
         _resolve_tool_results 把"空 content + 无 output_path"误标为占位符。
         此守卫在 execute() 返回后、回调/外置文件/content 构造前归一化。
         """
-        from core.tools.base import Tool, ToolResult
+        from core.tools.base import Tool
 
         class EmptyTool(Tool):
             name = "test_empty_output"

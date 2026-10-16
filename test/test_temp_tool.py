@@ -1,9 +1,6 @@
 """Tests for core/tools/shared/temp.py - 临时文件管理工具。"""
 
 import os
-import shutil
-import tempfile
-from pathlib import Path
 
 import pytest
 

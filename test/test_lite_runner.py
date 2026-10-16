@@ -169,8 +169,6 @@ class TestLiteRunFlow:
     def test_no_tools_uses_real_tool_whitelist(self):
         """无 mock 工具时由注册表实例化（仅 read/write/edit/bash 白名单内）。"""
         # 注册表按 lite 白名单实例化，需 config 提供 approval 相关字段
-        from core.config import Config
-        from types import SimpleNamespace
         config = MagicMock()
         config.model = MagicMock()
         config.system.max_iterations = 50

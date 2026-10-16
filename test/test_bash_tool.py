@@ -1,6 +1,5 @@
 """Bash 工具测试"""
 
-import os
 from pathlib import Path
 
 

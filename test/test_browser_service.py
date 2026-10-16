@@ -1,7 +1,7 @@
 """Tests for core/browser_service.py — pure logic methods (no Playwright needed)."""
 
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -77,9 +77,9 @@ class TestGetService:
     """get_service() singleton pattern."""
 
     def test_returns_same_instance(self):
-        from core.browser_service import get_service, _service
         # Reset module state for test isolation
         import core.browser_service as bs_module
+        from core.browser_service import get_service
         original = bs_module._service
         try:
             bs_module._service = None
@@ -294,7 +294,7 @@ class TestCdpPortFallback:
     """W11/W12: CDP 端口占用/冲突处理（不启动真实 Chrome）。"""
 
     def test_cdp_port_defaults_to_9222(self):
-        from core.browser_service import BrowserService, DEFAULT_CDP_PORT
+        from core.browser_service import DEFAULT_CDP_PORT, BrowserService
         service = BrowserService()
         assert service._cdp_port == DEFAULT_CDP_PORT
 
@@ -775,7 +775,7 @@ class TestEnhancedActions:
 
     def test_capture_response_binary_skips_body(self):
         from collections import deque
-        from core.browser_service import _BODY_MAX_CHARS
+
         service = self._service()
         buf = deque()
         resp = MagicMock()
@@ -789,6 +789,7 @@ class TestEnhancedActions:
 
     def test_capture_response_large_body_skipped(self):
         from collections import deque
+
         from core.browser_service import _BODY_MAX_CHARS
         service = self._service()
         buf = deque()

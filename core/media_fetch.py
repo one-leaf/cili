@@ -3,7 +3,7 @@
 **为什么不直接用平台 SDK 的下载器**（QQ 侧原话）：它只校验 scheme
 （``http``/``https`` + 有 netloc），**没有 DNS 解析、没有内网/保留网段拦截**，
 **允许 http**，且**没有下载大小上限**。这四项我们都需要，所以自己实现（cili 已有
-httpx），只在分类规则上对齐官方插件 ``middleware/attachment.ts``。
+httpx），分类规则见下方各节的判定顺序。
 
 落盘位置：``{workspace}/uploads/``——与 Web 拖放上传同一目录（用户要求两边统一）。
 

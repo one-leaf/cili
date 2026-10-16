@@ -4,18 +4,19 @@
 以及 format_llm_error 与 transport.should_retry 的兼容行为。
 """
 
-import httpx
-import pytest
 from unittest.mock import MagicMock
 
+import httpx
+import pytest
+
 from core.llm import LLMResponse, TextBlock
-from core.output_sink import OutputSink
 from core.llm.errors import (
     LLMErrorInfo,
     StreamErrorEvent,
     classify_llm_error,
     format_llm_error,
 )
+from core.output_sink import OutputSink
 
 
 def _http_error(status: int, body: str = "", headers: dict | None = None) -> httpx.HTTPStatusError:

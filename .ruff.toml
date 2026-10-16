@@ -8,3 +8,10 @@ ignore = [
     # 存量风格：单行多语句（a = 1; b = 2）约 87 处，纯风格无风险，暂不批量改写
     "E702",
 ]
+
+[lint.per-file-ignores]
+# 测试文件先设置 sys.path / 环境变量再导入项目模块，属有意安排
+"test/conftest.py" = ["E402"]
+"test/test_llm.py" = ["E402"]
+"test/test_mcp.py" = ["E402"]
+"test/test_multimodal_image.py" = ["E402"]

@@ -11,10 +11,9 @@ import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 from core.security.python_paths import collect_python_targets
-from core.tools.approval import ApprovalStore, META_KEY
+from core.tools.approval import META_KEY, ApprovalStore
 from core.tools.base import ToolResult
 from core.tools.python_tool import PythonTool
-
 
 # ─── 单元：AST 收集 ──────────────────────────────────────────────
 

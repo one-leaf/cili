@@ -10,7 +10,6 @@ from core.role_config import load_role
 from core.tools.base import Tool
 from core.tools.registry import TOOL_REGISTRY, create_tools
 
-
 ROLES = ["master", "worker", "lite"]
 
 

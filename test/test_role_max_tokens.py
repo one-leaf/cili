@@ -10,10 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.session_runner import SessionRunner
-from core.role_config import load_role
 from core.config import Config, ModelConfig, SystemConfig
-
+from core.role_config import load_role
+from core.session_runner import SessionRunner
 
 ROLE_DEFAULTS = {
     "master": 16384,

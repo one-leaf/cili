@@ -25,10 +25,8 @@ from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 from core.tools.mcp import (
     MCPProvider,
     _sanitize_mcp_tool_name,
-    get_provider,
     stop_mcp_provider,
 )
-
 from test.conftest import make_dgx_config
 
 FIXTURE_SERVER = os.path.join(project_dir, "test", "fixtures", "mcp_echo_server.py")

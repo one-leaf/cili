@@ -7,8 +7,6 @@
 import re
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestParseAriaSnapshot:
     """_parse_aria_snapshot 解析真实 aria_snapshot 输出。"""
@@ -68,7 +66,7 @@ class TestParseAriaSnapshot:
 
     def test_inline_attrs_preserved_in_line(self):
         lines, ref_map = self._parse(self.SAMPLE)
-        heading_line = next(l for _, l in lines if 'heading "Hello World"' in l)
+        heading_line = next(line for _, line in lines if 'heading "Hello World"' in line)
         assert "[level=1]" in heading_line
         assert "[ref=" in heading_line
 
@@ -81,11 +79,11 @@ class TestParseAriaSnapshot:
         big = "\n".join(f'- button "Btn {i}"' for i in range(50))
         lines, ref_map = self._parse(big, max_refs=10)
         assert len(ref_map) == 10
-        assert len([1 for _, l in lines if "[ref=" in l]) == 10
+        assert len([1 for _, line in lines if "[ref=" in line]) == 10
 
     def test_property_lines_preserved_without_ref(self):
         lines, ref_map = self._parse(self.SAMPLE)
-        joined = "\n".join(l for _, l in lines)
+        joined = "\n".join(line for _, line in lines)
         assert "/url: /home" in joined
         assert "/url" not in ref_map
 
@@ -239,7 +237,6 @@ class TestEnhancedDispatch:
         svc.extract_table.assert_called_once_with(index=1, frame=None, tab_index=None)
 
     def test_download_with_ref(self):
-        import os
         svc = self._service()
         self._execute(svc, action="download", ref="r1", save_path="dl.bin")
         assert svc.download.call_args.kwargs["ref"] == "r1"
@@ -314,7 +311,7 @@ class TestEnhancedDispatch:
         此前工具层对任何被拦截的 URL 都弹批准卡，批准后 skip_ssrf=True
         跳过整段校验 —— 批准 file:/// 或元数据端点即可绕过防护。
         """
-        from core.tools.approval import ApprovalStore, META_KEY, approval_decision_id
+        from core.tools.approval import META_KEY, ApprovalStore, approval_decision_id
         from core.tools.browser import BrowserTool
 
         svc = self._service()

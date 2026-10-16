@@ -4,7 +4,6 @@
 无 API key 时自动 skip。
 """
 
-import pytest
 
 from core.session_runner import SessionRunner
 

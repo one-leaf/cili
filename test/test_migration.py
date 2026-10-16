@@ -8,9 +8,10 @@
 
 import json
 
-import pytest
-
-from core.migration import migrate_message, migrate_session_file, migrate_todos_from_metadata
+from core.migration import (
+    migrate_message,
+    migrate_session_file,
+)
 
 
 def _tool_result_block(tool_use_id: str = "tool_1") -> dict:

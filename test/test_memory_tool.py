@@ -4,7 +4,6 @@ v3 数据模型：entries/{type}/{name}.md，定位键是全局唯一的 name（
 type ∈ {fact, preference, skill, reference}，旧的 memory_type/topic/skill_name 已废弃。
 """
 
-import pytest
 
 from core.tools import get_tool_by_name
 

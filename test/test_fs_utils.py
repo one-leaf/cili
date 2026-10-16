@@ -1,7 +1,6 @@
 """fs_utils 原子写与损坏备份测试（A36: C3/C4/SEC-23）。"""
 
 import json
-from pathlib import Path
 
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
 

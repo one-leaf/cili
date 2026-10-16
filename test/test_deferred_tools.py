@@ -12,12 +12,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from core.session_runner import SessionRunner
-from core.role_config import load_role
 from core.prompt_sections import _build_deferred_tools_section
-from core.tools import create_tools, get_tool_by_name
+from core.role_config import load_role
+from core.session_runner import SessionRunner
+from core.tools import get_tool_by_name
 from core.tools.tool_search import ToolSearchTool
 
 
@@ -105,7 +103,6 @@ class TestDeferredToolSplit:
     def test_all_tools_still_instantiated(self):
         """所有工具（含 deferred）仍然实例化在 self.tools 中。"""
         runner = _make_master_runner()
-        tool_names = {t.name for t in runner.tools}
         # Deferred tools should still exist as instances
         for reg_name in runner.role_cfg.deferred_tools:
             tool_obj = get_tool_by_name(runner.tools, reg_name)

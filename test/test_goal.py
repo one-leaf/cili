@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.goal import COMPLETE_MARKER, GoalManager
-from web.goal_runner import GoalRunner, format_goal_status, start_goal_runner, stop_goal_runner
+from web.goal_runner import (
+    GoalRunner,
+    format_goal_status,
+    start_goal_runner,
+    stop_goal_runner,
+)
 
 
 class FakeSessionTool:

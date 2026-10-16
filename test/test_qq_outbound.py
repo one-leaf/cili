@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-
 # ─── 文本消毒 ─────────────────────────────────────────────────────────
 
 
@@ -347,8 +346,9 @@ class TestMedia:
         assert validate_media_path(f, ws) == f.resolve()
 
     def test_validate_rejects_missing_file(self, tmp_path):
-        from interfaces.qq.media import MediaError, validate_media_path
         import pytest
+
+        from interfaces.qq.media import MediaError, validate_media_path
         ws = tmp_path / "ws"
         ws.mkdir()
         with pytest.raises(MediaError):

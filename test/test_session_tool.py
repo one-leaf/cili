@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.tools.session_tool import SessionTool
-from core.tools.base import ToolResult
 
 
 @pytest.fixture
@@ -411,6 +410,7 @@ class TestSessionRunnerLifecycleBroadcast:
     def test_background_complete_republished(self, session_tool, monkeypatch):
         """后台模式：线程结束后补发 agent_complete（修复原先缺失的缺陷）"""
         import time
+
         from core.tools import background as base_mod
 
         session_tool.session.session_id = "sess-bg"

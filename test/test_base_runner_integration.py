@@ -7,20 +7,16 @@ DGX 端点：http://192.168.3.3:8080（本地推理，不消耗 API 配额）。
 from __future__ import annotations
 
 import json
-import os
 import secrets
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from core.config import Config, ModelConfig, SystemConfig
 from core.output_sink import OutputSink
 from core.session import SessionStore
 
 # 从 conftest 导入 DGX 配置工具
 from test.conftest import make_dgx_config
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +47,7 @@ def workspace_uuid(tmp_path):
     """
     import secrets
     import shutil
+
     from core.config import get_workspace_data_dir, upsert_workspace_entry
     test_uuid = secrets.token_hex(4)
     ws_dir = tmp_path / test_uuid
@@ -306,7 +303,7 @@ class TestAgentIntegration:
             session_dir=session_dir,
             exec_id=exec_id,
         )
-        result = runner.run()
+        runner.run()
         runner.close()
 
         index_file = session_dir / "index.json"

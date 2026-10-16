@@ -9,9 +9,9 @@ delete；edit 与 write 同策略。
 import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-from core.tools.approval import ApprovalStore, META_KEY
-from core.tools.write import WriteTool
+from core.tools.approval import META_KEY, ApprovalStore
 from core.tools.edit import EditTool
+from core.tools.write import WriteTool
 
 
 class TestWriteGate:

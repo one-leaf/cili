@@ -3,8 +3,6 @@
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from core.output_sink import OutputSink
 from core.session_runner import SessionRunner
 
@@ -61,7 +59,8 @@ class TestWorkerConstruction:
 
     def test_stop_check_stored(self):
         """stop_check callable is stored."""
-        stop_fn = lambda: False
+        def stop_fn():
+            return False
         runner = _make_runner(task="test", stop_check=stop_fn)
 
         assert runner.stop_check is stop_fn

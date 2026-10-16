@@ -1,6 +1,5 @@
 """Tests for AgentMailbox tool and module."""
 
-import pytest
 from core.agent_mailbox import AgentMailbox, get_agent_mailbox, stop_agent_mailbox
 
 
@@ -226,10 +225,11 @@ class TestMessageBusTool:
         stop_agent_mailbox()
 
     def _make_tool(self, session_id="test-session"):
-        from core.session import SessionStore
-        from core.tools.message_bus_tool import MessageBusTool
         import tempfile
         from pathlib import Path
+
+        from core.session import SessionStore
+        from core.tools.message_bus_tool import MessageBusTool
         tmp = Path(tempfile.mkdtemp())
         sm = SessionStore(session_id, tmp)
         return MessageBusTool(session=sm)

@@ -1,12 +1,9 @@
 """测试 bash/python 工具实时流式输出功能"""
 
 import os
+import tempfile
 import threading
 import time
-import tempfile
-from pathlib import Path
-
-import pytest
 
 
 class TestStreamingOutput:
@@ -42,7 +39,6 @@ class TestStreamingOutput:
 
         # 执行命令：每 0.2 秒输出一个字符，无换行符
         # 用纯 bash（printf/sleep）而非 python：bash 工具的黑名单禁止从 bash 调 python
-        start_time = time.time()
         result = bash_tool.execute(
             command='for c in A B C D E; do printf "%s" "$c"; sleep 0.2; done',
             timeout=30

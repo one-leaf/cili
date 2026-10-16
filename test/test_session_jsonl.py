@@ -9,6 +9,7 @@ import json
 import threading
 from pathlib import Path
 
+from core.migration import migrate_session_to_new_layout
 from core.session import (
     MESSAGES_FILE,
     SessionStore,
@@ -18,7 +19,6 @@ from core.session import (
     read_meta,
     read_view,
 )
-from core.migration import migrate_session_to_new_layout
 
 
 def _new_session(test_workspace, name="RT"):
@@ -177,7 +177,7 @@ class TestRevertClear:
         assert deleted == 3  # m2、m3、m4 删除（撤销到 m2 之前，与旧 API 一致）
 
         lines = read_jsonl(sdir / MESSAGES_FILE)
-        assert [l["seq"] for l in lines] == [0, 1]
+        assert [row["seq"] for row in lines] == [0, 1]
         assert [m["content"] for m in sm.messages] == ["m0", "m1"]
 
         # next_seq 回退：新消息复用被截断的序号

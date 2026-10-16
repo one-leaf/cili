@@ -1,6 +1,5 @@
 """集成测试 - 完整工作流"""
 
-import os
 
 
 class TestIntegration:

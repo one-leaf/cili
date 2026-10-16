@@ -23,8 +23,7 @@
 解析规则（:func:`resolve_profile`）
 -----------------------------------
 - ``_turn_interface`` 有已注册档案 → 用它（接口声明优先）。
-- 未声明（None）：interactive **不猜**——对齐 Claude-Code
-  ``questionPreviewFormat`` 的 undefined 语义，未声明就不注入，避免用看似
+- 未声明（None）：interactive **不猜**——未声明就不注入，避免用看似
   合理的默认值掩盖「接口层忘了设置」；autonomous（worker/lite 子代理）落到
   ``AGENT_PROFILE``——它的输出是给父代理读的文本，不是给用户的界面。
 - 未知接口名：warning 后按未声明处理。

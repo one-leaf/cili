@@ -72,7 +72,7 @@ class TestResolveProfile:
         assert resolve_profile(_FakeRunner("qq")).name == "qq"
 
     def test_interactive_undeclared_is_none(self):
-        """交互态未声明：不猜（对齐 Claude-Code questionPreviewFormat 的 undefined 语义）。"""
+        """交互态未声明：不猜——未声明就不注入。"""
         assert resolve_profile(_FakeRunner(None, "interactive")) is None
 
     def test_autonomous_undeclared_is_agent(self):

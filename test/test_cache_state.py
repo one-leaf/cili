@@ -4,8 +4,6 @@
 累计命中率计算、reset 行为。
 """
 
-import time
-import pytest
 
 from core.cache_state import CacheState
 

@@ -4,19 +4,17 @@
 RAW 降级、游标只在成功时推进、memory_enabled 工作区过滤。
 """
 
-import json
 from pathlib import Path
 
 import pytest
 
-from core import memory_pipeline
 from core.config import upsert_workspace_entry
 from core.memory_pipeline import (
-    redact_secrets,
-    memory_enabled,
-    run_extraction,
-    run_consolidation,
     consolidate_all,
+    memory_enabled,
+    redact_secrets,
+    run_consolidation,
+    run_extraction,
 )
 from core.memory_store import Journal, MemoryStore
 

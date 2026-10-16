@@ -1,6 +1,5 @@
 """Quick debug script to test master Agent with DGX local endpoint."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -8,10 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 使用 DGX 本地端点（不消耗真实 API 配额）
-from test.conftest import make_dgx_config
-from core.session_runner import SessionRunner
 from core.output_sink import OutputSink
 from core.session import SessionStore
+from core.session_runner import SessionRunner
+from test.conftest import make_dgx_config
 
 
 def get_default_workspace_uuid() -> str:
@@ -79,7 +78,7 @@ def main():
 
         # Verify
         assert len(runner.messages) == 2, f"Expected 2 messages, got {len(runner.messages)}"
-        assert "4" in full_output, f"Expected '4' in output"
+        assert "4" in full_output, "Expected '4' in output"
         print("  [PASS] Test 1 passed!")
 
         print("\n=== Test 2: Tool execution (bash) ===")
@@ -103,7 +102,7 @@ def main():
         if tool_calls:
             tool_names = [tc[0] for tc in tool_calls]
             print(f"  Tools used: {tool_names}")
-            assert "bash" in tool_names, f"Expected 'bash' tool"
+            assert "bash" in tool_names, "Expected 'bash' tool"
             print("  [PASS] Test 2 passed!")
 
         # Check output files

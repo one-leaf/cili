@@ -1,9 +1,8 @@
 """Configuration management tests"""
 
 import json
-import os
+
 import pytest
-from pathlib import Path
 
 
 class TestConfig:
