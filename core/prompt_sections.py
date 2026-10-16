@@ -18,6 +18,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# 技能清单段预算：单条描述截断至 _SKILL_DESC_MAX_CHARS；
+# 整段超过 _SKILLS_SECTION_BUDGET_CHARS 时降级为仅名称+id 清单。
+_SKILL_DESC_MAX_CHARS = 1024
+_SKILLS_SECTION_BUDGET_CHARS = 8000
+
 
 # ─── 动态段落构建 ────────────────────────────────────────────────────
 
@@ -55,6 +60,10 @@ def _build_skills_section(role: str, interface: str | None = None) -> str:
 
     ``interface`` 为当前驱动接口（解析后的档案名）；None 表示未声明——
     声明了 ``interfaces`` 的技能在此情形一律不可见。
+
+    预算控制：单条描述截断 ``_SKILL_DESC_MAX_CHARS``；整段超出
+    ``_SKILLS_SECTION_BUDGET_CHARS`` 时降级为仅名称+id 清单，
+    保证所有技能仍可被发现。
     """
     from core.tools.skill import list_skills
 
@@ -67,8 +76,27 @@ def _build_skills_section(role: str, interface: str | None = None) -> str:
         "Built-in skills provide detailed instructions for common workflows.",
         "Use `skill(action='list')` to see all, `skill(action='read', skill_id='...')` to read full content.",
     ]
-    for s in skills:
-        lines.append(f"- **{s['name']}** (`{s['id']}`): {s['description']}")
+
+    def _entry(s: dict, with_desc: bool) -> str:
+        head = f"- **{s['name']}** (`{s['id']}`)"
+        if not with_desc:
+            return head
+        desc = s.get("description", "")
+        if len(desc) > _SKILL_DESC_MAX_CHARS:
+            desc = desc[:_SKILL_DESC_MAX_CHARS] + "…"
+        wtu = s.get("when_to_use") or ""
+        if wtu:
+            desc = f"{desc} Use when: {wtu}" if desc else f"Use when: {wtu}"
+        return f"{head}: {desc}" if desc else head
+
+    entries = [_entry(s, True) for s in skills]
+    if sum(map(len, entries)) + sum(map(len, lines)) > _SKILLS_SECTION_BUDGET_CHARS:
+        entries = [_entry(s, False) for s in skills]
+        entries.append(
+            "(Descriptions omitted: skill metadata exceeded the prompt budget — "
+            "use `skill(action='read', skill_id='...')` for details.)"
+        )
+    lines.extend(entries)
     return "\n".join(lines)
 
 
@@ -249,7 +277,7 @@ def find_project_instructions(cwd: str) -> str | None:
 def build_instructions_message(cwd: str) -> dict | None:
     """构建项目指令消息（作为注入 user 消息）。
 
-    使用 <system-reminder> 标签包装，与 claude-code 保持一致。
+    使用 <system-reminder> 标签包装（区分于普通指令文本）。
 
     Args:
         cwd: 工作区根目录路径

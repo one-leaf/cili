@@ -223,7 +223,7 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 
 ### 技能系统
 
-每个技能一个目录（`skill.md`，YAML frontmatter 声明名称/描述/适用角色），按角色注入 system prompt：
+每个技能一个目录（`skill.md`，YAML frontmatter 声明名称/描述/适用角色），按角色注入 system prompt。大型技能把过程性内容拆到目录内 `references/*.md` 子文件，`skill.md` 只留触发描述、核心规则和阶段索引，按阶段用 `skill(action='read', ..., file=...)` 懒读取（如 `win-ops`、`file-processing`）：
 
 | 技能 | 适用角色 | 说明 |
 |------|---------|------|
@@ -236,12 +236,14 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 | translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
 | generate-agents-md | master/worker | 扫描项目代码结构，生成 AGENTS.md 项目指令文件 |
 | mermaid-diagram | master/worker/lite | Mermaid 图表生成（流程图、架构图、时序图、脑图、ER图等） |
+| tikz-diagram | master/worker/lite | TikZ 科学绘图（LaTeX/PGFplots 出版级图表） |
 | context-bounded-processing | worker | 上下文受限处理 |
 | file-processing | master/worker/lite | 文件处理与文档解析 |
 | word | master/worker/lite | Word 文档处理（docx/doc 读取、创建、编辑、转换） |
 | excel | master/worker/lite | Excel 表格处理（xlsx/xls 读取、公式、格式化） |
 | powerpoint | master/worker/lite | PPT 演示文稿处理（pptx/ppt 创建、编辑、视觉检查） |
 | pdf | master/worker/lite | PDF 处理（提取、合并拆分、OCR、转 Word） |
+| win-ops | master/worker | Windows 本机体检（只读采集 + 阈值评估，Markdown 报告；分级修复需确认） |
 
 ## 项目结构
 

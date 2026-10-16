@@ -1,11 +1,8 @@
 """System prompt building tests + shared SkillTool tests."""
 
 import os
-import json
 import re
-import pytest
 from datetime import datetime
-
 
 # ─── prompts.py tests ────────────────────────────────────────────────────────
 
@@ -117,6 +114,7 @@ class TestPrompts:
     def test_system_prompt_tools_block(self):
         """tools 块列出工具名与首行描述。"""
         from types import SimpleNamespace
+
         from core.prompt_builder import build_system_prompt
         tool1 = SimpleNamespace(name="read", description="read a file\nmultiline")
         tool2 = SimpleNamespace(name="bash", description="run commands")
@@ -149,9 +147,10 @@ class TestPrompts:
 
     def test_system_prompt_master_has_no_placeholders(self):
         """master 固定文案不含动态占位符（动态内容走 context 层）。"""
+        from types import SimpleNamespace
+
         from core.prompt_builder import build_system_prompt
         from core.role_config import load_role
-        from types import SimpleNamespace
         config = SimpleNamespace(model=SimpleNamespace(),
                                  system=SimpleNamespace(max_iterations=50))
         role_cfg = load_role("master", config)
@@ -297,6 +296,102 @@ class TestSkillTool:
         assert "file-processing" in ids
         assert "grilling" not in ids
         assert "context-bounded-processing" not in ids
+
+    def test_winops_skill_visibility(self):
+        """win-ops 对 master/worker 可见，对 lite 不可见（roles: [master, worker]）。"""
+        from core.tools.skill import list_skills
+
+        master_ids = {s["id"] for s in list_skills("master")}
+        worker_ids = {s["id"] for s in list_skills("worker")}
+        lite_ids = {s["id"] for s in list_skills("lite")}
+        assert "win-ops" in master_ids
+        assert "win-ops" in worker_ids
+        assert "win-ops" not in lite_ids
+
+        # frontmatter 解析完整性
+        winops = next(s for s in list_skills("master") if s["id"] == "win-ops")
+        assert winops["name"] == "Windows 优化"
+        assert "体检" in winops["description"]
+        assert "测速" in winops["description"]
+
+    def test_skill_subfile_read(self):
+        """skill 子文件渐进式读取：references/*.md 可读，路径穿越/非 .md 被拒。"""
+        from core.tools.skill import SkillTool
+
+        tool = SkillTool(role="master")
+        # 正常读取
+        r = tool.execute(action="read", skill_id="win-ops", file="references/repair.md")
+        assert not r.error and "Authorization tiers" in r.output
+        r = tool.execute(action="read", skill_id="win-ops", file="references/collection.md")
+        assert not r.error and "Batch 1" in r.output
+        # 不带 file 仍返回 skill.md 全文（前置 base directory 行）
+        r = tool.execute(action="read", skill_id="win-ops")
+        assert not r.error and "Base directory for this skill:" in r.output
+        assert "---" in r.output
+        # 路径穿越与非 .md 拒绝
+        for bad in ["../config.py", "a/../../b.md", "notes.txt", "/etc/passwd", "\\repair.md"]:
+            r = tool.execute(action="read", skill_id="win-ops", file=bad)
+            assert r.error, f"should reject: {bad!r}"
+        # 不存在的子文件报错而非抛异常
+        r = tool.execute(action="read", skill_id="win-ops", file="references/nope.md")
+        assert r.error
+        # 不可见角色的技能连子文件一起拒绝
+        tool_lite = SkillTool(role="lite")
+        r = tool_lite.execute(action="read", skill_id="win-ops", file="references/repair.md")
+        assert r.error
+
+    def test_skill_base_dir_and_when_to_use(self, monkeypatch, tmp_path):
+        """read 前置 base directory、替换 $SKILL_DIR；when_to_use 并入清单；超预算降级。"""
+        import core.tools.skill as skill_mod
+        from core.tools.skill import SkillTool
+
+        d = tmp_path / "demo"
+        (d / "references").mkdir(parents=True)
+        (d / "skill.md").write_text(
+            "---\nname: Demo\n"
+            f"description: {'x' * 2000}\n"
+            "when_to_use: 触发条件Y\n---\n# body $SKILL_DIR\n",
+            encoding="utf-8",
+        )
+        (d / "references" / "sub.md").write_text("sub-content", encoding="utf-8")
+        monkeypatch.setattr(skill_mod, "_SKILLS_DIR", str(tmp_path))
+
+        tool = SkillTool(role="master")
+        # base directory 前置 + $SKILL_DIR 替换为实际目录
+        r = tool.execute(action="read", skill_id="demo")
+        assert not r.error
+        assert r.output.startswith(f"Base directory for this skill: {d}")
+        assert str(d) in r.output.split("Base directory for this skill:")[1]
+        assert "$SKILL_DIR" not in r.output
+        # 子文件同样前置 base directory
+        r = tool.execute(action="read", skill_id="demo", file="references/sub.md")
+        assert not r.error and r.output.startswith("Base directory for this skill:")
+        assert "sub-content" in r.output
+        # list 输出含 when_to_use
+        r = tool.execute(action="list")
+        assert "Use when: 触发条件Y" in r.output
+
+        # 清单预算：单条描述截断 + 超预算降级为仅名称清单
+        from core.prompt_sections import (
+            _SKILLS_SECTION_BUDGET_CHARS,
+            _build_skills_section,
+        )
+
+        section = _build_skills_section("master")
+        assert "…" in section  # 2000 字符描述被截断
+        assert "Use when: 触发条件Y" in section
+
+        def _many(role, interface=None):
+            return [{"id": f"s{i}", "name": f"Skill{i}",
+                     "description": "d" * 2000, "when_to_use": ""}
+                    for i in range(30)]
+
+        monkeypatch.setattr(skill_mod, "list_skills", _many)
+        section = _build_skills_section("master")
+        assert len(section) < _SKILLS_SECTION_BUDGET_CHARS * 2
+        assert "Descriptions omitted" in section
+        for i in range(30):
+            assert f"(`s{i}`)" in section  # 名称+id 全部保留
 
     def test_read_skill_master_skill(self):
         """read_skill(role, id) 返回 skill.md 全文。"""

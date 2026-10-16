@@ -691,10 +691,19 @@ loop(action="status", source_file="data/files.txt")
 
 **核心模块**：`core/tools/skill.py`（扫描目录 `core/skills/`）
 
+**子文件渐进式读取**：大型技能可把各阶段的过程性内容拆到技能目录内的子文件（如 `win-ops/references/repair.md`），`skill.md` 本体只保留触发描述、不可协商规则和阶段索引。`read` 动作带 `file` 参数时读取子文件（相对路径、仅 `.md`、禁 `..`/绝对路径/反斜杠，越界 fail-closed），可见性沿用主技能 frontmatter 过滤——主技能对角色不可见时子文件同样不可读。不带 `file` 仍返回 `skill.md` 全文（向后兼容）。
+
+**渐进披露设计要点**：
+
+- **frontmatter 可选 `when_to_use`**：`description` 说明技能是什么，`when_to_use` 声明触发条件（何时使用）；清单注入与 `list` 输出中并入描述尾部（`Use when: …`）
+- **base directory 披露**：`read` 输出前置 `Base directory for this skill: <绝对路径>`，agent 由此用 read 工具直接访问技能目录内的脚本/资源等非 .md 文件；正文中 `$SKILL_DIR`/`${SKILL_DIR}` 占位符在读取时替换为技能目录
+- **清单注入预算**：system prompt 的技能清单段单条描述截断 1024 字符；整段超 8000 字符时降级为仅名称+id 清单并注明省略——所有技能保持可发现，描述用 `read` 补取
+- **触发后全文加载**：清单只含元数据，技能全文仅在 `read` 时进入上下文（渐进披露模型）
+
 **roles 过滤规则**：
 - frontmatter `roles: [master]` → 仅 master 可见（如 grilling / research / code-review / news / learning）
 - frontmatter `roles: [worker]` → 仅 worker 可见（如 context-bounded-processing）
-- frontmatter `roles: [master, worker]` → master/worker 可见（如 task-delegation）
+- frontmatter `roles: [master, worker]` → master/worker 可见（如 task-delegation / win-ops）
 - frontmatter `roles: [master, worker, lite]` → 三个角色均可见（如 file-processing）
 - 无 `roles` 字段 → 全部角色可见
 
@@ -705,14 +714,18 @@ skill(action="list")
 # → "Available skills for master (N):"
 #   [skill-id] skill name
 #     skill description
+#     Use when: ...（声明了 when_to_use 时）
 
-# 读取技能全文（按目录名）
+# 读取技能全文（按目录名；输出前置 base directory 行）
 skill(action="read", skill_id="large-file-processing")
+
+# 渐进式读取阶段子文件（大型技能）
+skill(action="read", skill_id="win-ops", file="references/repair.md")
 ```
 
 **设计要点**：
 - **角色参数化**：`SkillTool.__init__(role=...)`，注册表工厂传入 `role=role_cfg.name`，同一实例按角色过滤可见技能
-- **actions**：`list`（列出技能）、`read`（读取全文）
+- **actions**：`list`（列出技能）、`read`（读取全文或 `file` 指定的子文件）
 - **不再有 `shared/` 前缀 id**：技能 id 即目录名，统一目录平铺
 
 ### 8.2 session 工具 — 任务委派（SessionTool）
