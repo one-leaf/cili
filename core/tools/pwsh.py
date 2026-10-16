@@ -69,8 +69,10 @@ _DENY_PATTERNS = [
      "Bash invocation from PowerShell (use the bash tool instead)", MODE_DENY),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cmd/WSL invocation from PowerShell (cross-tool isolation)", MODE_DENY),
+    # ask 档：UAC 提权（Start-Process powershell -Verb RunAs）是合法需求，交用户批准；
+    # 但嵌套 -Command 载荷不参与本扫描，批准前用户需确认完整命令
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "PowerShell re-invocation (use native PowerShell commands)", MODE_DENY),
+     "PowerShell re-invocation (nested -Command payload bypasses the safety scan; verify before approving)", MODE_ASK),
 ]
 
 
@@ -89,8 +91,9 @@ class PwshTool(Tool):
             "Each call runs in a fresh pwsh process — no state (cwd, variables, functions) persists between calls.\n"
             "Paths use native Windows format (e.g., C:\\Users); environment variables use $env:NAME.\n"
             "Do NOT use pwsh to invoke bash (`bash` tool), cmd, or WSL — cross-tool calls are blocked.\n"
-            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations) and Python invocation "
-            "from pwsh require user approval; if blocked, wait for the decision then retry the exact command.\n"
+            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations), Python invocation, "
+            "and PowerShell re-invocation (e.g. Start-Process powershell -Verb RunAs for UAC elevation) "
+            "require user approval; if blocked, wait for the decision then retry the exact command.\n"
             f"Current working directory: {self.cwd}\n\n"
             "## Background tasks\n"
             "Long-running commands: action=\"run\", run_in_background=true → task_id. "

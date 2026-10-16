@@ -46,6 +46,21 @@ class TestPwshDeny:
         ]:
             _assert_blocked(self._check, cmd)
 
+    def test_reinvocation_ask_others_deny(self):
+        """powershell 再调用走 ask 档（UAC 提权合法需求），iex/bash/cmd/wsl/py 仍硬拒绝。"""
+        from core.tools.approval import MODE_ASK, MODE_DENY
+
+        for cmd in [
+            "Start-Process powershell -Verb RunAs -Wait",
+            "pwsh -Command Get-Date",
+            "powershell.exe -NoProfile -File x.ps1",
+        ]:
+            mode, _ = self._check(cmd)
+            assert mode == MODE_ASK, f"should be ask: {cmd!r}"
+        for cmd in ["iex 'Get-Process'", "bash -c 'echo hi'", "wsl ls", "py -3 x.py"]:
+            mode, _ = self._check(cmd)
+            assert mode == MODE_DENY, f"should be deny: {cmd!r}"
+
     def test_recursive_force_delete_order_independent(self):
         """参数顺序无关：-Force 在 -Recurse 之前也拦截。"""
         _assert_blocked(self._check, "Remove-Item -Force -Recurse C:\\Users")

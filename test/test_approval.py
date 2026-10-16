@@ -22,9 +22,9 @@ from core.tools.approval import (
     approval_decision_id,
     build_approved_commands_section,
 )
+from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.pwsh import PwshTool
-from core.tools.base import ToolResult
 
 
 def _check_bash(cmd: str):
@@ -72,7 +72,7 @@ class TestDenyTiers:
 
     def test_pwsh_architectural_is_deny(self):
         for cmd in ["iex 'x'", "Invoke-Expression 'x'", "py x.py",
-                    "bash -c 'x'", "cmd /c dir", "wsl ls /", "pwsh -Command x"]:
+                    "bash -c 'x'", "cmd /c dir", "wsl ls /"]:
             mode, reason = _check_pwsh(cmd)
             assert mode == MODE_DENY, f"{cmd!r} should be deny, got {mode} ({reason})"
 
@@ -307,7 +307,12 @@ class TestPathKind:
         assert store.approved_commands() == []
 
     def test_write_does_not_unlock_delete(self, tmp_path):
-        from core.security.path_policy import OP_DELETE, OP_WRITE, PathPolicy, PathTarget
+        from core.security.path_policy import (
+            OP_DELETE,
+            OP_WRITE,
+            PathPolicy,
+            PathTarget,
+        )
         policy = PathPolicy(workspace_root=str(tmp_path))
         w = policy.decision_id(PathTarget(OP_WRITE, "C:\\x", resolved="C:\\x"))
         d = policy.decision_id(PathTarget(OP_DELETE, "C:\\x", resolved="C:\\x"))
@@ -328,6 +333,7 @@ class TestPathKind:
 
     def test_persist_writes_kind_field(self, tmp_path):
         import json as _json
+
         from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
         path = tmp_path / "approvals.json"
         policy = PathPolicy(workspace_root=str(tmp_path))
@@ -436,6 +442,7 @@ class TestBrowserNavigateKind:
     def test_browser_tool_placeholder_and_gate(self):
         """浏览器工具 navigate 到非公网地址：未批准返回占位，已批准放行。"""
         from unittest.mock import MagicMock, patch
+
         from core.tools.approval import META_KEY
         from core.tools.browser import BrowserTool
 
