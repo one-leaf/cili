@@ -1298,6 +1298,14 @@ def _start_core_services() -> None:
     from core.app_context import app_context
     app_context.startup()
 
+    # 应用脚本目录下已下载的升级包：包内版本高于当前才解压覆盖，然后继续启动。
+    # 自动升级 / Web UI / 手动脚本都只负责下载 zip，覆盖统一收敛到启动时这一处。
+    try:
+        from core.updater import apply_pending_upgrade
+        apply_pending_upgrade()
+    except Exception as e:
+        logger.warning(f"应用升级包失败（按原版本继续启动）: {e}")
+
     # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
     from core.updater import start_auto_upgrade
     if _auto_update_enabled():

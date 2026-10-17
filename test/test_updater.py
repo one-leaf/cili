@@ -8,22 +8,41 @@ import zipfile
 from core import updater
 
 
-def _make_remote_zip(tmp_path, version="v20260912", main_content="new main"):
-    """构造一个"远端"代码包 zip（cili-main/main.py + version.json），返回 zip 路径。"""
+def _make_remote_zip(tmp_path, version="v20260912", main_content="new main", extra=None, root="cili-main"):
+    """构造一个升级包 zip（{root}/main.py + version.json + extra 相对路径文件），返回 zip 路径。"""
     zip_path = tmp_path / "remote.zip"
     src = tmp_path / "pkg"
-    src.mkdir(parents=True)
+    src.mkdir(parents=True, exist_ok=True)
     (src / "main.py").write_text(main_content, encoding="utf-8")
-    (src / "web" / "static").mkdir(parents=True)
+    (src / "web" / "static").mkdir(parents=True, exist_ok=True)
     (src / "web" / "static" / "version.json").write_text(
         f'{{"version": "{version}"}}', encoding="utf-8")
+    for rel, content in (extra or {}).items():
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content, encoding="utf-8")
     with zipfile.ZipFile(zip_path, "w") as zf:
-        for root, _, files in os.walk(src):
-            for f in files:
-                full = os.path.join(root, f)
+        for r, _, files in os.walk(src):
+            for name in files:
+                full = os.path.join(r, name)
                 rel = os.path.relpath(full, src)
-                zf.write(full, f"cili-main/{rel}")
+                zf.write(full, f"{root}/{rel}")
     return zip_path
+
+
+def _make_project(tmp_path, monkeypatch, version="v20260911"):
+    """构造一个最小"项目"目录（version.json + main.py），返回根路径。
+
+    同时把 updater 的 PROJECT_ROOT / VERSION_FILE 指向该目录，版本读取不落到真实项目。
+    """
+    project_root = tmp_path / "project"
+    (project_root / "web" / "static").mkdir(parents=True)
+    (project_root / "web" / "static" / "version.json").write_text(
+        f'{{"version": "{version}"}}', encoding="utf-8")
+    (project_root / "main.py").write_text("old main", encoding="utf-8")
+    monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(updater, "VERSION_FILE", project_root / "web" / "static" / "version.json")
+    return project_root
 
 
 class TestVersion:
@@ -102,6 +121,33 @@ class TestVersion:
         assert updater.fetch_remote_version() is None
 
 
+class TestUpgradeZipVersion:
+    """升级包版本读取"""
+
+    def test_read_zip_version(self, tmp_path):
+        """从标准结构（cili-main/web/static/version.json）读取版本"""
+        zip_path = _make_remote_zip(tmp_path, "v20260912")
+        assert updater.read_zip_version(str(zip_path)) == "v20260912"
+
+    def test_read_zip_version_no_root(self, tmp_path):
+        """无仓库根目录的包结构（web/static/version.json 在顶层）也能读取"""
+        zip_path = _make_remote_zip(tmp_path, root="")
+        assert updater.read_zip_version(str(zip_path)) == "v20260912"
+
+    def test_read_zip_version_missing_entry(self, tmp_path):
+        """包内没有 version.json 时返回 None"""
+        zip_path = tmp_path / "no-version.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("cili-main/main.py", "code")
+        assert updater.read_zip_version(str(zip_path)) is None
+
+    def test_read_zip_version_corrupt(self, tmp_path):
+        """损坏的 zip 返回 None"""
+        zip_path = tmp_path / "corrupt.zip"
+        zip_path.write_bytes(b"not a zip file")
+        assert updater.read_zip_version(str(zip_path)) is None
+
+
 class TestUpgrade:
     """升级文件操作"""
 
@@ -153,66 +199,71 @@ class TestUpgrade:
         dest = tmp_path / "extract"
         assert updater._safe_extract(str(zip_path), str(dest)) is None
 
-    def test_do_upgrade(self, tmp_path, monkeypatch):
-        """完整升级流程：下载（mock）→ 解压 → 覆盖，排除用户目录"""
-        project_root = tmp_path / "project"
-        project_root.mkdir()
-        (project_root / "web" / "static").mkdir(parents=True)
-        (project_root / "web" / "static" / "version.json").write_text(
-            '{"version": "v20260911"}', encoding="utf-8")
+    def test_copy_tree_skips_identical_files(self, tmp_path, monkeypatch):
+        """内容未变的文件跳过写入，仅复制新增/变更文件（与 upgrade.ps1 的检查逻辑一致）"""
+        import shutil as shutil_mod
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        (src / "core").mkdir(parents=True)
+        (dst / "core").mkdir(parents=True)
+        (src / "same.py").write_text("same", encoding="utf-8")
+        (dst / "same.py").write_text("same", encoding="utf-8")
+        (src / "core" / "changed.py").write_text("new", encoding="utf-8")
+        (dst / "core" / "changed.py").write_text("old", encoding="utf-8")
+        (src / "core" / "added.py").write_text("add", encoding="utf-8")
+
+        copied = []
+        real_copy2 = shutil_mod.copy2
+
+        def counting_copy2(s, d, **kwargs):
+            copied.append(os.path.basename(d))
+            return real_copy2(s, d, **kwargs)
+
+        monkeypatch.setattr(shutil_mod, "copy2", counting_copy2)
+        updater._copy_tree(str(src), str(dst), updater._EXCLUDE_DIRS)
+
+        assert sorted(copied) == ["added.py", "changed.py"]
+        assert (dst / "same.py").read_text(encoding="utf-8") == "same"
+        assert (dst / "core" / "changed.py").read_text(encoding="utf-8") == "new"
+        assert (dst / "core" / "added.py").read_text(encoding="utf-8") == "add"
+
+    def test_apply_zip(self, tmp_path, monkeypatch):
+        """解压覆盖：代码文件更新、版本号随包更新，用户数据目录排除"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
         (project_root / "data").mkdir()
         (project_root / "data" / "user.json").write_text('{"keep": 1}', encoding="utf-8")
         monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
 
-        # 构造一个"远端"代码包并 mock 下载函数写入它
-        zip_path = tmp_path / "remote.zip"
-        src = tmp_path / "pkg"
-        (src / "web" / "static").mkdir(parents=True)
-        (src / "data").mkdir()
-        (src / "main.py").write_text("new main", encoding="utf-8")
-        (src / "web" / "static" / "version.json").write_text(
-            '{"version": "v20260912"}', encoding="utf-8")
-        (src / "data" / "x.txt").write_text("x", encoding="utf-8")
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            for root, _, files in os.walk(src):
-                for f in files:
-                    full = os.path.join(root, f)
-                    rel = os.path.relpath(full, src)
-                    zf.write(full, f"cili-main/{rel}")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main",
+                                    extra={"data/x.txt": "x"})
 
-        def fake_download(urls, dest, timeout=120):
-            with open(dest, "wb") as f:
-                f.write(zip_path.read_bytes())
-            return True, ""
-
-        monkeypatch.setattr(updater, "_download_zip", fake_download)
-
-        result = updater.do_upgrade()
+        result = updater.apply_zip(str(zip_path))
         assert result["success"] is True
-        assert result["needs_restart"] is True
+        assert "v20260911 → v20260912" in result["message"]
         assert (project_root / "main.py").read_text(encoding="utf-8") == "new main"
-        # 版本文件随升级更新为远端版本
-        new_version = json.loads((project_root / "web" / "static" / "version.json").read_text(encoding="utf-8"))
+        # 版本文件随升级更新为包内版本
+        new_version = json.loads(
+            (project_root / "web" / "static" / "version.json").read_text(encoding="utf-8"))
         assert new_version["version"] == "v20260912"
-        # 用户数据目录保留
+        # 用户数据目录保留，包内 data/ 内容不覆盖
         assert (project_root / "data" / "user.json").read_text(encoding="utf-8") == '{"keep": 1}'
         assert not (project_root / "data" / "x.txt").exists()
 
-    def test_do_upgrade_locked(self, tmp_path, monkeypatch):
+    def test_apply_zip_locked(self, tmp_path, monkeypatch):
         """升级锁占用时返回繁忙"""
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
         updater._upgrade_lock.acquire()
         try:
-            result = updater.do_upgrade()
+            result = updater.apply_zip(str(tmp_path / "any.zip"))
             assert result["success"] is False
             assert "进行中" in result["error"]
         finally:
             updater._upgrade_lock.release()
 
-    def test_do_upgrade_removes_stale_files(self, tmp_path, monkeypatch):
+    def test_apply_zip_removes_stale_files(self, tmp_path, monkeypatch):
         """升级后删除新版本已移除的残余文件（含 core/cron.d/ 下旧配置与 __pycache__）"""
-        project_root = tmp_path / "project"
-        project_root.mkdir()
+        project_root = _make_project(tmp_path, monkeypatch)
         # 旧版本曾发布的文件：core/cron.d/ 下系统 cron 配置 + __pycache__ 生成物
         (project_root / "core" / "cron.d").mkdir(parents=True)
         (project_root / "core" / "cron.d" / "memory_consolidation.json").write_text("old", encoding="utf-8")
@@ -226,29 +277,11 @@ class TestUpgrade:
         monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
 
         # 新版本：core/cron.d/ 只保留 memory_consolidation.json，obsolete_task.json 已移除
-        zip_path = tmp_path / "remote.zip"
-        src = tmp_path / "pkg"
-        (src / "core" / "cron.d").mkdir(parents=True)
-        (src / "core" / "cron.d" / "memory_consolidation.json").write_text("new", encoding="utf-8")
-        (src / "web" / "static").mkdir(parents=True)
-        (src / "web" / "static" / "version.json").write_text(
-            '{"version": "v20260912"}', encoding="utf-8")
-        (src / "main.py").write_text("new main", encoding="utf-8")
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            for root, _, files in os.walk(src):
-                for f in files:
-                    full = os.path.join(root, f)
-                    rel = os.path.relpath(full, src)
-                    zf.write(full, f"cili-main/{rel}")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main", extra={
+            "core/cron.d/memory_consolidation.json": "new",
+        })
 
-        def fake_download(urls, dest, timeout=120):
-            with open(dest, "wb") as f:
-                f.write(zip_path.read_bytes())
-            return True, ""
-
-        monkeypatch.setattr(updater, "_download_zip", fake_download)
-
-        result = updater.do_upgrade()
+        result = updater.apply_zip(str(zip_path))
         assert result["success"] is True
         # 新版本保留的文件被覆盖
         assert (project_root / "core" / "cron.d" / "memory_consolidation.json").read_text(
@@ -261,34 +294,17 @@ class TestUpgrade:
             encoding="utf-8") == "local"
         assert (project_root / "pytest.ini").read_text(encoding="utf-8") == "[pytest]"
 
-    def test_do_upgrade_rollback_on_failure(self, tmp_path, monkeypatch):
+    def test_apply_zip_rollback_on_failure(self, tmp_path, monkeypatch):
         """复制中途失败时回滚到升级前版本，升级新增的文件被删除"""
-        project_root = tmp_path / "project"
-        project_root.mkdir()
+        project_root = _make_project(tmp_path, monkeypatch)
         (project_root / "a.py").write_text("old-a", encoding="utf-8")
         (project_root / "b.py").write_text("old-b", encoding="utf-8")
         monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
 
-        # 远端包：a.py/b.py 更新 + 新增 c.py
-        zip_path = tmp_path / "remote.zip"
-        src = tmp_path / "pkg"
-        src.mkdir(parents=True)
-        (src / "a.py").write_text("new-a", encoding="utf-8")
-        (src / "b.py").write_text("new-b", encoding="utf-8")
-        (src / "c.py").write_text("new-c", encoding="utf-8")
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            for root, _, files in os.walk(src):
-                for f in files:
-                    full = os.path.join(root, f)
-                    rel = os.path.relpath(full, src)
-                    zf.write(full, f"cili-main/{rel}")
-
-        def fake_download(urls, dest, timeout=120):
-            with open(dest, "wb") as f:
-                f.write(zip_path.read_bytes())
-            return True, ""
-
-        monkeypatch.setattr(updater, "_download_zip", fake_download)
+        # 升级包：a.py/b.py 更新 + 新增 c.py
+        zip_path = _make_remote_zip(tmp_path, "v20260912", extra={
+            "a.py": "new-a", "b.py": "new-b", "c.py": "new-c",
+        })
 
         # 复制到项目根：a/b/c 全部先复制，随后对 c.py 抛异常，模拟半成品升级
         real_copy_tree = updater._copy_tree
@@ -308,13 +324,190 @@ class TestUpgrade:
 
         monkeypatch.setattr(updater, "_copy_tree", flaky_copy_tree)
 
-        result = updater.do_upgrade()
+        result = updater.apply_zip(str(zip_path))
         assert result["success"] is False
         assert "回滚" in result["error"]
         # 被覆盖的文件恢复，升级新增的文件被删除
         assert (project_root / "a.py").read_text(encoding="utf-8") == "old-a"
         assert (project_root / "b.py").read_text(encoding="utf-8") == "old-b"
         assert not (project_root / "c.py").exists()
+
+
+class TestApplyPendingUpgrade:
+    """启动时应用脚本目录下的升级包"""
+
+    def test_no_zip_returns_none(self, tmp_path, monkeypatch):
+        """脚本目录没有升级包时返回 None"""
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        assert updater.apply_pending_upgrade() is None
+
+    def test_cleans_stale_downloading_temp(self, tmp_path, monkeypatch):
+        """启动时清理上次下载中断残留的临时文件"""
+        project_root = _make_project(tmp_path, monkeypatch)
+        stale = project_root / (updater.UPGRADE_ZIP_NAME + ".downloading")
+        stale.write_bytes(b"partial download")
+
+        assert updater.apply_pending_upgrade() is None  # 无升级包
+        assert not stale.exists()
+
+    def test_applies_newer_zip_and_deletes_it(self, tmp_path, monkeypatch):
+        """包版本更高：解压覆盖后删除升级包"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(zip_path, dest)
+
+        result = updater.apply_pending_upgrade()
+        assert result is not None and result["success"] is True
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "new main"
+        # 应用成功后升级包被删除
+        assert not dest.exists()
+
+    def test_skips_and_deletes_not_newer_zip(self, tmp_path, monkeypatch):
+        """包版本不高于本地：不解压覆盖，删除升级包"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        zip_path = _make_remote_zip(tmp_path, "v20260911", "new main")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(zip_path, dest)
+
+        result = updater.apply_pending_upgrade()
+        assert result is not None and result["success"] is True
+        # 代码未被覆盖
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "old main"
+        # 升级包被清理
+        assert not dest.exists()
+
+    def test_deletes_invalid_zip(self, tmp_path, monkeypatch):
+        """损坏的升级包：删除后按原版本启动"""
+        project_root = _make_project(tmp_path, monkeypatch)
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        dest.write_bytes(b"garbage not a zip")
+
+        result = updater.apply_pending_upgrade()
+        assert result is not None and result["success"] is False
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "old main"
+        assert not dest.exists()
+
+    def test_keeps_zip_when_apply_fails(self, tmp_path, monkeypatch):
+        """应用失败：保留升级包，下次启动重试"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        # 包内版本可读（web/static/version.json 在子目录里），但解压后没有
+        # cili-main 根目录 → _safe_extract 返回 None → 应用失败
+        zip_path = _make_remote_zip(tmp_path, "v20260912", root="pkg")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(zip_path, dest)
+
+        result = updater.apply_pending_upgrade()
+        assert result is not None and result["success"] is False
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "old main"
+        # 升级包保留
+        assert dest.exists()
+
+
+class TestDownloadUpgradeZip:
+    """下载升级包到脚本目录（只下载，不应用）"""
+
+    def test_download_writes_zip_to_script_dir(self, tmp_path, monkeypatch):
+        """下载成功后升级包落在脚本目录（项目根），且不改动本地代码"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260912")
+
+        real_zip = _make_remote_zip(tmp_path, "v20260912", "remote code")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(real_zip.read_bytes())
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is True
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        assert dest.exists()
+        assert updater.read_zip_version(str(dest)) == "v20260912"
+        assert updater.is_downloading() is False
+        # 只下载：本地代码不变
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "old main"
+
+    def test_download_skips_same_version(self, tmp_path, monkeypatch):
+        """已有相同版本的升级包时跳过重复下载"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260912")
+
+        real_zip = _make_remote_zip(tmp_path, "v20260912")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(real_zip, dest)
+
+        def fail_download(urls, dest_path, timeout=120):
+            raise AssertionError("不应重复下载")
+
+        monkeypatch.setattr(updater, "_download_zip", fail_download)
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is True
+        assert result.get("skipped") is True
+        assert dest.exists()
+
+    def test_download_replaces_older_zip(self, tmp_path, monkeypatch):
+        """已有更旧版本的升级包时重新下载替换"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260913")
+
+        real_zip = _make_remote_zip(tmp_path, "v20260913")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(real_zip.read_bytes())
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        dest.write_bytes(b"stale old zip")
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is True
+        assert updater.read_zip_version(str(dest)) == "v20260913"
+
+    def test_download_remote_check_failed(self, tmp_path, monkeypatch):
+        """远端版本检查失败时不落盘"""
+        project_root = _make_project(tmp_path, monkeypatch)
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: None)
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is False
+        assert not (project_root / updater.UPGRADE_ZIP_NAME).exists()
+
+    def test_download_invalid_package_rejected(self, tmp_path, monkeypatch):
+        """下载内容无效（缺版本信息）时不占用升级包路径"""
+        project_root = _make_project(tmp_path, monkeypatch)
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260912")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(b"garbage not a zip")
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is False
+        assert not (project_root / updater.UPGRADE_ZIP_NAME).exists()
+        assert updater.is_downloading() is False
 
 
 class TestPruneStaleFiles:

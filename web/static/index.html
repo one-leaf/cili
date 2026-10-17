@@ -183,6 +183,7 @@
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
+                <button class="settings-tab" data-tab="about">关于</button>
             </div>
             <div class="modal-body">
                 <!-- Models Tab: Providers + model tables -->
@@ -522,6 +523,27 @@
                             开启后 <code>send_file</code> 工具只会在微信驱动的回合里对模型可见。
                         </small>
                     </div>
+                </div>
+
+                <!-- About Tab: 版本与升级 -->
+                <div class="tab-content" id="tab-about">
+                    <div class="model-description">
+                        <strong>版本与升级</strong> — 检查新版本并下载升级包（zip 落在脚本目录）；重启服务时自动比对版本并解压覆盖。
+                    </div>
+                    <div class="form-group">
+                        <label>当前版本:</label>
+                        <span id="about-local-version">-</span>
+                        <small class="form-hint" id="about-zip-status"></small>
+                    </div>
+                    <div class="form-group">
+                        <label>远程版本:</label>
+                        <span id="about-remote-version">未检查</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin: 12px 0;">
+                        <button class="btn btn-small" id="btn-check-update">检查更新</button>
+                        <button class="btn btn-small" id="btn-download-update" style="display:none">下载升级包</button>
+                    </div>
+                    <div id="about-update-status" class="form-hint"></div>
                 </div>
 
             </div>

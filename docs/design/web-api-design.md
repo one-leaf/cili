@@ -557,7 +557,56 @@ Content-Type: application/json
 }
 ```
 
-### 3.9 文件服务
+### 3.9 系统升级
+
+升级采用两段式：本组端点只负责检查版本和下载升级包 zip 到脚本目录（项目根 `cili-update.zip`）；解压覆盖统一在下一次服务启动时由 `core/updater.py::apply_pending_upgrade()` 完成（包内版本高于本地才覆盖，应用后删除升级包）。
+
+#### 检查更新
+
+```
+GET /api/update/check
+```
+
+**响应**：
+```json
+{
+  "has_update": true,
+  "local_version": "v20261017",
+  "remote_version": "v20261018",
+  "error": null
+}
+```
+
+`remote_version` 为 `null` 时表示版本检查失败（网络异常），`error` 给出原因。
+
+#### 升级状态
+
+```
+GET /api/update/status
+```
+
+**响应**：
+```json
+{
+  "local_version": "v20261017",
+  "downloading": false,
+  "last_result": null,
+  "zip_present": true,
+  "zip_version": "v20261018"
+}
+```
+
+`last_result` 为最近一次后台下载的结果（`{success, message/error}`），`zip_present`/`zip_version` 反映脚本目录升级包的就绪状态。
+
+#### 下载升级包
+
+```
+POST /api/update/download
+```
+
+后台线程执行下载（各镜像依次回退），结果写入 `last_result` 供状态接口轮询；已有下载进行中时返回 `{success: false, error: "已有下载任务进行中"}`。
+
+### 3.10 文件服务
 
 #### 获取工作区文件
 
@@ -628,7 +677,7 @@ POST   /api/files/upload                          # 上传文件（multipart for
 
 所有端点均校验路径必须位于工作区内，防止路径穿越。
 
-### 3.10 记忆管理（Memory API）
+### 3.11 记忆管理（Memory API）
 
 记忆以工作区为单位存储，API 前缀 `/api/workspaces/{uuid}/memory`。
 
@@ -691,7 +740,7 @@ Content-Type: application/json
 
 > 上述写端点（PUT/POST）均调用 `_csrf_protect()` 做 CSRF 校验（W6）。
 
-### 3.11 MCP 服务器管理
+### 3.12 MCP 服务器管理
 
 #### 获取服务器列表
 

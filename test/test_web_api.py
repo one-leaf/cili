@@ -955,3 +955,72 @@ class TestSessionDeleteNoGhost:
         store.save()
 
         assert not store.session_dir.exists()
+
+
+class TestUpdateRoutes:
+    """系统升级路由（routes_update）— 版本检查与升级包状态查询。"""
+
+    def test_check_update(self, monkeypatch):
+        """远端版本可用时返回比较结果，error 为空"""
+        import asyncio
+
+        from core import updater
+        from web.routes_update import check_update
+
+        monkeypatch.setattr(updater, "check_update", lambda: (True, "v20261017", "v20261018"))
+        result = asyncio.run(check_update())
+        assert result == {
+            "has_update": True,
+            "local_version": "v20261017",
+            "remote_version": "v20261018",
+            "error": None,
+        }
+
+    def test_check_update_network_error(self, monkeypatch):
+        """远端版本不可用时 has_update 为 False 且给出错误说明"""
+        import asyncio
+
+        from core import updater
+        from web.routes_update import check_update
+
+        monkeypatch.setattr(updater, "check_update", lambda: (False, "v20261017", None))
+        result = asyncio.run(check_update())
+        assert result["has_update"] is False
+        assert result["remote_version"] is None
+        assert result["error"]
+
+    def test_update_status_with_zip(self, tmp_path, monkeypatch):
+        """脚本目录有升级包时状态返回包内版本与最近下载结果"""
+        import asyncio
+        import zipfile
+
+        from core import updater
+        from web import routes_update
+
+        zip_path = tmp_path / updater.UPGRADE_ZIP_NAME
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("cili-main/web/static/version.json", '{"version": "v20261018"}')
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(
+            updater, "VERSION_FILE", tmp_path / "web" / "static" / "version.json")
+        monkeypatch.setattr(
+            routes_update, "_last_download_result", {"success": True, "message": "ok"})
+
+        result = asyncio.run(routes_update.update_status())
+        assert result["zip_present"] is True
+        assert result["zip_version"] == "v20261018"
+        assert result["downloading"] is False
+        assert result["last_result"]["success"] is True
+        assert result["local_version"] == "0.0.0"  # VERSION_FILE 不存在时按 0.0.0
+
+    def test_download_rejects_when_busy(self, monkeypatch):
+        """已有下载任务进行中时拒绝新的下载请求"""
+        import asyncio
+
+        from core import updater
+        from web import routes_update
+
+        monkeypatch.setattr(updater, "is_downloading", lambda: True)
+        result = asyncio.run(routes_update.download_update())
+        assert result["success"] is False
+        assert "进行中" in result["error"]

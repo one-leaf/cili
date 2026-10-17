@@ -437,15 +437,18 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 **注意**：设为 `1` 表示同一时刻只允许 1 个后台子代理，其余全部排队。
 
-### auto_update — 启动时自动升级
+### auto_update — 自动升级
 
-**作用**：服务启动后是否在后台线程自动检查 GitHub 新版本并升级（`system.auto_update` 位于 system 下）。
+**作用**：是否在后台线程自动检查 GitHub 新版本并下载升级包（`system.auto_update` 位于 system 下）。
 
 **默认值**：`true`（未配置时默认开启）
 
 **通俗解释**：
 
-服务启动约 5 秒后，后台线程读取本地 `web/static/version.json` 的 `version` 字段（格式 `vYYYYMMDD`），并与 GitHub 仓库（`one-leaf/cili`）的 version.json 比对。发现新版本即自动下载代码包并覆盖本地代码，**保留** `data/`、`workspace/`、`.git` 目录。下载优先 GitHub 直连，失败自动回退 ghfast.top / ghproxy.net / gh-proxy.com 国内镜像；远端拉取失败视为检查失败，跳过升级，不影响服务启动。
+升级分两步，覆盖代码的逻辑只在启动时执行一处：
+
+1. **下载**：服务启动约 5 秒后，后台线程读取本地 `web/static/version.json` 的 `version` 字段（格式 `vYYYYMMDD`），并与 GitHub 仓库（`one-leaf/cili`）的 version.json 比对。发现新版本即把代码包 zip 下载到脚本目录（项目根 `cili-update.zip`），不影响运行中的服务。设置页「关于」页签也可手动检查并下载升级包。下载优先 GitHub 直连，失败自动回退 ghfast.top / ghproxy.net / gh-proxy.com 国内镜像；远端拉取失败视为检查失败，跳过下载，不影响服务启动。
+2. **应用**：下次启动时检测到脚本目录有升级包，先比对包内版本与本地版本，**包版本更高才解压覆盖**（保留 `data/`、`workspace/`、`.git` 目录），然后继续启动；包版本不高于本地或包损坏时自动删除升级包。
 
 **建议**：
 
@@ -454,7 +457,7 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 | 想始终使用最新版 | 保持默认 `true` |
 | 生产环境或需要固定版本 | `false` |
 
-**注意**：关闭后只能手动升级（运行 `scripts/upgrade.cmd` / `upgrade.ps1`）。
+**注意**：关闭后不再自动下载，仍可在设置页「关于」页签手动下载升级包，或运行 `scripts/upgrade.cmd`（同样只下载，重启后自动应用）。
 
 ---
 

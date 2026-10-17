@@ -802,6 +802,9 @@ async function openSettings() {
 
         // ── 微信接入端 ──
         loadWechatConfig(cfg.wechat || {});
+
+        // ── 关于（版本与升级） ──
+        loadAboutStatus();
     } catch (error) {
         document.getElementById('settings-status').textContent = '加载失败: ' + error.message;
     }
@@ -1266,6 +1269,106 @@ function collectProviders() {
             const sel = row.querySelector('.p-model-reasoning');
             const current = sel.value;
             sel.innerHTML = renderReasoningOptions(iface, current);
+        });
+    });
+})();
+
+// ─── 关于 Tab：版本与升级 ─────────────────────────────────────────────
+// 只负责检查版本和下载升级包到脚本目录；解压覆盖统一在服务重启时进行。
+
+let updatePollTimer = null;
+
+async function loadAboutStatus() {
+    const statusEl = document.getElementById('about-update-status');
+    if (!statusEl) return;
+    try {
+        const resp = await fetch('/api/update/status');
+        const data = await resp.json();
+        document.getElementById('about-local-version').textContent = data.local_version || '-';
+        const zipEl = document.getElementById('about-zip-status');
+        zipEl.textContent = (data.zip_present && data.zip_version)
+            ? `（升级包 ${data.zip_version} 已就绪，重启服务后自动应用）` : '';
+        if (data.downloading) {
+            statusEl.textContent = '正在下载升级包...';
+            pollDownloadStatus();
+        }
+    } catch (e) {
+        statusEl.textContent = '✗ 加载升级状态失败: ' + e.message;
+    }
+}
+
+async function checkForUpdate() {
+    const statusEl = document.getElementById('about-update-status');
+    statusEl.textContent = '正在检查更新...';
+    try {
+        const resp = await fetch('/api/update/check');
+        const data = await resp.json();
+        if (data.error) {
+            document.getElementById('about-remote-version').textContent = '检查失败';
+            statusEl.textContent = '✗ ' + data.error;
+            return;
+        }
+        document.getElementById('about-remote-version').textContent = data.remote_version;
+        document.getElementById('btn-download-update').style.display = data.has_update ? '' : 'none';
+        statusEl.textContent = data.has_update
+            ? `发现新版本 ${data.remote_version}（当前 ${data.local_version}）`
+            : '已是最新版本';
+    } catch (e) {
+        statusEl.textContent = '✗ 检查更新失败: ' + e.message;
+    }
+}
+
+async function downloadUpdate() {
+    const statusEl = document.getElementById('about-update-status');
+    try {
+        const resp = await fetch('/api/update/download', { method: 'POST' });
+        const data = await resp.json();
+        if (!data.success) {
+            statusEl.textContent = '✗ ' + (data.error || '下载失败');
+            return;
+        }
+        statusEl.textContent = '正在下载升级包...';
+        pollDownloadStatus();
+    } catch (e) {
+        statusEl.textContent = '✗ 发起下载失败: ' + e.message;
+    }
+}
+
+function pollDownloadStatus() {
+    if (updatePollTimer) return;
+    updatePollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/update/status');
+            const data = await resp.json();
+            // 仍在下载、或下载线程尚未写入结果（last_result 为空）时，下一轮继续
+            if (data.downloading || !data.last_result) return;
+            clearInterval(updatePollTimer);
+            updatePollTimer = null;
+            const statusEl = document.getElementById('about-update-status');
+            const result = data.last_result;
+            if (result && result.success) {
+                statusEl.textContent = '✓ ' + (result.message || '升级包已下载');
+                loadAboutStatus();  // 刷新升级包就绪提示
+            } else {
+                statusEl.textContent = '✗ ' + ((result && result.error) || '下载失败');
+            }
+        } catch (e) {
+            // 网络抖动：下一轮继续
+        }
+    }, 2000);
+}
+
+(function initAboutSettings() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const checkBtn = document.getElementById('btn-check-update');
+        const downloadBtn = document.getElementById('btn-download-update');
+        if (checkBtn) checkBtn.addEventListener('click', checkForUpdate);
+        if (downloadBtn) downloadBtn.addEventListener('click', downloadUpdate);
+        // 切到「关于」页签时刷新状态
+        document.querySelectorAll('.settings-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                if (tab.dataset.tab === 'about') loadAboutStatus();
+            });
         });
     });
 })();
