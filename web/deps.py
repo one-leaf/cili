@@ -149,6 +149,9 @@ def _auto_init_global_config() -> None:
         logger.warning(f"Config error: {e}")
 
 
+_web_deps_initialized = False
+
+
 def init_web_deps() -> None:
     """Web 接入端的显式初始化：确保默认工作区存在 + 全局配置自检。
 
@@ -157,8 +160,12 @@ def init_web_deps() -> None:
     - ``main.py`` 启动 Web 接口前
     - ``web_api.py`` 的 lifespan（直接跑 uvicorn / 直接执行本模块的路径）
 
-    幂等，可重复调用。
+    幂等，重复调用直接跳过（避免启动日志重复）。
     """
+    global _web_deps_initialized
+    if _web_deps_initialized:
+        return
+    _web_deps_initialized = True
     _ensure_default_workspace()
     _auto_init_global_config()
 
