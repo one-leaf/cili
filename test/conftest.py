@@ -15,7 +15,13 @@ project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
 import core.cron
-from core.config import Config, ModelConfig, SystemConfig
+from core.config import (
+    AgentConfig,
+    Config,
+    ModelSpec,
+    ProviderConfig,
+    SystemConfig,
+)
 from core.session_runner import SessionRunner
 from core.tools import create_tools
 
@@ -28,16 +34,15 @@ DGX_MODEL = "dgx"
 def make_dgx_config(interface_type: str = "anthropic") -> Config:
     """构建 DGX 端点配置，支持 anthropic / openai 两种协议。"""
     return Config(
-        model=ModelConfig(
-            name=DGX_MODEL,
-            interface_type=interface_type,
-            api_key=DGX_API_KEY,
-            base_url=DGX_BASE_URL,
-            max_tokens=4096,
-            max_context_tokens=256000,
-            multimodal=True,
-            temperature=0.2,
-        ),
+        providers={
+            "dgx": ProviderConfig(
+                interface_type=interface_type,
+                api_key=DGX_API_KEY,
+                base_url=DGX_BASE_URL,
+                models={"dgx": ModelSpec(name=DGX_MODEL, max_output_tokens=4096, max_context_tokens=256000)},
+            )
+        },
+        agents={"master": AgentConfig(model="dgx/dgx")},
         system=SystemConfig(),
     )
 

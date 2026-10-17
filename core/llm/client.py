@@ -180,15 +180,10 @@ class LLMClient:
         self.transport = transport
         self.config = config
         self.model_name = config.name
-        self.max_tokens = config.max_tokens
-        self.temperature = config.temperature
+        self.max_tokens = config.max_output_tokens
 
         # Expose base_url for error formatting (backward compat)
         self.base_url = config.base_url
-
-        # Detect LiteLLM proxy（官方域名跳过，避免启动时多余请求）
-        if adapter.should_detect_litellm():
-            adapter.detect_litellm(transport)
 
     def chat(
         self,
@@ -223,11 +218,10 @@ class LLMClient:
             tools=tools,
             model=self.model_name,
             max_tokens=max_tokens,
-            temperature=self.temperature,
             stream=False,
             session_id=session_id,
         )
-        headers = self.adapter.build_headers()
+        headers = self.adapter.build_request_headers(session_id=session_id)
         url = self.adapter.api_url
 
         def do_request():
@@ -253,6 +247,7 @@ class LLMClient:
             content=content_blocks,
             stop_reason=stop_reason,
             usage=usage,
+            model=str(data.get("model") or self.model_name),
         )
 
     def chat_stream(
@@ -300,11 +295,10 @@ class LLMClient:
             tools=tools,
             model=self.model_name,
             max_tokens=max_tokens,
-            temperature=self.temperature,
             stream=True,
             session_id=session_id,
         )
-        headers = self.adapter.build_headers()
+        headers = self.adapter.build_request_headers(session_id=session_id)
         url = self.adapter.api_url
         assembler = BlockAssembler()
 
@@ -351,6 +345,7 @@ class LLMClient:
             content=assembler.blocks,
             stop_reason=assembler.stop_reason,
             usage=assembler.usage,
+            model=assembler.model or self.model_name,
         )
 
     def chat_structured(

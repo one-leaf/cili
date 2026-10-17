@@ -174,8 +174,8 @@ _DEFAULT_MODEL = {
     "name": "claude-sonnet-4-6",
     "interface_type": "anthropic",
     "base_url": "https://api.anthropic.com",
-    "max_tokens": 16384,
-    "max_context_tokens": 256000,
+    "max_output_tokens": 8192,
+    "max_context_tokens": 128000,
     "multimodal": True,
     "temperature": 0.2,
 }
@@ -216,38 +216,37 @@ def _create_example_config() -> None:
 
     example_config = {
         "_comment": "Cili Agent 配置示例 - 复制为 setting.json 并修改",
-        "model": {
-            "_comment": "主模型配置（Master Agent 使用；Worker/Lite 未单独配置时继承此模型）",
-            "name": "claude-sonnet-4-6",
-            "interface_type": "anthropic",  # "anthropic" 或 "openai"
-            "api_key": "sk-xxx",
-            "base_url": "https://api.anthropic.com",
-            "max_tokens": 36000,  # 单次响应最大 token 数
-            "max_context_tokens": 256000,  # 上下文窗口大小
-            "multimodal": True,  # 是否支持图片输入
-            "temperature": 0.2,  # 0.1(稳定) ~ 1.0(创意)
+        "providers": {
+            "_comment": "接入层：一个凭据（api_key/base_url/协议）管理多个模型；api_key 支持 ${ENV_VAR} 引用环境变量",
+            "bg": {
+                "interface_type": "anthropic",  # "anthropic" 或 "openai"
+                "api_key": "sk-xxx",
+                "auth_type": "auto",  # auto | bearer | x-api-key | none（认证头补充方式）
+                "backend": "litellm",  # custom | codex | claude-code | opencode | openrouter | litellm（会话头自动填充）
+                "base_url": "http://ai.example.com/llm",
+                "headers": {},  # 附加请求头；值支持 {session_id} 占位符
+                "models": {
+                    "main": {  # 键 = 自由别名（agents 里的引用用它）
+                        "name": "ac/qwen3.7-plus",  # 发给 API 的真实模型 ID；省略时用键名
+                        "max_output_tokens": 36000,  # 单次响应最大输出 token
+                        "max_context_tokens": 256000,  # 上下文窗口
+                        "model_type": "reasoning",  # reasoning（有思考档位）| chat（无思考设置）
+                        "input": ["text", "image"],  # 输入模态：text/image/audio/video/pdf，必须含 text
+                        "reasoning": "default",  # default(不传) | off | low | medium | high；openai 另支持 none/minimal
+                        "cache_control": "auto",
+                    },
+                    "cheap": {
+                        "name": "ac/qwen3.7-flash",
+                        "max_output_tokens": 8192,
+                    },
+                },
+            },
         },
-        "worker_model": {
-            "_comment": "Worker 模型配置（可选；仅填 name 即可，其余字段继承主模型）",
-            "name": "claude-sonnet-4-6",
-            "interface_type": "anthropic",  # "anthropic" 或 "openai"
-            "api_key": "sk-xxx",  # 不填则使用主模型的 api_key
-            "base_url": "https://api.anthropic.com",
-            "max_tokens": 36000,
-            "max_context_tokens": 256000,
-            "multimodal": True,
-            "temperature": 0.2,
-        },
-        "lite_model": {
-            "_comment": "Lite 模型配置（可选；仅填 name 即可，其余字段继承主模型）",
-            "name": "claude-haiku-4-5",
-            "interface_type": "anthropic",
-            "api_key": "sk-xxx",  # 不填则使用主模型的 api_key
-            "base_url": "https://api.anthropic.com",
-            "max_tokens": 8192,
-            "max_context_tokens": 200000,
-            "multimodal": False,
-            "temperature": 0.1,
+        "agents": {
+            "_comment": "角色 → 模型引用；worker/lite 省略时继承 master",
+            "master": {"model": "bg/main"},
+            "worker": {"model": "bg/main"},
+            "lite": {"model": "bg/cheap"},
         },
         "system": {
             "_comment": "系统参数配置",

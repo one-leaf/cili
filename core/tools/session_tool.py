@@ -20,7 +20,7 @@ class SessionTool(Tool):
         "**Delegate complex, multi-step tasks to an autonomous sub-session (Worker/Lite).**\n"
         "The sub-session runs a complete loop with its own tool access.\n\n"
         "## Actions:\n"
-        "- \"start\" (default): delegate a task. Params: task (required), plan, agent_type, run_in_background, label, temperature\n"
+        "- \"start\" (default): delegate a task. Params: task (required), plan, agent_type, run_in_background, label\n"
         "- \"read\": check a background session's status/output. Params: task (pass task_id, e.g. \"agent-1\")\n"
         "- \"kill\": terminate a background session. Params: task (pass task_id)\n"
         "- \"list\": list all background tasks. No extra params needed.\n\n"
@@ -148,12 +148,6 @@ class SessionTool(Tool):
                         "completes — no polling needed."
                     ),
                 },
-                "temperature": {
-                    "type": "number",
-                    "description": "Override LLM temperature for this Agent (0.0=deterministic, 1.0=creative). Defaults to the configured model temperature.",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
                 "label": {
                     "type": "string",
                     "description": "Short display label for this Agent (max 64 chars). Shown in UI instead of task summary.",
@@ -169,7 +163,6 @@ class SessionTool(Tool):
         plan: list[str] | None = None,
         agent_type: str = "worker",
         run_in_background: bool | None = None,
-        temperature: float | None = None,
         label: str | None = None,
         exec_id: str | None = None,
     ) -> ToolResult:
@@ -271,7 +264,6 @@ class SessionTool(Tool):
             stop_check=self.stop_check,
             session_dir=exec_dir,
             exec_id=exec_id,
-            temperature=temperature,
             approval_store=self.approval_store,
             delegation_depth=self.delegation_depth + 1,
         )

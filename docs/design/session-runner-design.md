@@ -165,7 +165,6 @@ class SessionRunner(BaseSessionRunner):
         session_dir: Path | None = None,  # autonomous 模式的消息持久化目录
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",          # autonomous 模式的执行 ID（作为 session 标识）
-        temperature: float | None = None,  # 可选 LLM temperature 覆盖
         approval_store=None,        # autonomous 模式共享的会话级审批存储
         max_consecutive_failures: int | None = None,  # None 时取角色配置
         run_mode: str | None = None,  # 运行模式覆盖；None 时取角色 JSON 的 mode
@@ -264,8 +263,8 @@ runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（
 
 ### 3.4 模型选择
 
-- 角色 JSON **不含 model 字段**。`SessionRunner` 构造时取 `getattr(config, f"{role}_model", None) or config.model`。
-- `Config.model` 为 master 主模型；`worker_model` / `lite_model` 可选，未配置（或只填了部分字段）时通过 `ModelConfig.merged_with(override)` **继承 master 模型的其他字段**（例如只填 `name` 则其余字段全部沿用 master）。
+- 角色 JSON **不含 model 字段**。`SessionRunner` 构造时取 `config.model_for_role(role)`。
+- `Config` 模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）：角色字段是模型引用字符串，worker/lite 未配置时继承 master；`resolve_model()` 合成运行时 ModelConfig。
 - `reload_config()` 从磁盘重载配置、重建 LLM 客户端与工具集（先创建新客户端，成功后再关闭旧客户端，避免失败后 `self.client` 指向已关闭的实例）。
 
 ### 3.5 配置化 prompt（core/prompt_builder.py）
@@ -467,7 +466,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 - 生成 `exec_id`（`exec_{8位hex}`，`ExecLogStore._generate_exec_id()`，`core/session.py`）
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
-- 构造统一 SessionRunner：`SessionRunner(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, temperature, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
+- 构造统一 SessionRunner：`SessionRunner(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
 - **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用统一 `action` 枚举管理（`action="read"` 查状态、`action="kill"` 终止、`action="list"` 列出）
 - 子会话 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
@@ -515,11 +514,11 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 - **流式模式**：thinking 内容通过 `on_thinking` 回调实时推送到前端
 - **消息存储**：thinking blocks 保留在消息历史中，Anthropic API 要求后续请求包含之前的 thinking blocks
-- **启用条件**：配置了 `reasoning_effort` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000）
+- **启用条件**：`reasoning` 档位为 `low`/`medium`/`high` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000；`default`/`off` 不发送 thinking 参数）
 
 ### 7.2 LLM 配置
 
-**Anthropic API**（`budget_tokens` 由 `reasoning_effort` 配置决定，未配置时不启用 thinking）：
+**Anthropic API**（`budget_tokens` 由 `reasoning` 档位映射，`default`/`off` 时不启用 thinking）：
 ```json
 {
   "thinking": {
@@ -529,7 +528,7 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 }
 ```
 
-**OpenAI API**（推理模型，`reasoning_effort` 来自配置；未配置时不传该参数，使用 API 默认值）：
+**OpenAI API**（`reasoning` 非 `default` 时直传 `reasoning_effort`，`off` → `"none"`；`default` 不传该参数，使用 API 默认值）：
 ```json
 {
   "reasoning_effort": "medium"
@@ -557,8 +556,8 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 ### 8.3 为什么模型按角色配置？
 
-- `config.{role}_model or config.model`：worker/lite 可在 `setting.json` 单独配置模型，未配置继承 master 模型
-- `ModelConfig.merged_with(override)`：只填 `name` 时其余字段（接口类型、温度、上下文窗口等）自动继承 master，避免重复配置
+- `config.model_for_role(role)`：worker/lite 可在 `setting.json` 的 `agents` 表单独引用模型，未配置继承 master
+- 引用是 `"provider键/模型键"` 字符串，凭据与模型清单集中在 providers，角色只持引用，避免重复配置
 - 支持并行执行多个不同模型的子代理
 
 ### 8.4 为什么 SessionRunner 持有消息而不是 Session？

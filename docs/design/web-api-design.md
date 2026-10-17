@@ -482,20 +482,18 @@ GET /api/config
 ```json
 {
   "config": {
-    "model": {
-      "name": "claude-sonnet-4-6",
-      "interface_type": "anthropic",
-      "api_key_masked": "sk-a...xyz",
-      "base_url": "https://api.anthropic.com",
-      "max_tokens": 16384,
-      "max_context_tokens": 256000,
-      "multimodal": true,
-      "temperature": 0.2
+    "providers": {
+      "bg": {
+        "interface_type": "anthropic",
+        "api_key_masked": "sk-a...xyz",
+        "auth_type": "auto",
+        "backend": "litellm",
+        "base_url": "https://api.anthropic.com",
+        "headers": {},
+        "models": { "main": { "name": "claude-sonnet-4-6", "max_output_tokens": 8192, "max_context_tokens": 128000, "model_type": "reasoning", "input": ["text", "image"], "reasoning": "default", "cache_control": "auto" } }
+      }
     },
-    "worker_model": {
-      "name": "claude-haiku-4-5",
-      ...
-    },
+    "agents": { "master": { "model": "bg/main" }, "worker": { "model": "bg/main" } },
     "system": {
       "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
     }
@@ -504,7 +502,7 @@ GET /api/config
 }
 ```
 
-API Key 自动脱敏显示（`sk-a...xyz` 格式）。
+API Key 自动脱敏显示（`sk-a...xyz` 格式）；模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）。
 
 #### 更新配置
 
@@ -513,12 +511,17 @@ PUT /api/config
 Content-Type: application/json
 
 {
-  "model": {
-    "name": "claude-sonnet-4-6",
-    "api_key": "sk-ant-..."
+  "providers": {
+    "bg": {
+      "interface_type": "anthropic",
+      "api_key": "sk-ant-...",
+      "base_url": "https://api.anthropic.com",
+      "models": { "main": { "name": "claude-sonnet-4-6" } }
+    }
   },
-  "worker_model": {
-    "name": "claude-haiku-4-5"
+  "agents": {
+    "master": { "model": "bg/main" },
+    "worker": { "model": "bg/main" }
   },
   "system": {
     "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
@@ -1079,22 +1082,25 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
 
 ### 8.4 API Key 脱敏
 
-配置 API 返回时自动脱敏 API Key（`model`/`worker_model`/`lite_model` 的 `api_key` 与 `system.mineru_api_key`）：
+配置 API 返回时自动脱敏 API Key（各 provider 的 `api_key` 附加 `api_key_masked` 字段，以及 `system.mineru_api_key`）：
 
 ```python
-def _mask_single_model(model: dict) -> dict:
-    m = model.copy()
-    api_key = m.get("api_key", "")
-    if api_key:
-        m["api_key_masked"] = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
-    m.pop("api_key", None)
-    return m
-
 def _mask_api_key(config: dict) -> dict:
     result = config.copy()
-    for key in ("model", "worker_model", "lite_model"):
-        if key in result and isinstance(result[key], dict):
-            result[key] = _mask_single_model(result[key])
+    # providers 每项的 api_key 掩码（api_key_masked 附加以便前端回显）
+    if "providers" in result and isinstance(result["providers"], dict):
+        masked_providers = {}
+        for name, provider in result["providers"].items():
+            if isinstance(provider, dict):
+                p = provider.copy()
+                api_key = p.get("api_key", "")
+                if api_key:
+                    p["api_key_masked"] = _mask_secret(api_key)
+                p.pop("api_key", None)
+                masked_providers[name] = p
+            else:
+                masked_providers[name] = provider
+        result["providers"] = masked_providers
     # 系统配置中的 MinerU API Key 同样脱敏
     if "system" in result and isinstance(result["system"], dict):
         sys_copy = result["system"].copy()

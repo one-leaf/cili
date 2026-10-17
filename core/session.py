@@ -47,7 +47,7 @@ INTERNAL_META_FIELDS = frozenset({
     "valid", "output_path", "file_size", "truncated",
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
-    "compacted", "file_card",
+    "compacted", "file_card", "model",
 })
 # 兼容旧名（模块内引用）
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
@@ -1050,14 +1050,30 @@ class SessionStore:
 
     def update_usage(self, input_tokens: int = 0, output_tokens: int = 0,
                      api_calls: int = 0, cache_read_tokens: int = 0,
-                     cache_creation_tokens: int = 0) -> None:
-        """更新使用量统计（仅计数器；速度由 ConversationStore 按调用计速并随 sync 持久化）。"""
+                     cache_creation_tokens: int = 0, model: str = "") -> None:
+        """更新使用量统计（仅计数器；速度由 ConversationStore 按调用计速并随 sync 持久化）。
+
+        ``model`` 非空时同步记入 per-model 分桶（usage.models[model_name]），master/worker/lite
+        的 token 用量分开归属；``total`` 保留旧的平铺字段供 /status 兼容读取。
+        """
         usage = self.metadata.get("usage", {})
         usage["input_tokens"] = usage.get("input_tokens", 0) + input_tokens
         usage["output_tokens"] = usage.get("output_tokens", 0) + output_tokens
         usage["api_calls"] = usage.get("api_calls", 0) + api_calls
         usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cache_read_tokens
         usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation_tokens
+
+        if model:
+            models = usage.setdefault("models", {})
+            bucket = models.setdefault(model, {
+                "input_tokens": 0, "output_tokens": 0, "api_calls": 0,
+                "cache_read_tokens": 0, "cache_creation_tokens": 0,
+            })
+            bucket["input_tokens"] += input_tokens
+            bucket["output_tokens"] += output_tokens
+            bucket["api_calls"] += api_calls
+            bucket["cache_read_tokens"] += cache_read_tokens
+            bucket["cache_creation_tokens"] += cache_creation_tokens
 
         self.metadata["usage"] = usage
         self._bump_index_version()

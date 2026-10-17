@@ -39,6 +39,7 @@ class BlockAssembler:
     _block_map: dict[int, ContentBlock] = field(default_factory=dict)
     _stop_reason: str = ""
     _usage: UsageData = field(default_factory=UsageData)
+    model: str = ""  # API 返回的实际模型名（网关可能重写；空 = 未收到）
     _finished: bool = False
 
     def push(self, chunk: StreamChunk) -> None:
@@ -90,6 +91,8 @@ class BlockAssembler:
                     block.thought_signature = chunk.data["thought_signature"]
 
         elif ctype == "usage":
+            if chunk.data.get("model"):
+                self.model = str(chunk.data["model"])
             u = chunk.data.get("usage", UsageData())
             if isinstance(u, dict):
                 u = UsageData.from_dict(u)

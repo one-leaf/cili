@@ -45,12 +45,12 @@ class OpenAIAdapter(Adapter):
     def api_path(self) -> str:
         return "/v1/chat/completions"
 
-    def build_headers(self) -> dict[str, str]:
-        """Build headers for OpenAI API."""
-        return {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "content-type": "application/json",
-        }
+    def default_auth_headers(self) -> dict[str, str]:
+        """auth_type="auto" 的默认认证头。"""
+        return {"Authorization": f"Bearer {self.config.api_key}"}
+
+    def protocol_headers(self) -> dict[str, str]:
+        return {"content-type": "application/json"}
 
     def _convert_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Convert tool schema to OpenAI native format.
@@ -356,7 +356,6 @@ class OpenAIAdapter(Adapter):
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,
-        temperature: float | None = None,
         stream: bool = False,
         session_id: str = "",
     ) -> dict[str, Any]:
@@ -387,17 +386,11 @@ class OpenAIAdapter(Adapter):
         if sys_list is not None:
             body["system"] = sys_list
 
-        # Reasoning effort for reasoning models
-        # Only send if explicitly configured; otherwise let API decide
-        reasoning_effort = self.config.reasoning_effort
-        if reasoning_effort:
-            body["reasoning_effort"] = reasoning_effort
-        else:
-            if temperature is not None:
-                body["temperature"] = temperature
-
-        # LiteLLM proxy support
-        self._apply_litellm_extras(body, session_id)
+        # Reasoning effort for reasoning models（openai 取值域，§models-provider-design）
+        # default：不发送，由 API/网关默认行为决定；off → "none"；其余直传
+        reasoning = self.config.reasoning
+        if reasoning and reasoning != "default":
+            body["reasoning_effort"] = "none" if reasoning == "off" else reasoning
 
         if tools:
             body["tools"] = self._convert_tools(tools)
@@ -462,11 +455,14 @@ class OpenAIAdapter(Adapter):
         next_block_index = 0
 
         for event in events:
-            # Extract usage if present
+            # Extract usage if present（chunk 带 model 时一并传给 assembler）
             u = event.get("usage", {})
             if u:
                 usage = UsageData.from_openai(u)
-                yield StreamChunk.usage_chunk(usage)
+                chunk_data = {"usage": usage}
+                if event.get("model"):
+                    chunk_data["model"] = str(event["model"])
+                yield StreamChunk(type="usage", data=chunk_data)
 
             choices = event.get("choices", [])
             if not choices:

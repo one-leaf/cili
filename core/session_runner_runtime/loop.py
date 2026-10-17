@@ -336,7 +336,7 @@ class Loop:
             if not tool_calls:
                 # 差异点①：无工具调用 → 交付/转检查（autonomous）或回合完成（interactive）
                 if not autonomous:
-                    runner.add_message("assistant", response.content_as_dicts())
+                    runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                     runner._sync_to_session()
                     runner.session.save()
                     return None
@@ -345,18 +345,18 @@ class Loop:
                 if outcome.done:
                     if outcome.action == "budget_wrapup":
                         summary = response.get_text() or "预算耗尽，模型未输出总结"
-                        runner.add_message("assistant", response.content_as_dicts())
+                        runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                         runner._finalize("completed", summary, n)
                         return self._autonomous_result("completed", summary, n, budget_wrapup=True)
                     if outcome.action == "deliver":
                         summary = response.get_text()
-                        runner.add_message("assistant", response.content_as_dicts())
+                        runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                         runner._finalize("completed", summary, n)
                         return self._autonomous_result("completed", summary, n)
                     # check_complete：检查阶段文本收尾 → 任务真正完成
                     pm.mark_check_complete()
                     summary = response.get_text()
-                    runner.add_message("assistant", response.content_as_dicts())
+                    runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                     runner._finalize("completed", summary, n)
                     return self._autonomous_result(
                         "completed", summary, n, check_iterations=pm.check_iters
@@ -364,7 +364,7 @@ class Loop:
 
                 # enter_check：主阶段结束 → 注入检查提示转检查
                 summary = response.get_text()
-                runner.add_message("assistant", response.content_as_dicts())
+                runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                 runner.add_message("user", CHECK_PROMPT, meta={"pinned": True})
                 pm.enter_check(n - 1)
                 logger.debug(
@@ -376,7 +376,7 @@ class Loop:
             # ── 检查阶段轮次上限（autonomous 工具调用轮）──
             if autonomous and pm.on_tool_round():
                 summary = response.get_text() or "检查阶段超出最大迭代次数"
-                runner.add_message("assistant", response.content_as_dicts())
+                runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                 runner._finalize("completed", summary, n)
                 logger.warning(
                     f"[SessionRunner:{runner.role}] 检查阶段超出迭代上限 "
@@ -387,7 +387,7 @@ class Loop:
                 )
 
             # ── 添加 assistant 消息（工具调用轮）──
-            runner.add_message("assistant", response.content_as_dicts())
+            runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
 
             # ── 工具批执行（差异点②：结果 handler 模式专属）──
             if autonomous:

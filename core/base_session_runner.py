@@ -60,7 +60,7 @@ class BaseSessionRunner:
         # 子类可能已按角色解析过 model（SessionRunner 在 super().__init__ 前设置），
         # 此时不得用全局默认覆盖（审查 P1-1：三处赋值需一致）
         if not getattr(self, "model", None):
-            self.model = config.model
+            self.model = config.model_for_role("master")
         self.workspace_uuid = workspace_uuid
         self.cwd = cwd or os.getcwd()
         self.session_dir = session_dir
@@ -297,6 +297,7 @@ class BaseSessionRunner:
         cache_creation_tokens: int = 0,
         duration: float | None = None,
         ttft: float | None = None,
+        model: str = "",
     ) -> None:
         """Update usage statistics (delegated to ConversationStore)."""
         self.context.update_usage(
@@ -307,6 +308,7 @@ class BaseSessionRunner:
             cache_creation_tokens=cache_creation_tokens,
             duration=duration,
             ttft=ttft,
+            model=model,
         )
 
     def get_usage(self) -> dict[str, float]:

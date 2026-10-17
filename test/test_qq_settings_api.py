@@ -79,10 +79,14 @@ class TestPutConfigQQ:
     def test_other_sections_untouched(self, isolated_config):
         from web.routes_config import UpdateConfigRequest, update_config
         isolated_config.write_text(json.dumps({
-            "model": {"name": "keep-me"}, "qq": {"enabled": False},
+            "providers": {"p": {"api_key": "k", "models": {"m": {"name": "keep-me"}}}},
+            "agents": {"master": {"model": "p/m"}},
+            "qq": {"enabled": False},
         }), encoding="utf-8")
         asyncio.run(update_config(UpdateConfigRequest(qq={"enabled": True})))
-        assert _read(isolated_config)["model"]["name"] == "keep-me"
+        after = _read(isolated_config)
+        assert after["providers"]["p"]["models"]["m"]["name"] == "keep-me"
+        assert after["agents"]["master"]["model"] == "p/m"
 
     def test_toggle_starts_interface(self, isolated_config, monkeypatch):
         """enabled 从关到开 → 就地启动接入端（不重启 Cili）。"""

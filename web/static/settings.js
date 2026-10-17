@@ -227,62 +227,7 @@ async function openSettingsHelp() {
 }
 
 // 加载某个角色（worker/lite）模型配置到表单
-function loadRoleModel(prefix, cfg, masterKeyMasked) {
-    document.getElementById(`${prefix}-api-key`).value = '';
-    document.getElementById(`${prefix}-base-url`).value = cfg.base_url || '';
-    document.getElementById(`${prefix}-model`).value = cfg.name || '';
-    document.getElementById(`${prefix}-interface-type`).value = cfg.interface_type || '';
-    document.getElementById(`${prefix}-max-tokens`).value = cfg.max_tokens || 16384;
-    document.getElementById(`${prefix}-max-context-tokens`).value = cfg.max_context_tokens || 256000;
-    document.getElementById(`${prefix}-multimodal`).checked = cfg.multimodal !== false;
-
-    const tempVal = cfg.temperature != null ? cfg.temperature : 0.2;
-    document.getElementById(`${prefix}-temperature`).value = tempVal;
-    document.getElementById(`${prefix}-temperature-value`).textContent = tempVal;
-    document.getElementById(`${prefix}-reasoning-effort`).value = cfg.reasoning_effort || '';
-    document.getElementById(`${prefix}-cache-control`).value = cfg.cache_control || 'auto';
-
-    const hint = document.getElementById(`${prefix}-api-key-masked`);
-    if (cfg.api_key_masked) {
-        hint.textContent = `当前: ${cfg.api_key_masked} (留空保持不变)`;
-    } else if (masterKeyMasked) {
-        hint.textContent = '未单独配置（将继承主模型的 Key）';
-    } else {
-        hint.textContent = '未配置';
-    }
-}
-
 // 收集某个角色（worker/lite）模型配置；name 留空 → 信号后端移除、回退继承 Master
-function collectRoleModel(prefix, roleKey, payload) {
-    payload[roleKey] = {};
-    const apiKey = document.getElementById(`${prefix}-api-key`).value.trim();
-    if (apiKey) payload[roleKey].api_key = apiKey;
-
-    const baseUrl = document.getElementById(`${prefix}-base-url`).value.trim();
-    if (baseUrl) payload[roleKey].base_url = baseUrl;
-
-    const model = document.getElementById(`${prefix}-model`).value.trim();
-    if (model) payload[roleKey].name = model;
-
-    const interfaceType = document.getElementById(`${prefix}-interface-type`).value;
-    if (interfaceType) payload[roleKey].interface_type = interfaceType;
-
-    const maxTokens = document.getElementById(`${prefix}-max-tokens`).value;
-    if (maxTokens) payload[roleKey].max_tokens = parseInt(maxTokens);
-
-    const maxContextTokens = document.getElementById(`${prefix}-max-context-tokens`).value;
-    if (maxContextTokens) payload[roleKey].max_context_tokens = parseInt(maxContextTokens);
-
-    payload[roleKey].multimodal = document.getElementById(`${prefix}-multimodal`).checked;
-    payload[roleKey].temperature = parseFloat(document.getElementById(`${prefix}-temperature`).value);
-    payload[roleKey].reasoning_effort = document.getElementById(`${prefix}-reasoning-effort`).value;
-    payload[roleKey].cache_control = document.getElementById(`${prefix}-cache-control`).value;
-
-    if (!payload[roleKey].name) {
-        payload[roleKey] = { name: '', api_key: '' };  // Signal to backend to remove (fall back to Master)
-    }
-}
-
 // ── MCP 服务器管理 ──
 // 前端内存态：加载的服务器（保留原 headers，保存时 _preserve_headers）+
 // 表单新填的服务器（带完整 headers），一次性随 saveSettings 提交。
@@ -814,49 +759,20 @@ async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
 
-    // Reset to Master model tab
+    // Reset to models tab
     document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelector('.settings-tab[data-tab="root"]').classList.add('active');
-    document.getElementById('tab-root').classList.add('active');
+    document.querySelector('.settings-tab[data-tab="models"]').classList.add('active');
+    document.getElementById('tab-models').classList.add('active');
 
     try {
         const response = await fetch('/api/config');
         const data = await response.json();
         const cfg = data.config || {};
-        const modelCfg = cfg.model || {};
 
-        // ── Master model settings ──
-        document.getElementById('setting-api-key').value = '';
-        document.getElementById('setting-base-url').value = modelCfg.base_url || '';
-        document.getElementById('setting-model').value = modelCfg.name || '';
-        document.getElementById('setting-interface-type').value = modelCfg.interface_type || 'anthropic';
-        document.getElementById('setting-max-tokens').value = modelCfg.max_tokens || 16384;
-        document.getElementById('setting-max-context-tokens').value = modelCfg.max_context_tokens || 256000;
-        document.getElementById('setting-multimodal').checked = modelCfg.multimodal !== false;
-
-        // Temperature slider
-        const tempVal = modelCfg.temperature != null ? modelCfg.temperature : 0.2;
-        document.getElementById('setting-temperature').value = tempVal;
-        document.getElementById('setting-temperature-value').textContent = tempVal;
-
-        // Reasoning effort
-        document.getElementById('setting-reasoning-effort').value = modelCfg.reasoning_effort || '';
-
-        // Cache control
-        document.getElementById('setting-cache-control').value = modelCfg.cache_control || 'auto';
-
-        // Show masked key
-        const maskedHint = document.getElementById('setting-api-key-masked');
-        if (modelCfg.api_key_masked) {
-            maskedHint.textContent = `当前: ${modelCfg.api_key_masked} (留空保持不变)`;
-        } else {
-            maskedHint.textContent = '未配置 API Key';
-        }
-
-        // ── Worker/Lite model settings（未配置则继承 Master） ──
-        loadRoleModel('worker', cfg.worker_model || {}, modelCfg.api_key_masked);
-        loadRoleModel('lite', cfg.lite_model || {}, modelCfg.api_key_masked);
+        // ── Providers（模型列表 tab） ──
+        renderProviders(cfg.providers || {});
+        restoreAgentSelection(cfg.agents || {});
 
         // ── System parameters ──
         const systemCfg = cfg.system || {};
@@ -896,37 +812,24 @@ async function saveSettings() {
     const statusEl = document.getElementById('settings-status');
     statusEl.textContent = '保存中...';
 
-    const payload = {
-        model: {}
-    };
+    const payload = {};
 
-    // ── Master model settings ──
-    const apiKey = document.getElementById('setting-api-key').value.trim();
-    if (apiKey) payload.model.api_key = apiKey;
+    // ── Providers（模型列表 tab） ──
+    const providersPayload = collectProviders();
+    if (providersPayload === null) return;  // 收集失败（JSON 语法错等），状态已提示
+    payload.providers = providersPayload;
 
-    const baseUrl = document.getElementById('setting-base-url').value.trim();
-    if (baseUrl) payload.model.base_url = baseUrl;
-
-    const model = document.getElementById('setting-model').value.trim();
-    if (model) payload.model.name = model;
-
-    const interfaceType = document.getElementById('setting-interface-type').value;
-    payload.model.interface_type = interfaceType;
-
-    const maxTokens = document.getElementById('setting-max-tokens').value;
-    if (maxTokens) payload.model.max_tokens = parseInt(maxTokens);
-
-    const maxContextTokens = document.getElementById('setting-max-context-tokens').value;
-    if (maxContextTokens) payload.model.max_context_tokens = parseInt(maxContextTokens);
-
-    payload.model.multimodal = document.getElementById('setting-multimodal').checked;
-    payload.model.temperature = parseFloat(document.getElementById('setting-temperature').value);
-    payload.model.reasoning_effort = document.getElementById('setting-reasoning-effort').value;
-    payload.model.cache_control = document.getElementById('setting-cache-control').value;
-
-    // ── Worker/Lite model settings（name 留空移除 → 回退继承 Master） ──
-    collectRoleModel('worker', 'worker_model', payload);
-    collectRoleModel('lite', 'lite_model', payload);
+    // ── Agents（角色 → 模型引用） ──
+    const masterRef = document.getElementById('agent-master-model').value;
+    if (!masterRef) {
+        statusEl.textContent = '✗ Master 模型必选';
+        return;
+    }
+    payload.agents = { master: { model: masterRef } };
+    const workerRef = document.getElementById('agent-worker-model').value;
+    const liteRef = document.getElementById('agent-lite-model').value;
+    if (workerRef) payload.agents.worker = { model: workerRef };
+    if (liteRef) payload.agents.lite = { model: liteRef };
 
     // ── System parameters ──
     const pipMirror = document.getElementById('system-pip-mirror').value.trim();
@@ -985,52 +888,28 @@ async function saveSettings() {
     }
 }
 
-// 测试模型连接（'model' = Master；'worker'/'lite' = 子代理角色）
-async function testSettings(which = 'model') {
+// 测试某个 provider 下的具体模型连接（btn 在 provider 卡片内，取同卡片字段）
+async function testProviderModel(btn) {
     const statusEl = document.getElementById('settings-status');
     statusEl.textContent = '测试连接中...';
+    const card = btn.closest('.provider-card');
+    const modelKey = btn.dataset.modelKey;
+    const keyInput = card.querySelector('.p-model-key[data-model-key="' + modelKey + '"]');
+    const nameInput = card.querySelector('.p-model-name[data-model-key="' + modelKey + '"]');
+    const apiId = nameInput ? nameInput.value.trim() : '';
 
-    const isRoleTab = which === 'worker' || which === 'lite';
-    const modelLabel = which === 'worker' ? 'Worker 模型' : which === 'lite' ? 'Lite 模型' : 'Agent 模型';
-
-    let payload = {};
-    if (isRoleTab) {
-        // Test worker/lite model config（未填名称 = 继承主模型，无需测试）
-        const model = document.getElementById(`${which}-model`).value.trim();
-        if (!model) {
-            statusEl.textContent = `✗ ${modelLabel} 未配置独立模型（继承主模型），无需测试`;
-            return;
-        }
-        payload = {
-            config: {
-                name: model,
-                interface_type: document.getElementById(`${which}-interface-type`).value || 'anthropic',
-            }
-        };
-        const baseUrl = document.getElementById(`${which}-base-url`).value.trim();
-        if (baseUrl) payload.config.base_url = baseUrl;
-        const apiKey = document.getElementById(`${which}-api-key`).value.trim();
-        if (apiKey) payload.config.api_key = apiKey;
-    } else {
-        // Test Master model config
-        const model = document.getElementById('setting-model').value.trim();
-        const interfaceType = document.getElementById('setting-interface-type').value;
-        const baseUrl = document.getElementById('setting-base-url').value.trim();
-        const apiKey = document.getElementById('setting-api-key').value.trim();
-
-        if (!model) {
-            statusEl.textContent = '✗ 请先填写模型名称';
-            return;
-        }
-
-        payload = {
-            config: {
-                name: model,
-                interface_type: interfaceType || 'anthropic',
-            }
-        };
-        if (baseUrl) payload.config.base_url = baseUrl;
-        if (apiKey) payload.config.api_key = apiKey;
+    const payload = {
+        interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
+        auth_type: card.querySelector('.p-auth-type').value || 'auto',
+        base_url: card.querySelector('.p-base-url').value.trim(),
+        model_name: apiId || (keyInput ? keyInput.value.trim() : modelKey),
+    };
+    const apiKey = card.querySelector('.p-api-key').value.trim();
+    if (apiKey) payload.api_key = apiKey;
+    const headersJson = card.querySelector('.p-headers').value.trim();
+    if (headersJson) {
+        try { payload.headers = JSON.parse(headersJson); }
+        catch (e) { statusEl.textContent = '✗ Headers JSON 语法错误: ' + e.message; return; }
     }
 
     try {
@@ -1040,15 +919,353 @@ async function testSettings(which = 'model') {
             body: JSON.stringify(payload)
         });
         const data = await response.json();
-
         if (data.success) {
-            const interfaceInfo = data.interface_type === 'anthropic' ? ' (Anthropic API)' :
-                                 data.interface_type === 'openai' ? ' (OpenAI API)' : '';
-            statusEl.textContent = `✓ ${modelLabel}连接成功${interfaceInfo}`;
+            statusEl.textContent = '✓ ' + modelKey + ' 连接成功 (' + payload.interface_type + ')';
         } else {
-            statusEl.textContent = `✗ 连接失败: ${data.message}`;
+            statusEl.textContent = '✗ 连接失败: ' + data.message;
         }
     } catch (error) {
         statusEl.textContent = '✗ 测试失败: ' + error.message;
     }
 }
+
+// 自动检测网关模型列表（一次性导入：确认后合入 models 表）
+async function detectProviderModels(btn) {
+    const statusEl = document.getElementById('settings-status');
+    statusEl.textContent = '检测模型列表中...';
+    const card = btn.closest('.provider-card');
+
+    const payload = {
+        interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
+        auth_type: card.querySelector('.p-auth-type').value || 'auto',
+        base_url: card.querySelector('.p-base-url').value.trim(),
+    };
+    const apiKey = card.querySelector('.p-api-key').value.trim();
+    if (apiKey) payload.api_key = apiKey;
+    const headersJson = card.querySelector('.p-headers').value.trim();
+    if (headersJson) {
+        try { payload.headers = JSON.parse(headersJson); }
+        catch (e) { statusEl.textContent = '✗ Headers JSON 语法错误: ' + e.message; return; }
+    }
+
+    try {
+        const response = await fetch('/api/config/detect-models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!data.success) {
+            statusEl.textContent = '✗ 检测失败（网关可能不支持模型列表端点，请手动添加）: ' + (data.error || '');
+            return;
+        }
+        const existing = new Set(
+            Array.from(card.querySelectorAll('.p-model-key')).map(el => el.value.trim())
+        );
+        const candidates = (data.models || []).filter(function (id) { return !existing.has(id); });
+        if (!candidates.length) {
+            statusEl.textContent = '✓ 未发现新模型（或全部已存在）';
+            return;
+        }
+        if (!confirm('检测到 ' + candidates.length + ' 个模型（已排除现有）。全部加入该 Provider？\n\n' + candidates.join('\n'))) {
+            statusEl.textContent = '已取消导入';
+            return;
+        }
+        const modelsContainer = card.querySelector('.p-models-list');
+        const iface = card.querySelector('.p-interface-type').value;
+        candidates.forEach(function (id) {
+            modelsContainer.insertAdjacentHTML('beforeend', renderModelRow(id, {}, iface));
+        });
+        statusEl.textContent = '✓ 已加入 ' + candidates.length + ' 个模型（保存后生效）';
+    } catch (error) {
+        statusEl.textContent = '✗ 检测失败: ' + error.message;
+    }
+}
+
+// ===== Providers 渲染与收集（模型列表 tab）=====
+
+function renderReasoningOptions(interfaceType, selected) {
+    const opts = interfaceType === 'openai'
+        ? [['default', '缺省（不传）'], ['off', '关闭 (none)'], ['minimal', '最小 (minimal)'], ['low', '低'], ['medium', '中'], ['high', '高']]
+        : [['default', '缺省（不传）'], ['off', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高']];
+    return opts.map(function (o) {
+        return '<option value="' + o[0] + '"' + (o[0] === (selected || 'default') ? ' selected' : '') + '>' + o[1] + '</option>';
+    }).join('');
+}
+
+function renderModalities(selected) {
+    const list = selected && selected.length ? selected : ['text', 'image'];
+    const mods = ['text', 'image', 'audio', 'video', 'pdf'];
+    return mods.map(function (m) {
+        const checked = m === 'text' || list.includes(m);
+        const disabled = m === 'text' ? ' disabled' : '';
+        return '<label><input type="checkbox" class="p-model-input" value="' + m + '"' + (checked ? ' checked' : '') + disabled + '> ' + m + '</label>';
+    }).join('');
+}
+
+function toggleProviderKeyVisibility(btn) {
+    const input = btn.parentElement.querySelector('.p-api-key');
+    if (!input) return;
+    if (input.type === 'password') {
+        input.type = 'text';
+        btn.textContent = '🙈';
+    } else {
+        input.type = 'password';
+        btn.textContent = '👁';
+    }
+}
+
+function renderModelRow(key, m, iface) {
+    m = m || {};
+    return '<div class="p-model-row">'
+        + '<div class="p-model-row-main">'
+        + '<div class="field"><label class="field-label">别名</label>'
+        + '<input type="text" class="p-model-key" data-model-key="' + key + '" value="' + key + '" placeholder="别名" title="别名（agents 引用它）"></div>'
+        + '<span class="model-arrow">→</span>'
+        + '<div class="field"><label class="field-label">模型 ID</label>'
+        + '<input type="text" class="p-model-name" data-model-key="' + key + '" value="' + String(m.name || '').replace(/"/g, '&quot;') + '" placeholder="API 模型 ID（留空=用别名）"></div>'
+        + '<div class="field"><label class="field-label">最大输出</label>'
+        + '<input type="number" class="p-model-max-output" data-model-key="' + key + '" value="' + (m.max_output_tokens || 8192) + '" title="max_output_tokens：单次响应最大输出 token"></div>'
+        + '<div class="field"><label class="field-label">上下文窗口</label>'
+        + '<input type="number" class="p-model-max-context" data-model-key="' + key + '" value="' + (m.max_context_tokens || 128000) + '" title="max_context_tokens：上下文窗口大小"></div>'
+        + '<button type="button" class="btn-outline p-model-test" data-model-key="' + key + '">▶ 测试</button>'
+        + '<button type="button" class="btn-outline-danger p-model-remove" data-model-key="' + key + '" title="删除模型">✕</button>'
+        + '</div>'
+        + '<div class="p-model-row-opts">'
+        + '<label>类型: <select class="p-model-type" data-model-key="' + key + '">'
+        + '<option value="reasoning"' + ((m.model_type || 'reasoning') === 'reasoning' ? ' selected' : '') + '>reasoning</option>'
+        + '<option value="chat"' + (m.model_type === 'chat' ? ' selected' : '') + '>chat</option>'
+        + '</select></label>'
+        + '<label>思考: <select class="p-model-reasoning" data-model-key="' + key + '">' + renderReasoningOptions(iface || 'anthropic', m.reasoning) + '</select></label>'
+        + '<span class="modality-group">输入模态: ' + renderModalities(m.input) + '</span>'
+        + '</div></div>';
+}
+
+function renderProviderCard(key, p) {
+    p = p || {};
+    const configured = Boolean(p.api_key_masked || p.api_key);
+    const status = '<span class="provider-status" data-masked="' + (p.api_key_masked ? 1 : 0) + '">'
+        + '<span class="status-dot ' + (configured ? 'ok' : 'pending') + '"></span>'
+        + (configured ? '已配置' : '未配置') + '</span>';
+    const masked = p.api_key_masked
+        ? '<div class="apikey-hint" title="留空保持不变">当前: ' + p.api_key_masked + '</div>'
+        : '';
+    const models = p.models && Object.keys(p.models).length ? p.models : { default: {} };
+    const modelRows = Object.keys(models).map(function (mk) {
+        return renderModelRow(mk, models[mk], p.interface_type);
+    }).join('');
+    const esc = function (s) { return String(s).replace(/"/g, '&quot;'); };
+    return '<div class="provider-card">'
+        + '<div class="provider-header">'
+        + '<div class="provider-name-row">'
+        + '<label class="field-label">模型提供商</label>'
+        + '<input type="text" class="provider-key-input p-key" value="' + esc(key) + '" placeholder="模型提供商名称">'
+        + status
+        + '</div>'
+        + '<span class="spacer"></span>'
+        + '<button type="button" class="btn-outline p-detect">🔍 自动检测模型</button>'
+        + '<button type="button" class="btn-outline-danger p-remove">🗑 删除</button>'
+        + '</div>'
+        + '<div class="provider-body">'
+        + '<div class="field-grid">'
+        + '<div class="field"><label class="field-label">协议</label><select class="p-interface-type">'
+        + '<option value="anthropic"' + ((p.interface_type || 'anthropic') === 'anthropic' ? ' selected' : '') + '>Anthropic</option>'
+        + '<option value="openai"' + (p.interface_type === 'openai' ? ' selected' : '') + '>OpenAI</option>'
+        + '</select></div>'
+        + '<div class="field"><label class="field-label">认证</label><select class="p-auth-type">'
+        + '<option value="auto"' + ((p.auth_type || 'auto') === 'auto' ? ' selected' : '') + '>自动</option>'
+        + '<option value="bearer"' + (p.auth_type === 'bearer' ? ' selected' : '') + '>Bearer</option>'
+        + '<option value="x-api-key"' + (p.auth_type === 'x-api-key' ? ' selected' : '') + '>X-API-Key</option>'
+        + '<option value="none"' + (p.auth_type === 'none' ? ' selected' : '') + '>无</option>'
+        + '</select></div>'
+        + '<div class="field"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" placeholder="https://api.anthropic.com"></div>'
+        + '</div>'
+        + '<div class="field-grid keys-row">'
+        + '<div class="field">'
+        + '<label class="field-label">API Key</label>'
+        + '<div class="apikey-row">'
+        + '<div class="apikey-group">'
+        + '<input type="password" class="p-api-key" placeholder="sk-...（留空保持不变）">'
+        + '<button type="button" class="toggle-password" onclick="toggleProviderKeyVisibility(this)">👁</button>'
+        + '</div>'
+        + masked
+        + '</div>'
+        + '</div>'
+        + '<div class="field"><label class="field-label">后端服务器</label><select class="p-backend">'
+        + '<option value="custom"' + ((p.backend || 'custom') === 'custom' ? ' selected' : '') + '>自定义</option>'
+        + '<option value="codex"' + (p.backend === 'codex' ? ' selected' : '') + '>Codex</option>'
+        + '<option value="claude-code"' + (p.backend === 'claude-code' ? ' selected' : '') + '>Claude Code</option>'
+        + '<option value="opencode"' + (p.backend === 'opencode' ? ' selected' : '') + '>OpenCode</option>'
+        + '<option value="openrouter"' + (p.backend === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>'
+        + '<option value="litellm"' + (p.backend === 'litellm' ? ' selected' : '') + '>LiteLLM</option>'
+        + '</select></div>'
+        + '</div>'
+        + '<details class="p-headers-panel">'
+        + '<summary>自定义请求参数 / Headers</summary>'
+        + '<textarea class="p-headers" placeholder="JSON 对象，值支持 {session_id} 占位符，如 {\"X-Session-ID\": \"{session_id}\"}">' + JSON.stringify(p.headers || {}).replace(/</g, '&lt;') + '</textarea>'
+        + '</details>'
+        + '<div class="models-section">'
+        + '<div class="models-section-title">☰ 模型配置</div>'
+        + '<div class="p-models-list">' + modelRows + '</div>'
+        + '<div class="provider-add-row"><button type="button" class="btn-outline p-model-add">+ 新增模型</button></div>'
+        + '</div>'
+        + '</div>'
+        + '</div>';
+}
+
+function renderProviders(providers) {
+    const list = document.getElementById('providers-list');
+    const entries = Object.keys(providers || {})
+        .filter(function (key) { return key !== '_comment'; })
+        .map(function (key) { return [key, providers[key] || {}]; });
+    list.innerHTML = entries.map(function (e) { return renderProviderCard(e[0], e[1]); }).join('');
+    fillAgentSelects(collectAllRefs(providers));
+}
+
+// 收集页面上全部模型引用（含未保存的新卡片），填充 agents 三个下拉
+function collectAllRefs(providersArg) {
+    const refs = [];
+    document.querySelectorAll('.provider-card').forEach(function (card) {
+        const pkey = card.querySelector('.p-key').value.trim();
+        if (!pkey) return;
+        card.querySelectorAll('.p-model-key').forEach(function (el) {
+            const mkey = el.value.trim();
+            if (mkey) refs.push(pkey + '/' + mkey);
+        });
+    });
+    if (!refs.length && providersArg) {
+        Object.keys(providersArg).forEach(function (pkey) {
+            const p = providersArg[pkey] || {};
+            Object.keys(p.models || {}).forEach(function (mkey) { refs.push(pkey + '/' + mkey); });
+        });
+    }
+    return refs;
+}
+
+function fillAgentSelects(refs) {
+    const master = document.getElementById('agent-master-model');
+    const worker = document.getElementById('agent-worker-model');
+    const lite = document.getElementById('agent-lite-model');
+    const options = refs.map(function (r) { return '<option value="' + r + '">' + r + '</option>'; }).join('');
+    [master, worker, lite].forEach(function (sel) {
+        const current = sel.value;
+        sel.innerHTML = (sel !== master ? '<option value="">（与 Master 一致）</option>' : '') + options;
+        if (current && refs.includes(current)) sel.value = current;
+    });
+}
+
+function restoreAgentSelection(agents) {
+    const a = agents || {};
+    if (a.master && a.master.model) document.getElementById('agent-master-model').value = a.master.model;
+    if (a.worker && a.worker.model) document.getElementById('agent-worker-model').value = a.worker.model;
+    if (a.lite && a.lite.model) document.getElementById('agent-lite-model').value = a.lite.model;
+}
+
+function collectProviders() {
+    const statusEl = document.getElementById('settings-status');
+    const providers = {};
+    let ok = true;
+    document.querySelectorAll('.provider-card').forEach(function (card) {
+        if (!ok) return;
+        const key = card.querySelector('.p-key').value.trim();
+        if (!key) { statusEl.textContent = '✗ Provider 名称不能为空'; ok = false; return; }
+        if (providers[key]) { statusEl.textContent = '✗ Provider 名称冲突: ' + key; ok = false; return; }
+        let headers = {};
+        const headersJson = card.querySelector('.p-headers').value.trim();
+        if (headersJson) {
+            try { headers = JSON.parse(headersJson); }
+            catch (e) { statusEl.textContent = '✗ ' + key + ' 的 Headers JSON 语法错误: ' + e.message; ok = false; return; }
+        }
+        const models = {};
+        card.querySelectorAll('.p-model-row').forEach(function (row) {
+            const mkey = row.querySelector('.p-model-key').value.trim();
+            if (!mkey || models[mkey]) return;
+            const spec = {};
+            const name = row.querySelector('.p-model-name').value.trim();
+            if (name) spec.name = name;
+            spec.max_output_tokens = parseInt(row.querySelector('.p-model-max-output').value) || 8192;
+            spec.max_context_tokens = parseInt(row.querySelector('.p-model-max-context').value) || 128000;
+            spec.model_type = row.querySelector('.p-model-type').value;
+            spec.reasoning = row.querySelector('.p-model-reasoning').value;
+            spec.input = Array.prototype.map.call(row.querySelectorAll('.p-model-input:checked'), function (el) { return el.value; });
+            if (spec.input.indexOf('text') === -1) spec.input.unshift('text');
+            models[mkey] = spec;
+        });
+        const provider = {
+            interface_type: card.querySelector('.p-interface-type').value,
+            auth_type: card.querySelector('.p-auth-type').value,
+            backend: card.querySelector('.p-backend').value,
+            base_url: card.querySelector('.p-base-url').value.trim(),
+            headers: headers,
+            models: models,
+        };
+        const apiKey = card.querySelector('.p-api-key').value.trim();
+        if (apiKey) provider.api_key = apiKey;  // 留空 = 后端继承已保存值
+        providers[key] = provider;
+    });
+    return ok ? providers : null;
+}
+
+// Providers 卡片事件（委托）
+(function initProviderSettings() {
+    const list = document.getElementById('providers-list');
+    if (!list) return;
+
+    const addBtn = document.getElementById('provider-add-btn');
+    if (addBtn) {
+        addBtn.addEventListener('click', function () {
+            list.insertAdjacentHTML('beforeend', renderProviderCard('new-provider', {}));
+            fillAgentSelects(collectAllRefs());
+        });
+    }
+
+    list.addEventListener('click', function (e) {
+        const card = e.target.closest('.provider-card');
+        if (!card) return;
+        if (e.target.classList.contains('p-remove')) {
+            card.remove();
+            fillAgentSelects(collectAllRefs());
+        } else if (e.target.classList.contains('p-model-add')) {
+            const iface = card.querySelector('.p-interface-type').value;
+            const modelsList = card.querySelector('.p-models-list');
+            let key = 'model-1';
+            let i = 1;
+            const taken = new Set(Array.from(card.querySelectorAll('.p-model-key')).map(function (el) { return el.value.trim(); }));
+            while (taken.has(key)) { i += 1; key = 'model-' + i; }
+            modelsList.insertAdjacentHTML('beforeend', renderModelRow(key, {}, iface));
+            fillAgentSelects(collectAllRefs());
+        } else if (e.target.classList.contains('p-model-remove')) {
+            const key = e.target.dataset.modelKey;
+            const row = card.querySelector('.p-model-key[data-model-key="' + key + '"]');
+            if (row) row.closest('.p-model-row').remove();
+            fillAgentSelects(collectAllRefs());
+        } else if (e.target.classList.contains('p-model-test')) {
+            testProviderModel(e.target);
+        } else if (e.target.classList.contains('p-detect')) {
+            detectProviderModels(e.target);
+        }
+    });
+
+    // API Key 输入 → 更新状态点
+    list.addEventListener('input', function (e) {
+        if (!e.target.classList.contains('p-api-key')) return;
+        const card = e.target.closest('.provider-card');
+        const status = card.querySelector('.provider-status');
+        if (!status) return;
+        const configured = Boolean(e.target.value.trim()) || status.dataset.masked === '1';
+        status.innerHTML = '<span class="status-dot ' + (configured ? 'ok' : 'pending') + '"></span>'
+            + (configured ? '已配置' : '未配置');
+    });
+
+    // interface_type 变化 → 重渲染各模型行的思考下拉（选项集按协议）
+    list.addEventListener('change', function (e) {
+        if (!e.target.classList.contains('p-interface-type')) return;
+        const card = e.target.closest('.provider-card');
+        const iface = e.target.value;
+        card.querySelectorAll('.p-model-row').forEach(function (row) {
+            const sel = row.querySelector('.p-model-reasoning');
+            const current = sel.value;
+            sel.innerHTML = renderReasoningOptions(iface, current);
+        });
+    });
+})();

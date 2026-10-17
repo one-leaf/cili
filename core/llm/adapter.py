@@ -27,8 +27,16 @@ from core.llm.types import (
 
 logger = logging.getLogger(__name__)
 
-# 官方域名无需做 LiteLLM 代理探测（也不该为它们发多余请求）
-OFFICIAL_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
+# backend 预设 → 会话标识头模板（值在请求时展开为当前会话 ID，无会话时整条省略）
+BACKEND_SESSION_HEADERS: dict[str, dict[str, str]] = {
+    "codex": {"session-id": "{session_id}"},
+    "openrouter": {"x-session-id": "{session_id}"},
+    "opencode": {"x-opencode-session": "{session_id}"},
+    "litellm": {"x-litellm-session-id": "{session_id}"},
+    "claude-code": {"x-claude-code-session-id": "{session_id}"},
+}
+
+_SESSION_ID_PLACEHOLDER = "{session_id}"
 
 
 def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
@@ -130,7 +138,6 @@ class Adapter(ABC):
         self.config = config
         self.base_url = config.base_url.rstrip("/")
         self._validate_base_url()
-        self._is_litellm_proxy: bool = False
 
     def _validate_base_url(self) -> None:
         """校验 base_url 非空且可解析（含 scheme 与 host）。"""
@@ -144,10 +151,6 @@ class Adapter(ABC):
                 f"{self.__class__.__name__}: 无效的 base_url: {self.base_url!r}"
             )
 
-    def should_detect_litellm(self) -> bool:
-        """官方域名（Anthropic/OpenAI 1P）不做 LiteLLM 探测，直接返回 False。"""
-        return urlparse(self.base_url).hostname not in OFFICIAL_API_HOSTS
-
     @property
     @abstractmethod
     def api_path(self) -> str:
@@ -159,14 +162,52 @@ class Adapter(ABC):
         """Full API endpoint URL."""
         return f"{self.base_url}{self.api_path}"
 
-    @abstractmethod
-    def build_headers(self) -> dict[str, str]:
-        """Build HTTP headers for this provider.
+    def default_auth_headers(self) -> dict[str, str]:
+        """auth_type="auto" 时按协议的默认认证头（子类覆盖）。
 
-        Returns:
-            Dict of HTTP headers (Authorization, content-type, etc.)
+        anthropic → x-api-key；openai → Authorization: Bearer。
         """
-        ...
+        return {}
+
+    def protocol_headers(self) -> dict[str, str]:
+        """协议必备头（content-type / anthropic-version 等，子类覆盖）。"""
+        return {}
+
+    def build_request_headers(self, session_id: str = "") -> dict[str, str]:
+        """组装请求头：auth_type 分派 + 协议头 + backend 会话头 + 显式 headers。
+
+        - ``auth_type``：``auto`` 用子类默认认证头；``bearer``/``x-api-key`` 强制对应
+          认证头（覆盖默认）；``none`` 不加认证头。
+        - ``backend`` 预设会话头：值按 ``{session_id}`` 展开，无会话时整条省略。
+        - 配置的 ``headers``：值支持 ``{session_id}`` 占位符，显式值覆盖预设/自动补充的同名头。
+        """
+        headers: dict[str, str] = {}
+        auth = self.config.auth_type
+        if auth != "none":
+            headers.update(self.default_auth_headers())
+            if auth == "bearer":
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
+                headers.pop("x-api-key", None)
+            elif auth == "x-api-key":
+                headers["x-api-key"] = self.config.api_key
+                headers.pop("Authorization", None)
+        headers.update(self.protocol_headers())
+
+        for name, template in BACKEND_SESSION_HEADERS.get(self.config.backend, {}).items():
+            if session_id:
+                headers[name] = template.replace(_SESSION_ID_PLACEHOLDER, session_id)
+
+        for name, value in self.config.headers.items():
+            if _SESSION_ID_PLACEHOLDER in value:
+                if not session_id:
+                    continue  # 无会话 ID 时整条省略，不发空值
+                value = value.replace(_SESSION_ID_PLACEHOLDER, session_id)
+            headers[name] = value
+        return headers
+
+    def build_headers(self, session_id: str = "") -> dict[str, str]:
+        """Build HTTP headers for this provider（兼容旧名）。"""
+        return self.build_request_headers(session_id)
 
     @abstractmethod
     def serialize(
@@ -176,7 +217,6 @@ class Adapter(ABC):
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,
-        temperature: float | None = None,
         stream: bool = False,
         session_id: str = "",
     ) -> dict[str, Any]:
@@ -189,7 +229,6 @@ class Adapter(ABC):
             tools: Tool schemas (provider-specific format)
             model: Model name
             max_tokens: Maximum output tokens
-            temperature: Sampling temperature
             stream: Whether to enable streaming
             session_id: Optional session ID for proxy routing
 
@@ -221,45 +260,3 @@ class Adapter(ABC):
             StreamChunk objects for the BlockAssembler
         """
         ...
-
-    def detect_litellm(self, transport: Any) -> None:
-        """Detect if the endpoint is a LiteLLM proxy.
-
-        Called during initialization to enable proxy-specific features.
-
-        Args:
-            transport: HttpTransport instance for making the detection request
-        """
-        try:
-            # /openapi.json is a standard REST endpoint, must use GET
-            url = f"{self.base_url}/openapi.json"
-            logger.debug(f"[LiteLLM] Detecting proxy at {url}")
-
-            resp = transport.client.get(url, timeout=10)
-            logger.debug(f"[LiteLLM] Response status: {resp.status_code}")
-
-            if resp.status_code == 200:
-                data = resp.json()
-                info = data.get("info", {})
-                title = info.get("title", "")
-                logger.debug(f"[LiteLLM] API title: {title}")
-
-                if "litellm" in title.lower():
-                    self._is_litellm_proxy = True
-                    logger.info(f"[LiteLLM] Detected LiteLLM proxy: {self.base_url}")
-                else:
-                    logger.debug(f"[LiteLLM] Not a LiteLLM proxy: {self.base_url}")
-        except Exception as e:
-            logger.warning(f"[LiteLLM] Detection failed for {self.base_url}: {e}")
-
-    def _apply_litellm_extras(self, body: dict[str, Any], session_id: str) -> None:
-        """LiteLLM 代理额外字段：有 session_id 时写入，便于代理做会话路由。
-
-        两个 adapter 的 serialize() 共用此逻辑，避免重复。
-        """
-        if self._is_litellm_proxy and session_id:
-            body["litellm_session_id"] = session_id
-        elif self._is_litellm_proxy and not session_id:
-            logger.debug(
-                f"[{self.__class__.__name__}] LiteLLM proxy detected but no session_id provided"
-            )

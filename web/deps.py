@@ -138,7 +138,11 @@ def _auto_init_global_config() -> None:
 
     try:
         config = load_config()
-        logger.info(f"Global config loaded: model={config.model.name}, interface={config.model.interface_type}")
+        for role, model in config.role_models.items():
+            logger.info(
+                f"[Config] {role}={config.role_refs()[role]} → {model.name} "
+                f"@ {model.base_url} ({model.interface_type})"
+            )
     except RuntimeError as e:
         logger.warning(f"Config not available: {e}")
     except Exception as e:

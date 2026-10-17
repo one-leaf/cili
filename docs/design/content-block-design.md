@@ -155,7 +155,7 @@ class Adapter(ABC):
 - **API**: `/v1/messages`，`x-api-key` 认证
 - **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
 - **推理内容**: `thinking` block with `signature`
-- **扩展思考**: 配置 `reasoning_effort` 后启用（流式与非流式请求均生效），`budget_tokens` 按 `reasoning_effort` 映射：low→1024, medium→4096, high→10000（未知值默认 4096）
+- **扩展思考**: 按 `reasoning` 档位启用（流式与非流式请求均生效），`low`/`medium`/`high` → `budget_tokens` 1024/4096/10000；`default`/`off` 不发送 thinking 参数
 - **Prompt cache**: 使用 Anthropic 协议即启用（由用户决定是否使用支持 `cache_control` 的中转站）：`system` 转为带 `cache_control: ephemeral` 的块列表；最后一条消息的最后一块（text/tool_use/tool_result/image）追加第二个断点。字符串内容的消息保持原样不打断点。可通过 `cache_control` 配置项控制：`"auto"`（默认，根据协议自动决定）、`"true"`（强制启用）、`"false"`（禁用）。
 
 ### OpenAIAdapter
@@ -163,7 +163,7 @@ class Adapter(ABC):
 - **API**: `/v1/chat/completions`，`Bearer` 认证
 - **工具调用**: 内部 `tool_call` ↔ API `function` calling（`arguments` 保持 str）
 - **消息转换**: system 消息前置，tool_result → role=tool 消息
-- **推理模型**: `reasoning_effort` 仅在配置中显式设置时发送（无按模型名的自动检测）；未配置时改用 `temperature`
+- **推理模型**: `reasoning` 除 `default` 外均发送 `reasoning_effort`（`off` → `"none"`，`minimal`/`low`/`medium`/`high` 直传）；`default` 不发送该参数
 
 ---
 
@@ -291,17 +291,21 @@ class ToolResult:
 
 ## 配置
 
-模型继承架构：
+模型配置架构（providers + agents 两级，详见 workspace/models-provider-design.md）：
 
 ```json
 {
-  "model": { "name": "claude-sonnet-4-6", "interface_type": "anthropic", ... },
-  "worker_model": { "name": "claude-haiku-4-5", "interface_type": "anthropic", ... }
+  "providers": {
+    "bg": { "interface_type": "anthropic", "api_key": "...", "base_url": "...",
+            "models": { "main": { "name": "claude-sonnet-4-6", ... }, "cheap": { ... } } }
+  },
+  "agents": { "master": { "model": "bg/main" }, "worker": { "model": "bg/main" } }
 }
 ```
 
-- `model`: Master 主模型（所有角色默认继承）
-- `worker_model` / `lite_model`: 对应角色的模型（可选，只填 `name` 则其余字段继承主模型）
+- `providers`: 凭据/接入层（api_key/base_url/协议/auth_type/backend/headers）+ models 表
+- `agents`: 角色 → 模型引用（"provider键/模型键"）；worker/lite 未配置时继承 master
+- `resolve_model()` 产出运行时 `ModelConfig`（含接入层字段 auth_type/backend/headers）
 
 工厂函数：`create_llm_client(config) → LLMClient`
 

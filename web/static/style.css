@@ -3218,3 +3218,320 @@ mjx-container {
     font-size: 15px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
+
+/* ── Providers 管理区（设置页「模型列表」tab）── */
+
+/* 描边按钮变体 */
+.btn-outline {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--primary-color);
+    background: transparent;
+    color: var(--primary-color);
+    cursor: pointer;
+    font-size: 13px;
+    transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.btn-outline:hover {
+    background: rgba(74, 144, 226, 0.08);
+}
+
+.btn-outline-danger {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--error-color);
+    background: transparent;
+    color: var(--error-color);
+    cursor: pointer;
+    font-size: 13px;
+    transition: background-color 0.15s;
+}
+
+.btn-outline-danger:hover {
+    background: rgba(231, 76, 60, 0.08);
+}
+
+/* Provider 外层卡片 */
+.provider-card {
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+    background: var(--sidebar-bg);
+}
+
+.provider-header {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    margin-bottom: 14px;
+}
+
+.provider-name-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.provider-name-row .field-label {
+    margin: 0;
+    white-space: nowrap;
+}
+
+.provider-name-row .provider-key-input {
+    width: 260px;
+    font-weight: 600;
+}
+
+.provider-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-light);
+    white-space: nowrap;
+}
+
+.provider-status .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.provider-status .status-dot.ok {
+    background: #22c55e;
+}
+
+.provider-status .status-dot.pending {
+    background: #a1a1aa;
+}
+
+.provider-header .spacer {
+    flex: 1;
+}
+
+.provider-header .btn-outline,
+.provider-header .btn-outline-danger {
+    margin-left: 8px;
+}
+
+/* 内层嵌套面板 */
+.provider-body {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--bg-color);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* 字段：标签在上 */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.field > .field-label {
+    font-size: 13px;
+    color: var(--text-light);
+    margin: 0;
+}
+
+.field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+}
+
+/* 第二行：API Key 列加宽，状态列按内容，保证掩码提示与输入框同行 */
+.field-grid.keys-row {
+    grid-template-columns: 1.5fr 1fr;
+    align-items: start;
+}
+
+.field-grid .field input,
+.field-grid .field select {
+    width: 100%;
+}
+
+/* API Key 行：输入框 + 掩码提示同行 */
+.apikey-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.apikey-group {
+    position: relative;
+    flex: 1 1 220px;
+    min-width: 180px;
+}
+
+.apikey-group input {
+    width: 100%;
+    padding-right: 36px;
+}
+
+.apikey-group .toggle-password {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-light);
+    padding: 2px;
+}
+
+.apikey-hint {
+    font-size: 12px;
+    color: var(--text-light);
+    margin-top: 0;
+    white-space: nowrap;
+}
+
+/* Headers 折叠面板 */
+details.p-headers-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--sidebar-bg);
+    overflow: hidden;
+}
+
+details.p-headers-panel summary {
+    padding: 9px 12px;
+    font-size: 13px;
+    color: var(--text-color);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+details.p-headers-panel summary::before {
+    content: "▸";
+    transition: transform 0.15s;
+    color: var(--text-light);
+}
+
+details.p-headers-panel[open] summary::before {
+    transform: rotate(90deg);
+}
+
+details.p-headers-panel .p-headers {
+    width: 100%;
+    min-height: 56px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+    border: none;
+    border-top: 1px solid var(--border-color);
+    border-radius: 0;
+    padding: 8px 12px;
+    background: var(--bg-color);
+    color: var(--text-color);
+    resize: vertical;
+    outline: none;
+}
+
+/* 模型配置区块 */
+.models-section {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--sidebar-bg);
+    padding: 12px 14px;
+}
+
+.models-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.p-models-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.p-model-row {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--bg-color);
+}
+
+.p-model-row-main {
+    display: grid;
+    grid-template-columns: minmax(110px, 1fr) 16px minmax(150px, 1.8fr) minmax(90px, 0.8fr) minmax(90px, 0.8fr) auto auto;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+.p-model-row-main .model-arrow {
+    color: var(--text-light);
+    text-align: center;
+    padding-bottom: 8px;
+}
+
+.p-model-row-main .field input,
+.p-model-row-main .field select {
+    width: 100%;
+}
+
+.p-model-row-opts {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.p-model-row-opts label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-light);
+    font-size: 13px;
+    white-space: nowrap;
+    margin: 0;
+}
+
+.p-model-row-opts .modality-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+    color: var(--text-light);
+    font-size: 13px;
+}
+
+.p-model-row-opts .modality-group label {
+    gap: 3px;
+}
+
+.p-model-row-opts input[type="checkbox"] {
+    margin: 0;
+}
+
+.provider-add-row {
+    margin-top: 12px;
+}
+
+/* agents tab 下拉宽度 */
+#tab-agents select {
+    max-width: 380px;
+    display: block;
+}

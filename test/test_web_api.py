@@ -7,55 +7,31 @@ from unittest.mock import MagicMock
 import pytest
 
 
-class TestMaskSingleModel:
-    """_mask_single_model() API key masking."""
+class TestMaskProviders:
+    """_mask_api_key() providers 接入层 API key 掩码。"""
 
     def test_long_key_masked(self):
-        from web.routes_config import _mask_single_model
-        model = {"api_key": "sk-ant-1234567890abcdef", "name": "claude"}
-        result = _mask_single_model(model)
-        assert "api_key" not in result
-        assert result["api_key_masked"] == "sk-a...cdef"
-        assert result["name"] == "claude"
+        from web.routes_config import _mask_api_key
+        config = {"providers": {"bg": {"api_key": "sk-ant-1234567890abcdef", "models": {}}}}
+        result = _mask_api_key(config)
+        provider = result["providers"]["bg"]
+        assert "api_key" not in provider
+        assert provider["api_key_masked"] == "sk-a...cdef"
 
     def test_short_key_masked(self):
-        from web.routes_config import _mask_single_model
-        model = {"api_key": "shortkey", "name": "test"}
-        result = _mask_single_model(model)
-        assert "api_key" not in result
-        assert result["api_key_masked"] == "***"
+        from web.routes_config import _mask_api_key
+        config = {"providers": {"bg": {"api_key": "shortkey"}}}
+        result = _mask_api_key(config)
+        assert result["providers"]["bg"]["api_key_masked"] == "***"
 
     def test_empty_key_no_masked_field(self):
-        from web.routes_config import _mask_single_model
-        model = {"api_key": "", "name": "test"}
-        result = _mask_single_model(model)
-        assert "api_key" not in result
-        assert "api_key_masked" not in result
-
-    def test_no_api_key_field(self):
-        from web.routes_config import _mask_single_model
-        model = {"name": "test"}
-        result = _mask_single_model(model)
-        assert "api_key" not in result
-        assert "api_key_masked" not in result
-
-
-class TestMaskApiKey:
-    """_mask_api_key() config-level masking."""
-
-    def test_masks_all_models(self):
         from web.routes_config import _mask_api_key
-        config = {
-            "model": {"api_key": "sk-ant-1234567890", "name": "claude"},
-            "worker_model": {"api_key": "sk-worker-key-12345", "name": "worker-model"},
-            "lite_model": {"api_key": "sk-lite-key-12345", "name": "lite-model"},
-        }
+        config = {"providers": {"bg": {"api_key": ""}}}
         result = _mask_api_key(config)
-        for key in ("model", "worker_model", "lite_model"):
-            assert "api_key" not in result[key]
-            assert "api_key_masked" in result[key]
+        assert "api_key" not in result["providers"]["bg"]
+        assert "api_key_masked" not in result["providers"]["bg"]
 
-    def test_no_model_field(self):
+    def test_no_providers_field(self):
         from web.routes_config import _mask_api_key
         config = {"system": {"pip_mirror": "https://..."}}
         result = _mask_api_key(config)

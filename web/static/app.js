@@ -319,9 +319,6 @@ function setupEventListeners() {
     // Global settings
     document.getElementById('settings-btn').addEventListener('click', openSettings);
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
-    document.getElementById('model-test-btn').addEventListener('click', () => testSettings('model'));
-    document.getElementById('worker-test-btn').addEventListener('click', () => testSettings('worker'));
-    document.getElementById('lite-test-btn').addEventListener('click', () => testSettings('lite'));
 
     // Workspace settings
     document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
@@ -365,16 +362,6 @@ function setupEventListeners() {
                 input.type = 'password';
                 btn.classList.remove('active');
             }
-        });
-    });
-
-    // Temperature slider live value display
-    document.getElementById('setting-temperature').addEventListener('input', (e) => {
-        document.getElementById('setting-temperature-value').textContent = e.target.value;
-    });
-    ['worker', 'lite'].forEach(prefix => {
-        document.getElementById(`${prefix}-temperature`).addEventListener('input', (e) => {
-            document.getElementById(`${prefix}-temperature-value`).textContent = e.target.value;
         });
     });
 

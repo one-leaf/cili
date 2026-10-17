@@ -229,9 +229,19 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         else:
             body_size_str = f"{body_size / 1_000:.1f} KB"
 
+        model_buckets = usage.get("models") or {}
+        bucket_lines = ""
+        if model_buckets:
+            bucket_lines = "\n**按模型用量：**\n"
+            for model_name, b in model_buckets.items():
+                bucket_lines += (
+                    f"- **{model_name}**：{b.get('api_calls', 0)} 次调用，"
+                    f"输入 {b.get('input_tokens', 0):,} / 输出 {b.get('output_tokens', 0):,} tokens\n"
+                )
+
         status_text = f"""**当前会话状态：**
 
-- **模型：** {runner.config.model.name} ({runner.config.model.interface_type})
+- **模型：** {runner.model.name} ({runner.model.interface_type})
 - **上下文长度：** ~{context_tokens} tokens
 - **请求体大小：** {body_size_str}
 - **API 调用次数：** {usage['api_calls']}
@@ -241,7 +251,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 - **缓存创建：** {usage.get('cache_creation_tokens', 0):,} tokens
 - **预填充速度：** {usage.get('prefill_speed', 0):,.2f} tokens/s
 - **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
-"""
+{bucket_lines}"""
         # Save to session via SessionStore
         _persist_command_exchange(
             runner.session, f"{workspace_uuid}:{session_id}", content, status_text

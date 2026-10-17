@@ -38,9 +38,9 @@ def build_user_input(
     if content:
         blocks.append({"type": "text", "text": content, "_valid": True})
 
-    multimodal = bool(getattr(getattr(runner, "model", None), "multimodal", False))
+    model_input = list(getattr(getattr(runner, "model", None), "input", []) or [])
     for item in media_items:
-        if item.kind == "image" and multimodal:
+        if item.kind == "image" and "image" in model_input:
             data, mime = read_image_base64(item)
             if data:
                 blocks.append({

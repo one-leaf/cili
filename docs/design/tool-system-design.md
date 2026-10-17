@@ -765,7 +765,6 @@ session(action="list")
 - `plan`: 执行计划（有序步骤列表）
 - `agent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash/python/message_bus/clock，无 check 阶段）
 - `run_in_background`: 后台执行模式（立即返回 task_id）
-- `temperature`: 覆盖本次子代理的 LLM temperature（0.0~1.0，可选）
 - `label`: UI 显示标签（最长 64 字符，可选）
 
 **返回值**：
@@ -794,7 +793,6 @@ runner = SessionRunner(
     stop_check=self.stop_check,  # master 创建工具后注入
     session_dir=exec_dir,        # exec_id 独立目录
     exec_id=exec_id,
-    temperature=temperature,
     approval_store=self.approval_store,  # 根代理的会话级审批存储，子代理共享
     delegation_depth=self.delegation_depth + 1,  # 子代理委派深度 = 父级 + 1
 )

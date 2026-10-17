@@ -554,6 +554,7 @@ class LLMResponse:
     stop_reason: str = ""
     usage: UsageData = field(default_factory=UsageData)
     headers: dict[str, str] = field(default_factory=dict)
+    model: str = ""  # API 返回的实际模型名（网关可能重写；空 = 未收到）
 
     def get_text(self) -> str:
         """Extract all text content from blocks."""

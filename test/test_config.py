@@ -107,7 +107,7 @@ class TestConfig:
         assert saved["model"]["name"] == "saved-model"
 
     def test_load_config_no_api_key(self, tmp_path, monkeypatch):
-        """Test load_config raises error when no API key"""
+        """空 providers + 未配置 agents.master → master_ref 兜底失败"""
         from core import config
 
         monkeypatch.setattr(config, "DATA_DIR", tmp_path)
@@ -116,42 +116,43 @@ class TestConfig:
         monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
 
-        with pytest.raises(RuntimeError, match="No API key"):
+        with pytest.raises(RuntimeError, match="agents.master.model"):
             config.load_config()
 
-    def test_load_config_with_api_key(self, tmp_path, monkeypatch):
-        """Test load_config with API key in config"""
+    def test_load_config_new_schema(self, tmp_path, monkeypatch):
+        """新 schema：providers + agents 两级引用"""
         from core import config
 
         config_data = {
-            "model": {
-                "api_key": "test-key",
-                "base_url": "https://test.api"
-            }
+            "providers": {
+                "bg": {"api_key": "test-key", "base_url": "https://test.api",
+                       "models": {"main": {"name": "ac/main-model"}}}
+            },
+            "agents": {"master": {"model": "bg/main"}}
         }
         config_file = tmp_path / "setting.json"
         config_file.write_text(json.dumps(config_data))
 
         monkeypatch.setattr(config, "DATA_DIR", tmp_path)
         monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", config_file)
-        # Clear all env vars that could override config
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
 
         result = config.load_config()
-        assert result.model.api_key == "test-key"
-        assert result.model.base_url == "https://test.api"
+        assert result.model_for_role("master").api_key == "test-key"
+        assert result.model_for_role("master").base_url == "https://test.api"
+        assert result.model_for_role("master").name == "ac/main-model"
 
     def test_load_config_env_override(self, tmp_path, monkeypatch):
-        """Test environment variable overrides config"""
+        """ANTHROPIC_API_KEY/MODEL 只覆盖 master 的接入层与模型 ID"""
         from core import config
 
         config_data = {
-            "model": {
-                "name": "config-model",
-                "api_key": "config-key"
-            }
+            "providers": {
+                "bg": {"api_key": "config-key", "models": {"main": {"name": "config-model"}}}
+            },
+            "agents": {"master": {"model": "bg/main"}}
         }
         config_file = tmp_path / "setting.json"
         config_file.write_text(json.dumps(config_data))
@@ -159,37 +160,103 @@ class TestConfig:
         monkeypatch.setattr(config, "DATA_DIR", tmp_path)
         monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", config_file)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "env-model")
 
         result = config.load_config()
-        assert result.model.api_key == "env-key"
+        master = result.model_for_role("master")
+        assert master.api_key == "env-key"
+        assert master.name == "env-model"
 
     def test_config_to_dict(self):
-        """Test converting Config to dict"""
-        from core.config import Config, ModelConfig
+        """to_dict 输出 providers/agents 结构"""
+        from core.config import AgentConfig, Config, ModelSpec, ProviderConfig
 
-        config = Config(
-            model=ModelConfig(name="test", api_key="key"),
+        cfg = Config(
+            providers={"bg": ProviderConfig(api_key="key", models={"main": ModelSpec()})},
+            agents={"master": AgentConfig(model="bg/main")},
         )
-        result = config.to_dict()
-        assert result["model"]["name"] == "test"
+        result = cfg.to_dict()
+        assert result["providers"]["bg"]["models"]["main"]["model_type"] == "reasoning"
+        assert result["agents"]["master"]["model"] == "bg/main"
 
-    def test_workspace_config_save_load(self, tmp_path, monkeypatch):
-        """Test saving and loading workspace config"""
+    def test_migrate_legacy_config(self, tmp_path, monkeypatch):
+        """旧格式（model 为对象）→ 备份 + 转换 + 原子写回 + backend 默认 litellm"""
         from core import config
 
-        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
-
-        workspace_data = {
-            "workspace_name": "Test WS",
-            "directory": "/test/dir",
-            "created_at": "2026-08-22 10:00:00"
+        legacy = {
+            "model": {
+                "name": "ac/old-model", "api_key": "old-key", "base_url": "http://old/llm",
+                "max_tokens": 36000, "multimodal": True, "temperature": 0.2, "reasoning_effort": "",
+            }
         }
-        result = config.save_workspace_config("uuid-123", workspace_data)
-        assert result is True
+        config_file = tmp_path / "setting.json"
+        config_file.write_text(json.dumps(legacy), encoding="utf-8")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", config_file)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
 
-        loaded = config.load_workspace_config("uuid-123")
-        assert loaded["workspace_name"] == "Test WS"
-        assert loaded["directory"] == "/test/dir"
+        result = config.load_config()
+        migrated = json.loads(config_file.read_text(encoding="utf-8"))
+        assert "model" not in migrated and "providers" in migrated and "agents" in migrated
+        provider = migrated["providers"]["default"]
+        assert provider["backend"] == "litellm"
+        assert migrated["agents"]["master"]["model"] == "default/main"
+        backup = config_file.with_suffix(".json.bak")
+        assert backup.exists()
+        assert json.loads(backup.read_text(encoding="utf-8")) == legacy
+        master = result.model_for_role("master")
+        assert master.name == "ac/old-model"
+        assert master.input == ["text", "image"]
+        assert master.reasoning == "default"
+
+    def test_migrate_idempotent(self, tmp_path, monkeypatch):
+        """新格式二次加载不再触发迁移（.bak 不存在）"""
+        from core import config
+
+        migrated = {
+            "providers": {"p": {"api_key": "k", "models": {"m": {}}}},
+            "agents": {"master": {"model": "p/m"}},
+        }
+        config_file = tmp_path / "setting.json"
+        config_file.write_text(json.dumps(migrated), encoding="utf-8")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", config_file)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+
+        config.load_config()
+        config.load_config()
+        assert not config_file.with_suffix(".json.bak").exists()
+
+    def test_migrate_shared_credentials_merge(self):
+        """多个旧角色模型凭据相同 → 合入同一 default provider；不同 → 分 default_2
+
+        用纯转换函数 convert_legacy_config（无写盘副作用，不碰真实配置文件）。
+        """
+        from core.config import convert_legacy_config
+
+        cfg = {
+            "model": {"name": "m1", "api_key": "k1", "base_url": "http://a"},
+            "worker_model": {"name": "m2", "api_key": "k1", "base_url": "http://a"},
+            "lite_model": {"name": "m3", "api_key": "k2", "base_url": "http://b"},
+        }
+        out = convert_legacy_config(cfg)
+        assert out is not None
+        assert set(out["providers"]) == {"default", "default_2"}
+        assert out["providers"]["default"]["backend"] == "litellm"
+        assert out["providers"]["default"]["models"]["main"]["name"] == "m1"
+        assert out["providers"]["default"]["models"]["worker"]["name"] == "m2"
+        assert out["agents"]["master"]["model"] == "default/main"
+        assert out["agents"]["worker"]["model"] == "default/worker"
+        assert out["agents"]["lite"]["model"] == "default_2/lite"
+        assert "model" in cfg  # 纯函数不改输入
+
+    def test_convert_non_legacy_returns_none(self):
+        """新格式（无 model 对象）→ None（调用方原样返回）"""
+        from core.config import convert_legacy_config
+
+        assert convert_legacy_config({"providers": {}, "agents": {}}) is None
 
 
 class TestSystemConfig:
@@ -218,109 +285,84 @@ class TestSystemConfig:
         assert cfg.to_dict()["max_concurrent_agents"] == 7
 
 
-class TestModelInheritance:
-    """Worker/Lite 模型继承：未配置 → None，部分配置 → 继承 Master 其余字段。"""
+class TestModelResolution:
+    """引用解析、角色继承、fail-fast 校验"""
 
-    def _global_config(self, worker=None, lite=None):
-        data = {
-            "model": {
-                "name": "claude-sonnet-4-6",
-                "api_key": "sk-master",
-                "base_url": "https://api.anthropic.com",
-                "max_tokens": 16384,
-                "multimodal": True,
-            }
-        }
-        if worker:
-            data["worker_model"] = worker
-        if lite:
-            data["lite_model"] = lite
-        return data
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """隔离环境变量覆盖（用户环境可能设了 ANTHROPIC_MODEL 等）"""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
 
-    @staticmethod
-    def _clear_env(monkeypatch):
-        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
-            monkeypatch.delenv(var, raising=False)
-
-    def test_merged_with_partial_override(self):
-        """只覆盖 name，其余字段继承 master。"""
-        from core.config import ModelConfig
-
-        base = ModelConfig(name="claude-sonnet-4-6", api_key="sk-master",
-                           base_url="https://api.anthropic.com", multimodal=True)
-        merged = base.merged_with({"name": "claude-haiku-4-5"})
-        assert merged.name == "claude-haiku-4-5"
-        assert merged.api_key == "sk-master"
-        assert merged.base_url == "https://api.anthropic.com"
-        assert merged.multimodal is True
-
-    def test_no_role_model_returns_none(self, monkeypatch):
-        """未配置 worker/lite_model → 两者均为 None（继承 master）。"""
+    def _make_config(self, providers=None, agents=None):
         from core.config import Config
+        return Config.from_global_config({
+            "providers": providers if providers is not None else {
+                "bg": {"api_key": "k", "base_url": "http://x", "models": {
+                    "main": {"name": "bg/main-model"}, "cheap": {"name": "bg/cheap"},
+                }},
+                "dgx": {"api_key": "k2", "models": {"big": {"name": "ds/v4"}}},
+            },
+            "agents": agents if agents is not None else {"master": {"model": "bg/main"}},
+        })
 
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(self._global_config())
-        assert cfg.worker_model is None
-        assert cfg.lite_model is None
+    def test_resolve_model_basic(self):
+        cfg = self._make_config()
+        m = cfg.resolve_model("bg/main")
+        assert m.name == "bg/main-model" and m.api_key == "k" and m.base_url == "http://x"
 
-    def test_worker_model_inherits_master_fields(self, monkeypatch):
-        """worker_model 只填 name → api_key/base_url 等继承 master。"""
-        from core.config import Config
-
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(
-            self._global_config(worker={"name": "claude-haiku-4-5"})
+    def test_resolve_model_key_with_slash(self):
+        """模型键内可含 /（按第一个 / 拆分）"""
+        cfg = self._make_config(
+            providers={"gw": {"api_key": "k", "models": {"vendor/model-x": {"max_output_tokens": 4096}}}},
+            agents={"master": {"model": "gw/vendor/model-x"}},
         )
-        assert cfg.worker_model is not None
-        assert cfg.worker_model.name == "claude-haiku-4-5"
-        assert cfg.worker_model.api_key == "sk-master"
-        assert cfg.worker_model.base_url == "https://api.anthropic.com"
-        assert cfg.worker_model.multimodal is True
-        # lite 未配置 → 仍为 None
-        assert cfg.lite_model is None
+        m = cfg.resolve_model("gw/vendor/model-x")
+        assert m.name == "vendor/model-x" and m.max_output_tokens == 4096
 
-    def test_role_model_partial_fields_merge(self, monkeypatch):
-        """worker_model 覆盖 max_tokens，其余字段继承。"""
-        from core.config import Config
+    def test_resolve_missing_ref_fail_fast(self):
+        cfg = self._make_config()
+        with pytest.raises(RuntimeError, match="可用"):
+            cfg.resolve_model("bg/missing")
+        with pytest.raises(RuntimeError, match="可用"):
+            cfg.resolve_model("nope/main")
 
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(
-            self._global_config(worker={"name": "w", "max_tokens": 4096})
-        )
-        assert cfg.worker_model.max_tokens == 4096
-        assert cfg.worker_model.multimodal is True
-        assert cfg.worker_model.api_key == "sk-master"
+    def test_role_inheritance(self):
+        """worker/lite 未配置时继承 master"""
+        cfg = self._make_config(agents={"master": {"model": "bg/main"}, "lite": {"model": "bg/cheap"}})
+        assert cfg.model_for_role("worker").name == "bg/main-model"
+        assert cfg.model_for_role("lite").name == "bg/cheap"
 
-    def test_role_model_missing_name_returns_none(self, monkeypatch):
-        """worker_model 无 name → 视为未配置，回退继承 master。"""
-        from core.config import Config
+    def test_unknown_role_falls_back_master(self):
+        cfg = self._make_config()
+        assert cfg.model_for_role("typo_role").name == "bg/main-model"
 
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(
-            self._global_config(worker={"api_key": "sk-x"})
-        )
-        assert cfg.worker_model is None
+    def test_agents_omitted_single_model_fallback(self):
+        """agents 省略 + 唯一可用模型 → 三角色共用"""
+        cfg = self._make_config(providers={"only": {"api_key": "k", "models": {"solo": {}}}}, agents={})
+        assert cfg.model_for_role("master").name == "solo"
+        assert cfg.model_for_role("lite").name == "solo"
 
-    def test_lite_model_independent(self, monkeypatch):
-        """lite_model 独立配置，不影响 worker_model。"""
-        from core.config import Config
+    def test_agents_omitted_multiple_models_fails(self):
+        with pytest.raises(RuntimeError, match="agents.master.model"):
+            self._make_config(agents={})
 
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(
-            self._global_config(lite={"name": "claude-haiku-4-5"})
-        )
-        assert cfg.worker_model is None
-        assert cfg.lite_model is not None
-        assert cfg.lite_model.name == "claude-haiku-4-5"
+    def test_env_interpolation(self, monkeypatch):
+        """api_key 的 ${ENV_VAR} 整值插值"""
+        monkeypatch.setenv("MY_TEST_KEY", "sk-from-env")
+        cfg = self._make_config(providers={"a": {"api_key": "${MY_TEST_KEY}", "models": {"m": {}}}},
+                                agents={"master": {"model": "a/m"}})
+        assert cfg.model_for_role("master").api_key == "sk-from-env"
 
-    def test_to_dict_omits_unset_role_models(self, monkeypatch):
-        """to_dict 仅在角色模型存在时输出对应 key。"""
-        from core.config import Config
+    def test_env_interpolation_missing_var_fails(self, monkeypatch):
+        monkeypatch.delenv("MY_MISSING_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="MY_MISSING_KEY"):
+            self._make_config(providers={"a": {"api_key": "${MY_MISSING_KEY}", "models": {"m": {}}}},
+                              agents={"master": {"model": "a/m"}})
 
-        self._clear_env(monkeypatch)
-        cfg = Config.from_global_config(
-            self._global_config(worker={"name": "w"})
-        )
-        result = cfg.to_dict()
-        assert "worker_model" in result
-        assert "lite_model" not in result
+    def test_input_must_contain_text(self):
+        """旧配置 multimodal=false → input=['text']"""
+        from core.config import _convert_legacy_model_spec
+        spec = _convert_legacy_model_spec({"name": "x", "multimodal": False})
+        assert spec["input"] == ["text"]

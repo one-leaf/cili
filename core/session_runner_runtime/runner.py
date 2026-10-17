@@ -607,6 +607,7 @@ class Runner:
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
                     duration=time.monotonic() - call_start,
+                    model=response.model,
                 )
             # Use the new get_text() method for typed content blocks
             return response.get_text() or "（摘要生成失败）"
@@ -780,7 +781,7 @@ class Runner:
                     if sub.get("type") == "image":
                         new_sub.append({
                             "type": "text",
-                            "text": "[image - model does not support multimodal]",
+                            "text": "[image - model does not support image input]",
                         })
                     else:
                         new_sub.append(sub)
@@ -817,7 +818,7 @@ class Runner:
         if resolve_results:
             messages = self._resolve_tool_results(messages)
             messages = self._strip_meta_from_messages(messages)
-        if not self.runner.model.multimodal:
+        if "image" not in (self.runner.model.input or []):
             messages = self._strip_images_from_messages(messages)
         return self._convert_to_message_objects(messages)
 
@@ -863,6 +864,7 @@ class Runner:
                     cache_read_tokens=response.usage.cache_read_tokens,
                     cache_creation_tokens=response.usage.cache_write_tokens,
                     duration=time.monotonic() - call_start,
+                    model=response.model,
                 )
                 self.runner.cache_state.on_llm_response(
                     cache_read=response.usage.cache_read_tokens,
@@ -902,6 +904,7 @@ class Runner:
                             cache_read_tokens=response.usage.cache_read_tokens,
                             cache_creation_tokens=response.usage.cache_write_tokens,
                             duration=time.monotonic() - retry_start,
+                            model=response.model,
                         )
                         self.runner.cache_state.on_llm_response(
                             cache_read=response.usage.cache_read_tokens,

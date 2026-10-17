@@ -295,7 +295,7 @@ class TestAnthropicAdapter:
             name="claude-sonnet-4-6",
             api_key="test-key-123",
             base_url="https://api.anthropic.com",
-            max_tokens=4096,
+            max_output_tokens=4096,
             interface_type="anthropic",
         )
         return AnthropicAdapter(config)
@@ -343,16 +343,47 @@ class TestAnthropicAdapter:
         body = adapter.serialize(messages, system="You are helpful", tools=None, model="claude-sonnet-4-6", max_tokens=4096)
         assert body["messages"][-1]["content"] == "hi"
 
-    def test_serialize_litellm_session(self, adapter):
-        adapter._is_litellm_proxy = True
-        messages = [Message(role="user", content="hi")]
-        body = adapter.serialize(messages, system="", tools=None, model="claude-sonnet-4-6", max_tokens=4096, session_id="session-123")
-        assert body["litellm_session_id"] == "session-123"
+    def test_backend_session_headers(self):
+        """backend 预设 → 请求头按 {session_id} 展开；无会话整条省略"""
+        from core.config import ModelConfig
 
-    def test_serialize_no_litellm_session_when_not_proxy(self, adapter):
-        messages = [Message(role="user", content="hi")]
-        body = adapter.serialize(messages, system="", tools=None, model="claude-sonnet-4-6", max_tokens=4096, session_id="session-123")
-        assert "litellm_session_id" not in body
+        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", backend="litellm")
+        adapter = AnthropicAdapter(cfg)
+        headers = adapter.build_request_headers(session_id="session-123")
+        assert headers["x-litellm-session-id"] == "session-123"
+        assert "x-litellm-session-id" not in adapter.build_request_headers()
+
+    def test_configured_headers_session_placeholder(self):
+        """headers 值支持 {session_id} 插值；显式值覆盖预设"""
+        from core.config import ModelConfig
+
+        cfg = ModelConfig(
+            name="m", api_key="k", base_url="https://x.example.com",
+            backend="litellm", headers={"X-Session-ID": "{session_id}", "X-Extra": "static"},
+        )
+        adapter = AnthropicAdapter(cfg)
+        headers = adapter.build_request_headers(session_id="s1")
+        assert headers["X-Session-ID"] == "s1"
+        assert headers["X-Extra"] == "static"
+        no_session = adapter.build_request_headers()
+        assert "X-Session-ID" not in no_session and no_session["X-Extra"] == "static"
+
+    def test_auth_type_bearer_overrides_default(self):
+        """auth_type=bearer 强制 Authorization，替换 anthropic 默认 x-api-key"""
+        from core.config import ModelConfig
+
+        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", auth_type="bearer")
+        headers = AnthropicAdapter(cfg).build_request_headers()
+        assert headers["Authorization"] == "Bearer k"
+        assert "x-api-key" not in headers
+        assert headers["anthropic-version"] == "2023-06-01"  # 协议头保留
+
+    def test_auth_type_none_drops_auth(self):
+        from core.config import ModelConfig
+
+        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", auth_type="none")
+        headers = AnthropicAdapter(cfg).build_request_headers()
+        assert "x-api-key" not in headers and "Authorization" not in headers
 
     def test_parse_response_text_only(self, adapter):
         data = {
@@ -417,7 +448,7 @@ class TestOpenAIAdapter:
             name="gpt-4o",
             api_key="sk-test-key",
             base_url="https://api.openai.com",
-            max_tokens=4096,
+            max_output_tokens=4096,
             interface_type="openai",
         )
         return OpenAIAdapter(config)
@@ -761,7 +792,6 @@ class TestRetryDefaults:
 
         client = LLMClient.__new__(LLMClient)
         client.max_tokens = 1024
-        client.temperature = 0.2
         client.model_name = "test-model"
         client.adapter = MagicMock()
         client.adapter.api_url = "http://example.invalid"
@@ -941,7 +971,7 @@ class TestChatStreamIncomplete:
 
 
 class TestAdapterBaseUrl:
-    """base_url 校验 + 官方域名跳过 litellm 探测（A25）。"""
+    """base_url 校验。"""
 
     def test_empty_base_url_raises(self):
         config = ModelConfig(name="m", api_key="k", base_url="", interface_type="anthropic")
@@ -953,19 +983,23 @@ class TestAdapterBaseUrl:
         with pytest.raises(ValueError, match="无效的 base_url"):
             AnthropicAdapter(config)
 
-    def test_official_skips_litellm_detection(self):
-        config = ModelConfig(
-            name="m", api_key="k", base_url="https://api.anthropic.com", interface_type="anthropic",
-        )
-        adapter = AnthropicAdapter(config)
-        assert adapter.should_detect_litellm() is False
+    def test_backend_headers_all_presets(self):
+        """六种 backend 预设的会话头名单"""
+        from core.config import ModelConfig
+        from core.llm.adapter import BACKEND_SESSION_HEADERS
 
-    def test_custom_detects_litellm(self):
-        config = ModelConfig(
-            name="m", api_key="k", base_url="https://relay.example.com", interface_type="anthropic",
-        )
-        adapter = AnthropicAdapter(config)
-        assert adapter.should_detect_litellm() is True
+        assert "custom" not in BACKEND_SESSION_HEADERS
+        assert BACKEND_SESSION_HEADERS["codex"] == {"session-id": "{session_id}"}
+        assert BACKEND_SESSION_HEADERS["openrouter"] == {"x-session-id": "{session_id}"}
+        assert BACKEND_SESSION_HEADERS["opencode"] == {"x-opencode-session": "{session_id}"}
+        assert BACKEND_SESSION_HEADERS["litellm"] == {"x-litellm-session-id": "{session_id}"}
+        assert BACKEND_SESSION_HEADERS["claude-code"] == {"x-claude-code-session-id": "{session_id}"}
+
+        for backend, expected in BACKEND_SESSION_HEADERS.items():
+            cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", backend=backend)
+            headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
+            for header_name, template in expected.items():
+                assert headers[header_name] == "s"
 
 
 class TestChatTimeoutParam:

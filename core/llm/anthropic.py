@@ -53,10 +53,12 @@ class AnthropicAdapter(Adapter):
         # auto：使用 Anthropic 协议即启用
         return True
 
-    def build_headers(self) -> dict[str, str]:
-        """Build headers for Anthropic API."""
+    def default_auth_headers(self) -> dict[str, str]:
+        """auth_type="auto" 的默认认证头。"""
+        return {"x-api-key": self.config.api_key}
+
+    def protocol_headers(self) -> dict[str, str]:
         return {
-            "x-api-key": self.config.api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
@@ -68,7 +70,6 @@ class AnthropicAdapter(Adapter):
         tools: list[dict[str, Any]] | None,
         model: str,
         max_tokens: int,
-        temperature: float | None = None,
         stream: bool = False,
         session_id: str = "",
     ) -> dict[str, Any]:
@@ -89,9 +90,7 @@ class AnthropicAdapter(Adapter):
             "messages": anthropic_messages,
         }
 
-        self._apply_thinking_config(body, temperature)
-        # LiteLLM proxy support
-        self._apply_litellm_extras(body, session_id)
+        self._apply_thinking_config(body)
 
         if tools:
             body["tools"] = tools
@@ -140,23 +139,23 @@ class AnthropicAdapter(Adapter):
                 })
         return anthropic_messages
 
-    def _apply_thinking_config(self, body: dict[str, Any], temperature: float | None) -> None:
-        """Extended thinking：配置 reasoning_effort 时开启 thinking（与 temperature 互斥）。"""
-        effort = self.config.reasoning_effort
-        if effort:
-            # budget_tokens 按档位映射（经验值）：low/medium/high 分别为
-            # 1024/4096/10000，未命中档位时回退 4096（medium）
+    def _apply_thinking_config(self, body: dict[str, Any]) -> None:
+        """Extended thinking：按 reasoning 档位开启思考（anthropic 取值域，§models-provider-design）。
+
+        - ``default``/``off``：不发送 thinking 参数（Anthropic API 无显式关闭参数，两者同 wire）
+        - ``low``/``medium``/``high``：``thinking.budget_tokens`` 1024/4096/10000
+        - ``chat`` 型模型（model_type）不进入本分支——serialize 前由 client 保证
+        """
+        effort = self.config.reasoning
+        if effort in ("low", "medium", "high"):
             budget_map = {
                 "low": 1024,
                 "medium": 4096,
                 "high": 10000,
             }
-            budget_tokens = budget_map.get(effort, 4096)
+            budget_tokens = budget_map[effort]
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-        else:
-            # No thinking, use temperature if specified
-            if temperature is not None:
-                body["temperature"] = temperature
+        # default / off / 其他值：不发送 thinking 参数，也不发送 temperature（已移除）
 
     def _apply_prompt_cache(
         self,
@@ -277,7 +276,10 @@ class AnthropicAdapter(Adapter):
                 u = msg.get("usage", {})
                 if u:
                     usage = UsageData.from_anthropic(u)
-                    yield StreamChunk.usage_chunk(usage)
+                    chunk_data = {"usage": usage}
+                    if msg.get("model"):
+                        chunk_data["model"] = str(msg["model"])
+                    yield StreamChunk(type="usage", data=chunk_data)
 
             elif evt_type == "content_block_start":
                 current_block_index += 1

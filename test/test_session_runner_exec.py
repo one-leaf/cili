@@ -60,6 +60,7 @@ class TestCallLlmForwardsToRunRound:
 class _FakeLLMResponse:
     def __init__(self):
         self.usage = None
+        self.model = "fake-model"  # assistant 消息 _meta.model 与 usage 分桶需要
 
     def get_tool_calls(self):
         return []

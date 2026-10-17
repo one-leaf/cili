@@ -830,13 +830,13 @@ _DEFAULT_CONSOLIDATE_MAX_TOKENS = 16000
 
 def _lite_client():
     config = load_config()
-    model = config.lite_model or config.model
+    model = config.model_for_role("lite")
     return create_llm_client(model)
 
 
 def _output_limit(client, requested: int) -> int:
     """max_tokens 取请求值与模型配置上限的较小者，避免小模型被超上限拒绝。"""
-    return min(requested, client.config.max_tokens)
+    return min(requested, client.config.max_output_tokens)
 
 
 def default_extractor(messages: list[Message], system: str, schema: dict,

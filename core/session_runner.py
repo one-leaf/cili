@@ -104,7 +104,6 @@ class SessionRunner(BaseSessionRunner):
         session_dir: Path | None = None,
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
-        temperature: float | None = None,
         approval_store=None,
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
@@ -122,7 +121,6 @@ class SessionRunner(BaseSessionRunner):
             session_dir: autonomous 模式的消息持久化目录
             stop_check: 返回 True 表示父代理已停止
             exec_id: autonomous 模式的执行 ID（作为 session 标识）
-            temperature: 可选的 LLM temperature 覆盖（0.0~1.0）
             approval_store: autonomous 模式共享的会话级审批存储
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
@@ -132,7 +130,6 @@ class SessionRunner(BaseSessionRunner):
         self.role_cfg = load_role(role, config)
         self.model = config.model_for_role(role)
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
-        self._temperature = temperature
         # run_mode 与 role 解耦：默认取角色 JSON 的 mode，接口层可显式覆盖
         # （例如将来 QQ 接口用 interactive 行为但非 master 画像）。
         self._mode = run_mode or self.role_cfg.mode
@@ -178,13 +175,11 @@ class SessionRunner(BaseSessionRunner):
 
         # Create LLM client（worker/lite 用角色模型，未配置继承 master model）
         self.client = create_llm_client(self.model)
-        if temperature is not None:
-            self.client.temperature = temperature
         # 角色级 max_tokens 上限：min(角色配置, 模型上限)，避免超过模型实际能力
         # （isinstance 守卫兼容测试中的 MagicMock 模型）
         role_max_tokens = self.role_cfg.max_tokens
-        if role_max_tokens and isinstance(self.model.max_tokens, int):
-            self.client.max_tokens = min(role_max_tokens, self.model.max_tokens)
+        if role_max_tokens and isinstance(self.model.max_output_tokens, int):
+            self.client.max_tokens = min(role_max_tokens, self.model.max_output_tokens)
 
         if self._mode == "interactive":
             # 高风险命令审批存储：会话级内存 + workspace 持久化规则（启动回灌），根/子代理共享
@@ -756,6 +751,7 @@ class SessionRunner(BaseSessionRunner):
                 api_calls=1,
                 cache_read_tokens=response.usage.cache_read_tokens,
                 cache_creation_tokens=response.usage.cache_write_tokens,
+                model=response.model,
             )
         text = response.get_text().strip()
         self.add_message("assistant", text)
@@ -801,6 +797,7 @@ class SessionRunner(BaseSessionRunner):
             "message_count": len(self.messages),
             "current_tool": current_tool,
             "tool_call_count": self._tool_call_count,
+            "model": getattr(self.model, "name", ""),
         }
 
         log_data = build_exec_log_data(
@@ -852,6 +849,7 @@ class SessionRunner(BaseSessionRunner):
                 "message_count": len(self.messages),
                 "tool_call_count": self._tool_call_count,
                 "summary": summary,
+                "model": getattr(self.model, "name", ""),
             }
 
             log_data = build_exec_log_data(

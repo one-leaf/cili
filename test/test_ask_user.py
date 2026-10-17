@@ -15,7 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from core.config import Config, ModelConfig, SystemConfig
+from core.config import (
+    AgentConfig,
+    Config,
+    ModelSpec,
+    ProviderConfig,
+    SystemConfig,
+)
 from core.llm.types import LLMResponse, TextBlock, ToolCallBlock
 from core.session_runner import SessionRunner
 from core.tools import get_tool_by_name
@@ -30,16 +36,13 @@ from core.tools.base import ToolResult
 def config():
     """构建测试配置"""
     return Config(
-        model=ModelConfig(
-            name="test-model",
+        providers={"test": ProviderConfig(
             interface_type="anthropic",
             api_key="test-key",
             base_url="http://localhost:9999",
-            max_tokens=4096,
-            max_context_tokens=256000,
-            multimodal=True,
-            temperature=0.2,
-        ),
+            models={"test": ModelSpec(name="test-model", max_output_tokens=4096, max_context_tokens=256000)},
+        )},
+        agents={"master": AgentConfig(model="test/test")},
         system=SystemConfig(),
     )
 

@@ -14,7 +14,10 @@ from core.session_runner_runtime.loop import PhaseMachine
 
 def _make_mock_config(max_iterations=200):
     config = MagicMock()
-    config.model = MagicMock()
+    model = MagicMock()
+    model.name = "mock-model"
+    model.max_tokens = 4096
+    config.model_for_role.return_value = model
     config.system.max_iterations = max_iterations
     return config
 
@@ -48,6 +51,7 @@ def _make_text_response(text):
     resp.get_tool_calls.return_value = []
     resp.get_text.return_value = text
     resp.content_as_dicts.return_value = [{"type": "text", "text": text}]
+    resp.model = "mock-model"  # LLMResponse.model 进入 usage 分桶与消息 _meta，须可序列化
     return resp
 
 

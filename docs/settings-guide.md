@@ -28,343 +28,172 @@ Cili Agent/
 
 ```json
 {
-  "model": { ... },           // 主模型配置（必填，所有角色默认继承）
-  "worker_model": { ... },    // Worker 角色模型（可选，缺省继承主模型）
-  "lite_model": { ... },      // Lite 角色模型（可选，缺省继承主模型）
+  "providers": { ... },       // 模型提供商：凭据（API Key / Base URL / 协议）+ 模型表
+  "agents": { ... },          // 角色分配：master / worker / lite 各用哪个模型
   "system": { ... },          // 系统参数配置
   "mcp_servers": { ... }      // MCP 服务器配置（可选）
 }
 ```
 
+模型配置是两级结构：**providers 管凭据和模型清单**，**agents 决定每个角色用哪个模型**。换 API Key 只改一处，多个模型共享同一凭据。
+
 ---
 
-## 一、主模型配置（model）
+## 一、模型提供商（providers）
 
-这是最核心的配置，决定了 Agent 使用哪个 AI 模型来回答你的问题。
+每个 provider 是一个"接入层"：API 地址、密钥、协议，外加它名下的模型清单。
 
 ```json
-"model": {
-  "name": "claude-sonnet-4-6",
-  "interface_type": "anthropic",
-  "api_key": "sk-xxx",
-  "base_url": "https://api.anthropic.com",
-  "max_tokens": 36000,
-  "max_context_tokens": 256000,
-  "multimodal": true,
-  "temperature": 0.2,
-  "reasoning_effort": "",
-  "cache_control": "auto"
+{
+  "providers": {
+    "default": {
+      "interface_type": "anthropic",
+      "api_key": "sk-xxx",
+      "auth_type": "auto",
+      "backend": "litellm",
+      "base_url": "http://ai.example.com/llm",
+      "headers": {},
+      "models": {
+        "main": {
+          "name": "ac/qwen3.7-plus",
+          "max_output_tokens": 36000,
+          "max_context_tokens": 256000,
+          "model_type": "reasoning",
+          "input": ["text", "image"],
+          "reasoning": "default",
+          "cache_control": "auto"
+        },
+        "cheap": { "name": "ac/qwen3.7-flash", "max_output_tokens": 8192 }
+      }
+    }
+  }
 }
 ```
 
-### name — 模型名称
+- **键名**（上面的 `default`、`main`、`cheap`）是自由命名的别名，agents 里用 `"provider键/模型键"` 引用（如 `"default/main"`）。
+- 模型条目里 **`name` 省略时用键名当作发给 API 的模型 ID**——直连官方 API 时直接拿模型 ID 当键名即可，不用重复写。
 
-**作用**：指定使用哪个 AI 模型。
+### interface_type — 接口协议
 
-**怎么填**：填你使用的模型提供商支持的模型 ID。
-
-**常见示例**：
-
-| 提供商 | 模型名称示例 |
-|--------|-------------|
-| Anthropic（Claude） | `claude-sonnet-4-6`、`claude-opus-4-20250514`、`claude-haiku-4-5` |
-| OpenAI（GPT） | `gpt-4o`、`gpt-4o-mini`、`o3-mini` |
-| 通义千问 | `qwen-plus`、`qwen-max` |
-| 本地部署（Ollama 等） | 你部署时用的模型名 |
-
-**注意**：模型名称必须和 `interface_type`、`base_url` 配套，不同提供商的接口格式不一样。
-
----
-
-### interface_type — 接口类型
-
-**作用**：告诉 Agent 用哪种 API 格式与模型通信。
-
-**可选值**：
-
-| 值 | 适用场景 |
-|-----|---------|
-| `"anthropic"` | Anthropic 官方 API，或兼容 Anthropic 格式的代理服务 |
-| `"openai"` | OpenAI 官方 API，以及绝大多数兼容 OpenAI 格式的第三方服务（通义千问、DeepSeek、本地 Ollama 等） |
-
-**怎么判断填哪个**：
-
-- 如果你用的是 Anthropic 的 Claude 模型 → 填 `"anthropic"`
-- 如果你用的是其他任何模型 → 大概率填 `"openai"`（因为现在大部分服务都兼容 OpenAI 格式）
-- 如果不确定，看一下你的服务提供商的 API 文档，通常会说明用的是哪种格式
-
----
+| 值 | 说明 |
+|----|------|
+| `anthropic` | Anthropic Messages API（`/v1/messages`），默认值 |
+| `openai` | OpenAI Chat Completions API（`/v1/chat/completions`） |
 
 ### api_key — API 密钥
 
-**作用**：用于身份验证的密钥，相当于你的"通行证"。
+支持两种写法：
 
-**怎么获取**：
+- **明文**：直接写 `"sk-xxx"`
+- **环境变量引用**：写成 `"${MY_API_KEY}"`，启动时展开。变量未设置时**启动失败并报错**（不会静默用空 key）。密钥不落盘，推荐这种方式。
 
-- **Anthropic**：登录 [console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key
-- **OpenAI**：登录 [platform.openai.com](https://platform.openai.com) → API Keys → Create new secret key
-- **其他服务**：在你的服务提供商控制台里找"API Key"或"密钥"
+### auth_type — 认证头方式
 
-**格式示例**：
+请求时自动补充的认证头，**显式 `headers` 里的同名头会覆盖它**：
 
-- Anthropic：`sk-ant-api03-xxxxxxxxxxxx...`
-- OpenAI：`sk-xxxxxxxxxxxx...`
-- 第三方服务各不相同
+| 值 | 行为 |
+|----|------|
+| `auto`（默认） | 按协议：anthropic → `x-api-key`；openai → `Authorization: Bearer` |
+| `bearer` | 强制 `Authorization: Bearer <key>`（LiteLLM 等 OpenAI 兼容网关） |
+| `x-api-key` | 强制 `x-api-key: <key>` |
+| `none` | 不自动加认证头，用 `headers` 手动给 |
 
-**安全提醒**：
+### backend — 后端服务器类型
 
-- ⚠️ **绝对不要**把 api_key 分享给别人或发到网上
-- ⚠️ 如果你的 setting.json 不小心泄露了密钥，立即到控制台删除旧密钥并重新生成
+自动填充会话标识头（网关按会话做粘性路由用）。每个预设填充的头：
 
-**也可以通过环境变量设置**：设置环境变量 `ANTHROPIC_API_KEY` 可以覆盖配置文件中的值（优先级更高）。
+| 值 | 自动填充的头 |
+|----|-------------|
+| `custom`（默认） | 不填充，`headers` 手写 |
+| `codex` | `session-id` |
+| `claude-code` | `x-claude-code-session-id` |
+| `opencode` | `x-opencode-session` |
+| `openrouter` | `x-session-id` |
+| `litellm` | `x-litellm-session-id` |
 
----
+头的值是当前会话 ID（每请求携带，无会话时省略）。`headers` 里也可以用 `{session_id}` 占位符手写任意会话头，显式值覆盖预设。
 
 ### base_url — API 地址
 
-**作用**：指定 API 请求发送到哪个服务器。
+默认 `https://api.anthropic.com`。走聚合网关时填网关地址。
 
-**常见值**：
+### headers — 附加请求头
 
-| 场景 | base_url |
-|------|----------|
-| Anthropic 官方 | `https://api.anthropic.com` |
-| OpenAI 官方 | `https://api.openai.com/v1` |
-| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| DeepSeek | `https://api.deepseek.com/v1` |
-| 本地 Ollama | `http://localhost:11434/v1` |
-| 自建代理 | 你的代理服务器地址 |
+JSON 对象。值支持 `{session_id}` 占位符（请求时展开为当前会话 ID，无会话时该头省略）：
 
-**注意**：
+```json
+"headers": { "X-Session-ID": "{session_id}", "X-Extra": "static-value" }
+```
 
-- 末尾不要加 `/`（斜杠），比如写 `https://api.openai.com/v1` 而不是 `https://api.openai.com/v1/`
-- 如果你用了 API 代理服务（中转站），填代理给你的地址
+### models — 模型表
 
----
+每个条目的字段（除 `name` 外全部可选）：
 
-### max_tokens — 最大输出长度
+#### name — 模型 ID
 
-**作用**：限制模型单次回复的最大长度（以 token 为单位）。
+发给 API 的真实模型 ID。**省略时用条目键名**。
 
-**默认值**：`16384`（约 1.6 万 token）
+#### max_output_tokens — 最大输出
 
-**通俗解释**：
+单次响应最大输出 token，默认 **8192**。
 
-1 个 token 大约等于 1~2 个汉字，或 3~4 个英文字母。max_tokens = 16384 意味着模型一次最多可以输出约 8000~16000 个汉字。
+#### max_context_tokens — 上下文窗口
 
-**建议值**：
+模型上下文窗口大小，默认 **128000**。用于上下文长度计算与压缩触发。
 
-| 场景 | 建议值 |
-|------|--------|
-| 日常对话 | `8192` |
-| 写代码、写长文 | `16384`~`36000` |
-| 需要非常长的输出 | 根据模型支持的上限设置 |
+#### model_type — 模型类型
 
-**注意**：这个值不能超过模型本身支持的最大输出长度。比如你的模型最多输出 8192 token，你设成 100000 也没用。
+| 值 | 说明 |
+|----|------|
+| `reasoning`（默认） | 推理模型，思考选项可选 缺省/关闭/低/中/高 |
+| `chat` | 非推理模型，无思考设置，请求不携带任何思考参数 |
 
-**角色级上限（max_tokens in core/agents/{role}.json）**：三个角色另有独立默认输出上限——master 16384、worker 16384、lite 8192。Agent 实际使用的 max_tokens 取 `min(角色上限, 模型 max_tokens)`，两方向都保护：角色上限防止单次输出过大浪费，模型上限防止超过模型实际能力报错。如某角色需要更长输出，可编辑对应角色 JSON 或调大模型的 max_tokens。
+#### input — 输入模态
 
----
+勾选式数组：`text` / `image` / `audio` / `video` / `pdf` 的子集，默认 `["text", "image"]`，必须含 `text`。决定图片附件是转成图像块还是退化为路径文本。
 
-### max_context_tokens — 最大上下文长度
+#### reasoning — 思考档位
 
-**作用**：指定模型能"记住"多少对话内容（包括你发的消息 + 模型的回复 + 工具调用结果，全部加起来）。
+仅 `model_type="reasoning"` 时有效，默认 `default`（不发送思考参数，由 API 默认行为决定）。取值域按协议：
 
-**默认值**：`256000`
+| 协议 | 取值 | 发送行为 |
+|------|------|---------|
+| anthropic | `default` / `off` / `low` / `medium` / `high` | low/medium/high → `thinking.budget_tokens` 1024/4096/10000；default/off 不发送 |
+| openai | `default` / `none` / `minimal` / `low` / `medium` / `high` | 除 default 外 `reasoning_effort` 直传（none/minimal 需模型支持，不支持时等同缺省） |
 
-**通俗解释**：
+#### cache_control — 缓存控制
 
-这个值决定了模型的"记忆容量"。值越大，Agent 能处理的内容越多（比如读取很长的文件、记住更长的对话历史）。
-
-**⚠️ 重要说明：大上下文 ≠ 高质量**
-
-很多模型宣称支持 200K、500K 甚至 1M 的上下文，但需要注意：
-
-- **扩容技术**：部分超大上下文是通过 RoPE 外推、YaRN 等技术扩容出来的，超出模型原始训练长度，实际对话质量可能下降
-- **分段收费**：很多模型按输入长度分段收费，超过一定长度后价格会大幅上涨
-- **推荐设置**：**256000**（256K）是一个平衡点，既能满足大多数场景，又能保持较好的性价比
-
-**建议值**：
-
-| 模型 | 建议值 | 说明 |
-|------|--------|------|
-| Claude Sonnet/Opus | `200000` | 官方原生支持，质量稳定 |
-| Claude Haiku | `200000` | 官方原生支持，质量稳定 |
-| GPT-4o | `128000` | 超过 128K 后价格翻倍 |
-| 通义千问 | `131072` | 超过 128K 后价格更高 |
-| 不确定 | `256000` | 通用默认值 |
-
-**注意事项**：
-
-- 这个值设得太大可能导致请求失败（超出模型的实际上下文窗口）
-- 设得太小则 Agent 可能"忘记"之前的对话内容
-- **不是越大越好**，超过 256K 后可能面临质量下降和费用增加
-- 如果不确定，保持默认 `256000` 通常没问题
+| 值 | 说明 |
+|----|------|
+| `auto`（默认） | Anthropic 协议启用 prompt cache，OpenAI 协议禁用 |
+| `true` | 强制启用（不支持的网关会失败） |
+| `false` | 禁用 |
 
 ---
 
-### multimodal — 是否支持图片
+## 二、角色分配（agents）
 
-**作用**：告诉 Agent 当前模型是否能看懂图片。
+每个角色引用 providers 里的一个模型：
 
-**可选值**：
-
-- `true` — 模型支持图片输入（可以发截图、照片给 Agent 分析）
-- `false` — 模型不支持图片（发图片会被忽略或报错）
-
-**常见模型支持情况**：
-
-| 模型 | multimodal |
-|------|-----------|
-| Claude Sonnet 4 / Opus 4 | `true` |
-| GPT-4o | `true` |
-| 通义千问 VL 系列 | `true` |
-| 纯文本模型（如某些本地模型） | `false` |
-
-**建议**：如果你不确定，可以设为 `true`，发图片试试看能不能正常处理。
-
----
-
-### temperature — 创造性/随机性
-
-**作用**：控制模型回答的"创意程度"。
-
-**取值范围**：`0.0` ~ `1.0`
-
-| 值 | 效果 | 适合场景 |
-|-----|------|---------|
-| `0.1` | 非常严谨、稳定，每次回答几乎一样 | 代码生成、精确任务 |
-| `0.2` | 比较严谨，偶尔有点变化（**推荐默认值**） | 日常使用 |
-| `0.5` | 适中，有时会有出乎意料的回答 | 创意写作 |
-| `0.8`~`1.0` | 很跳脱，每次回答差异大 | 头脑风暴、创意发散 |
-
-**建议**：保持默认的 `0.2` 就好。如果觉得 Agent 太死板，可以调到 `0.5`；如果觉得回答不够稳定，可以调到 `0.1`。
-
-**⚠️ 注意**：如果设置了 `reasoning_effort`（非空值），temperature 会被忽略，两者不能同时使用。
-
----
-
-### reasoning_effort — 推理力度
-
-**作用**：控制 AI 模型的"思考深度"，启用模型的深度推理能力。
-
-**可选值**：
-
-| 值 | 效果 | budget_tokens |
-|-----|------|---------------|
-| `""` （空字符串） | 关闭深度推理，使用 temperature 控制（**推荐默认**） | - |
-| `"low"` | 轻度思考，快速回答 | 1024 |
-| `"medium"` | 适中的思考深度 | 4096 |
-| `"high"` | 深度思考，适合复杂问题 | 10000 |
-
-**⚠️ 重要说明：reasoning_effort 与 temperature 互斥**
-
-- 启用 `reasoning_effort`（非空值）→ **temperature 设置会被忽略**（模型固定使用 temperature=1.0）
-- 关闭 `reasoning_effort`（空字符串）→ 正常使用 `temperature` 设置
-- 两者不能同时生效，这是 Anthropic API 的限制
-
-**支持的模型**：
-
-| 模型 | 支持情况 |
-|------|---------|
-| Claude Sonnet/Opus（Anthropic 接口） | ✅ 支持 Extended Thinking |
-| o3-mini、o1、o4-mini（OpenAI 接口） | ✅ 支持 reasoning_effort |
-| 其他模型 | ❌ 可能不支持，参数会被忽略 |
-
-**使用建议**：
-
-- **日常使用**：保持 `""` 空字符串，配合 temperature 0.2 使用
-- **复杂编程/数学问题**：设为 `"medium"` 或 `"high"`，牺牲速度换取质量
-- **简单问答**：设为 `"low"` 加快响应
-
----
-
-### cache_control — 缓存控制
-
-**作用**：控制是否启用 Prompt Cache，通过显式缓存标记降低 API 调用成本。
-
-**可选值**：
-
-| 值 | 行为 | 适用场景 |
-|----|------|----------|
-| `"auto"` | 根据接口类型自动决定（推荐） | 大多数情况 |
-| `"true"` | 强制启用显式缓存 | 使用支持 cache_control 的兼容网关 |
-| `"false"` | 禁用显式缓存 | 使用不兼容的网关或遇到问题时 |
-
-**自动模式行为**：
-
-| 接口类型 | 自动模式行为 | 说明 |
-|----------|--------------|------|
-| Anthropic | ✅ 启用 | 使用 Anthropic 协议即启用 cache_control |
-| OpenAI | ❌ 禁用 | OpenAI 标准 API 使用隐式前缀缓存，不支持显式标记 |
-
-**成本分析**（Anthropic API）：
-- 缓存写入：1.25x 基础价格
-- 缓存读取：0.1x 基础价格
-- **单次复用即盈利**：只要在 5 分钟内复用一次即可回本
-
-**注意事项**：
-- 部分中转站/网关可能不支持 cache_control，如遇到错误可设为 `"false"` 禁用
-- 支持 cache_control 的兼容网关（如 OpenRouter 上的 Anthropic 模型）可设为 `"true"` 强制启用
-
-**配置示例**：
 ```json
 {
-  "name": "claude-sonnet-4-6",
-  "interface_type": "anthropic",
-  "api_key": "sk-xxx",
-  "max_tokens": 4096,
-  "max_context_tokens": 256000,
-  "multimodal": true,
-  "temperature": 0.2,
-  "reasoning_effort": "",
-  "cache_control": "auto"
+  "agents": {
+    "master": { "model": "default/main" },
+    "worker": { "model": "default/main" },
+    "lite":   { "model": "default/cheap" }
+  }
 }
 ```
 
----
+| 角色 | 职责 | 省略时 |
+|------|------|--------|
+| `master` | 日常对话与任务执行的主模型 | **必选**（`agents` 整个省略且全局只有一个可用模型时自动兜底） |
+| `worker` | 委派子代理（完整工具集 + 检查阶段） | 继承 master |
+| `lite` | 轻量子代理（最小工具集），记忆整合也用它 | 继承 master |
 
-## 二、角色模型配置（worker_model / lite_model）
-
-这是两个**可选**的配置，分别指定 **Worker** 和 **Lite** 角色使用的模型。Worker/Lite 是自主执行任务的子代理（通过 `agent` 工具委派），可以用更便宜/更快的模型降低成本。
-
-```json
-"worker_model": {
-  "name": "claude-haiku-4-5",
-  "interface_type": "anthropic",
-  "api_key": "sk-xxx",
-  "base_url": "https://api.anthropic.com",
-  "max_tokens": 8192,
-  "max_context_tokens": 200000,
-  "multimodal": false,
-  "temperature": 0.2,
-  "reasoning_effort": ""
-}
-```
-
-**这些字段的含义和主模型完全一样**，这里不再重复。下面只说明几个区别：
-
-### 和主模型的区别
-
-| | 主模型（model） | Worker/Lite 模型（worker_model / lite_model） |
-|--|--------------|----------------------|
-| 用途 | Master 角色：和你对话、执行任务 | Worker/Lite 子代理：自主执行委派任务 |
-| 要求 | 需要较好的能力 | 可以用更便宜/更快的模型 |
-| 是否必填 | ✅ 必填 | ❌ 可选 |
-
-### 继承规则
-
-- **未配置时继承主模型**：`worker_model`/`lite_model` 缺省或 `name` 为空时，对应角色直接使用 `model`（Master 模型），所有字段（api_key、base_url 等）完全一致
-- **只填 name 即可部分覆盖**：只要填了 `name`，其余字段自动继承主模型的对应值（如 api_key、base_url、temperature 等）。如果某个字段需要不同（如更小的 max_tokens），单独写上即可
-- **api_key 复用**：填了 name 但没填 `api_key`，会自动复用主模型的 api_key
-
-### 使用建议
-
-- **Worker 角色**：负责较复杂的自主任务（完整工具集、含检查阶段），建议配一个能力适中的模型
-- **Lite 角色**：只读 read/write/edit/bash 的最小执行，建议配最便宜快速的小模型
-- **不要配**：如果想全部使用主模型，直接不写这两个块即可
-
----
+- 引用格式：`"provider键/模型键"`，启动时校验，引用不存在会**启动失败并列出全部可用引用**（fail-fast，不静默回退）。
+- Worker/Lite 省略时继承 master——改 master 的模型，未显式配置的角色自动跟随。
+- 环境变量 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` 与 CLI `--model` 只覆盖 **master** 的接入层与模型 ID，不影响 worker/lite。
 
 ## 三、系统参数配置（system）
 
@@ -634,11 +463,13 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 配置的生效优先级从高到低：
 
 1. **环境变量**（最高优先级）
-   - `ANTHROPIC_API_KEY` — 覆盖 api_key
-   - `ANTHROPIC_BASE_URL` — 覆盖 base_url
-   - `ANTHROPIC_MODEL` — 覆盖 model name
+   - `ANTHROPIC_API_KEY` — 覆盖 master 模型的 api_key
+   - `ANTHROPIC_BASE_URL` — 覆盖 master 模型的 base_url
+   - `ANTHROPIC_MODEL` — 覆盖 master 模型的模型 ID
 2. **setting.json 文件**（中优先级）
 3. **默认值**（最低优先级）
+
+环境变量只作用于 **master** 模型，不影响 worker / lite。CLI `--model` 与 `ANTHROPIC_MODEL` 同级。
 
 也就是说，如果你同时设置了环境变量和 setting.json，环境变量的值会优先生效。
 
@@ -650,26 +481,20 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ```json
 {
-  "model": {
-    "name": "claude-sonnet-4-6",
-    "interface_type": "anthropic",
-    "api_key": "sk-ant-api03-你的密钥",
-    "base_url": "https://api.anthropic.com",
-    "max_tokens": 16384,
-    "max_context_tokens": 200000,
-    "multimodal": true,
-    "temperature": 0.2,
-    "reasoning_effort": ""
+  "providers": {
+    "anthropic": {
+      "interface_type": "anthropic",
+      "api_key": "sk-ant-api03-你的密钥",
+      "models": {
+        "claude-sonnet-4-6": { "max_output_tokens": 8192, "max_context_tokens": 200000 },
+        "claude-haiku-4-5": { "max_output_tokens": 8192 }
+      }
+    }
   },
-  "worker_model": {
-    "name": "claude-sonnet-4-6",
-    "interface_type": "anthropic",
-    "max_tokens": 8192
-  },
-  "lite_model": {
-    "name": "claude-haiku-4-5",
-    "interface_type": "anthropic",
-    "max_tokens": 8192
+  "agents": {
+    "master": { "model": "anthropic/claude-sonnet-4-6" },
+    "worker": { "model": "anthropic/claude-sonnet-4-6" },
+    "lite":   { "model": "anthropic/claude-haiku-4-5" }
   },
   "system": {
     "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/",
@@ -683,21 +508,23 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 }
 ```
 
+直连官方 API 时模型条目可以省略 `name`（键名即模型 ID）。
+
 ### 示例 2：使用国内 API 代理服务
 
 ```json
 {
-  "model": {
-    "name": "claude-sonnet-4-6",
-    "interface_type": "openai",
-    "api_key": "sk-你的代理服务密钥",
-    "base_url": "https://你的代理服务地址.com/v1",
-    "max_tokens": 16384,
-    "max_context_tokens": 200000,
-    "multimodal": true,
-    "temperature": 0.2,
-    "reasoning_effort": ""
+  "providers": {
+    "proxy": {
+      "interface_type": "openai",
+      "api_key": "sk-你的代理服务密钥",
+      "base_url": "https://你的代理服务地址.com/v1",
+      "models": {
+        "main": { "name": "claude-sonnet-4-6", "max_context_tokens": 200000 }
+      }
+    }
   },
+  "agents": { "master": { "model": "proxy/main" } },
   "system": {
     "pip_mirror": "https://mirrors.aliyun.com/pypi/simple/",
     "browser_path": "",
@@ -713,17 +540,17 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ```json
 {
-  "model": {
-    "name": "qwen2.5:14b",
-    "interface_type": "openai",
-    "api_key": "ollama",
-    "base_url": "http://localhost:11434/v1",
-    "max_tokens": 8192,
-    "max_context_tokens": 32768,
-    "multimodal": false,
-    "temperature": 0.2,
-    "reasoning_effort": ""
+  "providers": {
+    "local": {
+      "interface_type": "openai",
+      "api_key": "ollama",
+      "base_url": "http://localhost:11434/v1",
+      "models": {
+        "qwen2.5:14b": { "max_context_tokens": 32768, "model_type": "chat" }
+      }
+    }
   },
+  "agents": { "master": { "model": "local/qwen2.5:14b" } },
   "system": {
     "pip_mirror": "",
     "browser_path": "",
@@ -739,7 +566,7 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ```json
 {
-  "model": { ... },
+  "providers": { ... },
   "system": {
     "pip_mirror": "",
     "browser_path": "",
@@ -761,15 +588,19 @@ A：通过 Web UI 设置页面修改的配置会立即生效（会通知已创�
 
 ### Q：api_key 填错了会怎样？
 
-A：启动时会报错提示"No API key found"或连接失败。请检查密钥是否正确、是否复制完整。
+A：启动时会报错提示"No API key found"或连接失败。请检查密钥是否正确、是否复制完整。推荐用 `${环境变量}` 引用方式，避免密钥写进配置文件。
 
-### Q：model 和 worker_model / lite_model 必须用同一家提供商吗？
+### Q：agents 里引用了不存在的模型会怎样？
 
-A：不需要。你可以主模型用 Anthropic，worker_model 用 OpenAI，完全没问题。它们各自独立配置（前提是填写了对应的 `name`；未填 name 时角色回退继承主模型）。
+A：启动失败并列出全部可用引用（fail-fast，不静默回退）。按报错信息改成正确的 `"provider键/模型键"` 即可。
 
-### Q：worker_model / lite_model 不配会怎样？
+### Q：不同角色必须用同一家提供商的模型吗？
 
-A：不影响任何功能。对应角色（Worker/Lite 子代理）直接使用主模型 `model`，只是无法通过更便宜的模型降低委派任务的成本。
+A：不需要。providers 可以配多家（每个 provider 各自的凭据和模型表），agents 里各角色引用任意提供商的模型，完全自由组合。
+
+### Q：worker / lite 不配会怎样？
+
+A：不影响任何功能。对应角色（Worker/Lite 子代理）直接使用 master 的模型，只是无法通过更便宜的模型降低委派任务的成本。
 
 ### Q：max_context_tokens 设得比模型实际支持的大怎么办？
 

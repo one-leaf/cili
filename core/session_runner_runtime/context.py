@@ -342,8 +342,12 @@ class ConversationStore:
         cache_creation_tokens: int = 0,
         duration: float | None = None,
         ttft: float | None = None,
+        model: str = "",
     ) -> None:
         """累计 usage 统计；带 duration 时按单次调用更新速度滚动平均。
+
+        ``model`` 非空时同步累计 per-model 分桶（_usage["models"]，随 sync 持久化）。
+        Models 分桶随 _usage 覆盖式写入 session.metadata["usage"]，无需单独同步。
 
         duration 为本次 LLM 调用墙钟时长，ttft 为流式首 token 延迟。
         速度 = tokens / 对应时段（有 ttft 时预填充用 ttft、生成用其余时长），
@@ -356,6 +360,18 @@ class ConversationStore:
         self._usage["api_calls"] += api_calls
         self._usage["cache_read_tokens"] += cache_read_tokens
         self._usage["cache_creation_tokens"] += cache_creation_tokens
+
+        if model:
+            models: dict = self._usage.setdefault("models", {})
+            bucket: dict = models.setdefault(model, {
+                "input_tokens": 0, "output_tokens": 0, "api_calls": 0,
+                "cache_read_tokens": 0, "cache_creation_tokens": 0,
+            })
+            bucket["input_tokens"] += input_tokens
+            bucket["output_tokens"] += output_tokens
+            bucket["api_calls"] += api_calls
+            bucket["cache_read_tokens"] += cache_read_tokens
+            bucket["cache_creation_tokens"] += cache_creation_tokens
 
         if not api_calls or not duration or duration <= 0:
             return

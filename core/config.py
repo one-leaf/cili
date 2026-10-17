@@ -6,8 +6,11 @@ import copy
 import json
 import logging
 import os
+import re
+import shutil
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from core.fs_utils import atomic_write_json
@@ -63,16 +66,23 @@ def _detect_browser_path() -> str:
 
 @dataclass
 class ModelConfig:
-    """Configuration for a single LLM model."""
+    """运行时模型配置：provider 接入层与 model 条目的合成结果（resolve_model 产出）。
+
+    旧版各角色独立配置的完整对象保留为运行时形态，下游（LLMClient/Adapter/runner）不感知配置格式。
+    auth_type/backend/headers 属接入层，随 provider 一起带入（adapter 构造请求头用）。
+    """
     name: str
     interface_type: str = "anthropic"  # "anthropic" | "openai"
     api_key: str = ""
     base_url: str = "https://api.anthropic.com"
-    max_tokens: int = 16384
-    max_context_tokens: int = 256000
-    multimodal: bool = True  # Whether this model supports image input
-    temperature: float = 0.2  # 0.1(古板) ~ 1.0(跳脱)
-    reasoning_effort: str = ""  # Reasoning effort for reasoning models: "low" | "medium" | "high" (empty = API default)
+    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
+    backend: str = "custom"  # "custom" | "codex" | "claude-code" | "opencode" | "openrouter" | "litellm"
+    headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
+    max_output_tokens: int = 8192  # 单次响应最大输出 token
+    max_context_tokens: int = 128000  # 上下文窗口
+    model_type: str = "reasoning"  # "reasoning" | "chat"：思考选项按此设置
+    input: list[str] = field(default_factory=lambda: ["text", "image"])  # 输入模态，必须含 "text"
+    reasoning: str = "default"  # 思考档位：default/off/low/medium/high（openai 另支持 none/minimal）
     cache_control: str = "auto"  # Prompt cache: "auto" (protocol default) | "true" (force) | "false" (disable)
 
     @classmethod
@@ -83,11 +93,14 @@ class ModelConfig:
             interface_type=data.get("interface_type", "anthropic"),
             api_key=data.get("api_key", ""),
             base_url=data.get("base_url", "https://api.anthropic.com").rstrip("/"),
-            max_tokens=int(data.get("max_tokens", 16384)),
-            max_context_tokens=int(data.get("max_context_tokens", 256000)),
-            multimodal=bool(data.get("multimodal", True)),
-            temperature=float(data.get("temperature", 0.2)),
-            reasoning_effort=data.get("reasoning_effort", ""),
+            auth_type=data.get("auth_type", "auto"),
+            backend=data.get("backend", "custom"),
+            headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
+            max_output_tokens=int(data.get("max_output_tokens", data.get("max_tokens", 8192))),
+            max_context_tokens=int(data.get("max_context_tokens", 128000)),
+            model_type=data.get("model_type", "reasoning"),
+            input=list(data.get("input") or ["text", "image"]),
+            reasoning=data.get("reasoning", "default"),
             cache_control=data.get("cache_control", "auto"),
         )
 
@@ -98,26 +111,123 @@ class ModelConfig:
             "interface_type": self.interface_type,
             "api_key": self.api_key,
             "base_url": self.base_url,
-            "max_tokens": self.max_tokens,
+            "auth_type": self.auth_type,
+            "backend": self.backend,
+            "headers": dict(self.headers),
+            "max_output_tokens": self.max_output_tokens,
             "max_context_tokens": self.max_context_tokens,
-            "multimodal": self.multimodal,
-            "temperature": self.temperature,
-            "reasoning_effort": self.reasoning_effort,
+            "model_type": self.model_type,
+            "input": list(self.input),
+            "reasoning": self.reasoning,
             "cache_control": self.cache_control,
         }
 
-    def merged_with(self, override: dict) -> "ModelConfig":
-        """Return a copy with fields present in *override* applied on top.
 
-        Used for worker/lite model inheritance: an override with only a subset
-        of fields (e.g. just ``{"name": "x"}``) keeps all other fields from
-        this (master) model.
-        """
-        data = self.to_dict()
-        for key, value in override.items():
-            if key in data:
-                data[key] = value
-        return ModelConfig.from_dict(data)
+@dataclass
+class ModelSpec:
+    """模型条目（provider 下 models 表的值；键为自由别名，``name`` 省略时用键名作 API 模型 ID）。"""
+    name: str = ""  # 发给 API 的真实模型 ID；空 = 用键名
+    max_output_tokens: int = 8192  # 单次响应最大输出 token
+    max_context_tokens: int = 128000  # 上下文窗口
+    model_type: str = "reasoning"  # "reasoning" | "chat"
+    input: list[str] = field(default_factory=lambda: ["text", "image"])
+    reasoning: str = "default"  # 取值域按 provider 的 interface_type 各自定义
+    cache_control: str = "auto"
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ModelSpec":
+        return cls(
+            name=str(data.get("name", "")),
+            max_output_tokens=int(data.get("max_output_tokens", data.get("max_tokens", 8192))),
+            max_context_tokens=int(data.get("max_context_tokens", 128000)),
+            model_type=data.get("model_type", "reasoning"),
+            input=list(data.get("input") or ["text", "image"]),
+            reasoning=data.get("reasoning", "default"),
+            cache_control=data.get("cache_control", "auto"),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "max_output_tokens": self.max_output_tokens,
+            "max_context_tokens": self.max_context_tokens,
+            "model_type": self.model_type,
+            "input": list(self.input),
+            "reasoning": self.reasoning,
+            "cache_control": self.cache_control,
+        }
+
+
+@dataclass
+class ProviderConfig:
+    """接入层配置：管 api_key / base_url / 协议与多个模型条目。"""
+    interface_type: str = "anthropic"  # "anthropic" | "openai"
+    api_key: str = ""  # 支持 ${ENV_VAR} 整值插值
+    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
+    backend: str = "custom"  # "custom" | "codex" | "claude-code" | "opencode" | "openrouter" | "litellm"
+    base_url: str = "https://api.anthropic.com"
+    headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
+    models: dict[str, ModelSpec] = field(default_factory=dict)  # 键 = 自由别名；省略时视为 {"default": {}}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ProviderConfig":
+        raw_models = data.get("models")
+        if isinstance(raw_models, dict) and raw_models:
+            models = {key: ModelSpec.from_dict(v if isinstance(v, dict) else {})
+                      for key, v in raw_models.items()}
+        else:
+            models = {"default": ModelSpec.from_dict({})}
+        return cls(
+            interface_type=data.get("interface_type", "anthropic"),
+            api_key=_expand_env_value(str(data.get("api_key", ""))),
+            auth_type=data.get("auth_type", "auto"),
+            backend=data.get("backend", "custom"),
+            base_url=data.get("base_url", "https://api.anthropic.com").rstrip("/"),
+            headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
+            models=models,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "interface_type": self.interface_type,
+            "api_key": self.api_key,
+            "auth_type": self.auth_type,
+            "backend": self.backend,
+            "base_url": self.base_url,
+            "headers": dict(self.headers),
+            "models": {key: spec.to_dict() for key, spec in self.models.items()},
+        }
+
+
+@dataclass
+class AgentConfig:
+    """角色条目：模型引用（"provider键/模型键"）。"""
+    model: str = ""  # 空 = 继承 master
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AgentConfig":
+        return cls(model=str(data.get("model", "")) if isinstance(data, dict) else "")
+
+    def to_dict(self) -> dict:
+        return {"model": self.model}
+
+
+_ENV_INTERP_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _expand_env_value(value: str) -> str:
+    """``${ENV_VAR}`` 整值插值；变量未设置时启动报错（fail-fast，不静默空 key）。"""
+    matched = _ENV_INTERP_RE.fullmatch(value.strip())
+    if not matched:
+        return value
+    var = matched.group(1)
+    env_value = os.environ.get(var)
+    if env_value is None:
+        raise RuntimeError(
+            f"环境变量 {var} 未设置（api_key 引用了 ${{{var}}}）；"
+            f"请设置该变量或将 api_key 改为字面值"
+        )
+    return env_value
 
 
 @dataclass
@@ -198,61 +308,138 @@ class MCPConfig:
 
 @dataclass
 class Config:
-    """Global configuration."""
-    model: ModelConfig          # Master (main) model: multi-turn conversation for all agents
-    worker_model: ModelConfig | None = None  # Worker model; None = inherit master model
-    lite_model: ModelConfig | None = None    # Lite model; None = inherit master model
-    system: SystemConfig = field(default_factory=SystemConfig)  # System parameters
-    mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)  # MCP 服务器配置
+    """Global configuration.
+
+    模型配置为两级结构：``providers``（凭据/接入层 + models 表）与 ``agents``
+    （角色 → 模型引用字符串，如 ``"bg/main"``）。
+    """
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    agents: dict[str, AgentConfig] = field(default_factory=dict)  # 键 = 角色名（master/worker/lite）
+    system: SystemConfig = field(default_factory=SystemConfig)
+    mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)
+
+    # ── 引用解析 ──
+
+    def resolve_model(self, ref: str) -> ModelConfig:
+        """解析 ``"provider键/模型键"`` 为运行时 ModelConfig。
+
+        按第一个 ``/`` 拆分（模型键内可再含 ``/``）；引用无效时 RuntimeError 并列出可用引用。
+        """
+        provider_key, _, model_key = ref.partition("/")
+        if not provider_key or not model_key:
+            raise RuntimeError(
+                f"模型引用 {ref!r} 无效，应为 \"provider键/模型键\"；可用: {self.available_refs() or '（无）'}"
+            )
+        provider = self.providers.get(provider_key)
+        if provider is None:
+            raise RuntimeError(f"模型引用 {ref!r} 的 provider {provider_key!r} 不存在；可用: {self.available_refs()}")
+        spec = provider.models.get(model_key)
+        if spec is None:
+            raise RuntimeError(
+                f"模型引用 {ref!r} 的模型键 {model_key!r} 不存在；可用: {self.available_refs()}"
+            )
+        return ModelConfig(
+            name=spec.name or model_key,
+            interface_type=provider.interface_type,
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            auth_type=provider.auth_type,
+            backend=provider.backend,
+            headers=dict(provider.headers),
+            max_output_tokens=spec.max_output_tokens,
+            max_context_tokens=spec.max_context_tokens,
+            model_type=spec.model_type,
+            input=list(spec.input),
+            reasoning=spec.reasoning,
+            cache_control=spec.cache_control,
+        )
+
+    def available_refs(self) -> list[str]:
+        """全部可用模型引用（"provider键/模型键"），按 provider 分组排序。"""
+        return [f"{pkey}/{mkey}" for pkey in sorted(self.providers) for mkey in sorted(self.providers[pkey].models)]
+
+    def master_ref(self) -> str:
+        """master 角色的模型引用；agents 未配置时按"全局恰好只有一个可用模型"兜底。"""
+        ref = (self.agents.get("master") or AgentConfig()).model
+        if ref:
+            return ref
+        available = self.available_refs()
+        if len(available) == 1:
+            return available[0]
+        raise RuntimeError(
+            f"未配置 agents.master.model 且无法从唯一可用模型兜底（可用: {available or '（无）'}）；"
+            f"请在 setting.json 的 agents.master.model 配置模型引用"
+        )
+
+    def role_refs(self) -> dict[str, str]:
+        """角色名 → 模型引用；worker/lite 未配置时继承 master。"""
+        master_ref = self.master_ref()
+        return {
+            "master": master_ref,
+            "worker": (self.agents.get("worker") or AgentConfig()).model or master_ref,
+            "lite": (self.agents.get("lite") or AgentConfig()).model or master_ref,
+        }
 
     @property
     def role_models(self) -> dict[str, ModelConfig]:
         """角色名 → 模型配置的显式映射（未单独配置的角色回退 master 模型）。"""
-        return {
-            "master": self.model,
-            "worker": self.worker_model or self.model,
-            "lite": self.lite_model or self.model,
-        }
+        return {role: self.resolve_model(ref) for role, ref in self.role_refs().items()}
 
     def model_for_role(self, role: str) -> ModelConfig:
-        """取角色模型；未知角色回退 master 模型并告警。
-
-        取代原先 `getattr(config, f"{role}_model", None) or config.model` 的静默回退
-        （角色名拼错会无提示地使用 master 模型）。
-        """
+        """取角色模型；未知角色回退 master 模型并告警。"""
         models = self.role_models
         if role in models:
             return models[role]
         logger.warning(
             f"[Config] 未知角色 {role!r}，回退 master 模型；"
-            f"如需独立模型请在 setting.json 中配置 {role}_model"
+            f"如需独立模型请在 setting.json 的 agents.{role}.model 配置模型引用"
         )
-        return self.model
+        return models["master"]
+
+    @property
+    def model(self) -> ModelConfig:
+        """master 模型（运行时形态）。供少量旧调用点过渡使用。"""
+        return self.resolve_model(self.master_ref())
+
+    # ── 构建 ──
 
     @classmethod
     def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
-        """Build Config from raw global config dict with CLI/env overrides."""
-        # ── Master model ──
-        model_data = global_config.get("model", {})
+        """Build Config from raw global config dict with CLI/env overrides.
 
-        api_key = (
-            os.environ.get("ANTHROPIC_API_KEY")
-            or model_data.get("api_key")
-            or ""
-        )
-        base_url = (
-            os.environ.get("ANTHROPIC_BASE_URL")
-            or model_data.get("base_url")
-            or "https://api.anthropic.com"
-        )
-        model_name = (
-            model_override
-            or os.environ.get("ANTHROPIC_MODEL")
-            or model_data.get("name")
-            or "claude-sonnet-4-6"
-        )
+        旧格式（model/worker_model/lite_model 为对象）由 ``migrate_legacy_config``
+        在此之前转换，此处只处理新格式。
+        """
+        providers = {
+            name: ProviderConfig.from_dict(cfg)
+            for name, cfg in (global_config.get("providers") or {}).items()
+            if isinstance(cfg, dict)
+        }
+        agents = {
+            name: AgentConfig.from_dict(cfg)
+            for name, cfg in (global_config.get("agents") or {}).items()
+            if isinstance(cfg, dict)
+        }
+        if "master" not in agents:
+            agents["master"] = AgentConfig.from_dict({})
 
-        if not api_key:
+        config = cls(providers=providers, agents=agents)
+
+        # ── env/CLI 覆盖：只作用于 master 的接入层/模型 ID，不改变模型归属 ──
+        master_ref = config.master_ref()
+        provider_key, _, model_key = master_ref.partition("/")
+        provider = config.providers[provider_key]
+        env_api_key = os.environ.get("ANTHROPIC_API_KEY")
+        env_base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        env_model = model_override or os.environ.get("ANTHROPIC_MODEL")
+        if env_api_key:
+            provider.api_key = env_api_key
+        if env_base_url:
+            provider.base_url = env_base_url.rstrip("/")
+        if env_model:
+            provider.models[model_key].name = env_model
+
+        if not provider.api_key:
             raise RuntimeError(
                 f"No API key found. Please configure one of:\n"
                 f"  1. Environment variable: ANTHROPIC_API_KEY\n"
@@ -260,59 +447,151 @@ class Config:
                 f"\nYou can also configure via web UI or edit {GLOBAL_CONFIG_PATH} directly."
             )
 
-        # Use from_dict with env-var overrides applied on top
-        model = ModelConfig.from_dict({
-            **model_data,
-            "name": model_name,
-            "api_key": api_key,
-            "base_url": base_url,
-        })
-
-        # ── Worker/Lite model (optional; inherit master when unset) ──
-        worker_model = cls._parse_role_model(global_config, "worker", model)
-        lite_model = cls._parse_role_model(global_config, "lite", model)
-
         # ── System ──
-        system = SystemConfig.from_dict(global_config.get("system", {}))
+        config.system = SystemConfig.from_dict(global_config.get("system", {}))
 
         # ── MCP servers ──
-        mcp_servers = {
+        config.mcp_servers = {
             name: MCPConfig.from_dict(cfg)
             for name, cfg in (global_config.get("mcp_servers") or {}).items()
             if isinstance(cfg, dict)
         }
 
-        return cls(
-            model=model,
-            worker_model=worker_model,
-            lite_model=lite_model,
-            system=system,
-            mcp_servers=mcp_servers,
-        )
-
-    @staticmethod
-    def _parse_role_model(global_config: dict, role: str, base_model: ModelConfig) -> ModelConfig | None:
-        """Parse ``{role}_model`` config; returns None when unset or missing name."""
-        data = global_config.get(f"{role}_model", {})
-        if not data or not data.get("name"):
-            return None
-        return base_model.merged_with(data)
+        return config
 
     def to_dict(self) -> dict:
-        """Convert to a serializable dict (for API response)."""
-        result = {
-            "model": self.model.to_dict(),
+        """Convert to a serializable dict (for API response)。api_key 脱敏在路由层做。"""
+        result: dict = {
+            "providers": {name: cfg.to_dict() for name, cfg in self.providers.items()},
+            "agents": {name: cfg.to_dict() for name, cfg in self.agents.items()},
             "system": self.system.to_dict(),
         }
-        if self.worker_model:
-            result["worker_model"] = self.worker_model.to_dict()
-        if self.lite_model:
-            result["lite_model"] = self.lite_model.to_dict()
         if self.mcp_servers:
             result["mcp_servers"] = {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             }
         return result
+
+
+# ── 旧格式迁移 ──
+
+_LEGACY_MODEL_SPEC_EXCLUDE = {"name", "interface_type", "api_key", "base_url", "temperature", "multimodal", "reasoning_effort", "max_tokens", "max_context_tokens"}
+
+
+def _convert_legacy_model_spec(obj: dict) -> dict:
+    """旧角色模型对象 → 新 ModelSpec 字段（multimodal/reasoning_effort 转换，temperature 丢弃）。"""
+    spec = {k: v for k, v in obj.items() if k not in _LEGACY_MODEL_SPEC_EXCLUDE}
+    spec["name"] = obj.get("name", "")
+    spec["max_output_tokens"] = int(obj.get("max_tokens", 8192))
+    spec["max_context_tokens"] = int(obj.get("max_context_tokens", 128000))
+    if "multimodal" in obj:
+        spec["input"] = ["text", "image"] if obj.get("multimodal") else ["text"]
+    effort = obj.get("reasoning_effort", "")
+    spec["reasoning"] = effort if effort else "default"
+    return spec
+
+
+def _backup_global_config() -> Path:
+    """备份 setting.json；返回备份路径。已存在 setting.json.bak 时用带时间戳后缀，不覆盖更早的回滚副本。"""
+    backup = GLOBAL_CONFIG_PATH.with_suffix(".json.bak")
+    if backup.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = GLOBAL_CONFIG_PATH.with_suffix(f".json.bak-{stamp}")
+    shutil.copy2(GLOBAL_CONFIG_PATH, backup)
+    return backup
+
+
+def convert_legacy_config(global_config: dict) -> dict | None:
+    """旧格式（model/worker_model/lite_model 为对象）→ 新格式 dict；非旧格式返回 None。
+
+    纯函数，不碰文件系统。master 缺失时抛 RuntimeError。
+    合成 provider 键为 ``default``（凭据不同时 ``default_2`` 起），backend 默认 litellm。
+    """
+    legacy_role_models = {
+        role: global_config.get(top_key)
+        for role, top_key in (("master", "model"), ("worker", "worker_model"), ("lite", "lite_model"))
+    }
+    if not any(isinstance(obj, dict) for obj in legacy_role_models.values()):
+        return None
+
+    master_obj = legacy_role_models.get("master")
+    if not isinstance(master_obj, dict) or not master_obj.get("name"):
+        raise RuntimeError("旧格式配置缺少 model.name（master 主模型），无法迁移；请补全后重试")
+
+    providers_raw: dict[str, dict] = {}
+    agents: dict[str, dict] = {}
+    dropped_fields: list[str] = []
+
+    for role, obj in legacy_role_models.items():
+        if not isinstance(obj, dict) or not obj.get("name"):
+            continue
+        cred = (
+            obj.get("interface_type", "anthropic"),
+            obj.get("api_key", ""),
+            (obj.get("base_url") or "https://api.anthropic.com").rstrip("/"),
+        )
+        provider_key = next(
+            (key for key, raw in providers_raw.items() if raw["_cred"] == cred), None
+        )
+        if provider_key is None:
+            provider_key = "default" if not providers_raw else f"default_{len(providers_raw) + 1}"
+            providers_raw[provider_key] = {
+                "_cred": cred,
+                "interface_type": cred[0],
+                "api_key": cred[1],
+                "base_url": cred[2],
+                "backend": "litellm",
+                "headers": {},
+                "auth_type": "auto",
+                "models": {},
+            }
+        model_key = "main" if role == "master" else role
+        while model_key in providers_raw[provider_key]["models"]:
+            model_key += "_2"
+        if "temperature" in obj:
+            dropped_fields.append(f"{role}.temperature")
+        providers_raw[provider_key]["models"][model_key] = _convert_legacy_model_spec(obj)
+        agents[role] = {"model": f"{provider_key}/{model_key}"}
+
+    providers: dict[str, dict] = {}
+    for key, raw in providers_raw.items():
+        raw.pop("_cred")
+        providers[key] = raw
+
+    migrated = {
+        key: value for key, value in global_config.items()
+        if key not in ("model", "worker_model", "lite_model")
+    }
+    migrated["providers"] = providers
+    migrated["agents"] = agents
+    if dropped_fields:
+        migrated["_migrate_dropped"] = dropped_fields  # 供调用方日志，写盘前剥离
+    return migrated
+
+
+def migrate_legacy_config(global_config: dict) -> dict:
+    """旧格式 → 新格式（备份 → 转换 → 原子写回）；新格式原样返回。幂等。
+
+    仅在真实配置加载路径（load_config / get_config）调用；纯转换见 convert_legacy_config。
+    """
+    migrated = convert_legacy_config(global_config)
+    if migrated is None:
+        return global_config
+
+    backup_path = _backup_global_config()
+    dropped_fields = migrated.pop("_migrate_dropped", [])
+
+    try:
+        atomic_write_json(GLOBAL_CONFIG_PATH, migrated)
+    except OSError as e:
+        raise RuntimeError(f"迁移结果写回失败（原文件未动，备份在 {backup_path}）: {e}") from e
+
+    dropped_note = f"；丢弃字段: {', '.join(dropped_fields)}" if dropped_fields else ""
+    logger.info(
+        f"[Config] 旧格式配置已迁移：providers={list(migrated.get('providers', {}))}，"
+        f"agents={migrated.get('agents', {})}；备份: {backup_path}{dropped_note}"
+    )
+    return migrated
 
 
 # Base directories (config.py is in core/, project root is one level up)
@@ -505,8 +784,12 @@ def save_global_config(config: dict) -> bool:
 
 
 def load_config(model_override: str | None = None) -> Config:
-    """Load config with priority: CLI override > env vars > global config > defaults."""
-    global_config = load_global_config()
+    """Load config with priority: CLI override > env vars > global config > defaults.
+
+    旧格式（model/worker_model/lite_model 为对象）在此处自动迁移：
+    备份原文件 → 转换 → 原子写回 → 按新格式解析（详见 migrate_legacy_config）。
+    """
+    global_config = migrate_legacy_config(load_global_config())
     return Config.from_global_config(global_config, model_override)
 
 

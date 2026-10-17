@@ -10,7 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.config import Config, ModelConfig, SystemConfig
+from core.config import (
+    AgentConfig,
+    Config,
+    ModelSpec,
+    ProviderConfig,
+    SystemConfig,
+)
 from core.role_config import load_role
 from core.session_runner import SessionRunner
 
@@ -32,12 +38,12 @@ class TestRoleConfigDefaults:
 
 def _make_real_config(model_max_tokens: int) -> Config:
     return Config(
-        model=ModelConfig(
-            name="test-model",
+        providers={"test": ProviderConfig(
             interface_type="anthropic",
-            max_tokens=model_max_tokens,
-            max_context_tokens=256000,
-        ),
+            api_key="test-key",
+            models={"test": ModelSpec(name="test-model", max_output_tokens=model_max_tokens, max_context_tokens=256000)},
+        )},
+        agents={"master": AgentConfig(model="test/test")},
         system=SystemConfig(),
     )
 

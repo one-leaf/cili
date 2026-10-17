@@ -345,7 +345,7 @@ description 一律截断到 200 字上限（journal 记录截断 300，直接透
 
 ### 5.7 Lite 模型与沙箱
 
-- 提取/整合两阶段均调用 Lite 模型（`config.lite_model` 或 `config.model`），max_tokens 分别 8000 / 16000（取模型配置上限的较小者）。
+- 提取/整合两阶段均调用 Lite 模型（`config.model_for_role("lite")`），max_tokens 分别 8000 / 16000（取模型配置上限的较小者）。
 - **无工具**：两阶段 LLM 调用不挂 bash/python/web 等任何工具——比只读 agent 更严的沙箱、更便宜，测试可注入回调替换。
 
 ---
