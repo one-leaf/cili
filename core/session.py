@@ -813,6 +813,11 @@ class SessionStore:
         """
         # 开头捕获版本、结尾写回：并发 add_message 在持久化中途置脏的变更
         # 不会被本次 write-back 覆盖，而是保留版本差触发下一次 save
+        if not self.session_dir.exists():
+            # 会话目录已被外部删除（如 UI 删除会话）。持久化会经
+            # atomic_write_json 的 mkdir 把已删会话重建为空壳，故直接跳过；
+            # _persisted_version 不更新，下次 save 仍会进入本分支，幂等。
+            return
         persisted_version = self._index_version
         self._append_pending_messages()
         self._rewrite_index_and_meta()

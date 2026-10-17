@@ -615,17 +615,18 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # 先把 runner 从池里摘除（cleanup 会 save 一次，此时目录还在），
+    # 再删目录——顺序反了会让 cleanup 的 save 把已删目录重建为空会话
+    key = f"{workspace_uuid}:{session_id}"
+    with _sessions_lock:
+        registry.remove(key)
+
     # 删除整个 session 目录
     shutil.rmtree(session_dir)
     _drop_session_lock(session_dir)
     # 会话目录已删，丢弃缓存的 GoalManager（否则 _managers 长期累积）
     from core.goal import release_goal_manager
     release_goal_manager(session_dir)
-
-    # Remove from registry (under lock)
-    key = f"{workspace_uuid}:{session_id}"
-    with _sessions_lock:
-        registry.remove(key)
 
     return {"success": True}
 
@@ -703,6 +704,11 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 
         try:
             if request.action == "delete":
+                # 先摘除 runner（同单删：避免 cleanup 的 save 重建已删目录），
+                # 且不让已删会话的 runner 残留在池里（之后淘汰/关停时 save 会复活空会话）
+                key = f"{workspace_uuid}:{session_id}"
+                with _sessions_lock:
+                    registry.remove(key)
                 # Delete session
                 shutil.rmtree(session_dir, ignore_errors=True)
                 _drop_session_lock(session_dir)

@@ -849,3 +849,109 @@ class TestTokenCookieAuth:
             monkeypatch, self._request(headers={"X-Access-Token": "secret"}))
         assert resp.status_code == 200
         assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
+
+
+class TestSessionDeleteNoGhost:
+    """删除会话不残留空会话（回归）。
+
+    根因：runner.cleanup() 会 save 当前会话；若删除路由先 rmtree 再从
+    registry 摘除 runner，save 经 atomic_write_json 的 mkdir 把已删目录
+    重建为空壳（index/meta 在、jsonl 缺失 → 0 条消息）。批量删除此前
+    甚至不摘 runner，之后 LRU 淘汰/关停时同样复活空会话。
+    """
+
+    def _snapshot(self):
+        from core.session_registry import registry
+        return dict(registry._hosted), dict(registry._access)
+
+    def _restore(self, snapshot):
+        from core.session_registry import registry
+        hosted, access = snapshot
+        registry._hosted.clear()
+        registry._hosted.update(hosted)
+        registry._access.clear()
+        registry._access.update(access)
+
+    def _make_hosted_session(self, sessions_dir):
+        """建一个有消息的会话 + 在 registry 里挂一个 cleanup 会 save 的假 runner。
+
+        cleanup 模拟真实 SessionRunner.cleanup() 的行为（sync + save），
+        使「先删目录后摘 runner」的错误顺序能在测试中复现残留。
+        """
+        import time
+
+        from core.session import SessionStore
+        from core.session_registry import HostedSession, registry, session_key
+
+        store = SessionStore.create_new_session(sessions_dir, "待删会话")
+        store.add_message("user", "你好", flush=True)
+        store.save()
+
+        def cleanup():
+            store.save(force=True)
+
+        runner = MagicMock()
+        runner.cleanup.side_effect = cleanup
+        runner.is_running.return_value = False
+        key = session_key("test-workspace", store.session_id)
+        registry._hosted[key] = HostedSession(key=key, runner=runner)
+        registry._access[key] = time.time()
+        return store, key
+
+    def test_delete_session_no_ghost_dir(self, test_workspace):
+        """单删：先摘 runner 再 rmtree，目录不复活、registry 不残留。"""
+        import asyncio
+
+        from core.config import get_workspace_data_dir
+        from core.session_registry import registry
+        from web.routes_workspace import delete_session
+
+        ws_dir = get_workspace_data_dir("test-workspace")
+        sessions_dir = ws_dir / "sessions"
+        snap = self._snapshot()
+        try:
+            store, key = self._make_hosted_session(sessions_dir)
+            result = asyncio.run(delete_session("test-workspace", store.session_id, ws_dir=ws_dir))
+            assert result == {"success": True}
+            assert not store.session_dir.exists()
+            assert key not in registry._hosted
+        finally:
+            self._restore(snap)
+
+    def test_batch_delete_no_ghost_dir(self, test_workspace):
+        """批量删：同样先摘 runner，目录不复活。"""
+        import asyncio
+
+        from core.config import get_workspace_data_dir
+        from core.session_registry import registry
+        from web.routes_workspace import BatchSessionRequest, batch_session_operation
+
+        ws_dir = get_workspace_data_dir("test-workspace")
+        sessions_dir = ws_dir / "sessions"
+        snap = self._snapshot()
+        try:
+            store, key = self._make_hosted_session(sessions_dir)
+            request = BatchSessionRequest(session_ids=[store.session_id], action="delete")
+            result = asyncio.run(batch_session_operation("test-workspace", request, ws_dir=ws_dir))
+            assert result["success"] is True
+            assert result["results"] == [{"session_id": store.session_id, "success": True}]
+            assert not store.session_dir.exists()
+            assert key not in registry._hosted
+        finally:
+            self._restore(snap)
+
+    def test_persist_skips_when_dir_deleted(self, tmp_path):
+        """兜底：会话目录被外部删除后，save 不经 mkdir 重建空壳。"""
+        import shutil
+
+        from core.session import SessionStore
+
+        store = SessionStore.create_new_session(tmp_path / "sessions", "x")
+        store.add_message("user", "你好", flush=True)
+        store.save()
+        shutil.rmtree(store.session_dir)
+
+        store._bump_index_version()  # 模拟 cleanup 前 _sync_to_session 置脏
+        store.save()
+
+        assert not store.session_dir.exists()
