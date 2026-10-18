@@ -97,9 +97,10 @@ class PDF2MarkdownTool(Tool):
     MAX_TOOL_RESULT_SIZE_CHARS = 50_000
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session=None, config: Config | None = None, approval_store=None):
+                 session=None, config: Config | None = None, approval_store=None,
+                 approval_rules=None):
         super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session=session,
-                         approval_store=approval_store)
+                         approval_store=approval_store, approval_rules=approval_rules)
         self._config = config
 
     def _get_mineru_api_key(self) -> str:

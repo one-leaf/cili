@@ -179,15 +179,20 @@ class TestBashExecuteGate:
         result = tool.execute(command=f"touch {outside}", timeout=5)
         assert result.completed is False
         assert not result.error
-        assert result.meta[META_KEY]["kind"] == "path:write"
-        assert result.meta[META_KEY]["command"] == str(outside)
+        # 统一占位：命令级卡片携带完整命令，越界目标在 targets 证据里
+        assert result.meta[META_KEY]["kind"] == "command"
+        assert result.meta[META_KEY]["command"] == f"touch {outside}"
+        targets = result.meta[META_KEY]["targets"]
+        assert any(not t["inside_workspace"] and t["decision_id"] for t in targets)
 
     def test_outside_delete_placeholder(self, test_workspace, tmp_path):
         tool = self._tool(test_workspace, ApprovalStore())
         outside = tmp_path / "o.txt"
         result = tool.execute(command=f"rm {outside}", timeout=5)
         assert result.completed is False
-        assert result.meta[META_KEY]["kind"] == "path:delete"
+        assert result.meta[META_KEY]["kind"] == "command"
+        targets = result.meta[META_KEY]["targets"]
+        assert any(not t["inside_workspace"] and t["decision_id"] for t in targets)
 
     def test_inside_write_runs(self, test_workspace, monkeypatch):
         tool = self._tool(test_workspace, ApprovalStore())
@@ -234,7 +239,10 @@ class TestBashExecuteGate:
         outside.mkdir()
         result = tool.execute(command="ls", working_dir=str(outside), timeout=5)
         assert result.completed is False
-        assert result.meta[META_KEY]["kind"] == "path:write"
+        # working_dir 目标折叠进统一命令级占位
+        assert result.meta[META_KEY]["kind"] == "command"
+        targets = result.meta[META_KEY]["targets"]
+        assert any(not t["inside_workspace"] and t["decision_id"] for t in targets)
 
     def test_working_dir_inside_runs(self, test_workspace, monkeypatch):
         tool = self._tool(test_workspace, ApprovalStore())
@@ -250,7 +258,9 @@ class TestPwshExecuteGate:
         outside = tmp_path / "o.txt"
         result = tool.execute(command=f"Remove-Item {outside}", timeout=5)
         assert result.completed is False
-        assert result.meta[META_KEY]["kind"] == "path:delete"
+        assert result.meta[META_KEY]["kind"] == "command"
+        targets = result.meta[META_KEY]["targets"]
+        assert any(not t["inside_workspace"] and t["decision_id"] for t in targets)
 
     def test_inside_write_runs(self, test_workspace, monkeypatch):
         tool = PwshTool(cwd=test_workspace, approval_store=ApprovalStore())

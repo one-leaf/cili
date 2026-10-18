@@ -50,7 +50,8 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     logger.info(f"[ask-user] 尝试为 tool_use_id={ask_user_tool_use_id} 提交答案")
 
     if not inject_ask_user_answer(runner.session, ask_user_tool_use_id, request.answer,
-                                  runner.approval_store):
+                                  runner.approval_store,
+                                  getattr(runner, "approval_rules", None)):
         raise HTTPException(400, f"Placeholder tool_result not found for tool_use_id: {ask_user_tool_use_id}")
 
     # 继续 runner 循环（本端点无后续输入来源，客户端断开时取消执行）

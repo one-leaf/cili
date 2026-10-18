@@ -155,7 +155,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         f"Workspace temp directory: `{tmp_dir}` (inside the workspace).",
         "",
         "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
-        "Writes/deletes are only allowed inside the workspace; anything outside requires approval.",
+        "Writes/deletes are only allowed inside the workspace; anything outside goes through the approval flow (safety judgment + user confirmation).",
         "For session-scoped temp storage use the `temp` tool — it creates "
         "`{workspace}/.cili/tmp/{session_id}/`.",
         "In Python, `tempfile` module is auto-configured to the system temp.",

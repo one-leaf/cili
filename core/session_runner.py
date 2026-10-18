@@ -30,6 +30,8 @@ from core.prompt_builder import (
     build_system_prompt,
 )
 from core.role_config import load_role
+from core.security.approval_judge import ApprovalJudge
+from core.security.approval_rules import ApprovalRules
 from core.session import SessionStore, build_exec_log_data, generate_short_id
 from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
@@ -47,6 +49,7 @@ from core.tools.approval import (
     REJECT_LABEL,
     REMEMBER_LABEL,
     ApprovalStore,
+    append_approval_audit,
     build_approval_question,
     build_approved_commands_section,
 )
@@ -105,6 +108,7 @@ class SessionRunner(BaseSessionRunner):
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
         approval_store=None,
+        approval_rules=None,
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
         run_mode: str | None = None,
@@ -122,6 +126,7 @@ class SessionRunner(BaseSessionRunner):
             stop_check: 返回 True 表示父代理已停止
             exec_id: autonomous 模式的执行 ID（作为 session 标识）
             approval_store: autonomous 模式共享的会话级审批存储
+            approval_rules: autonomous 模式共享的审批规则引擎（core/security/approval_rules.py）
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
             run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
@@ -182,10 +187,14 @@ class SessionRunner(BaseSessionRunner):
             self.client.max_tokens = min(role_max_tokens, self.model.max_output_tokens)
 
         if self._mode == "interactive":
-            # 高风险命令审批存储：会话级内存 + workspace 持久化规则（启动回灌），根/子代理共享
+            # 审批三件套（设计 §3.1）：会话级存储 + 规则引擎（workspace 持久化，旧
+            # approvals.json 首次加载自动迁移）+ lite 判定器。根/子代理共享 store 与
+            # rules 实例（子代理经 session_tool 透传）。
             from core.config import get_workspace_data_dir
-            self.approval_store = ApprovalStore(
-                rules_path=get_workspace_data_dir(self.workspace_uuid) / "approvals.json"
+            self.approval_store = ApprovalStore()
+            self.approval_rules = ApprovalRules(
+                get_workspace_data_dir(self.workspace_uuid) / "approval_rules.json",
+                workspace_root=self._cwd_init,
             )
             # IMPORTANT: Share messages list with session (not copy!)
             self.messages = self.session.messages
@@ -196,6 +205,7 @@ class SessionRunner(BaseSessionRunner):
             self.sink = self.default_sink
         else:
             self.approval_store = approval_store
+            self.approval_rules = approval_rules
             self.max_consecutive_failures = (
                 max_consecutive_failures
                 if max_consecutive_failures is not None
@@ -204,6 +214,15 @@ class SessionRunner(BaseSessionRunner):
             self._budget_warn_triggered = False
             self._budget_final_triggered = False
             self._started_at: datetime | None = None
+
+        # lite 判定器（设计 §3.3）：interactive 与 autonomous 都具备判定能力；
+        # 有无「询问用户」通道由 role_cfg.approval 决定（master=True，worker/lite=False）。
+        self.approval_judge = ApprovalJudge(
+            config, self.approval_rules, self.approval_store,
+            role=self.role, has_user_channel=bool(self.role_cfg.approval),
+            workspace_root=self._cwd_init, cwd=self._cwd_init,
+            session_dir=init_session_dir,
+        )
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
@@ -280,6 +299,7 @@ class SessionRunner(BaseSessionRunner):
             session=sm,
             config=self.config,
             approval_store=self.approval_store,
+            approval_rules=self.approval_rules,
         )
 
         # MCP 动态工具（默认 deferred，tool_search 按需激活）：
@@ -527,6 +547,12 @@ class SessionRunner(BaseSessionRunner):
         [assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]
         """
         self.approval_store.set_pending(approval)
+        # 审计：卡片询问（asked）——用户决定（decided）在 inject_ask_user_answer 落
+        append_approval_audit(self.session.session_dir, "asked", {
+            "source": "user", "decision_id": approval.get("decision_id", ""),
+            "tool": approval.get("tool", ""), "kind": approval.get("kind", "command"),
+            "action": str(approval.get("command", ""))[:300],
+        })
 
         ask_id = generate_short_id()
         ask_input = {
@@ -536,7 +562,7 @@ class SessionRunner(BaseSessionRunner):
                     "header": "命令批准",
                     "options": [
                         {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同命令（含委派给子代理）不再询问。"},
-                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区，重启后仍放行相同命令。"},
+                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类命令。"},
                         {"label": REJECT_LABEL, "description": "拒绝执行该命令。"},
                     ],
                 }
@@ -690,8 +716,8 @@ class SessionRunner(BaseSessionRunner):
         )
         lines.append("")
 
-        # 下放主代理会话级批准的命令（共享同一 ApprovalStore，子代理可直接执行）
-        approved_section = build_approved_commands_section(self.approval_store)
+        # 下放主代理会话级批准的命令与工作区已落盘规则（共享同一实例，子代理可直接执行）
+        approved_section = build_approved_commands_section(self.approval_store, self.approval_rules)
         if approved_section:
             lines.append(approved_section)
 

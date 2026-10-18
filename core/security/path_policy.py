@@ -14,11 +14,14 @@ approval_store 为 None 时 fail-closed：越界（临时目录除外）一律 d
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
 
 from core.fs_utils import normalize_bash_path
+
+logger = logging.getLogger(__name__)
 
 OP_WRITE = "write"
 OP_DELETE = "delete"
@@ -77,11 +80,14 @@ class PathPolicy:
     """
 
     def __init__(self, workspace_root: str, cwd: str | None = None,
-                 approval_store=None):
+                 approval_store=None, approval_rules=None):
         self.cwd = os.path.abspath(cwd or workspace_root)
         self.workspace_root = os.path.realpath(workspace_root)
         self.temp_root = os_temp_root()
         self.approval_store = approval_store
+        # 审批规则引擎（core/security/approval_rules.py），duck-typing 调用
+        # match_path(kind, resolved)——避免 import 成环（rules → shell_paths → 本模块）
+        self.approval_rules = approval_rules
 
     def resolve(self, path: str) -> str:
         """展开 ~ → 相对路径 join cwd → realpath。不做边界抛错。
@@ -111,13 +117,20 @@ class PathPolicy:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
     def status(self, target: PathTarget) -> str:
-        """allow（区内）| approved（外部但已批）| needs_approval（外部未批）| deny（无 store）"""
+        """allow（区内）| approved（外部但已批/命中规则）| needs_approval（外部未批）| deny（无任何审批通道）"""
         if target.resolved is not None and self.is_inside(target.resolved):
             return "allow"
-        if self.approval_store is None:
-            return "deny"
-        if self.approval_store.is_approved(self.decision_id(target)):
+        if self.approval_rules is not None and target.resolved is not None:
+            kind = "path:delete" if target.op == OP_DELETE else "path:write"
+            try:
+                if self.approval_rules.match_path(kind, target.resolved):
+                    return "approved"
+            except Exception:  # noqa: BLE001 —— 规则引擎异常不放大为放行
+                logger.exception("[path-policy] 规则匹配异常，按未命中处理")
+        if self.approval_store is not None and self.approval_store.is_approved(self.decision_id(target)):
             return "approved"
+        if self.approval_store is None and self.approval_rules is None:
+            return "deny"
         return "needs_approval"
 
     def any_denied(self, targets: list[PathTarget]) -> PathTarget | None:
@@ -133,6 +146,16 @@ class PathPolicy:
             if self.status(t) == "needs_approval":
                 return t
         return None
+
+    def target_evidence(self, target: PathTarget) -> dict:
+        """单个目标的判定证据（进入 lite 判定输入 / 审计 / 会话批准派生）。"""
+        return {
+            "op": target.op,
+            "raw": target.raw,
+            "resolved": target.resolved,
+            "inside_workspace": bool(target.resolved and self.is_inside(target.resolved)),
+            "decision_id": self.decision_id(target),
+        }
 
     def approval_meta(self, target: PathTarget) -> dict:
         """构造与 bash 审批同构的 meta（META_KEY.approval_required 内容）。"""

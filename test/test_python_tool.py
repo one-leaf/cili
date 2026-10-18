@@ -61,7 +61,7 @@ class TestPythonDeny:
     @staticmethod
     def _check(code):
         from core.tools.python_tool import PythonTool
-        return PythonTool._check_python_deny(code)
+        return PythonTool._analyze_python_code(code)
 
     def test_eval_blocked(self):
         assert self._check("eval('1+1')")
@@ -150,7 +150,8 @@ class TestPythonDeny:
         assert not self._check("import builtins; builtins.open('f.txt')")
 
     def test_syntax_error_reported(self):
-        assert "语法错误" in (self._check("def broken(") or "")
+        # 语法错误不再作为安全证据（代码自然执行失败，由 Python 运行时报错）
+        assert self._check("def broken(") == []
 
 
 class TestPipNoticeFilter:

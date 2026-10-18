@@ -42,10 +42,10 @@ from core.tools.write import WriteTool
 
 logger = logging.getLogger(__name__)
 
-Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any], Tool]
+Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any, Any], Tool]
 
 
-def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store) -> Tool:
+def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules) -> Tool:
     return SkillTool(
         role=role_cfg.name,
         cwd=cwd, workspace_uuid=workspace_uuid, session=session,
@@ -53,9 +53,10 @@ def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store) 
 
 
 def _factory(cls: type, *, needs_config: bool = False, needs_approval: bool = False) -> Factory:
-    def factory(role_cfg, cwd, workspace_uuid, session, config, approval_store) -> Tool:
+    def factory(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules) -> Tool:
         kwargs: dict[str, Any] = dict(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
+            approval_rules=approval_rules,
         )
         if needs_config:
             kwargs["config"] = config
@@ -106,6 +107,7 @@ def create_tools(
     session=None,
     config: Config | None = None,
     approval_store=None,
+    approval_rules=None,
     role: str | None = None,
 ) -> list[Tool]:
     """按角色工具白名单实例化工具。
@@ -123,7 +125,7 @@ def create_tools(
             logger.warning(f"[registry] 角色 {role_cfg.name!r} 白名单中的工具 {name!r} 未注册，已跳过")
             continue
         try:
-            tools.append(factory(role_cfg, cwd, workspace_uuid, session, config, approval_store))
+            tools.append(factory(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules))
         except Exception:
             # 用 exception 保留堆栈：工具构造失败（如子类 __init__ 未透传 **kwargs）
             # 会让该工具静默缺席，只有堆栈能定位根因。

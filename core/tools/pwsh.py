@@ -6,12 +6,11 @@ import os
 import re
 from typing import Any
 
+from core.security.approval_rules import is_builtin_readonly
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.security.shell_paths import extract_shell_targets
 from core.tools.approval import (
     META_KEY,
-    MODE_ASK,
-    MODE_DENY,
     approval_decision_id,
     approval_placeholder_text,
 )
@@ -23,8 +22,9 @@ from core.tools.base import (
     _strip_shell_strings,
 )
 
-# PowerShell 危险命令黑名单（大小写不敏感）
-# 扫描前先剥掉字符串字面量（见 _check_deny_patterns），只扫代码部分。
+# PowerShell 静态证据模式（原 ask/deny 黑名单转为判定证据，设计 §3.2.4 / §3.3.2）：
+# 命中不再拒绝，而是作为 static_findings 交给 lite 判定器。
+# 扫描前先剥掉字符串字面量（见 collect_command_findings），只扫代码部分。
 #
 # 递归强删规则：别名齐全（Remove-Item 及其别名 rm/ri/del/erase/rd/rmdir）、
 # 参数顺序无关、支持参数缩写（-r / -rec / -fo 等）、目标覆盖盘符（正反斜杠）和 $env: 路径。
@@ -40,39 +40,37 @@ _RECURSIVE_FORCE_DELETE = re.compile(
     re.I,
 )
 
-_DENY_PATTERNS = [
-    # --- ask：破坏性操作，可经用户批准后在本次会话内执行 ---
+_FINDING_PATTERNS = [
     (_RECURSIVE_FORCE_DELETE,
-     "Remove-Item -Recurse -Force on drive path (destructive recursive delete)", MODE_ASK),
-    (re.compile(r"\bFormat-Volume\b", re.I), "Format-Volume (disk format)", MODE_ASK),
-    (re.compile(r"\bClear-Disk\b", re.I), "Clear-Disk (disk wipe)", MODE_ASK),
-    (re.compile(r"\bInitialize-Disk\b", re.I), "Initialize-Disk (disk initialize)", MODE_ASK),
-    (re.compile(r"\bdiskpart\b", re.I), "diskpart (disk management)", MODE_ASK),
-    (re.compile(r"\bStop-Computer\b", re.I), "Stop-Computer (shutdown)", MODE_ASK),
-    (re.compile(r"\bRestart-Computer\b", re.I), "Restart-Computer (reboot)", MODE_ASK),
-    # Also block legacy cmd-style dangerous commands
-    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "format (disk format)", MODE_ASK),
-    (re.compile(r"\bshutdown\b", re.I), "shutdown", MODE_ASK),
-    (re.compile(r"\breboot\b", re.I), "reboot", MODE_ASK),
-    # --- deny：架构性/代码执行，问用户无意义，保持硬拒绝 ---
-    (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "Stop-Process -Id 0 (system process)", MODE_DENY),
+     "system-destructive", "Remove-Item -Recurse -Force on drive path (destructive recursive delete)"),
+    (re.compile(r"\bFormat-Volume\b", re.I), "system-destructive", "Format-Volume (disk format)"),
+    (re.compile(r"\bClear-Disk\b", re.I), "system-destructive", "Clear-Disk (disk wipe)"),
+    (re.compile(r"\bInitialize-Disk\b", re.I), "system-destructive", "Initialize-Disk (disk initialize)"),
+    (re.compile(r"\bdiskpart\b", re.I), "system-destructive", "diskpart (disk management)"),
+    (re.compile(r"\bStop-Computer\b", re.I), "system-destructive", "Stop-Computer (shutdown)"),
+    (re.compile(r"\bRestart-Computer\b", re.I), "system-destructive", "Restart-Computer (reboot)"),
+    # Also flag legacy cmd-style dangerous commands
+    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "system-destructive", "format (disk format)"),
+    (re.compile(r"\bshutdown\b", re.I), "system-destructive", "shutdown"),
+    (re.compile(r"\breboot\b", re.I), "system-destructive", "reboot"),
+    (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "system-destructive", "Stop-Process -Id 0 (system process)"),
     # Code execution from string: the payload lives in a string literal that
-    # string-stripping would hide from the scan, so block the invocation itself
+    # string-stripping would hide from the scan, so flag the invocation itself
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:Invoke-Expression|iex)(?![a-zA-Z0-9_-])", re.I),
-     "Invoke-Expression (code execution from string — run the command directly)", MODE_DENY),
+     "code-from-string", "Invoke-Expression (code execution from string — run the command directly)"),
     # Cross-tool isolation: use dedicated tools instead of calling from pwsh
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Python invocation from PowerShell bypasses the python tool's safety checks (use the python tool instead)", MODE_ASK),
+     "python-tool-routing", "Python invocation from PowerShell bypasses the python tool's safety checks (use the python tool instead)"),
     (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "py launcher invocation from PowerShell (use the python tool instead)", MODE_DENY),
+     "py-launcher", "py launcher invocation from PowerShell (use the python tool instead)"),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "Bash invocation from PowerShell (use the bash tool instead)", MODE_DENY),
+     "cross-tool-isolation", "Bash invocation from PowerShell (use the bash tool instead)"),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "cmd/WSL invocation from PowerShell (cross-tool isolation)", MODE_DENY),
-    # ask 档：UAC 提权（Start-Process powershell -Verb RunAs）是合法需求，交用户批准；
-    # 但嵌套 -Command 载荷不参与本扫描，批准前用户需确认完整命令
+     "cross-tool-isolation", "cmd/WSL invocation from PowerShell (cross-tool isolation)"),
+    # UAC 提权（Start-Process powershell -Verb RunAs）是合法需求；嵌套 -Command 载荷
+    # 不参与本扫描，判定器会提示用户确认完整命令
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "PowerShell re-invocation (nested -Command payload bypasses the safety scan; verify before approving)", MODE_ASK),
+     "cross-tool-isolation", "PowerShell re-invocation (nested -Command payload bypasses the safety scan; verify before approving)"),
 ]
 
 
@@ -80,8 +78,9 @@ class PwshTool(Tool):
     name = "pwsh"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
-                 approval_store=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
+                 approval_store=None, approval_rules=None):
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
+                         approval_rules=approval_rules)
         self.description = self._build_description()
 
     def _build_description(self) -> str:
@@ -90,10 +89,11 @@ class PwshTool(Tool):
             "Execute a PowerShell command and return its output. "
             "Each call runs in a fresh pwsh process — no state (cwd, variables, functions) persists between calls.\n"
             "Paths use native Windows format (e.g., C:\\Users); environment variables use $env:NAME.\n"
-            "Do NOT use pwsh to invoke bash (`bash` tool), cmd, or WSL — cross-tool calls are blocked.\n"
-            "Some destructive commands (e.g. Remove-Item -Recurse -Force, disk operations), Python invocation, "
-            "and PowerShell re-invocation (e.g. Start-Process powershell -Verb RunAs for UAC elevation) "
-            "require user approval; if blocked, wait for the decision then retry the exact command.\n"
+            "Do NOT use pwsh to invoke bash, cmd, or WSL — use the dedicated tools instead (cross-tool calls "
+            "are flagged by static analysis and usually rejected by the safety judge).\n"
+            "Commands that do not match a pre-approved rule go through an automatic safety judgment; "
+            "if a command needs user confirmation it will be surfaced to the user. Do NOT reword a command "
+            "just to dodge the judgment — follow the suggestion in the error instead.\n"
             f"Current working directory: {self.cwd}\n\n"
             "## Background tasks\n"
             "Long-running commands: action=\"run\", run_in_background=true → task_id. "
@@ -196,70 +196,61 @@ class PwshTool(Tool):
         if not command:
             return ToolResult("Error: command is required", error=True)
 
-        # Safety: deny dangerous commands (ask 档先查会话级批准，未批准则等待用户确认)
-        deny = self._check_deny_patterns(command)
-        keyword_approved = False
-        if deny:
-            mode, reason = deny
-            if mode == MODE_DENY or not self.approval_store:
-                # 硬拒绝：给出清晰的错误和解决建议
-                if "cross-tool" in reason.lower() or "use the" in reason.lower() and "tool instead" in reason.lower():
+        policy = self._path_policy()
+        initial_dir = self.cwd
+        working_targets: list[PathTarget] = []
+        did = approval_decision_id(command)
+
+        # Apply working_dir override：目标折叠进统一审批占位（一次授权覆盖命令+越界目录），
+        # Set-Location 前缀在批准后、真正执行前才拼接
+        if working_dir:
+            resolved = policy.resolve(working_dir)
+            if not os.path.isdir(resolved):
+                return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
+            initial_dir = resolved
+            working_targets = [PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)]
+
+        # ── 审批管道（设计 §3.1）：命令级放行 → 统一判定占位 → 只读快道 ──
+        # 路径门与命令门合并为一张卡：占位符携带完整命令 + 全部目标（含 working_dir）
+        # + 静态证据，一次授权（会话级或落盘规则 + implied_path_rules）同时覆盖两者。
+        store = self.approval_store
+        store_hit = bool(store and store.is_approved(did))
+        rule_hit = bool(self.approval_rules and self.approval_rules.match_command(self.name, command))
+        if not (store_hit or rule_hit):
+            targets = extract_shell_targets(command, "pwsh", cwd=self.cwd, initial_dir=initial_dir) + working_targets
+            findings = self.collect_command_findings(command)
+            # status 返回 deny（store 与 rules 均缺）或 needs_approval（有通道待批）
+            # 都视为越界待审；deny 在下方 no-store 分支落地为 fail-closed 拒绝
+            needs_path = any(policy.status(t) in ("needs_approval", "deny") for t in targets)
+            if findings or needs_path:
+                if not store:
+                    reason = findings[0]["evidence"] if findings else "写/删目标越界"
                     return ToolResult(
-                        f"Error: 跨工具调用被禁止（硬拒绝，无法通过用户批准绕过）。\n"
-                        f"原因：{reason}\n"
-                        f"命令：`{command}`\n"
-                        f"解决：请使用对应的专用工具，不要在 pwsh 中调用其他工具。",
+                        f"Error: 命令需审批但无审批通道（fail-closed）：{reason}\n命令：`{command}`",
                         error=True,
                     )
-                return ToolResult(
-                    f"Error: 命令被安全策略硬拒绝（无法通过用户批准绕过）。\n"
-                    f"原因：{reason}\n"
-                    f"解决：请使用更安全的方式完成相同任务。",
-                    error=True,
-                )
-            approval = {
-                "decision_id": approval_decision_id(command),
-                "command": command,
-                "reason": reason,
-            }
-            if not self.approval_store.is_approved(approval["decision_id"]):
+                approval = self._pending_approval(command, did, targets, findings)
                 return ToolResult(
                     approval_placeholder_text(approval),
                     completed=False,
                     meta={META_KEY: approval},
                 )
-            keyword_approved = True  # 整条命令已批准，跳过路径门
-
-        policy = self._path_policy()
-        initial_dir = self.cwd
-
-        # Apply working_dir override (no path conversion needed for pwsh)
-        if working_dir:
-            resolved = policy.resolve(working_dir)
-            # 区外 working_dir 也需审批/拒绝
-            gate = self._path_gate([PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)])
-            if gate:
-                return gate
-            if not os.path.isdir(resolved):
-                return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
-            # 目录名可能含单引号，pwsh 单引号内用 '' 转义；注入段参与 deny 扫描
-            escaped_dir = resolved.replace("'", "''")
-            cd_prefix = f"Set-Location '{escaped_dir}'; "
-            deny_prefix = self._check_deny_patterns(cd_prefix + command)
-            if deny_prefix:
-                mode, reason = deny_prefix
+            if is_builtin_readonly(self.name, command):
+                pass  # 只读快速通道：免判定（越界目标已在 needs_path 拦下）
+            elif not store:
+                pass  # 无 store 的独立/测试场景：无证据的良性命令保持旧行为直接执行
+            else:
+                approval = self._pending_approval(command, did, targets, findings)
                 return ToolResult(
-                    f"Error: command blocked by safety check — {reason}", error=True
+                    approval_placeholder_text(approval),
+                    completed=False,
+                    meta={META_KEY: approval},
                 )
-            command = cd_prefix + command
-            initial_dir = resolved
 
-        # 路径权限门：静态提取写/删目标，越界需审批（keyword_approved 时跳过）
-        if not keyword_approved:
-            targets = extract_shell_targets(command, "pwsh", cwd=self.cwd, initial_dir=initial_dir)
-            gate = self._path_gate(targets)
-            if gate:
-                return gate
+        if working_dir:
+            # 目录名可能含单引号，pwsh 单引号内用 '' 转义
+            escaped_dir = initial_dir.replace("'", "''")
+            command = f"Set-Location '{escaped_dir}'; " + command
 
         timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         timeout = min(timeout, self.MAX_TIMEOUT)
@@ -285,16 +276,17 @@ class PwshTool(Tool):
         return self._run_pwsh(command, timeout=timeout)
 
     @staticmethod
-    def _check_deny_patterns(command: str) -> tuple[str, str] | None:
-        """Check command against deny patterns. Returns (mode, reason) if blocked, None if OK.
+    def collect_command_findings(command: str) -> list[dict]:
+        """静态证据提取（原 deny/ask 黑名单转为判定证据，设计 §3.3.2）。
 
-        mode ∈ {"ask", "deny"}: ask 表示破坏性操作可经用户批准后执行；deny 表示硬拒绝。
+        返回全部命中项：id 对应 constraints 条目，evidence 为人读描述。
         String literals are stripped first so that string data (e.g. Write-Output "pwsh
-        works") does not trigger keyword rules; subexpressions inside double quotes
+        works") does not trigger findings; subexpressions inside double quotes
         ($( ... )) are preserved because they execute as code.
         """
         code = _strip_shell_strings(command, "pwsh")
-        for pattern, reason, mode in _DENY_PATTERNS:
+        findings: list[dict] = []
+        for pattern, constraint_id, label in _FINDING_PATTERNS:
             if pattern.search(code):
-                return mode, reason
-        return None
+                findings.append({"id": constraint_id, "evidence": label})
+        return findings

@@ -277,9 +277,12 @@ class TestEnhancedDispatch:
         svc.navigate.assert_called_once_with("https://example.com", tab_index=None)
 
     def test_navigate_private_url_placeholder(self):
-        from core.tools.approval import META_KEY
+        from core.tools.approval import META_KEY, ApprovalStore
+        from core.tools.browser import BrowserTool
         svc = self._service()
-        result = self._execute(svc, action="navigate", url="http://127.0.0.1:8885/tcmp-war/")
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool(approval_store=ApprovalStore()).execute(
+                action="navigate", url="http://127.0.0.1:8885/tcmp-war/")
         assert result.completed is False
         assert not result.error
         assert META_KEY in result.meta
@@ -298,11 +301,11 @@ class TestEnhancedDispatch:
             BrowserTool(approval_store=store).execute(action="navigate", url=url)
         svc.navigate.assert_called_once_with(url, tab_index=None, approved_non_public=True)
 
-    def test_navigate_private_url_no_store_hard_placeholder(self):
-        """无 approval_store（独立/worker 无共享实例）时仍返回占位而非放行。"""
+    def test_navigate_private_url_no_store_fail_closed(self):
+        """无 approval_store（独立/worker 无共享实例）时 fail-closed 拒绝而非放行。"""
         svc = self._service()
         result = self._execute(svc, action="navigate", url="http://192.168.1.5/")
-        assert result.completed is False
+        assert result.error
         svc.navigate.assert_not_called()
 
     def test_hard_deny_url_gets_no_approval_card(self):

@@ -1,89 +1,43 @@
 # -*- coding: utf-8 -*-
-"""高风险命令会话级审批测试。
+"""审批流程测试（设计 workspace/approval-flow-design.md）。
 
 覆盖：
-1. 三档分类：破坏性操作 → ask（可询问）；跨工具隔离/eval → deny（硬拒绝）
-2. decision_id 确定性
-3. ApprovalStore 会话级：批准不消费，同命令持续放行，不同命令仍拦截
-4. 工具执行路径：未批准返回占位符（completed=False + meta.approval_required）；已批准真正执行
-5. 子代理降级：approval_required 结果 → is_error=True，不挂起
-6. 提示词下放：已批准命令列表出现在子代理任务消息
-7. ask_user 选项上限扩展为 6
+1. 决策 ID 确定性；ApprovalStore 会话级语义（不消费 / kind 分类 / 无落盘）
+2. 工具执行管道：规则命中执行 / 只读快道 / 未命中占位（completed=False + 证据）/
+   无 store fail-closed / 防搭车
+3. 卡片文案（含义/风险/理由/三选项）、label 互不为后缀、四分拒绝文本
+4. 子代理降级安全网、提示词下放段落（会话批准 + 工作区规则）
+5. 浏览器导航审批（规则命中放行 / 无通道 fail-closed）
 """
 
+import json
+
+from core.security.approval_rules import ApprovalRules
 from core.tools.approval import (
     APPROVE_LABEL,
     META_KEY,
-    MODE_ASK,
-    MODE_DENY,
     REJECT_LABEL,
     REMEMBER_LABEL,
     ApprovalStore,
     approval_decision_id,
+    build_approval_question,
     build_approved_commands_section,
+    judge_deny_text,
+    judge_unavailable_text,
+    no_channel_text,
+    user_reject_hint,
 )
 from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.pwsh import PwshTool
 
 
-def _check_bash(cmd: str):
-    return BashTool._check_deny_patterns(cmd)
-
-
-def _check_pwsh(cmd: str):
-    return PwshTool._check_deny_patterns(cmd)
-
-
-class TestDenyTiers:
-    """三档分类：破坏性操作 ask / 架构性 deny。"""
-
-    def test_bash_destructive_is_ask(self):
-        for cmd in [
-            "rm -rf /", "rm -rf *", "rm -rf ~",
-            "format C:", "dd if=/dev/zero of=/dev/sda",
-            "mkfs.ext4 /dev/sda1", "shutdown -h now", "reboot",
-            ":(){ :|:& };:", "> /dev/sda",
-        ]:
-            mode, reason = _check_bash(cmd)
-            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
-
-    def test_bash_architectural_is_deny(self):
-        for cmd in ["eval 'x'", "pwsh -Command foo", "powershell -Command foo",
-                    "py x.py", "cmd /c dir", "wsl ls /"]:
-            mode, reason = _check_bash(cmd)
-            assert mode == MODE_DENY, f"{cmd!r} should be deny, got {mode} ({reason})"
-
-    def test_bash_python_invocation_is_ask(self):
-        # python 调用降为 ask 档：可经用户批准成为例外，而非架构性硬拒
-        for cmd in ["python x.py", "python3 x.py", "pythonw x.py", "python.exe x.py"]:
-            mode, reason = _check_bash(cmd)
-            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
-
-    def test_pwsh_destructive_is_ask(self):
-        for cmd in [
-            "Remove-Item -Recurse -Force C:\\x", "Format-Volume -DriveLetter C",
-            "Clear-Disk -Number 0", "Initialize-Disk -Number 1", "diskpart /s wipe.txt",
-            "Stop-Computer -Force", "Restart-Computer -Force",
-            "format C:", "shutdown /s /t 0", "reboot",
-        ]:
-            mode, reason = _check_pwsh(cmd)
-            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
-
-    def test_pwsh_architectural_is_deny(self):
-        for cmd in ["iex 'x'", "Invoke-Expression 'x'", "py x.py",
-                    "bash -c 'x'", "cmd /c dir", "wsl ls /"]:
-            mode, reason = _check_pwsh(cmd)
-            assert mode == MODE_DENY, f"{cmd!r} should be deny, got {mode} ({reason})"
-
-    def test_pwsh_python_invocation_is_ask(self):
-        for cmd in ["python x.py", "python3 x.py", "python.exe x.py"]:
-            mode, reason = _check_pwsh(cmd)
-            assert mode == MODE_ASK, f"{cmd!r} should be ask, got {mode} ({reason})"
-
-    def test_benign_not_blocked(self):
-        assert _check_bash("ls -la") is None
-        assert _check_pwsh("Get-Process") is None
+def _rules(tmp_path, rules=None):
+    path = tmp_path / "approval_rules.json"
+    if rules is not None:
+        path.write_text(json.dumps({"version": 1, "rules": rules, "constraints": []},
+                                   ensure_ascii=False), encoding="utf-8")
+    return ApprovalRules(path, workspace_root=str(tmp_path))
 
 
 class TestDecisionId:
@@ -100,15 +54,15 @@ class TestDecisionId:
 class TestApprovalStore:
     def test_session_level_not_consumed(self):
         store = ApprovalStore()
-        did = approval_decision_id("rm -rf /tmp/x")
-        store.approve(did, "rm -rf /tmp/x")
+        did = approval_decision_id("node server.js")
+        store.approve(did, "node server.js")
         assert store.is_approved(did)  # 第一次命中
         assert store.is_approved(did)  # 会话级：不消费，仍放行
 
     def test_other_command_still_blocked(self):
         store = ApprovalStore()
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        assert not store.is_approved(approval_decision_id("rm -rf /tmp/y"))
+        store.approve(approval_decision_id("node a.js"), "node a.js")
+        assert not store.is_approved(approval_decision_id("node b.js"))
 
     def test_pending_single_slot(self):
         store = ApprovalStore()
@@ -117,119 +71,191 @@ class TestApprovalStore:
         store.clear_pending()
         assert store.pending is None
 
-    def test_approved_commands_listing(self):
+    def test_kind_classification(self):
         store = ApprovalStore()
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        assert store.approved_commands() == ["rm -rf /tmp/x"]
+        store.approve("d1", "cmd", kind="command")
+        store.approve("d2", "C:\\out", kind="path:write")
+        store.approve("d3", "http://127.0.0.1", kind="browser:navigate")
+        assert store.approved_commands() == ["cmd"]
+        assert store.approved_path_rules() == [{"kind": "path:write", "command": "C:\\out"}]
+        assert store.approved_navigations() == ["http://127.0.0.1"]
 
-    # ─── 持久化 ──────────────────────────────────────────────────
-
-    def test_persist_writes_file(self, tmp_path):
-        import json as _json
-        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
-        did = approval_decision_id("rm -rf /tmp/x")
-        store.approve(did, "rm -rf /tmp/x", persist=True, reason="rm -rf /")
-        path = tmp_path / "approvals.json"
-        assert path.exists()
-        data = _json.loads(path.read_text(encoding="utf-8"))
-        assert data["rules"][0]["decision_id"] == did
-        assert data["rules"][0]["command"] == "rm -rf /tmp/x"
-        assert data["rules"][0]["reason"] == "rm -rf /"
-        assert "created_at" in data["rules"][0]
-
-    def test_load_rules_from_file(self, tmp_path):
-        store = ApprovalStore(rules_path=tmp_path / "approvals.json")
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x", persist=True)
-        # 新实例从文件回灌
-        reloaded = ApprovalStore(rules_path=tmp_path / "approvals.json")
-        assert reloaded.is_approved(approval_decision_id("rm -rf /tmp/x"))
-
-    def test_persist_dedup_replaces(self, tmp_path):
-        import json as _json
-        path = tmp_path / "approvals.json"
-        store = ApprovalStore(rules_path=path)
-        did = approval_decision_id("rm -rf /tmp/x")
-        store.approve(did, "rm -rf /tmp/x", persist=True, reason="old")
-        store.approve(did, "rm -rf /tmp/y", persist=True, reason="new")
-        data = _json.loads(path.read_text(encoding="utf-8"))
-        assert len(data["rules"]) == 1
-        assert data["rules"][0]["command"] == "rm -rf /tmp/y"
-        assert data["rules"][0]["reason"] == "new"
-
-    def test_no_path_does_not_write(self, tmp_path):
-        store = ApprovalStore()  # rules_path=None → 纯内存，不落盘
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x", persist=True)
+    def test_no_persistence(self, tmp_path):
+        # 持久化已移交 ApprovalRules；store 纯内存
+        store = ApprovalStore()
+        store.approve(approval_decision_id("x"), "x")
         assert not (tmp_path / "approvals.json").exists()
-
-    def test_corrupt_file_loads_default(self, tmp_path):
-        path = tmp_path / "approvals.json"
-        path.write_text("{not valid json", encoding="utf-8")
-        store = ApprovalStore(rules_path=path)
-        assert not store.is_approved("anything")
+        assert not (tmp_path / "approval_rules.json").exists()
 
 
-class TestExecuteApprovalFlow:
-    def test_unapproved_returns_placeholder(self):
-        store = ApprovalStore()
-        tool = BashTool(cwd=".", approval_store=store)
-        result = tool.execute(command="rm -rf /")
-        assert result.completed is False
-        assert not result.error
-        assert result.meta[META_KEY]["command"] == "rm -rf /"
-        assert "decision_id" in result.meta[META_KEY]
+class TestCommandFlow:
+    """bash/pwsh 执行管道：规则命中 → 只读快道 → 占位 → fail-closed。"""
 
-    def test_approved_runs(self, monkeypatch):
-        store = ApprovalStore()
-        did = approval_decision_id("rm -rf /tmp/x")
-        store.approve(did, "rm -rf /tmp/x")
-        tool = BashTool(cwd=".", approval_store=store)
+    def test_readonly_runs_without_store(self, tmp_path, monkeypatch):
+        tool = BashTool(cwd=str(tmp_path))
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
-        result = tool.execute(command="rm -rf /tmp/x", timeout=10)
+        result = tool.execute(command="echo hello", timeout=10)
         assert result.output == "ran ok"
-        assert not result.error
 
-    def test_no_store_hard_deny(self):
-        tool = BashTool(cwd=".")  # approval_store=None → 硬拒绝，不询问
-        result = tool.execute(command="rm -rf /tmp/x")
+    def test_findings_without_store_hard_deny(self, tmp_path):
+        tool = BashTool(cwd=str(tmp_path))  # 无 store → fail-closed
+        result = tool.execute(command="rm -rf /")
         assert result.error
         assert result.completed is not False
 
-    def test_deny_tier_hard_deny_even_with_store(self):
-        store = ApprovalStore()
-        tool = BashTool(cwd=".", approval_store=store)
-        result = tool.execute(command="py x.py")
-        assert result.error
-
-    def test_bash_python_ask_tier_placeholder(self):
-        # python 调用降为 ask 档：有 store 时返回占位等待用户批准，而非硬拒
-        store = ApprovalStore()
-        tool = BashTool(cwd=".", approval_store=store)
-        result = tool.execute(command="python x.py")
-        assert result.completed is False
-        assert result.meta[META_KEY]["command"] == "python x.py"
-
-    def test_bash_python_ask_tier_hard_deny_without_store(self):
-        # 无 store（如独立 worker）仍硬拒绝，不询问
-        tool = BashTool(cwd=".")
+    def test_python_invocation_without_store_hard_deny(self, tmp_path):
+        tool = BashTool(cwd=str(tmp_path))
         result = tool.execute(command="python x.py")
         assert result.error
 
-    def test_pwsh_unapproved_returns_placeholder(self):
-        store = ApprovalStore()
-        tool = PwshTool(cwd=".", approval_store=store)
-        result = tool.execute(command="Remove-Item -Recurse -Force C:\\x")
-        assert result.completed is False
-        assert result.meta[META_KEY]["command"] == "Remove-Item -Recurse -Force C:\\x"
+    def test_benign_non_readonly_runs_without_store(self, tmp_path, monkeypatch):
+        # 无 store 的独立/测试场景：无证据的良性命令保持旧行为直接执行
+        tool = BashTool(cwd=str(tmp_path))
+        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
+        result = tool.execute(command="node -e 'console.log(1)'", timeout=10)
+        assert result.output == "ran ok"
 
-    def test_pwsh_approved_runs(self, monkeypatch):
+    def test_unmatched_returns_placeholder_with_evidence(self, tmp_path):
         store = ApprovalStore()
-        did = approval_decision_id("Remove-Item -Recurse -Force C:\\x")
-        store.approve(did, "Remove-Item -Recurse -Force C:\\x")
-        tool = PwshTool(cwd=".", approval_store=store)
-        monkeypatch.setattr(tool, "_run_pwsh", lambda command, timeout: ToolResult("done"))
-        result = tool.execute(command="Remove-Item -Recurse -Force C:\\x", timeout=10)
-        assert result.output == "done"
+        tool = BashTool(cwd=str(tmp_path), approval_store=store)
+        result = tool.execute(command="node server.js", timeout=10)
+        assert result.completed is False
         assert not result.error
+        meta = result.meta[META_KEY]
+        assert meta["command"] == "node server.js"
+        assert meta["kind"] == "command"
+        assert meta["tool"] == "bash"
+        assert "decision_id" in meta
+
+    def test_findings_pending_with_store(self, tmp_path):
+        store = ApprovalStore()
+        tool = BashTool(cwd=str(tmp_path), approval_store=store)
+        result = tool.execute(command="python x.py", timeout=10)
+        assert result.completed is False
+        findings = result.meta[META_KEY]["findings"]
+        assert any(f["id"] == "python-tool-routing" for f in findings)
+
+    def test_session_approved_runs(self, tmp_path, monkeypatch):
+        store = ApprovalStore()
+        did = approval_decision_id("node server.js")
+        store.approve(did, "node server.js")
+        tool = BashTool(cwd=str(tmp_path), approval_store=store)
+        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
+        result = tool.execute(command="node server.js", timeout=10)
+        assert result.output == "ran ok"
+
+    def test_rule_hit_runs(self, tmp_path, monkeypatch):
+        rules = _rules(tmp_path, rules=[{
+            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
+            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "node server"},
+            "display": "以 node server 开头",
+        }])
+        tool = BashTool(cwd=str(tmp_path), approval_rules=rules)
+        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
+        result = tool.execute(command="node server --port 1", timeout=10)
+        assert result.output == "ran ok"
+
+    def test_rule_hit_does_not_cover_piggyback(self, tmp_path):
+        rules = _rules(tmp_path, rules=[{
+            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
+            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "git status"},
+            "display": "以 git status 开头",
+        }])
+        store = ApprovalStore()
+        tool = BashTool(cwd=str(tmp_path), approval_store=store, approval_rules=rules)
+        result = tool.execute(command="git status && rm -rf /tmp/x", timeout=10)
+        # 第二段未命中 → 不放行，进入判定占位（防搭车）
+        assert result.completed is False
+
+    def test_path_pending_carries_evidence(self, tmp_path):
+        store = ApprovalStore()
+        tool = BashTool(cwd=str(tmp_path), approval_store=store)
+        result = tool.execute(command="cp a.txt /e/outside/x.txt", timeout=10)
+        assert result.completed is False
+        meta = result.meta[META_KEY]
+        # 统一占位：命令级卡片一次覆盖命令与越界目标（避免路径/命令双卡）
+        assert meta["kind"] == "command"
+        assert meta["command"] == "cp a.txt /e/outside/x.txt"
+        assert meta["targets"], "证据应包含全部目标"
+        outside = [t for t in meta["targets"] if not t["inside_workspace"]]
+        assert outside and all(t["decision_id"] for t in outside)
+
+    def test_pwsh_unmatched_returns_placeholder(self, tmp_path):
+        store = ApprovalStore()
+        tool = PwshTool(cwd=str(tmp_path), approval_store=store)
+        result = tool.execute(command="Remove-Item -Recurse -Force C:\\x", timeout=10)
+        assert result.completed is False
+        meta = result.meta[META_KEY]
+        # 证据先于路径门：命令级占位携带完整命令与 system-destructive 证据
+        assert meta["kind"] == "command"
+        assert meta["command"] == "Remove-Item -Recurse -Force C:\\x"
+        assert any(f["id"] == "system-destructive" for f in meta["findings"])
+
+    def test_pwsh_session_approved_runs(self, tmp_path, monkeypatch):
+        store = ApprovalStore()
+        cmd = "Remove-Item -Recurse -Force C:\\x"
+        store.approve(approval_decision_id(cmd), cmd)
+        tool = PwshTool(cwd=str(tmp_path), approval_store=store)
+        monkeypatch.setattr(tool, "_run_pwsh", lambda command, timeout: ToolResult("done"))
+        result = tool.execute(command=cmd, timeout=10)
+        assert result.output == "done"
+
+
+class TestCardTexts:
+    def test_labels(self):
+        assert APPROVE_LABEL == "允许本次会话"
+        assert REMEMBER_LABEL == "一直允许（此类命令）"
+        assert REJECT_LABEL == "拒绝"
+        # endswith 匹配安全：互不为后缀
+        assert not APPROVE_LABEL.endswith(REMEMBER_LABEL)
+        assert not REMEMBER_LABEL.endswith(APPROVE_LABEL)
+        assert not REJECT_LABEL.endswith(APPROVE_LABEL)
+        assert not REMEMBER_LABEL.endswith(REJECT_LABEL)
+
+    def test_question_contains_summary_risk_reason(self):
+        q = build_approval_question({
+            "decision_id": "abc", "command": "rm -rf ./build && make",
+            "kind": "command", "summary": "删除构建目录并重新编译",
+            "risk": "medium", "reason": "目标在工作区内",
+        })
+        assert "rm -rf ./build && make" in q
+        assert "删除构建目录并重新编译" in q
+        assert "风险：中" in q
+        assert "目标在工作区内" in q
+        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
+
+    def test_question_without_judge_fields(self):
+        q = build_approval_question({"decision_id": "abc", "command": "x", "reason": "r"})
+        assert "判定编号：abc" in q
+        assert "含义：" not in q
+
+    def test_placeholder_text(self):
+        from core.tools.approval import approval_placeholder_text
+        text = approval_placeholder_text({
+            "decision_id": "abc", "command": "x", "reason": "r", "kind": "command",
+        })
+        assert "判定编号：abc" in text
+        assert "worker/lite" in text
+
+
+class TestRejectionTexts:
+    """§3.6 四分拒绝文本。"""
+
+    def test_judge_deny(self):
+        t = judge_deny_text({"decision_id": "d1", "command": "x"}, "摘要", "理由", "改用 A")
+        assert "安全判定拒绝" in t and "理由" in t and "改用 A" in t and "d1" in t
+
+    def test_no_channel(self):
+        t = no_channel_text({"decision_id": "d1", "command": "x"}, "摘要")
+        assert "无询问通道" in t and "父代理" in t and "摘要" in t
+
+    def test_unavailable(self):
+        t = judge_unavailable_text({"decision_id": "d1", "command": "x"}, "超时")
+        assert "暂不可用" in t and "超时" in t
+
+    def test_user_reject_hint(self):
+        t = user_reject_hint("拒绝", {"summary": "删库"})
+        assert "用户拒绝" in t and "删库" in t and "不要原样重发" in t
 
 
 class TestAgentDowngrade:
@@ -246,16 +272,81 @@ class TestAgentDowngrade:
         assert META_KEY not in result["_meta"]
         assert "completed" not in result["_meta"]
 
-    def test_approved_commands_section_injected(self):
+
+class TestApprovedSection:
+    def test_session_and_rules(self, tmp_path):
         store = ApprovalStore()
         store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        section = build_approved_commands_section(store)
+        rules = _rules(tmp_path, rules=[{
+            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
+            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "git status"},
+            "display": "以 git status 开头的命令",
+        }])
+        section = build_approved_commands_section(store, rules)
+        assert "Session-approved actions" in section
         assert "rm -rf /tmp/x" in section
-        assert "Pre-approved commands" in section
+        assert "Workspace-approved rules" in section
+        assert "以 git status 开头的命令" in section
 
-    def test_no_approved_no_section(self):
-        assert build_approved_commands_section(ApprovalStore()) == ""
-        assert build_approved_commands_section(None) == ""
+    def test_empty_when_none(self, tmp_path):
+        assert build_approved_commands_section(ApprovalStore(), _rules(tmp_path)) == ""
+        assert build_approved_commands_section(None, None) == ""
+
+
+class TestBrowserNavigateKind:
+    """浏览器导航：硬拒绝保留在 browser_service；非公网走规则/判定管道。"""
+
+    URL = "http://127.0.0.1:8885/tcmp-war/"
+
+    def test_question_wording(self):
+        q = build_approval_question({
+            "decision_id": "abc", "command": self.URL,
+            "kind": "browser:navigate", "reason": "127.0.0.1 不是公网地址（环回）",
+        })
+        assert "非公网地址导航" in q
+        assert self.URL in q
+        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
+
+    def test_no_store_fail_closed(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.tools.browser import BrowserTool
+
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool().execute(action="navigate", url=self.URL)
+        assert result.error  # 无审批通道 → fail-closed
+        svc.navigate.assert_not_called()
+
+    def test_unapproved_placeholder(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.tools.browser import BrowserTool
+
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        store = ApprovalStore()
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
+        assert result.completed is False
+        svc.navigate.assert_not_called()
+
+    def test_rule_hit_navigates(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from core.tools.browser import BrowserTool
+
+        rules = _rules(tmp_path, rules=[{
+            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
+            "tool": "browser", "kind": "browser:navigate",
+            "match": {"type": "exact", "value": self.URL}, "display": "精确匹配",
+        }])
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        with patch("core.browser_service.get_service", return_value=svc):
+            BrowserTool(approval_rules=rules).execute(action="navigate", url=self.URL)
+        svc.navigate.assert_called_once_with(self.URL, tab_index=None, approved_non_public=True)
 
 
 class TestAskUserSchema:
@@ -264,209 +355,3 @@ class TestAskUserSchema:
         options = AskUserTool.parameters["properties"]["questions"]["items"]["properties"]["options"]
         assert options["maxItems"] == 6
         assert options["minItems"] == 2
-
-    def test_approve_label_constant(self):
-        assert APPROVE_LABEL == "允许本次会话"
-
-    def test_remember_label_constant(self):
-        assert REMEMBER_LABEL == "允许并记住"
-        # endswith 匹配安全：两 label 互不为子串
-        assert not APPROVE_LABEL.endswith(REMEMBER_LABEL)
-        assert not REMEMBER_LABEL.endswith(APPROVE_LABEL)
-
-    def test_approval_question_mentions_three_options(self):
-        from core.tools.approval import build_approval_question
-        q = build_approval_question({
-            "decision_id": "abc",
-            "command": "rm -rf /tmp/x",
-            "reason": "destructive delete",
-        })
-        assert APPROVE_LABEL in q
-        assert REMEMBER_LABEL in q
-        assert REJECT_LABEL in q
-        assert "rm -rf /tmp/x" in q
-
-
-class TestPathKind:
-    """kind 字段：路径规则与命令规则共存、互不串扰。"""
-
-    def test_command_default_kind(self):
-        store = ApprovalStore()
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        assert store.approved_commands() == ["rm -rf /tmp/x"]
-        assert store.approved_path_rules() == []
-
-    def test_path_write_rule(self, tmp_path):
-        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-        policy = PathPolicy(workspace_root=str(tmp_path))
-        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
-        store = ApprovalStore()
-        store.approve(did, "C:\\out", kind="path:write")
-        assert store.is_approved(did)
-        assert store.approved_path_rules() == [{"kind": "path:write", "command": "C:\\out"}]
-        assert store.approved_commands() == []
-
-    def test_write_does_not_unlock_delete(self, tmp_path):
-        from core.security.path_policy import (
-            OP_DELETE,
-            OP_WRITE,
-            PathPolicy,
-            PathTarget,
-        )
-        policy = PathPolicy(workspace_root=str(tmp_path))
-        w = policy.decision_id(PathTarget(OP_WRITE, "C:\\x", resolved="C:\\x"))
-        d = policy.decision_id(PathTarget(OP_DELETE, "C:\\x", resolved="C:\\x"))
-        store = ApprovalStore()
-        store.approve(w, "C:\\x", kind="path:write")
-        assert store.is_approved(w)
-        assert not store.is_approved(d)  # 批 write 不解锁同路径 delete
-
-    def test_old_rule_without_kind_loads_as_command(self, tmp_path):
-        import json as _json
-        path = tmp_path / "approvals.json"
-        path.write_text(_json.dumps({
-            "rules": [{"decision_id": "abc123", "command": "rm -rf /tmp/old", "reason": ""}]
-        }), encoding="utf-8")
-        store = ApprovalStore(rules_path=path)
-        assert store.approved_commands() == ["rm -rf /tmp/old"]
-        assert store.approved_path_rules() == []
-
-    def test_persist_writes_kind_field(self, tmp_path):
-        import json as _json
-
-        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-        path = tmp_path / "approvals.json"
-        policy = PathPolicy(workspace_root=str(tmp_path))
-        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
-        store = ApprovalStore(rules_path=path)
-        store.approve(did, "C:\\out", kind="path:write", persist=True)
-        data = _json.loads(path.read_text(encoding="utf-8"))
-        assert data["rules"][0]["kind"] == "path:write"
-
-    def test_question_path_write_wording(self):
-        from core.tools.approval import build_approval_question
-        q = build_approval_question({
-            "decision_id": "abc", "command": "C:\\out",
-            "kind": "path:write", "reason": "写入目标不在工作区 内",
-        })
-        assert "工作区外" in q
-        assert "操作：写入" in q
-        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
-
-    def test_question_path_delete_wording(self):
-        from core.tools.approval import build_approval_question
-        q = build_approval_question({
-            "decision_id": "abc", "command": "rm out",
-            "kind": "path:delete", "reason": "删除目标不在工作区内",
-        })
-        assert "操作：删除" in q
-        assert "操作：写入" not in q
-
-    def test_question_default_command_wording(self):
-        from core.tools.approval import build_approval_question
-        q = build_approval_question({
-            "decision_id": "abc", "command": "rm -rf /tmp/x", "reason": "r",
-        })
-        assert "高风险命令" in q
-        assert "命令：`rm -rf /tmp/x`" in q
-
-    def test_section_includes_path_rules(self):
-        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-        store = ApprovalStore()
-        policy = PathPolicy(workspace_root="C:\\ws")
-        did = policy.decision_id(PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out"))
-        store.approve(did, "C:\\out", kind="path:write")
-        section = build_approved_commands_section(store)
-        assert "Pre-approved commands" in section
-        assert "write `C:\\out`" in section
-
-
-class TestBrowserNavigateKind:
-    """kind="browser:navigate"（SSRF 导航审批）：文案、存储归类、下放段落。"""
-
-    URL = "http://127.0.0.1:8885/tcmp-war/"
-
-    def test_question_wording(self):
-        from core.tools.approval import build_approval_question
-        q = build_approval_question({
-            "decision_id": "abc",
-            "command": self.URL,
-            "kind": "browser:navigate",
-            "reason": "127.0.0.1 不是公网地址（环回）",
-        })
-        assert "非公网地址导航" in q
-        assert self.URL in q
-        assert "拦截原因" in q
-        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
-
-    def test_placeholder_wording(self):
-        from core.tools.approval import approval_placeholder_text
-        p = approval_placeholder_text({
-            "decision_id": "abc", "command": self.URL,
-            "kind": "browser:navigate", "reason": "r",
-        })
-        assert "SSRF" in p
-        # 新格式告知子代理应向父代理报告，不再包含"原样重发"
-        assert "父代理" in p or "非公网" in p
-
-    def test_store_classifies_navigation(self):
-        store = ApprovalStore()
-        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
-        assert store.approved_navigations() == [self.URL]
-        assert store.approved_commands() == []  # 导航不计入命令
-        assert store.approved_path_rules() == []  # 也不落入路径规则
-
-    def test_command_does_not_count_as_navigation(self):
-        store = ApprovalStore()
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        assert store.approved_navigations() == []
-        assert store.approved_commands() == ["rm -rf /tmp/x"]
-
-    def test_section_includes_navigation(self):
-        store = ApprovalStore()
-        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
-        section = build_approved_commands_section(store)
-        assert "Pre-approved commands" in section
-        assert f"navigate `{self.URL}`" in section
-
-    def test_persist_roundtrip_kind(self, tmp_path):
-        import json as _json
-        path = tmp_path / "approvals.json"
-        store = ApprovalStore(rules_path=path)
-        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate", persist=True)
-        data = _json.loads(path.read_text(encoding="utf-8"))
-        assert data["rules"][0]["kind"] == "browser:navigate"
-        reloaded = ApprovalStore(rules_path=path)
-        assert reloaded.approved_navigations() == [self.URL]
-
-    def test_browser_tool_placeholder_and_gate(self):
-        """浏览器工具 navigate 到非公网地址：未批准返回占位，已批准放行。"""
-        from unittest.mock import MagicMock, patch
-
-        from core.tools.approval import META_KEY
-        from core.tools.browser import BrowserTool
-
-        svc = MagicMock()
-        svc.is_running.return_value = True
-
-        # 无 store → 占位，不调用 service
-        with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool().execute(action="navigate", url=self.URL)
-        assert result.completed is False
-        assert not result.error
-        assert result.meta[META_KEY]["kind"] == "browser:navigate"
-        assert result.meta[META_KEY]["command"] == self.URL
-        svc.navigate.assert_not_called()
-
-        # 有 store 但未批准 → 仍占位
-        store = ApprovalStore()
-        with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
-        assert result.completed is False
-        svc.navigate.assert_not_called()
-
-        # 已批准 → 真正导航（approved_non_public=True）
-        store.approve(approval_decision_id(self.URL), self.URL, kind="browser:navigate")
-        with patch("core.browser_service.get_service", return_value=svc):
-            BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
-        svc.navigate.assert_called_once_with(self.URL, tab_index=None, approved_non_public=True)

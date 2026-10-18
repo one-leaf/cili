@@ -32,7 +32,7 @@ class TestRegistryCompleteness:
     def test_no_duplicate_factories(self):
         """不同注册键不指向同一工具类（除有意别名外）。"""
         from core.tools.todo import TodoWriteTool
-        todo_tool = TOOL_REGISTRY["todo"](load_role("master"), ".", "", None, None, None)
+        todo_tool = TOOL_REGISTRY["todo"](load_role("master"), ".", "", None, None, None, None)
         assert isinstance(todo_tool, TodoWriteTool)
         assert todo_tool.name == "todo_write"  # T26：注册键 "todo" 与工具名不同，属有意设计
 
@@ -61,5 +61,5 @@ class TestCreateTools:
         for name in role_cfg.tools:
             if name == "todo":
                 continue  # 有意差异：注册键 "todo" → 工具名 "todo_write"
-            tool = TOOL_REGISTRY[name](role_cfg, ".", "", None, None, None)
+            tool = TOOL_REGISTRY[name](role_cfg, ".", "", None, None, None, None)
             assert tool.name == name, f"注册键 {name} 实例化出工具名 {tool.name}"

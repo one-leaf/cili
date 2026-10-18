@@ -250,17 +250,28 @@ Use web_search for simple lookups; use browser when search results are insuffici
             if hard_deny:
                 return ToolResult(f"Error: 导航被拒绝 — {hard_deny}", error=True)
 
-            # SSRF 防护：非公网地址导航走审批门（ask 档）——master 弹卡询问、
-            # worker/lite 由循环降级为硬拒绝；已批准（含「允许并记住」）后放行。
+            # SSRF 防护：非公网地址导航走审批门（设计 §3.1）——规则/会话批准命中直接放行，
+            # 否则返回判定占位，由 Loop 做 lite 判定分派（ask → 卡片 / deny → 拒绝）。
             block_reason = _validate_navigate_url(url)
             if block_reason:
-                approval = {
-                    "kind": "browser:navigate",
-                    "decision_id": approval_decision_id(url),
-                    "command": url,
-                    "reason": block_reason,
-                }
-                if not self.approval_store or not self.approval_store.is_approved(approval["decision_id"]):
+                did = approval_decision_id(url)
+                rule_hit = bool(self.approval_rules and self.approval_rules.match_url(url))
+                store_hit = bool(self.approval_store and self.approval_store.is_approved(did))
+                if not (rule_hit or store_hit):
+                    approval = {
+                        "kind": "browser:navigate",
+                        "decision_id": did,
+                        "command": url,
+                        "reason": block_reason,
+                        "tool": self.name,
+                        "targets": [],
+                        "findings": [],
+                    }
+                    if not self.approval_store:
+                        return ToolResult(
+                            f"Error: 导航命中非公网地址且无审批通道（fail-closed）：{block_reason}",
+                            error=True,
+                        )
                     return ToolResult(
                         approval_placeholder_text(approval),
                         completed=False,

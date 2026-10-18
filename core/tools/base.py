@@ -148,17 +148,20 @@ class Tool(ShellMixin, BackgroundMixin):
         return None
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session: SessionHandle | None = None,
-                 approval_store=None, **kwargs):
+                 approval_store=None, approval_rules=None, **kwargs):
         """统一构造协议。
 
         子类若重写 ``__init__``，应显式声明所需参数并透传 ``**kwargs``，否则
-        ``registry._factory`` 注入的参数（config/approval_store）会导致实例化失败。
+        ``registry._factory`` 注入的参数（config/approval_store/approval_rules）
+        会导致实例化失败。
         """
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session = session  # For accessing session info (e.g., in python tool)
         # 会话级高风险命令审批存储（内存，根/子代理共享），由 agent 注入
         self.approval_store = approval_store
+        # 审批规则引擎（core/security/approval_rules.py，根/子代理共享同一实例）
+        self.approval_rules = approval_rules
         # 工具输出文件路径：由 agent 在 execute() 前设置
         # _run_bash() 逐行写入此文件（实时流式），前端可轮询读取
         # save_output_to_file() 兜底确保所有工具输出都落盘
@@ -194,14 +197,16 @@ class Tool(ShellMixin, BackgroundMixin):
         return PathPolicy(
             workspace_root=self.cwd, cwd=self.cwd,
             approval_store=self.approval_store,
+            approval_rules=self.approval_rules,
         )
 
-    def _path_gate(self, targets: list) -> ToolResult | None:
+    def _path_gate(self, targets: list, findings: list | None = None) -> ToolResult | None:
         """统一写/删路径审批门。返回 None 表示放行；否则返回拒绝/占位结果。
 
-        - 任一目标越界且无审批通道（approval_store=None）→ 硬拒绝（fail-closed）
-        - 否则按序返回第一个未批准越界目标的审批占位符（pending 单槽，一次一卡）
-        - 已批准目标自动放行（is_approved 命中）
+        - 任一目标越界且无审批通道（store 与 rules 均为 None）→ 硬拒绝（fail-closed）
+        - 否则按序返回第一个未批准越界目标的审批占位符（pending 单槽，一次一卡），
+          占位符携带全部目标的判定证据（供 lite 判定与审计）
+        - 已批准目标（会话级或命中规则）自动放行
         """
         if not targets:
             return None
@@ -216,12 +221,30 @@ class Tool(ShellMixin, BackgroundMixin):
         pending = policy.first_pending(targets)
         if pending is not None:
             approval = policy.approval_meta(pending)
+            approval["tool"] = self.name
+            approval["targets"] = [policy.target_evidence(t) for t in targets]
+            approval["findings"] = list(findings or [])
             return ToolResult(
                 approval_placeholder_text(approval),
                 completed=False,
                 meta={META_KEY: approval},
             )
         return None
+
+    def _pending_approval(self, command: str, decision_id: str, targets: list, findings: list,
+                          kind: str = "command",
+                          reason: str = "未命中允许规则，需要安全判定") -> dict:
+        """构造判定占位 meta（设计 §3.3.2）：证据齐全（目标 / 静态发现），供 lite 判定与审计。"""
+        policy = self._path_policy()
+        return {
+            "decision_id": decision_id,
+            "command": command,
+            "kind": kind,
+            "tool": self.name,
+            "reason": reason,
+            "targets": [policy.target_evidence(t) for t in targets],
+            "findings": findings,
+        }
 
     def _emit_output(self, chunk: str, written_bytes: int) -> None:
         """调用 on_output 钩子，异常不影响工具执行（钩子失败静默忽略）。"""

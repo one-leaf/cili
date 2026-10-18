@@ -19,8 +19,16 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from core.config import ApprovalConfig, get_approval_config
+from core.security.approval_judge import ApprovalDecision
+from core.security.approval_rules import build_granted_rule, implied_path_rules
 from core.session_runner_runtime.tool_batch import execute_tool_calls
-from core.tools.approval import META_KEY
+from core.tools.approval import (
+    META_KEY,
+    judge_deny_text,
+    judge_unavailable_text,
+    no_channel_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -469,8 +477,11 @@ class Loop:
             on_execute=lambda names: runner._save_progress(n, status=phase, current_tool=names),
         )
 
+        # lite 判定分派（autonomous 无询问通道：allow 落盘并重执行，ask/deny 拒绝）
+        self._resolve_approval_results(runner, results, tool_calls, has_channel=False)
+
         for result in results:
-            # autonomous 无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问
+            # 安全网：正常流程下 META_KEY 已被分派消费；此处兜底降级
             runner._downgrade_approval_result(result)
             runner.add_message("user", [result])
 
@@ -486,13 +497,110 @@ class Loop:
         runner._save_progress(n, status=phase)
         return False
 
+    # ── lite 判定分派（设计 §3.1 ②③） ─────────────────────────────
+
+    def _resolve_approval_results(self, runner, results: list[dict], tool_calls: list,
+                                  has_channel: bool) -> dict | None:
+        """处理工具结果中的 pending 占位（META_KEY），返回待合成确认卡的 approval。
+
+        - allow：落盘规则（granted_by=judge；受 judge_persist_allow / risk=high /
+          BANNED_PREFIXES 约束）+ 会话级批准 → 原地重执行替换占位结果；
+        - ask：有通道 → 返回 approval 供调用方合成确认卡；无通道 → 拒绝文本；
+        - deny：拒绝文本（含替代建议）。
+        同批多条 pending 只处理第一条（pending 单槽语义不变），其余直接拒绝。
+        """
+        judge = getattr(runner, "approval_judge", None)
+        rules = getattr(runner, "approval_rules", None)
+        store = getattr(runner, "approval_store", None)
+        cfg = get_approval_config(runner.config) if getattr(runner, "config", None) is not None else ApprovalConfig()
+        ask_approval: dict | None = None
+        first = True
+        for idx, result in enumerate(results):
+            meta = result.get("_meta") or {}
+            if META_KEY not in meta:
+                continue
+            approval = meta.pop(META_KEY)
+            meta.pop("completed", None)
+            if not first:
+                result["is_error"] = True
+                result["content"] = "该命令需要安全判定，本批仅处理一条，请稍后重试其余命令。"
+                continue
+            first = False
+
+            if judge is None:
+                decision = ApprovalDecision(decision="deny", summary="", reason="判定器缺失",
+                                            source="failure", error="no judge")
+            else:
+                decision = judge.decide(approval)
+            if decision.usage:
+                try:
+                    runner._update_usage(
+                        input_tokens=decision.usage.get("input_tokens", 0),
+                        output_tokens=decision.usage.get("output_tokens", 0),
+                        api_calls=1,
+                        cache_read_tokens=decision.usage.get("cache_read_tokens", 0),
+                        cache_creation_tokens=decision.usage.get("cache_creation_tokens", 0),
+                        model=decision.usage.get("model", ""),
+                    )
+                except Exception:  # noqa: BLE001 —— 用量记账失败不影响判定本身
+                    logger.debug("[approval] 判定用量记账失败", exc_info=True)
+
+            if decision.decision == "allow":
+                # AI 判定放行 → 落盘规则（§3.5）；不满足落盘条件时仅会话级放行
+                persistable = (rules is not None and cfg.judge_persist_allow
+                               and decision.risk != "high" and decision.source == "judge")
+                if persistable:
+                    rule = build_granted_rule(
+                        kind=approval.get("kind", "command"), tool=approval.get("tool", "*"),
+                        action=str(approval.get("command") or ""), suggested=decision.suggested_rule,
+                        granted_by="judge", summary=decision.summary,
+                        decision_id=approval.get("decision_id", ""))
+                    if rule:
+                        rules.add_granted(rule)
+                        for extra in implied_path_rules(approval.get("targets") or [], "judge",
+                                                        approval.get("decision_id", "")):
+                            rules.add_granted(extra)
+                if store:
+                    store.approve(approval.get("decision_id", ""), str(approval.get("command") or ""),
+                                  kind=approval.get("kind", "command"))
+                # 原地重执行（规则/会话批准此时放行），结果替换占位
+                tc = next((t for t in tool_calls if t.id == result.get("tool_use_id")), None)
+                if tc is not None:
+                    new_result = runner._execute_tool(tc.name, tc.parse_arguments(), tc.id)
+                    nmeta = new_result.get("_meta") or {}
+                    if META_KEY in nmeta:
+                        nmeta.pop(META_KEY, None)
+                        nmeta.pop("completed", None)
+                        new_result["is_error"] = True
+                        new_result["content"] = "判定放行后重执行仍被拦截，已终止自动重试。"
+                    results[idx] = new_result
+            elif decision.decision == "ask" and has_channel:
+                approval["summary"] = decision.summary
+                approval["risk"] = decision.risk
+                approval["reason"] = decision.reason
+                approval["rule_display"] = (decision.suggested_rule or {}).get("display", "")
+                ask_approval = approval
+                result["is_error"] = True
+                result["content"] = "该命令需要用户确认，正在询问用户..."
+            else:
+                result["is_error"] = True
+                if decision.source == "failure":
+                    result["content"] = judge_unavailable_text(approval, decision.error)
+                elif decision.decision == "ask":
+                    result["content"] = no_channel_text(approval, decision.summary)
+                else:
+                    result["content"] = judge_deny_text(approval, decision.summary,
+                                                        decision.reason, decision.alternative)
+        return ask_approval
+
     def _interactive_tool_batch(self, tool_calls: list, state: dict[str, Any]) -> bool:
-        """interactive 工具批：审批/占位标注 + 批后合成 ask_user 卡。
+        """interactive 工具批：判定分派 + 占位标注 + 批后合成 ask_user 卡。
 
         返回 True 表示需等待外部输入（ask_user/session 占位或审批卡）。
 
         并发安全工具批内并行执行（execute_tool_calls），结果按输入顺序返回；
-        审批单槽/占位等顺序相关逻辑在结果循环中保持输入顺序处理。
+        判定分派先行处理 pending 占位（allow 重执行 / ask 卡片 / deny 拒绝），
+        占位/单槽等顺序相关逻辑在结果循环中保持输入顺序处理。
         """
         runner = self.runner
         parallel = bool(getattr(runner.config, "system", None)
@@ -501,31 +609,26 @@ class Loop:
         runner._save_progress(runner._turn_iterations, status="running", tool_calls=len(tool_calls))
         results = execute_tool_calls(runner, tool_calls, parallel=parallel)
 
+        # lite 判定分派（设计 §3.1 ②③）：META_KEY 占位在此被替换/降级
+        ask_approval = self._resolve_approval_results(
+            runner, results, tool_calls,
+            has_channel=bool(getattr(runner.role_cfg, "approval", False)),
+        )
+
         for result in results:
             placeholder = result.get("_meta", {}).get("completed") is False
-            # 高风险命令需用户批准：降级为错误提示，统一在批处理完后合成 ask_user 卡
-            if META_KEY in result.get("_meta", {}):
-                if state["approval"] is None:
-                    state["approval"] = result["_meta"][META_KEY]
-                    result["is_error"] = True
-                    result["content"] = "该命令需要用户批准，正在询问用户..."
-                else:
-                    # 同批多个需批准命令：只询问第一条，其余保持拒绝
-                    result["is_error"] = True
-                    result["content"] = "该命令需要用户批准，本批仅询问一条，请稍后重试。"
-                result["_meta"].pop(META_KEY, None)
-                result["_meta"].pop("completed", None)
-            elif placeholder:
+            if placeholder:
                 # 模型自发的 ask_user/session 占位：正常等待，不叠加审批卡
                 state["wait_for_external"] = True
                 state["external_already"] = True
             runner.add_message("user", [result])
             runner._sync_to_session()
 
-        # 合成 ask_user 卡询问用户是否批准（放在所有工具结果之后，保持消息配对正确；
-        # 本批已有模型自发的占位时不合成，避免与 pending 单槽冲突）
-        if state["approval"] and not state["external_already"] and not runner._stopped:
-            runner._handle_approval_required(state["approval"])
+        # 合成确认卡（放在所有工具结果之后，保持消息配对正确；本批已有模型自发的
+        # 占位时顺延不合成——判定结论已缓存，模型下轮重发该命令零判定开销）
+        if ask_approval and not state["external_already"] and not runner._stopped:
+            state["approval"] = ask_approval
+            runner._handle_approval_required(ask_approval)
             state["wait_for_external"] = True
         # 迭代边界批量落盘一次：本批工具结果已入内存，一次性追加 jsonl + fsync（非逐条）。
         # 已由 _handle_approval_required 的 save() 落盘时此处为幂等 no-op。

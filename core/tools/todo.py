@@ -129,8 +129,9 @@ class TodoWriteTool(Tool):
         cwd: str = ".",
         workspace_uuid: str = "",
         session=None,
+        approval_rules=None,
     ):
-        super().__init__(cwd, workspace_uuid, session)
+        super().__init__(cwd, workspace_uuid, session, approval_rules=approval_rules)
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the todo_write tool.

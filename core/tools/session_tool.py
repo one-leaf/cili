@@ -43,10 +43,12 @@ class SessionTool(Tool):
         "a sub-session (depth 1) may delegate only to 'lite'; sessions two levels deep cannot delegate."
     )
 
-    def __init__(self, *args, config=None, approval_store=None, delegation_depth: int = 0, **kwargs):
+    def __init__(self, *args, config=None, approval_store=None, approval_rules=None,
+                 delegation_depth: int = 0, **kwargs):
         super().__init__(*args, **kwargs)
         self.config = config  # 全局配置，构造子 SessionRunner 用（角色模型继承）
         self.approval_store = approval_store  # 根 runner 的会话级审批存储，传给子 runner 共享
+        self.approval_rules = approval_rules  # 审批规则引擎（与子 runner 共享同一实例）
         self.delegation_depth = delegation_depth  # 当前 runner 的委派深度（master=0；depth1 仅可委派 lite；depth≥2 禁止）
         self.stop_check = None  # Set by master SessionRunner after tool creation
         self.on_session_start = None  # Callback(exec_id, task_summary) fired before sub-session starts
@@ -265,6 +267,7 @@ class SessionTool(Tool):
             session_dir=exec_dir,
             exec_id=exec_id,
             approval_store=self.approval_store,
+            approval_rules=self.approval_rules,
             delegation_depth=self.delegation_depth + 1,
         )
 

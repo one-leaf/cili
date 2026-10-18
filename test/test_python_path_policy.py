@@ -154,7 +154,10 @@ class TestPythonExecuteGate:
         assert result.error is True
 
     def test_deny_first(self, test_workspace):
+        """eval 证据命令：不再硬拒绝，返回判定占位（证据 python-dynamic-exec）。"""
         tool = self._tool(test_workspace, ApprovalStore())
         result = tool.execute(action="execute", code='eval("1+1")')
-        assert result.error is True
-        assert "blocked" in result.output
+        assert result.completed is False
+        assert not result.error
+        findings = result.meta[META_KEY]["findings"]
+        assert any(f["id"] == "python-dynamic-exec" for f in findings)

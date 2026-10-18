@@ -112,8 +112,10 @@ class LoopTool(Tool):
         cwd: str = ".",
         workspace_uuid: str = "",
         session=None,
+        approval_rules=None,
     ):
-        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session=session)
+        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session=session,
+                         approval_rules=approval_rules)
 
     @property
     def parameters(self) -> dict:

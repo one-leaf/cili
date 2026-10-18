@@ -15,6 +15,11 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
+from core.tools.approval import (
+    META_KEY,
+    approval_decision_id,
+    approval_placeholder_text,
+)
 from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, Tool, ToolResult
 
 
@@ -76,8 +81,9 @@ class PythonTool(Tool):
     name = "python"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,
-                 approval_store=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
+                 approval_store=None, approval_rules=None):
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
+                         approval_rules=approval_rules)
         self._config = config
         self.description = self._build_description()
 
@@ -96,7 +102,8 @@ class PythonTool(Tool):
             "Use CJK text directly (e.g., plt.title('中文标题')); for sub/superscripts and math use "
             "mathtext `$...$` (`$x_1$`, `$P^{-1}$`), not Unicode ₁₂³ (renders as boxes).\n\n"
             "## Rules:\n"
-            "- eval() and exec() are blocked.\n"
+            "- Avoid eval()/exec() and shell escapes (os.system, subprocess) — static analysis flags them "
+            "and the safety judge usually rejects them.\n"
             "- Do not invoke bash/pwsh from Python code.\n"
             "- This is the ONLY way to run Python — never use bash or pwsh to call python.\n"
             "- There is NO 'timeout' parameter here (unlike bash): execution timeout is fixed. "
@@ -249,14 +256,19 @@ class PythonTool(Tool):
                 content = f.read()
         except Exception as e:
             return ToolResult(f"Error: cannot read script for safety check: {e}", error=True)
-        deny_msg = self._check_python_deny(content)
-        if deny_msg:
-            return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
-
-        # 路径权限门：脚本内的写/删目标，越界需审批/拒绝
-        gate = self._path_gate(collect_python_targets(content, cwd=self.cwd))
+        # 审批管道（设计 §3.1）：AST 证据 + 路径门 → 判定占位（证据齐全）
+        findings = self._analyze_python_code(content)
+        targets = collect_python_targets(content, cwd=self.cwd)
+        gate = self._path_gate(targets, findings=findings)
         if gate:
             return gate
+        if findings:
+            if not self.approval_store:
+                return ToolResult(
+                    f"Error: 代码命中安全证据且无审批通道（fail-closed）：{findings[0]['evidence']}",
+                    error=True,
+                )
+            return self._pending_python_result(content, targets, findings)
 
         # Set MPLCONFIGDIR to use Cili's matplotlib config
         mpl_config_dir = _resolve_mpl_config_dir()
@@ -271,15 +283,19 @@ class PythonTool(Tool):
 
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
         """Execute Python code (no LLM injection — main agent is the LLM itself)."""
-        # Check for cross-tool invocations
-        deny_msg = self._check_python_deny(code)
-        if deny_msg:
-            return ToolResult(f"Error: code blocked by safety check — {deny_msg}", error=True)
-
-        # 路径权限门：AST 收集写/删目标，越界需审批/拒绝
-        gate = self._path_gate(collect_python_targets(code, cwd=self.cwd))
+        # 审批管道（设计 §3.1）：AST 证据 + 路径门 → 判定占位（证据齐全）
+        findings = self._analyze_python_code(code)
+        targets = collect_python_targets(code, cwd=self.cwd)
+        gate = self._path_gate(targets, findings=findings)
         if gate:
             return gate
+        if findings:
+            if not self.approval_store:
+                return ToolResult(
+                    f"Error: 代码命中安全证据且无审批通道（fail-closed）：{findings[0]['evidence']}",
+                    error=True,
+                )
+            return self._pending_python_result(code, targets, findings)
 
         python_exe = _resolve_python_exe()
         # Set MPLCONFIGDIR to use Cili's matplotlib config
@@ -359,13 +375,33 @@ class PythonTool(Tool):
         cmd = f'"{_resolve_python_exe()}" -m pip {subcmd} --disable-pip-version-check'
         return self._filter_notices(self._run_bash(cmd, timeout=timeout))
 
-    @staticmethod
-    def _check_python_deny(code: str) -> str | None:
-        """AST 静态分析 Python 代码，拦截动态执行与 shell 逃逸。
+    @classmethod
+    def _analyze_python_code(cls, code: str) -> list[dict]:
+        """AST 静态分析：动态执行与 shell 逃逸转为判定证据（设计 §3.3.2）。
 
-        Returns:
-            拦截原因；None 表示通过。
+        原 deny 拦截已移除——命中项作为 static_findings 交给 lite 判定器
+        （constraints 的 python-dynamic-exec 引导拒绝）。语法错误不再作为安全证据
+        （代码自然执行失败）。
         """
+        try:
+            ast.parse(code)
+        except SyntaxError:
+            return []
+        reason = cls._find_dynamic_exec(code)
+        return [{"id": "python-dynamic-exec", "evidence": reason}] if reason else []
+
+    def _pending_python_result(self, code: str, targets: list, findings: list) -> ToolResult:
+        """构造 python 代码的判定占位结果（判定编号按完整代码哈希，卡片截断展示）。"""
+        display = code if len(code) <= 2000 else code[:2000] + f"\n...（共 {len(code)} 字符）"
+        approval = self._pending_approval(
+            display, approval_decision_id(code), targets, findings,
+            reason="代码命中动态执行/shell 逃逸证据，需要安全判定",
+        )
+        return ToolResult(approval_placeholder_text(approval), completed=False, meta={META_KEY: approval})
+
+    @staticmethod
+    def _find_dynamic_exec(code: str) -> str | None:
+        """AST 扫描动态执行 / shell 逃逸写法。Returns: 命中原因；None 表示未命中。"""
         try:
             tree = ast.parse(code)
         except SyntaxError as e:

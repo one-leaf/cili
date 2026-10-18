@@ -11,7 +11,12 @@ import re
 import secrets
 from typing import Any
 
-from core.tools.approval import APPROVE_LABEL, REMEMBER_LABEL
+from core.security.approval_rules import build_granted_rule, implied_path_rules
+from core.tools.approval import (
+    APPROVE_LABEL,
+    REMEMBER_LABEL,
+    append_approval_audit,
+)
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -143,13 +148,27 @@ def build_other_answer(session, ask_user_tool_use_id: str, content: str) -> str:
 
 
 def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
-                           approval_store=None) -> bool:
+                           approval_store=None, approval_rules=None) -> bool:
     """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
 
     返回是否找到占位符。消息块是 runner 与 session 的共享引用，就地修改对两者都生效
     （answer_ask_user 与 send_message 共用）。
+
+    审批卡三态（设计 §3.4/§3.5）按答案 label 后缀判定：「一直允许」与 AI 判定 allow
+    走同一落盘管道（build_granted_rule，granted_by=user）；拒绝时给模型附加引导文案。
     """
     logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
+    store = approval_store
+    pending = store.pending if store else None
+    # 拒绝/自由输入时给模型附加引导（§3.6 用户拒绝文案），注入占位符内容尾部
+    hint = ""
+    if pending is not None:
+        probe = answer.rstrip()
+        if not (probe.endswith(APPROVE_LABEL) or probe.endswith(REMEMBER_LABEL)):
+            summary = str(pending.get("summary") or "").strip()
+            meaning = f"（{summary}）" if summary else ""
+            hint = f"\n\n（系统提示：用户拒绝了该命令{meaning}。请改用其他方式完成目标，不要原样重发该命令。）"
+    guided_answer = answer + hint
     found_placeholder = False
     for msg in reversed(session.messages):
         if msg["role"] != "user":
@@ -162,7 +181,7 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
             block_tool_id = block.get("tool_use_id") or block.get("tool_call_id")
             if block.get("type") == "tool_result" and block_tool_id == ask_user_tool_use_id:
                 # 替换占位符内容（内存视图；jsonl 行保持占位）
-                block["content"] = answer
+                block["content"] = guided_answer
                 found_placeholder = True
                 logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
 
@@ -174,11 +193,11 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
                 block["_meta"].update({
                     "completed": True,
                     "output_path": output_path,
-                    "file_size": len(answer.encode("utf-8")),
+                    "file_size": len(guided_answer.encode("utf-8")),
                 })
                 try:
                     ext_file = session.session_dir / output_path
-                    ext_file.write_text(answer, encoding="utf-8")
+                    ext_file.write_text(guided_answer, encoding="utf-8")
                     logger.info(f"[ask-user] 已写入答案文件: {output_path}")
                 except Exception as e:
                     logger.warning(f"[ask-user] 写入答案文件失败: {e}")
@@ -213,26 +232,47 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
     if not found_tool_use:
         logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={ask_user_tool_use_id}")
 
-    # 会话级审批：若本次 ask_user 是高风险命令批准卡，按答案记录批准/拒绝并清空待批槽
-    # 答案格式为 "{question} {label}"，用 label 后缀精确匹配区分三档（避免子串误判）
-    store = approval_store
-    if store and store.pending:
+    # 审批卡三态：答案格式 "{question} {label}"，用 label 后缀精确匹配（避免子串误判）
+    if store and pending:
         stripped = answer.rstrip()
-        kind = store.pending.get("kind", "command")
+        did = pending.get("decision_id", "")
+        command = pending.get("command", "")
+        kind = pending.get("kind", "command")
+        audit_base = {
+            "source": "user", "decision_id": did, "tool": pending.get("tool", ""),
+            "kind": kind, "action": str(command)[:300],
+        }
         if stripped.endswith(REMEMBER_LABEL):
-            store.approve(
-                store.pending["decision_id"],
-                store.pending["command"],
-                persist=True,
-                reason=store.pending.get("reason", ""),
-                kind=kind,
-            )
-            logger.info(f"[approval] 用户批准并记住高风险命令: {store.pending['command']}")
+            if approval_rules is not None:
+                main = build_granted_rule(
+                    kind=kind, tool=pending.get("tool", "*"), action=command,
+                    suggested=pending.get("suggested_rule"), granted_by="user",
+                    summary=pending.get("summary", ""), decision_id=did,
+                )
+                if main:
+                    approval_rules.add_granted(main)
+                    for extra in implied_path_rules(pending.get("targets") or [], "user", did):
+                        approval_rules.add_granted(extra)
+                    logger.info(f"[approval] 用户批准并记住（落盘规则）：{command[:80]}")
+                else:
+                    logger.info(f"[approval] 规则落盘被黑名单/降级约束拒绝，仅会话级放行：{command[:80]}")
+            store.approve(did, command, kind=kind)
+            append_approval_audit(getattr(session, "session_dir", None), "decided",
+                                  {**audit_base, "decision": "persist"})
         elif stripped.endswith(APPROVE_LABEL):
-            store.approve(store.pending["decision_id"], store.pending["command"], kind=kind)
-            logger.info(f"[approval] 用户批准高风险命令(本次会话): {store.pending['command']}")
+            store.approve(did, command, kind=kind)
+            # 会话级放行越界目标：重执行直接通过路径门，无需再判定（设计 §3.4）
+            for t in pending.get("targets") or []:
+                if isinstance(t, dict) and t.get("decision_id") and not t.get("inside_workspace"):
+                    t_kind = "path:delete" if t.get("op") == "delete" else "path:write"
+                    store.approve(t["decision_id"], str(t.get("raw") or ""), kind=t_kind)
+            logger.info(f"[approval] 用户批准高风险命令(本次会话): {command[:80]}")
+            append_approval_audit(getattr(session, "session_dir", None), "decided",
+                                  {**audit_base, "decision": "approve"})
         else:
-            logger.info(f"[approval] 用户拒绝高风险命令: {store.pending['command']}")
+            logger.info(f"[approval] 用户拒绝高风险命令: {command[:80]}")
+            append_approval_audit(getattr(session, "session_dir", None), "decided",
+                                  {**audit_base, "decision": "reject"})
         store.clear_pending()
 
     # 就地修改了共享消息块（未走 add_message），须置脏否则 save 短路不落盘

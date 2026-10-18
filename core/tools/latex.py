@@ -94,8 +94,9 @@ class LatexTool(Tool):
     }
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
-                 approval_store=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store)
+                 approval_store=None, approval_rules=None):
+        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
+                         approval_rules=approval_rules)
         self._compiler_cache: str | None = None
 
     def execute(

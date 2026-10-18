@@ -1,34 +1,37 @@
-"""高风险命令的会话级审批共享模块。
+"""高风险动作的会话级审批共享模块（占位符 / 存储 / 文案 / 审计）。
 
-三档拦截（allow/ask/deny）中的 ask 档：命令命中后不直接拒绝，
-先查 ApprovalStore 是否已在本会话内被用户批准；未批准则返回
-completed=False 占位符，由 Master Agent 循环合成 ask_user 卡询问用户。
+审批流程重构（workspace/approval-flow-design.md）：静态 deny 黑名单已移除——工具层
+只做「规则匹配 + 证据收集」，未命中返回 completed=False 占位符，由 Loop 做 lite 判定
+分派（allow → 落盘规则并重执行 / ask → 合成确认卡 / deny → 拒绝，判定器见
+core/security/approval_judge.py，规则引擎见 core/security/approval_rules.py）。
 
-ApprovalStore 由 Master Agent 持有，Master/Worker/Lite 的 bash/pwsh 与
-agent 委派共享同一实例：Master 批准的会话级命令在 Worker/Lite 中同样
-放行。会话级批准仅存内存，服务器重启即失效；用户选择「允许并记住」
-时规则持久化到 workspace 的 approvals.json（Master 启动时回灌）。
+本模块保留：
+
+- ApprovalStore：会话级放行（decision_id → {command, kind}，批准不消费）+ 单槽
+  pending。持久化已移交 ApprovalRules——本类只管会话内存状态（重启失效）。
+- 文案：卡片问题（含含义/风险/理由）、占位文本、四分拒绝文本、子代理下放段落。
+- 审计：append_approval_audit（asked/decided 成对事件 → {session_dir}/approval_audit.jsonl）。
 """
 
 from __future__ import annotations
 
 import hashlib
-import threading
+import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.fs_utils import atomic_write_json, load_json_or_backup
+logger = logging.getLogger(__name__)
 
-MODE_ASK = "ask"
-MODE_DENY = "deny"
+# ToolResult.meta 中标记"需要判定/批准"的键（占位符管道，未变）
+META_KEY = "approval_required"
 
 APPROVE_LABEL = "允许本次会话"
-REMEMBER_LABEL = "允许并记住"
+REMEMBER_LABEL = "一直允许（此类命令）"
 REJECT_LABEL = "拒绝"
 
-# ToolResult.meta 中标记"需要用户批准"的键
-META_KEY = "approval_required"
+_RISK_LABELS = {"low": "低", "medium": "中", "high": "高"}
 
 
 def canonicalize_command(command: str) -> str:
@@ -44,14 +47,18 @@ def approval_decision_id(command: str) -> str:
     return hashlib.sha256(canonicalize_command(command).encode("utf-8")).hexdigest()[:16]
 
 
-def build_approval_question(approval: dict[str, Any]) -> str:
-    """构造发给用户的批准问题文案。
+def _risk_label(risk: str) -> str:
+    return _RISK_LABELS.get(risk, "中")
 
-    按 kind 分支：browser:navigate 为非公网地址导航；path:write/path:delete 为
-    工作区外文件操作；其余为高风险命令。
-    """
+
+def build_approval_question(approval: dict[str, Any]) -> str:
+    """构造发给用户的批准问题文案（含含义/风险/理由，设计 §3.4）。"""
     kind = approval.get("kind", "command")
-    target_label = "路径" if kind.startswith("path:") else "命令"
+    summary = str(approval.get("summary") or "").strip()
+    risk = str(approval.get("risk") or "").strip()
+    reason = str(approval.get("reason") or "").strip()
+    display = str(approval.get("rule_display") or "").strip()
+
     if kind == "browser:navigate":
         head = (
             f"检测到非公网地址导航，需要您批准后才能执行：\n\n"
@@ -69,188 +76,170 @@ def build_approval_question(approval: dict[str, Any]) -> str:
         )
     else:
         head = (
-            f"检测到高风险命令，需要您批准后才能执行：\n\n"
+            f"检测到需要确认的命令，需要您批准后才能执行：\n\n"
             f"命令：`{approval['command']}`\n"
         )
+
+    if summary:
+        head += f"含义：{summary}\n"
+    if risk:
+        head += f"风险：{_risk_label(risk)}\n"
+    if reason:
+        head += f"判定理由：{reason}\n"
+    head += f"判定编号：{approval['decision_id']}\n"
+
+    target_label = "路径" if kind.startswith("path:") else ("地址" if kind == "browser:navigate" else "命令")
+    persist_desc = f"（{display}）" if display else ""
     return (
-        f"{head}"
-        f"拦截原因：{approval['reason']}\n"
-        f"判定编号：{approval['decision_id']}\n\n"
-        f"「{APPROVE_LABEL}」仅本次会话放行；「{REMEMBER_LABEL}」会写入此工作区，"
-        f"重启后仍放行相同{target_label}（包括委派给子代理）；「{REJECT_LABEL}」仅拦截本次执行，"
-        f"下次遇到相同{target_label}仍会询问。"
+        f"{head}\n"
+        f"「{APPROVE_LABEL}」仅本次会话放行；「{REMEMBER_LABEL}」会写入此工作区{persist_desc}，"
+        f"重启后仍自动放行同类{target_label}（包括委派给子代理）；「{REJECT_LABEL}」仅拦截本次执行。"
     )
 
 
 def approval_placeholder_text(approval: dict[str, Any]) -> str:
-    """工具返回给 LLM 的占位文本（completed=False，等待用户批准）。"""
+    """工具返回给 LLM 的占位文本（completed=False）。
+
+    该文本通常不会到达模型——Loop 会用判定结论（放行重执行 / 确认卡 / 四分拒绝
+    文本）替换它；仅在判定器缺失等边界场景兜底可见。
+    """
     kind = approval.get("kind", "command")
-    reason = approval.get("reason", "").lower()
-    command = approval.get("command", "")
-
-    # 1. 检测 bash/pwsh 中调用 python 的情况
-    if "python tool" in reason:
-        return (
-            "Error: 不能在 bash/pwsh 中调用 Python。\n"
-            "原因：该命令需要用户批准，但子代理无法等待用户确认。\n"
-            "解决：直接使用 `python` tool 执行 Python 代码。\n\n"
-            "示例：\n"
-            "- 错误：`bash(command=\"python script.py\")`\n"
-            "- 正确：`python(action=\"execute_file\", file=\"script.py\")`"
-        )
-
-    # 2. 检测跨工具调用（bash调pwsh、pwsh调bash等）
-    if "cross-tool" in reason or ("use the" in reason and "tool instead" in reason):
-        return (
-            f"Error: 跨工具调用被禁止。\n"
-            f"原因：{approval.get('reason', '')}\n"
-            f"命令：`{command}`\n\n"
-            f"解决：请使用对应的专用工具，不要在 shell 中调用其他工具。"
-        )
-
-    # 3. 路径越界操作
-    if kind.startswith("path:"):
-        op = "删除" if kind == "path:delete" else "写入"
-        return (
-            f"Error: 该操作会{op}工作区外的文件，需要用户批准。\n"
-            f"拦截原因：{approval.get('reason', '目标路径不在工作区内')}\n"
-            f"操作目标：`{approval.get('path', approval.get('command', ''))}`\n\n"
-            f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
-            f"1. 改用工作区内的路径\n"
-            f"2. 或向父代理报告，让父代理处理此操作"
-        )
-
-    # 4. 浏览器导航（非公网地址）
-    if kind == "browser:navigate":
-        return (
-            f"Error: 该导航地址被 SSRF 防护拦截（非公网地址），需要用户批准。\n"
-            f"地址：`{command}`\n\n"
-            f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
-            f"1. 确认地址是否正确（应使用公网地址）\n"
-            f"2. 或向父代理报告，让父代理处理此导航"
-        )
-
-    # 5. 通用高风险命令
+    target_label = "地址" if kind == "browser:navigate" else ("路径" if kind.startswith("path:") else "命令")
     return (
-        f"Error: 该命令被安全策略拦截，需要用户批准。\n"
-        f"拦截原因：{approval.get('reason', '高风险操作')}\n"
-        f"命令：`{command}`\n\n"
-        f"如果你是子代理（worker/lite），无法等待用户确认，请：\n"
-        f"1. 尝试用更安全的方式完成相同任务\n"
-        f"2. 或向父代理报告，让父代理处理此操作"
+        f"Error: 该{target_label}未命中允许规则，已被拦截，等待安全判定（自动判定或用户确认）。\n"
+        f"{target_label}：`{approval.get('command', '')}`\n"
+        f"判定编号：{approval.get('decision_id', '')}\n"
+        f"拦截原因：{approval.get('reason', '')}\n\n"
+        f"请勿原样重发；等待判定结果或用户决定。\n"
+        f"如果你是子代理（worker/lite）：无法等待用户确认，请换用非拦截命令，或向父代理报告此操作。"
     )
 
 
-def build_approved_commands_section(approval_store: "ApprovalStore | None") -> str:
-    """子代理任务消息中下放的已批准命令/导航/路径段落（无批准时返回空串）。
+# ─── 四分拒绝文本（设计 §3.6：模型需要分清「人不干」和「没人可问」） ────────
 
-    命令、导航 URL 与路径规则分列：worker/lite 据此得知主会话已放行的命令、
-    非公网导航与工作区外文件操作，避免重复尝试被拒（放行本身由共享 store
-    的 is_approved 保证，本段仅作提示）。
+def judge_deny_text(approval: dict[str, Any], summary: str, reason: str, alternative: str) -> str:
+    alt = f"建议替代做法：{alternative}。" if alternative else ""
+    return (
+        f"该命令被安全判定拒绝：{reason}\n"
+        f"命令含义：{summary or approval.get('command', '')}\n{alt}"
+        f"判定编号：{approval.get('decision_id', '')}\n"
+        f"（系统提示：不要原样重发；请按替代建议调整，或改用其他方式完成目标。）"
+    )
+
+
+def no_channel_text(approval: dict[str, Any], summary: str = "") -> str:
+    meaning = f"（{summary}）" if summary else ""
+    return (
+        f"该命令需要用户确认{meaning}，但当前是自主执行的子代理，无询问通道。\n"
+        f"命令：`{approval.get('command', '')}`\n"
+        f"判定编号：{approval.get('decision_id', '')}\n"
+        f"（系统提示：请换用非拦截命令，或向父代理报告此操作。）"
+    )
+
+
+def judge_unavailable_text(approval: dict[str, Any], error: str) -> str:
+    return (
+        f"自动判定暂不可用（{error}），已按保守策略拒绝。\n"
+        f"命令：`{approval.get('command', '')}`\n"
+        f"判定编号：{approval.get('decision_id', '')}\n"
+        f"（系统提示：可稍后重试相同命令，或改用其他方式完成目标。）"
+    )
+
+
+def user_reject_hint(answer: str, approval: dict[str, Any] | None) -> str:
+    """用户在卡片上选「拒绝」/自由输入时，附加给模型的引导（注入占位符文本尾部）。"""
+    summary = str((approval or {}).get("summary") or "").strip()
+    meaning = f"（{summary}）" if summary else ""
+    return (
+        f"{answer}\n\n"
+        f"（系统提示：用户拒绝了该命令{meaning}。请改用其他方式完成目标，不要原样重发该命令。）"
+    )
+
+
+def build_approved_commands_section(store: "ApprovalStore | None", rules=None) -> str:
+    """子代理任务消息中下放的已批准命令/导航/路径与已落盘规则段落（无则空串）。
+
+    worker/lite 据此得知主会话已放行的内容，避免重复尝试被拒（放行本身由共享
+    store / rules 保证，本段仅作提示）。
     """
-    if not approval_store:
+    if not store and not rules:
         return ""
-    approved = approval_store.approved_commands()
-    navigations = approval_store.approved_navigations()
-    path_rules = approval_store.approved_path_rules()
-    if not approved and not navigations and not path_rules:
-        return ""
-    lines = ["### Pre-approved commands", ""]
-    if approved:
-        lines.append(
-            "The following commands have been approved by the user for this "
-            "session and may be executed directly:"
-        )
-        lines += [f"- `{cmd}`" for cmd in approved]
-    if navigations:
-        lines.append(
-            "The following navigation URLs have been approved by the user for "
-            "this session and may be navigated to directly:"
-        )
-        lines += [f"- navigate `{url}`" for url in navigations]
-    if path_rules:
-        lines.append(
-            "The following file operations have been approved by the user for "
-            "this session and may be executed directly:"
-        )
-        for rule in path_rules:
-            verb = "delete" if rule["kind"] == "path:delete" else "write"
-            lines.append(f"- {verb} `{rule['command']}`")
-    lines.append("")
-    return "\n".join(lines)
+    lines: list[str] = []
+    if store:
+        approved = store.approved_commands()
+        navigations = store.approved_navigations()
+        path_rules = store.approved_path_rules()
+        if approved or navigations or path_rules:
+            lines += ["### Session-approved actions", ""]
+            if approved:
+                lines.append("The following commands have been approved by the user for this session:")
+                lines += [f"- `{cmd}`" for cmd in approved]
+            if navigations:
+                lines.append("The following navigation URLs have been approved for this session:")
+                lines += [f"- navigate `{url}`" for url in navigations]
+            if path_rules:
+                lines.append("The following file operations have been approved for this session:")
+                for rule in path_rules:
+                    verb = "delete" if rule["kind"] == "path:delete" else "write"
+                    lines.append(f"- {verb} `{rule['command']}`")
+            lines.append("")
+    if rules:
+        displays = rules.granted_displays()
+        if displays:
+            lines += [
+                "### Workspace-approved rules",
+                "",
+                "The following rules were approved (by the user or the safety judge) in this",
+                "workspace and take effect permanently:",
+            ]
+            lines += [f"- {d}" for d in displays]
+            lines.append("")
+    return "\n".join(lines) if lines else ""
+
+
+def append_approval_audit(session_dir, event: str, data: dict[str, Any]) -> None:
+    """审批审计：asked / decided 成对事件追加到 {session_dir}/approval_audit.jsonl。
+
+    独立于会话消息（不进 LLM 上下文、不进聊天 UI），供误判复盘与设置页审计。
+    任何失败静默（审计绝不影响审批主流程）。
+    """
+    try:
+        if not session_dir:
+            return
+        d = Path(session_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        record = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "event": event, **data}
+        with open(d / "approval_audit.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        logger.debug("[approval-audit] 写审计事件失败", exc_info=True)
 
 
 class ApprovalStore:
-    """高风险命令审批存储：会话级（内存）+ 可选持久化到 workspace。
+    """会话级放行存储：decision_id → {command, kind}，批准不消费；单槽 pending。
 
-    - _approved: decision_id -> command，会话内持续生效，不按次数消费；
-      含从 rules_path 回灌的持久化规则
-    - pending: 单槽待批准项 {decision_id, command, reason}，由 root 循环写入、
-      answer 端点读取后清空
-    - rules_path: 持久化规则文件（workspace 的 approvals.json）。为 None 时
-      退化为纯内存存储（现有测试/独立调用零改动）。仅 Master 写入文件，
-      Worker/Lite 通过共享实例继承。
+    - _approved：会话内持续生效（含委派给子代理），重启失效；
+    - pending：单槽待判定/待批准项，由 Loop 写入、answer 端点读取后清空；
+    - 持久化规则见 ApprovalRules（core/security/approval_rules.py），本类不落盘。
     """
 
-    def __init__(self, rules_path: Path | str | None = None) -> None:
+    def __init__(self) -> None:
         self._approved: dict[str, dict[str, str]] = {}
         self.pending: dict[str, Any] | None = None
-        self._rules_path = Path(rules_path) if rules_path is not None else None
-        # 规则文件的读-改-写锁（多 agent 并发「允许并记住」时避免丢更新）
-        self._rules_lock = threading.Lock()
-        self._load_rules()
-
-    def _load_rules(self) -> None:
-        """启动时从 rules_path 回灌持久化规则（文件缺失/损坏时静默跳过）。
-
-        旧规则无 kind 字段，按 "command" 回灌（兼容既有 approvals.json）。
-        """
-        if self._rules_path is None:
-            return
-        data = load_json_or_backup(self._rules_path, {})
-        for rule in data.get("rules", []):
-            did = rule.get("decision_id")
-            command = rule.get("command")
-            if did and command:
-                kind = rule.get("kind", "command")
-                self._approved[did] = {"command": command, "kind": kind}
 
     def is_approved(self, decision_id: str) -> bool:
         return decision_id in self._approved
 
-    def approve(self, decision_id: str, command: str, persist: bool = False,
-                reason: str = "", kind: str = "command") -> None:
-        """记录批准。persist=True 时把规则原子写入 rules_path（按 decision_id 去重）。
-
-        kind 默认 "command"，现有调用点零改动；路径规则传 "path:write"/"path:delete"。
-        """
+    def approve(self, decision_id: str, command: str, kind: str = "command") -> None:
+        """记录会话级批准（不消费；重启失效）。"""
         self._approved[decision_id] = {"command": command, "kind": kind}
-        if persist:
-            self._persist_rule(decision_id, command, reason, kind)
-
-    def _persist_rule(self, decision_id: str, command: str, reason: str, kind: str) -> None:
-        if self._rules_path is None:
-            return
-        # 读-改-写整体加锁：atomic_write 只保证单次写原子，不防并发丢更新
-        with self._rules_lock:
-            data = load_json_or_backup(self._rules_path, {"rules": []})
-            rules = [r for r in data.get("rules", []) if r.get("decision_id") != decision_id]
-            rules.append({
-                "decision_id": decision_id,
-                "command": command,
-                "reason": reason or "",
-                "kind": kind,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
-            data["rules"] = rules
-            atomic_write_json(self._rules_path, data)
 
     def approved_commands(self) -> list[str]:
-        """仅命令类规则（kind == "command"），供现有调用/测试保持语义。"""
+        """仅命令类规则（kind == "command"）。"""
         return [v["command"] for v in self._approved.values() if v["kind"] == "command"]
 
     def approved_navigations(self) -> list[str]:
-        """导航类规则（kind == "browser:navigate"），供子代理提示段落。"""
+        """导航类规则（kind == "browser:navigate"）。"""
         return [v["command"] for v in self._approved.values() if v["kind"] == "browser:navigate"]
 
     def approved_path_rules(self) -> list[dict[str, str]]:
