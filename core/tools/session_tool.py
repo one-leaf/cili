@@ -269,6 +269,9 @@ class SessionTool(Tool):
             approval_store=self.approval_store,
             approval_rules=self.approval_rules,
             delegation_depth=self.delegation_depth + 1,
+            # master session id 逐级透传：LLM 后端会话头按它聚合（含子代理）
+            master_session_id=getattr(self.session, "master_session_id", "")
+                             or getattr(self.session, "session_id", ""),
         )
 
         # 全局事件流：worker 逐 token 消息与工具增量 → 事件总线（实时推送，去前端轮询）。

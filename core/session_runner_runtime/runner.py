@@ -596,7 +596,7 @@ class Runner:
             response = self.runner.client.chat(
                 messages=[Message(role="user", content=summary_prompt)],
                 system="你是一个对话总结助手。请用中文简洁地总结对话要点。",
-                session_id=self.runner._session_id,
+                session_id=self.runner.master_session_id,
             )
             # Track usage (UsageData object)
             if response.usage:
@@ -853,7 +853,7 @@ class Runner:
                 messages=message_objects,
                 system=system_prompt,
                 tools=self.runner.tool_schemas,
-                session_id=self.runner._session_id,
+                session_id=self.runner.master_session_id,
             )
             # Track usage (UsageData object)
             if response.usage:
@@ -894,7 +894,7 @@ class Runner:
                         messages=retry_message_objects,
                         system=system_prompt,
                         tools=self.runner.tool_schemas,
-                        session_id=self.runner._session_id,
+                        session_id=self.runner.master_session_id,
                     )
                     if response.usage:
                         self.runner._update_usage(
@@ -959,7 +959,7 @@ class Runner:
                     on_text=on_text_delta,
                     on_thinking=on_thinking_delta,
                     stop_check=lambda: self.runner._stopped,
-                    session_id=self.runner._session_id,
+                    session_id=self.runner.master_session_id,
                 )
                 # 成功，跳出重试循环
                 break

@@ -88,9 +88,13 @@ class _SessionRef:
     autonomous 模式使用 exec_id 作为 session 标识。
     """
 
-    def __init__(self, session_id: str, session_dir: Path | None = None):
+    def __init__(self, session_id: str, session_dir: Path | None = None,
+                 master_session_id: str = ""):
         self.session_id = session_id
         self.session_dir = session_dir
+        # master 的 session id：LLM 后端会话头按它聚合同一会话的全部请求（含子
+        # 代理），创建子 runner 时逐级透传。缺省回落到自身标识。
+        self.master_session_id = master_session_id or session_id
 
 
 class SessionRunner(BaseSessionRunner):
@@ -112,6 +116,7 @@ class SessionRunner(BaseSessionRunner):
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
         run_mode: str | None = None,
+        master_session_id: str = "",
     ):
         """Initialize SessionRunner.
 
@@ -153,8 +158,11 @@ class SessionRunner(BaseSessionRunner):
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
             init_session_dir = self.sessions_dir / self.current_session_id
+            # master session id：master 为自身会话 id（LLM 后端会话头按它聚合）
+            self.master_session_id = master_session_id or self._session_id
         else:
-            self._init_autonomous(task, plan, exec_id, session_dir, stop_check)
+            self._init_autonomous(task, plan, exec_id, session_dir, stop_check,
+                                  master_session_id)
             init_session_dir = session_dir
 
         super().__init__(
@@ -273,14 +281,18 @@ class SessionRunner(BaseSessionRunner):
         exec_id: str,
         session_dir: Path | None,
         stop_check: Callable[[], bool] | None,
+        master_session_id: str = "",
     ) -> None:
         """autonomous（worker/lite）：task/plan/exec_id 独立执行。"""
         self.task = task
         self.plan = plan
         self._exec_id = exec_id
         self._session_id = exec_id
+        # master session id：创建方透传，LLM 后端会话头按它聚合（含子代理）
+        self.master_session_id = master_session_id
         # 创建 session 引用，供工具获取 session_id 和 session_dir
-        self._session_ref = _SessionRef(exec_id, session_dir)
+        self._session_ref = _SessionRef(exec_id, session_dir,
+                                        master_session_id=master_session_id)
         logger.debug(f"[SessionRunner:{self.role}] Session ID set to: {exec_id}")
 
     def _create_default_session(self) -> None:
@@ -636,6 +648,7 @@ class SessionRunner(BaseSessionRunner):
         self.context.set_session(session_store)  # 同步 context 引用，保持一致
         self.current_session_id = session_store.session_id
         self._session_id = session_store.session_id
+        self.master_session_id = session_store.session_id
         self.session_dir = session_store.session_dir
         self.messages = session_store.messages
         self._usage = session_store.get_usage()
@@ -768,7 +781,7 @@ class SessionRunner(BaseSessionRunner):
         response = self.client.chat(
             messages=message_objects,
             system=self._system_prompt,
-            session_id=self._session_id,
+            session_id=self.master_session_id,
         )
         if response.usage:
             self._update_usage(
