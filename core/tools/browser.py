@@ -37,7 +37,7 @@ Available actions:
 - click / fill / type / press: interact with elements by their ref from snapshot
   (click supports button='right'/'middle' for right/middle click)
 - hover / drag: hover an element, or drag one ref onto another
-- upload: upload a local file to a file input (ref)
+- upload: upload a local file (path) to a file input (ref)
 - fill_form: batch-fill multiple fields: fields=[{ref, value}, ...]
 - scroll: scroll down/up/top/bottom, or to_element (by ref)
 - extract: extract text/attributes from elements matching a CSS selector
@@ -199,6 +199,11 @@ Use web_search for simple lookups; use browser when search results are insuffici
             "save_path": {
                 "type": "string",
                 "description": "File path to save the download to (default: suggested filename in workspace). "
+                               "Relative paths resolve against the working directory.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Local file path to upload (required for 'upload' action). "
                                "Relative paths resolve against the working directory.",
             },
             "target_ref": {

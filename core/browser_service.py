@@ -157,6 +157,15 @@ _SNAP_EL_RE = re.compile(
 )
 _SNAP_TEXT_RE = re.compile(r"^(\s*)-\s+(\w+):\s+(.+?)\s*$")
 
+# 无「可访问名」时仍分配 ref 的角色。快照里无名元素照样会显示，若不给 ref，模型就
+# 看得见却寻址不了（典型：JS 注入的 <div role="button"> 没有文本标签）。只对交互类
+# 角色放宽，避免把 ref 预算耗在 - generic: 这类结构性节点上（SNAPSHOT_MAX_REFS 有限）。
+_INTERACTIVE_ROLES = frozenset({
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "switch",
+    "combobox", "listbox", "option", "slider", "spinbutton", "menuitem",
+    "menuitemcheckbox", "menuitemradio", "tab", "treeitem", "gridcell",
+})
+
 # 单次 snapshot 最多分配的 ref 数（超出的元素保留显示但不给 ref）
 SNAPSHOT_MAX_REFS = 400
 
@@ -188,8 +197,8 @@ def _parse_aria_snapshot(yaml_text: str, max_refs: int = SNAPSHOT_MAX_REFS):
         m = _SNAP_EL_RE.match(line)
         if m:
             indent, role, name, _attrs = m.groups()
-            if name:
-                key = (role, name)
+            if name or role in _INTERACTIVE_ROLES:
+                key = (role, name or "")
                 idx = seen.get(key, 0)
                 seen[key] = idx + 1
                 if ref_counter < max_refs:
@@ -197,7 +206,7 @@ def _parse_aria_snapshot(yaml_text: str, max_refs: int = SNAPSHOT_MAX_REFS):
                     ref = f"r{ref_counter}"
                     ref_map[ref] = {
                         "role": role,
-                        "name": _unescape_quoted(name),
+                        "name": _unescape_quoted(name) if name else "",
                         "index": idx,
                         "mode": "role",
                     }
@@ -1234,6 +1243,10 @@ class BrowserService:
         """
         if entry["mode"] == "text":
             return base.get_by_text(entry["name"], exact=True).nth(entry["index"])
+        if not entry["name"]:
+            # 无名元素（role in _INTERACTIVE_ROLES）：按 role 定位。
+            # 不能传 name=""——那会去匹配「可访问名为空」这一条件，语义不同。
+            return base.get_by_role(entry["role"]).nth(entry["index"])
         return base.get_by_role(
             entry["role"], name=entry["name"], exact=True
         ).nth(entry["index"])
@@ -1820,13 +1833,14 @@ class BrowserService:
         def _do_extract(page):
             base = self._resolve_frame(page, frame)
             js = (
-                "(sel, attr, limit) => Array.from(document.querySelectorAll(sel))"
+                "({sel, attr, limit}) => Array.from(document.querySelectorAll(sel))"
                 ".slice(0, limit)"
                 ".map(el => attr === 'text' ? (el.textContent || '').trim() "
                 ": (el.getAttribute(attr) ?? el[attr] ?? ''))"
             )
             try:
-                data = base.evaluate(js, selector, attribute, limit)
+                # evaluate 只接受 1 个 arg，多个参数必须打包成一个对象
+                data = base.evaluate(js, {"sel": selector, "attr": attribute, "limit": limit})
             except Exception as e:
                 return ToolResult(f"Error: extract failed — {e}", error=True)
             if not data:

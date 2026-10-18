@@ -6,6 +6,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _strict_evaluate_page() -> MagicMock:
+    """构造 evaluate 带 Playwright 真实签名的 mock page。
+
+    MagicMock 不校验签名——多传位置参数也照收，extract 的多参数调用正是这样溜过
+    测试的（真实 Playwright 只收 expression + 1 个 arg，会抛 TypeError）。
+    返回值仍取自 evaluate.return_value，call_args 等调用记录照常可用。
+    """
+    page = MagicMock()
+
+    def _evaluate(expression, arg=None):
+        return page.evaluate.return_value
+
+    page.evaluate = MagicMock(side_effect=_evaluate)
+    return page
+
+
 class TestFindBrowser:
     """_find_browser() platform-specific path lookup."""
 
@@ -551,19 +567,18 @@ class TestEnhancedActions:
 
     def test_extract(self):
         service = self._service()
-        page = MagicMock()
+        page = _strict_evaluate_page()
         page.evaluate.return_value = ["a", "b"]
         result = self._run(service, "extract", page, selector=".item", attribute="text", limit=5)
         assert not result.error
         assert "Extracted 2 element(s)" in result.output
         assert "1. a" in result.output
-        # evaluate 收到 JS 函数 + 三个参数
-        args = page.evaluate.call_args.args
-        assert args[1:] == (".item", "text", 5)
+        # evaluate 只收 1 个 arg：JS 函数 + 打包好的参数对象
+        assert page.evaluate.call_args.args[1] == {"sel": ".item", "attr": "text", "limit": 5}
 
     def test_extract_no_match(self):
         service = self._service()
-        page = MagicMock()
+        page = _strict_evaluate_page()
         page.evaluate.return_value = []
         result = self._run(service, "extract", page, selector=".nope")
         assert not result.error
@@ -571,14 +586,14 @@ class TestEnhancedActions:
 
     def test_extract_error(self):
         service = self._service()
-        page = MagicMock()
+        page = _strict_evaluate_page()
         page.evaluate.side_effect = RuntimeError("boom")
         result = self._run(service, "extract", page, selector=".item")
         assert result.error
 
     def test_extract_table(self):
         service = self._service()
-        page = MagicMock()
+        page = _strict_evaluate_page()
         page.evaluate.return_value = [["Name", "Age"], ["Alice", "30"]]
         result = self._run(service, "extract_table", page, index=0)
         assert not result.error
@@ -588,7 +603,7 @@ class TestEnhancedActions:
 
     def test_extract_table_no_rows(self):
         service = self._service()
-        page = MagicMock()
+        page = _strict_evaluate_page()
         page.evaluate.return_value = []
         result = self._run(service, "extract_table", page)
         assert not result.error
