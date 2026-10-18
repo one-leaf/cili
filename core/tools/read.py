@@ -14,7 +14,7 @@ class ReadTool(Tool):
     name = "read"
     concurrency_safe = True
     description = (
-        "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP), and PDFs. "
+        "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP, BMP, SVG), and PDFs. "
         "Use offset/limit for pagination on large text files. "
         "Use pages (e.g. '3' or '1-5') for PDF page ranges (max 20 pages, default: page 1). "
         "Images are returned as base64-encoded data for the model to view."
@@ -42,7 +42,7 @@ class ReadTool(Tool):
         "required": ["file_path"],
     }
 
-    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
     MEDIA_TYPES = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
@@ -61,6 +61,88 @@ class ReadTool(Tool):
     MAX_PAGES_PER_READ = 20   # PDF 单次读取页数上限
     MAX_RAW_IMAGE_BYTES = 5 * 1024 * 1024  # 无 PIL 时原始图片读取上限（5MB）
     PDF_READ_TIMEOUT = 60  # PDF 解析/取文本超时（秒），防损坏/超大 PDF 挂起；可用 CILI_PDF_READ_TIMEOUT 覆盖
+
+    @staticmethod
+    def _image_to_result(file_path: str, img) -> ToolResult:
+        """PIL 图像 → multimodal ToolResult（>16MP 缩放、PNG 编码、体积上限）。"""
+        from PIL import Image
+
+        max_pixels = 16_000_000  # 16 megapixels
+        width, height = img.size
+        current_pixels = width * height
+
+        if current_pixels > max_pixels:
+            scale = (max_pixels / current_pixels) ** 0.5
+            img = img.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
+
+        if img.mode not in ('RGBA', 'P', 'LA') and img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_bytes = img_byte_arr.getvalue()
+
+        base64_data = base64.b64encode(img_bytes).decode('utf-8')
+        # 编码后字节上限：PNG 对噪点图压缩率低，16MP 像素上限不足以保证
+        # 体积，超大 base64 会撑爆 LLM 上下文（T24）
+        if len(base64_data) > ReadTool.MAX_RAW_IMAGE_BYTES:
+            return ToolResult(
+                output=(
+                    f"Error: Image '{file_path}' encoded size {len(base64_data) / 1024 / 1024:.1f}MB "
+                    f"exceeds the {ReadTool.MAX_RAW_IMAGE_BYTES // 1024 // 1024}MB limit. "
+                    "Image too large to fit in LLM context."
+                ),
+                error=True,
+            )
+
+        return ToolResult(
+            output=f"[Image: {file_path} (image/png)]",
+            content=[{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64_data,
+                }
+            }]
+        )
+
+    @staticmethod
+    def _read_svg(file_path: str) -> ToolResult:
+        """SVG → PNG 光栅化后按位图处理。
+
+        接口层不收 image/svg+xml（Anthropic/OpenAI 只认 jpeg/png/gif/webp），
+        所以必须先用 PyMuPDF 渲染成位图，再走与普通图片同一条编码路径。
+        """
+        try:
+            import pymupdf
+        except ImportError:
+            return ToolResult(
+                "Error: reading SVG requires PyMuPDF (pip install pymupdf).",
+                error=True,
+            )
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            doc = pymupdf.open(stream=data, filetype="svg")
+            try:
+                png_bytes = doc[0].get_pixmap().tobytes("png")
+            finally:
+                doc.close()
+        except Exception as e:
+            return ToolResult(
+                f"Error: failed to render SVG '{file_path}': {e}",
+                error=True,
+            )
+        try:
+            from PIL import Image
+        except ImportError:
+            return ToolResult(
+                "Error: reading SVG requires Pillow for PNG encoding (pip install Pillow).",
+                error=True,
+            )
+        with Image.open(io.BytesIO(png_bytes)) as img:
+            return ReadTool._image_to_result(file_path, img)
 
     def execute(
         self,
@@ -138,57 +220,16 @@ class ReadTool(Tool):
     def read_image(file_path: str) -> ToolResult:
         """Return an image as multimodal content for vision models.
 
-        read 工具与 read_image 工具共用此实现：PIL 可用时自动缩放超过 16MP 的
-        图片并转 PNG，无 PIL 时回退原始 base64（限制 5MB）。
+        read 工具与 read_image 工具共用此实现：SVG 先用 PyMuPDF 光栅化成位图，
+        普通位图交给 PIL 缩放（>16MP）并转 PNG；无 PIL 时回退原始 base64（限 5MB）。
         """
-        max_pixels = 16_000_000  # 16 megapixels
+        if os.path.splitext(file_path)[1].lower() == ".svg":
+            return ReadTool._read_svg(file_path)
         try:
             from PIL import Image
 
             with Image.open(file_path) as img:
-                width, height = img.size
-                current_pixels = width * height
-
-                if current_pixels > max_pixels:
-                    scale = (max_pixels / current_pixels) ** 0.5
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                if img.mode in ('RGBA', 'P', 'LA'):
-                    pass
-                elif img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                img_byte_arr = io.BytesIO()
-                img.save(img_byte_arr, format='PNG')
-                img_bytes = img_byte_arr.getvalue()
-
-            base64_data = base64.b64encode(img_bytes).decode('utf-8')
-            # 编码后字节上限：PNG 对噪点图压缩率低，16MP 像素上限不足以保证
-            # 体积，超大 base64 会撑爆 LLM 上下文（T24）
-            if len(base64_data) > ReadTool.MAX_RAW_IMAGE_BYTES:
-                return ToolResult(
-                    output=(
-                        f"Error: Image '{file_path}' encoded size {len(base64_data) / 1024 / 1024:.1f}MB "
-                        f"exceeds the {ReadTool.MAX_RAW_IMAGE_BYTES // 1024 // 1024}MB limit. "
-                        "Image too large to fit in LLM context."
-                    ),
-                    error=True,
-                )
-            media_type = 'image/png'
-
-            return ToolResult(
-                output=f"[Image: {file_path} ({media_type})]",
-                content=[{
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": base64_data,
-                    }
-                }]
-            )
+                return ReadTool._image_to_result(file_path, img)
         except ImportError:
             # PIL not available, fallback to base64 without resize.
             # 无 PIL 时无法缩放，限制原始文件大小防止超大图片撑爆上下文

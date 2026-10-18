@@ -109,6 +109,53 @@ class TestReadImage:
         assert len(ri_img) == 1 and len(rd_img) == 1
         assert ri_img[0].data == rd_img[0].data
 
+    def test_svg_returns_multimodal(self, tools, test_workspace):
+        """SVG 光栅化后同样返回 image/png 内容块（接口层不收 image/svg+xml）。"""
+        pytest.importorskip("pymupdf")
+        p = os.path.join(test_workspace, "chart.svg")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+                    '<rect width="40" height="20" fill="red"/></svg>')
+        r = _tool(tools, "read_image").execute(file_path="chart.svg")
+        assert not r.error, r.output
+        from core.llm.types import ImageBlock
+
+        img = [b for b in r.blocks if isinstance(b, ImageBlock)]
+        assert len(img) == 1
+        assert img[0].mime_type == "image/png"
+        assert img[0].data
+
+    def test_svg_shared_with_read(self, tools, test_workspace):
+        """read 与 read_image 对同一 SVG 返回一致的 multimodal 结果。"""
+        pytest.importorskip("pymupdf")
+        p = os.path.join(test_workspace, "shared.svg")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">'
+                    '<circle cx="4" cy="4" r="3" fill="blue"/></svg>')
+        ri = _tool(tools, "read_image").execute(file_path="shared.svg")
+        rd = _tool(tools, "read").execute(file_path="shared.svg")
+        assert not ri.error and not rd.error
+        from core.llm.types import ImageBlock
+
+        ri_img = [b for b in ri.blocks if isinstance(b, ImageBlock)]
+        rd_img = [b for b in rd.blocks if isinstance(b, ImageBlock)]
+        assert len(ri_img) == 1 and len(rd_img) == 1
+        assert ri_img[0].data == rd_img[0].data
+
+    def test_broken_svg_reports_error(self, tools, test_workspace):
+        """扩展名是 .svg 但内容不是 SVG：给出可读错误而非抛异常。
+
+        注意 PyMuPDF 对**未闭合标签**是宽容的（渲染成空白页、不报错），
+        所以这里用「非 SVG 内容」触发 FileDataError。
+        """
+        pytest.importorskip("pymupdf")
+        p = os.path.join(test_workspace, "notreally.svg")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("this is plain text, not svg")
+        r = _tool(tools, "read_image").execute(file_path="notreally.svg")
+        assert r.error
+        assert "failed to render SVG" in r.output
+
 
 class TestSessionSearch:
     """跨会话历史消息搜索。

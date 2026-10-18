@@ -17,7 +17,8 @@ class ReadImageTool(Tool):
     concurrency_safe = True
     description = (
         "View an image file and return it to the model for visual inspection. "
-        "Supports PNG, JPG, JPEG, GIF, WebP, BMP. Large images are automatically "
+        "Supports PNG, JPG, JPEG, GIF, WebP, BMP, SVG (SVG is rendered to PNG). "
+        "Large images are automatically "
         "downscaled to fit the model's context. Use this for screenshots, diagrams, "
         "charts, photos, and other visual content."
     )

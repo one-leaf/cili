@@ -15,6 +15,9 @@ matplotlib
 pyyaml
 toml
 Pillow
+# pymupdf：SVG 光栅化（read/read_image 读 .svg 时渲染成 PNG；接口层不收 image/svg+xml）
+# 自带 MuPDF、纯 pip wheel 无原生依赖（cairosvg 在 Windows 需另装 Cairo 原生库，故不用）
+pymupdf
 openpyxl
 playwright
 playwright-stealth
