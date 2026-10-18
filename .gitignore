@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 .pytest_cache/
+.ruff_cache/
 build/
 develop-eggs/
 dist/
@@ -46,6 +47,10 @@ CLAUDE.md
 # Cili Agent 运行时数据
 workspace/
 data/*
+
+# 升级包（下载到项目根，启动时应用；.downloading 为下载中断残留）
+cili-update.zip
+cili-update.zip.downloading
 .tmp/
 .cili/
 .test/
