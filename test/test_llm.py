@@ -18,6 +18,7 @@ from core.llm import (
     UsageData,
     create_llm_client,
 )
+from core.llm.adapter import join_api_url
 from core.llm.transport import HttpTransport
 
 # ========== LLMResponse ==========
@@ -456,6 +457,40 @@ class TestOpenAIAdapter:
     def test_api_url(self, adapter):
         assert adapter.api_url == "https://api.openai.com/v1/chat/completions"
 
+    def test_parse_modelscope_null_fields(self, adapter):
+        """ModelScope 响应带显式 null 字段（tool_calls/function_calls、空 content），parse 不得崩。"""
+        data = {
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": None, "content": "", "tool_calls": None,
+                          "function_calls": None, "reasoning_content": ""},
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": "", "tool_calls": None,
+                            "function_calls": None, "reasoning_content": "We need answer."},
+            }],
+            "usage": {"prompt_tokens": 31, "completion_tokens": 8, "total_tokens": 39},
+        }
+        blocks, stop_reason, usage = adapter.parse_response(data)
+        assert [type(b).__name__ for b in blocks] == ["ReasoningBlock"]   # content 空串不产 TextBlock
+        assert stop_reason == "length"          # 未知 finish_reason 原样透传
+        assert usage.input_tokens == 31
+        assert usage.output_tokens == 8
+
+    def test_translate_stream_tolerates_null_tool_calls(self, adapter):
+        """流式 chunk 的 delta.tool_calls / delta 为显式 null 时不得崩（ModelScope 实际行为）。"""
+        events = [
+            {"usage": None,
+             "choices": [{"delta": {"role": "assistant", "content": "Hi", "tool_calls": None},
+                          "finish_reason": None}]},
+            {"choices": [{"delta": None, "finish_reason": "stop"}]},
+        ]
+        chunks = list(adapter.translate_stream(events))
+        assert any(c.type == "text_delta" for c in chunks)
+        assert any(c.type == "finish" and c.data["stop_reason"] == "end_turn" for c in chunks)
+
     def test_build_headers(self, adapter):
         headers = adapter.build_headers()
         assert headers["Authorization"] == "Bearer sk-test-key"
@@ -716,6 +751,43 @@ class TestOpenAIAdapter:
         adapter = OpenAIAdapter(config)
         assert adapter.base_url == "https://api.openai.com"
         assert adapter.api_url == "https://api.openai.com/v1/chat/completions"
+
+    def test_base_url_with_version_suffix_not_duplicated(self):
+        """base_url 自带 /v1（ModelScope 等厂商文档惯例）时不再重复拼版本段。"""
+        for base in ("https://api-inference.modelscope.cn/v1",
+                     "https://api-inference.modelscope.cn/v1/"):
+            config = ModelConfig(
+                name="deepseek-ai/DeepSeek-V4.1-Flash",
+                api_key="key",
+                base_url=base,
+                interface_type="openai",
+            )
+            adapter = OpenAIAdapter(config)
+            assert adapter.api_url == "https://api-inference.modelscope.cn/v1/chat/completions"
+
+
+class TestJoinApiUrl:
+    """base_url 与 api_path 的重复段合并。"""
+
+    def test_merge_single_version_segment(self):
+        assert join_api_url("https://host/v1", "/v1/chat/completions") == "https://host/v1/chat/completions"
+        assert join_api_url("https://host/v1/", "/v1/chat/completions") == "https://host/v1/chat/completions"
+        assert join_api_url("https://host/api/v1", "/v1/messages") == "https://host/api/v1/messages"
+
+    def test_merge_multiple_segments(self):
+        assert join_api_url("https://host/v1/chat", "/v1/chat/completions") == "https://host/v1/chat/completions"
+
+    def test_no_overlap_unchanged(self):
+        assert join_api_url("https://host", "/v1/chat/completions") == "https://host/v1/chat/completions"
+        assert join_api_url("http://gw/llm", "/v1/chat/completions") == "http://gw/llm/v1/chat/completions"
+
+    def test_similar_segment_not_merged(self):
+        """/v11 只是形似 /v1，不得误合并。"""
+        assert join_api_url("https://host/v11", "/v1/chat/completions") == "https://host/v11/v1/chat/completions"
+
+    def test_full_path_already_present(self):
+        """path 整段已在 base 里时不再追加，且不留尾斜杠。"""
+        assert join_api_url("https://host/v1/messages", "/v1/messages") == "https://host/v1/messages"
 
 
 # ========== A23-A26: 重试 / SSE 边界 / base_url / 超时 ==========
@@ -1322,7 +1394,11 @@ class TestLLMClientDGX:
         # chat_stream 返回累积的 LLMResponse
         assert response is not None
         full_text = response.get_text()
-        assert len(full_text) > 0, f"[{protocol}] Should return non-empty text via stream"
+        # DGX 的 OpenAI 兼容层可能将全部 tokens 用于 reasoning，导致 text 为空
+        # 此时 stop_reason 应为 length/max_tokens（截断）——同 test_chat_chinese
+        if not full_text:
+            assert response.stop_reason in ("length", "max_tokens"), \
+                f"[{protocol}] Empty streamed text but stop_reason={response.stop_reason}"
         # on_text 回调也应该收到内容（可能为空，取决于模型是否返回 reasoning）
         # 不强制断言 on_text 有内容，因为 reasoning 模型的 text 部分可能延迟到达
 

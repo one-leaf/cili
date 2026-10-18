@@ -119,6 +119,29 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
     return merged
 
 
+def join_api_url(base_url: str, path: str) -> str:
+    """拼接 base_url 与 API 路径，重复的路径段自动合并。
+
+    厂商文档普遍把 /v1 写进 base_url（OpenAI SDK 约定），而 api_path 自带 /v1 前缀
+    ——直接拼会得到 /v1/v1/...（api-inference.modelscope.cn 实测 404 page not found）。
+    这里按「段对齐的最长重叠」合并：base 结尾与 path 开头重合的部分只保留一份，
+    因此 /v1 与 /v1/chat 这类更长的重复前缀都能处理。
+    """
+    base = base_url.rstrip("/")
+    base_segs = [s for s in base.split("/") if s]
+    path_segs = [s for s in path.split("/") if s]
+
+    overlap = min(len(base_segs), len(path_segs))
+    while overlap > 0 and base_segs[-overlap:] != path_segs[:overlap]:
+        overlap -= 1
+
+    if overlap == 0:
+        return base + path
+    if overlap == len(path_segs):
+        return base          # 整段 path 已在 base 里，不追加（也不留尾斜杠）
+    return base + "/" + "/".join(path_segs[overlap:])
+
+
 class Adapter(ABC):
     """Abstract adapter for LLM providers.
 
@@ -160,7 +183,7 @@ class Adapter(ABC):
     @property
     def api_url(self) -> str:
         """Full API endpoint URL."""
-        return f"{self.base_url}{self.api_path}"
+        return join_api_url(self.base_url, self.api_path)
 
     def default_auth_headers(self) -> dict[str, str]:
         """auth_type="auto" 时按协议的默认认证头（子类覆盖）。

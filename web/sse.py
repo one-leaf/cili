@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
+from core.stream_executor import get_stream_executor
 from core.tools.todo import todo_update_event
 
 logger = logging.getLogger(__name__)
@@ -173,13 +174,15 @@ def sse_run_response(
     """
     async def generate():
         loop = asyncio.get_running_loop()
-        task = asyncio.ensure_future(loop.run_in_executor(None, run_fn))
+        task = asyncio.ensure_future(loop.run_in_executor(get_stream_executor(), run_fn))
         try:
             while True:
                 try:
-                    # to_thread：避免阻塞的 queue.get 卡住事件循环
-                    # （走默认 executor，线程复用，不是每轮新建）
-                    event = await asyncio.to_thread(event_queue.get, True, poll_timeout)
+                    # 走专用池：避免阻塞的 queue.get 卡住事件循环，也不占用默认
+                    # executor（长驻流会把请求期短任务饿死，见 core/stream_executor）
+                    event = await loop.run_in_executor(
+                        get_stream_executor(), event_queue.get, True, poll_timeout
+                    )
                     if event is None:
                         break
                     yield event

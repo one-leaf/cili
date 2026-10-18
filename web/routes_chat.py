@@ -17,6 +17,7 @@ from core.config import get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.session import SessionStore
+from core.stream_executor import get_stream_executor
 from core.turn_dispatch import execute_turn, prepare_turn
 from web.deps import (
     _SAFE_ID_RE,
@@ -176,7 +177,11 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
         try:
             while True:
                 try:
-                    event = await asyncio.to_thread(event_queue.get, True, 15)
+                    # 走专用池：长驻的 SSE 流不得占用默认 executor，否则请求期
+                    # 短任务（如会话列表）会被饿死（见 core/stream_executor）
+                    event = await asyncio.get_running_loop().run_in_executor(
+                        get_stream_executor(), event_queue.get, True, 15
+                    )
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except queue.Empty:
                     # 心跳（SSE 注释行，客户端忽略），防中间代理空闲断连
@@ -500,7 +505,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
                 _release_session_run(key)
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_runner)
+        await loop.run_in_executor(get_stream_executor(), run_runner)
 
     # 必须持有任务引用：create_task 的返回值若无人引用，任务可能被 GC 回收而中断
     task = asyncio.create_task(run_resume())

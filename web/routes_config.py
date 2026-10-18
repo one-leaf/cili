@@ -17,6 +17,7 @@ from core.config import (
     migrate_legacy_config,
     save_global_config,
 )
+from core.stream_executor import get_stream_executor
 from core.tools.mcp import get_provider
 from web.deps import _sessions_lock, registry
 
@@ -71,6 +72,7 @@ class TestConfigRequest(BaseModel):
     base_url: str | None = None
     headers: dict[str, str] | None = None
     model_name: str | None = None  # 发给 API 的模型 ID
+    provider: str | None = None    # provider 名：api_key 留空时按它取已保存的 key
 
 
 class DetectModelsRequest(BaseModel):
@@ -80,6 +82,7 @@ class DetectModelsRequest(BaseModel):
     auth_type: str | None = None
     base_url: str | None = None
     headers: dict[str, str] | None = None
+    provider: str | None = None    # provider 名：api_key 留空时按它取已保存的 key
 
 
 class QQTestRequest(BaseModel):
@@ -386,13 +389,34 @@ async def test_mcp_server(request: McpTestRequest | None = None):
         return {"status": "failed", "error": str(e)}
 
 
+def _saved_provider_api_key(provider: str) -> str:
+    """已保存配置里某 provider 的 api_key（未找到返回 ""）。"""
+    if not provider:
+        return ""
+    providers = migrate_legacy_config(load_global_config()).get("providers") or {}
+    entry = providers.get(provider) or {}
+    return str(entry.get("api_key") or "") if isinstance(entry, dict) else ""
+
+
+def _resolve_api_key(request_api_key: str | None, provider: str | None) -> str:
+    """解析本次请求该用的 api_key（测试连接与模型列表检测共用）。
+
+    显式传入的优先（掩码视为未传）；否则取**请求所指 provider** 已保存的 key；
+    只有请求没指定 provider（空请求＝测主模型）才回退到 master 角色的 key——
+    否则会拿别的 provider 的 key 去请求，表现为莫名其妙的 401。
+    """
+    key = request_api_key or ""
+    if key and not _is_masked(key):
+        return key
+    key = _saved_provider_api_key(provider or "")
+    if not key and not provider:
+        key = load_config().model_for_role("master").api_key
+    return key
+
+
 def _resolve_test_provider(request: TestConfigRequest) -> tuple[str, str, str, dict[str, str]]:
-    """解析连接测试的接入层参数；api_key 留空/掩码时回退已保存主模型的。"""
-    api_key = request.api_key or ""
-    if not api_key or _is_masked(api_key):
-        saved = load_config()
-        master = saved.model_for_role("master")
-        api_key = master.api_key
+    """解析连接测试的接入层参数。"""
+    api_key = _resolve_api_key(request.api_key, request.provider)
     interface_type = request.interface_type or "anthropic"
     base_url = (request.base_url or "").rstrip("/")
     return interface_type, api_key, base_url, dict(request.headers or {})
@@ -428,7 +452,11 @@ async def test_config(request: TestConfigRequest | None = None):
         from core.llm import create_llm_client
         client = create_llm_client(model_cfg)
         try:
-            success, message = client.test_connection()
+            # test_connection 是同步阻塞的 LLM 请求（重试总上限 300s，见 core/llm/client.py）：
+            # 直接在 async 路由里调用会冻住整个事件循环，所有页面一起挂。走专用池。
+            success, message = await asyncio.get_running_loop().run_in_executor(
+                get_stream_executor(), client.test_connection
+            )
         finally:
             # 必须放 finally：test_connection 抛异常时否则会泄漏 httpx 客户端
             client.close()
@@ -473,9 +501,7 @@ async def detect_models(request: DetectModelsRequest | None = None):
     if request is None:
         request = DetectModelsRequest()
     interface_type = (request.interface_type or "anthropic").lower()
-    api_key = request.api_key or ""
-    if not api_key or _is_masked(api_key):
-        api_key = load_config().model_for_role("master").api_key
+    api_key = _resolve_api_key(request.api_key, request.provider)
     base_url = (request.base_url or "").rstrip("/")
     if not base_url:
         base_url = "https://api.anthropic.com" if interface_type == "anthropic" else "https://api.openai.com/v1"

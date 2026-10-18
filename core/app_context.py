@@ -97,6 +97,7 @@ class AppContext:
         self._shutdown = True
 
         for name, stop in (
+            ("流式线程池", self._stop_stream_executor),
             ("QQ 接入端", self._stop_qq),
             ("微信接入端", self._stop_wechat),
             ("AgentMailbox", self._stop_mailbox),
@@ -122,6 +123,11 @@ class AppContext:
     def _stop_mailbox() -> None:
         from core.agent_mailbox import stop_agent_mailbox
         stop_agent_mailbox()
+
+    @staticmethod
+    def _stop_stream_executor() -> None:
+        from core.stream_executor import shutdown_stream_executor
+        shutdown_stream_executor()
 
     @staticmethod
     def _stop_qq() -> None:

@@ -7,6 +7,7 @@
 // ── 全局状态 ──
 let _eventSource = null;          // 当前 EventSource
 let _esWasDisconnected = false;   // 曾断线（onopen 时用于对齐）
+let _lastHidden = document.hidden;  // 上次可见性：重复派发/加载期事件据此短路
 const _sessionCards = {};           // exec_id -> entry（worker 卡片状态机）
 
 // master 自动恢复流式渲染（后台 agent 完成后 master 继续执行，text 逐 token 推送）
@@ -78,13 +79,32 @@ function connectEventSource() {
     _eventSource = es;
 }
 
-function closeEventSource() {
+function closeEventSource(markDisconnected = false) {
+    const had = _eventSource !== null;
     if (_eventSource) {
         _eventSource.close();
         _eventSource = null;
     }
-    _esWasDisconnected = false;
+    // 仅当确实断开过连接时才标记，避免无连接时空跑一次重连对齐
+    _esWasDisconnected = markDisconnected && had;
 }
+
+// 标签页切到后台时断开事件流：浏览器对同一源的并发连接上限是 6，后台标签页若继续
+// 持有长连接，多开几个就会占满槽位——该源上任何新请求（页面加载、设置面板的 fetch）
+// 都会无限排队。回前台重连，并按「刷新恢复」的同一路径自愈后台期间的丢失
+// （断线区间由 onopen → alignAfterReconnect 补齐；后台漏掉的 turn_complete 在此补一次）。
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden === _lastHidden) return;   // 状态未变（含加载期派发）→ 不动作
+    _lastHidden = document.hidden;
+    if (document.hidden) {
+        closeEventSource(true);
+        return;
+    }
+    connectEventSource();
+    if (currentSession && foregroundStreamSessionId !== currentSession.session_id) {
+        loadSession(currentSession.session_id);
+    }
+});
 
 // 重连对齐：running 卡片的展开内容增量补拉 + master 工具流按 offset 补拉
 async function alignAfterReconnect() {

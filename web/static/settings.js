@@ -906,6 +906,8 @@ async function testProviderModel(btn) {
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
         base_url: card.querySelector('.p-base-url').value.trim(),
         model_name: apiId || (keyInput ? keyInput.value.trim() : modelKey),
+        // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
+        provider: card.querySelector('.p-key').value.trim(),
     };
     const apiKey = card.querySelector('.p-api-key').value.trim();
     if (apiKey) payload.api_key = apiKey;
@@ -942,6 +944,8 @@ async function detectProviderModels(btn) {
         interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
         base_url: card.querySelector('.p-base-url').value.trim(),
+        // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
+        provider: card.querySelector('.p-key').value.trim(),
     };
     const apiKey = card.querySelector('.p-api-key').value.trim();
     if (apiKey) payload.api_key = apiKey;

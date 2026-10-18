@@ -408,7 +408,7 @@ class OpenAIAdapter(Adapter):
         content_blocks: list[ContentBlock] = []
         # "choices" 存在但为空列表时，默认值 [{}] 不生效 → 用 or 兜底避免 IndexError
         choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message", {})
+        message = choice.get("message") or {}
 
         # Reasoning content (for o1, o3 models; or DGX which uses 'reasoning')
         reasoning = message.get("reasoning_content") or message.get("reasoning")
@@ -426,7 +426,8 @@ class OpenAIAdapter(Adapter):
             content_blocks.append(TextBlock(text=f"[模型拒绝请求] {refusal}"))
 
         # Tool calls - keep arguments as raw JSON string
-        for tc in message.get("tool_calls", []):
+        # .get(key, []) 兜不住「键存在但为 null」（ModelScope 实测会发 null），用 or [] 兜底
+        for tc in message.get("tool_calls") or []:
             func = tc.get("function", {})
             content_blocks.append(ToolCallBlock(
                 id=tc.get("id", ""),
@@ -439,7 +440,7 @@ class OpenAIAdapter(Adapter):
         stop_reason = self._map_finish_reason(choice.get("finish_reason", ""))
 
         # Map usage
-        usage = UsageData.from_openai(data.get("usage", {}))
+        usage = UsageData.from_openai(data.get("usage") or {})
 
         return content_blocks, stop_reason, usage
 
@@ -468,7 +469,7 @@ class OpenAIAdapter(Adapter):
             if not choices:
                 continue
 
-            delta = choices[0].get("delta", {})
+            delta = choices[0].get("delta") or {}
             finish_reason = choices[0].get("finish_reason")
 
             # Emit finish reason
@@ -497,7 +498,7 @@ class OpenAIAdapter(Adapter):
 
             # Handle tool calls
             if "tool_calls" in delta:
-                for tc in delta["tool_calls"]:
+                for tc in delta["tool_calls"] or []:
                     openai_idx = tc.get("index", 0)
 
                     if openai_idx not in tool_call_indices:
