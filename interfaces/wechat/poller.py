@@ -95,11 +95,11 @@ class Poller:
 
         data = await rt.client.get_updates(rt.account.get_updates_buf)
 
-        # 游标必须落盘：丢了重启后会把积压消息重收一遍
+        # 游标必须落盘：丢了重启后会把积压消息重收一遍（按账号分文件，§5.1）
         new_cursor = str(data.get("get_updates_buf", "") or "")
         if new_cursor and new_cursor != rt.account.get_updates_buf:
             rt.account.get_updates_buf = new_cursor
-            save_account(rt.account)
+            save_account(rt.account_id, rt.account)
 
         for msg in data.get("msgs") or []:
             if not isinstance(msg, dict):

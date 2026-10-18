@@ -7,6 +7,9 @@
 
 handler 是**纯**的：只做状态读写并返回要回给用户的文本，不碰网络。实际发送由
 ``inbound.py`` 统一走 ``outbound.py``。
+
+**多账号 + 多聊天**（设计 §3.3）：指令作用于**当前 (账号, 聊天)** 的状态切片；
+``/w`` 在账号锁定工作空间时拒绝执行（§3.5），``/status`` 显示锁定状态。
 """
 
 from __future__ import annotations
@@ -24,23 +27,30 @@ from core.session import SessionStore
 from core.session_registry import registry, session_key
 from interfaces.wechat.runtime import WechatRuntime
 from interfaces.wechat.state import (
-    WechatState,
+    WechatAccountState,
+    WechatChatState,
     latest_session_id,
     resolve_current,
-    save_state,
+    save_account_state,
 )
 
 logger = logging.getLogger(__name__)
 
 MAX_LIST_ITEMS = 20   # 列表最多展示多少条，避免刷屏
 
+LOCKED_WORKSPACE_REPLY = (
+    "⚠️ 本账号已锁定工作空间，不支持切换。如需切换，请到设置页取消「锁定工作空间」。"
+)
+
 
 @dataclass
 class CommandContext:
-    """指令执行上下文。"""
+    """指令执行上下文。``state`` 是账号切片，``chat`` 是当前聊天的切片。"""
 
     runtime: WechatRuntime
-    state: WechatState
+    state: WechatAccountState
+    chat: WechatChatState
+    chat_id: str = ""
     args: str = ""
 
 
@@ -101,11 +111,11 @@ def _session_label(workspace_uuid: str, session_id: str) -> str:
     return session_id
 
 
-def _current_label(state: WechatState) -> str:
+def _current_label(chat: WechatChatState) -> str:
     """「工作区 / 会话」的展示串。**不显示任何 id**——id 对用户没有意义。"""
-    entry = find_workspace_entry(state.workspace_uuid) or {}
+    entry = find_workspace_entry(chat.workspace_uuid) or {}
     ws_name = entry.get("workspace_name") or "(未设置)"
-    return f"{ws_name} / {_session_label(state.workspace_uuid, state.session_id)}"
+    return f"{ws_name} / {_session_label(chat.workspace_uuid, chat.session_id)}"
 
 
 # ─── 各指令 ───────────────────────────────────────────────────────────
@@ -113,13 +123,19 @@ def _current_label(state: WechatState) -> str:
 
 def cmd_help(ctx: CommandContext) -> str:
     lines = ["**可用指令**", ""]
+    locked = ctx.runtime.cfg.workspace_locked
     for cmd in unique_commands():
-        lines.append(f"- `{cmd.usage}` — {cmd.description}")
+        usage = cmd.usage
+        if locked and cmd.name == "w":
+            usage += "（本账号已锁定）"
+        lines.append(f"- `{usage}` — {cmd.description}")
     lines += ["", "直接发消息即与 AI 对话。"]
     return "\n".join(lines)
 
 
 def cmd_workspace(ctx: CommandContext) -> str:
+    if ctx.runtime.cfg.workspace_locked:
+        return LOCKED_WORKSPACE_REPLY
     items = _workspaces()
     if not items:
         return "没有可用工作区。"
@@ -129,25 +145,25 @@ def cmd_workspace(ctx: CommandContext) -> str:
         for i, entry in enumerate(items[:MAX_LIST_ITEMS], start=1):
             name = entry.get("workspace_name") or "(未命名)"
             directory = entry.get("directory") or "(未知目录)"
-            mark = " ✅" if entry.get("uuid") == ctx.state.workspace_uuid else ""
+            mark = " ✅" if entry.get("uuid") == ctx.chat.workspace_uuid else ""
             lines.append(f"{i}. **{name}**{mark}")
             lines.append(f"    `{directory}`")
-        lines += ["", f"当前：{_current_label(ctx.state)}", "用 `/w <序号>` 切换。"]
+        lines += ["", f"当前：{_current_label(ctx.chat)}", "用 `/w <序号>` 切换。"]
         return "\n".join(lines)
 
     picked = _pick(items, ctx.args, "uuid")
     if not picked:
         return f"找不到工作区：{ctx.args}"
-    ctx.state.workspace_uuid = str(picked.get("uuid") or "")
-    ctx.state.session_id = latest_session_id(ctx.state.workspace_uuid)
-    save_state(ctx.state)
-    return f"已切换工作区 → {_current_label(ctx.state)}"
+    ctx.chat.workspace_uuid = str(picked.get("uuid") or "")
+    ctx.chat.session_id = latest_session_id(ctx.chat.workspace_uuid)
+    save_account_state(ctx.runtime.account_id, ctx.state)
+    return f"已切换工作区 → {_current_label(ctx.chat)}"
 
 
 def cmd_session(ctx: CommandContext) -> str:
-    if not ctx.state.workspace_uuid:
+    if not ctx.chat.workspace_uuid:
         return "尚未设置工作区，先执行 `/w`。"
-    items = _sessions(ctx.state.workspace_uuid)
+    items = _sessions(ctx.chat.workspace_uuid)
 
     if not ctx.args:
         if not items:
@@ -156,7 +172,7 @@ def cmd_session(ctx: CommandContext) -> str:
         for i, s in enumerate(items[:MAX_LIST_ITEMS], start=1):
             sid = str(s.get("session_id") or "")
             name = s.get("display_name") or s.get("name") or sid
-            mark = " ✅" if sid == ctx.state.session_id else ""
+            mark = " ✅" if sid == ctx.chat.session_id else ""
             lines.append(f"{i}. {name}{mark}")
         lines += ["", "用 `/s <序号>` 切换。"]
         return "\n".join(lines)
@@ -168,34 +184,36 @@ def cmd_session(ctx: CommandContext) -> str:
     if not (0 <= idx < len(items)):
         return f"序号超出范围：{ctx.args}（当前共 {len(items)} 个会话）"
     picked = items[idx]
-    ctx.state.session_id = str(picked.get("session_id") or "")
-    save_state(ctx.state)
-    name = picked.get("display_name") or picked.get("name") or ctx.state.session_id
+    ctx.chat.session_id = str(picked.get("session_id") or "")
+    save_account_state(ctx.runtime.account_id, ctx.state)
+    name = picked.get("display_name") or picked.get("name") or ctx.chat.session_id
     return f"已切换会话 → {name}"
 
 
 def cmd_new(ctx: CommandContext) -> str:
-    if not ctx.state.workspace_uuid:
+    if not ctx.chat.workspace_uuid:
         return "尚未设置工作区，先执行 `/w`。"
     name = ctx.args or "微信会话"
-    sessions_dir = get_workspace_data_dir(ctx.state.workspace_uuid) / "sessions"
+    sessions_dir = get_workspace_data_dir(ctx.chat.workspace_uuid) / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     store = SessionStore.create_new_session(sessions_dir, name)
-    ctx.state.session_id = store.session_id
-    save_state(ctx.state)
+    ctx.chat.session_id = store.session_id
+    save_account_state(ctx.runtime.account_id, ctx.state)
     return f"已新建并切换到会话：{name}  `{store.session_id[:8]}`"
 
 
 def cmd_status(ctx: CommandContext) -> str:
-    lines = ["**当前状态**", "", f"- 工作区/会话：{_current_label(ctx.state)}"]
-    owner = ctx.runtime.state.owner_user_id
-    lines.append(f"- Owner：{owner or '(未绑定)'}")
-    entry = find_workspace_entry(ctx.state.workspace_uuid) or {}
+    lines = ["**当前状态**", "", f"- 工作区/会话：{_current_label(ctx.chat)}"]
+    if ctx.runtime.cfg.workspace_locked:
+        lines.append("- 工作空间：已锁定（/w 不可用）")
+    owner = ctx.state.owner or "(未绑定)"
+    lines.append(f"- Owner：{owner}")
+    entry = find_workspace_entry(ctx.chat.workspace_uuid) or {}
     lines.append(f"- 目录：{entry.get('directory') or '(未知)'}")
     if ctx.runtime.account.ilink_user_id:
         lines.append(f"- 微信账号：{ctx.runtime.account.ilink_user_id}")
 
-    runner = registry.get(session_key(ctx.state.workspace_uuid, ctx.state.session_id))
+    runner = registry.get(session_key(ctx.chat.workspace_uuid, ctx.chat.session_id))
     if runner is None:
         lines.append("- 运行中：否（runner 未加载）")
     else:
@@ -208,10 +226,10 @@ def cmd_status(ctx: CommandContext) -> str:
         except Exception as e:  # noqa: BLE001 — 状态展示不该因统计失败而中断
             lines.append(f"- 用量统计不可用：{e}")
 
-    # 微信侧没有「被动回复次数」，只有每个 context_token 的发送预算
-    if owner and ctx.runtime.outbound is not None:
-        left = ctx.runtime.outbound.budget_left(owner)
-        deferred = ctx.runtime.outbound.deferred_count(owner)
+    # 微信侧没有「被动回复次数」，只有每个 context_token 的发送预算（按聊天计）
+    if ctx.chat_id and ctx.runtime.outbound is not None:
+        left = ctx.runtime.outbound.budget_left(ctx.chat_id)
+        deferred = ctx.runtime.outbound.deferred_count(ctx.chat_id)
         lines.append(f"- 本轮剩余发送条数：{left}")
         if deferred:
             lines.append(f"- 待重发（配额受限）：{deferred} 条")
@@ -219,7 +237,7 @@ def cmd_status(ctx: CommandContext) -> str:
 
 
 def cmd_stop(ctx: CommandContext) -> str:
-    runner = registry.get(session_key(ctx.state.workspace_uuid, ctx.state.session_id))
+    runner = registry.get(session_key(ctx.chat.workspace_uuid, ctx.chat.session_id))
     if runner is None or not runner.is_running():
         return "当前没有正在执行的任务。"
     runner.stop()
@@ -268,8 +286,13 @@ def parse(text: str) -> tuple[str, str] | None:
     return name.strip().lower(), args.strip()
 
 
-async def dispatch(runtime: WechatRuntime, state: WechatState, text: str) -> str | None:
-    """执行一条指令，返回要回给用户的文本；不是已知指令则返回 None。"""
+async def dispatch(
+    runtime: WechatRuntime, state: WechatAccountState, chat_id: str, text: str,
+) -> str | None:
+    """执行一条指令，返回要回给用户的文本；不是已知指令则返回 None。
+
+    指令依赖「当前工作区/会话」，所以先按 (账号, 聊天) 解析一次。
+    """
     parsed = parse(text)
     if parsed is None:
         return None
@@ -278,8 +301,8 @@ async def dispatch(runtime: WechatRuntime, state: WechatState, text: str) -> str
     if cmd is None:
         return f"未知指令：`/{name}`。用 `/h` 查看可用指令。"
 
-    resolve_current(state)          # 指令依赖「当前工作区/会话」
-    ctx = CommandContext(runtime=runtime, state=state, args=args)
+    chat = resolve_current(state, chat_id, runtime.cfg)
+    ctx = CommandContext(runtime=runtime, state=state, chat=chat, chat_id=chat_id, args=args)
     result: Any = cmd.handler(ctx)
     if hasattr(result, "__await__"):
         result = await result

@@ -349,79 +349,18 @@
                         </div>
                     </details>
 
-                    <div class="form-group">
-                        <label>启用:</label>
-                        <input type="checkbox" id="qq-enabled">
-                        <small class="form-hint">关闭时不加载 SDK、不占资源；开启后会立即尝试连接</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>AppID:</label>
-                        <input type="text" id="qq-app-id" placeholder="在 QQ 开放平台创建机器人后获取">
-                    </div>
-
-                    <div class="form-group">
-                        <label>AppSecret:</label>
-                        <div>
-                            <div class="input-with-icon">
-                                <input type="password" id="qq-secret" placeholder="留空保持不变">
-                                <button type="button" class="toggle-password" data-target="qq-secret">
-                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                                        <circle cx="12" cy="12" r="3"></circle>
-                                    </svg>
-                                </button>
-                            </div>
-                            <small class="form-hint" id="qq-secret-masked">未配置</small>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>沙箱环境:</label>
-                        <input type="checkbox" id="qq-use-sandbox">
-                        <small class="form-hint">未过审的机器人只能在沙箱收发，建议先保持开启</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>消息格式:</label>
-                        <select id="qq-msg-format">
-                            <option value="markdown">Markdown（推荐）</option>
-                            <option value="plain">纯文本</option>
-                        </select>
-                        <small class="form-hint">单聊自定义 Markdown 已对所有机器人开放，无需申请模板</small>
-                    </div>
-
-                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
-                    <div class="model-description"><strong>高级参数</strong></div>
-
-                    <div class="form-group">
-                        <label>流式节流（秒）:</label>
-                        <input type="number" id="qq-flush-interval" min="0.2" max="10" step="0.1" value="1.5">
-                        <small class="form-hint">正文累积多久推一次（默认 1.5s，对齐官方实现的 1500ms）</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>单轮文件上限:</label>
-                        <input type="number" id="qq-max-outbound-files" min="0" max="3" value="3">
-                        <small class="form-hint">QQ 单聊每条用户消息只能被动回复 4 次，流式消息已占 1 次，故上限 3</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>入站附件上限（MB）:</label>
-                        <input type="number" id="qq-max-inbound-mb" min="1" max="200" value="100">
-                        <small class="form-hint">与网页端拖放上传的上限一致</small>
-                    </div>
+                    <div id="qq-accounts-list"></div>
 
                     <div class="form-group">
                         <label></label>
-                        <button id="qq-test-btn" class="btn btn-small">测试连接</button>
-                        <span id="qq-test-result" class="form-hint" style="margin-left: 8px;"></span>
+                        <button id="qq-add-account-btn" class="btn btn-small btn-primary">添加账号</button>
                     </div>
 
                     <div class="model-description" style="margin-top: 12px;">
                         <small class="form-hint">
-                            保存后即刻生效（无需重启）。开启后，<code>send_file</code> 工具及其说明
-                            只会在 QQ 驱动的回合里对模型可见。
+                            保存后即刻生效（无需重启）。每个账号可绑定独立的默认工作空间，
+                            不同账号配不同工作区，记忆也相互隔离。开启账号后，
+                            <code>send_file</code> 工具及其说明只会在 QQ 驱动的回合里对模型可见。
                         </small>
                     </div>
                 </div>
@@ -450,77 +389,18 @@
                         </div>
                     </details>
 
-                    <div class="form-group">
-                        <label>启用:</label>
-                        <input type="checkbox" id="wechat-enabled">
-                        <small class="form-hint">关闭时不连接微信、不占资源；开启后需先扫码登录</small>
-                    </div>
+                    <div id="wechat-accounts-list"></div>
 
                     <div class="form-group">
-                        <label>登录状态:</label>
-                        <div>
-                            <span id="wechat-status-text" class="form-hint">未登录</span>
-                            <button id="wechat-login-btn" class="btn btn-small" type="button">扫码登录</button>
-                            <button id="wechat-logout-btn" class="btn btn-small" type="button">登出</button>
-                        </div>
-                    </div>
-
-                    <div class="form-group" id="wechat-qr-wrap" style="display:none;">
-                        <label>扫码:</label>
-                        <div>
-                            <img id="wechat-qr-img" alt="微信登录二维码"
-                                 style="width:200px;height:200px;display:none;">
-                            <div id="wechat-qr-fallback" class="form-hint"
-                                 style="display:none;word-break:break-all;"></div>
-                            <small class="form-hint" id="wechat-login-msg"></small>
-                        </div>
-                    </div>
-
-                    <div class="form-group" id="wechat-verify-wrap" style="display:none;">
-                        <label>验证码:</label>
-                        <div>
-                            <input type="text" id="wechat-verify-code" placeholder="微信上显示的数字">
-                            <button id="wechat-verify-btn" class="btn btn-small" type="button">提交</button>
-                        </div>
-                    </div>
-
-                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
-                    <div class="model-description"><strong>高级参数</strong></div>
-
-                    <div class="form-group">
-                        <label>单条文本上限:</label>
-                        <input type="number" id="wechat-chunk-limit" min="200" max="1800" value="1800">
-                        <small class="form-hint">iLink 单条消息的硬限制是 1800 字符，超长会切分</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>每轮发送预算:</label>
-                        <input type="number" id="wechat-budget" min="1" max="10" value="8">
-                        <small class="form-hint">每个 context_token 的可发条数（服务端未公开，经验值约 8）</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>单轮文件上限:</label>
-                        <input type="number" id="wechat-max-outbound-files" min="0" max="3" value="3">
-                        <small class="form-hint">文本分片与出站文件共享上面的发送预算</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>入站附件上限（MB）:</label>
-                        <input type="number" id="wechat-max-inbound-mb" min="1" max="200" value="100">
-                        <small class="form-hint">与网页端拖放上传的上限一致</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>「正在输入」提示:</label>
-                        <input type="checkbox" id="wechat-typing" checked>
-                        <small class="form-hint">iLink 不支持更新已发消息，这是回合内唯一的进度反馈</small>
+                        <label></label>
+                        <button id="wechat-add-account-btn" class="btn btn-small btn-primary">添加账号</button>
                     </div>
 
                     <div class="model-description" style="margin-top: 12px;">
                         <small class="form-hint">
-                            凭证来自扫码，不写进设置文件；保存后即刻生效（无需重启）。
-                            开启后 <code>send_file</code> 工具只会在微信驱动的回合里对模型可见。
+                            凭证来自扫码，按账号存放，不写进设置文件；保存后即刻生效（无需重启）。
+                            不同账号可绑定不同默认工作空间来隔离记忆。开启账号后，
+                            <code>send_file</code> 工具只会在微信驱动的回合里对模型可见。
                         </small>
                     </div>
                 </div>
@@ -550,6 +430,36 @@
             <div class="modal-footer">
                 <span id="settings-status" class="settings-status"></span>
                 <button id="settings-save-btn" class="btn btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 微信扫码登录弹框（从设置弹框里点「扫码登录」弹出，z-index 在其上） -->
+    <div id="wechat-login-modal" class="modal" style="display:none; z-index: 1100;">
+        <div class="modal-backdrop" data-modal="wechat-login-modal"></div>
+        <div class="modal-content" style="width: 360px;">
+            <div class="modal-header">
+                <h2>微信扫码登录</h2>
+                <button class="modal-close" data-modal="wechat-login-modal"
+                        id="wechat-login-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center; padding: 24px;">
+                <div id="wechat-qr-wrap">
+                    <img id="wechat-qr-img" alt="微信登录二维码"
+                         style="width: 240px; height: 240px; display: none;">
+                    <div id="wechat-qr-fallback" class="form-hint"
+                         style="display: none; word-break: break-all; max-width: 280px; margin: 0 auto;">
+                    </div>
+                </div>
+                <div id="wechat-login-msg" style="margin: 12px 0 4px;"></div>
+                <div id="wechat-verify-wrap" style="display: none; margin-top: 8px;">
+                    <input type="text" id="wechat-verify-code" placeholder="输入微信上显示的数字"
+                           style="width: 160px;">
+                    <button id="wechat-verify-btn" class="btn btn-small" type="button">提交</button>
+                </div>
+                <div style="margin-top: 16px;">
+                    <button id="wechat-login-cancel-btn" class="btn btn-small" type="button">取消登录</button>
+                </div>
             </div>
         </div>
     </div>

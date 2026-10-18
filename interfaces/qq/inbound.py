@@ -64,12 +64,12 @@ class InboundHandler:
         if not openid or not msg_id:
             return
 
-        # 单用户：每次对话把 owner 更新为当前发送者（自动绑定 / 保持最新）
+        # 记录本账号最近对话的对方（状态展示用，不是访问闸门）
         if not self._owner.track(openid):
             return
 
-        state = self._rt.state
-        resolve_current(state)
+        account = self._rt.state
+        chat = resolve_current(account, openid, self._rt.cfg)
 
         text = self._extract_text(event)
         attachments = list(getattr(event, "attachments", None) or [])
@@ -79,13 +79,13 @@ class InboundHandler:
 
         # 指令分流（不进入 AI 回合）
         if text.startswith("/"):
-            reply = await commands.dispatch(self._rt, state, text)
+            reply = await commands.dispatch(self._rt, account, openid, text)
             if reply is not None:
                 await self._send_text(openid, msg_id, reply)
                 return
 
-        media_items = await self._download_attachments(attachments)
-        await self._run_turn(openid, msg_id, text, media_items)
+        media_items = await self._download_attachments(attachments, chat)
+        await self._run_turn(openid, msg_id, text, media_items, chat)
 
     # ── 解析 ────────────────────────────────────────────────────────
 
@@ -104,10 +104,10 @@ class InboundHandler:
             return "\n".join(parts).strip()
         return ""
 
-    async def _download_attachments(self, attachments: list) -> list[InboundMedia]:
+    async def _download_attachments(self, attachments: list, chat) -> list[InboundMedia]:
         if not attachments:
             return []
-        entry = self._rt.state.workspace_uuid
+        entry = chat.workspace_uuid
         from core.config import find_workspace_entry
 
         ws = find_workspace_entry(entry) or {}
@@ -128,9 +128,13 @@ class InboundHandler:
         msg_id: str,
         text: str,
         media_items: list[InboundMedia],
+        chat,
     ) -> None:
-        state = self._rt.state
-        workspace_uuid, session_id = state.workspace_uuid, state.session_id
+        # 真要跑回合了：工作区没有会话时自动建一个（§3.6；指令路径不建）
+        from interfaces.qq.state import ensure_session
+
+        chat = ensure_session(self._rt.state, openid, self._rt.cfg)
+        workspace_uuid, session_id = chat.workspace_uuid, chat.session_id
         if not workspace_uuid or not session_id:
             await self._send_text(openid, msg_id, "尚未确定工作区/会话，请先执行 `/w`。")
             return

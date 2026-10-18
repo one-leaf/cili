@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -87,9 +88,9 @@ class DetectModelsRequest(BaseModel):
 
 class QQTestRequest(BaseModel):
     """测试 QQ 凭据（未提供 secret 时用已保存的）。"""
+    account_id: str | None = None
     app_id: str | None = None
     secret: str | None = None
-    use_sandbox: bool | None = None
 
 
 # ---------- 掩码 helpers ----------
@@ -167,45 +168,62 @@ def _mask_api_key(config: dict) -> dict:
         result["mcp_servers"] = {
             name: _mask_mcp_server(cfg) for name, cfg in result["mcp_servers"].items()
         }
-    # Mask QQ secret
+    # Mask QQ secret（按账号）
     if "qq" in result and isinstance(result["qq"], dict):
         qq_copy = result["qq"].copy()
-        secret = qq_copy.get("secret", "")
-        if secret:
-            qq_copy["secret_masked"] = _mask_secret(secret)
-        qq_copy.pop("secret", None)
+        accounts = qq_copy.get("accounts")
+        if isinstance(accounts, list):
+            masked_accounts = []
+            for acct in accounts:
+                if isinstance(acct, dict):
+                    a = acct.copy()
+                    secret = a.get("secret", "")
+                    if secret:
+                        a["secret_masked"] = _mask_secret(secret)
+                    a.pop("secret", None)
+                    masked_accounts.append(a)
+                else:
+                    masked_accounts.append(acct)
+            qq_copy["accounts"] = masked_accounts
         result["qq"] = qq_copy
     return result
 
 
-def _apply_qq_enabled(enabled: bool) -> None:
-    """按开关启停 QQ 接入端（阻塞操作，调用方需丢线程池）。"""
+def _apply_account_enabled_changes(
+    interface: str, before: dict[str, bool], after: dict[str, bool]
+) -> None:
+    """按账号 diff 启停接入端（设计 §7.1）：只动开关变化的账号。
+
+    未变的账号不被重启（重启意味着断连与可能的会话游标丢失）；被删除的
+    账号一并停止。阻塞操作，调用方需丢线程池。
+    """
     try:
-        from interfaces.qq import start_qq_interface, stop_qq_interface
+        if interface == "qq":
+            from interfaces.qq import start_qq_interface, stop_qq_interface
 
-        if enabled:
-            started = start_qq_interface()
-            if not started:
-                logger.warning("[Config] QQ 已启用但未启动（凭据缺失或 SDK 未安装）")
+            start_fn, stop_fn = start_qq_interface, stop_qq_interface
         else:
-            stop_qq_interface()
+            from interfaces.wechat import start_wechat_interface, stop_wechat_interface
+
+            start_fn, stop_fn = start_wechat_interface, stop_wechat_interface
+
+        for acct_id, enabled in after.items():
+            if before.get(acct_id) == enabled:
+                continue          # 开关没变 → 不动它
+            if enabled:
+                if not start_fn(acct_id):
+                    logger.warning(
+                        f"[Config] 账号 {acct_id} 已启用但未启动"
+                        f"（凭据缺失/未登录/SDK 未安装）"
+                    )
+            else:
+                stop_fn(acct_id)
+        # 被删除的账号：不再出现在列表里，停掉它的宿主
+        for acct_id in before:
+            if acct_id not in after:
+                stop_fn(acct_id)
     except Exception as e:  # noqa: BLE001 — 启停失败不该让保存请求失败
-        logger.warning(f"[Config] 切换 QQ 接入端失败: {e}")
-
-
-def _apply_wechat_enabled(enabled: bool) -> None:
-    """按开关启停微信接入端（阻塞操作，调用方需丢线程池）。"""
-    try:
-        from interfaces.wechat import start_wechat_interface, stop_wechat_interface
-
-        if enabled:
-            started = start_wechat_interface()
-            if not started:
-                logger.warning("[Config] 微信已启用但未启动（未扫码登录或配置不完整）")
-        else:
-            stop_wechat_interface()
-    except Exception as e:  # noqa: BLE001 — 启停失败不该让保存请求失败
-        logger.warning(f"[Config] 切换微信接入端失败: {e}")
+        logger.warning(f"[Config] 切换 {interface} 接入端失败: {e}")
 
 
 # ---------- Config ----------
@@ -270,45 +288,85 @@ async def update_config(request: UpdateConfigRequest):
         else:
             config.pop("mcp_servers", None)
 
-    # Update QQ 接入端配置
-    qq_toggled = False
-    qq_enabled = False
+    # Update QQ 接入端配置（账号列表，全量替换；secret 留空/掩码 = 保留原值）
+    qq_enable_before: dict[str, bool] = {}
+    qq_enable_after: dict[str, bool] = {}
     if request.qq is not None:
-        existing_qq = config.get("qq", {})
-        if not isinstance(existing_qq, dict):
-            existing_qq = {}
-        new_qq = dict(existing_qq)
         incoming = dict(request.qq)
-        # secret 留空 = 不修改（前端只回显掩码，不回传明文）
-        if not incoming.get("secret"):
-            incoming.pop("secret", None)
-        new_qq.update(incoming)
-        config["qq"] = new_qq
-        qq_enabled = bool(new_qq.get("enabled"))
-        qq_toggled = qq_enabled != bool(existing_qq.get("enabled"))
+        accounts_in = incoming.get("accounts")
+        if not isinstance(accounts_in, list):
+            accounts_in = []
+        existing_qq = config.get("qq") if isinstance(config.get("qq"), dict) else {}
+        old_accounts = existing_qq.get("accounts") if isinstance(existing_qq.get("accounts"), list) else []
+        old_by_id = {
+            str(a.get("id") or ""): a for a in old_accounts if isinstance(a, dict)
+        }
+        new_accounts: list[dict] = []
+        for item in accounts_in:
+            if not isinstance(item, dict):
+                continue
+            from interfaces.qq.config import QQConfig
 
-    # Update 微信接入端配置（凭证走扫码、不在配置里，所以这里只有参数与开关）
-    wechat_toggled = False
-    wechat_enabled = False
+            cfg_obj = QQConfig.from_dict(item)      # 白名单归一化：未知键丢弃、类型兜底
+            acct_id = cfg_obj.id.strip()
+            if not acct_id:
+                acct_id = secrets.token_hex(4)
+            cfg_obj.id = acct_id
+            # secret 留空或掩码 → 继承已保存值（前端只回显掩码，不回传明文）
+            if not cfg_obj.secret or _is_masked(cfg_obj.secret):
+                cfg_obj.secret = str((old_by_id.get(acct_id) or {}).get("secret") or "")
+            new_accounts.append(cfg_obj.to_dict())
+        config["qq"] = {"accounts": new_accounts}
+        qq_enable_before = {
+            str(a.get("id") or ""): bool(a.get("enabled"))
+            for a in old_accounts if isinstance(a, dict)
+        }
+        qq_enable_after = {
+            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
+        }
+
+    # Update 微信接入端配置（账号列表，全量替换；凭证走扫码、不在配置里）
+    wechat_enable_before: dict[str, bool] = {}
+    wechat_enable_after: dict[str, bool] = {}
     if request.wechat is not None:
-        existing_wechat = config.get("wechat", {})
-        if not isinstance(existing_wechat, dict):
-            existing_wechat = {}
-        new_wechat = dict(existing_wechat)
-        new_wechat.update(dict(request.wechat))
-        config["wechat"] = new_wechat
-        wechat_enabled = bool(new_wechat.get("enabled"))
-        wechat_toggled = wechat_enabled != bool(existing_wechat.get("enabled"))
+        incoming = dict(request.wechat)
+        accounts_in = incoming.get("accounts")
+        if not isinstance(accounts_in, list):
+            accounts_in = []
+        existing_wechat = config.get("wechat") if isinstance(config.get("wechat"), dict) else {}
+        old_accounts = existing_wechat.get("accounts") if isinstance(existing_wechat.get("accounts"), list) else []
+        new_accounts: list[dict] = []
+        for item in accounts_in:
+            if not isinstance(item, dict):
+                continue
+            from interfaces.wechat.config import WechatConfig
+
+            cfg_obj = WechatConfig.from_dict(item)  # 白名单归一化：未知键丢弃、类型兜底
+            if not cfg_obj.id:
+                cfg_obj.id = secrets.token_hex(4)
+            new_accounts.append(cfg_obj.to_dict())
+        config["wechat"] = {"accounts": new_accounts}
+        wechat_enable_before = {
+            str(a.get("id") or ""): bool(a.get("enabled"))
+            for a in old_accounts if isinstance(a, dict)
+        }
+        wechat_enable_after = {
+            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
+        }
 
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
-    # 开关变化 → 就地启停 QQ 接入端（不必重启 Cili）。
+    # 开关变化的账号 → 就地启停（不必重启 Cili，未变的账号不断连）。
     # start/stop 会等宿主线程就绪/退出（数秒），属阻塞操作 → 丢线程池。
-    if qq_toggled:
-        await asyncio.to_thread(_apply_qq_enabled, qq_enabled)
-    if wechat_toggled:
-        await asyncio.to_thread(_apply_wechat_enabled, wechat_enabled)
+    if qq_enable_before != qq_enable_after:
+        await asyncio.to_thread(
+            _apply_account_enabled_changes, "qq", qq_enable_before, qq_enable_after
+        )
+    if wechat_enable_before != wechat_enable_after:
+        await asyncio.to_thread(
+            _apply_account_enabled_changes, "wechat", wechat_enable_before, wechat_enable_after
+        )
 
     # 重连 MCP 服务器（签名变化才真正重连）
     try:
@@ -540,28 +598,36 @@ async def detect_models(request: DetectModelsRequest | None = None):
 async def test_qq_connection(request: QQTestRequest | None = None):
     """测试 QQ 凭据：能否拿到 access token 与网关地址。
 
-    未提供 ``secret`` 时用已保存的（前端只回显掩码，不回传明文）。
-    不触碰正在运行的接口——用独立临时客户端，测完即关。
+    未提供 ``secret`` 时用已保存的（前端只回显掩码，不回传明文）。用进程当前
+    域名（§4.2：域名不再按账号/按次切换），不触碰正在运行的接口——独立临时
+    客户端，测完即关。
     """
     if request is None:
         request = QQTestRequest()
 
     app_id = (request.app_id or "").strip()
     secret = (request.secret or "").strip()
-    use_sandbox = request.use_sandbox
 
-    saved = load_global_config().get("qq") or {}
+    saved_accounts = (load_global_config().get("qq") or {}).get("accounts") or []
+    saved: dict = {}
+    if isinstance(saved_accounts, list):
+        for a in saved_accounts:
+            if not isinstance(a, dict):
+                continue
+            if request.account_id and str(a.get("id") or "") != request.account_id:
+                continue
+            saved = a
+            break
+
     if not app_id:
         app_id = str(saved.get("app_id") or "")
     if not secret:
         secret = str(saved.get("secret") or "")
-    if use_sandbox is None:
-        use_sandbox = bool(saved.get("use_sandbox", True))
 
     try:
         from interfaces.qq.gateway import test_connection
 
-        ok, message = await test_connection(app_id, secret, bool(use_sandbox))
+        ok, message = await test_connection(app_id, secret)
         return {"success": ok, "message": message}
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[Config] 测试 QQ 连接失败: {e}")

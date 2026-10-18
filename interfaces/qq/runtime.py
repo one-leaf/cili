@@ -2,6 +2,9 @@
 
 单独成文件是为了避免 ``gateway`` / ``inbound`` / ``sink`` 之间的循环导入——
 三者都只依赖这个纯数据容器。
+
+多账号模型下（设计 §3.4）每个账号一个 runtime 实例：``account_id`` 用于
+日志前缀、状态定位与 ws_sessions 目录；``state`` 是该账号的状态切片。
 """
 
 from __future__ import annotations
@@ -12,16 +15,17 @@ from typing import Any
 
 from interfaces.qq.config import QQConfig
 from interfaces.qq.limiter import ReplyLimiter
-from interfaces.qq.state import QQState
+from interfaces.qq.state import QQAccountState
 
 
 @dataclass
 class QQRuntime:
-    """一次进程生命周期内共享的 QQ 运行时依赖。"""
+    """一个账号进程生命周期内共享的 QQ 运行时依赖。"""
 
-    cfg: QQConfig
-    state: QQState
-    loop: asyncio.AbstractEventLoop          # 宿主 loop（入站回调被派发到它上面）
+    account_id: str                         # 账号标识（状态/日志/ws_sessions 定位）
+    cfg: QQConfig                           # 账号级配置（每账号独立实例）
+    state: QQAccountState                   # 该账号的状态切片
+    loop: asyncio.AbstractEventLoop         # 宿主 loop（入站回调被派发到它上面）
     api: Any = None                          # qqbot_agent_sdk.QQApiClient
     ws: Any = None                           # qqbot_agent_sdk.QQWebSocket
     http: Any = None                         # httpx.AsyncClient（分片 PUT / 附件下载共用）

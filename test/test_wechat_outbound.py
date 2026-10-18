@@ -307,14 +307,15 @@ def _sink(*, budget: int = 8, chunk_limit: int = 1800, cfg: dict | None = None):
     from interfaces.wechat.config import WechatConfig
     from interfaces.wechat.runtime import WechatRuntime
     from interfaces.wechat.sink import WechatSink
-    from interfaces.wechat.state import WechatState
+    from interfaces.wechat.state import WechatAccountState
 
     loop = asyncio.new_event_loop()
     outbound = _FakeOutbound(budget=budget)
     typing = _FakeTyping()
     rt = WechatRuntime(
+        account_id="acc1",
         cfg=WechatConfig(text_chunk_limit=chunk_limit, **(cfg or {})),
-        state=WechatState(),
+        state=WechatAccountState(),
         account=WechatAccount(),
         tokens=_tokens(),
         loop=loop,
@@ -459,13 +460,13 @@ class TestWechatSink:
         from interfaces.wechat.config import WechatConfig
         from interfaces.wechat.runtime import WechatRuntime
         from interfaces.wechat.sink import WechatSink
-        from interfaces.wechat.state import WechatState
+        from interfaces.wechat.state import WechatAccountState
 
         seen: list = []
         loop = asyncio.new_event_loop()
         rt = WechatRuntime(
-            cfg=WechatConfig(), state=WechatState(), account=WechatAccount(),
-            tokens=_tokens(), loop=loop,
+            account_id="acc1", cfg=WechatConfig(), state=WechatAccountState(),
+            account=WechatAccount(), tokens=_tokens(), loop=loop,
         )
         rt.outbound = _FakeOutbound()
         rt.typing = _FakeTyping()

@@ -35,11 +35,12 @@ def _runtime(*, cursor: str = "", cfg: dict | None = None):
     from interfaces.wechat.account import ContextTokenStore, WechatAccount
     from interfaces.wechat.config import WechatConfig
     from interfaces.wechat.runtime import WechatRuntime
-    from interfaces.wechat.state import WechatState
+    from interfaces.wechat.state import WechatAccountState
 
     return WechatRuntime(
+        account_id="acc1",
         cfg=WechatConfig(**(cfg or {})),
-        state=WechatState(),
+        state=WechatAccountState(),
         account=WechatAccount(get_updates_buf=cursor),
         tokens=ContextTokenStore(max_age_seconds=60, budget=8),
         loop=asyncio.new_event_loop(),
@@ -96,57 +97,84 @@ def _text_msg(text: str, *, mid: str = "m1", sender: str = "u1",
     return msg
 
 
-# ─── 状态 ─────────────────────────────────────────────────────────────
+# ─── 状态：账号 → 聊天 两级（设计 §3.3） ─────────────────────────────
 
 
 class TestWechatState:
-    def test_from_dict_tolerates_junk(self):
-        from interfaces.wechat.state import WechatState
-        assert WechatState.from_dict(None) == WechatState()
-        assert WechatState.from_dict({"owner_user_id": 123}).owner_user_id == "123"
+    def test_roundtrip(self):
+        from interfaces.wechat.state import WechatAccountState, WechatChatState
+        acct = WechatAccountState(
+            owner="u1", chats={"u1": WechatChatState(workspace_uuid="w1", session_id="s1")}
+        )
+        assert WechatAccountState.from_dict(acct.to_dict()) == acct
 
-    def test_save_and_load(self, tmp_path, monkeypatch):
+    def test_from_dict_tolerates_junk(self):
+        from interfaces.wechat.state import WechatAccountState
+        assert WechatAccountState.from_dict(None) == WechatAccountState()
+        assert WechatAccountState.from_dict({"owner": 123}).owner == "123"
+
+    def test_save_and_load_per_account(self, tmp_path, monkeypatch):
         import interfaces.wechat.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
-        state = st.WechatState(owner_user_id="u1", workspace_uuid="w1", session_id="s1")
-        assert st.save_state(state)
-        assert st.load_state() == state
+        from interfaces.wechat.state import (
+            WechatAccountState,
+            WechatChatState,
+            load_account_state,
+            save_account_state,
+        )
+        acct = WechatAccountState(
+            owner="u1", chats={"u1": WechatChatState(workspace_uuid="w1", session_id="s1")}
+        )
+        assert save_account_state("acc1", acct)
+        assert load_account_state("acc1") == acct
+        assert load_account_state("acc2").is_empty()
 
     def test_load_missing_returns_empty(self, tmp_path, monkeypatch):
         import interfaces.wechat.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
-        assert st.load_state() == st.WechatState()
+        from interfaces.wechat.state import load_account_state
+        assert load_account_state("acc1").is_empty()
+
+    def test_legacy_flat_file_compat(self, tmp_path, monkeypatch):
+        """旧扁平文件（单账号）在迁移前按兼容读解析：owner 即聊天键。"""
+        import interfaces.wechat.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from core.fs_utils import atomic_write_json
+        from interfaces.wechat.state import load_account_state, state_path
+
+        atomic_write_json(
+            state_path(), {"owner_user_id": "u1", "workspace_uuid": "w1", "session_id": "s1"}
+        )
+        loaded = load_account_state("whatever")
+        assert loaded.owner == "u1"
+        assert loaded.chats["u1"].workspace_uuid == "w1"
+        assert loaded.chats["u1"].session_id == "s1"
 
 
-# ─── owner 绑定 ───────────────────────────────────────────────────────
+# ─── owner 绑定（退化为「本账号最近对话的对方」，不落盘） ─────────────
 
 
 class TestOwnerTracker:
-    def _tracker(self, state, monkeypatch):
-        import interfaces.wechat.access as acc
-        monkeypatch.setattr(acc, "save_state", lambda s: True)
+    def _tracker(self, account):
         from interfaces.wechat.access import OwnerTracker
-        return OwnerTracker(state)
+        return OwnerTracker(account)
 
-    def test_binds_first_sender(self, monkeypatch):
-        from interfaces.wechat.state import WechatState
-        state = WechatState()
-        tr = self._tracker(state, monkeypatch)
-        assert tr.track("u1") is True
-        assert tr.owner_user_id == "u1"
-        assert state.owner_user_id == "u1"
+    def test_binds_first_sender(self):
+        from interfaces.wechat.state import WechatAccountState
+        account = WechatAccountState()
+        assert self._tracker(account).track("u1") is True
+        assert account.owner == "u1"
+        assert self._tracker(account).owner_user_id == "u1"
 
-    def test_refreshes_when_sender_changes(self, monkeypatch):
-        from interfaces.wechat.state import WechatState
-        state = WechatState(owner_user_id="u1")
-        tr = self._tracker(state, monkeypatch)
-        assert tr.track("u2") is True
-        assert tr.owner_user_id == "u2"
+    def test_refreshes_when_sender_changes(self):
+        from interfaces.wechat.state import WechatAccountState
+        account = WechatAccountState(owner="u1")
+        assert self._tracker(account).track("u2") is True
+        assert account.owner == "u2"
 
-    def test_empty_sender_rejected(self, monkeypatch):
-        from interfaces.wechat.state import WechatState
-        tr = self._tracker(WechatState(), monkeypatch)
-        assert tr.track("") is False
+    def test_empty_sender_rejected(self):
+        from interfaces.wechat.state import WechatAccountState
+        assert self._tracker(WechatAccountState()).track("") is False
 
 
 # ─── 指令 ─────────────────────────────────────────────────────────────
@@ -175,30 +203,39 @@ class TestCommands:
     def test_unknown_command(self):
         rt = _runtime()
         from interfaces.wechat.commands import dispatch
-        out = asyncio.run(dispatch(rt, rt.state, "/bogus"))
+        out = asyncio.run(dispatch(rt, rt.state, "u1", "/bogus"))
         assert "未知指令" in out
 
     def test_non_command_returns_none(self):
         rt = _runtime()
         from interfaces.wechat.commands import dispatch
-        assert asyncio.run(dispatch(rt, rt.state, "你好")) is None
+        assert asyncio.run(dispatch(rt, rt.state, "u1", "你好")) is None
 
     def test_help_lists_commands(self):
         rt = _runtime()
         from interfaces.wechat.commands import dispatch
-        out = asyncio.run(dispatch(rt, rt.state, "/h"))
+        out = asyncio.run(dispatch(rt, rt.state, "u1", "/h"))
         assert "可用指令" in out
         assert "/status" in out
 
     def test_status_reports_owner_and_budget(self):
         rt = _runtime()
-        rt.state.owner_user_id = "u1"
+        rt.state.owner = "u1"
         rt.outbound = _FakeOutbound(budget=5, deferred=2)
         from interfaces.wechat.commands import dispatch
-        out = asyncio.run(dispatch(rt, rt.state, "/status"))
+        out = asyncio.run(dispatch(rt, rt.state, "u1", "/status"))
         assert "u1" in out
         assert "本轮剩余发送条数：5" in out
         assert "待重发（配额受限）：2 条" in out
+
+    def test_workspace_locked_rejects_w(self):
+        """锁定工作空间的账号：/w 拒绝执行且不改绑定（设计 §3.5）。"""
+        from interfaces.wechat.commands import dispatch
+        rt = _runtime(cfg={"workspace_locked": True, "default_workspace_uuid": "test"})
+        rt.state.chat("u1").workspace_uuid = "test"
+        out = asyncio.run(dispatch(rt, rt.state, "u1", "/w"))
+        assert "已锁定" in out
+        assert rt.state.chats["u1"].workspace_uuid == "test"      # 未变
 
 
 # ─── 长轮询 ───────────────────────────────────────────────────────────
@@ -247,7 +284,7 @@ class TestPoller:
         asyncio.run(poller._poll_once())
 
         assert rt.account.get_updates_buf == "c9"
-        assert account_mod.load_account().get_updates_buf == "c9"
+        assert account_mod.load_account("acc1").get_updates_buf == "c9"
 
     def test_auth_error_stops_and_propagates(self):
         """-14 → 轮询停掉并向上抛，由服务层提示重新扫码。"""

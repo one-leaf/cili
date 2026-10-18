@@ -29,11 +29,9 @@ def isolated_data(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def isolated_cfg(monkeypatch):
-    """登录流程读的是全局配置——测试里固定成默认配置。"""
-    import interfaces.wechat.login as login_mod
+def isolated_cfg():
+    """（历史兼容占位）登录流程已改用固定默认配置，不再需要隔离全局配置。"""
     from interfaces.wechat.config import WechatConfig
-    monkeypatch.setattr(login_mod, "load_wechat_config", lambda: WechatConfig())
     return WechatConfig()
 
 
@@ -94,30 +92,63 @@ class TestAccount:
         assert WechatAccount.from_dict(None) == WechatAccount()
         assert WechatAccount.from_dict({"bot_token": 123}).bot_token == "123"
 
-    def test_save_and_load(self, isolated_data):
+    def test_save_and_load_per_account(self, isolated_data):
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
         acc = WechatAccount(
             bot_token="tok", base_url="https://b", ilink_user_id="u1",
             ilink_bot_id="b1", get_updates_buf="cur",
         )
-        assert account_mod.save_account(acc)
-        assert account_mod.load_account() == acc
-        assert account_mod.load_account().has_token() is True
+        assert account_mod.save_account("acc1", acc)
+        assert account_mod.load_account("acc1") == acc
+        assert account_mod.load_account("acc1").has_token() is True
+        # 其它账号互不可见（设计 §5.1：每账号一个文件）
+        assert account_mod.load_account("acc2").has_token() is False
 
     def test_load_missing_returns_empty(self, isolated_data):
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
-        assert account_mod.load_account() == WechatAccount()
-        assert account_mod.load_account().has_token() is False
+        assert account_mod.load_account("acc1") == WechatAccount()
+        assert account_mod.load_account("acc1").has_token() is False
 
     def test_clear_account(self, isolated_data):
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
-        account_mod.save_account(WechatAccount(bot_token="tok"))
-        assert account_mod.clear_account()
-        assert account_mod.load_account().bot_token == ""
-        assert account_mod.clear_account()          # 再删一次也不报错
+        account_mod.save_account("acc1", WechatAccount(bot_token="tok"))
+        assert account_mod.clear_account("acc1")
+        assert account_mod.load_account("acc1").bot_token == ""
+        assert account_mod.clear_account("acc1")          # 再删一次也不报错
+
+    def test_list_account_ids(self, isolated_data):
+        import interfaces.wechat.account as account_mod
+        from interfaces.wechat.account import WechatAccount
+        assert account_mod.list_account_ids() == []
+        account_mod.save_account("b2", WechatAccount(bot_token="t"))
+        account_mod.save_account("a1", WechatAccount(bot_token="t"))
+        assert account_mod.list_account_ids() == ["a1", "b2"]   # 排序稳定
+
+    def test_legacy_single_file_compat(self, isolated_data):
+        """迁移前布局：账号目录不存在时回退旧单文件（设计 §5.1 兼容读）。"""
+        import interfaces.wechat.account as account_mod
+        from interfaces.wechat.account import WechatAccount
+        from core.fs_utils import atomic_write_json
+        atomic_write_json(
+            account_mod.legacy_account_path(),
+            {"bot_token": "legacy-token", "ilink_user_id": "u1"},
+        )
+        assert account_mod.load_account("acc1").bot_token == "legacy-token"
+
+    def test_no_legacy_fallback_once_dir_exists(self, isolated_data):
+        """账号目录已存在时不再回退旧文件——已登出的账号不能从旧文件复活。"""
+        import interfaces.wechat.account as account_mod
+        from interfaces.wechat.account import WechatAccount
+        from core.fs_utils import atomic_write_json
+        atomic_write_json(
+            account_mod.legacy_account_path(),
+            {"bot_token": "legacy-token"},
+        )
+        account_mod.save_account("other", WechatAccount(bot_token="t"))   # 建目录
+        assert account_mod.load_account("acc1").bot_token == ""
 
 # ─── context_token 台账 ───────────────────────────────────────────────
 
@@ -199,7 +230,7 @@ class TestQrPng:
 
 
 class TestLoginStart:
-    def test_returns_pending_with_qr(self, isolated_data, isolated_cfg):
+    def test_returns_pending_with_qr(self, isolated_data):
         store = _make_store(_qr_handler([]))
         result = asyncio.run(store.start())
         assert result["status"] == "pending"
@@ -208,33 +239,36 @@ class TestLoginStart:
         assert result["session_id"]
         assert result["interval_ms"] == 2000
 
-    def test_already_logged_in_short_circuits(self, isolated_data, isolated_cfg):
+    def test_already_logged_in_short_circuits(self, isolated_data):
+        """目标账号已有凭证时不取二维码（设计 §5.2 的按账号短路）。"""
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
-        account_mod.save_account(WechatAccount(bot_token="tok", ilink_user_id="u1"))
+        account_mod.save_account("acc1", WechatAccount(bot_token="tok", ilink_user_id="u1"))
 
         def boom(request):
             raise AssertionError("已登录就不该再取二维码")
 
-        result = asyncio.run(_make_store(boom).start())
+        result = asyncio.run(_make_store(boom).start("acc1"))
         assert result["status"] == "succeeded"
+        assert result["account_id"] == "acc1"
         assert result["ilink_user_id"] == "u1"
 
-    def test_force_ignores_existing_token(self, isolated_data, isolated_cfg):
+    def test_force_ignores_existing_token(self, isolated_data):
         """force 时不能把旧 token 交给服务端——否则会走 binded_redirect 拿不到新凭证。"""
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
-        account_mod.save_account(WechatAccount(bot_token="old-token"))
+        account_mod.save_account("acc1", WechatAccount(bot_token="old-token"))
 
         calls: list = []
-        result = asyncio.run(_make_store(_qr_handler([], calls)).start(force=True))
+        result = asyncio.run(_make_store(_qr_handler([], calls)).start("acc1", force=True))
         assert result["status"] == "pending"
         assert calls[0]["body"]["local_token_list"] == []
 
 class TestLoginPoll:
-    def _started(self, statuses, isolated_data, isolated_cfg, calls=None, force=False):
+    def _started(self, statuses, isolated_data, isolated_cfg, calls=None, force=False,
+                 target="acc1"):
         store = _make_store(_qr_handler(statuses, calls))
-        start = asyncio.run(store.start(force=force))
+        start = asyncio.run(store.start(target, force=force))
         return store, start["session_id"]
 
     def test_wait_stays_pending(self, isolated_data, isolated_cfg):
@@ -258,8 +292,9 @@ class TestLoginPoll:
         result = asyncio.run(store.poll(sid))
 
         assert result["status"] == "succeeded"
+        assert result["account_id"] == "acc1"
         assert result["ilink_user_id"] == "u9"
-        acc = account_mod.load_account()
+        acc = account_mod.load_account("acc1")
         assert acc.bot_token == "new-token"
         assert acc.base_url == "https://redirected.example"
         assert acc.ilink_bot_id == "b9"
@@ -315,12 +350,13 @@ class TestLoginPoll:
         """
         import interfaces.wechat.account as account_mod
         from interfaces.wechat.account import WechatAccount
-        account_mod.save_account(WechatAccount(bot_token="tok", ilink_user_id="u1"))
+        account_mod.save_account("acc1", WechatAccount(bot_token="tok", ilink_user_id="u1"))
         store, sid = self._started(
             [{"status": "binded_redirect"}], isolated_data, isolated_cfg, force=True,
         )
         result = asyncio.run(store.poll(sid))
         assert result["status"] == "succeeded"
+        assert result["account_id"] == "acc1"
         assert result["ilink_user_id"] == "u1"
 
     def test_binded_redirect_without_local_token_fails(self, isolated_data, isolated_cfg):
@@ -361,53 +397,65 @@ class TestWechatRoutes:
         monkeypatch.setattr(routes, "_store", _make_store(handler))
         return routes
 
+    @staticmethod
+    def _one_account():
+        from interfaces.wechat.config import WechatConfig
+        return [WechatConfig(id="acc1", label="主号")]
+
     def test_status_reports_logged_out(self, isolated_data, monkeypatch):
         import web.routes_wechat as routes
-        from interfaces.wechat.config import WechatConfig
-        monkeypatch.setattr(routes, "load_wechat_config", lambda: WechatConfig())
+        monkeypatch.setattr(routes, "load_wechat_accounts", self._one_account)
 
         data = asyncio.run(routes.wechat_status())
 
-        assert data["logged_in"] is False
-        assert data["running"] is False
-        assert data["enabled"] is False
+        assert data["accounts"] and data["accounts"][0]["logged_in"] is False
+        assert data["accounts"][0]["running"] is False
+        assert data["accounts"][0]["enabled"] is False
+        assert data["accounts"][0]["id"] == "acc1"
         assert "token" not in json.dumps(data)     # 凭证绝不出网
 
     def test_status_reports_logged_in(self, isolated_data, monkeypatch):
         import interfaces.wechat.account as account_mod
         import web.routes_wechat as routes
         from interfaces.wechat.account import WechatAccount
-        from interfaces.wechat.config import WechatConfig
-        monkeypatch.setattr(routes, "load_wechat_config", lambda: WechatConfig())
-        account_mod.save_account(WechatAccount(bot_token="secret-token", ilink_user_id="u1"))
+        monkeypatch.setattr(routes, "load_wechat_accounts", self._one_account)
+        account_mod.save_account("acc1", WechatAccount(bot_token="secret-token", ilink_user_id="u1"))
 
         data = asyncio.run(routes.wechat_status())
 
-        assert data["logged_in"] is True
-        assert data["ilink_user_id"] == "u1"
+        assert data["accounts"][0]["logged_in"] is True
+        assert data["accounts"][0]["ilink_user_id"] == "u1"
         assert "secret-token" not in json.dumps(data)
 
     def test_login_status_requires_session_id(self, isolated_data, monkeypatch):
         from fastapi import HTTPException
         routes = self._patch_store(monkeypatch, _qr_handler([]))
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(routes.wechat_login_status(session_id=""))
+            asyncio.run(routes.wechat_login_status("acc1", session_id=""))
         assert exc.value.status_code == 400
 
     def test_login_start_and_poll(self, isolated_data, isolated_cfg, monkeypatch):
         routes = self._patch_store(monkeypatch, _qr_handler([{"status": "wait"}]))
-        started = asyncio.run(routes.wechat_login_start(force=False))
+        started = asyncio.run(routes.wechat_login_start("acc1", force=False))
         assert started["status"] == "pending"
-        polled = asyncio.run(routes.wechat_login_status(session_id=started["session_id"]))
+        polled = asyncio.run(routes.wechat_login_status("acc1", session_id=started["session_id"]))
         assert polled["status"] == "pending"
+
+    def test_login_start_cancels(self, isolated_data, isolated_cfg, monkeypatch):
+        routes = self._patch_store(monkeypatch, _qr_handler([]))
+        started = asyncio.run(routes.wechat_login_start("acc1", force=True))
+        cancelled = asyncio.run(
+            routes.wechat_login_cancel("acc1", session_id=started["session_id"])
+        )
+        assert cancelled["status"] == "cancelled"
 
     def test_logout_clears_credentials(self, isolated_data, monkeypatch):
         import interfaces.wechat.account as account_mod
         import web.routes_wechat as routes
         from interfaces.wechat.account import WechatAccount
-        account_mod.save_account(WechatAccount(bot_token="tok"))
+        account_mod.save_account("acc1", WechatAccount(bot_token="tok"))
 
-        result = asyncio.run(routes.wechat_logout())
+        result = asyncio.run(routes.wechat_logout("acc1"))
 
         assert result["success"] is True
-        assert account_mod.load_account().bot_token == ""
+        assert account_mod.load_account("acc1").bot_token == ""

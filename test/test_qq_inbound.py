@@ -1,6 +1,7 @@
-"""QQ 入站侧测试：配置 / 状态 / owner / 指令 / SSRF / sink transcript。
+"""QQ 入站侧测试：状态（两级键）/ owner / 指令 / SSRF / sink transcript。
 
-全部不依赖网络与 QQ 凭据。
+全部不依赖网络与 QQ 凭据。配置面（账号列表 / 兼容读 / 固定默认值）的测试在
+test_qq_settings_api.py。
 """
 
 from __future__ import annotations
@@ -9,132 +10,175 @@ import asyncio
 
 import pytest
 
-from interfaces.qq.config import QQConfig
-from interfaces.qq.state import QQState
-
-# ─── 配置 ─────────────────────────────────────────────────────────────
+# ─── 状态：账号 → 聊天 两级（设计 §3.3） ─────────────────────────────
 
 
-class TestQQConfig:
-    def test_defaults(self):
-        cfg = QQConfig()
-        assert cfg.enabled is False
-        assert cfg.use_sandbox is True          # 未过审只能沙箱，默认更安全
-        assert cfg.msg_format == "markdown"     # 单聊 markdown 已全量开放
-        assert cfg.flush_interval_seconds == 1.5
-        assert cfg.flush_max_wait_seconds == 8.0
-        assert cfg.max_inbound_bytes == 100 * 1024 * 1024   # 与 Web 的 _MAX_UPLOAD_SIZE 一致
-        assert cfg.max_outbound_files == 3
+class TestQQAccountState:
+    def test_roundtrip(self):
+        from interfaces.qq.state import QQAccountState, QQChatState
 
-    def test_from_dict_ignores_unknown_keys(self):
-        cfg = QQConfig.from_dict({"enabled": True, "bogus": 1, "app_id": "x"})
-        assert cfg.enabled is True
-        assert cfg.app_id == "x"
+        acct = QQAccountState(
+            owner="o1", chats={"o1": QQChatState(workspace_uuid="w1", session_id="s1")}
+        )
+        assert QQAccountState.from_dict(acct.to_dict()) == acct
 
-    def test_from_dict_handles_non_dict(self):
-        assert QQConfig.from_dict(None).enabled is False
-        assert QQConfig.from_dict("nope").enabled is False
-
-    def test_from_dict_bad_type_falls_back(self):
-        """类型错误不应炸掉启动，退回默认。"""
-        cfg = QQConfig.from_dict({"flush_interval_seconds": "abc"})
-        assert cfg.flush_interval_seconds == 1.5
-
-    def test_coerces_numeric_strings(self):
-        cfg = QQConfig.from_dict({"flush_interval_seconds": "2.5", "max_outbound_files": "4"})
-        assert cfg.flush_interval_seconds == 2.5
-        assert cfg.max_outbound_files == 4
-
-    def test_coerces_bool_strings(self):
-        assert QQConfig.from_dict({"enabled": "true"}).enabled is True
-        assert QQConfig.from_dict({"enabled": "false"}).enabled is False
-        assert QQConfig.from_dict({"enabled": 1}).enabled is True
-
-    def test_rejects_bool_for_numeric_field(self):
-        """True 不该被当成 1（JSON 里写错类型的常见形态）。"""
-        assert QQConfig.from_dict({"max_outbound_files": True}).max_outbound_files == 3
-
-    def test_float_field_accepts_int(self):
-        assert QQConfig.from_dict({"flush_interval_seconds": 2}).flush_interval_seconds == 2.0
-
-    def test_is_ready_requires_both_credentials(self):
-        assert QQConfig(app_id="a", secret="s").is_ready()
-        assert not QQConfig(app_id="a").is_ready()
-        assert not QQConfig(secret="s").is_ready()
-
-    def test_roundtrip_dict(self):
-        cfg = QQConfig(enabled=True, app_id="a", secret="s", msg_format="plain")
-        assert QQConfig.from_dict(cfg.to_dict()) == cfg
-
-
-# ─── 状态 ─────────────────────────────────────────────────────────────
-
-
-class TestQQState:
     def test_from_dict_tolerates_junk(self):
-        assert QQState.from_dict(None) == QQState()
-        assert QQState.from_dict({"owner_openid": 123}).owner_openid == "123"
+        from interfaces.qq.state import QQAccountState
 
-    def test_save_and_load(self, tmp_path, monkeypatch):
+        assert QQAccountState.from_dict(None) == QQAccountState()
+        acct = QQAccountState.from_dict(
+            {"owner": 123, "chats": {"c": {"workspace_uuid": 1, "bogus": 2}}}
+        )
+        assert acct.owner == "123"
+        assert acct.chats["c"].workspace_uuid == "1"
+
+    def test_chat_get_or_create(self):
+        from interfaces.qq.state import QQAccountState, QQChatState
+
+        acct = QQAccountState()
+        chat = acct.chat("c1")
+        assert isinstance(chat, QQChatState)
+        assert acct.chats["c1"] is chat
+        chat.workspace_uuid = "w1"
+        assert acct.chat("c1") is chat          # 已存在的不重建
+
+    def test_is_empty(self):
+        from interfaces.qq.state import QQAccountState, QQChatState
+
+        assert QQAccountState().is_empty()
+        assert not QQAccountState(owner="o").is_empty()
+        assert not QQAccountState(chats={"c": QQChatState()}).is_empty()
+
+
+class TestQQStatePersistence:
+    def test_save_and_load_per_account(self, tmp_path, monkeypatch):
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
-        state = QQState(owner_openid="o1", workspace_uuid="w1", session_id="s1")
-        assert st.save_state(state)
-        assert st.load_state() == state
+        from interfaces.qq.state import (
+            QQAccountState,
+            QQChatState,
+            load_account_state,
+            save_account_state,
+        )
+
+        acct = QQAccountState(
+            owner="o1", chats={"o1": QQChatState(workspace_uuid="w1", session_id="s1")}
+        )
+        assert save_account_state("acc1", acct)
+        assert load_account_state("acc1") == acct
+        # 其它账号互不可见
+        assert load_account_state("acc2").is_empty()
 
     def test_load_missing_returns_empty(self, tmp_path, monkeypatch):
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
-        assert st.load_state() == QQState()
+        from interfaces.qq.state import load_account_state
+
+        assert load_account_state("acc1").is_empty()
+
+    def test_multi_account_save_preserves_others(self, tmp_path, monkeypatch):
+        """两个账号先后保存，互不覆盖（_STATE_LOCK 的读改写，设计 §10.1）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from interfaces.qq.state import (
+            QQAccountState,
+            QQChatState,
+            load_account_state,
+            save_account_state,
+        )
+
+        save_account_state(
+            "acc1", QQAccountState(owner="o1", chats={"o1": QQChatState(workspace_uuid="w1")})
+        )
+        save_account_state(
+            "acc2", QQAccountState(owner="o2", chats={"o2": QQChatState(workspace_uuid="w2")})
+        )
+        assert load_account_state("acc1").chats["o1"].workspace_uuid == "w1"
+        assert load_account_state("acc2").chats["o2"].workspace_uuid == "w2"
+
+    def test_legacy_flat_file_compat(self, tmp_path, monkeypatch):
+        """旧扁平文件（单账号）在迁移前按兼容读解析：owner 即聊天键（设计 §3.3）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from core.fs_utils import atomic_write_json
+        from interfaces.qq.state import load_account_state, state_path
+
+        atomic_write_json(
+            state_path(), {"owner_openid": "o1", "workspace_uuid": "w1", "session_id": "s1"}
+        )
+        loaded = load_account_state("whatever")
+        assert loaded.owner == "o1"
+        assert loaded.chats["o1"].workspace_uuid == "w1"
+        assert loaded.chats["o1"].session_id == "s1"
+
+    def test_legacy_file_converts_on_first_save(self, tmp_path, monkeypatch):
+        """兼容读拿到的切片保存时写回新形态，旧键消失（写函数只写新形态）。"""
+        import json
+
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from core.fs_utils import atomic_write_json
+        from interfaces.qq.state import load_account_state, save_account_state, state_path
+
+        atomic_write_json(
+            state_path(), {"owner_openid": "o1", "workspace_uuid": "w1", "session_id": "s1"}
+        )
+        acct = load_account_state("acc1")
+        acct.chat("o1").session_id = "s2"
+        assert save_account_state("acc1", acct)
+        data = json.loads(state_path().read_text(encoding="utf-8"))
+        assert "accounts" in data and "owner_openid" not in data
+        assert data["accounts"]["acc1"]["chats"]["o1"]["session_id"] == "s2"
 
 
-# ─── owner 记录（自动绑定 + 每次对话刷新） ───────────────────────────
+# ─── owner 记录（退化为「本账号最近对话的对方」，不落盘） ─────────────
 
 
 class TestOwnerTracker:
-    def _tracker(self, state, monkeypatch):
-        import interfaces.qq.access as acc
-        monkeypatch.setattr(acc, "save_state", lambda s: True)
+    def _tracker(self, account):
         from interfaces.qq.access import OwnerTracker
-        return OwnerTracker(state)
 
-    def test_first_message_binds(self, monkeypatch):
-        state = QQState()
-        tr = self._tracker(state, monkeypatch)
-        assert tr.track("first") is True
-        assert state.owner_openid == "first"
+        return OwnerTracker(account)
 
-    def test_updates_on_every_conversation(self, monkeypatch):
+    def test_first_message_binds(self):
+        from interfaces.qq.state import QQAccountState
+
+        account = QQAccountState()
+        assert self._tracker(account).track("first") is True
+        assert account.owner == "first"
+
+    def test_updates_on_every_conversation(self):
         """每次对话把 owner 刷新为当前发送者（openid 会因换设备/换号而变）。"""
-        state = QQState()
-        tr = self._tracker(state, monkeypatch)
+        from interfaces.qq.state import QQAccountState
+
+        account = QQAccountState()
+        tr = self._tracker(account)
         tr.track("first")
         assert tr.track("second") is True
-        assert state.owner_openid == "second"
-        assert tr.track("first") is True
-        assert state.owner_openid == "first"
+        assert account.owner == "second"
 
-    def test_same_sender_does_not_rewrite(self, monkeypatch):
-        """同一个发送者反复对话不该每次都落盘。"""
-        import interfaces.qq.access as acc
-        calls = []
-        monkeypatch.setattr(acc, "save_state", lambda s: calls.append(s) or True)
-        state = QQState()
-        tr = acc.OwnerTracker(state)
-        tr.track("a")
-        tr.track("a")
-        tr.track("a")
-        assert len(calls) == 1
+    def test_empty_sender_rejected(self):
+        from interfaces.qq.state import QQAccountState
 
-    def test_empty_sender_rejected(self, monkeypatch):
-        tr = self._tracker(QQState(), monkeypatch)
-        assert tr.track("") is False
+        assert self._tracker(QQAccountState()).track("") is False
 
-    def test_owner_property_exposes_current(self, monkeypatch):
-        state = QQState()
-        tr = self._tracker(state, monkeypatch)
+    def test_owner_property_exposes_current(self):
+        from interfaces.qq.state import QQAccountState
+
+        account = QQAccountState()
+        tr = self._tracker(account)
         tr.track("who")
         assert tr.owner_openid == "who"
+
+    def test_track_does_not_touch_disk(self, tmp_path, monkeypatch):
+        """owner 不再独立落盘——绑定由命令（/w /s /new）或默认解析决定（设计 §3.3）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from interfaces.qq.state import QQAccountState
+
+        account = QQAccountState()
+        self._tracker(account).track("first")
+        assert not (tmp_path / "tools" / "qq" / "state.json").exists()
 
 
 # ─── SSRF / 下载 URL 校验 ─────────────────────────────────────────────
@@ -212,12 +256,15 @@ class TestDownloadUrlCheck:
 
 
 class _FakeRuntime:
-    def __init__(self):
+    def __init__(self, *, cfg=None):
         from interfaces.qq.config import QQConfig
         from interfaces.qq.limiter import ReplyLimiter
-        self.cfg = QQConfig()
+        from interfaces.qq.state import QQAccountState
+
+        self.cfg = cfg or QQConfig()
+        self.account_id = self.cfg.id or "acc1"
         self.limiter = ReplyLimiter()
-        self.state = QQState()
+        self.state = QQAccountState()
         self.api = None
         self.loop = None
 
@@ -246,29 +293,33 @@ class TestCommands:
 
     def test_dispatch_unknown(self):
         from interfaces.qq.commands import dispatch
-        out = asyncio.run(dispatch(_FakeRuntime(), QQState(), "/nope"))
+        from interfaces.qq.state import QQAccountState
+        out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/nope"))
         assert "未知指令" in out
 
     def test_dispatch_non_command_returns_none(self):
         from interfaces.qq.commands import dispatch
-        assert asyncio.run(dispatch(_FakeRuntime(), QQState(), "你好")) is None
+        from interfaces.qq.state import QQAccountState
+        assert asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "你好")) is None
 
     def test_help_lists_all(self):
         from interfaces.qq.commands import dispatch
-        out = asyncio.run(dispatch(_FakeRuntime(), QQState(), "/h"))
+        from interfaces.qq.state import QQAccountState
+        out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/h"))
         for name in ("/h", "/w", "/s", "/new", "/status", "/stop"):
             assert name in out
 
     def test_help_does_not_duplicate_aliases(self):
         """别名指向同一个 Command，/h 里不该把同一条指令列两遍。"""
         from interfaces.qq.commands import dispatch
-        out = asyncio.run(dispatch(_FakeRuntime(), QQState(), "/h"))
+        from interfaces.qq.state import QQAccountState
+        out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/h"))
         assert out.count("/w ") <= 1
         assert out.count("/s ") <= 1
         assert out.count("/h") == 1
 
     def test_long_form_aliases_still_work(self):
-        """`/help` `/ws` `/session` 保留为等价别名——省得改了短名后旧习惯直接报未知指令。"""
+        """`/help` `/workspace` `/session` 保留为等价别名——省得改了短名后旧习惯直接报未知指令。"""
         from interfaces.qq.commands import build_commands
         table = build_commands()
         assert table["help"] is table["h"]
@@ -279,9 +330,10 @@ class TestCommands:
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         from interfaces.qq.commands import dispatch
+        from interfaces.qq.state import QQAccountState
         for short, long in (("/h", "/help"), ("/w", "/workspace"), ("/s", "/session")):
-            a = asyncio.run(dispatch(_FakeRuntime(), QQState(), short))
-            b = asyncio.run(dispatch(_FakeRuntime(), QQState(), long))
+            a = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", short))
+            b = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", long))
             assert a == b, f"{short} 与 {long} 的输出应完全一致"
 
     def test_short_names_do_not_collide_with_prefixes(self):
@@ -298,8 +350,8 @@ class TestCommands:
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="w1", session_id="s1")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/status"))
+        from interfaces.qq.state import QQAccountState
+        out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/status"))
         assert "当前状态" in out
         assert "被动回复配额" in out
 
@@ -308,21 +360,57 @@ class TestCommands:
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         from interfaces.qq.commands import dispatch
-        rt = _FakeRuntime()
-        rt.state.owner_openid = "MY_OPENID"
-        out = asyncio.run(dispatch(rt, QQState(workspace_uuid="w1"), "/status"))
+        from interfaces.qq.state import QQAccountState
+        state = QQAccountState(owner="MY_OPENID")
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/status"))
         assert "MY_OPENID" in out
 
     def test_status_shows_unbound_owner(self, tmp_path, monkeypatch):
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         from interfaces.qq.commands import dispatch
-        out = asyncio.run(dispatch(_FakeRuntime(), QQState(workspace_uuid="w1"), "/status"))
+        from interfaces.qq.state import QQAccountState
+        out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/status"))
         assert "未绑定" in out
+
+    def test_status_shows_lock(self, tmp_path, monkeypatch):
+        """锁定工作空间的账号在 /status 里可见（设计 §3.5）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from interfaces.qq.commands import dispatch
+        from interfaces.qq.config import QQConfig
+        from interfaces.qq.state import QQAccountState
+        cfg = QQConfig(workspace_locked=True)
+        out = asyncio.run(dispatch(_FakeRuntime(cfg=cfg), QQAccountState(), "c1", "/status"))
+        assert "已锁定" in out
+
+    def test_workspace_locked_rejects_w(self, tmp_path, monkeypatch):
+        """锁定工作空间的账号：/w 拒绝执行且不改绑定（设计 §3.5）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from interfaces.qq.commands import dispatch
+        from interfaces.qq.config import QQConfig
+        from interfaces.qq.state import QQAccountState, QQChatState
+        cfg = QQConfig(workspace_locked=True, default_workspace_uuid="test")
+        state = QQAccountState(chats={"c1": QQChatState(workspace_uuid="test")})
+        out = asyncio.run(dispatch(_FakeRuntime(cfg=cfg), state, "c1", "/w"))
+        assert "已锁定" in out
+        assert state.chats["c1"].workspace_uuid == "test"      # 未变
+
+    def test_help_annotates_locked_w(self, tmp_path, monkeypatch):
+        """锁定时 /h 的 /w 条目标注「本账号已锁定」（设计 §3.5）。"""
+        import interfaces.qq.state as st
+        monkeypatch.setattr(st, "DATA_DIR", tmp_path)
+        from interfaces.qq.commands import dispatch
+        from interfaces.qq.config import QQConfig
+        from interfaces.qq.state import QQAccountState
+        cfg = QQConfig(workspace_locked=True)
+        out = asyncio.run(dispatch(_FakeRuntime(cfg=cfg), QQAccountState(), "c1", "/h"))
+        assert "本账号已锁定" in out
 
 
 class TestCommandsWithWorkspaces:
-    """用隔离的工作区索引测 /ws 与 /session 的列表与切换。"""
+    """用隔离的工作区索引测 /w 与 /s 的列表与切换（作用于当前聊天切片）。"""
 
     @pytest.fixture
     def isolated(self, tmp_path, monkeypatch):
@@ -343,10 +431,20 @@ class TestCommandsWithWorkspaces:
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         return config_mod
 
+    @staticmethod
+    def _state(ws: str = "wsA"):
+        """预绑定 wsA 的账号状态（聊天键固定 c1）。"""
+        from interfaces.qq.state import QQAccountState, QQChatState
+        return QQAccountState(chats={"c1": QQChatState(workspace_uuid=ws)})
+
+    @staticmethod
+    def _chat(state):
+        return state.chats["c1"]
+
     def test_ws_list_shows_name_and_directory(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/w"))
+        state = self._state()
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/w"))
         assert "Alpha" in out and "Beta" in out
         assert "✅" in out
         # 要目录
@@ -356,122 +454,133 @@ class TestCommandsWithWorkspaces:
     def test_ws_list_hides_uuid(self, isolated):
         """列表不显示 id —— 用户认的是名字和目录。"""
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/w"))
+        out = asyncio.run(dispatch(_FakeRuntime(), self._state(), "c1", "/w"))
         assert "wsA" not in out
         assert "wsB" not in out
 
     def test_ws_switch_by_index(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/w 2"))
-        assert state.workspace_uuid == "wsB"
+        state = self._state()
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/w 2"))
+        assert self._chat(state).workspace_uuid == "wsB"
         assert "Beta" in out
 
     def test_ws_switch_by_name(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsB")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/w alpha"))
-        assert state.workspace_uuid == "wsA"
+        state = self._state("wsB")
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/w alpha"))
+        assert self._chat(state).workspace_uuid == "wsA"
 
     def test_ws_switch_not_found(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/w 99"))
+        state = self._state()
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/w 99"))
         assert "找不到" in out
-        assert state.workspace_uuid == "wsA"      # 未变
+        assert self._chat(state).workspace_uuid == "wsA"      # 未变
 
     def test_new_creates_and_switches_session(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/new 测试会话"))
+        state = self._state()
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 测试会话"))
         assert "已新建" in out
-        assert state.session_id
+        assert self._chat(state).session_id
 
     def test_session_list_after_new(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/s"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s"))
         assert "甲" in out
 
     def test_session_list_hides_session_id(self, isolated):
         """列表不显示 session id —— 切换只按序号，露出 id 反而诱导用户去敲它。"""
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        sid = state.session_id
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/s"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        sid = self._chat(state).session_id
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s"))
         assert sid not in out
         assert sid[:8] not in out
 
     def test_session_switch_by_index(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        first = state.session_id
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 乙"))
-        assert state.session_id != first
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        first = self._chat(state).session_id
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 乙"))
+        assert self._chat(state).session_id != first
 
         # 从列表里读出「甲」的序号再切（不假设排序：同一秒创建的会话
         # updated_at 相同，顺序由 tiebreaker 决定，测里不该硬编码）
-        listing = asyncio.run(dispatch(_FakeRuntime(), state, "/s"))
+        listing = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s"))
         idx = next(
             int(ln.split(".", 1)[0])
             for ln in listing.splitlines()
             if ln[:2] in ("1.", "2.") and "甲" in ln
         )
-        out = asyncio.run(dispatch(_FakeRuntime(), state, f"/s {idx}"))
-        assert state.session_id == first
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", f"/s {idx}"))
+        assert self._chat(state).session_id == first
         assert "甲" in out                      # 确认文案用展示名，不是 id
 
     def test_session_index_stable_across_calls(self, isolated):
         """同一秒建的两个会话，序号在两次列表之间必须稳定（tiebreaker 的作用）。"""
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
+        state = self._state()
         for name in ("甲", "乙", "丙"):
-            asyncio.run(dispatch(_FakeRuntime(), state, "/new " + name))
-        first = asyncio.run(dispatch(_FakeRuntime(), state, "/s"))
-        second = asyncio.run(dispatch(_FakeRuntime(), state, "/s"))
+            asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new " + name))
+        first = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s"))
+        second = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s"))
         assert first == second
 
     def test_session_rejects_non_numeric(self, isolated):
         """不再支持按 id 切换 —— 给出明确指引而不是静默失败。"""
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        before = state.session_id
-        out = asyncio.run(dispatch(_FakeRuntime(), state, f"/s {before}"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        before = self._chat(state).session_id
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", f"/s {before}"))
         assert "序号" in out
-        assert state.session_id == before       # 未变
+        assert self._chat(state).session_id == before       # 未变
 
     def test_session_index_out_of_range(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        before = state.session_id
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/s 99"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        before = self._chat(state).session_id
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s 99"))
         assert "超出范围" in out
-        assert state.session_id == before
+        assert self._chat(state).session_id == before
 
     def test_switch_confirmation_uses_display_name(self, isolated):
         """切换确认里不该出现 session id。"""
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        sid = state.session_id
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 乙"))
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/s 2"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        sid = self._chat(state).session_id
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 乙"))
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/s 2"))
         assert sid not in out
 
     def test_status_hides_session_id(self, isolated):
         from interfaces.qq.commands import dispatch
-        state = QQState(workspace_uuid="wsA")
-        asyncio.run(dispatch(_FakeRuntime(), state, "/new 甲"))
-        sid = state.session_id
-        out = asyncio.run(dispatch(_FakeRuntime(), state, "/status"))
+        state = self._state()
+        asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/new 甲"))
+        sid = self._chat(state).session_id
+        out = asyncio.run(dispatch(_FakeRuntime(), state, "c1", "/status"))
         assert sid not in out
         assert "甲" in out
+
+    def test_w_and_s_persist_to_state_file(self, isolated):
+        """/w 的切换要落盘（按账号键），重启后兼容读能拿回来（设计 §3.3）。"""
+        import interfaces.qq.state as st
+        from interfaces.qq.commands import dispatch
+        from interfaces.qq.state import load_account_state
+
+        rt = _FakeRuntime()
+        state = self._state()
+        asyncio.run(dispatch(rt, state, "c1", "/w 2"))
+        loaded = load_account_state(rt.account_id)
+        assert loaded.chats["c1"].workspace_uuid == "wsB"
 
 
 # ─── sink：单流 transcript ────────────────────────────────────────────
@@ -486,11 +595,13 @@ class _SinkRuntime:
     def __init__(self):
         from interfaces.qq.config import QQConfig
         from interfaces.qq.limiter import ReplyLimiter
+        from interfaces.qq.state import QQAccountState
+        self.account_id = "acc1"
         self.cfg = QQConfig()
         self.limiter = ReplyLimiter()
         self.api = _FakeApi()
         self.loop = None
-        self.state = QQState()
+        self.state = QQAccountState()
 
 
 class TestQQSinkTranscript:

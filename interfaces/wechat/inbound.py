@@ -56,12 +56,12 @@ class InboundHandler:
         if not user_id:
             return
 
-        # 单用户：每次对话把 owner 更新为当前发送者（自动绑定 / 保持最新）
+        # 记录本账号最近对话的对方（状态展示用，不是访问闸门）
         if not self._owner.track(user_id):
             return
 
-        state = self._rt.state
-        resolve_current(state)
+        account = self._rt.state
+        chat = resolve_current(account, user_id, self._rt.cfg)
 
         # 用户又说话了 → 这就是新的 context_token；先把之前被推迟的回复补上。
         # 必须在命令分流之前：命令回复也要用这个 token 才发得出去。
@@ -76,27 +76,27 @@ class InboundHandler:
 
         # 指令分流（不进入 AI 回合）
         if text.startswith("/"):
-            reply = await commands.dispatch(self._rt, state, text)
+            reply = await commands.dispatch(self._rt, account, user_id, text)
             if reply is not None:
                 await self._send_text(user_id, reply)
                 return
 
-        media_items, failed = await self._download_media(inbound)
+        media_items, failed = await self._download_media(inbound, chat)
         if failed:
             note = f"[有 {failed} 个附件未能下载]"
             text = f"{text}\n{note}" if text else note
-        await self._run_turn(user_id, text, media_items)
+        await self._run_turn(user_id, text, media_items, chat)
 
     # ── 媒体 ────────────────────────────────────────────────────────
 
-    async def _download_media(self, inbound: InboundMessage) -> tuple[list, int]:
+    async def _download_media(self, inbound: InboundMessage, chat) -> tuple[list, int]:
         """下载入站媒体。返回 ``(已落盘的媒体, 失败个数)``。"""
         if not inbound.media:
             return [], 0
 
         from core.config import find_workspace_entry
 
-        entry = find_workspace_entry(self._rt.state.workspace_uuid) or {}
+        entry = find_workspace_entry(chat.workspace_uuid) or {}
         ws_dir = Path(entry.get("directory") or ".")
 
         items = []
@@ -114,9 +114,12 @@ class InboundHandler:
 
     # ── 回合 ────────────────────────────────────────────────────────
 
-    async def _run_turn(self, user_id: str, text: str, media_items: list) -> None:
-        state = self._rt.state
-        workspace_uuid, session_id = state.workspace_uuid, state.session_id
+    async def _run_turn(self, user_id: str, text: str, media_items: list, chat) -> None:
+        # 真要跑回合了：工作区没有会话时自动建一个（§3.6；指令路径不建）
+        from interfaces.wechat.state import ensure_session
+
+        chat = ensure_session(self._rt.state, user_id, self._rt.cfg)
+        workspace_uuid, session_id = chat.workspace_uuid, chat.session_id
         if not workspace_uuid or not session_id:
             await self._send_text(user_id, "尚未确定工作区/会话，请先执行 `/w`。")
             return
@@ -175,7 +178,7 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(user_id, key)
+        await self._send_outbox_files(user_id, key, chat)
 
     # ── 出站辅助 ────────────────────────────────────────────────────
 
@@ -188,7 +191,7 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[wechat/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(self, user_id: str, key: str) -> None:
+    async def _send_outbox_files(self, user_id: str, key: str, chat) -> None:
         """回合末取走 ``send_file`` 登记的文件并加密上传发送。
 
         受 ``max_outbound_files`` 与剩余发送预算双重限制——文本分片与出站文件共享
@@ -217,7 +220,7 @@ class InboundHandler:
 
         from core.config import find_workspace_entry
 
-        entry = find_workspace_entry(self._rt.state.workspace_uuid) or {}
+        entry = find_workspace_entry(chat.workspace_uuid) or {}
         workspace_root = str(entry.get("directory") or "")
 
         for f in files:

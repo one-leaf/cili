@@ -1,14 +1,24 @@
 """微信接入端的账号状态：登录凭证 + 长轮询游标 + context_token 台账。
 
-**凭证与配置分开**：``setting.json`` 的 ``wechat`` 段放可编辑的参数（见 config.py），
-这里放**扫码换来的**东西——``bot_token`` 等。分开的直接好处是 Web 配置接口天然
-不泄露凭证（它只读写 setting.json）。
+**凭证与配置分开**：``setting.json`` 的 ``wechat`` 段放可编辑的参数（见
+config.py），这里放**扫码换来的**东西——``bot_token`` 等。分开的直接好处是
+Web 配置接口天然不泄露凭证（它只读写 setting.json）。
 
-**为什么必须持久化 ``get_updates_buf``**：它是长轮询游标，丢了就会把服务端积压的
-消息重新收一遍（用户看到重复回复）。
+**多账号**（设计 §5.1）：每个账号一个文件
+``data/cili/tools/wechat/accounts/{account_id}.json``。分文件而不是单文件
+多键，是因为 poller 每轮都要落盘游标，多账号并发读改写同一份文件会互相
+覆盖 → 重复收消息。列表由目录枚举得出。
 
-**为什么不持久化 context_token**：服务端 ~90–160s 就让它失效，而一次重启必然比这
-更久；用户下一条消息会带来新 token，内存里存着就够。
+**兼容读**：账号目录不存在（迁移未跑或失败）时回退旧的单文件
+``account.json``——迁移（core.migration）通常在启动期已完成改写并删除旧
+文件，这里只是兜底。账号目录一旦存在就不再回退，避免「已登出的账号从旧
+文件里复活」。
+
+**为什么必须持久化 ``get_updates_buf``**：它是长轮询游标，丢了就会把服务端
+积压的消息重新收一遍（用户看到重复回复）。
+
+**为什么不持久化 context_token**：服务端 ~90–160s 就让它失效，而一次重启必
+然比这更久；用户下一条消息会带来新 token，内存里存着就够。
 """
 
 from __future__ import annotations
@@ -24,9 +34,35 @@ from core.fs_utils import atomic_write_json, load_json_or_backup
 logger = logging.getLogger(__name__)
 
 
-def account_path() -> Path:
-    """账号文件路径（惰性求值，便于测试 monkeypatch ``DATA_DIR``）。"""
+def accounts_dir() -> Path:
+    """账号凭证目录（惰性求值，便于测试 monkeypatch ``DATA_DIR``）。"""
+    return DATA_DIR / "tools" / "wechat" / "accounts"
+
+
+def legacy_account_path() -> Path:
+    """旧单文件凭证路径（迁移前布局，只读不写）。"""
     return DATA_DIR / "tools" / "wechat" / "account.json"
+
+
+def account_path(account_id: str) -> Path:
+    """某账号的凭证文件路径。"""
+    return accounts_dir() / f"{account_id}.json"
+
+
+def legacy_account_id() -> str:
+    """旧单文件时代的账号标识：ilink_bot_id → ilink_user_id → "default"。
+
+    供迁移（core.migration）与兼容读共用，保证两处口径一致。新账号的 id
+    由前端生成；登录确认时按 ``ilink_bot_id`` 去重（见 login.py）。
+    """
+    data = load_json_or_backup(legacy_account_path(), {})
+    if isinstance(data, dict):
+        return (
+            str(data.get("ilink_bot_id") or "")
+            or str(data.get("ilink_user_id") or "")
+            or "default"
+        )
+    return "default"
 
 
 @dataclass
@@ -59,15 +95,18 @@ class WechatAccount:
         return bool(self.bot_token)
 
 
-def load_account() -> WechatAccount:
-    """读取账号（文件缺失/损坏时返回空账号）。"""
-    return WechatAccount.from_dict(load_json_or_backup(account_path(), {}))
+def load_account(account_id: str) -> WechatAccount:
+    """读取账号凭证（账号目录不存在时回退旧单文件；都缺失返回空账号）。"""
+    if accounts_dir().exists():
+        return WechatAccount.from_dict(load_json_or_backup(account_path(account_id), {}))
+    # 迁移前布局：整个实例只有一份凭证
+    return WechatAccount.from_dict(load_json_or_backup(legacy_account_path(), {}))
 
 
-def save_account(account: WechatAccount) -> bool:
-    """原子写入账号。"""
+def save_account(account_id: str, account: WechatAccount) -> bool:
+    """原子写入某账号的凭证。"""
     try:
-        path = account_path()
+        path = account_path(account_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, account.to_dict())
         return True
@@ -76,14 +115,22 @@ def save_account(account: WechatAccount) -> bool:
         return False
 
 
-def clear_account() -> bool:
-    """登出：删掉账号文件（下次启动会要求重新扫码）。"""
+def clear_account(account_id: str) -> bool:
+    """登出：删掉该账号的凭证文件（下次启动会要求重新扫码）。"""
     try:
-        account_path().unlink(missing_ok=True)
+        account_path(account_id).unlink(missing_ok=True)
         return True
     except OSError as e:
         logger.warning(f"[wechat] 清除账号失败: {e}")
         return False
+
+
+def list_account_ids() -> list[str]:
+    """枚举已有凭证的账号 id（按文件名排序，保证顺序稳定）。"""
+    d = accounts_dir()
+    if not d.exists():
+        return []
+    return sorted(p.stem for p in d.glob("*.json") if p.is_file())
 
 
 # ─── context_token 台账 ───────────────────────────────────────────────
@@ -103,6 +150,8 @@ class ContextTokenStore:
     配额是**服务端未公开**的经验值（约 8 条/上下文），所以这里做本地预算兜底：
     超预算就本地直接拒（不打 API），由 ``outbound.py`` 转成 defer。等 API 报错才
     知道超了的话，那条消息已经白发一次了。
+
+    实例挂在各自账号的 runtime 上（多账号天然隔离），键是 user_id。
     """
 
     def __init__(self, *, max_age_seconds: float, budget: int) -> None:

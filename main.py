@@ -1236,6 +1236,14 @@ def _prepare_environment(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"[migration] Warning: tools/cron.d migration failed: {e}")
 
+    # 接入端多账号迁移（设计 §9）：setting.json 的 qq/wechat 段、两侧 state、
+    # 微信凭证与 QQ ws 会话文件。幂等，已迁移的形态直接跳过。
+    try:
+        from core.migration import migrate_interfaces_to_multi_account
+        migrate_interfaces_to_multi_account()
+    except Exception as e:
+        print(f"[migration] Warning: interface multi-account migration failed: {e}")
+
     # 安全校验（_check_web_auth）是 Web 专属，移至 _start_web_interface。
 
 

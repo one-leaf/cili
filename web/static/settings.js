@@ -506,64 +506,164 @@ async function testNewMcp() {
     if (reloadBtn) reloadBtn.addEventListener('click', reloadMcp);
 })();
 
-// 打开全局设置弹窗
+// ─── 接入端账号卡片（QQ / 微信共用） ─────────────────────────────────
+// 多账号（设计 §8）：每个接入端是一个账号列表；每个账号可绑定默认工作空间
+// 与锁定开关。工作区下拉在 openSettings 时取一次、所有卡片复用。
+
+const ACCOUNT_CARD_STYLE =
+    'border:1px solid var(--border-color,#ddd);border-radius:6px;padding:10px 14px;margin:10px 0;';
+
+let settingsWorkspaceOptions = [];
+
+async function loadSettingsWorkspaceOptions() {
+    try {
+        const resp = await fetch('/api/workspaces');
+        const data = await resp.json();
+        settingsWorkspaceOptions = (data.workspaces || [])
+            .filter(ws => !ws.system)
+            .map(ws => ({ uuid: ws.uuid, name: ws.name }));
+    } catch (e) {
+        settingsWorkspaceOptions = [];
+    }
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function newAccountId() {
+    return Date.now().toString(16).slice(-6) + Math.random().toString(16).slice(2, 6);
+}
+
+function workspaceOptionsHtml(selected) {
+    const opts = ['<option value="">（跟随默认）</option>'];
+    settingsWorkspaceOptions.forEach(ws => {
+        const sel = ws.uuid === selected ? ' selected' : '';
+        opts.push(`<option value="${escapeHtml(ws.uuid)}"${sel}>${escapeHtml(ws.name)}</option>`);
+    });
+    return opts.join('');
+}
+
+function accountHeaderHtml(acc) {
+    return `
+        <div class="form-group" style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
+            <input class="acc-label" placeholder="账号备注（仅用于区分）"
+                   value="${escapeHtml(acc.label || '')}" style="flex:1;">
+            <label style="white-space:nowrap;margin:0;">
+                <input type="checkbox" class="acc-enabled" ${acc.enabled ? 'checked' : ''}> 启用
+            </label>
+            <button type="button" class="acc-delete btn btn-small">删除</button>
+        </div>`;
+}
+
+function workspaceFieldsHtml(acc) {
+    return `
+        <div class="form-group">
+            <label>默认工作空间:</label>
+            <select class="acc-workspace">${workspaceOptionsHtml(acc.default_workspace_uuid || '')}</select>
+            <small class="form-hint">该账号的对话默认落在这个工作区；不同账号配不同工作区可隔离记忆</small>
+        </div>
+        <div class="form-group">
+            <label>锁定工作空间:</label>
+            <input type="checkbox" class="acc-locked" ${acc.workspace_locked ? 'checked' : ''}>
+            <small class="form-hint">锁定后该账号的 /w 不可用，需在此解锁；需先选择默认工作空间</small>
+        </div>`;
+}
+
+function bindAccountCommon(card) {
+    const wsSel = card.querySelector('.acc-workspace');
+    const lockCb = card.querySelector('.acc-locked');
+    const syncLock = () => { lockCb.disabled = !wsSel.value; };
+    wsSel.addEventListener('change', syncLock);
+    syncLock();
+    card.querySelector('.acc-delete').addEventListener('click', () => {
+        if (confirm('删除该账号？保存后其配置与会话绑定将被移除（登录凭证文件保留，重新添加后可重新扫码）。')) {
+            card.remove();
+        }
+    });
+}
+
 // ─── QQ 接入端设置 ───────────────────────────────────────────────────
 
-const QQ_MAX_INBOUND_MB_DEFAULT = 100;
-
-function loadQQConfig(qqCfg) {
-    qqCfg = qqCfg || {};
-    document.getElementById('qq-enabled').checked = qqCfg.enabled === true;
-    document.getElementById('qq-app-id').value = qqCfg.app_id || '';
-    document.getElementById('qq-secret').value = '';
-    // 沙箱默认开启（未过审机器人只能沙箱收发）
-    document.getElementById('qq-use-sandbox').checked = qqCfg.use_sandbox !== false;
-    document.getElementById('qq-msg-format').value = qqCfg.msg_format || 'markdown';
-    document.getElementById('qq-flush-interval').value =
-        qqCfg.flush_interval_seconds != null ? qqCfg.flush_interval_seconds : 1.5;
-    document.getElementById('qq-max-outbound-files').value =
-        qqCfg.max_outbound_files != null ? qqCfg.max_outbound_files : 3;
-    const bytes = qqCfg.max_inbound_bytes != null
-        ? qqCfg.max_inbound_bytes : QQ_MAX_INBOUND_MB_DEFAULT * 1024 * 1024;
-    document.getElementById('qq-max-inbound-mb').value = Math.round(bytes / 1024 / 1024);
-
-    const masked = document.getElementById('qq-secret-masked');
-    masked.textContent = qqCfg.secret_masked
-        ? `当前: ${qqCfg.secret_masked}（留空保持不变）`
-        : '未配置';
-    document.getElementById('qq-test-result').textContent = '';
+function buildQQCard(acc) {
+    const card = document.createElement('div');
+    card.className = 'account-card';
+    card.dataset.accountId = acc.id || '';
+    card.style.cssText = ACCOUNT_CARD_STYLE;
+    card.innerHTML = `
+        ${accountHeaderHtml(acc)}
+        <div class="form-group">
+            <label>AppID:</label>
+            <input class="acc-app-id" value="${escapeHtml(acc.app_id || '')}"
+                   placeholder="在 QQ 开放平台创建机器人后获取">
+        </div>
+        <div class="form-group">
+            <label>AppSecret:</label>
+            <div>
+                <div class="input-with-icon">
+                    <input type="password" class="acc-secret" placeholder="留空保持不变">
+                </div>
+                <small class="form-hint acc-secret-hint">${
+                    acc.secret_masked ? `当前: ${escapeHtml(acc.secret_masked)}（留空保持不变）` : '未配置'
+                }</small>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>消息格式:</label>
+            <select class="acc-msg-format">
+                <option value="markdown">Markdown（推荐）</option>
+                <option value="plain">纯文本</option>
+            </select>
+            <small class="form-hint">单聊自定义 Markdown 已对所有机器人开放，无需申请模板</small>
+        </div>
+        ${workspaceFieldsHtml(acc)}
+        <div class="form-group">
+            <label></label>
+            <button type="button" class="acc-test-btn btn btn-small">测试连接</button>
+            <span class="acc-test-result form-hint" style="margin-left: 8px;"></span>
+        </div>`;
+    card.querySelector('.acc-msg-format').value = acc.msg_format || 'markdown';
+    bindAccountCommon(card);
+    card.querySelector('.acc-test-btn').addEventListener('click', () => testQQConnection(card));
+    return card;
 }
 
-function collectQQConfig() {
-    const cfg = {
-        enabled: document.getElementById('qq-enabled').checked,
-        app_id: document.getElementById('qq-app-id').value.trim(),
-        use_sandbox: document.getElementById('qq-use-sandbox').checked,
-        msg_format: document.getElementById('qq-msg-format').value,
-        flush_interval_seconds: parseFloat(document.getElementById('qq-flush-interval').value) || 1.5,
-        max_outbound_files: parseInt(document.getElementById('qq-max-outbound-files').value, 10),
-        max_inbound_bytes: (parseInt(document.getElementById('qq-max-inbound-mb').value, 10) || QQ_MAX_INBOUND_MB_DEFAULT) * 1024 * 1024,
-    };
-    if (Number.isNaN(cfg.max_outbound_files)) cfg.max_outbound_files = 3;
-    // secret 留空 = 不修改（后端据此保留原值）
-    const secret = document.getElementById('qq-secret').value.trim();
-    if (secret) cfg.secret = secret;
-    return cfg;
+function renderQQAccounts(accounts) {
+    const list = document.getElementById('qq-accounts-list');
+    list.innerHTML = '';
+    (Array.isArray(accounts) ? accounts : []).forEach(acc => list.appendChild(buildQQCard(acc)));
 }
 
-async function testQQConnection() {
-    const resultEl = document.getElementById('qq-test-result');
-    const btn = document.getElementById('qq-test-btn');
+function collectQQAccounts() {
+    return Array.from(document.querySelectorAll('#qq-accounts-list .account-card')).map(card => {
+        const cfg = {
+            id: card.dataset.accountId || '',
+            label: card.querySelector('.acc-label').value.trim(),
+            enabled: card.querySelector('.acc-enabled').checked,
+            default_workspace_uuid: card.querySelector('.acc-workspace').value,
+            workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+            app_id: card.querySelector('.acc-app-id').value.trim(),
+            msg_format: card.querySelector('.acc-msg-format').value,
+        };
+        const secret = card.querySelector('.acc-secret').value.trim();
+        if (secret) cfg.secret = secret;
+        return cfg;
+    });
+}
+
+async function testQQConnection(card) {
+    const resultEl = card.querySelector('.acc-test-result');
+    const btn = card.querySelector('.acc-test-btn');
     resultEl.textContent = '测试中…';
     btn.disabled = true;
     try {
         const body = {
-            app_id: document.getElementById('qq-app-id').value.trim(),
-            use_sandbox: document.getElementById('qq-use-sandbox').checked,
+            account_id: card.dataset.accountId || '',
+            app_id: card.querySelector('.acc-app-id').value.trim(),
         };
-        const secret = document.getElementById('qq-secret').value.trim();
+        const secret = card.querySelector('.acc-secret').value.trim();
         if (secret) body.secret = secret;   // 留空则后端用已保存的
-
         const response = await fetch('/api/config/test-qq', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -580,62 +680,67 @@ async function testQQConnection() {
     }
 }
 
-(function initQQSettings() {
-    document.addEventListener('DOMContentLoaded', () => {
-        const btn = document.getElementById('qq-test-btn');
-        if (btn) btn.addEventListener('click', testQQConnection);
-    });
-})();
+// ─── 微信接入端设置 ──────────────────────────────────────────────────
 
-// ─── 微信接入端设置 ───────────────────────────────────────────────────
-
-const WECHAT_MAX_INBOUND_MB_DEFAULT = 100;
 let wechatPollTimer = null;
 let wechatSessionId = '';
+let wechatLoginAccountId = '';
 
-function loadWechatConfig(wechatCfg) {
-    wechatCfg = wechatCfg || {};
-    document.getElementById('wechat-enabled').checked = wechatCfg.enabled === true;
-    document.getElementById('wechat-chunk-limit').value =
-        wechatCfg.text_chunk_limit != null ? wechatCfg.text_chunk_limit : 1800;
-    document.getElementById('wechat-budget').value =
-        wechatCfg.context_message_budget != null ? wechatCfg.context_message_budget : 8;
-    document.getElementById('wechat-max-outbound-files').value =
-        wechatCfg.max_outbound_files != null ? wechatCfg.max_outbound_files : 3;
-    const bytes = wechatCfg.max_inbound_bytes != null
-        ? wechatCfg.max_inbound_bytes : WECHAT_MAX_INBOUND_MB_DEFAULT * 1024 * 1024;
-    document.getElementById('wechat-max-inbound-mb').value = Math.round(bytes / 1024 / 1024);
-    document.getElementById('wechat-typing').checked = wechatCfg.typing_enabled !== false;
-    hideWechatQr();
-    refreshWechatStatus();
+function buildWechatCard(acc) {
+    const card = document.createElement('div');
+    card.className = 'account-card';
+    card.dataset.accountId = acc.id || '';
+    card.style.cssText = ACCOUNT_CARD_STYLE;
+    const parts = [acc.logged_in ? '已登录' : '未登录'];
+    if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
+    if (acc.running) parts.push('运行中');
+    card.innerHTML = `
+        ${accountHeaderHtml(acc)}
+        <div class="form-group">
+            <label>登录状态:</label>
+            <span class="acc-login-status form-hint">${escapeHtml(parts.join(' · '))}</span>
+            <button type="button" class="acc-login-btn btn btn-small">扫码登录</button>
+            <button type="button" class="acc-logout-btn btn btn-small">登出</button>
+        </div>
+        ${workspaceFieldsHtml(acc)}`;
+    bindAccountCommon(card);
+    card.querySelector('.acc-login-btn').addEventListener('click', () => wechatStartLogin(card));
+    card.querySelector('.acc-logout-btn').addEventListener('click', () => wechatLogout(card));
+    return card;
 }
 
-function collectWechatConfig() {
-    const cfg = {
-        enabled: document.getElementById('wechat-enabled').checked,
-        typing_enabled: document.getElementById('wechat-typing').checked,
-        text_chunk_limit: parseInt(document.getElementById('wechat-chunk-limit').value, 10) || 1800,
-        context_message_budget: parseInt(document.getElementById('wechat-budget').value, 10) || 8,
-        max_outbound_files: parseInt(document.getElementById('wechat-max-outbound-files').value, 10),
-        max_inbound_bytes: (parseInt(document.getElementById('wechat-max-inbound-mb').value, 10)
-            || WECHAT_MAX_INBOUND_MB_DEFAULT) * 1024 * 1024,
-    };
-    if (Number.isNaN(cfg.max_outbound_files)) cfg.max_outbound_files = 3;
-    return cfg;
+function renderWechatAccounts(accounts) {
+    const list = document.getElementById('wechat-accounts-list');
+    list.innerHTML = '';
+    (Array.isArray(accounts) ? accounts : []).forEach(acc => list.appendChild(buildWechatCard(acc)));
+}
+
+function collectWechatAccounts() {
+    return Array.from(document.querySelectorAll('#wechat-accounts-list .account-card')).map(card => ({
+        id: card.dataset.accountId || '',
+        label: card.querySelector('.acc-label').value.trim(),
+        enabled: card.querySelector('.acc-enabled').checked,
+        default_workspace_uuid: card.querySelector('.acc-workspace').value,
+        workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+    }));
 }
 
 async function refreshWechatStatus() {
-    const el = document.getElementById('wechat-status-text');
-    if (!el) return;
     try {
         const resp = await fetch('/api/wechat/status');
         const data = await resp.json();
-        const parts = [data.logged_in ? '已登录' : '未登录'];
-        if (data.logged_in && data.ilink_user_id) parts.push(`账号 ${data.ilink_user_id}`);
-        if (data.running) parts.push('运行中');
-        el.textContent = parts.join(' · ');
+        const byId = {};
+        (data.accounts || []).forEach(a => { byId[a.id] = a; });
+        document.querySelectorAll('#wechat-accounts-list .account-card').forEach(card => {
+            const acc = byId[card.dataset.accountId];
+            if (!acc) return;
+            const parts = [acc.logged_in ? '已登录' : '未登录'];
+            if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
+            if (acc.running) parts.push('运行中');
+            card.querySelector('.acc-login-status').textContent = parts.join(' · ');
+        });
     } catch (e) {
-        el.textContent = '状态查询失败';
+        // 状态刷新失败不打扰用户
     }
 }
 
@@ -676,17 +781,41 @@ function renderWechatQr(data) {
     if (needCode) document.getElementById('wechat-verify-code').focus();
 }
 
-async function wechatStartLogin() {
+function openWechatLoginModal() {
+    document.getElementById('wechat-login-modal').style.display = 'flex';
+}
+
+function closeWechatLoginModal(cancel = true) {
+    stopWechatPolling();
+    const sid = wechatSessionId;
+    const accountId = wechatLoginAccountId;
+    wechatSessionId = '';
+    wechatLoginAccountId = '';
+    hideWechatQr();
+    document.getElementById('wechat-login-modal').style.display = 'none';
+    if (cancel && sid && accountId) {
+        // 尽早清理服务端的扫码会话（服务端另有 TTL 兜底）
+        fetch(`/api/wechat/accounts/${encodeURIComponent(accountId)}/login/cancel?session_id=${encodeURIComponent(sid)}`,
+              { method: 'POST' }).catch(() => {});
+    }
+}
+
+async function wechatStartLogin(card) {
+    const accountId = card.dataset.accountId || '';
     stopWechatPolling();
     wechatSessionId = '';
+    wechatLoginAccountId = accountId;
     hideWechatQr();
+    openWechatLoginModal();
+    document.getElementById('wechat-login-msg').textContent = '正在获取二维码…';
     // 总是 force=true：用户点「扫码登录」就是要扫码；而且若服务端那侧凭证已失效，
     // 走「已登录」短路会让人卡在「显示已登录、实际用不了」的状态。
     try {
-        const resp = await fetch('/api/wechat/login/start?force=true', { method: 'POST' });
+        const resp = await fetch(`/api/wechat/accounts/${encodeURIComponent(accountId)}/login/start?force=true`, { method: 'POST' });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || '取二维码失败');
         if (data.status === 'succeeded') {
+            closeWechatLoginModal(false);
             await refreshWechatStatus();
             showToast(data.message || '微信已登录');
             return;
@@ -695,14 +824,14 @@ async function wechatStartLogin() {
         renderWechatQr(data);
         wechatPollTimer = setInterval(pollWechatLogin, data.interval_ms || 2000);
     } catch (e) {
-        document.getElementById('wechat-qr-wrap').style.display = '';
+        // 弹框保持打开，失败原因留在上面，用户看完手动关闭
         document.getElementById('wechat-login-msg').textContent = '✗ ' + e.message;
     }
 }
 
 async function pollWechatLogin(verifyCode) {
-    if (!wechatSessionId) return;
-    let url = `/api/wechat/login/status?session_id=${encodeURIComponent(wechatSessionId)}`;
+    if (!wechatSessionId || !wechatLoginAccountId) return;
+    let url = `/api/wechat/accounts/${encodeURIComponent(wechatLoginAccountId)}/login/status?session_id=${encodeURIComponent(wechatSessionId)}`;
     if (verifyCode) url += `&verify_code=${encodeURIComponent(verifyCode)}`;
     try {
         const resp = await fetch(url);
@@ -714,10 +843,11 @@ async function pollWechatLogin(verifyCode) {
         stopWechatPolling();
         wechatSessionId = '';
         if (data.status === 'succeeded') {
-            hideWechatQr();
+            closeWechatLoginModal(false);
             await refreshWechatStatus();
             showToast(data.message || '微信已连接');
         } else {
+            // 失败/过期：弹框留着展示原因，用户手动关闭
             document.getElementById('wechat-login-msg').textContent =
                 '✗ ' + (data.message || '登录失败');
         }
@@ -726,12 +856,10 @@ async function pollWechatLogin(verifyCode) {
     }
 }
 
-async function wechatLogout() {
-    stopWechatPolling();
-    wechatSessionId = '';
-    hideWechatQr();
+async function wechatLogout(card) {
+    const accountId = card.dataset.accountId || '';
     try {
-        const resp = await fetch('/api/wechat/logout', { method: 'POST' });
+        const resp = await fetch(`/api/wechat/accounts/${encodeURIComponent(accountId)}/logout`, { method: 'POST' });
         const data = await resp.json();
         showToast(data.message || '已登出');
         await refreshWechatStatus();
@@ -740,21 +868,36 @@ async function wechatLogout() {
     }
 }
 
-(function initWechatSettings() {
+(function initAccountCards() {
     document.addEventListener('DOMContentLoaded', () => {
-        const loginBtn = document.getElementById('wechat-login-btn');
-        const logoutBtn = document.getElementById('wechat-logout-btn');
+        const qqAdd = document.getElementById('qq-add-account-btn');
+        if (qqAdd) qqAdd.addEventListener('click', () => {
+            document.getElementById('qq-accounts-list').appendChild(buildQQCard({ id: newAccountId() }));
+        });
+        const wechatAdd = document.getElementById('wechat-add-account-btn');
+        if (wechatAdd) wechatAdd.addEventListener('click', () => {
+            document.getElementById('wechat-accounts-list').appendChild(buildWechatCard({ id: newAccountId() }));
+        });
         const verifyBtn = document.getElementById('wechat-verify-btn');
-        if (loginBtn) loginBtn.addEventListener('click', () => wechatStartLogin());
-        if (logoutBtn) logoutBtn.addEventListener('click', wechatLogout);
         if (verifyBtn) {
             verifyBtn.addEventListener('click', () => {
                 pollWechatLogin(document.getElementById('wechat-verify-code').value.trim());
             });
         }
+        // 扫码登录弹框：×、背景与「取消登录」都走完整关闭（顺带取消服务端会话）。
+        // 注意 app.js 的通用 data-modal 关闭也会触发一次隐藏，两者叠加无害。
+        const loginModal = document.getElementById('wechat-login-modal');
+        if (loginModal) {
+            document.getElementById('wechat-login-modal-close')
+                .addEventListener('click', () => closeWechatLoginModal(true));
+            document.getElementById('wechat-login-cancel-btn')
+                .addEventListener('click', () => closeWechatLoginModal(true));
+            loginModal.querySelector('.modal-backdrop')
+                .addEventListener('click', () => closeWechatLoginModal(true));
+        }
     });
 })();
-
+// 打开全局设置弹窗
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
@@ -797,11 +940,12 @@ async function openSettings() {
         // ── MCP servers ──
         await loadMcpServers();
 
-        // ── QQ 接入端 ──
-        loadQQConfig(cfg.qq || {});
+        // ── 接入端账号列表（工作区下拉取一次，卡片复用） ──
+        await loadSettingsWorkspaceOptions();
+        renderQQAccounts(cfg.qq && cfg.qq.accounts);
 
         // ── 微信接入端 ──
-        loadWechatConfig(cfg.wechat || {});
+        renderWechatAccounts(cfg.wechat && cfg.wechat.accounts);
 
         // ── 关于（版本与升级） ──
         loadAboutStatus();
@@ -864,11 +1008,11 @@ async function saveSettings() {
     }
     payload.mcp_servers = mcpServersPayload;
 
-    // ── QQ 接入端 ──
-    payload.qq = collectQQConfig();
+    // ── QQ 接入端（账号列表） ──
+    payload.qq = { accounts: collectQQAccounts() };
 
-    // ── 微信接入端 ──
-    payload.wechat = collectWechatConfig();
+    // ── 微信接入端（账号列表） ──
+    payload.wechat = { accounts: collectWechatAccounts() };
 
     try {
         const response = await fetch('/api/config', {

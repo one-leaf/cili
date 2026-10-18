@@ -4,6 +4,11 @@
 凭证），前端每 2s 调一次 ``poll`` 即可。这样登录不需要宿主线程，用户关掉设置页后也
 不会留下后台任务在跑。
 
+**多账号**（设计 §5.2）：登录会话带 ``target_account_id``——用户在哪个账号行上点
+「扫码登录」，凭证就写到哪个账号。``_sessions`` 按 session_id 分键，多账号同时扫码
+天然支持。``confirmed`` 时按 ``ilink_bot_id`` 查重：同一微信号不能同时绑在两个账号
+行上。
+
 **协议状态机**（``get_qrcode_status`` 返回的 ``status``）：
 
 ==============================  ============================================
@@ -34,9 +39,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from interfaces.wechat.account import WechatAccount, load_account, save_account
+from interfaces.wechat.account import (
+    WechatAccount,
+    list_account_ids,
+    load_account,
+    save_account,
+)
 from interfaces.wechat.client import WechatClient
-from interfaces.wechat.config import WechatConfig, load_wechat_config
+from interfaces.wechat.config import WechatConfig
 from interfaces.wechat.protocol import WechatApiError
 
 logger = logging.getLogger(__name__)
@@ -81,6 +91,7 @@ class LoginSession:
     qr_png: str
     base_url: str
     expires_at: float
+    target_account_id: str = ""   # 凭证写入哪个账号（空 = 由确认结果决定）
     refresh_count: int = 0
     verification_failed: bool = False
 
@@ -99,24 +110,26 @@ class WechatLoginStore:
 
     # ── 对外三个动作 ────────────────────────────────────────────────
 
-    async def start(self, *, force: bool = False) -> dict[str, Any]:
-        """取二维码、开一个会话。
+    async def start(self, target_account_id: str = "", *, force: bool = False) -> dict[str, Any]:
+        """取二维码、开一个会话，凭证写入 ``target_account_id`` 账号。
 
-        ``force=False`` 且本地已有凭证时**不取二维码**，直接报已登录；Web 的「扫码
-        登录」按钮走 ``force=True``——用户点它就是要扫码，而且若服务端那侧凭证已经
-        失效，短路只会让人卡在「显示已登录、实际用不了」的状态。
+        ``force=False`` 且目标账号已有凭证时**不取二维码**，直接报已登录；Web 的
+        「扫码登录」按钮走 ``force=True``——用户点它就是要扫码，而且若服务端那侧
+        凭证已经失效，短路只会让人卡在「显示已登录、实际用不了」的状态。
         """
         await self._cleanup_expired()
 
-        cfg = load_wechat_config()
-        account = load_account()
-        if not force and account.has_token():
-            return {
-                "session_id": "",
-                "status": "succeeded",
-                "message": "微信已登录。",
-                "ilink_user_id": account.ilink_user_id,
-            }
+        cfg = WechatConfig()
+        if target_account_id and not force:
+            account = load_account(target_account_id)
+            if account.has_token():
+                return {
+                    "session_id": "",
+                    "status": "succeeded",
+                    "message": "该账号已登录。",
+                    "account_id": target_account_id,
+                    "ilink_user_id": account.ilink_user_id,
+                }
 
         client = self._client_factory(cfg)
         try:
@@ -136,6 +149,7 @@ class WechatLoginStore:
             qr_png=qr_png_data_url(content),
             base_url=cfg.base_url,
             expires_at=time.time() + SESSION_TTL_S,
+            target_account_id=target_account_id,
         )
         self._sessions[session_id] = session
         return self._payload(session, status="pending", message="请用微信扫码登录。")
@@ -235,6 +249,15 @@ class WechatLoginStore:
         # wait / 未知状态 → 继续等
         return self._payload(session, status="pending", message="等待扫码…")
 
+    def _find_account_id_by_bot_id(self, bot_id: str) -> str:
+        """按 ilink_bot_id 找已绑定的账号 id（找不到返回 ""）。"""
+        if not bot_id:
+            return ""
+        for account_id in list_account_ids():
+            if load_account(account_id).ilink_bot_id == bot_id:
+                return account_id
+        return ""
+
     async def _on_confirmed(
         self,
         session_id: str,
@@ -249,46 +272,82 @@ class WechatLoginStore:
                 "status": "failed",
                 "message": "微信确认了扫码但没有返回凭证，请重试。",
             }
+
+        # 同一微信号不能同时绑在两个账号行上：按 ilink_bot_id 查重
+        bot_id = str(data.get("ilink_bot_id", "") or "")
+        conflict_id = self._find_account_id_by_bot_id(bot_id) if bot_id else ""
+        if conflict_id and conflict_id != session.target_account_id:
+            await self._close(session_id)
+            return {
+                "session_id": session_id,
+                "status": "failed",
+                "message": "该微信号已绑定其它账号，请先在那个账号上登出再扫码。",
+            }
+
+        account_id = session.target_account_id or conflict_id or secrets.token_hex(4)
         account = WechatAccount(
             bot_token=token,
             base_url=str(data.get("baseurl", "") or session.base_url or session.cfg.base_url),
             ilink_user_id=str(data.get("ilink_user_id", "") or ""),
-            ilink_bot_id=str(data.get("ilink_bot_id", "") or ""),
-            # 新登录 → 长轮询游标从头开始
+            ilink_bot_id=bot_id,
+            # 新登录 → 长轮询游标从头开始（只影响本账号）
             get_updates_buf="",
         )
-        save_account(account)
+        save_account(account_id, account)
         await self._close(session_id)
         logger.info(
-            f"[wechat/login] 登录成功 ilink_user_id={account.ilink_user_id or '(未知)'}"
+            f"[wechat/login] 账号 {account_id} 登录成功 "
+            f"ilink_user_id={account.ilink_user_id or '(未知)'}"
         )
         return {
             "session_id": session_id,
             "status": "succeeded",
             "message": "微信已连接。",
+            "account_id": account_id,
             "ilink_user_id": account.ilink_user_id,
         }
 
     async def _on_binded_redirect(self, session_id: str) -> dict[str, Any]:
-        """该微信号已经绑过 bot。
+        """该微信号已绑过 bot。
 
-        **不区分是否 force**：只要本地握着可用凭证就算成功。cili 要的是「能用」而不是
-        「拿到一批新凭证」——用户点「扫码登录」时若扫的还是本实例已绑定的号，报成功比
-        报「已绑定其他 bot，无法登录」有用得多（那句提示在这里还是错的：绑的就是我们）。
+        **不区分是否 force**：本地握着可用凭证就算成功。cili 要的是「能用」而不是
+        「拿到一批新凭证」。优先看目标账号自己的凭证；没有目标账号时，任一账号有
+        凭证也算。
         """
-        account = load_account()
+        session = self._sessions.get(session_id)
+        target_account_id = session.target_account_id if session is not None else ""
         await self._close(session_id)
-        if account.has_token():
+
+        if target_account_id:
+            account = load_account(target_account_id)
+            if account.has_token():
+                return {
+                    "session_id": session_id,
+                    "status": "succeeded",
+                    "message": "该微信号已绑定本实例，无需重复登录。",
+                    "account_id": target_account_id,
+                    "ilink_user_id": account.ilink_user_id,
+                }
             return {
                 "session_id": session_id,
-                "status": "succeeded",
-                "message": "该微信号已绑定本实例，无需重复登录。",
-                "ilink_user_id": account.ilink_user_id,
+                "status": "failed",
+                "message": "微信说该号已绑定，但本账号没有凭证——请先在设置页登出后再扫码。",
             }
+
+        for account_id in list_account_ids():
+            account = load_account(account_id)
+            if account.has_token():
+                return {
+                    "session_id": session_id,
+                    "status": "succeeded",
+                    "message": "该微信号已绑定本实例，无需重复登录。",
+                    "account_id": account_id,
+                    "ilink_user_id": account.ilink_user_id,
+                }
         return {
             "session_id": session_id,
             "status": "failed",
-            "message": "微信说该号已绑定，但本地没有凭证——请先在设置页点「登出」再试。",
+            "message": "微信说该号已绑定，但本地没有凭证——请先在设置页登出后再试。",
         }
 
     # ── 内部 ────────────────────────────────────────────────────────
@@ -328,6 +387,7 @@ class WechatLoginStore:
             "qr_png_data_url": session.qr_png,
             "expires_at_ms": int(session.expires_at * 1000),
             "interval_ms": POLL_INTERVAL_MS,
+            "account_id": session.target_account_id,
         }
         if challenge:
             payload["challenge"] = challenge
