@@ -140,13 +140,18 @@ class AnthropicAdapter(Adapter):
         return anthropic_messages
 
     def _apply_thinking_config(self, body: dict[str, Any]) -> None:
-        """Extended thinking：按 reasoning 档位开启思考（anthropic 取值域，§models-provider-design）。
+        """Extended thinking：按 reasoning 档位设置思考（anthropic 取值域，§models-provider-design）。
 
-        - ``default``/``off``：不发送 thinking 参数（Anthropic API 无显式关闭参数，两者同 wire）
+        - ``default``：不发送 thinking 参数，交给服务端默认
+        - ``off``：显式 ``{"type": "disabled"}``。必须显式发——部分网关（litellm 等）
+          对「不传」的默认是**开**思考，只「不发」等于没关（实测：关掉后单次判定
+          从 ~27s 降到 ~6s）
         - ``low``/``medium``/``high``：``thinking.budget_tokens`` 1024/4096/10000
-        - ``chat`` 型模型（model_type）不进入本分支——serialize 前由 client 保证
         """
         effort = self.config.reasoning
+        if effort == "off":
+            body["thinking"] = {"type": "disabled"}
+            return
         if effort in ("low", "medium", "high"):
             budget_map = {
                 "low": 1024,
@@ -155,7 +160,7 @@ class AnthropicAdapter(Adapter):
             }
             budget_tokens = budget_map[effort]
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-        # default / off / 其他值：不发送 thinking 参数，也不发送 temperature（已移除）
+        # default / 其他值：不发送 thinking 参数，也不发送 temperature（已移除）
 
     def _apply_prompt_cache(
         self,

@@ -48,6 +48,80 @@ def _approval(did="d1", command="node server.js"):
             "reason": "未命中允许规则", "targets": [], "findings": []}
 
 
+class TestJudgeForcesThinkingOff:
+    def test_lite_reasoning_forced_off(self, tmp_path, monkeypatch):
+        """判定用 lite 时强制关闭思考（思考让单次判定从 ~6s 涨到 ~27s）。"""
+        import core.security.approval_judge as aj
+        from core.config import ModelConfig
+
+        seen = {}
+
+        class _FakeClient:
+            def chat_structured(self, *args, **kwargs):
+                return {"decision": "allow", "risk": "low", "summary": "s", "reason": "r"}
+
+            def close(self):
+                pass
+
+        class _CfgWithModel(_FakeConfig):
+            def model_for_role(self, role):
+                # lite 配置里故意开高档思考，验证判定器会覆盖为 off
+                return ModelConfig(name="lite-model", api_key="k",
+                                   base_url="https://api.anthropic.com",
+                                   interface_type="anthropic", reasoning="high")
+
+        def _fake_create(model_cfg):
+            seen["reasoning"] = model_cfg.reasoning
+            return _FakeClient()
+
+        monkeypatch.setattr(aj, "create_llm_client", _fake_create)
+        judge = ApprovalJudge(
+            _CfgWithModel(ApprovalConfig(judge_timeout_seconds=5)), None, ApprovalStore(),
+            role="master", has_user_channel=True,
+            workspace_root="E:\\ws", cwd="E:\\ws", session_dir=tmp_path,
+        )
+
+        assert judge.decide(_approval()).decision == "allow"
+        assert seen["reasoning"] == "off"
+
+    def test_off_rejected_falls_back_to_low(self, tmp_path, monkeypatch):
+        """off 尝试被拒（模型/网关不支持禁用）时，退到最低档（low）再试一次。"""
+        import core.security.approval_judge as aj
+        from core.config import ModelConfig
+
+        seq = []
+
+        class _FakeClient:
+            def chat_structured(self, *args, **kwargs):
+                idx = len(seq) - 1
+                if idx == 0:   # 第一次（off）被拒
+                    raise RuntimeError("thinking param rejected")
+                return {"decision": "allow", "risk": "low", "summary": "s", "reason": "r"}
+
+            def close(self):
+                pass
+
+        class _CfgWithModel(_FakeConfig):
+            def model_for_role(self, role):
+                return ModelConfig(name="lite-model", api_key="k",
+                                   base_url="https://api.anthropic.com",
+                                   interface_type="anthropic", reasoning="high")
+
+        def _fake_create(model_cfg):
+            seq.append(model_cfg.reasoning)
+            return _FakeClient()
+
+        monkeypatch.setattr(aj, "create_llm_client", _fake_create)
+        judge = ApprovalJudge(
+            _CfgWithModel(ApprovalConfig(judge_timeout_seconds=5)), None, ApprovalStore(),
+            role="master", has_user_channel=True,
+            workspace_root="E:\\ws", cwd="E:\\ws", session_dir=tmp_path,
+        )
+
+        assert judge.decide(_approval()).decision == "allow"
+        assert seq == ["off", "low"]
+
+
 class TestDecide:
     def test_allow(self, tmp_path, monkeypatch):
         judge, _ = _judge(tmp_path, monkeypatch)

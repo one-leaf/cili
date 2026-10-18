@@ -538,15 +538,18 @@ POST /api/config/test
 Content-Type: application/json
 
 {
-  "config": {
-    "name": "claude-sonnet-4-6",
-    "api_key": "sk-ant-...",
-    "base_url": "https://api.anthropic.com"
-  }
+  "interface_type": "anthropic",
+  "auth_type": "auto",
+  "api_key": "sk-ant-...",
+  "base_url": "https://api.anthropic.com",
+  "model_name": "claude-sonnet-4-6",
+  "provider": "bg"       // 可选：provider 名。api_key 留空/掩码时按它取该 provider 已保存的 Key
 }
 ```
 
-`config` 可选：传入时用给定参数测试（api_key 为空则回退用已保存的主模型 Key）；缺省时直接用已保存的主模型配置测试。
+字段均可选：缺省时用已保存的主模型配置测试；`api_key` 留空或为掩码时，按 `provider`
+取该 provider 已保存的 Key（未指定 provider 才回退主模型 Key）。测试在**专用线程池**
+执行，不阻塞事件循环。
 
 **响应**：
 ```json
@@ -861,6 +864,10 @@ def sse_run_response(run_fn, event_queue, *, cancel_on_disconnect=False,
 调用方只需构造 `event_queue` + `make_sse_callbacks`，定义 `run_fn`，然后
 `return sse_run_response(run_fn, event_queue)`。
 
+`run_fn` 与 SSE 队列轮询在**专用线程池**（`core/stream_executor.py`）执行——原先与
+请求期短任务（如会话列表读取）共用默认 executor，长任务占满 worker 会让短任务永久
+排队（主页卡死的根因之一）。
+
 ### 5.2 客户端断开处理
 
 `sse_run_response` 默认在客户端断开时让 runner 继续在后台运行
@@ -985,6 +992,12 @@ function handleEvent(event) {
     }
 }
 ```
+
+除 POST 的请求级流（chat.js）外，`sse-client.js` 维持一条**全局事件流**
+（`GET /api/events`，worker 逐 token 消息与工具增量）。标签页切到后台时会**主动
+断开**该流并标记断线（`visibilitychange`），回前台重连——浏览器对同源并发连接
+上限是 6，多标签页若各自长驻一条会占满槽位，导致该源上任何请求（含页面加载与
+设置面板的 fetch）无限排队。
 
 ---
 

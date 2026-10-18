@@ -56,6 +56,8 @@ anthropic-version: 2023-06-01
   },
   // 或使用 effort 级别（Cili 内部通过 reasoning_effort 映射）：
   // low → budget_tokens=1024, medium → 4096, high → 10000
+  // reasoning="off" → 显式 {"type": "disabled"}（部分网关对「不传 thinking」的默认
+  // 是开思考，必须显式关；实测单次判定 ~27s → 关掉后 ~6s）
 
   // 工具定义
   "tools": [
@@ -75,10 +77,13 @@ anthropic-version: 2023-06-01
     }
   ],
 
-  // LiteLLM 代理路由（可选）
-  "litellm_session_id": "session-abc123"
+  // LiteLLM 会话标识：以 HTTP 头发送（x-litellm-session-id），非请求体字段
 }
 ```
+
+**LiteLLM 会话标识**：会话 id 不走请求体，而是以 HTTP 头发送——`backend: "litellm"` 时
+cili 自动附加 `x-litellm-session-id: <master 的 session id>`（sub agent 透传同一 id），
+供网关按会话聚合同一会话的全部请求；无会话时整条省略。
 
 **消息格式示例**:
 
@@ -274,10 +279,13 @@ Authorization: Bearer sk-...
     }
   ],
 
-  // LiteLLM 代理路由（可选）
-  "litellm_session_id": "session-abc123"
+  // LiteLLM 会话标识：以 HTTP 头发送（x-litellm-session-id），非请求体字段
 }
 ```
+
+**LiteLLM 会话标识**：会话 id 不走请求体，而是以 HTTP 头发送——`backend: "litellm"` 时
+cili 自动附加 `x-litellm-session-id: <master 的 session id>`（sub agent 透传同一 id），
+供网关按会话聚合同一会话的全部请求；无会话时整条省略。
 
 **消息格式示例**:
 

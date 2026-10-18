@@ -21,7 +21,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from core.config import ApprovalConfig, get_approval_config
 from core.llm import Message, create_llm_client
@@ -180,21 +180,34 @@ class ApprovalJudge:
         result: dict = {}
 
         def _work() -> None:
-            client = create_llm_client(self.config.model_for_role("lite"))
-            try:
-                max_tokens = _JUDGE_MAX_TOKENS
-                model_cfg = getattr(client, "config", None)
-                cap = getattr(model_cfg, "max_output_tokens", None)
-                if isinstance(cap, int) and cap > 0:
-                    max_tokens = min(max_tokens, cap)
-                resp = client.chat_structured(
-                    messages, system=_SYSTEM_PROMPT, output_schema=_OUTPUT_SCHEMA, max_tokens=max_tokens)
-                result["resp"] = resp
-            finally:
+            # 判定强制最小化思考：优先 off（显式禁用，实测单次 ~10s vs 思考开 ~27s）；
+            # 模型/网关不支持禁用（参数被拒或被忽略）时退到最低档（low = budget 1024）。
+            # 两次尝试都在外层 join(timeout) 罩住之内，不会失控。
+            lite_model = self.config.model_for_role("lite")
+            attempts = [replace(lite_model, reasoning="off"),
+                        replace(lite_model, reasoning="low")]
+            last_error: Exception | None = None
+            for model_cfg in attempts:
+                client = create_llm_client(model_cfg)
                 try:
-                    client.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                    max_tokens = _JUDGE_MAX_TOKENS
+                    cap = getattr(model_cfg, "max_output_tokens", None)
+                    if isinstance(cap, int) and cap > 0:
+                        max_tokens = min(max_tokens, cap)
+                    resp = client.chat_structured(
+                        messages, system=_SYSTEM_PROMPT, output_schema=_OUTPUT_SCHEMA,
+                        max_tokens=max_tokens)
+                    result["resp"] = resp
+                    result["reasoning_used"] = model_cfg.reasoning
+                    return
+                except Exception as e:  # noqa: BLE001
+                    last_error = e
+                finally:
+                    try:
+                        client.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            raise last_error  # attempts 非空，必有最后一次异常
 
         thread = threading.Thread(target=_work, daemon=True)
         thread.start()

@@ -151,6 +151,11 @@ BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`doc
 > **role 与 run_mode 解耦**：`role` 决定画像（工具白名单/提示/预算），`run_mode` 决定循环行为
 > （interactive/autonomous）。默认 `run_mode=None` 时取角色 JSON 的 `mode`；接口层可显式覆盖
 > （例如 QQ 接口想要 interactive 行为但非 master 画像）。
+>
+> **master_session_id（LLM 会话头）**：master 为自身会话 id；sub agent 由创建方（session
+> 工具）透传同一 id，嵌套委派逐级透传根 id。该值进入所有 LLM 请求的 backend 会话头
+> （如 litellm 的 `x-litellm-session-id`），供网关聚合同一会话的全部请求（含子代理）。
+> `switch_session` 切换会话时同步更新。
 
 ```python
 class SessionRunner(BaseSessionRunner):
@@ -168,6 +173,7 @@ class SessionRunner(BaseSessionRunner):
         approval_store=None,        # autonomous 模式共享的会话级审批存储
         max_consecutive_failures: int | None = None,  # None 时取角色配置
         run_mode: str | None = None,  # 运行模式覆盖；None 时取角色 JSON 的 mode
+        master_session_id: str = "",  # master 的 session id（LLM 会话头用；sub agent 由创建方透传）
     ):
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -177,7 +183,8 @@ class SessionRunner(BaseSessionRunner):
         if self._mode == "interactive":
             self._init_interactive(workspace_uuid)
         else:
-            self._init_autonomous(task, plan, exec_id, session_dir, stop_check)
+            self._init_autonomous(task, plan, exec_id, session_dir, stop_check,
+                                  master_session_id)
 
         super().__init__(
             config=config, workspace_uuid=workspace_uuid, cwd=self._cwd_init,

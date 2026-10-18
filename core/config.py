@@ -236,7 +236,7 @@ class ApprovalConfig:
 
     enabled: bool = True  # 总开关；false = 所有动作直接执行（危险，仅供排障）
     judge_enabled: bool = True  # false = 不做 LLM 判定，未命中规则按 judge_on_error 处理
-    judge_timeout_seconds: int = 20  # 单次判定超时
+    judge_timeout_seconds: int = 60  # 单次判定超时（实测单次 5–45s，留足余量）
     judge_on_error: str = "ask"  # 超时/解析失败/模型不可用的兜底：ask | deny | allow
     judge_persist_allow: bool = True  # AI 判定 allow 是否落盘为规则（§3.5）
     judge_max_consecutive_failures: int = 3  # 连错降级阈值：连续失败 N 次本会话停用判定
@@ -253,7 +253,7 @@ class ApprovalConfig:
         return cls(
             enabled=bool(data.get("enabled", True)),
             judge_enabled=bool(data.get("judge_enabled", True)),
-            judge_timeout_seconds=max(5, int(data.get("judge_timeout_seconds", 20))),
+            judge_timeout_seconds=max(5, int(data.get("judge_timeout_seconds", 60))),
             judge_on_error=on_error,
             judge_persist_allow=bool(data.get("judge_persist_allow", True)),
             judge_max_consecutive_failures=max(1, int(data.get("judge_max_consecutive_failures", 3))),

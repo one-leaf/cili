@@ -155,7 +155,7 @@ class Adapter(ABC):
 - **API**: `/v1/messages`，`x-api-key` 认证
 - **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
 - **推理内容**: `thinking` block with `signature`
-- **扩展思考**: 按 `reasoning` 档位启用（流式与非流式请求均生效），`low`/`medium`/`high` → `budget_tokens` 1024/4096/10000；`default`/`off` 不发送 thinking 参数
+- **扩展思考**: 按 `reasoning` 档位启用（流式与非流式请求均生效），`low`/`medium`/`high` → `budget_tokens` 1024/4096/10000；`off` 显式发送 `thinking: {type: "disabled"}`（部分网关对「不传」默认开思考，必须显式关）；`default` 不发送 thinking 参数
 - **Prompt cache**: 使用 Anthropic 协议即启用（由用户决定是否使用支持 `cache_control` 的中转站）：`system` 转为带 `cache_control: ephemeral` 的块列表；最后一条消息的最后一块（text/tool_use/tool_result/image）追加第二个断点。字符串内容的消息保持原样不打断点。可通过 `cache_control` 配置项控制：`"auto"`（默认，根据协议自动决定）、`"true"`（强制启用）、`"false"`（禁用）。
 
 ### OpenAIAdapter

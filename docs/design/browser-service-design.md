@@ -591,7 +591,10 @@ find(pattern)    →  重新 snapshot 并正则匹配 role/name，返回匹配�
 **解析器规则**（`_parse_aria_snapshot`）：
 - 行形态：容器 `- banner:`（无 name，不分配 ref）；带名元素 `- button "Sign in"`（含内联属性 `[level=1]`）；文本形式 `- paragraph: some text`；属性行 `- /url: /home`（保留显示，不分配 ref）
 - ref 按行顺序（DFS）分配，`r1` 起；同名元素 index 递增（`get_by_role(role, name).nth(index)` 区分重复）
-- **mode 二选一**：`role` → `get_by_role(role, name, exact=True).nth(index)`；`text`（paragraph/generic 等）→ `get_by_text(name, exact=True).nth(index)`
+- **交互类角色无 name 也分配 ref**（button/link/textbox/checkbox 等）：JS 注入的
+  `<div role="button">` 常无可访问名，快照里看得见却寻址不了曾是 drag/click 的缺陷
+- **mode 二选一**：`role` → `get_by_role(role, name, exact=True).nth(index)`，无名元素按
+  `get_by_role(role).nth(index)` 定位；`text`（paragraph/generic 等）→ `get_by_text(name, exact=True).nth(index)`
 - 单次 snapshot 上限 `SNAPSHOT_MAX_REFS = 400`，超出元素保留显示但不给 ref
 - ref 仅在产生它的 snapshot 内有效；页面变化后未知 ref 会报错提示重新 snapshot
 

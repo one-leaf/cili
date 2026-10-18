@@ -304,6 +304,36 @@ class TestAnthropicAdapter:
     def test_api_url(self, adapter):
         assert adapter.api_url == "https://api.anthropic.com/v1/messages"
 
+    def _body_with_reasoning(self, reasoning: str) -> dict:
+        config = ModelConfig(
+            name="claude-sonnet-4-6",
+            api_key="key",
+            base_url="https://api.anthropic.com",
+            interface_type="anthropic",
+            reasoning=reasoning,
+        )
+        return AnthropicAdapter(config).serialize(
+            [Message(role="user", content="hi")],
+            system="", tools=None, model="claude-sonnet-4-6", max_tokens=100,
+        )
+
+    def test_thinking_disabled_for_off(self):
+        """reasoning='off' 显式发 thinking.disabled。
+
+        回归：部分网关（litellm 等）对「不传 thinking」的默认是**开**思考，
+        原先只「不发」等于没关（实测单次判定 ~27s vs 关掉后 ~6s）。
+        """
+        assert self._body_with_reasoning("off")["thinking"] == {"type": "disabled"}
+
+    def test_thinking_absent_for_default(self):
+        """reasoning='default' 不发 thinking 参数，交给服务端默认。"""
+        assert "thinking" not in self._body_with_reasoning("default")
+
+    def test_thinking_budget_for_high(self):
+        assert self._body_with_reasoning("high")["thinking"] == {
+            "type": "enabled", "budget_tokens": 10000,
+        }
+
     def test_build_headers(self, adapter):
         headers = adapter.build_headers()
         assert headers["x-api-key"] == "test-key-123"
