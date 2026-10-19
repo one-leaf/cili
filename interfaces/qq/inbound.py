@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 
 from core.multimodal import build_user_input
-from core.outbox import drain_files
+from core.outbox import drain_files, record_delivery_notice
 from core.session_registry import registry, session_key
 from core.turn_dispatch import execute_turn, prepare_turn
 from interfaces.qq import commands, media
@@ -174,7 +174,7 @@ class InboundHandler:
                 return
 
             prepared = prepare_turn(runner, content=content, user_input=user_input)
-            # 按回合门控：只有 QQ 驱动时 send_file 等专属工具才可见
+            # 按回合门控：只有 QQ 驱动时 send_user_file 等专属工具才可见
             runner.set_turn_interface("qq")
 
             sink = QQSink(
@@ -189,7 +189,7 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(openid, msg_id, key)
+        await self._send_outbox_files(runner, openid, msg_id, key)
 
     # ── 入参构造 ────────────────────────────────────────────────────
 
@@ -236,17 +236,20 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[qq/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(self, openid: str, msg_id: str, key: str) -> None:
-        """回合末取走 ``send_file`` 登记的文件并发送。
+    async def _send_outbox_files(self, runner, openid: str, msg_id: str, key: str) -> None:
+        """回合末取走 ``send_user_file`` 登记的文件并发送。
 
         受 ``max_outbound_files`` 与被动回复剩余配额双重限制——一条用户消息只有
-        4 次被动回复，流式消息已占 1 次。
+        4 次被动回复，流式消息已占 1 次。**条数上限已在工具登记时校验过**，这里
+        只剩「流式消息吃掉配额」这个交付期才知道的变量；发不完的件不静默丢：给
+        用户一条 ⚠️ 文案，并把交付回执落进会话（UI 可见、不进 LLM 上下文）。
         """
         files = drain_files(key)
         if not files:
             return
         if self._rt.api is None or self._rt.uploader is None:
             logger.warning("[qq/inbound] SDK 未就绪，丢弃待发文件")
+            record_delivery_notice(runner.session, [], [f.path for f in files], "发送通道未就绪")
             return
 
         limit = self._rt.cfg.max_outbound_files
@@ -258,25 +261,40 @@ class InboundHandler:
 
         if limit <= 0:
             await self._send_text(openid, msg_id, "⚠️ 本轮回复次数已用尽，文件未能发送。")
-            return
-        if len(files) > limit:
-            await self._send_text(
-                openid, msg_id, f"⚠️ 本轮只能发 {limit} 个文件，其余 {len(files) - limit} 个已跳过。"
+            record_delivery_notice(
+                runner.session, [], [f.path for f in files], "本轮被动回复配额已用尽"
             )
-            files = files[:limit]
+            return
 
-        for f in files:
+        over = files[limit:]
+        if over:
+            await self._send_text(
+                openid, msg_id, f"⚠️ 本轮只能发 {limit} 个文件，其余 {len(over)} 个未发出。"
+            )
+
+        sent: list[str] = []
+        failed: list[str] = []
+        for f in files[:limit]:
             try:
                 await media.send_file_message(
                     self._rt.api, self._rt.uploader, openid, f.path,
                     msg_id=msg_id, note=f.note,
                 )
                 self._rt.limiter.record(msg_id)
+                sent.append(f.path)
             except media.MediaError as e:
                 logger.warning(f"[qq/inbound] 发送文件失败：{e}")
+                failed.append(f.path)
                 await self._send_text(openid, msg_id, f"⚠️ {e}")
             except Exception as e:  # noqa: BLE001 — 单个文件失败不影响其它
+                failed.append(f.path)
                 logger.exception(f"[qq/inbound] 发送文件异常：{e}")
+
+        skipped = [f.path for f in over] + failed
+        if skipped:
+            record_delivery_notice(
+                runner.session, sent, skipped, "本轮配额不足" if over else "发送失败"
+            )
 
 
 # ─── 模块级辅助 ───────────────────────────────────────────────────────

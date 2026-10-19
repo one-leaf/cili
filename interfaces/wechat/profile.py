@@ -27,6 +27,11 @@ PROFILE = InterfaceProfile(
     streaming=False,
     can_send_file=True,
     file_delivery="upload",
+    # iLink CDN 无公开上限，取保守值：media.upload_media 整读内存（read_bytes），
+    # 过大文件会在上传前先撑爆内存；真超限由上传层报错兜底
+    file_size_limit_mb=200,
+    # 与正文/进度共享每个 context_token 的约 8 条预算，留 1 条给正文
+    max_files_per_turn=3,
     guidance=(
         "Images, `~~`, `<`/`>` and H5/H6 headings are stripped from your markdown.",
     ),

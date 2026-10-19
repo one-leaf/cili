@@ -412,7 +412,7 @@ class TestQQAccountsConfig:
 
 
 class TestSendFilePromptFollowsEnabledFlag:
-    """`send_file` 的工具与提示词都由「是否有 QQ 账号在跑」间接控制。
+    """`send_user_file` 的工具与提示词都由「是否有 QQ 账号在跑」间接控制。
 
     机制：只有 QQ 接入端在运行时才会调 `set_turn_interface("qq")`；关闭后没有任何
     回合带这个接口标记，所以工具与 QQ 能力段（Response Surface）都不会出现。
@@ -429,17 +429,17 @@ class TestSendFilePromptFollowsEnabledFlag:
         assert svc.qq_interface_running() is False
 
     def test_undeclared_turn_has_no_qq_tools_or_caps(self, runner):
-        """未声明接口的回合：既没有 send_file，也没有 QQ 能力段。"""
-        assert "send_file" not in {s["name"] for s in runner.tool_schemas}
+        """未声明接口的回合：既没有 send_user_file，也没有 QQ 能力段。"""
+        assert "send_user_file" not in {s["name"] for s in runner.tool_schemas}
         assert "QQ private chat" not in "\n".join(runner._build_system_prompt())
 
     def test_qq_turn_has_both(self, runner):
         runner.set_turn_interface("qq")
-        assert "send_file" in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" in {s["name"] for s in runner.tool_schemas}
         assert "QQ private chat" in "\n".join(runner._build_system_prompt())
 
     def test_clearing_interface_removes_both(self, runner):
         runner.set_turn_interface("qq")
         runner.set_turn_interface(None)
-        assert "send_file" not in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" not in {s["name"] for s in runner.tool_schemas}
         assert "QQ private chat" not in "\n".join(runner._build_system_prompt())

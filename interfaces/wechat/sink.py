@@ -217,7 +217,7 @@ class WechatSink:
             logger.warning("[wechat/sink] 发送层未就绪，丢弃本次回复")
             return
 
-        # 留 1 条额度给回合末的 send_file（出站文件与文本共享同一份预算）
+        # 留 1 条额度给回合末的 send_user_file（出站文件与文本共享同一份预算）
         budget = rt.outbound.budget_left(self._user_id, reserve=1)
         chunks = chunk_markdown(text, limit=rt.cfg.text_chunk_limit)
         if len(chunks) > max(1, budget):

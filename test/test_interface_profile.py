@@ -3,7 +3,7 @@
 覆盖：
 - 注册表与解析规则（未声明不猜 / autonomous → agent / 未知名字告警）
 - 能力段生成（各接口的事实行、否定式声明、无 web-based UI 残留）
-- send_file 描述随档案变化 + Web 回合可见性
+- send_user_file 描述随档案变化 + Web 回合可见性
 - 出站文件 web 落地（drain_outbox_events：file 帧 + file_card 消息）
 - 技能按接口过滤（frontmatter interfaces）
 - 角色 JSON 的 interface_caps 块声明与静态区 Web 假设清除
@@ -90,9 +90,10 @@ class TestRenderedSections:
         text = render_capability_section(get_profile("qq"))
         assert "4000" in text
         assert "NOT rendered" in text
-        assert "send_file" in text
+        assert "send_user_file" in text
         assert "200MB" in text
         assert "PNG" in text
+        assert "At most 3 files per turn" in text
 
     def test_wechat_states_1800_and_sanitization(self):
         text = render_capability_section(get_profile("wechat"))
@@ -112,7 +113,18 @@ class TestRenderedSections:
     def test_agent_guidance_bans_ui_artifacts(self):
         text = render_capability_section(AGENT_PROFILE)
         assert "calling agent" in text
-        assert "send_file" in text
+        assert "send_user_file" in text
+
+    def test_web_section_has_single_files_line(self):
+        """回归：Web 能力段只应有一条 Files 指令。
+
+        曾经结构化行（can_send_file 分支）与 guidance 散文各写一条，模型同时看到
+        「用 send_user_file 交付」与「按路径引用」两条并列指令，谁也没说清什么时候
+        用哪条。职责划分：结构化行讲交付通道，guidance 只讲渲染面。
+        """
+        text = render_capability_section(get_profile("web"))
+        files_lines = [ln for ln in text.splitlines() if ln.startswith("Files:")]
+        assert len(files_lines) == 1
 
     def test_no_section_claims_web_ui(self):
         """回归：能力段不得再引入 web-based UI 断言（静态区已清除）。"""
@@ -120,33 +132,37 @@ class TestRenderedSections:
             assert "web-based UI" not in render_capability_section(get_profile(name))
 
 
-# ─── send_file 描述随档案变化 ─────────────────────────────────────────
+# ─── send_user_file 描述随档案变化 ────────────────────────────────────
 
 
-class TestSendFileDescription:
+class TestSendUserFileDescription:
     @staticmethod
     def _tool():
-        from core.tools.send_file import SendFileTool
-        return SendFileTool(cwd=".", workspace_uuid="ws", session=None)
+        from core.tools.send_user_file import SendUserFileTool
+        return SendUserFileTool(cwd=".", workspace_uuid="ws", session=None)
 
     def test_base_description_without_profile(self):
         tool = self._tool()
         assert "workspace" in tool.description
-        # 接口未声明时不带 QQ 专属上限（200MB 由档案追加）
+        # 接口未声明时不带任何接口专属约束（条数/体积都由档案追加）
         assert "200MB" not in tool.description
+        assert "per turn" not in tool.description
 
     def test_qq_profile_adds_limits(self):
         tool = self._tool()
         tool.set_interface_profile(get_profile("qq"))
+        assert "At most 3 files per turn" in tool.description
         assert "200MB" in tool.description
         assert "PNG" in tool.description
 
     def test_link_delivery_mentioned_for_web(self):
-        """Web 档案是 link 交付：描述提及 download link。"""
+        """Web 档案是 link 交付：描述提及 download link；本地链接不限大小与条数。"""
         tool = self._tool()
         tool.set_interface_profile(get_profile("web"))
         assert "download link" in tool.description
-        assert "200MB" in tool.description  # 与 send_file.MAX_FILE_BYTES 对齐
+        # 本地下载链接（FileResponse 流式）没有体积上限，描述里不得出现 Max size
+        assert "Max size" not in tool.description
+        assert "per turn" not in tool.description
 
     def test_link_delivery_mentioned_synthetic(self):
         profile = InterfaceProfile(
@@ -201,16 +217,16 @@ class TestRoleJsonBlocks:
         assert hint_blocks == []
 
 
-# ─── Web 的 send_file 落地（第二阶段） ────────────────────────────────
+# ─── Web 的 send_user_file 落地 ───────────────────────────────────────
 
 
 class TestWebSendFileVisibility:
-    def test_web_turn_has_send_file(self, runner):
-        """set_turn_interface("web") 后 send_file 进入 tool_schemas。"""
+    def test_web_turn_has_send_user_file(self, runner):
+        """set_turn_interface("web") 后 send_user_file 进入 tool_schemas。"""
         runner.set_turn_interface("web")
-        assert "send_file" in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" in {s["name"] for s in runner.tool_schemas}
         runner.set_turn_interface(None)
-        assert "send_file" not in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" not in {s["name"] for s in runner.tool_schemas}
 
 
 class TestDrainOutboxEvents:
@@ -221,7 +237,7 @@ class TestDrainOutboxEvents:
         added: list[tuple] = []
         session = SimpleNamespace(
             add_message=lambda role, content, meta=None, flush=False: added.append(
-                (role, content, meta)
+                (role, content, meta, flush)
             )
         )
         runner = SimpleNamespace(
@@ -250,11 +266,14 @@ class TestDrainOutboxEvents:
         assert frame["note"] == "季度报告"
         assert frame["size"] == 1
 
-        role, content, meta = added[0]
+        role, content, meta, flush = added[0]
         assert role == "assistant"
         assert "report.pdf" in content and "report.pdf" in meta["file_card"]["path"]
         # 与 error_notice 同一机制：UI 可见、不进 LLM 上下文
         assert "file_card" in meta
+        # 回合 checkpoint 已过、之后无人保证 save：必须 flush 立即落盘，
+        # 否则刷新页面（从磁盘重拉）看不到下载卡片
+        assert flush is True
 
         assert outbox.drain_files("ws-drain:s-drain") == []
 
@@ -280,6 +299,29 @@ class TestDrainOutboxEvents:
         drain_outbox_events(runner, q)
         assert q.empty()
         assert added == []
+
+    def test_delivery_notice_recorded_and_filtered(self):
+        """交付回执：立即落盘（flush）+ 不进 LLM 上下文（与 file_card 同机制）。"""
+        from core.outbox import build_delivery_notice, record_delivery_notice
+        from core.session_runner_runtime.context import ConversationStore
+
+        content, meta = build_delivery_notice(["/w/a.png"], ["/w/b.png"], "本轮配额不足")
+        assert "a.png" in content and "b.png" in content
+        assert "本轮配额不足" in content
+        assert meta["delivery_notice"]["skipped"] == ["/w/b.png"]
+
+        added: list[tuple] = []
+        session = SimpleNamespace(
+            add_message=lambda role, c, meta=None, flush=False: added.append(
+                (role, c, meta, flush)
+            )
+        )
+        record_delivery_notice(session, ["/w/a.png"], ["/w/b.png"], "本轮配额不足")
+        assert added and added[0][3] is True  # flush=True：立即落盘
+
+        assert ConversationStore.is_message_in_context(
+            {"role": "assistant", "content": content, "_meta": meta}
+        ) is False
 
 
 # ─── 技能按接口过滤（第三阶段） ───────────────────────────────────────

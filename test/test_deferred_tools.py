@@ -73,7 +73,7 @@ class TestDeferredToolSplit:
     def test_active_tools_count(self):
         """active = total - deferred - 接口专属（默认不可见）。
 
-        接口专属工具（如 QQ 的 send_file）默认**既不在 active 也不在 deferred**——
+        接口专属工具（如 QQ 的 send_user_file）默认**既不在 active 也不在 deferred**——
         放进 deferred 会被 tool_search 激活，模型就能在 Web 回合里把它调起来。
         详见 core/session_runner.py 的 INTERFACE_TOOLS。
         """
@@ -93,12 +93,12 @@ class TestDeferredToolSplit:
         total = len(runner.tools)
 
         runner.set_turn_interface("qq")
-        assert "send_file" in {t.name for t in runner._active_tools}
+        assert "send_user_file" in {t.name for t in runner._active_tools}
         assert len(runner._active_tools) + len(runner._deferred_tools) == total
 
         runner.set_turn_interface(None)
-        assert "send_file" not in {t.name for t in runner._active_tools}
-        assert "send_file" not in {t.name for t in runner._deferred_tools}
+        assert "send_user_file" not in {t.name for t in runner._active_tools}
+        assert "send_user_file" not in {t.name for t in runner._deferred_tools}
 
     def test_all_tools_still_instantiated(self):
         """所有工具（含 deferred）仍然实例化在 self.tools 中。"""

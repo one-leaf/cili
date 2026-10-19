@@ -201,7 +201,7 @@ def infer_upload_type(path: str | Path) -> tuple[int, int, str]:
 def validate_media_path(path: str | Path, workspace_root: str | Path) -> Path:
     """路径白名单校验（realpath 双侧比对，防符号链接绕过）。
 
-    ``send_file`` 工具已经校验过一遍，这里再校验一次是纵深防御——本模块才是真正把
+    ``send_user_file`` 工具已经校验过一遍，这里再校验一次是纵深防御——本模块才是真正把
     文件内容交给网络的地方。
     """
     target = Path(os.path.realpath(str(path)))
@@ -271,7 +271,7 @@ async def upload_media(
     return {"type": item_type, item_key: item}
 
 
-async def send_file(
+async def send_user_file(
     sender: "OutboundSender",
     user_id: str,
     path: str | Path,

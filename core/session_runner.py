@@ -68,9 +68,9 @@ logger = logging.getLogger(__name__)
 # 的 ``deferred_tools`` 就是 ``_deferred_tools``，一旦落进去，模型在 Web 上也能
 # 自己把它激活。所以要从可见集合里彻底摘掉。
 INTERFACE_TOOLS: dict[str, frozenset[str]] = {
-    "web": frozenset({"send_file"}),   # Web 交付形态是下载卡片（web/sse.drain_outbox_events）
-    "qq": frozenset({"send_file"}),
-    "wechat": frozenset({"send_file"}),
+    "web": frozenset({"send_user_file"}),   # Web 交付形态是下载卡片（web/sse.drain_outbox_events）
+    "qq": frozenset({"send_user_file"}),
+    "wechat": frozenset({"send_user_file"}),
 }
 
 
@@ -397,7 +397,7 @@ class SessionRunner(BaseSessionRunner):
         也无接口专属工具。早期「None 等价 Web」的说法已废弃——Web 路由显式传
         ``"web"``，未声明就保持沉默，否则「接口层忘了设置」会被默认值掩盖。
 
-        顺序注意：先推送能力档案给接口感知的工具（``send_file`` 的 description
+        顺序注意：先推送能力档案给接口感知的工具（``send_user_file`` 的 description
         随档案变化），再重建 ``tool_schemas``——schema 在重建时读工具描述，
         顺序反了会带上过期描述。
         """

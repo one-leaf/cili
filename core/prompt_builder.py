@@ -75,7 +75,7 @@ def _gen_interface_hint(block: dict, runner) -> str:
 
     与 ``build_approved_commands_section``（无批准时返回 ""）是同一模式——不适用
     就返回空串，由 ``build_system_prompt`` 跳过。用于给接口专属工具配使用说明
-    （如 QQ 的 send_file），避免在 Web 回合里向模型描述一个它没有的工具。
+    （如 QQ 的 send_user_file），避免在 Web 回合里向模型描述一个它没有的工具。
 
     interactive 模式的 system prompt 每轮重建（``loop.py`` 在 run_interactive
     内调用 ``runner._build_system_prompt()``），所以接口切换后立刻生效。

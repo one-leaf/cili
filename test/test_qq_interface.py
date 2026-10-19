@@ -1,7 +1,7 @@
 """QQ 接入端相关测试。
 
 分两类：
-- **不依赖 QQ 凭据**的纯逻辑（接口门控、outbox、send_file 校验、turn_dispatch
+- **不依赖 QQ 凭据**的纯逻辑（接口门控、outbox、send_user_file 校验、turn_dispatch
   的 ask_user 判定）——本文件的主要部分，可在任何环境跑。
 - **需要真实凭据/网络的**部分（SDK 连接、流式裸调用）不在此文件，见手工验证清单。
 """
@@ -33,60 +33,60 @@ def _deferred_names(runner) -> set[str]:
 
 
 class TestInterfaceToolGating:
-    """send_file 是 QQ 专属：只有 QQ 驱动回合时可见。"""
+    """send_user_file 是 QQ 专属：只有 QQ 驱动回合时可见。"""
 
-    def test_send_file_registered_and_instantiated(self, runner):
-        assert "send_file" in {t.name for t in runner.tools}
+    def test_send_user_file_registered_and_instantiated(self, runner):
+        assert "send_user_file" in {t.name for t in runner.tools}
 
     def test_hidden_by_default(self, runner):
         """默认（无接口）不可见，且不在 deferred 里——否则 tool_search 能激活它。"""
-        assert "send_file" not in _active_names(runner)
-        assert "send_file" not in _deferred_names(runner)
-        assert "send_file" not in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" not in _active_names(runner)
+        assert "send_user_file" not in _deferred_names(runner)
+        assert "send_user_file" not in {s["name"] for s in runner.tool_schemas}
 
     def test_visible_for_qq(self, runner):
         runner.set_turn_interface("qq")
-        assert "send_file" in _active_names(runner)
-        assert "send_file" in {s["name"] for s in runner.tool_schemas}
+        assert "send_user_file" in _active_names(runner)
+        assert "send_user_file" in {s["name"] for s in runner.tool_schemas}
 
     def test_tool_search_cannot_reach_it_off_qq(self, runner):
-        """非 QQ 回合里，tool_search 的可激活集合不能含 send_file。"""
+        """非 QQ 回合里，tool_search 的可激活集合不能含 send_user_file。"""
         from core.tools import get_tool_by_name
         ts = get_tool_by_name(runner.tools, "tool_search")
         assert ts is not None
-        assert "send_file" not in {t.name for t in ts.deferred_tools}
+        assert "send_user_file" not in {t.name for t in ts.deferred_tools}
 
         runner.set_turn_interface("qq")
-        assert "send_file" in {t.name for t in ts.deferred_tools} or True  # active 时不在 deferred
+        assert "send_user_file" in {t.name for t in ts.deferred_tools} or True  # active 时不在 deferred
 
     def test_visibility_flips_across_turns(self, runner):
         """同一个 runner 按 Web → QQ → Web 驱动，可见性逐回合翻转（共享会话核心点）。"""
-        assert "send_file" not in _active_names(runner)          # Web
+        assert "send_user_file" not in _active_names(runner)          # Web
 
         runner.set_turn_interface("qq")
-        assert "send_file" in _active_names(runner)              # QQ
+        assert "send_user_file" in _active_names(runner)              # QQ
 
         runner.set_turn_interface(None)
-        assert "send_file" not in _active_names(runner)          # 回到 Web
-        assert "send_file" not in _deferred_names(runner)
+        assert "send_user_file" not in _active_names(runner)          # 回到 Web
+        assert "send_user_file" not in _deferred_names(runner)
 
     def test_direct_call_rejected_off_qq(self, runner):
         """纵深防御：模型硬调也要被拒。"""
-        result = runner._execute_tool("send_file", {"path": "x.txt"}, "tu_1")
+        result = runner._execute_tool("send_user_file", {"path": "x.txt"}, "tu_1")
         assert result["is_error"] is True
         assert "not available" in result["content"]
 
     def test_interface_tools_mapping_shape(self):
         assert "web" in INTERFACE_TOOLS
         assert "qq" in INTERFACE_TOOLS
-        assert "send_file" in INTERFACE_TOOLS["qq"]
-        assert "send_file" in INTERFACE_TOOLS["web"]  # Web 交付形态：下载卡片
+        assert "send_user_file" in INTERFACE_TOOLS["qq"]
+        assert "send_user_file" in INTERFACE_TOOLS["web"]  # Web 交付形态：下载卡片
 
 
 class TestInterfaceCapsPromptBlock:
     """interface_caps 块按驱动接口注入能力段。
 
-    原 ``interface_hint`` 的两块 send_file 散文已并入接口能力档案
+    原 ``interface_hint`` 的两块 send_user_file 散文已并入接口能力档案
     （``core/interface_profile.py``），QQ 的提示词断言随之改为能力段内容。
     """
 
@@ -145,41 +145,62 @@ class TestOutbox:
         assert [f.path for f in outbox.drain_files("ws:s2")] == ["/tmp/b"]
 
     def test_rejects_when_full(self):
-        for i in range(outbox.MAX_PENDING_FILES):
+        for i in range(outbox.DEFAULT_MAX_PENDING_FILES):
             assert outbox.enqueue_file("ws:s1", f"/tmp/{i}")
         assert outbox.enqueue_file("ws:s1", "/tmp/overflow") is False
-        assert outbox.pending_count("ws:s1") == outbox.MAX_PENDING_FILES
+        assert outbox.pending_count("ws:s1") == outbox.DEFAULT_MAX_PENDING_FILES
 
     def test_rejects_empty_args(self):
         assert outbox.enqueue_file("", "/tmp/a") is False
         assert outbox.enqueue_file("ws:s1", "") is False
 
+    def test_dedup_same_path(self):
+        """同一路径重复登记只入队一次（重复交付同一产物不该出现两次）。"""
+        assert outbox.enqueue_file("ws:s1", "/tmp/a.pdf", "报告")
+        assert outbox.enqueue_file("ws:s1", "/tmp/a.pdf", "改过的说明") is False
+        assert outbox.pending_count("ws:s1") == 1
+        assert outbox.drain_files("ws:s1")[0].note == "报告"
 
-# ─── send_file 工具校验 ───────────────────────────────────────────────
+    def test_overflow_is_whole_batch(self):
+        """容量不足时整批拒绝（不截断）——工具回执必须与事实一致。"""
+        res = outbox.enqueue_files("ws:s1", [("/tmp/a", ""), ("/tmp/b", "")], limit=1)
+        assert res.accepted == []
+        assert res.overflow is True
+        assert outbox.pending_count("ws:s1") == 0
+
+    def test_batch_enqueue_and_dedup(self):
+        res = outbox.enqueue_files(
+            "ws:s1", [("/tmp/a", "n"), ("/tmp/a", "n2"), ("/tmp/b", "")]
+        )
+        assert res.accepted == ["/tmp/a", "/tmp/b"]
+        assert res.duplicates == ["/tmp/a"]
 
 
-class TestSendFileTool:
+# ─── send_user_file 工具校验 ───────────────────────────────────────────────
+
+
+class TestSendUserFileTool:
     def teardown_method(self):
         outbox.clear()
 
     def _tool(self, runner):
         from core.tools import get_tool_by_name
-        tool = get_tool_by_name(runner.tools, "send_file")
+        tool = get_tool_by_name(runner.tools, "send_user_file")
         assert tool is not None
         return tool
 
     def test_rejects_missing_path(self, runner):
-        assert self._tool(runner).execute(path="").error is True
+        assert self._tool(runner).execute(paths=[""]).error is True
 
     def test_rejects_nonexistent_file(self, runner):
-        res = self._tool(runner).execute(path="nope.txt")
+        res = self._tool(runner).execute(paths=["nope.txt"])
         assert res.error is True
         assert "not found" in res.output
 
     def test_rejects_directory(self, runner):
         d = Path(runner.cwd) / "somedir"
         d.mkdir(exist_ok=True)
-        res = self._tool(runner).execute(path="somedir")
+        res = self._tool(runner).execute(paths=["somedir"])
         assert res.error is True
         assert "not a file" in res.output
 
@@ -189,7 +210,7 @@ class TestSendFileTool:
         existing_outside.write_text("x", encoding="utf-8")
         try:
             for probe in ("../outside_probe.txt", "../definitely_missing.txt"):
-                res = self._tool(runner).execute(path=probe)
+                res = self._tool(runner).execute(paths=[probe])
                 assert res.error is True
                 assert "outside the workspace" in res.output
         finally:
@@ -198,7 +219,7 @@ class TestSendFileTool:
     def test_accepts_file_in_workspace(self, runner):
         f = Path(runner.cwd) / "report.md"
         f.write_text("hello", encoding="utf-8")
-        res = self._tool(runner).execute(path="report.md", note="周报")
+        res = self._tool(runner).execute(paths=["report.md"], note="周报")
         assert not res.error, res.output
         assert "report.md" in res.output
         assert "周报" in res.output
@@ -210,7 +231,7 @@ class TestSendFileTool:
     def test_bare_filename_resolves_in_workspace(self, runner):
         """裸文件名按工作区（=工具 cwd）查找。"""
         (Path(runner.cwd) / "bare.txt").write_text("x", encoding="utf-8")
-        res = self._tool(runner).execute(path="bare.txt")
+        res = self._tool(runner).execute(paths=["bare.txt"])
         assert not res.error, res.output
 
     def test_rejects_symlink_escaping_workspace(self, runner):
@@ -225,19 +246,90 @@ class TestSendFileTool:
         except (OSError, NotImplementedError):
             pytest.skip("当前环境不支持创建符号链接")
         try:
-            res = self._tool(runner).execute(path="sneaky.txt")
+            res = self._tool(runner).execute(paths=["sneaky.txt"])
             assert res.error is True
             assert "outside the workspace" in res.output
         finally:
             outside.unlink(missing_ok=True)
 
-    def test_rejects_oversized_file(self, runner, monkeypatch):
-        from core.tools import send_file as sf
-        monkeypatch.setattr(sf, "MAX_FILE_BYTES", 4)
-        (Path(runner.cwd) / "big.bin").write_bytes(b"12345678")
-        res = self._tool(runner).execute(path="big.bin")
+    def test_rejects_oversized_file(self, runner):
+        """体积上限按当前回合档案校验（QQ 档案 200MB，此处用小档案做快速回归）。"""
+        from core.interface_profile import InterfaceProfile
+        tool = self._tool(runner)
+        tool.set_interface_profile(
+            InterfaceProfile(name="t", label="t", can_send_file=True, file_size_limit_mb=1)
+        )
+        (Path(runner.cwd) / "big.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+        try:
+            res = tool.execute(paths=["big.bin"])
+            assert res.error is True
+            assert "too large" in res.output
+            assert "max 1MB" in res.output
+        finally:
+            (Path(runner.cwd) / "big.bin").unlink(missing_ok=True)
+
+    def test_accepts_oversized_file_without_limit_profile(self, runner):
+        """档案未设上限（如 Web 本地链接交付）时不做体积校验。"""
+        from core.interface_profile import InterfaceProfile
+        tool = self._tool(runner)
+        tool.set_interface_profile(
+            InterfaceProfile(name="t", label="t", can_send_file=True)
+        )
+        (Path(runner.cwd) / "big.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+        try:
+            res = tool.execute(paths=["big.bin"])
+            assert res.error is not True
+            assert "Queued" in res.output
+        finally:
+            (Path(runner.cwd) / "big.bin").unlink(missing_ok=True)
+            outbox.clear()
+
+    def test_batch_accepts_multiple(self, runner):
+        """一次调用提交多个产物（批量签名）。"""
+        for name in ("a.txt", "b.txt"):
+            (Path(runner.cwd) / name).write_text("x", encoding="utf-8")
+        res = self._tool(runner).execute(paths=["a.txt", "b.txt"], note="两个")
+        assert not res.error, res.output
+        assert "Queued 2 file(s)" in res.output
+        drained = outbox.drain_files(
+            f"{runner.workspace_uuid}:{runner.current_session_id}"
+        )
+        assert [Path(f.path).name for f in drained] == ["a.txt", "b.txt"]
+        assert drained[0].note == "两个"
+
+    def test_whole_batch_rejected_when_one_bad(self, runner):
+        """任一件不合格则整批拒绝——部分接受会让模型难以推断实际交付了什么。"""
+        (Path(runner.cwd) / "good.txt").write_text("x", encoding="utf-8")
+        res = self._tool(runner).execute(paths=["good.txt", "missing.txt"])
         assert res.error is True
-        assert "too large" in res.output
+        assert "nothing was queued" in res.output
+        assert "missing.txt" in res.output
+        key = f"{runner.workspace_uuid}:{runner.current_session_id}"
+        assert outbox.pending_count(key) == 0
+
+    def test_rejects_over_per_turn_limit(self, runner):
+        """条数上限按档案在**登记时**校验，而不是等交付层截断。"""
+        from core.interface_profile import InterfaceProfile
+        tool = self._tool(runner)
+        tool.set_interface_profile(
+            InterfaceProfile(name="t", label="t", can_send_file=True, max_files_per_turn=1)
+        )
+        for name in ("a.txt", "b.txt"):
+            (Path(runner.cwd) / name).write_text("x", encoding="utf-8")
+        res = tool.execute(paths=["a.txt", "b.txt"])
+        assert res.error is True
+        assert "at most 1 per turn" in res.output
+        key = f"{runner.workspace_uuid}:{runner.current_session_id}"
+        assert outbox.pending_count(key) == 0
+
+    def test_duplicate_path_skipped(self, runner):
+        """同回合重复登记同一路径：第二次跳过并在回执里说明。"""
+        (Path(runner.cwd) / "a.txt").write_text("x", encoding="utf-8")
+        tool = self._tool(runner)
+        assert not tool.execute(paths=["a.txt"]).error
+        second = tool.execute(paths=["a.txt"])
+        assert not second.error
+        assert "already queued" in second.output
 
 
 # ─── turn_dispatch：ask_user 判定 ────────────────────────────────────

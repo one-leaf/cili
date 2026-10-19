@@ -6,7 +6,7 @@
 - markdown：等宽字体 + ANSI 渲染，表格/粗体可用，无 HTML；
 - 图片：``image_protocol`` 按探测结果填（kitty/iterm2 可内嵌，其余纯文本），
   对齐 pi 的 ``TerminalCapabilities``（只有 kitty/iterm2，无 sixel）；
-- 无 send_file：文件交付=告诉用户工作区路径；
+- 无 send_user_file：文件交付=告诉用户工作区路径；
 - 流式：终端逐行刷新即可。
 """
 

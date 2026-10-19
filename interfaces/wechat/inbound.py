@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 
 from core.multimodal import build_user_input
-from core.outbox import drain_files
+from core.outbox import drain_files, record_delivery_notice
 from core.session_registry import registry, session_key
 from core.turn_dispatch import execute_turn, prepare_turn
 from interfaces.wechat import commands, media
@@ -159,7 +159,7 @@ class InboundHandler:
                 return
 
             prepared = prepare_turn(runner, content=content, user_input=user_input)
-            # 按回合门控：只有微信驱动时 send_file 才可见
+            # 按回合门控：只有微信驱动时 send_user_file 才可见
             runner.set_turn_interface("wechat")
 
             sink = WechatSink(
@@ -178,7 +178,7 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(user_id, key, chat)
+        await self._send_outbox_files(runner, user_id, key, chat)
 
     # ── 出站辅助 ────────────────────────────────────────────────────
 
@@ -191,17 +191,20 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[wechat/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(self, user_id: str, key: str, chat) -> None:
-        """回合末取走 ``send_file`` 登记的文件并加密上传发送。
+    async def _send_outbox_files(self, runner, user_id: str, key: str, chat) -> None:
+        """回合末取走 ``send_user_file`` 登记的文件并加密上传发送。
 
         受 ``max_outbound_files`` 与剩余发送预算双重限制——文本分片与出站文件共享
-        同一个 context_token 的额度。
+        同一个 context_token 的额度。**条数上限已在工具登记时校验过**，这里只剩
+        「进度/正文吃掉预算」这个交付期才知道的变量；发不完的件不静默丢：给用户
+        一条 ⚠️ 文案，并把交付回执落进会话（UI 可见、不进 LLM 上下文）。
         """
         files = drain_files(key)
         if not files:
             return
         if self._rt.outbound is None:
             logger.warning("[wechat/inbound] 发送层未就绪，丢弃待发文件")
+            record_delivery_notice(runner.session, [], [f.path for f in files], "发送通道未就绪")
             return
 
         # 留 1 条给可能的提示文案
@@ -211,29 +214,44 @@ class InboundHandler:
         )
         if limit <= 0:
             await self._send_text(user_id, "⚠️ 本轮发送配额已用尽，文件未能发送。")
-            return
-        if len(files) > limit:
-            await self._send_text(
-                user_id, f"⚠️ 本轮只能发 {limit} 个文件，其余 {len(files) - limit} 个已跳过。"
+            record_delivery_notice(
+                runner.session, [], [f.path for f in files], "本轮发送配额已用尽"
             )
-            files = files[:limit]
+            return
+
+        over = files[limit:]
+        if over:
+            await self._send_text(
+                user_id, f"⚠️ 本轮只能发 {limit} 个文件，其余 {len(over)} 个未发出。"
+            )
 
         from core.config import find_workspace_entry
 
         entry = find_workspace_entry(chat.workspace_uuid) or {}
         workspace_root = str(entry.get("directory") or "")
 
-        for f in files:
+        sent: list[str] = []
+        failed: list[str] = []
+        for f in files[:limit]:
             try:
                 await media.send_file(
                     self._rt.outbound, user_id, f.path,
                     workspace_root=workspace_root or None, reserve=1,
                 )
+                sent.append(f.path)
             except media.MediaError as e:
                 logger.warning(f"[wechat/inbound] 发送文件失败：{e}")
+                failed.append(f.path)
                 await self._send_text(user_id, f"⚠️ {e}")
             except Exception as e:  # noqa: BLE001 — 单个文件失败不影响其它
+                failed.append(f.path)
                 logger.exception(f"[wechat/inbound] 发送文件异常：{e}")
+
+        skipped = [f.path for f in over] + failed
+        if skipped:
+            record_delivery_notice(
+                runner.session, sent, skipped, "本轮配额不足" if over else "发送失败"
+            )
 
 
 # ─── 模块级辅助 ───────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ def drain_outbox_events(runner, event_queue: queue.Queue[str | None]) -> None:
         try:
             rel = os.path.relpath(f.path, runner.cwd).replace("\\", "/")
         except ValueError:
-            # 不同盘符（理论不可达：send_file 已做工作区边界校验）；退化为裸文件名
+            # 不同盘符（理论不可达：send_user_file 已做工作区边界校验）；退化为裸文件名
             rel = name
         # 空格会截断 markdown 链接，URL 编码之（文件路由按解码后的 path 服务）
         link = rel.replace(" ", "%20")
@@ -69,10 +69,14 @@ def drain_outbox_events(runner, event_queue: queue.Queue[str | None]) -> None:
             "note": f.note, "session_id": runner.current_session_id,
         }, ensure_ascii=False) + "\n\n")
 
+        # flush=True：回合的 checkpoint save 已在此之前完成，之后没人保证再 save——
+        # 不 flush 的话卡片只是内存脏消息，下一次 save（往往是下一回合）才落盘；
+        # 期间刷新页面/服务重启都会丢（刷新后看不到下载链接）。
         try:
             runner.session.add_message(
                 "assistant", content,
                 meta={"file_card": {"name": name, "path": link, "note": f.note}},
+                flush=True,
             )
         except Exception:  # noqa: BLE001 —— 落盘失败只记日志，帧已发出
             logger.exception("[sse] file_card 消息落盘失败")

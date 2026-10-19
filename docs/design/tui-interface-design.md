@@ -94,8 +94,10 @@ access_token 时服务端走 IP 白名单，客户端无需 token。连接失败
 - `/new` 新建、`/s` 列出最近 10 条、`/s <序号>` 切换
 - 多 TUI 各自新会话互不干扰；同一会话并发驱动由**服务端 registry.claim 互斥**，
   客户端收到 `{"type": "error"}` 帧（「当前会话正在执行中」）显示后保持可输入
-- 出站文件：回合末服务端 `drain_outbox_events` 推 `file` 帧（send_file 产物路径），
-  TUI 只展示不上传——与 tui 能力档案 `can_send_file=False` 一致
+- 出站文件：TUI 回合里 `send_user_file` **不可见**（`INTERFACE_TOOLS` 不含 tui、
+  能力档案 `can_send_file=False`），队列不会产生条目，因此 `file` 帧的渲染路径当前
+  是休眠的——保留它是为将来做终端图片协议时的接缝；现在模型在正文里给工作区相对
+  路径就是交付本身
 
 ## 六、回合流与超时（client.py `chat_stream`）
 

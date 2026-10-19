@@ -30,7 +30,7 @@ from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
 from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
-from core.tools.send_file import SendFileTool
+from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
 from core.tools.session_tool import SessionTool
 from core.tools.skill import SkillTool
@@ -95,8 +95,8 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "session": _factory(SessionTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
-    # QQ 专属（按回合门控，Web 回合不可见）：把工作区内文件发给用户
-    "send_file": _factory(SendFileTool),
+    # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户
+    "send_user_file": _factory(SendUserFileTool),
 }
 
 

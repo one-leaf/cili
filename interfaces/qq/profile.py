@@ -26,6 +26,8 @@ PROFILE = InterfaceProfile(
     can_send_file=True,
     file_delivery="upload",
     file_size_limit_mb=HARD_LIMIT_BYTES // (1024 * 1024),
+    # 流式消息占 1 次被动回复，单条用户消息共 4 次 → 出站文件 1+N ≤ 4
+    max_files_per_turn=3,
 )
 
 register_profile(PROFILE)

@@ -24,15 +24,17 @@ PROFILE = InterfaceProfile(
     max_message_chars=None,
     streaming=True,
     thinking_visible=True,
-    # send_file 在 Web 落地为下载卡片：回合末 drain outbox → SSE file 帧 +
+    # send_user_file 在 Web 落地为下载卡片：回合末 drain outbox → SSE file 帧 +
     # 落一条 file_card 消息（见 web/sse.drain_outbox_events）
     can_send_file=True,
     file_delivery="link",
-    # 与 core/tools/send_file.MAX_FILE_BYTES 对齐（工具自身的兜底校验）
-    file_size_limit_mb=200,
+    # file_size_limit_mb 不设：交付是本地下载链接（FileResponse 流式响应），
+    # 不经过富媒体上传，多大都行
     guidance=(
-        "Files: reference them by workspace-relative path, e.g. `![plot](plot.svg)`. "
-        "Never use `file://` URLs or absolute paths.",
+        # 只讲渲染面（怎么内联显示）；「怎么交付文件」由 can_send_file 分支的
+        # Files 行负责——两处都写会给出互相矛盾的两条 Files 指令
+        "Inline images and diagrams by workspace-relative path, e.g. `![plot](plot.svg)`; "
+        "never use `file://` URLs or absolute paths.",
         "Do NOT rasterize a diagram to PNG for display — SVG and mermaid render "
         "natively.",
         "Write large artifacts (HTML/SVG/reports) to the workspace and reference "

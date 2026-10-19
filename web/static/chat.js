@@ -155,6 +155,38 @@ function normalizeContent(content) {
 }
 
 // Render messages
+// 出站文件卡片（send_user_file 落下的 file_card 消息）：连续出现 ≥3 条时折叠成
+// 一个附件块——单个文件仍按逐条卡片显示，成批产物不刷屏。
+const FILE_CARD_FOLD_THRESHOLD = 3;
+
+function _fileCardGroups(messages) {
+    const groups = new Map();  // 消息下标 → { head, cards }
+    let i = 0;
+    while (i < messages.length) {
+        if (!messages[i]._meta?.file_card) { i++; continue; }
+        let j = i;
+        const cards = [];
+        while (j < messages.length && messages[j]._meta?.file_card) {
+            cards.push(messages[j]._meta.file_card);
+            j++;
+        }
+        if (cards.length >= FILE_CARD_FOLD_THRESHOLD) {
+            for (let k = i; k < j; k++) groups.set(k, { head: k === i, cards });
+        }
+        i = j;
+    }
+    return groups;
+}
+
+function _renderFileCardGroup(cards) {
+    const lines = [`📎 附件（${cards.length} 个）`, ''];
+    cards.forEach(card => {
+        const note = card.note ? ` —— ${card.note}` : '';
+        lines.push(`- [${card.name}](${card.path})${note}`);
+    });
+    addMessage('assistant', lines.join('\n'));
+}
+
 function renderMessages(messages) {
     chatMessages.innerHTML = '';
     // 全局事件流那条路的渲染器持有 DOM 引用，清空后必须重置
@@ -169,11 +201,21 @@ function renderMessages(messages) {
         return;
     }
 
+    // 出站文件卡片连续 ≥3 条时折叠（映射：消息下标 → 组）
+    const fileGroups = _fileCardGroups(messages);
+
     messages.forEach((msg, idx) => {
         const role = msg.role;
         if (role === 'system') return;
         // 后台 agent 完成通知：LLM 上下文需要但前端不显示
         if (msg._meta?.background_notification) return;
+
+        // send_user_file 的出站文件卡片：成批时整组只渲染一次
+        const fileGroup = fileGroups.get(idx);
+        if (fileGroup) {
+            if (fileGroup.head) _renderFileCardGroup(fileGroup.cards);
+            return;
+        }
 
         const msgId = msg._meta?.id;  // 消息唯一 ID，用于分享链接
         const content = msg.content;
@@ -910,7 +952,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
                         } else if (event.type === 'todo_update') {
                             renderTodoList(event.todos);
                         } else if (event.type === 'file') {
-                            // send_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
+                            // send_user_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
                             const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
                             addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
                         } else if (event.type === 'retry_clear') {
@@ -1281,7 +1323,7 @@ async function sendMessage() {
                         // Todo 列表更新，渲染任务清单
                         renderTodoList(event.todos);
                     } else if (event.type === 'file') {
-                        // send_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
+                        // send_user_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
                         const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
                         addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
                     } else if (event.type === 'retry_clear') {

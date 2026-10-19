@@ -652,7 +652,9 @@ class SessionStore:
             if meta.get("error_notice"):
                 continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
             if meta.get("file_card"):
-                continue  # send_file 的出站文件卡片（下载链接），仅 UI 展示
+                continue  # send_user_file 的出站文件卡片（下载链接），仅 UI 展示
+            if meta.get("delivery_notice"):
+                continue  # 交付回执（哪些文件没发出去），仅 UI 展示
 
             role = msg.get("role")
             content = msg.get("content", "")

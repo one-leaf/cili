@@ -142,7 +142,7 @@ class Tool(ShellMixin, BackgroundMixin):
         """接收当前回合的接口能力档案（InterfaceProfile | None）。
 
         ``SessionRunner.set_turn_interface`` 在接口切换时对**全部**工具调用；
-        接口感知的工具（如 send_file）覆写本方法按档案调整描述/行为，其余工具
+        接口感知的工具（如 send_user_file）覆写本方法按档案调整描述/行为，其余工具
         用这个空实现。``profile`` 为 None 表示驱动接口未声明。
         """
         return None

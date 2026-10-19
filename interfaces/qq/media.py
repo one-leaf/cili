@@ -60,7 +60,7 @@ def infer_file_type(path: str | Path) -> int:
 def validate_media_path(path: str | Path, workspace_root: str | Path) -> Path:
     """路径白名单校验（realpath 双侧比对，防符号链接绕过）。
 
-    ``send_file`` 工具已校验过一遍，这里再校验一次是纵深防御——本模块才是真正
+    ``send_user_file`` 工具已校验过一遍，这里再校验一次是纵深防御——本模块才是真正
     把路径交给 SDK 的地方。
     """
     target = Path(os.path.realpath(str(path)))

@@ -50,7 +50,7 @@ class InterfaceProfile:
     - ``image_protocol``：终端图片协议（none|sixel|kitty|iterm2），为终端接入端
       预留（pi 的 TerminalCapabilities 只认 kitty/iterm2）。
     - ``file_delivery``：``upload``（上传到聊天）/ ``link``（transcript 内下载链接）
-      / ``none``（不支持 send_file）。
+      / ``none``（不支持 send_user_file）。
     - ``guidance``：行为指令文案（含禁止项），逐行进入能力段。
     - ``extra``：前向扩展口——加新能力字段时不必改所有档案。
     """
@@ -67,6 +67,9 @@ class InterfaceProfile:
     can_send_file: bool = False
     file_delivery: str = "none"
     file_size_limit_mb: int | None = None
+    # 每回合可交付的文件数上限；None = 不限（如 Web 的本地下载链接）。
+    # 由工具在**登记时**校验——交付层截断会让模型拿到与事实不符的回执。
+    max_files_per_turn: int | None = None
     guidance: tuple[str, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -99,7 +102,7 @@ AGENT_PROFILE = InterfaceProfile(
     not_rendered=("SVG", "HTML", "images", "mermaid"),
     guidance=(
         "Do NOT produce UI-oriented artifacts: no mermaid-for-display, "
-        "no inline SVG, no `send_file`.",
+        "no inline SVG, no `send_user_file`.",
         "Return text, file paths, and structured summaries.",
     ),
 )
@@ -151,14 +154,18 @@ def render_capability_section(profile: InterfaceProfile) -> str:
             lines.append("Message limit: none.")
 
     if profile.can_send_file:
+        if profile.max_files_per_turn:
+            lines.append(
+                f"At most {profile.max_files_per_turn} files per turn."
+            )
         if profile.file_delivery == "link":
             lines.append(
-                "Files: call `send_file` to hand a workspace file to the user; "
+                "Files: call `send_user_file` to hand a workspace file to the user; "
                 "it arrives as a download link in the transcript."
             )
         else:
             lines.append(
-                "Files: call `send_file` to deliver a workspace file; "
+                "Files: call `send_user_file` to deliver a workspace file; "
                 "it is uploaded and sent after the current turn."
             )
         if profile.inline_image_exts:

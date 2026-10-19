@@ -50,8 +50,8 @@ interfaces/qq/             QQ 接入端（SDK 单例，宿主线程 + 宿主 loo
 core/interface.py          Interface ABC + Attachment
 core/turn_dispatch.py      接口无关的回合驱动（认领后的「跑什么 / 怎么收尾」）
 core/default_sink.py       default_sink 绑定（发布到全局事件总线）
-core/outbox.py             出站文件队列（send_file 工具入队 → 接入端回合末出队）
-core/tools/send_file.py    send_file 工具（QQ 专属，按回合门控）
+core/outbox.py             出站文件队列（send_user_file 工具入队 → 接入端回合末出队）
+core/tools/send_user_file.py  send_user_file 工具（接口专属，按回合门控）
 ```
 
 ### 1.1 `Interface` ABC 只有一个方法
@@ -195,7 +195,7 @@ API**，靠 `file_info` 的 `ttl` 到期自动失效。消息撤回仅限发送�
 | 用途 | 条数 |
 |---|---|
 | 流式消息（工具轨迹 + 答案 + ask_user 提示折进尾部） | 1 |
-| 出站文件（`send_file`） | N |
+| 出站文件（`send_user_file`） | ≤ 3（**登记时按档案校验**） |
 | 合计 | **1 + N ≤ 4 → N ≤ 3** |
 
 `ask_user` / 审批提示**折进流尾部**而不是另发一条——流本来就是纯追加的，天然兼容，
@@ -255,14 +255,19 @@ SDK 的 `build_text_body` 会按 `MAX_MESSAGE_LENGTH = 4000` **静默截断**—
 
 ---
 
-## 七、出站文件：`send_file` 工具
+## 七、出站文件：`send_user_file` 工具
 
-agent 生成报告/图片后显式调用 `send_file(path, note="")`：校验（工作区内、realpath 防符号
-链接、≤200MB）后入队 `core/outbox`，由接入端在回合末取走上传发送。
+agent 生成报告/图片后显式调用 `send_user_file(paths=[...], note="")`：逐件校验（工作区内、
+realpath 防符号链接、体积与条数按能力档案）后**整批**入队 `core/outbox`，由接入端在回合末
+取走上传发送。任一件不合格则整批拒绝（部分接受会让模型难以推断实际交付了什么）。
+
+条数上限在**登记时**校验，交付层不再截断；交付期只有「流式消息吃掉被动回复配额」这一个
+不可预知的变量——发不完的件给用户一条 ⚠️ 文案，并把交付回执（`_meta.delivery_notice`，
+UI 可见、不进 LLM 上下文）落进会话。
 
 **为什么用工具而不是扫描目录**：语义明确、可控，不会误发中间产物。
 
-**为什么按回合门控**：`send_file` 是 QQ 专属。但 runner 创建一次就缓存在 registry 里，
+**为什么按回合门控**：`send_user_file` 是接口专属（web/qq/wechat 各自声明）。但 runner 创建一次就缓存在 registry 里，
 而会话在 Web/QQ 之间共享——同一个 runner 可能这回合被 Web 驱动、下回合被 QQ 驱动。所以
 门控必须**按回合**（`runner.set_turn_interface(...)`），不能按 runner 创建时过滤。
 
@@ -274,7 +279,8 @@ agent 生成报告/图片后显式调用 `send_file(path, note="")`：校验（�
    （渲染面 / 消息上限 / 文件交付方式），事实由 `core/interface_profile.py` 从传输层
    常量生成，QQ 档案在 `interfaces/qq/profile.py`（`__init__` import 时注册）；接口未
    声明（cron 等无客户端回合）时不注入。`interface_hint` 块保留为接口专属散文的逃生口
-   ——原两块 send_file 散文已并入档案 guidance，master.json 不再持有。
+   ——原两块 send_file 散文已并入档案 guidance，master.json 不再持有（工具后来改名
+   为 `send_user_file`，见 `file-delivery-design.md`）。
 3. **skill 层**（本次未用）。
 
 ---
@@ -283,8 +289,9 @@ agent 生成报告/图片后显式调用 `send_file(path, note="")`：校验（�
 
 - **Web 主界面拖放上传改为落到 `{workspace}/uploads/`**（原先落工作区根目录），插入输入框
   的路径随之变成 `uploads/<name>`。文件管理器面板内的拖放行为不变。
-- **Web 暂不消费 outbox**：Web 回合里 `send_file` 不可见，所以不会产生待发文件；出队逻辑
-  对 Web 是空操作。
+- ~~**Web 暂不消费 outbox**~~（已被 `docs/design/file-delivery-design.md` 取代）：Web 回合
+  现在带 `send_user_file`，回合末 `web/sse.drain_outbox_events` 把文件推成 `file` 帧 +
+  `file_card` 消息（下载链接）。
 
 ## 九、未做（明确排除）
 
