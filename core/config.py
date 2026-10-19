@@ -875,23 +875,47 @@ def load_workspace_config(workspace_uuid: str) -> dict:
     return get_workspace_config(workspace_uuid)
 
 
+def _init_workspace_git_quietly(workspace_uuid: str) -> None:
+    """尽力初始化工作区 Git 仓库（失败仅记日志，不阻断启动/调用方流程）。"""
+    try:
+        from core.workspace_git import init_workspace_git, is_git_initialized
+        if not is_git_initialized(workspace_uuid):
+            ok, msg = init_workspace_git(workspace_uuid)
+            if not ok:
+                logger.info(f"[config] 工作区 Git 初始化未执行: {msg}")
+    except Exception as e:  # noqa: BLE001 —— git 缺失/子进程异常都不该影响启动
+        logger.warning(f"[config] 工作区 Git 初始化失败: {e}")
+
+
 def ensure_default_workspace() -> str | None:
     """确保存在名为 "Default" 的工作区，返回其 uuid（失败返回 None）。
 
     原先私有在 ``web/deps.py``；QQ 接入端启动时也要确定「当前工作区」的兜底，
     故下沉 core。幂等。
+
+    Default 默认开启版本管理与记忆：新建时直接写入；旧条目缺省字段一次性
+    补齐（显式关闭过的不动），补齐时顺带初始化 Git 仓库。
     """
     import secrets
 
     try:
-        # 已存在 Default / legacy default → 直接返回（顺手迁移名字）
+        # 已存在 Default / legacy default → 直接返回（顺手迁移名字 + 补默认字段）
         for entry in load_workspaces_index():
             name = entry.get("workspace_name")
             uuid = entry.get("uuid")
             if name in ("Default", "default") and uuid:
+                changed = False
                 if name == "default":
                     entry["workspace_name"] = "Default"
+                    changed = True
+                if "git_enabled" not in entry or "memory_enabled" not in entry:
+                    entry.setdefault("git_enabled", True)
+                    entry.setdefault("memory_enabled", True)
+                    changed = True
+                if changed:
                     save_workspace_config(uuid, entry)
+                if changed and entry.get("git_enabled"):
+                    _init_workspace_git_quietly(uuid)
                 return uuid
 
         workspace_uuid = secrets.token_hex(4)
@@ -906,7 +930,11 @@ def ensure_default_workspace() -> str | None:
             "directory": str(PROJECT_ROOT / "workspace"),
             "created_at": now,
             "updated_at": now,
+            # 新建默认开启版本管理与记忆
+            "git_enabled": True,
+            "memory_enabled": True,
         })
+        _init_workspace_git_quietly(workspace_uuid)
         logger.info(f"[config] 已创建默认工作区: {workspace_uuid}")
         return workspace_uuid
     except (OSError, PermissionError) as e:

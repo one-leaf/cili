@@ -150,6 +150,9 @@ async def create_workspace(request: CreateWorkspaceRequest):
         "directory": workspace_dir,
         "created_at": now,
         "updated_at": now,
+        # 新建工作区默认开启版本管理与记忆
+        "git_enabled": True,
+        "memory_enabled": True,
     }
 
     save_workspace_config(workspace_uuid, ws_config)
@@ -161,6 +164,17 @@ async def create_workspace(request: CreateWorkspaceRequest):
     # Create sessions directory
     sessions_dir = ws_data_dir / "sessions"
     sessions_dir.mkdir(exist_ok=True)
+
+    # 默认开启版本管理：立即初始化 Git 仓库（子进程阻塞，放线程执行；
+    # 失败不阻断创建——首个回合结束的自动提交会再次尝试）
+    try:
+        from core.workspace_git import init_workspace_git, is_git_initialized
+        if not await asyncio.to_thread(is_git_initialized, workspace_uuid):
+            ok, msg = await asyncio.to_thread(init_workspace_git, workspace_uuid)
+            if not ok:
+                logger.warning(f"Workspace created, git init failed: {workspace_uuid}: {msg}")
+    except Exception as e:
+        logger.warning(f"Workspace created, git init errored: {workspace_uuid}: {e}")
 
     return {
         "uuid": workspace_uuid,

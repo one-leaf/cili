@@ -94,6 +94,10 @@ def _isolate_workspaces_index():
         "uuid": "test-default",
         "workspace_name": "Default",
         "directory": test_dir,
+        # 显式关闭：ensure_default_workspace() 命中此条目时按「显式关闭不回填」
+        # 直接返回，避免测试期间触发 git 初始化子进程
+        "git_enabled": False,
+        "memory_enabled": False,
     })
     # 补强：拦截 get_workspace_data_dir 的回落路径，
     # 未注册 uuid 不再回落至真实 Default 工作区，而是指向测试目录

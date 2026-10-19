@@ -1031,3 +1031,51 @@ class TestUpdateRoutes:
         result = asyncio.run(routes_update.download_update())
         assert result["success"] is False
         assert "进行中" in result["error"]
+
+
+class TestCreateWorkspaceDefaults:
+    """POST /api/workspaces 新建工作区默认开启版本管理与记忆。"""
+
+    def test_create_defaults_enabled(self, tmp_path, monkeypatch):
+        """新建工作区：git_enabled/memory_enabled 默认 True，且立即初始化 git"""
+        import asyncio
+
+        import core.config as config_mod
+        from web.routes_workspace import CreateWorkspaceRequest, create_workspace
+
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        monkeypatch.setattr("core.workspace_git.is_git_initialized", lambda uuid: False)
+
+        inited = []
+
+        def _fake_init(uuid):
+            inited.append(uuid)
+            return True, "ok"
+
+        monkeypatch.setattr("core.workspace_git.init_workspace_git", _fake_init)
+
+        result = asyncio.run(create_workspace(
+            CreateWorkspaceRequest(name="测试工作区", directory=str(tmp_path / "ws"))
+        ))
+        entry = config_mod.load_workspace_config(result["uuid"])
+        assert entry["git_enabled"] is True
+        assert entry["memory_enabled"] is True
+        assert inited == [result["uuid"]]
+
+    def test_create_git_init_failure_not_fatal(self, tmp_path, monkeypatch):
+        """git 初始化失败不影响工作区创建，开关保持开启"""
+        import asyncio
+
+        import core.config as config_mod
+        from web.routes_workspace import CreateWorkspaceRequest, create_workspace
+
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        monkeypatch.setattr("core.workspace_git.is_git_initialized", lambda uuid: False)
+        monkeypatch.setattr("core.workspace_git.init_workspace_git", lambda uuid: (False, "Git 未安装"))
+
+        result = asyncio.run(create_workspace(
+            CreateWorkspaceRequest(name="测试工作区", directory=str(tmp_path / "ws"))
+        ))
+        entry = config_mod.load_workspace_config(result["uuid"])
+        assert entry["git_enabled"] is True
+        assert entry["memory_enabled"] is True

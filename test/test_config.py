@@ -366,3 +366,82 @@ class TestModelResolution:
         from core.config import _convert_legacy_model_spec
         spec = _convert_legacy_model_spec({"name": "x", "multimodal": False})
         assert spec["input"] == ["text"]
+
+
+class TestEnsureDefaultWorkspace:
+    """ensure_default_workspace() 默认开启版本管理与记忆。"""
+
+    def test_new_default_enables_both(self, tmp_path, monkeypatch):
+        """全新创建：Default 默认 git_enabled/memory_enabled=True，并触发 git 初始化"""
+        from core import config
+
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        inited = []
+        monkeypatch.setattr(config, "_init_workspace_git_quietly", lambda uuid: inited.append(uuid))
+
+        uuid = config.ensure_default_workspace()
+        assert uuid
+        entry = config.load_workspace_config(uuid)
+        assert entry["git_enabled"] is True
+        assert entry["memory_enabled"] is True
+        assert inited == [uuid]
+
+    def test_existing_default_backfills_and_renames(self, tmp_path, monkeypatch):
+        """旧条目（缺省字段）：一次性补默认开启；legacy default 顺手改名"""
+        from core import config
+
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        config.upsert_workspace_entry({
+            "uuid": "old-ws",
+            "workspace_name": "default",
+            "directory": str(tmp_path / "ws"),
+        })
+        inited = []
+        monkeypatch.setattr(config, "_init_workspace_git_quietly", lambda uuid: inited.append(uuid))
+
+        uuid = config.ensure_default_workspace()
+        assert uuid == "old-ws"
+        entry = config.load_workspace_config("old-ws")
+        assert entry["workspace_name"] == "Default"
+        assert entry["git_enabled"] is True
+        assert entry["memory_enabled"] is True
+        assert inited == ["old-ws"]
+
+    def test_explicit_off_not_overridden(self, tmp_path, monkeypatch):
+        """显式关闭过的字段不回填，也不触发 git 初始化"""
+        from core import config
+
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        config.upsert_workspace_entry({
+            "uuid": "off-ws",
+            "workspace_name": "Default",
+            "directory": str(tmp_path / "ws"),
+            "git_enabled": False,
+            "memory_enabled": False,
+        })
+        inited = []
+        monkeypatch.setattr(config, "_init_workspace_git_quietly", lambda uuid: inited.append(uuid))
+
+        uuid = config.ensure_default_workspace()
+        assert uuid == "off-ws"
+        entry = config.load_workspace_config("off-ws")
+        assert entry["git_enabled"] is False
+        assert entry["memory_enabled"] is False
+        assert inited == []
+
+    def test_backfill_runs_only_once(self, tmp_path, monkeypatch):
+        """字段补齐后再次调用：幂等，不再触发 git 初始化"""
+        from core import config
+
+        monkeypatch.setattr(config, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        config.upsert_workspace_entry({
+            "uuid": "once-ws",
+            "workspace_name": "Default",
+            "directory": str(tmp_path / "ws"),
+        })
+        inited = []
+        monkeypatch.setattr(config, "_init_workspace_git_quietly", lambda uuid: inited.append(uuid))
+
+        assert config.ensure_default_workspace() == "once-ws"
+        assert config.ensure_default_workspace() == "once-ws"
+        assert inited == ["once-ws"]
