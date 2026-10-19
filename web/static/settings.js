@@ -1425,6 +1425,9 @@ function collectProviders() {
 // 只负责检查版本和下载升级包到脚本目录；解压覆盖统一在服务重启时进行。
 
 let updatePollTimer = null;
+// 轮询间隔 10 秒；上限 15 分钟（后台最坏情况：4 个镜像 × 120s 超时 + 传输）
+const UPDATE_POLL_INTERVAL_MS = 10000;
+const UPDATE_POLL_MAX_MS = 15 * 60 * 1000;
 
 async function loadAboutStatus() {
     const statusEl = document.getElementById('about-update-status');
@@ -1439,6 +1442,9 @@ async function loadAboutStatus() {
         if (data.downloading) {
             statusEl.textContent = '正在下载升级包...';
             pollDownloadStatus();
+        } else if (data.last_result && !data.last_result.success) {
+            // 自动下载的失败也在这里可见（结果由 core.updater 统一记录）
+            statusEl.textContent = '✗ ' + (data.last_result.error || '上次下载失败');
         }
     } catch (e) {
         statusEl.textContent = '✗ 加载升级状态失败: ' + e.message;
@@ -1484,26 +1490,36 @@ async function downloadUpdate() {
 
 function pollDownloadStatus() {
     if (updatePollTimer) return;
+    const startedAt = Date.now();
     updatePollTimer = setInterval(async () => {
         try {
             const resp = await fetch('/api/update/status');
             const data = await resp.json();
-            // 仍在下载、或下载线程尚未写入结果（last_result 为空）时，下一轮继续
-            if (data.downloading || !data.last_result) return;
+            // 是否结束只看 downloading：不能用 last_result 为空当「尚未结束」，
+            // 否则自动下载失败（没有结果写入口）后会无限轮询。
+            if (data.downloading && Date.now() - startedAt < UPDATE_POLL_MAX_MS) return;
             clearInterval(updatePollTimer);
             updatePollTimer = null;
             const statusEl = document.getElementById('about-update-status');
+            if (data.downloading) {
+                // 超时兜底：后台仍在下载但轮询已达上限，停止轮询并提示
+                statusEl.textContent = '⚠ 下载耗时过长，仍在后台进行；稍后重新打开本页查看结果';
+                return;
+            }
             const result = data.last_result;
             if (result && result.success) {
                 statusEl.textContent = '✓ ' + (result.message || '升级包已下载');
                 loadAboutStatus();  // 刷新升级包就绪提示
+            } else if (result) {
+                statusEl.textContent = '✗ ' + (result.error || '下载失败');
             } else {
-                statusEl.textContent = '✗ ' + ((result && result.error) || '下载失败');
+                // 无结果记录（异常路径兜底）：刷新整体状态并停止轮询
+                loadAboutStatus();
             }
         } catch (e) {
-            // 网络抖动：下一轮继续
+            // 网络抖动：下一轮继续（受上面的时间上限约束）
         }
-    }, 2000);
+    }, UPDATE_POLL_INTERVAL_MS);
 }
 
 (function initAboutSettings() {

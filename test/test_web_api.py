@@ -1010,8 +1010,9 @@ class TestUpdateRoutes:
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(
             updater, "VERSION_FILE", tmp_path / "web" / "static" / "version.json")
+        # 下载结果已下沉到 core.updater（自动/手动共用同一份）
         monkeypatch.setattr(
-            routes_update, "_last_download_result", {"success": True, "message": "ok"})
+            updater, "_last_download_result", {"success": True, "message": "ok"})
 
         result = asyncio.run(routes_update.update_status())
         assert result["zip_present"] is True
@@ -1031,6 +1032,24 @@ class TestUpdateRoutes:
         result = asyncio.run(routes_update.download_update())
         assert result["success"] is False
         assert "进行中" in result["error"]
+
+    def test_download_start_guard_blocks_double_start(self, monkeypatch):
+        """POST 到线程真正置位之间的窗口也视为「下载中」，连点不会起两个线程"""
+        import asyncio
+
+        from core import updater
+        from web import routes_update
+
+        monkeypatch.setattr(updater, "is_downloading", lambda: False)
+        monkeypatch.setattr(routes_update, "_starting", True)
+
+        result = asyncio.run(routes_update.download_update())
+        assert result["success"] is False
+        assert "进行中" in result["error"]
+
+        # 状态接口同样把它算作下载中——前端轮询因此在窗口期不会提前停止
+        status = asyncio.run(routes_update.update_status())
+        assert status["downloading"] is True
 
 
 class TestCreateWorkspaceDefaults:

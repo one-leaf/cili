@@ -509,6 +509,50 @@ class TestDownloadUpgradeZip:
         assert not (project_root / updater.UPGRADE_ZIP_NAME).exists()
         assert updater.is_downloading() is False
 
+    def test_download_records_shared_result(self, tmp_path, monkeypatch):
+        """下载结果记录在模块级（自动 worker 与手动下载共用，UI 轮询读取）"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(updater, "fetch_remote_version", lambda: "v20260912")
+        real_zip = _make_remote_zip(tmp_path, "v20260912")
+
+        def fake_download(urls, dest, timeout=120):
+            with open(dest, "wb") as f:
+                f.write(real_zip.read_bytes())
+            return True, ""
+
+        monkeypatch.setattr(updater, "_download_zip", fake_download)
+        updater.reset_last_download_result()
+
+        result = updater.download_upgrade_zip()
+        assert result["success"] is True
+        assert updater.get_last_download_result() == result
+
+    def test_busy_does_not_overwrite_result(self, monkeypatch):
+        """抢锁失败（另一线程正在下载）时不写共享结果——否则会覆盖真实结果"""
+        updater.reset_last_download_result()
+        assert updater._download_lock.acquire(blocking=False)
+        try:
+            result = updater.download_upgrade_zip("v20260912")
+            assert result.get("busy") is True
+            assert updater.get_last_download_result() is None
+        finally:
+            updater._download_lock.release()
+
+    def test_exception_becomes_recorded_result(self, monkeypatch):
+        """下载流程抛异常也要变成可展示的结果并记录，且释放进行中标记"""
+        updater.reset_last_download_result()
+
+        def boom(remote_version):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(updater, "_do_download", boom)
+        result = updater.download_upgrade_zip("v20260912")
+        assert result["success"] is False
+        assert "network down" in result["error"]
+        assert updater.get_last_download_result()["success"] is False
+        assert updater.is_downloading() is False
+
 
 class TestPruneStaleFiles:
     """升级残余文件清理"""

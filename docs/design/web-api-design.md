@@ -599,7 +599,7 @@ GET /api/update/status
 }
 ```
 
-`last_result` 为最近一次后台下载的结果（`{success, message/error}`），`zip_present`/`zip_version` 反映脚本目录升级包的就绪状态。
+`last_result` 为最近一次后台下载的结果（`{success, message/error}`；**自动下载与手动下载共用同一份**，由 `core.updater` 记录），`zip_present`/`zip_version` 反映脚本目录升级包的就绪状态。
 
 #### 下载升级包
 

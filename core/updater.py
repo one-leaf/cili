@@ -172,11 +172,32 @@ def is_downloading() -> bool:
     return _download_in_progress
 
 
+# 最近一次升级包下载的结果（自动 worker 与 Web UI 手动下载**共用同一份**，
+# UI 轮询 /api/update/status 读取）。busy 拒绝不写这里——否则会覆盖真正持有
+# 下载的线程的最终结果（并发 POST 时第二个线程抢锁失败就会发生）。
+_last_download_result: dict | None = None
+
+
+def get_last_download_result() -> dict | None:
+    """最近一次升级包下载的结果（自动/手动共用）；尚未下载过为 None。"""
+    return _last_download_result
+
+
+def reset_last_download_result() -> None:
+    """清空结果（新的手动下载开始时调用，让 UI 区分「本次」与「上次」）。"""
+    global _last_download_result
+    _last_download_result = None
+
+
 def download_upgrade_zip(remote_version: str | None = None) -> dict:
     """下载新版本代码包到脚本目录（只下载不应用，重启后由 apply_pending_upgrade 应用）。
 
     已有相同版本的升级包时跳过重复下载；下载先落临时文件，校验通过后原子替换，
     避免半成品包被误认为有效升级包。
+
+    无论自动 worker 还是 Web 手动下载调用，**结果都记录在模块级**
+    ``_last_download_result``——UI 轮询状态接口时据此判断结束并展示成败。
+    busy 拒绝不记录（它不属于本次下载）。
 
     Args:
         remote_version: 已知的远端版本号；缺省时现场检查 GitHub。
@@ -184,41 +205,52 @@ def download_upgrade_zip(remote_version: str | None = None) -> dict:
     Returns:
         成功: {"success": True, "message": str, "skipped": bool}
         失败: {"success": False, "error": str}
+        忙:   {"success": False, "error": str, "busy": True}
     """
-    global _download_in_progress
+    global _download_in_progress, _last_download_result
     if not _download_lock.acquire(blocking=False):
-        return {"success": False, "error": "已有下载任务进行中"}
+        return {"success": False, "error": "已有下载任务进行中", "busy": True}
     _download_in_progress = True
     try:
-        if remote_version is None:
-            remote_version = fetch_remote_version()
-        if not remote_version:
-            return {"success": False, "error": "版本检查失败（网络异常）"}
-
-        zip_path = get_upgrade_zip_path()
-        if zip_path.exists():
-            existing = read_zip_version(str(zip_path))
-            if existing == remote_version:
-                return {"success": True, "skipped": True,
-                        "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
-
-        tmp_path = zip_path.parent / (zip_path.name + ".downloading")
-        try:
-            downloaded, last_error = _download_zip(list(MIRROR_URLS.values()), str(tmp_path))
-            if not downloaded:
-                return {"success": False, "error": f"所有镜像均下载失败：{last_error}"}
-            # 落盘前校验：包损坏或缺版本信息直接判失败，不占用升级包路径
-            if read_zip_version(str(tmp_path)) is None:
-                return {"success": False, "error": "下载的升级包无效（缺少版本信息或已损坏）"}
-            os.replace(str(tmp_path), str(zip_path))
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
-        return {"success": True, "skipped": False,
-                "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
+        result = _do_download(remote_version)
+    except Exception as e:  # noqa: BLE001 —— 任何异常都要变成可展示的结果
+        logger.exception("[updater] 下载升级包异常")
+        result = {"success": False, "error": str(e)}
     finally:
         _download_in_progress = False
         _download_lock.release()
+    _last_download_result = result
+    return result
+
+
+def _do_download(remote_version: str | None) -> dict:
+    """实际下载流程（调用方持有下载锁并负责记录结果）。"""
+    if remote_version is None:
+        remote_version = fetch_remote_version()
+    if not remote_version:
+        return {"success": False, "error": "版本检查失败（网络异常）"}
+
+    zip_path = get_upgrade_zip_path()
+    if zip_path.exists():
+        existing = read_zip_version(str(zip_path))
+        if existing == remote_version:
+            return {"success": True, "skipped": True,
+                    "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
+
+    tmp_path = zip_path.parent / (zip_path.name + ".downloading")
+    try:
+        downloaded, last_error = _download_zip(list(MIRROR_URLS.values()), str(tmp_path))
+        if not downloaded:
+            return {"success": False, "error": f"所有镜像均下载失败：{last_error}"}
+        # 落盘前校验：包损坏或缺版本信息直接判失败，不占用升级包路径
+        if read_zip_version(str(tmp_path)) is None:
+            return {"success": False, "error": "下载的升级包无效（缺少版本信息或已损坏）"}
+        os.replace(str(tmp_path), str(zip_path))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return {"success": True, "skipped": False,
+            "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
 
 
 def _download_zip(urls: list[str], dest: str, timeout: float = 120) -> tuple[bool, str]:
