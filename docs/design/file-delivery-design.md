@@ -135,10 +135,12 @@ Constraints: files must exist inside the workspace; at most N per turn.
 `render_capability_section` 的 `Files:` 行与档案 `guidance` 职责划清：
 
 - **`Files:` 行（结构化）**：只讲交付通道——能不能发、发几个、多大、长什么样
-- **`guidance`（散文）**：只讲渲染面——哪些内容该内联显示（图片/图表按路径引用）、
-  哪些不该（不要把图表栅格化成 PNG）
+- **`guidance`（散文）**：渲染面规则（哪些内容该内联、不要把图表栅格化成 PNG），
+  外加一条**交付判据**——生成了用户该看到的图片/文件后，必须内联引用或调用
+  `send_user_file`，只写描述不算交付（回归：画完花只写了文字，浏览器什么也没有）。
 
-Web 档案的 guidance 删掉「Files: call `send_user_file`…」那半句，只保留内联显示规则。
+Web 档案的 guidance 删掉「Files: call `send_user_file`…」那半句，避免与结构化行
+并列出现两条 Files 指令；交付判据不占用 `Files:` 行首，不构成重复。
 
 ## 八、落地情况（2026-10-19 完成）
 
