@@ -584,6 +584,12 @@ function bindAccountCommon(card) {
     });
 }
 
+// 扫码登录成功或测试连接成功后，自动勾选「启用」，省去用户手动开关
+function enableAccountCard(card) {
+    const cb = card && card.querySelector('.acc-enabled');
+    if (cb) cb.checked = true;
+}
+
 // ─── QQ 接入端设置 ───────────────────────────────────────────────────
 
 function buildQQCard(acc) {
@@ -672,6 +678,7 @@ async function testQQConnection(card) {
         const data = await response.json();
         resultEl.textContent = (data.success ? '✓ ' : '✗ ') + (data.message || '');
         resultEl.style.color = data.success ? 'var(--success-color, #2e7d32)' : 'var(--error-color, #c62828)';
+        if (data.success) enableAccountCard(card);
     } catch (error) {
         resultEl.textContent = '✗ ' + error.message;
         resultEl.style.color = 'var(--error-color, #c62828)';
@@ -816,6 +823,7 @@ async function wechatStartLogin(card) {
         if (!resp.ok) throw new Error(data.detail || '取二维码失败');
         if (data.status === 'succeeded') {
             closeWechatLoginModal(false);
+            enableAccountCard(card);
             await refreshWechatStatus();
             showToast(data.message || '微信已登录');
             return;
@@ -843,7 +851,11 @@ async function pollWechatLogin(verifyCode) {
         stopWechatPolling();
         wechatSessionId = '';
         if (data.status === 'succeeded') {
+            const accountId = wechatLoginAccountId;  // closeWechatLoginModal 会清空它
             closeWechatLoginModal(false);
+            const card = document.querySelector(
+                `#wechat-accounts-list .account-card[data-account-id="${CSS.escape(accountId)}"]`);
+            enableAccountCard(card);
             await refreshWechatStatus();
             showToast(data.message || '微信已连接');
         } else {
