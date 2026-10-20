@@ -109,6 +109,32 @@ class TestPutConfigQQ:
         assert acct["secret"] == "original-secret"      # 保留
         assert acct["app_id"] == "2"                    # 其它字段更新
 
+    def test_blank_app_id_preserves_existing(self, isolated_config):
+        """凭据/消息格式输入框已移除：表单不携带 → 继承已保存值。"""
+        from web.routes_config import UpdateConfigRequest, update_config
+        _write(isolated_config, {"qq": {"accounts": [
+            {"id": "a1", "app_id": "bound-app", "secret": "s3cr3t", "msg_format": "plain"},
+        ]}})
+
+        asyncio.run(update_config(UpdateConfigRequest(qq={"accounts": [
+            {"id": "a1", "label": "备注", "enabled": True},   # 不带 app_id / secret / msg_format
+        ]})))
+        acct = _read(isolated_config)["qq"]["accounts"][0]
+        assert acct["app_id"] == "bound-app"
+        assert acct["secret"] == "s3cr3t"
+        assert acct["msg_format"] == "plain"
+        assert acct["label"] == "备注"
+
+    def test_new_account_defaults_markdown_msg_format(self, isolated_config):
+        """新账号（表单不带 msg_format）落默认 markdown。"""
+        from web.routes_config import UpdateConfigRequest, update_config
+
+        asyncio.run(update_config(UpdateConfigRequest(qq={"accounts": [
+            {"id": "new1", "enabled": True},
+        ]})))
+        acct = _read(isolated_config)["qq"]["accounts"][0]
+        assert acct["msg_format"] == "markdown"
+
     def test_masked_secret_preserves_existing(self, isolated_config):
         from web.routes_config import UpdateConfigRequest, update_config
         _write(isolated_config, {"qq": {"accounts": [
@@ -248,72 +274,6 @@ class TestAccountToggleDiff:
             {"id": "w1", "enabled": True},
         ]})))
         assert calls == [("start", "w1")]
-
-
-# ─── 测试连接端点（用进程当前域名，不再有 use_sandbox） ───────────────
-
-
-class TestTestQQEndpoint:
-    def test_reports_missing_sdk_clearly(self, isolated_config, monkeypatch):
-        """没装 SDK 时给出可读原因，而不是 500。"""
-        import interfaces.qq.gateway as gw
-        from web.routes_config import QQTestRequest, test_qq_connection
-
-        monkeypatch.setattr(gw, "SDK_AVAILABLE", False)
-        monkeypatch.setattr(gw, "_IMPORT_ERROR", "No module named 'qqbot_agent_sdk'")
-
-        out = asyncio.run(test_qq_connection(QQTestRequest(app_id="a", secret="s")))
-        assert out["success"] is False
-        assert "qqbot-agent-sdk" in out["message"]
-
-    def test_reports_missing_credentials(self, isolated_config, monkeypatch):
-        import interfaces.qq.gateway as gw
-        from web.routes_config import QQTestRequest, test_qq_connection
-
-        monkeypatch.setattr(gw, "SDK_AVAILABLE", True)
-        out = asyncio.run(test_qq_connection(QQTestRequest(app_id="", secret="")))
-        assert out["success"] is False
-        assert "未填写" in out["message"]
-
-    def test_falls_back_to_saved_credentials(self, isolated_config, monkeypatch):
-        """未传 secret 时用已保存账号的。"""
-        import interfaces.qq.gateway as gw
-        from web.routes_config import QQTestRequest, test_qq_connection
-
-        _write(isolated_config, {"qq": {"accounts": [
-            {"id": "a1", "app_id": "saved-app", "secret": "saved-secret"},
-        ]}})
-
-        seen: dict = {}
-
-        async def fake_test(app_id, secret):
-            seen.update(app_id=app_id, secret=secret)
-            return True, "ok"
-
-        monkeypatch.setattr(gw, "test_connection", fake_test)
-        out = asyncio.run(test_qq_connection(QQTestRequest()))
-        assert out["success"] is True
-        assert seen == {"app_id": "saved-app", "secret": "saved-secret"}
-
-    def test_prefers_matching_account(self, isolated_config, monkeypatch):
-        """带 account_id 时用对应账号的已存凭据，而不是第一份。"""
-        import interfaces.qq.gateway as gw
-        from web.routes_config import QQTestRequest, test_qq_connection
-
-        _write(isolated_config, {"qq": {"accounts": [
-            {"id": "a1", "app_id": "app-1", "secret": "s1"},
-            {"id": "a2", "app_id": "app-2", "secret": "s2"},
-        ]}})
-
-        seen: dict = {}
-
-        async def fake_test(app_id, secret):
-            seen.update(app_id=app_id, secret=secret)
-            return True, "ok"
-
-        monkeypatch.setattr(gw, "test_connection", fake_test)
-        asyncio.run(test_qq_connection(QQTestRequest(account_id="a2")))
-        assert seen == {"app_id": "app-2", "secret": "s2"}
 
 
 # ─── API 域名：进程级默认 + 环境变量覆盖（设计 §4.2） ─────────────────

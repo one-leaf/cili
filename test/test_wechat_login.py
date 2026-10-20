@@ -130,7 +130,6 @@ class TestAccount:
     def test_legacy_single_file_compat(self, isolated_data):
         """迁移前布局：账号目录不存在时回退旧单文件（设计 §5.1 兼容读）。"""
         import interfaces.wechat.account as account_mod
-        from interfaces.wechat.account import WechatAccount
         from core.fs_utils import atomic_write_json
         atomic_write_json(
             account_mod.legacy_account_path(),
@@ -141,8 +140,8 @@ class TestAccount:
     def test_no_legacy_fallback_once_dir_exists(self, isolated_data):
         """账号目录已存在时不再回退旧文件——已登出的账号不能从旧文件复活。"""
         import interfaces.wechat.account as account_mod
-        from interfaces.wechat.account import WechatAccount
         from core.fs_utils import atomic_write_json
+        from interfaces.wechat.account import WechatAccount
         atomic_write_json(
             account_mod.legacy_account_path(),
             {"bot_token": "legacy-token"},

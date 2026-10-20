@@ -329,30 +329,9 @@
                         <b>共享同一会话</b>。
                     </div>
 
-                    <details style="margin: 10px 0; padding: 8px 14px; border: 1px solid var(--border-color, #ddd); border-radius: 6px; background: rgba(0,0,0,0.02);">
-                        <summary style="cursor: pointer; font-weight: 600;">📖 对接帮助（如何拿到 AppID / AppSecret）</summary>
-                        <div class="model-description" style="margin-top: 10px;">
-                            <p><strong>1. 创建机器人：</strong>前往
-                            <a href="https://q.qq.com/" target="_blank" rel="noopener">QQ 开放平台（q.qq.com）</a>，
-                            用手机 QQ 扫码登录，点击「创建机器人」。</p>
-                            <p><strong>2. 复制凭据：</strong>在机器人的设置页找到 <b>AppID</b> 与 <b>AppSecret</b> 填到本页。
-                            ⚠️ AppSecret 只在页面上明文显示一次，离开前没保存就得重新生成。</p>
-                            <p><strong>3. 沙箱先跑通：</strong>未发布的机器人只能和沙箱环境互通，保持「沙箱环境」勾选；
-                            正式发布后可取消勾选。</p>
-                            <p><strong>4. 开始对话：</strong>勾选「启用」并保存，在手机 QQ 里给机器人发<b>私聊</b>消息——
-                            第一位发消息的人会自动绑定为 owner。发 <code>/h</code> 可查看全部指令。</p>
-                            <p><strong>配额提醒：</strong>单聊里每条用户消息只能被动回复 <b>4 次</b>（流式回复占 1 次，
-                            所以单轮最多再发 3 个文件）。看到「回复次数已用尽」属于正常限制，不是故障。</p>
-                            <p><strong>排查：</strong>连接失败先用「测试连接」核对凭据；收不到消息请确认机器人已发布、
-                            或你的 QQ 在沙箱白名单里。更多说明见
-                            <a href="https://docs.openclaw.ai/zh-CN/channels/qqbot" target="_blank" rel="noopener">QQ Bot 渠道文档</a>。</p>
-                        </div>
-                    </details>
-
                     <div id="qq-accounts-list"></div>
 
                     <div class="form-group">
-                        <label></label>
                         <button id="qq-add-account-btn" class="btn btn-small btn-primary">添加新账号</button>
                     </div>
 
@@ -371,28 +350,9 @@
                         <b>共享同一会话</b>。仅支持私聊。
                     </div>
 
-                    <details style="margin: 10px 0; padding: 8px 14px; border: 1px solid var(--border-color, #ddd); border-radius: 6px; background: rgba(0,0,0,0.02);">
-                        <summary style="cursor: pointer; font-weight: 600;">📖 对接帮助（扫码即可，无需注册平台）</summary>
-                        <div class="model-description" style="margin-top: 10px;">
-                            <p><strong>1. 扫码登录：</strong>点「扫码登录」，用<b>手机微信</b>扫码并确认；
-                            需要时输入微信里显示的数字验证码。整个过程不需要注册任何开放平台。</p>
-                            <p><strong>2. 开始对话：</strong>勾选「启用」并保存，然后用<b>另一个微信号</b>给扫码的号发私聊——
-                            第一位发消息的人会自动绑定为 owner。发 <code>/h</code> 查看指令、<code>/w</code> 切换工作区、
-                            <code>/s</code> 切换会话。</p>
-                            <p><strong>3. 限制：</strong>仅支持<b>私聊</b>（协议未开放群聊）；每个 context_token 只能发
-                            约 <b>8 条</b>消息、约 90 秒就过期（发送前会自动续期，超配额的回复会自动推迟、
-                            等你下一条消息时补发）；不支持流式更新——长任务按累计 1/2/4/8/16/32/64 次
-                            工具调用发进度消息，答完一次性发出。</p>
-                            <p><strong>排查：</strong>提示「登录已失效」就重新扫码；回复迟迟不来先发 <code>/status</code>
-                            看剩余发送条数；媒体收发依赖 AES 加密通道，个别文件发送失败会降级为文字提示。更多说明见
-                            <a href="https://docs.openclaw.ai/zh-CN/channels/wechat" target="_blank" rel="noopener">微信 ClawBot 渠道文档</a>。</p>
-                        </div>
-                    </details>
-
                     <div id="wechat-accounts-list"></div>
 
                     <div class="form-group">
-                        <label></label>
                         <button id="wechat-add-account-btn" class="btn btn-small btn-primary">添加新账号</button>
                     </div>
 
@@ -439,7 +399,7 @@
         <div class="modal-backdrop" data-modal="wechat-login-modal"></div>
         <div class="modal-content" style="width: 360px;">
             <div class="modal-header">
-                <h2>微信扫码登录</h2>
+                <h2>扫码连接微信</h2>
                 <button class="modal-close" data-modal="wechat-login-modal"
                         id="wechat-login-modal-close">&times;</button>
             </div>
@@ -459,6 +419,31 @@
                 </div>
                 <div style="margin-top: 16px;">
                     <button id="wechat-login-cancel-btn" class="btn btn-small" type="button">取消登录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- QQ 扫码绑定弹框（从设置弹框里点「扫码连接」弹出，z-index 在其上） -->
+    <div id="qq-onboard-modal" class="modal" style="display:none; z-index: 1100;">
+        <div class="modal-backdrop" data-modal="qq-onboard-modal"></div>
+        <div class="modal-content" style="width: 360px;">
+            <div class="modal-header">
+                <h2>扫码连接 QQ 机器人</h2>
+                <button class="modal-close" data-modal="qq-onboard-modal"
+                        id="qq-onboard-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center; padding: 24px;">
+                <div id="qq-onboard-qr-wrap">
+                    <img id="qq-onboard-qr-img" alt="QQ 机器人绑定二维码"
+                         style="width: 240px; height: 240px; display: none;">
+                    <div id="qq-onboard-qr-fallback" class="form-hint"
+                         style="display: none; word-break: break-all; max-width: 280px; margin: 0 auto;">
+                    </div>
+                </div>
+                <div id="qq-onboard-msg" style="margin: 12px 0 4px;"></div>
+                <div style="margin-top: 16px;">
+                    <button id="qq-onboard-cancel-btn" class="btn btn-small" type="button">取消</button>
                 </div>
             </div>
         </div>

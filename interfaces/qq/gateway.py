@@ -11,9 +11,7 @@
 环境变量 ``QQ_API_BASE`` 求值、且被 ``api_client`` 按值导入，一个进程只能有一个
 域名。所以本模块在**导入 SDK 之前** setdefault 该环境变量（默认沙箱，未过审
 机器人只能沙箱收发；要跑正式环境，在启动 cili 前设置
-``QQ_API_BASE=https://api.sgroup.qq.com``）。运行期不再切换域名——
-``test_connection`` 也只用进程当前域名，不再有「测试时翻转在跑账号域名」的
-副作用。
+``QQ_API_BASE=https://api.sgroup.qq.com``）。运行期不再切换域名。
 """
 
 from __future__ import annotations
@@ -68,36 +66,6 @@ def sdk_import_error() -> str:
 def effective_api_base() -> str:
     """当前 SDK 实际使用的 API 域名（来自 import 时的环境变量）。"""
     return os.environ.get("QQ_API_BASE") or SANDBOX_API_BASE
-
-
-async def test_connection(app_id: str, secret: str) -> tuple[bool, str]:
-    """测试凭据能否拿到 token 与网关地址。返回 (是否成功, 说明文案)。
-
-    用进程当前域名（§4.2：域名不再按账号/按次切换）。不触碰正在运行的
-    接口——用独立的临时客户端，测完即关。
-    """
-    if not SDK_AVAILABLE:
-        return False, f"未安装 qqbot-agent-sdk（{_IMPORT_ERROR}）"
-    if not app_id or not secret:
-        return False, "app_id / secret 未填写"
-
-    import httpx
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-        api = QQApiClient(app_id=app_id, client_secret=secret)
-        api.setup(client)
-        try:
-            await api.ensure_token()
-            gateway_url = await api.get_gateway_url()
-        except Exception as e:  # noqa: BLE001 — 凭据/网络/权限错误统一回报
-            return False, f"连接失败：{str(e)[:200]}"
-        finally:
-            try:
-                api.clear_token()
-            except Exception:  # noqa: BLE001
-                pass
-
-    return True, f"连接正常（{effective_api_base()}，网关 {gateway_url[:48]}…）"
 
 
 class QQGateway:

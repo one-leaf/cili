@@ -571,14 +571,15 @@ function workspaceFieldsHtml(acc) {
         </div>`;
 }
 
-function bindAccountCommon(card) {
+function bindAccountCommon(card, deleteConfirmText) {
     const wsSel = card.querySelector('.acc-workspace');
     const lockCb = card.querySelector('.acc-locked');
     const syncLock = () => { lockCb.disabled = !wsSel.value; };
     wsSel.addEventListener('change', syncLock);
     syncLock();
     card.querySelector('.acc-delete').addEventListener('click', () => {
-        if (confirm('删除该账号？保存后其配置与会话绑定将被移除（登录凭证文件保留，重新添加后可重新扫码）。')) {
+        if (confirm(deleteConfirmText ||
+            '删除该账号？保存后其配置与会话绑定将被移除（登录凭证文件保留，重新添加后可重新扫码）。')) {
             card.remove();
         }
     });
@@ -597,41 +598,19 @@ function buildQQCard(acc) {
     card.className = 'account-card';
     card.dataset.accountId = acc.id || '';
     card.style.cssText = ACCOUNT_CARD_STYLE;
+    const bound = !!(acc.app_id && acc.secret_masked);
     card.innerHTML = `
         ${accountHeaderHtml(acc)}
         <div class="form-group">
-            <label>AppID:</label>
-            <input class="acc-app-id" value="${escapeHtml(acc.app_id || '')}"
-                   placeholder="在 QQ 开放平台创建机器人后获取">
+            <label>连接状态:</label>
+            <span class="acc-login-status form-hint">${bound ? '已连接' : '未连接'}</span>
+            <button type="button" class="acc-onboard-btn btn btn-small btn-primary">扫码连接</button>
+            <button type="button" class="acc-disconnect-btn btn btn-small">断开连接</button>
         </div>
-        <div class="form-group">
-            <label>AppSecret:</label>
-            <div>
-                <div class="input-with-icon">
-                    <input type="password" class="acc-secret" placeholder="留空保持不变">
-                </div>
-                <small class="form-hint acc-secret-hint">${
-                    acc.secret_masked ? `当前: ${escapeHtml(acc.secret_masked)}（留空保持不变）` : '未配置'
-                }</small>
-            </div>
-        </div>
-        <div class="form-group">
-            <label>消息格式:</label>
-            <select class="acc-msg-format">
-                <option value="markdown">Markdown（推荐）</option>
-                <option value="plain">纯文本</option>
-            </select>
-            <small class="form-hint">单聊自定义 Markdown 已对所有机器人开放，无需申请模板</small>
-        </div>
-        ${workspaceFieldsHtml(acc)}
-        <div class="form-group">
-            <label></label>
-            <button type="button" class="acc-test-btn btn btn-small">测试连接</button>
-            <span class="acc-test-result form-hint" style="margin-left: 8px;"></span>
-        </div>`;
-    card.querySelector('.acc-msg-format').value = acc.msg_format || 'markdown';
-    bindAccountCommon(card);
-    card.querySelector('.acc-test-btn').addEventListener('click', () => testQQConnection(card));
+        ${workspaceFieldsHtml(acc)}`;
+    bindAccountCommon(card, '删除该账号？保存后其配置与会话绑定将被移除。');
+    card.querySelector('.acc-onboard-btn').addEventListener('click', () => qqStartOnboard(card));
+    card.querySelector('.acc-disconnect-btn').addEventListener('click', () => qqDisconnect(card));
     return card;
 }
 
@@ -642,48 +621,156 @@ function renderQQAccounts(accounts) {
 }
 
 function collectQQAccounts() {
-    return Array.from(document.querySelectorAll('#qq-accounts-list .account-card')).map(card => {
-        const cfg = {
-            id: card.dataset.accountId || '',
-            label: card.querySelector('.acc-label').value.trim(),
-            enabled: card.querySelector('.acc-enabled').checked,
-            default_workspace_uuid: card.querySelector('.acc-workspace').value,
-            workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
-            app_id: card.querySelector('.acc-app-id').value.trim(),
-            msg_format: card.querySelector('.acc-msg-format').value,
-        };
-        const secret = card.querySelector('.acc-secret').value.trim();
-        if (secret) cfg.secret = secret;
-        return cfg;
-    });
+    // 凭据（app_id/secret）与消息格式不进表单：凭据由扫码绑定写入、断开连接
+    // 清除，消息格式固定默认 markdown；留空即继承已保存值
+    return Array.from(document.querySelectorAll('#qq-accounts-list .account-card')).map(card => ({
+        id: card.dataset.accountId || '',
+        label: card.querySelector('.acc-label').value.trim(),
+        enabled: card.querySelector('.acc-enabled').checked,
+        default_workspace_uuid: card.querySelector('.acc-workspace').value,
+        workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+    }));
 }
 
-async function testQQConnection(card) {
-    const resultEl = card.querySelector('.acc-test-result');
-    const btn = card.querySelector('.acc-test-btn');
-    resultEl.textContent = '测试中…';
-    btn.disabled = true;
+// ─── QQ 扫码连接（凭据由服务端落库，前端只展示状态） ──────────────────
+
+let qqOnboardTimer = null;
+let qqOnboardSessionId = '';
+let qqOnboardAccountId = '';
+let qqOnboardCard = null;
+
+function stopQqOnboardPolling() {
+    if (qqOnboardTimer) {
+        clearInterval(qqOnboardTimer);
+        qqOnboardTimer = null;
+    }
+}
+
+function hideQqOnboardQr() {
+    document.getElementById('qq-onboard-qr-wrap').style.display = 'none';
+    document.getElementById('qq-onboard-qr-img').style.display = 'none';
+    document.getElementById('qq-onboard-qr-fallback').style.display = 'none';
+    document.getElementById('qq-onboard-msg').textContent = '';
+}
+
+function renderQqOnboardQr(data) {
+    document.getElementById('qq-onboard-qr-wrap').style.display = '';
+    document.getElementById('qq-onboard-msg').textContent = data.message || '';
+
+    const img = document.getElementById('qq-onboard-qr-img');
+    const fallback = document.getElementById('qq-onboard-qr-fallback');
+    if (data.qr_png_data_url) {
+        img.src = data.qr_png_data_url;
+        img.style.display = '';
+        fallback.style.display = 'none';
+    } else {
+        // 服务端没装 qrcode → 退化成展示原始内容串
+        img.style.display = 'none';
+        fallback.style.display = '';
+        fallback.textContent = data.qr_content || '';
+    }
+}
+
+function closeQqOnboardModal(cancel = true) {
+    stopQqOnboardPolling();
+    const sid = qqOnboardSessionId;
+    const accountId = qqOnboardAccountId;
+    qqOnboardSessionId = '';
+    qqOnboardAccountId = '';
+    qqOnboardCard = null;
+    hideQqOnboardQr();
+    document.getElementById('qq-onboard-modal').style.display = 'none';
+    if (cancel && sid && accountId) {
+        // 尽早丢弃服务端的扫码会话（服务端另有 TTL 兜底）
+        fetch(`/api/qq/accounts/${encodeURIComponent(accountId)}/onboard/cancel?session_id=${encodeURIComponent(sid)}`,
+              { method: 'POST' }).catch(() => {});
+    }
+}
+
+async function qqStartOnboard(card) {
+    const accountId = card.dataset.accountId || '';
+    if (!accountId) {
+        showToast('该账号缺少 ID，请先保存后重试');
+        return;
+    }
+    stopQqOnboardPolling();
+    qqOnboardSessionId = '';
+    qqOnboardAccountId = accountId;
+    qqOnboardCard = card;
+    hideQqOnboardQr();
+    document.getElementById('qq-onboard-modal').style.display = 'flex';
+    document.getElementById('qq-onboard-msg').textContent = '正在获取二维码…';
     try {
-        const body = {
-            account_id: card.dataset.accountId || '',
-            app_id: card.querySelector('.acc-app-id').value.trim(),
-        };
-        const secret = card.querySelector('.acc-secret').value.trim();
-        if (secret) body.secret = secret;   // 留空则后端用已保存的
-        const response = await fetch('/api/config/test-qq', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
+        const resp = await fetch(
+            `/api/qq/accounts/${encodeURIComponent(accountId)}/onboard/start`,
+            { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || '取二维码失败');
+        qqOnboardSessionId = data.session_id;
+        renderQqOnboardQr(data);
+        qqOnboardTimer = setInterval(pollQqOnboard, data.interval_ms || 2000);
+    } catch (e) {
+        // 弹框保持打开，失败原因留在上面，用户看完手动关闭
+        document.getElementById('qq-onboard-msg').textContent = '✗ ' + e.message;
+    }
+}
+
+async function pollQqOnboard() {
+    if (!qqOnboardSessionId || !qqOnboardAccountId) return;
+    try {
+        const resp = await fetch(
+            `/api/qq/accounts/${encodeURIComponent(qqOnboardAccountId)}/onboard/status` +
+            `?session_id=${encodeURIComponent(qqOnboardSessionId)}`);
+        const data = await resp.json();
+        if (data.status === 'pending') return;
+        stopQqOnboardPolling();
+        qqOnboardSessionId = '';
+        const card = qqOnboardCard;
+        qqOnboardCard = null;
+        if (data.status === 'succeeded') {
+            closeQqOnboardModal(false);
+            enableAccountCard(card);
+            await refreshQQStatus();
+            showToast(data.message || '机器人已连接');
+        } else {
+            // 失败/过期：弹框留着展示原因，用户手动关闭
+            document.getElementById('qq-onboard-msg').textContent =
+                '✗ ' + (data.message || '绑定失败');
+        }
+    } catch (e) {
+        // 网络抖动：不清会话，下一轮继续轮询
+    }
+}
+
+async function refreshQQStatus() {
+    try {
+        const resp = await fetch('/api/qq/status');
+        const data = await resp.json();
+        const byId = {};
+        (data.accounts || []).forEach(a => { byId[a.id] = a; });
+        document.querySelectorAll('#qq-accounts-list .account-card').forEach(card => {
+            const acc = byId[card.dataset.accountId];
+            if (!acc) return;
+            const parts = [acc.bound ? '已连接' : '未连接'];
+            if (acc.bound && acc.app_id) parts.push(`机器人 ${acc.app_id}`);
+            if (acc.running) parts.push('运行中');
+            card.querySelector('.acc-login-status').textContent = parts.join(' · ');
         });
-        const data = await response.json();
-        resultEl.textContent = (data.success ? '✓ ' : '✗ ') + (data.message || '');
-        resultEl.style.color = data.success ? 'var(--success-color, #2e7d32)' : 'var(--error-color, #c62828)';
-        if (data.success) enableAccountCard(card);
-    } catch (error) {
-        resultEl.textContent = '✗ ' + error.message;
-        resultEl.style.color = 'var(--error-color, #c62828)';
-    } finally {
-        btn.disabled = false;
+    } catch (e) {
+        // 状态刷新失败不打扰用户
+    }
+}
+
+async function qqDisconnect(card) {
+    const accountId = card.dataset.accountId || '';
+    try {
+        const resp = await fetch(
+            `/api/qq/accounts/${encodeURIComponent(accountId)}/disconnect`, { method: 'POST' });
+        const data = await resp.json();
+        showToast(data.message || '已断开连接');
+        await refreshQQStatus();
+    } catch (e) {
+        showToast('断开连接失败：' + e.message);
     }
 }
 
@@ -698,16 +785,16 @@ function buildWechatCard(acc) {
     card.className = 'account-card';
     card.dataset.accountId = acc.id || '';
     card.style.cssText = ACCOUNT_CARD_STYLE;
-    const parts = [acc.logged_in ? '已登录' : '未登录'];
+    const parts = [acc.logged_in ? '已连接' : '未连接'];
     if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
     if (acc.running) parts.push('运行中');
     card.innerHTML = `
         ${accountHeaderHtml(acc)}
         <div class="form-group">
-            <label>登录状态:</label>
+            <label>连接状态:</label>
             <span class="acc-login-status form-hint">${escapeHtml(parts.join(' · '))}</span>
-            <button type="button" class="acc-login-btn btn btn-small">扫码登录</button>
-            <button type="button" class="acc-logout-btn btn btn-small">登出</button>
+            <button type="button" class="acc-login-btn btn btn-small btn-primary">扫码连接</button>
+            <button type="button" class="acc-logout-btn btn btn-small">断开连接</button>
         </div>
         ${workspaceFieldsHtml(acc)}`;
     bindAccountCommon(card);
@@ -741,7 +828,7 @@ async function refreshWechatStatus() {
         document.querySelectorAll('#wechat-accounts-list .account-card').forEach(card => {
             const acc = byId[card.dataset.accountId];
             if (!acc) return;
-            const parts = [acc.logged_in ? '已登录' : '未登录'];
+            const parts = [acc.logged_in ? '已连接' : '未连接'];
             if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
             if (acc.running) parts.push('运行中');
             card.querySelector('.acc-login-status').textContent = parts.join(' · ');
@@ -907,6 +994,16 @@ async function wechatLogout(card) {
             loginModal.querySelector('.modal-backdrop')
                 .addEventListener('click', () => closeWechatLoginModal(true));
         }
+        // QQ 扫码绑定弹框：同上
+        const onboardModal = document.getElementById('qq-onboard-modal');
+        if (onboardModal) {
+            document.getElementById('qq-onboard-modal-close')
+                .addEventListener('click', () => closeQqOnboardModal(true));
+            document.getElementById('qq-onboard-cancel-btn')
+                .addEventListener('click', () => closeQqOnboardModal(true));
+            onboardModal.querySelector('.modal-backdrop')
+                .addEventListener('click', () => closeQqOnboardModal(true));
+        }
     });
 })();
 // 打开全局设置弹窗
@@ -955,9 +1052,11 @@ async function openSettings() {
         // ── 接入端账号列表（工作区下拉取一次，卡片复用） ──
         await loadSettingsWorkspaceOptions();
         renderQQAccounts(cfg.qq && cfg.qq.accounts);
+        refreshQQStatus();
 
         // ── 微信接入端 ──
         renderWechatAccounts(cfg.wechat && cfg.wechat.accounts);
+        refreshWechatStatus();  // 配置里没有登录态，从 /api/wechat/status 补齐
 
         // ── 关于（版本与升级） ──
         loadAboutStatus();

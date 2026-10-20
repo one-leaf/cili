@@ -86,13 +86,6 @@ class DetectModelsRequest(BaseModel):
     provider: str | None = None    # provider 名：api_key 留空时按它取已保存的 key
 
 
-class QQTestRequest(BaseModel):
-    """测试 QQ 凭据（未提供 secret 时用已保存的）。"""
-    account_id: str | None = None
-    app_id: str | None = None
-    secret: str | None = None
-
-
 # ---------- 掩码 helpers ----------
 
 def _mask_secret(v: str) -> str:
@@ -312,9 +305,17 @@ async def update_config(request: UpdateConfigRequest):
             if not acct_id:
                 acct_id = secrets.token_hex(4)
             cfg_obj.id = acct_id
-            # secret 留空或掩码 → 继承已保存值（前端只回显掩码，不回传明文）
+            # app_id / secret 留空 → 继承已保存值（凭据只由扫码绑定写入、由
+            # 「断开连接」清除，表单里已经没有凭据输入框）
+            if not cfg_obj.app_id:
+                cfg_obj.app_id = str((old_by_id.get(acct_id) or {}).get("app_id") or "")
             if not cfg_obj.secret or _is_masked(cfg_obj.secret):
                 cfg_obj.secret = str((old_by_id.get(acct_id) or {}).get("secret") or "")
+            # msg_format 表单不再提供（默认 markdown）：请求里缺失/留空 → 继承
+            # （from_dict 对缺失键已填默认值，必须看原始 item 才能区分）
+            if not str(item.get("msg_format") or "").strip():
+                cfg_obj.msg_format = str(
+                    (old_by_id.get(acct_id) or {}).get("msg_format") or "markdown")
             new_accounts.append(cfg_obj.to_dict())
         config["qq"] = {"accounts": new_accounts}
         qq_enable_before = {
@@ -592,43 +593,3 @@ async def detect_models(request: DetectModelsRequest | None = None):
         return {"success": False, "models": [], "error": str(e)[:300]}
 
     return {"success": True, "models": sorted(set(model_ids))}
-
-
-@router.post("/api/config/test-qq")
-async def test_qq_connection(request: QQTestRequest | None = None):
-    """测试 QQ 凭据：能否拿到 access token 与网关地址。
-
-    未提供 ``secret`` 时用已保存的（前端只回显掩码，不回传明文）。用进程当前
-    域名（§4.2：域名不再按账号/按次切换），不触碰正在运行的接口——独立临时
-    客户端，测完即关。
-    """
-    if request is None:
-        request = QQTestRequest()
-
-    app_id = (request.app_id or "").strip()
-    secret = (request.secret or "").strip()
-
-    saved_accounts = (load_global_config().get("qq") or {}).get("accounts") or []
-    saved: dict = {}
-    if isinstance(saved_accounts, list):
-        for a in saved_accounts:
-            if not isinstance(a, dict):
-                continue
-            if request.account_id and str(a.get("id") or "") != request.account_id:
-                continue
-            saved = a
-            break
-
-    if not app_id:
-        app_id = str(saved.get("app_id") or "")
-    if not secret:
-        secret = str(saved.get("secret") or "")
-
-    try:
-        from interfaces.qq.gateway import test_connection
-
-        ok, message = await test_connection(app_id, secret)
-        return {"success": ok, "message": message}
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[Config] 测试 QQ 连接失败: {e}")
-        return {"success": False, "message": str(e)[:200]}

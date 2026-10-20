@@ -25,6 +25,7 @@ from web.routes_chat import router as chat_router
 from web.routes_config import router as config_router
 from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
+from web.routes_qq import router as qq_router
 from web.routes_update import router as update_router
 from web.routes_wechat import router as wechat_router
 from web.routes_workspace import router as workspace_router
@@ -221,6 +222,7 @@ app.include_router(config_router)
 app.include_router(update_router)
 app.include_router(files_router)
 app.include_router(memory_router)
+app.include_router(qq_router)
 app.include_router(wechat_router)
 
 

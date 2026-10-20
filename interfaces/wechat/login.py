@@ -29,8 +29,6 @@ status                          处理
 
 from __future__ import annotations
 
-import base64
-import io
 import logging
 import secrets
 import time
@@ -39,6 +37,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+from interfaces.qr import qr_png_data_url  # noqa: F401 —— 共享渲染器，测试仍从这里导入
 from interfaces.wechat.account import (
     WechatAccount,
     list_account_ids,
@@ -54,29 +53,6 @@ logger = logging.getLogger(__name__)
 MAX_QR_REFRESH_COUNT = 3        # 二维码刷新上限（与官方插件一致）
 SESSION_TTL_S = 600.0           # 扫码会话有效期
 POLL_INTERVAL_MS = 2000         # 建议前端轮询间隔
-
-
-def qr_png_data_url(content: str) -> str:
-    """把二维码内容渲染成 PNG data URL；``qrcode`` 不可用时返回空串。
-
-    ``qrcode`` 与 Pillow 都在 requirements 里（main.py 启动时自动装），但这里仍然
-    容错——扫码登录不该因为一个可选库缺失就整个不可用，调用方降级展示原始内容串。
-    """
-    if not content:
-        return ""
-    try:
-        import qrcode
-    except ImportError:
-        logger.warning("[wechat/login] 未安装 qrcode，二维码降级为原始内容串")
-        return ""
-    try:
-        image = qrcode.make(content)
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception:  # noqa: BLE001 — 渲染失败不该让登录不可用
-        logger.exception("[wechat/login] 生成二维码 PNG 失败")
-        return ""
 
 
 @dataclass
