@@ -20,6 +20,7 @@ from core.config import load_config
 from core.interface import Attachment
 from core.session import SessionStore
 from core.session_runner import SessionRunner
+from core.teen_mode import get_teen_mode
 
 # Attachment 定义已迁至 core/interface.py（与 Interface ABC 同处，二者配套使用）；
 # 此处再导出，避免打断既有 ``from core.session_registry import Attachment`` 调用方。
@@ -103,7 +104,11 @@ class SessionRegistry:
 
         ``on_create`` 在新建 runner 时回调一次（接入端用于绑定 default_sink 等）。
         调用方负责 workspace 存在性校验（接口相关，不在此层）。
+
+        青少年模式：受限工作区在此做接口无关的兜底拦截（Web / QQ / 微信 /
+        TUI / cron 共用此池，逐个入口挂守卫必有遗漏，这里是最后防线）。
         """
+        get_teen_mode().guard_workspace(workspace_uuid, source="registry")
         key = session_key(workspace_uuid, session_id)
         with self.lock:
             with self._data_lock:

@@ -16,12 +16,13 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from interfaces.wechat.account import clear_account, load_account
 from interfaces.wechat.config import load_wechat_accounts
 from interfaces.wechat.login import WechatLoginStore
 from interfaces.wechat.protocol import WechatApiError
+from web.deps import teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,7 +85,8 @@ async def _restart_interface(account_id: str) -> None:
 # ─── 扫码登录（按账号） ───────────────────────────────────────────────
 
 
-@router.post("/api/wechat/accounts/{account_id}/login/start")
+@router.post("/api/wechat/accounts/{account_id}/login/start",
+             dependencies=[Depends(teen_guard("config_update"))])
 async def wechat_login_start(account_id: str, force: bool = False) -> dict[str, Any]:
     """开始指定账号的扫码登录。``force=true`` 时忽略本地已有凭证，强制重新扫码。"""
     try:
@@ -138,7 +140,8 @@ async def wechat_status() -> dict[str, Any]:
     return {"accounts": accounts}
 
 
-@router.post("/api/wechat/accounts/{account_id}/logout")
+@router.post("/api/wechat/accounts/{account_id}/logout",
+             dependencies=[Depends(teen_guard("config_update"))])
 async def wechat_logout(account_id: str) -> dict[str, Any]:
     """登出指定账号：先停该账号的宿主再清凭证。
 

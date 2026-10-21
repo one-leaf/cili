@@ -27,6 +27,7 @@ from core.config import (
 from core.default_sink import bind_default_sink
 from core.session_registry import registry
 from core.session_runner import SessionRunner
+from core.teen_mode import get_teen_mode
 
 # Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
 logging.basicConfig(
@@ -98,15 +99,40 @@ def _csrf_protect(request: Request) -> None:
             raise HTTPException(status_code=403, detail="Cross-site request blocked (CSRF)")
 
 
+def teen_guard(action: str, *, hard: bool = False):
+    """青少年模式路由守卫工厂（① HTTP 路由层）。
+
+    hard=True：模式开启即拒绝（解锁也不放行）——会话删除、撤销等「不可抹除」
+    语义本身；hard=False：解锁窗口内放行（配置修改、MCP、cron 等管理类）。
+    服务端强制：前端灰显只是提示，直接调 API 同样被拦。
+    """
+    def _dep(request: Request) -> None:
+        tm = get_teen_mode()
+        if not tm.is_enabled():
+            return
+        if not hard and tm.is_unlocked():
+            return
+        tm.audit("deny", action=action, source="web",
+                 ip=request.client.host if request.client else "")
+        tm.record_denied(action)
+        from core.teen_mode import deny_message
+        raise HTTPException(status_code=403, detail=deny_message(action))
+    return _dep
+
+
 def _require_workspace(workspace_uuid: str) -> Path:
     """FastAPI dependency: validate workspace exists, return its .cili data dir.
 
     Usage: ws_dir: Path = Depends(_require_workspace)
+
+    青少年模式：受限工作区（白名单外且未解锁）在此统一拦截——
+    routes_workspace / routes_chat 各处复用本依赖，一次覆盖。
     """
     if not _SAFE_ID_RE.match(workspace_uuid):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
     ws_dir = get_workspace_data_dir(workspace_uuid)
     ws_dir.mkdir(parents=True, exist_ok=True)
     return ws_dir
@@ -121,8 +147,16 @@ def _ensure_default_workspace() -> str | None:
     """确保默认工作区存在（实现已下沉 ``core.config.ensure_default_workspace``）。
 
     QQ 接入端启动时也要做同一件事，故下沉共用；此处保留同名薄封装。
+    青少年模式：Default 受限时兜底改为白名单内第一个工作区（§3.13）。
     """
-    return ensure_default_workspace()
+    uuid = ensure_default_workspace()
+    if uuid:
+        tm = get_teen_mode()
+        if tm.workspace_access(uuid) == "locked":
+            for ws in _list_all_workspaces():
+                if tm.workspace_access(ws.get("uuid", "")) == "allow":
+                    return ws["uuid"]
+    return uuid
 
 
 def _auto_init_global_config() -> None:

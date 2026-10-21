@@ -317,8 +317,15 @@ class SessionRunner(BaseSessionRunner):
         # MCP 动态工具（默认 deferred，tool_search 按需激活）：
         # 仅当角色开启 mcp 且配置了服务器时注入。provider 内部对配置签名
         # 做 diff，签名未变化不重连，因此此处每次 rebuild 开销很小。
+        # 青少年模式：外部 MCP 工具不经过 cili 的路径/审批管道，是绕过旁路，
+        # 默认禁用（解锁窗口内可用）。裁剪在重建时做，回合中不重挂。
+        from core.teen_mode import get_teen_mode
         from core.tools.mcp import MCPToolWrapper
-        if getattr(self.role_cfg, "mcp", False) and self.config.mcp_servers:
+        teen = get_teen_mode()
+        teen_mcp_denied = (teen.is_enabled()
+                           and (teen.policy().get("mcp_tools") or "deny") == "deny"
+                           and not teen.is_unlocked())
+        if getattr(self.role_cfg, "mcp", False) and self.config.mcp_servers and not teen_mcp_denied:
             from core.tools.mcp import get_provider
             provider = get_provider()
             provider.ensure_connected(self.config.mcp_servers)

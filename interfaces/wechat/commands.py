@@ -136,6 +136,9 @@ def cmd_help(ctx: CommandContext) -> str:
 def cmd_workspace(ctx: CommandContext) -> str:
     if ctx.runtime.cfg.workspace_locked:
         return LOCKED_WORKSPACE_REPLY
+    from core.teen_mode import get_teen_mode
+
+    teen = get_teen_mode()
     items = _workspaces()
     if not items:
         return "没有可用工作区。"
@@ -144,8 +147,12 @@ def cmd_workspace(ctx: CommandContext) -> str:
         lines = ["**工作区列表**", ""]
         for i, entry in enumerate(items[:MAX_LIST_ITEMS], start=1):
             name = entry.get("workspace_name") or "(未命名)"
-            directory = entry.get("directory") or "(未知目录)"
-            mark = " ✅" if entry.get("uuid") == ctx.chat.workspace_uuid else ""
+            uuid = str(entry.get("uuid") or "")
+            restricted = teen.workspace_access(uuid) == "locked"
+            directory = "(已锁定)" if restricted else (entry.get("directory") or "(未知目录)")
+            mark = " ✅" if uuid == ctx.chat.workspace_uuid else ""
+            if restricted:
+                mark += " 🔒"
             lines.append(f"{i}. **{name}**{mark}")
             lines.append(f"    `{directory}`")
         lines += ["", f"当前：{_current_label(ctx.chat)}", "用 `/w <序号>` 切换。"]
@@ -154,6 +161,8 @@ def cmd_workspace(ctx: CommandContext) -> str:
     picked = _pick(items, ctx.args, "uuid")
     if not picked:
         return f"找不到工作区：{ctx.args}"
+    if teen.workspace_access(str(picked.get("uuid") or "")) == "locked":
+        return "🔒 该工作区已锁定，需家长解锁后才能使用。"
     ctx.chat.workspace_uuid = str(picked.get("uuid") or "")
     ctx.chat.session_id = latest_session_id(ctx.chat.workspace_uuid)
     save_account_state(ctx.runtime.account_id, ctx.state)

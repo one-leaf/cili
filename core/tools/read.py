@@ -152,6 +152,9 @@ class ReadTool(Tool):
         pages: str | None = None,
     ) -> ToolResult:
         file_path = self._resolve_path(file_path, read_only=True)
+        teen_block = self._teen_read_guard(file_path)
+        if teen_block is not None:
+            return teen_block
         ext = os.path.splitext(file_path)[1].lower()
 
         # Handle PDFs

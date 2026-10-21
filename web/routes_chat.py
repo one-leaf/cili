@@ -18,6 +18,7 @@ from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.session import SessionStore
 from core.stream_executor import get_stream_executor
+from core.teen_mode import TeenModeDenied, get_teen_mode
 from core.turn_dispatch import execute_turn, prepare_turn
 from web.deps import (
     _SAFE_ID_RE,
@@ -29,6 +30,7 @@ from web.deps import (
     _validate_session_id,
     _validate_workspace_uuid,
     registry,
+    teen_guard,
 )
 from web.goal_runner import (
     format_goal_status,
@@ -169,6 +171,14 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
     if workspace_uuid:
         _validate_workspace_uuid(workspace_uuid)
 
+    # 青少年模式：不指定工作区时强制按白名单过滤（受限工作区事件不下发）
+    teen = get_teen_mode()
+    teen_filter: set[str] | None = None
+    if teen.is_enabled() and not workspace_uuid:
+        from web.deps import _list_all_workspaces
+        teen_filter = {ws["uuid"] for ws in _list_all_workspaces()
+                       if teen.workspace_access(ws["uuid"]) == "allow"}
+
     event_queue: queue.Queue[dict] = queue.Queue(maxsize=512)
     bus = get_event_bus()
     bus.subscribe(event_queue, workspace_uuid or None, session_id or None)
@@ -182,6 +192,8 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
                     event = await asyncio.get_running_loop().run_in_executor(
                         get_stream_executor(), event_queue.get, True, 15
                     )
+                    if teen_filter is not None and event.get("workspace_uuid") not in teen_filter:
+                        continue
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except queue.Empty:
                     # 心跳（SSE 注释行，客户端忽略），防中间代理空闲断连
@@ -356,6 +368,15 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         return StreamingResponse(sse_stream({"type": "text", "content": confirm_text, "session_id": session_id}), media_type="text/event-stream")
 
     # Normal message - send to runner
+    # 青少年模式：时长用尽 / 时段外禁止发送新消息（进行中的回合跑到结束）。
+    # 返回 SSE error 帧而非 403——前端聊天流按事件渲染，文案直接可见。
+    try:
+        get_teen_mode().check_send_allowed()
+    except TeenModeDenied as e:
+        return StreamingResponse(
+            sse_stream({"type": "error", "content": str(e), "session_id": session_id}),
+            media_type="text/event-stream",
+        )
     runner = await _get_or_create_runner(workspace_uuid, session_id)
 
     # Prevent concurrent execution on the same session
@@ -515,7 +536,8 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     return {"success": True, "message": "已触发继续"}
 
 
-@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert")
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert",
+             dependencies=[Depends(teen_guard("message_revert", hard=True))])
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = f"{workspace_uuid}:{session_id}"

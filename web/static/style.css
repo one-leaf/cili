@@ -2507,7 +2507,7 @@ mjx-container {
 
 /* Settings modal smaller font; size relative to viewport */
 #settings-modal .modal-content {
-    width: 50vw;
+    width: 80vw;
     max-width: 90vw;
     height: 80vh;
 }
@@ -2973,7 +2973,7 @@ mjx-container {
 
 /* 工作区设置固定大小，与系统设置一致 */
 #workspace-settings-modal .modal-content {
-    width: 50vw;
+    width: 80vw;
     max-width: 90vw;
     height: 80vh;
 }
@@ -3534,4 +3534,95 @@ details.p-headers-panel .p-headers {
 #tab-agents select {
     max-width: 380px;
     display: block;
+}
+
+/* ─── 青少年模式 ─────────────────────────────────────────── */
+
+.teen-badge {
+    position: absolute;
+    top: 10px;
+    right: 16px;
+    z-index: 5;
+    background: #fff7e6;
+    color: #ad6800;
+    border: 1px solid #ffd591;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 12px;
+    pointer-events: none;
+}
+
+[data-theme="dark"] .teen-badge {
+    background: #3a2e12;
+    color: #ffd591;
+    border-color: #5a4517;
+}
+
+#tab-teen .teen-section {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+}
+
+#tab-teen .teen-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+}
+
+#tab-teen .teen-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+    flex-wrap: wrap;
+}
+
+/* 行内 label/输入与 .teen-policy-grid 的 12px 风格一致 */
+#tab-teen .teen-row label,
+#tab-teen .teen-row input,
+#tab-teen .teen-row select {
+    font-size: 12px;
+}
+
+#tab-teen .teen-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 4px 0;
+}
+
+#tab-teen .teen-policy-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 4px 16px;
+}
+
+#tab-teen .teen-policy-grid label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    margin: 2px 0;
+}
+
+#tab-teen .teen-audit-list {
+    max-height: 220px;
+    overflow-y: auto;
+    font-size: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: var(--bg-color);
+}
+
+#tab-teen .teen-audit-list div {
+    padding: 1px 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#tab-teen .teen-countdown {
+    color: #ad6800;
+    font-weight: 600;
 }

@@ -100,6 +100,11 @@ def execute_turn(
     顺手改变行为）；QQ 侧走 ``dispatch_turn`` 默认开启。
     """
     runner = prepared.runner
+    import time as _time
+
+    from core.teen_mode import get_teen_mode
+
+    _turn_started = _time.monotonic()
     try:
         if prepared.mode == "resume":
             if on_ask_user_answered is not None and prepared.pending_ask_user_id:
@@ -107,6 +112,12 @@ def execute_turn(
             runner.resume_after_ask_user(sink=sink)
         else:
             runner.run(user_input=prepared.user_input, sink=sink)
+
+        # 青少年模式：按回合运行时间累计每日时长（跨会话合并，§2.5）
+        try:
+            get_teen_mode().record_turn_seconds(_time.monotonic() - _turn_started)
+        except Exception:  # noqa: BLE001 —— 记账失败不影响回合本身
+            logger.debug("[teen] 回合时长记账失败", exc_info=True)
 
         if after_turn_hooks:
             schedule_after_turn_hooks(runner)

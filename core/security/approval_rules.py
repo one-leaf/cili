@@ -105,6 +105,62 @@ _READONLY_NAV_HEADS = frozenset({
 # bash 侧 $(( 算术展开不执行命令，不算命令替换
 _SUBSTITUTION_RE = re.compile(r"\$\((?!\()|`|<\(|>\(")
 
+# ─── 青少年模式：回退类命令（§2.2 连带效应） ────────────────────────────
+# agent 用 git/文件操作把已发生的改动「撤销」掉，等于绕过「记录不可抹除」。
+# 模式开启且未解锁时硬拒；解锁窗口内走正常审批管道。
+_REVERT_GIT_SUBS = frozenset({"reset", "clean", "restore"})
+_REVERT_GIT_REFLOG_SUBS = frozenset({"expire", "delete"})
+_REVERT_STASH_SUBS = frozenset({"drop", "clear"})
+# rm -rf 高危形态（递归强制删除可整目录抹除记录，如 .git）
+_REVERT_RM_HEADS = frozenset({"rm", "unlink", "del", "erase"})
+
+
+def _is_revert_segment(tool: str, segment: str) -> bool:
+    """单个命令段是否为回退类。"""
+    tokens = segment.split()
+    if not tokens:
+        return False
+    head = _head_token(tokens[0])
+    sub = _head_token(tokens[1]) if len(tokens) > 1 else ""
+    if head == "git":
+        if sub in _REVERT_GIT_SUBS:
+            return True
+        if sub == "checkout":
+            # checkout -- <path> / checkout . / checkout HEAD——文件级回退；
+            # 分支切换（git checkout main）不拦
+            rest = tokens[2:]
+            if "--" in rest:
+                return True
+            bare = [t for t in rest if not t.startswith("-")]
+            return any(t in (".", "..", "HEAD") for t in bare)
+        if sub == "stash":
+            return (_head_token(tokens[2]) if len(tokens) > 2 else "") in _REVERT_STASH_SUBS
+        if sub == "reflog":
+            return (_head_token(tokens[2]) if len(tokens) > 2 else "") in _REVERT_GIT_REFLOG_SUBS
+        return False
+    if head in _REVERT_RM_HEADS:
+        if tool == "pwsh":
+            # PowerShell：Remove-Item -Recurse -Force（别名 ri 也在 RM 头清单）
+            lowers = {t.lower() for t in tokens[1:]}
+            return bool({"-recurse", "-force"} & lowers)
+        flags = "".join(t.lstrip("-") for t in tokens[1:] if t.startswith("-") and not t.startswith("--"))
+        low = flags.lower()
+        return "r" in low and "f" in low
+    return False
+
+
+def is_revert_command(tool: str, command: str) -> bool:
+    """回退类命令判定（青少年模式硬拒清单）：git 回退子命令、checkout --、
+    stash drop/clear、reflog expire、rm -rf 高危形态。链式命令逐段检查。"""
+    command = command or ""
+    if not command.strip():
+        return False
+    mode = "pwsh" if tool == "pwsh" else "bash"
+    segments = [canonical_text(s) for s in _split_segments(command, mode) if canonical_text(s)]
+    if not segments:
+        segments = [canonical_text(command)]
+    return any(_is_revert_segment(tool, seg) for seg in segments)
+
 # hits 落盘节流（秒）：命中计数高频更新，避免每次匹配都写盘
 _HIT_FLUSH_INTERVAL = 5.0
 

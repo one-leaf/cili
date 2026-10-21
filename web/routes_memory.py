@@ -16,6 +16,7 @@ from core.config import (
 )
 from core.memory_pipeline import memory_enabled, run_consolidation
 from core.memory_store import Journal, MemoryStore
+from core.teen_mode import deny_message, get_teen_mode
 from web.deps import _SAFE_ID_RE, _csrf_protect, _validate_workspace_uuid
 
 router = APIRouter()
@@ -39,6 +40,8 @@ class MemorySettingsRequest(BaseModel):
 
 def _memory_dir(workspace_uuid: str) -> Path:
     _validate_workspace_uuid(workspace_uuid)
+    # 受限工作区守卫（本域不经过 _require_workspace，这里是全部写端点的咽喉）
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():
         raise HTTPException(status_code=404, detail="该工作区尚未启用记忆")
@@ -54,6 +57,7 @@ def _validate_memory_name(name: str) -> None:
 async def list_memory(workspace_uuid: str, memory_type: str = "", status: str = "", q: str = ""):
     """记忆总览：统计 + 条目列表（可按 memory_type/status/关键词过滤）+ 待整合数 + 开关。"""
     _validate_workspace_uuid(workspace_uuid)
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():
         return {"enabled": memory_enabled(workspace_uuid),
@@ -118,9 +122,18 @@ async def update_memory_entry(workspace_uuid: str, name: str, request: UpdateMem
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/archive")
 async def archive_memory_entry(workspace_uuid: str, name: str, request_raw: Request = None):
-    """归档条目（移出索引，不再参与检索）。"""
+    """归档条目（移出索引，不再参与检索）。
+
+    青少年模式 deny_memory_delete：归档移出索引等同隐藏记录，与
+    「记录不可抹除」一致，需解锁窗口（§2.4）。
+    """
     _csrf_protect(request_raw)
     _validate_memory_name(name)
+    tm = get_teen_mode()
+    if tm.policy().get("deny_memory_delete") and not tm.is_unlocked():
+        tm.audit("deny", action="memory_delete", target=name, source="web")
+        tm.record_denied("memory_delete")
+        raise HTTPException(status_code=403, detail=deny_message("memory_delete"))
     md = _memory_dir(workspace_uuid)
     try:
         MemoryStore(md).archive(name)
@@ -144,9 +157,14 @@ async def restore_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
 
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/delete")
 async def delete_memory_entry(workspace_uuid: str, name: str, request_raw: Request = None):
-    """永久删除条目（不可恢复）。"""
+    """永久删除条目（不可恢复）。青少年模式 deny_memory_delete 下需解锁。"""
     _csrf_protect(request_raw)
     _validate_memory_name(name)
+    tm = get_teen_mode()
+    if tm.policy().get("deny_memory_delete") and not tm.is_unlocked():
+        tm.audit("deny", action="memory_delete", target=name, source="web")
+        tm.record_denied("memory_delete")
+        raise HTTPException(status_code=403, detail=deny_message("memory_delete"))
     md = _memory_dir(workspace_uuid)
     try:
         MemoryStore(md).delete(name)

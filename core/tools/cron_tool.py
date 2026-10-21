@@ -197,6 +197,18 @@ class CronTool(Tool):
                     error=True
                 )
 
+        # 青少年模式：定时任务增删改禁用（避免孩子挂无人值守长任务），
+        # list / run 已存在任务不受限（§2.3）
+        from core.teen_mode import get_teen_mode
+
+        _tm = get_teen_mode()
+        if action in ("create", "update", "delete", "enable", "disable") \
+                and _tm.is_enabled() and (_tm.policy().get("cron") or "deny") == "deny" \
+                and not _tm.is_unlocked():
+            _tm.audit("deny", action="cron_modify", target=name or "", source="tool")
+            _tm.record_denied("cron_modify")
+            return ToolResult("Error: 青少年模式已开启：定时任务的增删改需要家长授权。", error=True)
+
         if action == "create":
             # create 使用默认值
             return self._create(

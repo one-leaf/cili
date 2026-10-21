@@ -508,11 +508,20 @@ class Loop:
         - ask：有通道 → 返回 approval 供调用方合成确认卡；无通道 → 拒绝文本；
         - deny：拒绝文本（含替代建议）。
         同批多条 pending 只处理第一条（pending 单槽语义不变），其余直接拒绝。
+
+        青少年模式（§3.3 ③循环层策略）：strict 且未解锁 → 不调用判定器、
+        不产生审批卡，占位结果直接替换为「需家长授权」拒绝文本并记审计；
+        解锁窗口内走原流程，但判定放行不落盘规则、risk=high 直接拒绝。
         """
         judge = getattr(runner, "approval_judge", None)
         rules = getattr(runner, "approval_rules", None)
         store = getattr(runner, "approval_store", None)
         cfg = get_approval_config(runner.config) if getattr(runner, "config", None) is not None else ApprovalConfig()
+        from core.teen_mode import get_teen_mode
+
+        teen = get_teen_mode()
+        teen_active = teen.is_enabled() and teen.approval_strict()
+        teen_unlocked = teen.is_enabled() and teen.is_unlocked()
         ask_approval: dict | None = None
         first = True
         for idx, result in enumerate(results):
@@ -526,6 +535,21 @@ class Loop:
                 result["content"] = "该命令需要安全判定，本批仅处理一条，请稍后重试其余命令。"
                 continue
             first = False
+
+            if teen_active and not teen_unlocked:
+                # 未解锁：不合成审批卡（孩子点「允许」就放行等于没有约束），
+                # 也不调用判定器（省一次 LLM 往返），直接拒绝
+                teen.audit("deny", action="approval",
+                           target=str(approval.get("command") or approval.get("path") or "")[:200],
+                           source="loop")
+                teen.record_denied("approval")
+                result["is_error"] = True
+                result["content"] = (
+                    "青少年模式已开启：该操作需要家长授权。\n"
+                    f"操作：`{approval.get('command') or approval.get('path') or approval.get('kind', '')}`\n"
+                    "请等待家长开启解锁窗口后重试。"
+                )
+                continue
 
             if judge is None:
                 decision = ApprovalDecision(decision="deny", summary="", reason="判定器缺失",
@@ -546,9 +570,19 @@ class Loop:
                     logger.debug("[approval] 判定用量记账失败", exc_info=True)
 
             if decision.decision == "allow":
-                # AI 判定放行 → 落盘规则（§3.5）；不满足落盘条件时仅会话级放行
+                if teen_unlocked and decision.risk == "high":
+                    # 解锁窗口内：高风险动作即使判定 allow 也拒绝（§2.3）
+                    result["is_error"] = True
+                    result["content"] = judge_deny_text(
+                        approval, decision.summary,
+                        f"青少年模式：高风险动作需家长逐次授权（risk={decision.risk}）",
+                        decision.alternative)
+                    continue
+                # AI 判定放行 → 落盘规则（§3.5）；不满足落盘条件时仅会话级放行。
+                # 解锁窗口内强制不落盘（strict：一次放行不得终身放行）
                 persistable = (rules is not None and cfg.judge_persist_allow
-                               and decision.risk != "high" and decision.source == "judge")
+                               and decision.risk != "high" and decision.source == "judge"
+                               and not teen_unlocked)
                 if persistable:
                     rule = build_granted_rule(
                         kind=approval.get("kind", "command"), tool=approval.get("tool", "*"),

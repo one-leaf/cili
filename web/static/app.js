@@ -401,11 +401,11 @@ async function loadWorkspaces() {
         document.getElementById('file-manager-btn').disabled = true;
         document.getElementById('memory-btn').disabled = true;
 
-        // 先渲染普通工作区
+        // 先渲染普通工作区（青少年模式：受限工作区带锁标记）
         data.workspaces.filter(ws => !ws.system).forEach(ws => {
             const option = document.createElement('option');
             option.value = ws.uuid;
-            option.textContent = ws.name;
+            option.textContent = ws.locked ? `🔒 ${ws.name}（需家长解锁）` : ws.name;
             workspaceSelect.appendChild(option);
         });
 
@@ -414,7 +414,7 @@ async function loadWorkspaces() {
         systemWs.forEach(ws => {
             const option = document.createElement('option');
             option.value = ws.uuid;
-            option.textContent = ws.name;
+            option.textContent = ws.locked ? `🔒 ${ws.name}（需家长解锁）` : ws.name;
             workspaceSelect.appendChild(option);
         });
 
@@ -498,6 +498,38 @@ async function handleWorkspaceChange() {
     } catch (error) {
         console.error('Failed to get workspace info:', error);
         currentWorkspace = { uuid: selectedUuid, name: selectedUuid };
+    }
+
+    // 青少年模式：选中受限工作区 → 弹家长密码按工作区解锁（默认 15 分钟）
+    if (currentWorkspace && currentWorkspace.locked) {
+        const wsName = currentWorkspace.name || selectedUuid;
+        const pw = prompt(`工作区「${wsName}」已被青少年模式锁定，请输入家长密码解锁：`);
+        if (!pw) {
+            workspaceSelect.value = '';
+            handleWorkspaceChange();
+            return;
+        }
+        try {
+            const unlockResp = await fetch('/api/teen/unlock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pw, scope: `ws:${selectedUuid}` })
+            });
+            const unlockData = await unlockResp.json().catch(() => ({}));
+            if (!unlockResp.ok) {
+                alert(unlockData.detail || '解锁失败');
+                workspaceSelect.value = '';
+                handleWorkspaceChange();
+                return;
+            }
+            currentWorkspace.locked = false;
+            loadTeenStatus();
+        } catch (e) {
+            alert('解锁请求失败: ' + e.message);
+            workspaceSelect.value = '';
+            handleWorkspaceChange();
+            return;
+        }
     }
 
     currentSession = null;
@@ -691,13 +723,20 @@ function updateFooterToolbar() {
     if (isMultiSelectMode) {
         const count = selectedSessions.size;
         const hideLabel = showHiddenSessions ? '取消隐藏' : '隐藏';
+        // 青少年模式：批量删除硬禁（按钮隐藏）；批量隐藏受 deny_hide 约束
+        const teenOn = window.teenStatus && window.teenStatus.enabled;
+        const teenUnlocked = window.teenStatus && window.teenStatus.unlocked;
+        const teenHideDenied = teenOn && !teenUnlocked &&
+            (window.teenStatus.policy || {}).deny_hide;
         footerContent.innerHTML = `
-            <button id="footer-batch-hide" class="btn btn-small" ${count === 0 ? 'disabled' : ''}>${hideLabel}</button>
-            <button id="footer-batch-delete" class="btn btn-small btn-danger" ${count === 0 ? 'disabled' : ''}>删除</button>
+            ${teenHideDenied && showHiddenSessions ? '' : `<button id="footer-batch-hide" class="btn btn-small" ${count === 0 ? 'disabled' : ''}>${hideLabel}</button>`}
+            ${teenOn ? '' : `<button id="footer-batch-delete" class="btn btn-small btn-danger" ${count === 0 ? 'disabled' : ''}>删除</button>`}
             <button id="footer-exit-multi" class="btn btn-small">取消</button>
         `;
-        document.getElementById('footer-batch-hide').addEventListener('click', batchHideUnhide);
-        document.getElementById('footer-batch-delete').addEventListener('click', batchDelete);
+        const batchHideBtn = document.getElementById('footer-batch-hide');
+        if (batchHideBtn) batchHideBtn.addEventListener('click', batchHideUnhide);
+        const batchDeleteBtn = document.getElementById('footer-batch-delete');
+        if (batchDeleteBtn) batchDeleteBtn.addEventListener('click', batchDelete);
         document.getElementById('footer-exit-multi').addEventListener('click', exitMultiSelect);
     } else if (_footerOriginalHTML !== null) {
         footerContent.innerHTML = _footerOriginalHTML;
@@ -726,12 +765,19 @@ function toggleSessionItemMenu(session, btn) {
     const dropdown = document.createElement('div');
     dropdown.className = 'session-dropdown show';
 
+    // 青少年模式：删除（硬禁）与分享/隐藏（策略禁）不渲染，避免点了才报错
+    const teenOn = window.teenStatus && window.teenStatus.enabled;
+    const teenUnlocked = window.teenStatus && window.teenStatus.unlocked;
+    const teenPolicy = (teenOn && window.teenStatus.policy) || {};
     const hideLabel = session.hidden ? '取消隐藏' : '隐藏会话';
+    const showDelete = !teenOn;
+    const showShare = !teenOn || !teenPolicy.deny_share || teenUnlocked;
+    const showHide = !teenOn || (!session.hidden && (!teenPolicy.deny_hide || teenUnlocked)) || session.hidden;
     dropdown.innerHTML = `
         <div class="session-dropdown-item" data-action="rename">修改名称</div>
-        <div class="session-dropdown-item" data-action="hide">${hideLabel}</div>
-        <div class="session-dropdown-item" data-action="delete">删除会话</div>
-        <div class="session-dropdown-item" data-action="share">分享会话</div>
+        ${showHide ? `<div class="session-dropdown-item" data-action="hide">${hideLabel}</div>` : ''}
+        ${showDelete ? '<div class="session-dropdown-item" data-action="delete">删除会话</div>' : ''}
+        ${showShare ? '<div class="session-dropdown-item" data-action="share">分享会话</div>' : ''}
         <div class="session-dropdown-item" data-action="info">会话信息</div>
     `;
 

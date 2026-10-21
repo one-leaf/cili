@@ -246,6 +246,54 @@ class Tool(ShellMixin, BackgroundMixin):
             "findings": findings,
         }
 
+    def _teen_command_guard(self, command: str) -> ToolResult | None:
+        """青少年模式：回退类命令硬拒（开启且未解锁时）。返回 None 表示放行。
+
+        git reset/clean/restore、checkout --、stash drop/clear、reflog expire、
+        rm -rf 等可把已发生的改动「撤销」掉，绕过记录不可抹除的语义。
+        解锁窗口内放行（走正常审批管道）。
+        """
+        from core.security.approval_rules import is_revert_command
+        from core.teen_mode import get_teen_mode
+
+        tm = get_teen_mode()
+        if not tm.is_enabled() or tm.is_unlocked():
+            return None
+        if not is_revert_command(self.name, command or ""):
+            return None
+        tm.audit("deny", action="revert_command", target=(command or "")[:200], source="tool")
+        tm.record_denied("revert_command")
+        return ToolResult(
+            "Error: 青少年模式已开启：回退类命令（git reset/clean/restore、rm -rf 等）已被禁用。"
+            "如确需执行，请家长开启解锁窗口后重试。",
+            error=True,
+        )
+
+    def _teen_read_guard(self, resolved: str) -> ToolResult | None:
+        """青少年模式读侧门（§3.13）：deny_read_outside 开启时，读工具目标在
+        工作区外（含其他受限工作区目录）→ 拒绝。解锁窗口内放行。
+
+        这是启发式兜底（shell 命令的读目标不做提取），真正彻底的隔离靠
+        工作区白名单 + 沙箱（设计 §3.12）。
+        """
+        from core.teen_mode import get_teen_mode
+
+        tm = get_teen_mode()
+        if not tm.is_enabled() or not resolved:
+            return None
+        policy_cfg = tm.policy()
+        if not policy_cfg.get("deny_read_outside") or tm.is_unlocked():
+            return None
+        policy = self._path_policy()
+        if policy.is_inside(resolved):
+            return None
+        tm.audit("deny", action="read_outside", target=resolved[:200], source="tool")
+        tm.record_denied("read_outside")
+        return ToolResult(
+            "Error: 青少年模式已开启：读取工作区外文件需要家长授权。",
+            error=True,
+        )
+
     def _emit_output(self, chunk: str, written_bytes: int) -> None:
         """调用 on_output 钩子，异常不影响工具执行（钩子失败静默忽略）。"""
         cb = self.on_output

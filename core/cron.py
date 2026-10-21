@@ -744,6 +744,21 @@ class CronScheduler:
         ws_uuid = task.workspace_uuid or "system"
         ws_lock = self._get_workspace_lock(ws_uuid)
 
+        # 青少年模式：目标工作区受限不执行；时段外跳过并记审计（§2.5/§3.13）
+        from core.teen_mode import get_teen_mode
+
+        tm = get_teen_mode()
+        if tm.is_enabled():
+            if tm.workspace_access(ws_uuid) == "locked":
+                logger.info(f"[cron] Skip {task.name}: workspace {ws_uuid} restricted by teen mode")
+                tm.audit("deny", action="cron_workspace_locked", target=task.name, source="cron")
+                return
+            try:
+                tm.check_send_allowed()
+            except Exception:  # noqa: BLE001 —— 时段外：跳过（审计已在 check 内落）
+                logger.info(f"[cron] Skip {task.name}: outside allowed time window (teen mode)")
+                return
+
         if not ws_lock.acquire(blocking=False):
             logger.debug(f"[cron] Skip {task.name}: workspace {ws_uuid} locked (another task running)")
             return

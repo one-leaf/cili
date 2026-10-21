@@ -1306,6 +1306,14 @@ def _start_core_services() -> None:
     from core.app_context import app_context
     app_context.startup()
 
+    # 青少年模式：状态由 TeenModeManager 按需读文件（指纹缓存热重载），
+    # 这里只做启动审计——检测「由开启变为关闭/文件丢失」的外部干预路径。
+    try:
+        from core.teen_mode import get_teen_mode
+        get_teen_mode().check_startup_state()
+    except Exception as e:
+        logger.warning(f"Teen mode startup check failed (ignored): {e}")
+
     # 应用脚本目录下已下载的升级包：包内版本高于当前才解压覆盖，然后继续启动。
     # 自动升级 / Web UI / 手动脚本都只负责下载 zip，覆盖统一收敛到启动时这一处。
     try:

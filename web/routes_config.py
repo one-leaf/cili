@@ -7,7 +7,7 @@ import logging
 import secrets
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.config import (
@@ -19,8 +19,9 @@ from core.config import (
     save_global_config,
 )
 from core.stream_executor import get_stream_executor
+from core.teen_mode import deny_message, get_teen_mode
 from core.tools.mcp import get_provider
-from web.deps import _sessions_lock, registry
+from web.deps import _sessions_lock, registry, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -236,7 +237,19 @@ async def get_config():
 
 @router.put("/api/config")
 async def update_config(request: UpdateConfigRequest):
-    """Update global model configuration."""
+    """Update global model configuration.
+
+    青少年模式：被锁设置段（providers/agents/mcp/qq/wechat）需解锁窗口
+    （§2.4——换无约束模型/改端点/动外联渠道都是绕过路径）；system 参数
+    （pip_mirror 等）不在锁单内，system-only 保存放行。
+    """
+    tm = get_teen_mode()
+    if tm.is_enabled() and not tm.is_unlocked():
+        if any(v is not None for v in (request.providers, request.agents,
+                                       request.mcp_servers, request.qq, request.wechat)):
+            tm.audit("deny", action="config_update", source="web")
+            tm.record_denied("config_update")
+            raise HTTPException(status_code=403, detail=deny_message("config_update"))
     config = migrate_legacy_config(load_global_config())
 
     # Update providers（全量替换；api_key 留空或掩码样式 → 继承已保存值）
@@ -410,7 +423,8 @@ async def get_mcp_servers():
     return {"servers": servers}
 
 
-@router.post("/api/mcp/reload")
+@router.post("/api/mcp/reload",
+             dependencies=[Depends(teen_guard("config_update"))])
 async def reload_mcp():
     """强制重连所有 MCP 服务器，并刷新缓存的 master runner（deferred 工具重建）。"""
     cfg = load_config()

@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.teen_mode import get_teen_mode
 from core.tools.ask_user import inject_ask_user_answer
 from core.turn_dispatch import PreparedTurn, execute_turn
 from web.deps import (
@@ -36,6 +37,7 @@ class AnswerAskUserRequest(BaseModel):
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")
 async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
     """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 runner 循环"""
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
     key = f"{workspace_uuid}:{session_id}"
     runner = registry.get(key)
     if not runner:

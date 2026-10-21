@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
+from core.teen_mode import guard_or_raise
 
 # exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
 _EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
@@ -132,6 +133,24 @@ def _drop_session_lock(session_dir: Path) -> None:
     session_dir = Path(session_dir)
     with _SESSION_LOCKS_GUARD:
         _SESSION_LOCKS.pop(session_dir, None)
+
+
+def delete_session_dir(sessions_dir: Path, session_id: str) -> None:
+    """会话目录的唯一物理删除入口（青少年模式守卫落点）。
+
+    所有删除会话的调用方统一走这里：先过守卫（hard，解锁也不放行——
+    要删除必须先关闭青少年模式），再 rmtree 并释放目录锁。调用方仍需
+    自行从 runner 池摘除 runner（cleanup 会 save，顺序反了会把已删目录
+    重建为空会话）。
+
+    Raises:
+        core.teen_mode.TeenModeDenied: 青少年模式开启时
+    """
+    guard_or_raise("session_delete", hard=True, target=session_id)
+    session_dir = Path(sessions_dir) / session_id
+    if session_dir.exists():
+        shutil.rmtree(session_dir)
+    _drop_session_lock(session_dir)
 
 
 # ========== jsonl 读写 ==========
@@ -520,6 +539,7 @@ class ExecLogStore:
         """
         if not _EXEC_ID_RE.match(exec_id):
             raise ValueError(f"Invalid exec_id: {exec_id!r}")
+        guard_or_raise("exec_log_delete", hard=True, target=exec_id)
         exec_dir = self.session_dir / exec_id
         if exec_dir.exists() and exec_dir.is_dir():
             shutil.rmtree(exec_dir)
@@ -936,6 +956,7 @@ class SessionStore:
 
     def delete(self) -> None:
         """删除会话目录（包括 index.json、exec 子目录和工具输出文件）。"""
+        guard_or_raise("session_delete", hard=True, target=self.session_id)
         if self.session_dir.exists():
             shutil.rmtree(self.session_dir)
         _drop_session_lock(self.session_dir)
@@ -952,6 +973,7 @@ class SessionStore:
         Raises:
             ValueError: 未找到指定消息
         """
+        guard_or_raise("message_revert", hard=True, target=msg_id)
         lock = _get_session_lock(self.session_dir)
         with lock:
             target_idx = None

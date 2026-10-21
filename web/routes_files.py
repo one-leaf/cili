@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from core.config import load_workspace_config, load_workspaces_index
 from core.fs_utils import safe_upload_filename
+from core.teen_mode import deny_message, get_teen_mode
 from web.deps import (
     _LOCALHOST_IPS,
     _csrf_protect,
@@ -26,6 +27,11 @@ from web.deps import (
 )
 
 router = APIRouter()
+
+
+def _teen_ws_guard(workspace_uuid: str) -> None:
+    """文件域路由的受限工作区判定（本域不用 _require_workspace，逐处显式挂）。"""
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
 
 # 单次上传文件大小上限
 _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -69,6 +75,9 @@ def _find_workspace_for_file(file_path: str) -> tuple[str, Path] | None:
         workspace_dir = entry.get("directory", "")
         if not workspace_dir:
             continue
+        # 青少年模式：跨工作区扫描跳过受限工作区（读侧锁）
+        if get_teen_mode().workspace_access(uuid) == "locked":
+            continue
         workspace_path = Path(workspace_dir).resolve()
         file_full_path = (workspace_path / file_path).resolve()
         # Security: ensure file is within the workspace directory
@@ -102,6 +111,7 @@ async def get_workspace_file_short(file_path: str, workspace_uuid: str = ""):
         info = _get_workspace_info(workspace_uuid)
         if not info:
             raise HTTPException(status_code=404, detail="Workspace not found")
+        _teen_ws_guard(workspace_uuid)
         workspace_dir = info.get("directory", "")
         if not workspace_dir:
             raise HTTPException(status_code=404, detail="Workspace directory not configured")
@@ -129,6 +139,7 @@ async def get_workspace_file(workspace_uuid: str, file_path: str):
     info = _get_workspace_info(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
 
     workspace_dir = info.get("directory", "")
     if not workspace_dir:
@@ -161,6 +172,37 @@ def browse_directory(request: Request, path: str = ""):
             status_code=403,
             detail="Access denied: browse_directory is localhost-only",
         )
+
+    # 青少年模式：浏览范围限制到允许的工作区目录（§3.13）；
+    # 空路径不给盘符列表，直接落到第一个允许工作区
+    tm = get_teen_mode()
+    if tm.is_enabled():
+        import os as _os
+
+        allowed_roots = []
+        for entry in load_workspaces_index():
+            directory = entry.get("directory", "")
+            if directory and tm.workspace_access(entry.get("uuid", "")) == "allow":
+                allowed_roots.append(_os.path.normcase(_os.path.abspath(directory)))
+        if not allowed_roots:
+            raise HTTPException(status_code=403,
+                                detail="青少年模式已开启：没有允许使用的工作区，无法浏览目录")
+        if path:
+            resolved = _os.path.normcase(_os.path.abspath(path))
+            inside = False
+            for root in allowed_roots:
+                try:
+                    if _os.path.commonpath([resolved, root]) == root:
+                        inside = True
+                        break
+                except ValueError:
+                    continue
+            if not inside:
+                raise HTTPException(status_code=403,
+                                    detail="青少年模式已开启：仅可浏览允许使用的工作区目录")
+        else:
+            path = allowed_roots[0]
+
     if not path:
         if sys.platform == "win32":
             # Get available drives on Windows
@@ -268,6 +310,7 @@ def list_files(workspace_uuid: str, path: str = ""):
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():
@@ -379,6 +422,7 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(request.workspace_uuid)
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():
@@ -431,6 +475,14 @@ def delete_files(request: FileDeleteRequest, request_raw: Request = None):
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(request.workspace_uuid)
+
+    # 青少年模式：文件删除可由家长锁定（默认放开——正常写代码需要删文件）
+    tm = get_teen_mode()
+    if tm.policy().get("deny_file_delete") and not tm.is_unlocked():
+        tm.audit("deny", action="file_delete", source="web")
+        tm.record_denied("file_delete")
+        raise HTTPException(status_code=403, detail=deny_message("file_delete"))
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():
@@ -480,6 +532,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
     ws_config = load_workspace_config(request.workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(request.workspace_uuid)
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():
@@ -557,6 +610,7 @@ def upload_files(
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():

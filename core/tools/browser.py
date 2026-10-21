@@ -378,6 +378,16 @@ Use web_search for simple lookups; use browser when search results are insuffici
                 return ToolResult("Error: 'path' is required for upload action", error=True)
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)
+            # 青少年模式：上传是把本地文件送出去的通道，默认禁用（解锁窗口内放行）
+            from core.teen_mode import get_teen_mode
+
+            _tm = get_teen_mode()
+            if _tm.is_enabled() and (_tm.policy().get("browser_upload") or "deny") == "deny" \
+                    and not _tm.is_unlocked():
+                _tm.audit("deny", action="browser_upload",
+                          target=os.path.basename(path), source="tool")
+                _tm.record_denied("browser_upload")
+                return ToolResult("Error: 青少年模式已开启：浏览器上传需要家长授权。", error=True)
             # P1-23：upload 把本地文件内容交给网页（外传向量），与其他写工具
             # 一样接入路径审批门：工作区内放行，越界需审批/拒绝
             resolved = self._path_policy().resolve(path)

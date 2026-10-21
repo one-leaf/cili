@@ -196,6 +196,11 @@ class PwshTool(Tool):
         if not command:
             return ToolResult("Error: command is required", error=True)
 
+        # 青少年模式：回退类命令硬拒（开启且未解锁时）
+        teen_block = self._teen_command_guard(command)
+        if teen_block is not None:
+            return teen_block
+
         policy = self._path_policy()
         initial_dir = self.cwd
         working_targets: list[PathTarget] = []

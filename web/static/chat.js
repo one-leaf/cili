@@ -1556,12 +1556,15 @@ function addMessage(role, content, msgId, createdAt, container = chatMessages) {
         if (role === 'user' || role === 'assistant') {
             actionsDiv.appendChild(makeMessageAction('引用', 'quote', () => doQuote(messageDiv)));
         }
-        // 撤销（仅用户消息）
-        if (role === 'user' && msgId) {
+        // 撤销（仅用户消息；青少年模式硬禁，不渲染）
+        const teenOn = window.teenStatus && window.teenStatus.enabled;
+        if (role === 'user' && msgId && !teenOn) {
             actionsDiv.appendChild(makeMessageAction('撤销', 'revert', () => doRevert(msgId)));
         }
-        // 分享（有消息 ID 时）
-        if (msgId) {
+        // 分享（有消息 ID 时；青少年模式 deny_share 时不渲染）
+        const teenShareDenied = teenOn && !window.teenStatus.unlocked &&
+            (window.teenStatus.policy || {}).deny_share;
+        if (msgId && !teenShareDenied) {
             actionsDiv.appendChild(makeMessageAction('分享', 'share', () => doShare(msgId)));
         }
 

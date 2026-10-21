@@ -203,3 +203,22 @@ def temp_cron_state(monkeypatch):
         import core.tools.cron_tool as cron_tool
         monkeypatch.setattr(cron_tool, "get_user_tasks_file", lambda workspace_uuid="": temp_path / "user_tasks.json")
         yield temp_dir
+
+
+@pytest.fixture
+def teen(tmp_path):
+    """临时 TeenModeManager：状态/审计/用量重定向到临时目录，替换全局单例。
+
+    青少年模式默认读真实 data/cili/teen_mode.json，测试必须隔离；用后
+    set_teen_mode(None) 恢复懒加载单例，避免污染其他测试。
+    """
+    from core.teen_mode import TeenModeManager, set_teen_mode
+
+    manager = TeenModeManager(
+        state_path=tmp_path / "teen_mode.json",
+        audit_path=tmp_path / "teen" / "audit.jsonl",
+        usage_path=tmp_path / "teen" / "usage.json",
+    )
+    set_teen_mode(manager)
+    yield manager
+    set_teen_mode(None)

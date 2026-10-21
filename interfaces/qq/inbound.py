@@ -140,6 +140,7 @@ class InboundHandler:
             return
 
         from core.config import find_workspace_entry
+        from core.teen_mode import TeenModeDenied, get_teen_mode
 
         entry = find_workspace_entry(workspace_uuid) or {}
         workspace_dir = str(entry.get("directory") or "")
@@ -147,11 +148,22 @@ class InboundHandler:
             await self._send_text(openid, msg_id, f"工作区目录不存在：{workspace_dir}")
             return
 
+        # 青少年模式：时长用尽/时段外直接回提示（进行中的回合不受影响）
+        try:
+            get_teen_mode().check_send_allowed()
+        except TeenModeDenied as e:
+            await self._send_text(openid, msg_id, str(e))
+            return
+
         key = session_key(workspace_uuid, session_id)
-        runner = await registry.get_or_create(
-            workspace_uuid, session_id, workspace_dir,
-            on_create=lambda r: _bind_default_sink(r, workspace_uuid, session_id),
-        )
+        try:
+            runner = await registry.get_or_create(
+                workspace_uuid, session_id, workspace_dir,
+                on_create=lambda r: _bind_default_sink(r, workspace_uuid, session_id),
+            )
+        except TeenModeDenied as e:
+            await self._send_text(openid, msg_id, f"🔒 {e}")
+            return
 
         # 会话忙 → 排队等待（可能是 Web 或上一个 QQ 回合在跑）
         claimed = False

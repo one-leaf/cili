@@ -28,7 +28,7 @@ from core.session import (
     MESSAGES_FILE,
     META_FILE,
     SessionStore,
-    _drop_session_lock,
+    delete_session_dir,
     load_history_messages,
     load_history_meta,
     preview_from_messages,
@@ -36,6 +36,7 @@ from core.session import (
     read_meta,
     session_display_name,
 )
+from core.teen_mode import deny_message, get_teen_mode
 from core.tools.base import Tool
 from web.deps import (
     _SAFE_ID_RE,
@@ -48,6 +49,7 @@ from web.deps import (
     _validate_session_id,
     _validate_workspace_uuid,
     registry,
+    teen_guard,
 )
 
 router = APIRouter()
@@ -114,11 +116,25 @@ class GitSettingsRequest(BaseModel):
 
 @router.get("/api/workspaces")
 async def list_workspaces():
-    """List all workspaces."""
-    return {"workspaces": _list_all_workspaces()}
+    """List all workspaces.
+
+    青少年模式：受限工作区带 ``locked: true``，且不返回目录路径
+    （避免暴露家长的文件组织）。
+    """
+    tm = get_teen_mode()
+    workspaces = []
+    for ws in _list_all_workspaces():
+        entry = dict(ws)
+        locked = tm.workspace_access(entry.get("uuid", "")) == "locked"
+        entry["locked"] = locked
+        if locked:
+            entry["directory"] = ""
+        workspaces.append(entry)
+    return {"workspaces": workspaces}
 
 
-@router.post("/api/workspaces")
+@router.post("/api/workspaces",
+             dependencies=[Depends(teen_guard("config_update"))])
 async def create_workspace(request: CreateWorkspaceRequest):
     """Create a new workspace.
 
@@ -185,6 +201,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
 
 def _remove_workspace_data(workspace_uuid: str) -> None:
     """Remove workspace .cili data directory (filesystem only, does not touch sessions dict or index)."""
+    get_teen_mode().ensure_allowed("workspace_delete", hard=True, target=workspace_uuid)
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
     ws_data_dir = get_workspace_data_dir(workspace_uuid)
@@ -216,7 +233,8 @@ async def delete_workspace(workspace_uuid: str):
     return {"success": True}
 
 
-@router.put("/api/workspaces/{workspace_uuid}")
+@router.put("/api/workspaces/{workspace_uuid}",
+            dependencies=[Depends(teen_guard("config_update"))])
 async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest):
     """Update workspace name and/or directory."""
     _validate_workspace_uuid(workspace_uuid)
@@ -250,7 +268,8 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
     return {"success": True, "workspace": config}
 
 
-@router.post("/api/workspaces/{workspace_uuid}/reset")
+@router.post("/api/workspaces/{workspace_uuid}/reset",
+             dependencies=[Depends(teen_guard("workspace_reset", hard=True))])
 async def reset_workspace(workspace_uuid: str):
     """删除工作区配置（从索引移除），保留 .cili 数据目录和工作区文件。"""
     _validate_workspace_uuid(workspace_uuid)
@@ -621,7 +640,8 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
     return session.to_dict()
 
 
-@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}")
+@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}",
+               dependencies=[Depends(teen_guard("session_delete", hard=True))])
 async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Delete a session."""
     _validate_session_id(session_id)
@@ -635,9 +655,8 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     with _sessions_lock:
         registry.remove(key)
 
-    # 删除整个 session 目录
-    shutil.rmtree(session_dir)
-    _drop_session_lock(session_dir)
+    # 删除整个 session 目录（统一入口：青少年模式守卫在数据层）
+    delete_session_dir(ws_dir / "sessions", session_id)
     # 会话目录已删，丢弃缓存的 GoalManager（否则 _managers 长期累积）
     from core.goal import release_goal_manager
     release_goal_manager(session_dir)
@@ -675,7 +694,15 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/hidden")
 async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetHiddenRequest, ws_dir: Path = Depends(_require_workspace)):
-    """Set session hidden status."""
+    """Set session hidden status.
+
+    青少年模式 deny_hide：隐藏会让会话在列表中消失（家长看不到），默认禁止。
+    """
+    tm = get_teen_mode()
+    if request.hidden and tm.policy().get("deny_hide") and not tm.is_unlocked():
+        tm.audit("deny", action="session_hide", target=session_id, source="web")
+        tm.record_denied("session_hide")
+        raise HTTPException(status_code=403, detail=deny_message("session_hide"))
     _validate_session_id(session_id)
     session_dir = ws_dir / "sessions" / session_id
     if not (session_dir / "index.json").exists():
@@ -702,7 +729,18 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/batch")
 async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequest, ws_dir: Path = Depends(_require_workspace)):
-    """Batch operations on sessions: hide, unhide, or delete."""
+    """Batch operations on sessions: hide, unhide, or delete.
+
+    青少年模式：delete 为硬禁（解锁也不放行）；hide 受 deny_hide 策略约束。
+    """
+    tm = get_teen_mode()
+    if request.action == "delete":
+        tm.ensure_allowed("session_delete", hard=True)
+    elif request.action == "hide" and tm.policy().get("deny_hide") and not tm.is_unlocked():
+        tm.audit("deny", action="session_hide", source="web")
+        tm.record_denied("session_hide")
+        raise HTTPException(status_code=403, detail=deny_message("session_hide"))
+
     sessions_dir = ws_dir / "sessions"
     results = []
 
@@ -723,9 +761,8 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
                 key = f"{workspace_uuid}:{session_id}"
                 with _sessions_lock:
                     registry.remove(key)
-                # Delete session
-                shutil.rmtree(session_dir, ignore_errors=True)
-                _drop_session_lock(session_dir)
+                # Delete session（统一入口：青少年模式守卫在数据层）
+                delete_session_dir(sessions_dir, session_id)
                 results.append({"session_id": session_id, "success": True})
             elif request.action in ("hide", "unhide"):
                 # Set hidden status in meta.json
@@ -779,7 +816,8 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     return log
 
 
-@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
+@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}",
+               dependencies=[Depends(teen_guard("exec_log_delete", hard=True))])
 async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Delete a specific sub-agent execution log."""
     _validate_session_id(session_id)
@@ -836,7 +874,8 @@ async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_
     return {"filename": "AGENTS.md", "content": "", "found": False}
 
 
-@router.put("/api/workspaces/{workspace_uuid}/instructions")
+@router.put("/api/workspaces/{workspace_uuid}/instructions",
+            dependencies=[Depends(teen_guard("config_update"))])
 async def save_instructions(workspace_uuid: str, request: SaveInstructionsRequest, ws_dir: Path = Depends(_require_workspace)):
     """保存项目指令文件到工作区。
 
@@ -876,7 +915,8 @@ async def save_instructions(workspace_uuid: str, request: SaveInstructionsReques
         raise HTTPException(status_code=500, detail=f"Failed to save: {e}")
 
 
-@router.post("/api/workspaces/{workspace_uuid}/instructions/generate")
+@router.post("/api/workspaces/{workspace_uuid}/instructions/generate",
+             dependencies=[Depends(teen_guard("config_update"))])
 async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
     """创建 worker agent 后台扫描代码并生成 AGENTS.md。
 

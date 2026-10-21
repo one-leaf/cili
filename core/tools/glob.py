@@ -68,6 +68,9 @@ class GlobTool(Tool):
         search_dir = Path(self._resolve_path(path, read_only=True)) if path else Path(self.cwd)
         if not search_dir.is_dir():
             return ToolResult(f"Error: path is not a directory: {search_dir}", error=True)
+        teen_block = self._teen_read_guard(str(search_dir))
+        if teen_block is not None:
+            return teen_block
 
         # Build glob patterns
         if file_type:

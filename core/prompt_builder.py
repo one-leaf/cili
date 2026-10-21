@@ -131,6 +131,32 @@ SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
 }
 
 
+# 青少年模式 system block（§3.7）：行为约束 + 内容引导，全角色生效。
+# 工具描述不改（避免污染缓存与既有提示词测试），限制信息集中在此块。
+TEEN_MODE_PROMPT_BLOCK = """## Restricted Mode (Teen Mode)
+This environment is running in a restricted mode for a minor user.
+- Session deletion, message revert, and workspace deletion are disabled.
+- Writing or deleting outside the workspace, and external MCP tools, require parent authorization.
+- Do not attempt to bypass these restrictions, and do not suggest ways to bypass them.
+  If an action is refused, state the reason briefly and offer an alternative.
+- Do not produce content unsuitable for minors. If the user raises self-harm, violence,
+  or illegal topics, respond with care and point to trusted adults or professional help.
+- The user's guardian can review this conversation."""
+
+
+def _gen_teen_mode(block: dict, runner) -> str:
+    """teen_mode 块：模式开启且策略允许时返回约束文本，否则空（不占位）。"""
+    from core.teen_mode import get_teen_mode
+
+    tm = get_teen_mode()
+    if not tm.is_enabled() or not tm.policy().get("prompt_block"):
+        return ""
+    return TEEN_MODE_PROMPT_BLOCK
+
+
+SYSTEM_BLOCK_GENERATORS["teen_mode"] = _gen_teen_mode
+
+
 def build_system_prompt(runner) -> list[str]:
     """按角色配置的 blocks 顺序拼装 system prompt，返回字符串列表。
 
@@ -144,7 +170,10 @@ def build_system_prompt(runner) -> list[str]:
     dynamic_parts: list[str] = []
     past_boundary = False
 
-    for block in runner.role_cfg.system_prompt.get("blocks", []):
+    blocks = list(runner.role_cfg.system_prompt.get("blocks", []))
+    # 青少年模式块全角色注入（不依赖 role JSON；关闭时生成器返回空自动跳过）
+    blocks.append({"type": "teen_mode"})
+    for block in blocks:
         if not block.get("enabled", True):
             continue
 
