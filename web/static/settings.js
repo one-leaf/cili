@@ -591,6 +591,11 @@ function enableAccountCard(card) {
     if (cb) cb.checked = true;
 }
 
+// 连接状态字体风格与 MCP 服务器卡片一致（12px，已连接=绿）
+function connStatusColor(connected) {
+    return connected ? '#4caf50' : 'var(--text-secondary)';
+}
+
 // ─── QQ 接入端设置 ───────────────────────────────────────────────────
 
 function buildQQCard(acc) {
@@ -603,7 +608,7 @@ function buildQQCard(acc) {
         ${accountHeaderHtml(acc)}
         <div class="form-group">
             <label>连接状态:</label>
-            <span class="acc-login-status form-hint">${bound ? '已连接' : '未连接'}</span>
+            <span class="acc-login-status" style="font-size:12px;color:${connStatusColor(bound)};">${bound ? '已连接' : '未连接'}</span>
             <button type="button" class="acc-onboard-btn btn btn-small btn-primary">扫码连接</button>
             <button type="button" class="acc-disconnect-btn btn btn-small">断开连接</button>
         </div>
@@ -751,10 +756,13 @@ async function refreshQQStatus() {
         document.querySelectorAll('#qq-accounts-list .account-card').forEach(card => {
             const acc = byId[card.dataset.accountId];
             if (!acc) return;
-            const parts = [acc.bound ? '已连接' : '未连接'];
-            if (acc.bound && acc.app_id) parts.push(`机器人 ${acc.app_id}`);
+            const connected = !!acc.bound;
+            const parts = [connected ? '已连接' : '未连接'];
+            if (connected && acc.app_id) parts.push(`机器人 ${acc.app_id}`);
             if (acc.running) parts.push('运行中');
-            card.querySelector('.acc-login-status').textContent = parts.join(' · ');
+            const el = card.querySelector('.acc-login-status');
+            el.textContent = parts.join(' · ');
+            el.style.color = connStatusColor(connected);
         });
     } catch (e) {
         // 状态刷新失败不打扰用户
@@ -792,7 +800,7 @@ function buildWechatCard(acc) {
         ${accountHeaderHtml(acc)}
         <div class="form-group">
             <label>连接状态:</label>
-            <span class="acc-login-status form-hint">${escapeHtml(parts.join(' · '))}</span>
+            <span class="acc-login-status" style="font-size:12px;color:${connStatusColor(acc.logged_in)};">${escapeHtml(parts.join(' · '))}</span>
             <button type="button" class="acc-login-btn btn btn-small btn-primary">扫码连接</button>
             <button type="button" class="acc-logout-btn btn btn-small">断开连接</button>
         </div>
@@ -828,10 +836,13 @@ async function refreshWechatStatus() {
         document.querySelectorAll('#wechat-accounts-list .account-card').forEach(card => {
             const acc = byId[card.dataset.accountId];
             if (!acc) return;
-            const parts = [acc.logged_in ? '已连接' : '未连接'];
-            if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
+            const connected = !!acc.logged_in;
+            const parts = [connected ? '已连接' : '未连接'];
+            if (connected && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
             if (acc.running) parts.push('运行中');
-            card.querySelector('.acc-login-status').textContent = parts.join(' · ');
+            const el = card.querySelector('.acc-login-status');
+            el.textContent = parts.join(' · ');
+            el.style.color = connStatusColor(connected);
         });
     } catch (e) {
         // 状态刷新失败不打扰用户
