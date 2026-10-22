@@ -28,9 +28,11 @@ from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
 from web.routes_qq import router as qq_router
 from web.routes_teen import router as teen_router
+from web.routes_textbooks import router as textbooks_router
 from web.routes_update import router as update_router
 from web.routes_wechat import router as wechat_router
 from web.routes_workspace import router as workspace_router
+from web.routes_workspace_wizard import router as workspace_wizard_router
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,8 @@ async def lifespan(app: FastAPI):
 
     app_context.startup()
     yield
+    from core.textbooks import textbook_tasks
+    await textbook_tasks.shutdown_all()
     app_context.shutdown()
 
 
@@ -249,11 +253,13 @@ async def health_check():
 
 # ----- Routes（按资源域挂载；files 域含 catch-all 路径，放在 config/memory 之后避免吞前缀） -----
 app.include_router(workspace_router)
+app.include_router(workspace_wizard_router)
 app.include_router(chat_router)
 app.include_router(ask_user_router)
 app.include_router(config_router)
 app.include_router(update_router)
 app.include_router(teen_router)
+app.include_router(textbooks_router)
 app.include_router(files_router)
 app.include_router(memory_router)
 app.include_router(qq_router)

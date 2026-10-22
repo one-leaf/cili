@@ -37,6 +37,7 @@ from core.session import (
     session_display_name,
 )
 from core.teen_mode import deny_message, get_teen_mode
+from core.textbooks import textbook_tasks
 from core.tools.base import Tool
 from web.deps import (
     _SAFE_ID_RE,
@@ -227,6 +228,8 @@ async def delete_workspace(workspace_uuid: str):
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
     with _sessions_lock:
         _cleanup_runners_for_workspace(workspace_uuid)
+    # 删除工作区前取消未完成的教材下载，避免任务继续写已删除目录
+    await textbook_tasks.cancel_for_workspace(workspace_uuid)
     # rmtree 属阻塞 IO（大工作区可达数秒），放线程里执行
     await asyncio.to_thread(_remove_workspace_data, workspace_uuid)
     remove_workspace_entry(workspace_uuid)
@@ -258,6 +261,9 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
     # Update directory if provided
     if request.directory is not None:
         new_dir = os.path.abspath(request.directory)
+        if new_dir != config.get("directory"):
+            # 目录变化后，旧任务不应继续写旧位置
+            await textbook_tasks.cancel_for_workspace(workspace_uuid)
         config["directory"] = new_dir
 
     config["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

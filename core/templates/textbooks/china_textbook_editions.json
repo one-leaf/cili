@@ -1,0 +1,1159 @@
+{
+  "schema_version": 1,
+  "source_commit": "5a80345f2043ba6f8db8d7be9cf3db82725ff1f7",
+  "generated_at": "2026-10-22",
+  "notes": [
+    "所有版本简称均真实存在，名称与通行叫法一致。",
+    "四个同书异名：鲁教湘教版=湘鲁版；教科版（EEC学院）=教科版（EEC）；西南师大版=西南大学版（同社）；接力社版=接力版（同社）。",
+    "path_verified=true 表示清单源路径内嵌出版社全名可直接自证；false 表示经公开资料（国家中小学智慧教育平台、教习网、21世纪教育网等）检索核实。"
+  ],
+  "editions": [
+    {
+      "name": "中图中华地图版",
+      "publisher": "中国地图出版社、中华地图学社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "地理"
+      ]
+    },
+    {
+      "name": "中图版",
+      "publisher": "中国地图出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "地理"
+      ]
+    },
+    {
+      "name": "人教中图版",
+      "publisher": "人民教育出版社、中国地图出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "信息技术"
+      ]
+    },
+    {
+      "name": "人教版",
+      "publisher": "人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "俄语",
+        "化学",
+        "地理",
+        "数学",
+        "日语",
+        "物理",
+        "生物",
+        "美术",
+        "英语",
+        "通用技术"
+      ]
+    },
+    {
+      "name": "人教版（A版）",
+      "publisher": "人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "数学"
+      ]
+    },
+    {
+      "name": "人教版（B版）",
+      "publisher": "人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "数学"
+      ]
+    },
+    {
+      "name": "人教版（PEP）（三年级起点）",
+      "publisher": "人民教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "人教版（一年级起点）",
+      "publisher": "人民教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "人教版（五线谱）",
+      "publisher": "人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "人教版（简谱）",
+      "publisher": "人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "人教版（精通）（三年级起点）",
+      "publisher": "人民教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "人教鄂教版",
+      "publisher": "人民教育出版社、湖北教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "科学"
+      ]
+    },
+    {
+      "name": "人美版",
+      "publisher": "人民美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "人音版",
+      "publisher": "人民音乐出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "人音版（五线谱）",
+      "publisher": "人民音乐出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "人音版（简谱）",
+      "publisher": "人民音乐出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "冀人版",
+      "publisher": "河北人民出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "科学"
+      ]
+    },
+    {
+      "name": "冀少版",
+      "publisher": "河北少年儿童出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "生物",
+        "音乐"
+      ]
+    },
+    {
+      "name": "冀教版",
+      "publisher": "河北教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "数学",
+        "英语"
+      ]
+    },
+    {
+      "name": "冀教版（一年级起点）",
+      "publisher": "河北教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "冀教版（三年级起点）",
+      "publisher": "河北教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "冀美版",
+      "publisher": "河北美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "北京版",
+      "publisher": "北京出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "化学",
+        "数学",
+        "生物",
+        "英语"
+      ]
+    },
+    {
+      "name": "北师大版",
+      "publisher": "北京师范大学出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "数学",
+        "物理",
+        "生物",
+        "英语"
+      ]
+    },
+    {
+      "name": "华东师大版",
+      "publisher": "华东师范大学出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "信息技术",
+        "数学",
+        "科学"
+      ]
+    },
+    {
+      "name": "华中师大版",
+      "publisher": "华中师范大学出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "体育"
+      ]
+    },
+    {
+      "name": "华文社版",
+      "publisher": "华文出版社",
+      "path_verified": false,
+      "stages": [],
+      "subjects": []
+    },
+    {
+      "name": "商务星图版",
+      "publisher": "商务印书馆、星球地图出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "地理"
+      ]
+    },
+    {
+      "name": "地质社版",
+      "publisher": "地质出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "通用技术"
+      ]
+    },
+    {
+      "name": "外研社版",
+      "publisher": "外语教学与研究出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "外研社版（一年级起点）",
+      "publisher": "外语教学与研究出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "外研社版（三年级起点）",
+      "publisher": "外语教学与研究出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "大象社版",
+      "publisher": "大象出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "科学"
+      ]
+    },
+    {
+      "name": "岭南美版",
+      "publisher": "岭南美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "川教版",
+      "publisher": "四川教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "广西师大版",
+      "publisher": "广西师范大学出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "体育"
+      ]
+    },
+    {
+      "name": "接力版三年级起点",
+      "publisher": "接力出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "接力社版",
+      "publisher": "接力出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "教科版",
+      "publisher": "教育科学出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "信息技术",
+        "物理",
+        "科学",
+        "艺术",
+        "英语"
+      ]
+    },
+    {
+      "name": "教科版（EEC学院）",
+      "publisher": "教育科学出版社（即常见「教科版（EEC）」小学英语）",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "晋人版",
+      "publisher": "山西人民出版社",
+      "path_verified": false,
+      "stages": [],
+      "subjects": []
+    },
+    {
+      "name": "晋教版",
+      "publisher": "山西教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "地理"
+      ]
+    },
+    {
+      "name": "未来社版",
+      "publisher": "未来出版社",
+      "path_verified": false,
+      "stages": [],
+      "subjects": []
+    },
+    {
+      "name": "桂教版",
+      "publisher": "广西教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "桂美版",
+      "publisher": "广西美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "武汉版",
+      "publisher": "武汉出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "科学"
+      ]
+    },
+    {
+      "name": "沪书画版",
+      "publisher": "上海书画出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "沪外教版",
+      "publisher": "上海外语教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "沪教版",
+      "publisher": "上海教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "化学",
+        "数学",
+        "科学",
+        "美术",
+        "艺术",
+        "英语",
+        "音乐"
+      ]
+    },
+    {
+      "name": "沪科技版",
+      "publisher": "上海科学技术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "化学",
+        "数学",
+        "物理",
+        "生物"
+      ]
+    },
+    {
+      "name": "沪科技粤教版",
+      "publisher": "上海科学技术出版社、广东教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "物理"
+      ]
+    },
+    {
+      "name": "沪科教版",
+      "publisher": "上海科技教育出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "信息技术",
+        "物理",
+        "生物"
+      ]
+    },
+    {
+      "name": "沪音版",
+      "publisher": "上海音乐出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "济南版",
+      "publisher": "济南出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "生物"
+      ]
+    },
+    {
+      "name": "浙人美版",
+      "publisher": "浙江人民美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "浙教版",
+      "publisher": "浙江教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "信息技术",
+        "数学",
+        "科学"
+      ]
+    },
+    {
+      "name": "浙科版",
+      "publisher": "浙江科学技术出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "生物"
+      ]
+    },
+    {
+      "name": "清华大学版",
+      "publisher": "清华大学出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "湘少版",
+      "publisher": "湖南少年儿童出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "湘教版",
+      "publisher": "湖南教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "地理",
+        "数学"
+      ]
+    },
+    {
+      "name": "湘文艺版",
+      "publisher": "湖南文艺出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "湘科版",
+      "publisher": "湖南科学技术出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "科学"
+      ]
+    },
+    {
+      "name": "湘美版",
+      "publisher": "湖南美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "科学社版",
+      "publisher": "科学出版社",
+      "path_verified": false,
+      "stages": [],
+      "subjects": []
+    },
+    {
+      "name": "科学粤教版",
+      "publisher": "科学出版社、广东教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "化学"
+      ]
+    },
+    {
+      "name": "科普版",
+      "publisher": "科学普及出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "化学",
+        "地理",
+        "英语"
+      ]
+    },
+    {
+      "name": "粤教版",
+      "publisher": "广东教育出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "体育",
+        "信息技术",
+        "物理",
+        "美术",
+        "艺术"
+      ]
+    },
+    {
+      "name": "粤教粤人版",
+      "publisher": "广东教育出版社、广东人民出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "地理",
+        "英语"
+      ]
+    },
+    {
+      "name": "粤教粤科版",
+      "publisher": "广东教育出版社、广东科技出版社",
+      "path_verified": true,
+      "stages": [
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "科学",
+        "通用技术"
+      ]
+    },
+    {
+      "name": "粤教花城版",
+      "publisher": "广东教育出版社、花城出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "统编版",
+      "publisher": "教育部统编，人民教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "历史",
+        "地理",
+        "思想政治",
+        "语文",
+        "道德与法治"
+      ]
+    },
+    {
+      "name": "苏少版",
+      "publisher": "江苏凤凰少年儿童出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "苏少版（五线谱）",
+      "publisher": "江苏凤凰少年儿童出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "苏少版（简谱）",
+      "publisher": "江苏凤凰少年儿童出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "音乐"
+      ]
+    },
+    {
+      "name": "苏教版",
+      "publisher": "江苏凤凰教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "化学",
+        "数学",
+        "生物",
+        "科学",
+        "通用技术"
+      ]
+    },
+    {
+      "name": "苏科版",
+      "publisher": "江苏凤凰科学技术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中"
+      ],
+      "subjects": [
+        "数学",
+        "物理",
+        "生物"
+      ]
+    },
+    {
+      "name": "西南大学版",
+      "publisher": "西南师范大学出版社（现西南大学出版社）",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "数学"
+      ]
+    },
+    {
+      "name": "西南师大版",
+      "publisher": "西南师范大学出版社（现西南大学出版社）",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "数学",
+        "音乐"
+      ]
+    },
+    {
+      "name": "西泠印社版",
+      "publisher": "西泠印社出版社",
+      "path_verified": false,
+      "stages": [],
+      "subjects": []
+    },
+    {
+      "name": "译林版",
+      "publisher": "译林出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "高中"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "译林版三年级起点",
+      "publisher": "译林出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "豫科版",
+      "publisher": "河南科学技术出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "通用技术"
+      ]
+    },
+    {
+      "name": "赣美版",
+      "publisher": "江西美术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    },
+    {
+      "name": "辽宁师大版",
+      "publisher": "辽宁师范大学出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "辽海版",
+      "publisher": "辽海出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "美术",
+        "音乐"
+      ]
+    },
+    {
+      "name": "鄂教版",
+      "publisher": "湖北教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "数学",
+        "艺术"
+      ]
+    },
+    {
+      "name": "重庆大学版",
+      "publisher": "重庆大学出版社",
+      "path_verified": true,
+      "stages": [
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "闽教版",
+      "publisher": "福建教育出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "陕旅版",
+      "publisher": "陕西旅游出版社",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "青岛版",
+      "publisher": "青岛出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学"
+      ],
+      "subjects": [
+        "数学",
+        "科学"
+      ]
+    },
+    {
+      "name": "鲁教湘教版",
+      "publisher": "山东教育出版社、湖南教育出版社（常见叫法「湘鲁版」）",
+      "path_verified": false,
+      "stages": [
+        "小学"
+      ],
+      "subjects": [
+        "英语"
+      ]
+    },
+    {
+      "name": "鲁教版",
+      "publisher": "山东教育出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "化学",
+        "地理",
+        "数学",
+        "美术",
+        "英语",
+        "音乐"
+      ]
+    },
+    {
+      "name": "鲁科版",
+      "publisher": "山东科学技术出版社",
+      "path_verified": true,
+      "stages": [
+        "初中",
+        "小学",
+        "高中"
+      ],
+      "subjects": [
+        "化学",
+        "物理",
+        "生物",
+        "英语"
+      ]
+    },
+    {
+      "name": "鲁美版",
+      "publisher": "山东美术出版社",
+      "path_verified": true,
+      "stages": [
+        "高中"
+      ],
+      "subjects": [
+        "美术"
+      ]
+    }
+  ]
+}

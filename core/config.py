@@ -742,12 +742,12 @@ def remove_workspace_entry(workspace_uuid: str) -> bool:
 def get_workspace_data_dir(workspace_uuid: str) -> Path:
     """Get the .cili data directory for a workspace: {directory}/.cili/.
 
-    - 空 uuid：PROJECT_ROOT/workspace/.cili/
+    - 空 uuid：PROJECT_ROOT/workspace/default/.cili/
     - system：data/.cili/（directory = data/，找不到条目时兜底）
     - 其他：从 workspaces.json 读 directory，返回 {directory}/.cili/
     """
     if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / ".cili"
+        return PROJECT_ROOT / "workspace" / "default" / ".cili"
     entry = find_workspace_entry(workspace_uuid)
     if entry and entry.get("directory"):
         return Path(entry["directory"]) / ".cili"
@@ -763,7 +763,7 @@ def get_workspace_data_dir(workspace_uuid: str) -> Path:
     logger.warning(
         f"[config] 未知 workspace_uuid={workspace_uuid!r}，回退到默认工作区数据目录"
     )
-    return PROJECT_ROOT / "workspace" / ".cili"
+    return PROJECT_ROOT / "workspace" / "default" / ".cili"
 
 
 def get_system_workspace_data_dir() -> Path:
@@ -899,6 +899,13 @@ def ensure_default_workspace() -> str | None:
     import secrets
 
     try:
+        # 旧布局迁移（workspace/ 根 → workspace/default/）；已迁移或全新安装时为 no-op
+        try:
+            from core.workspace_migration import migrate_default_workspace
+            migrate_default_workspace()
+        except Exception as e:  # noqa: BLE001 —— 迁移失败不阻断启动，旧路径仍可用
+            logger.error(f"[config] 默认工作区迁移失败: {e}")
+
         # 已存在 Default / legacy default → 直接返回（顺手迁移名字 + 补默认字段）
         for entry in load_workspaces_index():
             name = entry.get("workspace_name")
@@ -914,8 +921,11 @@ def ensure_default_workspace() -> str | None:
                     changed = True
                 if changed:
                     save_workspace_config(uuid, entry)
-                if changed and entry.get("git_enabled"):
-                    _init_workspace_git_quietly(uuid)
+                    if entry.get("git_enabled"):
+                        _init_workspace_git_quietly(uuid)
+                # 数据目录被手动删除时按需重建（原 main._ensure_default_workspace 行为）
+                get_workspace_data_dir(uuid).mkdir(parents=True, exist_ok=True)
+                (get_workspace_data_dir(uuid) / "sessions").mkdir(exist_ok=True)
                 return uuid
 
         workspace_uuid = secrets.token_hex(4)
@@ -927,7 +937,7 @@ def ensure_default_workspace() -> str | None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_workspace_config(workspace_uuid, {
             "workspace_name": "Default",
-            "directory": str(PROJECT_ROOT / "workspace"),
+            "directory": str(PROJECT_ROOT / "workspace" / "default"),
             "created_at": now,
             "updated_at": now,
             # 新建默认开启版本管理与记忆
