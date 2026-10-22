@@ -37,7 +37,7 @@ def _is_within(child: str, root: str) -> bool:
 def protected_roots() -> list[str]:
     """当前受保护根目录清单（含全部工作区的 .cili 数据目录）。"""
     roots = [_norm(DATA_DIR), _norm(SYSTEM_DATA_DIR),
-             _norm(PROJECT_ROOT / "workspace" / ".cili")]
+             _norm(PROJECT_ROOT / "workspace" / "default" / ".cili")]
     seen = set(roots)
     try:
         entries = load_workspaces_index()

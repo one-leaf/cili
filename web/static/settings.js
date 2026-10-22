@@ -1679,16 +1679,38 @@ function pollDownloadStatus() {
 
 let teenStatusCache = null;
 let teenCountdownTimer = null;
+let teenStatusTimer = null;
+
+function startTeenStatusPolling() {
+    if (teenStatusTimer) return;
+    teenStatusTimer = setInterval(loadTeenStatus, 60000);
+}
+
+function stopTeenStatusPolling() {
+    if (!teenStatusTimer) return;
+    clearInterval(teenStatusTimer);
+    teenStatusTimer = null;
+}
 
 async function loadTeenStatus() {
+    let knownDisabled = false;
     try {
         const response = await fetch('/api/teen/status');
-        teenStatusCache = response.ok ? await response.json() : { enabled: false };
+        if (response.ok) {
+            teenStatusCache = await response.json();
+            knownDisabled = teenStatusCache.enabled === false;
+        } else {
+            teenStatusCache = { enabled: false };
+        }
     } catch (e) {
         teenStatusCache = { enabled: false };
     }
     window.teenStatus = teenStatusCache;
     updateTeenBadge();
+    // 只有服务端明确返回关闭状态才停止轮询；网络/服务异常时保留轮询，
+    // 以便服务恢复后重新同步状态。
+    if (knownDisabled) stopTeenStatusPolling();
+    else startTeenStatusPolling();
     return teenStatusCache;
 }
 
@@ -2075,8 +2097,8 @@ function showTeenOk(msg) {
                 if (tab.dataset.tab === 'teen') renderTeenPanel();
             });
         });
-        // 启动即拉取状态（徽章 + 灰显依据），之后每分钟轮询解锁倒计时
+        // 启动即拉取状态（徽章 + 灰显依据）。仅当模式开启时才启动轮询；
+        // loadTeenStatus() 会在检测到关闭后自行停止，避免空转请求。
         loadTeenStatus();
-        setInterval(loadTeenStatus, 60000);
     });
 })();

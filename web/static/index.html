@@ -469,6 +469,7 @@
                 <button class="settings-tab active" data-tab="ws-basic" onclick="switchWorkspaceSettingsTab('ws-basic')">基本设置</button>
                 <button class="settings-tab" data-tab="ws-instructions" onclick="switchWorkspaceSettingsTab('ws-instructions')">项目提示词</button>
                 <button class="settings-tab" data-tab="ws-git" onclick="switchWorkspaceSettingsTab('ws-git')">版本管理</button>
+                <button class="settings-tab" data-tab="ws-textbooks" onclick="switchWorkspaceSettingsTab('ws-textbooks')">教材下载</button>
             </div>
             <div class="modal-body">
                 <!-- 基本设置 Tab -->
@@ -547,6 +548,73 @@
                     </div>
                     <div id="git-settings-status" class="settings-status"></div>
                 </div>
+                <!-- 教材下载 Tab -->
+                <div class="tab-content" id="tab-ws-textbooks">
+                    <div class="textbook-toolbar">
+                        <div class="form-group">
+                            <label>学段</label>
+                            <select id="textbook-stage">
+                                <option value="小学">小学</option>
+                                <option value="初中">初中</option>
+                                <option value="高中">高中</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>学制</label>
+                            <select id="textbook-system">
+                                <option value="六三制">六三制</option>
+                                <option value="五四制">五四制</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>科目</label>
+                            <select id="textbook-subject">
+                                <option value="">加载中...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>教材版本</label>
+                            <select id="textbook-edition">
+                                <option value="">全部版本</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>年级</label>
+                            <select id="textbook-grade">
+                                <option value="">全部年级</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>学期</label>
+                            <select id="textbook-semester">
+                                <option value="">全部学期</option>
+                                <option value="上册">上册</option>
+                                <option value="下册">下册</option>
+                                <option value="全一册">全一册</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="textbook-high-scope-group" style="display:none;">
+                            <label>高中范围</label>
+                            <select id="textbook-high-scope">
+                                <option value="all_textbook_volumes">必修 + 选择性必修</option>
+                                <option value="required_only">仅必修</option>
+                                <option value="manual">全部展示，手动勾选</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="textbook-actions">
+                        <button type="button" id="textbook-refresh-btn" class="btn btn-small btn-secondary">刷新教材</button>
+                        <button type="button" id="textbook-select-all-btn" class="btn btn-small">全选</button>
+                        <button type="button" id="textbook-clear-btn" class="btn btn-small">清空</button>
+                        <button type="button" id="textbook-download-btn" class="btn btn-small btn-primary">下载选中教材</button>
+                        <button type="button" id="textbook-cancel-btn" class="btn btn-small" style="display:none;">取消任务</button>
+                        <button type="button" id="textbook-retry-btn" class="btn btn-small" style="display:none;">重试失败</button>
+                    </div>
+                    <div id="textbook-summary" class="textbook-summary">选择科目后自动列出可下载课本。</div>
+                    <progress id="textbook-progress" value="0" max="100" style="display:none;"></progress>
+                    <div id="textbook-task-status" class="settings-status"></div>
+                    <div id="textbook-list" class="textbook-list"><div class="textbook-empty">选择科目后自动列出可下载课本。</div></div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="workspace-delete-btn" class="btn btn-danger" style="margin-right:auto;">删除配置</button>
@@ -555,33 +623,77 @@
         </div>
     </div>
 
-    <!-- New Workspace Modal -->
+    <!-- New Workspace Wizard -->
     <div id="new-workspace-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="new-workspace-modal"></div>
-        <div class="modal-content">
+        <div class="modal-content wizard-modal">
             <div class="modal-header">
                 <h2>新建工作区</h2>
                 <button class="modal-close" data-modal="new-workspace-modal">&times;</button>
             </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>工作区名称:</label>
-                    <input type="text" id="new-ws-name" placeholder="输入工作区名称">
-                    <small class="form-hint">最多50个字符</small>
-                </div>
-                <div class="form-group">
-                    <label>工作目录:</label>
-                    <div class="input-with-button">
-                        <input type="text" id="new-ws-directory" placeholder="留空则使用默认路径">
-                        <button type="button" id="new-ws-browse-dir-btn" class="btn btn-small">浏览...</button>
-                    </div>
-                    <small class="form-hint">Agent 在此目录下执行操作</small>
-                </div>
-                <div id="new-workspace-status" class="settings-status"></div>
+            <div class="wizard-progress">
+                <div class="wizard-step-indicator active" data-step="1"><span>1</span>类型</div>
+                <div class="wizard-step-indicator" data-step="2"><span>2</span>基本信息</div>
+                <div class="wizard-step-indicator" data-step="3"><span>3</span>配置</div>
+                <div class="wizard-step-indicator" data-step="4"><span>4</span>预览</div>
+                <div class="wizard-step-indicator" data-step="5"><span>5</span>完成</div>
             </div>
-            <div class="modal-footer">
-                <button id="new-workspace-cancel-btn" class="btn">取消</button>
-                <button id="new-workspace-create-btn" class="btn btn-primary">创建</button>
+            <div class="modal-body">
+                <div class="wizard-step active" id="wizard-step-1">
+                    <h3>选择项目类型</h3>
+                    <div id="wizard-categories" class="wizard-category-grid"></div>
+                </div>
+
+                <div class="wizard-step" id="wizard-step-2">
+                    <h3>基本信息与位置</h3>
+                    <div class="form-group">
+                        <label>项目名称</label>
+                        <input type="text" id="wizard-name" placeholder="输入项目名称">
+                    </div>
+                    <div class="form-group">
+                        <label>位置</label>
+                        <select id="wizard-location"></select>
+                        <small class="form-hint" id="wizard-location-hint"></small>
+                    </div>
+                    <div class="form-group" id="wizard-custom-group" style="display:none;">
+                        <label>自定义父目录</label>
+                        <div class="input-with-button">
+                            <input type="text" id="wizard-custom-directory" placeholder="例如：E:\projects">
+                            <button type="button" id="wizard-browse-dir-btn" class="btn btn-small">浏览...</button>
+                        </div>
+                        <small class="form-hint" id="wizard-custom-hint"></small>
+                    </div>
+                    <div class="form-group">
+                        <label>目录名（可选）</label>
+                        <input type="text" id="wizard-slug" placeholder="默认按名称生成">
+                        <small class="form-hint" id="wizard-path-preview"></small>
+                    </div>
+                    <div class="wizard-checkbox-row">
+                        <label><input type="checkbox" id="wizard-allow-existing"> 允许写入已有目录</label>
+                        <label><input type="checkbox" id="wizard-git-enabled" checked> 启用 Git 版本管理</label>
+                        <label><input type="checkbox" id="wizard-memory-enabled" checked> 启用记忆</label>
+                    </div>
+                </div>
+
+                <div class="wizard-step" id="wizard-step-3">
+                    <h3>项目配置</h3>
+                    <div id="wizard-category-config"></div>
+                </div>
+
+                <div class="wizard-step" id="wizard-step-4">
+                    <h3>预览</h3>
+                    <div id="wizard-preview"></div>
+                </div>
+
+                <div class="wizard-step" id="wizard-step-5">
+                    <h3>创建结果</h3>
+                    <div id="wizard-result"></div>
+                </div>
+                <div id="wizard-status" class="settings-status"></div>
+            </div>
+            <div class="modal-footer wizard-footer">
+                <button id="wizard-back-btn" class="btn">上一步</button>
+                <button id="wizard-next-btn" class="btn btn-primary">下一步</button>
             </div>
         </div>
     </div>

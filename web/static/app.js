@@ -324,7 +324,6 @@ function setupEventListeners() {
     document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
     document.getElementById('workspace-delete-btn').addEventListener('click', deleteWorkspaceConfig);
     document.getElementById('ws-browse-dir-btn').addEventListener('click', browseDirectory);
-    document.getElementById('new-ws-browse-dir-btn').addEventListener('click', browseDirectory);
 
     // 项目提示词相关按钮
     document.getElementById('instructions-generate-btn').addEventListener('click', generateInstructions);
@@ -365,11 +364,20 @@ function setupEventListeners() {
         });
     });
 
-    // New workspace
-    document.getElementById('new-workspace-create-btn').addEventListener('click', createNewWorkspace);
-    document.getElementById('new-workspace-cancel-btn').addEventListener('click', () => {
-        document.getElementById('new-workspace-modal').style.display = 'none';
+    // New workspace wizard
+    document.getElementById('wizard-back-btn').addEventListener('click', wizardGoBack);
+    document.getElementById('wizard-next-btn').addEventListener('click', wizardGoNext);
+    document.getElementById('wizard-location').addEventListener('change', updateWizardLocationHint);
+    document.getElementById('wizard-custom-directory').addEventListener('input', updateWizardLocationHint);
+    document.getElementById('wizard-browse-dir-btn').addEventListener('click', () => {
+        const input = document.getElementById('wizard-custom-directory');
+        openDirectoryBrowser(input.value.trim(), (selectedPath) => {
+            input.value = selectedPath;
+            updateWizardLocationHint();
+        });
     });
+    document.getElementById('wizard-slug').addEventListener('input', updateWizardLocationHint);
+    document.getElementById('wizard-name').addEventListener('input', updateWizardLocationHint);
 
     // Generic modal close handlers
     document.querySelectorAll('.modal-close').forEach(btn => {
@@ -569,55 +577,559 @@ async function handleWorkspaceChange() {
     }
 }
 
-// Handle new workspace button
-function handleNewWorkspace() {
-    document.getElementById('new-workspace-modal').style.display = 'flex';
-    document.getElementById('new-ws-name').value = '';
-    document.getElementById('new-ws-directory').value = '';
-    document.getElementById('new-workspace-status').textContent = '';
-    document.getElementById('new-ws-name').focus();
+function joinPreviewPath(parent, child) {
+    if (!parent) return child;
+    if (/[\\/]$/.test(parent)) return parent + child;
+    return parent + (parent.includes('\\') ? '\\' : '/') + child;
 }
 
-// Create new workspace
-async function createNewWorkspace() {
-    const statusEl = document.getElementById('new-workspace-status');
-    statusEl.textContent = '创建中...';
+function updateWizardLocationHint() {
+    if (!wizardState.options) return;
+    const location = document.getElementById('wizard-location').value;
+    const item = (wizardState.options.locations || []).find(entry => entry.id === location);
+    const slug = document.getElementById('wizard-slug').value.trim() ||
+        document.getElementById('wizard-name').value.trim();
+    const parent = item?.parent || '';
+    const customDir = document.getElementById('wizard-custom-directory').value.trim();
+    const hint = document.getElementById('wizard-location-hint');
+    if (hint) hint.textContent = location === 'custom' ? '' : `父目录：${parent}`;
+    const customHint = document.getElementById('wizard-custom-hint');
+    if (customHint) customHint.textContent = location === 'custom' ? '最终目录：自定义父目录 + 目录名' : '';
+    const preview = document.getElementById('wizard-path-preview');
+    if (preview) {
+        preview.textContent = location === 'custom'
+            ? '最终目录：' + (customDir ? (slug ? joinPreviewPath(customDir, slug) : customDir) : '(未填写)')
+            : '最终目录：' + (parent ? (slug ? joinPreviewPath(parent, slug) : parent) : '(未知)');
+    }
+    const customGroup = document.getElementById('wizard-custom-group');
+    if (customGroup) customGroup.style.display = location === 'custom' ? '' : 'none';
+}
 
-    const name = document.getElementById('new-ws-name').value.trim();
-    const directory = document.getElementById('new-ws-directory').value.trim();
+// ─── 新建工作区向导 ─────────────────────────────────────────────────────────
 
-    if (!name) {
-        statusEl.textContent = '请输入工作区名称';
+const wizardState = {
+    step: 1,
+    options: null,
+    category: '',
+    preview: null,
+    creating: false,
+    result: null,
+};
+
+function handleNewWorkspace() {
+    document.getElementById('new-workspace-modal').style.display = 'flex';
+    wizardState.step = 1;
+    wizardState.category = '';
+    wizardState.preview = null;
+    wizardState.result = null;
+    wizardState.creating = false;
+    wizardState.options = null;
+    document.getElementById('wizard-status').textContent = '';
+    document.getElementById('wizard-result').innerHTML = '';
+    document.getElementById('wizard-preview').innerHTML = '<div class="textbook-empty">点击下一步生成预览。</div>';
+    document.getElementById('wizard-name').value = '';
+    document.getElementById('wizard-slug').value = '';
+    document.getElementById('wizard-custom-directory').value = '';
+    document.getElementById('wizard-allow-existing').checked = false;
+    document.getElementById('wizard-git-enabled').checked = true;
+    document.getElementById('wizard-memory-enabled').checked = true;
+    renderWizardCategories();
+    loadWizardOptions();
+    showWizardStep(1);
+}
+
+async function loadWizardOptions() {
+    try {
+        const response = await fetch('/api/workspace-wizard/options');
+        if (!response.ok) throw new Error((await response.json()).detail || '加载向导选项失败');
+        wizardState.options = await response.json();
+        renderWizardOptions();
+    } catch (error) {
+        setWizardStatus('✗ ' + error.message, 'error');
+    }
+}
+
+function applyWizardCategoryInputs() {
+    const isStudy = wizardState.category === 'study';
+    const nameInput = document.getElementById('wizard-name');
+    const slugInput = document.getElementById('wizard-slug');
+    if (nameInput) {
+        nameInput.disabled = isStudy;
+        nameInput.placeholder = isStudy ? '学习项目自动按「年级-科目」命名' : '输入项目名称（选填）';
+    }
+    if (slugInput) {
+        slugInput.disabled = isStudy;
+        slugInput.placeholder = isStudy ? '自动按科目生成' : '默认按名称生成，选填';
+    }
+}
+
+function renderWizardCategories() {
+    applyWizardCategoryInputs();
+    const categories = wizardState.options?.categories || [
+        { id: 'study', name: '学习项目', description: '按科目拆分工作区。' },
+        { id: 'office', name: '日常办公', description: '文档、表格、演示与归档。' },
+        { id: 'research', name: '科研项目', description: '文献、实验与论文写作。' },
+        { id: 'blank', name: '空白项目', description: '只创建基础工作区。' },
+    ];
+    const grid = document.getElementById('wizard-categories');
+    grid.innerHTML = '';
+    categories.forEach(category => {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'wizard-category-card' + (wizardState.category === category.id ? ' selected' : '');
+        card.innerHTML = '<strong>' + escapeHtml(category.name) + '</strong><span>' + escapeHtml(category.description) + '</span>';
+        card.addEventListener('click', () => {
+            wizardState.category = category.id;
+            wizardState.preview = null;
+            renderWizardCategories();
+            renderWizardConfig();
+            showWizardStep(2);
+        });
+        grid.appendChild(card);
+    });
+}
+
+function renderWizardOptions() {
+    const options = wizardState.options;
+    if (!options) return;
+    const locationSelect = document.getElementById('wizard-location');
+    const old = locationSelect.value;
+    locationSelect.innerHTML = '';
+    (options.locations || []).forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.label;
+        locationSelect.appendChild(option);
+    });
+    locationSelect.value = old || options.defaults?.location || 'cili';
+    updateWizardLocationHint();
+
+    const profile = collectWizardProfile(false);
+    const stageSelect = document.getElementById('wizard-study-stage');
+    if (stageSelect) {
+        const oldStage = stageSelect.value || profile.stage;
+        stageSelect.innerHTML = '<option value="">选择学段...</option>';
+        (options.stages || []).forEach(stage => {
+            const option = document.createElement('option');
+            option.value = stage;
+            option.textContent = stage;
+            stageSelect.appendChild(option);
+        });
+        stageSelect.value = oldStage;
+    }
+
+    const systemSelect = document.getElementById('wizard-study-system');
+    if (systemSelect) {
+        const oldSystem = systemSelect.value || profile.system;
+        systemSelect.innerHTML = '<option value="">选择学制...</option>';
+        (options.systems || []).forEach(system => {
+            const option = document.createElement('option');
+            option.value = system;
+            option.textContent = system;
+            systemSelect.appendChild(option);
+        });
+        systemSelect.value = oldSystem || '六三制';
+    }
+
+    updateStudyGradeOptions();
+}
+
+function updateStudyGradeOptions() {
+    const gradeSelect = document.getElementById('wizard-study-grade');
+    if (!gradeSelect) return;
+    const system = document.getElementById('wizard-study-system')?.value || '六三制';
+    const stage = document.getElementById('wizard-study-stage')?.value || '';
+    const grades = (wizardState.options?.grades || {})[system]?.[stage] || [];
+    const old = gradeSelect.value;
+    gradeSelect.innerHTML = '<option value="">选择年级...</option>';
+    grades.forEach(grade => {
+        const option = document.createElement('option');
+        option.value = grade;
+        option.textContent = grade;
+        gradeSelect.appendChild(option);
+    });
+    gradeSelect.value = grades.includes(old) ? old : '';
+}
+
+function renderWizardConfig() {
+    applyWizardCategoryInputs();
+    const container = document.getElementById('wizard-category-config');
+    const category = wizardState.category;
+    if (!category) {
+        container.innerHTML = '<div class="textbook-empty">请先选择项目类型。</div>';
         return;
     }
+    if (category === 'study') {
+        container.innerHTML = getStudyConfigHtml();
+        bindStudyConfigEvents();
+        return;
+    }
+    if (category === 'office') {
+        container.innerHTML = getOfficeConfigHtml();
+        return;
+    }
+    if (category === 'research') {
+        container.innerHTML = getResearchConfigHtml();
+        return;
+    }
+    container.innerHTML = '<p>空白项目无需额外配置。</p>';
+}
 
+function getStudyConfigHtml() {
+    return `
+        <div class="wizard-grid">
+            <div class="form-group"><label>孩子称呼</label><input type="text" id="wizard-study-learner" placeholder="选填，用于工作区命名"></div>
+            <div class="form-group"><label>学段</label><select id="wizard-study-stage"></select></div>
+            <div class="form-group"><label>学制</label><select id="wizard-study-system"></select></div>
+            <div class="form-group"><label>年级</label><select id="wizard-study-grade"></select></div>
+            <div class="form-group"><label>考区</label><input type="text" id="wizard-study-region" placeholder="例如：广东"></div>
+            <div class="form-group"><label>学习重点</label><select id="wizard-study-focus"><option>同步学习</option><option>中考复习</option><option>高考复习</option></select></div>
+            <div class="form-group"><label>每天学习分钟数</label><input type="number" id="wizard-study-minutes" min="0" max="600" value="60"></div>
+        </div>
+        <div class="form-group"><label>家长备注</label><textarea id="wizard-study-note" rows="2" placeholder="孩子学习习惯、薄弱点等"></textarea></div>
+        <div class="form-group"><label>科目（勾选后按科目选择教材版本）</label><div id="wizard-study-subjects" class="wizard-subject-list"></div></div>
+        <label class="wizard-checkbox-row"><input type="checkbox" id="wizard-download-textbooks" checked> 自动下载匹配教材</label>
+    `;
+}
+
+function getOfficeConfigHtml() {
+    return `
+        <div class="wizard-grid">
+            <div class="form-group"><label>岗位/角色</label><input type="text" id="wizard-office-role" placeholder="例如：行政 / 项目经理"></div>
+            <div class="form-group"><label>文档语言</label><select id="wizard-office-language"><option>中文</option><option>英文</option><option>中英双语</option></select></div>
+        </div>
+    `;
+}
+
+function getResearchConfigHtml() {
+    return `
+        <div class="wizard-grid">
+            <div class="form-group"><label>学科</label><input type="text" id="wizard-research-field" placeholder="例如：计算机"></div>
+            <div class="form-group"><label>研究方向</label><input type="text" id="wizard-research-direction"></div>
+            <div class="form-group"><label>引用格式</label><select id="wizard-research-citation"><option>GB/T 7714</option><option>APA</option><option>MLA</option><option>Chicago</option><option>IEEE</option></select></div>
+        </div>
+    `;
+}
+
+const GRADE_COVERAGE = {
+    '1至2年级': ['一年级', '二年级'],
+    '3至4年级': ['三年级', '四年级'],
+    '5至6年级': ['五年级', '六年级'],
+};
+
+function editionCoversGrade(item, grade) {
+    if (!grade) return true;
+    const grades = item.grades || [];
+    if (!grades.length) return true;
+    return grades.some(g => !g || g === grade || (GRADE_COVERAGE[g] || []).includes(grade));
+}
+
+function renderStudySubjectRows() {
+    const stage = document.getElementById('wizard-study-stage')?.value || '';
+    const system = document.getElementById('wizard-study-system')?.value || '六三制';
+    const grade = document.getElementById('wizard-study-grade')?.value || '';
+    const subjects = wizardState.options?.study_subjects?.[stage] || [];
+    const container = document.getElementById('wizard-study-subjects');
+    container.innerHTML = '';
+    subjects.forEach(subject => {
+        const row = document.createElement('div');
+        row.className = 'wizard-subject-row';
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = subject;
+        checkbox.checked = ['语文', '数学', '英语'].includes(subject);
+        checkbox.addEventListener('change', updateWizardSubjectHint);
+        label.appendChild(checkbox);
+        label.append(subject);
+        row.appendChild(label);
+        const select = document.createElement('select');
+        select.className = 'wizard-subject-edition';
+        select.dataset.subject = subject;
+        select.title = `${subject} 教材版本`;
+        const allEditions = wizardState.options?.textbook_editions?.[system]?.[stage]?.[subject] || [];
+        const editions = allEditions.filter(item => editionCoversGrade(item, grade));
+        const usable = editions.length ? editions : allEditions;
+        if (usable.length) {
+            usable.forEach(edition => {
+                const option = document.createElement('option');
+                option.value = edition.name;
+                option.textContent = edition.publisher ? `${edition.name}（${edition.publisher}）` : edition.name;
+                select.appendChild(option);
+            });
+            const fallback = usable.find(edition => edition.default) || usable[0];
+            select.value = fallback.name;
+        } else {
+            select.disabled = true;
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = '暂无教材';
+            select.appendChild(option);
+        }
+        row.appendChild(select);
+        container.appendChild(row);
+    });
+    updateWizardSubjectHint();
+}
+
+function bindStudyConfigEvents() {
+    document.getElementById('wizard-study-stage')?.addEventListener('change', () => {
+        renderStudySubjectRows();
+        updateStudyGradeOptions();
+    });
+    document.getElementById('wizard-study-system')?.addEventListener('change', () => {
+        renderStudySubjectRows();
+        updateStudyGradeOptions();
+    });
+    document.getElementById('wizard-study-grade')?.addEventListener('change', renderStudySubjectRows);
+    renderWizardOptions();
+}
+
+function updateWizardSubjectHint() {
+    const checked = Array.from(document.querySelectorAll('#wizard-study-subjects input:checked')).map(x => x.value);
+    setWizardStatus(checked.length ? `已选 ${checked.length} 个科目，将创建 ${checked.length} 个工作区。` : '请至少选择一个科目。');
+}
+
+function collectWizardProfile(strict = false) {
+    const category = wizardState.category;
+    if (category === 'study') {
+        const subject_overrides = {};
+        document.querySelectorAll('#wizard-study-subjects select.wizard-subject-edition').forEach(sel => {
+            if (sel.dataset.subject && sel.value) {
+                subject_overrides[sel.dataset.subject] = { textbook_edition: sel.value };
+            }
+        });
+        const profile = {
+            learner_name: document.getElementById('wizard-study-learner')?.value.trim() || '',
+            stage: document.getElementById('wizard-study-stage')?.value || '',
+            system: document.getElementById('wizard-study-system')?.value || '六三制',
+            grade: document.getElementById('wizard-study-grade')?.value || '',
+            exam_region: document.getElementById('wizard-study-region')?.value.trim() || '',
+            focus: document.getElementById('wizard-study-focus')?.value || '同步学习',
+            daily_minutes: Number(document.getElementById('wizard-study-minutes')?.value || 0),
+            parent_note: document.getElementById('wizard-study-note')?.value.trim() || '',
+            subject_overrides,
+        };
+        if (strict && !profile.stage) throw new Error('请选择学段');
+        if (strict && !profile.grade) throw new Error('请选择年级');
+        return profile;
+    }
+    if (category === 'office') {
+        return {
+            role: document.getElementById('wizard-office-role')?.value.trim() || '',
+            doc_language: document.getElementById('wizard-office-language')?.value || '中文',
+        };
+    }
+    if (category === 'research') {
+        return {
+            field: document.getElementById('wizard-research-field')?.value.trim() || '',
+            direction: document.getElementById('wizard-research-direction')?.value.trim() || '',
+            citation_style: document.getElementById('wizard-research-citation')?.value || 'GB/T 7714',
+        };
+    }
+    return {};
+}
+
+function collectWizardSubjects() {
+    return Array.from(document.querySelectorAll('#wizard-study-subjects input:checked')).map(x => x.value);
+}
+
+function setWizardStatus(message, type = '') {
+    const el = document.getElementById('wizard-status');
+    el.textContent = message;
+    el.className = 'settings-status' + (type ? ' ' + type : '');
+}
+
+function showWizardStep(step) {
+    wizardState.step = step;
+    document.querySelectorAll('.wizard-step').forEach(item => {
+        item.classList.toggle('active', item.id === `wizard-step-${step}`);
+    });
+    document.querySelectorAll('.wizard-step-indicator').forEach(item => {
+        item.classList.toggle('active', Number(item.dataset.step) <= step);
+        item.classList.toggle('current', Number(item.dataset.step) === step);
+    });
+    const back = document.getElementById('wizard-back-btn');
+    const next = document.getElementById('wizard-next-btn');
+    back.style.display = step === 1 ? 'none' : '';
+    next.textContent = step === 4 ? '创建' : (step === 5 ? '完成' : '下一步');
+    next.disabled = false;
+}
+
+function wizardGoBack() {
+    if (wizardState.step > 1) showWizardStep(wizardState.step - 1);
+}
+
+async function workspaceNameExists(name) {
     try {
-        const response = await fetch('/api/workspaces', {
+        const response = await fetch('/api/workspaces');
+        if (!response.ok) return false;
+        const data = await response.json();
+        return (data.workspaces || []).some(ws => ws.name === name);
+    } catch {
+        return false; // 网络失败时放行，由后端预检兜底
+    }
+}
+
+async function wizardGoNext() {
+    try {
+        if (wizardState.step === 1) {
+            if (!wizardState.category) throw new Error('请选择项目类型');
+            renderWizardConfig();
+            showWizardStep(2);
+            return;
+        }
+        if (wizardState.step === 2) {
+            const name = document.getElementById('wizard-name').value.trim();
+            if (name && wizardState.category !== 'study' && await workspaceNameExists(name)) {
+                throw new Error(`已存在同名工作区「${name}」，请修改项目名称`);
+            }
+            renderWizardConfig();
+            showWizardStep(3);
+            return;
+        }
+        if (wizardState.step === 3) {
+            collectWizardProfile(true);
+            await previewWizard();
+            showWizardStep(4);
+            return;
+        }
+        if (wizardState.step === 4) {
+            await createWizard();
+            return;
+        }
+        if (wizardState.step === 5) {
+            document.getElementById('new-workspace-modal').style.display = 'none';
+            return;
+        }
+    } catch (error) {
+        setWizardStatus('✗ ' + error.message, 'error');
+    }
+}
+
+function wizardRequest() {
+    return {
+        category: wizardState.category,
+        name: document.getElementById('wizard-name').value.trim(),
+        location: document.getElementById('wizard-location').value,
+        slug: document.getElementById('wizard-slug').value.trim(),
+        custom_directory: document.getElementById('wizard-custom-directory').value.trim(),
+        profile: collectWizardProfile(true),
+        subjects: collectWizardSubjects(),
+        allow_existing: document.getElementById('wizard-allow-existing').checked,
+    };
+}
+
+function renderWizardPreview(data) {
+    const container = document.getElementById('wizard-preview');
+    container.innerHTML = '';
+    const warnings = data.warnings || [];
+    if (warnings.length) {
+        const warning = document.createElement('div');
+        warning.className = 'wizard-warning';
+        warning.textContent = warnings.join('；');
+        container.appendChild(warning);
+    }
+    data.workspaces.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'wizard-preview-card';
+        const title = document.createElement('strong');
+        title.textContent = item.name;
+        const path = document.createElement('div');
+        path.textContent = item.directory + (item.exists ? '（目录已存在）' : '');
+        const pre = document.createElement('pre');
+        pre.textContent = item.agents_md;
+        card.append(title, path, pre);
+        container.appendChild(card);
+    });
+}
+
+async function previewWizard() {
+    const next = document.getElementById('wizard-next-btn');
+    next.disabled = true;
+    setWizardStatus('生成预览...');
+    try {
+        const response = await fetch('/api/workspace-wizard/preview', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, directory })
+            body: JSON.stringify(wizardRequest()),
         });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || '创建失败');
-        }
-
-        const workspace = await response.json();
-        statusEl.textContent = '✓ 创建成功';
-
-        // 关闭 modal
-        document.getElementById('new-workspace-modal').style.display = 'none';
-
-        // 刷新工作区列表
-        await loadWorkspaces();
-
-        // 选中新创建的工作区
-        workspaceSelect.value = workspace.uuid;
-        await handleWorkspaceChange();
-    } catch (error) {
-        statusEl.textContent = '✗ ' + error.message;
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '生成预览失败');
+        wizardState.preview = data;
+        renderWizardPreview(data);
+        setWizardStatus('预览已生成，确认后点击创建。');
+    } finally {
+        next.disabled = false;
     }
+}
+
+async function createWizard() {
+    if (wizardState.creating) return;
+    wizardState.creating = true;
+    const next = document.getElementById('wizard-next-btn');
+    next.disabled = true;
+    setWizardStatus('正在创建...');
+    try {
+        const body = {
+            ...wizardRequest(),
+            overwrite_agents: false,
+            git_enabled: document.getElementById('wizard-git-enabled').checked,
+            memory_enabled: document.getElementById('wizard-memory-enabled').checked,
+            download_textbooks: document.getElementById('wizard-download-textbooks')?.checked || false,
+        };
+        const response = await fetch('/api/workspace-wizard/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '创建失败');
+        wizardState.result = data;
+        showWizardStep(5);
+        renderWizardResult(data);
+        setWizardStatus('✓ 创建完成', 'success');
+        await loadWorkspaces();
+    } catch (error) {
+        setWizardStatus('✗ ' + error.message, 'error');
+    } finally {
+        wizardState.creating = false;
+        next.disabled = false;
+    }
+}
+
+function renderWizardResult(data) {
+    const container = document.getElementById('wizard-result');
+    container.innerHTML = '';
+    (data.created || []).forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'wizard-result-card success';
+        card.innerHTML = '<strong>' + escapeHtml(item.name) + '</strong><div>' + escapeHtml(item.directory) + '</div>';
+        if (item.subject) {
+            const subject = document.createElement('div');
+            subject.textContent = '科目：' + item.subject;
+            card.appendChild(subject);
+        }
+        container.appendChild(card);
+    });
+    (data.failed || []).forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'wizard-result-card error';
+        card.innerHTML = '<strong>' + escapeHtml(item.name) + '</strong><div>' + escapeHtml(item.error) + '</div>';
+        container.appendChild(card);
+    });
+    (data.textbook_tasks || []).forEach(task => {
+        const card = document.createElement('div');
+        card.className = 'wizard-result-card info';
+        card.textContent = `已启动教材下载：${task.subject}，共 ${task.total_books} 本。`;
+        container.appendChild(card);
+    });
+    (data.warnings || []).forEach(warning => {
+        const card = document.createElement('div');
+        card.className = 'wizard-warning';
+        card.textContent = warning;
+        container.appendChild(card);
+    });
 }
 
 // Load sessions
@@ -1332,6 +1844,11 @@ function switchWorkspaceSettingsTab(tabName) {
         footerSaveBtn.style.marginLeft = 'auto';
         footerSaveBtn.onclick = saveGitRemote;
         deleteBtn.style.display = 'none';
+    } else if (tabName === 'ws-textbooks') {
+        // 教材下载 tab：使用面板内按钮，隐藏底部保存/删除
+        footerSaveBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
+        initTextbookPanel();
     } else {
         // 基本设置 tab：显示 footer 按钮
         footerSaveBtn.textContent = '保存';
@@ -1855,3 +2372,421 @@ document.addEventListener('drop', async (e) => {
         showToast('✗ 上传失败: ' + (error.message || error), 3000);
     }
 });
+
+// ─── 教材下载 ───────────────────────────────────────────────────────────────
+
+const textbookState = {
+    initialized: false,
+    loading: false,
+    workspaceUuid: null,
+    books: [],
+    filtered: [],
+    taskId: null,
+    pollTimer: null,
+};
+
+function textbookFormatSize(bytes) {
+    const value = Number(bytes || 0);
+    if (value >= 1024 * 1024 * 1024) return (value / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+    if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
+    return value + ' B';
+}
+
+function textbookSetStatus(message, type = '') {
+    const el = document.getElementById('textbook-task-status');
+    if (!el) return;
+    el.textContent = message;
+    el.className = 'settings-status' + (type ? ' ' + type : '');
+}
+
+function textbookSetButtons(taskRunning = false, hasFailures = false) {
+    document.getElementById('textbook-download-btn').disabled = textbookState.loading || taskRunning;
+    document.getElementById('textbook-refresh-btn').disabled = textbookState.loading || taskRunning;
+    document.getElementById('textbook-cancel-btn').style.display = taskRunning ? '' : 'none';
+    document.getElementById('textbook-retry-btn').style.display = (!taskRunning && hasFailures) ? '' : 'none';
+}
+
+function initTextbookPanel() {
+    if (!currentWorkspace) return;
+    const isSystem = currentWorkspace.system || currentWorkspace.uuid === 'system';
+    if (isSystem) {
+        stopTextbookPolling(null);
+        textbookState.taskId = null;
+        textbookState.books = [];
+        textbookState.filtered = [];
+        textbookSetStatus('系统工作区不支持教材下载', 'error');
+        document.getElementById('textbook-list').innerHTML =
+            '<div class="textbook-empty">系统工作区不支持教材下载。</div>';
+        return;
+    }
+
+    // 切换工作区后清空上一个工作区的任务与选择，避免跨工作区误操作。
+    if (textbookState.workspaceUuid !== currentWorkspace.uuid) {
+        stopTextbookPolling(null);
+        textbookState.workspaceUuid = currentWorkspace.uuid;
+        textbookState.taskId = null;
+        textbookState.books = [];
+        textbookState.filtered = [];
+        textbookState.loading = false;
+        document.getElementById('textbook-progress').style.display = 'none';
+        document.getElementById('textbook-progress').value = 0;
+    }
+
+    if (!textbookState.initialized) {
+        const stage = document.getElementById('textbook-stage');
+        const system = document.getElementById('textbook-system');
+        const subject = document.getElementById('textbook-subject');
+        const edition = document.getElementById('textbook-edition');
+        const grade = document.getElementById('textbook-grade');
+        const semester = document.getElementById('textbook-semester');
+        const highScope = document.getElementById('textbook-high-scope');
+        stage.addEventListener('change', () => {
+            syncTextbookStageControls();
+            loadTextbookSubjects();
+        });
+        system.addEventListener('change', loadTextbookSubjects);
+        subject.addEventListener('change', () => {
+            subject.dataset.value = subject.value;
+            loadTextbookBooks();
+        });
+        edition.addEventListener('change', loadTextbookBooks);
+        grade.addEventListener('change', loadTextbookBooks);
+        semester.addEventListener('change', renderTextbookBooks);
+        highScope.addEventListener('change', loadTextbookBooks);
+        document.getElementById('textbook-refresh-btn').addEventListener('click', loadTextbookBooks);
+        document.getElementById('textbook-select-all-btn').addEventListener('click', () => {
+            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(box => {
+                box.checked = true;
+            });
+            updateTextbookSummary();
+        });
+        document.getElementById('textbook-clear-btn').addEventListener('click', () => {
+            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(box => {
+                box.checked = false;
+            });
+            updateTextbookSummary();
+        });
+        document.getElementById('textbook-download-btn').addEventListener('click', downloadSelectedTextbooks);
+        document.getElementById('textbook-cancel-btn').addEventListener('click', cancelTextbookTask);
+        document.getElementById('textbook-retry-btn').addEventListener('click', retryFailedTextbooks);
+        textbookState.initialized = true;
+    }
+
+    syncTextbookStageControls();
+    loadTextbookSubjects();
+}
+
+function syncTextbookStageControls() {
+    const stage = document.getElementById('textbook-stage').value;
+    const system = document.getElementById('textbook-system');
+    const highScopeGroup = document.getElementById('textbook-high-scope-group');
+    const isHighSchool = stage === '高中';
+    system.disabled = isHighSchool;
+    if (isHighSchool) system.value = '六三制';
+    highScopeGroup.style.display = isHighSchool ? '' : 'none';
+}
+
+async function loadTextbookSubjects() {
+    if (!currentWorkspace || textbookState.loading) return;
+    const subjectSelect = document.getElementById('textbook-subject');
+    const stage = document.getElementById('textbook-stage').value;
+    const system = document.getElementById('textbook-system').value;
+    textbookState.loading = true;
+    textbookSetButtons();
+    syncTextbookStageControls();
+    subjectSelect.innerHTML = '<option value="">加载中...</option>';
+    textbookState.books = [];
+    textbookState.filtered = [];
+    document.getElementById('textbook-list').innerHTML =
+        '<div class="textbook-empty">选择科目后自动列出可下载课本。</div>';
+    updateTextbookSummary();
+    textbookSetStatus('加载科目...');
+    try {
+        const params = new URLSearchParams({ stage, system, book_types: 'textbook' });
+        const response = await fetch('/api/textbooks/subjects?' + params.toString());
+        if (!response.ok) throw new Error((await response.json()).detail || '加载科目失败');
+        const data = await response.json();
+        const oldSubject = subjectSelect.dataset.value || '';
+        subjectSelect.innerHTML = '<option value="">选择科目...</option>';
+        (data.subjects || []).forEach(item => {
+            const option = document.createElement('option');
+            option.value = item.subject;
+            option.textContent = item.subject + '（' + item.count + ' 本，' + textbookFormatSize(item.total_size) + '）';
+            subjectSelect.appendChild(option);
+        });
+        if (oldSubject && (data.subjects || []).some(item => item.subject === oldSubject)) {
+            subjectSelect.value = oldSubject;
+            subjectSelect.dataset.value = oldSubject;
+        } else {
+            subjectSelect.dataset.value = '';
+        }
+        if (!(data.subjects || []).length) {
+            subjectSelect.innerHTML = '<option value="">暂无科目</option>';
+        }
+        if (subjectSelect.value) {
+            await loadTextbookBooks();
+            return;
+        }
+        textbookSetStatus('请选择科目。');
+    } catch (error) {
+        subjectSelect.innerHTML = '<option value="">加载失败</option>';
+        textbookSetStatus('✗ ' + error.message, 'error');
+    } finally {
+        textbookState.loading = false;
+        textbookSetButtons();
+    }
+}
+
+async function loadTextbookBooks() {
+    if (!currentWorkspace) return;
+    // 由 loadTextbookSubjects 恢复上一次科目时会嵌套调用；避免在这里被外层 loading 拦截。
+    const stage = document.getElementById('textbook-stage').value;
+    const system = document.getElementById('textbook-system').value;
+    const subject = document.getElementById('textbook-subject').value;
+    const edition = document.getElementById('textbook-edition').value;
+    const highScope = document.getElementById('textbook-high-scope').value;
+    const listEl = document.getElementById('textbook-list');
+
+    if (!subject) {
+        textbookState.books = [];
+        textbookState.filtered = [];
+        listEl.innerHTML = '<div class="textbook-empty">选择科目后自动列出可下载课本。</div>';
+        updateTextbookSummary();
+        return;
+    }
+
+    textbookState.loading = true;
+    textbookSetButtons();
+    listEl.innerHTML = '<div class="textbook-empty">加载教材...</div>';
+    textbookSetStatus('加载教材清单...');
+    try {
+        const params = new URLSearchParams({
+            stage: stage,
+            system: system,
+            subject: subject,
+            edition: edition,
+            edition_grade: document.getElementById('textbook-grade').value,
+            high_scope: highScope,
+            book_types: 'textbook',
+        });
+        const response = await fetch('/api/textbooks/options?' + params.toString());
+        if (!response.ok) throw new Error((await response.json()).detail || '加载教材失败');
+        const data = await response.json();
+        textbookState.books = data.books || [];
+
+        const editionSelect = document.getElementById('textbook-edition');
+        const oldEdition = editionSelect.value;
+        editionSelect.innerHTML = '<option value="">全部版本</option>';
+        (data.editions || []).forEach(item => {
+            const option = document.createElement('option');
+            option.value = item.edition_raw;
+            option.textContent = item.edition_raw + '（' + item.count + ' 本，' + textbookFormatSize(item.total_size) + '）';
+            editionSelect.appendChild(option);
+        });
+        editionSelect.value = (data.editions || []).some(item => item.edition_raw === oldEdition)
+            ? oldEdition : '';
+
+        const grades = [...new Set(textbookState.books.map(item => item.grade).filter(Boolean))].sort();
+        const semesters = [...new Set(textbookState.books.map(item => item.semester).filter(Boolean))].sort();
+        populateTextbookSelect('textbook-grade', grades, '全部年级');
+        populateTextbookSelect('textbook-semester', semesters, '全部学期');
+        renderTextbookBooks();
+        const warning = (data.warnings || []).join('；');
+        textbookSetStatus(warning ? warning : '已加载 ' + textbookState.books.length + ' 本教材，默认全选。');
+    } catch (error) {
+        textbookState.books = [];
+        textbookState.filtered = [];
+        listEl.innerHTML = '<div class="textbook-empty">加载失败</div>';
+        updateTextbookSummary();
+        textbookSetStatus('✗ ' + error.message, 'error');
+    } finally {
+        textbookState.loading = false;
+        textbookSetButtons();
+    }
+}
+
+function populateTextbookSelect(id, values, emptyLabel) {
+    const select = document.getElementById(id);
+    const old = select.value;
+    select.innerHTML = '<option value="">' + emptyLabel + '</option>';
+    values.forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+    });
+    select.value = values.includes(old) ? old : '';
+}
+
+function renderTextbookBooks() {
+    const grade = document.getElementById('textbook-grade').value;
+    const semester = document.getElementById('textbook-semester').value;
+    textbookState.filtered = textbookState.books.filter(book =>
+        (!grade || book.grade === grade) && (!semester || book.semester === semester)
+    );
+    const listEl = document.getElementById('textbook-list');
+    if (!textbookState.filtered.length) {
+        listEl.innerHTML = '<div class="textbook-empty">没有匹配的教材。</div>';
+        updateTextbookSummary();
+        return;
+    }
+    listEl.innerHTML = '';
+    textbookState.filtered.forEach(book => {
+        const label = document.createElement('label');
+        label.className = 'textbook-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = book.book_key;
+        checkbox.checked = true;
+        checkbox.addEventListener('change', updateTextbookSummary);
+        const text = document.createElement('span');
+        text.className = 'textbook-item-text';
+        text.textContent = [
+            book.title,
+            book.edition_raw,
+            book.grade || '',
+            book.semester || book.high_type || '',
+            book.split ? '分片 ' + book.chunk_count : '',
+            textbookFormatSize(book.total_size),
+        ].filter(Boolean).join(' · ');
+        label.append(checkbox, text);
+        listEl.appendChild(label);
+    });
+    updateTextbookSummary();
+}
+
+function updateTextbookSummary() {
+    const selected = selectedTextbookBooks();
+    const totalSize = selected.reduce((sum, book) => sum + Number(book.total_size || 0), 0);
+    const splitCount = selected.filter(book => book.split).length;
+    document.getElementById('textbook-summary').textContent =
+        '已选 ' + selected.length + ' 本，共 ' + textbookFormatSize(totalSize) +
+        '；其中 ' + splitCount + ' 本需分片合并。';
+    textbookSetButtons(Boolean(textbookState.taskId && isTextbookTaskRunning()));
+}
+
+function selectedTextbookBooks() {
+    const selected = new Set(Array.from(
+        document.querySelectorAll('#textbook-list input[type="checkbox"]:checked')
+    ).map(box => box.value));
+    return textbookState.filtered.filter(book => selected.has(book.book_key));
+}
+
+function isTextbookTaskRunning(status) {
+    return status === 'running';
+}
+
+async function downloadSelectedTextbooks() {
+    if (!currentWorkspace) return;
+    const books = selectedTextbookBooks();
+    if (!books.length) {
+        textbookSetStatus('请先选择要下载的教材。', 'error');
+        return;
+    }
+    const downloadBtn = document.getElementById('textbook-download-btn');
+    downloadBtn.disabled = true;
+    textbookSetStatus('创建下载任务...');
+    try {
+        const response = await fetch('/api/textbooks/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workspace_uuid: currentWorkspace.uuid,
+                book_keys: books.map(book => book.book_key),
+                overwrite: false,
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '创建下载任务失败');
+        startTextbookPolling(data.task_id);
+    } catch (error) {
+        textbookSetStatus('✗ ' + error.message, 'error');
+        downloadBtn.disabled = false;
+    }
+}
+
+function startTextbookPolling(taskId) {
+    textbookState.taskId = taskId;
+    textbookSetButtons(true);
+    const progress = document.getElementById('textbook-progress');
+    progress.style.display = '';
+    progress.value = 0;
+    if (textbookState.pollTimer) clearInterval(textbookState.pollTimer);
+    textbookState.pollTimer = setInterval(pollTextbookTask, 1000);
+    pollTextbookTask();
+}
+
+async function pollTextbookTask() {
+    if (!textbookState.taskId) return;
+    try {
+        const response = await fetch('/api/textbooks/download/' + textbookState.taskId);
+        if (response.status === 404) {
+            stopTextbookPolling('任务不存在（服务可能已重启）', 'error');
+            return;
+        }
+        if (!response.ok) throw new Error((await response.json()).detail || '查询任务失败');
+        const task = await response.json();
+        const percent = task.total_bytes > 0
+            ? Math.min(100, Math.round(task.downloaded_bytes / task.total_bytes * 100))
+            : 100;
+        document.getElementById('textbook-progress').value = percent;
+        const failed = (task.books || []).filter(book => book.status === 'failed');
+        const skipped = (task.books || []).filter(book => book.status === 'skipped');
+        const done = (task.books || []).filter(book => book.status === 'done');
+        textbookSetStatus(
+            task.status + '：完成 ' + done.length + '，跳过 ' + skipped.length +
+            '，失败 ' + failed.length + '；' + textbookFormatSize(task.downloaded_bytes) +
+            ' / ' + textbookFormatSize(task.total_bytes) + '（' + percent + '%）' +
+            (failed.length ? '；首个错误：' + failed[0].error : '')
+        );
+        if (!isTextbookTaskRunning(task.status)) {
+            stopTextbookPolling(null, task.status === 'done' ? 'success' : 'error');
+            textbookSetButtons(false, failed.length > 0);
+        } else {
+            textbookSetButtons(true);
+        }
+    } catch (error) {
+        textbookSetStatus('查询下载进度失败: ' + error.message, 'error');
+    }
+}
+
+function stopTextbookPolling(message, type = '') {
+    if (textbookState.pollTimer) {
+        clearInterval(textbookState.pollTimer);
+        textbookState.pollTimer = null;
+    }
+    if (message !== null) textbookSetStatus(message, type);
+}
+
+async function retryFailedTextbooks() {
+    if (!textbookState.taskId) return;
+    try {
+        const response = await fetch('/api/textbooks/download/' + textbookState.taskId + '/retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '重试失败');
+        startTextbookPolling(data.task_id);
+    } catch (error) {
+        textbookSetStatus('✗ ' + error.message, 'error');
+    }
+}
+
+async function cancelTextbookTask() {
+    if (!textbookState.taskId) return;
+    try {
+        const response = await fetch('/api/textbooks/download/' + textbookState.taskId + '/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '取消失败');
+        textbookState.taskId = data.task_id;
+        pollTextbookTask();
+    } catch (error) {
+        textbookSetStatus('✗ ' + error.message, 'error');
+    }
+}

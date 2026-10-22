@@ -105,7 +105,7 @@ def _isolate_workspaces_index():
 
     def _safe_get_workspace_data_dir(workspace_uuid: str) -> Path:
         result = _original_get_workspace_data_dir(workspace_uuid)
-        real_default = config_mod.PROJECT_ROOT / "workspace" / ".cili"
+        real_default = config_mod.PROJECT_ROOT / "workspace" / "default" / ".cili"
         if result == real_default:
             return Path(test_dir) / ".cili"
         return result
