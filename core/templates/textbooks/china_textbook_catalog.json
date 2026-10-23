@@ -25,7 +25,7 @@
     "chunk_suffix": ".pdf.N",
     "order": "numeric_suffix",
     "readme": "https://github.com/one-leaf/ChinaTextbook#问题如何合并被拆分的文件",
-    "note": "README 推荐 mergePDFs 程序，或 Windows 的 copy /b、macOS/Linux 的 cat。本目录按同样顺序做字节拼接。"
+    "note": "README 推荐 Windows 的 copy /b、macOS/Linux 的 cat。本目录按同样顺序做字节拼接。"
   },
   "stats": {
     "books": 2061,

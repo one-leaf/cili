@@ -25,6 +25,7 @@ from core.fs_utils import atomic_write_text
 
 WORKSPACE_PARENT = PROJECT_ROOT / "workspace"
 DATA_ROOT = PROJECT_ROOT / "data"
+SUBJECT_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "subjects"
 SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
 
 CATEGORIES: dict[str, dict[str, Any]] = {
@@ -213,6 +214,64 @@ def _clean_line(value: Any, default: str = "", limit: int = 200) -> str:
     return text[:limit] or default
 
 
+def _textbook_range_lines(
+    stage: str, system: str, subject: str, edition: str, grade: str
+) -> str:
+    """从教材清单取该学制/年级/版本/学科的课本清单；失败时给出兜底文案。"""
+    try:
+        from core.textbooks import get_catalog
+
+        books = get_catalog().find_books(
+            stage=stage, system=system, subject=subject, edition=edition,
+            grade=grade, book_types=("textbook",), high_scope="all_textbook_volumes",
+        )
+    except Exception:  # noqa: BLE001 —— 教材清单不可用不阻断工作区创建
+        return "- 以学校实际使用的教材为准。"
+    titles: list[str] = []
+    for book in sorted(books, key=lambda b: (b.grade, b.semester, b.title)):
+        line = f"- 《{book.title}》（{book.edition}）"
+        if line not in titles:
+            titles.append(line)
+    if not titles:
+        return "- 以学校实际使用的教材为准（清单中暂无该年级电子课本）。"
+    return "\n".join(titles[:12])
+
+
+def _render_study_template(profile: dict[str, Any], subject: str) -> str:
+    """按「学段-学科」模板生成学科教练提示词；模板缺失回退通用模板。"""
+    stage = _clean_line(profile.get("stage"), "小学", 20)
+    path = SUBJECT_TEMPLATE_DIR / f"{stage}-{subject}.md"
+    if not path.is_file():
+        path = SUBJECT_TEMPLATE_DIR / "通用.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = "## 角色\n\n你是 {{learner}} 的 {{subject}} 学科教练，负责引导思考，而不是直接代替完成作业。"
+    grade = _clean_line(profile.get("grade"), "", 20)
+    minutes = profile.get("daily_minutes")
+    mapping = {
+        "learner": _clean_line(profile.get("learner_name"), "同学", 40),
+        "subject": subject or "综合学习",
+        "stage": stage,
+        "grade": grade or "当前年级",
+        "system": _clean_line(profile.get("system"), "六三制", 10),
+        "edition": _clean_line(profile.get("textbook_edition"), "学校在用版本", 80),
+        "exam_region": _clean_line(profile.get("exam_region"), "本地", 80),
+        "focus": _clean_line(profile.get("focus"), "同步学习", 40),
+        "daily_minutes": f"{int(minutes)} 分钟" if minutes else "30 分钟",
+        "textbook_range": _textbook_range_lines(
+            stage,
+            _clean_line(profile.get("system"), "六三制", 10),
+            subject,
+            _clean_line(profile.get("textbook_edition"), "", 80),
+            grade,
+        ),
+    }
+    for key, value in mapping.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
 def _render_agents_md(
     *,
     category: str,
@@ -236,36 +295,9 @@ def _render_agents_md(
     ]
 
     if category == "study":
-        stage = _clean_line(profile.get("stage"), "未设置", 20)
-        grade = _clean_line(profile.get("grade"), "未设置", 20)
-        edition = _clean_line(profile.get("textbook_edition"), "未指定", 80)
-        region = _clean_line(profile.get("exam_region"), "未指定", 80)
-        focus = _clean_line(profile.get("focus"), "同步学习", 40)
-        learner = _clean_line(profile.get("learner_name"), "学生", 40)
-        subject_text = subject or _clean_line(profile.get("subject"), "综合学习", 40)
-        minutes = profile.get("daily_minutes")
         lines.extend([
             "",
-            "## 角色",
-            f"你是 {learner} 的 {subject_text} 学科教练，负责引导思考，而不是直接代替完成作业。",
-            "",
-            "## 学习档案",
-            f"- 学段：{stage}；年级：{grade}",
-            f"- 教材版本：{edition}；考区：{region}",
-            f"- 当前重点：{focus}" + (f"；建议每天 {minutes} 分钟" if minutes else ""),
-            "",
-            "## 教学原则",
-            "1. 先问后讲：确认卡点再讲解。",
-            "2. 分层提示：思路 → 关键步骤 → 完整解法。",
-            "3. 每次讲完用 1-2 道变式题确认掌握。",
-            "4. 不直接代写作业；给完整答案前必须先给思路。",
-            "",
-            "## 学习闭环",
-            "课前小测 → 引导学习 → 题型归纳 → 课后小测",
-            "",
-            "## 错题与计划",
-            "- 错题记录：题目、错因、正确思路、同类变式、复习日期。",
-            "- 每次课后更新 `学习计划.md`；每周生成一次家长摘要。",
+            _render_study_template(profile, subject),
         ])
     elif category == "office":
         role = _clean_line(profile.get("role"), "办公助理", 80)

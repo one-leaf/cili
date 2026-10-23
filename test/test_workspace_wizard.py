@@ -116,6 +116,33 @@ def test_study_grade_linked_to_system():
     assert preview["workspaces"][0]["name"] == "六年级-数学"
 
 
+def test_study_agents_md_uses_subject_template(tmp_path):
+    existing = [
+        {"uuid": f"w{i}", "name": f"占位{i}", "directory": str(tmp_path / f"w{i}")}
+        for i in range(6)
+    ]
+    middle = preview_workspaces(
+        category="study", base_name="学生A", location="cili",
+        profile=_profile(), subjects=["数学"], existing_workspaces=existing,
+    )
+    agents_md = middle["workspaces"][0]["agents_md"]
+    # 学段-学科模板：中考导向 + 年级/考区占位已填充 + 教材范围来自清单
+    assert "中考题型" in agents_md
+    assert "八年级" in agents_md
+    assert "广东" in agents_md
+    assert "义务教育教科书·数学八年级上册" in agents_md
+    import re
+    assert not re.findall(r"\{\{\w+\}\}", agents_md)
+
+    primary = preview_workspaces(
+        category="study", base_name="学生B", location="cili",
+        profile=_profile(stage="小学", grade="三年级"), subjects=["科学"],
+        existing_workspaces=existing,
+    )
+    # 小学科学走小学模板：探究导向
+    assert "探究" in primary["workspaces"][0]["agents_md"]
+
+
 def test_subject_edition_override(tmp_path):
     preview = preview_workspaces(
         category="study", base_name="学生A", location="cili",
