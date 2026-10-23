@@ -203,8 +203,6 @@ def validate_workspace_directory(
         raise WorkspaceWizardError("目标路径已存在且不是目录")
     if len(str(candidate)) >= 240:
         warnings.append("目录较长，部分老程序可能不支持")
-    if re.search(r"[^\x00-\x7f]", candidate.name):
-        warnings.append("目录名包含中文，少数外部工具可能显示异常")
     return warnings
 
 
@@ -369,6 +367,8 @@ def _study_specs(profile: dict[str, Any], subjects: list[str]) -> list[dict[str,
             clean.append(text)
     if not clean:
         raise WorkspaceWizardError("学习项目至少选择一个科目")
+    if not _clean_line(profile.get("learner_name"), "", 40):
+        raise WorkspaceWizardError("学习项目必须填写孩子称呼")
     stage = _clean_line(profile.get("stage"), "", 20)
     if stage not in STAGES:
         raise WorkspaceWizardError("学习项目必须选择学段")

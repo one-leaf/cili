@@ -36,6 +36,11 @@ def _use_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
 
 
+def _use_isolated_workspace_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """把向导的 workspace 父目录指到临时目录，避免与真实工作区互相干扰。"""
+    monkeypatch.setattr("core.workspace_wizard.WORKSPACE_PARENT", tmp_path / "workspace")
+
+
 def test_slugify_keeps_chinese_and_rejects_reserved():
     assert slugify("学生A 八年级 数学") == "学生A-八年级-数学"
     assert slugify("My App: v2") == "My-App-v2"
@@ -116,7 +121,8 @@ def test_study_grade_linked_to_system():
     assert preview["workspaces"][0]["name"] == "六年级-数学"
 
 
-def test_study_agents_md_uses_subject_template(tmp_path):
+def test_study_agents_md_uses_subject_template(tmp_path, monkeypatch):
+    _use_isolated_workspace_root(tmp_path, monkeypatch)
     existing = [
         {"uuid": f"w{i}", "name": f"占位{i}", "directory": str(tmp_path / f"w{i}")}
         for i in range(6)
@@ -143,7 +149,16 @@ def test_study_agents_md_uses_subject_template(tmp_path):
     assert "探究" in primary["workspaces"][0]["agents_md"]
 
 
-def test_subject_edition_override(tmp_path):
+def test_study_requires_learner_name():
+    with pytest.raises(WorkspaceWizardError, match="孩子称呼"):
+        preview_workspaces(
+            category="study", base_name="学生A", location="cili",
+            profile=_profile(learner_name=""), subjects=["数学"],
+        )
+
+
+def test_subject_edition_override(tmp_path, monkeypatch):
+    _use_isolated_workspace_root(tmp_path, monkeypatch)
     preview = preview_workspaces(
         category="study", base_name="学生A", location="cili",
         profile=_profile(subject_overrides={"数学": {"textbook_edition": "北师大版"}}),

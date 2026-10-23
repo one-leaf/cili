@@ -778,7 +778,7 @@ function renderWizardConfig() {
 function getStudyConfigHtml() {
     return `
         <div class="wizard-grid">
-            <div class="form-group"><label>孩子称呼</label><input type="text" id="wizard-study-learner" placeholder="选填，用于工作区命名"></div>
+            <div class="form-group"><label>孩子称呼</label><input type="text" id="wizard-study-learner" placeholder="用于对话称呼"></div>
             <div class="form-group"><label>学段</label><select id="wizard-study-stage"></select></div>
             <div class="form-group"><label>学制</label><select id="wizard-study-system"></select></div>
             <div class="form-group"><label>年级</label><select id="wizard-study-grade"></select></div>
@@ -910,6 +910,7 @@ function collectWizardProfile(strict = false) {
             parent_note: document.getElementById('wizard-study-note')?.value.trim() || '',
             subject_overrides,
         };
+        if (strict && !profile.learner_name) throw new Error('请填写孩子称呼');
         if (strict && !profile.stage) throw new Error('请选择学段');
         if (strict && !profile.grade) throw new Error('请选择年级');
         return profile;
