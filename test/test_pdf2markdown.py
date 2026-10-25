@@ -1,6 +1,8 @@
 """pdf2markdown 工具测试"""
 
+import io
 import os
+import zipfile
 from unittest.mock import Mock, patch
 
 import pytest
@@ -11,6 +13,33 @@ from core.tools.pdf2markdown import (
     _AuthError,
     _QuotaExceededError,
 )
+
+
+def _config_with_key(key: str):
+    """构造带 mineru_api_key 的配置"""
+    from core.config import Config, SystemConfig
+
+    config = Config.__new__(Config)
+    config.system = SystemConfig(mineru_api_key=key)
+    return config
+
+
+def _resp(json_data=None, content: bytes = b""):
+    """构造 requests 响应 Mock"""
+    r = Mock()
+    r.status_code = 200
+    r.content = content
+    r.json.return_value = json_data or {}
+    r.raise_for_status = Mock()
+    return r
+
+
+def _zip_bytes(md_name: str, md_content: str) -> bytes:
+    """构造包含 full.md 的内存 ZIP"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(md_name, md_content)
+    return buf.getvalue()
 
 
 class TestPDF2MarkdownToolBasic:
@@ -226,6 +255,148 @@ class TestPDF2MarkdownToolConfig:
         key = tool._get_mineru_api_key()
         # 可能为空字符串或环境变量中的值
         assert isinstance(key, str)
+
+
+class TestPDF2MarkdownPrecisionFirst:
+    """商业 API 优先策略测试（配置 apikey → Precision 优先，失败降级 Agent）"""
+
+    @patch("requests.get")
+    @patch("requests.put")
+    @patch("requests.post")
+    def test_api_key_tries_precision_first(self, mock_post, mock_put, mock_get, tmp_path):
+        """配置了 API key → 优先走 Precision API（vlm 模型），不调用免费 Agent API"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k-1"))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+
+        zip_bytes = _zip_bytes("doc/full.md", "# 精析结果")
+        post_urls = []
+
+        def post_side(url, **kw):
+            post_urls.append(url)
+            if url.endswith("/api/v4/file-urls/batch"):
+                assert kw["json"]["model_version"] == "vlm"
+                assert kw["headers"]["Authorization"] == "Bearer k-1"
+                return _resp({"code": 0, "data": {"batch_id": "b1", "file_urls": ["http://oss/upload"]}})
+            raise AssertionError(f"Agent API 不应被调用: {url}")
+
+        def get_side(url, **kw):
+            if "/extract-results/batch/" in url:
+                return _resp({"code": 0, "data": {"extract_result": [
+                    {"state": "done", "full_zip_url": "http://zip/f"}]}})
+            if url == "http://zip/f":
+                return _resp(content=zip_bytes)
+            raise AssertionError(f"unexpected GET: {url}")
+
+        mock_post.side_effect = post_side
+        mock_get.side_effect = get_side
+        mock_put.return_value = _resp()
+
+        result = tool.execute(file_path=str(tmp))
+        assert not result.is_error
+        assert "Precision" in result.output
+        assert "api/v4" in post_urls[0]
+        assert (tmp_path / "doc.md").read_text(encoding="utf-8") == "# 精析结果"
+
+    @patch("requests.get")
+    @patch("requests.put")
+    @patch("requests.post")
+    def test_quota_failure_falls_back_to_agent(self, mock_post, mock_put, mock_get, tmp_path):
+        """Precision 每日配额超限 → 降级免费 Agent API 完成，结果标注降级原因"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k-2"))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+
+        def post_side(url, **kw):
+            if "/api/v4/" in url:
+                return _resp({"code": -60018, "msg": "每日解析任务数量已达上限"})
+            if url.endswith("/api/v1/agent/parse/file"):
+                return _resp({"code": 0, "data": {"task_id": "t1", "file_url": "http://oss/u"}})
+            raise AssertionError(f"unexpected POST: {url}")
+
+        def get_side(url, **kw):
+            if url.endswith("/api/v1/agent/parse/t1"):
+                return _resp({"code": 0, "data": {"state": "done", "markdown_url": "http://cdn/md"}})
+            if url == "http://cdn/md":
+                return _resp(content="# 免费结果".encode("utf-8"))
+            raise AssertionError(f"unexpected GET: {url}")
+
+        mock_post.side_effect = post_side
+        mock_get.side_effect = get_side
+        mock_put.return_value = _resp()
+
+        result = tool.execute(file_path=str(tmp))
+        assert not result.is_error
+        assert "[Agent API]" in result.output
+        assert "降级" in result.output
+        assert "每日解析任务数量已达上限" in result.output
+        assert (tmp_path / "doc.md").read_text(encoding="utf-8") == "# 免费结果"
+
+    @patch("requests.get")
+    @patch("requests.put")
+    @patch("requests.post")
+    def test_auth_failure_falls_back_to_agent(self, mock_post, mock_put, mock_get, tmp_path):
+        """Precision 认证失败（A0202）→ 降级免费 Agent API"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("bad-key"))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+
+        def post_side(url, **kw):
+            if "/api/v4/" in url:
+                return _resp({"code": "A0202", "msg": "authenticate failed"})
+            if url.endswith("/api/v1/agent/parse/file"):
+                return _resp({"code": 0, "data": {"task_id": "t2", "file_url": "http://oss/u"}})
+            raise AssertionError(f"unexpected POST: {url}")
+
+        def get_side(url, **kw):
+            if url.endswith("/api/v1/agent/parse/t2"):
+                return _resp({"code": 0, "data": {"state": "done", "markdown_url": "http://cdn/md"}})
+            if url == "http://cdn/md":
+                return _resp(content="# fallback".encode("utf-8"))
+            raise AssertionError(f"unexpected GET: {url}")
+
+        mock_post.side_effect = post_side
+        mock_get.side_effect = get_side
+        mock_put.return_value = _resp()
+
+        result = tool.execute(file_path=str(tmp))
+        assert not result.is_error
+        assert "[Agent API]" in result.output
+        assert "A0202" in result.output
+
+    @patch("requests.post")
+    def test_precision_fail_oversize_no_fallback(self, mock_post, tmp_path):
+        """Precision 失败且文件超出 Agent 限制（>10MB）→ 不降级，直接报错"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k-3"))
+        tmp = tmp_path / "big.pdf"
+        tmp.write_bytes(b"0" * (11 * 1024 * 1024))
+        mock_post.return_value = _resp({"code": -60010, "msg": "解析失败"})
+
+        result = tool.execute(file_path=str(tmp))
+        assert result.is_error
+        assert "无法降级" in result.output
+
+    @patch("requests.post")
+    def test_no_key_keeps_agent_first(self, mock_post, tmp_path):
+        """未配置 API key → 仍走免费 Agent API（原逻辑不变）"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+        mock_post.return_value = _resp({"code": 0, "data": {"task_id": "t3", "file_url": "http://oss/u"}})
+
+        with patch("requests.get") as mock_get, patch("requests.put") as mock_put:
+            mock_get.side_effect = lambda url, **kw: (
+                _resp({"code": 0, "data": {"state": "done", "markdown_url": "http://cdn/md"}})
+                if url.endswith("/api/v1/agent/parse/t3") else _resp(content="# free".encode("utf-8"))
+            )
+            mock_put.return_value = _resp()
+            result = tool.execute(file_path=str(tmp))
+
+        assert not result.is_error
+        assert "[Agent API]" in result.output
+        # 不应触碰商业 API
+        called = mock_post.call_args[0][0]
+        assert "api/v1/agent" in called
 
 
 class TestPDF2MarkdownToolModelVersion:

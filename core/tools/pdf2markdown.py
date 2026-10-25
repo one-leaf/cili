@@ -4,7 +4,10 @@ Two API modes with automatic fallback:
 1. Agent API (free, no key) — ≤10MB, ≤20 pages, Markdown only
 2. Precision Parse API (needs API key) — ≤200MB, ≤200 pages, ZIP output
 
-Fallback order: Agent → Precision (when file exceeds Agent limits)
+Fallback order:
+- mineru_api_key configured: Precision (commercial, model_version=vlm) first,
+  fall back to free Agent API when Precision fails (file must meet Agent limits)
+- no key: Agent API only
 
 Official docs: https://mineru.net/apiManage/docs
 """
@@ -41,10 +44,10 @@ _PRECISION_SUPPORTED_EXT = {
 }
 
 # model_version 选择 (官方文档: pipeline/vlm/MinerU-HTML)
-# - pipeline: 默认，传统流水线，速度快
-# - vlm: 视觉语言模型，更准确但更慢
+# - vlm: 视觉语言模型，效果更好（商业 Precision API 默认）
+# - pipeline: 传统流水线，速度快
 # - MinerU-HTML: 专用于 HTML 文件
-_MODEL_VERSION_DEFAULT = "pipeline"
+_MODEL_VERSION_DEFAULT = "vlm"
 _MODEL_VERSION_HTML = "MinerU-HTML"
 
 # Token 有效期提示 (官方文档: 90 天)
@@ -65,9 +68,10 @@ class PDF2MarkdownTool(Tool):
     description = (
         "Convert PDF, image, or office files to Markdown using MinerU OCR API. "
         "Supports PDF, PNG, JPG, DOCX, PPTX, XLSX, HTML. "
-        "Two modes: Agent API (free, no key, ≤10MB/≤20 pages) and "
-        "Precision API (needs mineru_api_key, ≤200MB/≤200 pages). "
-        "Automatically tries Agent API first, falls back to Precision API if needed. "
+        "Two modes: Precision API (commercial, needs mineru_api_key, ≤200MB/≤200 pages, "
+        "vlm model) and Agent API (free, no key, ≤10MB/≤20 pages). "
+        "If mineru_api_key is configured, Precision API is used first and falls back "
+        "to the free Agent API on failure; without a key, only the free Agent API is available. "
         "Output is saved as a .md file in the current working directory."
     )
     parameters = {
@@ -87,7 +91,7 @@ class PDF2MarkdownTool(Tool):
             },
             "model_version": {
                 "type": "string",
-                "description": "Model version: 'pipeline' (fast, default), 'vlm' (accurate), 'MinerU-HTML' (for HTML). Only for Precision API.",
+                "description": "Model version: 'vlm' (accurate, default for Precision API), 'pipeline' (fast), 'MinerU-HTML' (for HTML). Only for Precision API.",
                 "enum": ["pipeline", "vlm", "MinerU-HTML"],
             },
         },
@@ -165,49 +169,63 @@ class PDF2MarkdownTool(Tool):
             and file_ext in _AGENT_SUPPORTED_EXT
         )
 
-        # Try Agent API first if eligible
+        # 商业 API 优先：配置了 mineru_api_key 时先走 Precision（vlm 模型），
+        # 失败才降级免费 Agent API
+        if api_key:
+            try:
+                markdown = self._precision_parse(abs_path, api_key, timeout, model_version)
+                self._save_markdown(markdown, output_path)
+                return self._build_result(markdown, output_path, api_mode="Precision")
+            except Exception as e:
+                precision_error = e
+                hint = f"（{_TOKEN_VALIDITY_HINT}）" if isinstance(e, _AuthError) else ""
+                logger.warning(f"Precision API failed: {e}{hint}, falling back to Agent API")
+
+            # Precision 失败 → 免费降级（文件需满足 Agent 限制）
+            if not agent_eligible:
+                return ToolResult(
+                    f"Precision API 解析失败，且文件超出免费 Agent API 限制 "
+                    f"({_AGENT_MAX_SIZE_MB}MB/{_AGENT_MAX_PAGES}页)，无法降级。\n"
+                    f"失败原因: {precision_error}",
+                    error=True,
+                )
+            try:
+                markdown = self._agent_parse(abs_path, timeout)
+                self._save_markdown(markdown, output_path)
+                return self._build_result(
+                    markdown, output_path, api_mode="Agent",
+                    fallback_reason=str(precision_error),
+                )
+            except Exception as e:
+                return ToolResult(
+                    f"Precision 与 Agent API 均解析失败。\n"
+                    f"Precision: {precision_error}\n"
+                    f"Agent: {e}",
+                    error=True,
+                )
+
+        # 未配置 API Key → 只能用免费 Agent API
         if agent_eligible:
             try:
                 markdown = self._agent_parse(abs_path, timeout)
                 self._save_markdown(markdown, output_path)
                 return self._build_result(markdown, output_path, api_mode="Agent")
-            except _AgentLimitError as e:
-                # File exceeds Agent limits, fall through to Precision
-                logger.info(f"Agent API limit exceeded: {e}, falling back to Precision API")
             except Exception as e:
-                logger.warning(f"Agent API failed: {e}, falling back to Precision API")
-
-        # Fall back to Precision API
-        if not api_key:
+                logger.warning(f"Agent API failed without configured key: {e}")
             return ToolResult(
                 f"Agent API 解析失败，且未配置 MinerU API Key，无法使用 Precision API。\n"
                 f"{_FREE_QUOTA_HINT}",
                 error=True,
             )
 
-        try:
-            markdown = self._precision_parse(abs_path, api_key, timeout, model_version)
-            self._save_markdown(markdown, output_path)
-            return self._build_result(markdown, output_path, api_mode="Precision")
-        except _AuthError as e:
-            return ToolResult(
-                f"Precision API 认证失败: {e}\n"
-                f"{_TOKEN_VALIDITY_HINT}，请更新 system.mineru_api_key 配置。",
-                error=True,
-            )
-        except _QuotaExceededError as e:
-            return ToolResult(
-                f"每日解析任务数量已达上限: {e}\n"
-                f"请明日再试，或检查 API Key 状态。",
-                error=True,
-            )
-        except Exception as e:
-            return ToolResult(
-                f"解析失败: {e}\n{_FREE_QUOTA_HINT}",
-                error=True,
-            )
+        return ToolResult(
+            f"文件超出免费 Agent API 限制，且未配置 MinerU API Key，无法使用 Precision API。\n"
+            f"{_FREE_QUOTA_HINT}",
+            error=True,
+        )
 
-    def _build_result(self, markdown: str, output_path: str, api_mode: str) -> ToolResult:
+    def _build_result(self, markdown: str, output_path: str, api_mode: str,
+                      fallback_reason: str = "") -> ToolResult:
         """Build successful result with metadata."""
         char_count = len(markdown)
         line_count = markdown.count('\n') + 1
@@ -223,7 +241,11 @@ class PDF2MarkdownTool(Tool):
             f"行数: {line_count:,}\n\n"
             f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
         )
-        return ToolResult(output, meta={"output_path": output_path, "api_mode": api_mode})
+        meta = {"output_path": output_path, "api_mode": api_mode}
+        if fallback_reason:
+            output += f"\n\n[降级] Precision API 失败，已回退免费 Agent API。原因: {fallback_reason}"
+            meta["fallback_reason"] = fallback_reason
+        return ToolResult(output, meta=meta)
 
     def _save_markdown(self, content: str, output_path: str) -> None:
         """Save markdown content to file."""
