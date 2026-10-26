@@ -44,13 +44,9 @@ _FINDING_PATTERNS = [
     # Code execution from string: the payload lives in a string literal that
     # string-stripping would hide from the scan, so flag the invocation itself
     (re.compile(r"(?<![a-zA-Z0-9_-])eval\b", re.I),            "code-from-string",     "eval (code execution from string — run the command directly)"),
-    # Cross-tool isolation: use pwsh/python tools instead of calling from bash
+    # Cross-tool isolation: use the pwsh tool instead of calling from bash
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cross-tool-isolation", "PowerShell invocation from bash (use the pwsh tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:python3?|pythonw?)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "python-tool-routing", "Python invocation from bash bypasses the python tool's safety checks (use the python tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_\\.-])py(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "py-launcher", "py launcher invocation from bash (use the python tool instead)"),
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cross-tool-isolation", "cmd/WSL invocation from bash (cross-tool isolation)"),
 ]

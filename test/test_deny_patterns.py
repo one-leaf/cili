@@ -34,17 +34,21 @@ class TestBashFindings:
         assert "code-from-string" in _ids(_bash_findings("eval 'x'"))
         assert "cross-tool-isolation" in _ids(_bash_findings("pwsh -Command foo"))
         assert "cross-tool-isolation" in _ids(_bash_findings("powershell -Command foo"))
-        assert "py-launcher" in _ids(_bash_findings("py x.py"))
         assert "cross-tool-isolation" in _ids(_bash_findings("cmd /c dir"))
         assert "cross-tool-isolation" in _ids(_bash_findings("wsl ls /"))
-        assert "python-tool-routing" in _ids(_bash_findings("python x.py"))
-        assert "python-tool-routing" in _ids(_bash_findings("python3 x.py"))
-        assert "python-tool-routing" in _ids(_bash_findings("pythonw x.py"))
-        assert "python-tool-routing" in _ids(_bash_findings("python.exe x.py"))
+
+    def test_python_invocation_allowed(self):
+        """python/py 直接调用不再强制路由到 python 工具"""
+        assert _bash_findings("python x.py") == []
+        assert _bash_findings("python3 x.py") == []
+        assert _bash_findings("pythonw x.py") == []
+        assert _bash_findings("python.exe x.py") == []
+        assert _bash_findings("py x.py") == []
+        assert _bash_findings("py -3 x.py") == []
 
     def test_multiple_findings_all_returned(self):
-        ids = _ids(_bash_findings("eval 'x' && python y.py"))
-        assert "code-from-string" in ids and "python-tool-routing" in ids
+        ids = _ids(_bash_findings("eval 'x' && wsl ls"))
+        assert "code-from-string" in ids and "cross-tool-isolation" in ids
 
     def test_benign_no_findings(self):
         assert _bash_findings("ls -la") == []
@@ -56,7 +60,7 @@ class TestBashFindings:
 
     def test_subexpressions_still_scanned(self):
         assert "system-destructive" in _ids(_bash_findings('echo "$(rm -rf /)"'))
-        assert "python-tool-routing" in _ids(_bash_findings('echo "`python x.py`"'))
+        assert "code-from-string" in _ids(_bash_findings('echo "`eval x`"'))
 
 
 class TestPwshFindings:
@@ -75,11 +79,14 @@ class TestPwshFindings:
                     "reboot",
                     "format C:",
                     "Stop-Process -Id 0",
-                    "python script.py",
                     "Start-Process powershell -ArgumentList foo"]:
             assert "system-destructive" in _ids(self._check(cmd)) \
-                or "cross-tool-isolation" in _ids(self._check(cmd)) \
-                or "python-tool-routing" in _ids(self._check(cmd)), cmd
+                or "cross-tool-isolation" in _ids(self._check(cmd)), cmd
+
+    def test_python_invocation_allowed(self):
+        """python/py 直接调用不再强制路由到 python 工具"""
+        assert self._check("python script.py") == []
+        assert self._check("py -3 x.py") == []
 
     def test_isolation_ids(self):
         assert "code-from-string" in _ids(self._check("iex 'Get-Process'"))
@@ -87,7 +94,6 @@ class TestPwshFindings:
         assert "cross-tool-isolation" in _ids(self._check("bash -c 'echo hi'"))
         assert "cross-tool-isolation" in _ids(self._check("wsl ls"))
         assert "cross-tool-isolation" in _ids(self._check('cmd /c "rd /s /q C:\\Windows"'))
-        assert "py-launcher" in _ids(self._check("py -3 x.py"))
 
     def test_recursive_force_delete_variants(self):
         for cmd in ["Remove-Item -Force -Recurse C:\\Users",

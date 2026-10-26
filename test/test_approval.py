@@ -130,10 +130,10 @@ class TestCommandFlow:
     def test_findings_pending_with_store(self, tmp_path):
         store = ApprovalStore()
         tool = BashTool(cwd=str(tmp_path), approval_store=store)
-        result = tool.execute(command="python x.py", timeout=10)
+        result = tool.execute(command="shutdown -h now", timeout=10)
         assert result.completed is False
         findings = result.meta[META_KEY]["findings"]
-        assert any(f["id"] == "python-tool-routing" for f in findings)
+        assert any(f["id"] == "system-destructive" for f in findings)
 
     def test_session_approved_runs(self, tmp_path, monkeypatch):
         store = ApprovalStore()

@@ -351,12 +351,8 @@ def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str) -
 
 # 默认 constraints（规则文件未提供/缺条目时补齐；文件条目按 id 覆盖默认）
 DEFAULT_CONSTRAINTS: list[dict] = [
-    {"id": "python-tool-routing", "severity": "deny",
-     "text": "Python 代码必须通过 python 工具执行。在 bash/pwsh 里直接调用 python 解释器会绕过 python 工具的安全校验。"},
     {"id": "cross-tool-isolation", "severity": "deny",
      "text": "bash 不得调用 pwsh/powershell，pwsh 不得调用 bash/sh；两者都不得调用 cmd/wsl。这是工具路由架构约束，用户批准也不能改变。"},
-    {"id": "py-launcher", "severity": "deny",
-     "text": "py 启动器与 python 解释器同样绕过 python 工具的安全校验。"},
     {"id": "code-from-string", "severity": "deny",
      "text": "eval / Invoke-Expression / iex 属于字符串代码执行，载荷藏在字符串里无法静态审计，应拒绝并建议直接执行等价命令。"},
     {"id": "python-dynamic-exec", "severity": "deny",

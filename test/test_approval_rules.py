@@ -256,16 +256,23 @@ class TestConstraints:
     def test_defaults_present(self, tmp_path):
         r = _rules(tmp_path)
         ids = {c["id"] for c in r.constraints()}
-        assert "python-tool-routing" in ids
+        assert "code-from-string" in ids
         assert "cross-tool-isolation" in ids
+
+    def test_python_routing_removed(self, tmp_path):
+        """python/py 路由约束已移除，默认集不再包含"""
+        r = _rules(tmp_path)
+        ids = {c["id"] for c in r.constraints()}
+        assert "python-tool-routing" not in ids
+        assert "py-launcher" not in ids
 
     def test_file_overrides_by_id(self, tmp_path):
         r = _rules(tmp_path, constraints=[
-            {"id": "python-tool-routing", "severity": "warn", "text": "custom"},
+            {"id": "code-from-string", "severity": "warn", "text": "custom"},
         ])
         by_id = {c["id"]: c for c in r.constraints()}
-        assert by_id["python-tool-routing"]["severity"] == "warn"
-        assert by_id["python-tool-routing"]["text"] == "custom"
+        assert by_id["code-from-string"]["severity"] == "warn"
+        assert by_id["code-from-string"]["text"] == "custom"
 
 
 class TestBuiltinReadonly:
