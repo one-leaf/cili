@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.base_session_runner import BaseSessionRunner
-from core.config import Config
+from core.config import Config, DATA_DIR, get_permission_config
 from core.fs_utils import atomic_write_json
 from core.interface_profile import resolve_profile
 from core.llm import create_llm_client
@@ -30,8 +30,9 @@ from core.prompt_builder import (
     build_system_prompt,
 )
 from core.role_config import load_role
-from core.security.approval_judge import ApprovalJudge
-from core.security.approval_rules import ApprovalRules
+from core.security.permission_judge import PermissionJudge
+from core.security.permission_policy import PermissionPolicy
+from core.security.permission_rules import PermissionRules
 from core.session import SessionStore, build_exec_log_data, generate_short_id
 from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
@@ -43,15 +44,15 @@ from core.session_runner_runtime.loop import (
     LoopPolicy,
 )
 from core.tools import create_tools, get_tool_by_name
-from core.tools.approval import (
+from core.tools.permission import (
     APPROVE_LABEL,
     META_KEY,
     REJECT_LABEL,
     REMEMBER_LABEL,
-    ApprovalStore,
-    append_approval_audit,
-    build_approval_question,
-    build_approved_commands_section,
+    PermissionStore,
+    append_permission_audit,
+    build_approved_actions_section,
+    build_permission_question,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,8 @@ class SessionRunner(BaseSessionRunner):
         session_dir: Path | None = None,
         stop_check: Callable[[], bool] | None = None,
         exec_id: str = "",
+        permission_store=None,
+        permission_rules=None,
         approval_store=None,
         approval_rules=None,
         max_consecutive_failures: int | None = None,
@@ -130,8 +133,8 @@ class SessionRunner(BaseSessionRunner):
             session_dir: autonomous 模式的消息持久化目录
             stop_check: 返回 True 表示父代理已停止
             exec_id: autonomous 模式的执行 ID（作为 session 标识）
-            approval_store: autonomous 模式共享的会话级审批存储
-            approval_rules: autonomous 模式共享的审批规则引擎（core/security/approval_rules.py）
+            permission_store: autonomous 模式共享的会话级权限存储
+            permission_rules: autonomous 模式共享的权限规则引擎（core/security/permission_rules.py）
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
             run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
@@ -195,14 +198,24 @@ class SessionRunner(BaseSessionRunner):
             self.client.max_tokens = min(role_max_tokens, self.model.max_output_tokens)
 
         if self._mode == "interactive":
-            # 审批三件套（设计 §3.1）：会话级存储 + 规则引擎（workspace 持久化，旧
-            # approvals.json 首次加载自动迁移）+ lite 判定器。根/子代理共享 store 与
-            # rules 实例（子代理经 session_tool 透传）。
+            # 权限三件套：会话级存储 + 统一规则引擎（全局层 + 工作区层）+ 裁决器。
+            # 根/子代理共享 store 与 rules 实例（子代理经 session_tool 透传）。
+            from pathlib import Path
+
             from core.config import get_workspace_data_dir
-            self.approval_store = ApprovalStore()
-            self.approval_rules = ApprovalRules(
+
+            permission_cfg = get_permission_config(config)
+            global_path = (
+                Path(permission_cfg.global_rules_path)
+                if permission_cfg.global_rules_path
+                else DATA_DIR / "cili" / "approval_rules.json"
+            )
+            self.permission_store = PermissionStore()
+            self.permission_rules = PermissionRules(
                 get_workspace_data_dir(self.workspace_uuid) / "approval_rules.json",
+                global_path=global_path,
                 workspace_root=self._cwd_init,
+                hot_reload=permission_cfg.rules_hot_reload,
             )
             # IMPORTANT: Share messages list with session (not copy!)
             self.messages = self.session.messages
@@ -212,8 +225,8 @@ class SessionRunner(BaseSessionRunner):
             self.default_sink = OutputSink()
             self.sink = self.default_sink
         else:
-            self.approval_store = approval_store
-            self.approval_rules = approval_rules
+            self.permission_store = permission_store if permission_store is not None else approval_store
+            self.permission_rules = permission_rules if permission_rules is not None else approval_rules
             self.max_consecutive_failures = (
                 max_consecutive_failures
                 if max_consecutive_failures is not None
@@ -223,14 +236,22 @@ class SessionRunner(BaseSessionRunner):
             self._budget_final_triggered = False
             self._started_at: datetime | None = None
 
-        # lite 判定器（设计 §3.3）：interactive 与 autonomous 都具备判定能力；
+        # 统一裁决器与 lite 判定器：interactive 与 autonomous 都具备判定能力；
         # 有无「询问用户」通道由 role_cfg.approval 决定（master=True，worker/lite=False）。
-        self.approval_judge = ApprovalJudge(
-            config, self.approval_rules, self.approval_store,
+        self.permission_policy = PermissionPolicy(
+            get_permission_config(config), self.permission_rules, self.permission_store,
+            workspace_root=self._cwd_init, cwd=self._cwd_init,
+        )
+        self.permission_judge = PermissionJudge(
+            config, self.permission_rules, self.permission_store,
             role=self.role, has_user_channel=bool(self.role_cfg.approval),
             workspace_root=self._cwd_init, cwd=self._cwd_init,
             session_dir=init_session_dir,
         )
+        # 过渡别名（新代码使用 permission_*）
+        self.approval_store = self.permission_store
+        self.approval_rules = self.permission_rules
+        self.approval_judge = self.permission_judge
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
@@ -310,8 +331,9 @@ class SessionRunner(BaseSessionRunner):
             workspace_uuid=self.workspace_uuid,
             session=sm,
             config=self.config,
-            approval_store=self.approval_store,
-            approval_rules=self.approval_rules,
+            permission_store=self.permission_store,
+            permission_rules=self.permission_rules,
+            permission_policy=self.permission_policy,
         )
 
         # MCP 动态工具（默认 deferred，tool_search 按需激活）：
@@ -517,6 +539,19 @@ class SessionRunner(BaseSessionRunner):
             self.client = new_client
             self.model = new_model
             self.config = new_config
+            self.permission_policy = PermissionPolicy(
+                get_permission_config(new_config), self.permission_rules, self.permission_store,
+                workspace_root=self._cwd_init, cwd=self._cwd_init,
+            )
+            self.permission_judge = PermissionJudge(
+                new_config, self.permission_rules, self.permission_store,
+                role=self.role, has_user_channel=bool(self.role_cfg.approval),
+                workspace_root=self._cwd_init, cwd=self._cwd_init,
+                session_dir=getattr(self, "session_dir", None),
+            )
+            self.approval_store = self.permission_store
+            self.approval_rules = self.permission_rules
+            self.approval_judge = self.permission_judge
             old_client.close()
             self._rebuild_tools()
         except Exception as e:
@@ -559,30 +594,30 @@ class SessionRunner(BaseSessionRunner):
             # 落盘之后再通知，接入端重拉时才能拿到完整状态
             self.sink.on_turn_complete()
 
-    def _handle_approval_required(self, approval: dict) -> None:
-        """合成 ask_user 卡询问用户是否批准高风险命令，随后暂停循环等待回答。
+    def _handle_permission_required(self, permission: dict) -> None:
+        """合成 ask_user 卡询问用户是否批准，随后暂停循环等待回答。
 
         在批处理所有工具结果之后调用，保证消息配对正确：
         [assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]
         """
-        self.approval_store.set_pending(approval)
+        self.permission_store.set_pending(permission)
         # 审计：卡片询问（asked）——用户决定（decided）在 inject_ask_user_answer 落
-        append_approval_audit(self.session.session_dir, "asked", {
-            "source": "user", "decision_id": approval.get("decision_id", ""),
-            "tool": approval.get("tool", ""), "kind": approval.get("kind", "command"),
-            "action": str(approval.get("command", ""))[:300],
+        append_permission_audit(self.session.session_dir, "asked", {
+            "source": "user", "decision_id": permission.get("decision_id", ""),
+            "tool": permission.get("tool", ""), "kind": permission.get("kind", "command"),
+            "action": str(permission.get("command", ""))[:300],
         })
 
         ask_id = generate_short_id()
         ask_input = {
             "questions": [
                 {
-                    "question": build_approval_question(approval),
-                    "header": "命令批准",
+                    "question": build_permission_question(permission),
+                    "header": "权限确认",
                     "options": [
-                        {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同命令（含委派给子代理）不再询问。"},
-                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类命令。"},
-                        {"label": REJECT_LABEL, "description": "拒绝执行该命令。"},
+                        {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同操作（含委派给子代理）不再询问。"},
+                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类操作。"},
+                        {"label": REJECT_LABEL, "description": "拒绝执行该操作。"},
                     ],
                 }
             ]
@@ -592,6 +627,9 @@ class SessionRunner(BaseSessionRunner):
         self.add_message("user", [self._execute_tool("ask_user", ask_input, ask_id)])
         self._sync_to_session()
         self.session.save()
+
+    # 过渡别名（新代码使用 _handle_permission_required）
+    _handle_approval_required = _handle_permission_required
 
     def _resume_loop(self, sink: OutputSink | None = None) -> None:
         """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。"""
@@ -737,7 +775,7 @@ class SessionRunner(BaseSessionRunner):
         lines.append("")
 
         # 下放主代理会话级批准的命令与工作区已落盘规则（共享同一实例，子代理可直接执行）
-        approved_section = build_approved_commands_section(self.approval_store, self.approval_rules)
+        approved_section = build_approved_actions_section(self.permission_store, self.permission_rules)
         if approved_section:
             lines.append(approved_section)
 
@@ -766,13 +804,16 @@ class SessionRunner(BaseSessionRunner):
             )
 
     @staticmethod
-    def _downgrade_approval_result(result: dict) -> None:
+    def _downgrade_permission_result(result: dict) -> None:
         """autonomous 无 ask_user：把"需用户批准"的结果降级为普通错误，不挂起不询问。"""
         if META_KEY in result.get("_meta", {}):
             result["is_error"] = True
-            result["content"] = "该命令需要用户（主代理会话）批准，子代理无法执行，请换用非拦截命令或告知主代理。"
+            result["content"] = "该操作需要用户（主代理会话）批准，子代理无法执行，请换用非拦截方式或告知主代理。"
             result["_meta"].pop(META_KEY, None)
             result["_meta"].pop("completed", None)
+
+    # 过渡别名
+    _downgrade_approval_result = _downgrade_permission_result
 
     def _wrapup_timeout_summary(self) -> str:
         """额度耗尽时兜底生成一次执行总结。

@@ -9,7 +9,7 @@ delete；edit 与 write 同策略。
 import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-from core.tools.approval import META_KEY, ApprovalStore
+from core.tools.permission import META_KEY, PermissionStore
 from core.tools.edit import EditTool
 from core.tools.write import WriteTool
 
@@ -27,7 +27,7 @@ class TestWriteGate:
             assert f.read() == "hi"
 
     def test_outside_unapproved_placeholder(self, test_workspace, tmp_path):
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         outside = tmp_path / "x.txt"
         result = tool.execute(file_path=str(outside), content="hi")
         assert result.completed is False
@@ -38,7 +38,7 @@ class TestWriteGate:
         assert not outside.exists()  # 未批准不落盘
 
     def test_outside_approved_writes(self, test_workspace, tmp_path):
-        store = ApprovalStore()
+        store = PermissionStore()
         tool = self._tool(test_workspace, store)
         outside = tmp_path / "x.txt"
         policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, approval_store=store)
@@ -74,7 +74,7 @@ class TestEditGate:
     def test_outside_unapproved_placeholder(self, test_workspace, tmp_path):
         outside = tmp_path / "a.txt"
         outside.write_text("hello world", encoding="utf-8")
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         result = tool.execute(file_path=str(outside), old_text="hello", new_text="goodbye")
         assert result.completed is False
         assert result.meta[META_KEY]["kind"] == "path:write"

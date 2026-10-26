@@ -285,6 +285,133 @@ def get_approval_config(config) -> "ApprovalConfig":
     return ApprovalConfig()
 
 
+def get_permission_config(config) -> "PermissionConfig":
+    """从运行时 Config 取顶层权限配置；缺省/测试替身场景回退默认值。"""
+    permissions = getattr(config, "permissions", None)
+    if isinstance(permissions, PermissionConfig):
+        return permissions
+    return PermissionConfig()
+
+
+@dataclass
+class OutsideConfig:
+    """工作区外访问策略（权限配置的 outside 子块）。"""
+
+    read: str = "allow"      # allow | ai | ask | deny
+    write: str = "ask"       # allow | ai | ask | deny
+    delete: str = "ask"      # allow | ai | ask | deny
+    navigate: str = "ai"     # allow | ai | ask | deny
+
+    _CHOICES = ("allow", "ai", "ask", "deny")
+
+    @classmethod
+    def _choice(cls, data: dict, key: str, default: str) -> str:
+        value = str(data.get(key, default))
+        return value if value in cls._CHOICES else default
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "OutsideConfig":
+        data = data if isinstance(data, dict) else {}
+        return cls(
+            read=cls._choice(data, "read", "allow"),
+            write=cls._choice(data, "write", "ask"),
+            delete=cls._choice(data, "delete", "ask"),
+            navigate=cls._choice(data, "navigate", "ai"),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "read": self.read,
+            "write": self.write,
+            "delete": self.delete,
+            "navigate": self.navigate,
+        }
+
+
+@dataclass
+class JudgeConfig:
+    """AI 判定器参数（权限配置的 judge 子块）。"""
+
+    enabled: bool = True
+    timeout_seconds: int = 60
+    on_error: str = "ask"  # ask | deny | allow
+    persist_allow: bool = True
+    cache: str = "session"  # session | none
+    max_consecutive_failures: int = 3
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "JudgeConfig":
+        data = data if isinstance(data, dict) else {}
+        on_error = str(data.get("on_error", "ask"))
+        if on_error not in ("ask", "deny", "allow"):
+            on_error = "ask"
+        cache = str(data.get("cache", "session"))
+        if cache not in ("session", "none"):
+            cache = "session"
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            timeout_seconds=max(5, int(data.get("timeout_seconds", 60))),
+            on_error=on_error,
+            persist_allow=bool(data.get("persist_allow", True)),
+            cache=cache,
+            max_consecutive_failures=max(1, int(data.get("max_consecutive_failures", 3))),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "timeout_seconds": self.timeout_seconds,
+            "on_error": self.on_error,
+            "persist_allow": self.persist_allow,
+            "cache": self.cache,
+            "max_consecutive_failures": self.max_consecutive_failures,
+        }
+
+
+@dataclass
+class PermissionConfig:
+    """顶层权限配置：``setting.json → permissions``（不放进 system 块）。
+
+    默认值按日常可用性设计：外部读取允许、外部写/删询问、默认策略默认允许、
+    只读白名单开启。完整设计见 workspace/default/permission-settings-plan-2026-10-26.md。
+    """
+
+    enabled: bool = True
+    default_mode: str = "allow"  # allow | ai | ask
+    readonly_bypass: bool = True
+    outside: OutsideConfig = field(default_factory=OutsideConfig)
+    rules_hot_reload: bool = True
+    global_rules_path: str = ""  # 空 = data/cili/approval_rules.json
+    judge: JudgeConfig = field(default_factory=JudgeConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PermissionConfig":
+        data = data if isinstance(data, dict) else {}
+        mode = str(data.get("default_mode", "allow"))
+        if mode not in ("allow", "ai", "ask"):
+            mode = "allow"
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            default_mode=mode,
+            readonly_bypass=bool(data.get("readonly_bypass", True)),
+            outside=OutsideConfig.from_dict(data.get("outside") or {}),
+            rules_hot_reload=bool(data.get("rules_hot_reload", True)),
+            global_rules_path=str(data.get("global_rules_path", "")),
+            judge=JudgeConfig.from_dict(data.get("judge") or {}),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "default_mode": self.default_mode,
+            "readonly_bypass": self.readonly_bypass,
+            "outside": self.outside.to_dict(),
+            "rules_hot_reload": self.rules_hot_reload,
+            "global_rules_path": self.global_rules_path,
+            "judge": self.judge.to_dict(),
+        }
+
+
 @dataclass
 class SystemConfig:
     """System-level configuration (pip mirror, env paths, etc.)."""
@@ -374,6 +501,7 @@ class Config:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     agents: dict[str, AgentConfig] = field(default_factory=dict)  # 键 = 角色名（master/worker/lite）
     system: SystemConfig = field(default_factory=SystemConfig)
+    permissions: PermissionConfig = field(default_factory=PermissionConfig)
     mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)
 
     # ── 引用解析 ──
@@ -508,6 +636,9 @@ class Config:
         # ── System ──
         config.system = SystemConfig.from_dict(global_config.get("system", {}))
 
+        # ── Permissions（顶层 permissions 字段，不放进 system） ──
+        config.permissions = PermissionConfig.from_dict(global_config.get("permissions") or {})
+
         # ── MCP servers ──
         config.mcp_servers = {
             name: MCPConfig.from_dict(cfg)
@@ -523,6 +654,7 @@ class Config:
             "providers": {name: cfg.to_dict() for name, cfg in self.providers.items()},
             "agents": {name: cfg.to_dict() for name, cfg in self.agents.items()},
             "system": self.system.to_dict(),
+            "permissions": self.permissions.to_dict(),
         }
         if self.mcp_servers:
             result["mcp_servers"] = {

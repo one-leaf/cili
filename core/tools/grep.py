@@ -144,11 +144,11 @@ class GrepTool(Tool):
 
         # Resolve to absolute path
         path = self._resolve_path(path, read_only=True) if path else self.cwd
+        gate = self._read_gate([path])
+        if gate is not None:
+            return gate
         # 统一为 / 分隔符：git bash 下目录遍历输出 /、单文件会原样回显 \，归一化避免混用
         path = path.replace("\\", "/")
-        teen_block = self._teen_read_guard(path)
-        if teen_block is not None:
-            return teen_block
 
         if not os.path.exists(path):
             return ToolResult(f"错误: 路径不存在: {path}", error=True)

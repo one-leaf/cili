@@ -102,7 +102,8 @@ def _build_skills_section(role: str, interface: str | None = None) -> str:
 
 # ─── 动态环境上下文（context 层）──────────────────────────────────────
 
-def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
+def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
+                              tools: list[str] | None = None) -> str:
     """构建动态环境变量，作为独立 user 消息段注入。
 
     每次请求都不同（datetime 变化等），作为单独段发送不影响 system prompt 的缓存。
@@ -110,6 +111,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
     """
     import platform
     current_date = datetime.now().strftime("%Y-%m-%d")
+    available = set(tools) if tools is not None else {"bash", "pwsh", "python"}
     from core.config import get_workspace_data_dir
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     # 工作区临时目录：写在 {workspace}/.cili/tmp 内，受统一路径权限（写/删限工作区）约束
@@ -129,36 +131,56 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "",
         "## Shell Environment",
         "",
-        "Three separate tools for three environments — **do NOT cross-invoke**:",
+        "Use the dedicated tool for each environment. Cross-invoking another shell may be denied by the permission policy.",
         "",
         "| Tool | Environment | Use For |",
         "|------|-------------|---------|",
-        "| `bash` | Git Bash (MSYS2) | ls, git, npm, curl, Unix commands |",
-        "| `pwsh` | PowerShell | Get-*, Set-*, Windows APIs, registry |",
-        "| `python` | Python interpreter | Python code, pip install |",
-        "",
-        "**Path format for bash**: Windows paths must be converted:",
-        "- `E:\\path\\to\\file` → `/e/path/to/file`",
-        "- `C:\\Users\\name` → `/c/Users/name`",
-        "",
-        "**Path format for pwsh**: Use native Windows format (e.g., `C:\\Users`).",
-        "",
-        "**Python**: Use the `python` tool — do NOT run python from bash or pwsh.",
-        "",
-        "## Python Environment",
-        "",
-        "Use the `python` tool for ALL Python execution — do NOT invoke python from bash or pwsh.",
-        "The agent's virtual environment is automatically activated in the python tool.",
-        "",
+    ]
+    if "bash" in available:
+        parts.append("| `bash` | Git Bash (MSYS2) | ls, git, npm, curl, Unix commands |")
+    if "pwsh" in available:
+        parts.append("| `pwsh` | PowerShell | Get-*, Set-*, Windows APIs, registry |")
+    if "python" in available:
+        parts.append("| `python` | Python interpreter | Python code, pip install |")
+    parts.append("")
+    if "bash" in available:
+        parts.extend([
+            "**Path format for bash**: Windows paths must be converted:",
+            "- `E:\\path\\to\\file` → `/e/path/to/file`",
+            "- `C:\\Users\\name` → `/c/Users/name`",
+            "",
+        ])
+    if "pwsh" in available:
+        parts.extend([
+            "**Path format for pwsh**: Use native Windows format (e.g., `C:\\Users`).",
+            "",
+        ])
+    if "python" in available:
+        parts.extend([
+            "**Python execution**: Prefer the `python` tool for Python code and scripts. "
+            "Running Python from `bash` bypasses the python tool's static analysis and may require permission approval.",
+            "",
+            "## Python Environment",
+            "",
+            "Use the `python` tool for Python execution. The agent's virtual environment is automatically activated there.",
+            "",
+        ])
+    parts.extend([
         "## Temporary Files",
         "",
         f"Workspace temp directory: `{tmp_dir}` (inside the workspace).",
         "",
         "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
-        "Writes/deletes are only allowed inside the workspace; anything outside goes through the approval flow (safety judgment + user confirmation).",
-        "For session-scoped temp storage use the `temp` tool — it creates "
-        "`{workspace}/.cili/tmp/{session_id}/`.",
-        "In Python, `tempfile` module is auto-configured to the system temp.",
+        "Writes/deletes inside the workspace are allowed by default; outside actions follow the workspace permission settings (allow / AI judgment / user confirmation / deny). Reads outside follow the read policy.",
+    ])
+    if "temp" in available:
+        parts.extend([
+            "For session-scoped temp storage use the `temp` tool — it creates "
+            "`{workspace}/.cili/tmp/{session_id}/`.",
+        ])
+    if "python" in available:
+        parts.append("In Python, `tempfile` module is auto-configured to the system temp.")
+    parts.extend([
         "",
         "## Memory",
         "",
@@ -166,7 +188,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "") -> str:
         "the MEMORY.md index, and the global summary. Apply relevant facts, preferences "
         "and skills instead of relying on model memory.",
         "",
-    ]
+    ])
 
     # 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）
     parts.extend(_build_memory_sections(memory_dir, workspace_uuid))

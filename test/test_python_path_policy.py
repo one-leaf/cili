@@ -11,7 +11,7 @@ import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 from core.security.python_paths import collect_python_targets
-from core.tools.approval import META_KEY, ApprovalStore
+from core.tools.permission import META_KEY, PermissionStore
 from core.tools.base import ToolResult
 from core.tools.python_tool import PythonTool
 
@@ -114,7 +114,7 @@ class TestPythonExecuteGate:
         return PythonTool(cwd=cwd, approval_store=store)
 
     def test_outside_write_placeholder(self, test_workspace, tmp_path):
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         outside = tmp_path / "o.txt"
         result = tool.execute(action="execute", code=f'open(r"{outside}", "w")')
         assert result.completed is False
@@ -123,21 +123,21 @@ class TestPythonExecuteGate:
         assert result.meta[META_KEY]["command"] == str(outside)
 
     def test_inside_write_runs(self, test_workspace, monkeypatch):
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout, stdin: ToolResult("ran"))
         result = tool.execute(action="execute", code='open("in.txt", "w")')
         assert result.output == "ran"
         assert not result.error
 
     def test_inside_read_runs(self, test_workspace, monkeypatch):
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout, stdin: ToolResult("ran"))
         result = tool.execute(action="execute", code='open("in.txt", "r")')
         assert result.output == "ran"
         assert not result.error
 
     def test_approved_path_allows(self, test_workspace, tmp_path, monkeypatch):
-        store = ApprovalStore()
+        store = PermissionStore()
         tool = self._tool(test_workspace, store)
         outside = tmp_path / "o.txt"
         policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, approval_store=store)
@@ -155,7 +155,7 @@ class TestPythonExecuteGate:
 
     def test_deny_first(self, test_workspace):
         """eval 证据命令：不再硬拒绝，返回判定占位（证据 python-dynamic-exec）。"""
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         result = tool.execute(action="execute", code='eval("1+1")')
         assert result.completed is False
         assert not result.error

@@ -531,6 +531,22 @@ Content-Type: application/json
 
 更新成功后，自动通知所有缓存的 Agent 调用 `reload_config()` 重新加载配置（使新的 API Key / Model 立即生效）。
 
+#### 权限配置与规则
+
+权限配置独立于 `system`，位于 `setting.json` 顶层 `permissions`。
+
+| 方法 | 路径 | 作用 |
+|------|------|------|
+| GET | `/api/permissions` | 读取配置、内置规则、只读分组、作用域列表 |
+| PUT | `/api/permissions` | 保存顶层 permissions（只更新该键） |
+| GET | `/api/permissions/rules?scope=global\|<uuid>&decision=all\|allow\|deny\|ask` | 列出规则 |
+| POST | `/api/permissions/rules?scope=...` | 新增规则（decision/kind/match） |
+| PATCH | `/api/permissions/rules/{id}?scope=...` | 启停/修改 |
+| DELETE | `/api/permissions/rules/{id}?scope=...` | 删除 |
+| POST | `/api/permissions/rules/revoke-ai?scope=...` | 回收 AI 自动落盘规则 |
+
+规则文件：全局 `data/cili/approval_rules.json`，工作区 `<workspace>/.cili/approval_rules.json`。写入后刷新缓存 runner，下一动作生效。
+
 #### 测试连接
 
 ```

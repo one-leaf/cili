@@ -181,6 +181,7 @@
                 <button class="settings-tab active" data-tab="models">模型列表</button>
                 <button class="settings-tab" data-tab="agents">Agents</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
+                <button class="settings-tab" data-tab="permissions">权限</button>
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
@@ -280,6 +281,159 @@
                         <input type="number" id="system-max-concurrent-agents" min="1" max="10" value="5" placeholder="5">
                         <small class="form-hint">同时运行的后台子代理上限（默认 5，范围 1-10）</small>
                     </div>
+                </div>
+
+                <!-- Permissions Tab -->
+                <div class="tab-content" id="tab-permissions">
+                    <div class="model-description">
+                        <strong>权限</strong> — 控制命令、工作区外读写、浏览器导航与只读白名单。配置独立于系统参数，写入 setting.json 顶层 permissions。
+                    </div>
+                    <div class="form-group">
+                        <label>启用权限系统:</label>
+                        <input type="checkbox" id="permission-enabled">
+                        <small class="form-hint">关闭后跳过用户规则与默认策略；青少年约束与执行层不变式仍然生效。</small>
+                    </div>
+                    <div class="form-group">
+                        <label>默认策略:</label>
+                        <select id="permission-default-mode">
+                            <option value="allow">默认允许（未命中规则直接执行）</option>
+                            <option value="ai">AI 识别（lite 判定）</option>
+                            <option value="ask">人工询问</option>
+                        </select>
+                        <small class="form-hint">作用于未命中允许规则、且不在工作区/临时目录安全区的命令与代码。</small>
+                    </div>
+
+                    <div class="model-description" style="margin-top: 16px;"><strong>外部访问</strong> — 工作区与系统临时目录之外。</div>
+                    <div class="form-group">
+                        <label>读取:</label>
+                        <select id="permission-outside-read">
+                            <option value="allow">允许</option>
+                            <option value="ai">AI 识别（仅路径元数据）</option>
+                            <option value="ask">询问</option>
+                            <option value="deny">禁止</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>写入:</label>
+                        <select id="permission-outside-write">
+                            <option value="allow">允许</option>
+                            <option value="ai">AI 识别</option>
+                            <option value="ask">询问</option>
+                            <option value="deny">禁止</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>删除:</label>
+                        <select id="permission-outside-delete">
+                            <option value="allow">允许</option>
+                            <option value="ai">AI 识别</option>
+                            <option value="ask">询问</option>
+                            <option value="deny">禁止</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>非公网导航:</label>
+                        <select id="permission-outside-navigate">
+                            <option value="allow">允许</option>
+                            <option value="ai">AI 识别</option>
+                            <option value="ask">询问</option>
+                            <option value="deny">禁止</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>只读白名单:</label>
+                        <input type="checkbox" id="permission-readonly-bypass">
+                        <small class="form-hint">纯只读命令（ls/cat/git status 等）不进入判定流程。</small>
+                    </div>
+                    <div id="permission-readonly-groups" class="form-hint" style="margin: -8px 0 16px 152px;"></div>
+
+                    <div class="model-description" style="margin-top: 16px;"><strong>规则管理</strong> — 白名单 / 黑名单 / 灰名单。</div>
+                    <div class="form-group">
+                        <label>作用域:</label>
+                        <select id="permission-scope">
+                            <option value="global">全局</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>视图:</label>
+                        <select id="permission-decision-filter">
+                            <option value="all">全部</option>
+                            <option value="allow">白名单（允许）</option>
+                            <option value="deny">黑名单（拒绝）</option>
+                            <option value="ask">灰名单（询问）</option>
+                        </select>
+                        <button id="permission-revoke-ai-btn" class="btn btn-small" type="button">回收 AI 规则</button>
+                        <span id="permission-status" class="settings-status"></span>
+                    </div>
+                    <div id="permission-rules-list"></div>
+
+                    <div class="model-description" style="margin-top: 16px;"><strong>添加规则</strong></div>
+                    <div class="form-group">
+                        <label>裁决:</label>
+                        <select id="permission-rule-decision">
+                            <option value="allow">白名单（允许）</option>
+                            <option value="deny">黑名单（拒绝）</option>
+                            <option value="ask">灰名单（询问）</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>工具:</label>
+                        <input type="text" id="permission-rule-tool" value="*" placeholder="* / bash / read / write">
+                    </div>
+                    <div class="form-group">
+                        <label>类型:</label>
+                        <select id="permission-rule-kind">
+                            <option value="command">命令</option>
+                            <option value="path:read">读取路径</option>
+                            <option value="path:write">写入路径</option>
+                            <option value="path:delete">删除路径</option>
+                            <option value="browser:navigate">浏览器导航</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>匹配方式:</label>
+                        <select id="permission-rule-match-type">
+                            <option value="exact">精确匹配</option>
+                            <option value="prefix">前缀匹配</option>
+                            <option value="argv_glob">argv 通配</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>匹配值:</label>
+                        <input type="text" id="permission-rule-value" placeholder="例如 rm -rf /">
+                    </div>
+                    <div class="form-group">
+                        <label>备注:</label>
+                        <input type="text" id="permission-rule-note" placeholder="可选">
+                    </div>
+                    <div class="form-group">
+                        <label></label>
+                        <button id="permission-add-rule-btn" class="btn btn-small" type="button">添加规则</button>
+                    </div>
+
+                    <details style="margin-top: 16px;">
+                        <summary style="cursor: pointer; font-weight: 500;">高级判定器设置</summary>
+                        <div class="form-group"><label>启用 AI 判定:</label><input type="checkbox" id="permission-judge-enabled"></div>
+                        <div class="form-group"><label>判定超时（秒）:</label><input type="number" id="permission-judge-timeout" min="5" max="300"></div>
+                        <div class="form-group">
+                            <label>失败策略:</label>
+                            <select id="permission-judge-on-error">
+                                <option value="ask">询问</option>
+                                <option value="deny">拒绝</option>
+                                <option value="allow">允许</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>AI 放行自动落盘:</label><input type="checkbox" id="permission-judge-persist"></div>
+                        <div class="form-group">
+                            <label>判定缓存:</label>
+                            <select id="permission-judge-cache">
+                                <option value="session">会话</option>
+                                <option value="none">关闭</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>连错降级次数:</label><input type="number" id="permission-judge-failures" min="1" max="10"></div>
+                    </details>
                 </div>
 
                 <!-- MCP Servers Tab -->

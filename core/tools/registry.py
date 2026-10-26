@@ -42,47 +42,50 @@ from core.tools.write import WriteTool
 
 logger = logging.getLogger(__name__)
 
-Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any, Any], Tool]
+Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any, Any, Any], Tool]
 
 
-def _make_skill(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules) -> Tool:
+def _make_skill(role_cfg, cwd, workspace_uuid, session, config,
+                permission_store, permission_rules, permission_policy) -> Tool:
     return SkillTool(
         role=role_cfg.name,
         cwd=cwd, workspace_uuid=workspace_uuid, session=session,
     )
 
 
-def _factory(cls: type, *, needs_config: bool = False, needs_approval: bool = False) -> Factory:
-    def factory(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules) -> Tool:
+def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = False) -> Factory:
+    def factory(role_cfg, cwd, workspace_uuid, session, config,
+                permission_store, permission_rules, permission_policy) -> Tool:
         kwargs: dict[str, Any] = dict(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
-            approval_rules=approval_rules,
+            permission_rules=permission_rules,
         )
         if needs_config:
             kwargs["config"] = config
-        if needs_approval:
-            kwargs["approval_store"] = approval_store
+        if needs_permission:
+            kwargs["permission_store"] = permission_store
+            kwargs["permission_policy"] = permission_policy
         return cls(**kwargs)
     return factory
 
 
 TOOL_REGISTRY: dict[str, Factory] = {
-    "read": _factory(ReadTool),
-    "read_image": _factory(ReadImageTool),
-    "write": _factory(WriteTool, needs_approval=True),
-    "edit": _factory(EditTool, needs_approval=True),
-    "bash": _factory(BashTool, needs_approval=True),
-    "pwsh": _factory(PwshTool, needs_approval=True),
-    "grep": _factory(GrepTool),
-    "glob": _factory(GlobTool),
-    "browser": _factory(BrowserTool, needs_approval=True),
+    "read": _factory(ReadTool, needs_permission=True),
+    "read_image": _factory(ReadImageTool, needs_permission=True),
+    "write": _factory(WriteTool, needs_permission=True),
+    "edit": _factory(EditTool, needs_permission=True),
+    "bash": _factory(BashTool, needs_permission=True),
+    "pwsh": _factory(PwshTool, needs_permission=True),
+    "grep": _factory(GrepTool, needs_permission=True),
+    "glob": _factory(GlobTool, needs_permission=True),
+    "browser": _factory(BrowserTool, needs_permission=True),
     "web_search": _factory(WebSearchTool),
     "memory": _factory(MemoryTool),
-    "python": _factory(PythonTool, needs_config=True, needs_approval=True),
+    "python": _factory(PythonTool, needs_config=True, needs_permission=True),
     # 注意：注册键 "todo" 与工具类 name="todo_write" 不同（T26）。这是有意的——
     # 注册键简短稳定供角色白名单引用，工具名详细供 LLM 语义理解。勿"统一"改名。
     "todo": _factory(TodoWriteTool),
-    "latex": _factory(LatexTool, needs_approval=True),
+    "latex": _factory(LatexTool, needs_permission=True),
     "message_bus": _factory(MessageBusTool),
     "cron": _factory(CronTool),
     "clock": _factory(ClockTool),
@@ -90,9 +93,9 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
-    "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_approval=True),
+    "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_permission=True),
     "skill": _make_skill,
-    "session": _factory(SessionTool, needs_config=True, needs_approval=True),
+    "session": _factory(SessionTool, needs_config=True, needs_permission=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
     # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户
@@ -106,17 +109,21 @@ def create_tools(
     workspace_uuid: str = "",
     session=None,
     config: Config | None = None,
+    permission_store=None,
+    permission_rules=None,
+    permission_policy=None,
+    role: str | None = None,
+    # 过渡参数（旧调用点）
     approval_store=None,
     approval_rules=None,
-    role: str | None = None,
 ) -> list[Tool]:
-    """按角色工具白名单实例化工具。
-
-    role_cfg 缺省时回退到 load_role(role or "master", config)，便于旧调用点
-    （conftest / prompts）不显式传角色配置即可获得 master 全量工具。
-    """
+    """按角色工具白名单实例化工具。"""
     if role_cfg is None:
         role_cfg = load_role(role or "master", config)
+    if permission_store is None:
+        permission_store = approval_store
+    if permission_rules is None:
+        permission_rules = approval_rules
 
     tools: list[Tool] = []
     for name in role_cfg.tools:
@@ -125,7 +132,10 @@ def create_tools(
             logger.warning(f"[registry] 角色 {role_cfg.name!r} 白名单中的工具 {name!r} 未注册，已跳过")
             continue
         try:
-            tools.append(factory(role_cfg, cwd, workspace_uuid, session, config, approval_store, approval_rules))
+            tools.append(factory(
+                role_cfg, cwd, workspace_uuid, session, config,
+                permission_store, permission_rules, permission_policy,
+            ))
         except Exception:
             # 用 exception 保留堆栈：工具构造失败（如子类 __init__ 未透传 **kwargs）
             # 会让该工具静默缺席，只有堆栈能定位根因。

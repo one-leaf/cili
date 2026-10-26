@@ -6,13 +6,14 @@ import os
 import re
 from typing import Any
 
-from core.security.approval_rules import is_builtin_readonly
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.security.shell_paths import extract_shell_targets
-from core.tools.approval import (
+from core.tools.permission import (
     META_KEY,
-    approval_decision_id,
-    approval_placeholder_text,
+    denied_rule_text,
+    no_channel_text,
+    permission_decision_id,
+    permission_placeholder_text,
 )
 from core.tools.base import (
     _VENV_DIR,
@@ -74,9 +75,14 @@ class PwshTool(Tool):
     name = "pwsh"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
+                 permission_store=None, permission_rules=None, permission_policy=None,
                  approval_store=None, approval_rules=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
-                         approval_rules=approval_rules)
+        super().__init__(
+            cwd, workspace_uuid, session,
+            permission_store=permission_store, permission_rules=permission_rules,
+            permission_policy=permission_policy,
+            approval_store=approval_store, approval_rules=approval_rules,
+        )
         self.description = self._build_description()
 
     def _build_description(self) -> str:
@@ -200,7 +206,7 @@ class PwshTool(Tool):
         policy = self._path_policy()
         initial_dir = self.cwd
         working_targets: list[PathTarget] = []
-        did = approval_decision_id(command)
+        did = permission_decision_id(command)
 
         # Apply working_dir override：目标折叠进统一审批占位（一次授权覆盖命令+越界目录），
         # Set-Location 前缀在批准后、真正执行前才拼接
@@ -211,42 +217,27 @@ class PwshTool(Tool):
             initial_dir = resolved
             working_targets = [PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)]
 
-        # ── 审批管道（设计 §3.1）：命令级放行 → 统一判定占位 → 只读快道 ──
-        # 路径门与命令门合并为一张卡：占位符携带完整命令 + 全部目标（含 working_dir）
-        # + 静态证据，一次授权（会话级或落盘规则 + implied_path_rules）同时覆盖两者。
-        store = self.approval_store
-        store_hit = bool(store and store.is_approved(did))
-        rule_hit = bool(self.approval_rules and self.approval_rules.match_command(self.name, command))
-        if not (store_hit or rule_hit):
-            targets = extract_shell_targets(command, "pwsh", cwd=self.cwd, initial_dir=initial_dir) + working_targets
-            findings = self.collect_command_findings(command)
-            # status 返回 deny（store 与 rules 均缺）或 needs_approval（有通道待批）
-            # 都视为越界待审；deny 在下方 no-store 分支落地为 fail-closed 拒绝
-            needs_path = any(policy.status(t) in ("needs_approval", "deny") for t in targets)
-            if findings or needs_path:
-                if not store:
-                    reason = findings[0]["evidence"] if findings else "写/删目标越界"
-                    return ToolResult(
-                        f"Error: 命令需审批但无审批通道（fail-closed）：{reason}\n命令：`{command}`",
-                        error=True,
-                    )
-                approval = self._pending_approval(command, did, targets, findings)
-                return ToolResult(
-                    approval_placeholder_text(approval),
-                    completed=False,
-                    meta={META_KEY: approval},
-                )
-            if is_builtin_readonly(self.name, command):
-                pass  # 只读快速通道：免判定（越界目标已在 needs_path 拦下）
-            elif not store:
-                pass  # 无 store 的独立/测试场景：无证据的良性命令保持旧行为直接执行
-            else:
-                approval = self._pending_approval(command, did, targets, findings)
-                return ToolResult(
-                    approval_placeholder_text(approval),
-                    completed=False,
-                    meta={META_KEY: approval},
-                )
+        # ── 权限管道：命令级裁决 → 统一占位 / 直接执行 ──
+        targets = extract_shell_targets(command, "pwsh", cwd=self.cwd, initial_dir=initial_dir) + working_targets
+        findings = self.collect_command_findings(command)
+        verdict = self._permission_policy().command_verdict(
+            self.name, command, targets, findings, did,
+        )
+        if verdict.action != "allow":
+            approval = self._pending_permission(
+                command, did, targets, findings,
+                reason=verdict.reason or "未命中允许规则，需要权限判定",
+                mode=verdict.action, rule=verdict.rule,
+            )
+            if not self._permission_has_channel():
+                if verdict.action == "deny":
+                    return ToolResult(denied_rule_text(approval, verdict.rule), error=True)
+                return ToolResult(no_channel_text(approval), error=True)
+            return ToolResult(
+                permission_placeholder_text(approval),
+                completed=False,
+                meta={META_KEY: approval},
+            )
 
         if working_dir:
             # 目录名可能含单引号，pwsh 单引号内用 '' 转义

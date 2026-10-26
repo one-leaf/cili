@@ -1028,27 +1028,22 @@ deny 扫描只针对代码部分，不扫描字符串字面量，避免字符串
 - **按需读取**：LLM 可根据需要重读完整内容（截断时会提示使用 read 工具读取原文件）
 - **前后端解耦**：后端注入内容，前端无感知
 
-### 10.8 高风险命令的会话级审批（ask 档）
+### 10.8 权限与审批（permission_*）
 
-deny 黑名单分两档：**ask**（破坏性操作，可询问用户）与 **deny**（跨工具隔离、iex/eval 等架构性拒绝，硬拒）。
+权限模型已替换旧的 allow-only 审批：
 
-ask 档命中时，命令不直接拒绝，而是走"拦截 → 询问 → 会话级批准"流程：
+- **配置**：`setting.json` 顶层 `permissions`（不放进 `system`），由 `core.config.PermissionConfig` 解析；
+- **规则**：`PermissionRules` 读写全局 `data/cili/approval_rules.json` 与工作区 `<workspace>/.cili/approval_rules.json`，每条规则 `decision=allow/deny/ask`；
+- **裁决**：`PermissionPolicy` 按 `deny > ask > allow > 安全区 > 只读白名单 > 默认策略` 顺序给出 `allow/ai/ask/deny`；
+- **判定**：`PermissionJudge` 在 `ai` 时调用 lite；失败按 `judge.on_error`；`outside.read=ai` 只接收路径元数据；
+- **会话批准**：`PermissionStore` 保存 `decision_id → {command, kind}`；根/子代理共享同一 store 与规则实例；
+- **工具注入**：`registry` 统一注入 `permission_store / permission_rules / permission_policy`；自定义 `__init__` 必须透传 `**kwargs`；
+- **Loop**：`_resolve_permission_results` 处理占位里的 `verdict`；`_handle_permission_required` 合成卡片；`_downgrade_permission_result` 处理自主子代理；
+- **无通道**：`ask` 在 worker/lite 等无询问通道场景直接拒绝；独立工具无 store 时 fail-closed。
 
-1. **工具层**（bash/pwsh）：查 `ApprovalStore.is_approved(decision_id)` → 已批准放行执行；未批准返回 `completed=False` 占位符 + `meta.approval_required`（decision_id 为规范化命令的 sha256 前 16 位，确定性）
-2. **Master 循环**（`core/session_runner.py`）：把首个 approval_required 降级为错误提示、记录 pending，批处理完后**合成一张 ask_user 卡**（选项"允许本次会话"/"拒绝"）→ 占位 break；同批多条只问一条，其余拒绝
-3. **answer 端点**（web_api.py）：答案含"允许本次会话" → `store.approve(did, cmd)`；否则仅清 pending（自定义输入视为拒绝）
-4. **模型重发**：resume 后模型读到批准，原样重发命令 → `is_approved` 命中 → 放行；此后**本会话内**（含子代理）同命令不再询问
+相关文件：`core/config.py`（PermissionConfig）、`core/security/permission_rules.py`、`permission_policy.py`、`permission_judge.py`、`core/tools/permission.py`、`core/session_runner.py`、`core/session_runner_runtime/loop.py`、`web/routes_permissions.py`。
 
-**会话级、内存不持久化**：`ApprovalStore` 由 master Agent 持有（`_approved: decision_id→command`，不按次数消费 + 单槽 `pending`），服务器重启即失效，不写配置不落盘。
-
-**子代理共享**：根/子代理的 bash/pwsh 与 SessionTool 构造时透传同一 `ApprovalStore` 实例——
-- 已批准命令子代理可直接执行（工具层共享放行）
-- 已批准命令列表注入子代理 pinned 任务消息（`build_approved_commands_section`，approval.py），子模型知晓可直接执行
-- 子代理无 ask_user：未批准命令的占位符被子循环 `_downgrade_approval_result`（`core/session_runner.py`）降级为普通 error，不挂起不询问
-
-**消息配对**：合成 ask_user 需手动补 `assistant` tool_use 块（`generate_short_id()` 生成 id），且全部工具结果处理完后再追加，避免悬挂 tool_result 或打断本批其他 tool_use 的配对。
-
-相关文件：`core/tools/approval.py`（ApprovalStore、ask/deny 常量、decision_id 与文案）、`core/tools/bash.py`、`core/tools/pwsh.py`、`core/session_runner.py`（`_handle_approval_required`、`_downgrade_approval_result`）、`core/tools/session_tool.py`（透传）、`web/web_api.py`（answer_ask_user 记录批准）。
+> 旧的 `ApprovalStore` / `ApprovalRules` / `approval_rules.json` 仅保留为历史代码，不再接入运行时。
 
 ---
 

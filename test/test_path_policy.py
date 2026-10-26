@@ -16,7 +16,7 @@ from core.security.path_policy import (
     PathTarget,
     is_path_within,
 )
-from core.tools.approval import ApprovalStore
+from core.tools.permission import PermissionStore
 
 
 class TestIsPathWithin:
@@ -113,19 +113,19 @@ class TestStatus:
         assert p.status(t) == "deny"
 
     def test_outside_needs_approval(self, tmp_path):
-        p = self._policy(tmp_path, ApprovalStore())
+        p = self._policy(tmp_path, PermissionStore())
         t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
         assert p.status(t) == "needs_approval"
 
     def test_outside_approved(self, tmp_path):
-        store = ApprovalStore()
+        store = PermissionStore()
         p = self._policy(tmp_path, store)
         t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
         store.approve(p.decision_id(t), "C:\\out", kind="path:write")
         assert p.status(t) == "approved"
 
     def test_dynamic_needs_approval(self, tmp_path):
-        p = self._policy(tmp_path, ApprovalStore())
+        p = self._policy(tmp_path, PermissionStore())
         t = PathTarget(OP_DELETE, "rm build/*", op_name="rm", dynamic=True)
         assert p.status(t) == "needs_approval"
 
@@ -139,12 +139,12 @@ class TestTempRootAllowlist:
     """系统临时目录安全区：bash /tmp、pwsh $env:TEMP 的真实落点免审批。"""
 
     def test_temp_write_allowed(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
         t = PathTarget(OP_WRITE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
         assert p.status(t) == "allow"
 
     def test_temp_delete_allowed(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
         t = PathTarget(OP_DELETE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
         assert p.status(t) == "allow"
 
@@ -160,14 +160,14 @@ class TestTempRootAllowlist:
         assert p.status(t) == "allow"
 
     def test_outside_still_gated(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
         t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
         assert p.status(t) == "needs_approval"
 
 
 class TestAggregation:
     def test_first_pending_skips_allow_and_approved(self, tmp_path):
-        store = ApprovalStore()
+        store = PermissionStore()
         p = PathPolicy(workspace_root=str(tmp_path), approval_store=store)
         inside = PathTarget(OP_WRITE, "in", resolved=os.path.join(str(tmp_path), "in"))
         approved = PathTarget(OP_WRITE, "C:\\a", resolved="C:\\a")
@@ -176,7 +176,7 @@ class TestAggregation:
         assert p.first_pending([inside, approved, pending]) is pending
 
     def test_first_pending_none_when_all_ok(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=ApprovalStore())
+        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
         inside = PathTarget(OP_WRITE, "in", resolved=os.path.join(str(tmp_path), "in"))
         assert p.first_pending([inside]) is None
 

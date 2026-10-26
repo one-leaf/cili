@@ -277,11 +277,11 @@ class TestEnhancedDispatch:
         svc.navigate.assert_called_once_with("https://example.com", tab_index=None)
 
     def test_navigate_private_url_placeholder(self):
-        from core.tools.approval import META_KEY, ApprovalStore
+        from core.tools.permission import META_KEY, PermissionStore
         from core.tools.browser import BrowserTool
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool(approval_store=ApprovalStore()).execute(
+            result = BrowserTool(approval_store=PermissionStore()).execute(
                 action="navigate", url="http://127.0.0.1:8885/tcmp-war/")
         assert result.completed is False
         assert not result.error
@@ -291,11 +291,11 @@ class TestEnhancedDispatch:
         svc.navigate.assert_not_called()
 
     def test_navigate_private_url_approved_bypasses(self):
-        from core.tools.approval import ApprovalStore, approval_decision_id
+        from core.tools.permission import PermissionStore, permission_decision_id
         from core.tools.browser import BrowserTool
         url = "http://127.0.0.1:8885/tcmp-war/"
-        store = ApprovalStore()
-        store.approve(approval_decision_id(url), url, kind="browser:navigate")
+        store = PermissionStore()
+        store.approve(permission_decision_id(url), url, kind="browser:navigate")
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
             BrowserTool(approval_store=store).execute(action="navigate", url=url)
@@ -314,14 +314,14 @@ class TestEnhancedDispatch:
         此前工具层对任何被拦截的 URL 都弹批准卡，批准后 skip_ssrf=True
         跳过整段校验 —— 批准 file:/// 或元数据端点即可绕过防护。
         """
-        from core.tools.approval import META_KEY, ApprovalStore, approval_decision_id
+        from core.tools.permission import META_KEY, PermissionStore, permission_decision_id
         from core.tools.browser import BrowserTool
 
         svc = self._service()
-        store = ApprovalStore()
+        store = PermissionStore()
         for url in ("file:///etc/passwd", "http://169.254.169.254/latest/meta-data/"):
             # 即便规则已批准，也应直接硬拒绝、不调用 service
-            store.approve(approval_decision_id(url), url, kind="browser:navigate")
+            store.approve(permission_decision_id(url), url, kind="browser:navigate")
             with patch("core.browser_service.get_service", return_value=svc):
                 result = BrowserTool(approval_store=store).execute(action="navigate", url=url)
             assert result.error
@@ -336,11 +336,11 @@ class TestEnhancedDispatch:
         navigate 门也永远返回审批占位（用户批准后反复弹卡）。
         """
         from core.role_config import load_role
-        from core.tools.approval import ApprovalStore, approval_decision_id
+        from core.tools.permission import PermissionStore, permission_decision_id
         from core.tools.registry import create_tools
         url = "http://127.0.0.1:8000/"
-        store = ApprovalStore()
-        store.approve(approval_decision_id(url), url, kind="browser:navigate")
+        store = PermissionStore()
+        store.approve(permission_decision_id(url), url, kind="browser:navigate")
         tools = create_tools(
             load_role("master"),
             cwd=".", workspace_uuid="d1b45267",

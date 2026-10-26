@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from core.fs_utils import normalize_bash_path
-from core.security.path_policy import OP_DELETE, PathPolicy
-from core.tools.approval import META_KEY, approval_placeholder_text
+from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
+from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.background import (
     BackgroundMixin,
 )
@@ -148,6 +148,7 @@ class Tool(ShellMixin, BackgroundMixin):
         return None
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session: SessionHandle | None = None,
+                 permission_store=None, permission_rules=None, permission_policy=None,
                  approval_store=None, approval_rules=None, **kwargs):
         """统一构造协议。
 
@@ -158,10 +159,13 @@ class Tool(ShellMixin, BackgroundMixin):
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session = session  # For accessing session info (e.g., in python tool)
-        # 会话级高风险命令审批存储（内存，根/子代理共享），由 agent 注入
-        self.approval_store = approval_store
-        # 审批规则引擎（core/security/approval_rules.py，根/子代理共享同一实例）
-        self.approval_rules = approval_rules
+        # 权限存储 / 规则 / 裁决（根/子代理共享同一实例，由 runner 注入）
+        self.permission_store = permission_store if permission_store is not None else approval_store
+        self.permission_rules = permission_rules if permission_rules is not None else approval_rules
+        self.permission_policy = permission_policy
+        # 旧属性别名（过渡；新代码不要依赖）
+        self.approval_store = self.permission_store
+        self.approval_rules = self.permission_rules
         # 工具输出文件路径：由 agent 在 execute() 前设置
         # _run_bash() 逐行写入此文件（实时流式），前端可轮询读取
         # save_output_to_file() 兜底确保所有工具输出都落盘
@@ -188,6 +192,22 @@ class Tool(ShellMixin, BackgroundMixin):
             path = os.path.join(self.cwd, path)
         return os.path.realpath(path)
 
+    def _permission_policy(self):
+        """取本次注入的裁决器；独立工具场景构造默认策略。"""
+        if self.permission_policy is None:
+            from core.config import PermissionConfig
+            from core.security.permission_policy import PermissionPolicy
+
+            self.permission_policy = PermissionPolicy(
+                PermissionConfig(), self.permission_rules, self.permission_store,
+                workspace_root=self.cwd, cwd=self.cwd,
+            )
+        return self.permission_policy
+
+    def _permission_has_channel(self) -> bool:
+        """是否有用户审批通道（共享 PermissionStore）。独立工具 fail-closed。"""
+        return self.permission_store is not None
+
     def _path_policy(self) -> PathPolicy:
         """构造本工具工作区（= cwd）的路径权限判定器。
 
@@ -196,8 +216,9 @@ class Tool(ShellMixin, BackgroundMixin):
         """
         return PathPolicy(
             workspace_root=self.cwd, cwd=self.cwd,
-            approval_store=self.approval_store,
-            approval_rules=self.approval_rules,
+            permission_policy=self._permission_policy(),
+            permission_store=self.permission_store,
+            permission_rules=self.permission_rules,
         )
 
     def _path_gate(self, targets: list, findings: list | None = None) -> ToolResult | None:
@@ -218,23 +239,58 @@ class Tool(ShellMixin, BackgroundMixin):
                 f"Error: {verb}目标不在工作区 {policy.workspace_root!r} 内，且无审批通道：{denied.raw}",
                 error=True,
             )
-        pending = policy.first_pending(targets)
+        pending = policy.first_pending(targets, tool=self.name)
         if pending is not None:
-            approval = policy.approval_meta(pending)
-            approval["tool"] = self.name
+            approval = policy.permission_meta(pending, tool=self.name)
             approval["targets"] = [policy.target_evidence(t) for t in targets]
             approval["findings"] = list(findings or [])
             return ToolResult(
-                approval_placeholder_text(approval),
+                permission_placeholder_text(approval),
                 completed=False,
                 meta={META_KEY: approval},
             )
         return None
 
-    def _pending_approval(self, command: str, decision_id: str, targets: list, findings: list,
-                          kind: str = "command",
-                          reason: str = "未命中允许规则，需要安全判定") -> dict:
-        """构造判定占位 meta（设计 §3.3.2）：证据齐全（目标 / 静态发现），供 lite 判定与审计。"""
+    def _read_gate(self, paths: list[str], findings: list | None = None) -> ToolResult | None:
+        """统一读侧门：工作区外读取按 outside.read 裁决（allow/ai/ask/deny）。"""
+        if not paths:
+            return None
+        for path in paths:
+            teen_block = self._teen_read_guard(path)
+            if teen_block is not None:
+                return teen_block
+        targets = [
+            PathTarget(OP_READ, p, "read", resolved=p)
+            for p in paths
+        ]
+        policy = self._path_policy()
+
+        def _status(target: PathTarget) -> str:
+            return policy.read_status(target.resolved, tool=self.name, raw=target.raw)
+
+        denied = next((t for t in targets if _status(t) == "deny"), None)
+        if denied is not None:
+            return ToolResult(
+                f"Error: 读取目标不在工作区 {policy.workspace_root!r} 内，且无审批通道：{denied.raw}",
+                error=True,
+            )
+        pending = next((t for t in targets if _status(t) == "needs_approval"), None)
+        if pending is not None:
+            approval = policy.permission_meta(pending, tool=self.name)
+            approval["targets"] = [policy.target_evidence(t) for t in targets]
+            approval["findings"] = list(findings or [])
+            return ToolResult(
+                permission_placeholder_text(approval),
+                completed=False,
+                meta={META_KEY: approval},
+            )
+        return None
+
+    def _pending_permission(self, command: str, decision_id: str, targets: list, findings: list,
+                            kind: str = "command",
+                            reason: str = "未命中允许规则，需要权限判定",
+                            mode: str = "ai", rule: dict | None = None) -> dict:
+        """构造判定占位 meta：证据齐全（目标 / 静态发现），供判定/审批/审计。"""
         policy = self._path_policy()
         return {
             "decision_id": decision_id,
@@ -244,7 +300,13 @@ class Tool(ShellMixin, BackgroundMixin):
             "reason": reason,
             "targets": [policy.target_evidence(t) for t in targets],
             "findings": findings,
+            "mode": mode,
+            "verdict": mode,
+            "rule": rule,
         }
+
+    # 旧名兼容（过渡）
+    _pending_approval = _pending_permission
 
     def _teen_command_guard(self, command: str) -> ToolResult | None:
         """青少年模式：回退类命令硬拒（开启且未解锁时）。返回 None 表示放行。

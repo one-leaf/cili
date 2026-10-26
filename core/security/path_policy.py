@@ -1,101 +1,91 @@
-"""路径权限判定：写入/删除必须在 workspace 内，越界走审批。
+"""路径权限判定：工作区/临时目录内放行，外部按权限策略裁决。
 
-采纳 nanobot 的路径前缀匹配思路（Path.resolve + relative_to，symlink 解析），
-但越界不是硬拒绝而是审批：main agent 弹 ask_user 卡，worker/lite 查共享
-ApprovalStore（未批准则降级为权限拒绝）。读取不经过本模块（任意放行）。
-
-安全区例外：workspace 之外，系统临时目录（os_temp_root，即 Git Bash /tmp
-的 usertemp 挂载点、pwsh $env:TEMP 的真实落点）也视为区内——临时文件
-不持久化，写入/删除免审批。
-
-approval_store 为 None 时 fail-closed：越界（临时目录除外）一律 deny，不询问。
+- ``PathPolicy`` 委托 ``PermissionPolicy`` 做规则/会话批准/分项策略裁决；
+- 青少年模式受保护路径硬 deny，strict 未解锁时挂起普通放行通道；
+- 读取通过 ``read_status`` 使用 ``outside.read``（含 ``ai`` 路径元数据）。
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import tempfile
 from dataclasses import dataclass
 
+from core.config import PermissionConfig
 from core.fs_utils import normalize_bash_path
+from core.security.permission_policy import PermissionPolicy
 from core.security.protected_paths import teen_path_verdict
 
 logger = logging.getLogger(__name__)
 
 OP_WRITE = "write"
 OP_DELETE = "delete"
+OP_READ = "read"
+
+_DYN_KEY_PREFIX = "dyn"
 
 
 def os_temp_root() -> str:
-    """进程环境下的临时目录根（realpath 后），作为路径白名单安全区。
-
-    与 shell_paths._os_temp_dir 同源（TMP → TEMP → gettempdir），覆盖
-    Git Bash /tmp 的 usertemp 挂载落点与 pwsh $env:TEMP 的真实位置。
-    """
+    """进程环境下的临时目录根（realpath 后），作为路径白名单安全区。"""
     for var in ("TMP", "TEMP"):
         v = os.environ.get(var)
         if v:
             return os.path.realpath(v)
     return os.path.realpath(tempfile.gettempdir())
 
-# 动态目标（变量/通配符/$(...) 等无法静态解析）的 decision_id 前缀。
-# 动态目标 resolved=None，按原始串生成稳定 ID，保证"原样重发"命中同一 ID。
-_DYN_KEY_PREFIX = "dyn"
-
-
-@dataclass
-class PathTarget:
-    """一个待判定的写/删目标。
-
-    raw: 原始目标串（可能含 $、* 等）；resolved: realpath 后绝对路径。
-    dynamic=True 表示无法静态解析（保守按越界待批）。
-    """
-
-    op: str  # OP_WRITE / OP_DELETE
-    raw: str
-    op_name: str = ""  # 触发词（rm/mv/>/os.remove/open），用于 reason
-    dynamic: bool = False
-    resolved: str | None = None
-
 
 def is_path_within(resolved: str, root: str) -> bool:
-    """resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。
-
-    与 base.Tool._is_within_workspace 同思路：commonpath 两侧 normcase 后比较。
-    """
+    """resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。"""
     try:
         return os.path.normcase(
             os.path.commonpath([resolved, root])
         ) == os.path.normcase(root)
     except ValueError:
-        return False  # 不同盘符
+        return False
+
+
+@dataclass
+class PathTarget:
+    """一个待判定的路径目标。"""
+
+    op: str  # OP_READ / OP_WRITE / OP_DELETE
+    raw: str
+    op_name: str = ""
+    dynamic: bool = False
+    resolved: str | None = None
 
 
 class PathPolicy:
-    """基于路径前缀的写/删权限判定。
+    """基于路径前缀的读/写/删权限判定。"""
 
-    workspace_root 即工作区根（= 工具 cwd）；cwd 用于相对路径 join；
-    approval_store 为共享审批存储（master 与 worker/lite 同一实例）。
-    """
-
-    def __init__(self, workspace_root: str, cwd: str | None = None,
-                 approval_store=None, approval_rules=None):
+    def __init__(
+        self,
+        workspace_root: str,
+        cwd: str | None = None,
+        *,
+        permission_policy: PermissionPolicy | None = None,
+        permission_store=None,
+        permission_rules=None,
+        # 过渡参数：旧调用点仍在传 approval_store / approval_rules
+        approval_store=None,
+        approval_rules=None,
+    ):
         self.cwd = os.path.abspath(cwd or workspace_root)
         self.workspace_root = os.path.realpath(workspace_root)
         self.temp_root = os_temp_root()
-        self.approval_store = approval_store
-        # 审批规则引擎（core/security/approval_rules.py），duck-typing 调用
-        # match_path(kind, resolved)——避免 import 成环（rules → shell_paths → 本模块）
-        self.approval_rules = approval_rules
+        store = permission_store if permission_store is not None else approval_store
+        rules = permission_rules if permission_rules is not None else approval_rules
+        if rules is not None and not hasattr(rules, "evaluate_path"):
+            rules = None
+        self.permission_policy = permission_policy or PermissionPolicy(
+            PermissionConfig(), rules, store,
+            workspace_root=self.workspace_root, cwd=self.cwd,
+        )
+
+    # ── 解析 ─────────────────────────────────────────────────────
 
     def resolve(self, path: str) -> str:
-        """展开 ~ → 相对路径 join cwd → realpath。不做边界抛错。
-
-        自动处理 bash 风格路径（/c/... -> C:/...），LLM 从 shell 输出复制路径时
-        常遇到这种格式。
-        """
         path = normalize_bash_path(path)
         p = os.path.expanduser(path)
         if not os.path.isabs(p):
@@ -103,77 +93,85 @@ class PathPolicy:
         return os.path.realpath(p)
 
     def is_inside(self, resolved: str) -> bool:
-        """workspace 内，或系统临时目录内（临时文件不落盘持久化，视为安全区）。"""
         if is_path_within(resolved, self.workspace_root):
             return True
         return is_path_within(resolved, self.temp_root)
 
     def decision_id(self, target: PathTarget) -> str:
-        """路径 → 审批判定 ID。静态按 op+resolved（normcase 保证大小写无关）；
-        动态按原始串，原样重发命中同一 ID。"""
-        if target.resolved is not None:
-            key = f"{target.op}:{os.path.normcase(target.resolved)}"
-        else:
-            key = f"{_DYN_KEY_PREFIX}:{target.op}:{target.raw.strip()}"
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        return self.permission_policy.path_decision_id(target.op, target.resolved, target.raw)
 
-    def status(self, target: PathTarget) -> str:
-        """allow（区内）| approved（外部但已批/命中规则）| needs_approval（外部未批）| deny（无任何审批通道）
+    # ── 状态 ─────────────────────────────────────────────────────
 
-        青少年模式加层（顺序固定）：
-        ① 受保护路径（data/cili、各工作区 .cili 除 tmp）→ 硬 deny，不走审批；
-        ② strict 且未解锁：挂起 allow 规则与会话批准（防孩子用先前攒下的
-           放行绕过），越界按 outside_workspace 策略（deny / 维持审批）。
-        """
-        # ① 受保护路径硬 deny（模式语义本身，解锁窗口也不放行）
-        if teen_path_verdict(target.resolved, target.op) == "deny":
+    def _verdict_to_status(self, verdict, *, has_channel: bool) -> str:
+        if verdict.action == "allow":
+            return "approved" if verdict.approved else "allow"
+        if verdict.action == "deny":
             return "deny"
-        if target.resolved is not None and self.is_inside(target.resolved):
-            return "allow"
+        # ask / ai：无审批通道时 fail-closed
+        return "needs_approval" if has_channel else "deny"
 
-        # ② 青少年模式 strict 且未解锁：存量放行通道全部挂起
+    def _has_channel(self) -> bool:
+        return self.permission_policy.store is not None
+
+    def status(self, target: PathTarget, tool: str = "*") -> str:
+        """allow（区内）| approved（规则/会话已批）| needs_approval | deny。"""
+        if target.resolved is not None and teen_path_verdict(target.resolved, target.op) == "deny":
+            return "deny"
+
         from core.teen_mode import get_teen_mode
 
         tm = get_teen_mode()
         teen_locked = tm.is_enabled() and tm.approval_strict() and not tm.is_unlocked()
-
-        if not teen_locked and self.approval_rules is not None and target.resolved is not None:
-            kind = "path:delete" if target.op == OP_DELETE else "path:write"
-            try:
-                if self.approval_rules.match_path(kind, target.resolved):
-                    return "approved"
-            except Exception:  # noqa: BLE001 —— 规则引擎异常不放大为放行
-                logger.exception("[path-policy] 规则匹配异常，按未命中处理")
-        if not teen_locked and self.approval_store is not None \
-                and self.approval_store.is_approved(self.decision_id(target)):
-            return "approved"
         if teen_locked:
-            # 未解锁：越界一律拒（outside_workspace=approval 时仍走审批通道，
-            # 但放行规则已挂起，解锁窗口内可正常出卡审批）
-            if (tm.policy().get("outside_workspace") or "deny") == "approval" \
-                    and not (self.approval_store is None and self.approval_rules is None):
+            if target.resolved is not None and self.is_inside(target.resolved):
+                return "allow"
+            outside_policy = (tm.policy().get("outside_workspace") or "deny")
+            if outside_policy == "approval" and self._has_channel():
                 return "needs_approval"
             return "deny"
-        if self.approval_store is None and self.approval_rules is None:
+
+        kind = "path:delete" if target.op == OP_DELETE else "path:write"
+        verdict = self.permission_policy.path_verdict(
+            kind, target.resolved,
+            decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+        )
+        return self._verdict_to_status(verdict, has_channel=self._has_channel())
+
+    def read_status(self, resolved: str | None, tool: str = "*", raw: str = "") -> str:
+        """读取状态：allow / approved / needs_approval / deny。"""
+        from core.teen_mode import get_teen_mode
+
+        tm = get_teen_mode()
+        if (
+            tm.is_enabled()
+            and tm.policy().get("deny_read_outside")
+            and not tm.is_unlocked()
+            and resolved is not None
+            and not self.is_inside(resolved)
+        ):
             return "deny"
-        return "needs_approval"
 
-    def any_denied(self, targets: list[PathTarget]) -> PathTarget | None:
-        """按序返回第一个 deny 目标（无 store 时的 fail-closed）。"""
+        target = PathTarget(OP_READ, raw or (resolved or ""), "read", resolved=resolved)
+        verdict = self.permission_policy.path_verdict(
+            "path:read", resolved, decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+        )
+        return self._verdict_to_status(verdict, has_channel=self._has_channel())
+
+    def any_denied(self, targets: list[PathTarget], tool: str = "*") -> PathTarget | None:
         for t in targets:
-            if self.status(t) == "deny":
+            if self.status(t, tool=tool) == "deny":
                 return t
         return None
 
-    def first_pending(self, targets: list[PathTarget]) -> PathTarget | None:
-        """按序返回第一个 needs_approval 目标（pending 单槽兼容，一次一卡）。"""
+    def first_pending(self, targets: list[PathTarget], tool: str = "*") -> PathTarget | None:
         for t in targets:
-            if self.status(t) == "needs_approval":
+            if self.status(t, tool=tool) == "needs_approval":
                 return t
         return None
+
+    # ── 证据 / 审批 meta ─────────────────────────────────────────
 
     def target_evidence(self, target: PathTarget) -> dict:
-        """单个目标的判定证据（进入 lite 判定输入 / 审计 / 会话批准派生）。"""
         return {
             "op": target.op,
             "raw": target.raw,
@@ -182,17 +180,33 @@ class PathPolicy:
             "decision_id": self.decision_id(target),
         }
 
-    def approval_meta(self, target: PathTarget) -> dict:
-        """构造与 bash 审批同构的 meta（META_KEY.approval_required 内容）。"""
-        kind = "path:delete" if target.op == OP_DELETE else "path:write"
+    def permission_meta(self, target: PathTarget, tool: str = "*") -> dict:
+        """构造与命令审批同构的 meta（含 mode，供 Loop 区分 ai/ask）。"""
+        kind = {
+            OP_READ: "path:read",
+            OP_DELETE: "path:delete",
+        }.get(target.op, "path:write")
         display = target.resolved if target.resolved is not None else target.raw
-        reason = f"{target.op_name or '操作'}目标不在工作区 {self.workspace_root!r} 内"
+        action = {"path:read": "读取", "path:delete": "删除"}.get(kind, "写入")
+        reason = f"{target.op_name or action}目标不在工作区 {self.workspace_root!r} 内"
         if target.dynamic:
             reason += "（路径含变量/通配符，无法静态解析）"
+
+        verdict = self.permission_policy.path_verdict(
+            kind, target.resolved,
+            decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+        )
         return {
             "decision_id": self.decision_id(target),
             "command": display,
             "path": display,
             "kind": kind,
             "reason": reason,
+            "mode": verdict.action,
+            "verdict": verdict.action,
+            "rule": verdict.rule,
+            "tool": tool,
         }
+
+    # 旧名兼容（过渡）
+    approval_meta = permission_meta

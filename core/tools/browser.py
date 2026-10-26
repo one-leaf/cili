@@ -15,10 +15,12 @@ import os
 
 from core.config import PROJECT_ROOT
 from core.security.path_policy import OP_WRITE, PathTarget
-from core.tools.approval import (
+from core.tools.permission import (
     META_KEY,
-    approval_decision_id,
-    approval_placeholder_text,
+    denied_rule_text,
+    no_channel_text,
+    permission_decision_id,
+    permission_placeholder_text,
 )
 from core.tools.base import Tool, ToolResult
 
@@ -259,30 +261,33 @@ Use web_search for simple lookups; use browser when search results are insuffici
             # 否则返回判定占位，由 Loop 做 lite 判定分派（ask → 卡片 / deny → 拒绝）。
             block_reason = _validate_navigate_url(url)
             if block_reason:
-                did = approval_decision_id(url)
-                rule_hit = bool(self.approval_rules and self.approval_rules.match_url(url))
-                store_hit = bool(self.approval_store and self.approval_store.is_approved(did))
-                if not (rule_hit or store_hit):
-                    approval = {
-                        "kind": "browser:navigate",
-                        "decision_id": did,
-                        "command": url,
-                        "reason": block_reason,
-                        "tool": self.name,
-                        "targets": [],
-                        "findings": [],
-                    }
-                    if not self.approval_store:
-                        return ToolResult(
-                            f"Error: 导航命中非公网地址且无审批通道（fail-closed）：{block_reason}",
-                            error=True,
-                        )
-                    return ToolResult(
-                        approval_placeholder_text(approval),
-                        completed=False,
-                        meta={META_KEY: approval},
-                    )
-                return service.navigate(url, tab_index=tab_index, approved_non_public=True)
+                did = permission_decision_id(url)
+                verdict = self._permission_policy().url_verdict(
+                    url, decision_id=did, tool=self.name,
+                )
+                if verdict.action == "allow":
+                    return service.navigate(url, tab_index=tab_index, approved_non_public=True)
+                approval = {
+                    "kind": "browser:navigate",
+                    "decision_id": did,
+                    "command": url,
+                    "reason": block_reason,
+                    "tool": self.name,
+                    "targets": [],
+                    "findings": [],
+                    "mode": verdict.action,
+                    "verdict": verdict.action,
+                    "rule": verdict.rule,
+                }
+                if not self._permission_has_channel():
+                    if verdict.action == "deny":
+                        return ToolResult(denied_rule_text(approval, verdict.rule), error=True)
+                    return ToolResult(no_channel_text(approval), error=True)
+                return ToolResult(
+                    permission_placeholder_text(approval),
+                    completed=False,
+                    meta={META_KEY: approval},
+                )
             return service.navigate(url, tab_index=tab_index)
 
         elif action == "snapshot":

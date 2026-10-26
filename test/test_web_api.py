@@ -387,28 +387,28 @@ class TestAskUserDirectInput:
 
     @staticmethod
     def _approval_agent(tmp_path):
-        """构造带待批准命令的 agent（approval_store.pending 非空）。"""
+        """构造带待批准命令的 agent（permission_store.pending 非空）。"""
         from types import SimpleNamespace
 
-        from core.security.approval_rules import ApprovalRules
-        from core.tools.approval import ApprovalStore, approval_decision_id
+        from core.security.permission_rules import PermissionRules
+        from core.tools.permission import PermissionStore, permission_decision_id
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
-        store = ApprovalStore()
+        store = PermissionStore()
         store.set_pending({
-            "decision_id": approval_decision_id("rm -rf /tmp/x"),
+            "decision_id": permission_decision_id("rm -rf /tmp/x"),
             "command": "rm -rf /tmp/x",
             "reason": "destructive recursive delete",
         })
-        rules = ApprovalRules(tmp_path / "approval_rules.json")
-        agent = SimpleNamespace(session=sm, approval_store=store, approval_rules=rules)
+        rules = PermissionRules(tmp_path / "approval_rules.json")
+        agent = SimpleNamespace(session=sm, permission_store=store, permission_rules=rules)
         return agent, tool_use_id, store, rules
 
     def test_inject_answer_remember_persists_rule(self, tmp_path):
-        from core.security.approval_rules import ApprovalRules
-        from core.tools.approval import REMEMBER_LABEL, approval_decision_id
+        from core.security.permission_rules import PermissionRules
+        from core.tools.permission import REMEMBER_LABEL, permission_decision_id
         from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
-        did = approval_decision_id("rm -rf /tmp/x")
+        did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
                                       f"批准命令 {REMEMBER_LABEL}", store, rules) is True
         assert store.is_approved(did)
@@ -417,14 +417,14 @@ class TestAskUserDirectInput:
         path = tmp_path / "approval_rules.json"
         assert path.exists()
         assert "rm -rf /tmp/x" in path.read_text(encoding="utf-8")
-        reloaded = ApprovalRules(path)
-        assert reloaded.match_command("bash", "rm -rf /tmp/x") is not None
+        reloaded = PermissionRules(path)
+        assert reloaded.evaluate_command("bash", "rm -rf /tmp/x")[0] == "allow"
 
     def test_inject_answer_approve_session_only(self, tmp_path):
-        from core.tools.approval import APPROVE_LABEL, approval_decision_id
+        from core.tools.permission import APPROVE_LABEL, permission_decision_id
         from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
-        did = approval_decision_id("rm -rf /tmp/x")
+        did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
                                       f"批准命令 {APPROVE_LABEL}", store, rules) is True
         assert store.is_approved(did)
@@ -434,18 +434,18 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_remember_persists_path_kind(self, tmp_path):
         """路径审批（kind=path:write）经「一直允许」后，kind 落盘并回灌为路径规则。"""
-        from core.security.approval_rules import ApprovalRules
-        from core.tools.approval import REMEMBER_LABEL, ApprovalStore
+        from core.security.permission_rules import PermissionRules
+        from core.tools.permission import REMEMBER_LABEL, PermissionStore
         from core.tools.ask_user import inject_ask_user_answer
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
-        store = ApprovalStore()
+        store = PermissionStore()
         store.set_pending({
             "decision_id": "pathwrite1234567890ab",
             "command": "C:\\outside\\x.txt",
             "reason": "工作区外写入",
             "kind": "path:write",
         })
-        rules = ApprovalRules(tmp_path / "approval_rules.json")
+        rules = PermissionRules(tmp_path / "approval_rules.json")
         assert inject_ask_user_answer(sm, tool_use_id, f"批准写入 {REMEMBER_LABEL}",
                                       store, rules) is True
         assert store.is_approved("pathwrite1234567890ab")
@@ -454,16 +454,16 @@ class TestAskUserDirectInput:
         path = tmp_path / "approval_rules.json"
         assert path.exists()
         assert "path:write" in path.read_text(encoding="utf-8")
-        reloaded = ApprovalRules(path)
-        assert reloaded.match_path("path:write", "C:\\outside\\x.txt") is not None
-        assert reloaded.match_path("path:write", "C:\\outside\\other.txt") is not None
-        assert reloaded.match_path("path:delete", "C:\\outside\\x.txt") is None  # kind 隔离
+        reloaded = PermissionRules(path)
+        assert reloaded.evaluate_path("path:write", "C:\\outside\\x.txt")[0] == "allow"
+        assert reloaded.evaluate_path("path:write", "C:\\outside\\other.txt")[0] == "allow"
+        assert reloaded.evaluate_path("path:delete", "C:\\outside\\x.txt")[0] is None  # kind 隔离
 
     def test_inject_answer_reject_does_not_approve(self, tmp_path):
-        from core.tools.approval import REJECT_LABEL, approval_decision_id
+        from core.tools.permission import REJECT_LABEL, permission_decision_id
         from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
-        did = approval_decision_id("rm -rf /tmp/x")
+        did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
                                       f"批准命令 {REJECT_LABEL}", store, rules) is True
         assert not store.is_approved(did)
@@ -482,7 +482,8 @@ class TestAskUserDirectInput:
         sm, tool_use_id = self._placeholder_session(tmp_path)
         agent = SimpleNamespace(
             session=sm,
-            approval_store=None,
+            permission_store=None,
+            permission_rules=None,
             workspace_uuid="ws-ask",
             current_session_id="sess-ask",
         )
@@ -540,7 +541,8 @@ class TestSendMessageInterface:
         calls = []
         agent = SimpleNamespace(
             session=SimpleNamespace(messages=[]),
-            approval_store=None,
+            permission_store=None,
+            permission_rules=None,
             workspace_uuid="ws-if",
             current_session_id="sess-if",
         )
@@ -584,7 +586,8 @@ class TestSendMessageInterface:
         calls = []
         agent = SimpleNamespace(
             session=SimpleNamespace(messages=[]),
-            approval_store=None,
+            permission_store=None,
+            permission_rules=None,
             workspace_uuid="ws-if",
             current_session_id="sess-if",
         )

@@ -461,6 +461,54 @@ Agent 每次帮你做事时，可能会多次调用各种工具（比如读 10 �
 
 ---
 
+## 四、权限配置（permissions）
+
+权限配置**独立于 system**，是 `setting.json` 的顶层 `permissions` 字段；设置页对应「系统参数」之后的独立「权限」页签。
+
+```json
+"permissions": {
+  "enabled": true,
+  "default_mode": "allow",
+  "readonly_bypass": true,
+  "outside": {
+    "read": "allow",
+    "write": "ask",
+    "delete": "ask",
+    "navigate": "ai"
+  },
+  "rules_hot_reload": true,
+  "global_rules_path": "",
+  "judge": {
+    "enabled": true,
+    "timeout_seconds": 60,
+    "on_error": "ask",
+    "persist_allow": true,
+    "cache": "session",
+    "max_consecutive_failures": 3
+  }
+}
+```
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `enabled` | `true` | 权限总开关；关闭后跳过用户规则与默认策略，青少年/执行层约束仍生效 |
+| `default_mode` | `allow` | 未命中规则时的默认策略：`allow` / `ai` / `ask` |
+| `readonly_bypass` | `true` | 内置只读白名单免判定（`ls` / `cat` / `git status` 等） |
+| `outside.read` | `allow` | 工作区外读取：`allow` / `ai`（仅路径元数据）/ `ask` / `deny` |
+| `outside.write` | `ask` | 工作区外写入：`allow` / `ai` / `ask` / `deny` |
+| `outside.delete` | `ask` | 工作区外删除：`allow` / `ai` / `ask` / `deny` |
+| `outside.navigate` | `ai` | 非公网导航：`allow` / `ai` / `ask` / `deny` |
+| `judge.*` | — | lite 判定器开关、超时、失败策略、自动落盘、缓存与连错降级 |
+
+规则文件：
+
+- 全局：`data/cili/approval_rules.json`
+- 工作区：`<workspace>/.cili/approval_rules.json`
+
+每条规则带 `decision`：`allow`（白名单）/ `deny`（黑名单）/ `ask`（灰名单）；同一动作命中多条时按 `deny > ask > allow` 取最严。工作区规则优先于全局规则。旧的 `system.approval` 与 `approval_rules.json` 不再读取。
+
+---
+
 ## 配置优先级
 
 配置的生效优先级从高到低：

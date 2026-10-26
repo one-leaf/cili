@@ -6,7 +6,7 @@
 
 from pathlib import Path
 
-from core.tools.approval import META_KEY, ApprovalStore
+from core.tools.permission import META_KEY, PermissionStore
 from core.tools.latex import LatexTool
 from core.tools.pdf2markdown import PDF2MarkdownTool
 
@@ -19,7 +19,7 @@ class TestLatexGate:
 
     def test_outside_output_placeholder(self, test_workspace, tmp_path):
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         outside = tmp_path / "out.pdf"
         result = tool.execute(action="compile", tex_file="doc.tex", output=str(outside))
         assert result.completed is False
@@ -29,7 +29,7 @@ class TestLatexGate:
 
     def test_inside_output_passes_gate(self, test_workspace):
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         result = tool.execute(action="compile", tex_file="doc.tex", output="out.pdf")
         # 门放行后进入编译逻辑（无编译器报错），不应返回审批占位
         assert result.completed is not False
@@ -48,7 +48,7 @@ class TestPDF2MarkdownGate:
 
     def test_outside_output_placeholder(self, test_workspace, tmp_path):
         (Path(test_workspace) / "doc.pdf").write_bytes(b"%PDF-1.4 fake")
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         outside = tmp_path / "out.md"
         result = tool.execute(file_path="doc.pdf", output_path=str(outside))
         assert result.completed is False
@@ -57,7 +57,7 @@ class TestPDF2MarkdownGate:
 
     def test_inside_output_passes_gate(self, test_workspace, monkeypatch):
         (Path(test_workspace) / "doc.pdf").write_bytes(b"%PDF-1.4 fake")
-        tool = self._tool(test_workspace, ApprovalStore())
+        tool = self._tool(test_workspace, PermissionStore())
         monkeypatch.setattr(tool, "_agent_parse", lambda file_path, timeout: "# md")
         monkeypatch.setattr(tool, "_save_markdown", lambda content, output_path: None)
         result = tool.execute(file_path="doc.pdf", output_path="out.md")

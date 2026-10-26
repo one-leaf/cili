@@ -15,10 +15,12 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
-from core.tools.approval import (
+from core.tools.permission import (
     META_KEY,
-    approval_decision_id,
-    approval_placeholder_text,
+    denied_rule_text,
+    no_channel_text,
+    permission_decision_id,
+    permission_placeholder_text,
 )
 from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, Tool, ToolResult
 
@@ -81,9 +83,14 @@ class PythonTool(Tool):
     name = "python"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,
+                 permission_store=None, permission_rules=None, permission_policy=None,
                  approval_store=None, approval_rules=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
-                         approval_rules=approval_rules)
+        super().__init__(
+            cwd, workspace_uuid, session,
+            permission_store=permission_store, permission_rules=permission_rules,
+            permission_policy=permission_policy,
+            approval_store=approval_store, approval_rules=approval_rules,
+        )
         self._config = config
         self.description = self._build_description()
 
@@ -256,19 +263,14 @@ class PythonTool(Tool):
                 content = f.read()
         except Exception as e:
             return ToolResult(f"Error: cannot read script for safety check: {e}", error=True)
-        # 审批管道（设计 §3.1）：AST 证据 + 路径门 → 判定占位（证据齐全）
-        findings = self._analyze_python_code(content)
-        targets = collect_python_targets(content, cwd=self.cwd)
-        gate = self._path_gate(targets, findings=findings)
+        gate = self._read_gate([path])
         if gate:
             return gate
-        if findings:
-            if not self.approval_store:
-                return ToolResult(
-                    f"Error: 代码命中安全证据且无审批通道（fail-closed）：{findings[0]['evidence']}",
-                    error=True,
-                )
-            return self._pending_python_result(content, targets, findings)
+        findings = self._analyze_python_code(content)
+        targets = collect_python_targets(content, cwd=self.cwd)
+        gate = self._python_permission_gate(content, targets, findings)
+        if gate:
+            return gate
 
         # Set MPLCONFIGDIR to use Cili's matplotlib config
         mpl_config_dir = _resolve_mpl_config_dir()
@@ -283,19 +285,11 @@ class PythonTool(Tool):
 
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
         """Execute Python code (no LLM injection — main agent is the LLM itself)."""
-        # 审批管道（设计 §3.1）：AST 证据 + 路径门 → 判定占位（证据齐全）
         findings = self._analyze_python_code(code)
         targets = collect_python_targets(code, cwd=self.cwd)
-        gate = self._path_gate(targets, findings=findings)
+        gate = self._python_permission_gate(code, targets, findings)
         if gate:
             return gate
-        if findings:
-            if not self.approval_store:
-                return ToolResult(
-                    f"Error: 代码命中安全证据且无审批通道（fail-closed）：{findings[0]['evidence']}",
-                    error=True,
-                )
-            return self._pending_python_result(code, targets, findings)
 
         python_exe = _resolve_python_exe()
         # Set MPLCONFIGDIR to use Cili's matplotlib config
@@ -390,14 +384,59 @@ class PythonTool(Tool):
         reason = cls._find_dynamic_exec(code)
         return [{"id": "python-dynamic-exec", "evidence": reason}] if reason else []
 
-    def _pending_python_result(self, code: str, targets: list, findings: list) -> ToolResult:
-        """构造 python 代码的判定占位结果（判定编号按完整代码哈希，卡片截断展示）。"""
+    def _python_permission_gate(self, code: str, targets: list, findings: list) -> ToolResult | None:
+        policy = self._permission_policy()
+        did = permission_decision_id(code)
+        # 纯路径目标走路径门（path:write/delete 卡片）；有静态证据才走命令级判定
+        if not findings and targets:
+            return self._path_gate(targets)
+        if findings:
+            verdict = policy.command_verdict(self.name, code, targets, findings, did)
+            if verdict.action != "allow":
+                approval = self._python_approval(
+                    code, targets, findings,
+                    mode=verdict.action, rule=verdict.rule,
+                    reason=verdict.reason or "代码命中安全证据，需要权限判定",
+                )
+                if not self._permission_has_channel():
+                    if verdict.action == "deny":
+                        return ToolResult(denied_rule_text(approval, verdict.rule), error=True)
+                    return ToolResult(no_channel_text(approval), error=True)
+                return ToolResult(
+                    permission_placeholder_text(approval),
+                    completed=False,
+                    meta={META_KEY: approval},
+                )
+            return None
+        # 无证据/无越界目标：ai 不白等一次 LLM；ask 按权限设置出卡；allow 执行
+        if policy.config.default_mode == "ask":
+            approval = self._python_approval(
+                code, targets, findings, mode="ask", reason="默认策略：人工询问",
+            )
+            if not self._permission_has_channel():
+                return ToolResult(no_channel_text(approval), error=True)
+            return ToolResult(
+                permission_placeholder_text(approval),
+                completed=False,
+                meta={META_KEY: approval},
+            )
+        return None
+
+    def _python_approval(self, code: str, targets: list, findings: list,
+                         mode: str = "ai", rule: dict | None = None,
+                         reason: str = "代码命中动态执行/shell 逃逸证据，需要权限判定") -> dict:
         display = code if len(code) <= 2000 else code[:2000] + f"\n...（共 {len(code)} 字符）"
-        approval = self._pending_approval(
-            display, approval_decision_id(code), targets, findings,
-            reason="代码命中动态执行/shell 逃逸证据，需要安全判定",
+        return self._pending_permission(
+            display, permission_decision_id(code), targets, findings,
+            reason=reason, mode=mode, rule=rule,
         )
-        return ToolResult(approval_placeholder_text(approval), completed=False, meta={META_KEY: approval})
+
+    def _pending_python_result(self, code: str, targets: list, findings: list,
+                               mode: str = "ai", rule: dict | None = None,
+                               reason: str = "代码命中动态执行/shell 逃逸证据，需要权限判定") -> ToolResult:
+        """构造 python 代码的判定占位结果（判定编号按完整代码哈希，卡片截断展示）。"""
+        approval = self._python_approval(code, targets, findings, mode=mode, rule=rule, reason=reason)
+        return ToolResult(permission_placeholder_text(approval), completed=False, meta={META_KEY: approval})
 
     @staticmethod
     def _find_dynamic_exec(code: str) -> str | None:

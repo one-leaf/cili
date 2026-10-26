@@ -11,11 +11,11 @@ import re
 import secrets
 from typing import Any
 
-from core.security.approval_rules import build_granted_rule, implied_path_rules
-from core.tools.approval import (
+from core.security.permission_rules import build_granted_rule, implied_path_rules
+from core.tools.permission import (
     APPROVE_LABEL,
     REMEMBER_LABEL,
-    append_approval_audit,
+    append_permission_audit,
 )
 from core.tools.base import Tool, ToolResult
 
@@ -148,6 +148,7 @@ def build_other_answer(session, ask_user_tool_use_id: str, content: str) -> str:
 
 
 def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
+                           permission_store=None, permission_rules=None,
                            approval_store=None, approval_rules=None) -> bool:
     """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
 
@@ -158,7 +159,8 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
     走同一落盘管道（build_granted_rule，granted_by=user）；拒绝时给模型附加引导文案。
     """
     logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
-    store = approval_store
+    store = permission_store if permission_store is not None else approval_store
+    rules = permission_rules if permission_rules is not None else approval_rules
     pending = store.pending if store else None
     # 拒绝/自由输入时给模型附加引导（§3.6 用户拒绝文案），注入占位符内容尾部
     hint = ""
@@ -243,35 +245,38 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
             "kind": kind, "action": str(command)[:300],
         }
         if stripped.endswith(REMEMBER_LABEL):
-            if approval_rules is not None:
+            if rules is not None:
                 main = build_granted_rule(
                     kind=kind, tool=pending.get("tool", "*"), action=command,
+                    decision="allow",
                     suggested=pending.get("suggested_rule"), granted_by="user",
                     summary=pending.get("summary", ""), decision_id=did,
                 )
                 if main:
-                    approval_rules.add_granted(main)
+                    rules.add_rule(main, "workspace")
                     for extra in implied_path_rules(pending.get("targets") or [], "user", did):
-                        approval_rules.add_granted(extra)
-                    logger.info(f"[approval] 用户批准并记住（落盘规则）：{command[:80]}")
+                        rules.add_rule(extra, "workspace")
+                    logger.info(f"[permission] 用户批准并记住（落盘规则）：{command[:80]}")
                 else:
-                    logger.info(f"[approval] 规则落盘被黑名单/降级约束拒绝，仅会话级放行：{command[:80]}")
+                    logger.info(f"[permission] 规则落盘被黑名单/降级约束拒绝，仅会话级放行：{command[:80]}")
             store.approve(did, command, kind=kind)
-            append_approval_audit(getattr(session, "session_dir", None), "decided",
+            append_permission_audit(getattr(session, "session_dir", None), "decided",
                                   {**audit_base, "decision": "persist"})
         elif stripped.endswith(APPROVE_LABEL):
             store.approve(did, command, kind=kind)
             # 会话级放行越界目标：重执行直接通过路径门，无需再判定（设计 §3.4）
             for t in pending.get("targets") or []:
                 if isinstance(t, dict) and t.get("decision_id") and not t.get("inside_workspace"):
-                    t_kind = "path:delete" if t.get("op") == "delete" else "path:write"
+                    t_kind = "path:read" if t.get("op") == "read" else (
+                        "path:delete" if t.get("op") == "delete" else "path:write"
+                    )
                     store.approve(t["decision_id"], str(t.get("raw") or ""), kind=t_kind)
             logger.info(f"[approval] 用户批准高风险命令(本次会话): {command[:80]}")
-            append_approval_audit(getattr(session, "session_dir", None), "decided",
+            append_permission_audit(getattr(session, "session_dir", None), "decided",
                                   {**audit_base, "decision": "approve"})
         else:
             logger.info(f"[approval] 用户拒绝高风险命令: {command[:80]}")
-            append_approval_audit(getattr(session, "session_dir", None), "decided",
+            append_permission_audit(getattr(session, "session_dir", None), "decided",
                                   {**audit_base, "decision": "reject"})
         store.clear_pending()
 

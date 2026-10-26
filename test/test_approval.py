@@ -1,357 +1,365 @@
 # -*- coding: utf-8 -*-
-"""审批流程测试（设计 workspace/approval-flow-design.md）。
+"""权限模型测试（permission_rules / permission_policy / PermissionStore）。
 
-覆盖：
-1. 决策 ID 确定性；ApprovalStore 会话级语义（不消费 / kind 分类 / 无落盘）
-2. 工具执行管道：规则命中执行 / 只读快道 / 未命中占位（completed=False + 证据）/
-   无 store fail-closed / 防搭车
-3. 卡片文案（含义/风险/理由/三选项）、label 互不为后缀、四分拒绝文本
-4. 子代理降级安全网、提示词下放段落（会话批准 + 工作区规则）
-5. 浏览器导航审批（规则命中放行 / 无通道 fail-closed）
+旧 allow-only 审批模型的测试已由本文件替换：
+- 规则 decision=allow/deny/ask 与 deny > ask > allow 优先级；
+- 段级匹配、路径/URL 匹配、只读白名单、内置 deny；
+- 默认策略、外部读取（含 ai 路径元数据）、无通道 fail-closed；
+- 工具集成与卡片文案。
 """
 
 import json
 
-from core.security.approval_rules import ApprovalRules
-from core.tools.approval import (
+from core.config import PermissionConfig
+from core.security.permission_policy import PermissionPolicy
+from core.security.permission_rules import (
+    PermissionRules,
+    build_granted_rule,
+    implied_path_rules,
+    is_readonly_command,
+    is_safe_create_command,
+)
+from core.tools.bash import BashTool
+from core.tools.base import ToolResult
+from core.tools.browser import BrowserTool
+from core.tools.permission import (
     APPROVE_LABEL,
     META_KEY,
     REJECT_LABEL,
     REMEMBER_LABEL,
-    ApprovalStore,
-    approval_decision_id,
-    build_approval_question,
-    build_approved_commands_section,
+    PermissionStore,
+    build_permission_question,
+    denied_rule_text,
     judge_deny_text,
     judge_unavailable_text,
     no_channel_text,
+    permission_decision_id,
+    permission_placeholder_text,
     user_reject_hint,
 )
-from core.tools.base import ToolResult
-from core.tools.bash import BashTool
-from core.tools.pwsh import PwshTool
+from core.tools.read import ReadTool
 
 
-def _rules(tmp_path, rules=None):
+def _rule(decision="allow", match_type="prefix", value="git status",
+          tool="bash", kind="command", enabled=True):
+    return {
+        "id": f"r-{decision}-{match_type}-{value}",
+        "enabled": enabled,
+        "decision": decision,
+        "source": "user",
+        "tool": tool,
+        "kind": kind,
+        "match": {"type": match_type, "value": value},
+        "note": value,
+    }
+
+
+def _rules(tmp_path, rules):
     path = tmp_path / "approval_rules.json"
-    if rules is not None:
-        path.write_text(json.dumps({"version": 1, "rules": rules, "constraints": []},
-                                   ensure_ascii=False), encoding="utf-8")
-    return ApprovalRules(path, workspace_root=str(tmp_path))
+    path.write_text(json.dumps({"version": 1, "rules": rules, "constraints": []},
+                               ensure_ascii=False), encoding="utf-8")
+    return PermissionRules(path, workspace_root=str(tmp_path))
 
 
-class TestDecisionId:
-    def test_deterministic(self):
-        assert approval_decision_id("rm -rf /tmp/x") == approval_decision_id("rm -rf /tmp/x")
-
-    def test_whitespace_collapsed(self):
-        assert approval_decision_id("rm  -rf  /tmp/x") == approval_decision_id("rm -rf /tmp/x")
-
-    def test_different_command_different_id(self):
-        assert approval_decision_id("rm -rf /tmp/x") != approval_decision_id("rm -rf /tmp/y")
+def _policy(tmp_path, cfg=None, rules=None, store=None):
+    return PermissionPolicy(
+        PermissionConfig.from_dict(cfg or {}), rules, store,
+        workspace_root=str(tmp_path), cwd=str(tmp_path),
+    )
 
 
-class TestApprovalStore:
+class TestPermissionStore:
     def test_session_level_not_consumed(self):
-        store = ApprovalStore()
-        did = approval_decision_id("node server.js")
+        store = PermissionStore()
+        did = permission_decision_id("node server.js")
         store.approve(did, "node server.js")
-        assert store.is_approved(did)  # 第一次命中
-        assert store.is_approved(did)  # 会话级：不消费，仍放行
+        assert store.is_approved(did)
+        assert store.is_approved(did)
 
     def test_other_command_still_blocked(self):
-        store = ApprovalStore()
-        store.approve(approval_decision_id("node a.js"), "node a.js")
-        assert not store.is_approved(approval_decision_id("node b.js"))
+        store = PermissionStore()
+        store.approve(permission_decision_id("node a.js"), "node a.js")
+        assert not store.is_approved(permission_decision_id("node b.js"))
 
     def test_pending_single_slot(self):
-        store = ApprovalStore()
-        store.set_pending({"decision_id": "a", "command": "x", "reason": "r"})
+        store = PermissionStore()
+        store.set_pending({"decision_id": "a", "command": "x"})
         assert store.pending is not None
         store.clear_pending()
         assert store.pending is None
 
     def test_kind_classification(self):
-        store = ApprovalStore()
+        store = PermissionStore()
         store.approve("d1", "cmd", kind="command")
         store.approve("d2", "C:\\out", kind="path:write")
-        store.approve("d3", "http://127.0.0.1", kind="browser:navigate")
+        store.approve("d3", "C:\\in", kind="path:read")
+        store.approve("d4", "http://127.0.0.1", kind="browser:navigate")
         assert store.approved_commands() == ["cmd"]
-        assert store.approved_path_rules() == [{"kind": "path:write", "command": "C:\\out"}]
         assert store.approved_navigations() == ["http://127.0.0.1"]
-
-    def test_no_persistence(self, tmp_path):
-        # 持久化已移交 ApprovalRules；store 纯内存
-        store = ApprovalStore()
-        store.approve(approval_decision_id("x"), "x")
-        assert not (tmp_path / "approvals.json").exists()
-        assert not (tmp_path / "approval_rules.json").exists()
+        assert {r["kind"] for r in store.approved_path_rules()} == {"path:write", "path:read"}
 
 
-class TestCommandFlow:
-    """bash/pwsh 执行管道：规则命中 → 只读快道 → 占位 → fail-closed。"""
+class TestRuleMatching:
+    def test_prefix_token_boundary_and_piggyback(self, tmp_path):
+        r = _rules(tmp_path, [_rule(value="git status")])
+        assert r.evaluate_command("bash", "git status --short")[0] == "allow"
+        assert r.evaluate_command("bash", "git statusx")[0] is None
+        assert r.evaluate_command("bash", "git status && rm -rf /tmp/x")[0] is None
 
-    def test_readonly_runs_without_store(self, tmp_path, monkeypatch):
+    def test_path_like_prefix_matches_subtree(self, tmp_path):
+        r = _rules(tmp_path, [_rule(decision="deny", value="rm -rf /")])
+        assert r.evaluate_command("bash", "rm -rf /tmp/x")[0] == "deny"
+
+    def test_deny_overrides_allow(self, tmp_path):
+        r = _rules(tmp_path, [
+            _rule(decision="allow", value="git status"),
+            _rule(decision="deny", match_type="exact", value="git status"),
+        ])
+        assert r.evaluate_command("bash", "git status")[0] == "deny"
+
+    def test_ask(self, tmp_path):
+        r = _rules(tmp_path, [_rule(decision="ask", value="git push")])
+        decision, rule = r.evaluate_command("bash", "git push origin main")
+        assert decision == "ask" and rule["decision"] == "ask"
+
+    def test_argv_glob(self, tmp_path):
+        r = _rules(tmp_path, [_rule(decision="allow", match_type="argv_glob",
+                                    value=["git", "log", "*"])])
+        assert r.evaluate_command("bash", "git log --oneline")[0] == "allow"
+        assert r.evaluate_command("bash", "git push origin main")[0] is None
+
+    def test_path_matching(self, tmp_path):
+        r = _rules(tmp_path, [_rule(decision="allow", kind="path:write", value="E:\\out", tool="*")])
+        assert r.evaluate_path("path:write", "E:\\out\\x.txt")[0] == "allow"
+        assert r.evaluate_path("path:write", "E:\\out2\\x.txt")[0] is None
+        assert r.evaluate_path("path:delete", "E:\\out\\x.txt")[0] is None
+
+    def test_url_matching(self, tmp_path):
+        r = _rules(tmp_path, [_rule(decision="allow", tool="browser",
+                                    kind="browser:navigate", match_type="exact",
+                                    value="http://127.0.0.1:8000")])
+        assert r.evaluate_url("http://127.0.0.1:8000")[0] == "allow"
+        assert r.evaluate_url("http://127.0.0.1:8000/x")[0] is None
+
+    def test_crud_roundtrip(self, tmp_path):
+        r = _rules(tmp_path, [])
+        saved = r.add_rule(_rule(), "workspace")
+        assert saved is not None
+        assert r.evaluate_command("bash", "git status --short")[0] == "allow"
+        assert r.update_rule(saved["id"], {"enabled": False}, "workspace")
+        assert r.evaluate_command("bash", "git status --short")[0] is None
+        assert r.delete_rule(saved["id"], "workspace")
+
+
+class TestReadonlyWhitelist:
+    def test_readonly_commands(self):
+        assert is_readonly_command("bash", "git status --short")
+        assert is_readonly_command("bash", "git config user.name")
+        assert not is_readonly_command("bash", "git config user.name value")
+        assert not is_readonly_command("bash", "touch x")
+        assert is_safe_create_command("bash", "touch x")
+
+    def test_builtin_deny(self, tmp_path):
+        policy = _policy(tmp_path)
+        assert policy.command_verdict("bash", "rm -rf /").action == "deny"
+        assert policy.command_verdict("bash", "ls -la").action == "allow"
+
+
+class TestPolicy:
+    def test_default_modes(self, tmp_path):
+        # 默认策略为默认允许；ai/ask 仍可显式配置
+        assert _policy(tmp_path).command_verdict("bash", "node server.js").action == "allow"
+        assert _policy(tmp_path, {"default_mode": "ai"}).command_verdict(
+            "bash", "node server.js").action == "ai"
+        assert _policy(tmp_path, {"default_mode": "ask"}).command_verdict(
+            "bash", "node server.js").action == "ask"
+        assert _policy(tmp_path, {"default_mode": "allow"}).command_verdict(
+            "bash", "node server.js").action == "allow"
+
+    def test_blacklist_beats_allow(self, tmp_path):
+        r = _rules(tmp_path, [
+            _rule(decision="allow", value="rm -rf /"),
+            _rule(decision="deny", value="rm -rf /"),
+        ])
+        assert _policy(tmp_path, {"default_mode": "allow"}, r).command_verdict(
+            "bash", "rm -rf /tmp/x").action == "deny"
+
+    def test_outside_read_modes(self, tmp_path):
+        outside = tmp_path.parent / f"outside-{tmp_path.name}" / "x.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("x", encoding="utf-8")
+        cfg = {"outside": {"read": "ai"}}
+        assert _policy(tmp_path, cfg).path_verdict("path:read", str(outside)).action == "ai"
+        assert _policy(tmp_path, {"outside": {"read": "deny"}}).path_verdict(
+            "path:read", str(outside)).action == "deny"
+        assert _policy(tmp_path, {"outside": {"read": "ask"}}).path_verdict(
+            "path:read", str(outside)).action == "ask"
+
+    def test_path_inside_and_outside_write(self, tmp_path):
+        inside = str(tmp_path / "in.txt")
+        outside = str(tmp_path.parent / f"outside-{tmp_path.name}" / "o.txt")
+        policy = _policy(tmp_path)
+        assert policy.path_verdict("path:write", inside).action == "allow"
+        assert policy.path_verdict("path:write", outside).action == "ask"
+
+    def test_store_approved_path(self, tmp_path):
+        outside = str(tmp_path.parent / f"outside-{tmp_path.name}" / "o.txt")
+        store = PermissionStore()
+        policy = _policy(tmp_path, store=store)
+        did = policy.path_decision_id("write", outside)
+        store.approve(did, outside, kind="path:write")
+        assert policy.path_verdict("path:write", outside, decision_id=did).action == "allow"
+
+
+class TestToolIntegration:
+    def test_bash_no_store_fail_closed(self, tmp_path):
         tool = BashTool(cwd=str(tmp_path))
-        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
-        result = tool.execute(command="echo hello", timeout=10)
-        assert result.output == "ran ok"
+        assert tool.execute(command="rm -rf /", timeout=5).error
 
-    def test_findings_without_store_hard_deny(self, tmp_path):
-        tool = BashTool(cwd=str(tmp_path))  # 无 store → fail-closed
-        result = tool.execute(command="rm -rf /")
-        assert result.error
-        assert result.completed is not False
-
-    def test_python_invocation_without_store_hard_deny(self, tmp_path):
-        tool = BashTool(cwd=str(tmp_path))
-        result = tool.execute(command="python x.py")
-        assert result.error
-
-    def test_benign_non_readonly_runs_without_store(self, tmp_path, monkeypatch):
-        # 无 store 的独立/测试场景：无证据的良性命令保持旧行为直接执行
-        tool = BashTool(cwd=str(tmp_path))
-        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
-        result = tool.execute(command="node -e 'console.log(1)'", timeout=10)
-        assert result.output == "ran ok"
-
-    def test_unmatched_returns_placeholder_with_evidence(self, tmp_path):
-        store = ApprovalStore()
-        tool = BashTool(cwd=str(tmp_path), approval_store=store)
-        result = tool.execute(command="node server.js", timeout=10)
+    def test_bash_with_store_placeholder(self, tmp_path):
+        store = PermissionStore()
+        policy = _policy(tmp_path, {"default_mode": "ai"}, store=store)
+        tool = BashTool(cwd=str(tmp_path), permission_store=store, permission_policy=policy)
+        result = tool.execute(command="node server.js", timeout=5)
         assert result.completed is False
-        assert not result.error
         meta = result.meta[META_KEY]
+        assert meta["verdict"] == "ai"
         assert meta["command"] == "node server.js"
-        assert meta["kind"] == "command"
-        assert meta["tool"] == "bash"
-        assert "decision_id" in meta
 
-    def test_findings_pending_with_store(self, tmp_path):
-        store = ApprovalStore()
-        tool = BashTool(cwd=str(tmp_path), approval_store=store)
-        result = tool.execute(command="shutdown -h now", timeout=10)
-        assert result.completed is False
-        findings = result.meta[META_KEY]["findings"]
-        assert any(f["id"] == "system-destructive" for f in findings)
-
-    def test_session_approved_runs(self, tmp_path, monkeypatch):
-        store = ApprovalStore()
-        did = approval_decision_id("node server.js")
-        store.approve(did, "node server.js")
-        tool = BashTool(cwd=str(tmp_path), approval_store=store)
+    def test_bash_allow_rule_runs(self, tmp_path, monkeypatch):
+        rules = _rules(tmp_path, [_rule(value="npm run")])
+        tool = BashTool(cwd=str(tmp_path), permission_rules=rules)
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
-        result = tool.execute(command="node server.js", timeout=10)
+        result = tool.execute(command="npm run build", timeout=5)
         assert result.output == "ran ok"
 
-    def test_rule_hit_runs(self, tmp_path, monkeypatch):
-        rules = _rules(tmp_path, rules=[{
-            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
-            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "node server"},
-            "display": "以 node server 开头",
-        }])
-        tool = BashTool(cwd=str(tmp_path), approval_rules=rules)
-        monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran ok"))
-        result = tool.execute(command="node server --port 1", timeout=10)
-        assert result.output == "ran ok"
+    def test_read_outside_default_allow(self, tmp_path):
+        outside = tmp_path.parent / f"outside-{tmp_path.name}" / "secret.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("hello", encoding="utf-8")
+        result = ReadTool(cwd=str(tmp_path)).execute(file_path=str(outside))
+        assert result.error is False and "hello" in result.output
 
-    def test_rule_hit_does_not_cover_piggyback(self, tmp_path):
-        rules = _rules(tmp_path, rules=[{
-            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
-            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "git status"},
-            "display": "以 git status 开头",
-        }])
-        store = ApprovalStore()
-        tool = BashTool(cwd=str(tmp_path), approval_store=store, approval_rules=rules)
-        result = tool.execute(command="git status && rm -rf /tmp/x", timeout=10)
-        # 第二段未命中 → 不放行，进入判定占位（防搭车）
+    def test_read_outside_ask_placeholder(self, tmp_path):
+        outside = tmp_path.parent / f"outside-{tmp_path.name}" / "secret.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("hello", encoding="utf-8")
+        store = PermissionStore()
+        policy = _policy(tmp_path, {"outside": {"read": "ask"}}, store=store)
+        tool = ReadTool(cwd=str(tmp_path), permission_policy=policy,
+                        permission_store=store)
+        result = tool.execute(file_path=str(outside))
         assert result.completed is False
+        assert result.meta[META_KEY]["kind"] == "path:read"
 
-    def test_path_pending_carries_evidence(self, tmp_path):
-        store = ApprovalStore()
-        tool = BashTool(cwd=str(tmp_path), approval_store=store)
-        result = tool.execute(command="cp a.txt /e/outside/x.txt", timeout=10)
+    def test_browser_no_store_fail_closed(self):
+        from unittest.mock import MagicMock, patch
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool().execute(action="navigate", url="http://127.0.0.1:8000/")
+        assert result.error
+        svc.navigate.assert_not_called()
+
+    def test_browser_with_store_placeholder(self):
+        from unittest.mock import MagicMock, patch
+        svc = MagicMock()
+        svc.is_running.return_value = True
+        store = PermissionStore()
+        with patch("core.browser_service.get_service", return_value=svc):
+            result = BrowserTool(permission_store=store).execute(
+                action="navigate", url="http://127.0.0.1:8000/")
         assert result.completed is False
-        meta = result.meta[META_KEY]
-        # 统一占位：命令级卡片一次覆盖命令与越界目标（避免路径/命令双卡）
-        assert meta["kind"] == "command"
-        assert meta["command"] == "cp a.txt /e/outside/x.txt"
-        assert meta["targets"], "证据应包含全部目标"
-        outside = [t for t in meta["targets"] if not t["inside_workspace"]]
-        assert outside and all(t["decision_id"] for t in outside)
-
-    def test_pwsh_unmatched_returns_placeholder(self, tmp_path):
-        store = ApprovalStore()
-        tool = PwshTool(cwd=str(tmp_path), approval_store=store)
-        result = tool.execute(command="Remove-Item -Recurse -Force C:\\x", timeout=10)
-        assert result.completed is False
-        meta = result.meta[META_KEY]
-        # 证据先于路径门：命令级占位携带完整命令与 system-destructive 证据
-        assert meta["kind"] == "command"
-        assert meta["command"] == "Remove-Item -Recurse -Force C:\\x"
-        assert any(f["id"] == "system-destructive" for f in meta["findings"])
-
-    def test_pwsh_session_approved_runs(self, tmp_path, monkeypatch):
-        store = ApprovalStore()
-        cmd = "Remove-Item -Recurse -Force C:\\x"
-        store.approve(approval_decision_id(cmd), cmd)
-        tool = PwshTool(cwd=str(tmp_path), approval_store=store)
-        monkeypatch.setattr(tool, "_run_pwsh", lambda command, timeout: ToolResult("done"))
-        result = tool.execute(command=cmd, timeout=10)
-        assert result.output == "done"
+        assert result.meta[META_KEY]["kind"] == "browser:navigate"
+        svc.navigate.assert_not_called()
 
 
-class TestCardTexts:
-    def test_labels(self):
+class TestTexts:
+    def test_labels_not_suffixes(self):
         assert APPROVE_LABEL == "允许本次会话"
-        assert REMEMBER_LABEL == "一直允许（此类命令）"
+        assert REMEMBER_LABEL == "一直允许（此类操作）"
         assert REJECT_LABEL == "拒绝"
-        # endswith 匹配安全：互不为后缀
         assert not APPROVE_LABEL.endswith(REMEMBER_LABEL)
         assert not REMEMBER_LABEL.endswith(APPROVE_LABEL)
         assert not REJECT_LABEL.endswith(APPROVE_LABEL)
         assert not REMEMBER_LABEL.endswith(REJECT_LABEL)
 
-    def test_question_contains_summary_risk_reason(self):
-        q = build_approval_question({
-            "decision_id": "abc", "command": "rm -rf ./build && make",
-            "kind": "command", "summary": "删除构建目录并重新编译",
-            "risk": "medium", "reason": "目标在工作区内",
+    def test_question_path_read(self):
+        q = build_permission_question({
+            "decision_id": "d1", "command": "C:\\secret.txt",
+            "kind": "path:read", "reason": "路径在工作区外",
         })
-        assert "rm -rf ./build && make" in q
-        assert "删除构建目录并重新编译" in q
-        assert "风险：中" in q
-        assert "目标在工作区内" in q
-        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
+        assert "工作区外文件读取" in q and "C:\\secret.txt" in q
 
-    def test_question_without_judge_fields(self):
-        q = build_approval_question({"decision_id": "abc", "command": "x", "reason": "r"})
-        assert "判定编号：abc" in q
-        assert "含义：" not in q
-
-    def test_placeholder_text(self):
-        from core.tools.approval import approval_placeholder_text
-        text = approval_placeholder_text({
-            "decision_id": "abc", "command": "x", "reason": "r", "kind": "command",
-        })
-        assert "判定编号：abc" in text
-        assert "worker/lite" in text
+    def test_placeholder_and_denied(self):
+        assert "判定编号" in permission_placeholder_text(
+            {"decision_id": "d1", "command": "x", "kind": "command"})
+        assert "权限黑名单拒绝" in denied_rule_text(
+            {"decision_id": "d1", "command": "x"}, {"note": "测试规则"})
+        assert "权限判定拒绝" in judge_deny_text(
+            {"decision_id": "d1", "command": "x"}, "摘要", "理由", "")
+        assert "无询问通道" in no_channel_text({"decision_id": "d1", "command": "x"})
+        assert "暂不可用" in judge_unavailable_text({"decision_id": "d1", "command": "x"}, "超时")
+        assert "用户拒绝" in user_reject_hint("拒绝", {"summary": "删库"})
 
 
-class TestRejectionTexts:
-    """§3.6 四分拒绝文本。"""
+class TestRuleGeneration:
+    def test_two_token_prefix(self):
+        rule = build_granted_rule(kind="command", tool="bash", action="git commit -m x",
+                                  granted_by="user")
+        assert rule["match"] == {"type": "prefix", "value": "git commit"}
 
-    def test_judge_deny(self):
-        t = judge_deny_text({"decision_id": "d1", "command": "x"}, "摘要", "理由", "改用 A")
-        assert "安全判定拒绝" in t and "理由" in t and "改用 A" in t and "d1" in t
+    def test_banned_prefix_rejected_for_allow(self):
+        assert build_granted_rule(kind="command", tool="bash", action="python x.py",
+                                  suggested={"type": "prefix", "value": "python x.py"},
+                                  granted_by="user") is None
 
-    def test_no_channel(self):
-        t = no_channel_text({"decision_id": "d1", "command": "x"}, "摘要")
-        assert "无询问通道" in t and "父代理" in t and "摘要" in t
+    def test_deny_allows_banned_prefix(self):
+        rule = build_granted_rule(kind="command", tool="bash", action="python x.py",
+                                  decision="deny",
+                                  suggested={"type": "prefix", "value": "python"},
+                                  granted_by="user")
+        assert rule is not None and rule["decision"] == "deny"
 
-    def test_unavailable(self):
-        t = judge_unavailable_text({"decision_id": "d1", "command": "x"}, "超时")
-        assert "暂不可用" in t and "超时" in t
+    def test_destructive_head_degrades_exact(self):
+        rule = build_granted_rule(kind="command", tool="bash", action="rm -rf ./build",
+                                  suggested={"type": "prefix", "value": "rm -rf ./build"},
+                                  granted_by="user")
+        assert rule["match"]["type"] == "exact"
 
-    def test_user_reject_hint(self):
-        t = user_reject_hint("拒绝", {"summary": "删库"})
-        assert "用户拒绝" in t and "删库" in t and "不要原样重发" in t
+    def test_path_and_url(self, tmp_path):
+        path_rule = build_granted_rule(kind="path:write", tool="*",
+                                       action="E:\\out\\x.txt", granted_by="user")
+        assert path_rule["match"]["type"] == "prefix"
+        url_rule = build_granted_rule(kind="browser:navigate", tool="browser",
+                                      action="http://127.0.0.1:8000/x", granted_by="user")
+        assert "127.0.0.1:8000" in url_rule["match"]["value"]
 
-
-class TestAgentDowngrade:
-    def test_downgrade_approval_result(self):
-        from core.session_runner import SessionRunner
-        result = {
-            "type": "tool_result",
-            "is_error": False,
-            "content": "等待批准...",
-            "_meta": {"completed": False, META_KEY: {"decision_id": "x", "command": "c", "reason": "r"}},
-        }
-        SessionRunner._downgrade_approval_result(result)
-        assert result["is_error"] is True
-        assert META_KEY not in result["_meta"]
-        assert "completed" not in result["_meta"]
-
-
-class TestApprovedSection:
-    def test_session_and_rules(self, tmp_path):
-        store = ApprovalStore()
-        store.approve(approval_decision_id("rm -rf /tmp/x"), "rm -rf /tmp/x")
-        rules = _rules(tmp_path, rules=[{
-            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
-            "tool": "bash", "kind": "command", "match": {"type": "prefix", "value": "git status"},
-            "display": "以 git status 开头的命令",
-        }])
-        section = build_approved_commands_section(store, rules)
-        assert "Session-approved actions" in section
-        assert "rm -rf /tmp/x" in section
-        assert "Workspace-approved rules" in section
-        assert "以 git status 开头的命令" in section
-
-    def test_empty_when_none(self, tmp_path):
-        assert build_approved_commands_section(ApprovalStore(), _rules(tmp_path)) == ""
-        assert build_approved_commands_section(None, None) == ""
+    def test_implied_path_rules(self):
+        rules = implied_path_rules(
+            [{"op": "write", "raw": "E:\\out\\x", "resolved": "E:\\out\\x",
+              "inside_workspace": False, "decision_id": "t1"}],
+            "judge", "d1")
+        assert rules and rules[0]["decision"] == "allow"
 
 
-class TestBrowserNavigateKind:
-    """浏览器导航：硬拒绝保留在 browser_service；非公网走规则/判定管道。"""
-
-    URL = "http://127.0.0.1:8885/tcmp-war/"
-
-    def test_question_wording(self):
-        q = build_approval_question({
-            "decision_id": "abc", "command": self.URL,
-            "kind": "browser:navigate", "reason": "127.0.0.1 不是公网地址（环回）",
-        })
-        assert "非公网地址导航" in q
-        assert self.URL in q
-        assert APPROVE_LABEL in q and REMEMBER_LABEL in q and REJECT_LABEL in q
-
-    def test_no_store_fail_closed(self):
-        from unittest.mock import MagicMock, patch
-
-        from core.tools.browser import BrowserTool
-
-        svc = MagicMock()
-        svc.is_running.return_value = True
-        with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool().execute(action="navigate", url=self.URL)
-        assert result.error  # 无审批通道 → fail-closed
-        svc.navigate.assert_not_called()
-
-    def test_unapproved_placeholder(self):
-        from unittest.mock import MagicMock, patch
-
-        from core.tools.browser import BrowserTool
-
-        svc = MagicMock()
-        svc.is_running.return_value = True
-        store = ApprovalStore()
-        with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool(approval_store=store).execute(action="navigate", url=self.URL)
-        assert result.completed is False
-        svc.navigate.assert_not_called()
-
-    def test_rule_hit_navigates(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        from core.tools.browser import BrowserTool
-
-        rules = _rules(tmp_path, rules=[{
-            "id": "r1", "enabled": True, "source": "granted", "granted_by": "user",
-            "tool": "browser", "kind": "browser:navigate",
-            "match": {"type": "exact", "value": self.URL}, "display": "精确匹配",
-        }])
-        svc = MagicMock()
-        svc.is_running.return_value = True
-        with patch("core.browser_service.get_service", return_value=svc):
-            BrowserTool(approval_rules=rules).execute(action="navigate", url=self.URL)
-        svc.navigate.assert_called_once_with(self.URL, tab_index=None, approved_non_public=True)
+class TestLegacyApprovalFile:
+    def test_rule_without_decision_defaults_allow(self, tmp_path):
+        path = tmp_path / "approval_rules.json"
+        path.write_text(json.dumps({
+            "version": 1,
+            "rules": [{
+                "id": "legacy", "enabled": True, "tool": "bash", "kind": "command",
+                "match": {"type": "prefix", "value": "git status"},
+            }],
+            "constraints": [],
+        }, ensure_ascii=False), encoding="utf-8")
+        rules = PermissionRules(path, workspace_root=str(tmp_path))
+        assert rules.evaluate_command("bash", "git status --short")[0] == "allow"
 
 
-class TestAskUserSchema:
-    def test_options_up_to_six(self):
-        from core.tools.ask_user import AskUserTool
-        options = AskUserTool.parameters["properties"]["questions"]["items"]["properties"]["options"]
-        assert options["maxItems"] == 6
-        assert options["minItems"] == 2
+class TestAuditFileName:
+    def test_writes_approval_audit_jsonl(self, tmp_path):
+        from core.tools.permission import append_permission_audit
+        append_permission_audit(tmp_path, "asked", {"decision_id": "d1"})
+        assert (tmp_path / "approval_audit.jsonl").exists()

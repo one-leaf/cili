@@ -35,6 +35,9 @@ class ReadImageTool(Tool):
 
     def execute(self, file_path: str) -> ToolResult:
         file_path = self._resolve_path(file_path, read_only=True)
+        gate = self._read_gate([file_path])
+        if gate is not None:
+            return gate
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in ReadTool.IMAGE_EXTENSIONS:
             return ToolResult(

@@ -66,8 +66,8 @@ def prepare_turn(
     pending_id = find_pending_ask_user(runner.session) if content else None
     if pending_id:
         answer = build_other_answer(runner.session, pending_id, content)
-        if inject_ask_user_answer(runner.session, pending_id, answer, runner.approval_store,
-                                  getattr(runner, "approval_rules", None)):
+        if inject_ask_user_answer(runner.session, pending_id, answer, runner.permission_store,
+                                  getattr(runner, "permission_rules", None)):
             return PreparedTurn(
                 runner=runner,
                 mode="resume",

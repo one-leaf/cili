@@ -46,6 +46,15 @@ class TestPrompts:
         assert "pwsh" in ctx
         assert "python" in ctx
 
+    def test_environment_context_filters_unavailable_tools(self):
+        """lite 等角色没有 pwsh/temp 时，环境段不应描述这些工具。"""
+        from core.prompt_sections import build_environment_context
+        ctx = build_environment_context("u", "/cwd", tools=["bash", "python"])
+        assert "bash" in ctx
+        assert "python" in ctx
+        assert "pwsh" not in ctx
+        assert "`temp` tool" not in ctx
+
     # -- find_project_instructions / build_instructions_message (claude_md 层) --
 
     def test_find_instructions_none(self, tmp_path):

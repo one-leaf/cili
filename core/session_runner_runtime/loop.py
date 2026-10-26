@@ -19,12 +19,14 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from core.config import ApprovalConfig, get_approval_config
-from core.security.approval_judge import ApprovalDecision
-from core.security.approval_rules import build_granted_rule, implied_path_rules
+from core.config import PermissionConfig, get_permission_config
+from core.security.permission_judge import PermissionDecision
+from core.security.permission_rules import build_granted_rule, implied_path_rules
 from core.session_runner_runtime.tool_batch import execute_tool_calls
-from core.tools.approval import (
+from core.tools.permission import (
     META_KEY,
+    append_permission_audit,
+    denied_rule_text,
     judge_deny_text,
     judge_unavailable_text,
     no_channel_text,
@@ -478,11 +480,11 @@ class Loop:
         )
 
         # lite 判定分派（autonomous 无询问通道：allow 落盘并重执行，ask/deny 拒绝）
-        self._resolve_approval_results(runner, results, tool_calls, has_channel=False)
+        self._resolve_permission_results(runner, results, tool_calls, has_channel=False)
 
         for result in results:
             # 安全网：正常流程下 META_KEY 已被分派消费；此处兜底降级
-            runner._downgrade_approval_result(result)
+            runner._downgrade_permission_result(result)
             runner.add_message("user", [result])
 
             if result.get("is_error"):
@@ -499,63 +501,85 @@ class Loop:
 
     # ── lite 判定分派（设计 §3.1 ②③） ─────────────────────────────
 
-    def _resolve_approval_results(self, runner, results: list[dict], tool_calls: list,
-                                  has_channel: bool) -> dict | None:
-        """处理工具结果中的 pending 占位（META_KEY），返回待合成确认卡的 approval。
+    def _resolve_permission_results(self, runner, results: list[dict], tool_calls: list,
+                                    has_channel: bool) -> dict | None:
+        """处理工具结果中的权限占位（META_KEY），返回待合成确认卡的 permission。
 
-        - allow：落盘规则（granted_by=judge；受 judge_persist_allow / risk=high /
-          BANNED_PREFIXES 约束）+ 会话级批准 → 原地重执行替换占位结果；
-        - ask：有通道 → 返回 approval 供调用方合成确认卡；无通道 → 拒绝文本；
-        - deny：拒绝文本（含替代建议）。
-        同批多条 pending 只处理第一条（pending 单槽语义不变），其余直接拒绝。
-
-        青少年模式（§3.3 ③循环层策略）：strict 且未解锁 → 不调用判定器、
-        不产生审批卡，占位结果直接替换为「需家长授权」拒绝文本并记审计；
-        解锁窗口内走原流程，但判定放行不落盘规则、risk=high 直接拒绝。
+        占位携带 ``verdict``：
+        - deny：黑名单/内置保护 → 直接拒绝 + 审计；
+        - ask：跳过判定，有通道 → 确认卡；无通道 → 拒绝；
+        - ai：调用 lite 判定器，按 allow/ask/deny 分派；allow 可落盘规则并重执行。
+        同批多条 pending 只处理第一条（单槽语义不变）。
         """
-        judge = getattr(runner, "approval_judge", None)
-        rules = getattr(runner, "approval_rules", None)
-        store = getattr(runner, "approval_store", None)
-        cfg = get_approval_config(runner.config) if getattr(runner, "config", None) is not None else ApprovalConfig()
+        judge = getattr(runner, "permission_judge", None) or getattr(runner, "approval_judge", None)
+        rules = getattr(runner, "permission_rules", None) or getattr(runner, "approval_rules", None)
+        store = getattr(runner, "permission_store", None) or getattr(runner, "approval_store", None)
+        cfg = get_permission_config(runner.config) if getattr(runner, "config", None) is not None else PermissionConfig()
         from core.teen_mode import get_teen_mode
 
         teen = get_teen_mode()
         teen_active = teen.is_enabled() and teen.approval_strict()
         teen_unlocked = teen.is_enabled() and teen.is_unlocked()
-        ask_approval: dict | None = None
+        ask_permission: dict | None = None
         first = True
         for idx, result in enumerate(results):
             meta = result.get("_meta") or {}
             if META_KEY not in meta:
                 continue
-            approval = meta.pop(META_KEY)
+            permission = meta.pop(META_KEY)
             meta.pop("completed", None)
             if not first:
                 result["is_error"] = True
-                result["content"] = "该命令需要安全判定，本批仅处理一条，请稍后重试其余命令。"
+                result["content"] = "该操作需要权限判定，本批仅处理一条，请稍后重试其余操作。"
                 continue
             first = False
 
             if teen_active and not teen_unlocked:
-                # 未解锁：不合成审批卡（孩子点「允许」就放行等于没有约束），
-                # 也不调用判定器（省一次 LLM 往返），直接拒绝
-                teen.audit("deny", action="approval",
-                           target=str(approval.get("command") or approval.get("path") or "")[:200],
+                teen.audit("deny", action="permission",
+                           target=str(permission.get("command") or permission.get("path") or "")[:200],
                            source="loop")
-                teen.record_denied("approval")
+                teen.record_denied("permission")
                 result["is_error"] = True
                 result["content"] = (
                     "青少年模式已开启：该操作需要家长授权。\n"
-                    f"操作：`{approval.get('command') or approval.get('path') or approval.get('kind', '')}`\n"
+                    f"操作：`{permission.get('command') or permission.get('path') or permission.get('kind', '')}`\n"
                     "请等待家长开启解锁窗口后重试。"
                 )
                 continue
 
+            verdict = str(permission.get("verdict") or permission.get("mode") or "ai")
+            if verdict == "deny":
+                result["is_error"] = True
+                result["content"] = denied_rule_text(permission, permission.get("rule"))
+                append_permission_audit(getattr(runner, "session_dir", None), "denied_rule", {
+                    "decision_id": permission.get("decision_id", ""),
+                    "tool": permission.get("tool", ""),
+                    "kind": permission.get("kind", "command"),
+                    "action": str(permission.get("command", ""))[:300],
+                    "rule": (permission.get("rule") or {}).get("id", ""),
+                })
+                continue
+
+            if verdict == "ask":
+                if not has_channel:
+                    result["is_error"] = True
+                    result["content"] = no_channel_text(permission, permission.get("summary", ""))
+                    continue
+                permission["summary"] = permission.get("summary") or ""
+                permission["risk"] = permission.get("risk") or "medium"
+                permission["reason"] = permission.get("reason") or "权限设置：人工询问"
+                permission["rule_display"] = (permission.get("rule") or {}).get("display", "")
+                ask_permission = permission
+                result["is_error"] = True
+                result["content"] = "该操作需要用户确认，正在询问用户..."
+                continue
+
+            # verdict == "ai"（或旧占位未带 verdict）
             if judge is None:
-                decision = ApprovalDecision(decision="deny", summary="", reason="判定器缺失",
-                                            source="failure", error="no judge")
+                decision = PermissionDecision(decision="deny", summary="", reason="判定器缺失",
+                                              source="failure", error="no judge")
             else:
-                decision = judge.decide(approval)
+                decision = judge.decide(permission)
             if decision.usage:
                 try:
                     runner._update_usage(
@@ -567,36 +591,34 @@ class Loop:
                         model=decision.usage.get("model", ""),
                     )
                 except Exception:  # noqa: BLE001 —— 用量记账失败不影响判定本身
-                    logger.debug("[approval] 判定用量记账失败", exc_info=True)
+                    logger.debug("[permission] 判定用量记账失败", exc_info=True)
 
             if decision.decision == "allow":
                 if teen_unlocked and decision.risk == "high":
-                    # 解锁窗口内：高风险动作即使判定 allow 也拒绝（§2.3）
                     result["is_error"] = True
                     result["content"] = judge_deny_text(
-                        approval, decision.summary,
+                        permission, decision.summary,
                         f"青少年模式：高风险动作需家长逐次授权（risk={decision.risk}）",
                         decision.alternative)
                     continue
-                # AI 判定放行 → 落盘规则（§3.5）；不满足落盘条件时仅会话级放行。
-                # 解锁窗口内强制不落盘（strict：一次放行不得终身放行）
-                persistable = (rules is not None and cfg.judge_persist_allow
+                persistable = (rules is not None and cfg.judge.persist_allow
                                and decision.risk != "high" and decision.source == "judge"
                                and not teen_unlocked)
                 if persistable:
                     rule = build_granted_rule(
-                        kind=approval.get("kind", "command"), tool=approval.get("tool", "*"),
-                        action=str(approval.get("command") or ""), suggested=decision.suggested_rule,
-                        granted_by="judge", summary=decision.summary,
-                        decision_id=approval.get("decision_id", ""))
+                        kind=permission.get("kind", "command"), tool=permission.get("tool", "*"),
+                        action=str(permission.get("command") or ""), decision="allow",
+                        suggested=decision.suggested_rule, granted_by="judge",
+                        summary=decision.summary, decision_id=permission.get("decision_id", ""))
                     if rule:
                         rules.add_granted(rule)
-                        for extra in implied_path_rules(approval.get("targets") or [], "judge",
-                                                        approval.get("decision_id", "")):
+                        for extra in implied_path_rules(permission.get("targets") or [], "judge",
+                                                        permission.get("decision_id", "")):
                             rules.add_granted(extra)
                 if store:
-                    store.approve(approval.get("decision_id", ""), str(approval.get("command") or ""),
-                                  kind=approval.get("kind", "command"))
+                    store.approve(permission.get("decision_id", ""),
+                                  str(permission.get("command") or ""),
+                                  kind=permission.get("kind", "command"))
                 # 原地重执行（规则/会话批准此时放行），结果替换占位
                 tc = next((t for t in tool_calls if t.id == result.get("tool_use_id")), None)
                 if tc is not None:
@@ -609,23 +631,23 @@ class Loop:
                         new_result["content"] = "判定放行后重执行仍被拦截，已终止自动重试。"
                     results[idx] = new_result
             elif decision.decision == "ask" and has_channel:
-                approval["summary"] = decision.summary
-                approval["risk"] = decision.risk
-                approval["reason"] = decision.reason
-                approval["rule_display"] = (decision.suggested_rule or {}).get("display", "")
-                ask_approval = approval
+                permission["summary"] = decision.summary
+                permission["risk"] = decision.risk
+                permission["reason"] = decision.reason
+                permission["rule_display"] = (decision.suggested_rule or {}).get("display", "")
+                ask_permission = permission
                 result["is_error"] = True
-                result["content"] = "该命令需要用户确认，正在询问用户..."
+                result["content"] = "该操作需要用户确认，正在询问用户..."
             else:
                 result["is_error"] = True
                 if decision.source == "failure":
-                    result["content"] = judge_unavailable_text(approval, decision.error)
+                    result["content"] = judge_unavailable_text(permission, decision.error)
                 elif decision.decision == "ask":
-                    result["content"] = no_channel_text(approval, decision.summary)
+                    result["content"] = no_channel_text(permission, decision.summary)
                 else:
-                    result["content"] = judge_deny_text(approval, decision.summary,
+                    result["content"] = judge_deny_text(permission, decision.summary,
                                                         decision.reason, decision.alternative)
-        return ask_approval
+        return ask_permission
 
     def _interactive_tool_batch(self, tool_calls: list, state: dict[str, Any]) -> bool:
         """interactive 工具批：判定分派 + 占位标注 + 批后合成 ask_user 卡。
@@ -644,7 +666,7 @@ class Loop:
         results = execute_tool_calls(runner, tool_calls, parallel=parallel)
 
         # lite 判定分派（设计 §3.1 ②③）：META_KEY 占位在此被替换/降级
-        ask_approval = self._resolve_approval_results(
+        ask_permission = self._resolve_permission_results(
             runner, results, tool_calls,
             has_channel=bool(getattr(runner.role_cfg, "approval", False)),
         )
@@ -660,9 +682,9 @@ class Loop:
 
         # 合成确认卡（放在所有工具结果之后，保持消息配对正确；本批已有模型自发的
         # 占位时顺延不合成——判定结论已缓存，模型下轮重发该命令零判定开销）
-        if ask_approval and not state["external_already"] and not runner._stopped:
-            state["approval"] = ask_approval
-            runner._handle_approval_required(ask_approval)
+        if ask_permission and not state["external_already"] and not runner._stopped:
+            state["approval"] = ask_permission
+            runner._handle_permission_required(ask_permission)
             state["wait_for_external"] = True
         # 迭代边界批量落盘一次：本批工具结果已入内存，一次性追加 jsonl + fsync（非逐条）。
         # 已由 _handle_approval_required 的 save() 落盘时此处为幂等 no-op。

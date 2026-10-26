@@ -94,9 +94,14 @@ class LatexTool(Tool):
     }
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
+                 permission_store=None, permission_rules=None, permission_policy=None,
                  approval_store=None, approval_rules=None):
-        super().__init__(cwd, workspace_uuid, session, approval_store=approval_store,
-                         approval_rules=approval_rules)
+        super().__init__(
+            cwd, workspace_uuid, session,
+            permission_store=permission_store, permission_rules=permission_rules,
+            permission_policy=permission_policy,
+            approval_store=approval_store, approval_rules=approval_rules,
+        )
         self._compiler_cache: str | None = None
 
     def execute(
@@ -192,6 +197,10 @@ class LatexTool(Tool):
 
         if not tex_path.endswith(".tex"):
             return ToolResult(f"Error: File must have .tex extension: {tex_path}", error=True)
+
+        gate = self._read_gate([tex_path])
+        if gate:
+            return gate
 
         # Determine output path
         if output:

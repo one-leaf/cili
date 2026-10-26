@@ -117,7 +117,9 @@ def _gen_context(block: dict, runner) -> str:
     key = "env_context"
     if key not in cache:
         from core.prompt_sections import build_environment_context
-        cache[key] = build_environment_context(runner.workspace_uuid, runner.cwd)
+        active = getattr(runner, "_active_tools", None) or getattr(runner, "tools", [])
+        tool_names = [t.name for t in active]
+        cache[key] = build_environment_context(runner.workspace_uuid, runner.cwd, tools=tool_names)
     return cache[key]
 
 

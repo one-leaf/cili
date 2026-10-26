@@ -389,13 +389,16 @@ class Loop:
 - 每轮 `_call_llm()`（`Runner.run_round` 内部先压缩）→ 添加 assistant 消息 → 有工具调用则批执行并落盘，无工具调用则回合结束
 - `ask_user`/`session` 占位（`_meta.completed=False`）或合成审批卡时，批处理完退出等待外部输入
 
-### 4.4 审批（approval）
+### 4.4 权限（permission）
 
-master 启用会话级高风险命令审批（`ApprovalStore`，内存存储，根/子代理共享）：
+master 与 autonomous 子代理共享 `PermissionRules` / `PermissionStore` / `PermissionPolicy`：
 
-- 工具执行返回 `_meta[META_KEY]` 表示「需用户批准」时，该结果被降级为错误提示
-- 批处理完所有工具结果后，`_handle_approval_required(approval)` 合成一条 `ask_user` 卡片询问用户是否批准，随后暂停循环等待回答（保证消息配对正确：`[assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]`）
-- 批准后本会话内执行相同命令（含委派给子代理）不再询问；同批多个需批准命令只询问第一条，其余保持拒绝
+- 工具执行返回 `_meta[META_KEY]` 占位时，占位携带 `verdict`（`allow/ai/ask/deny`）；
+- `Loop._resolve_permission_results` 分派：`deny` → 黑名单拒绝 + 审计；`ask` → 有通道合成确认卡、无通道拒绝；`ai` → lite 判定；
+- `ai` 判定 `allow` 可按 `judge.persist_allow` 落盘 `decision=allow` 规则并原地重执行；`ask/deny` 不落盘；
+- `_handle_permission_required(approval)` 合成 `ask_user` 卡片，随后暂停循环等待回答（消息配对顺序不变：`[assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]`）；
+- worker/lite 无询问通道：`_downgrade_permission_result()` 把占位降级为普通错误，不挂起；
+- 根/子代理共享同一 `PermissionStore` / `PermissionRules`，主代理批准或规则对子代理生效。
 
 ---
 

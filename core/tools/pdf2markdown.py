@@ -101,10 +101,15 @@ class PDF2MarkdownTool(Tool):
     MAX_TOOL_RESULT_SIZE_CHARS = 50_000
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
-                 session=None, config: Config | None = None, approval_store=None,
-                 approval_rules=None):
-        super().__init__(cwd=cwd, workspace_uuid=workspace_uuid, session=session,
-                         approval_store=approval_store, approval_rules=approval_rules)
+                 session=None, config: Config | None = None,
+                 permission_store=None, permission_rules=None, permission_policy=None,
+                 approval_store=None, approval_rules=None):
+        super().__init__(
+            cwd=cwd, workspace_uuid=workspace_uuid, session=session,
+            permission_store=permission_store, permission_rules=permission_rules,
+            permission_policy=permission_policy,
+            approval_store=approval_store, approval_rules=approval_rules,
+        )
         self._config = config
 
     def _get_mineru_api_key(self) -> str:
@@ -131,6 +136,9 @@ class PDF2MarkdownTool(Tool):
         abs_path = self._resolve_path(file_path, read_only=True)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
+        gate = self._read_gate([abs_path])
+        if gate:
+            return gate
 
         file_ext = Path(abs_path).suffix.lower()
         file_size_mb = os.path.getsize(abs_path) / (1024 * 1024)
