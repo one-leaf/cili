@@ -101,7 +101,7 @@ class TestCatalog:
             volume="", title="书", source_path="小学/数学/甲版/书.pdf",
             target_path="教材/原始资料/小学/数学/甲版/一年级/上册/书.pdf",
             split=False, chunk_count=1, total_size=100,
-            files=({"index": 1, "path": "x.pdf", "url": "https://raw.githubusercontent.com/one-leaf/ChinaTextbook/" + "0" * 40 + "/x.pdf", "size": 100},),
+            files=({"index": 1, "path": "x.pdf", "url": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/x.pdf", "size": 100},),
         )
         specs = [("甲版", "一年级"), ("乙版", "3至4年级"), ("丙版", "")]
         books = [
@@ -113,7 +113,7 @@ class TestCatalog:
             for i, (edition, grade) in enumerate(specs)
         ]
         catalog = TextbookCatalog({
-            "source": {"commit": "0" * 40, "raw_base": "https://raw.githubusercontent.com/one-leaf/ChinaTextbook/" + "0" * 40 + "/"},
+            "source": {"commit": "0" * 40, "raw_base": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/"},
             "download_policy": {}, "merge": {},
             "books": [book.__dict__ for book in books],
         })
@@ -177,7 +177,7 @@ def _book(tmp_path: Path, chunk_count: int = 2) -> CatalogBook:
         {
             "index": index,
             "path": f"test/book.pdf.{index}",
-            "url": f"https://raw.githubusercontent.com/one-leaf/ChinaTextbook/{'0' * 40}/test/book.pdf.{index}",
+            "url": f"https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/{'0' * 40}/test/book.pdf.{index}",
             "size": len(body),
         }
         for index, body in enumerate(bodies, 1)
@@ -197,7 +197,7 @@ def _fake_catalog(book: CatalogBook) -> TextbookCatalog:
     data = {
         "source": {
             "commit": "0" * 40,
-            "raw_base": "https://raw.githubusercontent.com/one-leaf/ChinaTextbook/" + "0" * 40 + "/",
+            "raw_base": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/",
         },
         "download_policy": {"default_book_types": ["textbook"]},
         "merge": {},

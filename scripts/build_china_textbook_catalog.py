@@ -17,7 +17,7 @@ OUT_MD = ROOT / "workspace/default/ChinaTextbook-清单.md"
 
 if not TREE.exists():
     TREE.parent.mkdir(parents=True, exist_ok=True)
-    url = "https://api.github.com/repos/one-leaf/ChinaTextbook/git/trees/master?recursive=1"
+    url = "https://api.github.com/repos/TapXWorld/ChinaTextbook/git/trees/master?recursive=1"
     request = urllib.request.Request(url, headers={"User-Agent": "cili-china-textbook-catalog"})
     with urllib.request.urlopen(request, timeout=120) as response:
         TREE.write_bytes(response.read())
@@ -178,7 +178,7 @@ for source_base, chunks in books.items():
             "index": index if index else 1,
             "path": item["path"],
             "url": (
-                "https://raw.githubusercontent.com/one-leaf/ChinaTextbook/"
+                "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/"
                 + sha + "/" + quote(item["path"], safe="/")
             ),
             "size": item.get("size", 0),
@@ -245,7 +245,7 @@ other = [
         "path": item["path"],
         "size": item.get("size", 0),
         "url": (
-            "https://raw.githubusercontent.com/one-leaf/ChinaTextbook/"
+            "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/"
             + sha + "/" + quote(item["path"], safe="/")
         ),
     }
@@ -275,11 +275,11 @@ stats = {
 catalog = {
     "schema_version": 1,
     "source": {
-        "repo": "one-leaf/ChinaTextbook",
+        "repo": "TapXWorld/ChinaTextbook",
         "upstream": "TapXWorld/ChinaTextbook",
         "branch": "master",
         "commit": sha,
-        "raw_base": f"https://raw.githubusercontent.com/one-leaf/ChinaTextbook/{sha}/",
+        "raw_base": f"https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/{sha}/",
         "generated_at": "2026-10-22",
         "license_note": "仓库未声明单独许可证；教材版权归原出版方，下载和使用前请自行确认授权范围。",
     },
@@ -294,7 +294,7 @@ catalog = {
         "strategy": "binary_concat",
         "chunk_suffix": ".pdf.N",
         "order": "numeric_suffix",
-        "readme": "https://github.com/one-leaf/ChinaTextbook#问题如何合并被拆分的文件",
+        "readme": "https://github.com/TapXWorld/ChinaTextbook#问题如何合并被拆分的文件",
         "note": "README 推荐 mergePDFs 程序，或 Windows 的 copy /b、macOS/Linux 的 cat。本目录按同样顺序做字节拼接。",
     },
     "stats": stats,
@@ -308,7 +308,7 @@ OUT_JSON.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", en
 lines = [
     "# ChinaTextbook 教材清单",
     "",
-    "- 来源：`one-leaf/ChinaTextbook`，上游 `TapXWorld/ChinaTextbook`",
+    "- 来源：`TapXWorld/ChinaTextbook`",
     f"- 分支：`master`，提交：`{sha}`",
     "- 生成日期：2026-10-22",
     f"- 图书条目：{stats['books']}，其中拆分书 {stats['split_books']} 本，未拆分 {stats['plain_books']} 本",
