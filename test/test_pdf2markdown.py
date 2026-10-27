@@ -525,3 +525,46 @@ class TestPdfSplitting:
         big.write_bytes(b"0" * (11 * 1024 * 1024))
         with pytest.raises(_AgentLimitError):
             tool.convert_file(str(big), timeout=60)
+
+
+class TestPolling:
+    """轮询策略：pending/running 时持续等待，不按固定总超时放弃"""
+
+    @patch("requests.get")
+    @patch("requests.put")
+    @patch("requests.post")
+    def test_pending_then_done_without_deadline(self, mock_post, mock_put, mock_get,
+                                                tmp_path, monkeypatch):
+        from core.tools import pdf2markdown as mod
+
+        # 轮询里的 3s 间隔在测试中跳过
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k"))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+
+        zip_bytes = _zip_bytes("full.md", "# ok")
+        states = iter(["pending", "running", "done"])
+
+        def post_side(url, **kw):
+            return _resp({"code": 0, "data": {"batch_id": "b1",
+                                              "file_urls": ["http://oss/u"]}})
+
+        def get_side(url, **kw):
+            if "/extract-results/batch/" in url:
+                st = next(states)
+                item = {"state": st}
+                if st == "done":
+                    item["full_zip_url"] = "http://zip/f"
+                return _resp({"code": 0, "data": {"extract_result": [item]}})
+            if url == "http://zip/f":
+                return _resp(content=zip_bytes)
+            raise AssertionError(f"unexpected GET: {url}")
+
+        mock_post.side_effect = post_side
+        mock_get.side_effect = get_side
+        mock_put.return_value = _resp()
+
+        # 旧实现按 timeout=1 会中断；新实现必须一直等到 done
+        md = tool.convert_file(str(tmp), timeout=1)
+        assert md == "# ok"

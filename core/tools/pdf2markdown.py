@@ -15,6 +15,10 @@ compliant parts for both the Precision API (≤200MB/≤200 pages) and the free
 Agent API (≤10MB/≤20 pages); the parts are parsed one by one and merged back
 into a single markdown document in page order.
 
+Polling semantics: while the server reports ``pending``/``running`` the task is
+still executing, so polling waits without a total deadline; it only gives up
+after repeated consecutive network errors.
+
 ``convert_file()`` is the reusable entry point: it returns markdown text and
 lets exceptions propagate (used by external scripts such as the textbook batch
 conversion, so there is only one implementation).
@@ -46,6 +50,10 @@ from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, Tool
 
 logger = logging.getLogger(__name__)
 
+# pypdf 读取不规范 PDF 时会刷大量 "Ignoring wrong pointing object" 警告，
+# 这些告警不影响解析结果，降到 ERROR 级别以保持日志可读
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
 # Agent API limits (官方文档)
 _AGENT_MAX_SIZE_MB = 10
 _AGENT_MAX_PAGES = 20
@@ -65,6 +73,12 @@ _PRECISION_SUPPORTED_EXT = {
 # - MinerU-HTML: 专用于 HTML 文件
 _MODEL_VERSION_DEFAULT = "vlm"
 _MODEL_VERSION_HTML = "MinerU-HTML"
+
+# 轮询策略：服务端返回 pending/running 说明任务仍在排队/执行，不设总超时；
+# 仅在连续网络错误达到阈值时放弃
+_POLL_INTERVAL_S = 3
+_POLL_MAX_CONSECUTIVE_ERRORS = 12
+_POLL_HEARTBEAT_EVERY = 20     # 每 20 次轮询（约 1 分钟）打一条心跳日志
 
 # Token 有效期提示 (官方文档: 90 天)
 _TOKEN_VALIDITY_HINT = "API Key 有效期 90 天，请在 https://mineru.net/apiManage 续期"
@@ -169,7 +183,7 @@ class PDF2MarkdownTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max wait time in seconds for parsing (default: 300, max: 600).",
+                "description": "Legacy parameter kept for compatibility. Polling keeps waiting while the task is pending/running and no longer aborts on a fixed deadline.",
             },
             "output_path": {
                 "type": "string",
@@ -462,18 +476,33 @@ class PDF2MarkdownTool(Tool):
         return self._download_markdown(markdown_url)
 
     def _agent_poll(self, task_id: str, timeout: int) -> dict:
-        """Poll Agent API for parsing result.
+        """轮询 Agent 结果，直到 done/failed。
 
-        状态值: waiting-file, uploading, pending, running, done, failed
+        pending/running 等非终态表示任务仍在执行，不设总超时持续等待；
+        只有连续网络错误达到阈值才放弃。timeout 参数仅为兼容保留。
         """
         url = f"https://mineru.net/api/v1/agent/parse/{task_id}"
         start_time = time.time()
-        poll_interval = 3
+        consecutive_errors = 0
+        polls = 0
 
-        while time.time() - start_time < timeout:
-            resp = requests.get(url, timeout=30)
-            resp.raise_for_status()
-            result = resp.json()
+        while True:
+            polls += 1
+            try:
+                resp = requests.get(url, timeout=30)
+                resp.raise_for_status()
+                result = resp.json()
+                consecutive_errors = 0
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                consecutive_errors += 1
+                if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
+                    raise TimeoutError(
+                        f"Agent API 连续 {consecutive_errors} 次网络错误: {e}")
+                logger.warning(
+                    f"[pdf2markdown] Agent 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
+                    f"({consecutive_errors}/{_POLL_MAX_CONSECUTIVE_ERRORS}): {e}")
+                time.sleep(_POLL_INTERVAL_S)
+                continue
 
             if result.get("code") != 0:
                 raise Exception(f"Agent poll error (code={result.get('code')}): {result.get('msg')}")
@@ -491,9 +520,10 @@ class PDF2MarkdownTool(Tool):
                 raise Exception(f"Agent parse failed: {err_msg}")
             # 其他状态: waiting-file, uploading, pending, running - 继续轮询
 
-            time.sleep(poll_interval)
-
-        raise TimeoutError(f"Agent API timeout ({timeout}s)")
+            if polls % _POLL_HEARTBEAT_EVERY == 0:
+                logger.info(f"[pdf2markdown] Agent 轮询中 state={state}，"
+                            f"已等待 {time.time() - start_time:.0f}s")
+            time.sleep(_POLL_INTERVAL_S)
 
     # ── Precision Parse API v4 ─────────────────────────────────────────────────
 
@@ -626,19 +656,34 @@ class PDF2MarkdownTool(Tool):
                     raise Exception(f"Upload failed after {max_retries} attempts: {e}")
 
     def _precision_poll(self, batch_id: str, api_key: str, timeout: int) -> dict:
-        """Poll Precision API for parsing result.
+        """轮询 Precision 结果，直到 done/failed。
 
-        状态值: pending, running, done, failed
+        pending/running 表示任务仍在排队/执行，这里不设总超时，持续等待；
+        只有连续网络错误达到阈值才放弃。timeout 参数仅为兼容保留。
         """
         url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
         headers = {"Authorization": f"Bearer {api_key}"}
         start_time = time.time()
-        poll_interval = 3
+        consecutive_errors = 0
+        polls = 0
 
-        while time.time() - start_time < timeout:
-            resp = _request_with_retry("GET", url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            result = resp.json()
+        while True:
+            polls += 1
+            try:
+                resp = requests.get(url, headers=headers, timeout=30)
+                resp.raise_for_status()
+                result = resp.json()
+                consecutive_errors = 0
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                consecutive_errors += 1
+                if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
+                    raise TimeoutError(
+                        f"Precision API 连续 {consecutive_errors} 次网络错误: {e}")
+                logger.warning(
+                    f"[pdf2markdown] 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
+                    f"({consecutive_errors}/{_POLL_MAX_CONSECUTIVE_ERRORS}): {e}")
+                time.sleep(_POLL_INTERVAL_S)
+                continue
 
             if result.get("code") != 0:
                 code = result.get("code")
@@ -646,8 +691,8 @@ class PDF2MarkdownTool(Tool):
                 self._handle_precision_error(code, msg)
 
             extract_results = result["data"]["extract_result"]
-
-            all_done = True
+            all_done = bool(extract_results)
+            state = None
             for item in extract_results:
                 state = item.get("state")
                 if state == "failed":
@@ -662,9 +707,10 @@ class PDF2MarkdownTool(Tool):
             if all_done:
                 return result["data"]
 
-            time.sleep(poll_interval)
-
-        raise TimeoutError(f"Precision API timeout ({timeout}s)")
+            if polls % _POLL_HEARTBEAT_EVERY == 0:
+                logger.info(f"[pdf2markdown] 轮询中 state={state}，"
+                            f"已等待 {time.time() - start_time:.0f}s")
+            time.sleep(_POLL_INTERVAL_S)
 
     def _extract_markdown_from_zip(self, zip_url: str) -> str:
         """Download ZIP and extract full.md content.
