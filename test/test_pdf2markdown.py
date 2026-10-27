@@ -15,6 +15,15 @@ from core.tools.pdf2markdown import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_submit_throttle(monkeypatch):
+    """测试中关闭提交限流等待"""
+    from core.tools import pdf2markdown as mod
+
+    monkeypatch.setattr(mod._submit_limiter, "_interval", 0.0)
+    monkeypatch.setattr(mod._submit_limiter, "_next_at", 0.0)
+
+
 def _config_with_key(key: str):
     """构造带 mineru_api_key 的配置"""
     from core.config import Config, SystemConfig

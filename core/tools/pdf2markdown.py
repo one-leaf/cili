@@ -32,6 +32,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -76,9 +77,13 @@ _MODEL_VERSION_HTML = "MinerU-HTML"
 
 # 轮询策略：服务端返回 pending/running 说明任务仍在排队/执行，不设总超时；
 # 仅在连续网络错误达到阈值时放弃
-_POLL_INTERVAL_S = 3
+# 官方结果查询频控 1000 次/分钟，5 秒间隔远低于上限
+_POLL_INTERVAL_S = 5
 _POLL_MAX_CONSECUTIVE_ERRORS = 12
-_POLL_HEARTBEAT_EVERY = 20     # 每 20 次轮询（约 1 分钟）打一条心跳日志
+_POLL_HEARTBEAT_EVERY = 12     # 每 12 次轮询（约 1 分钟）打一条心跳日志
+
+# 提交限流：官方所有创建解析任务接口共用 50 文件/分钟频控，按 40 留余量
+_SUBMIT_RATE_PER_MIN = 40
 
 # Token 有效期提示 (官方文档: 90 天)
 _TOKEN_VALIDITY_HINT = "API Key 有效期 90 天，请在 https://mineru.net/apiManage 续期"
@@ -155,6 +160,31 @@ def _request_with_retry(method: str, url: str, *, attempts: int = 3,
                     f"({i + 1}/{attempts}): {e}")
                 time.sleep(backoff)
     raise last
+
+
+class _RateLimiter:
+    """线程安全的等间隔限流器：每分钟最多 rate_per_min 次"""
+
+    def __init__(self, rate_per_min: int) -> None:
+        self._lock = threading.Lock()
+        self._interval = 60.0 / max(rate_per_min, 1)
+        self._next_at = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._next_at - now
+            if wait > 0:
+                logger.info(f"[pdf2markdown] 提交限流等待 {wait:.1f}s"
+                            f"（上限 {_SUBMIT_RATE_PER_MIN} 文件/分钟）")
+                time.sleep(wait)
+                now = time.monotonic()
+                self._next_at = max(now, self._next_at) + self._interval
+            else:
+                self._next_at = now + self._interval
+
+
+_submit_limiter = _RateLimiter(_SUBMIT_RATE_PER_MIN)
 
 
 class PDF2MarkdownTool(Tool):
@@ -551,7 +581,8 @@ class PDF2MarkdownTool(Tool):
             "is_ocr": False,          # OCR (pipeline/vlm 有效)
         }
 
-        # Step 1: Get upload URLs（连接类错误自动重试）
+        # Step 1: 申请上传 URL（先过提交限流：40 文件/分钟；连接类错误自动重试）
+        _submit_limiter.acquire()
         resp = _request_with_retry(
             "POST",
             "https://mineru.net/api/v4/file-urls/batch",
