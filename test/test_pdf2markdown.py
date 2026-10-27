@@ -258,7 +258,7 @@ class TestPDF2MarkdownToolConfig:
 
 
 class TestPDF2MarkdownPrecisionFirst:
-    """商业 API 优先策略测试（配置 apikey → Precision 优先，失败降级 Agent）"""
+    """商业 API 优先策略测试（配置 apikey → 仅 Precision，不做免费降级）"""
 
     @patch("requests.get")
     @patch("requests.put")
@@ -298,71 +298,41 @@ class TestPDF2MarkdownPrecisionFirst:
         assert "api/v4" in post_urls[0]
         assert (tmp_path / "doc.md").read_text(encoding="utf-8") == "# 精析结果"
 
-    @patch("requests.get")
-    @patch("requests.put")
     @patch("requests.post")
-    def test_quota_failure_falls_back_to_agent(self, mock_post, mock_put, mock_get, tmp_path):
-        """Precision 每日配额超限 → 降级免费 Agent API 完成，结果标注降级原因"""
+    def test_quota_failure_no_fallback(self, mock_post, tmp_path):
+        """Precision 每日配额超限 → 直接报错，不调用免费 Agent API"""
         tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k-2"))
         tmp = tmp_path / "doc.pdf"
         tmp.write_bytes(b"%PDF-fake")
 
         def post_side(url, **kw):
-            if "/api/v4/" in url:
-                return _resp({"code": -60018, "msg": "每日解析任务数量已达上限"})
-            if url.endswith("/api/v1/agent/parse/file"):
-                return _resp({"code": 0, "data": {"task_id": "t1", "file_url": "http://oss/u"}})
-            raise AssertionError(f"unexpected POST: {url}")
-
-        def get_side(url, **kw):
-            if url.endswith("/api/v1/agent/parse/t1"):
-                return _resp({"code": 0, "data": {"state": "done", "markdown_url": "http://cdn/md"}})
-            if url == "http://cdn/md":
-                return _resp(content="# 免费结果".encode("utf-8"))
-            raise AssertionError(f"unexpected GET: {url}")
+            assert "/api/v4/" in url   # 只允许 Precision 端点，命中 Agent 端点即失败
+            return _resp({"code": -60018, "msg": "每日解析任务数量已达上限"})
 
         mock_post.side_effect = post_side
-        mock_get.side_effect = get_side
-        mock_put.return_value = _resp()
 
         result = tool.execute(file_path=str(tmp))
-        assert not result.is_error
-        assert "[Agent API]" in result.output
-        assert "降级" in result.output
+        assert result.is_error
         assert "每日解析任务数量已达上限" in result.output
-        assert (tmp_path / "doc.md").read_text(encoding="utf-8") == "# 免费结果"
+        assert not (tmp_path / "doc.md").exists()
 
-    @patch("requests.get")
-    @patch("requests.put")
     @patch("requests.post")
-    def test_auth_failure_falls_back_to_agent(self, mock_post, mock_put, mock_get, tmp_path):
-        """Precision 认证失败（A0202）→ 降级免费 Agent API"""
+    def test_auth_failure_no_fallback(self, mock_post, tmp_path):
+        """Precision 认证失败（A0202）→ 直接报错，不调用免费 Agent API"""
         tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("bad-key"))
         tmp = tmp_path / "doc.pdf"
         tmp.write_bytes(b"%PDF-fake")
 
         def post_side(url, **kw):
-            if "/api/v4/" in url:
-                return _resp({"code": "A0202", "msg": "authenticate failed"})
-            if url.endswith("/api/v1/agent/parse/file"):
-                return _resp({"code": 0, "data": {"task_id": "t2", "file_url": "http://oss/u"}})
-            raise AssertionError(f"unexpected POST: {url}")
-
-        def get_side(url, **kw):
-            if url.endswith("/api/v1/agent/parse/t2"):
-                return _resp({"code": 0, "data": {"state": "done", "markdown_url": "http://cdn/md"}})
-            if url == "http://cdn/md":
-                return _resp(content="# fallback".encode("utf-8"))
-            raise AssertionError(f"unexpected GET: {url}")
+            assert "/api/v4/" in url
+            return _resp({"code": "A0202", "msg": "authenticate failed"})
 
         mock_post.side_effect = post_side
-        mock_get.side_effect = get_side
-        mock_put.return_value = _resp()
 
         result = tool.execute(file_path=str(tmp))
-        assert not result.is_error
-        assert "[Agent API]" in result.output
+        assert result.is_error
         assert "A0202" in result.output
+        assert "认证失败" in result.output
 
     @patch("requests.post")
     def test_precision_fail_oversize_no_fallback(self, mock_post, tmp_path):
@@ -374,7 +344,7 @@ class TestPDF2MarkdownPrecisionFirst:
 
         result = tool.execute(file_path=str(tmp))
         assert result.is_error
-        assert "无法降级" in result.output
+        assert "不做免费 Agent 降级" in result.output
 
     @patch("requests.post")
     def test_no_key_keeps_agent_first(self, mock_post, tmp_path):
@@ -460,3 +430,98 @@ class TestToolRegistration:
         assert schema["name"] == "pdf2markdown"
         assert "input_schema" in schema
         assert schema["input_schema"]["type"] == "object"
+
+
+class TestPdfSplitting:
+    """超限 PDF 分片解析与合并（Precision API 限制）"""
+
+    @staticmethod
+    def _make_pdf(path, pages: int) -> None:
+        from pypdf import PdfWriter
+
+        writer = PdfWriter()
+        for _ in range(pages):
+            writer.add_blank_page(width=200, height=200)
+        with open(path, "wb") as f:
+            writer.write(f)
+
+    def test_split_respects_page_limit(self, tmp_path):
+        from pypdf import PdfReader
+
+        from core.tools.pdf2markdown import _split_pdf_for_api
+
+        src = tmp_path / "big.pdf"
+        self._make_pdf(src, 7)
+        parts, tmp = _split_pdf_for_api(str(src), max_size_bytes=10 << 20, max_pages=3)
+        try:
+            assert len(parts) == 3
+            assert [len(PdfReader(str(p)).pages) for p in parts] == [3, 3, 1]
+        finally:
+            tmp.cleanup()
+
+    def test_convert_file_splits_and_merges_in_order(self, tmp_path, monkeypatch):
+        from core.tools import pdf2markdown as mod
+
+        src = tmp_path / "big.pdf"
+        self._make_pdf(src, 5)
+        monkeypatch.setattr(mod, "_PRECISION_MAX_PAGES", 2)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k"))
+
+        seen = []
+
+        def fake_parse(self, file_path, api_key, timeout, model_version):
+            seen.append(os.path.basename(file_path))
+            return f"# part {len(seen)}"
+
+        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse", fake_parse)
+        md = tool.convert_file(str(src), model_version="vlm", timeout=60)
+        assert len(seen) == 3   # 5 页 → 2+2+1
+        assert md == "# part 1\n\n# part 2\n\n# part 3"
+
+    def test_convert_file_no_split_within_limits(self, tmp_path, monkeypatch):
+        from core.tools import pdf2markdown as mod
+
+        src = tmp_path / "small.pdf"
+        self._make_pdf(src, 2)
+        monkeypatch.setattr(mod, "_PRECISION_MAX_PAGES", 200)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k"))
+        calls = {"n": 0}
+
+        def fake_parse(self, file_path, api_key, timeout, model_version):
+            calls["n"] += 1
+            return "# single"
+
+        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse", fake_parse)
+        assert tool.convert_file(str(src), timeout=60) == "# single"
+        assert calls["n"] == 1
+
+    def test_agent_path_splits_within_free_limits(self, tmp_path, monkeypatch):
+        """无 key 的免费 Agent 路径：45 页 PDF 按 20 页/片拆分后合并"""
+        from core.tools import pdf2markdown as mod
+
+        monkeypatch.delenv("MINERU_API_KEY", raising=False)
+        src = tmp_path / "big_agent.pdf"
+        self._make_pdf(src, 45)
+        monkeypatch.setattr(mod, "_AGENT_MAX_PAGES", 20)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        seen = []
+
+        def fake_agent(self, file_path, timeout):
+            seen.append(os.path.basename(file_path))
+            return f"# agent part {len(seen)}"
+
+        monkeypatch.setattr(PDF2MarkdownTool, "_agent_parse", fake_agent)
+        md = tool.convert_file(str(src), timeout=60)
+        assert len(seen) == 3          # 45 页 → 20+20+5
+        assert md == "# agent part 1\n\n# agent part 2\n\n# agent part 3"
+
+    def test_agent_non_pdf_oversize_rejected(self, tmp_path, monkeypatch):
+        """非 PDF 文件超出免费限额 → 直接报错（无法分片）"""
+        from core.tools.pdf2markdown import _AgentLimitError
+
+        monkeypatch.delenv("MINERU_API_KEY", raising=False)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        big = tmp_path / "big.docx"
+        big.write_bytes(b"0" * (11 * 1024 * 1024))
+        with pytest.raises(_AgentLimitError):
+            tool.convert_file(str(big), timeout=60)

@@ -1,13 +1,23 @@
 """PDF/Image to Markdown conversion via MinerU API.
 
-Two API modes with automatic fallback:
-1. Agent API (free, no key) — ≤10MB, ≤20 pages, Markdown only
-2. Precision Parse API (needs API key) — ≤200MB, ≤200 pages, ZIP output
+Two API modes:
+1. Precision Parse API (commercial, needs API key) — ≤200MB, ≤200 pages,
+   model_version defaults to "vlm" for best accuracy
+2. Agent API (free, no key) — ≤10MB, ≤20 pages, Markdown only
 
-Fallback order:
-- mineru_api_key configured: Precision (commercial, model_version=vlm) first,
-  fall back to free Agent API when Precision fails (file must meet Agent limits)
-- no key: Agent API only
+Mode selection:
+- mineru_api_key configured: Precision only, no free Agent fallback
+  (the free light API has lower accuracy); failures are returned as errors
+- no key: free Agent API only
+
+PDFs exceeding API limits (size or pages) are split locally with pypdf into
+compliant parts for both the Precision API (≤200MB/≤200 pages) and the free
+Agent API (≤10MB/≤20 pages); the parts are parsed one by one and merged back
+into a single markdown document in page order.
+
+``convert_file()`` is the reusable entry point: it returns markdown text and
+lets exceptions propagate (used by external scripts such as the textbook batch
+conversion, so there is only one implementation).
 
 Official docs: https://mineru.net/apiManage/docs
 """
@@ -17,12 +27,18 @@ from __future__ import annotations
 import io
 import logging
 import os
+import tempfile
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
+
+try:
+    from pypdf import PdfReader, PdfWriter
+except ImportError:   # 未安装 pypdf 时无法拆分超限 PDF
+    PdfReader = PdfWriter = None   # type: ignore[assignment]
 
 from core.config import Config
 from core.security.path_policy import OP_WRITE, PathTarget
@@ -61,6 +77,72 @@ _FREE_QUOTA_HINT = (
 )
 
 
+def _pdf_page_count(file_path: str) -> int:
+    """读取 PDF 页数；失败或无 pypdf 时返回 0（交给云端判断）"""
+    if PdfReader is None:
+        return 0
+    try:
+        return len(PdfReader(file_path).pages)
+    except Exception as e:
+        logger.warning(f"[pdf2markdown] 读取页数失败: {e}")
+        return 0
+
+
+def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
+                       max_pages: int) -> tuple[list[Path], tempfile.TemporaryDirectory]:
+    """按页数/大小把 PDF 拆成符合 Precision API 限制的分片（保持页序）"""
+    if PdfReader is None or PdfWriter is None:
+        raise RuntimeError("缺少 pypdf，无法拆分超限 PDF（请安装 pypdf）")
+    reader = PdfReader(file_path)
+    total = len(reader.pages)
+    size = os.path.getsize(file_path)
+    avg = size / max(total, 1)
+    # 按平均页大小估算每组页数，留 15% 余量；再用实际大小递归校正
+    pages_by_size = max(1, int(max_size_bytes * 0.85 / max(avg, 1)))
+    chunk = max(1, min(max_pages, pages_by_size))
+    tmp = tempfile.TemporaryDirectory(prefix="pdf2md_split_")
+    parts: list[Path] = []
+
+    def emit(start: int, end: int) -> None:
+        writer = PdfWriter()
+        for i in range(start, end):
+            writer.add_page(reader.pages[i])
+        out = Path(tmp.name) / f"part_{len(parts) + 1:03d}.pdf"
+        with open(out, "wb") as f:
+            writer.write(f)
+        if out.stat().st_size > max_size_bytes and (end - start) > 1:
+            out.unlink()   # 实际大小仍超限：二分继续拆
+            mid = (start + end) // 2
+            emit(start, mid)
+            emit(mid, end)
+        else:
+            parts.append(out)
+
+    for start in range(0, total, chunk):
+        emit(start, min(start + chunk, total))
+    if not parts:
+        raise RuntimeError(f"PDF 拆分失败：共 {total} 页")
+    return parts, tmp
+
+
+def _request_with_retry(method: str, url: str, *, attempts: int = 3,
+                        backoff: float = 5.0, **kwargs):
+    """连接类错误（超时/DNS/连接重置）自动重试；HTTP 状态错误不重试"""
+    func = requests.post if method.upper() == "POST" else requests.get
+    last = None
+    for i in range(attempts):
+        try:
+            return func(url, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last = e
+            if i < attempts - 1:
+                logger.warning(
+                    f"[pdf2markdown] {method} {url} 网络错误，{backoff:.0f}s 后重试 "
+                    f"({i + 1}/{attempts}): {e}")
+                time.sleep(backoff)
+    raise last
+
+
 class PDF2MarkdownTool(Tool):
     """Convert PDF/image files to Markdown via MinerU API."""
 
@@ -70,8 +152,12 @@ class PDF2MarkdownTool(Tool):
         "Supports PDF, PNG, JPG, DOCX, PPTX, XLSX, HTML. "
         "Two modes: Precision API (commercial, needs mineru_api_key, ≤200MB/≤200 pages, "
         "vlm model) and Agent API (free, no key, ≤10MB/≤20 pages). "
-        "If mineru_api_key is configured, Precision API is used first and falls back "
-        "to the free Agent API on failure; without a key, only the free Agent API is available. "
+        "Oversized PDFs are split automatically to satisfy the active API's "
+        "size/page limits (Precision: 200MB/200 pages, Agent: 10MB/20 pages) "
+        "and the parts are merged into one Markdown file. "
+        "If mineru_api_key is configured, only the Precision API is used "
+        "(no free fallback; failures are reported as errors). "
+        "Without a key, only the free Agent API is available. "
         "Output is saved as a .md file in the current working directory."
     )
     parameters = {
@@ -141,7 +227,6 @@ class PDF2MarkdownTool(Tool):
             return gate
 
         file_ext = Path(abs_path).suffix.lower()
-        file_size_mb = os.path.getsize(abs_path) / (1024 * 1024)
 
         # Validate extension
         if file_ext not in _PRECISION_SUPPORTED_EXT:
@@ -171,65 +256,120 @@ class PDF2MarkdownTool(Tool):
 
         api_key = self._get_mineru_api_key()
 
-        # Decide whether Agent API can handle this file
-        agent_eligible = (
-            file_size_mb <= _AGENT_MAX_SIZE_MB
-            and file_ext in _AGENT_SUPPORTED_EXT
-        )
-
-        # 商业 API 优先：配置了 mineru_api_key 时先走 Precision（vlm 模型），
-        # 失败才降级免费 Agent API
-        if api_key:
-            try:
-                markdown = self._precision_parse(abs_path, api_key, timeout, model_version)
-                self._save_markdown(markdown, output_path)
-                return self._build_result(markdown, output_path, api_mode="Precision")
-            except Exception as e:
-                precision_error = e
-                hint = f"（{_TOKEN_VALIDITY_HINT}）" if isinstance(e, _AuthError) else ""
-                logger.warning(f"Precision API failed: {e}{hint}, falling back to Agent API")
-
-            # Precision 失败 → 免费降级（文件需满足 Agent 限制）
-            if not agent_eligible:
+        # 商业 API 优先：配置了 mineru_api_key 时走 Precision（vlm，超限自动分片），
+        # 不做免费 Agent 兜底；未配置 key 时只能走免费 Agent API
+        try:
+            markdown = self.convert_file(
+                abs_path, model_version=model_version, timeout=timeout)
+        except _AuthError as e:
+            return ToolResult(
+                f"Precision API 认证失败: {e}\n"
+                f"{_TOKEN_VALIDITY_HINT}，请更新 system.mineru_api_key 配置。",
+                error=True,
+            )
+        except _QuotaExceededError as e:
+            return ToolResult(
+                f"每日解析任务数量已达上限: {e}\n"
+                f"请明日再试，或检查 API Key 状态。",
+                error=True,
+            )
+        except _AgentLimitError as e:
+            return ToolResult(
+                f"文件超出免费 Agent API 限制，且未配置 MinerU API Key，"
+                f"无法使用 Precision API。\n{_FREE_QUOTA_HINT}\n原因: {e}",
+                error=True,
+            )
+        except Exception as e:
+            if api_key:
                 return ToolResult(
-                    f"Precision API 解析失败，且文件超出免费 Agent API 限制 "
-                    f"({_AGENT_MAX_SIZE_MB}MB/{_AGENT_MAX_PAGES}页)，无法降级。\n"
-                    f"失败原因: {precision_error}",
+                    f"Precision API 解析失败: {e}\n"
+                    f"（已配置 mineru_api_key，不做免费 Agent 降级）",
                     error=True,
                 )
-            try:
-                markdown = self._agent_parse(abs_path, timeout)
-                self._save_markdown(markdown, output_path)
-                return self._build_result(
-                    markdown, output_path, api_mode="Agent",
-                    fallback_reason=str(precision_error),
-                )
-            except Exception as e:
-                return ToolResult(
-                    f"Precision 与 Agent API 均解析失败。\n"
-                    f"Precision: {precision_error}\n"
-                    f"Agent: {e}",
-                    error=True,
-                )
-
-        # 未配置 API Key → 只能用免费 Agent API
-        if agent_eligible:
-            try:
-                markdown = self._agent_parse(abs_path, timeout)
-                self._save_markdown(markdown, output_path)
-                return self._build_result(markdown, output_path, api_mode="Agent")
-            except Exception as e:
-                logger.warning(f"Agent API failed without configured key: {e}")
             return ToolResult(
                 f"Agent API 解析失败，且未配置 MinerU API Key，无法使用 Precision API。\n"
-                f"{_FREE_QUOTA_HINT}",
+                f"{_FREE_QUOTA_HINT}\n原因: {e}",
                 error=True,
             )
 
-        return ToolResult(
-            f"文件超出免费 Agent API 限制，且未配置 MinerU API Key，无法使用 Precision API。\n"
-            f"{_FREE_QUOTA_HINT}",
-            error=True,
+        self._save_markdown(markdown, output_path)
+        api_mode = "Precision" if api_key else "Agent"
+        return self._build_result(markdown, output_path, api_mode=api_mode)
+
+    def convert_file(self, file_path: str, *, model_version: str = "",
+                     timeout: int = 300) -> str:
+        """把文件转换为 markdown 文本（可复用入口：不做路径/输出门禁）。
+
+        - 配置了 mineru_api_key → Precision API（默认 vlm）；PDF 超限自动分片后合并
+        - 未配置 key → 免费 Agent API；PDF 超限（10MB/20页）同样自动分片后合并
+        失败时抛出 _AuthError / _QuotaExceededError / _AgentLimitError 或普通异常。
+        """
+        abs_path = str(file_path)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"file not found: {abs_path}")
+        ext = Path(abs_path).suffix.lower()
+        if ext not in _PRECISION_SUPPORTED_EXT:
+            raise ValueError(f"unsupported file type '{ext}'")
+        if not model_version:
+            model_version = _MODEL_VERSION_HTML if ext == ".html" else _MODEL_VERSION_DEFAULT
+
+        api_key = self._get_mineru_api_key()
+        if api_key:
+            return self._precision_parse_with_split(
+                abs_path, api_key, timeout, model_version)
+
+        if ext not in _AGENT_SUPPORTED_EXT:
+            raise _AgentLimitError(f"免费 Agent API 不支持 {ext} 类型")
+        size_mb = os.path.getsize(abs_path) / (1024 * 1024)
+        if ext != ".pdf" and size_mb > _AGENT_MAX_SIZE_MB:
+            raise _AgentLimitError(
+                f"非 PDF 文件超出免费 Agent API 限制（≤{_AGENT_MAX_SIZE_MB}MB）")
+        # PDF 超限（大小/页数）自动分片，逐片解析后合并
+        return self._agent_parse_with_split(abs_path, timeout)
+
+    def _parse_with_split(self, file_path: str, parse_fn: Callable[[str], str], *,
+                          max_size_mb: int, max_pages: int) -> str:
+        """按限额解析：超限 PDF 先分片（pypdf），逐片解析后按页序合并"""
+        ext = Path(file_path).suffix.lower()
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        pages = _pdf_page_count(file_path) if ext == ".pdf" else 0
+        if ext != ".pdf" or (size_mb <= max_size_mb and pages <= max_pages):
+            return parse_fn(file_path)
+
+        parts, tmp = _split_pdf_for_api(
+            file_path,
+            max_size_bytes=max_size_mb * 1024 * 1024,
+            max_pages=max_pages,
+        )
+        logger.info(f"[pdf2markdown] 文件超限（{size_mb:.0f}MB/{pages}页，"
+                    f"限额 {max_size_mb}MB/{max_pages}页），拆分为 {len(parts)} 片")
+        try:
+            mds = []
+            for i, part in enumerate(parts, 1):
+                logger.info(f"[pdf2markdown] 分片 {i}/{len(parts)}: {part.name} "
+                            f"({part.stat().st_size / (1024 * 1024):.1f} MB)")
+                mds.append(parse_fn(str(part)))
+            return "\n\n".join(m for m in mds if m.strip())
+        finally:
+            tmp.cleanup()
+
+    def _precision_parse_with_split(self, file_path: str, api_key: str,
+                                    timeout: int, model_version: str) -> str:
+        """Precision API：超限（200MB/200页）自动分片后合并"""
+        return self._parse_with_split(
+            file_path,
+            lambda p: self._precision_parse(p, api_key, timeout, model_version),
+            max_size_mb=_PRECISION_MAX_SIZE_MB,
+            max_pages=_PRECISION_MAX_PAGES,
+        )
+
+    def _agent_parse_with_split(self, file_path: str, timeout: int) -> str:
+        """免费 Agent API：超限（10MB/20页）自动分片后合并"""
+        return self._parse_with_split(
+            file_path,
+            lambda p: self._agent_parse(p, timeout),
+            max_size_mb=_AGENT_MAX_SIZE_MB,
+            max_pages=_AGENT_MAX_PAGES,
         )
 
     def _build_result(self, markdown: str, output_path: str, api_mode: str,
@@ -381,8 +521,9 @@ class PDF2MarkdownTool(Tool):
             "is_ocr": False,          # OCR (pipeline/vlm 有效)
         }
 
-        # Step 1: Get upload URLs
-        resp = requests.post(
+        # Step 1: Get upload URLs（连接类错误自动重试）
+        resp = _request_with_retry(
+            "POST",
             "https://mineru.net/api/v4/file-urls/batch",
             headers={
                 "Content-Type": "application/json",
@@ -495,7 +636,7 @@ class PDF2MarkdownTool(Tool):
         poll_interval = 3
 
         while time.time() - start_time < timeout:
-            resp = requests.get(url, headers=headers, timeout=30)
+            resp = _request_with_retry("GET", url, headers=headers, timeout=30)
             resp.raise_for_status()
             result = resp.json()
 

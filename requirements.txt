@@ -34,3 +34,6 @@ qqbot-agent-sdk
 # qrcode：扫码登录用，服务端生成二维码 PNG（复用已有的 Pillow）
 cryptography
 qrcode
+
+# PDF 拆分（pdf2markdown 大文件分片解析）
+pypdf
