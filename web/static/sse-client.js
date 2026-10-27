@@ -578,7 +578,7 @@ function _renderHeader(entry, meta = {}) {
     const modeBadge = entry.background ? '<span class="sa-mode-badge">异步</span>' : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
     entry.header.innerHTML = `
         <span class="sa-icon">${_STATUS_ICONS[entry.status] || '📋'}</span>
-        <span class="sa-title">${entry.status === 'running' ? '子代理执行中' : '子代理执行'}</span>
+        <span class="sa-title">${entry.status === 'running' ? '任务执行中' : '任务已结束'}</span>
         ${modeBadge}
         <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
         <span class="sa-meta">${meta.iterations || 0} 轮 · ${meta.message_count || 0} 条消息${toolCallsDisplay}</span>
