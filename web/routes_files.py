@@ -12,7 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -36,6 +36,30 @@ def _teen_ws_guard(workspace_uuid: str) -> None:
 # 单次上传文件大小上限
 _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 上传分块大小（流式写盘，不整文件入内存）
+
+# 文本预览上限与二进制探测字节数
+_PREVIEW_MAX_BYTES = 512 * 1024
+_PREVIEW_SNIFF_BYTES = 8192
+
+
+def _decode_preview_text(data: bytes, truncated: bool) -> tuple[str, str]:
+    """解码预览文本：utf-8 → gb18030 → utf-8 替换。
+
+    truncated 时尾部可能截断在多字节字符中间，先尝试去掉末尾 1-3 字节再严格解码，
+    避免把合法 UTF-8 误判成 GB18030。
+    """
+    candidates = [data]
+    if truncated:
+        for cut in (1, 2, 3):
+            if len(data) > cut:
+                candidates.append(data[:-cut])
+    for encoding, label in (("utf-8-sig", "utf-8"), ("gb18030", "gb18030")):
+        for blob in candidates:
+            try:
+                return blob.decode(encoding), label
+            except UnicodeDecodeError:
+                continue
+    return data.decode("utf-8", errors="replace"), "utf-8"
 
 
 # ---------- Models ----------
@@ -340,7 +364,7 @@ def list_files(workspace_uuid: str, path: str = ""):
             # 跳过非法路径（Windows 特殊设备名等 is_file/is_dir/is_symlink 均为 False）
             if not item.is_file() and not item.is_dir() and not item.is_symlink():
                 continue
-            rel_path = str(item.relative_to(workspace_dir))
+            rel_path = item.relative_to(workspace_dir).as_posix()
             try:
                 stat = item.stat()
                 items.append({
@@ -360,7 +384,7 @@ def list_files(workspace_uuid: str, path: str = ""):
     if target_path == workspace_dir.resolve():
         parent = None
     else:
-        parent = str(target_path.parent.relative_to(workspace_dir))
+        parent = target_path.parent.relative_to(workspace_dir).as_posix()
         if parent == ".":
             parent = ""
 
@@ -368,6 +392,77 @@ def list_files(workspace_uuid: str, path: str = ""):
         "path": path,
         "items": items,
         "parent": parent
+    }
+
+
+# ----- File Preview (只读文本预览) -----
+@router.get("/api/file-preview")
+def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dict:
+    """Read a workspace text file for the read-only preview pane.
+
+    独立路径（而非 /api/files/preview）避开 /api/files/{file_path:path} 的
+    注册顺序陷阱；只读、限长、二进制不解码。
+    """
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
+    ws_config = load_workspace_config(workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+
+    workspace_root = workspace_dir.resolve()
+    file_path = (workspace_dir / path).resolve()
+    if not file_path.is_relative_to(workspace_root):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Not a file: {path}")
+
+    try:
+        stat = file_path.stat()
+        with open(file_path, "rb") as f:
+            data = f.read(_PREVIEW_MAX_BYTES + 1)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    truncated = len(data) > _PREVIEW_MAX_BYTES
+    if truncated:
+        data = data[:_PREVIEW_MAX_BYTES]
+
+    response.headers["Cache-Control"] = "no-store"
+    rel_path = file_path.relative_to(workspace_root).as_posix()
+
+    if b"\x00" in data[:_PREVIEW_SNIFF_BYTES]:
+        return {
+            "path": rel_path,
+            "name": file_path.name,
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "kind": "binary",
+            "encoding": None,
+            "truncated": False,
+            "content": None,
+        }
+
+    content, encoding = _decode_preview_text(data, truncated)
+    return {
+        "path": rel_path,
+        "name": file_path.name,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "kind": "text",
+        "encoding": encoding,
+        "truncated": truncated,
+        "content": content,
     }
 
 
@@ -388,6 +483,7 @@ def read_file(file_path: str, workspace_uuid: str):
     ws_config = load_workspace_config(workspace_uuid)
     if not ws_config:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
 
     workspace_dir = Path(ws_config.get("directory", ""))
     if not workspace_dir.exists():
@@ -449,11 +545,11 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
     try:
         if request.type == "folder":
             target_path.mkdir(parents=True, exist_ok=True)
-            return {"type": "folder", "path": str(target_path.relative_to(workspace_dir)), "name": request.name}
+            return {"type": "folder", "path": target_path.relative_to(workspace_dir).as_posix(), "name": request.name}
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(request.content, encoding="utf-8")
-            return {"type": "file", "path": str(target_path.relative_to(workspace_dir)), "name": request.name}
+            return {"type": "file", "path": target_path.relative_to(workspace_dir).as_posix(), "name": request.name}
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
     except Exception as e:
@@ -558,7 +654,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
         try:
             new_full_path.parent.mkdir(parents=True, exist_ok=True)
             file_full_path.rename(new_full_path)
-            return {"action": "rename", "path": request.new_path}
+            return {"action": "rename", "path": Path(request.new_path).as_posix()}
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
         except Exception as e:
@@ -571,7 +667,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
 
         try:
             file_full_path.write_text(request.content, encoding="utf-8")
-            return {"action": "save", "path": request.path}
+            return {"action": "save", "path": Path(request.path).as_posix()}
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
         except Exception as e:

@@ -14,6 +14,7 @@
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/file-tree.css">
     <script src="/static/libs/marked.min.js"></script>
     <script src="/static/libs/purify.min.js"></script>
     <script src="/static/libs/mermaid.min.js"></script>
@@ -63,7 +64,7 @@
                 </div>
             </div>
 
-            <div class="sidebar-section">
+            <div class="sidebar-section sessions-section">
                 <div class="section-header">
                     <button id="session-menu-btn" class="btn-icon-flat" title="会话菜单">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
@@ -74,6 +75,27 @@
                 <div id="sessions-list" class="sessions-list">
                     <div class="empty-state">选择一个工作区</div>
                 </div>
+            </div>
+
+            <div class="sidebar-h-split" id="sidebar-h-split" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整会话/文件区域高度（双击重置）"></div>
+
+            <div class="sidebar-section files-section" id="files-section">
+                <div class="section-header files-header">
+                    <button id="files-toggle-btn" class="btn-icon-flat" title="折叠文件区">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <h3>文件</h3>
+                    <div class="files-header-actions">
+                        <button id="files-collapse-all-btn" class="btn-icon-flat" title="全部折叠" disabled>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 9 12 17 20 9"/><polyline points="4 4 12 12 20 4" opacity=".45"/></svg>
+                        </button>
+                        <button id="files-refresh-btn" class="btn-icon-flat" title="刷新文件树" disabled>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="file-tree" class="file-tree" role="tree" aria-label="工作区文件" tabindex="0"></div>
+                <div id="file-tree-status" class="file-tree-status" hidden></div>
             </div>
 
             <div class="sidebar-footer">
@@ -123,6 +145,34 @@
                 <button id="send-btn" class="btn btn-primary">发送</button>
             </div>
         </main>
+        <div class="preview-resize-handle" id="preview-resize-handle" title="拖拽调整预览宽度（双击重置）" hidden></div>
+
+        <aside class="preview-pane" id="preview-pane" aria-label="文件预览" hidden>
+            <div class="preview-header">
+                <span class="preview-file-icon" id="preview-file-icon">📄</span>
+                <div class="preview-title">
+                    <div class="preview-name" id="preview-name"></div>
+                    <div class="preview-path" id="preview-path"></div>
+                </div>
+                <div class="preview-actions">
+                    <button id="preview-maximize-btn" class="btn-icon-flat" title="最大化预览">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    </button>
+                    <button id="preview-wrap-btn" class="btn-icon-flat" title="自动换行" hidden>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><polyline points="15 9 18 12 15 15"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
+                    </button>
+                    <button id="preview-reload-btn" class="btn-icon-flat" title="重新加载">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    </button>
+                    <a id="preview-download-btn" class="btn-icon-flat" title="下载" download>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                    <button id="preview-close-btn" class="btn-icon-flat" title="关闭预览">&times;</button>
+                </div>
+            </div>
+            <div class="preview-body" id="preview-body"></div>
+            <div class="preview-status" id="preview-status" hidden></div>
+        </aside>
     </div>
 
     <!-- 特殊指令帮助 Modal -->
@@ -961,6 +1011,7 @@
     </div>
 
     <script src="/static/utils.js"></script>
+    <script src="/static/file-tree.js"></script>
     <script src="/static/settings.js"></script>
     <script src="/static/file-manager.js"></script>
     <script src="/static/memory.js"></script>

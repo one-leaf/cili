@@ -8,6 +8,11 @@ let fmSelectedFiles = new Set();  // 选中的文件路径集合
 let fmPreviewFile = null;         // 当前预览的文件路径
 let directoryBrowserCallback = null;  // 目录浏览器回调
 
+// 通知文件树刷新（文件管理器发生增删改后）
+function notifyFilesChanged() {
+    window.dispatchEvent(new CustomEvent('cili:files-changed'));
+}
+
 async function browseDirectory(event) {
     // 找到触发事件的输入框
     const targetInput = event.target.parentElement.querySelector('input[type="text"]');
@@ -648,6 +653,7 @@ async function fmCreateFile() {
     try {
         await createFile(fmCurrentPath, name, 'file', '');
         await loadFileManagerFiles(fmCurrentPath);
+        notifyFilesChanged();
     } catch (error) {
         alert('创建失败：' + error.message);
     }
@@ -661,6 +667,7 @@ async function fmCreateFolder() {
     try {
         await createFile(fmCurrentPath, name, 'folder');
         await loadFileManagerFiles(fmCurrentPath);
+        notifyFilesChanged();
     } catch (error) {
         alert('创建失败：' + error.message);
     }
@@ -681,6 +688,7 @@ async function fmDeleteSelected() {
         await deleteFiles(Array.from(fmSelectedFiles));
         fmSelectedFiles.clear();
         await loadFileManagerFiles(fmCurrentPath);
+        notifyFilesChanged();
     } catch (error) {
         alert('删除失败：' + error.message);
     }
@@ -705,6 +713,7 @@ async function fmRenameSelected() {
         await renameFile(oldPath, newPath);
         fmSelectedFiles.clear();
         await loadFileManagerFiles(fmCurrentPath);
+        notifyFilesChanged();
     } catch (error) {
         alert('重命名失败：' + error.message);
     }
@@ -717,6 +726,7 @@ async function fmUploadFiles(files) {
     try {
         await uploadFiles(fmCurrentPath, files);
         await loadFileManagerFiles(fmCurrentPath);
+        notifyFilesChanged();
     } catch (error) {
         alert('上传失败：' + error.message);
     }

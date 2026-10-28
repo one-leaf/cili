@@ -167,6 +167,7 @@ function handleBusEvent(e) {
         if (foregroundStreamSessionId !== currentSession.session_id) {
             loadSession(currentSession.session_id);
         }
+        window.dispatchEvent(new CustomEvent('cili:turn-complete', { detail: { session_id: e.session_id } }));
         return;
     }
 

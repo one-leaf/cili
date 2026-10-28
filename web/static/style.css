@@ -1465,51 +1465,51 @@ pre.tool-streaming-output:empty::after {
     50% { opacity: 0; }
 }
 
-.message .message-content {
+.message .message-content, .preview-md {
     line-height: 1.6;
     overflow-x: auto;
     max-width: 100%;
     font-size: 13px;
 }
 
-.message .message-content h1 {
+.message .message-content h1, .preview-md h1 {
     font-size: 20px;
     margin: 12px 0 8px;
 }
 
-.message .message-content h2 {
+.message .message-content h2, .preview-md h2 {
     font-size: 17px;
     margin: 10px 0 6px;
 }
 
-.message .message-content h3 {
+.message .message-content h3, .preview-md h3 {
     font-size: 15px;
     margin: 8px 0 4px;
 }
 
-.message .message-content h4 {
+.message .message-content h4, .preview-md h4 {
     font-size: 14px;
     margin: 8px 0 4px;
 }
 
-.message .message-content h5,
-.message .message-content h6 {
+.message .message-content h5, .preview-md h5,
+.message .message-content h6, .preview-md h6 {
     font-size: 13px;
     margin: 6px 0 4px;
 }
 
-.message .message-content p {
+.message .message-content p, .preview-md p {
     margin-bottom: 10px;
     font-size: 13px;
     word-wrap: break-word;
     overflow-wrap: break-word;
 }
 
-.message .message-content p:last-child {
+.message .message-content p:last-child, .preview-md p:last-child {
     margin-bottom: 0;
 }
 
-.message .message-content code {
+.message .message-content code, .preview-md code {
     background-color: var(--code-bg);
     padding: 2px 6px;
     border-radius: 3px;
@@ -1528,25 +1528,25 @@ pre.tool-streaming-output:empty::after {
     font-size: 12px;
 }
 
-.message .message-content pre code {
+.message .message-content pre code, .preview-md pre code {
     background-color: transparent;
     padding: 0;
     word-break: normal;
     white-space: pre;
 }
 
-.message .message-content ul,
-.message .message-content ol {
+.message .message-content ul, .preview-md ul,
+.message .message-content ol, .preview-md ol {
     font-size: 13px;
     margin: 8px 0;
     padding-left: 20px;
 }
 
-.message .message-content li {
+.message .message-content li, .preview-md li {
     margin-bottom: 4px;
 }
 
-.message .message-content blockquote {
+.message .message-content blockquote, .preview-md blockquote {
     font-size: 13px;
     margin: 8px 0;
     padding: 8px 12px;
@@ -1554,21 +1554,21 @@ pre.tool-streaming-output:empty::after {
     color: var(--text-light);
 }
 
-.message .message-content table {
+.message .message-content table, .preview-md table {
     font-size: 12px;
     border-collapse: collapse;
     max-width: 100%;
     margin: 10px 0;
 }
 
-.message .message-content th,
-.message .message-content td {
+.message .message-content th, .preview-md th,
+.message .message-content td, .preview-md td {
     border: 1px solid var(--border-color);
     padding: 6px 10px;
     text-align: left;
 }
 
-.message .message-content th {
+.message .message-content th, .preview-md th {
     background: #f5f5f5;
     font-weight: 600;
 }
@@ -1577,7 +1577,7 @@ pre.tool-streaming-output:empty::after {
     background: #27272a;
 }
 
-.message .message-content img {
+.message .message-content img, .preview-md img {
     max-width: 100%;
     height: auto;
     border-radius: 4px;
@@ -1585,20 +1585,20 @@ pre.tool-streaming-output:empty::after {
 }
 
 /* PDF 内嵌预览 */
-.message .message-content .pdf-preview {
+.message .message-content .pdf-preview, .preview-md .pdf-preview {
     margin: 12px 0;
     border: 1px solid var(--border-color, #e5e7eb);
     border-radius: 6px;
     overflow: hidden;
     background: var(--code-bg, #f9fafb);
 }
-.message .message-content .pdf-preview iframe {
+.message .message-content .pdf-preview iframe, .preview-md .pdf-preview iframe {
     width: 100%;
     height: 480px;
     border: none;
     display: block;
 }
-.message .message-content .pdf-link {
+.message .message-content .pdf-link, .preview-md .pdf-link {
     display: block;
     padding: 8px 12px;
     font-size: 13px;
@@ -1607,13 +1607,13 @@ pre.tool-streaming-output:empty::after {
     border-top: 1px solid var(--border-color, #e5e7eb);
     background: var(--bg-secondary, #f3f4f6);
 }
-.message .message-content .pdf-link:hover {
+.message .message-content .pdf-link:hover, .preview-md .pdf-link:hover {
     color: var(--primary, #6366f1);
     text-decoration: underline;
 }
 
 /* MathJax formula styles */
-.message .message-content .MathJax {
+.message .message-content .MathJax, .preview-md .MathJax {
     font-size: 100%;
     overflow-x: auto;
     overflow-y: hidden;
@@ -1626,12 +1626,12 @@ mjx-container {
 }
 
 /* Mermaid 图表样式 */
-.message .message-content .mermaid {
+.message .message-content .mermaid, .preview-md .mermaid {
     text-align: center;
     margin: 12px 0;
     overflow-x: auto;
 }
-.message .message-content .mermaid svg {
+.message .message-content .mermaid svg, .preview-md .mermaid svg {
     max-width: 100%;
     height: auto;
 }

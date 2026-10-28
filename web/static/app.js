@@ -490,6 +490,7 @@ async function handleWorkspaceChange() {
         sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
         updateWorkspacePath();
+        if (window.FileTree) FileTree.setWorkspace(null);
         return;
     }
 
@@ -553,11 +554,13 @@ async function handleWorkspaceChange() {
 
     if (!currentWorkspace) {
         updateWorkspacePath();
+        if (window.FileTree) FileTree.setWorkspace(null);
         sessionsList.innerHTML = '<div class="empty-state">工作区未找到</div>';
         return;
     }
 
     updateWorkspacePath();
+    if (window.FileTree) FileTree.setWorkspace(currentWorkspace);
     await loadSessions();
 
     // 自动加载最近的会话（如果有）
@@ -718,28 +721,14 @@ function renderWizardOptions() {
         stageSelect.value = oldStage;
     }
 
-    const systemSelect = document.getElementById('wizard-study-system');
-    if (systemSelect) {
-        const oldSystem = systemSelect.value || profile.system;
-        systemSelect.innerHTML = '<option value="">选择学制...</option>';
-        (options.systems || []).forEach(system => {
-            const option = document.createElement('option');
-            option.value = system;
-            option.textContent = system;
-            systemSelect.appendChild(option);
-        });
-        systemSelect.value = oldSystem || '六三制';
-    }
-
     updateStudyGradeOptions();
 }
 
 function updateStudyGradeOptions() {
     const gradeSelect = document.getElementById('wizard-study-grade');
     if (!gradeSelect) return;
-    const system = document.getElementById('wizard-study-system')?.value || '六三制';
     const stage = document.getElementById('wizard-study-stage')?.value || '';
-    const grades = (wizardState.options?.grades || {})[system]?.[stage] || [];
+    const grades = (wizardState.options?.grades || {})[stage] || [];
     const old = gradeSelect.value;
     gradeSelect.innerHTML = '<option value="">选择年级...</option>';
     grades.forEach(grade => {
@@ -780,7 +769,6 @@ function getStudyConfigHtml() {
         <div class="wizard-grid">
             <div class="form-group"><label>孩子称呼</label><input type="text" id="wizard-study-learner" placeholder="用于对话称呼"></div>
             <div class="form-group"><label>学段</label><select id="wizard-study-stage"></select></div>
-            <div class="form-group"><label>学制</label><select id="wizard-study-system"></select></div>
             <div class="form-group"><label>年级</label><select id="wizard-study-grade"></select></div>
             <div class="form-group"><label>考区</label><input type="text" id="wizard-study-region" placeholder="例如：广东"></div>
             <div class="form-group"><label>学习重点</label><select id="wizard-study-focus"><option>同步学习</option><option>中考复习</option><option>高考复习</option></select></div>
@@ -811,22 +799,15 @@ function getResearchConfigHtml() {
     `;
 }
 
-const GRADE_COVERAGE = {
-    '1至2年级': ['一年级', '二年级'],
-    '3至4年级': ['三年级', '四年级'],
-    '5至6年级': ['五年级', '六年级'],
-};
-
 function editionCoversGrade(item, grade) {
     if (!grade) return true;
     const grades = item.grades || [];
     if (!grades.length) return true;
-    return grades.some(g => !g || g === grade || (GRADE_COVERAGE[g] || []).includes(grade));
+    return grades.includes(grade);
 }
 
 function renderStudySubjectRows() {
     const stage = document.getElementById('wizard-study-stage')?.value || '';
-    const system = document.getElementById('wizard-study-system')?.value || '六三制';
     const grade = document.getElementById('wizard-study-grade')?.value || '';
     const subjects = wizardState.options?.study_subjects?.[stage] || [];
     const container = document.getElementById('wizard-study-subjects');
@@ -847,7 +828,7 @@ function renderStudySubjectRows() {
         select.className = 'wizard-subject-edition';
         select.dataset.subject = subject;
         select.title = `${subject} 教材版本`;
-        const allEditions = wizardState.options?.textbook_editions?.[system]?.[stage]?.[subject] || [];
+        const allEditions = wizardState.options?.textbook_editions?.[stage]?.[subject] || [];
         const editions = allEditions.filter(item => editionCoversGrade(item, grade));
         const usable = editions.length ? editions : allEditions;
         if (usable.length) {
@@ -877,10 +858,6 @@ function bindStudyConfigEvents() {
         renderStudySubjectRows();
         updateStudyGradeOptions();
     });
-    document.getElementById('wizard-study-system')?.addEventListener('change', () => {
-        renderStudySubjectRows();
-        updateStudyGradeOptions();
-    });
     document.getElementById('wizard-study-grade')?.addEventListener('change', renderStudySubjectRows);
     renderWizardOptions();
 }
@@ -902,7 +879,6 @@ function collectWizardProfile(strict = false) {
         const profile = {
             learner_name: document.getElementById('wizard-study-learner')?.value.trim() || '',
             stage: document.getElementById('wizard-study-stage')?.value || '',
-            system: document.getElementById('wizard-study-system')?.value || '六三制',
             grade: document.getElementById('wizard-study-grade')?.value || '',
             exam_region: document.getElementById('wizard-study-region')?.value.trim() || '',
             focus: document.getElementById('wizard-study-focus')?.value || '同步学习',
