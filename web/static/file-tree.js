@@ -667,6 +667,202 @@ const FileTree = (() => {
         area.remove();
     }
 
+    async function openInExplorer(path) {
+        if (!state.ws) return;
+        try {
+            const res = await fetch('/api/open-in-explorer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_uuid: state.ws.uuid,
+                    path: normalizePath(path),
+                }),
+            });
+            if (!res.ok) {
+                let detail = `HTTP ${res.status}`;
+                try {
+                    const data = await res.json();
+                    if (data && data.detail) detail = data.detail;
+                } catch (e) { /* ignore */ }
+                throw new Error(detail);
+            }
+            toast('已在资源管理器中打开');
+        } catch (err) {
+            toast('打开资源管理器失败：' + (err.message || '未知错误'));
+        }
+    }
+
+    function parentOf(path) {
+        const clean = normalizePath(path);
+        const cut = clean.lastIndexOf('/');
+        return cut === -1 ? '' : clean.slice(0, cut);
+    }
+
+    async function ensureExpanded(dir) {
+        if (!dir || !state.ws) return;
+        if (!state.expanded.has(dir)) {
+            state.expanded.add(dir);
+            scheduleSaveTreeState();
+        }
+        if (!state.dirs.get(dir)?.items) await loadDir(dir);
+    }
+
+    function remapPaths(oldPath, newPath) {
+        const map = (p) => {
+            if (p === oldPath) return newPath;
+            if (p.startsWith(oldPath + '/')) return newPath + p.slice(oldPath.length);
+            return p;
+        };
+        state.expanded = new Set(Array.from(state.expanded, map));
+        if (state.selected) state.selected = map(state.selected);
+        if (state.focusPath) state.focusPath = map(state.focusPath);
+        for (const key of Array.from(state.dirs.keys())) {
+            if (key === oldPath || key.startsWith(oldPath + '/')) state.dirs.delete(key);
+        }
+        if (state.preview.path) {
+            const mapped = map(state.preview.path);
+            if (mapped !== state.preview.path) {
+                state.preview.path = mapped;
+                state.preview.requestToken += 1;
+                renderPreviewHeader(findItem(mapped));
+                reloadPreview({ preserveScroll: true });
+            }
+        }
+        restoreExpansion();
+        scheduleSaveTreeState();
+    }
+
+    function forgetPaths(path) {
+        const inside = (p) => p === path || p.startsWith(path + '/');
+        state.expanded = new Set(Array.from(state.expanded).filter((p) => !inside(p)));
+        if (state.selected && inside(state.selected)) state.selected = null;
+        if (state.focusPath && inside(state.focusPath)) state.focusPath = null;
+        for (const key of Array.from(state.dirs.keys())) {
+            if (inside(key)) state.dirs.delete(key);
+        }
+        if (state.preview.path && inside(state.preview.path)) {
+            state.preview.path = null;
+            closePreview();
+        }
+        scheduleSaveTreeState();
+    }
+
+    function validEntryName(name) {
+        if (!name) return false;
+        const backslash = String.fromCharCode(92);
+        return !name.includes('/') && !name.includes(backslash);
+    }
+
+    async function createFileIn(dir) {
+        const raw = prompt('请输入文件名：');
+        const name = (raw || '').trim();
+        if (!name) return;
+        if (!validEntryName(name)) {
+            toast('名称不能包含路径分隔符');
+            return;
+        }
+        try {
+            await createFile(dir, name, 'file', '');
+            await ensureExpanded(dir);
+            await refreshTree();
+            toast('已创建文件');
+        } catch (err) {
+            toast('创建失败：' + (err.message || '未知错误'));
+        }
+    }
+
+    async function createFolderIn(dir) {
+        const raw = prompt('请输入文件夹名：');
+        const name = (raw || '').trim();
+        if (!name) return;
+        if (!validEntryName(name)) {
+            toast('名称不能包含路径分隔符');
+            return;
+        }
+        try {
+            await createFile(dir, name, 'folder');
+            await ensureExpanded(dir);
+            await refreshTree();
+            toast('已创建文件夹');
+        } catch (err) {
+            toast('创建失败：' + (err.message || '未知错误'));
+        }
+    }
+
+    async function renameEntry(path) {
+        if (!state.ws) return;
+        const oldName = basename(path);
+        const raw = prompt('请输入新名称：', oldName);
+        const newName = (raw || '').trim();
+        if (!newName || newName === oldName) return;
+        if (!validEntryName(newName)) {
+            toast('名称不能包含路径分隔符');
+            return;
+        }
+        const parent = parentOf(path);
+        const newPath = parent ? `${parent}/${newName}` : newName;
+        try {
+            await renameFile(path, newPath);
+            remapPaths(path, newPath);
+            await refreshTree();
+            toast('已重命名');
+        } catch (err) {
+            toast('重命名失败：' + (err.message || '未知错误'));
+        }
+    }
+
+    async function deleteEntry(path, isDir) {
+        if (!state.ws) return;
+        const name = basename(path);
+        const message = isDir
+            ? `确定删除文件夹「${name}」及其全部内容吗？`
+            : `确定删除「${name}」吗？`;
+        if (!confirm(message)) return;
+        try {
+            const result = await deleteFiles([path]);
+            const errors = result && result.errors ? result.errors : [];
+            if (errors.length) {
+                toast('删除失败：' + (errors[0].error || '未知错误'));
+                return;
+            }
+            forgetPaths(path);
+            await refreshTree();
+            toast('已删除');
+        } catch (err) {
+            toast('删除失败：' + (err.message || '未知错误'));
+        }
+    }
+
+    function pickFilesForUpload(dir) {
+        if (!state.ws) return;
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.multiple = true;
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        const cleanup = () => input.remove();
+        input.addEventListener('cancel', cleanup);
+        input.addEventListener('change', async () => {
+            const files = Array.from(input.files || []);
+            cleanup();
+            if (!files.length) return;
+            try {
+                const result = await uploadFiles(dir, files);
+                const errors = result && result.errors ? result.errors : [];
+                if (errors.length) {
+                    toast('部分文件上传失败：' + (errors[0].error || '未知错误'));
+                } else {
+                    toast(`已上传 ${files.length} 个文件`);
+                }
+                await ensureExpanded(dir);
+                await refreshTree();
+            } catch (err) {
+                toast('上传失败：' + (err.message || '未知错误'));
+            }
+        });
+        input.click();
+    }
+
     function showContextMenu(x, y, item) {
         closeContextMenu();
         const menu = document.createElement('div');
@@ -676,21 +872,39 @@ const FileTree = (() => {
             ? [
                 ['预览', () => openPreview(item.path)],
                 ['下载', () => window.open(fileUrl(item.path), '_blank', 'noopener')],
+                ['-', null],
+                ['在文件资源管理器中显示', () => openInExplorer(item.path)],
                 ['复制相对路径', () => copyPath(item.path)],
+                ['-', null],
+                ['重命名', () => renameEntry(item.path)],
+                ['删除', () => deleteEntry(item.path, false)],
             ]
             : [
                 [state.expanded.has(item.path) ? '折叠' : '展开', () => toggleDir(item.path)],
                 ['全部折叠', () => collapseTree(item.path)],
+                ['-', null],
+                ['新建文件', () => createFileIn(item.path)],
+                ['新建文件夹', () => createFolderIn(item.path)],
+                ['上传', () => pickFilesForUpload(item.path)],
+                ['-', null],
+                ['在文件资源管理器中显示', () => openInExplorer(item.path)],
                 ['复制相对路径', () => copyPath(item.path)],
-                ['在文件管理器中打开', () => {
-                    if (typeof openFileManager === 'function') openFileManager();
-                }],
+                ['-', null],
+                ['重命名', () => renameEntry(item.path)],
+                ['删除', () => deleteEntry(item.path, true)],
             ];
 
         for (const [label, action] of entries) {
+            if (label === '-') {
+                const sep = document.createElement('div');
+                sep.className = 'ft-context-sep';
+                menu.appendChild(sep);
+                continue;
+            }
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'ft-context-item';
+            if (label === '删除') btn.classList.add('danger');
             btn.textContent = label;
             btn.addEventListener('click', () => {
                 closeContextMenu();

@@ -610,3 +610,18 @@
     display: block;
     background: #fff;
 }
+
+/* 右键菜单分组与危险项 */
+.ft-context-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--border-color);
+}
+
+.ft-context-item.danger {
+    color: var(--error-color);
+}
+
+.ft-context-item.danger:hover {
+    background: var(--tool-error-bg);
+}

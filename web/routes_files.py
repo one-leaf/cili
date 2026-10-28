@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,6 +86,12 @@ class FileUpdateRequest(BaseModel):
     path: str  # Current relative path
     new_path: str = ""  # New relative path (for rename/move)
     content: str | None = None  # New content (for save)
+
+
+class OpenInExplorerRequest(BaseModel):
+    """Request model for opening a workspace path in the system file explorer."""
+    workspace_uuid: str
+    path: str = ""  # Relative path; empty = workspace root
 
 
 # ----- Workspace Files -----
@@ -674,6 +681,59 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
             raise HTTPException(status_code=500, detail=str(e))
 
     raise HTTPException(status_code=400, detail="No action specified: provide new_path or content")
+
+
+# ----- System Explorer -----
+
+@router.post("/api/open-in-explorer")
+def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None):
+    """Open a workspace path in the OS file explorer (localhost only).
+
+    浏览器无法直接拉起系统资源管理器，由本机服务端进程执行 explorer.exe：
+    目录直接打开；文件用 /select 定位。仅限本机调用（与 /api/browse 同）；
+    青少年模式开启且未全局解锁时拒绝——资源管理器可越出工作区浏览整盘。
+    """
+    _csrf_protect(request_raw)  # W6: CSRF 防护
+    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
+
+    client_ip = request_raw.client.host if request_raw and request_raw.client else ""
+    if client_ip not in _LOCALHOST_IPS:
+        raise HTTPException(status_code=403, detail="Access denied: open_in_explorer is localhost-only")
+
+    ws_config = load_workspace_config(request.workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(request.workspace_uuid)
+
+    tm = get_teen_mode()
+    if tm.is_enabled() and not tm.is_unlocked():
+        tm.audit("deny", action="open_in_explorer", source="web", ip=client_ip)
+        tm.record_denied("open_in_explorer")
+        raise HTTPException(status_code=403, detail="青少年模式已开启：不允许打开系统资源管理器")
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_root = workspace_dir.resolve()
+
+    target = (workspace_dir / request.path).resolve() if request.path else workspace_root
+    if not target.is_relative_to(workspace_root):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Path not found: {request.path}")
+
+    if sys.platform != "win32":
+        raise HTTPException(status_code=501, detail="Opening the system file explorer is only supported on Windows")
+
+    try:
+        if target.is_dir():
+            subprocess.Popen(["explorer.exe", str(target)])
+        else:
+            subprocess.Popen(["explorer.exe", f"/select,{target}"])
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open explorer: {e}")
+
+    return {"ok": True, "path": target.relative_to(workspace_root).as_posix()}
 
 
 def _sanitize_upload_filename(raw: str) -> str | None:

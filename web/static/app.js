@@ -101,7 +101,8 @@ function initInputResize() {
 const sidebarResizeHandle = document.querySelector('.sidebar-resize-handle');
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 500;
-const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_DEFAULT_WIDTH = 270;
+const LEGACY_SIDEBAR_DEFAULT_WIDTH = 300;
 const SIDEBAR_WIDTH_KEY = 'sidebar-width';
 
 function getSidebarEl() {
@@ -160,7 +161,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Sidebar collapse / expand
 function restoreSidebarWidth() {
-    const saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    let saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    // 移除文件管理按钮后默认宽度收窄 30px；旧默认值一次性迁移，保留自定义宽度
+    if (saved === LEGACY_SIDEBAR_DEFAULT_WIDTH) {
+        saved = SIDEBAR_DEFAULT_WIDTH;
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+    }
     if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) {
         getSidebarEl().style.width = saved + 'px';
     }
@@ -406,7 +412,6 @@ async function loadWorkspaces() {
 
         // 默认禁用工作区相关按钮
         workspaceSettingsBtn.disabled = true;
-        document.getElementById('file-manager-btn').disabled = true;
         document.getElementById('memory-btn').disabled = true;
 
         // 先渲染普通工作区（青少年模式：受限工作区带锁标记）
@@ -430,8 +435,7 @@ async function loadWorkspaces() {
         if (data.workspaces.length === 0) {
             sessionsList.innerHTML = '<div class="empty-state">点击 + 创建工作区</div>';
             workspaceSettingsBtn.disabled = true;
-            document.getElementById('file-manager-btn').disabled = true;
-        document.getElementById('memory-btn').disabled = true;
+            document.getElementById('memory-btn').disabled = true;
             return;
         }
 
@@ -485,7 +489,6 @@ async function handleWorkspaceChange() {
         closeEventSource();  // 无工作区：断开事件流
         clearPosition();
         workspaceSettingsBtn.disabled = true;
-        document.getElementById('file-manager-btn').disabled = true;
         document.getElementById('memory-btn').disabled = true;
         sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
@@ -496,7 +499,6 @@ async function handleWorkspaceChange() {
 
     // Enable workspace settings button
     workspaceSettingsBtn.disabled = false;
-    document.getElementById('file-manager-btn').disabled = false;
     document.getElementById('memory-btn').disabled = false;
 
     // Find the workspace object from the list

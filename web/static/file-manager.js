@@ -739,7 +739,6 @@ function fmRefresh() {
 
 // 文件管理器事件绑定
 function setupFileManagerEvents() {
-    document.getElementById('file-manager-btn').addEventListener('click', openFileManager);
     document.getElementById('fm-new-file-btn').addEventListener('click', fmCreateFile);
     document.getElementById('fm-new-folder-btn').addEventListener('click', fmCreateFolder);
     document.getElementById('fm-upload-btn').addEventListener('click', () => {
