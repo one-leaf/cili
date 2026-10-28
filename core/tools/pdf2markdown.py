@@ -16,8 +16,9 @@ Agent API (≤10MB/≤20 pages); the parts are parsed one by one and merged back
 into a single markdown document in page order.
 
 Polling semantics: while the server reports ``pending``/``running`` the task is
-still executing, so polling waits without a total deadline; it only gives up
-after repeated consecutive network errors.
+still executing and polling keeps waiting, but a total timeout applies (default
+1 hour per file) so a lost task cannot hang the caller forever; repeated
+consecutive network errors also abort.
 
 ``convert_file()`` is the reusable entry point: it returns markdown text and
 lets exceptions propagate (used by external scripts such as the textbook batch
@@ -35,6 +36,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -75,12 +77,15 @@ _PRECISION_SUPPORTED_EXT = {
 _MODEL_VERSION_DEFAULT = "vlm"
 _MODEL_VERSION_HTML = "MinerU-HTML"
 
-# 轮询策略：服务端返回 pending/running 说明任务仍在排队/执行，不设总超时；
-# 仅在连续网络错误达到阈值时放弃
+# 轮询策略：pending/running 表示任务仍在排队/执行，持续等待；
+# 但设总超时（默认 1 小时），防止服务端丢任务后无限挂起；连续网络错误也会放弃
 # 官方结果查询频控 1000 次/分钟，5 秒间隔远低于上限
 _POLL_INTERVAL_S = 5
 _POLL_MAX_CONSECUTIVE_ERRORS = 12
 _POLL_HEARTBEAT_EVERY = 12     # 每 12 次轮询（约 1 分钟）打一条心跳日志
+
+_DEFAULT_TIMEOUT_S = 3600      # 单次解析默认总超时（1 小时）
+_MAX_TIMEOUT_S = 3600          # 参数上限
 
 # 提交限流：官方所有创建解析任务接口共用 50 文件/分钟频控，按 40 留余量
 _SUBMIT_RATE_PER_MIN = 40
@@ -213,7 +218,7 @@ class PDF2MarkdownTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Legacy parameter kept for compatibility. Polling keeps waiting while the task is pending/running and no longer aborts on a fixed deadline.",
+                "description": "Total wait time in seconds (default: 3600, max: 3600). Polling keeps waiting while the task is pending/running; the call fails with a timeout once this deadline is reached.",
             },
             "output_path": {
                 "type": "string",
@@ -241,6 +246,33 @@ class PDF2MarkdownTool(Tool):
             approval_store=approval_store, approval_rules=approval_rules,
         )
         self._config = config
+        # 实时进度（仅推前端/输出文件，不进 ToolResult/上下文）
+        self._progress_offset = 0
+        self._progress_lock = threading.Lock()
+
+    def _progress(self, text: str) -> None:
+        """推送一条实时进度：追加到 output_file（runner 注入）并触发 on_output。
+
+        这些增量只走 UI 通道（事件总线/前端工具卡片），不进入 ToolResult，
+        因此不会被写入会话上下文。未挂载输出通道时退化为服务端日志。
+        """
+        line = f"[{datetime.now():%H:%M:%S}] {text}\n"
+        with self._progress_lock:
+            wrote_file = False
+            if self.output_file:
+                try:
+                    with open(self.output_file, "a", encoding="utf-8") as f:
+                        f.write(line)
+                        f.flush()
+                    wrote_file = True
+                except OSError:
+                    pass
+            # 文本模式写 Windows 下 \n -> \r\n（多 1 字节），补偿后与文件真实偏移一致
+            self._progress_offset += len(line.encode("utf-8")) + line.count("\n")
+            offset = self._progress_offset
+        if not wrote_file:
+            logger.info(f"[pdf2markdown] {text}")
+        self._emit_output(line, offset)
 
     def _get_mineru_api_key(self) -> str:
         """Get MinerU API key from config or environment."""
@@ -250,12 +282,15 @@ class PDF2MarkdownTool(Tool):
 
     def execute(self, **kwargs: Any) -> ToolResult:
         file_path = kwargs.get("file_path", "")
+        # 每次调用重置进度偏移（runner 会为新调用创建并清空输出文件）
+        with self._progress_lock:
+            self._progress_offset = 0
         # T14: timeout 安全转换 + clamp（非数字回退默认，范围 1-600）
         try:
-            timeout = int(kwargs.get("timeout", 300))
+            timeout = int(kwargs.get("timeout", _DEFAULT_TIMEOUT_S))
         except (TypeError, ValueError):
-            timeout = 300
-        timeout = max(1, min(timeout, 600))
+            timeout = _DEFAULT_TIMEOUT_S
+        timeout = max(1, min(timeout, _MAX_TIMEOUT_S))
         output_path = kwargs.get("output_path", "")
         model_version = kwargs.get("model_version", "")
 
@@ -341,7 +376,7 @@ class PDF2MarkdownTool(Tool):
         return self._build_result(markdown, output_path, api_mode=api_mode)
 
     def convert_file(self, file_path: str, *, model_version: str = "",
-                     timeout: int = 300) -> str:
+                     timeout: int = _DEFAULT_TIMEOUT_S) -> str:
         """把文件转换为 markdown 文本（可复用入口：不做路径/输出门禁）。
 
         - 配置了 mineru_api_key → Precision API（默认 vlm）；PDF 超限自动分片后合并
@@ -357,19 +392,24 @@ class PDF2MarkdownTool(Tool):
         if not model_version:
             model_version = _MODEL_VERSION_HTML if ext == ".html" else _MODEL_VERSION_DEFAULT
 
-        api_key = self._get_mineru_api_key()
-        if api_key:
-            return self._precision_parse_with_split(
-                abs_path, api_key, timeout, model_version)
-
-        if ext not in _AGENT_SUPPORTED_EXT:
-            raise _AgentLimitError(f"免费 Agent API 不支持 {ext} 类型")
         size_mb = os.path.getsize(abs_path) / (1024 * 1024)
-        if ext != ".pdf" and size_mb > _AGENT_MAX_SIZE_MB:
-            raise _AgentLimitError(
-                f"非 PDF 文件超出免费 Agent API 限制（≤{_AGENT_MAX_SIZE_MB}MB）")
-        # PDF 超限（大小/页数）自动分片，逐片解析后合并
-        return self._agent_parse_with_split(abs_path, timeout)
+        api_key = self._get_mineru_api_key()
+        mode = "Precision" if api_key else "Agent"
+        self._progress(f"开始处理 {Path(abs_path).name}"
+                       f"（{size_mb:.1f} MB，{mode} 模式，model={model_version}）")
+        if api_key:
+            md = self._precision_parse_with_split(
+                abs_path, api_key, timeout, model_version)
+        else:
+            if ext not in _AGENT_SUPPORTED_EXT:
+                raise _AgentLimitError(f"免费 Agent API 不支持 {ext} 类型")
+            if ext != ".pdf" and size_mb > _AGENT_MAX_SIZE_MB:
+                raise _AgentLimitError(
+                    f"非 PDF 文件超出免费 Agent API 限制（≤{_AGENT_MAX_SIZE_MB}MB）")
+            # PDF 超限（大小/页数）自动分片，逐片解析后合并
+            md = self._agent_parse_with_split(abs_path, timeout)
+        self._progress(f"转换完成：{len(md):,} 字符")
+        return md
 
     def _parse_with_split(self, file_path: str, parse_fn: Callable[[str], str], *,
                           max_size_mb: int, max_pages: int) -> str:
@@ -385,14 +425,15 @@ class PDF2MarkdownTool(Tool):
             max_size_bytes=max_size_mb * 1024 * 1024,
             max_pages=max_pages,
         )
-        logger.info(f"[pdf2markdown] 文件超限（{size_mb:.0f}MB/{pages}页，"
-                    f"限额 {max_size_mb}MB/{max_pages}页），拆分为 {len(parts)} 片")
+        self._progress(f"文件超限（{size_mb:.0f}MB/{pages}页，"
+                       f"限额 {max_size_mb}MB/{max_pages}页），拆分为 {len(parts)} 片")
         try:
             mds = []
             for i, part in enumerate(parts, 1):
-                logger.info(f"[pdf2markdown] 分片 {i}/{len(parts)}: {part.name} "
-                            f"({part.stat().st_size / (1024 * 1024):.1f} MB)")
+                self._progress(f"[分片 {i}/{len(parts)}] 开始解析 {part.name}"
+                               f"（{part.stat().st_size / (1024 * 1024):.1f} MB）")
                 mds.append(parse_fn(str(part)))
+                self._progress(f"[分片 {i}/{len(parts)}] 完成")
             return "\n\n".join(m for m in mds if m.strip())
         finally:
             tmp.cleanup()
@@ -459,6 +500,7 @@ class PDF2MarkdownTool(Tool):
         """
         file_name = Path(file_path).name
         logger.info(f"[Agent API] Parsing: {file_name}")
+        self._progress(f"申请上传 URL（Agent）：{file_name}")
 
         # Step 1: Get upload URL
         resp = requests.post(
@@ -490,10 +532,13 @@ class PDF2MarkdownTool(Tool):
         file_url = data["file_url"]
 
         # Step 2: Upload file (官方文档说 URL 有效期 24 小时)
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        self._progress(f"上传中（{size_mb:.1f} MB）...")
         with open(file_path, "rb") as f:
             resp = requests.put(file_url, data=f, timeout=(10, 120))
             if resp.status_code not in (200, 201, 204):
                 raise Exception(f"文件上传失败: HTTP {resp.status_code}")
+        self._progress("上传完成，开始轮询解析结果")
 
         # Step 3: Poll for result
         result_data = self._agent_poll(task_id, timeout)
@@ -512,11 +557,15 @@ class PDF2MarkdownTool(Tool):
         只有连续网络错误达到阈值才放弃。timeout 参数仅为兼容保留。
         """
         url = f"https://mineru.net/api/v1/agent/parse/{task_id}"
-        start_time = time.time()
+        start_time = time.monotonic()
+        deadline = start_time + timeout
         consecutive_errors = 0
         polls = 0
 
         while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Agent API 轮询超时（{timeout}s），任务可能已丢失")
             polls += 1
             try:
                 resp = requests.get(url, timeout=30)
@@ -551,8 +600,8 @@ class PDF2MarkdownTool(Tool):
             # 其他状态: waiting-file, uploading, pending, running - 继续轮询
 
             if polls % _POLL_HEARTBEAT_EVERY == 0:
-                logger.info(f"[pdf2markdown] Agent 轮询中 state={state}，"
-                            f"已等待 {time.time() - start_time:.0f}s")
+                self._progress(f"解析中 state={state}，"
+                               f"已等待 {time.monotonic() - start_time:.0f}s")
             time.sleep(_POLL_INTERVAL_S)
 
     # ── Precision Parse API v4 ─────────────────────────────────────────────────
@@ -582,6 +631,7 @@ class PDF2MarkdownTool(Tool):
         }
 
         # Step 1: 申请上传 URL（先过提交限流：40 文件/分钟；连接类错误自动重试）
+        self._progress(f"申请上传 URL：{file_name}")
         _submit_limiter.acquire()
         resp = _request_with_retry(
             "POST",
@@ -606,10 +656,14 @@ class PDF2MarkdownTool(Tool):
         file_urls = data["file_urls"]
 
         # Step 2: Upload file to OSS (with retries)
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        self._progress(f"上传中（{size_mb:.1f} MB）...")
         self._upload_to_oss(file_urls[0], file_path)
+        self._progress("上传完成，已提交异步解析，开始轮询（每 5s）")
 
         # Step 3: Poll for result
         result_data = self._precision_poll(batch_id, api_key, timeout)
+        self._progress("云端解析完成，下载结果包")
 
         # Step 4: Extract markdown from ZIP
         extract_result = result_data.get("extract_result", [])
@@ -694,11 +748,15 @@ class PDF2MarkdownTool(Tool):
         """
         url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
         headers = {"Authorization": f"Bearer {api_key}"}
-        start_time = time.time()
+        start_time = time.monotonic()
+        deadline = start_time + timeout
         consecutive_errors = 0
         polls = 0
 
         while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Precision API 轮询超时（{timeout}s），任务可能已丢失")
             polls += 1
             try:
                 resp = requests.get(url, headers=headers, timeout=30)
@@ -739,8 +797,8 @@ class PDF2MarkdownTool(Tool):
                 return result["data"]
 
             if polls % _POLL_HEARTBEAT_EVERY == 0:
-                logger.info(f"[pdf2markdown] 轮询中 state={state}，"
-                            f"已等待 {time.time() - start_time:.0f}s")
+                self._progress(f"解析中 state={state}，"
+                               f"已等待 {time.monotonic() - start_time:.0f}s")
             time.sleep(_POLL_INTERVAL_S)
 
     def _extract_markdown_from_zip(self, zip_url: str) -> str:

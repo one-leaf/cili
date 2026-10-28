@@ -45,7 +45,7 @@ _LARGE_OUTPUT_THRESHOLD = 10_000
 _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 # 需要外部文件做流式读取的工具（前端轮询用）
-_STREAMING_TOOLS = frozenset({"bash", "python"})
+_STREAMING_TOOLS = frozenset({"bash", "python", "pdf2markdown"})
 # 占位符工具：输出直接内联在 content，不落外部文件
 _PLACEHOLDER_TOOLS = frozenset({"ask_user", "session"})
 

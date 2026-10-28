@@ -537,7 +537,7 @@ class TestPdfSplitting:
 
 
 class TestPolling:
-    """轮询策略：pending/running 时持续等待，不按固定总超时放弃"""
+    """轮询策略：pending/running 持续等待，受总超时（默认 1 小时）约束"""
 
     @patch("requests.get")
     @patch("requests.put")
@@ -574,6 +574,65 @@ class TestPolling:
         mock_get.side_effect = get_side
         mock_put.return_value = _resp()
 
-        # 旧实现按 timeout=1 会中断；新实现必须一直等到 done
+        # pending/running 阶段不因超时中断，直到 done；三次轮询瞬间完成，远小于 timeout=1s
         md = tool.convert_file(str(tmp), timeout=1)
         assert md == "# ok"
+
+    @patch("requests.get")
+    @patch("requests.put")
+    @patch("requests.post")
+    def test_pending_forever_times_out(self, mock_post, mock_put, mock_get,
+                                       tmp_path, monkeypatch):
+        """任务一直 pending：到达总超时后抛出 TimeoutError"""
+        from core.tools import pdf2markdown as mod
+
+        clock = {"t": 0.0}
+
+        def fake_monotonic():
+            clock["t"] += 10.0   # 每次调用推进 10 秒，快速触发 deadline
+            return clock["t"]
+
+        monkeypatch.setattr(mod.time, "monotonic", fake_monotonic)
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k"))
+        tmp = tmp_path / "doc.pdf"
+        tmp.write_bytes(b"%PDF-fake")
+
+        def post_side(url, **kw):
+            return _resp({"code": 0, "data": {"batch_id": "b1",
+                                              "file_urls": ["http://oss/u"]}})
+
+        mock_post.side_effect = post_side
+        mock_get.side_effect = lambda url, **kw: _resp(
+            {"code": 0, "data": {"extract_result": [{"state": "pending"}]}})
+        mock_put.return_value = _resp()
+
+        with pytest.raises(TimeoutError):
+            tool.convert_file(str(tmp), timeout=60)
+
+
+class TestProgressStreaming:
+    """实时进度：写入 output_file 并触发 on_output，不进入 ToolResult"""
+
+    def test_progress_writes_file_and_emits(self, tmp_path, monkeypatch):
+        tool = PDF2MarkdownTool(cwd=str(tmp_path), config=_config_with_key("k"))
+        out_file = tmp_path / "progress.txt"
+        out_file.write_text("", encoding="utf-8")
+        tool.output_file = str(out_file)
+        chunks = []
+        tool.on_output = lambda chunk, offset: chunks.append((chunk, offset))
+
+        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse",
+                            lambda self, *a, **kw: "# md")
+
+        src = tmp_path / "doc.pdf"
+        src.write_bytes(b"%PDF-fake")
+        md = tool.convert_file(str(src), timeout=60)
+
+        assert md == "# md"
+        content = out_file.read_text(encoding="utf-8")
+        assert "开始处理 doc.pdf" in content
+        assert "转换完成" in content
+        assert len(chunks) >= 2
+        # 最后一个 offset 应与文件真实字节数一致（含 Windows CRLF 补偿）
+        assert chunks[-1][1] == out_file.stat().st_size
