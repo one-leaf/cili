@@ -55,7 +55,6 @@ const FileTree = (() => {
             wrap: false,
             requestToken: 0,
             scrollTop: 0,
-            pdf: null,
         },
     };
 
@@ -67,7 +66,6 @@ const FileTree = (() => {
     let previewScrollTimer = null;
     let treeScrollTimer = null;
     let ctxMenu = null;
-    let pdfjsPromise = null;
 
     // ---------- 通用 ----------
     function normalizePath(value) {
@@ -955,10 +953,10 @@ const FileTree = (() => {
         if (!state.preview.open) return;
         state.preview.open = false;
         state.preview.requestToken += 1;
-        destroyPdfViewer();
         setMaximized(false);
         el.pane.hidden = true;
         el.previewHandle.hidden = true;
+        el.body.textContent = '';
         savePreviewState();
     }
 
@@ -1005,7 +1003,6 @@ const FileTree = (() => {
         const path = state.preview.path;
         const cat = categoryOf(path);
 
-        destroyPdfViewer();
         el.body.classList.remove('media', 'pdf');
         el.body.textContent = '';
         el.previewStatus.textContent = '';
@@ -1054,289 +1051,17 @@ const FileTree = (() => {
         return `/static/libs/pdfjs/${name}`;
     }
 
-    function authToken() {
-        try {
-            const key = typeof TOKEN_KEY !== 'undefined' ? TOKEN_KEY : 'cili_access_token';
-            return localStorage.getItem(key) || '';
-        } catch (e) {
-            return '';
-        }
-    }
-
-    function loadPdfJs() {
-        if (!pdfjsPromise) {
-            pdfjsPromise = import(pdfAssetUrl('build/pdf.min.mjs'))
-                .then((pdfjs) => {
-                    pdfjs.GlobalWorkerOptions.workerSrc = pdfAssetUrl('build/pdf.worker.min.mjs');
-                    return pdfjs;
-                })
-                .catch((err) => {
-                    pdfjsPromise = null;
-                    throw err;
-                });
-        }
-        return pdfjsPromise;
-    }
-
-    function destroyPdfViewer() {
-        const pdf = state.preview.pdf;
-        if (!pdf) return;
-        state.preview.pdf = null;
-        pdf.token += 1;
-        if (pdf.observer) {
-            try { pdf.observer.disconnect(); } catch (e) { /* ignore */ }
-            pdf.observer = null;
-        }
-        if (pdf.renderTask) {
-            try { pdf.renderTask.cancel(); } catch (e) { /* ignore */ }
-            pdf.renderTask = null;
-        }
-        if (pdf.loadingTask) {
-            try { pdf.loadingTask.destroy(); } catch (e) { /* ignore */ }
-            pdf.loadingTask = null;
-        }
-        pdf.doc = null;
-    }
-
     function renderPdf(path) {
-        el.body.classList.remove('media');
-        el.body.classList.add('pdf');
+        el.body.classList.remove('pdf');
+        el.body.classList.add('media');
         el.body.textContent = '';
 
-        const pdf = {
-            token: state.preview.requestToken,
-            path,
-            loadingTask: null,
-            doc: null,
-            renderTask: null,
-            renderToken: 0,
-            pageNumber: 1,
-            zoom: 1,
-            observer: null,
-            canvas: null,
-            scroll: null,
-            pageInput: null,
-            pageTotal: null,
-            zoomLabel: null,
-            prevBtn: null,
-            nextBtn: null,
-            loading: null,
-        };
-        state.preview.pdf = pdf;
-
-        const toolbar = document.createElement('div');
-        toolbar.className = 'pdf-toolbar';
-
-        const makeButton = (label, title, onClick) => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn-icon-flat pdf-nav';
-            btn.textContent = label;
-            btn.title = title;
-            btn.addEventListener('click', onClick);
-            return btn;
-        };
-
-        const prevBtn = makeButton('‹', '上一页', () => goToPdfPage(pdf, pdf.pageNumber - 1));
-        const nextBtn = makeButton('›', '下一页', () => goToPdfPage(pdf, pdf.pageNumber + 1));
-        const zoomOut = makeButton('−', '缩小', () => changePdfZoom(pdf, 1 / 1.25));
-        const zoomIn = makeButton('+', '放大', () => changePdfZoom(pdf, 1.25));
-
-        const pageInput = document.createElement('input');
-        pageInput.className = 'pdf-page-input';
-        pageInput.type = 'number';
-        pageInput.min = '1';
-        pageInput.value = '1';
-        pageInput.setAttribute('aria-label', '页码');
-        pageInput.addEventListener('change', () => goToPdfPage(pdf, parseInt(pageInput.value, 10)));
-        pageInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                goToPdfPage(pdf, parseInt(pageInput.value, 10));
-            }
-        });
-
-        const pageTotal = document.createElement('span');
-        pageTotal.className = 'pdf-page-total';
-        pageTotal.textContent = '/ –';
-
-        const spacer = document.createElement('span');
-        spacer.className = 'pdf-toolbar-spacer';
-
-        const zoomLabel = document.createElement('span');
-        zoomLabel.className = 'pdf-zoom-label';
-        zoomLabel.textContent = '100%';
-
-        const fitBtn = document.createElement('button');
-        fitBtn.type = 'button';
-        fitBtn.className = 'btn-icon-flat pdf-fit-btn';
-        fitBtn.title = '适应宽度';
-        fitBtn.textContent = '适应';
-        fitBtn.addEventListener('click', () => {
-            pdf.zoom = 1;
-            updatePdfToolbar(pdf);
-            renderPdfPage(pdf);
-        });
-
-        toolbar.appendChild(prevBtn);
-        toolbar.appendChild(pageInput);
-        toolbar.appendChild(pageTotal);
-        toolbar.appendChild(nextBtn);
-        toolbar.appendChild(spacer);
-        toolbar.appendChild(zoomOut);
-        toolbar.appendChild(zoomLabel);
-        toolbar.appendChild(zoomIn);
-        toolbar.appendChild(fitBtn);
-
-        const scroll = document.createElement('div');
-        scroll.className = 'pdf-scroll';
-        const canvasWrap = document.createElement('div');
-        canvasWrap.className = 'pdf-canvas-wrap';
-        const canvas = document.createElement('canvas');
-        canvas.className = 'pdf-canvas';
-        canvasWrap.appendChild(canvas);
-        scroll.appendChild(canvasWrap);
-        const loading = document.createElement('div');
-        loading.className = 'pdf-loading';
-        loading.textContent = '加载中…';
-        scroll.appendChild(loading);
-
-        el.body.appendChild(toolbar);
-        el.body.appendChild(scroll);
-
-        pdf.canvas = canvas;
-        pdf.scroll = scroll;
-        pdf.pageInput = pageInput;
-        pdf.pageTotal = pageTotal;
-        pdf.zoomLabel = zoomLabel;
-        pdf.prevBtn = prevBtn;
-        pdf.nextBtn = nextBtn;
-        pdf.loading = loading;
-
-        if (typeof ResizeObserver === 'function') {
-            let timer = null;
-            pdf.observer = new ResizeObserver(() => {
-                clearTimeout(timer);
-                timer = setTimeout(() => {
-                    if (state.preview.pdf === pdf && pdf.doc) renderPdfPage(pdf);
-                }, 150);
-            });
-            pdf.observer.observe(scroll);
-        }
-
-        updatePdfToolbar(pdf);
-        loadPdfDocument(pdf);
-    }
-
-    function updatePdfToolbar(pdf) {
-        if (!pdf || state.preview.pdf !== pdf) return;
-        const total = pdf.doc ? pdf.doc.numPages : 0;
-        pdf.pageTotal.textContent = total ? `/ ${total}` : '/ –';
-        if (pdf.pageInput) {
-            pdf.pageInput.max = String(total || 1);
-            if (document.activeElement !== pdf.pageInput) {
-                pdf.pageInput.value = String(pdf.pageNumber);
-            }
-        }
-        pdf.zoomLabel.textContent = `${Math.round(pdf.zoom * 100)}%`;
-        pdf.prevBtn.disabled = !total || pdf.pageNumber <= 1;
-        pdf.nextBtn.disabled = !total || pdf.pageNumber >= total;
-    }
-
-    function goToPdfPage(pdf, pageNumber) {
-        if (!pdf || state.preview.pdf !== pdf || !pdf.doc) return;
-        const total = pdf.doc.numPages;
-        const value = Number.isFinite(pageNumber) ? pageNumber : 1;
-        const next = Math.min(total, Math.max(1, value));
-        if (next === pdf.pageNumber) {
-            updatePdfToolbar(pdf);
-            return;
-        }
-        pdf.pageNumber = next;
-        if (pdf.scroll) pdf.scroll.scrollTop = 0;
-        updatePdfToolbar(pdf);
-        renderPdfPage(pdf);
-    }
-
-    function changePdfZoom(pdf, factor) {
-        if (!pdf || state.preview.pdf !== pdf || !pdf.doc) return;
-        pdf.zoom = Math.min(4, Math.max(0.25, pdf.zoom * factor));
-        updatePdfToolbar(pdf);
-        renderPdfPage(pdf);
-    }
-
-    async function loadPdfDocument(pdf) {
-        const token = pdf.token;
-        try {
-            const pdfjs = await loadPdfJs();
-            if (state.preview.pdf !== pdf) return;
-            const headers = {};
-            const tokenValue = authToken();
-            if (tokenValue) headers['X-Access-Token'] = tokenValue;
-            const loadingTask = pdfjs.getDocument({
-                url: mediaUrl(pdf.path),
-                cMapUrl: pdfAssetUrl('cmaps/'),
-                cMapPacked: true,
-                standardFontDataUrl: pdfAssetUrl('standard_fonts/'),
-                wasmUrl: pdfAssetUrl('wasm/'),
-                iccUrl: pdfAssetUrl('iccs/'),
-                httpHeaders: headers,
-                useWorkerFetch: false,
-            });
-            pdf.loadingTask = loadingTask;
-            const doc = await loadingTask.promise;
-            if (state.preview.pdf !== pdf || token !== pdf.token) {
-                try { await loadingTask.destroy(); } catch (e) { /* ignore */ }
-                return;
-            }
-            pdf.doc = doc;
-            pdf.pageNumber = 1;
-            updatePdfToolbar(pdf);
-            await renderPdfPage(pdf);
-        } catch (err) {
-            if (state.preview.pdf !== pdf) return;
-            destroyPdfViewer();
-            renderPreviewError(err && err.message ? err.message : 'PDF 加载失败');
-        }
-    }
-
-    async function renderPdfPage(pdf) {
-        if (!pdf || state.preview.pdf !== pdf || !pdf.doc) return;
-        const renderToken = ++pdf.renderToken;
-        if (pdf.renderTask) {
-            try { pdf.renderTask.cancel(); } catch (e) { /* ignore */ }
-            pdf.renderTask = null;
-        }
-        try {
-            const page = await pdf.doc.getPage(pdf.pageNumber);
-            if (state.preview.pdf !== pdf || renderToken !== pdf.renderToken) return;
-            const baseViewport = page.getViewport({ scale: 1 });
-            const available = Math.max(120, (pdf.scroll ? pdf.scroll.clientWidth : el.body.clientWidth) - 24);
-            const dpr = window.devicePixelRatio || 1;
-            const scale = (available / baseViewport.width) * pdf.zoom * dpr;
-            const viewport = page.getViewport({ scale });
-            const canvas = pdf.canvas;
-            canvas.width = Math.max(1, Math.floor(viewport.width));
-            canvas.height = Math.max(1, Math.floor(viewport.height));
-            canvas.style.width = `${Math.max(1, Math.floor(viewport.width / dpr))}px`;
-            canvas.style.height = `${Math.max(1, Math.floor(viewport.height / dpr))}px`;
-            const context = canvas.getContext('2d', { alpha: false });
-            const task = page.render({ canvasContext: context, viewport });
-            pdf.renderTask = task;
-            await task.promise;
-            if (state.preview.pdf !== pdf || renderToken !== pdf.renderToken) return;
-            pdf.renderTask = null;
-            if (pdf.loading) {
-                pdf.loading.remove();
-                pdf.loading = null;
-            }
-            updatePdfToolbar(pdf);
-        } catch (err) {
-            if (err && err.name === 'RenderingCancelledException') return;
-            if (state.preview.pdf !== pdf) return;
-            destroyPdfViewer();
-            renderPreviewError(err && err.message ? err.message : 'PDF 渲染失败');
-        }
+        const fileAbs = new URL(fileUrl(path), window.location.href).href;
+        const frame = document.createElement('iframe');
+        frame.className = 'preview-pdf';
+        frame.title = basename(path);
+        frame.src = `${pdfAssetUrl('web/viewer.html')}?file=${encodeURIComponent(fileAbs)}&locale=zh-CN`;
+        el.body.appendChild(frame);
     }
 
     function renderHtml(path) {
