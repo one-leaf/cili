@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 from core.config import load_workspace_config, load_workspaces_index
 from core.fs_utils import safe_upload_filename
 from core.teen_mode import deny_message, get_teen_mode
+from core.tools.office2pdf import SUPPORTED_EXTENSIONS as OFFICE_SUPPORTED_EXTENSIONS, ensure_pdf
 from web.deps import (
     _LOCALHOST_IPS,
     _csrf_protect,
@@ -471,6 +473,90 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
         "truncated": truncated,
         "content": content,
     }
+
+
+# ----- Office Preview (Office document -> PDF) -----
+
+def _office_preview_source(workspace_uuid: str, path: str) -> tuple[Path, Path]:
+    """Resolve and validate an Office source file inside a workspace."""
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
+    ws_config = load_workspace_config(workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+
+    workspace_root = workspace_dir.resolve()
+    file_path = (workspace_dir / path).resolve()
+    if not file_path.is_relative_to(workspace_root):
+        raise HTTPException(status_code=403, detail="Access denied: path outside workspace")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Not a file: {path}")
+
+    ext = file_path.suffix.lower()
+    if ext not in OFFICE_SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported Office file type: {ext}. Supported: {', '.join(sorted(OFFICE_SUPPORTED_EXTENSIONS))}",
+        )
+    return workspace_root, file_path
+
+
+def _office_preview_result(source: Path, workspace_root: Path, workspace_uuid: str) -> tuple[Path, str, bool, str]:
+    try:
+        pdf_path, engine, cached = ensure_pdf(str(source), timeout=120)
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=f"Office conversion timed out: {e}")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"File not found: {e}")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Office conversion failed: {e}")
+
+    rel_path = source.relative_to(workspace_root).as_posix()
+    pdf_url = "/api/office-preview/pdf?" + urlencode({
+        "workspace_uuid": workspace_uuid,
+        "path": rel_path,
+        "v": int(source.stat().st_mtime),
+    })
+    return pdf_path, engine, cached, pdf_url
+
+
+@router.get("/api/office-preview/status")
+def office_preview_status(workspace_uuid: str, path: str = "") -> dict:
+    """Convert (or reuse cached) an Office document and return its PDF URL."""
+    workspace_root, source = _office_preview_source(workspace_uuid, path)
+    pdf_path, engine, cached, pdf_url = _office_preview_result(source, workspace_root, workspace_uuid)
+    return {
+        "status": "ready",
+        "pdf_url": pdf_url,
+        "engine": engine,
+        "cached": cached,
+        "size": pdf_path.stat().st_size,
+    }
+
+
+@router.get("/api/office-preview/pdf")
+def office_preview_pdf(workspace_uuid: str, path: str = "") -> FileResponse:
+    """Serve the cached PDF for an Office document (supports Range)."""
+    workspace_root, source = _office_preview_source(workspace_uuid, path)
+    pdf_path, _engine, _cached, _pdf_url = _office_preview_result(source, workspace_root, workspace_uuid)
+    return FileResponse(
+        str(pdf_path),
+        media_type="application/pdf",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ----- File Manager API (统一 /api/files 路径) -----

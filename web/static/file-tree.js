@@ -28,7 +28,10 @@ const FileTree = (() => {
     const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg']);
     const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
     const VIDEO_EXTS = new Set(['mp4', 'webm', 'ogv']);
-    const OFFICE_EXTS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']);
+    const OFFICE_EXTS = new Set([
+        'doc', 'docx', 'docm', 'rtf', 'xls', 'xlsx', 'xlsm', 'xlsb',
+        'ppt', 'pptx', 'pptm', 'ppsx', 'ppsm', 'potx',
+    ]);
     const TEXT_EXTS = new Set([
         'txt', 'md', 'markdown', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'scss',
         'less', 'xml', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini',
@@ -92,7 +95,7 @@ const FileTree = (() => {
         if (ext === 'pdf') return 'pdf';
         if (AUDIO_EXTS.has(ext)) return 'audio';
         if (VIDEO_EXTS.has(ext)) return 'video';
-        if (OFFICE_EXTS.has(ext)) return 'unsupported';
+        if (OFFICE_EXTS.has(ext)) return 'office';
         if (TEXT_EXTS.has(ext)) return 'text';
         return 'probe';
     }
@@ -1003,7 +1006,7 @@ const FileTree = (() => {
         const path = state.preview.path;
         const cat = categoryOf(path);
 
-        el.body.classList.remove('media', 'pdf');
+        el.body.classList.remove('media', 'pdf', 'office');
         el.body.textContent = '';
         el.previewStatus.textContent = '';
         el.previewStatus.hidden = true;
@@ -1016,6 +1019,8 @@ const FileTree = (() => {
             renderHtml(path);
         } else if (cat === 'audio' || cat === 'video') {
             renderAv(path, cat);
+        } else if (cat === 'office') {
+            renderOffice(path);
         } else if (cat === 'unsupported') {
             el.body.classList.remove('media');
             renderUnsupported(path);
@@ -1049,6 +1054,62 @@ const FileTree = (() => {
 
     function pdfAssetUrl(name) {
         return `/static/libs/pdfjs/${name}`;
+    }
+
+    function renderOffice(path) {
+        el.body.classList.remove('media', 'pdf');
+        el.body.classList.add('office');
+        el.body.textContent = '';
+
+        const loading = document.createElement('div');
+        loading.className = 'office-loading';
+        const spinner = document.createElement('div');
+        spinner.className = 'office-spinner';
+        const text = document.createElement('div');
+        text.className = 'office-loading-text';
+        text.textContent = `正在转换 ${basename(path)}…`;
+        const progress = document.createElement('div');
+        progress.className = 'office-progress';
+        loading.appendChild(spinner);
+        loading.appendChild(text);
+        loading.appendChild(progress);
+        el.body.appendChild(loading);
+
+        const token = state.preview.requestToken;
+        const version = state.preview.mtime || Date.now();
+        const statusUrl = `/api/office-preview/status?${wsQuery()}`
+            + `&path=${encodeURIComponent(normalizePath(path))}`
+            + `&v=${encodeURIComponent(version)}`;
+
+        fetch(statusUrl)
+            .then(async (res) => {
+                if (!res.ok) {
+                    let detail = `HTTP ${res.status}`;
+                    try {
+                        const data = await res.json();
+                        if (data && data.detail) detail = data.detail;
+                    } catch (e) { /* ignore */ }
+                    throw new Error(detail);
+                }
+                return res.json();
+            })
+            .then((data) => {
+                if (token !== state.preview.requestToken || state.preview.path !== path) return;
+                const fileAbs = new URL(data.pdf_url, window.location.href).href;
+                const frame = document.createElement('iframe');
+                frame.className = 'preview-pdf';
+                frame.title = basename(path);
+                frame.src = `${pdfAssetUrl('web/viewer.html')}?file=${encodeURIComponent(fileAbs)}&locale=zh-CN`;
+                el.body.classList.remove('office');
+                el.body.classList.add('media');
+                el.body.textContent = '';
+                el.body.appendChild(frame);
+            })
+            .catch((err) => {
+                if (token !== state.preview.requestToken || state.preview.path !== path) return;
+                el.body.classList.remove('office');
+                renderPreviewError(err.message || 'Office 文档转换失败');
+            });
     }
 
     function renderPdf(path) {
@@ -1235,7 +1296,7 @@ const FileTree = (() => {
             state.preview.scrollTop = el.body.scrollTop;
         }
         const cat = categoryOf(state.preview.path);
-        if (cat === 'image' || cat === 'pdf' || cat === 'audio' || cat === 'video' || cat === 'html') {
+        if (cat === 'image' || cat === 'pdf' || cat === 'audio' || cat === 'video' || cat === 'html' || cat === 'office') {
             state.preview.mtime = Date.now();
             renderPreviewBody();
         } else {
