@@ -234,7 +234,8 @@ def _generate_commit_summary(diff_stat: str) -> str:
 
     try:
         config = load_config()
-        model = config.lite_model or config.model
+        # model_for_role 自带回退（未知角色回退 master）；lite_model 属性随两级配置重构移除
+        model = config.model_for_role("lite")
         client = create_llm_client(model)
 
         prompt = f"""根据以下文件变更统计，生成一行简洁的中文提交摘要（不超过 50 字）：
