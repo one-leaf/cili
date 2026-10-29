@@ -12,23 +12,21 @@ from pydantic import BaseModel
 
 from core.config import PROJECT_ROOT, get_workspace_data_dir
 from core.textbooks import (
-    TextbookCatalogError,
     TextbookDownloadError,
-    get_catalog,
+    get_official_catalog,
     textbook_tasks,
 )
-from core.textbooks.catalog import EDITION_PUBLISHERS, edition_sort_key
+from core.textbooks.markdown_store import copy_textbook_markdown
 from core.workspace_wizard import (
     CATEGORIES,
-    GRADES,
     LOCATIONS,
-    STAGES,
-    STUDY_SUBJECTS,
-    SYSTEMS,
     WorkspaceWizardError,
     create_workspaces,
     documents_root,
+    grade_options,
     preview_workspaces,
+    stage_options,
+    study_subjects_by_stage,
 )
 from web.deps import _csrf_protect, _list_all_workspaces, teen_guard
 
@@ -68,69 +66,68 @@ def _locations() -> list[dict[str, str]]:
     return [{**item, "parent": roots[item["id"]]} for item in LOCATIONS]
 
 
-def _sorted_editions(entries: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """版本选项按名称排序；默认选中最通行的版本（统编版 > 人教版 > 书目最多）。"""
-    names = sorted(entries, key=edition_sort_key)
-    for preferred in ("统编版", "人教版"):
-        if preferred in entries:
-            top = preferred
-            break
-    else:
-        top = max(names, key=lambda name: entries[name]["count"])
-    return [
-        {
-            "name": name,
-            "publisher": EDITION_PUBLISHERS.get(name, ""),
-            "default": name == top,
-            "grades": sorted(entries[name]["grades"]),
-        }
-        for name in names
-    ]
+def _textbook_editions() -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """按官方目录统计各学段、学科实际存在的教材版本。
 
-
-def _textbook_editions() -> dict[str, dict[str, dict[str, list[dict[str, Any]]]]]:
-    """从教材清单统计各学制、学段、学科实际存在的教材版本（仅正文教材）。"""
-    entries: dict[str, dict[str, dict[str, dict[str, dict[str, Any]]]]] = {
-        system: {stage: {} for stage in STAGES} for system in SYSTEMS
-    }
+    官方把五•四学制作为独立学段，因此不再区分「学制」维度。
+    """
     try:
-        catalog = get_catalog()
-    except TextbookCatalogError:
-        pass
-    else:
-        for book in catalog.books:
-            stages = entries.get(book.system)
-            if not stages or book.stage not in STAGES or not book.edition:
+        catalog = get_official_catalog()
+    except Exception:  # noqa: BLE001 —— 平台目录不可用时返回空映射
+        return {}
+    result: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for stage in catalog.stage_options():
+        subjects: dict[str, list[dict[str, Any]]] = {}
+        for item in catalog.subjects(stage=stage):
+            subject = item["subject"]
+            editions = catalog.editions(stage=stage, subject=subject)
+            if not editions:
                 continue
-            if book.book_type != "textbook":
-                continue
-            subjects = stages[book.stage].setdefault(book.subject, {})
-            item = subjects.setdefault(book.edition, {"count": 0, "grades": set()})
-            item["count"] += 1
-            item["grades"].add(book.grade or "")
-    return {
-        system: {
-            stage: {
-                subject: _sorted_editions(subject_entries)
-                for subject, subject_entries in subjects.items()
-            }
-            for stage, subjects in stages.items()
-        }
-        for system, stages in entries.items()
-    }
+            names = [entry["edition"] for entry in editions]
+            if "统编版" in names:
+                top = "统编版"
+            elif "人教版" in names:
+                top = "人教版"
+            else:
+                top = max(editions, key=lambda entry: entry["count"])["edition"]
+            subjects[subject] = [
+                {
+                    "name": entry["edition"],
+                    "publisher": "",
+                    "default": entry["edition"] == top,
+                    "grades": entry["grades"],
+                    "count": entry["count"],
+                }
+                for entry in editions
+            ]
+        if subjects:
+            result[stage] = subjects
+    return result
 
 
 @router.get("/api/workspace-wizard/options")
 async def workspace_wizard_options():
-    """返回向导静态选项。"""
+    """返回向导选项：学段/年级/学科与教材版本均来自官方平台目录。"""
+
+    def build() -> tuple[list[str], dict[str, list[str]], dict[str, list[str]],
+                          dict[str, dict[str, list[dict[str, Any]]]]]:
+        try:
+            stages = stage_options()
+        except Exception:  # noqa: BLE001 —— 平台目录不可用时前端降级为空列表
+            return [], {}, {}, {}
+        grades = {stage: grade_options(stage) for stage in stages}
+        subjects = study_subjects_by_stage()
+        editions = _textbook_editions()
+        return stages, grades, subjects, editions
+
+    stages, grades, subjects, editions = await asyncio.to_thread(build)
     return {
         "categories": list(CATEGORIES.values()),
         "locations": _locations(),
-        "stages": list(STAGES),
-        "systems": list(SYSTEMS),
-        "grades": GRADES,
-        "textbook_editions": _textbook_editions(),
-        "study_subjects": STUDY_SUBJECTS,
+        "stages": stages,
+        "grades": grades,
+        "textbook_editions": editions,
+        "study_subjects": subjects,
         "defaults": {
             "location": "cili",
             "git_enabled": True,
@@ -161,10 +158,9 @@ async def workspace_wizard_preview(request: WorkspaceWizardRequest):
 
 
 def _start_textbook_tasks(created: list[dict[str, Any]], profile: dict[str, Any]) -> list[dict[str, Any]]:
-    """为学习项目工作区启动匹配教材的下载任务。"""
-    catalog = get_catalog()
+    """为学习项目工作区启动匹配教材的下载任务（官方目录 + 浏览器登录凭据）。"""
+    catalog = get_official_catalog()
     stage = str(profile.get("stage") or "")
-    system = str(profile.get("system") or "六三制")
     grade = str(profile.get("grade") or "")
     tasks: list[dict[str, Any]] = []
     for item in created:
@@ -174,15 +170,14 @@ def _start_textbook_tasks(created: list[dict[str, Any]], profile: dict[str, Any]
         edition = str((item.get("profile") or {}).get("textbook_edition") or "")
         books = catalog.find_books(
             stage=stage,
-            system=system,
             subject=subject,
             edition=edition,
             grade=grade,
-            book_types=("textbook",),
-            high_scope="all_textbook_volumes",
         )
         if not books:
             continue
+        # 与 PDF 下载成功与否无关：先把已生成的教材 Markdown 复制到 教材/
+        copied = copy_textbook_markdown(item["directory"], catalog, books)
         task = textbook_tasks.start(
             workspace_uuid=str(item["uuid"]),
             workspace_dir=item["directory"],
@@ -197,6 +192,7 @@ def _start_textbook_tasks(created: list[dict[str, Any]], profile: dict[str, Any]
             "task_id": task.task_id,
             "total_books": len(books),
             "total_bytes": task.total_bytes,
+            "markdown_copies": len(copied),
         })
     return tasks
 
@@ -230,8 +226,6 @@ async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateR
     if body.category == "study" and body.download_textbooks and result.get("created"):
         try:
             textbook_tasks_response = _start_textbook_tasks(result["created"], body.profile)
-        except TextbookCatalogError as e:
-            warnings.append(f"教材清单不可用，已跳过自动下载: {e}")
         except TextbookDownloadError as e:
             warnings.append(f"教材下载任务创建失败: {e}")
         except Exception as e:  # noqa: BLE001 —— 教材下载失败不回滚工作区

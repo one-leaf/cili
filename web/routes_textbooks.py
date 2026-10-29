@@ -1,11 +1,13 @@
-"""教材清单查询与自动下载路由域。
+"""官方教材目录查询与下载路由域。
 
-清单来自 ``core/templates/textbooks/china_textbook_catalog.json``。查询接口只读
-清单；下载接口创建后台任务，把教材平铺写入工作区 ``教材/``。
+目录来自国家中小学智慧教育平台（``core.textbooks.smartedu``，内存 + 磁盘缓存
+24 小时）。下载需要平台登录凭据：缺失时会自动打开浏览器引导手机号登录
+（``smartedu_login``），抓取凭据后写入缓存目录长期生效。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,16 +17,23 @@ from pydantic import BaseModel
 from core.config import get_workspace_data_dir, load_workspace_config
 from core.teen_mode import get_teen_mode
 from core.textbooks import (
-    CatalogBook,
-    TextbookCatalogError,
+    OfficialBook,
     TextbookDownloadError,
-    get_catalog,
+    get_official_catalog,
     textbook_tasks,
 )
+from core.textbooks.markdown_store import copy_textbook_markdown
+from core.textbooks.smartedu import SmartEduError
+from core.textbooks.smartedu_login import credentials_ready, login_status, start_login
 from web.deps import _SAFE_ID_RE, _csrf_protect, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+LOGIN_REQUIRED_MESSAGE = (
+    "需要先在浏览器完成教材平台登录（已自动打开登录页）；"
+    "用手机号注册/登录后回到本页重试下载。"
+)
 
 
 class TextbookDownloadRequest(BaseModel):
@@ -37,18 +46,13 @@ class TextbookRetryRequest(BaseModel):
     book_keys: list[str] | None = None
 
 
-def _catalog_or_400():
+def _catalog_or_503():
     try:
-        return get_catalog()
-    except TextbookCatalogError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-def _parse_book_types(raw: str, catalog) -> tuple[str, ...]:
-    if not raw:
-        return catalog.default_book_types
-    types = tuple(item.strip() for item in raw.split(",") if item.strip())
-    return types or catalog.default_book_types
+        return get_official_catalog()
+    except SmartEduError as e:
+        raise HTTPException(status_code=503, detail=f"平台教材目录不可用: {e}") from e
+    except Exception as e:  # noqa: BLE001 —— 平台异常统一转 503
+        raise HTTPException(status_code=503, detail=f"平台教材目录不可用: {e}") from e
 
 
 def _workspace_or_404(workspace_uuid: str) -> dict[str, Any]:
@@ -63,32 +67,30 @@ def _workspace_or_404(workspace_uuid: str) -> dict[str, Any]:
     return info
 
 
-def _validate_books(catalog, book_keys: list[str]) -> list[CatalogBook]:
+def _validate_books(catalog, book_keys: list[str]) -> list[OfficialBook]:
     if not book_keys:
         raise HTTPException(status_code=400, detail="没有选择要下载的教材")
     if len(book_keys) != len(set(book_keys)):
         raise HTTPException(status_code=400, detail="教材重复选择")
-    books: list[CatalogBook] = []
+    books: list[OfficialBook] = []
     for key in book_keys:
         if not _SAFE_ID_RE.fullmatch(key or ""):
             raise HTTPException(status_code=400, detail=f"Invalid book_key: {key}")
         book = catalog.get_by_key(key)
         if not book:
-            raise HTTPException(status_code=400, detail=f"教材不在清单中: {key}")
+            raise HTTPException(status_code=400, detail=f"教材不在平台目录中: {key}")
         books.append(book)
     return books
 
 
 @router.get("/api/textbooks/subjects")
 async def textbook_subjects(stage: str = "", system: str = "", book_types: str = "textbook"):
-    """返回可选学科；供向导/设置页联动。"""
-    catalog = _catalog_or_400()
-    types = _parse_book_types(book_types, catalog)
+    """返回可选学科（``system``/``book_types`` 仅保留参数兼容）。"""
+    del system, book_types
+    catalog = await asyncio.to_thread(_catalog_or_503)
     return {
         "source_commit": catalog.source_commit,
-        "subjects": catalog.subjects(
-            stage=stage.strip(), system=system.strip(), book_types=types,
-        ),
+        "subjects": catalog.subjects(stage=stage.strip()),
     }
 
 
@@ -104,25 +106,20 @@ async def textbook_options(
     book_types: str = "textbook",
     edition_grade: str = "",
 ):
-    """按学段/系统/学科/版本/年级/学期返回可选教材；edition_grade 用于过滤版本列表。"""
-    catalog = _catalog_or_400()
-    types = _parse_book_types(book_types, catalog)
+    """按学段/学科/版本/年级/册次返回可选教材（``system``/``book_types`` 仅兼容）。"""
+    del system, high_scope, book_types
+    catalog = await asyncio.to_thread(_catalog_or_503)
     books = catalog.find_books(
         stage=stage.strip(),
-        system=system.strip(),
         subject=subject.strip(),
         edition=edition.strip(),
         grade=grade.strip(),
         semester=semester.strip(),
-        high_scope=high_scope.strip() or "all_textbook_volumes",
-        book_types=types,
     )
     editions = catalog.editions(
         stage=stage.strip(),
-        system=system.strip(),
         subject=subject.strip(),
         grade=edition_grade.strip(),
-        book_types=types,
     )
     warnings: list[str] = []
     if not books:
@@ -132,23 +129,45 @@ async def textbook_options(
         "editions": editions,
         "books": [book.public_dict() for book in books],
         "total_size": sum(book.total_size for book in books),
-        "split_count": sum(1 for book in books if book.split),
+        "split_count": 0,
         "warnings": warnings,
     }
+
+
+@router.get("/api/textbooks/login/status")
+async def textbook_login_status():
+    """查询教材平台登录状态（凭据缓存于 data/cili/cache，登录一次长期有效）。"""
+    return {**login_status(), "credentials_ready": credentials_ready()}
+
+
+@router.post("/api/textbooks/login",
+             dependencies=[Depends(teen_guard("config_update"))])
+async def textbook_login(request: Request):
+    """打开浏览器引导用户手机号登录，并抓取平台凭据写入缓存。"""
+    _csrf_protect(request)
+    if credentials_ready():
+        return {"ok": True, "message": "已有登录凭据", "running": False}
+    return start_login()
 
 
 @router.post("/api/textbooks/download",
              dependencies=[Depends(teen_guard("config_update"))])
 async def download_textbooks(request: Request, body: TextbookDownloadRequest):
-    """创建后台教材下载任务。"""
+    """创建后台教材下载任务；未登录时自动打开浏览器登录页。"""
     _csrf_protect(request)
     info = _workspace_or_404(body.workspace_uuid)
     workspace_dir = info.get("directory") or ""
     if not workspace_dir:
         raise HTTPException(status_code=400, detail="Workspace directory not configured")
-
-    catalog = _catalog_or_400()
+    catalog = await asyncio.to_thread(_catalog_or_503)
     books = _validate_books(catalog, body.book_keys)
+    # 无论 PDF 是否下载成功，先把已生成的教材 Markdown 复制到 教材/
+    copied = await asyncio.to_thread(copy_textbook_markdown, workspace_dir, catalog, books)
+
+    if not credentials_ready():
+        status = start_login()
+        raise HTTPException(status_code=409, detail=LOGIN_REQUIRED_MESSAGE,
+                            headers={"X-Cili-Login": str(status.get("running", False)).lower()})
     try:
         task = textbook_tasks.start(
             workspace_uuid=body.workspace_uuid,
@@ -169,6 +188,7 @@ async def download_textbooks(request: Request, body: TextbookDownloadRequest):
         "total_books": len(books),
         "total_bytes": task.total_bytes,
         "status": task.status,
+        "markdown_copies": len(copied),
     }
 
 

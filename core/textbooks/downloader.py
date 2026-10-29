@@ -1,11 +1,12 @@
-"""教材下载任务：流式下载分片、断点续传、重试与进度。
+"""教材下载任务：官方平台源文件流式下载、断点续传、重试与进度。
+
+数据来自国家中小学智慧教育平台：目录由 ``smartedu`` 模块抓取并缓存；每本书
+下载前按其 content_id 查询详情接口取源文件地址（私有 CDN，需要登录凭据，
+``X-ND-AUTH`` MAC 签名按每条 URL 现算）。凭据由浏览器登录流程抓取并缓存。
 
 任务由 FastAPI 路由创建后在当前事件循环里后台执行；不阻塞工作区创建。
-所有 URL 都必须来自教材清单并指向固定提交的 raw 地址；不接受用户传入的
-任意 URL。直连失败按固定镜像前缀回退（ghproxy.net → ghfast.top → gh-proxy.com，
-与升级包下载共用同一列表），续传的 ``.part`` 文件在切换源时继续使用。目标文件
-平铺写到工作区 ``教材/`` 下（重名自动加版本前缀），分片与临时文件写在
-工作区 ``.cili/tmp/textbooks/<book_key>/``。
+目标文件平铺写到工作区 ``教材/`` 下（重名自动加版本前缀），临时文件写在
+工作区 ``.cili/tmp/textbooks/<content_id>/``。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import os
 import re
 import secrets
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -26,37 +27,27 @@ from urllib.parse import urlparse
 import httpx
 
 from core.fs_utils import atomic_write_json, load_json_or_backup
-from core.textbooks.catalog import CatalogBook, TextbookCatalog
-from core.textbooks.merge import merge_textbook_chunks
+from core.textbooks.smartedu import (
+    BASE_HEADERS,
+    PRIVATE_CDN_HOSTS,
+    OfficialBook,
+    OfficialCatalog,
+    build_nd_auth,
+    clear_credentials,
+    fetch_book_source,
+)
 
 logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = ".manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
-DOWNLOAD_HOST = "raw.githubusercontent.com"
-BOOK_KEY_RE = re.compile(r"^[0-9a-f]{12}$")
+BOOK_KEY_RE = re.compile(r"^[0-9A-Za-z-]{8,80}$")
 MAX_CONCURRENT_BOOKS = 2
 MAX_ATTEMPTS = 5
 ATTEMPT_BACKOFF_SECONDS = (0.25, 0.5, 1.0, 2.0, 2.0)
 DOWNLOAD_BLOCK_SIZE = 256 * 1024
-
-# GitHub 直连失败后的镜像回退前缀（与 core/updater.py / scripts/upgrade.ps1 的镜像列表一致）
-GITHUB_MIRROR_PREFIXES = (
-    "https://ghproxy.net/",
-    "https://ghfast.top/",
-    "https://gh-proxy.com/",
-)
-
-
-def _candidate_urls(url: str) -> list[str]:
-    """直连 + 镜像回退列表；镜像仅做前缀改写，原始 URL 仍受清单校验约束。"""
-    return [url] + [prefix + url for prefix in GITHUB_MIRROR_PREFIXES]
-
-
-def _source_label(candidate: str, url: str) -> str:
-    if candidate == url:
-        return "直连"
-    return candidate.split("/")[2] if "://" in candidate else candidate
+# 私有 CDN 短时间连打会 400：同地址退避重试（每次重新签名）比立刻换镜像更有效
+_SAME_URL_400_DELAYS = (1.0, 3.0)
 MIN_FREE_RATIO = 1.2
 MIN_FREE_HEADROOM = 64 * 1024 * 1024
 
@@ -73,8 +64,8 @@ class BookProgress:
     title: str
     target_path: str
     total_size: int
-    chunk_count: int
-    split: bool
+    chunk_count: int = 1
+    split: bool = False
     status: str = "pending"
     downloaded_bytes: int = 0
     error: str = ""
@@ -104,10 +95,9 @@ class TextbookDownloadTask:
     workspace_dir: Path
     data_dir: Path
     source_commit: str
-    raw_base: str
     overwrite: bool
     books: dict[str, BookProgress]
-    catalog_books: dict[str, CatalogBook]
+    catalog_books: dict[str, OfficialBook]
     status: str = "running"
     downloaded_bytes: int = 0
     total_bytes: int = 0
@@ -139,19 +129,36 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _validate_book_key(book: CatalogBook) -> None:
-    if not BOOK_KEY_RE.fullmatch(book.book_key):
-        raise TextbookDownloadError(f"教材 book_key 非法: {book.book_key}")
+def _validate_book_key(book: OfficialBook) -> None:
+    if not BOOK_KEY_RE.fullmatch(book.content_id):
+        raise TextbookDownloadError(f"教材 content_id 非法: {book.content_id}")
 
 
-def _validate_file_url(book: CatalogBook, file: dict[str, Any], raw_base: str) -> str:
-    url = str(file.get("url") or "")
+def _validate_source_url(url: str) -> str:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != DOWNLOAD_HOST:
-        raise TextbookDownloadError(f"教材下载 URL 非法: {book.book_key}")
-    if raw_base and not url.startswith(raw_base):
-        raise TextbookDownloadError(f"教材下载 URL 不属于清单提交: {book.book_key}")
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise TextbookDownloadError("教材源文件地址非法")
+    if not parsed.hostname.endswith(".ykt.cbern.com.cn"):
+        raise TextbookDownloadError(f"教材源文件域名非法: {parsed.hostname}")
     return url
+
+
+def _cdn_candidates(url: str) -> list[str]:
+    """私有 CDN 镜像顺序：原 host 优先，再切 r1/r2/r3 中其余地址。"""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if host not in PRIVATE_CDN_HOSTS:
+        return [url]
+    others = [h for h in PRIVATE_CDN_HOSTS if h != host]
+    return [url] + [
+        url.replace(f"//{host}", f"//{other}", 1) for other in others
+    ]
+
+
+def _signed_headers(url: str) -> dict[str, str]:
+    headers = dict(BASE_HEADERS)
+    headers["X-ND-AUTH"] = build_nd_auth(url, "GET")
+    return headers
 
 
 def _target_path(workspace_dir: Path, relative: str, book_key: str) -> Path:
@@ -187,11 +194,7 @@ def _save_manifest(workspace_dir: Path, data: dict[str, Any]) -> None:
     atomic_write_json(_manifest_path(workspace_dir), data)
 
 
-def _record_book(
-    workspace_dir: Path,
-    source_commit: str,
-    progress: BookProgress,
-) -> None:
+def _record_book(workspace_dir: Path, source_commit: str, progress: BookProgress) -> None:
     manifest = _load_manifest(workspace_dir)
     manifest["source_commit"] = source_commit
     manifest["books"][progress.book_key] = {
@@ -200,8 +203,8 @@ def _record_book(
         "status": progress.status,
         "bytes": progress.total_size,
         "sha256": progress.sha256,
-        "chunk_count": progress.chunk_count,
-        "split": progress.split,
+        "chunk_count": 1,
+        "split": False,
         "error": progress.error,
         "updated_at": _now(),
     }
@@ -253,8 +256,8 @@ class TextbookTaskManager:
         workspace_uuid: str,
         workspace_dir: Path,
         data_dir: Path,
-        catalog: TextbookCatalog,
-        books: list[CatalogBook],
+        catalog: OfficialCatalog,
+        books: list[OfficialBook],
         overwrite: bool,
         flat_names: dict[str, str] | None = None,
     ) -> TextbookDownloadTask:
@@ -268,24 +271,22 @@ class TextbookTaskManager:
         seen_keys: set[str] = set()
         for book in books:
             _validate_book_key(book)
-            if book.book_key in seen_keys:
-                raise TextbookDownloadError(f"教材重复选择: {book.book_key}")
-            seen_keys.add(book.book_key)
+            if book.content_id in seen_keys:
+                raise TextbookDownloadError(f"教材重复选择: {book.content_id}")
+            seen_keys.add(book.content_id)
 
         progress_books: dict[str, BookProgress] = {}
-        catalog_books: dict[str, CatalogBook] = {}
+        catalog_books: dict[str, OfficialBook] = {}
         for book in books:
-            flat = (flat_names or {}).get(book.book_key) or f"教材/{catalog.flat_filename(book)}"
+            flat = (flat_names or {}).get(book.content_id) or f"教材/{catalog.flat_filename(book)}"
             progress = BookProgress(
-                book_key=book.book_key,
+                book_key=book.content_id,
                 title=book.title,
                 target_path=flat,
                 total_size=book.total_size,
-                chunk_count=book.chunk_count,
-                split=book.split,
             )
-            progress_books[book.book_key] = progress
-            catalog_books[book.book_key] = book
+            progress_books[book.content_id] = progress
+            catalog_books[book.content_id] = book
 
         task = TextbookDownloadTask(
             task_id=secrets.token_hex(4),
@@ -293,7 +294,6 @@ class TextbookTaskManager:
             workspace_dir=Path(workspace_dir),
             data_dir=Path(data_dir),
             source_commit=catalog.source_commit,
-            raw_base=catalog.raw_base,
             overwrite=overwrite,
             books=progress_books,
             catalog_books=catalog_books,
@@ -309,8 +309,8 @@ class TextbookTaskManager:
         workspace_uuid: str,
         workspace_dir: Path | str,
         data_dir: Path | str,
-        catalog: TextbookCatalog,
-        books: list[CatalogBook],
+        catalog: OfficialCatalog,
+        books: list[OfficialBook],
         overwrite: bool = False,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         flat_names: dict[str, str] | None = None,
@@ -368,7 +368,6 @@ class TextbookTaskManager:
             workspace_uuid=old.workspace_uuid,
             workspace_dir=old.workspace_dir,
             data_dir=old.data_dir,
-            # retry 只重建下载行为；catalog 元数据来自原任务，避免重新读盘。
             catalog=_retry_catalog(old),
             books=books,
             overwrite=True,
@@ -412,7 +411,7 @@ class TextbookTaskManager:
             factory = client_factory or _default_client_factory
             async with factory() as client:
 
-                async def run_one(book: CatalogBook) -> None:
+                async def run_one(book: OfficialBook) -> None:
                     async with semaphore:
                         if task.cancel_event.is_set():
                             return
@@ -422,8 +421,6 @@ class TextbookTaskManager:
                     *(run_one(book) for book in task.catalog_books.values()),
                     return_exceptions=True,
                 )
-            # 单本书失败在 _download_book 内转为 failed 状态；这里按最终
-            # 状态汇总，避免异常被吞掉后误报 done。
             failures = [item for item in results if isinstance(item, BaseException)]
             failed_books = [
                 progress for progress in task.books.values()
@@ -433,14 +430,14 @@ class TextbookTaskManager:
                 task.status = "cancelled"
             elif failures or failed_books:
                 task.status = "partial_failed"
-                task.error = f"{len(failures) + len(failed_books)} 本教材下载或合并失败"
+                task.error = f"{len(failures) + len(failed_books)} 本教材下载失败"
             else:
                 task.status = "done"
         except asyncio.CancelledError:
             task.status = "cancelled"
             task.error = "下载已取消"
             for progress in task.books.values():
-                if progress.status in ("pending", "downloading", "merging"):
+                if progress.status in ("pending", "downloading"):
                     progress.status = "cancelled"
             _save_task_manifest(task)
             raise
@@ -458,45 +455,58 @@ class TextbookTaskManager:
     async def _download_book(
         self,
         task: TextbookDownloadTask,
-        book: CatalogBook,
+        book: OfficialBook,
         client: httpx.AsyncClient,
     ) -> None:
-        progress = task.books[book.book_key]
+        progress = task.books[book.content_id]
         progress.status = "downloading"
         task.touch()
         try:
-            target = _target_path(task.workspace_dir, progress.target_path, book.book_key)
-            temp_dir = task.data_dir / "tmp" / "textbooks" / book.book_key
+            target = _target_path(task.workspace_dir, progress.target_path, book.content_id)
+            temp_dir = task.data_dir / "tmp" / "textbooks" / book.content_id
             temp_dir.mkdir(parents=True, exist_ok=True)
-            self._recount_downloaded(task, book, temp_dir)
 
             if target.exists() and not task.overwrite:
-                if target.stat().st_size == book.total_size:
+                if not book.total_size or target.stat().st_size == book.total_size:
                     progress.status = "skipped"
-                    progress.downloaded_bytes = book.total_size
-                    task.downloaded_bytes += book.total_size
+                    size = target.stat().st_size
+                    progress.total_size = progress.downloaded_bytes = size
+                    task.downloaded_bytes += size
                     progress.sha256 = _file_sha256(target)
                     _record_book(task.workspace_dir, task.source_commit, progress)
                     return
                 raise TextbookDownloadError(f"目标教材已存在且大小不符: {target}")
 
-            chunk_paths: list[Path] = []
-            for file in sorted(book.files, key=lambda item: int(item.get("index", 0))):
-                _validate_file_url(book, file, task.raw_base)
-                chunk_paths.append(await self._download_chunk(task, book, file, temp_dir, client))
+            source = await asyncio.to_thread(fetch_book_source, book.content_id)
+            url = _validate_source_url(str(source["url"]))
+            expected_size = int(source.get("size") or book.total_size or 0)
 
-            progress.status = "merging"
-            task.touch()
-            result = merge_textbook_chunks(
-                chunk_paths,
-                target,
-                expected_size=book.total_size,
-                overwrite=True,
-            )
+            part_path = temp_dir / "source.part"
+            done_path = temp_dir / "source.done"
+            if done_path.is_file():
+                if not expected_size or done_path.stat().st_size == expected_size:
+                    part_path = done_path
+                else:
+                    done_path.unlink(missing_ok=True)
+            if part_path.is_file() and expected_size and part_path.stat().st_size > expected_size:
+                part_path.unlink(missing_ok=True)
+
+            if not (done_path.is_file() and not expected_size):
+                part_path = await self._download_source(
+                    task, book, url, expected_size, temp_dir, client,
+                )
+
+            size = part_path.stat().st_size
+            if expected_size and size != expected_size:
+                raise TextbookDownloadError(
+                    f"文件大小不符: 实际 {size}，平台 {expected_size}"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(part_path, target)
             progress.status = "done"
-            progress.downloaded_bytes = result.size
-            progress.sha256 = result.sha256
-            self._recount_downloaded(task, book, temp_dir, final_size=result.size)
+            progress.total_size = progress.downloaded_bytes = size
+            progress.sha256 = _file_sha256(target)
+            task.downloaded_bytes += size
             shutil.rmtree(temp_dir, ignore_errors=True)
             _record_book(task.workspace_dir, task.source_commit, progress)
         except asyncio.CancelledError:
@@ -507,61 +517,66 @@ class TextbookTaskManager:
             progress.error = str(e)
             _record_book(task.workspace_dir, task.source_commit, progress)
         except Exception as e:  # noqa: BLE001 —— 单本书失败不影响其它书
-            logger.exception("[textbooks] 教材下载失败: %s", book.book_key)
+            logger.exception("[textbooks] 教材下载失败: %s", book.content_id)
             progress.status = "failed"
-            progress.error = f"下载或合并失败: {e}"
+            progress.error = f"下载失败: {e}"
             _record_book(task.workspace_dir, task.source_commit, progress)
 
-    async def _download_chunk(
+    async def _download_source(
         self,
         task: TextbookDownloadTask,
-        book: CatalogBook,
-        file: dict[str, Any],
+        book: OfficialBook,
+        url: str,
+        expected_size: int,
         temp_dir: Path,
         client: httpx.AsyncClient,
     ) -> Path:
-        try:
-            index = int(file.get("index", 0))
-            expected_size = int(file.get("size", 0))
-        except (TypeError, ValueError) as e:
-            raise TextbookDownloadError(f"分片序号或大小非法: {book.book_key}") from e
-        if index <= 0 or expected_size <= 0:
-            raise TextbookDownloadError(f"分片序号或大小非法: {book.book_key}")
-        url = _validate_file_url(book, file, task.raw_base)
-        candidates = _candidate_urls(url)
-
-        part_path = temp_dir / f"{index:04d}.part"
-        done_path = temp_dir / f"{index:04d}.done"
+        """下载单本教材源文件（Range 续传 + 镜像回退 + 400 退避）。"""
+        part_path = temp_dir / "source.part"
+        done_path = temp_dir / "source.done"
         if done_path.is_file():
-            if done_path.stat().st_size == expected_size:
-                self._recount_downloaded(task, book, temp_dir)
-                return done_path
-            done_path.unlink(missing_ok=True)
-        if part_path.is_file() and part_path.stat().st_size > expected_size:
-            part_path.unlink(missing_ok=True)
-
+            return done_path
+        candidates = _cdn_candidates(url)
         last_error: Exception | None = None
+        same_url_retry = 0
+
         for attempt in range(MAX_ATTEMPTS):
             if task.cancel_event.is_set():
                 raise asyncio.CancelledError()
             candidate = candidates[attempt % len(candidates)]
             offset = part_path.stat().st_size if part_path.exists() else 0
-            if offset > expected_size:
+            if expected_size and offset > expected_size:
                 offset = 0
                 part_path.unlink(missing_ok=True)
-            headers = {"Range": f"bytes={offset}-"} if offset else {}
+            headers = _signed_headers(candidate)
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
             try:
                 async with client.stream("GET", candidate, headers=headers) as response:
-                    if response.status_code == 416 and offset == expected_size:
+                    if response.status_code == 400:
+                        body = (await response.aread())[:200].decode("utf-8", "replace")
+                        if same_url_retry < len(_SAME_URL_400_DELAYS):
+                            delay = _SAME_URL_400_DELAYS[same_url_retry]
+                            same_url_retry += 1
+                            await asyncio.sleep(delay)
+                            continue
+                        if "InvalidArgument" in body:
+                            clear_credentials()
+                            raise TextbookDownloadError(
+                                "平台登录已过期，请重新登录后再下载"
+                            )
+                        raise TextbookDownloadError("教材源文件下载失败: HTTP 400")
+                    if response.status_code in (401, 403):
+                        clear_credentials()
+                        raise TextbookDownloadError("平台登录已过期，请重新登录后再下载")
+                    if response.status_code == 416 and expected_size and offset == expected_size:
                         break
                     if response.status_code == 200 and offset:
-                        # 服务端不支持 Range：从头下载。
                         offset = 0
                         part_path.unlink(missing_ok=True)
-                        self._recount_downloaded(task, book, temp_dir)
                     elif response.status_code not in (200, 206):
                         raise TextbookDownloadError(
-                            f"分片下载失败: HTTP {response.status_code}"
+                            f"教材源文件下载失败: HTTP {response.status_code}"
                         )
                     mode = "ab" if response.status_code == 206 else "wb"
                     with open(part_path, mode) as out:
@@ -571,11 +586,11 @@ class TextbookTaskManager:
                             if not block:
                                 continue
                             out.write(block)
-                            task.books[book.book_key].downloaded_bytes += len(block)
+                            task.books[book.content_id].downloaded_bytes += len(block)
                             task.downloaded_bytes += len(block)
-                if part_path.stat().st_size != expected_size:
+                if expected_size and part_path.stat().st_size != expected_size:
                     raise TextbookDownloadError(
-                        f"分片大小不符: 实际 {part_path.stat().st_size}，清单 {expected_size}"
+                        f"下载不完整: 实际 {part_path.stat().st_size}，平台 {expected_size}"
                     )
                 os.replace(part_path, done_path)
                 return done_path
@@ -584,54 +599,24 @@ class TextbookTaskManager:
             except (httpx.HTTPError, OSError, TextbookDownloadError) as e:
                 last_error = e
                 logger.warning(
-                    "[textbooks] 分片下载失败（第 %s 次，源 %s）: %s/%s: %s",
-                    attempt + 1, _source_label(candidate, url), book.book_key, index, e,
+                    "[textbooks] 教材下载失败（第 %s 次，源 %s）: %s: %s",
+                    attempt + 1, urlparse(candidate).hostname or candidate,
+                    book.content_id, e,
                 )
+                if isinstance(e, TextbookDownloadError) and "登录" in str(e):
+                    raise
                 if attempt + 1 < MAX_ATTEMPTS:
-                    await asyncio.sleep(ATTEMPT_BACKOFF_SECONDS[min(attempt, len(ATTEMPT_BACKOFF_SECONDS) - 1)])
-        raise TextbookDownloadError(
-            f"分片下载失败: {book.book_key}/{index}: {last_error}"
-        )
+                    await asyncio.sleep(
+                        ATTEMPT_BACKOFF_SECONDS[min(attempt, len(ATTEMPT_BACKOFF_SECONDS) - 1)]
+                    )
+        raise TextbookDownloadError(f"教材下载失败: {book.content_id}: {last_error}")
 
 
-    def _recount_downloaded(
-        self,
-        task: TextbookDownloadTask,
-        book: CatalogBook,
-        temp_dir: Path,
-        *,
-        final_size: int | None = None,
-    ) -> None:
-        """按临时文件真实大小重算一本书的进度，避免续传重复计数。"""
-        if final_size is not None:
-            actual = final_size
-        else:
-            actual = 0
-            for file in book.files:
-                try:
-                    index = int(file.get("index", 0))
-                    expected_size = int(file.get("size", 0))
-                except (TypeError, ValueError):
-                    continue
-                done_path = temp_dir / f"{index:04d}.done"
-                part_path = temp_dir / f"{index:04d}.part"
-                if done_path.is_file():
-                    actual += min(done_path.stat().st_size, expected_size)
-                elif part_path.is_file():
-                    actual += min(part_path.stat().st_size, expected_size)
-        progress = task.books[book.book_key]
-        delta = actual - progress.downloaded_bytes
-        progress.downloaded_bytes = actual
-        task.downloaded_bytes = max(0, task.downloaded_bytes + delta)
-
-
-def _retry_catalog(task: TextbookDownloadTask) -> TextbookCatalog:
-    """从任务元数据构造最小 catalog，供重试使用。"""
-    return TextbookCatalog({
-        "source": {"commit": task.source_commit, "raw_base": task.raw_base},
-        "download_policy": {},
-        "merge": {},
-        "books": [book.__dict__ for book in task.catalog_books.values()],
+def _retry_catalog(task: TextbookDownloadTask) -> OfficialCatalog:
+    """从任务元数据构造最小目录，供重试使用。"""
+    return OfficialCatalog({
+        "fetched_at": task.source_commit,
+        "books": [asdict(book) for book in task.catalog_books.values()],
     })
 
 
@@ -660,8 +645,8 @@ def _save_task_manifest(task: TextbookDownloadTask) -> None:
                 "status": progress.status,
                 "bytes": progress.total_size,
                 "sha256": progress.sha256,
-                "chunk_count": progress.chunk_count,
-                "split": progress.split,
+                "chunk_count": 1,
+                "split": False,
                 "error": progress.error,
                 "updated_at": _now(),
             }
@@ -673,7 +658,7 @@ def _save_task_manifest(task: TextbookDownloadTask) -> None:
 def _default_client_factory() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         timeout=httpx.Timeout(60.0, connect=15.0),
-        follow_redirects=False,
+        follow_redirects=True,
         headers={"User-Agent": "cili-textbook-downloader/1.0"},
     )
 

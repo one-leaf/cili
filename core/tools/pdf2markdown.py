@@ -43,7 +43,7 @@ from typing import Any, Callable
 import requests
 
 try:
-    from pypdf import PdfReader, PdfWriter
+    from pypdf import PdfReader, PdfWriter, apply_configuration, get_configuration
 except ImportError:   # 未安装 pypdf 时无法拆分超限 PDF
     PdfReader = PdfWriter = None   # type: ignore[assignment]
 
@@ -84,8 +84,8 @@ _POLL_INTERVAL_S = 5
 _POLL_MAX_CONSECUTIVE_ERRORS = 12
 _POLL_HEARTBEAT_EVERY = 12     # 每 12 次轮询（约 1 分钟）打一条心跳日志
 
-_DEFAULT_TIMEOUT_S = 3600      # 单次解析默认总超时（1 小时）
-_MAX_TIMEOUT_S = 3600          # 参数上限
+_DEFAULT_TIMEOUT_S = 7200      # 单次解析默认总超时（2 小时）
+_MAX_TIMEOUT_S = 7200          # 参数上限
 
 # 提交限流：官方所有创建解析任务接口共用 50 文件/分钟频控，按 40 留余量
 _SUBMIT_RATE_PER_MIN = 40
@@ -106,7 +106,10 @@ def _pdf_page_count(file_path: str) -> int:
     if PdfReader is None:
         return 0
     try:
-        return len(PdfReader(file_path).pages)
+        limit = max(get_configuration().maximum_declared_stream_length,
+                    os.path.getsize(file_path))
+        with apply_configuration(maximum_declared_stream_length=limit):
+            return len(PdfReader(file_path).pages)
     except Exception as e:
         logger.warning(f"[pdf2markdown] 读取页数失败: {e}")
         return 0
@@ -117,33 +120,36 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
     """按页数/大小把 PDF 拆成符合 Precision API 限制的分片（保持页序）"""
     if PdfReader is None or PdfWriter is None:
         raise RuntimeError("缺少 pypdf，无法拆分超限 PDF（请安装 pypdf）")
-    reader = PdfReader(file_path)
-    total = len(reader.pages)
-    size = os.path.getsize(file_path)
-    avg = size / max(total, 1)
-    # 按平均页大小估算每组页数，留 15% 余量；再用实际大小递归校正
-    pages_by_size = max(1, int(max_size_bytes * 0.85 / max(avg, 1)))
-    chunk = max(1, min(max_pages, pages_by_size))
-    tmp = tempfile.TemporaryDirectory(prefix="pdf2md_split_")
-    parts: list[Path] = []
+    limit = max(get_configuration().maximum_declared_stream_length,
+                os.path.getsize(file_path))
+    with apply_configuration(maximum_declared_stream_length=limit):
+        reader = PdfReader(file_path)
+        total = len(reader.pages)
+        size = os.path.getsize(file_path)
+        avg = size / max(total, 1)
+        # 按平均页大小估算每组页数，留 15% 余量；再用实际大小递归校正
+        pages_by_size = max(1, int(max_size_bytes * 0.85 / max(avg, 1)))
+        chunk = max(1, min(max_pages, pages_by_size))
+        tmp = tempfile.TemporaryDirectory(prefix="pdf2md_split_")
+        parts: list[Path] = []
 
-    def emit(start: int, end: int) -> None:
-        writer = PdfWriter()
-        for i in range(start, end):
-            writer.add_page(reader.pages[i])
-        out = Path(tmp.name) / f"part_{len(parts) + 1:03d}.pdf"
-        with open(out, "wb") as f:
-            writer.write(f)
-        if out.stat().st_size > max_size_bytes and (end - start) > 1:
-            out.unlink()   # 实际大小仍超限：二分继续拆
-            mid = (start + end) // 2
-            emit(start, mid)
-            emit(mid, end)
-        else:
-            parts.append(out)
+        def emit(start: int, end: int) -> None:
+            writer = PdfWriter()
+            for i in range(start, end):
+                writer.add_page(reader.pages[i])
+            out = Path(tmp.name) / f"part_{len(parts) + 1:03d}.pdf"
+            with open(out, "wb") as f:
+                writer.write(f)
+            if out.stat().st_size > max_size_bytes and (end - start) > 1:
+                out.unlink()   # 实际大小仍超限：二分继续拆
+                mid = (start + end) // 2
+                emit(start, mid)
+                emit(mid, end)
+            else:
+                parts.append(out)
 
-    for start in range(0, total, chunk):
-        emit(start, min(start + chunk, total))
+        for start in range(0, total, chunk):
+            emit(start, min(start + chunk, total))
     if not parts:
         raise RuntimeError(f"PDF 拆分失败：共 {total} 页")
     return parts, tmp
@@ -218,7 +224,7 @@ class PDF2MarkdownTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Total wait time in seconds (default: 3600, max: 3600). Polling keeps waiting while the task is pending/running; the call fails with a timeout once this deadline is reached.",
+                "description": "Total wait time in seconds (default: 7200, max: 7200). Polling keeps waiting while the task is pending/running; the call fails with a timeout once this deadline is reached.",
             },
             "output_path": {
                 "type": "string",

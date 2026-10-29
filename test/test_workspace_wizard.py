@@ -32,6 +32,36 @@ def _profile(**overrides):
     return data
 
 
+@pytest.fixture(autouse=True)
+def _fake_official_catalog(monkeypatch):
+    """用固定的小目录替代真实平台目录：测试离线、结果确定。"""
+    from core.textbooks.smartedu import OfficialCatalog
+
+    def book(content_id, stage, grade, subject, edition, title):
+        return {
+            "content_id": content_id, "title": title, "stage": stage,
+            "subject": subject, "edition": edition, "grade": grade,
+            "volume": "上册", "total_size": 1000,
+            "url": f"https://basic.smartedu.cn/tchMaterial/detail?contentId={content_id}",
+        }
+
+    books = [
+        book("00000001-0000-0000-0000-000000000001", "小学", "三年级", "科学", "人教版",
+             "义务教育教科书·科学三年级上册"),
+        book("00000002-0000-0000-0000-000000000002", "初中", "八年级", "数学", "人教版",
+             "义务教育教科书·数学八年级上册"),
+        book("00000003-0000-0000-0000-000000000003", "初中", "八年级", "数学", "北师大版",
+             "义务教育教科书·数学八年级上册"),
+        book("00000004-0000-0000-0000-000000000004", "初中", "八年级", "英语", "人教版",
+             "义务教育教科书·英语八年级上册"),
+        book("00000005-0000-0000-0000-000000000005", "初中（五•四学制）", "六年级", "数学", "人教版",
+             "义务教育教科书·数学六年级上册"),
+    ]
+    catalog = OfficialCatalog({"fetched_at": "2026-10-28 00:00:00", "books": books})
+    monkeypatch.setattr("core.textbooks.smartedu.get_catalog", lambda *a, **kw: catalog)
+    yield catalog
+
+
 def _use_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
 
@@ -103,20 +133,17 @@ def test_preview_rejects_duplicate_study_title(tmp_path):
         )
 
 
-def test_study_grade_linked_to_system():
-    with pytest.raises(WorkspaceWizardError, match="六年级"):
+def test_study_stage_and_grade_validated():
+    # 小学没有「八年级」
+    with pytest.raises(WorkspaceWizardError, match="八年级"):
         preview_workspaces(
             category="study", base_name="学生A", location="cili",
-            profile=_profile(grade="六年级"), subjects=["数学"],
+            profile=_profile(stage="小学", grade="八年级"), subjects=["数学"],
         )
-    with pytest.raises(WorkspaceWizardError, match="学制非法"):
-        preview_workspaces(
-            category="study", base_name="学生A", location="cili",
-            profile=_profile(system="不明学制"), subjects=["数学"],
-        )
+    # 五•四学制初中从六年级起
     preview = preview_workspaces(
         category="study", base_name="学生A", location="cili",
-        profile=_profile(system="五四制", grade="六年级"), subjects=["数学"],
+        profile=_profile(stage="初中（五•四学制）", grade="六年级"), subjects=["数学"],
     )
     assert preview["workspaces"][0]["name"] == "六年级-数学"
 
@@ -136,7 +163,7 @@ def test_study_agents_md_uses_subject_template(tmp_path, monkeypatch):
     assert "中考题型" in agents_md
     assert "八年级" in agents_md
     assert "广东" in agents_md
-    assert "义务教育教科书·数学八年级上册" in agents_md
+    assert "教科书" in agents_md
     import re
     assert not re.findall(r"\{\{\w+\}\}", agents_md)
 

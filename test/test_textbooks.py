@@ -1,21 +1,29 @@
-"""教材清单、分片合并与下载任务测试。"""
+"""官方教材目录、登录签名、缓存与下载任务测试。"""
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import base64
+import hashlib
+import hmac
+import json
 
 import httpx
 import pytest
 
-from core.textbooks import (
-    CatalogBook,
-    TextbookCatalog,
-    TextbookTaskManager,
-    get_catalog,
-    merge_textbook_chunks,
+from core.textbooks import TextbookTaskManager
+from core.textbooks import downloader as downloader_mod
+from core.textbooks import smartedu as smartedu_mod
+from core.textbooks.smartedu import (
+    OfficialCatalog,
+    SmartEduCredentials,
+    SmartEduError,
+    _extract_total_size,
+    build_nd_auth,
+    is_auth_expired,
+    signature_string,
 )
-from core.textbooks.merge import TextbookMergeError
+from core.textbooks.smartedu_login import _capture_from_output
 
 PDF_HEAD = b"%PDF-1.4\n"
 PDF_TAIL = b"\n%%EOF\n"
@@ -26,309 +34,322 @@ def _pdf_body(size: int, fill: bytes = b"a") -> bytes:
     return PDF_HEAD + fill * (size - len(PDF_HEAD) - len(PDF_TAIL)) + PDF_TAIL
 
 
-class TestCatalog:
-    """真实清单的基础校验和匹配。"""
+def _book(
+    content_id: str = "c3e06fe4-c6b3-49cb-8727-4f8ff69bbfbc",
+    title: str = "义务教育教科书·数学一年级上册",
+    *,
+    stage: str = "小学",
+    subject: str = "数学",
+    edition: str = "人教版",
+    grade: str = "一年级",
+    volume: str = "上册",
+    size: int = 100,
+) -> dict:
+    return {
+        "content_id": content_id,
+        "title": title,
+        "stage": stage,
+        "subject": subject,
+        "edition": edition,
+        "grade": grade,
+        "volume": volume,
+        "total_size": size,
+        "url": f"https://basic.smartedu.cn/tchMaterial/detail?contentId={content_id}",
+    }
 
-    def test_loads_real_catalog(self):
-        catalog = get_catalog()
-        assert catalog.books
-        assert catalog.source_commit
-        assert catalog.default_book_types == ("textbook",)
 
-    def test_edition_publishers_cover_catalog(self):
-        from core.textbooks.catalog import EDITION_PUBLISHERS
+def _catalog(*books: dict) -> OfficialCatalog:
+    return OfficialCatalog({"fetched_at": "2026-10-28 00:00:00", "books": list(books)})
 
-        catalog = get_catalog()
-        editions = {
-            book.edition
-            for book in catalog.books
-            if book.book_type == "textbook" and book.stage in ("小学", "初中", "高中") and book.edition
-        }
-        assert editions <= set(EDITION_PUBLISHERS), sorted(editions - set(EDITION_PUBLISHERS))
 
-    def test_edition_sort_key_pinyin_order(self):
-        from core.textbooks.catalog import edition_sort_key
+@pytest.fixture(autouse=True)
+def _clean_smartedu_memory_cache():
+    """隔离 smartedu 模块级内存缓存，避免跨测试文件互相污染。"""
+    smartedu_mod.reset_cache_for_tests()
+    yield
+    smartedu_mod.reset_cache_for_tests()
 
-        names = ["人教版", "冀教版", "北京版", "北师大版", "𝐀稀有字版"]
-        ordered = sorted(names, key=edition_sort_key)
-        assert ordered[:4] == ["北京版", "北师大版", "冀教版", "人教版"]
-        assert "𝐀稀有字版" in ordered
 
-    def test_finds_primary_math_pep(self):
-        catalog = get_catalog()
-        books = catalog.find_books(
-            stage="小学", system="六三制", subject="数学",
-            edition="人教版", book_types=("textbook",),
+class TestOfficialCatalog:
+    """目录查询：学段/年级/学科/版本、年级覆盖与文件命名。"""
+
+    def test_stage_and_grade_options(self):
+        catalog = _catalog(
+            _book(stage="高中", grade="高中年级"),
+            _book(content_id="a0000001-0000-0000-0000-000000000001", stage="小学", grade="一年级"),
+            _book(content_id="a0000002-0000-0000-0000-000000000002", stage="初中", grade="八年级"),
+            _book(content_id="a0000003-0000-0000-0000-000000000003", stage="小学（五•四学制）", grade="三年级"),
         )
-        assert len(books) == 12
-        grades = {book.grade for book in books}
-        assert "一年级" in grades
-        assert all(book.split is False or book.chunk_count > 0 for book in books)
+        assert catalog.stage_options() == ["小学", "小学（五•四学制）", "初中", "高中"]
+        assert catalog.grades("小学") == ["一年级"]
+        assert catalog.grades("小学（五•四学制）") == ["三年级"]
 
-    def test_high_school_default_contains_required_and_selective(self):
-        catalog = get_catalog()
-        books = catalog.find_books(
-            stage="高中", subject="数学", edition="人教版（A版）（主编：章建跃&李增沪）-人民教育出版社",
+    def test_grade_coverage_handles_aliases_and_merged_books(self):
+        merged = _book(content_id="b0000001-0000-0000-0000-000000000001",
+                       grade="一至二年级", stage="小学")
+        high = _book(content_id="b0000002-0000-0000-0000-000000000002",
+                     stage="高中", grade="高中年级")
+        catalog = _catalog(merged, high)
+        assert [b.content_id for b in catalog.find_books(stage="小学", grade="二年级")] \
+            == [merged["content_id"]]
+        for grade in ("高一", "高二", "高三"):
+            assert [b.content_id for b in catalog.find_books(stage="高中", grade=grade)] \
+                == [high["content_id"]]
+
+    def test_editions_expand_covered_grades(self):
+        catalog = _catalog(
+            _book(content_id="c0000001-0000-0000-0000-000000000001", grade="一至二年级"),
+            _book(content_id="c0000002-0000-0000-0000-000000000002", grade="三年级",
+                  title="义务教育教科书·数学三年级上册"),
         )
-        assert {book.high_type for book in books} >= {"必修", "选择性必修"}
-        required_only = catalog.find_books(
-            stage="高中", subject="数学",
-            edition="人教版（A版）（主编：章建跃&李增沪）-人民教育出版社",
-            high_scope="required_only",
+        editions = catalog.editions(stage="小学", subject="数学")
+        assert len(editions) == 1
+        assert editions[0]["grades"] == ["一年级", "二年级", "三年级"]
+
+    def test_flat_filename_dedupes_same_title_across_editions(self):
+        catalog = _catalog(
+            _book(content_id="d0000001-0000-0000-0000-000000000001", edition="人教版"),
+            _book(content_id="d0000002-0000-0000-0000-000000000002", edition="北师大版"),
         )
-        assert {book.high_type for book in required_only} == {"必修"}
-
-    def test_information_science_has_no_match(self):
-        catalog = get_catalog()
-        assert catalog.find_books(stage="初中", subject="信息学") == []
-
-    def test_editions_are_sorted_by_name(self):
-        from core.textbooks.catalog import edition_sort_key
-
-        catalog = get_catalog()
-        editions = catalog.editions(stage="小学", system="六三制", subject="数学")
-        assert editions
-        keys = [edition_sort_key(item["edition_raw"]) for item in editions]
-        assert keys == sorted(keys)
-
-    def test_editions_filter_by_grade(self):
-        from dataclasses import replace
-
-        base = CatalogBook(
-            id="x", book_key="0123456789ab", stage="小学", system="六三制",
-            subject="数学", subject_raw="数学", edition="甲版", edition_raw="甲版",
-            grade="一年级", semester="上册", book_type="textbook", high_type="",
-            volume="", title="书", source_path="小学/数学/甲版/书.pdf",
-            target_path="教材/原始资料/小学/数学/甲版/一年级/上册/书.pdf",
-            split=False, chunk_count=1, total_size=100,
-            files=({"index": 1, "path": "x.pdf", "url": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/x.pdf", "size": 100},),
-        )
-        specs = [("甲版", "一年级"), ("乙版", "3至4年级"), ("丙版", "")]
-        books = [
-            replace(
-                base, id=f"id{i}", book_key=f"key{i:012d}",
-                edition=edition, edition_raw=edition, grade=grade,
-                target_path=f"教材/原始资料/小学/数学/{edition}/{grade}/书.pdf",
-            )
-            for i, (edition, grade) in enumerate(specs)
-        ]
-        catalog = TextbookCatalog({
-            "source": {"commit": "0" * 40, "raw_base": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/"},
-            "download_policy": {}, "merge": {},
-            "books": [book.__dict__ for book in books],
-        })
-
-        def names(grade: str) -> set[str]:
-            return {item["edition"] for item in catalog.editions(stage="小学", subject="数学", grade=grade)}
-
-        assert names("") == {"甲版", "乙版", "丙版"}
-        assert names("一年级") == {"甲版", "丙版"}
-        assert names("三年级") == {"乙版", "丙版"}
-        assert names("九年级") == {"丙版"}
+        first = catalog.get_by_key("d0000001-0000-0000-0000-000000000001")
+        second = catalog.get_by_key("d0000002-0000-0000-0000-000000000002")
+        assert catalog.flat_filename(first) == "义务教育教科书·数学一年级上册.pdf"
+        assert catalog.flat_filename(second) == "北师大版-义务教育教科书·数学一年级上册.pdf"
 
     def test_invalid_catalog_raises(self):
-        with pytest.raises(Exception):
-            TextbookCatalog({})
+        with pytest.raises(SmartEduError):
+            OfficialCatalog({})
 
 
-class TestMerge:
-    """分片合并与 PDF 校验。"""
+class TestSmartEduAuth:
+    """X-ND-AUTH MAC 签名与凭据失效判断。"""
 
-    def test_merges_chunks_in_given_order(self, tmp_path):
-        chunks = []
-        expected = bytearray()
-        for index, fill in enumerate((b"1", b"2", b"3"), 1):
-            path = tmp_path / f"{index:04d}.done"
-            body = _pdf_body(64 if index < 3 else 80, fill)
-            path.write_bytes(body)
-            expected.extend(body)
-            chunks.append(path)
-        target = tmp_path / "out" / "book.pdf"
-        result = merge_textbook_chunks(chunks, target, expected_size=len(expected))
-        assert result.size == len(expected)
-        assert target.read_bytes() == bytes(expected)
-        assert target.read_bytes().startswith(PDF_HEAD)
-        assert b"%%EOF" in target.read_bytes()[-16:]
+    def test_signature_string_uses_decoded_path_and_query(self):
+        nonce = "1700000000000:ABCDEFGH"
+        text = signature_string(
+            "https://r1-ndr-private.ykt.cbern.com.cn/edu/%E6%95%B0%E5%AD%A6.pdf?x=1",
+            "GET", nonce,
+        )
+        assert text == (
+            "1700000000000:ABCDEFGH\nGET\n"
+            "/edu/数学.pdf?x=1\nr1-ndr-private.ykt.cbern.com.cn\n"
+        )
 
-    def test_rejects_size_mismatch(self, tmp_path):
-        chunk = tmp_path / "0001.done"
-        chunk.write_bytes(_pdf_body(64))
-        with pytest.raises(TextbookMergeError, match="大小不符"):
-            merge_textbook_chunks([chunk], tmp_path / "book.pdf", expected_size=65)
+    def test_build_nd_auth_matches_hmac(self, monkeypatch):
+        creds = SmartEduCredentials(access_token="tok", mac_key="key", diff=0)
+        url = "https://r1-ndr-private.ykt.cbern.com.cn/book.pdf"
+        nonce = "1700000000000:ABCDEFGH"
+        monkeypatch.setattr(smartedu_mod, "generate_nonce", lambda diff=0: nonce)
+        mac = base64.b64encode(hmac.new(
+            b"key", signature_string(url, "GET", nonce).encode("utf-8"), hashlib.sha256
+        ).digest()).decode("ascii")
+        assert build_nd_auth(url, "GET", creds) == (
+            f'MAC id="tok",nonce="{nonce}",mac="{mac}"'
+        )
 
-    def test_rejects_bad_pdf(self, tmp_path):
-        chunk = tmp_path / "0001.done"
-        chunk.write_bytes(b"not a pdf")
-        with pytest.raises(TextbookMergeError, match="PDF"):
-            merge_textbook_chunks([chunk], tmp_path / "book.pdf")
+    def test_placeholder_without_mac_key(self):
+        header = build_nd_auth("https://example.com/x.pdf", "GET",
+                               SmartEduCredentials(access_token="tok"))
+        assert header == 'MAC id="tok",nonce="0",mac="0"'
 
-    def test_does_not_overwrite_by_default(self, tmp_path):
-        chunk = tmp_path / "0001.done"
-        chunk.write_bytes(_pdf_body(64))
-        target = tmp_path / "book.pdf"
-        target.write_bytes(_pdf_body(64, b"old"))
-        with pytest.raises(TextbookMergeError, match="已存在"):
-            merge_textbook_chunks([chunk], target)
+    def test_is_auth_expired(self):
+        assert is_auth_expired(401)
+        assert is_auth_expired(403)
+        assert is_auth_expired(400, "InvalidArgument")
+        assert not is_auth_expired(400, "")
+        assert not is_auth_expired(200)
+
+    def test_extract_total_size(self):
+        assert _extract_total_size({"total_size": 123}) == 123
+        assert _extract_total_size({"custom_properties": {"size": 45}}) == 45
+        assert _extract_total_size({}) == 0
 
 
-def _book(tmp_path: Path, chunk_count: int = 2) -> CatalogBook:
-    bodies = [_pdf_body(48, bytes([65 + i])) for i in range(chunk_count)]
-    files = [
-        {
-            "index": index,
-            "path": f"test/book.pdf.{index}",
-            "url": f"https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/{'0' * 40}/test/book.pdf.{index}",
-            "size": len(body),
+class TestSmartEduCache:
+    """内存 + 磁盘缓存、强制刷新与空缓存失效。"""
+
+    def test_cache_reuse_and_force_refresh(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "smartedu_catalog.json"
+        monkeypatch.setattr(smartedu_mod, "CACHE_PATH", cache_path)
+        calls = {"n": 0}
+
+        def fake_fetch():
+            calls["n"] += 1
+            return {"fetched_at": "2026-10-28 00:00:00", "books": [_book()]}
+
+        monkeypatch.setattr(smartedu_mod, "fetch_catalog", fake_fetch)
+        smartedu_mod.reset_cache_for_tests()
+
+        first = smartedu_mod.get_catalog()
+        second = smartedu_mod.get_catalog()
+        assert len(first.books) == 1
+        assert first is second
+        assert calls["n"] == 1
+
+        refreshed = smartedu_mod.get_catalog(force_refresh=True)
+        assert len(refreshed.books) == 1
+        assert calls["n"] == 2
+
+    def test_empty_disk_cache_is_treated_as_invalid(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "smartedu_catalog.json"
+        cache_path.write_text(json.dumps({
+            "fetched_at": "2026-10-28 00:00:00", "books": [],
+        }), encoding="utf-8")
+        monkeypatch.setattr(smartedu_mod, "CACHE_PATH", cache_path)
+
+        def fake_fetch():
+            return {"fetched_at": "2026-10-28 00:00:00", "books": [_book()]}
+
+        monkeypatch.setattr(smartedu_mod, "fetch_catalog", fake_fetch)
+        smartedu_mod.reset_cache_for_tests()
+        catalog = smartedu_mod.get_catalog()
+        assert len(catalog.books) == 1
+
+
+class TestLoginCapture:
+    def test_parses_execute_script_output(self):
+        output = (
+            'JavaScript result:\n[{"access_token": "tok", "mac_key": "key", "diff": 0}]'
+        )
+        assert _capture_from_output(output) == {
+            "access_token": "tok", "mac_key": "key", "diff": 0,
         }
-        for index, body in enumerate(bodies, 1)
-    ]
-    return CatalogBook(
-        id="test/book.pdf", book_key="0123456789ab", stage="小学", system="六三制",
-        subject="数学", subject_raw="数学", edition="人教版", edition_raw="人教版",
-        grade="一年级", semester="上册", book_type="textbook", high_type="",
-        volume="", title="测试教材", source_path="test/book.pdf",
-        target_path="教材/原始资料/小学/数学/人教版/一年级/上册/测试教材.pdf",
-        split=chunk_count > 1, chunk_count=chunk_count, total_size=sum(map(len, bodies)),
-        files=tuple(files),
-    )
+
+    def test_ignores_non_json_output(self):
+        assert _capture_from_output("Navigated to ...") is None
 
 
-def _fake_catalog(book: CatalogBook) -> TextbookCatalog:
-    data = {
-        "source": {
-            "commit": "0" * 40,
-            "raw_base": "https://raw.githubusercontent.com/TapXWorld/ChinaTextbook/" + "0" * 40 + "/",
-        },
-        "download_policy": {"default_book_types": ["textbook"]},
-        "merge": {},
-        "books": [book.__dict__],
-    }
-    return TextbookCatalog(data)
+class TestOfficialDownloader:
+    """官方源文件下载：签名头、断点续传、跳过已存在、登录失效。"""
 
-
-class TestDownloader:
-    """分片下载、合并、进度与 manifest。"""
-
-    def test_downloads_and_merges_split_pdf(self, tmp_path):
-        book = _book(tmp_path, 2)
-        catalog = _fake_catalog(book)
-        bodies = [_pdf_body(48, bytes([65 + i])) for i in range(2)]
-        requests: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(str(request.url))
-            index = int(str(request.url).rsplit(".", 1)[-1])
-            return httpx.Response(200, content=bodies[index - 1])
+    @staticmethod
+    def _run(tmp_path, book: dict, handler, monkeypatch, *, catalog=None):
+        size = int(book["total_size"])
+        monkeypatch.setattr(
+            downloader_mod, "fetch_book_source",
+            lambda content_id: {
+                "url": f"https://r1-ndr-private.ykt.cbern.com.cn/{content_id}.pdf",
+                "format": "pdf",
+                "size": size,
+            },
+        )
+        cat = catalog or _catalog(book)
 
         def factory() -> httpx.AsyncClient:
             return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
         async def run():
             workspace = tmp_path / "ws"
-            workspace.mkdir()
+            workspace.mkdir(exist_ok=True)
             manager = TextbookTaskManager()
             task = manager.start(
-                workspace_uuid="test-ws", workspace_dir=workspace,
-                data_dir=tmp_path / "data", catalog=catalog, books=[book],
-                client_factory=factory,
-            )
-            await task.async_task
-            return task, manager, workspace
-
-        task, manager, workspace = asyncio.run(run())
-        assert task.status == "done", task.public_dict()
-        progress = task.books[book.book_key]
-        assert progress.status == "done"
-        assert progress.downloaded_bytes == book.total_size
-        target = workspace / "教材" / "测试教材.pdf"
-        assert target.is_file()
-        assert target.stat().st_size == book.total_size
-        assert len(requests) == 2
-        manifest_path = workspace / "教材" / ".manifest.json"
-        assert manifest_path.is_file()
-
-    def test_falls_back_to_mirror_when_direct_fails(self, tmp_path):
-        book = _book(tmp_path, 1)
-        catalog = _fake_catalog(book)
-        body = _pdf_body(48)
-        requested: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requested.append(str(request.url))
-            if str(request.url).startswith("https://raw.githubusercontent.com/"):
-                return httpx.Response(500)
-            return httpx.Response(200, content=body)
-
-        def factory() -> httpx.AsyncClient:
-            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-        async def run():
-            workspace = tmp_path / "ws"
-            workspace.mkdir()
-            manager = TextbookTaskManager()
-            task = manager.start(
-                workspace_uuid="test-ws", workspace_dir=workspace,
-                data_dir=tmp_path / "data", catalog=catalog, books=[book],
+                workspace_uuid="test-ws",
+                workspace_dir=workspace,
+                data_dir=tmp_path / "data",
+                catalog=cat,
+                books=list(cat.books),
                 client_factory=factory,
             )
             await task.async_task
             return task, workspace
 
-        task, workspace = asyncio.run(run())
-        assert task.status == "done", task.public_dict()
-        assert requested[0].startswith("https://raw.githubusercontent.com/")
-        assert requested[1] == "https://ghproxy.net/" + requested[0]
-        assert (workspace / "教材" / "测试教材.pdf").is_file()
+        return asyncio.run(run())
 
-    def test_skips_existing_target_without_overwrite(self, tmp_path):
-        book = _book(tmp_path, 1)
-        catalog = _fake_catalog(book)
-        workspace = tmp_path / "ws"
-        workspace.mkdir()
-        target = workspace / "教材" / "测试教材.pdf"
-        target.parent.mkdir(parents=True)
-        target.write_bytes(_pdf_body(48))
+    def test_downloads_with_signed_header(self, tmp_path, monkeypatch):
+        body = _pdf_body(80)
+        book = _book(size=len(body))
+        seen_headers: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            raise AssertionError("should not download")
+            seen_headers.append(dict(request.headers))
+            return httpx.Response(200, content=body)
 
-        def factory() -> httpx.AsyncClient:
-            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        task, workspace = self._run(tmp_path, book, handler, monkeypatch)
+        assert task.status == "done", task.public_dict()
+        files = list((workspace / "教材").glob("*.pdf"))
+        assert len(files) == 1
+        assert files[0].read_bytes() == body
+        assert (workspace / "教材" / ".manifest.json").is_file()
+        assert any("x-nd-auth" in {k.lower() for k in h} for h in seen_headers)
 
-        async def run():
-            manager = TextbookTaskManager()
-            task = manager.start(
-                workspace_uuid="test-ws", workspace_dir=workspace,
-                data_dir=tmp_path / "data", catalog=catalog, books=[book],
-                client_factory=factory,
-            )
-            await task.async_task
+    def test_skips_existing_target_without_request(self, tmp_path, monkeypatch):
+        body = _pdf_body(80)
+        book = _book(size=len(body))
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        catalog = _catalog(book)
+        target = workspace / "教材" / catalog.flat_filename(catalog.books[0])
+        target.parent.mkdir(parents=True)
+        target.write_bytes(body)
 
-        asyncio.run(run())
-        assert target.read_bytes() == _pdf_body(48)
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("已有完整文件时不应发起请求")
 
-    def test_rejects_non_catalog_host(self, tmp_path):
-        book = _book(tmp_path, 1)
-        catalog = _fake_catalog(book)
-        bad = catalog.books[0].__dict__["files"][0]
-        bad = dict(bad)
-        bad["url"] = "https://example.com/evil.pdf"
-        evil = CatalogBook(**{**catalog.books[0].__dict__, "files": (bad,)})
-        catalog = _fake_catalog(evil)
+        task, _ = self._run(tmp_path, book, handler, monkeypatch, catalog=catalog)
+        assert task.books[book["content_id"]].status == "skipped"
+
+    def test_auth_expired_clears_cached_credentials(self, tmp_path, monkeypatch):
+        body = _pdf_body(80)
+        book = _book(size=len(body))
+        cleared: list[bool] = []
+        monkeypatch.setattr(downloader_mod, "clear_credentials",
+                            lambda: cleared.append(True))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, content=b"unauthorized")
+
+        task, _ = self._run(tmp_path, book, handler, monkeypatch)
+        progress = task.books[book["content_id"]]
+        assert progress.status == "failed"
+        assert "登录" in progress.error
+        assert cleared
+
+    def test_resumes_from_partial_file(self, tmp_path, monkeypatch):
+        body = _pdf_body(96)
+        book = _book(size=len(body))
+        content_id = book["content_id"]
+        part_dir = tmp_path / "data" / "tmp" / "textbooks" / content_id
+        part_dir.mkdir(parents=True)
+        split_at = 40
+        (part_dir / "source.part").write_bytes(body[:split_at])
+        ranges: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            ranges.append(request.headers.get("range", ""))
+            return httpx.Response(206, content=body[split_at:])
+
+        task, workspace = self._run(tmp_path, book, handler, monkeypatch)
+        assert task.status == "done", task.public_dict()
+        assert ranges and ranges[0].startswith("bytes=")
+        files = list((workspace / "教材").glob("*.pdf"))
+        assert files and files[0].read_bytes() == body
+
+
+class TestMarkdownStore:
+    """教材 Markdown 复制：可读文件名、缺失源跳过。"""
+
+    def test_copies_markdown_with_readable_name(self, tmp_path, monkeypatch):
+        from core.textbooks import markdown_store
+
+        md_dir = tmp_path / "md"
+        md_dir.mkdir()
+        monkeypatch.setattr(markdown_store, "MD_DIR", md_dir)
+        content_id = "00000001-0000-0000-0000-000000000001"
+        (md_dir / f"{content_id}.md").write_text("# 数学", encoding="utf-8")
+        catalog = _catalog(_book(content_id=content_id))
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        def factory() -> httpx.AsyncClient:
-            raise AssertionError("should not create client")
+        copied = markdown_store.copy_textbook_markdown(workspace, catalog, catalog.books)
+        target = workspace / "教材" / "义务教育教科书·数学一年级上册.md"
+        assert copied == [str(target)]
+        assert target.read_text(encoding="utf-8") == "# 数学"
 
-        async def run():
-            manager = TextbookTaskManager()
-            task = manager.start(
-                workspace_uuid="test-ws", workspace_dir=workspace,
-                data_dir=tmp_path / "data", catalog=catalog, books=[evil],
-                client_factory=factory,
-            )
-            await task.async_task
+    def test_skips_when_source_missing(self, tmp_path, monkeypatch):
+        from core.textbooks import markdown_store
 
-        asyncio.run(run())
-        assert not list(workspace.rglob("*.pdf"))
+        monkeypatch.setattr(markdown_store, "MD_DIR", tmp_path / "empty")
+        catalog = _catalog(_book())
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        assert markdown_store.copy_textbook_markdown(workspace, catalog, catalog.books) == []

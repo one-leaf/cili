@@ -58,26 +58,51 @@ LOCATIONS: list[dict[str, str]] = [
     {"id": "custom", "label": "自定义目录"},
 ]
 
-STAGES = ("小学", "初中", "高中")
-SYSTEMS = ("六三制", "五四制")
-# 年级随学制联动：六三制小学到六年级；五四制小学到五年级、初中从六年级起
-GRADES: dict[str, dict[str, tuple[str, ...]]] = {
-    "六三制": {
-        "小学": ("一年级", "二年级", "三年级", "四年级", "五年级", "六年级"),
-        "初中": ("七年级", "八年级", "九年级"),
-        "高中": ("高一", "高二", "高三"),
-    },
-    "五四制": {
-        "小学": ("一年级", "二年级", "三年级", "四年级", "五年级"),
-        "初中": ("六年级", "七年级", "八年级", "九年级"),
-        "高中": ("高一", "高二", "高三"),
-    },
-}
-STUDY_SUBJECTS = {
-    "小学": ("语文", "数学", "英语", "科学", "道德与法治"),
-    "初中": ("语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "道德与法治", "信息学"),
-    "高中": ("语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "思想政治", "信息技术", "信息学"),
-}
+def _official_catalog():
+    """惰性读取官方教材目录（首次访问可能触发抓取/读缓存）。"""
+    from core.textbooks.smartedu import get_catalog
+
+    return get_catalog()
+
+
+def stage_options() -> list[str]:
+    """官方学段列表（含五•四学制、特殊教育等）。"""
+    return _official_catalog().stage_options()
+
+
+def grade_options(stage: str) -> list[str]:
+    """指定学段的年级列表：归一化官方标签，过滤「教师用书」等非年级标签。"""
+    from core.textbooks.smartedu import GRADE_ALIASES, GRADE_ORDER
+
+    try:
+        raw = _official_catalog().grades(stage)
+    except Exception:  # noqa: BLE001
+        raw = []
+    if "高中" in stage:
+        # 高中教材多数只标「高中年级」，始终提供完整三段
+        return ["高一", "高二", "高三"]
+    mapped = {GRADE_ALIASES.get(g, g) for g in raw}
+    return [g for g in GRADE_ORDER if g in mapped]
+
+
+def study_subjects_by_stage() -> dict[str, list[str]]:
+    """各学段的学科列表（来自官方目录的学科标签）。"""
+    catalog = _official_catalog()
+    return {
+        stage: [item["subject"] for item in catalog.subjects(stage=stage)]
+        for stage in catalog.stage_options()
+    }
+
+
+def system_for_stage(stage: str) -> str:
+    """由学段推导学制（仅用于模板占位文案）。"""
+    return "五四制" if "五•四学制" in stage else "六三制"
+
+
+def template_stage(stage: str) -> str:
+    """模板文件名使用的学段：去掉五•四学制后缀，未知学段回退通用模板。"""
+    base = stage.replace("（五•四学制）", "").strip()
+    return base if base in ("小学", "初中", "高中") else stage
 
 WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -213,32 +238,39 @@ def _clean_line(value: Any, default: str = "", limit: int = 200) -> str:
 
 
 def _textbook_range_lines(
-    stage: str, system: str, subject: str, edition: str, grade: str
+    stage: str, subject: str, edition: str, grade: str
 ) -> str:
-    """从教材清单取该学制/年级/版本/学科的课本清单；失败时给出兜底文案。"""
+    """从官方教材目录取该年级/版本/学科的课本清单；失败时给出兜底文案。"""
     try:
-        from core.textbooks import get_catalog
+        from core.textbooks.smartedu import normalize_subject
 
-        books = get_catalog().find_books(
-            stage=stage, system=system, subject=subject, edition=edition,
-            grade=grade, book_types=("textbook",), high_scope="all_textbook_volumes",
+        catalog = _official_catalog()
+        books = catalog.find_books(
+            stage=stage, subject=normalize_subject(subject),
+            edition=edition, grade=grade,
         )
-    except Exception:  # noqa: BLE001 —— 教材清单不可用不阻断工作区创建
+        if not books and subject:
+            books = catalog.find_books(stage=stage, subject=subject,
+                                       edition=edition, grade=grade)
+    except Exception:  # noqa: BLE001 —— 教材目录不可用不阻断工作区创建
         return "- 以学校实际使用的教材为准。"
     titles: list[str] = []
-    for book in sorted(books, key=lambda b: (b.grade, b.semester, b.title)):
-        line = f"- 《{book.title}》（{book.edition}）"
+    for book in sorted(books, key=lambda b: (b.grade, b.volume, b.title)):
+        line = f"- 《{book.title}》（{book.edition}）" if book.edition else f"- 《{book.title}》"
         if line not in titles:
             titles.append(line)
     if not titles:
-        return "- 以学校实际使用的教材为准（清单中暂无该年级电子课本）。"
+        return "- 以学校实际使用的教材为准（目录中暂无该年级电子课本）。"
     return "\n".join(titles[:12])
 
 
 def _render_study_template(profile: dict[str, Any], subject: str) -> str:
     """按「学段-学科」模板生成学科教练提示词；模板缺失回退通用模板。"""
     stage = _clean_line(profile.get("stage"), "小学", 20)
-    path = SUBJECT_TEMPLATE_DIR / f"{stage}-{subject}.md"
+    from core.textbooks.smartedu import normalize_subject
+
+    tpl_subject = normalize_subject(subject)
+    path = SUBJECT_TEMPLATE_DIR / f"{template_stage(stage)}-{tpl_subject}.md"
     if not path.is_file():
         path = SUBJECT_TEMPLATE_DIR / "通用.md"
     try:
@@ -252,14 +284,13 @@ def _render_study_template(profile: dict[str, Any], subject: str) -> str:
         "subject": subject or "综合学习",
         "stage": stage,
         "grade": grade or "当前年级",
-        "system": _clean_line(profile.get("system"), "六三制", 10),
+        "system": _clean_line(profile.get("system"), system_for_stage(stage), 10),
         "edition": _clean_line(profile.get("textbook_edition"), "学校在用版本", 80),
         "exam_region": _clean_line(profile.get("exam_region"), "本地", 80),
         "focus": _clean_line(profile.get("focus"), "同步学习", 40),
         "daily_minutes": f"{int(minutes)} 分钟" if minutes else "30 分钟",
         "textbook_range": _textbook_range_lines(
             stage,
-            _clean_line(profile.get("system"), "六三制", 10),
             subject,
             _clean_line(profile.get("textbook_edition"), "", 80),
             grade,
@@ -370,19 +401,28 @@ def _study_specs(profile: dict[str, Any], subjects: list[str]) -> list[dict[str,
     if not _clean_line(profile.get("learner_name"), "", 40):
         raise WorkspaceWizardError("学习项目必须填写孩子称呼")
     stage = _clean_line(profile.get("stage"), "", 20)
-    if stage not in STAGES:
+    if not stage:
         raise WorkspaceWizardError("学习项目必须选择学段")
-    system = _clean_line(profile.get("system"), "六三制", 10)
-    if system not in GRADES:
-        raise WorkspaceWizardError("学制非法")
+    try:
+        valid_stages = stage_options()
+    except Exception:  # noqa: BLE001 —— 目录不可用时按手动输入处理
+        valid_stages = []
+    if valid_stages and stage not in valid_stages:
+        raise WorkspaceWizardError(f"学段非法: {stage}")
+    system = system_for_stage(stage)
     grade = _clean_line(profile.get("grade"), "", 20)
-    if grade and grade not in GRADES[system].get(stage, ()):
-        raise WorkspaceWizardError(f"{stage}「{system}」没有「{grade}」，请重新选择年级")
+    if grade:
+        try:
+            valid_grades = grade_options(stage)
+        except Exception:  # noqa: BLE001
+            valid_grades = []
+        if valid_grades and grade not in valid_grades:
+            raise WorkspaceWizardError(f"{stage}没有「{grade}」，请重新选择年级")
     overrides = profile.get("subject_overrides")
     overrides = overrides if isinstance(overrides, dict) else {}
     specs: list[dict[str, Any]] = []
     for subject in clean:
-        spec_profile = {**profile, "subject": subject}
+        spec_profile = {**profile, "subject": subject, "system": system}
         override = overrides.get(subject)
         if isinstance(override, dict):
             edition = _clean_line(override.get("textbook_edition"), "", 80)
