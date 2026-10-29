@@ -60,3 +60,7 @@ cili-update.zip.downloading
 # 本地 pytest 配置（仅本地保留，不入库）
 pytest.ini
 core/templates/textbooks/
+
+# PDF.js viewer 运行时构建文件（随仓库分发）
+!web/static/libs/pdfjs/build/
+!web/static/libs/pdfjs/build/*.mjs
