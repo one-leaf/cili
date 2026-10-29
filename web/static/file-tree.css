@@ -444,11 +444,111 @@
     border-radius: 4px;
 }
 
-.preview-pdf {
-    width: 100%;
-    height: 100%;
-    border: none;
+/* PDF.js 查看器 */
+.preview-body.pdf {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    overflow: hidden;
+}
+
+.pdf-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--sidebar-bg);
+    flex-shrink: 0;
+    overflow-x: auto;
+}
+
+.pdf-toolbar .btn-icon-flat {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.pdf-page-input {
+    width: 38px;
+    height: 24px;
+    padding: 0 2px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-color);
+    color: var(--text-color);
+    font-size: 12px;
+    text-align: center;
+}
+
+.pdf-page-input::-webkit-outer-spin-button,
+.pdf-page-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.pdf-page-total {
+    font-size: 11px;
+    color: var(--text-light);
+    white-space: nowrap;
+}
+
+.pdf-toolbar-spacer {
+    flex: 1;
+}
+
+.pdf-zoom-label {
+    min-width: 34px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-light);
+    font-variant-numeric: tabular-nums;
+}
+
+.pdf-fit-btn {
+    width: auto !important;
+    flex: 0 0 auto !important;
+    padding: 0 6px;
+    font-size: 11px;
+}
+
+.pdf-scroll {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+    background: var(--bg-color);
+}
+
+.pdf-canvas-wrap {
+    display: flex;
+    justify-content: center;
+    min-width: 100%;
+}
+
+.pdf-canvas {
     display: block;
+    background: #fff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+    border-radius: 2px;
+}
+
+.pdf-loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 8px 14px;
+    border-radius: 6px;
+    background: var(--sidebar-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-light);
+    font-size: 12px;
 }
 
 .preview-av {
