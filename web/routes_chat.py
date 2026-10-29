@@ -19,7 +19,10 @@ from core.goal import get_goal_manager
 from core.session import SessionStore
 from core.stream_executor import get_stream_executor
 from core.teen_mode import TeenModeDenied, get_teen_mode
-from core.turn_dispatch import execute_turn, prepare_turn
+from core.tools.ask_user import find_pending_ask_user
+from core.turn_dispatch import PreparedTurn, execute_turn, prepare_turn
+from core.turn_queue import QueuedTurn, QueueError, merge_queued_turns
+from core.turn_queue import queue as turn_queue
 from web.deps import (
     _SAFE_ID_RE,
     _claim_session_run,
@@ -74,6 +77,15 @@ class SendMessageRequest(BaseModel):
     # 驱动客户端类型（web/tui/...）：run_runner 按它 set_turn_interface，
     # 能力档案（Response Surface）与接口专属工具随回合切换。缺省视为 web。
     interface: str | None = None
+    # 前端幂等键：同 client_id 重复提交返回原排队项（网络重试不重复排队）
+    client_id: str | None = None
+
+
+class QueueRequest(BaseModel):
+    content: str = ""
+    images: list[dict] | None = None
+    interface: str | None = None
+    client_id: str | None = None
 
 
 class RevertRequest(BaseModel):
@@ -86,6 +98,104 @@ def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
     if not sessions_dir.exists():
         return None
     return SessionStore.load_session(session_id, sessions_dir)
+
+
+def _session_key(workspace_uuid: str, session_id: str) -> str:
+    return f"{workspace_uuid}:{session_id}"
+
+
+def _build_user_input(content: str, images: list[dict] | None) -> Any:
+    """文本 + base64 图片 → runner 入参（str 或 content blocks）。"""
+    if not images:
+        return content
+    blocks: list[dict] = [{"type": "text", "text": content, "_valid": True}]
+    for img in images:
+        blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": img.get("media_type", "image/png"),
+                "data": img.get("data", ""),
+            },
+            "_valid": True,
+        })
+    return blocks
+
+
+def _delivery_payload(items: list[QueuedTurn]) -> dict:
+    """合并批次的投递事件载荷（请求级帧与全局事件共用，避免两处漂移）。"""
+    return {
+        "item_ids": [it.item_id for it in items],
+        "merged_count": len(items),
+        "content": "\n\n".join(it.content for it in items if it.content),
+        "interfaces": [it.interface for it in items],
+        "has_images": any(it.has_images for it in items),
+        "created_at": items[0].created_at,
+    }
+
+
+def _pump_queue(key: str) -> None:
+    """上一回合结束后的后台泵：空闲、未暂停、无待答 ask_user / goal 时启动下一批。
+
+    与前台流的区别只在渲染路径：后台回合走 ``runner.default_sink``（全局事件
+    总线），前端 ``sse-client.js`` 的 master-resume 渲染器负责显示。``claim()``
+    是原子闸门——拿不到执行权说明本回合正被前台流/另一个泵驱动，直接退出，
+    由该回合在安全边界自行投递。
+    """
+    if turn_queue.is_paused(key) or not turn_queue.has_items(key):
+        return
+    runner = registry.get(key)
+    if runner is None:
+        return
+    if find_pending_ask_user(runner.session):
+        return
+    goal = get_runner(key)
+    if goal is not None and goal.is_running():
+        return
+    if not _claim_session_run(key):
+        return
+    try:
+        items = turn_queue.drain_batch(key)
+        if not items:
+            return
+        user_input, meta = merge_queued_turns(items)
+        prepared = PreparedTurn(runner=runner, mode="run", user_input=user_input, meta=meta)
+        # 后台泵回合没有前台请求流：投递事件走全局事件流，界面补一条合并用户气泡
+        # （getattr duck-typing：测试替身可能没有 default_sink，缺失时只跳过广播）
+        sink = getattr(runner, "default_sink", None)
+        if sink is not None:
+            sink.on_user_message(_delivery_payload(items))
+        set_iface = getattr(runner, "set_turn_interface", None)
+        try:
+            if set_iface is not None:
+                set_iface("web")
+            execute_turn(
+                prepared, runner.default_sink,
+                on_error=lambda _msg: turn_queue.pause(key, "error"),
+            )
+        finally:
+            if set_iface is not None:
+                set_iface(None)
+    except Exception:
+        logger.exception("[queue] 后台泵执行失败")
+        turn_queue.pause(key, "error")
+    finally:
+        _release_session_run(key)
+    # 最后一轮边界之后才到达的消息：本轮结束后再泵一次
+    _pump_queue(key)
+
+
+def _start_pump(key: str) -> None:
+    """在专用线程池里启动后台泵（不阻塞路由协程）。
+
+    任务引用必须持有（asyncio 只持弱引用，无人引用会被 GC 中断）。
+    """
+    async def _run() -> None:
+        await asyncio.get_running_loop().run_in_executor(get_stream_executor(), _pump_queue, key)
+
+    task = asyncio.create_task(_run())
+    _resume_tasks.add(task)
+    task.add_done_callback(_resume_tasks.discard)
 
 
 # ----- Tool Output Streaming -----
@@ -378,47 +488,86 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             media_type="text/event-stream",
         )
     runner = await _get_or_create_runner(workspace_uuid, session_id)
-
-    # Prevent concurrent execution on the same session
-    session_key = f"{workspace_uuid}:{session_id}"
-    if not _claim_session_run(session_key):
-        goal_runner = get_runner(session_key)
-        if goal_runner is not None and goal_runner.is_running():
-            error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
-        else:
-            error_text = "当前会话正在执行中，请等待完成后再发送消息"
-        return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
+    session_key = _session_key(workspace_uuid, session_id)
 
     # 本轮是「普通消息」还是「ask_user 的答案」——判定与注入逻辑在 core.turn_dispatch
     # （接口无关，Web 与 QQ 共用）。多模态入参在这里构造好一并传入。
-    user_input: Any = request.content
-    if request.images:
-        content_blocks: list[dict] = [
-            {"type": "text", "text": request.content, "_valid": True}
-        ]
-        for img in request.images:
-            content_blocks.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": img.get("media_type", "image/png"),
-                    "data": img.get("data", ""),
-                },
-                "_valid": True,
-            })
-        user_input = content_blocks
+    user_input: Any = _build_user_input(content, getattr(request, "images", None))
 
     # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
     # 若留到 run_runner（executor 线程）里取，异常会吞掉结束哨兵把流挂死。
     # getattr duck-typing：web 路由测试广泛用 SimpleNamespace 伪造 request，
     # 缺属性时按缺省处理（与下方 set_iface 的 duck-typing 同一约定）。
     iface = getattr(request, "interface", None) or "web"
+    client_id = getattr(request, "client_id", None)
 
-    prepared = prepare_turn(runner, content=content, user_input=user_input)
+    # 待答 ask_user：本次输入是「答案」，不排队（设计 §3.5：避免排队消息
+    # 被误当成问题答案；输入框文本仍走 prepare_turn 的答案分流）
+    pending_ask = find_pending_ask_user(runner.session) if content else None
+
+    delivered: dict | None = None
+    if pending_ask:
+        if not _claim_session_run(session_key):
+            goal_runner = get_runner(session_key)
+            if goal_runner is not None and goal_runner.is_running():
+                error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
+            else:
+                error_text = "当前会话正在执行中，请等待完成后再发送消息"
+            return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
+        prepared = prepare_turn(runner, content=content, user_input=user_input)
+    else:
+        # 普通消息：先入队再尝试启动——运行中不再报错，「接收」与「执行」解耦
+        try:
+            item = turn_queue.enqueue(session_key, QueuedTurn(
+                item_id="",
+                content=content,
+                user_input=user_input,
+                interface=iface,
+                client_id=client_id,
+                has_images=bool(getattr(request, "images", None)),
+            ))
+        except QueueError as e:
+            return StreamingResponse(sse_stream({"type": "error", "content": str(e), "session_id": session_id}), media_type="text/event-stream")
+
+        if not _claim_session_run(session_key):
+            # 其他客户端 / 目标循环持有执行权：消息留在队列，由持权回合在
+            # 安全边界投递，或回合结束后由后台泵启动
+            return StreamingResponse(sse_stream({
+                "type": "queued",
+                "session_id": session_id,
+                "item": item.preview(),
+                "queue_paused": turn_queue.is_paused(session_key),
+            }), media_type="text/event-stream")
+
+        items = turn_queue.drain_batch(session_key)
+        if not items:
+            # 暂停态（并发的 /stop）：不启动，释放认领，消息留在队列
+            _release_session_run(session_key)
+            return StreamingResponse(sse_stream({
+                "type": "queued",
+                "session_id": session_id,
+                "item": item.preview(),
+                "queue_paused": True,
+            }), media_type="text/event-stream")
+
+        merged_input, merged_meta = merge_queued_turns(items)
+        prepared = PreparedTurn(runner=runner, mode="run",
+                                user_input=merged_input, meta=merged_meta)
+        delivered = _delivery_payload(items)
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()
     cb = make_sse_callbacks(event_queue, runner)
+
+    if delivered is not None:
+        # 请求级流即时校正前端乐观气泡；全局流让其他标签页也能看到这条合并消息
+        event_queue.put("data: " + json.dumps(
+            {"type": "user_message", "session_id": session_id, **delivered},
+            ensure_ascii=False,
+        ) + "\n\n")
+        default_sink = getattr(runner, "default_sink", None)
+        if default_sink is not None:
+            default_sink.on_user_message(delivered)
 
     def _on_ask_user_answered(tool_use_id: str, answer: str) -> None:
         # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），再恢复循环
@@ -455,6 +604,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             _release_session_run(session_key)
             drain_outbox_events(runner, event_queue)
             event_queue.put(None)  # sentinel: done
+            # 本回合结束：仍有排队项（最后一个边界之后才到达的）→ 启动后台泵。
+            # 若用户又发起了新的前台回合并抢先认领，泵会自动退出。
+            _pump_queue(session_key)
 
     # 客户端断开时 runner 继续后台执行，仅 /stop 能中断
     return sse_run_response(run_runner, event_queue)
@@ -462,17 +614,27 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop")
 async def stop_runner(workspace_uuid: str, session_id: str):
-    """Stop the currently running runner for a session."""
-    key = f"{workspace_uuid}:{session_id}"
+    """直接结束当前会话正在运行的 runner（队列不暂停：排队项由泵继续）。"""
+    key = _session_key(workspace_uuid, session_id)
+
     if key not in registry:
         return {"success": False, "message": "没有正在运行的 master runner"}
 
     runner = registry.get(key)
-    if not runner.is_running():
-        return {"success": False, "message": "master runner 当前未在运行"}
+    is_running = getattr(runner, "is_running", None)
+    runner_running = bool(is_running()) if callable(is_running) else False
+    goal = get_runner(key)
+    goal_running = goal is not None and goal.is_running()
 
-    runner.stop()
-    return {"success": True, "message": "已发送停止信号"}
+    if runner_running or goal_running:
+        stopper = getattr(runner, "stop", None)
+        if callable(stopper):
+            # 目标循环在跑时同样置 master._stopped：goal 轮间检查后暂停并跳出
+            stopper()
+        message = "已发送停止信号" if runner_running else "已发送停止信号（目标循环将在本轮结束后暂停）"
+        return {"success": True, "message": message}
+
+    return {"success": False, "message": "master runner 当前未在运行"}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/resume")
@@ -565,15 +727,98 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
         except ValueError as e:
             raise HTTPException(404, str(e))
 
-    return {"success": True, "deleted_count": deleted_count}
+    # 撤销后队列若保留旧消息，下一个边界会把它们又插回来——一并清空
+    cleared_queue = turn_queue.clear(key)
+    return {"success": True, "deleted_count": deleted_count, "cleared_queue": cleared_queue}
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/status")
 async def get_runner_status(workspace_uuid: str, session_id: str):
-    """Check if a runner is running for a session."""
-    key = f"{workspace_uuid}:{session_id}"
-    if key not in registry:
-        return {"running": False}
-
+    """会话运行状态 + 队列摘要（刷新/切会话的界面据此恢复队列条）。"""
+    key = _session_key(workspace_uuid, session_id)
+    snap = turn_queue.snapshot(key)
+    running = False
     runner = registry.get(key)
-    return {"running": runner.is_running()}
+    if runner is not None:
+        checker = getattr(runner, "is_running", None)
+        running = bool(checker()) if callable(checker) else False
+    return {
+        "running": running,
+        "queue_length": len(snap["items"]),
+        "queue_items": snap["items"],
+        "queue_paused": snap["paused"],
+        "queue_reason": snap["reason"],
+    }
+
+
+# ----- 排队输入（运行中也能发送；队列状态在服务端） -----
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue")
+async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRequest,
+                          ws_dir: Path = Depends(_require_workspace)):
+    """仅入队（运行中/空闲都可调用）；队列变更经全局事件流广播。"""
+    _validate_session_id(session_id)
+    if not (ws_dir / "sessions" / session_id).exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        get_teen_mode().check_send_allowed()
+    except TeenModeDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    content = (request.content or "").strip()
+    if not content and not request.images:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    key = _session_key(workspace_uuid, session_id)
+    try:
+        item = turn_queue.enqueue(key, QueuedTurn(
+            item_id="",
+            content=content,
+            user_input=_build_user_input(content, request.images),
+            interface=request.interface or "web",
+            client_id=request.client_id,
+            has_images=bool(request.images),
+        ))
+    except QueueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    _start_pump(key)
+    return {"success": True, "item": item.preview(), "queue_paused": turn_queue.is_paused(key)}
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue")
+async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+    """返回队列快照（items / paused / reason）。"""
+    _validate_session_id(session_id)
+    key = _session_key(workspace_uuid, session_id)
+    snap = turn_queue.snapshot(key)
+    return {"success": True, **snap}
+
+
+@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/{item_id}")
+async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
+                            ws_dir: Path = Depends(_require_workspace)):
+    """移除一条排队项。"""
+    _validate_session_id(session_id)
+    if not _SAFE_ID_RE.match(item_id):
+        raise HTTPException(status_code=400, detail="Invalid item_id format")
+    removed = turn_queue.remove(_session_key(workspace_uuid, session_id), item_id)
+    return {"success": removed}
+
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/clear")
+async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+    """清空队列（会话运行中也可调用）。"""
+    _validate_session_id(session_id)
+    cleared = turn_queue.clear(_session_key(workspace_uuid, session_id))
+    return {"success": True, "cleared": cleared}
+
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/resume")
+async def resume_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+    """解除暂停并尝试启动下一批（会话空闲时）。"""
+    _validate_session_id(session_id)
+    key = _session_key(workspace_uuid, session_id)
+    turn_queue.resume(key)
+    _start_pump(key)
+    return {"success": True}

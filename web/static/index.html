@@ -120,24 +120,41 @@
 
             <div class="input-resize-handle" title="拖拽调整输入框大小（双击重置）"></div>
             <div class="chat-input-area">
+                <div id="queued-messages" class="queued-messages" hidden>
+                    <div class="queued-header">
+                        <span id="queued-label">待发送 0 条</span>
+                        <span class="queued-actions">
+                            <button id="queue-resume-btn" class="btn btn-small" hidden>继续</button>
+                            <button id="queue-clear-btn" class="btn btn-small btn-danger">清空</button>
+                        </span>
+                    </div>
+                    <div id="queued-list" class="queued-list"></div>
+                </div>
                 <div class="chat-input-wrap">
                     <div id="image-preview-area" class="image-preview-area"></div>
                     <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行, Ctrl+V 粘贴图片)" rows="3"></textarea>
-                    <button id="insert-file-btn" class="btn-icon-floating" title="插入文件名">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="12" y1="5" x2="12" y2="19"></line>
-                            <line x1="5" y1="12" x2="19" y2="12"></line>
-                        </svg>
-                    </button>
-                    <button id="help-btn" class="btn-icon-floating" title="特殊指令帮助">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-                            <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                        </svg>
-                    </button>
+                    <div class="input-actions">
+                        <button id="insert-file-btn" class="btn-icon-floating" title="插入文件名">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button id="help-btn" class="btn-icon-floating" title="特殊指令帮助">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                        </button>
+                        <button id="composer-action-btn" class="btn-icon-floating composer-action" data-state="disabled" title="发送" aria-label="发送">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 2L11 13"></path>
+                                <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
-                <button id="send-btn" class="btn btn-primary">发送</button>
             </div>
         </main>
         <div class="preview-resize-handle" id="preview-resize-handle" title="拖拽调整预览宽度（双击重置）" hidden></div>

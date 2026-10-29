@@ -147,6 +147,40 @@ class BaseSessionRunner:
         """Save messages (delegated to ConversationStore)."""
         self.context.save_messages(metadata, session_id=getattr(self, "_session_id", ""))
 
+    def _drain_queued_user_messages(self) -> int:
+        """在安全边界合并投递当前排队批次；返回投递条数（0 = 队列为空/暂停）。
+
+        只允许 interactive（master）回合调用：autonomous（worker/lite）没有
+        用户入口，不消费用户队列。投递后消息立即 flush 进 jsonl，下一轮压缩
+        与 LLM 调用可见；``_meta.queued_ids`` 供审计与前端整批清空队列条。
+        """
+        if getattr(self, "_mode", "") != "interactive":
+            return 0
+        session_id = getattr(self, "current_session_id", "") or getattr(self, "_session_id", "")
+        if not session_id:
+            return 0
+        key = f"{self.workspace_uuid}:{session_id}"
+        from core.turn_queue import merge_queued_turns, queue
+
+        items = queue.drain_batch(key)
+        if not items:
+            return 0
+        user_input, meta = merge_queued_turns(items)
+        self.add_message("user", user_input, meta=meta)
+        self.context.sync_to_session()
+        session = getattr(self, "session", None)
+        if session is not None:
+            session.flush()
+        self.sink.on_user_message({
+            "item_ids": [it.item_id for it in items],
+            "merged_count": len(items),
+            "content": "\n\n".join(it.content for it in items if it.content),
+            "interfaces": [it.interface for it in items],
+            "has_images": any(it.has_images for it in items),
+            "created_at": items[0].created_at,
+        })
+        return len(items)
+
     def load_messages(self) -> bool:
         """Load messages from session_dir/index.json (delegated to ConversationStore)."""
         return self.context.load_messages()

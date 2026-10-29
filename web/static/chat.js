@@ -1,6 +1,6 @@
 // ── chat.js ── 聊天相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingImages,
-//   chatMessages, chatInput, sendBtn
+//   chatMessages, chatInput, composerBtn
 // 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast, loadSession, loadSessions, savePosition
 
 // 在飞回合的输出容器：sessionId → 该回合所有输出的专属容器。
@@ -82,6 +82,7 @@ function renderImagePreviews() {
     area.innerHTML = '';
     if (pendingImages.length === 0) {
         area.classList.remove('visible');
+        updateComposerButtons();
         return;
     }
     area.classList.add('visible');
@@ -105,6 +106,7 @@ function renderImagePreviews() {
         wrapper.appendChild(removeBtn);
         area.appendChild(wrapper);
     });
+    updateComposerButtons();
 }
 
 // 辅助函数：提取文本内容
@@ -785,6 +787,8 @@ function renderAskUserQuestions(container, input, toolUseId) {
         // 同名渲染器让位（否则本回合正文会被请求级流与全局流各渲染一遍）
         isSending = true;
         foregroundStreamSessionId = sessionId;
+        sessionRunning = true;
+        updateComposerButtons();
 
         try {
             // 调用 answer-ask-user API
@@ -999,6 +1003,8 @@ function renderAskUserQuestions(container, input, toolUseId) {
             // 时的 loadSession 按新会话 /status 重置）或已在别的会话发起新请求
             if (currentSession && currentSession.session_id === sessionId) {
                 isSending = false;
+                isStopping = false;
+                updateComposerButtons();
             }
             if (foregroundStreamSessionId === sessionId) {
                 foregroundStreamSessionId = null;
@@ -1011,14 +1017,156 @@ function renderAskUserQuestions(container, input, toolUseId) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Stop agent
-async function stopAgent() {
-    if (!currentWorkspace || !currentSession) return;
+// ── 排队队列条与投递 ──
+// 队列状态在服务端：本地只缓存快照（queue_update / /status），操作均走 API。
+const _deliveredQueueIds = new Set();  // 已投递批次幂等键（请求流 + 全局流双路去重）
 
-    // Disable button immediately after clicking, keep "停止中..." until the SSE stream actually closes
-    // (agent truly stopped). sendMessage()'s finally block restores the button.
-    sendBtn.disabled = true;
-    sendBtn.textContent = '停止中...';
+function makeClientId() {
+    try {
+        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    } catch (e) { /* 非安全上下文无 randomUUID */ }
+    return `c-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function setQueueState(items, paused, reason) {
+    queuedItems = items || [];
+    queuePaused = !!paused;
+    queueReason = reason || '';
+    renderQueueBar();
+}
+
+function renderQueueBar() {
+    if (!queuedMessagesEl) return;
+    const hasSession = !!currentSession;
+    // 仅在有排队项时显示；「暂停但 0 条」不显示——没东西可继续/清空，
+    // 且下次发消息入队会自动恢复暂停态（设计 §3.4）
+    const visible = hasSession && queuedItems.length > 0;
+    queuedMessagesEl.hidden = !visible;
+    if (!visible) {
+        queuedListEl.innerHTML = '';
+        return;
+    }
+    const reasonText = queueReason === 'error' ? '（上回合出错）' : (queuePaused ? '（已停止）' : '');
+    queuedLabelEl.textContent = queuePaused
+        ? `队列已暂停${reasonText} · ${queuedItems.length} 条`
+        : `待发送 ${queuedItems.length} 条`;
+    if (queueResumeBtn) queueResumeBtn.hidden = !queuePaused;
+    queuedListEl.innerHTML = '';
+    queuedItems.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'queued-item';
+
+        const text = document.createElement('div');
+        text.className = 'queued-item-text';
+        text.textContent = item.content || '（图片）';
+        text.title = item.content || '';
+        row.appendChild(text);
+
+        if (item.has_images) {
+            const badge = document.createElement('span');
+            badge.className = 'queued-item-badge';
+            badge.textContent = '🖼';
+            badge.title = '含图片';
+            row.appendChild(badge);
+        }
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'queued-item-remove';
+        removeBtn.title = '移除该条';
+        removeBtn.textContent = '✕';
+        removeBtn.addEventListener('click', () => removeQueuedItem(item.item_id));
+        row.appendChild(removeBtn);
+
+        queuedListEl.appendChild(row);
+    });
+}
+
+function upsertQueuedItem(item) {
+    if (!item || !item.item_id) return;
+    const idx = queuedItems.findIndex(it => it.item_id === item.item_id);
+    if (idx >= 0) queuedItems[idx] = item;
+    else queuedItems.push(item);
+    renderQueueBar();
+}
+
+function _handleDeliveredBatch(event) {
+    // 同一批可能同时到达请求级帧与全局事件：按 item_ids 幂等
+    const ids = event.item_ids || [];
+    const fresh = ids.filter(id => !_deliveredQueueIds.has(id));
+    ids.forEach(id => _deliveredQueueIds.add(id));
+    if (_deliveredQueueIds.size > 500) _deliveredQueueIds.clear();
+    if (ids.length) {
+        queuedItems = queuedItems.filter(it => !ids.includes(it.item_id));
+        renderQueueBar();
+    }
+    return fresh.length > 0;
+}
+
+async function removeQueuedItem(itemId) {
+    if (!currentWorkspace || !currentSession) return;
+    try {
+        await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/${itemId}`,
+            { method: 'DELETE' }
+        );
+    } catch (e) { /* 失败时等下一次 queue_update 校正 */ }
+    queuedItems = queuedItems.filter(it => it.item_id !== itemId);
+    renderQueueBar();
+}
+
+async function clearQueue() {
+    if (!currentWorkspace || !currentSession) return;
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/clear`,
+            { method: 'POST' }
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        queuedItems = [];
+        queuePaused = false;
+        queueReason = '';
+        renderQueueBar();
+    } catch (e) {
+        showToast('清空队列失败');
+    }
+}
+
+async function resumeQueue() {
+    if (!currentWorkspace || !currentSession) return;
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/resume`,
+            { method: 'POST' }
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        queuePaused = false;
+        queueReason = '';
+        renderQueueBar();
+    } catch (e) {
+        showToast('恢复队列失败');
+    }
+}
+
+async function refreshSessionStatus(sessionId) {
+    if (!currentWorkspace || !currentSession || currentSession.session_id !== sessionId) return;
+    try {
+        const resp = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/status`);
+        if (!resp.ok) return;
+        const status = await resp.json();
+        sessionRunning = !!status.running;
+        queuedItems = status.queue_items || queuedItems;
+        queuePaused = !!status.queue_paused;
+        queueReason = status.queue_reason || '';
+    } catch (e) { /* 状态刷新失败时沿用本地推断 */ }
+}
+
+// Stop agent（直接结束当前正在运行的 runner；排队项不暂停，由泵继续）
+async function stopAgent() {
+    if (!currentWorkspace || !currentSession || isStopping) return;
+
+    isStopping = true;
+    updateComposerButtons();
 
     let success = false;
     try {
@@ -1026,14 +1174,9 @@ async function stopAgent() {
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stop`,
             { method: 'POST' }
         );
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
         if (result.success) {
-            console.log('Agent stop signal sent');
             success = true;
         } else {
             console.warn('Stop failed:', result.message);
@@ -1043,25 +1186,20 @@ async function stopAgent() {
     }
 
     if (!success) {
-        // 停止信号未送达（agent 可能已自行停止或网络异常）：恢复为可点击的"停止"按钮，
-        // 若 agent 确实已停止，SSE 流马上关闭，finally 会恢复为"发送"
-        sendBtn.disabled = false;
-        sendBtn.textContent = '停止';
-    } else {
-        // 保持"停止中..."直到 SSE 流关闭。兜底超时：若流长时间未关闭
-        // （如 LLM 重试卡住），恢复"停止"按钮允许重新点击
-        clearTimeout(window._stopPendingTimer);
-        window._stopPendingTimer = setTimeout(() => {
-            if (isSending && sendBtn.textContent === '停止中...') {
-                sendBtn.disabled = false;
-                sendBtn.textContent = '停止';
-            }
-        }, 60000);
+        // 停止信号未送达（回合可能已自行结束）：恢复可点击
+        isStopping = false;
+        updateComposerButtons();
+        return;
     }
-    // 不在这里恢复按钮状态：isSending 保持 true，阻止停止过程中发送新消息，
-    // 直到 SSE 流关闭（agent 真正停止）后由 sendMessage() 的 finally 恢复
 
-    chatInput.disabled = false;
+    // 兜底超时：流长时间未关闭（如 LLM 重试卡住）时恢复可点击
+    clearTimeout(window._stopPendingTimer);
+    window._stopPendingTimer = setTimeout(() => {
+        if (isStopping) {
+            isStopping = false;
+            updateComposerButtons();
+        }
+    }, 60000);
 
     // 禁用所有 pending 的 ask_user 问题卡片
     document.querySelectorAll('.ask-user-card').forEach(card => {
@@ -1086,11 +1224,6 @@ async function sendMessage() {
         return;
     }
 
-    // Block sending if agent is running
-    if (isSending) {
-        return;
-    }
-
     console.log('Sending message to session:', currentSession.session_id);
     const sessionId = currentSession.session_id;
 
@@ -1099,16 +1232,51 @@ async function sendMessage() {
         data: img.data,
         media_type: img.media_type,
     })) : null;
+    const clientId = makeClientId();
 
-    // Clear input and change button to stop
+    // 运行中：入队，不创建回合容器、不置 isSending（设计 §5.7.2）
+    if (sessionRunning) {
+        try {
+            const resp = await fetch(
+                `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/queue`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: message,
+                        images: imagesToSend,
+                        client_id: clientId,
+                    }),
+                }
+            );
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.success) {
+                showToast(data.detail || '排队失败，请稍后重试');
+                return;
+            }
+            chatInput.value = '';
+            pendingImages = [];
+            renderImagePreviews();
+            upsertQueuedItem(data.item);
+            updateComposerButtons();
+        } catch (error) {
+            console.error('Failed to enqueue message:', error);
+            showToast('排队失败: ' + error.message);
+        }
+        return;
+    }
+
+    // 本页已有前台流时不再开第二条（会话空闲时 isSending 才会为真）
+    if (isSending) return;
+
+    // Clear input（按钮配色由 updateComposerButtons 统一决定）
     chatInput.value = '';
     pendingImages = [];
     renderImagePreviews();
     isSending = true;
     foregroundStreamSessionId = sessionId;
-    sendBtn.textContent = '停止';
-    sendBtn.classList.remove('btn-primary');
-    sendBtn.classList.add('btn-danger');
+    sessionRunning = true;
+    updateComposerButtons();
 
     // 本回合的助手侧输出全部渲染进专属容器（用户消息仍在消息区直接显示）。
     // 容器随会话可见性挂载/脱离：切走后内容留着，切回时 renderMessages 挂回。
@@ -1149,6 +1317,9 @@ async function sendMessage() {
     // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
     chatMessages.appendChild(turnContainer);
     _activeTurnContainers.set(sessionId, turnContainer);
+
+    // 服务端确认投递（user_message 帧）时用它校正合并后的气泡内容
+    const optimisticUserDiv = userDiv;
 
     // Create placeholder for assistant response
     let assistantDiv = null;
@@ -1336,6 +1507,19 @@ async function sendMessage() {
                         finalizeThinkBlock();
                         thinkDiv = null;
                         thinkContent = '';
+                    } else if (event.type === 'user_message') {
+                        // 服务端确认投递：按合并内容校正乐观气泡，并整批清空队列条
+                        _handleDeliveredBatch(event);
+                        if (optimisticUserDiv && event.content) {
+                            const contentDiv = optimisticUserDiv.querySelector('.message-content');
+                            if (contentDiv) contentDiv.innerHTML = renderMarkdown(event.content);
+                            optimisticUserDiv.dataset.rawContent = event.content;
+                        }
+                    } else if (event.type === 'queued') {
+                        // 空闲判断与认领之间被其他客户端抢先：退回排队，不创建回合
+                        if (optimisticUserDiv) optimisticUserDiv.remove();
+                        if (event.item) upsertQueuedItem(event.item);
+                        showToast('消息已排队，当前回合结束后自动插入');
                     } else if (event.type === 'error') {
                         addTurnMessage('assistant', `错误: ${escapeHtml(event.content)}`);
                     } else if (event.type === 'done') {
@@ -1373,10 +1557,11 @@ async function sendMessage() {
         // 避免旧会话流结束时覆盖新会话的运行状态
         if (currentSession && currentSession.session_id === sessionId) {
             isSending = false;
-            sendBtn.disabled = false;
-            sendBtn.textContent = '发送';
-            sendBtn.classList.remove('btn-danger');
-            sendBtn.classList.add('btn-primary');
+            isStopping = false;
+            // 回合可能还有排队批次在后台继续：状态以 /status 为准
+            await refreshSessionStatus(sessionId);
+            updateComposerButtons();
+            renderQueueBar();
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
         // 刷新侧边栏，更新会话标题（preview = 最后一条用户消息）

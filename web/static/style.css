@@ -25,6 +25,15 @@ ul, ol {
     --hover-bg: #f0f0f0;
     --text-secondary: #666;
     --error-color: #e74c3c;
+    /* 输入区语义色：正常发送 / 排队发送 / 停止；禁用灰是中性态，不计入三色 */
+    --composer-send-bg: #4a90e2;
+    --composer-send-fg: #ffffff;
+    --composer-send-hover: #357abd;
+    --composer-stop-bg: #dc3545;
+    --composer-stop-fg: #ffffff;
+    --composer-stop-hover: #c82333;
+    --composer-disabled-bg: #e5e7eb;
+    --composer-disabled-fg: #9ca3af;
 }
 
 /* ── 暗色主题 ── */
@@ -45,6 +54,15 @@ ul, ol {
     --hover-bg: #27272a;
     --text-secondary: #a1a1aa;
     --error-color: #ef4444;
+    /* 夜间主色本身是橙色，排队态改用青绿，保证与发送/停止都可区分 */
+    --composer-send-bg: #f97316;
+    --composer-send-fg: #ffffff;
+    --composer-send-hover: #fb923c;
+    --composer-stop-bg: #dc2626;
+    --composer-stop-fg: #ffffff;
+    --composer-stop-hover: #b91c1c;
+    --composer-disabled-bg: #3f3f46;
+    --composer-disabled-fg: #71717a;
 }
 
 [data-theme="dark"] body {
@@ -1859,7 +1877,8 @@ mjx-container {
     background-color: white;
     border-top: 1px solid var(--border-color);
     display: flex;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     flex-shrink: 0;
 }
 
@@ -1870,16 +1889,95 @@ mjx-container {
     align-items: stretch;
 }
 
-.btn-icon-floating {
+/* 排队队列条：输入框上方，最多 120px 高，超出滚动 */
+.queued-messages {
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    color: var(--text-light);
+}
+
+.queued-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.queued-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.queued-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.queued-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.queued-item-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.queued-item-badge {
+    flex-shrink: 0;
+    color: var(--text-light);
+}
+
+.queued-item-remove {
+    flex-shrink: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-light);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.queued-item-remove:hover {
+    background: var(--hover-bg);
+    color: var(--error-color);
+}
+
+/* 输入框右下角浮动图标组：插入文件 → 命令帮助 → 停止（停止最靠右） */
+.input-actions {
     position: absolute;
     right: 8px;
     bottom: 8px;
-    width: 28px;
-    height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.input-actions .btn-icon-floating {
+    position: static;
+    /* 这一排（插入文件 / 命令帮助 / 停止）统一小一号，尺寸完全一致 */
+    width: 24px;
+    height: 24px;
+}
+
+.btn-icon-floating {
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-light);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1892,15 +1990,11 @@ mjx-container {
     color: var(--primary-color);
 }
 
-/* 插入文件名按钮在左、帮助按钮在最右（两者都小一号） */
-#insert-file-btn {
-    right: 40px;
-}
-
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    padding-right: 76px;
+    /* 三个 24px 图标 + 4px 间距 + 8px 右边距 = 88px，留 4px 余量 */
+    padding-right: 92px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;
@@ -1912,6 +2006,37 @@ mjx-container {
 .chat-input-area textarea:focus {
     outline: none;
     border-color: var(--primary-color);
+}
+
+/* 右下角主操作按钮（Claude Code 插件式单按钮）：
+   有草稿=发送（主色），运行中空草稿=停止（红），否则禁用（灰） */
+.composer-action[data-state="send"] {
+    background: var(--composer-send-bg);
+    color: var(--composer-send-fg);
+}
+
+.composer-action[data-state="send"]:hover {
+    background: var(--composer-send-hover);
+}
+
+.composer-action[data-state="stop"] {
+    background: var(--composer-stop-bg);
+    color: var(--composer-stop-fg);
+}
+
+.composer-action[data-state="stop"]:hover {
+    background: var(--composer-stop-hover);
+}
+
+.composer-action[data-state="disabled"] {
+    background: var(--composer-disabled-bg);
+    color: var(--composer-disabled-fg);
+}
+
+.composer-action:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+    pointer-events: none;
 }
 
 /* Image preview area */

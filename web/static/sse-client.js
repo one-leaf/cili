@@ -124,6 +124,21 @@ function handleBusEvent(e) {
     // 只处理当前会话的事件，防止切会话后旧流串入
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
+    // 队列事件必须在下面「前台流去重早退」之前处理：队列条与投递气泡是
+    // 服务端权威状态，本页是否持有前台流不影响它们（设计 §5.7.1）
+    if (e.type === 'queue_update') {
+        setQueueState(e.items, e.paused, e.reason);
+        return;
+    }
+    if (e.type === 'user_message') {
+        const fresh = _handleDeliveredBatch(e);
+        // 本页正用前台请求流渲染该回合时由请求级帧负责校正气泡，这里只清队列条
+        if (foregroundStreamSessionId !== currentSession.session_id && fresh && e.content) {
+            addMessage('user', e.content);
+        }
+        return;
+    }
+
     if (e.type === 'session_start') {
         ensureSessionCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
         return;
@@ -161,6 +176,10 @@ function handleBusEvent(e) {
     // 前台请求流还在时由它自己重拉会话，这里跳过；页面刷新后请求流已断，
     // 这条全局事件是界面唯一能知道「本回合结束了」的途径。
     if (e.type === 'turn_complete') {
+        // 回合真正收尾：停止中状态复位（队列若被停止暂停，由 loadSession 的
+        // /status 快照呈现「已暂停 + 继续/清空」）
+        isStopping = false;
+        updateComposerButtons();
         // 本页正持有该会话的前台流时由它自己重拉，否则（典型：刷新过页面）靠这里自愈。
         // 用 foregroundStreamSessionId 而非 isSending —— 后者在刷新后也为 true
         // （loadSession 查到 /status.running），会把自愈也一起挡掉。

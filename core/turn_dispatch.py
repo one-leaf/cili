@@ -47,6 +47,8 @@ class PreparedTurn:
     user_input: Any = None                      # mode == "run" 时的入参
     pending_ask_user_id: str | None = None      # mode == "resume" 时的占位 tool_use_id
     answer: str | None = None                   # mode == "resume" 时注入的答案
+    # mode == "run" 时随 user 消息写入的 _meta（队列合并批次审计：queued_ids 等）
+    meta: dict | None = None
 
 
 def prepare_turn(
@@ -111,7 +113,7 @@ def execute_turn(
                 on_ask_user_answered(prepared.pending_ask_user_id, prepared.answer or "")
             runner.resume_after_ask_user(sink=sink)
         else:
-            runner.run(user_input=prepared.user_input, sink=sink)
+            runner.run(user_input=prepared.user_input, sink=sink, meta=prepared.meta)
 
         # 青少年模式：按回合运行时间累计每日时长（跨会话合并，§2.5）
         try:

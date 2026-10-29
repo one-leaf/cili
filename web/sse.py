@@ -138,6 +138,13 @@ def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSi
         event = json.dumps({"type": "session_complete", "exec_id": exec_id, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
+    def on_user_message(payload: dict) -> None:
+        # 排队消息投递：请求级流即时校正乐观气泡；全局流（后台泵）由
+        # default_sink 负责，两路都带 item_ids，前端据此幂等去重。
+        base.on_user_message(payload)
+        event = json.dumps({"type": "user_message", "session_id": sid, **payload}, ensure_ascii=False)
+        event_queue.put(f"data: {event}\n\n")
+
     return OutputSink(
         on_text=on_text,
         on_thinking=on_thinking,
@@ -145,6 +152,7 @@ def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSi
         on_tool_result=on_tool_result,
         on_session_start=on_session_start,
         on_session_complete=on_session_complete,
+        on_user_message=on_user_message,
     )
 
 

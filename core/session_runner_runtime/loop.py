@@ -285,6 +285,11 @@ class Loop:
             # _meta.background_notification=True（LLM 可见但前端跳过渲染）。
             if not autonomous:
                 self._drain_session_notifications()
+                # ── 排队用户消息投递（安全边界①：迭代顶部）──
+                # stop 检查与后台通知之后、压缩与 LLM 调用之前：把运行中
+                # 用户追加的消息合并成一条 user 消息插入，本轮 LLM 即可见。
+                # 绝不在工具批执行中间投递（保住 tool_use → tool_result 配对）。
+                runner._drain_queued_user_messages()
 
             # ── 额度预警（autonomous，stop 已排除）──
             if autonomous and policy.budget_notice:
@@ -349,6 +354,11 @@ class Loop:
                     runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                     runner._sync_to_session()
                     runner.session.save()
+                    # ── 排队用户消息投递（安全边界②：自然结束出口）──
+                    # 模型本来要结束回合，但此时有排队输入：合并投递并继续，
+                    # 不必等用户再发一次（否则排队消息只能靠下次任意回合带走）。
+                    if runner._drain_queued_user_messages():
+                        continue
                     return None
 
                 outcome = pm.decide_no_tool_calls(runner._budget_final_triggered)

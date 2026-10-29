@@ -1,5 +1,5 @@
 // ── settings.js ── 设置相关逻辑
-// 依赖 app.js 全局变量: currentWorkspace, chatInput, sendBtn
+// 依赖 app.js 全局变量: currentWorkspace, chatInput, composerBtn
 // 依赖 utils.js 函数: showToast
 
 // ── 全局设置 ──

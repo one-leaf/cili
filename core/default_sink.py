@@ -86,6 +86,16 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
             "session_id": session_id,
         })
 
+    def _default_on_user_message(payload: dict) -> None:
+        # 排队消息投递：聊天区补一条合并用户气泡；刷新后的界面也能看到
+        # 这条全局事件（后台泵回合没有前台请求流）。
+        bus.publish({
+            "type": "user_message",
+            "workspace_uuid": workspace_uuid,
+            "session_id": session_id,
+            **payload,
+        })
+
     runner.default_sink = OutputSink(
         on_text=_default_on_text,
         on_thinking=_default_on_thinking,
@@ -93,5 +103,6 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
         on_tool_result=_default_on_tool_result,
         on_tool_output=_on_tool_output,
         on_turn_complete=_default_on_turn_complete,
+        on_user_message=_default_on_user_message,
     )
     runner.sink = runner.default_sink

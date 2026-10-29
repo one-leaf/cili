@@ -11,6 +11,12 @@ let isSending = false;
 // 必须是 session 作用域而非布尔：切到 B 会话时 A 的流仍在读，若用布尔值，
 // 会把 B 会话自己的全局事件也误判为「已有前台流」而去重掉。
 let foregroundStreamSessionId = null;
+// 服务端会话状态与排队队列（与 isSending 解耦：isSending 只表示本页持有前台流）
+let sessionRunning = false;      // 服务端该会话正在运行（/status、turn_complete）
+let queuedItems = [];            // 服务端队列快照（queue_update / /status）
+let queuePaused = false;         // 队列已暂停（停止/出错后需显式继续或清空）
+let queueReason = '';            // 暂停原因：stopped / error
+let isStopping = false;          // 已发 /stop，等待回合真正收尾
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
@@ -28,7 +34,12 @@ const newWorkspaceBtn = document.getElementById('new-workspace-btn');
 const sessionsList = document.getElementById('sessions-list');
 const chatMessages = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
-const sendBtn = document.getElementById('send-btn');
+const composerBtn = document.getElementById('composer-action-btn');
+const queuedMessagesEl = document.getElementById('queued-messages');
+const queuedListEl = document.getElementById('queued-list');
+const queuedLabelEl = document.getElementById('queued-label');
+const queueResumeBtn = document.getElementById('queue-resume-btn');
+const queueClearBtn = document.getElementById('queue-clear-btn');
 const newSessionBtn = document.getElementById('new-session-btn');
 const sessionMenuBtn = document.getElementById('session-menu-btn');
 
@@ -272,6 +283,39 @@ function toggleTheme() {
     }
 }
 
+// ── 输入区按钮状态（发送 / 排队发送 / 停止）──
+// 单点决策：所有分支结束后都调它，不再在 fetch 分支里直接改按钮文案/配色。
+function hasDraft() {
+    return chatInput.value.trim().length > 0 || pendingImages.length > 0;
+}
+
+// 右下角单按钮图标（Claude Code 插件式）：发送=纸飞机，停止=方块
+const COMPOSER_SEND_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2l-7 20-4-9-9-4 20-7z"></path></svg>';
+const COMPOSER_STOP_ICON = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1.5"></rect></svg>';
+
+function updateComposerButtons() {
+    const hasSession = !!currentSession;
+    const draft = hasDraft();
+    // 有草稿=发送（运行中即排队发送）；运行中空草稿=停止；否则禁用
+    let state = 'disabled';
+    if (hasSession) {
+        if (draft) {
+            state = 'send';
+        } else if (sessionRunning) {
+            state = 'stop';
+        }
+    }
+    composerBtn.dataset.state = state;
+    composerBtn.innerHTML = state === 'stop' ? COMPOSER_STOP_ICON : COMPOSER_SEND_ICON;
+    const title = state === 'stop' ? '停止当前回合'
+        : (state === 'send' && sessionRunning ? '排队发送' : '发送');
+    composerBtn.title = title;
+    composerBtn.setAttribute('aria-label', title);
+    composerBtn.disabled = state === 'disabled' || (state === 'stop' && isStopping);
+    // 有会话时输入框常开（运行中也能输入）；无会话才禁用
+    chatInput.disabled = !hasSession;
+}
+
 // Setup event listeners
 function setupEventListeners() {
     // 文件管理器事件
@@ -284,15 +328,21 @@ function setupEventListeners() {
     sessionMenuBtn.addEventListener('click', toggleSessionPanelMenu);
     document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
     document.getElementById('sidebar-open-btn').addEventListener('click', toggleSidebar);
-    sendBtn.addEventListener('click', () => {
-        if (isSending) {
+    // 右下角单按钮：停止态点停止，发送态点发送/排队
+    composerBtn.addEventListener('click', () => {
+        if (composerBtn.dataset.state === 'stop') {
             stopAgent();
         } else {
             sendMessage();
         }
     });
+    updateComposerButtons();
+    if (queueResumeBtn) queueResumeBtn.addEventListener('click', () => resumeQueue());
+    if (queueClearBtn) queueClearBtn.addEventListener('click', () => clearQueue());
+    chatInput.addEventListener('input', updateComposerButtons);
     chatInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        // isComposing：中文输入法组合期间的 Enter 不提交（避免截断误发）
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
             sendMessage();
         }
@@ -575,9 +625,13 @@ async function handleWorkspaceChange() {
             : sessions[0].session_id;
         await loadSession(targetSession);
     } else {
-        // 没有会话时禁用输入框
-        chatInput.disabled = true;
-        sendBtn.disabled = true;
+        // 没有会话时禁用输入框（有会话时运行中也保持可输入）
+        sessionRunning = false;
+        queuedItems = [];
+        queuePaused = false;
+        queueReason = '';
+        updateComposerButtons();
+        renderQueueBar();
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>点击 + 创建新会话</p></div>';
     }
 }
@@ -1478,8 +1532,12 @@ async function deleteSession(session) {
                 currentSession = null;
                 savePosition({ session_id: '' });
                 chatMessages.innerHTML = '<div class="empty-state">请选择或创建会话</div>';
-                chatInput.disabled = true;
-                sendBtn.disabled = true;
+                sessionRunning = false;
+                queuedItems = [];
+                queuePaused = false;
+                queueReason = '';
+                updateComposerButtons();
+                renderQueueBar();
             }
             // 重新加载会话列表
             await loadSessions();
@@ -1579,24 +1637,21 @@ async function loadSession(sessionId) {
         // 重连全局事件流到当前会话（worker 消息 + 工具输出实时推送）
         connectEventSource();
 
-        // Enable input by default when selecting a session
-        chatInput.disabled = false;
-        sendBtn.disabled = false;
-        sendBtn.textContent = '发送';
-        sendBtn.classList.remove('btn-danger');
-        sendBtn.classList.add('btn-primary');
+        // 输入框常开：运行中不再禁用，由按钮状态与队列条表达（设计 §5.7.1）
         isSending = false;
+        isStopping = false;
+        chatInput.disabled = false;
 
-        // Check if agent is running for this session
+        // Check if agent is running for this session（同时取队列快照）
         const statusResponse = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/status`);
         const status = await statusResponse.json();
-        if (status.running) {
-            // Agent is running, disable input and show stop button
-            chatInput.disabled = true;
-            sendBtn.textContent = '停止';
-            sendBtn.classList.remove('btn-primary');
-            sendBtn.classList.add('btn-danger');
-            isSending = true;
+        sessionRunning = !!status.running;
+        queuedItems = status.queue_items || [];
+        queuePaused = !!status.queue_paused;
+        queueReason = status.queue_reason || '';
+        updateComposerButtons();
+        renderQueueBar();
+        if (sessionRunning) {
             // 恢复该会话运行中的 worker 卡片（历史消息里只有已完成的 agent_ref）
             recoverRunningCards();
         }
@@ -1647,11 +1702,14 @@ async function createNewSession() {
         // 重连事件流到新会话
         connectEventSource();
         chatInput.disabled = false;
-        sendBtn.disabled = false;
-        sendBtn.textContent = '发送';
-        sendBtn.classList.remove('btn-danger');
-        sendBtn.classList.add('btn-primary');
         isSending = false;
+        sessionRunning = false;
+        queuedItems = [];
+        queuePaused = false;
+        queueReason = '';
+        isStopping = false;
+        updateComposerButtons();
+        renderQueueBar();
         chatInput.focus();
     } catch (error) {
         console.error('Failed to create session:', error);

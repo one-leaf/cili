@@ -39,6 +39,7 @@ from core.session import (
 from core.teen_mode import deny_message, get_teen_mode
 from core.textbooks import textbook_tasks
 from core.tools.base import Tool
+from core.turn_queue import queue as turn_queue
 from web.deps import (
     _SAFE_ID_RE,
     _get_workspace_info,
@@ -659,6 +660,8 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     # 再删目录——顺序反了会让 cleanup 的 save 把已删目录重建为空会话
     key = f"{workspace_uuid}:{session_id}"
     with _sessions_lock:
+        # 队列独立于 runner 池：先清队列，删除后旧消息不会被泵/边界插回
+        turn_queue.remove_session(key)
         registry.remove(key)
 
     # 删除整个 session 目录（统一入口：青少年模式守卫在数据层）

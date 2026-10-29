@@ -40,6 +40,9 @@ class OutputSink:
     # 一次 interactive 回合（run / resume）结束、会话已落盘后调用。
     # 接入端据此重拉会话状态：请求级流断开（刷新页面）后，界面靠这条信号自愈。
     on_turn_complete: Callable[[], None] = _noop
+    # 排队消息在安全边界合并投递给模型时调用（参数见 core.turn_queue 的
+    # item_ids/merged_count/content/interfaces/has_images）。未绑定时 no-op。
+    on_user_message: Callable[[dict], None] = _noop
 
 
 def merge_sink(base: OutputSink, **overrides) -> OutputSink:

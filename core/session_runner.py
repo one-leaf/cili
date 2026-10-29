@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.base_session_runner import BaseSessionRunner
-from core.config import Config, DATA_DIR, get_permission_config
+from core.config import DATA_DIR, Config, get_permission_config
 from core.fs_utils import atomic_write_json
 from core.interface_profile import resolve_profile
 from core.llm import create_llm_client
@@ -572,8 +572,13 @@ class SessionRunner(BaseSessionRunner):
         user_input: str | list[dict],
         sink: OutputSink | None = None,
         streaming: bool = True,
+        meta: dict | None = None,
     ) -> None:
-        """Run one turn of the interactive session loop."""
+        """Run one turn of the interactive session loop.
+
+        ``meta`` 随 user 消息写入（队列合并批次带 ``queued_ids`` /
+        ``merged_count``，供审计与前端整批清空队列条）。
+        """
         self._stopped = False
         self._running = True
         self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
@@ -582,7 +587,7 @@ class SessionRunner(BaseSessionRunner):
 
         try:
             # Add user message（loop.run_interactive 在回合前做 checkpoint save）
-            self.add_message("user", user_input)
+            self.add_message("user", user_input, meta=meta)
 
             self.loop.run_interactive()
         finally:
