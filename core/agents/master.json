@@ -265,6 +265,7 @@
     "session",
     "ask_user",
     "tool_search",
+    "office2pdf",
     "send_user_file"
   ],
   "deferred_tools": [

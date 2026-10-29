@@ -14,7 +14,8 @@ A deck's value is in **visual quality**, not just correct text. The flow is "bui
 python-pptx        → read, create, edit (text/shapes/tables/images/notes)
 markitdown         → quick full-text extraction (includes placeholder-residue checks)
 template-driven vs from-scratch → follow an existing template/reference layout and style strictly; only design from scratch when none exists
-pptx→PDF→images    → export PDF via PowerPoint COM, render with pdftoppm, self-check with read_image + subagent review
+office2pdf tool    → export PDF via PowerPoint/WPS COM (cached; macros disabled)
+pdftoppm           → render PDF pages to images for visual self-check
 ```
 
 **Local environment**: `python-pptx` / `markitdown` installed; PowerPoint COM available; LibreOffice unavailable → PDF export goes through COM. Parsing-library selection details follow the `file-processing` skill.
@@ -29,7 +30,7 @@ pptx→PDF→images    → export PDF via PowerPoint COM, render with pdftoppm, 
 | Edit from a template/reference | `python-pptx` to change text and content, **keeping the original layout and style** |
 | Split/merge/deep XML | `zipfile` unpack → edit `ppt/slides/slideN.xml` → repack |
 | Legacy `.ppt` | convert to `.pptx` via PowerPoint COM first (see below) |
-| To PDF | PowerPoint COM `ExportAsFixedFormat` |
+| To PDF | `office2pdf` tool (Office/WPS COM under the hood) |
 | Visual self-check | render images + `read_image` + fresh-eyes subagent review |
 
 ## Reading
@@ -83,7 +84,7 @@ prs.save('out.pptx')
 
 ## Visual Check Loop (required before delivery)
 
-1. **Render**: export PDF via PowerPoint COM → `pdftoppm -jpeg -r 150 out.pdf slide` to render images.
+1. **Render**: call `office2pdf` to export the PDF, then `pdftoppm -jpeg -r 150 out.pdf slide` to render images.
 2. **Self-check**: use `read_image` on each one, checking overlapping elements, overflow/truncated text, spacing <0.3", insufficient margins, inconsistent alignment, low contrast, residual placeholders.
 3. **Subagent review**: before delivery, delegate a worker via `agent` for a fresh-eyes visual check (give it image paths and expected content); a subagent without prior assumptions spots problems more easily.
 4. **Fix → re-verify**: after fixing, re-render the affected slides and check again — one fix often causes another issue. Not done until at least one fix-verify round completes.
@@ -102,7 +103,7 @@ Layout, text, images, and notes are all preserved after conversion; then process
 
 ## Conversion
 
-**To PDF** (PowerPoint COM, `ExportAsFixedFormat(out.pdf)`): absolute paths, `Visible=false`, and release COM objects afterward to keep processes from hanging.
+**To PDF**: call the `office2pdf` tool with `file_path` (optionally `output_path`); it uses PowerPoint/WPS COM and returns the PDF path. Do not hand-write COM scripts for PDF export.
 
 ## Common Pitfalls
 

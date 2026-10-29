@@ -14,7 +14,8 @@ Pick a layer by goal — don't rely on a single toolkit:
 pandas             → data analysis: read tables, filter, aggregate, statistics, transform
 openpyxl           → structural ops: cells, formulas, styles, merges, column widths, multiple sheets
 Formulas first     → anything computable in the deliverable is an Excel formula (=SUM etc.), never hardcoded results
-Excel COM (pwsh)   → recalculate formulas into cached values, export to PDF, legacy .xls compat (Office installed; LibreOffice unavailable)
+Excel COM (pwsh)   → recalculate formulas, legacy .xls/.xlsb compat
+office2pdf tool    → export PDF via Excel/WPS COM (cached; print layout)
 pdf2markdown tool  → parsing table/formula-dense documents (see file-processing skill)
 ```
 
@@ -34,7 +35,7 @@ pdf2markdown tool  → parsing table/formula-dense documents (see file-processin
 | `.xlsb` binary | Excel COM → `.xlsx` first; `pyxlsb` only without Office |
 | `.csv` / `.tsv` | `pandas` `read_csv` (large files: `chunksize`) |
 | Recalculate / materialize cached values | Excel COM open → save |
-| To PDF | Excel COM `ExportAsFixedFormat` |
+| To PDF | `office2pdf` tool (Office/WPS COM under the hood) |
 
 ## Reading & Analysis
 
@@ -110,4 +111,4 @@ Verify the result opens in openpyxl. Only without Office do you fall back to the
 
 ## Conversion
 
-**To PDF** (Excel COM, `ExportAsFixedFormat(0, out.pdf)`); export specific sheets only by selecting them first (`Select()`). Paths must be absolute, `Visible=false`, `DisplayAlerts=false`, and release COM objects afterward to keep Excel processes from hanging.
+**To PDF**: call the `office2pdf` tool with `file_path` (optionally `output_path`). Excel/WPS COM opens the workbook read-only with macros/link updates disabled and exports its print layout; set print areas/page setup in the workbook first if you need specific sheets. Do not hand-write COM scripts for PDF export.

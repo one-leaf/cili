@@ -1,5 +1,7 @@
 # Office formats (file-processing)
 
+**PDF export**: use the `office2pdf` tool (Word/Excel/PowerPoint or WPS COM, cached, macros disabled). The COM snippets below are for legacy format conversion (.doc→.docx, .xls→.xlsx, .ppt→.pptx) and manual fallback.
+
 ## Microsoft Word
 
 ### DOCX — python-docx

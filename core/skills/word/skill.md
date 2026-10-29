@@ -13,7 +13,8 @@ A `.docx` file is a ZIP archive of OOXML (Office Open XML) files. Pick a layer b
 ```
 python-docx high-level API  → 80% of tasks: read, edit, create (paragraphs/headings/tables/images/styles)
 unpack → edit XML → repack   → precise structural ops: revisions, comments, merged cells, image refs, custom XML
-pwsh + Word COM              → lossless conversion: .doc→.docx, .docx→PDF (Office installed; LibreOffice unavailable)
+office2pdf tool              → .doc/.docx → PDF via Office/WPS COM (cached; macros disabled)
+pwsh + Word COM              → .doc→.docx lossless conversion
 pdf2markdown tool            → complex tables/formulas/scanned-doc parsing (see file-processing skill)
 ```
 
@@ -32,7 +33,7 @@ pdf2markdown tool            → complex tables/formulas/scanned-doc parsing (se
 | Edit in place | open with `python-docx` → edit → save |
 | Revisions/comments/merged cells/deep XML | unpack → edit XML → repack |
 | Legacy `.doc` | Word COM → `.docx` first, then python-docx (never just rename) |
-| To PDF | Word COM (`SaveAs` format 17) |
+| To PDF | `office2pdf` tool (Office/WPS COM under the hood) |
 | Formal reports/papers | `latex` tool preferred; generate editable Word only when the user explicitly asks |
 
 ## Reading
@@ -94,7 +95,7 @@ Verify it opens with `python-docx` after conversion. **Never rename `.doc` to `.
 
 ## Conversion
 
-**`.docx` → PDF** (Word COM, format 17=wdFormatPDF): same structure, `SaveAs2(out.pdf, 17)`.
+**To PDF**: call the `office2pdf` tool with `file_path` (optionally `output_path`). It uses Word/WPS COM, opens read-only with macros/link updates disabled, and returns the PDF path; do not hand-write COM scripts for PDF export. `.doc` → `.docx` legacy conversion still uses Word COM as described above.
 
 **Formal reports prefer the `latex` tool** (typesetting quality far above docx; supports formulas, TOC, references, and Chinese via ctex); generate docx only when the user explicitly wants an editable Word file.
 

@@ -25,6 +25,7 @@ from core.tools.loop import LoopTool
 from core.tools.memory import MemoryTool
 from core.tools.message_bus_tool import MessageBusTool
 from core.tools.pdf2markdown import PDF2MarkdownTool
+from core.tools.office2pdf import Office2PDFTool
 from core.tools.pwsh import PwshTool
 from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
@@ -94,6 +95,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_permission=True),
+    "office2pdf": _factory(Office2PDFTool, needs_permission=True),
     "skill": _make_skill,
     "session": _factory(SessionTool, needs_config=True, needs_permission=True),
     "ask_user": _factory(AskUserTool),
