@@ -5,8 +5,10 @@ COM automation. Conversion runs in a short-lived worker subprocess so a hung
 Office instance cannot block the agent loop; the parent enforces a timeout and
 kills the recorded Office process on timeout.
 
-Results are cached under ``data/cili/cache/office2pdf`` keyed by source path +
-mtime_ns + size. Repeated conversions of an unchanged file reuse the cached PDF.
+Results are cached per workspace under ``{workspace}/.cili/cache/pdf/`` keyed
+by source path + mtime_ns + size; unchanged sources reuse the cached PDF and
+superseded versions of the same source are removed on re-conversion. Callers
+without a workspace context fall back to the legacy ``data/cache/office2pdf``.
 
 The same module doubles as the worker entry point::
 
@@ -99,6 +101,15 @@ def _get_cache_dir() -> Path:
     return CACHE_DIR
 
 
+def workspace_cache_dir(workspace_uuid: str) -> Path:
+    """工作区级 PDF 预览缓存目录：{workspace}/.cili/cache/pdf/。"""
+    from core.config import get_workspace_data_dir
+
+    d = get_workspace_data_dir(workspace_uuid) / "cache" / "pdf"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _read_meta(meta_path: Path, pdf_path: Path, stat: os.stat_result) -> dict[str, Any] | None:
     if not pdf_path.exists() or not meta_path.exists():
         return None
@@ -117,9 +128,26 @@ def _read_meta(meta_path: Path, pdf_path: Path, stat: os.stat_result) -> dict[st
     return meta
 
 
-def _prune_cache() -> None:
+def _remove_superseded(cache_dir: Path, source_real: str, keep_key: str) -> int:
+    """删除同一源文件的过期缓存版本（源文件变化后旧 key 的 pdf/meta）。"""
+    removed = 0
+    for meta_path in cache_dir.glob("*.json"):
+        if meta_path.stem == keep_key:
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if meta.get("source") == source_real:
+            meta_path.unlink(missing_ok=True)
+            meta_path.with_suffix(".pdf").unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def _prune_cache(cache_dir: Path | None = None) -> None:
     with _prune_guard:
-        cache_dir = _get_cache_dir()
+        cache_dir = cache_dir if cache_dir is not None else _get_cache_dir()
         now = time.time()
         entries: list[tuple[float, Path]] = []
         for pdf in cache_dir.glob("*.pdf"):
@@ -239,8 +267,13 @@ def _run_worker(source: str, output: str, kind: str, pid_file: Path, timeout: in
     return engine
 
 
-def ensure_pdf(source: str, *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[Path, str, bool]:
+def ensure_pdf(
+    source: str, *, cache_dir: Path | None = None, timeout: int = _DEFAULT_TIMEOUT
+) -> tuple[Path, str, bool]:
     """Return a cached PDF for *source*, converting once if needed.
+
+    ``cache_dir`` 缺省时回退到全局缓存（测试 / 无工作区上下文的调用方）；
+    生产调用方（预览路由 / 工具）传 ``workspace_cache_dir()``。
 
     Returns ``(pdf_path, engine, cached)``. Raises on unsupported input,
     missing Office/WPS, or conversion failure.
@@ -255,7 +288,8 @@ def ensure_pdf(source: str, *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[Path, s
         raise FileNotFoundError(source)
 
     key, stat = _cache_key(source)
-    cache_dir = _get_cache_dir()
+    cache_dir = cache_dir if cache_dir is not None else _get_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = cache_dir / f"{key}.pdf"
     meta_path = cache_dir / f"{key}.json"
 
@@ -276,10 +310,12 @@ def ensure_pdf(source: str, *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[Path, s
                 "engine": engine,
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             })
+            # 源文件变化会换 key：清掉同源旧版本，避免缓存目录膨胀
+            _remove_superseded(cache_dir, os.path.realpath(source), key)
         finally:
             tmp.unlink(missing_ok=True)
             tmp.with_suffix(".officepid").unlink(missing_ok=True)
-        _prune_cache()
+        _prune_cache(cache_dir)
         return pdf_path, engine, False
 
 
@@ -295,6 +331,87 @@ def copy_pdf(pdf_path: Path, output_path: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
+# ----- workspace sync (office-pdf-sync cron) -----
+
+_SKIP_DIR_NAMES = {".cili", ".git", "node_modules", "__pycache__", ".svn", ".idea", ".vscode"}
+
+
+def _iter_office_docs(workspace_dir: Path):
+    """遍历工作区内的 Office 文档（跳过 .cili/.git/node_modules 等目录）。"""
+    for dirpath, dirnames, filenames in os.walk(workspace_dir):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES and not d.startswith(".")]
+        for name in filenames:
+            p = Path(dirpath) / name
+            if p.suffix.lower() in SUPPORTED_EXTENSIONS:
+                yield p
+
+
+def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
+                             timeout: int = _DEFAULT_TIMEOUT) -> dict:
+    """把一个工作区的全部 Office 文档增量同步到 ``.cili/cache/pdf/``。
+
+    - 新增/变更的文档转换为 PDF（受 ``limit`` 限额，超出留给下一轮）；
+    - 源文件已删除或 meta 损坏的缓存条目（过期 PDF）直接清理；
+    - 同源旧版本由 ``ensure_pdf`` 转换时自动清理。
+
+    写操作只落在 ``{workspace}/.cili/cache/pdf/``（工具内部缓存，不触碰
+    用户文件），因此不需要路径策略门禁。
+    """
+    from core.config import load_workspace_config
+
+    cfg = load_workspace_config(workspace_uuid)
+    root = Path((cfg or {}).get("directory", ""))
+    if not cfg or not root.exists():
+        return {"workspace_uuid": workspace_uuid, "error": "workspace directory not found"}
+
+    cache_dir = workspace_cache_dir(workspace_uuid)
+    docs = sorted(_iter_office_docs(root))
+    valid_sources = {os.path.realpath(str(d)) for d in docs}
+
+    # 过期清理：meta 指向的源已不存在，或 meta 损坏
+    removed = 0
+    for meta_path in cache_dir.glob("*.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            source_ok = str(meta.get("source", "")) in valid_sources
+        except Exception:
+            source_ok = False
+        if not source_ok:
+            meta_path.unlink(missing_ok=True)
+            meta_path.with_suffix(".pdf").unlink(missing_ok=True)
+            removed += 1
+
+    converted = skipped = failed = 0
+    errors: list[str] = []
+    for doc in docs:
+        try:
+            key, stat = _cache_key(str(doc))
+        except OSError:
+            continue
+        if _read_meta(cache_dir / f"{key}.json", cache_dir / f"{key}.pdf", stat) is not None:
+            skipped += 1
+            continue
+        if converted >= limit:
+            continue  # 超出本轮限额：留给下一轮（2 小时后）
+        try:
+            ensure_pdf(str(doc), cache_dir=cache_dir, timeout=timeout)
+            converted += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"{doc.name}: {e}")
+
+    return {
+        "workspace_uuid": workspace_uuid,
+        "docs": len(docs),
+        "converted": converted,
+        "skipped": skipped,
+        "failed": failed,
+        "removed_stale": removed,
+        "cache_dir": str(cache_dir),
+        "errors": errors[:10],
+    }
+
+
 class Office2PDFTool(Tool):
     """Convert Word/Excel/PowerPoint documents to PDF via Office/WPS COM."""
 
@@ -307,14 +424,33 @@ The source is opened read-only with macros and external link updates disabled. C
 
 By default the PDF is written to <filename>.pdf in the current directory; pass output_path to choose another path. Pass overwrite=false to refuse replacing an existing PDF.
 
+action="sync" batch-syncs workspace Office documents into the per-workspace preview cache ({workspace}/.cili/cache/pdf/): converts new or changed files, and removes cached PDFs whose source no longer exists. Used by the office-pdf-sync cron task; sync writes only inside .cili/cache/pdf and never touches user files.
+
 Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PDF export.
 """
     parameters = {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["convert", "sync"],
+                "description": "convert: convert a single document (default). sync: batch-sync workspaces into the preview cache and clean stale PDFs.",
+                "default": "convert",
+            },
             "file_path": {
                 "type": "string",
-                "description": "Workspace-relative path to the Office document.",
+                "description": "Workspace-relative path to the Office document (convert only).",
+            },
+            "workspace_uuid": {
+                "type": "string",
+                "description": "sync only: limit to this workspace UUID. Default: all workspaces (System excluded).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "sync only: max new conversions per workspace per run (default 100).",
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 100,
             },
             "output_path": {
                 "type": "string",
@@ -338,6 +474,10 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
     concurrency_safe = False
 
     def execute(self, **kwargs: Any) -> ToolResult:
+        action = str(kwargs.get("action") or "convert").strip().lower()
+        if action == "sync":
+            return self._execute_sync(kwargs)
+
         file_path = str(kwargs.get("file_path") or "").strip()
         if not file_path:
             return ToolResult("Error: file_path is required", error=True)
@@ -380,7 +520,9 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         timeout = max(_MIN_TIMEOUT, min(timeout, _MAX_TIMEOUT))
 
         try:
-            pdf_path, engine, cached = ensure_pdf(abs_path, timeout=timeout)
+            ws_uuid = str(getattr(self, "workspace_uuid", "") or "")
+            cache_dir = workspace_cache_dir(ws_uuid) if ws_uuid else None
+            pdf_path, engine, cached = ensure_pdf(abs_path, cache_dir=cache_dir, timeout=timeout)
             copy_pdf(pdf_path, output_path)
         except TimeoutError as e:
             return ToolResult(f"Error: {e}", error=True)
@@ -403,6 +545,61 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
             "cached": cached,
             "engine": engine,
         })
+
+    def _execute_sync(self, kwargs: dict) -> ToolResult:
+        """批量同步工作区 Office 文档到预览缓存。
+
+        写操作限定在各工作区 ``.cili/cache/pdf/``（工具内部缓存，不触碰
+        用户文件），因此不走路径策略门禁；跨工作区文档读取按「区外读取
+        默认允许」策略放行。
+        """
+        try:
+            limit = int(kwargs.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        limit = max(1, min(limit, 1000))
+
+        ws_arg = str(kwargs.get("workspace_uuid") or "").strip()
+        if ws_arg:
+            targets = [ws_arg]
+        else:
+            from core.config import load_workspaces_index
+
+            targets = [
+                str(e.get("uuid", "")) for e in load_workspaces_index()
+                if e.get("uuid") and not e.get("system") and str(e.get("uuid")) != "system"
+            ]
+
+        results: list[dict] = []
+        totals = {"converted": 0, "skipped": 0, "failed": 0, "removed_stale": 0}
+        for uuid in targets:
+            try:
+                r = sync_workspace_pdf_cache(uuid, limit=limit)
+            except Exception as e:
+                logger.warning(f"[office2pdf] sync {uuid} failed: {e}")
+                results.append({"workspace_uuid": uuid, "error": str(e)})
+                continue
+            results.append(r)
+            for k in totals:
+                totals[k] += int(r.get(k, 0))
+
+        lines = [
+            f"工作区数: {len(results)}",
+            f"新转换: {totals['converted']} · 复用缓存: {totals['skipped']} · "
+            f"清理过期: {totals['removed_stale']} · 失败: {totals['failed']}",
+        ]
+        for r in results:
+            if r.get("error"):
+                lines.append(f"- {r['workspace_uuid']}: 错误 {r['error']}")
+                continue
+            if r.get("converted") or r.get("removed_stale") or r.get("failed"):
+                lines.append(
+                    f"- {r['workspace_uuid']}: 转换 {r['converted']} / 复用 {r['skipped']} / "
+                    f"清理 {r['removed_stale']} / 失败 {r['failed']}"
+                )
+                for err in r.get("errors", []):
+                    lines.append(f"  · {err}")
+        return ToolResult("\n".join(lines), meta={"totals": totals, "results": results})
 
 
 # ----- worker entry point (COM runs here, never in the agent process) -----

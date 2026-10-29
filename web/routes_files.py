@@ -21,7 +21,13 @@ from pydantic import BaseModel
 from core.config import load_workspace_config, load_workspaces_index
 from core.fs_utils import safe_upload_filename
 from core.teen_mode import deny_message, get_teen_mode
-from core.tools.office2pdf import SUPPORTED_EXTENSIONS as OFFICE_SUPPORTED_EXTENSIONS, ensure_pdf
+from core.tools.office2pdf import (
+    SUPPORTED_EXTENSIONS as OFFICE_SUPPORTED_EXTENSIONS,
+)
+from core.tools.office2pdf import (
+    ensure_pdf,
+    workspace_cache_dir,
+)
 from web.deps import (
     _LOCALHOST_IPS,
     _csrf_protect,
@@ -512,7 +518,10 @@ def _office_preview_source(workspace_uuid: str, path: str) -> tuple[Path, Path]:
 
 def _office_preview_result(source: Path, workspace_root: Path, workspace_uuid: str) -> tuple[Path, str, bool, str]:
     try:
-        pdf_path, engine, cached = ensure_pdf(str(source), timeout=120)
+        # 预览缓存按工作区隔离：{workspace}/.cili/cache/pdf/
+        pdf_path, engine, cached = ensure_pdf(
+            str(source), cache_dir=workspace_cache_dir(workspace_uuid), timeout=120
+        )
     except TimeoutError as e:
         raise HTTPException(status_code=504, detail=f"Office conversion timed out: {e}")
     except FileNotFoundError as e:

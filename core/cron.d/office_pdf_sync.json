@@ -1,0 +1,17 @@
+{
+  "name": "office-pdf-sync",
+  "description": "每 2 小时同步所有工作区的 Office 文档到 PDF 预览缓存（.cili/cache/pdf/），并清理过期 PDF",
+  "enabled": true,
+  "schedule": {
+    "type": "interval",
+    "minutes": 120,
+    "initial_delay_minutes": 60
+  },
+  "content": {
+    "task": "运行 Office 文档 PDF 缓存同步：调用 office2pdf 工具（action=\"sync\"），把所有工作区（排除 System）中的 Word/Excel/PPT/RTF 文档增量转换为 PDF，写入各工作区 .cili/cache/pdf/ 缓存目录（源文件变化时自动重新转换，源文件已删除的过期 PDF 自动清理）。完成后报告各工作区的新转换数、复用缓存数、清理过期数与失败明细（若有）。",
+    "plan": []
+  },
+  "config": {
+    "max_iterations": 30
+  }
+}

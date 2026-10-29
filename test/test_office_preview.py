@@ -28,7 +28,7 @@ class _Base:
         return ws_dir
 
     def _fake_ensure(self, pdf_path, engine="Test Office", cached=False):
-        def fake(source, timeout=120):
+        def fake(source, cache_dir=None, timeout=120):
             Path(pdf_path).write_bytes(b"%PDF-1.7\nfake")
             return Path(pdf_path), engine, cached
         return fake
@@ -85,7 +85,7 @@ class TestOfficePreview(_Base):
         ws_dir = self._prepare(tmp_path, monkeypatch)
         (ws_dir / "a.docx").write_bytes(b"fake")
 
-        def timeout(source, timeout=120):
+        def timeout(source, cache_dir=None, timeout=120):
             raise TimeoutError("conversion timed out")
 
         monkeypatch.setattr("web.routes_files.ensure_pdf", timeout)
@@ -97,7 +97,7 @@ class TestOfficePreview(_Base):
         ws_dir = self._prepare(tmp_path, monkeypatch)
         (ws_dir / "a.docx").write_bytes(b"fake")
 
-        def fail(source, timeout=120):
+        def fail(source, cache_dir=None, timeout=120):
             raise RuntimeError("Office not available")
 
         monkeypatch.setattr("web.routes_files.ensure_pdf", fail)
