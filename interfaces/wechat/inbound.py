@@ -246,7 +246,7 @@ class InboundHandler:
         failed: list[str] = []
         for f in files[:limit]:
             try:
-                await media.send_file(
+                await media.send_user_file(
                     self._rt.outbound, user_id, f.path,
                     workspace_root=workspace_root or None, reserve=1,
                 )
