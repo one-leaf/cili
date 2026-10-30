@@ -133,7 +133,7 @@ def _friendly_upload_error(exc: Exception) -> str:
     return f"发送文件失败：{text[:120]}"
 
 
-async def send_file_message(
+async def send_user_file(
     api,
     uploader,
     openid: str,

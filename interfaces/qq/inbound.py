@@ -288,7 +288,7 @@ class InboundHandler:
         failed: list[str] = []
         for f in files[:limit]:
             try:
-                await media.send_file_message(
+                await media.send_user_file(
                     self._rt.api, self._rt.uploader, openid, f.path,
                     msg_id=msg_id, note=f.note,
                 )
