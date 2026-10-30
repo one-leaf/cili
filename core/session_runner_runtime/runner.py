@@ -555,8 +555,43 @@ class Runner:
         logger.info(f"[Full Compact] 完成: {total_tokens:,} → {new_tokens:,} tokens")
         return total_tokens, new_tokens
 
+    # 结构化压缩模板：从对话中提取关键字段，防止压缩后丢失失败路径/验证状态/用户约束
+    _COMPACT_STRUCTURED_TEMPLATE = """请按以下结构用中文总结对话。每节用简短条目（无内容写"无"）。
+
+```markdown
+## 当前目标
+（用户的主要需求和期望结果）
+
+## 用户约束 / 偏好
+（用户明确提出的要求、风格偏好、禁止事项等）
+
+## 已完成工作
+（已完成的关键操作和结论）
+
+## 当前状态
+（当前在做什么，卡在哪里）
+
+## 失败路径（不要重复）
+（尝试过但失败的方法，避免再次踩坑）
+
+## 验证状态
+- 已验证：（已运行的命令/测试及结果）
+- 未验证：（计划但尚未执行的检查）
+
+## 关键上下文
+（相关文件、工具、链接、重要决策等）
+
+## 下一步
+（接下来应做的具体动作，按顺序列出）
+```
+
+对话内容：
+{conversation_text}
+
+按上述结构输出总结："""
+
     def _summarize_messages(self, messages: list[dict]) -> str:
-        """Use LLM to summarize messages."""
+        """Use LLM to summarize messages into a structured handoff-style format."""
         conversation_parts = []
         for msg in messages:
             role = msg.get("role", "unknown")
@@ -571,7 +606,8 @@ class Runner:
                     elif block.get("type") == "tool_use":
                         texts.append(f"[调用工具: {block.get('name', '')}]")
                     elif block.get("type") == "tool_result":
-                        texts.append("[工具结果]")
+                        is_err = block.get("is_error", False)
+                        texts.append(f"[工具结果{'(失败)' if is_err else ''}]")
                 if texts:
                     conversation_parts.append(f"{role}: {' '.join(texts)}")
 
@@ -580,22 +616,15 @@ class Runner:
         if len(conversation_text) > max_chars:
             conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
 
-        summary_prompt = f"""请用中文简洁地总结以下对话的主要内容，包括：
-1. 用户的主要需求和目标
-2. 已完成的关键操作
-3. 当前进展状态
-4. 重要的上下文信息
-
-对话内容：
-{conversation_text}
-
-请用 200-400 字总结："""
+        summary_prompt = self._COMPACT_STRUCTURED_TEMPLATE.format(
+            conversation_text=conversation_text,
+        )
 
         try:
             call_start = time.monotonic()
             response = self.runner.client.chat(
                 messages=[Message(role="user", content=summary_prompt)],
-                system="你是一个对话总结助手。请用中文简洁地总结对话要点。",
+                system="你是一个对话总结助手。请用中文按结构化模板总结对话要点，确保失败路径和验证状态不遗漏。",
                 session_id=self.runner.master_session_id,
             )
             # Track usage (UsageData object)
