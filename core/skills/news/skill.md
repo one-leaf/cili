@@ -22,11 +22,23 @@ Base URL: `https://60s.viki.moe/v2`. Free, no auth, covers hot searches + financ
 
 **Encoding (verified 2026-09-18):** every endpoint returns **UTF-8 JSON** — always `r.content.decode('utf-8')`. On Windows, `print()`ing Chinese to the terminal looks garbled (console codepage cp936); that is purely a display artifact, not the data. Write output to a file and Read it, or `json.dumps(data, ensure_ascii=False)` into a file.
 
+**⚠️ Single-script rule:** always fetch AND format in the **same** `python` tool call. Each python call is a fresh `stdin` with no variable persistence — `results` defined in call 1 is gone in call 2.
+
 ```python
 import httpx, json
-r = httpx.get('https://60s.viki.moe/v2/weibo', timeout=20, follow_redirects=True)
-d = json.loads(r.content.decode('utf-8'))     # response: {"code":200,"data":[...]}
-data = d.get('data') or []                    # data may be list or dict, or null
+
+def fetch(url, retries=3):
+    """Fetch a 60s API endpoint with retry. Returns data or None."""
+    for i in range(retries):
+        try:
+            r = httpx.get(url, timeout=20, follow_redirects=True)
+            d = json.loads(r.content.decode('utf-8'))
+            if d.get('data') is not None:
+                return d['data']
+        except Exception:
+            if i < retries - 1:
+                import time; time.sleep(1)
+    return None
 ```
 
 **Flakiness (verified):** this is a free third-party service and **intermittently returns `data: null`/empty or HTTP 500 even on healthy endpoints**, especially under burst requests. Always retry up to 3 times with a short backoff; if still empty, fall through to the next channel. Verified-unstable endpoints: `rednote`, `bili`, `maoyan/realtime/movie`, `dongchedi` (empty), `zhihu-daily` (404 — does not exist), `baike?query=` (400). Do not hard-fail on any single source.
@@ -35,27 +47,114 @@ data = d.get('data') or []                    # data may be list or dict, or nul
 
 | Endpoint | Shape | Item fields |
 |---|---|---|
-| `/v2/60s` | `{date, news[15], tip, link}` | news item: `title`, `link` — 每日 15 条精选 + 每日一言 |
+| `/v2/60s` | `{date, news[15], tip, cover, image, link}` | ⚠️ **news 是 `list[str]`**，每条直接是标题字符串（无 `title`/`link` 字段）；tip 也是 str |
 | `/v2/weibo` | list[50] | `title`, `hot_value`, `link` — 微博热搜 |
-| `/v2/zhihu` | list[30] | `title`, `hot_value_desc`, `answer_cnt`, `link` — 知乎热榜 |
+| `/v2/zhihu` | list[30] | `title`, `detail`, `hot_value_desc`, `answer_cnt`, `follower_cnt`, `comment_cnt`, `cover`, `created_at`, `link` — 知乎热榜 |
 | `/v2/baidu/hot` | list[50] | `rank`, `title`, `desc`, `score`, `url` — 百度热搜 |
-| `/v2/douyin` | list[49] | `title`, `hot_value`, `link` — 抖音热点 |
+| `/v2/douyin` | list[49] | `title`, `hot_value`, `cover`, `link`, `event_time`, `active_time` — 抖音热点 |
 | `/v2/toutiao` | list[50] | `title`, `hot_value`, `link` — 今日头条 |
 | `/v2/quark` | list[50] | `title`, `summary`, `source`, `link` — 夸克热点 |
-| `/v2/hacker-news/top` | list[10] | `title`, `score`, `author`, `link` — Hacker News（另有 `/new`、`/best`） |
+| `/v2/hacker-news/top` | list[10] | `id`, `title`, `score`, `author`, `link`, `created`, `created_at` — Hacker News（另有 `/new`、`/best`） |
 | `/v2/ai-news` | `{date, news[4]}` | `title`, `detail`, `link`, `source` — AI 资讯 |
 | `/v2/today-in-history` | `{date, items[11]}` | `title`, `year`, `description`, `link` — 历史上的今天 |
-| `/v2/gold-price` | `{date, metals, stores, banks, recycle}` | metals: `name`,`sell_price`; stores: `brand`,`price`; banks: `bank`,`price` — 金价 |
-| `/v2/exchange-rate?currency=CNY` | `{base_code, updated, rates}` | `currency`, `rate` — 汇率 |
+| `/v2/gold-price` | `{date, metals, stores, banks, recycle}` | metals: `name`,`sell_price`,`today_price`,`high_price`,`low_price`,`unit`；stores: `brand`,`product`,`price`,`unit`,`formatted`；banks: `bank`,`product`,`price`,`time`；recycle: `type`,`price`,`purity` |
+| `/v2/exchange-rate?currency=CNY` | `{base_code, updated, updated_at, rates}` | rates item: `currency`, `rate`。注意：`updated` 是字符串时间（如 `2026/10/30 08:02:31`），`updated_at` 是毫秒时间戳 |
 | `/v2/fuel-price` | `{region, trend, items, link}` | `name`, `price` — 油价 |
 | `/v2/maoyan/all/movie` | `{list[20], tip}` | `rank`, `movie_name`, `box_office` — 票房 |
 | `/v2/douban/weekly/movie` | list[10] | `rank`, `title`, `rating`, `url` — 口碑电影 |
 | `/v2/ncm-rank/list` | list[63] | `id`, `name`, `update_frequency` — 音乐榜 |
-| `/v2/weather/realtime?query=北京` | `{location, weather, air_quality, sunrise, life_indices, alerts}` | 天气 |
+| `/v2/weather/realtime?query=北京` | `{location, weather, air_quality, sunrise, life_indices, alerts}` | 天气（⚠️ 有频率限制，可能 429） |
 | `/v2/weather/forecast?query=北京&days=7` | — | 预报 |
 | `/v2/moyu` | dict | 摸鱼日历（假期/周末/进度） |
 | `/v2/epic` | list[4] | `title`, `is_free_now`, `free_end`, `link` — Epic 免费游戏 |
 | `/v2/60s?encoding=markdown` | text/markdown | 直接可展示的文本，无需解析 |
+
+**Reference implementation** — 完整的 fetch + format 单脚本模板（直接可用，按需裁剪）：
+
+```python
+import httpx, json, time
+
+def fetch(url, retries=3):
+    for i in range(retries):
+        try:
+            r = httpx.get(url, timeout=20, follow_redirects=True)
+            d = json.loads(r.content.decode('utf-8'))
+            if d.get('data') is not None:
+                return d['data']
+        except Exception:
+            if i < retries - 1:
+                time.sleep(1)
+    return None
+
+# Fetch all needed endpoints in one script
+data_60s = fetch('https://60s.viki.moe/v2/60s') or {}
+weibo = fetch('https://60s.viki.moe/v2/weibo') or []
+douyin = fetch('https://60s.viki.moe/v2/douyin') or []
+zhihu = fetch('https://60s.viki.moe/v2/zhihu') or []
+hn = fetch('https://60s.viki.moe/v2/hacker-news/top') or []
+gold = fetch('https://60s.viki.moe/v2/gold-price') or {}
+exchange = fetch('https://60s.viki.moe/v2/exchange-rate?currency=CNY') or {}
+
+output = []
+
+# 1. 每日早报 — news 是 list[str]，直接遍历
+output.append("# 今日热点速览")
+output.append("> 数据来源: 60s API\n")
+output.append("## 每日要闻")
+for item in (data_60s.get('news') or [])[:12]:
+    output.append(f"- {item}")  # item 直接是字符串
+tip = data_60s.get('tip') or ''
+if tip:
+    output.append(f"\n💡 每日一言: {tip}")
+
+# 2. 微博热搜
+output.append("\n---\n## 🔥 微博热搜 TOP15")
+for i, item in enumerate(weibo[:15], 1):
+    if isinstance(item, dict):
+        output.append(f"{i}. {item.get('title', '')} — 热度 {item.get('hot_value', '')}")
+
+# 3. 抖音热点
+output.append("\n---\n## 🎵 抖音热点 TOP10")
+for i, item in enumerate(douyin[:10], 1):
+    if isinstance(item, dict):
+        output.append(f"{i}. {item.get('title', '')} — 热度 {item.get('hot_value', '')}")
+
+# 4. 知乎热榜
+output.append("\n---\n## 📘 知乎热榜 TOP10")
+for i, item in enumerate(zhihu[:10], 1):
+    if isinstance(item, dict):
+        output.append(f"{i}. {item.get('title', '')} — {item.get('hot_value_desc', '')} · {item.get('answer_cnt', '')}条回答")
+
+# 5. Hacker News
+output.append("\n---\n## 💻 Hacker News TOP10")
+for i, item in enumerate(hn[:10], 1):
+    if isinstance(item, dict):
+        output.append(f"{i}. {item.get('title', '')} — {item.get('score', '')} points")
+
+# 6. 金价
+output.append("\n---\n## 💰 金价与汇率")
+for m in (gold.get('metals') or [])[:4]:
+    if isinstance(m, dict):
+        output.append(f"- {m.get('name', '')}: ¥{m.get('sell_price', '')}/克")
+for s in (gold.get('stores') or [])[:6]:
+    if isinstance(s, dict):
+        output.append(f"- {s.get('brand', '')}: ¥{s.get('price', '')}/克")
+
+# 7. 汇率 — 注意字段名是 updated 不是 updated_at
+rates = exchange.get('rates') or []
+base = exchange.get('base_code', 'CNY')
+updated = exchange.get('updated', '')  # 字符串时间，如 "2026/10/30 08:02:31"
+key_cur = ['USD', 'EUR', 'GBP', 'JPY', 'HKD']
+output.append(f"\n汇率 (基准: {base})")
+for r in rates:
+    if isinstance(r, dict) and r.get('currency') in key_cur:
+        output.append(f"- 1 {base} = {r.get('rate', '')} {r.get('currency', '')}")
+if updated:
+    output.append(f"更新时间: {updated}")
+
+text = '\n'.join(output)
+print(text[:3000])
+```
 
 ### Channel B — direct free APIs (verified, no auth)
 
