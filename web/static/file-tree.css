@@ -578,7 +578,8 @@
 }
 
 .preview-pane.maximized {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    min-width: 0;
     width: auto !important;
 }
 
@@ -614,7 +615,8 @@
 @media (max-width: 980px) {
     .container.preview-maximized .preview-pane {
         position: static;
-        width: 100% !important;
+        width: auto !important;
+        flex: 1 1 0;
         box-shadow: none;
     }
 }
