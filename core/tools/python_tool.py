@@ -31,11 +31,11 @@ def _resolve_python_exe() -> str:
     return exe if os.path.isfile(exe) else sys.executable
 
 
-def _resolve_mpl_config_dir() -> str:
-    """matplotlib 配置目录：deps 布局存在时用 deps，否则用系统临时目录。"""
+def _resolve_mpl_config_dir(cwd: str) -> str:
+    """matplotlib 配置目录：deps 布局存在时用 deps，否则用工作区 .cili/tmp。"""
     if os.path.isdir(_VENV_DIR):
         return os.path.join(_VENV_DIR, "matplotlib")
-    return os.path.join(tempfile.gettempdir(), "cili-matplotlib")
+    return os.path.join(cwd, ".cili", "tmp", "matplotlib")
 
 
 # pip 包名白名单（PEP 508 名称字符集）：双引号挡不住 bash 的 `$(...)` 命令
@@ -293,11 +293,12 @@ class PythonTool(Tool):
 
         python_exe = _resolve_python_exe()
         # Set MPLCONFIGDIR to use Cili's matplotlib config
-        mpl_config_dir = _resolve_mpl_config_dir()
+        mpl_config_dir = _resolve_mpl_config_dir(self.cwd)
 
         if run_in_background:
             # For background execution, write code to temp file and execute
-            tmp_dir = os.environ.get("CILI_TMP")
+            tmp_dir = os.environ.get("CILI_TMP") or os.path.join(self.cwd, ".cili", "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
             self._cleanup_stale_bg_scripts(tmp_dir)
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".py", delete=False, encoding="utf-8",

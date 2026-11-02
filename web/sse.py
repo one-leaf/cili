@@ -119,7 +119,7 @@ def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSi
 
     def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
         # Skip tool_result SSE for placeholder tools (they have dedicated SSE events)
-        if tool_name in ("ask_user", "session"):
+        if tool_name in ("ask_user", "agent"):
             return
         base.on_tool_result(tool_name, output, is_error, tool_use_id)
         event = json.dumps({"type": "tool_result", "tool": tool_name, "content": output, "is_error": is_error, "tool_use_id": tool_use_id, "session_id": sid}, ensure_ascii=False)

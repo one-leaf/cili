@@ -475,6 +475,7 @@ class BackgroundMixin:
         session: Any,
         exec_id: str,
         task_summary: str,
+        on_complete: Any = None,
     ) -> ToolResult:
         """Start a Runner in background and return task_id.
 
@@ -556,7 +557,7 @@ class BackgroundMixin:
                         f"Failed to unregister background Runner from AgentMailbox {task_id}: {e}"
                     )
                 # T18: 资源/统计对称 —— 后台子 runner 结束也 close LLM client 并转发 usage，
-                # 与同步委派（session_tool.py）保持一致。
+                # 与同步委派（agent_tool.py）保持一致。
                 try:
                     runner.close()
                 except Exception:
@@ -577,64 +578,73 @@ class BackgroundMixin:
                         logging.getLogger(__name__).warning(
                             f"Failed to forward usage for background Runner {task_id}: {e}"
                         )
-                # 后台 runner 完成：先计算 status
                 status = (task.result or {}).get("status", "completed")
-                # 全局事件流：后台模式补发 session_complete + 保留 on_session_complete 回调
-                # + 通过 message_bus 发送通知给 master（使其在空闲时也能收到通知）
-                try:
-                    publish = getattr(self, "_publish", None)
-                    if publish:
-                        publish("session_complete", exec_id=exec_id, status=status)
-                    # 通过 message_bus 发送通知给 master，使其在空闲时也能收到通知
-                    sm = getattr(self, "session", None)
-                    master_session_id = getattr(sm, "session_id", None) if sm else None
-                    if master_session_id:
-                        try:
-                            from core.agent_mailbox import get_agent_mailbox
-                            mbus = get_agent_mailbox()
-                            summary_text = ""
-                            if task.result:
-                                summary_text = (task.result.get("summary")
-                                                or task.result.get("message") or "")
-                            mbus.send_to_agent(
-                                exec_id,
-                                master_session_id,
-                                f"[子 Runner 完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
-                                message_type="notification",
-                            )
-                            # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）
-                            try:
-                                from core.event_bus import get_event_bus
-                                get_event_bus().publish({
-                                    "type": "background_runner_resume",
-                                    "workspace_uuid": self.workspace_uuid,
-                                    "session_id": master_session_id,
-                                    "exec_id": exec_id,
-                                    "status": status,
-                                })
-                            except Exception:
-                                pass  # 事件发布失败不影响主流程
-                        except Exception as e:
-                            import logging
-                            logging.getLogger(__name__).debug(
-                                f"Failed to send notification via message_bus: {e}"
-                            )
-                    if getattr(self, "on_session_complete", None):
-                        self.on_session_complete(exec_id)
-                except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"Failed to notify background Runner complete {task_id}: {e}"
-                    )
-                # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）
-                if getattr(self, "on_background_complete", None):
+                defer_completion = False
+                if on_complete is not None:
                     try:
-                        self.on_background_complete(exec_id, status)
+                        defer_completion = bool(on_complete(task.result or {}))
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(
-                            f"on_background_complete callback error {task_id}: {e}"
+                            f'on_complete callback error {task_id}: {e}'
                         )
+                if not defer_completion:
+                    # 全局事件流：后台模式补发 session_complete + 保留 on_session_complete 回调
+                    # + 通过 message_bus 发送通知给 master（使其在空闲时也能收到通知）
+                    try:
+                        publish = getattr(self, "_publish", None)
+                        if publish:
+                            publish("session_complete", exec_id=exec_id, status=status)
+                        # 通过 message_bus 发送通知给 master，使其在空闲时也能收到通知
+                        sm = getattr(self, "session", None)
+                        master_session_id = getattr(sm, "session_id", None) if sm else None
+                        if master_session_id:
+                            try:
+                                from core.agent_mailbox import get_agent_mailbox
+                                mbus = get_agent_mailbox()
+                                summary_text = ""
+                                if task.result:
+                                    summary_text = (task.result.get("summary")
+                                                    or task.result.get("message") or "")
+                                mbus.send_to_agent(
+                                    exec_id,
+                                    master_session_id,
+                                    f"[子 Runner 完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
+                                    message_type="notification",
+                                )
+                                # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）
+                                try:
+                                    from core.event_bus import get_event_bus
+                                    get_event_bus().publish({
+                                        "type": "background_runner_resume",
+                                        "workspace_uuid": self.workspace_uuid,
+                                        "session_id": master_session_id,
+                                        "exec_id": exec_id,
+                                        "status": status,
+                                    })
+                                except Exception:
+                                    pass  # 事件发布失败不影响主流程
+                            except Exception as e:
+                                import logging
+                                logging.getLogger(__name__).debug(
+                                    f"Failed to send notification via message_bus: {e}"
+                                )
+                        if getattr(self, "on_session_complete", None):
+                            self.on_session_complete(exec_id)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"Failed to notify background Runner complete {task_id}: {e}"
+                        )
+                    # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）
+                    if getattr(self, "on_background_complete", None):
+                        try:
+                            self.on_background_complete(exec_id, status)
+                        except Exception as e:
+                            import logging
+                            logging.getLogger(__name__).warning(
+                                f"on_background_complete callback error {task_id}: {e}"
+                            )
 
         # Create background task entry
         task = BackgroundTask(

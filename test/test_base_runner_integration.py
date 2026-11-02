@@ -417,7 +417,8 @@ class TestBaseSessionRunnerUnitTests:
             {"role": "user", "content": "recent question"},
         ]
 
-        with patch.object(runner, "_summarize_messages", return_value="（摘要生成失败，请查看完整历史）"):
+        # Patch Runner._summarize_messages（inner runner），不是 BaseSessionRunner._summarize_messages
+        with patch.object(runner.runner, "_summarize_messages", return_value="（摘要生成失败，请查看完整历史）"):
             before, after = runner._perform_full_compact(keep_user_messages=1)
 
         # 摘要失败后所有消息仍有效
@@ -438,7 +439,8 @@ class TestBaseSessionRunnerUnitTests:
             {"role": "user", "content": "recent question"},
         ]
 
-        with patch.object(runner, "_summarize_messages", return_value="之前的对话摘要内容"):
+        # Patch Runner._summarize_messages（inner runner）
+        with patch.object(runner.runner, "_summarize_messages", return_value="之前的对话摘要内容"):
             runner._perform_full_compact(keep_user_messages=1)
 
         # 摘要成功：旧消息被标记无效，摘要消息已插入
@@ -462,7 +464,8 @@ class TestBaseSessionRunnerUnitTests:
             {"role": "user", "content": "pinned check", "_meta": {"pinned": True}},
         ]
 
-        with patch.object(runner, "_summarize_messages", return_value="对话摘要"):
+        # Patch Runner._summarize_messages（inner runner）
+        with patch.object(runner.runner, "_summarize_messages", return_value="对话摘要"):
             runner._perform_full_compact(keep_user_messages=1)
 
         # pinned 消息永不失效
@@ -496,7 +499,8 @@ class TestBaseSessionRunnerUnitTests:
             {"role": "user", "content": "pinned check", "_meta": {"pinned": True}},
         ]
 
-        with patch.object(runner, "_summarize_messages", return_value="对话摘要"):
+        # Patch Runner._summarize_messages（inner runner）
+        with patch.object(runner.runner, "_summarize_messages", return_value="对话摘要"):
             runner._perform_full_compact(keep_user_messages=1)
 
         # pinned 消息永不失效（漂移会让第一条 pinned 被误标）

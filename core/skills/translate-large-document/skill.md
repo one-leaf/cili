@@ -42,7 +42,7 @@ Group the blocks into consecutive batches of **~40 blocks each** (last batch may
 For each batch, in order:
 
 1. Mark that batch's todo item `in_progress`.
-2. Call `agent(..., agent_type="lite", run_in_background=true)` with a task that makes the Lite agent loop over its whole block range in one run:
+2. Call `agent(..., subagent_type="lite", run_in_background=true)` with a task that makes the Lite agent loop over its whole block range in one run:
 
    ```
    agent(
@@ -52,7 +52,7 @@ For each batch, in order:
        "Loop over the range in ascending order: read chunk_NNN.txt, translate in-context, write result_NNN.txt",
        "Use python to verify every chunk in the range has a result file; retranslate any missing one"
      ],
-     agent_type="lite",
+     subagent_type="lite",
      run_in_background=true
    )
    ```
@@ -64,7 +64,7 @@ For each batch, in order:
 
 ### Wait for the batches (avoid per-task polling)
 
-Instead of calling `agent` with `action="read"` once per batch, wait with a single bounded bash loop and re-check:
+Instead of calling `agent` with `action="status", agent_id=...` once per batch, wait with a single bounded bash loop and re-check:
 
 - `bash` `while [ $(ls $CILI_TMP/{task_id}/results/*.txt 2>/dev/null | wc -l) -lt {total} ]; do sleep 30; done` — but keep each bash call under ~4 minutes (hard 300s limit). If it is not done in one call, repeat it.
 

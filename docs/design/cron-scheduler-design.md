@@ -37,7 +37,7 @@ CronTask.execute()
   └─ agent.run(cron_message, streaming=False) — 注入 cron user message，运行 session loop
   ↓
 SessionRunner.run(cron_message, streaming=False)  ← cron 直接执行（master 角色，非流式）
-  └─ 正常 session loop，自主执行工具完成任务；需要时通过 session 工具委派 Worker/Lite 子代理
+  └─ 正常 session loop，自主执行工具完成任务；需要时通过 agent 工具委派 Worker/Lite 子代理
 ```
 
 **关键点**：
@@ -484,12 +484,12 @@ loop 工具用于跟踪批量任务进度（如处理大量文件）。Worker/Li
 
 ### 6.4 Cron Message 格式
 
-注入到 session 的 user message（提示 Master SessionRunner 使用 session 工具委派执行）：
+注入到 session 的 user message（提示 Master SessionRunner 使用 agent 工具委派执行）：
 
 ```
 [Cron 定时任务触发]
 
-请使用 session 工具执行以下任务：
+请使用 agent 工具执行以下任务：
 
 ## 任务描述
 运行记忆整合：调用 memory(action="consolidate")，把各工作区 journal 中待整合的记忆记录写入条目、刷新 summary、推进游标并 git 提交。
@@ -604,7 +604,7 @@ result = scheduler.run_task_now("memory-consolidation") -> dict | None  # 任务
 ### 9.1 为什么用 Master SessionRunner 而不是直接创建 Worker/Lite 子代理？
 
 - **统一入口**：Master SessionRunner 走正常 session loop，自主决定直接执行还是委派 Worker/Lite 子代理，任务处理更灵活
-- **工具完整**：Master SessionRunner 拥有完整工具集（含 session 工具），无需 Cron 侧特殊编排
+- **工具完整**：Master SessionRunner 拥有完整工具集（含 agent 工具），无需 Cron 侧特殊编排
 - **非流式执行**：Cron 后台任务无需流式输出，`agent.run(streaming=False)` 即可
 - **上下文干净**：每次运行前 `invalidate_all_messages()`，避免 cron 历史消息累积撑爆上下文
 - **按 workspace 缓存**：`_cron_sessions` 复用 Master SessionRunner 实例，运行中的 workspace 跳过本次执行

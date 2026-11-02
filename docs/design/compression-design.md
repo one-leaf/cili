@@ -67,7 +67,9 @@
 
 **触发条件**：`total_tokens > max_context_tokens * 0.80`
 
-**实现位置**：`core/session_runner_runtime/runner.py::_perform_full_compact()`
+**用户输入预检查**：交互式新回合在 `SessionRunner._run_interactive` 里、添加用户消息之前调用 `Runner.maybe_full_compact_for_user_input(user_text)`。它先跑 Layer 1，再按「已有 token + 本次输入 token」判断阈值；触发时用 handoff 模板做全压缩，把本次输入写入「下一阶段任务（立即执行）」，然后继续该回合。`resume_after_ask_user` / `resume_from_notification` 不经过该路径。
+
+**实现位置**：`core/session_runner_runtime/runner.py::_perform_full_compact()` / `maybe_full_compact_for_user_input()`
 
 **策略**：
 1. 保留最近 N 条用户消息（`KEEP_USER_MESSAGES = 3`）
@@ -75,21 +77,10 @@
 3. 摘要作为新的 user+assistant 消息对插入
 4. 旧消息标记消息级 `_meta.valid=False`（不删除，发送给 API 时被过滤）
 
-**摘要 Prompt**：
-```
-请用中文简洁地总结以下对话的主要内容，包括：
-1. 用户的主要需求和目标
-2. 已完成的关键操作
-3. 当前进展状态
-4. 重要的上下文信息
-
-对话内容：
-{conversation_text}
-
-请用 200-400 字总结：
-```
-
-系统提示词：`你是一个对话总结助手。请用中文简洁地总结对话要点。`
+**摘要 Prompt（当前实现）**：
+- 压缩：`_SUMMARY_INSTRUCTION_TEMPLATE`（末尾追加指令，复用 system+tools+messages 前缀）
+- 输入预检查：`core/handoff.py::build_handoff_document(next_steps, reason)`
+- 摘要请求不拼接原始对话；模型通过 cache prefix 看到完整对话
 
 **压缩后消息格式**：
 旧消息不做删除，而是标记消息级 `_meta.valid=False`；在消息列表末尾追加两条新消息（英文占位提示 + 原始摘要文本）：
@@ -199,6 +190,7 @@ total += max(750, len(data) // 100)
     ▼
 SessionRunner.run()（master 交互式 / worker、lite 自主式）
     │
+    ├── maybe_full_compact_for_user_input(user_text)   # interactive 新回合，输入作 next_steps
     ├── 添加用户消息
     │
     └── 循环：
@@ -229,8 +221,9 @@ SessionRunner.run()（master 交互式 / worker、lite 自主式）
 | 文件 | 职责 |
 |------|------|
 | `core/compression.py` | 压缩函数（microcompact 标记、token 计数） |
-| `core/session_runner_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现、`_resolve_tool_results()`、图片替换 |
+| `core/session_runner_runtime/runner.py` | 压缩调度（`_check_and_compress`）、Full Compact 实现、输入预检查、`_resolve_tool_results()`、图片替换 |
 | `core/base_session_runner.py` | 同名薄转发方法（委托给 `session_runner_runtime/runner.py`） |
+| `core/handoff.py` | 交接文档模板（输入预检查与 handoff 工具共用） |
 | `core/tools/read.py` | 读取工具输出文件（截断输出的完整内容按路径分批读取） |
 | `core/tools/read_tool_result.py` | 检索被压缩（microcompact）的旧工具结果（按 `tool_use_id`） |
 | `core/tools/base.py` | 工具输出外部存储 |

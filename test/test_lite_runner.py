@@ -72,7 +72,10 @@ class TestLiteConstruction:
     def test_tool_whitelist(self):
         """Lite 白名单含 read/write/edit/bash/python/message_bus/clock。"""
         runner = _make_runner(task="t")
-        assert runner.role_cfg.tools == ["read", "write", "edit", "bash", "python", "message_bus", "clock"]
+        assert runner.role_cfg.tools == [
+            "read", "write", "edit", "bash",
+            "python", "message_bus", "clock",
+        ]
 
     def test_tools_instantiated(self):
         tools = [MagicMock() for _ in range(4)]
@@ -167,7 +170,7 @@ class TestLiteRunFlow:
         assert results[0]["status"] == "stopped"
 
     def test_no_tools_uses_real_tool_whitelist(self):
-        """无 mock 工具时由注册表实例化（仅 read/write/edit/bash 白名单内）。"""
+        """无 mock 工具时由注册表实例化（lite 白名单内）。"""
         # 注册表按 lite 白名单实例化，需 config 提供 approval 相关字段
         config = MagicMock()
         config.model = MagicMock()
@@ -177,4 +180,7 @@ class TestLiteRunFlow:
         with patch("core.session_runner.create_llm_client", return_value=MagicMock()):
             runner = SessionRunner(config, role="lite", task="t", cwd=".")
         names = {t.name for t in runner.tools}
-        assert names == {"read", "write", "edit", "bash", "python", "message_bus", "clock"}
+        assert names == {
+            "read", "write", "edit", "bash",
+            "python", "message_bus", "clock",
+        }

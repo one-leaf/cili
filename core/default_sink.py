@@ -65,7 +65,7 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
         })
 
     def _default_on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str) -> None:
-        if tool_name in ("ask_user", "session"):
+        if tool_name in ("ask_user", "agent"):
             return
         bus.publish({
             "type": "tool_result",

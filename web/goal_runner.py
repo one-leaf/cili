@@ -1,11 +1,11 @@
-"""GoalRunner — master 经 session 工具逐轮委派 worker 的目标循环后台编排。
+"""GoalRunner — master 经 agent 工具逐轮委派 worker 的目标循环后台编排。
 
-/goal 命令设置目标后，后台 daemon 线程逐轮调用 master 的 session 工具
+/goal 命令设置目标后，后台 daemon 线程逐轮调用 master 的 agent 工具
 委派一个 worker 执行轮次提示（与用户手动委派 / master LLM 循环内委派
 走同一条路径）。每轮完成后检查完成标记 / 轮次上限 / 手动暂停，
 未完成则重注入续跑提示进入下一轮。
 
-worker 委派复用 SessionTool 既有机制：exec_id 为 exec_{8位hex}、
+worker 委派复用 AgentTool 既有机制：exec_id 为 exec_{8位hex}、
 session_start/session_complete 事件、执行日志、工具输出目录（exec_*）全部与
 普通委派一致，前端按 worker 卡渲染。goal 级完成/暂停/错误文本不带 exec_id
 → 前端按 master 主聊天渲染。
@@ -76,16 +76,16 @@ class GoalRunner:
         session_id: str,
         runner,
         manager: GoalManager,
-        session_tool=None,
+        agent_tool=None,
     ):
         self.workspace_uuid = workspace_uuid
         self.session_id = session_id
         self.runner = runner
         self.manager = manager
-        self.runner_tool = session_tool
-        if self.runner_tool is None:
-            self.runner_tool = next(
-                (t for t in getattr(runner, "tools", []) or [] if getattr(t, "name", "") == "session"),
+        self.agent_tool = agent_tool
+        if self.agent_tool is None:
+            self.agent_tool = next(
+                (t for t in getattr(runner, "tools", []) or [] if getattr(t, "name", "") == "agent"),
                 None,
             )
         self._stop = threading.Event()
@@ -127,7 +127,7 @@ class GoalRunner:
 
     def _goal_loop(self) -> None:
         m = self.manager
-        session_tool = self.runner_tool
+        agent_tool = self.agent_tool
         while m.is_active():
             # 轮间停止检查：/goal pause|clear 经 request_stop 置位；
             # UI 停止按钮置 master._stopped → 暂停并跳出（防停止后空转）
@@ -147,13 +147,13 @@ class GoalRunner:
                 break
 
             prompt = m.next_round_prompt()
-            if session_tool is None:
+            if agent_tool is None:
                 m.block("runner_error")
-                self._round_finish("❌ 未找到 master 的 session 工具，无法委派 worker 执行目标。")
+                self._round_finish("❌ 未找到 master 的 agent 工具，无法委派 worker 执行目标。")
                 break
 
-            # 委派 worker：事件/卡片/日志/exec_id 全部由 SessionTool 完成，
-            # 同步阻塞至本轮 worker 结束（SessionTool 内部有 1h 超时兜底）。
+            # 委派 worker：事件/卡片/日志/exec_id 全部由 AgentTool 完成，
+            # 同步阻塞至本轮 worker 结束（AgentTool 内部有 1h 超时兜底）。
             # 先在 master 会话记录占位消息（assistant tool_use + user tool_result 带
             # _meta.exec_id），与普通委派一致 —— 前端 loadSession 重渲染 / 页面重载时
             # renderMessages 按 tool_result._meta.exec_id 重建 worker 卡，否则卡片会消失。
@@ -163,9 +163,9 @@ class GoalRunner:
                 self._record_round_ref(sm, exec_id, prompt)
             try:
                 if exec_id:
-                    tr = session_tool.execute(task=prompt, agent_type="worker", exec_id=exec_id)
+                    tr = agent_tool.execute(task=prompt, subagent_type="worker", exec_id=exec_id)
                 else:
-                    tr = session_tool.execute(task=prompt, agent_type="worker")
+                    tr = agent_tool.execute(task=prompt, subagent_type="worker")
             except Exception as e:
                 logger.error(f"[goal] 第 {round_no} 轮执行异常: {e}")
                 if sm is not None and exec_id:
@@ -206,7 +206,7 @@ class GoalRunner:
 
     @staticmethod
     def _parse_result(tr) -> dict:
-        """从 session 工具 ToolResult 解析结果 dict（{status, summary, iterations, ...}）。"""
+        """从 agent 工具 ToolResult 解析结果 dict（{status, summary, iterations, ...}）。"""
         output = getattr(tr, "output", None) or ""
         if isinstance(output, str) and output.strip().startswith("{"):
             try:
@@ -217,7 +217,7 @@ class GoalRunner:
 
     @staticmethod
     def _pre_generate_exec_id(sm) -> str:
-        """预生成本轮 worker 的 exec_id（与 SessionTool 内部生成规则一致）。"""
+        """预生成本轮 worker 的 exec_id（与 AgentTool 内部生成规则一致）。"""
         if sm is None:
             return ""
         gen = getattr(getattr(sm, "agent_logs", None), "_generate_exec_id", None)
@@ -238,8 +238,8 @@ class GoalRunner:
             sm.add_message("assistant", [{
                 "type": "tool_use",
                 "id": tool_use_id,
-                "name": "session",
-                "input": {"task": task[:_TOOL_INPUT_MAX], "agent_type": "worker"},
+                "name": "agent",
+                "input": {"task": task[:_TOOL_INPUT_MAX], "subagent_type": "worker"},
             }])
             sm.add_message("user", [{
                 "type": "tool_result",
@@ -248,7 +248,7 @@ class GoalRunner:
                 "content": "（目标轮次 worker 委派记录，结果见执行日志与轮次摘要）",
                 "is_error": False,
                 "_meta": {
-                    "tool_name": "session",
+                    "tool_name": "agent",
                     "exec_id": exec_id,
                     "completed": False,
                     "iterations": 0,

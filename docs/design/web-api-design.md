@@ -236,6 +236,20 @@ Content-Type: application/json
 
 将 `metadata.hidden` 写入会话 meta.json（`read_meta()` + `atomic_write_json()` 原子写入）。隐藏的会话在列表中默认不显示，取消隐藏可恢复。
 
+#### 分支会话（fork）
+
+```
+POST /api/workspaces/{uuid}/sessions/{id}/fork
+Content-Type: application/json
+
+{
+  "next_steps": "可选；留空只创建分支，不自动执行",
+  "label": "可选；分支名"
+}
+```
+
+会话空闲时认领 → `runner.set_turn_interface("web")` → `asyncio.to_thread(runner.fork_session, ...)` → 返回 `{session_id, name, status, mode, token_estimate}`。404 会话不存在、409 会话运行中、500 摘要/分支创建失败。前端「分支会话」菜单成功后刷新列表并切换到新会话。fork 只复制已完成回合 snapshot；超过 100k token 时 mode=handoff 并显式提示。
+
 #### 批量会话操作
 
 ```

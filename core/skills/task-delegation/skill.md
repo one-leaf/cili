@@ -8,7 +8,7 @@ roles: [master, worker]
 
 > **Large files and complex tasks → delegate to a Worker/Lite sub-agent via `agent` tool. Don't handle them yourself.**
 
-The Master agent's job is to understand user intent, orchestrate tasks, and present results. Heavy file I/O and batch processing should be delegated to a Worker/Lite sub-agent (`agent` tool, `agent_type` defaults to `worker`).
+The Master agent's job is to understand user intent, orchestrate tasks, and present results. Heavy file I/O and batch processing should be delegated to a Worker/Lite sub-agent (`agent` tool, `subagent_type` defaults to `worker`).
 
 ## When to Use agent Tool
 
@@ -132,7 +132,7 @@ agent(
 ## Important Notes
 
 - **Task info is pinned**: Task objective and plan are the pinned first user message, immune to compression
-- `agent_type`: `agent` accepts `agent_type="worker"` (default, full tool set + check phase) or `agent_type="lite"` (read/write/edit/bash only) — use lite for simple, self-contained file tasks
+- `subagent_type`: `agent` accepts `subagent_type="worker"` (default, full tool set + check phase) or `subagent_type="lite"` (read/write/edit/bash only) — use lite for simple, self-contained file tasks
 - Worker/Lite sub-agent performs LLM processing in its own context (there is no separate `llm` tool)
 - Sub-agent timeout is 1 hour
 - **Delegation depth limit (1 level)**: only master can delegate — to a worker or lite (depth 1). A sub-agent at depth 1 cannot delegate further; calling `agent` there returns an error, so complete the task directly

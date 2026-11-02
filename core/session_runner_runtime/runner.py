@@ -21,10 +21,13 @@ from typing import Any
 
 import httpx
 
+from core.handoff import build_handoff_instruction
 from core.llm import (
     LLMResponse,
     Message,
     TextBlock,
+    ToolCallBlock,
+    ToolResultBlock,
     classify_llm_error,
     format_llm_error,
 )
@@ -39,6 +42,7 @@ _FALLBACK_EXEC_LOCK = threading.Lock()
 
 # 压缩常量
 KEEP_USER_MESSAGES = 3
+FULL_COMPACT_TOKEN_RATIO = 0.80
 _LARGE_OUTPUT_THRESHOLD = 10_000
 
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
@@ -47,7 +51,7 @@ _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 # 需要外部文件做流式读取的工具（前端轮询用）
 _STREAMING_TOOLS = frozenset({"bash", "python", "pdf2markdown"})
 # 占位符工具：输出直接内联在 content，不落外部文件
-_PLACEHOLDER_TOOLS = frozenset({"ask_user", "session"})
+_PLACEHOLDER_TOOLS = frozenset({"ask_user", "agent"})
 
 # on_text 回调哨兵：413 去图/延迟重试时发出，通知前端清空已流式输出的文本
 RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
@@ -180,6 +184,9 @@ class Runner:
             if isinstance(input_data, ToolResult):
                 result = input_data
             else:
+                # agent/handoff snapshots need the current tool_use_id to close the snapshot pair
+                if name in ("handoff", "agent"):
+                    tool.current_tool_use_id = tool_use_id
                 result = tool.execute(**input_data)
         except Exception as e:
             import traceback
@@ -432,7 +439,6 @@ class Runner:
         )
 
         MAX_TOKENS = self.runner.model.max_context_tokens
-        FULL_COMPACT_TOKEN_RATIO = 0.80
         MAX_BODY_SIZE = 3_000_000
 
         # Layer 1: Microcompact
@@ -489,10 +495,19 @@ class Runner:
         # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
         self.runner._invalidate_message_cache()
 
-    def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
+    def _perform_full_compact(
+        self,
+        keep_user_messages: int,
+        *,
+        next_steps: str | None = None,
+        reason: str = "",
+    ) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
 
         Returns (before_tokens, after_tokens) tuple.
+
+        摘要复用主对话的 system+tools+messages prefix，末尾追加摘要指令。
+        Anthropic cache 按 prefix 匹配，前面全部 cache_read，只有末尾指令是 cache_write。
         """
 
         all_messages = self.runner.messages
@@ -512,9 +527,15 @@ class Runner:
             # Nothing to summarize
             return total_tokens, total_tokens
 
-        # 经 runner 转发调用：测试 patch runner._summarize_messages 时生效，且
-        # 未被 patch 时经转发落到 Runner 真实实现（可覆写 seam 与 _get_messages_with_header 同理）
-        summary = self.runner._summarize_messages(old_messages)
+        # Cache-aware 摘要：复用主对话 prefix 共享缓存
+        instruction = (
+            build_handoff_instruction(next_steps, reason)
+            if next_steps
+            else None
+        )
+        summary = self.runner._summarize_messages(
+            split_idx=split_idx, instruction=instruction
+        )
         if summary.startswith("(摘要生成失败") or summary.startswith("（摘要生成失败"):
             logger.error("摘要生成失败，跳过压缩")
             return total_tokens, total_tokens
@@ -556,14 +577,21 @@ class Runner:
         return total_tokens, new_tokens
 
     # 结构化压缩模板：从对话中提取关键字段，防止压缩后丢失失败路径/验证状态/用户约束
-    _COMPACT_STRUCTURED_TEMPLATE = """请按以下结构用中文总结对话。每节用简短条目（无内容写"无"）。
+    # 摘要指令模板：不含对话文本（模型通过 cache prefix 已看到完整对话）
+    _SUMMARY_INSTRUCTION_TEMPLATE = """请总结我们对话的前 {split_idx} 条消息的内容。
+按以下结构用中文总结，每节用简短条目（无内容写"无"）。不要调用任何工具，只输出总结文本。
 
-```markdown
 ## 当前目标
 （用户的主要需求和期望结果）
 
+## 成功标准
+（怎样算完成）
+
 ## 用户约束 / 偏好
 （用户明确提出的要求、风格偏好、禁止事项等）
+
+## 已确认上下文
+（已确定的事实、关键信息）
 
 ## 已完成工作
 （已完成的关键操作和结论）
@@ -571,7 +599,7 @@ class Runner:
 ## 当前状态
 （当前在做什么，卡在哪里）
 
-## 失败路径（不要重复）
+## 不要重复的尝试
 （尝试过但失败的方法，避免再次踩坑）
 
 ## 验证状态
@@ -579,55 +607,67 @@ class Runner:
 - 未验证：（计划但尚未执行的检查）
 
 ## 关键上下文
-（相关文件、工具、链接、重要决策等）
+（相关文件、工具、链接、已做决策等）
+
+## 未决问题
+（待解决的疑问或分歧）
 
 ## 下一步
-（接下来应做的具体动作，按顺序列出）
-```
+（接下来应做的具体动作，按顺序列出）"""
 
-对话内容：
-{conversation_text}
+    def _summarize_messages(
+        self,
+        split_idx: int = 0,
+        *,
+        instruction: str | None = None,
+        pending_tool_use_id: str = "",
+        system_prompt: str | list[str] | None = None,
+    ) -> str:
+        """Cache-aware 摘要：复用主对话的 system+tools+messages prefix 共享缓存。
 
-按上述结构输出总结："""
+        ``instruction`` 为空时用压缩模板；handoff 传入已填充的指令（不再次 format）。
+        ``pending_tool_use_id`` 非空时闭合快照里的当前 tool_use，不污染原消息。
+        """
+        if pending_tool_use_id:
+            api_messages = self._prepare_messages_for_llm(
+                pad_dangling=False, resolve_results=True
+            )
+            self.pad_dangling_in_messages(
+                api_messages, exclude_ids={pending_tool_use_id}
+            )
+            text = instruction or self._SUMMARY_INSTRUCTION_TEMPLATE.format(
+                split_idx=split_idx
+            )
+            api_messages.append(Message(role="user", content=[
+                ToolResultBlock(
+                    tool_use_id=pending_tool_use_id,
+                    content="[handoff: 正在生成交接文档]",
+                    is_error=False,
+                ),
+                TextBlock(text=text),
+            ]))
+        else:
+            api_messages = self._prepare_messages_for_llm(
+                pad_dangling=True, resolve_results=True
+            )
+            text = instruction or self._SUMMARY_INSTRUCTION_TEMPLATE.format(
+                split_idx=split_idx
+            )
+            api_messages.append(Message(role="user", content=text))
 
-    def _summarize_messages(self, messages: list[dict]) -> str:
-        """Use LLM to summarize messages into a structured handoff-style format."""
-        conversation_parts = []
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                conversation_parts.append(f"{role}: {content}")
-            elif isinstance(content, list):
-                texts = []
-                for block in content:
-                    if block.get("type") == "text":
-                        texts.append(block.get("text", ""))
-                    elif block.get("type") == "tool_use":
-                        texts.append(f"[调用工具: {block.get('name', '')}]")
-                    elif block.get("type") == "tool_result":
-                        is_err = block.get("is_error", False)
-                        texts.append(f"[工具结果{'(失败)' if is_err else ''}]")
-                if texts:
-                    conversation_parts.append(f"{role}: {' '.join(texts)}")
-
-        conversation_text = "\n".join(conversation_parts)
-        max_chars = min(50000, self.runner.model.max_context_tokens * 2)
-        if len(conversation_text) > max_chars:
-            conversation_text = conversation_text[:max_chars] + "\n...(内容被截断)"
-
-        summary_prompt = self._COMPACT_STRUCTURED_TEMPLATE.format(
-            conversation_text=conversation_text,
-        )
+        if system_prompt is None:
+            system_prompt = self.runner._build_system_prompt()
 
         try:
             call_start = time.monotonic()
             response = self.runner.client.chat(
-                messages=[Message(role="user", content=summary_prompt)],
-                system="你是一个对话总结助手。请用中文按结构化模板总结对话要点，确保失败路径和验证状态不遗漏。",
+                messages=api_messages,
+                system=system_prompt,
+                tools=self.runner.tool_schemas,
                 session_id=self.runner.master_session_id,
             )
-            # Track usage (UsageData object)
+
+            # Track usage
             if response.usage:
                 self.runner._update_usage(
                     input_tokens=response.usage.input_tokens,
@@ -638,11 +678,112 @@ class Runner:
                     duration=time.monotonic() - call_start,
                     model=response.model,
                 )
-            # Use the new get_text() method for typed content blocks
+                # 记录 cache 效率（仅日志）
+                total_input = response.usage.input_tokens or 0
+                cache_read = response.usage.cache_read_tokens or 0
+                if total_input > 0:
+                    logger.info(
+                        f"[上下文] cache-aware 摘要: cache_read={cache_read:,} / "
+                        f"total_input={total_input:,} ({cache_read/total_input:.0%} 命中)"
+                    )
+
             return response.get_text() or "（摘要生成失败）"
         except Exception:
             logger.error("[上下文] 摘要生成失败")
             return "（摘要生成失败，请查看完整历史）"
+
+    @staticmethod
+    def pad_dangling_in_messages(
+        messages: list[Message],
+        exclude_ids: set[str] | None = None,
+    ) -> None:
+        """为快照副本里的悬挂 tool_use 补占位，可排除当前调用 id。"""
+        exclude = exclude_ids or set()
+        answered: set[str] = set()
+        for msg in messages:
+            if not isinstance(msg.content, list):
+                continue
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock) and block.tool_use_id:
+                    answered.add(block.tool_use_id)
+
+        pending: list[tuple[int, list[str]]] = []
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg.content, list):
+                continue
+            ids = [
+                block.id for block in msg.content
+                if isinstance(block, ToolCallBlock) and block.id
+                and block.id not in answered and block.id not in exclude
+            ]
+            if ids:
+                pending.append((idx, ids))
+
+        for idx, ids in reversed(pending):
+            messages.insert(
+                idx + 1,
+                Message(role="user", content=[
+                    ToolResultBlock(
+                        tool_use_id=tool_use_id,
+                        content="[interrupted]",
+                        is_error=True,
+                    )
+                    for tool_use_id in ids
+                ]),
+            )
+
+    def summarize_for_handoff(
+        self,
+        next_steps: str,
+        reason: str = "",
+        pending_tool_use_id: str = "",
+    ) -> str:
+        """Build a handoff document with cache-aware prefix sharing."""
+        instruction = build_handoff_instruction(next_steps, reason)
+        system_prompt = None
+        if getattr(self.runner, "_mode", "interactive") == "autonomous":
+            system_prompt = getattr(self.runner, "_system_prompt", None)
+        return self._summarize_messages(
+            instruction=instruction,
+            pending_tool_use_id=pending_tool_use_id,
+            system_prompt=system_prompt,
+        )
+
+    def maybe_full_compact_for_user_input(self, user_text: str) -> None:
+        """Compact before a new user turn, using the input as the next task."""
+        if not user_text or not user_text.strip():
+            return
+        if not self.runner.get_valid_messages():
+            return
+
+        from core.compression import microcompact_mark_orphans_and_errors
+
+        invalidated = microcompact_mark_orphans_and_errors(self.runner.messages)
+        if invalidated:
+            self.runner._invalidate_message_cache()
+
+        messages = self.runner._get_messages_with_header()
+        total = self.runner._count_messages_tokens(messages)
+        projected = total + Tool.approx_token_count(user_text)
+        threshold = int(
+            self.runner.model.max_context_tokens * FULL_COMPACT_TOKEN_RATIO
+        )
+        if projected <= threshold:
+            return
+
+        logger.info(
+            f"[上下文] 用户输入触发全压缩: projected={projected:,} > {threshold:,}"
+        )
+        try:
+            self._perform_full_compact(
+                KEEP_USER_MESSAGES,
+                next_steps=user_text,
+                reason="用户新输入触发的全压缩",
+            )
+            self.runner.cache_state.reset_after_compact()
+            self.runner.cache_state.on_compression(2)
+        except Exception as e:
+            logger.warning(f"[上下文] 用户输入全压缩失败: {e}")
 
     def _mark_old_images_invalid(self, max_body_size: int = 3_000_000) -> int:
         """Replace old tool_result images with text placeholders until body < max_body_size.

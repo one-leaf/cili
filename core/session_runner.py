@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ from typing import Callable
 from core.base_session_runner import BaseSessionRunner
 from core.config import DATA_DIR, Config, get_permission_config
 from core.fs_utils import atomic_write_json
+from core.agent_run import ContinuationRequest
+from core.handoff import default_branch_name, user_input_text
 from core.interface_profile import resolve_profile
 from core.llm import create_llm_client
 from core.output_sink import OutputSink, layer_sink
@@ -120,6 +123,9 @@ class SessionRunner(BaseSessionRunner):
         delegation_depth: int = 0,
         run_mode: str | None = None,
         master_session_id: str = "",
+        initial_session: SessionStore | None = None,
+        epoch: int = 1,
+        max_epochs: int = 1,
     ):
         """Initialize SessionRunner.
 
@@ -138,6 +144,7 @@ class SessionRunner(BaseSessionRunner):
             max_consecutive_failures: 最大连续失败次数，None 时取角色配置
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
             run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
+            initial_session: interactive 模式直接使用的会话（fork 分支用；跳过加载最新）
         """
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -147,19 +154,21 @@ class SessionRunner(BaseSessionRunner):
         # （例如将来 QQ 接口用 interactive 行为但非 master 画像）。
         self._mode = run_mode or self.role_cfg.mode
         self.delegation_depth = delegation_depth
+        self.epoch = int(epoch)
+        self.max_epochs = max(1, int(max_epochs))
         # 本次 run/resume 的驱动接口（"web"/"qq"/None）。None 等价于「无接口专属工具」，
         # 由接口层在 run() 前设置；决定 INTERFACE_TOOLS 的可见性。
         self._turn_interface: str | None = None
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
-        # 事件发布回调（由 session_tool / background 注入，用于广播 session_progress）
+        # 事件发布回调（由 agent_tool / background 注入，用于广播 session_progress）
         self._event_publisher = None
         # session_progress 事件节流：距上次发送不足 0.5s 则跳过，避免高频 SSE 事件堵塞前端
         self._last_progress_event_time: float = 0.0
 
         if self._mode == "interactive":
-            self._init_interactive(workspace_uuid)
+            self._init_interactive(workspace_uuid, initial_session=initial_session)
             init_session_dir = self.sessions_dir / self.current_session_id
             # master session id：master 为自身会话 id（LLM 后端会话头按它聚合）
             self.master_session_id = master_session_id or self._session_id
@@ -199,7 +208,7 @@ class SessionRunner(BaseSessionRunner):
 
         if self._mode == "interactive":
             # 权限三件套：会话级存储 + 统一规则引擎（全局层 + 工作区层）+ 裁决器。
-            # 根/子代理共享 store 与 rules 实例（子代理经 session_tool 透传）。
+            # 根/子代理共享 store 与 rules 实例（子代理经 agent_tool 透传）。
             from pathlib import Path
 
             from core.config import get_workspace_data_dir
@@ -210,13 +219,18 @@ class SessionRunner(BaseSessionRunner):
                 if permission_cfg.global_rules_path
                 else DATA_DIR / "cili" / "approval_rules.json"
             )
-            self.permission_store = PermissionStore()
-            self.permission_rules = PermissionRules(
-                get_workspace_data_dir(self.workspace_uuid) / "approval_rules.json",
-                global_path=global_path,
-                workspace_root=self._cwd_init,
-                hot_reload=permission_cfg.rules_hot_reload,
+            self.permission_store = (
+                permission_store if permission_store is not None else PermissionStore()
             )
+            if permission_rules is not None:
+                self.permission_rules = permission_rules
+            else:
+                self.permission_rules = PermissionRules(
+                    get_workspace_data_dir(self.workspace_uuid) / "approval_rules.json",
+                    global_path=global_path,
+                    workspace_root=self._cwd_init,
+                    hot_reload=permission_cfg.rules_hot_reload,
+                )
             # IMPORTANT: Share messages list with session (not copy!)
             self.messages = self.session.messages
             self._usage = self.session.get_usage()
@@ -262,28 +276,34 @@ class SessionRunner(BaseSessionRunner):
 
     # ─── mode 专属初始化 ────────────────────────────────────────────
 
-    def _init_interactive(self, workspace_uuid: str) -> None:
+    def _init_interactive(self, workspace_uuid: str,
+                          initial_session: SessionStore | None = None) -> None:
         """interactive（master）：会话持久化 + SessionStore。"""
         from core.config import get_workspace_data_dir
         self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        self.session = SessionStore("", self.sessions_dir)
-        self.current_session_id: str = ""
+        if initial_session is not None:
+            self.session = initial_session
+            self.sessions_dir = initial_session.sessions_dir
+            self.current_session_id = initial_session.session_id
+        else:
+            self.session = SessionStore("", self.sessions_dir)
+            self.current_session_id = ""
 
-        # Load or create session
-        sessions = SessionStore.list_sessions(self.sessions_dir)
-        if sessions:
-            latest = max(sessions, key=lambda s: s.get("updated_at", ""))
-            sid = latest["session_id"]
-            loaded = SessionStore.load_session(sid, self.sessions_dir)
-            if loaded:
-                self.session = loaded
-                self.current_session_id = sid
+            # Load or create session
+            sessions = SessionStore.list_sessions(self.sessions_dir)
+            if sessions:
+                latest = max(sessions, key=lambda s: s.get("updated_at", ""))
+                sid = latest["session_id"]
+                loaded = SessionStore.load_session(sid, self.sessions_dir)
+                if loaded:
+                    self.session = loaded
+                    self.current_session_id = sid
+                else:
+                    self._create_default_session()
             else:
                 self._create_default_session()
-        else:
-            self._create_default_session()
 
         self._session_id = self.current_session_id
 
@@ -377,23 +397,23 @@ class SessionRunner(BaseSessionRunner):
         if ts:
             ts.on_load = self._activate_tools
 
-        # Wire session tool: set delegation depth for all modes
-        session_tool = get_tool_by_name(self.tools, "session")
-        if session_tool:
-            session_tool.delegation_depth = self.delegation_depth
+        # Wire agent tool: set delegation depth for all modes
+        agent_tool = get_tool_by_name(self.tools, "agent")
+        if agent_tool:
+            agent_tool.delegation_depth = self.delegation_depth
 
         if self._mode == "interactive":
-            # Wire session callbacks
-            if session_tool:
-                session_tool.stop_check = lambda: self._stopped
-                session_tool.on_session_start = (
+            # Wire agent callbacks
+            if agent_tool:
+                agent_tool.stop_check = lambda: self._stopped
+                agent_tool.on_session_start = (
                     lambda exec_id, task_summary: self.sink.on_session_start(exec_id, task_summary)
                 )
-                session_tool.on_session_complete = (
+                agent_tool.on_session_complete = (
                     lambda exec_id: self.sink.on_session_complete(exec_id)
                 )
                 # 后台 session 完成后自动恢复 master 循环
-                session_tool.on_background_complete = self._handle_background_session_complete
+                agent_tool.on_background_complete = self._handle_background_session_complete
 
     def _eligible_tools(self) -> list:
         """本回合可用的工具：接口专属工具只在自己的接口下出现。"""
@@ -586,6 +606,11 @@ class SessionRunner(BaseSessionRunner):
         self.sink = layer_sink(self.default_sink, sink)
 
         try:
+            # 用户输入到达时先检查全压缩：把本次输入作为「下一阶段任务」
+            user_text = user_input_text(user_input)
+            if user_text:
+                self.runner.maybe_full_compact_for_user_input(user_text)
+
             # Add user message（loop.run_interactive 在回合前做 checkpoint save）
             self.add_message("user", user_input, meta=meta)
 
@@ -598,6 +623,169 @@ class SessionRunner(BaseSessionRunner):
                 self.session.save()
             # 落盘之后再通知，接入端重拉时才能拿到完整状态
             self.sink.on_turn_complete()
+
+    # ─── AgentRun continuation ───────────────────────────────────
+
+    _CONTINUATION_NEXT_STEPS = (
+        "继续完成原任务。原 worker 的迭代额度已耗尽；请先核对工作区当前状态，"
+        "再依据交接文档中的进度、已完成项、未完成项与决策继续执行。"
+    )
+
+    def build_continuation_request(self, iterations: int) -> dict | None:
+        """Build a same-AgentRun continuation request for a depth-1 worker."""
+        if self.role != "worker" or self.delegation_depth != 1:
+            return None
+        if self.epoch >= self.max_epochs:
+            return None
+        if self.stop_check and self.stop_check():
+            return None
+        if not self.get_valid_messages():
+            return None
+        next_steps = self._CONTINUATION_NEXT_STEPS
+        try:
+            doc = self.runner.summarize_for_handoff(
+                next_steps, "worker iteration limit reached", ""
+            )
+        except Exception as e:
+            logger.warning(f"[SessionRunner:{self.role}] continuation summary failed: {e}")
+            return None
+        if not doc or doc.startswith(("（摘要生成失败", "(摘要生成失败")):
+            return None
+        self._finalize("handoff", "迭代额度耗尽，已生成续任交接文档", iterations)
+        request = ContinuationRequest(
+            exec_id=getattr(self, "_exec_id", "") or self._session_id,
+            epoch=self.epoch,
+            exit_reason="max_iterations",
+            truncated=True,
+            document=doc,
+            next_steps=next_steps,
+            summary="迭代额度耗尽，已生成续任交接文档",
+            iterations=iterations,
+            max_iterations=self.max_iterations,
+        )
+        result = self.loop._autonomous_result("handoff", request.summary, iterations)
+        result.update(
+            epoch=self.epoch,
+            max_epochs=self.max_epochs,
+            continuation=request.to_dict(),
+            exit_reason="max_iterations",
+            truncated=True,
+        )
+        return result
+
+    # ─── master session fork ─────────────────────────────────────
+
+    def fork_session(self, next_steps: str = "", label: str | None = None) -> dict:
+        """Clone the completed-turn context of this master session into a sibling.
+
+        Fork is a session-level operation, not a worker handoff. It copies the
+        completed message snapshot (excluding an in-flight turn), or falls back
+        to a structured handoff document when the snapshot is too large.
+        """
+        if self.role != "master":
+            return {"status": "error", "message": "fork is only available for master sessions"}
+        existing = [s.get("name", "") for s in SessionStore.list_sessions(self.sessions_dir)]
+        name = default_branch_name(self.session.name, label, existing)
+        store = SessionStore.create_new_session(self.sessions_dir, name)
+        snapshot = self.get_valid_messages(strip_meta=False)
+        max_tokens = int(getattr(getattr(self.config, "system", None), "fork_max_tokens", 100000))
+        try:
+            token_estimate = self._count_messages_tokens(snapshot)
+        except Exception:
+            token_estimate = 0
+
+        mode = "snapshot"
+        if token_estimate > max_tokens:
+            text = (next_steps or "").strip() or "继续当前任务，保持原有目标、约束与验证状态。"
+            doc = self.runner.summarize_for_handoff(text, "fork context too large", "")
+            if not doc or doc.startswith(("（摘要生成失败", "(摘要生成失败")):
+                return {"status": "error", "message": "fork summary generation failed"}
+            store.add_message("user", doc, meta={"fork": True, "handoff": True})
+            mode = "handoff"
+            token_estimate = 0
+        else:
+            for msg in snapshot:
+                store.add_message(
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    meta=msg.get("_meta"),
+                )
+        store.save(force=True)
+
+        clone = SessionRunner(
+            self.config,
+            role="master",
+            cwd=self.cwd,
+            workspace_uuid=self.workspace_uuid,
+            initial_session=store,
+            permission_store=self.permission_store,
+            permission_rules=self.permission_rules,
+        )
+        clone.set_turn_interface(self._turn_interface)
+        auto_run = bool((next_steps or "").strip())
+        from core.session_registry import registry
+        key = registry.register_hosted(
+            self.workspace_uuid, store.session_id, clone, claim=auto_run
+        )
+        from core.default_sink import bind_default_sink
+        bind_default_sink(clone, self.workspace_uuid, store.session_id)
+        try:
+            from core.agent_mailbox import get_agent_mailbox
+            mbus = get_agent_mailbox()
+            mbus.register_session(store.session_id, name)
+            mbus.register_agent(store.session_id, store.session_id)
+        except Exception as e:
+            logger.warning(f"[fork] mailbox register failed: {e}")
+
+        self._publish_fork_session_created(store.session_id, name, mode)
+        result = {
+            "status": "running" if auto_run else "idle",
+            "session_id": store.session_id,
+            "name": name,
+            "mode": mode,
+            "token_estimate": token_estimate,
+        }
+        if not auto_run:
+            return result
+
+        def _run() -> None:
+            try:
+                clone.run(user_input=next_steps, meta={"fork": True})
+            except Exception as e:
+                self._persist_clone_error(clone, e)
+            finally:
+                registry.release(key)
+
+        threading.Thread(
+            target=_run, daemon=True, name=f"fork-{store.session_id}"
+        ).start()
+        return result
+
+    def _publish_fork_session_created(self, new_session_id: str,
+                                      name: str, mode: str) -> None:
+        try:
+            from core.event_bus import get_event_bus
+            get_event_bus().publish({
+                "type": "session_fork_created",
+                "workspace_uuid": self.workspace_uuid,
+                "session_id": self.current_session_id,
+                "new_session_id": new_session_id,
+                "new_name": name,
+                "mode": mode,
+            })
+        except Exception:
+            logger.debug("[fork] session_fork_created publish failed", exc_info=True)
+
+    def _persist_clone_error(self, clone: SessionRunner,
+                             exc: BaseException) -> None:
+        try:
+            clone.session.add_message(
+                "assistant", f"错误: {exc}",
+                meta={"error_notice": True}, flush=True,
+            )
+            clone.session.save()
+        except Exception:
+            logger.warning("[fork] persist clone error failed", exc_info=True)
 
     def _handle_permission_required(self, permission: dict) -> None:
         """合成 ask_user 卡询问用户是否批准，随后暂停循环等待回答。
@@ -667,7 +855,7 @@ class SessionRunner(BaseSessionRunner):
     def _handle_background_session_complete(self, exec_id: str, status: str) -> None:
         """后台 session 完成后自动恢复 master 循环（如果 master 空闲）。
 
-        由 SessionTool.on_background_complete 回调触发。
+        由 AgentTool.on_background_complete 回调触发。
         检查 message_bus 是否有未读通知，如果有且 master 空闲，则自动恢复循环。
         使用 default_sink（发布事件到全局事件总线）。
         """
@@ -936,6 +1124,8 @@ class SessionRunner(BaseSessionRunner):
                 "ended_at": ended_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "duration_seconds": duration_seconds,
                 "status": status,
+                "epoch": self.epoch,
+                "max_epochs": self.max_epochs,
                 "iterations": iterations,
                 "max_iterations": self.max_iterations,
                 "message_count": len(self.messages),

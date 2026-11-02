@@ -262,7 +262,7 @@ function renderMessages(messages) {
                     const saMsg = {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
-                        status: isCompleted ? 'completed' : 'running',
+                        status: block._meta.status || (isCompleted ? 'completed' : 'running'),
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
                         tool_call_count: block._meta.tool_call_count || 0,
@@ -438,7 +438,7 @@ function prependMessages(messages) {
                     const saMsg = {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
-                        status: isCompleted ? 'completed' : 'running',
+                        status: block._meta.status || (isCompleted ? 'completed' : 'running'),
                         iterations: block._meta.iterations || 0,
                         message_count: block._meta.message_count || 0,
                         tool_call_count: block._meta.tool_call_count || 0,

@@ -374,7 +374,7 @@ class CronTask:
         """Execute all tasks through master Runner. Returns result dict.
 
         Cron 的职责：创建/复用 session + 注入 user message。
-        master Runner 走正常 runner loop，自主决定是否委派 sub-session。
+        master Runner 走正常 runner loop，自主决定是否委派 sub-agent。
         """
         # Get task list dynamically
         tasks = self.get_tasks()
@@ -408,7 +408,7 @@ class CronTask:
         2. 获取或创建 master Runner（按 workspace 缓存）
         3. 切换到 cron session，标记旧消息无效
         4. 注入 cron 任务消息，运行 runner loop（非流式）
-        5. Runner 自主调用 session 工具执行任务，工具内部同步等待结果
+        5. Runner 自主调用 agent 工具执行任务，工具内部同步等待结果
         6. Runner loop 正常完成后返回
         """
         from core.config import load_workspace_config

@@ -445,6 +445,12 @@ class Loop:
             )
             return None
 
+        continuation = getattr(runner, "build_continuation_request", None)
+        if continuation is not None:
+            result = continuation(max_iterations)
+            if result is not None:
+                return result
+
         status = "timeout"
         summary = f"Exceeded max iterations ({max_iterations})"
         wrapped_up = False

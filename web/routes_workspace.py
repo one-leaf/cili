@@ -23,6 +23,7 @@ from core.config import (
     save_workspace_config,
     validate_workspace_name,
 )
+from core.agent_run import AgentRunStore
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
     MESSAGES_FILE,
@@ -799,7 +800,37 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
         raise HTTPException(status_code=404, detail="Session not found")
 
     logs = sm.agent_logs.list_agent_logs()
+    run_store = AgentRunStore(sm.session_dir)
+    for log in logs:
+        exec_id = log.get("exec_id", "")
+        run = run_store.get(exec_id) or run_store.derive_legacy(exec_id)
+        if run is not None:
+            meta = log.setdefault("metadata", {})
+            meta.update({
+                "parent_exec_id": run.parent_exec_id,
+                "owner_task_id": run.owner_task_id,
+                "relation": run.relation,
+                "source_exec_id": run.source_exec_id,
+                "epoch": run.epochs[-1].epoch if run.epochs else 0,
+                "max_epochs": run.max_epochs,
+                "status": run.status,
+                "delivery_state": run.delivery_state,
+                "exit_reason": run.exit_reason,
+                "truncated": run.truncated,
+                "legacy": run.legacy,
+            })
     return {"executions": logs}
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/agent-runs")
+async def list_agent_runs(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+    """Return AgentRun records (including epoch indexes) for this session."""
+    sessions_dir = ws_dir / "sessions"
+    sm = SessionStore.load_session(session_id, sessions_dir)
+    if not sm:
+        raise HTTPException(status_code=404, detail="Session not found")
+    run_store = AgentRunStore(sm.session_dir)
+    return {"agent_runs": [r.to_dict() for r in run_store.list()]}
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")

@@ -56,7 +56,7 @@ core/tools/
 ├── loop.py                  # 循环任务进度追踪（配合 cron 使用）
 ├── pdf2markdown.py          # PDF 转 Markdown（MinerU API）
 ├── skill.py                 # 技能工具（SkillTool，按角色 frontmatter roles 过滤）
-├── session_tool.py         # 子代理委派（SessionTool）
+├── agent_tool.py           # 子代理委派（AgentTool）
 ├── ask_user.py              # 用户交互（AskUserTool）
 ├── tool_search.py           # 延迟工具搜索与激活（ToolSearchTool）
 └── mcp.py                   # MCP 服务器桥接（MCPProvider，非注册工具）
@@ -94,7 +94,7 @@ TOOL_REGISTRY = {
     "loop": _factory(LoopTool),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_approval=True),
     "skill": _make_skill,
-    "session": _factory(SessionTool, needs_config=True, needs_approval=True),
+    "agent": _factory(AgentTool, needs_config=True, needs_approval=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
 }
@@ -108,7 +108,7 @@ TOOL_REGISTRY = {
 | bash / pwsh / browser | `approval_store` | 会话级高风险命令/操作审批（拦截→询问→批准） |
 | python / pdf2markdown | `config` + `approval_store` | config 读取全局配置（API 密钥、模型等）；approval_store 高风险操作审批 |
 | skill | `role=role_cfg.name` | 角色名，决定可见技能集合（frontmatter roles 过滤） |
-| session | `config` + `approval_store` | config 用于构造子 SessionRunner；approval_store 透传给子代理共享 |
+| agent | `config` + `permission_store/rules` | config 用于构造子 SessionRunner；权限 store/rules 透传给子代理共享 |
 
 ### 2.3 create_tools 实例化流程
 
@@ -135,17 +135,17 @@ def create_tools(
 
 | Agent 角色 | 模式 | 工具数量 | 工具清单 |
 |-----------|------|---------|---------|
-| master | interactive | 26（18 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, glob, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, session, ask_user, tool_search |
-| worker | autonomous | 24 | master 去掉 cron、ask_user |
+| master | interactive | 28（20 core + 8 deferred） | 全量：read, read_image, write, edit, bash, pwsh, grep, glob, browser, web_search, memory, python, todo, latex, message_bus, cron, clock, read_tool_result, session_search, temp, loop, pdf2markdown, skill, agent, ask_user, tool_search, office2pdf, send_user_file |
+| worker | autonomous | 25（18 core + 7 deferred） | master 去掉 cron、ask_user、send_user_file |
 | lite | autonomous | 7 | read, write, edit, bash, python, message_bus, clock |
 
 **延迟工具加载（deferred）**：master 的 8 个低频工具（browser/todo/latex/message_bus/cron/temp/loop/pdf2markdown）schema 默认不发送给 LLM，仅名称+摘要出现在 system prompt 的 "Deferred Tools" 段。模型通过 `tool_search` 按需获取完整 schema 并激活，激活后加入后续 API 调用。工具实例仍全部实例化，执行路径不受影响。
 
 **设计要点**：
 - **ask_user 仅 master**：master 是交互式（interactive），可向用户提问；worker/lite 是自主后台模式（autonomous），不含交互工具
-- **session 委派（master + worker）**：master(0) 与 worker(1) 均持有 session 工具——委派深度最多 2 层：master(0) 可委派 worker/lite(1)；depth 1 的子代理仅可再委派 lite(2)；depth≥2 禁止再委派（调用直接报错）。lite 是纯执行角色，无 session 工具
+- **agent 委派（master + worker）**：master(0) 与 worker(1) 均持有 agent 工具——委派深度最多 2 层：master(0) 可委派 worker/lite(1)；depth 1 的子代理仅可再委派 lite(2)；depth≥2 禁止再委派（调用直接报错）。lite 是纯执行角色，无 agent 工具
 - **cron/ask_user 仅 master**：定时任务调度和用户交互属于主代理的编排职责，worker 不持有
-- **worker 执行型精简集**：worker = master 去掉 cron、ask_user 两个编排/交互工具（24 个），保留完整执行能力（含 browser/loop/pdf2markdown/session）
+- **worker 执行型精简集**：worker = master 去掉 cron、ask_user、send_user_file 三个编排/交互/接口工具（25 个），保留完整执行能力（含 browser/loop/pdf2markdown/agent）
 - **lite 精简集**：只保留 read/write/edit/bash/python/message_bus/clock，无 skill、无 web_search 等，适合快速文件处理类子任务
 - 修改某角色工具集只需编辑对应 JSON，无需改动注册表代码
 
@@ -341,7 +341,7 @@ content = [
 
 ## 四、工具列表
 
-全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 26 个（18 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 cron/ask_user 的 24 个（执行型全集）；lite 仅 read/write/edit/bash/python/message_bus/clock。
+全部工具平铺在 `core/tools/`，注册名与角色白名单一一对应。可用角色中，master 含全部 28 个（20 core 常驻 + 8 deferred 延迟加载）；worker 为 master 去掉 cron/ask_user/send_user_file 的 25 个（执行型全集）；lite 为 7 个（read/write/edit/bash/python/message_bus/clock）。
 
 | 工具 | 文件 | 说明 | 可用角色 |
 |------|------|------|---------|
@@ -368,7 +368,7 @@ content = [
 | loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master/worker |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master/worker |
 | skill | skill.py | 技能工具（按角色 frontmatter roles 过滤，见 8.1） | master/worker |
-| session | session_tool.py | 委派复杂任务给子代理（SessionTool，见 8.2） | master/worker |
+| agent | agent_tool.py | 委派自包含任务给子代理（AgentTool，见 8.2） | master/worker |
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 | tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master/worker |
 
@@ -377,7 +377,7 @@ content = [
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，deferred 名单按类属性 name 匹配，LLM schema 亦使用类属性 name）
 - `skill` 工具由注册表工厂传入 `role=role_cfg.name`，每个角色实例化独立 SkillTool，可见技能集合不同
-- `session` 工具注册键与白名单名均为 `session`，类名为 `SessionTool`（`core/tools/session_tool.py:17`，`Tool.name = "session"`）
+- `agent` 工具注册键与白名单名均为 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`，`Tool.name = "agent"`）
 
 ---
 
@@ -462,17 +462,17 @@ tool_schemas = [tool.to_schema() for tool in tools]
 
 ## 七、后台任务执行
 
-bash、pwsh、python 和 session 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
+bash、pwsh、python 和 agent 工具支持后台执行长运行命令/任务，并通过统一的后台任务管理接口进行控制。
 
 ### 7.1 功能概述
 
-各工具统一通过 `action` 参数控制后台任务（省略 action 即执行默认动作：bash/pwsh 为 `run`、python 为 `execute`、session 为 `start`）：
+各工具统一通过 `action` 参数控制后台任务（省略 action 即执行默认动作：bash/pwsh 为 `run`、python 为 `execute`、agent 为 `spawn`）：
 
 | 功能 | 参数 | 说明 |
 |------|------|------|
-| 启动后台任务 | `action="run"`（bash/pwsh）/ `action="execute"`（python）/ `action="start"`（session）+ `run_in_background: true` | 立即返回 task_id（shell 为 `bg-N`，Runner 为 `agent-N`） |
-| 读取输出 | `action="read"` + `task_id`（session 用 `task`） | 非阻塞读取累积输出/Runner 状态 |
-| 终止任务 | `action="kill"` + `task_id`（session 用 `task`） | 终止后台任务 |
+| 启动后台任务 | `action="run"`（bash/pwsh）/ `action="execute"`（python）/ `action="spawn"`（agent）+ `run_in_background: true` | 立即返回 ID（shell 为 `bg-N`，子代理为 `agent-N`） |
+| 读取输出/状态 | `action="read"` + `task_id`（shell）/ `action="status"` + `agent_id`（agent） | 非阻塞读取累积输出/子代理状态 |
+| 终止任务 | `action="kill"` + `task_id`（shell）/ `action="stop"` + `agent_id`（agent） | 终止后台任务/子代理 |
 | 写入 stdin | `action="write_stdin"` + `task_id` + `text` | 向运行中的进程发送输入（仅 shell 任务） |
 | 列出任务 | `action="list"` | 列出所有后台任务及状态 |
 
@@ -545,23 +545,23 @@ python(action="execute_file", file="long_task.py", run_in_background=True)
 python(action="execute", code="import time; time.sleep(60)", run_in_background=True)
 ```
 
-**session 后台执行**：
+**agent 后台执行**：
 ```python
 # 后台运行子代理
-session(action="start", task="Complex task...", run_in_background=True)
+agent(action="spawn", task="Complex task...", run_in_background=True)
 # → "Background Runner started.\nTask ID: agent-1\n..."
 
 # 查询子代理状态
-session(action="read", task="agent-1")
+agent(action="status", agent_id="agent-1")
 # → "Runner agent-1 still running.\nEstimated iterations: 5\nCurrent tool: bash"
 # → "Runner agent-1 completed.\nStatus: completed\nIterations: 12\n\nSummary:\n..."
 
 # 终止后台子代理
-session(action="kill", task="agent-1")
+agent(action="stop", agent_id="agent-1")
 # → "Runner agent-1 terminated"
 
 # 列出所有后台任务
-session(action="list")
+agent(action="list")
 # → 2 background task(s):
 #   bg-1: [shell][running] sleep 100
 #   agent-1: [session][running] Complex task...
@@ -596,7 +596,7 @@ session(action="list")
 - **反向映射**：`_session_to_agents: dict[session_id, set[agent_name]]`，用于清理和反查
 - **生命周期**：
   - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
-  - 子代理（worker/lite）：`session_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
+  - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
   - 后台子代理：`background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
 - **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑
 - **Pull 模型不变**：消息不自动注入 agent 循环，agent 需主动 `receive` 读取
@@ -606,7 +606,7 @@ session(action="list")
 - **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
 - **按需读取**：消息不自动注入 agent 循环，agent 需主动调用 `message_bus(action="receive")` 检查
 - **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 AgentMailbox
-- **子代理注册**：`session_tool.py` / `background.py` 在子代理生命周期自动注册/注销
+- **子代理注册**：`agent_tool.py` / `background.py` 在子代理生命周期自动注册/注销
 - **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
 
 ### 7.6 read_tool_result — 检索压缩的工具结果
@@ -728,42 +728,43 @@ skill(action="read", skill_id="win-ops", file="references/repair.md")
 - **actions**：`list`（列出技能）、`read`（读取全文或 `file` 指定的子文件）
 - **不再有 `shared/` 前缀 id**：技能 id 即目录名，统一目录平铺
 
-### 8.2 session 工具 — 任务委派（SessionTool）
+### 8.2 agent 工具 — 任务委派（AgentTool）
 
-`session` 工具在独立的子会话（Worker/Lite）中执行复杂任务。注册键、白名单名与 `Tool.name` 均为 `session`，类名为 `SessionTool`（`core/tools/session_tool.py`），master 与 worker 白名单均包含（委派深度最多 2 层，见下）。
+`agent` 工具在独立的子代理（Worker/Lite）中执行自包含任务。注册键、白名单名与 `Tool.name` 均为 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），master 与 worker 白名单均包含（委派深度最多 2 层，见下）。
 
 **调用方式**：
 ```python
-# 同步模式（阻塞直到完成；action 省略即 start）
-session(
-    action="start",
+# 同步模式（阻塞直到完成；action 省略即 spawn）
+agent(
+    action="spawn",
     task="Read input.txt, translate to Chinese, write to output.txt",
     plan=["Read input.txt", "Translate content", "Write result"],
-    agent_type="worker",        # "worker"（默认）| "lite"
+    subagent_type="worker",     # "worker"（默认）| "lite"
 )
 
 # 后台模式（立即返回 task_id）
-session(
-    action="start",
+agent(
+    action="spawn",
     task="Long-running task...",
     run_in_background=True,
 )
 
 # 查询后台任务状态
-session(action="read", task="agent-1")
+agent(action="status", agent_id="agent-1")
 
 # 终止后台任务
-session(action="kill", task="agent-1")
+agent(action="stop", agent_id="agent-1")
 
 # 列出所有后台任务（shell + session）
-session(action="list")
+agent(action="list")
 ```
 
 **参数**：
-- `action`: 操作类型，`"start"`（默认，委派任务）/ `"read"`（读取后台状态）/ `"kill"`（终止后台任务）/ `"list"`（列出所有后台任务）
-- `task`: `action="start"` 时为任务目标描述（必填，须自包含——子会话看不到当前对话与 CLAUDE.md）；`action="read"`/`"kill"` 时传 task_id（如 `"agent-1"`）
+- `action`: `"spawn"`（默认，委派任务）/ `"status"`（读取后台状态）/ `"stop"`（终止后台任务）/ `"list"`（列出所有后台任务）
+- `task`: `action="spawn"` 时为任务目标描述（必填，须自包含——子代理看不到当前对话与 CLAUDE.md）
+- `agent_id`: `action="status"` / `"stop"` 时的后台子代理 ID（如 `"agent-1"`）
 - `plan`: 执行计划（有序步骤列表）
-- `agent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash/python/message_bus/clock，无 check 阶段）
+- `subagent_type`: 子代理角色，`"worker"`（默认，完整工具集 + check 阶段）或 `"lite"`（最小 read/write/edit/bash/python/message_bus/clock，无 check 阶段）
 - `run_in_background`: 后台执行模式（立即返回 task_id）
 - `label`: UI 显示标签（最长 64 字符，可选）
 
@@ -780,12 +781,12 @@ session(action="list")
 "Background Runner started.\nTask ID: agent-1\n..."
 ```
 
-**子代理构造**：`SessionTool` 使用统一 `SessionRunner`（`core/session_runner.py`），按 `agent_type` 选择角色：
+**子代理构造**：`AgentTool` 使用统一 `SessionRunner`（`core/session_runner.py`），按 `subagent_type` 选择角色：
 
 ```python
 runner = SessionRunner(
     config=self.config,          # 全局配置（角色模型继承）
-    role=agent_type,             # "worker" | "lite"，决定工具白名单与行为开关
+    role=subagent_type,          # "worker" | "lite"，决定工具白名单与行为开关
     task=task,
     plan=plan,
     workspace_uuid=...,
@@ -799,36 +800,36 @@ runner = SessionRunner(
 runner.run()
 ```
 
-子代理的工具集由 `agent_type` 对应角色的 JSON 白名单决定（worker 24 个 / lite 7 个）。
+子代理的工具集由 `subagent_type` 对应角色的 JSON 白名单决定（worker 25 个 / lite 7 个）。
 
 **关键特性**：
-- **独立工具集**：worker 24 个 / lite 7 个（取决于 agent_type）
+- **独立工具集**：worker 25 个 / lite 7 个（取决于 subagent_type）
 - **结构化任务**：task + plan 拼接到 system prompt 末尾（不可压缩）
 - **1 小时超时**
-- **委派深度限制（最多 2 层）**：master(0) 可委派 worker/lite(1)；depth 1 的子代理仅可再委派 lite(2)；depth≥2 再调用 `session` 直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
+- **委派深度限制（最多 2 层）**：master(0) 可委派 worker/lite(1)；depth 1 的子代理仅可再委派 lite(2)；depth≥2 再调用 `agent` 直接报错，应自行完成任务。子代理构造时传 `delegation_depth = parent + 1`
 - **后台执行**：`run_in_background=true` 在独立线程中运行子代理
-- **懒加载 UI**：子会话结果通过 tool_result 中的 exec_id 懒加载渲染
+- **懒加载 UI**：子代理结果通过 tool_result 中的 exec_id 懒加载渲染
 
 **会话消息结构**：
-- 主会话通过 tool_use(tool: session) + tool_result(exec_id) 消息对呈现子会话
+- 主会话通过 tool_use(tool: agent) + tool_result(exec_id) 消息对呈现子代理
 - 完整执行日志存入独立 `exec_*.json` 文件，每轮迭代实时保存
 
 **后台子代理生命周期**：
-1. `action="start", run_in_background=True` → 注册 task_id（格式：`agent-N`）
+1. `action="spawn", run_in_background=True` → 注册 task_id（格式：`agent-N`）
 2. 独立线程运行 `runner.run()`，完成后自动更新 tool_result 状态
-3. `action="read", task="agent-N"` → 查询状态（running/completed）和摘要
-4. `action="kill", task="agent-N"` → 置 `runner._stopped=True` 终止子代理
+3. `action="status", agent_id="agent-N"` → 查询状态（running/completed）和摘要
+4. `action="stop", agent_id="agent-N"` → 置 `runner._stopped=True` 终止子代理
 
 **回调链路**：
 ```
 web/deps.py 注入 on_session_start / on_session_complete 回调
   → SessionRunner._on_session_start / _on_session_complete
-    → SessionTool.on_session_start / on_session_complete
+    → AgentTool.on_session_start / on_session_complete
       → 推送 SSE 事件（session_start / session_complete）
         → 前端渲染卡片 / 更新状态
 ```
 
-**实现**：`core/tools/session_tool.py`（SessionTool），子代理由 `core/session_runner.py` 的统一 `SessionRunner`（autonomous 模式）驱动。
+**实现**：`core/tools/agent_tool.py`（AgentTool），子代理由 `core/session_runner.py` 的统一 `SessionRunner`（autonomous 模式）驱动。
 
 ### 8.3 temp — 临时文件/目录管理
 
@@ -877,6 +878,14 @@ web/deps.py 注入 on_session_start / on_session_complete 回调
 
 **相关**：`todo_update_event()`（`core/tools/todo.py`）同理——把「哪个工具触发、数据从哪取」
 的判断收进 core，传输层只负责序列化。
+
+### 8.5 AgentRun 续任与 master fork
+
+`handoff` 工具已移除；不再让 worker 自己克隆同级 worker。
+
+- **worker 续任**：worker 到达 `max_iterations` 时，`SessionRunner.build_continuation_request()` 生成结构化交接文档并返回 `status=handoff`；父级 `AgentTool`/`AgentRunManager` 保留同一 `exec_id` 开启下一 epoch，卡片不新增。
+- **master fork**：会话右键「分支会话」→ `POST .../sessions/{id}/fork`；只复制已完成回合的 snapshot，超过 100k token 时回退为交接文档并提示。fork 是 session 级关系，不是模型工具。
+- **实现**：`core/agent_run.py`（AgentRun 记录/续任）+ `core/session_runner.py::fork_session` + `core/handoff.py` 模板。
 
 ---
 
@@ -1069,5 +1078,5 @@ deny 扫描只针对代码部分，不扫描字符串字面量，避免字符串
 
 **文档版本**: v2.0  
 **创建时间**: 2026-08-25  
-**更新时间**: 2026-10-09（同步 SessionRunner 命名与实现：注册键 `agent`→`session`、后台任务统一 `action` 参数、角色工具集 master 26 / worker 24 / lite 7、BackgroundTaskManager 迁至 `core/tools/background.py`；此前 2026-09-24 将 find 工具改名为 glob）  
+**更新时间**: 2026-11-02（移除 handoff 工具，改为 master fork + worker 同 exec_id 续任；角色工具集 master 28 / worker 25 / lite 7；此前 2026-10-09 同步后台任务统一 `action` 参数、BackgroundTaskManager 迁至 `core/tools/background.py`）<br>
 **状态**: 已实现

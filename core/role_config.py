@@ -32,6 +32,7 @@ _DEFAULTS = {
     "budget_notice": False,
     "progress_persistence": False,
     "max_iterations": None,  # None -> config.system.max_iterations
+    "max_epochs": 1,  # same logical worker run can continue in a new epoch
     "max_consecutive_failures": 5,
     "max_tokens": None,  # None -> 继承角色模型的 max_tokens
     "system_prompt": {},
@@ -59,6 +60,7 @@ class RoleConfig:
     budget_notice: bool = False
     progress_persistence: bool = False
     max_iterations: int | None = None  # None -> config.system.max_iterations
+    max_epochs: int = 1  # continuation epochs for worker/lite
     max_consecutive_failures: int = 5
     max_tokens: int | None = None  # None -> 继承角色模型的 max_tokens；否则覆盖
     system_prompt: dict = field(default_factory=dict)  # {"blocks": [...]}
@@ -116,6 +118,7 @@ def load_role(role: str, config: Config | None = None) -> RoleConfig:
         budget_notice=bool(merged["budget_notice"]),
         progress_persistence=bool(merged["progress_persistence"]),
         max_iterations=merged["max_iterations"],
+        max_epochs=int(merged["max_epochs"]),
         max_consecutive_failures=int(merged["max_consecutive_failures"]),
         max_tokens=int(merged["max_tokens"]) if merged["max_tokens"] is not None else None,
         system_prompt=merged["system_prompt"] or {},

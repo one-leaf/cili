@@ -308,12 +308,15 @@ class ShellMixin:
     def _workspace_tmp(workspace_uuid: str) -> str:
         """工作区临时目录 {workspace}/.cili/tmp，供 CILI_TMP 注入子进程。
 
+        同时作为子进程 TEMP/TMP/TMPDIR 的值（临时文件统一落在工作区）。
         workspace_uuid 为空或解析失败时回落系统 temp，保证子进程总有一个
         可写的临时目录（data/tmp 已废弃，技能脚本通过 $CILI_TMP 引用）。
         """
         try:
             from core.config import get_workspace_data_dir
-            return str(get_workspace_data_dir(workspace_uuid) / "tmp")
+            tmp_dir = get_workspace_data_dir(workspace_uuid) / "tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            return str(tmp_dir)
         except Exception:
             return _TMP_DIR
 
@@ -381,9 +384,9 @@ class ShellMixin:
                     path_str = ";".join(paths)
                     env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
                 env_setup += (
-                    f'$env:TEMP = "{_TMP_DIR}"; '
-                    f'$env:TMP = "{_TMP_DIR}"; '
-                    f'$env:TMPDIR = "{_TMP_DIR}"; '
+                    f'$env:TEMP = "{cili_tmp}"; '
+                    f'$env:TMP = "{cili_tmp}"; '
+                    f'$env:TMPDIR = "{cili_tmp}"; '
                     f'$env:CILI_TMP = "{cili_tmp}"; '
                     f'$env:LANG = "C.UTF-8"; '
                     f'$env:PYTHONIOENCODING = "utf-8"; '
@@ -399,9 +402,9 @@ class ShellMixin:
                 if _VENV_SCRIPTS:
                     paths.append(_to_bash_path(_VENV_SCRIPTS))
 
-                # 统一临时目录（bash 格式）；CILI_TMP 指向工作区 .cili/tmp
-                tmp_bash = _to_bash_path(_TMP_DIR)
-                cili_tmp_bash = _to_bash_path(self._workspace_tmp(self.workspace_uuid))
+                # 统一临时目录（bash 格式）；TEMP/TMP/TMPDIR 与 CILI_TMP 一致指向工作区 .cili/tmp
+                tmp_bash = _to_bash_path(self._workspace_tmp(self.workspace_uuid))
+                cili_tmp_bash = tmp_bash
 
                 if paths:
                     path_str = ":".join(paths)

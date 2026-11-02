@@ -1321,6 +1321,7 @@ function toggleSessionItemMenu(session, btn) {
     dropdown.innerHTML = `
         <div class="session-dropdown-item" data-action="rename">修改名称</div>
         ${showHide ? `<div class="session-dropdown-item" data-action="hide">${hideLabel}</div>` : ''}
+        <div class="session-dropdown-item" data-action="fork">分支会话</div>
         ${showDelete ? '<div class="session-dropdown-item" data-action="delete">删除会话</div>' : ''}
         ${showShare ? '<div class="session-dropdown-item" data-action="share">分享会话</div>' : ''}
         <div class="session-dropdown-item" data-action="info">会话信息</div>
@@ -1455,6 +1456,9 @@ async function handleSessionAction(session, action) {
         case 'hide':
             await toggleSessionHidden(session);
             break;
+        case 'fork':
+            await forkSession(session);
+            break;
         case 'delete':
             await deleteSession(session);
             break;
@@ -1511,6 +1515,35 @@ async function renameSession(session) {
     } catch (error) {
         console.error('修改会话名称失败:', error);
         alert('修改失败: ' + error.message);
+    }
+}
+
+// 分支会话：克隆当前 master 会话的已完成回合上下文
+async function forkSession(session) {
+    if (!currentWorkspace) return;
+    const next = prompt('下一阶段要执行什么？（留空只创建分支，不自动执行）', '');
+    if (next === null) return;
+    showToast('正在创建分支会话…');
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${session.session_id}/fork`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ next_steps: next.trim() })
+            }
+        );
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            showToast('交接失败: ' + (data.detail || '未知错误'));
+            return;
+        }
+        await loadSessions();
+        await loadSession(data.session_id);
+        showToast('已创建分支会话');
+    } catch (error) {
+        console.error('分支会话失败:', error);
+        showToast('分支失败: ' + error.message);
     }
 }
 

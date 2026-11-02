@@ -174,6 +174,7 @@ class SessionRunner(BaseSessionRunner):
         max_consecutive_failures: int | None = None,  # None 时取角色配置
         run_mode: str | None = None,  # 运行模式覆盖；None 时取角色 JSON 的 mode
         master_session_id: str = "",  # master 的 session id（LLM 会话头用；sub agent 由创建方透传）
+        initial_session: SessionStore | None = None,  # interactive 直接使用的会话（fork 分支）
     ):
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -181,7 +182,7 @@ class SessionRunner(BaseSessionRunner):
         self._mode = run_mode or self.role_cfg.mode
 
         if self._mode == "interactive":
-            self._init_interactive(workspace_uuid)
+            self._init_interactive(workspace_uuid, initial_session=initial_session)
         else:
             self._init_autonomous(task, plan, exec_id, session_dir, stop_check,
                                   master_session_id)
@@ -254,7 +255,7 @@ runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（
 | | master | worker | lite |
 |---|--------|--------|------|
 | **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 26 个（18 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search） | 24 个（17 常驻 + 7 deferred；read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/session/tool_search，延迟 browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
+| **工具白名单** | 28 个（20 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search、office2pdf、send_user_file） | 25 个（18 常驻 + 7 deferred；read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/agent/office2pdf/tool_search，延迟 browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
 | **skills** | `["*"]` | `["*"]` | `[]` |
 | **streaming** | ✓ | ✓ | ✓ |
 | **ask_user** | ✓ | ✗ | ✗ |
@@ -378,7 +379,7 @@ def _run_interactive(
 class Loop:
     def run_interactive(self) -> None:
         """交互回合循环主体（run()/resume_* 薄入口调用）。"""
-        # 入口排空：用户发新消息前后台子会话已完成的通知，注入 messages
+        # 入口排空：用户发新消息前后台子代理已完成的通知，注入 messages
         self._drain_session_notifications()
         runner._sync_to_session()
         runner.session.save()
@@ -387,7 +388,7 @@ class Loop:
 
 - 迭代计数用 `runner._turn_iterations`（resume 路径累计不重置），达 `max_iterations` 时提示用户继续
 - 每轮 `_call_llm()`（`Runner.run_round` 内部先压缩）→ 添加 assistant 消息 → 有工具调用则批执行并落盘，无工具调用则回合结束
-- `ask_user`/`session` 占位（`_meta.completed=False`）或合成审批卡时，批处理完退出等待外部输入
+- `ask_user`/`agent` 占位（`_meta.completed=False`）或合成审批卡时，批处理完退出等待外部输入
 
 ### 4.4 权限（permission）
 
@@ -460,7 +461,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 | 维度 | worker | lite |
 |------|--------|------|
-| 工具集 | 24 个（17 常驻：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/session/tool_search；7 延迟：browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
+| 工具集 | 25 个（18 常驻：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/agent/office2pdf/tool_search；7 延迟：browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
 | 检查阶段 | ✓（`check_phase=True`） | ✗ |
 | 预算预警 | ✓（`budget_notice=True`） | ✗ |
 | 迭代上限 | null → system（默认 200） | 200 |
@@ -470,21 +471,21 @@ def _run_autonomous(self) -> dict[str, Any]:
 
 ## 六、委派会话消息结构
 
-主会话通过 tool_use + tool_result 消息对存储 `session` 调用，子会话自己的完整执行日志存储在独立目录。
+主会话通过 tool_use + tool_result 消息对存储 `agent` 调用，子代理自己的完整执行日志存储在独立目录。
 
-`session` 工具（`core/tools/session_tool.py`）委派逻辑：
+`agent` 工具（`core/tools/agent_tool.py`）委派逻辑：
 
 - 生成 `exec_id`（`exec_{8位hex}`，`ExecLogStore._generate_exec_id()`，`core/session.py`）
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
-- 构造统一 SessionRunner：`SessionRunner(config, role=agent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`agent_type` 为 `worker`（默认）或 `lite`
-- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `task_id`，用统一 `action` 枚举管理（`action="read"` 查状态、`action="kill"` 终止、`action="list"` 列出）
-- 子会话 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
+- 构造统一 SessionRunner：`SessionRunner(config, role=subagent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`subagent_type` 为 `worker`（默认）或 `lite`
+- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `agent_id`，用统一 `action` 枚举管理（`action="status"` 查状态、`action="stop"` 终止、`action="list"` 列出）
+- 子代理 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
 ```
 主会话 index.json:
   messages: [
     {role: "user", content: "处理这个大文件"},
-    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "session", input: {task: "处理文件...", agent_type: "worker"}}]},
+    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "agent", input: {task: "处理文件...", subagent_type: "worker"}}]},
     {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_001",
      _meta: {exec_id: "exec_abc123", completed: true, iterations: 15, message_count: 42}}]},
     {role: "assistant", content: "处理完成！"}
@@ -513,6 +514,13 @@ def _run_autonomous(self) -> dict[str, Any]:
 ```
 
 `metadata` 还可能在执行期间包含 `current_tool`（`_save_progress` 写入），供前端显示当前正在执行的工具。
+
+### 6.1 master fork 与 worker continuation
+
+- **master fork**：`SessionRunner.fork_session()` 复制父会话已完成回合的 snapshot（或超 100k token 时回退交接文档），创建新 `SessionStore` + master runner，注册进 `SessionRegistry`；可带 `next_steps` 自动首轮，否则保持 idle。事件 `session_fork_created`，UI「分支会话」。
+- **worker continuation**：worker 到达迭代上限时返回 `status=handoff` + `continuation` 请求；父级保留同一 `exec_id` 和角色，归档当前 epoch，在后台启动下一 epoch（`core/agent_run.py`）。worker 不持有 `handoff`/`fork` 工具，也不向自己返回普通结果。
+- **卡片**：continuation 沿用同一 `exec_id`，不新增 sibling 卡片；父级完成后通过 `agent_run_settled`/邮箱通知投递。
+- **上下文**：fork 只取已完成回合；continuation 使用结构化交接文档作为 pinned 任务；两者都不共享可变 messages 引用。
 
 ---
 
@@ -591,4 +599,4 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 *文档版本: v3.0*
 *最后更新: 2026-09-13（worker 精简为执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
-*最后更新: 2026-10-09（同步代码：worker 24 个工具 / lite 7 个；会话回调更名 on_session_start/on_session_complete；循环编排迁至 session_runner_runtime/loop.py；session 工具统一 action 枚举）*
+*最后更新: 2026-11-02（移除 handoff，改为 master fork + worker 同 exec_id 续任；master 28 / worker 25 / lite 7；输入时全压缩；`session` 工具硬切换为 `agent`、统一 spawn/status/stop/list；此前 2026-10-09 同步 worker/lite 工具数、会话回调更名、循环编排迁移）*

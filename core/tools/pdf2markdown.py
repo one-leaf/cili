@@ -116,7 +116,7 @@ def _pdf_page_count(file_path: str) -> int:
 
 
 def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
-                       max_pages: int) -> tuple[list[Path], tempfile.TemporaryDirectory]:
+                       max_pages: int, tmp_dir: str | None = None) -> tuple[list[Path], tempfile.TemporaryDirectory]:
     """按页数/大小把 PDF 拆成符合 Precision API 限制的分片（保持页序）"""
     if PdfReader is None or PdfWriter is None:
         raise RuntimeError("缺少 pypdf，无法拆分超限 PDF（请安装 pypdf）")
@@ -130,29 +130,35 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
         # 按平均页大小估算每组页数，留 15% 余量；再用实际大小递归校正
         pages_by_size = max(1, int(max_size_bytes * 0.85 / max(avg, 1)))
         chunk = max(1, min(max_pages, pages_by_size))
-        tmp = tempfile.TemporaryDirectory(prefix="pdf2md_split_")
-        parts: list[Path] = []
+        if tmp_dir:
+            os.makedirs(tmp_dir, exist_ok=True)
+        tmp = tempfile.TemporaryDirectory(prefix="pdf2md_split_", dir=tmp_dir)
+        try:
+            parts: list[Path] = []
 
-        def emit(start: int, end: int) -> None:
-            writer = PdfWriter()
-            for i in range(start, end):
-                writer.add_page(reader.pages[i])
-            out = Path(tmp.name) / f"part_{len(parts) + 1:03d}.pdf"
-            with open(out, "wb") as f:
-                writer.write(f)
-            if out.stat().st_size > max_size_bytes and (end - start) > 1:
-                out.unlink()   # 实际大小仍超限：二分继续拆
-                mid = (start + end) // 2
-                emit(start, mid)
-                emit(mid, end)
-            else:
-                parts.append(out)
+            def emit(start: int, end: int) -> None:
+                writer = PdfWriter()
+                for i in range(start, end):
+                    writer.add_page(reader.pages[i])
+                out = Path(tmp.name) / f"part_{len(parts) + 1:03d}.pdf"
+                with open(out, "wb") as f:
+                    writer.write(f)
+                if out.stat().st_size > max_size_bytes and (end - start) > 1:
+                    out.unlink()   # 实际大小仍超限：二分继续拆
+                    mid = (start + end) // 2
+                    emit(start, mid)
+                    emit(mid, end)
+                else:
+                    parts.append(out)
 
-        for start in range(0, total, chunk):
-            emit(start, min(start + chunk, total))
-    if not parts:
-        raise RuntimeError(f"PDF 拆分失败：共 {total} 页")
-    return parts, tmp
+            for start in range(0, total, chunk):
+                emit(start, min(start + chunk, total))
+            if not parts:
+                raise RuntimeError(f"PDF 拆分失败：共 {total} 页")
+            return parts, tmp
+        except Exception:
+            tmp.cleanup()
+            raise
 
 
 def _request_with_retry(method: str, url: str, *, attempts: int = 3,
@@ -244,7 +250,8 @@ class PDF2MarkdownTool(Tool):
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
                  session=None, config: Config | None = None,
                  permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None):
+                 approval_store=None, approval_rules=None,
+                 tmp_dir: str | None = None):
         super().__init__(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
             permission_store=permission_store, permission_rules=permission_rules,
@@ -252,6 +259,8 @@ class PDF2MarkdownTool(Tool):
             approval_store=approval_store, approval_rules=approval_rules,
         )
         self._config = config
+        # 超限 PDF 分割临时目录：默认 cwd 下的 .cili/tmp（与系统临时目录约定一致），外部调用可覆盖
+        self._tmp_dir = tmp_dir or str(Path(cwd) / ".cili" / "tmp")
         # 实时进度（仅推前端/输出文件，不进 ToolResult/上下文）
         self._progress_offset = 0
         self._progress_lock = threading.Lock()
@@ -430,6 +439,7 @@ class PDF2MarkdownTool(Tool):
             file_path,
             max_size_bytes=max_size_mb * 1024 * 1024,
             max_pages=max_pages,
+            tmp_dir=self._tmp_dir,
         )
         self._progress(f"文件超限（{size_mb:.0f}MB/{pages}页，"
                        f"限额 {max_size_mb}MB/{max_pages}页），拆分为 {len(parts)} 片")

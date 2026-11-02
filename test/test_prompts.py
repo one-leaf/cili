@@ -495,3 +495,35 @@ class TestParseSkillFrontmatter:
     def test_unclosed_frontmatter(self):
         from core.tools.skill import _parse_skill_frontmatter
         assert _parse_skill_frontmatter("---\nname: broken") == {}
+
+
+
+class TestRolePromptDelegation:
+
+
+    """master 区分 agent 与 handoff；worker 只说明自动 epoch 续任。"""
+
+    @staticmethod
+    def _prompt(role):
+        from core.role_config import load_role
+        blocks = load_role(role).system_prompt["blocks"]
+        parts = []
+        for block in blocks:
+            if block.get("type") != "text":
+                continue
+            content = block.get("content", [])
+            if isinstance(content, str):
+                content = [content]
+            parts.append("\n".join(content))
+        return "\n".join(parts)
+
+    def test_master_distinguishes_agent_and_branch_sessions(self):
+        prompt = self._prompt("master")
+        assert "**Delegation vs branch sessions**" in prompt
+        assert "`agent`" in prompt
+        assert "分支会话" in prompt
+
+    def test_worker_uses_automatic_epoch_continuation(self):
+        prompt = self._prompt("worker")
+        assert "new epoch automatically" in prompt
+        assert "`handoff`" not in prompt

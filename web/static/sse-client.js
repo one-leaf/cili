@@ -119,6 +119,14 @@ async function alignAfterReconnect() {
 
 // ── 主路由 ──
 
+let _loadSessionsTimer = null;
+function scheduleLoadSessions() {
+    clearTimeout(_loadSessionsTimer);
+    _loadSessionsTimer = setTimeout(() => {
+        if (typeof loadSessions === 'function') loadSessions();
+    }, 300);
+}
+
 function handleBusEvent(e) {
     if (!e || typeof e !== 'object') return;
     // 只处理当前会话的事件，防止切会话后旧流串入
@@ -138,12 +146,25 @@ function handleBusEvent(e) {
         }
         return;
     }
+    if (e.type === 'session_created' || e.type === 'session_fork_created') {
+        scheduleLoadSessions();
+        return;
+    }
 
     if (e.type === 'session_start') {
         ensureSessionCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
         return;
     }
     if (e.type === 'session_complete') {
+        markAgentComplete(e.exec_id, e.status || 'completed');
+        return;
+    }
+    if (e.type === 'agent_epoch_started') {
+        const entry = ensureSessionCard(e.exec_id, '', { status: 'running' });
+        if (entry) updateHeaderMeta(entry, { iterations: 0, message_count: 0, tool_call_count: 0 });
+        return;
+    }
+    if (e.type === 'agent_run_settled') {
         markAgentComplete(e.exec_id, e.status || 'completed');
         return;
     }

@@ -33,7 +33,7 @@ from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
-from core.tools.session_tool import SessionTool
+from core.tools.agent_tool import AgentTool
 from core.tools.skill import SkillTool
 from core.tools.temp import TempTool
 from core.tools.todo import TodoWriteTool
@@ -47,7 +47,7 @@ Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any, Any, Any], To
 
 
 def _make_skill(role_cfg, cwd, workspace_uuid, session, config,
-                permission_store, permission_rules, permission_policy) -> Tool:
+                permission_store, permission_rules, permission_policy=None) -> Tool:
     return SkillTool(
         role=role_cfg.name,
         cwd=cwd, workspace_uuid=workspace_uuid, session=session,
@@ -56,7 +56,7 @@ def _make_skill(role_cfg, cwd, workspace_uuid, session, config,
 
 def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = False) -> Factory:
     def factory(role_cfg, cwd, workspace_uuid, session, config,
-                permission_store, permission_rules, permission_policy) -> Tool:
+                permission_store, permission_rules, permission_policy=None) -> Tool:
         kwargs: dict[str, Any] = dict(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
             permission_rules=permission_rules,
@@ -97,7 +97,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_permission=True),
     "office2pdf": _factory(Office2PDFTool, needs_permission=True),
     "skill": _make_skill,
-    "session": _factory(SessionTool, needs_config=True, needs_permission=True),
+    "agent": _factory(AgentTool, needs_config=True, needs_permission=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
     # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户

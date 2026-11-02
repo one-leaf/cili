@@ -352,7 +352,7 @@ Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与�
         {
             "type": "tool_use",
             "id": "toolu_sub_001",
-            "name": "session",
+            "name": "agent",
             "input": {"task": "优化爬虫性能"}
         }
     ]
@@ -367,7 +367,7 @@ Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与�
             "tool_use_id": "toolu_sub_001",
             "content": "{\"status\": \"completed\", ...}",
             "_meta": {
-                "tool_name": "session",
+                "tool_name": "agent",
                 "exec_id": "exec_a1b2c3d4",
                 "completed": true
             }

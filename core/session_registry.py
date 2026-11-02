@@ -126,6 +126,26 @@ class SessionRegistry:
                     self._hosted[key] = HostedSession(key=key, runner=runner)
                 return self._hosted[key].runner
 
+    def register_hosted(
+        self,
+        workspace_uuid: str,
+        session_id: str,
+        runner: SessionRunner,
+        *,
+        claim: bool = False,
+    ) -> str:
+        """Register an externally created runner (e.g. a fork or hosted branch)."""
+        get_teen_mode().guard_workspace(workspace_uuid, source="registry")
+        key = session_key(workspace_uuid, session_id)
+        with self._data_lock:
+            self.evict_idle()
+            self._hosted[key] = HostedSession(key=key, runner=runner)
+            self._access[key] = time.time()
+            if claim:
+                with self._claims_lock:
+                    self._claims.add(key)
+        return key
+
     def _attach_requested_session(self, runner: SessionRunner, session_id: str) -> None:
         """把 runner 从默认会话切到请求的 session_id（已存在则加载，否则新建）。"""
         if session_id == runner.current_session_id:

@@ -226,18 +226,39 @@ class BaseSessionRunner:
         """3-layer compression before LLM call (delegated to Runner)."""
         self.runner._check_and_compress()
 
-    def _perform_full_compact(self, keep_user_messages: int) -> tuple[int, int]:
+    def _perform_full_compact(self, keep_user_messages: int, *,
+                              next_steps: str | None = None,
+                              reason: str = "") -> tuple[int, int]:
         """Full auto compact: summarize old messages (delegated to Runner)."""
-        return self.runner._perform_full_compact(keep_user_messages)
+        return self.runner._perform_full_compact(
+            keep_user_messages, next_steps=next_steps, reason=reason
+        )
 
     @staticmethod
     def _find_split_by_user_messages(messages: list[dict], keep_user_count: int) -> int:
         """Find split point keeping last N user messages (delegated to ConversationStore)."""
         return ConversationStore.find_split_by_user_messages(messages, keep_user_count)
 
-    def _summarize_messages(self, messages: list[dict]) -> str:
-        """Use LLM to summarize messages (delegated to Runner)."""
-        return self.runner._summarize_messages(messages)
+    def _summarize_messages(self, split_idx: int = 0, *,
+                            instruction: str | None = None,
+                            pending_tool_use_id: str = "",
+                            system_prompt: str | list[str] | None = None) -> str:
+        """Use LLM to summarize messages with cache-aware prefix sharing (delegated to Runner)."""
+        return self.runner._summarize_messages(
+            split_idx=split_idx,
+            instruction=instruction,
+            pending_tool_use_id=pending_tool_use_id,
+            system_prompt=system_prompt,
+        )
+
+    def summarize_for_handoff(self, next_steps: str, reason: str = "",
+                              pending_tool_use_id: str = "") -> str:
+        """Build a handoff document (delegated to Runner)."""
+        return self.runner.summarize_for_handoff(next_steps, reason, pending_tool_use_id)
+
+    def maybe_full_compact_for_user_input(self, user_text: str) -> None:
+        """Full compact before a new user turn (delegated to Runner)."""
+        return self.runner.maybe_full_compact_for_user_input(user_text)
 
     def _mark_old_images_invalid(self, max_body_size: int = 3_000_000) -> int:
         """Replace old tool_result images until body < max_body_size (delegated to Runner)."""

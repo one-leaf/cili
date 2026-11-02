@@ -88,6 +88,11 @@ class QueueRequest(BaseModel):
     client_id: str | None = None
 
 
+class ForkSessionRequest(BaseModel):
+    next_steps: str = ""
+    label: str | None = None
+
+
 class RevertRequest(BaseModel):
     msg_id: str  # 要撤销到的消息 ID
 
@@ -696,6 +701,46 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     task.add_done_callback(_resume_tasks.discard)
 
     return {"success": True, "message": "已触发继续"}
+
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/fork")
+async def fork_session(
+    workspace_uuid: str,
+    session_id: str,
+    request: ForkSessionRequest,
+    ws_dir: Path = Depends(_require_workspace),
+):
+    """Fork the current master session into a sibling session (UI「分支会话」)."""
+    _validate_session_id(session_id)
+    session_dir = ws_dir / "sessions" / session_id
+    if not (session_dir / "index.json").exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    runner = await _get_or_create_runner(workspace_uuid, session_id)
+    key = f"{workspace_uuid}:{session_id}"
+    if not _claim_session_run(key):
+        raise HTTPException(status_code=409, detail="会话正在运行")
+
+    try:
+        runner.set_turn_interface("web")
+        result = await asyncio.to_thread(
+            runner.fork_session,
+            next_steps=request.next_steps.strip(),
+            label=request.label,
+        )
+    finally:
+        runner.set_turn_interface(None)
+        _release_session_run(key)
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message") or "fork failed")
+    return {
+        "session_id": result.get("session_id", ""),
+        "name": result.get("name", ""),
+        "status": result.get("status", "idle"),
+        "mode": result.get("mode", "snapshot"),
+        "token_estimate": result.get("token_estimate", 0),
+    }
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert",
