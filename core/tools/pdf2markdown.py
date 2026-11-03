@@ -101,18 +101,74 @@ _FREE_QUOTA_HINT = (
 )
 
 
+# pypdf 解析保护上限放宽：扫描版教材 PDF 的资源数组巨大，默认 10 万元素
+# 会把完好文件误判为损坏（LimitReachedError）
+_PDF_ARRAY_LIMIT = 10_000_000
+
+
+def _pdf_read_limits(file_path: str) -> dict:
+    """放宽 pypdf 解析保护上限（stream 按文件实际大小），供 apply_configuration 用。"""
+    try:
+        stream = max(get_configuration().maximum_declared_stream_length,
+                     os.path.getsize(file_path))
+    except OSError:
+        stream = get_configuration().maximum_declared_stream_length
+    return {"maximum_declared_stream_length": stream,
+            "array_maximum_element_count": _PDF_ARRAY_LIMIT}
+
+
 def _pdf_page_count(file_path: str) -> int:
     """读取 PDF 页数；失败或无 pypdf 时返回 0（交给云端判断）"""
     if PdfReader is None:
         return 0
     try:
-        limit = max(get_configuration().maximum_declared_stream_length,
-                    os.path.getsize(file_path))
-        with apply_configuration(maximum_declared_stream_length=limit):
+        with apply_configuration(**_pdf_read_limits(file_path)):
             return len(PdfReader(file_path).pages)
     except Exception as e:
         logger.warning(f"[pdf2markdown] 读取页数失败: {e}")
         return 0
+
+
+def _rasterize_page_to_pdf(file_path: str, page_index: int,
+                           out_path: Path, max_size_bytes: int) -> bool:
+    """单页超限的兜底：把该页渲染成位图 PDF 并覆写 out_path。
+
+    电子版教材可能单页内嵌超大资源（音视频/巨型图片），无法再拆页；
+    内嵌媒体本来也无法转 markdown，视觉内容转 200dpi 位图足够云端解析。
+    返回 True 表示已用栅格化结果覆写 out_path 且大小达标。
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        logger.warning("[pdf2markdown] 单页超限且 pymupdf 不可用")
+        return False
+    rasterized = out_path.with_suffix(".rasterized.pdf")
+    try:
+        doc = pymupdf.open(file_path)
+        try:
+            page = doc.load_page(page_index)
+            rect = page.rect
+            for dpi in (200, 150, 100):
+                png = page.get_pixmap(dpi=dpi).tobytes("png")
+                if len(png) > max_size_bytes:
+                    continue
+                tmp_doc = pymupdf.open()
+                try:
+                    new_page = tmp_doc.new_page(width=rect.width, height=rect.height)
+                    new_page.insert_image(rect, stream=png)
+                    tmp_doc.save(str(rasterized), garbage=4, deflate=True)
+                finally:
+                    tmp_doc.close()
+                if rasterized.stat().st_size <= max_size_bytes:
+                    os.replace(rasterized, out_path)
+                    return True
+            return False
+        finally:
+            doc.close()
+    except Exception as e:
+        logger.warning(f"[pdf2markdown] 单页栅格化失败: {e}")
+        rasterized.unlink(missing_ok=True)
+        return False
 
 
 def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
@@ -120,9 +176,7 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
     """按页数/大小把 PDF 拆成符合 Precision API 限制的分片（保持页序）"""
     if PdfReader is None or PdfWriter is None:
         raise RuntimeError("缺少 pypdf，无法拆分超限 PDF（请安装 pypdf）")
-    limit = max(get_configuration().maximum_declared_stream_length,
-                os.path.getsize(file_path))
-    with apply_configuration(maximum_declared_stream_length=limit):
+    with apply_configuration(**_pdf_read_limits(file_path)):
         reader = PdfReader(file_path)
         total = len(reader.pages)
         size = os.path.getsize(file_path)
@@ -148,6 +202,12 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
                     mid = (start + end) // 2
                     emit(start, mid)
                     emit(mid, end)
+                elif out.stat().st_size > max_size_bytes:
+                    # 单页超限（页内嵌大资源，无法再拆）：栅格化兜底
+                    if not _rasterize_page_to_pdf(file_path, start, out, max_size_bytes):
+                        logger.warning("[pdf2markdown] 第 %d 页栅格化失败，"
+                                       "该分片仍超限（可能被云端拒绝）", start + 1)
+                    parts.append(out)
                 else:
                     parts.append(out)
 
@@ -432,12 +492,17 @@ class PDF2MarkdownTool(Tool):
         ext = Path(file_path).suffix.lower()
         size_mb = os.path.getsize(file_path) / (1024 * 1024)
         pages = _pdf_page_count(file_path) if ext == ".pdf" else 0
-        if ext != ".pdf" or (size_mb <= max_size_mb and pages <= max_pages):
+        # 服务端按十进制 MB 校验（200MB = 200e6 字节），本地若按 MiB 计算会留出
+        # (200e6, 209.7e6] 字节窗口——落在窗口内的文件/分片会被服务端拒绝，
+        # 故统一乘 0.9 留余量，直接提交与分片预算共用同一阈值
+        safe_bytes = int(max_size_mb * 1e6 * 0.9)
+        size = os.path.getsize(file_path)
+        if ext != ".pdf" or (size <= safe_bytes and pages <= max_pages):
             return parse_fn(file_path)
 
         parts, tmp = _split_pdf_for_api(
             file_path,
-            max_size_bytes=max_size_mb * 1024 * 1024,
+            max_size_bytes=safe_bytes,
             max_pages=max_pages,
             tmp_dir=self._tmp_dir,
         )
