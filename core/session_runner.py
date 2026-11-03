@@ -678,9 +678,10 @@ class SessionRunner(BaseSessionRunner):
     def fork_session(self, next_steps: str = "", label: str | None = None) -> dict:
         """Clone the completed-turn context of this master session into a sibling.
 
-        Fork is a session-level operation, not a worker handoff. It copies the
-        completed message snapshot (excluding an in-flight turn), or falls back
-        to a structured handoff document when the snapshot is too large.
+        Fork is a session-level operation, not a worker handoff. With an empty
+        next_steps it only copies the current session snapshot. With a next-stage
+        task it copies the snapshot (or falls back to a handoff document when
+        the snapshot is too large) and starts that task.
         """
         if self.role != "master":
             return {"status": "error", "message": "fork is only available for master sessions"}
@@ -694,10 +695,18 @@ class SessionRunner(BaseSessionRunner):
         except Exception:
             token_estimate = 0
 
+        next_text = (next_steps or "").strip()
         mode = "snapshot"
-        if token_estimate > max_tokens:
-            text = (next_steps or "").strip() or "继续当前任务，保持原有目标、约束与验证状态。"
-            doc = self.runner.summarize_for_handoff(text, "fork context too large", "")
+        if not next_text:
+            # Empty next task: copy the session, do not summarize and do not auto-run.
+            for msg in snapshot:
+                store.add_message(
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    meta={k: v for k, v in (msg.get("_meta") or {}).items() if k != "seq"},
+                )
+        elif token_estimate > max_tokens:
+            doc = self.runner.summarize_for_handoff(next_text, "fork context too large", "")
             if not doc or doc.startswith(("（摘要生成失败", "(摘要生成失败")):
                 return {"status": "error", "message": "fork summary generation failed"}
             store.add_message("user", doc, meta={"fork": True, "handoff": True})
@@ -708,7 +717,7 @@ class SessionRunner(BaseSessionRunner):
                 store.add_message(
                     msg.get("role", "user"),
                     msg.get("content", ""),
-                    meta=msg.get("_meta"),
+                    meta={k: v for k, v in (msg.get("_meta") or {}).items() if k != "seq"},
                 )
         store.save(force=True)
 
