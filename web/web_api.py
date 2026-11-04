@@ -274,4 +274,4 @@ if __name__ == "__main__":
     # _check_web_auth 强制要求 access_token，此处绕开它，故不得绑非 localhost。
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=1618)

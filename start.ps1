@@ -3,7 +3,7 @@
 # Auto-detect and download Git Bash, Python, and LaTeX compiler
 
 param(
-    [int]$Port = 8000,
+    [int]$Port = 1618,
     [string]$HostName = "127.0.0.1"
 )
 
@@ -449,7 +449,7 @@ Write-Host ""
 
 # Build arguments
 $scriptArgs = @()
-if ($Port -ne 8000) {
+if ($Port -ne 1618) {
     $scriptArgs += "--port"
     $scriptArgs += $Port
 }

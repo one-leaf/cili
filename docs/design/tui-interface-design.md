@@ -48,9 +48,9 @@ web/routes_chat.py         POST messages 的 interface 字段（唯一的路由�
      若留到 executor 线程内取，异常会吞掉结束哨兵把 SSE 流挂死
    - **getattr duck-typing**：web 路由测试广泛用 SimpleNamespace 伪造 request，
      缺属性按缺省处理（与 `set_iface` 本身的 duck-typing 同一约定）
-2. **`server.json` 落盘**（main.py:1345）：服务端启动时写
-   `{host, port, pid, started_at}`，退出（含 Ctrl+C）时删除——TUI 据此发现同机
-   服务端，自定义 `--port` 自然覆盖
+2. **`server.json` 落盘**（`main.py` 的 `_start_web_interface`）：服务端启动时写
+   `{host, port, pid, started_at}`（`port` 为端口探测后的实际端口），退出（含 Ctrl+C）
+   时删除——TUI 据此发现同机服务端，自定义 `--port` 自然覆盖
 3. **tui 档案注册**（core/app_context.py startup）：TUI 没有 start 函数可走
    （QQ/微信是启动接口时顺带注册的），在此用 import 副作用注册
    `interfaces.tui.profile`——否则 `set_turn_interface("tui")` 的回合告警
@@ -62,7 +62,7 @@ web/routes_chat.py         POST messages 的 interface 字段（唯一的路由�
 
 | 项 | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
-| 服务端地址 | `--server` 参数 | 环境变量 `CILI_SERVER` | `~/.cili/config.json` | `data/cili/server.json` | 默认 `http://127.0.0.1:8000` |
+| 服务端地址 | `--server` 参数 | 环境变量 `CILI_SERVER` | `~/.cili/config.json` | `data/cili/server.json` | 默认 `http://127.0.0.1:1618` |
 | token | 环境变量 `CILI_TOKEN` | `~/.cili/config.json` | 服务端 setting.json 的 `system.access_token` | | |
 
 项目根由 `config.py.__file__` 自定位（客户端不依赖 cwd）——同机场景直接读服务端

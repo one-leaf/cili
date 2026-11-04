@@ -89,8 +89,15 @@ data/
 8. 自动检测浏览器（_auto_detect_browser）
    - 若 browser_path 为空或路径不存在，自动检测 Edge → Chrome 并写回配置
 9. 启动 Cron 调度器
-10. 启动 Web 服务（uvicorn）
-11. 延迟 2 秒后自动打开浏览器（webbrowser.open）
+10. 探测监听端口（core/port_guard.resolve_web_port，默认 1618）
+    - 端口空闲：直接使用
+    - 端口被 cili 自身占用（本地连接表 CIM 定位进程，netstat 兜底；再按 server.json 的
+      pid/port、进程命令行含 main.py 与 cili 路径、/openapi.json 指纹判定）：停止旧实例
+      （taskkill /F），等待端口释放后复用
+    - 端口被其它程序占用：从 --port + 1 向上找空闲端口（最多 50 个），仍无则用系统分配端口；
+      server.json / 浏览器 / 日志统一使用解析后的端口
+11. 启动 Web 服务（uvicorn）
+12. 延迟 2 秒后自动打开浏览器（webbrowser.open）
 ```
 
 **关键函数**：
@@ -98,6 +105,7 @@ data/
 - `_install_deps_python()`: 下载 embeddable Python
 - `_install_packages()`: 安装依赖
 - `_init_mplfonts()`: 初始化 matplotlib 中文字体配置
+- `resolve_web_port()`（core/port_guard）: 启动端口探测与冲突处理（旧 cili 复用 / 外部占用顺延）
 
 ## Embeddable Python 模式
 

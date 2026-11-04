@@ -71,7 +71,7 @@ python main.py
 python main.py --port 8080 --host 0.0.0.0
 ```
 
-启动后浏览器自动打开 `http://localhost:8000`，即可开始对话。
+启动后浏览器自动打开 `http://localhost:1618`；端口被占用时，若占用者是旧 cili 实例则自动停止它并复用端口，否则顺延到下一个可用端口。
 
 ### 配置
 

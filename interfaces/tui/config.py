@@ -18,7 +18,7 @@ SERVER_INFO_PATH = PROJECT_ROOT / "data" / "cili" / "server.json"
 SETTING_PATH = PROJECT_ROOT / "data" / "cili" / "setting.json"
 USER_CONFIG_PATH = Path.home() / ".cili" / "config.json"
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_BASE_URL = "http://127.0.0.1:1618"
 
 
 @dataclass

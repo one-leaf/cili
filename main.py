@@ -1062,8 +1062,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port for web server (default: 8000)",
+        default=1618,
+        help="Port for web server (default: 1618)",
     )
     parser.add_argument(
         "--host",
@@ -1284,9 +1284,21 @@ def _start_core_services() -> None:
 
 
 def _start_web_interface(args: argparse.Namespace) -> None:
-    """启动 Web 接入端：鉴权校验 + 自动开浏览器 + uvicorn。"""
+    """启动 Web 接入端：鉴权校验 + 端口探测 + 自动开浏览器 + uvicorn。"""
     # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网（Web 专属）
     _check_web_auth(args.host)
+
+    # 端口探测：端口被 cili 自身占用时停止旧实例并复用，被其它程序占用时
+    # 顺延到下一个可用端口。解析后的端口统一用于 server.json / 浏览器 / 日志。
+    from core.port_guard import resolve_web_port
+
+    _system = _load_settings_cached().get("system") or {}
+    _token = _system.get("access_token", "") if isinstance(_system, dict) else ""
+    try:
+        args.port = resolve_web_port(args.host, args.port, probe_token=_token)
+    except RuntimeError as e:
+        print(f"[setup] Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
     # 隐式执行，改为在此显式调用；web_api 的 lifespan 也会调一次（幂等）。
