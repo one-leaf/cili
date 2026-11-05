@@ -213,9 +213,13 @@ class WechatClient:
 
         这个请求不打 iLink 主域，所以不走 ``_request``（没有 base_info、没有重试语义）。
         """
+        return await self.upload_encrypted_stream(url, data)
+
+    async def upload_encrypted_stream(self, url: str, chunks) -> str:
+        """流式上传：``chunks`` 可以是 bytes，也可以是异步可迭代的密文分块。"""
         response = await self._client.post(
             url,
-            content=data,
+            content=chunks,
             headers={"Content-Type": "application/octet-stream"},
         )
         response.raise_for_status()

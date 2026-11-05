@@ -103,7 +103,7 @@ def _cim_listener_pids(port: int) -> list[int] | None:
         data = json.loads(text)
     except json.JSONDecodeError:
         logger.debug("[setup] CIM port scan returned invalid JSON for %s", port)
-        return []
+        return None
     if isinstance(data, dict):
         rows = [data]
     elif isinstance(data, list):

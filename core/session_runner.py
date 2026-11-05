@@ -160,6 +160,8 @@ class SessionRunner(BaseSessionRunner):
         # 由接口层在 run() 前设置；决定 INTERFACE_TOOLS 的可见性。
         self._turn_interface: str | None = None
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
+        # 恢复循环互斥：后台完成回调可能来自多个线程，防止同一 runner 双循环
+        self._resume_lock = threading.Lock()
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
         # 事件发布回调（由 agent_tool / background 注入，用于广播 session_progress）
@@ -217,7 +219,7 @@ class SessionRunner(BaseSessionRunner):
             global_path = (
                 Path(permission_cfg.global_rules_path)
                 if permission_cfg.global_rules_path
-                else DATA_DIR / "cili" / "approval_rules.json"
+                else DATA_DIR / "approval_rules.json"
             )
             self.permission_store = (
                 permission_store if permission_store is not None else PermissionStore()
@@ -834,21 +836,30 @@ class SessionRunner(BaseSessionRunner):
     _handle_approval_required = _handle_permission_required
 
     def _resume_loop(self, sink: OutputSink | None = None) -> None:
-        """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。"""
-        self._stopped = False
-        self._running = True
-        self.sink = layer_sink(self.default_sink, sink)
+        """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。
 
+        后台完成回调来自 agent_tool/background 多个线程；非阻塞锁保证同一
+        runner 同时只有一个恢复循环（原先 is_running() 的 check-then-act 有竞态）。
+        """
+        if not self._resume_lock.acquire(blocking=False):
+            logger.warning(f"[SessionRunner:{self.role}] 恢复循环已在运行，忽略重复 resume")
+            return
         try:
-            # loop.run_interactive 在回合前做 checkpoint save
-            self.loop.run_interactive()
+            self._stopped = False
+            self._running = True
+            self.sink = layer_sink(self.default_sink, sink)
+            try:
+                # loop.run_interactive 在回合前做 checkpoint save
+                self.loop.run_interactive()
+            finally:
+                self._running = False
+                # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
+                self._sync_to_session()
+                self.session.save()
+                # 落盘之后再通知，接入端重拉时才能拿到完整状态
+                self.sink.on_turn_complete()
         finally:
-            self._running = False
-            # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
-            self._sync_to_session()
-            self.session.save()
-            # 落盘之后再通知，接入端重拉时才能拿到完整状态
-            self.sink.on_turn_complete()
+            self._resume_lock.release()
 
     def resume_after_ask_user(self, sink: OutputSink | None = None) -> None:
         """Resume session loop after ask_user tool result has been injected."""

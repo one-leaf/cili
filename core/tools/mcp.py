@@ -316,6 +316,7 @@ class MCPProvider:
         self._connect_timeout = connect_timeout
 
         self._configured_sig: dict[str, dict] | None = None  # 当前已连接的配置签名
+        self._server_sigs: dict[str, dict] = {}  # server_name -> 已应用配置签名
         self._connections: dict[str, Any] = {}  # server_name -> ClientSession
         self._stacks: dict[str, AsyncExitStack] = {}
         self._wrappers: dict[str, list[MCPToolWrapper]] = {}
@@ -374,6 +375,7 @@ class MCPProvider:
         self._connections.clear()
         self._stacks.clear()
         self._wrappers.clear()
+        self._server_sigs.clear()
         self._status.clear()
 
     def run_in_loop(self, coro, timeout: float = 60) -> Any:
@@ -401,11 +403,16 @@ class MCPProvider:
         sig = {name: cfg.to_dict() for name, cfg in servers.items()}
         if self._configured_sig == sig:
             return
-        self._configured_sig = sig
         try:
             self.run_in_loop(self._connect_all(servers), timeout=self._connect_timeout + 5)
         except Exception as exc:
             logger.warning(f"[MCP] 连接失败: {exc}")
+            return
+        # 全部连接成功才记签名；失败/超时的 server 留待下次 ensure_connected 重试
+        if all(self._status.get(name) == "connected" for name in servers):
+            self._configured_sig = sig
+        else:
+            logger.warning("[MCP] 部分服务器未连接，保留旧签名以便下次重试")
 
     async def _connect_all(self, servers: dict[str, MCPConfig]) -> None:
         # 关闭已不在配置里的 server
@@ -414,6 +421,9 @@ class MCPProvider:
                 await self._close_server(name)
 
         for name, cfg in servers.items():
+            cfg_sig = cfg.to_dict()
+            if name in self._connections and self._server_sigs.get(name) != cfg_sig:
+                await self._close_server(name)
             if name in self._connections:
                 continue
             self._status[name] = "connecting"
@@ -442,6 +452,7 @@ class MCPProvider:
             self._connections[name] = session
             self._stacks[name] = stack
             self._wrappers[name] = wrappers
+            self._server_sigs[name] = cfg.to_dict()
             self._status[name] = "connected"
             logger.info(f"[MCP] 服务器 {name} 已连接，{len(wrappers)} 个工具")
         except Exception as exc:
@@ -458,6 +469,7 @@ class MCPProvider:
             await stack.aclose()
             self._connections.pop(name, None)
             self._wrappers.pop(name, None)
+            self._server_sigs.pop(name, None)
             self._status[name] = "offline"
             self._tasks.pop(name, None)
             logger.info(f"[MCP] 服务器 {name} 已断开")
@@ -473,6 +485,7 @@ class MCPProvider:
         self._connections.pop(name, None)
         self._stacks.pop(name, None)
         self._wrappers.pop(name, None)
+        self._server_sigs.pop(name, None)
         self._status.pop(name, None)
 
     async def _open_session(self, name: str, cfg: MCPConfig, stack: AsyncExitStack) -> Any:

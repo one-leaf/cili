@@ -55,11 +55,17 @@ def build_user_input(
             text_parts.append(f"[附件] {item.rel_path}")
 
     body = "\n".join(p for p in text_parts if p).strip()
-    if len(blocks) <= 1:
+    has_image = any(b.get("type") == "image" for b in blocks)
+    if not has_image:
         # 没有可用的图片块 → 退回纯文本（含附件路径）
         return body
+    text_block = next((b for b in blocks if b.get("type") == "text"), None)
     if body:
-        blocks[0] = {"type": "text", "text": body, "_valid": True}
+        if text_block is not None:
+            text_block["text"] = body
+        else:
+            # 纯图片/语音混合消息没有文本块：插到首位，不能覆盖已有图片块
+            blocks.insert(0, {"type": "text", "text": body, "_valid": True})
     return blocks
 
 

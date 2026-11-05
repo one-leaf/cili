@@ -54,6 +54,7 @@ from web.deps import (
     registry,
     teen_guard,
 )
+from web.goal_runner import stop_goal_runner
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -229,7 +230,16 @@ async def delete_workspace(workspace_uuid: str):
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
     with _sessions_lock:
+        for key in registry.keys():
+            if key.startswith(f"{workspace_uuid}:"):
+                stop_goal_runner(key)
         _cleanup_runners_for_workspace(workspace_uuid)
+    # 丢弃该工作区所有会话的 GoalManager 缓存
+    from core.goal import release_goal_manager
+    sessions_root = get_workspace_data_dir(workspace_uuid) / "sessions"
+    if sessions_root.exists():
+        for sd in sessions_root.iterdir():
+            release_goal_manager(sd)
     # 删除工作区前取消未完成的教材下载，避免任务继续写已删除目录
     await textbook_tasks.cancel_for_workspace(workspace_uuid)
     # rmtree 属阻塞 IO（大工作区可达数秒），放线程里执行
@@ -312,8 +322,8 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
     init_result = None
     if request.git_enabled:
         from core.workspace_git import init_workspace_git, is_git_initialized
-        if not is_git_initialized(workspace_uuid):
-            ok, msg = init_workspace_git(workspace_uuid)
+        if not await asyncio.to_thread(is_git_initialized, workspace_uuid):
+            ok, msg = await asyncio.to_thread(init_workspace_git, workspace_uuid)
             init_result = {"success": ok, "message": msg}
 
     # 设置远程仓库（三个字段任一变化则更新）
@@ -323,10 +333,14 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
         remote_url = request.git_remote_url or ""
         username = request.git_username or ""
         token = request.git_token or ""
-        ok, msg = set_git_remote(workspace_uuid, remote_url, username, token)
+        ok, msg = await asyncio.to_thread(
+            set_git_remote, workspace_uuid, remote_url, username, token
+        )
         remote_result = {"success": ok, "message": msg}
         if ok:
-            remote_result["remote_info"] = get_git_remote_info(workspace_uuid)
+            remote_result["remote_info"] = await asyncio.to_thread(
+                get_git_remote_info, workspace_uuid
+            )
 
     logger.info(f"Git settings updated: {workspace_uuid} enabled={request.git_enabled}")
     return {
@@ -345,8 +359,8 @@ async def get_git_status(workspace_uuid: str):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     from core.workspace_git import get_git_remote_info, get_workspace_git_status
-    status = get_workspace_git_status(workspace_uuid)
-    status["remote_info"] = get_git_remote_info(workspace_uuid)
+    status = await asyncio.to_thread(get_workspace_git_status, workspace_uuid)
+    status["remote_info"] = await asyncio.to_thread(get_git_remote_info, workspace_uuid)
     return status
 
 
@@ -358,7 +372,7 @@ async def git_pull(workspace_uuid: str):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     from core.workspace_git import git_pull as do_pull
-    ok, msg = do_pull(workspace_uuid)
+    ok, msg = await asyncio.to_thread(do_pull, workspace_uuid)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
@@ -372,7 +386,7 @@ async def git_push(workspace_uuid: str):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     from core.workspace_git import git_push as do_push
-    ok, msg = do_push(workspace_uuid)
+    ok, msg = await asyncio.to_thread(do_push, workspace_uuid)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
@@ -648,6 +662,20 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
     return session.to_dict()
 
 
+def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> None:
+    """停止并摘除会话的 GoalRunner/队列/runner，再删目录（唯一删除顺序）。"""
+    from core.goal import release_goal_manager
+
+    key = f"{workspace_uuid}:{session_id}"
+    session_dir = sessions_dir / session_id
+    stop_goal_runner(key)
+    with _sessions_lock:
+        turn_queue.remove_session(key)
+        registry.remove(key)
+    delete_session_dir(sessions_dir, session_id)
+    release_goal_manager(session_dir)
+
+
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}",
                dependencies=[Depends(teen_guard("session_delete", hard=True))])
 async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
@@ -657,20 +685,9 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 先把 runner 从池里摘除（cleanup 会 save 一次，此时目录还在），
-    # 再删目录——顺序反了会让 cleanup 的 save 把已删目录重建为空会话
-    key = f"{workspace_uuid}:{session_id}"
-    with _sessions_lock:
-        # 队列独立于 runner 池：先清队列，删除后旧消息不会被泵/边界插回
-        turn_queue.remove_session(key)
-        registry.remove(key)
-
-    # 删除整个 session 目录（统一入口：青少年模式守卫在数据层）
-    delete_session_dir(ws_dir / "sessions", session_id)
-    # 会话目录已删，丢弃缓存的 GoalManager（否则 _managers 长期累积）
-    from core.goal import release_goal_manager
-    release_goal_manager(session_dir)
-
+    # cleanup 会 save，必须在目录还在时摘除 runner；GoalRunner 也先停掉。
+    # 磁盘 cleanup/save 属阻塞操作，丢线程池执行。
+    await asyncio.to_thread(_purge_session, workspace_uuid, session_id, ws_dir / "sessions")
     return {"success": True}
 
 
@@ -766,13 +783,9 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 
         try:
             if request.action == "delete":
-                # 先摘除 runner（同单删：避免 cleanup 的 save 重建已删目录），
-                # 且不让已删会话的 runner 残留在池里（之后淘汰/关停时 save 会复活空会话）
-                key = f"{workspace_uuid}:{session_id}"
-                with _sessions_lock:
-                    registry.remove(key)
-                # Delete session（统一入口：青少年模式守卫在数据层）
-                delete_session_dir(sessions_dir, session_id)
+                await asyncio.to_thread(
+                    _purge_session, workspace_uuid, session_id, sessions_dir
+                )
                 results.append({"session_id": session_id, "success": True})
             elif request.action in ("hide", "unhide"):
                 # Set hidden status in meta.json

@@ -398,6 +398,25 @@ class EcbStreamDecryptor:
         return self._decryptor.update(chunk)
 
 
+class EcbStreamEncryptor:
+    """流式 AES-128-ECB 加密；非最后一块必须按 16 字节对齐，PKCS7 只在最后补。
+
+    与 ``EcbStreamDecryptor`` 对称，供大文件上传边读边加密，峰值内存为单块。
+    """
+
+    def __init__(self, key: bytes) -> None:
+        self._encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        self._finished = False
+
+    def __call__(self, chunk: bytes, is_last: bool) -> bytes:
+        if self._finished:
+            return b""
+        if is_last:
+            self._finished = True
+            return self._encryptor.update(pkcs7_pad(chunk)) + self._encryptor.finalize()
+        return self._encryptor.update(chunk)
+
+
 def parse_aes_key(raw: str) -> bytes | None:
     """把消息里的 aeskey 解析成 16 字节原始 key；无法解析返回 None。
 

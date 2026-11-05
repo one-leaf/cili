@@ -276,6 +276,17 @@ class TestAes:
         # 合法填充 → 剥掉
         assert pkcs7_unpad(b"abc" + bytes([3]) * 3) == b"abc"
 
+    def test_stream_encryptor_matches_one_shot(self):
+        from interfaces.wechat.protocol import EcbStreamEncryptor, aes_ecb_encrypt
+        plain = b"iLink media payload " * 37
+        enc = EcbStreamEncryptor(self.KEY)
+        out = b""
+        step = 64
+        pieces = [plain[i:i + step] for i in range(0, len(plain), step)]
+        for i, piece in enumerate(pieces):
+            out += enc(piece, i == len(pieces) - 1)
+        assert out == aes_ecb_encrypt(plain, self.KEY)
+
     def test_stream_decryptor_matches_one_shot(self):
         from interfaces.wechat.protocol import EcbStreamDecryptor, aes_ecb_encrypt
         plain = b"iLink media payload " * 37          # 740 字节

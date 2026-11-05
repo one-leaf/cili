@@ -122,31 +122,6 @@ class TestPDF2MarkdownToolValidation:
         assert _PRECISION_SUPPORTED_EXT == expected
 
 
-class TestPDF2MarkdownToolErrors:
-    """错误处理测试"""
-
-    def test_agent_limit_error(self):
-        """Agent 限制异常"""
-        try:
-            raise _AgentLimitError("test limit")
-        except _AgentLimitError as e:
-            assert "test limit" in str(e)
-
-    def test_auth_error(self):
-        """认证异常"""
-        try:
-            raise _AuthError("token expired")
-        except _AuthError as e:
-            assert "token expired" in str(e)
-
-    def test_quota_exceeded_error(self):
-        """配额超限异常"""
-        try:
-            raise _QuotaExceededError("daily limit")
-        except _QuotaExceededError as e:
-            assert "daily limit" in str(e)
-
-
 class TestPDF2MarkdownToolPrecisionErrors:
     """Precision API 错误码处理测试"""
 
@@ -403,23 +378,6 @@ class TestPDF2MarkdownToolModelVersion:
         assert params["enum"] == ["pipeline", "vlm", "MinerU-HTML"]
 
 
-class TestPDF2MarkdownToolIntegration:
-    """集成测试（需要网络，标记为 slow）"""
-
-    @pytest.mark.slow
-    def test_agent_api_flow(self):
-        """Agent API 完整流程（需要真实 API 调用）"""
-        # 这个测试需要真实网络调用，标记为 slow
-        # 在实际测试中可以跳过
-        pass
-
-    @pytest.mark.slow
-    def test_precision_api_flow(self):
-        """Precision API 完整流程（需要 API key）"""
-        # 这个测试需要 API key，标记为 slow
-        pass
-
-
 # 工具注册测试
 class TestToolRegistration:
     """工具注册测试"""
@@ -526,7 +484,6 @@ class TestPdfSplitting:
 
     def test_agent_non_pdf_oversize_rejected(self, tmp_path, monkeypatch):
         """非 PDF 文件超出免费限额 → 直接报错（无法分片）"""
-        from core.tools.pdf2markdown import _AgentLimitError
 
         monkeypatch.delenv("MINERU_API_KEY", raising=False)
         tool = PDF2MarkdownTool(cwd=str(tmp_path))

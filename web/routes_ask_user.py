@@ -51,9 +51,15 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
     ask_user_tool_use_id = request.tool_use_id
     logger.info(f"[ask-user] 尝试为 tool_use_id={ask_user_tool_use_id} 提交答案")
 
-    if not inject_ask_user_answer(runner.session, ask_user_tool_use_id, request.answer,
-                                  runner.permission_store,
-                                  getattr(runner, "permission_rules", None)):
+    try:
+        injected = inject_ask_user_answer(runner.session, ask_user_tool_use_id, request.answer,
+                                          runner.permission_store,
+                                          getattr(runner, "permission_rules", None))
+    except Exception:
+        _release_session_run(key)
+        raise
+    if not injected:
+        _release_session_run(key)
         raise HTTPException(400, f"Placeholder tool_result not found for tool_use_id: {ask_user_tool_use_id}")
 
     # 继续 runner 循环（本端点无后续输入来源，客户端断开时取消执行）

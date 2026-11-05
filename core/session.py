@@ -354,10 +354,12 @@ def session_display_name(name: str, preview: str = "") -> str:
     return name or preview or UNNAMED_SESSION_NAME
 
 
-def build_model_messages(session_dir: Path | str) -> list[dict]:
+def build_model_messages(session_dir: Path | str, lines: list[dict] | None = None) -> list[dict]:
     """按 index.json 的 commits 重建模型视图消息（含 _meta、应用内容规则）。"""
     view = read_view(session_dir)
-    by_seq = {line.get("seq"): line for line in read_jsonl(Path(session_dir) / MESSAGES_FILE)}
+    if lines is None:
+        lines = read_jsonl(Path(session_dir) / MESSAGES_FILE)
+    by_seq = {line.get("seq"): line for line in lines}
     messages = []
     for commit in view.get("commits", []):
         if "summary" in commit:
@@ -781,12 +783,11 @@ class SessionStore:
         with lock:
             self._persist()
 
-    def _refresh_jsonl_max_seq(self) -> None:
+    def _refresh_jsonl_max_seq(self, lines: list[dict] | None = None) -> None:
         """重新扫描 jsonl 的最大 seq（load/截断/清空后调用）。"""
-        self._jsonl_max_seq = max(
-            (line.get("seq", -1) for line in read_jsonl(self.session_dir / MESSAGES_FILE)),
-            default=-1,
-        )
+        if lines is None:
+            lines = read_jsonl(self.session_dir / MESSAGES_FILE)
+        self._jsonl_max_seq = max((line.get("seq", -1) for line in lines), default=-1)
 
     def _append_pending_messages(self) -> bool:
         """为无 seq 的新消息分配 seq/id 并追加 jsonl。返回是否追加了行。
@@ -913,9 +914,10 @@ class SessionStore:
         if not (session_dir / INDEX_FILE).exists():
             return False
 
-        self.messages = build_model_messages(session_dir)
-        self._refresh_jsonl_max_seq()
-        tail_recovered = self._append_uncommitted_tail(session_dir)
+        lines = read_jsonl(session_dir / MESSAGES_FILE)
+        self.messages = build_model_messages(session_dir, lines)
+        self._refresh_jsonl_max_seq(lines)
+        tail_recovered = self._append_uncommitted_tail(session_dir, lines)
         meta = read_meta(session_dir)
         self.name = meta.get("name", "New Session")
         # 类型校验：meta.json 里该键可能被写成 null/非 dict，直接赋值会让后续 .get 崩溃
@@ -929,7 +931,7 @@ class SessionStore:
             self._bump_index_version()
         return True
 
-    def _append_uncommitted_tail(self, session_dir: Path) -> bool:
+    def _append_uncommitted_tail(self, session_dir: Path, lines: list[dict] | None = None) -> bool:
         """崩溃自愈：把 jsonl 中已 flush 但未 checkpoint（seq 超出提交视图）的尾部
         消息追加回模型视图，避免 save 降频后进程崩溃丢失尾部消息。
 
@@ -945,7 +947,9 @@ class SessionStore:
         if self._jsonl_max_seq <= max_committed:
             return False
         appended = False
-        for line in read_jsonl(session_dir / MESSAGES_FILE):
+        if lines is None:
+            lines = read_jsonl(session_dir / MESSAGES_FILE)
+        for line in lines:
             seq = line.get("seq", -1)
             if seq > max_committed:
                 msg = _message_from_line(line, None, seq)
@@ -989,6 +993,7 @@ class SessionStore:
             if target_seq is None:
                 # 摘要消息无 seq（jsonl 中不存在），仅从内存消息截断
                 del self.messages[target_idx:]
+                self._messages_dirty = True
                 self._persist()
                 return deleted_count
 
@@ -997,6 +1002,7 @@ class SessionStore:
             self._truncate_jsonl_to(target_seq)
             self._refresh_jsonl_max_seq()
             del self.messages[target_idx:]
+            self._messages_dirty = True
             # 预置 next_seq，让 _persist 复用被截断的序号
             atomic_write_json(self.session_dir / INDEX_FILE, {
                 "schema_version": SCHEMA_VERSION,

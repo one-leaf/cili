@@ -116,12 +116,13 @@ class TestFindListenerPids:
         assert pg._cim_listener_pids(8000) == []
 
     def test_cim_invalid_json(self, monkeypatch):
+        """JSON 解析失败 → None（回退 netstat），与 docstring 约定一致。"""
         monkeypatch.setattr(pg.sys, "platform", "win32")
         monkeypatch.setattr(
             pg.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout="{not json", returncode=0),
         )
-        assert pg._cim_listener_pids(8000) == []
+        assert pg._cim_listener_pids(8000) is None
 
     def test_cim_query_failure_returns_none(self, monkeypatch):
         monkeypatch.setattr(pg.sys, "platform", "win32")

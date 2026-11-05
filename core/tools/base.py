@@ -315,7 +315,7 @@ class Tool(ShellMixin, BackgroundMixin):
         rm -rf 等可把已发生的改动「撤销」掉，绕过记录不可抹除的语义。
         解锁窗口内放行（走正常审批管道）。
         """
-        from core.security.approval_rules import is_revert_command
+        from core.security.permission_rules import is_revert_command
         from core.teen_mode import get_teen_mode
 
         tm = get_teen_mode()

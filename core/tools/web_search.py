@@ -5,8 +5,7 @@
 2. 调用 service 进行导航和提取
 3. 解析和格式化搜索结果
 
-Tab 管理：每次搜索自动创建新 tab 并返回 tab_index，后续操作使用该 tab_index。
-旧 tab 由 BrowserService 10 分钟后自动关闭。
+Tab 管理：每次搜索临时创建 tab，提取完成后立即关闭；结果页不保留。
 """
 
 from __future__ import annotations
@@ -54,8 +53,7 @@ class WebSearchTool(Tool):
         "(titles, URLs, and brief descriptions) — NOT full page content. "
         "To read the full content of a specific page, use the browser tool "
         "to visit the URL directly. "
-        "Also returns the tab_index of the search results page, "
-        "which can be used with browser tool for further exploration. "
+        "The search tab is closed after extraction; use the browser tool on a result URL for full content. "
         "The search engine is configured in system settings (default: Bing). "
         "Use time_range to filter results by recency."
     )

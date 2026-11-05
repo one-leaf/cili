@@ -257,15 +257,16 @@ class PythonTool(Tool):
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {script_file}", error=True)
 
+        # 先授权再读文件：读取本身也是权限门约束的动作
+        gate = self._read_gate([path])
+        if gate:
+            return gate
         # Check file content for cross-tool invocations（读取失败 fail-closed，不跳过检查）
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
         except Exception as e:
             return ToolResult(f"Error: cannot read script for safety check: {e}", error=True)
-        gate = self._read_gate([path])
-        if gate:
-            return gate
         findings = self._analyze_python_code(content)
         targets = collect_python_targets(content, cwd=self.cwd)
         gate = self._python_permission_gate(content, targets, findings)
@@ -273,7 +274,7 @@ class PythonTool(Tool):
             return gate
 
         # Set MPLCONFIGDIR to use Cili's matplotlib config
-        mpl_config_dir = _resolve_mpl_config_dir()
+        mpl_config_dir = _resolve_mpl_config_dir(self.cwd)
         cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{path}"'
         if args:
             # 逐个 token 引用：整体 quote 会把整串当成单个参数传给脚本

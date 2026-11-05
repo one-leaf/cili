@@ -384,8 +384,9 @@ async def update_config(request: UpdateConfigRequest):
 
     # 重连 MCP 服务器（签名变化才真正重连）
     try:
-        new_cfg = load_config()
-        get_provider().reload(new_cfg.mcp_servers)
+        new_cfg = await asyncio.to_thread(load_config)
+        provider = get_provider()
+        await asyncio.to_thread(provider.reload, new_cfg.mcp_servers)
     except Exception as e:
         logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
 
@@ -395,7 +396,7 @@ async def update_config(request: UpdateConfigRequest):
     with _sessions_lock:
         cached = list(registry.items())
     for key, runner in cached:
-        runner.reload_config()
+        await asyncio.to_thread(runner.reload_config)
         logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
@@ -427,12 +428,13 @@ async def get_mcp_servers():
              dependencies=[Depends(teen_guard("config_update"))])
 async def reload_mcp():
     """强制重连所有 MCP 服务器，并刷新缓存的 master runner（deferred 工具重建）。"""
-    cfg = load_config()
+    cfg = await asyncio.to_thread(load_config)
     provider = get_provider()
-    provider.reload(cfg.mcp_servers, force=True)
+    await asyncio.to_thread(provider.reload, cfg.mcp_servers, force=True)
     with _sessions_lock:
-        for key, runner in registry.items():
-            runner.reload_config()
+        cached = list(registry.items())
+    for key, runner in cached:
+        await asyncio.to_thread(runner.reload_config)
     return {"success": True, "servers": provider.status()}
 
 

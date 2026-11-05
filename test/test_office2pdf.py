@@ -37,8 +37,15 @@ class TestOffice2PDFToolSchema:
         assert "Office" in tool.description
         assert "file_path" in tool.parameters["properties"]
         assert "output_path" in tool.parameters["properties"]
-        assert tool.parameters["required"] == ["file_path"]
+        assert tool.parameters.get("required", []) == []
         assert tool.concurrency_safe is False
+
+    def test_sync_action_not_blocked_by_required(self):
+        from core.tools.result import ToolResult
+
+        tool = Office2PDFTool(cwd=".")
+        coerced = tool.coerce_input({"action": "sync"})
+        assert not isinstance(coerced, ToolResult)
 
     def test_supported_extensions(self):
         assert ".docx" in mod.SUPPORTED_EXTENSIONS

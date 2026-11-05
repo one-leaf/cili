@@ -449,7 +449,7 @@ class TestEnhancedActions:
     def _run(service, method, page, **kwargs):
         from core.tools.base import ToolResult  # noqa: F401 (side effect 用)
 
-        def fake_execute(op_name, func, tab_index=None):
+        def fake_execute(op_name, func, tab_index=None, timeout=None):
             return func(page)
 
         with patch.object(service, "_execute_operation", side_effect=fake_execute):

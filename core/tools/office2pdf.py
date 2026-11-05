@@ -268,7 +268,8 @@ def _run_worker(source: str, output: str, kind: str, pid_file: Path, timeout: in
 
 
 def ensure_pdf(
-    source: str, *, cache_dir: Path | None = None, timeout: int = _DEFAULT_TIMEOUT
+    source: str, *, cache_dir: Path | None = None, timeout: int = _DEFAULT_TIMEOUT,
+    prune: bool = True,
 ) -> tuple[Path, str, bool]:
     """Return a cached PDF for *source*, converting once if needed.
 
@@ -315,7 +316,8 @@ def ensure_pdf(
         finally:
             tmp.unlink(missing_ok=True)
             tmp.with_suffix(".officepid").unlink(missing_ok=True)
-        _prune_cache(cache_dir)
+        if prune:
+            _prune_cache(cache_dir)
         return pdf_path, engine, False
 
 
@@ -394,11 +396,14 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
         if converted >= limit:
             continue  # 超出本轮限额：留给下一轮（2 小时后）
         try:
-            ensure_pdf(str(doc), cache_dir=cache_dir, timeout=timeout)
+            ensure_pdf(str(doc), cache_dir=cache_dir, timeout=timeout, prune=False)
             converted += 1
         except Exception as e:
             failed += 1
             errors.append(f"{doc.name}: {e}")
+
+    # 批量路径只做一次全局 prune，避免每次转换都扫描整个缓存目录
+    _prune_cache(cache_dir)
 
     return {
         "workspace_uuid": workspace_uuid,
@@ -469,7 +474,7 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
                 "default": _DEFAULT_TIMEOUT,
             },
         },
-        "required": ["file_path"],
+        "required": [],
     }
     concurrency_safe = False
 

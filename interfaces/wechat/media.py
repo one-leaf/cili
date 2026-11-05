@@ -35,8 +35,8 @@ from interfaces.wechat.protocol import (
     UPLOAD_MEDIA_FILE,
     UPLOAD_MEDIA_IMAGE,
     EcbStreamDecryptor,
+    EcbStreamEncryptor,
     MediaRef,
-    aes_ecb_encrypt,
     parse_aes_key,
     pkcs7_padded_size,
 )
@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from interfaces.wechat.outbound import OutboundSender
 
 logger = logging.getLogger(__name__)
+
+_UPLOAD_STREAM_CHUNK = 64 * 1024  # 16 的倍数，保证 ECB 分块对齐
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg"}
 
@@ -87,7 +89,8 @@ def _sniff_image_mime(path: Path) -> str:
     一致**，所以必须看魔数而不是猜。
     """
     try:
-        head = path.read_bytes()[:12]
+        with path.open("rb") as f:
+            head = f.read(12)
     except OSError:
         return "image/png"
     if head.startswith(b"\xff\xd8\xff"):
@@ -224,8 +227,12 @@ async def upload_media(
     user_id: str,
 ) -> dict:
     """上传本地文件到微信 CDN，返回可直接放进 ``item_list`` 的媒体项。"""
-    raw = path.read_bytes()
-    raw_size = len(raw)
+    raw_size = path.stat().st_size
+    md5 = hashlib.md5()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            md5.update(chunk)
+    raw_md5 = md5.hexdigest()
     upload_type, item_type, item_key = infer_upload_type(path)
 
     aes_key_raw = os.urandom(16)
@@ -235,7 +242,7 @@ async def upload_media(
         "media_type": upload_type,
         "to_user_id": user_id,
         "rawsize": raw_size,
-        "rawfilemd5": hashlib.md5(raw).hexdigest(),
+        "rawfilemd5": raw_md5,
         "filesize": pkcs7_padded_size(raw_size),
         "no_need_thumb": True,
         "aeskey": aes_key_raw.hex(),
@@ -254,7 +261,19 @@ async def upload_media(
     else:
         raise MediaError("服务端没有返回上传地址")
 
-    download_param = await client.upload_encrypted(cdn_url, aes_ecb_encrypt(raw, aes_key_raw))
+    async def encrypted_chunks():
+        encryptor = EcbStreamEncryptor(aes_key_raw)
+        with path.open("rb") as f:
+            chunk = f.read(_UPLOAD_STREAM_CHUNK)
+            while True:
+                nxt = f.read(_UPLOAD_STREAM_CHUNK)
+                if not nxt:
+                    yield encryptor(chunk, True)
+                    break
+                yield encryptor(chunk, False)
+                chunk = nxt
+
+    download_param = await client.upload_encrypted_stream(cdn_url, encrypted_chunks())
 
     media: dict = {
         "encrypt_query_param": download_param,

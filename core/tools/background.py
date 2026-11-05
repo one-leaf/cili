@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.tools.result import ToolResult
-from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH
+from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH, _VENV_DIR, _VENV_SCRIPTS
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,23 @@ class BackgroundMixin:
     self.stop_check / self._publish / self.on_session_complete。
     """
 
+    def _background_env(self) -> dict[str, str]:
+        """后台子进程环境：与前台一致的 TEMP/TMP/TMPDIR/CILI_TMP + venv PATH。"""
+        env = os.environ.copy()
+        tmp_dir = self._workspace_tmp(self.workspace_uuid)
+        for key in ("TEMP", "TMP", "TMPDIR", "CILI_TMP"):
+            env[key] = tmp_dir
+        env.update({
+            "LANG": "C.UTF-8",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "PYTHONUNBUFFERED": "1",
+        })
+        paths = [p for p in (_VENV_DIR, _VENV_SCRIPTS) if p]
+        if paths:
+            env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+        return env
+
     def _start_background_task(
         self,
         command: str,
@@ -226,6 +243,7 @@ class BackgroundMixin:
                 encoding="utf-8",
                 errors="replace",
                 cwd=self.cwd,
+                env=self._background_env(),
             )
 
             # Create output queue and reader thread

@@ -262,12 +262,17 @@ def _download_zip(urls: list[str], dest: str, timeout: float = 120) -> tuple[boo
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             for url in urls:
                 try:
-                    resp = client.get(url)
-                    resp.raise_for_status()
-                    if resp.content:
+                    wrote = False
+                    with client.stream("GET", url) as resp:
+                        resp.raise_for_status()
                         with open(dest, "wb") as f:
-                            f.write(resp.content)
-                        return True, ""
+                            for chunk in resp.iter_bytes():
+                                if chunk:
+                                    f.write(chunk)
+                                    wrote = True
+                    if not wrote:
+                        raise ValueError("empty response body")
+                    return True, ""
                 except Exception as e:
                     last_error = str(e)
                     logger.warning(f"[updater] 下载失败: {url}: {e}")

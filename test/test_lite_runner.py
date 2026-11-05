@@ -171,12 +171,11 @@ class TestLiteRunFlow:
 
     def test_no_tools_uses_real_tool_whitelist(self):
         """无 mock 工具时由注册表实例化（lite 白名单内）。"""
-        # 注册表按 lite 白名单实例化，需 config 提供 approval 相关字段
+        # 注册表按 lite 白名单实例化
         config = MagicMock()
         config.model = MagicMock()
         config.system.max_iterations = 50
         config.workspaces = []
-        config.system.approval = None
         with patch("core.session_runner.create_llm_client", return_value=MagicMock()):
             runner = SessionRunner(config, role="lite", task="t", cwd=".")
         names = {t.name for t in runner.tools}

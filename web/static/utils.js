@@ -73,9 +73,8 @@ function clearPosition() {
 
 // ── 辅助函数：HTML转义 ──
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text == null ? '' : text).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // ── 显示提示信息 ──
@@ -180,64 +179,7 @@ function renderMarkdown(text) {
         );
     }
 
-    // 保护数学公式：提取 $$...$$ 和 $...$ 为占位符，避免 marked 破坏 LaTeX 语法
-    const mathBlocks = [];
-    // 先处理 display math $$...$$
-    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
-        const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-        mathBlocks.push(match);
-        return placeholder;
-    });
-    // 再处理 inline math $...$（排除转义的 \$）
-    text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match, formula) => {
-        const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-        mathBlocks.push(match);
-        return placeholder;
-    });
-
-    // 解析 markdown
-    let html = marked.parse(text);
-
-    // 将 mermaid 代码块转换为 <div class="mermaid">，由 mermaid.js 渲染为 SVG
-    html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, (match, content) => {
-        // 还原 marked 的 HTML 转义，mermaid 需要原始文本
-        const decoded = content
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/&amp;/g, '&');
-        return '<div class="mermaid">' + decoded + '</div>';
-    });
-
-    // 将 PDF <img> 转换为 iframe 内嵌预览（兜底：URL 中已有 workspace_uuid 的 PDF 不会走降级逻辑）
-    html = html.replace(
-        /<img([^>]*)\ssrc="([^"]*\.pdf)(\?[^"]*)?"/g,
-        (match, before, src, query) => {
-            const url = src + (query || '');
-            const altMatch = before.match(/alt="([^"]*)"/);
-            const alt = altMatch ? altMatch[1] : 'PDF 文件';
-            return `<div class="pdf-preview"><iframe src="${url}" title="${alt}"></iframe><a href="${url}" target="_blank" class="pdf-link">📄 ${alt || '查看 PDF'}</a></div>`;
-        }
-    );
-
-    // 恢复数学公式
-    mathBlocks.forEach((block, idx) => {
-        html = html.replace('MATHBLOCK{' + idx + '}', block);
-    });
-
-    // XSS 防护：sanitize HTML（允许 MathJax 所需标签）
-    if (typeof DOMPurify !== 'undefined') {
-        html = DOMPurify.sanitize(html, {
-            ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math', 'iframe'],
-            ADD_ATTR: ['encoding', 'display', 'xmlns', 'target', 'allowfullscreen'],
-        });
-    } else {
-        // DOMPurify 加载失败时 fail-closed：转义所有标签，阻止原始 HTML 注入。
-        // 转义后的文本节点内 `<`/`>` 经浏览器解码还原，MathJax 仍可正常渲染公式。
-        html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-    return html;
+    return renderMarkdownCore(text);
 }
 
 // ── Mermaid 图表渲染 ──

@@ -72,7 +72,14 @@ class TuiApp:
             if not line:
                 continue
             if line.startswith("/"):
-                if not self._dispatch_command(line):
+                try:
+                    if not self._dispatch_command(line):
+                        continue
+                except CiliServerError as e:
+                    self.renderer.error_line(str(e))
+                    continue
+                except Exception as e:
+                    self.renderer.error_line(f"命令执行失败: {e}")
                     continue
             content = line
             if self.router.ask_labels:

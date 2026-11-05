@@ -20,6 +20,8 @@ import secrets
 from dataclasses import dataclass, fields
 
 from core.config import load_global_config, save_global_config
+from interfaces.common.config import INVALID as _INVALID
+from interfaces.common.config import coerce_value as _coerce
 
 logger = logging.getLogger(__name__)
 
@@ -48,38 +50,6 @@ _PERSIST_FIELDS = (
     "secret",
     "msg_format",
 )
-
-_INVALID = object()   # 类型不合法的哨兵
-
-
-def _coerce(type_name, value):
-    """按字段声明的类型做宽松转换；无法转换返回 ``_INVALID``。
-
-    ``from __future__ import annotations`` 生效时 ``field.type`` 是字符串，
-    所以两种形态都要处理。
-    """
-    name = type_name if isinstance(type_name, str) else getattr(type_name, "__name__", "")
-    if isinstance(value, bool) and name in ("int", "float"):
-        return _INVALID            # True/False 不是合法的数字配置
-    try:
-        if name == "bool":
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.strip().lower() in ("1", "true", "yes", "on")
-            if isinstance(value, (int, float)):
-                return bool(value)
-            return _INVALID
-        if name == "int":
-            return int(value)
-        if name == "float":
-            return float(value)
-        if name == "str":
-            return value if isinstance(value, str) else str(value)
-    except (TypeError, ValueError):
-        return _INVALID
-    return value
-
 
 @dataclass
 class QQConfig:

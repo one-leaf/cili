@@ -517,12 +517,11 @@ Use web_search for simple lookups; use browser when search results are insuffici
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
     def close(self) -> None:
-        """断开浏览器连接，保持 Chrome 进程运行。"""
-        try:
-            from core.browser_service import get_service
-            get_service().disconnect()
-        except Exception:
-            pass
+        """空操作：浏览器服务是全局单例，由 AppContext.shutdown 统一关闭。
+
+        会话淘汰/子代理结束会对每个工具调用 close()；若在此 disconnect，
+        会切断所有会话共享的 page 池并误伤其他会话。
+        """
 
     def kill_chrome(self) -> None:
         """终止 Chrome 进程。"""

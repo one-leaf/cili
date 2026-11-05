@@ -1013,6 +1013,13 @@ class Runner:
         else:
             return self._call_llm_non_streaming(system_prompt)
 
+    def _persist_before_retry(self) -> None:
+        """413 去图重试前落盘：autonomous 写 exec 进度，interactive 写会话 schema。"""
+        if getattr(self.runner, "_mode", "interactive") == "autonomous":
+            self.runner._save_progress(self.runner._turn_iterations, status="running")
+        else:
+            self.runner.save_messages()
+
     def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Non-streaming LLM call."""
         message_objects = self._prepare_messages_for_llm()
@@ -1047,12 +1054,7 @@ class Runner:
             if self._is_413_error(e):
                 logger.warning("[LLM] 请求体过大，正在重试...")
                 self._mark_all_images_invalid()
-                # autonomous 模式写 exec schema（exec_id/task），避免覆盖 exec 日志；
-                # interactive 模式写普通 session schema。
-                if getattr(self.runner, "_mode", "interactive") == "autonomous":
-                    self.runner._save_progress(self.runner._turn_iterations, status="running")
-                else:
-                    self.runner.save_messages()
+                self._persist_before_retry()
 
                 # 首轮已 pad/解析过工具输出，重试仅重新组装并去图
                 retry_message_objects = self._prepare_messages_for_llm(
@@ -1150,7 +1152,7 @@ class Runner:
                 if self._is_413_error(e) and not images_stripped:
                     logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
                     self._mark_all_images_invalid()
-                    self.runner.save_messages()
+                    self._persist_before_retry()
                     self.runner.sink.on_text(RETRY_CLEAR_SENTINEL)
                     text_parts.clear()
                     images_stripped = True

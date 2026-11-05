@@ -10,12 +10,16 @@ Key design decisions:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.config import get_workspace_tools_dir
+from core.fs_utils import atomic_write_text
 from core.tools.base import Tool, ToolResult
+
+logger = logging.getLogger(__name__)
 
 # Valid status values
 VALID_STATUSES = {"pending", "in_progress", "completed"}
@@ -39,7 +43,8 @@ def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
     try:
         data = json.loads(todo_file.read_text(encoding="utf-8"))
         return data.get("todos", [])
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[todo] 读取 {todo_file} 失败: {e}")
         return []
 
 
@@ -53,7 +58,7 @@ def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") ->
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "todos": todos,
     }
-    todo_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(todo_file, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 class TodoWriteTool(Tool):

@@ -37,3 +37,7 @@ qrcode
 
 # PDF 拆分（pdf2markdown 大文件分片解析）
 pypdf
+
+# TUI 终端渲染（interfaces/tui/render.py）
+rich
+markdown-it-py

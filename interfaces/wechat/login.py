@@ -83,6 +83,7 @@ class WechatLoginStore:
         # 工厂只为测试注入 MockTransport；生产就是普通构造
         self._client_factory = client_factory or (lambda cfg: WechatClient(cfg))
         self._sessions: dict[str, LoginSession] = {}
+        self._polls_inflight: set[str] = set()
 
     # ── 对外三个动作 ────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ class WechatLoginStore:
         return self._payload(session, status="pending", message="请用微信扫码登录。")
 
     async def poll(self, session_id: str, *, verify_code: str = "") -> dict[str, Any]:
-        """查一次扫码状态（前端每 2s 调一次）。"""
+        """查一次扫码状态（前端每 2s 调一次；同一会话重入直接返回 pending）。"""
         await self._cleanup_expired()
         session = self._sessions.get(session_id)
         if session is None:
@@ -140,20 +141,25 @@ class WechatLoginStore:
                 "status": "expired",
                 "message": "扫码会话已过期，请重新获取二维码。",
             }
-
+        if session_id in self._polls_inflight:
+            return self._payload(session, status="pending", message="正在查询扫码状态…")
+        self._polls_inflight.add(session_id)
         try:
-            data = await session.client.poll_qr_status(
-                session.qrcode_id, verify_code=verify_code, base_url=session.base_url,
-            )
-        except WechatApiError as e:
-            if e.retryable:
-                # 网络抖动 → 继续等（用户还举着手机呢）
-                return self._payload(session, status="pending", message="等待微信响应…")
-            await self._close(session_id)
-            return {"session_id": session_id, "status": "failed", "message": f"扫码登录失败：{e}"}
+            try:
+                data = await session.client.poll_qr_status(
+                    session.qrcode_id, verify_code=verify_code, base_url=session.base_url,
+                )
+            except WechatApiError as e:
+                if e.retryable:
+                    # 网络抖动 → 继续等（用户还举着手机呢）
+                    return self._payload(session, status="pending", message="等待微信响应…")
+                await self._close(session_id)
+                return {"session_id": session_id, "status": "failed", "message": f"扫码登录失败：{e}"}
 
-        status = str(data.get("status", "") or "")
-        return await self._handle_status(session_id, session, status, data, verify_code)
+            status = str(data.get("status", "") or "")
+            return await self._handle_status(session_id, session, status, data, verify_code)
+        finally:
+            self._polls_inflight.discard(session_id)
 
     async def cancel(self, session_id: str) -> dict[str, Any]:
         await self._close(session_id)
@@ -371,6 +377,7 @@ class WechatLoginStore:
         return payload
 
     async def _close(self, session_id: str) -> None:
+        self._polls_inflight.discard(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:
             with suppress(Exception):

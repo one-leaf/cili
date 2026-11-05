@@ -110,21 +110,36 @@ class SessionRegistry:
         """
         get_teen_mode().guard_workspace(workspace_uuid, source="registry")
         key = session_key(workspace_uuid, session_id)
+
+        # 快路径：已存在就直接返回，不碰重量级构造
+        with self._data_lock:
+            if key in self._hosted:
+                self._access[key] = time.time()
+                return self._hosted[key].runner
+
+        # 读配置、加载会话、建工具、on_create 都可能做磁盘/网络 IO，必须在锁外。
+        self.evict_idle()
+        config = load_config()
+        runner = SessionRunner(
+            config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid
+        )
+        self._attach_requested_session(runner, session_id)
+        if on_create is not None:
+            on_create(runner)
+
+        # 只有登记是临界区；并发双构造时丢弃后到的 runner，避免资源泄漏。
         with self.lock:
             with self._data_lock:
                 self._access[key] = time.time()
-                if key not in self._hosted:
-                    self.evict_idle()
-                    config = load_config()
-                    runner = SessionRunner(
-                        config, role="master", cwd=workspace_dir, workspace_uuid=workspace_uuid
-                    )
-                    self._attach_requested_session(runner, session_id)
-                    if on_create is not None:
-                        on_create(runner)
-                    self._register_mailbox(runner, session_id)
-                    self._hosted[key] = HostedSession(key=key, runner=runner)
-                return self._hosted[key].runner
+                if key in self._hosted:
+                    try:
+                        runner.close()
+                    except Exception:
+                        pass
+                    return self._hosted[key].runner
+                self._register_mailbox(runner, session_id)
+                self._hosted[key] = HostedSession(key=key, runner=runner)
+                return runner
 
     def register_hosted(
         self,

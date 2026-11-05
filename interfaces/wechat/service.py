@@ -19,6 +19,7 @@ import logging
 import threading
 from contextlib import suppress
 
+from interfaces.common.host import HostBase
 from interfaces.wechat.access import OwnerTracker
 from interfaces.wechat.account import ContextTokenStore, load_account
 from interfaces.wechat.config import WechatConfig, load_wechat_accounts
@@ -31,49 +32,17 @@ _hosts: dict[str, "WechatHost"] = {}
 _lock = threading.Lock()
 
 
-class WechatHost:
+class WechatHost(HostBase):
     """一个账号的宿主：拥有宿主 loop、runtime、长轮询任务与入站处理器。"""
 
+    _thread_prefix = "wechat"
+    _log_tag = "wechat"
+
     def __init__(self, cfg: WechatConfig) -> None:
-        self.cfg = cfg
-        self.loop: asyncio.AbstractEventLoop | None = None
+        super().__init__(cfg)
         self.runtime = None
         self.poller = None
-        self._thread: threading.Thread | None = None
-        self._started = threading.Event()
         self._poll_task: asyncio.Task[None] | None = None
-
-    # ── 启动 ────────────────────────────────────────────────────────
-
-    def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._thread_main, name=f"wechat-{self.cfg.id}", daemon=True
-        )
-        self._thread.start()
-        # 等宿主 loop 就绪（最多 5s），便于调用方知道是否起来了
-        self._started.wait(timeout=5.0)
-
-    def _thread_main(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self.loop = loop
-        try:
-            loop.run_until_complete(self._async_start())
-        except Exception:
-            logger.exception(f"[wechat/service] 账号 {self.cfg.id} 启动失败")
-            self._started.set()
-            loop.close()
-            return
-
-        self._started.set()
-        try:
-            loop.run_forever()
-        finally:
-            try:
-                loop.run_until_complete(self._async_stop())
-            except Exception:  # noqa: BLE001
-                logger.exception(f"[wechat/service] 账号 {self.cfg.id} 关闭失败")
-            loop.close()
 
     async def _async_start(self) -> None:
         from interfaces.wechat.client import WechatClient
@@ -84,6 +53,7 @@ class WechatHost:
 
         account = load_account(self.cfg.id)
         if not account.has_token():
+            self.ready = False
             logger.warning(
                 f"[wechat/service] 账号 {self.cfg.label or self.cfg.id} 尚未扫码登录，微信接入端不启动"
             )
@@ -117,6 +87,7 @@ class WechatHost:
         self.runtime = runtime
         self.poller = poller
         self._poll_task = asyncio.create_task(self._run_poller(poller))
+        self.ready = True
         logger.info(f"[wechat/service] 账号 {self.cfg.label or self.cfg.id} 已启动，开始长轮询")
 
     async def _run_poller(self, poller) -> None:
@@ -131,6 +102,8 @@ class WechatHost:
             raise
         except Exception:
             logger.exception(f"[wechat/service] 账号 {self.cfg.id} 长轮询异常退出")
+        finally:
+            self.ready = False
 
     async def _async_stop(self) -> None:
         if self.poller is not None:
@@ -151,17 +124,6 @@ class WechatHost:
                     await runtime.client.aclose()
         self.runtime = None
         self.poller = None
-
-    # ── 停止 ────────────────────────────────────────────────────────
-
-    def stop(self) -> None:
-        loop = self.loop
-        if loop is None or loop.is_closed():
-            return
-        loop.call_soon_threadsafe(loop.stop)
-        if self._thread is not None:
-            self._thread.join(timeout=10.0)
-        logger.info(f"[wechat/service] 账号 {self.cfg.id} 已停止")
 
 
 def _build_runtime(*, account_id, cfg, account, tokens, client, loop):
@@ -199,10 +161,15 @@ def start_wechat_interface(account_id: str | None = None) -> bool:
                     f"[wechat/service] 账号 {cfg.label or cfg.id} 已启用但尚未扫码登录，跳过"
                 )
                 continue
-            if cfg.id in _hosts:
+            existing = _hosts.get(cfg.id)
+            if existing is not None and existing.is_alive():
                 continue          # 已在跑（幂等）
+            _hosts.pop(cfg.id, None)
             host = WechatHost(cfg)
-            host.start()
+            if not host.start():
+                logger.warning(f"[wechat/service] 账号 {cfg.label or cfg.id} 启动失败，未登记")
+                host.stop()
+                continue
             _hosts[cfg.id] = host
             started.append(cfg.id)
     if started:
@@ -234,6 +201,10 @@ def stop_wechat_interface(account_id: str | None = None) -> None:
 
 def wechat_interface_running(account_id: str | None = None) -> bool:
     """是否有账号在跑。account_id 为 None 时指「任一账号」。"""
-    if account_id is not None:
-        return account_id in _hosts
-    return bool(_hosts)
+    with _lock:
+        for hid, host in list(_hosts.items()):
+            if not host.is_alive():
+                _hosts.pop(hid, None)
+        if account_id is not None:
+            return account_id in _hosts
+        return bool(_hosts)

@@ -232,6 +232,7 @@ def _generate_commit_summary(diff_stat: str) -> str:
     if not diff_stat.strip():
         return "自动提交"
 
+    client = None
     try:
         config = load_config()
         # model_for_role 自带回退（未知角色回退 master）；lite_model 属性随两级配置重构移除
@@ -260,6 +261,12 @@ def _generate_commit_summary(diff_stat: str) -> str:
     except Exception as e:
         logger.warning(f"[workspace-git] 生成提交摘要失败: {e}")
         return "自动提交"
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote: bool = False) -> tuple[bool, str]:

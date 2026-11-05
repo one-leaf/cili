@@ -883,6 +883,7 @@ def upload_files(
     errors = []
 
     for file in files:
+        file_path: Path | None = None
         try:
             # Check file size before reading
             if file.size is not None and file.size > _MAX_UPLOAD_SIZE:
@@ -923,6 +924,12 @@ def upload_files(
 
             uploaded.append({"name": file.filename, "size": written})
         except Exception as e:
+            # 写盘中途失败会留下半截文件；只清理本次新建/截断的目标
+            if file_path is not None:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             errors.append({"name": file.filename, "error": str(e)})
 
     return {"uploaded": uploaded, "errors": errors}

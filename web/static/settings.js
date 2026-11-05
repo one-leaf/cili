@@ -3,6 +3,9 @@
 // 依赖 utils.js 函数: showToast
 
 // ── 全局设置 ──
+let settingsLoading = false;
+let settingsLoadError = '';
+let teenWorkspaceLoadFailed = false;
 
 // 打开设置说明窗口
 async function openSettingsHelp() {
@@ -28,6 +31,8 @@ async function openSettingsHelp() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>设置说明</title>
     <script src="${window.location.origin}/static/libs/marked.min.js"><\/script>
+    <script src="${window.location.origin}/static/libs/purify.min.js"><\/script>
+    <script src="${window.location.origin}/static/markdown_core.js"><\/script>
     <script>
         window.MathJax = {
             tex: {
@@ -186,27 +191,7 @@ async function openSettingsHelp() {
     </div>
     <script>
         const markdown = ${JSON.stringify(markdown)};
-        // 保护数学公式不被 marked 破坏
-        function renderMarkdownWithMath(text) {
-            if (!text) return '';
-            const mathBlocks = [];
-            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match) => {
-                const placeholder = 'MATHBLOCK{' + mathBlocks.length + '}';
-                mathBlocks.push(match);
-                return placeholder;
-            });
-            let html = marked.parse(text);
-            mathBlocks.forEach((block, idx) => {
-                html = html.replace('MATHBLOCK{' + idx + '}', block);
-            });
-            return html;
-        }
-        document.querySelector('.md-content').innerHTML = renderMarkdownWithMath(markdown);
+        document.querySelector('.md-content').innerHTML = renderMarkdownCore(markdown);
         if (window.MathJax && window.MathJax.typesetPromise) {
             MathJax.typesetPromise();
         }
@@ -254,6 +239,7 @@ async function loadMcpServers() {
         }
     } catch (e) {
         mcpServers = {};
+        settingsLoadError = 'MCP 服务器列表加载失败';
     }
     renderMcpServers();
 }
@@ -524,12 +510,8 @@ async function loadSettingsWorkspaceOptions() {
             .map(ws => ({ uuid: ws.uuid, name: ws.name }));
     } catch (e) {
         settingsWorkspaceOptions = [];
+        settingsLoadError = '工作区列表加载失败';
     }
-}
-
-function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g,
-        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function newAccountId() {
@@ -1021,6 +1003,10 @@ async function wechatLogout(card) {
 async function openSettings() {
     document.getElementById('settings-modal').style.display = 'flex';
     document.getElementById('settings-status').textContent = '加载中...';
+    settingsLoading = true;
+    settingsLoadError = '';
+    const saveBtn = document.getElementById('settings-save-btn');
+    if (saveBtn) saveBtn.disabled = true;
 
     // Reset to models tab
     document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -1055,8 +1041,6 @@ async function openSettings() {
             mineruInput.placeholder = '留空则使用免费 Agent API（≤10MB/≤20页）';
         }
 
-        document.getElementById('settings-status').textContent = `配置文件: ${data.config_path}`;
-
         // ── MCP servers ──
         await loadMcpServers();
 
@@ -1071,8 +1055,18 @@ async function openSettings() {
 
         // ── 关于（版本与升级） ──
         loadAboutStatus();
+
+        if (settingsLoadError) {
+            document.getElementById('settings-status').textContent = '✗ 部分设置加载失败：' + settingsLoadError;
+        } else {
+            document.getElementById('settings-status').textContent = `配置文件: ${data.config_path}`;
+        }
     } catch (error) {
-        document.getElementById('settings-status').textContent = '加载失败: ' + error.message;
+        settingsLoadError = error.message || '设置加载失败';
+        document.getElementById('settings-status').textContent = '加载失败: ' + settingsLoadError;
+    } finally {
+        settingsLoading = false;
+        if (saveBtn) saveBtn.disabled = false;
     }
 }
 
@@ -1083,6 +1077,18 @@ async function saveSettings() {
         return savePermissions();
     }
     const statusEl = document.getElementById('settings-status');
+    if (settingsLoading) {
+        statusEl.textContent = '设置仍在加载，请稍候再保存';
+        return;
+    }
+    if (settingsLoadError) {
+        statusEl.textContent = '✗ 设置未完整加载，已阻止保存：' + settingsLoadError;
+        return;
+    }
+    if (teenWorkspaceLoadFailed && document.querySelector('[data-teen-policy]')) {
+        statusEl.textContent = '✗ 青少年工作区列表加载失败，已阻止保存';
+        return;
+    }
     statusEl.textContent = '保存中...';
 
     const payload = {};
@@ -1997,6 +2003,7 @@ function bindTeenUnlocked(st) {
 async function renderTeenWorkspaceList(st) {
     const container = document.getElementById('teen-ws-list');
     if (!container) return;
+    teenWorkspaceLoadFailed = false;
     const allowed = (st.policy || {}).allowed_workspaces || [];
     try {
         const response = await fetch('/api/workspaces');
@@ -2010,6 +2017,7 @@ async function renderTeenWorkspaceList(st) {
             `<label><input type="checkbox" data-teen-ws="${teenEscape(ws.uuid)}" ${allowed.includes(ws.uuid) ? 'checked' : ''}> ${teenEscape(ws.name)}</label>`
         ).join('');
     } catch (e) {
+        teenWorkspaceLoadFailed = true;
         container.innerHTML = '<span class="teen-hint">工作区列表加载失败</span>';
     }
 }

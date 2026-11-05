@@ -334,6 +334,20 @@ class TestAnthropicAdapter:
             "type": "enabled", "budget_tokens": 10000,
         }
 
+    def test_translate_stream_signature_delta(self, adapter):
+        """Anthropic 流式 signature_delta 必须转成 StreamChunk，供 thinking 重放。"""
+        events = [
+            {"type": "content_block_start", "index": 0,
+             "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "signature_delta", "signature": "sig-abc"}},
+            {"type": "content_block_stop", "index": 0},
+        ]
+        chunks = list(adapter.translate_stream(events))
+        sig = [c for c in chunks if c.type == "signature_delta"]
+        assert len(sig) == 1
+        assert sig[0].data["signature"] == "sig-abc"
+
     def test_build_headers(self, adapter):
         headers = adapter.build_headers()
         assert headers["x-api-key"] == "test-key-123"

@@ -116,8 +116,8 @@ class GrepTool(Tool):
 
     MAX_FILES = 100                  # 最多检索 100 个文件
     MAX_COLUMNS = 500                # 每行最大字符数（防止长行撑爆上下文）
-    MAX_LIST_OUTPUT_CHARS = 50_000   # 文件列表/内容模式输出上限（字符）
-    MAX_COUNT_OUTPUT_CHARS = 100_000 # count 模式输出上限（字符，"path:count" 行允许更大）
+    MAX_LIST_OUTPUT_CHARS = 30_000   # 与 shell 硬上限一致，避免「常量看似更大但被截断」
+    MAX_COUNT_OUTPUT_CHARS = 30_000  # 与 shell 硬上限一致
 
     def execute(
         self,
@@ -237,7 +237,7 @@ class GrepTool(Tool):
         for suffix in self.IGNORE_DIR_SUFFIXES:
             cmd_parts.extend(["--exclude-dir", f"*{suffix}"])
 
-        cmd_parts.extend([pattern, path])
+        cmd_parts.extend(["-e", pattern, path])
         cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
         cmd += " || true"
 
@@ -303,7 +303,7 @@ class GrepTool(Tool):
                 cmd_parts.append("-E")
             if case_insensitive:
                 cmd_parts.append("-i")
-            cmd_parts.append(pattern)
+            cmd_parts.extend(["-e", pattern])
             cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             cmd += " || true"
@@ -348,7 +348,7 @@ class GrepTool(Tool):
                 cmd_parts.append("-i")
             if context > 0:
                 cmd_parts.extend(["-C", str(context)])
-            cmd_parts.append(pattern)
+            cmd_parts.extend(["-e", pattern])
             cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             # -H 强制输出文件名前缀（grep -n 多文件输出格式为 path:linenum:content），

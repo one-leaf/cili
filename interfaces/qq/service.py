@@ -21,6 +21,7 @@ import asyncio
 import logging
 import threading
 
+from interfaces.common.host import HostBase
 from interfaces.qq.access import OwnerTracker
 from interfaces.qq.config import QQConfig, load_qq_accounts
 from interfaces.qq.runtime import QQRuntime
@@ -32,49 +33,17 @@ _hosts: dict[str, QQHost] = {}
 _lock = threading.Lock()
 
 
-class QQHost:
+class QQHost(HostBase):
     """一个账号的宿主：拥有宿主 loop、runtime、gateway 与入站处理器。"""
 
+    _thread_prefix = "qq"
+    _log_tag = "qq"
+
     def __init__(self, cfg: QQConfig) -> None:
-        self.cfg = cfg
-        self.loop: asyncio.AbstractEventLoop | None = None
+        super().__init__(cfg)
         self.runtime: QQRuntime | None = None
         self.gateway = None
         self.handler = None
-        self._thread: threading.Thread | None = None
-        self._started = threading.Event()
-
-    # ── 启动 ────────────────────────────────────────────────────────
-
-    def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._thread_main, name=f"qq-{self.cfg.id}", daemon=True
-        )
-        self._thread.start()
-        # 等宿主 loop 就绪（最多 5s），便于调用方知道是否起来了
-        self._started.wait(timeout=5.0)
-
-    def _thread_main(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self.loop = loop
-        try:
-            loop.run_until_complete(self._async_start())
-        except Exception:
-            logger.exception(f"[qq/service] 账号 {self.cfg.id} 启动失败")
-            self._started.set()
-            loop.close()
-            return
-
-        self._started.set()
-        try:
-            loop.run_forever()
-        finally:
-            try:
-                loop.run_until_complete(self._async_stop())
-            except Exception:  # noqa: BLE001
-                logger.exception(f"[qq/service] 账号 {self.cfg.id} 关闭失败")
-            loop.close()
 
     async def _async_start(self) -> None:
         from interfaces.qq.gateway import QQGateway, sdk_available, sdk_import_error
@@ -101,22 +70,14 @@ class QQHost:
         try:
             await self.gateway.start()
         except Exception:
+            self.ready = False
             logger.exception(f"[qq/service] 账号 {self.cfg.id} 网关启动失败（凭据/网络问题？）")
+        else:
+            self.ready = True
 
     async def _async_stop(self) -> None:
         if self.gateway is not None:
             await self.gateway.stop()
-
-    # ── 停止 ────────────────────────────────────────────────────────
-
-    def stop(self) -> None:
-        loop = self.loop
-        if loop is None or loop.is_closed():
-            return
-        loop.call_soon_threadsafe(loop.stop)
-        if self._thread is not None:
-            self._thread.join(timeout=10.0)
-        logger.info(f"[qq/service] 账号 {self.cfg.id} 已停止")
 
 
 # ─── 模块级启停（幂等；account_id 为 None 时作用于全部账号） ──────────
@@ -139,10 +100,15 @@ def start_qq_interface(account_id: str | None = None) -> bool:
                     f"[qq/service] 账号 {cfg.label or cfg.id} 已启用但 app_id/secret 未配置，跳过"
                 )
                 continue
-            if cfg.id in _hosts:
+            existing = _hosts.get(cfg.id)
+            if existing is not None and existing.is_alive():
                 continue          # 已在跑（幂等）
+            _hosts.pop(cfg.id, None)
             host = QQHost(cfg)
-            host.start()
+            if not host.start():
+                logger.warning(f"[qq/service] 账号 {cfg.label or cfg.id} 启动失败，未登记")
+                host.stop()
+                continue
             _hosts[cfg.id] = host
             started.append(cfg.id)
     if started:
@@ -179,6 +145,10 @@ def stop_qq_interface(account_id: str | None = None) -> None:
 
 def qq_interface_running(account_id: str | None = None) -> bool:
     """是否有账号在跑。account_id 为 None 时指「任一账号」。"""
-    if account_id is not None:
-        return account_id in _hosts
-    return bool(_hosts)
+    with _lock:
+        for hid, host in list(_hosts.items()):
+            if not host.is_alive():
+                _hosts.pop(hid, None)
+        if account_id is not None:
+            return account_id in _hosts
+        return bool(_hosts)

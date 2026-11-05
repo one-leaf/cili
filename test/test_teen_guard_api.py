@@ -142,12 +142,12 @@ class TestPathPolicyTeen:
 
     def test_rules_suspended_when_locked(self, teen, test_workspace):
         """strict 且未解锁：allow 规则挂起，先前攒下的放行不再生效。"""
-        from core.security.path_policy import OP_WRITE, PathTarget
+        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 
         teen.enable("parent123")
         teen.unlock("parent123")
-        policy = _make_policy(test_workspace, None)
-        policy.approval_rules = _FakeRules(hit=True)
+        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace,
+                            permission_rules=_FakeRules(hit=True))
         target = PathTarget(OP_WRITE, "x", "write", resolved="D:/out.txt")
         # 解锁窗口内：规则生效 → approved
         assert policy.status(target) == "approved"
@@ -165,6 +165,19 @@ class _FakeRules:
 
     def match_command(self, tool, command):
         return {"id": "fake"} if self._hit else None
+
+    def evaluate_path(self, kind, resolved, tool="*"):
+        return (("allow", {"id": "fake", "display": "fake"})
+                if self._hit else (None, None))
+
+
+class TestPasswordFailure:
+    """P0-4 回归：_mutate 返回 fn 结果，审计只记失败次数而不是整份 state。"""
+
+    def test_register_password_failure_returns_attempt_count(self, teen):
+        teen.enable("parent123")
+        assert teen.register_password_failure() == 1
+        assert teen.register_password_failure() == 2
 
 
 # ── ③ 回退类命令 ─────────────────────────────────────────────────────────
@@ -195,7 +208,7 @@ class TestRevertCommands:
         ("git log --oneline", False),
     ])
     def test_is_revert_command(self, command, expected):
-        from core.security.approval_rules import is_revert_command
+        from core.security.permission_rules import is_revert_command
 
         assert is_revert_command("bash", command) is expected
 
@@ -235,12 +248,12 @@ class _FakeJudge:
         self._risk = risk
         self.called = 0
 
-    def decide(self, approval):
+    def decide(self, permission):
         self.called += 1
-        from core.security.approval_judge import ApprovalDecision
+        from core.security.permission_judge import PermissionDecision
 
-        return ApprovalDecision(decision=self._decision, summary="s", reason="r",
-                                risk=self._risk, source="judge")
+        return PermissionDecision(decision=self._decision, summary="s", reason="r",
+                                  risk=self._risk, source="judge")
 
 
 class _FakeRules2(_FakeRules):
@@ -248,19 +261,18 @@ class _FakeRules2(_FakeRules):
         super().__init__(hit=False)
         self.granted = []
 
-    def add_granted(self, rule):
+    def add_rule(self, rule, scope="workspace"):
         self.granted.append(rule)
 
 
 def _fake_runner(test_workspace, judge, rules):
-    """loop._resolve_approval_results 需要的最小 runner 形状（duck-typing）。"""
+    """loop._resolve_permission_results 需要的最小 runner 形状（duck-typing）。"""
     from types import SimpleNamespace
 
-
     return SimpleNamespace(
-        approval_judge=judge,
-        approval_rules=rules,
-        approval_store=None,
+        permission_judge=judge,
+        permission_rules=rules,
+        permission_store=None,
         config=SimpleNamespace(),
         _update_usage=lambda **kw: None,
         _execute_tool=lambda *a, **k: {"content": "re-executed"},
@@ -268,10 +280,12 @@ def _fake_runner(test_workspace, judge, rules):
 
 
 def _pending_result(command="git push"):
+    from core.tools.permission import META_KEY
+
     return {
         "content": "pending",
         "is_error": False,
-        "_meta": {"approval_required": {
+        "_meta": {META_KEY: {
             "decision_id": "d1", "command": command, "kind": "command",
             "tool": "bash", "reason": "test",
         }, "completed": False},
@@ -280,7 +294,7 @@ def _pending_result(command="git push"):
 
 
 class TestLoopStrict:
-    """_resolve_approval_results 的青少年模式策略。"""
+    """_resolve_permission_results 的青少年模式策略。"""
 
     def _resolve(self, runner, results, tool_calls=None):
 
@@ -289,7 +303,7 @@ class TestLoopStrict:
         loop_obj = Loop.__new__(Loop)  # 不跑 __init__
         if tool_calls is None:
             tool_calls = []
-        return loop_obj._resolve_approval_results(runner, results, tool_calls, False)
+        return loop_obj._resolve_permission_results(runner, results, tool_calls, False)
 
     @staticmethod
     def _fake_tool_call(tool_use_id="tu1"):

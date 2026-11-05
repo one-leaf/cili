@@ -543,11 +543,14 @@ function prependMessages(messages) {
 async function loadMoreMessages() {
     if (!currentWorkspace || !currentSession || isLoadingMore || !currentSessionHasMore) return;
 
+    const sessionId = currentSession.session_id;
+    const epoch = sessionLoadEpoch;
     isLoadingMore = true;
     try {
         const newOffset = currentSessionLoadedOffset;
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}?limit=50&offset=${newOffset}`);
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}?limit=50&offset=${newOffset}`);
         const data = await response.json();
+        if (epoch !== sessionLoadEpoch || !currentSession || currentSession.session_id !== sessionId) return;
 
         if (data.messages && data.messages.length > 0) {
             prependMessages(data.messages);
@@ -627,10 +630,177 @@ function renderTodoList(todos) {
     container.innerHTML = html;
 }
 
+// ── 单回合流式渲染器（sendMessage 与 answer-ask-user 共用） ──
+// 两个入口的 SSE 事件分派曾各写一份并已漂移；统一在这里维护。
+function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, scrollIfViewing,
+                                   onUserMessage = null, onQueued = null }) {
+    let assistantDiv = null;
+    let assistantContent = '';
+    let thinkDiv = null;
+    let thinkContent = '';
+    let assistantRenderQueued = false;
+    let thinkRenderQueued = false;
+
+    function scheduleAssistantRender() {
+        if (assistantRenderQueued) return;
+        assistantRenderQueued = true;
+        requestAnimationFrame(() => {
+            assistantRenderQueued = false;
+            if (!assistantDiv) return;
+            assistantDiv.dataset.rawContent = assistantContent;
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+            scrollIfViewing();
+        });
+    }
+
+    function scheduleThinkRender() {
+        if (thinkRenderQueued || !thinkDiv) return;
+        thinkRenderQueued = true;
+        requestAnimationFrame(() => {
+            thinkRenderQueued = false;
+            if (!thinkDiv) return;
+            thinkDiv.innerHTML = renderMarkdown(thinkContent);
+            scrollIfViewing();
+        });
+    }
+
+    function finalizeThinkBlock() {
+        if (thinkDiv) {
+            const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
+            if (thinkTitle) thinkTitle.textContent = '💭 思考完成';
+            thinkDiv = null;
+            thinkContent = '';
+        }
+    }
+
+    function handleEvent(event) {
+        if (event.type === 'thinking') {
+            if (!thinkDiv) {
+                const div = addTurnMessage('assistant', '');
+                div.classList.add('thinking');
+                const contentDiv = div.querySelector('.message-content');
+                const thinkTitle = document.createElement('div');
+                thinkTitle.className = 'think-title';
+                thinkTitle.textContent = '💭 思考中...';
+                contentDiv.appendChild(thinkTitle);
+                thinkDiv = document.createElement('div');
+                thinkDiv.className = 'think-content';
+                contentDiv.appendChild(thinkDiv);
+                thinkContent = '';
+            }
+            thinkContent += event.content;
+            scheduleThinkRender();
+        } else if (event.type === 'text') {
+            finalizeThinkBlock();
+            assistantContent += event.content;
+            if (!assistantDiv) {
+                assistantDiv = addTurnMessage('assistant', assistantContent);
+            } else {
+                scheduleAssistantRender();
+            }
+        } else if (event.type === 'tool_use') {
+            finalizeThinkBlock();
+            const div = addTurnMessage('assistant', '');
+            div.classList.add('tool');
+            const contentDiv = div.querySelector('.message-content');
+            if (event.tool === 'ask_user') {
+                renderAskUserQuestions(contentDiv, event.input, event.tool_use_id);
+            } else {
+                const toolTitle = document.createElement('div');
+                toolTitle.className = 'tool-title';
+                toolTitle.textContent = `[调用工具: ${event.tool}]`;
+                contentDiv.appendChild(toolTitle);
+                const pre = document.createElement('pre');
+                pre.textContent = JSON.stringify(event.input, null, 2);
+                contentDiv.appendChild(pre);
+                if (event.tool === 'bash' || event.tool === 'python') {
+                    startToolStreaming(event.tool_use_id, event.tool, sessionId);
+                }
+            }
+            assistantDiv = null;
+            assistantContent = '';
+        } else if (event.type === 'tool_result') {
+            stopToolStreaming(event.tool_use_id);
+            if (event.tool === 'ask_user') {
+                const askCard = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
+                if (askCard) {
+                    const btn = askCard.querySelector('.ask-submit');
+                    if (btn && !btn.classList.contains('ask-submitted')) {
+                        btn.textContent = '✓ 已提交';
+                        btn.classList.add('ask-submitted');
+                        btn.disabled = true;
+                    }
+                    askCard.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
+                    askCard.querySelectorAll('input').forEach(el => el.disabled = true);
+                }
+                return;
+            }
+            finalizeThinkBlock();
+            const div = addTurnMessage('assistant', '');
+            div.classList.add('tool');
+            if (event.is_error) {
+                div.classList.add('tool-error');
+            } else {
+                div.classList.add('tool-result');
+            }
+            const contentDiv = div.querySelector('.message-content');
+            const resultTitle = document.createElement('div');
+            resultTitle.className = 'tool-title';
+            resultTitle.textContent = '[工具结果]';
+            contentDiv.appendChild(resultTitle);
+            const text = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
+            const pre = document.createElement('pre');
+            pre.textContent = text;
+            contentDiv.appendChild(pre);
+            assistantDiv = null;
+            assistantContent = '';
+        } else if (event.type === 'session_start') {
+            renderSessionStart(event.exec_id, event.task_summary);
+        } else if (event.type === 'session_complete') {
+            renderSessionComplete(event.exec_id);
+        } else if (event.type === 'todo_update') {
+            renderTodoList(event.todos);
+        } else if (event.type === 'file') {
+            const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
+            addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
+        } else if (event.type === 'retry_clear') {
+            if (assistantDiv) {
+                assistantDiv.remove();
+                assistantDiv = null;
+            }
+            assistantContent = '';
+            finalizeThinkBlock();
+        } else if (event.type === 'user_message') {
+            if (onUserMessage) onUserMessage(event);
+        } else if (event.type === 'queued') {
+            if (onQueued) onQueued(event);
+        } else if (event.type === 'error') {
+            addTurnMessage('assistant', `错误: ${escapeHtml(event.content)}`);
+        }
+    }
+
+    function flush() {
+        if (assistantDiv) {
+            assistantDiv.dataset.rawContent = assistantContent;
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+        }
+        if (thinkDiv) {
+            thinkDiv.innerHTML = renderMarkdown(thinkContent);
+            const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
+            if (thinkTitle) thinkTitle.textContent = '💭 思考完成';
+        }
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            MathJax.typesetPromise([turnContainer]).catch(() => {});
+        }
+    }
+
+    return { handleEvent, flush };
+}
+
 // 子代理开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
-// 委托 sse-client.js 幂等 ensureAgentCard（POST SSE 与事件流双源共用）
+// 委托 sse-client.js 幂等 ensureSessionCard（POST SSE 与事件流双源共用）
 function renderSessionStart(execId, taskSummary) {
-    ensureAgentCard(execId, taskSummary, { status: 'running' });
+    ensureSessionCard(execId, taskSummary, { status: 'running' });
 }
 
 // 子代理完成时更新卡片状态——委托 sse-client.js 幂等 markAgentComplete
@@ -816,11 +986,6 @@ function renderAskUserQuestions(container, input, toolUseId) {
             const decoder = new TextDecoder();
             let buffer = '';
 
-            let assistantDiv = null;
-            let assistantContent = '';
-            let thinkDiv = null;
-            let thinkContent = '';
-
             // 与 sendMessage 同样的专属容器：切走后内容留着，切回时挂回
             const turnContainer = document.createElement('div');
             turnContainer.className = 'turn-stream';
@@ -833,6 +998,10 @@ function renderAskUserQuestions(container, input, toolUseId) {
                     chatMessages.scrollTop = chatMessages.scrollHeight;
                 }
             };
+
+            const renderer = createTurnStreamRenderer({
+                sessionId, turnContainer, addTurnMessage, scrollIfViewing,
+            });
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -853,134 +1022,15 @@ function renderAskUserQuestions(container, input, toolUseId) {
                         // 丢弃不属于本流的帧
                         if (event.session_id && event.session_id !== sessionId) continue;
 
-                        if (event.type === 'thinking') {
-                            if (!thinkDiv) {
-                                const div = addTurnMessage('assistant', '');
-                                div.classList.add('thinking');
-                                const contentDiv = div.querySelector('.message-content');
-                                const thinkTitle = document.createElement('div');
-                                thinkTitle.className = 'think-title';
-                                thinkTitle.textContent = '💭 思考中...';
-                                contentDiv.appendChild(thinkTitle);
-                                thinkDiv = document.createElement('div');
-                                thinkDiv.className = 'think-content';
-                                contentDiv.appendChild(thinkDiv);
-                                thinkContent = '';
-                            }
-                            thinkContent += event.content;
-                            thinkDiv.innerHTML = renderMarkdown(thinkContent);
-                            scrollIfViewing();
-                        } else if (event.type === 'text') {
-                            if (thinkDiv) {
-                                thinkDiv = null;
-                                thinkContent = '';
-                            }
-                            assistantContent += event.content;
-                            if (!assistantDiv) {
-                                assistantDiv = addTurnMessage('assistant', assistantContent);
-                            } else {
-                                assistantDiv.dataset.rawContent = assistantContent;
-                                assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
-                                if (window.MathJax && window.MathJax.typesetPromise) {
-                                    MathJax.typesetPromise([assistantDiv]).catch((err) => {});
-                                }
-                            }
-                        } else if (event.type === 'tool_use') {
-                            if (thinkDiv) {
-                                thinkDiv = null;
-                                thinkContent = '';
-                            }
-                            const div = addTurnMessage('assistant', '');
-                            div.classList.add('tool');
-                            const contentDiv = div.querySelector('.message-content');
-                            if (event.tool === 'ask_user') {
-                                renderAskUserQuestions(contentDiv, event.input, event.tool_use_id);
-                            } else {
-                                const toolTitle = document.createElement('div');
-                                toolTitle.className = 'tool-title';
-                                toolTitle.textContent = `[调用工具: ${event.tool}]`;
-                                contentDiv.appendChild(toolTitle);
-                                const pre = document.createElement('pre');
-                                pre.textContent = JSON.stringify(event.input, null, 2);
-                                contentDiv.appendChild(pre);
-                                // 对 bash/python 工具启动实时输出流式显示（独立气泡）
-                                if (event.tool === 'bash' || event.tool === 'python') {
-                                    startToolStreaming(event.tool_use_id, event.tool, sessionId);
-                                }
-                            }
-                            assistantDiv = null;
-                            assistantContent = '';
-                        } else if (event.type === 'tool_result') {
-                            // 停止该工具调用的实时输出轮询
-                            stopToolStreaming(event.tool_use_id);
-                            if (event.tool === 'ask_user') {
-                                const askCard = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
-                                if (askCard) {
-                                    const btn = askCard.querySelector('.ask-submit');
-                                    if (btn && !btn.classList.contains('ask-submitted')) {
-                                        btn.textContent = '✓ 已提交';
-                                        btn.classList.add('ask-submitted');
-                                        btn.disabled = true;
-                                    }
-                                    askCard.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
-                                    askCard.querySelectorAll('input').forEach(el => el.disabled = true);
-                                }
-                                continue;
-                            }
-                            if (thinkDiv) {
-                                thinkDiv = null;
-                                thinkContent = '';
-                            }
-                            const div = addTurnMessage('assistant', '');
-                            div.classList.add('tool');
-                            if (event.is_error) {
-                                div.classList.add('tool-error');
-                            } else {
-                                div.classList.add('tool-result');
-                            }
-                            const contentDiv = div.querySelector('.message-content');
-                            const resultTitle = document.createElement('div');
-                            resultTitle.className = 'tool-title';
-                            resultTitle.textContent = '[工具结果]';
-                            contentDiv.appendChild(resultTitle);
-                            const text = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
-                            const pre = document.createElement('pre');
-                            pre.textContent = text;
-                            contentDiv.appendChild(pre);
-                            assistantDiv = null;
-                            assistantContent = '';
-                        } else if (event.type === 'session_start') {
-                            renderSessionStart(event.exec_id, event.task_summary);
-                        } else if (event.type === 'session_complete') {
-                            renderSessionComplete(event.exec_id);
-                        } else if (event.type === 'todo_update') {
-                            renderTodoList(event.todos);
-                        } else if (event.type === 'file') {
-                            // send_user_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
-                            const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
-                            addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
-                        } else if (event.type === 'retry_clear') {
-                            if (assistantDiv) {
-                                assistantDiv.remove();
-                                assistantDiv = null;
-                            }
-                            assistantContent = '';
-                            if (thinkDiv) {
-                                thinkDiv = null;
-                                thinkContent = '';
-                            }
-                        } else if (event.type === 'error') {
-                            addTurnMessage('assistant', `错误: ${escapeHtml(event.content)}`);
-                        } else if (event.type === 'done') {
-                            // Stream complete
-                        }
+                        renderer.handleEvent(event);
                     } catch (e) {
                         console.error('Failed to parse SSE event:', e, dataStr);
                     }
                 }
             }
 
-            // 回合已结束并落盘：注销容器，避免重拉时与容器内容重复
+            // 回合已结束并落盘：先 flush 节流中的渲染，再注销容器
+            renderer.flush();
             _activeTurnContainers.delete(sessionId);
 
             // Refresh session to get persisted state（仅当仍停留在该会话时，
@@ -1322,22 +1372,22 @@ async function sendMessage() {
     const optimisticUserDiv = userDiv;
 
     // Create placeholder for assistant response
-    let assistantDiv = null;
-    let assistantContent = '';
-    let thinkDiv = null;
-    let thinkContent = '';
-
-    // Close the current think block (shared by text, tool_use, tool_result handlers)
-    function finalizeThinkBlock() {
-        if (thinkDiv) {
-            const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
-            if (thinkTitle) {
-                thinkTitle.textContent = '💭 思考完成';
+    const renderer = createTurnStreamRenderer({
+        sessionId, turnContainer, addTurnMessage, scrollIfViewing,
+        onUserMessage: (event) => {
+            _handleDeliveredBatch(event);
+            if (optimisticUserDiv && event.content) {
+                const contentDiv = optimisticUserDiv.querySelector('.message-content');
+                if (contentDiv) contentDiv.innerHTML = renderMarkdown(event.content);
+                optimisticUserDiv.dataset.rawContent = event.content;
             }
-            thinkDiv = null;
-            thinkContent = '';
-        }
-    }
+        },
+        onQueued: (event) => {
+            if (optimisticUserDiv) optimisticUserDiv.remove();
+            if (event.item) upsertQueuedItem(event.item);
+            showToast('消息已排队，当前回合结束后自动插入');
+        },
+    });
 
     try {
         const requestBody = { content: message };
@@ -1384,155 +1434,16 @@ async function sendMessage() {
                     // 丢弃不属于本流的帧
                     if (event.session_id && event.session_id !== sessionId) continue;
 
-                    if (event.type === 'thinking') {
-                        // 创建或更新 think 块
-                        if (!thinkDiv) {
-                            const div = addTurnMessage('assistant', '');
-                            div.classList.add('thinking');
-                            const contentDiv = div.querySelector('.message-content');
-                            const thinkTitle = document.createElement('div');
-                            thinkTitle.className = 'think-title';
-                            thinkTitle.textContent = '💭 思考中...';
-                            contentDiv.appendChild(thinkTitle);
-                            thinkDiv = document.createElement('div');
-                            thinkDiv.className = 'think-content';
-                            contentDiv.appendChild(thinkDiv);
-                            thinkContent = '';
-                        }
-                        thinkContent += event.content;
-                        thinkDiv.innerHTML = renderMarkdown(thinkContent);
-                        scrollIfViewing();
-                    } else if (event.type === 'text') {
-                        // 如果之前有 think 块，标记完成
-                        finalizeThinkBlock();
-                        assistantContent += event.content;
-                        if (!assistantDiv) {
-                            assistantDiv = addTurnMessage('assistant', assistantContent);
-                        } else {
-                            assistantDiv.dataset.rawContent = assistantContent;
-                            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
-                            // Render math formulas with MathJax
-                            if (window.MathJax && window.MathJax.typesetPromise) {
-                                MathJax.typesetPromise([assistantDiv]).catch((err) => {});
-                            }
-                        }
-                    } else if (event.type === 'tool_use') {
-                        // 如果之前有 think 块，标记完成
-                        finalizeThinkBlock();
-                        // 创建新的消息气泡
-                        const div = addTurnMessage('assistant', '');
-                        div.classList.add('tool');
-                        const contentDiv = div.querySelector('.message-content');
-
-                        if (event.tool === 'ask_user') {
-                            // 渲染交互式问题卡片
-                            renderAskUserQuestions(contentDiv, event.input, event.tool_use_id);
-                        } else {
-                            const toolTitle = document.createElement('div');
-                            toolTitle.className = 'tool-title';
-                            toolTitle.textContent = `[调用工具: ${event.tool}]`;
-                            contentDiv.appendChild(toolTitle);
-                            const pre = document.createElement('pre');
-                            pre.textContent = JSON.stringify(event.input, null, 2);
-                            contentDiv.appendChild(pre);
-                            // 对 bash/python 工具启动实时输出流式显示（独立气泡）
-                            if (event.tool === 'bash' || event.tool === 'python') {
-                                startToolStreaming(event.tool_use_id, event.tool, sessionId);
-                            }
-                        }
-
-                        // 重置 assistantDiv 用于后续文本
-                        assistantDiv = null;
-                        assistantContent = '';
-                    } else if (event.type === 'tool_result') {
-                        // 停止该工具调用的实时输出轮询
-                        stopToolStreaming(event.tool_use_id);
-                        // ask_user 的 tool_result 事件：禁用问题卡片
-                        if (event.tool === 'ask_user') {
-                            const card = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
-                            if (card) {
-                                const submitBtn = card.querySelector('.ask-submit');
-                                if (submitBtn && !submitBtn.classList.contains('ask-submitted')) {
-                                    submitBtn.textContent = '✓ 已提交';
-                                    submitBtn.classList.add('ask-submitted');
-                                    submitBtn.disabled = true;
-                                }
-                                card.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
-                                card.querySelectorAll('input').forEach(el => el.disabled = true);
-                            }
-                            continue;
-                        }
-                        // 如果之前有 think 块，标记完成
-                        finalizeThinkBlock();
-                        // 创建新的消息气泡
-                        const div = addTurnMessage('assistant', '');
-                        div.classList.add('tool');
-                        if (event.is_error) {
-                            div.classList.add('tool-error');
-                        } else {
-                            div.classList.add('tool-result');
-                        }
-                        const contentDiv = div.querySelector('.message-content');
-                        const resultTitle = document.createElement('div');
-                        resultTitle.className = 'tool-title';
-                        resultTitle.textContent = '[工具结果]';
-                        contentDiv.appendChild(resultTitle);
-                        const text = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
-                        const pre = document.createElement('pre');
-                        pre.textContent = text;
-                        contentDiv.appendChild(pre);
-                        // 重置 assistantDiv 用于后续文本
-                        assistantDiv = null;
-                        assistantContent = '';
-                    } else if (event.type === 'session_start') {
-                        // 子代理开始执行，立即渲染占位卡片
-                        renderSessionStart(event.exec_id, event.task_summary);
-                    } else if (event.type === 'session_complete') {
-                        // 子代理完成，更新卡片状态
-                        renderSessionComplete(event.exec_id);
-                    } else if (event.type === 'todo_update') {
-                        // Todo 列表更新，渲染任务清单
-                        renderTodoList(event.todos);
-                    } else if (event.type === 'file') {
-                        // send_user_file 出站文件：下载链接（相对路径由 renderMarkdown 改写）
-                        const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
-                        addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
-                    } else if (event.type === 'retry_clear') {
-                        // 413 重试：清除已流式输出的文本，防止用户看到重复内容
-                        if (assistantDiv) {
-                            assistantDiv.remove();
-                            assistantDiv = null;
-                        }
-                        assistantContent = '';
-                        finalizeThinkBlock();
-                        thinkDiv = null;
-                        thinkContent = '';
-                    } else if (event.type === 'user_message') {
-                        // 服务端确认投递：按合并内容校正乐观气泡，并整批清空队列条
-                        _handleDeliveredBatch(event);
-                        if (optimisticUserDiv && event.content) {
-                            const contentDiv = optimisticUserDiv.querySelector('.message-content');
-                            if (contentDiv) contentDiv.innerHTML = renderMarkdown(event.content);
-                            optimisticUserDiv.dataset.rawContent = event.content;
-                        }
-                    } else if (event.type === 'queued') {
-                        // 空闲判断与认领之间被其他客户端抢先：退回排队，不创建回合
-                        if (optimisticUserDiv) optimisticUserDiv.remove();
-                        if (event.item) upsertQueuedItem(event.item);
-                        showToast('消息已排队，当前回合结束后自动插入');
-                    } else if (event.type === 'error') {
-                        addTurnMessage('assistant', `错误: ${escapeHtml(event.content)}`);
-                    } else if (event.type === 'done') {
-                        // Stream complete
-                    }
+                    renderer.handleEvent(event);
                 } catch (e) {
                     console.error('Failed to parse SSE event:', e, dataStr);
                 }
             }
         }
 
-        // 回合已结束并落盘：注销容器。否则下面/以后的重拉会把「已落盘的完整回合」
-        // 和容器里那份流式渲染各显示一遍。注销后由重拉统一渲染持久化结果。
+        // 回合已结束并落盘：先 flush 节流中的渲染，再注销容器。
+        renderer.flush();
+        // 注销容器：否则重拉会把「已落盘的完整回合」和容器里那份流式渲染各显示一遍。
         _activeTurnContainers.delete(sessionId);
 
         // Refresh session to get persisted state（仅当仍停留在该会话时，避免切走后被拉回）

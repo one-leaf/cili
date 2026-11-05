@@ -18,6 +18,7 @@ from typing import Any
 
 from core.config import (
     PROJECT_ROOT,
+    remove_workspace_entry,
     save_workspace_config,
     validate_workspace_name,
 )
@@ -608,6 +609,7 @@ def create_workspaces(
 
     for item in preview["workspaces"]:
         directory = Path(item["directory"])
+        saved_uuid: str | None = None
         try:
             directory.mkdir(parents=True, exist_ok=True)
             _write_initial_files(directory, item, overwrite_agents=overwrite_agents)
@@ -630,6 +632,7 @@ def create_workspaces(
                 config["study_group_name"] = preview["group"]["name"]
             if not save_workspace_config(uuid, config):
                 raise WorkspaceWizardError("工作区索引写入失败")
+            saved_uuid = uuid
 
             data_dir = directory / ".cili"
             (data_dir / "sessions").mkdir(parents=True, exist_ok=True)
@@ -649,6 +652,8 @@ def create_workspaces(
                 "git_message": git_message,
             })
         except (WorkspaceWizardError, OSError) as e:
+            if saved_uuid:
+                remove_workspace_entry(saved_uuid)
             failed.append({
                 "name": item["name"],
                 "subject": item["subject"],

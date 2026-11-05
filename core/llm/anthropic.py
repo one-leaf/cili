@@ -321,6 +321,11 @@ class AnthropicAdapter(Adapter):
                     if text:
                         yield StreamChunk.reasoning_delta(current_block_index, text)
 
+                elif delta_type == "signature_delta":
+                    signature = delta.get("signature", "")
+                    if signature:
+                        yield StreamChunk.signature_delta(current_block_index, signature)
+
                 elif delta_type == "input_json_delta":
                     args = delta.get("partial_json", "")
                     if args:

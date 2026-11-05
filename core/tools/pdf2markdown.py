@@ -107,14 +107,21 @@ _PDF_ARRAY_LIMIT = 10_000_000
 
 
 def _pdf_read_limits(file_path: str) -> dict:
-    """放宽 pypdf 解析保护上限（stream 按文件实际大小），供 apply_configuration 用。"""
+    """放宽 pypdf 解析保护上限（stream 按文件实际大小），供 apply_configuration 用。
+
+    pypdf 6.x 移除了 ``array_maximum_element_count``；``apply_configuration``
+    对未知字段直接 TypeError。这里按当前版本实际支持的字段
+    构造参数，兼容新旧版本。
+    """
+    cfg = get_configuration()
     try:
-        stream = max(get_configuration().maximum_declared_stream_length,
-                     os.path.getsize(file_path))
+        stream = max(cfg.maximum_declared_stream_length, os.path.getsize(file_path))
     except OSError:
-        stream = get_configuration().maximum_declared_stream_length
-    return {"maximum_declared_stream_length": stream,
-            "array_maximum_element_count": _PDF_ARRAY_LIMIT}
+        stream = cfg.maximum_declared_stream_length
+    limits = {"maximum_declared_stream_length": stream}
+    if "array_maximum_element_count" in vars(cfg):
+        limits["array_maximum_element_count"] = _PDF_ARRAY_LIMIT
+    return limits
 
 
 def _pdf_page_count(file_path: str) -> int:

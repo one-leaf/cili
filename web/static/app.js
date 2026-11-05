@@ -1,6 +1,7 @@
 // State
 let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
+let sessionLoadEpoch = 0;  // 会话加载代次：旧响应到达时丢弃
 let sessions = [];
 let isSending = false;
 // 本页持有的前台请求级 SSE 流属于哪个 session（null = 本页未持有）。
@@ -318,9 +319,6 @@ function updateComposerButtons() {
 
 // Setup event listeners
 function setupEventListeners() {
-    // 文件管理器事件
-    setupFileManagerEvents();
-
     workspaceSelect.addEventListener('change', handleWorkspaceChange);
     workspaceSettingsBtn.addEventListener('click', openWorkspaceSettings);
     newWorkspaceBtn.addEventListener('click', handleNewWorkspace);
@@ -1652,10 +1650,12 @@ async function showSessionInfo(session) {
 async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
+    const epoch = ++sessionLoadEpoch;
     try {
         // 初始加载最近 50 条消息
         const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}?limit=50&offset=0`);
         const session = await response.json();
+        if (epoch !== sessionLoadEpoch) return;
         currentSession = session;
         // 记录已加载的消息偏移量（从末尾算起）
         currentSessionLoadedOffset = session.messages.length;
@@ -1678,6 +1678,7 @@ async function loadSession(sessionId) {
         // Check if agent is running for this session（同时取队列快照）
         const statusResponse = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/status`);
         const status = await statusResponse.json();
+        if (epoch !== sessionLoadEpoch) return;
         sessionRunning = !!status.running;
         queuedItems = status.queue_items || [];
         queuePaused = !!status.queue_paused;
@@ -2330,7 +2331,7 @@ document.getElementById('git-push-btn')?.addEventListener('click', gitPush);
 
 // ─── 全局文件拖放上传 ─────────────────────────────────────────────
 // 拖放文件到任意窗口，自动上传到当前工作区；若文件管理器已打开且拖放落在其内，则上传到当前文件夹
-// 复用 file-manager.js 的 uploadFiles / fmCurrentPath / loadFileManagerFiles
+// 复用 file-manager.js 的 uploadFiles
 
 const dropOverlay = document.createElement('div');
 dropOverlay.className = 'drop-overlay';
@@ -2344,16 +2345,8 @@ function isFileDrag(e) {
     return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
 }
 
-// 拖放目标是否落在已打开的文件管理器内
-function dropInFileManager(e) {
-    const fmModal = document.getElementById('file-manager-modal');
-    return fmModal && fmModal.style.display !== 'none' && e.target.closest('#file-manager-modal');
-}
-
 function showDropOverlay(e) {
-    dropOverlayInner.textContent = dropInFileManager(e)
-        ? '松开以上传到当前文件夹'
-        : '松开以上传到工作区';
+    dropOverlayInner.textContent = '松开以上传到工作区';
     dropOverlay.classList.add('show');
 }
 
@@ -2410,10 +2403,8 @@ document.addEventListener('drop', async (e) => {
         return;
     }
 
-    const inFileManager = dropInFileManager(e);
-    // 主界面拖放统一落到 uploads/（与 QQ 入站附件同目录，便于两边一致）；
-    // 文件管理器面板内的拖放仍落在当前浏览目录。
-    const path = inFileManager ? fmCurrentPath : 'uploads';
+    // 主界面拖放统一落到 uploads/（与 QQ 入站附件同目录，便于两边一致）
+    const path = 'uploads';
     try {
         const result = await uploadFiles(path, files);
         const uploaded = result.uploaded || [];
@@ -2434,9 +2425,6 @@ document.addEventListener('drop', async (e) => {
         if (errList.length > 0) {
             const reasons = errList.map((err) => `${err.name}: ${err.error}`).join('；');
             showToast(`✗ ${errList.length} 个文件上传失败：${reasons}`, 4000);
-        }
-        if (inFileManager && uploaded.length > 0) {
-            await loadFileManagerFiles(fmCurrentPath);
         }
     } catch (error) {
         showToast('✗ 上传失败: ' + (error.message || error), 3000);

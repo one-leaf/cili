@@ -13,6 +13,7 @@
     <script src="/static/libs/marked.min.js"></script>
     <script src="/static/libs/purify.min.js"></script>
     <script src="/static/libs/mermaid.min.js"></script>
+    <script src="/static/markdown_core.js"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -184,51 +185,6 @@
 
         const targetMsgIds = parseMsgIds(idsStr);
 
-        function renderMarkdownWithMath(text) {
-            if (!text) return '';
-            const mathBlocks = [];
-            text = text.replace(/\$\$([\s\S]*?)\$\$/g, (m) => {
-                mathBlocks.push(m);
-                return 'MATHBLOCK{' + (mathBlocks.length - 1) + '}';
-            });
-            text = text.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (m) => {
-                mathBlocks.push(m);
-                return 'MATHBLOCK{' + (mathBlocks.length - 1) + '}';
-            });
-            let html = marked.parse(text);
-            // 将 mermaid 代码块转换为 <div class="mermaid">
-            html = html.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, (match, content) => {
-                const decoded = content
-                    .replace(/&lt;/g, '<')
-                    .replace(/&gt;/g, '>')
-                    .replace(/&quot;/g, '"')
-                    .replace(/&#39;/g, "'")
-                    .replace(/&amp;/g, '&');
-                return '<div class="mermaid">' + decoded + '</div>';
-            });
-            // 将 PDF <img> 转换为 iframe 内嵌预览（兼容历史数据中已注入 workspace_uuid 的 PDF）
-            html = html.replace(
-                /<img([^>]*)\ssrc="([^"]*\.pdf)(\?[^"]*)?"/g,
-                (match, before, src, query) => {
-                    const url = src + (query || '');
-                    const altMatch = before.match(/alt="([^"]*)"/);
-                    const alt = altMatch ? altMatch[1] : 'PDF 文件';
-                    return `<div class="pdf-preview"><iframe src="${url}" title="${alt}"></iframe><a href="${url}" target="_blank" class="pdf-link">📄 ${alt || '查看 PDF'}</a></div>`;
-                }
-            );
-            mathBlocks.forEach((b, i) => { html = html.replace('MATHBLOCK{' + i + '}', b); });
-            // XSS 防护：sanitize HTML（允许 MathJax 所需标签及 PDF iframe）
-            if (typeof DOMPurify !== 'undefined') {
-                html = DOMPurify.sanitize(html, {
-                    ADD_TAGS: ['mjx-container', 'annotation', 'semantics', 'math', 'iframe'],
-                    ADD_ATTR: ['encoding', 'display', 'xmlns', 'target', 'allowfullscreen'],
-                });
-            } else {
-                html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            }
-            return html;
-        }
-
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
@@ -371,13 +327,13 @@
             } else if (msg.type === 'thinking') {
                 cssClass = 'assistant thinking';
                 roleLabel = '💭 思考过程';
-                contentHtml = renderMarkdownWithMath(msg.text);
+                contentHtml = renderMarkdownCore(msg.text);
             } else if (msg.role === 'user') {
                 roleLabel = '用户';
                 contentHtml = imgHtml + escapeHtml(msg.text);
             } else {
                 roleLabel = '助手';
-                contentHtml = imgHtml + renderMarkdownWithMath(msg.text);
+                contentHtml = imgHtml + renderMarkdownCore(msg.text);
             }
             const timeHtml = msg.timestamp ? `<div class="message-time">${msg.timestamp}</div>` : '';
             const msgIdAttr = msg.msgId ? ` data-msg-id="${msg.msgId}"` : '';

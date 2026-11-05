@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -230,61 +231,6 @@ def _expand_env_value(value: str) -> str:
     return env_value
 
 
-@dataclass
-class ApprovalConfig:
-    """审批管道配置（设计 §六）：data/cili/setting.json → system.approval。"""
-
-    enabled: bool = True  # 总开关；false = 所有动作直接执行（危险，仅供排障）
-    judge_enabled: bool = True  # false = 不做 LLM 判定，未命中规则按 judge_on_error 处理
-    judge_timeout_seconds: int = 60  # 单次判定超时（实测单次 5–45s，留足余量）
-    judge_on_error: str = "ask"  # 超时/解析失败/模型不可用的兜底：ask | deny | allow
-    judge_persist_allow: bool = True  # AI 判定 allow 是否落盘为规则（§3.5）
-    judge_max_consecutive_failures: int = 3  # 连错降级阈值：连续失败 N 次本会话停用判定
-    judge_cache: str = "session"  # 判定结果缓存范围：session | none
-    rules_hot_reload: bool = True  # 规则文件 mtime 变化时热重载
-    global_rules_path: str = ""  # 全局规则文件路径（空 = data/cili/approval_rules.json，P3）
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "ApprovalConfig":
-        data = data if isinstance(data, dict) else {}
-        on_error = str(data.get("judge_on_error", "ask"))
-        if on_error not in ("ask", "deny", "allow"):
-            on_error = "ask"
-        return cls(
-            enabled=bool(data.get("enabled", True)),
-            judge_enabled=bool(data.get("judge_enabled", True)),
-            judge_timeout_seconds=max(5, int(data.get("judge_timeout_seconds", 60))),
-            judge_on_error=on_error,
-            judge_persist_allow=bool(data.get("judge_persist_allow", True)),
-            judge_max_consecutive_failures=max(1, int(data.get("judge_max_consecutive_failures", 3))),
-            judge_cache="none" if str(data.get("judge_cache", "session")) == "none" else "session",
-            rules_hot_reload=bool(data.get("rules_hot_reload", True)),
-            global_rules_path=str(data.get("global_rules_path", "")),
-        )
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "judge_enabled": self.judge_enabled,
-            "judge_timeout_seconds": self.judge_timeout_seconds,
-            "judge_on_error": self.judge_on_error,
-            "judge_persist_allow": self.judge_persist_allow,
-            "judge_max_consecutive_failures": self.judge_max_consecutive_failures,
-            "judge_cache": self.judge_cache,
-            "rules_hot_reload": self.rules_hot_reload,
-            "global_rules_path": self.global_rules_path,
-        }
-
-
-def get_approval_config(config) -> "ApprovalConfig":
-    """从运行时 Config 取审批配置；缺省/测试替身（MagicMock 等）场景回退默认值。"""
-    sys_cfg = getattr(config, "system", None)
-    approval = getattr(sys_cfg, "approval", None)
-    if isinstance(approval, ApprovalConfig):
-        return approval
-    return ApprovalConfig()
-
-
 def get_permission_config(config) -> "PermissionConfig":
     """从运行时 Config 取顶层权限配置；缺省/测试替身场景回退默认值。"""
     permissions = getattr(config, "permissions", None)
@@ -424,7 +370,6 @@ class SystemConfig:
     max_concurrent_agents: int = 2  # 同时运行的后台子代理上限（范围 1-10）
     access_token: str = ""  # 访问令牌：非 localhost 绑定且未配置时拒绝启动；配置后 Web 请求需携带
     parallel_tools: bool = True  # 工具批内并行：无依赖的纯读工具（concurrency_safe）同一回合并行执行
-    approval: ApprovalConfig = field(default_factory=ApprovalConfig)  # 审批管道配置（§六）
 
     @classmethod
     def from_dict(cls, data: dict) -> "SystemConfig":
@@ -441,7 +386,6 @@ class SystemConfig:
             max_concurrent_agents=max_concurrent_agents,
             access_token=data.get("access_token", ""),
             parallel_tools=bool(data.get("parallel_tools", True)),
-            approval=ApprovalConfig.from_dict(data.get("approval") or {}),
         )
 
     def to_dict(self) -> dict:
@@ -456,7 +400,6 @@ class SystemConfig:
             "max_concurrent_agents": self.max_concurrent_agents,
             "access_token": self.access_token,
             "parallel_tools": self.parallel_tools,
-            "approval": self.approval.to_dict(),
         }
 
 
@@ -815,30 +758,59 @@ def validate_workspace_name(name: str) -> str | None:
     return None
 
 
+_WORKSPACES_CACHE: list[dict] = []
+_WORKSPACES_SIG: tuple | None = None
+_WORKSPACES_LOCK = threading.RLock()
+
+
 def load_workspaces_index() -> list[dict]:
-    """Load workspace index from data/cili/workspaces.json. Returns [] if missing."""
-    if not WORKSPACES_JSON.exists():
-        return []
+    """Load workspace index from data/cili/workspaces.json. Returns [] if missing.
+
+    mtime+size 缓存：QQ/微信每条消息会重复解析索引（单条 4-8 次）；返回深拷贝，
+    调用方就地修改不会污染缓存。
+    """
+    global _WORKSPACES_CACHE, _WORKSPACES_SIG
+    path_key = str(WORKSPACES_JSON)
     try:
-        with open(WORKSPACES_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-        logger.warning(f"Invalid workspaces.json format (expected list): {WORKSPACES_JSON}")
-        return []
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to read {WORKSPACES_JSON}: {e}")
-        return []
+        st = WORKSPACES_JSON.stat()
+        sig = (path_key, st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = None
+    with _WORKSPACES_LOCK:
+        if sig is not None and sig == _WORKSPACES_SIG:
+            return copy.deepcopy(_WORKSPACES_CACHE)
+        data: list[dict] = []
+        if sig is not None:
+            try:
+                with open(WORKSPACES_JSON, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    data = loaded
+                else:
+                    logger.warning(f"Invalid workspaces.json format (expected list): {WORKSPACES_JSON}")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to read {WORKSPACES_JSON}: {e}")
+        _WORKSPACES_CACHE = data
+        _WORKSPACES_SIG = sig
+        return copy.deepcopy(data)
 
 
 def save_workspaces_index(workspaces: list[dict]) -> bool:
     """Save workspace index to data/cili/workspaces.json (atomic write)."""
-    try:
-        atomic_write_json(WORKSPACES_JSON, workspaces)
-        return True
-    except OSError as e:
-        logger.warning(f"Failed to save {WORKSPACES_JSON}: {e}")
-        return False
+    global _WORKSPACES_CACHE, _WORKSPACES_SIG
+    with _WORKSPACES_LOCK:
+        try:
+            atomic_write_json(WORKSPACES_JSON, workspaces)
+            _WORKSPACES_CACHE = copy.deepcopy(workspaces)
+            try:
+                st = WORKSPACES_JSON.stat()
+                _WORKSPACES_SIG = (str(WORKSPACES_JSON), st.st_mtime_ns, st.st_size)
+            except OSError:
+                _WORKSPACES_SIG = None
+            return True
+        except OSError as e:
+            logger.warning(f"Failed to save {WORKSPACES_JSON}: {e}")
+            return False
 
 
 def find_workspace_entry(workspace_uuid: str) -> dict | None:
@@ -851,24 +823,26 @@ def find_workspace_entry(workspace_uuid: str) -> dict | None:
 
 def upsert_workspace_entry(entry: dict) -> bool:
     """Add or update a workspace entry in workspaces.json (keyed by uuid)."""
-    workspaces = load_workspaces_index()
-    uuid = entry.get("uuid")
-    for i, e in enumerate(workspaces):
-        if e.get("uuid") == uuid:
-            workspaces[i] = entry
-            break
-    else:
-        workspaces.append(entry)
-    return save_workspaces_index(workspaces)
+    with _WORKSPACES_LOCK:
+        workspaces = load_workspaces_index()
+        uuid = entry.get("uuid")
+        for i, e in enumerate(workspaces):
+            if e.get("uuid") == uuid:
+                workspaces[i] = entry
+                break
+        else:
+            workspaces.append(entry)
+        return save_workspaces_index(workspaces)
 
 
 def remove_workspace_entry(workspace_uuid: str) -> bool:
     """Remove a workspace entry from workspaces.json. Idempotent."""
-    workspaces = load_workspaces_index()
-    filtered = [e for e in workspaces if e.get("uuid") != workspace_uuid]
-    if len(filtered) == len(workspaces):
-        return True  # not found
-    return save_workspaces_index(filtered)
+    with _WORKSPACES_LOCK:
+        workspaces = load_workspaces_index()
+        filtered = [e for e in workspaces if e.get("uuid") != workspace_uuid]
+        if len(filtered) == len(workspaces):
+            return True  # not found
+        return save_workspaces_index(filtered)
 
 
 def get_workspace_data_dir(workspace_uuid: str) -> Path:

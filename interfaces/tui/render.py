@@ -49,15 +49,17 @@ def format_ask_user_card(tool_input: dict) -> str:
     if not isinstance(questions, list) or not questions:
         return ""
     lines: list[str] = []
+    next_idx = 1
     for q in questions:
         if not isinstance(q, dict):
             continue
         header = q.get("header", "")
         lines.append(f"❓ [{header}] {q.get('question', '')}" if header else f"❓ {q.get('question', '')}")
-        for idx, opt in enumerate(q.get("options", []) or [], start=1):
+        for opt in q.get("options", []) or []:
             label = opt.get("label", "") if isinstance(opt, dict) else str(opt)
             desc = opt.get("description", "") if isinstance(opt, dict) else ""
-            lines.append(f"  {idx}. {label}" + (f"  — {desc}" if desc else ""))
+            lines.append(f"  {next_idx}. {label}" + (f"  — {desc}" if desc else ""))
+            next_idx += 1
         if q.get("multi_select"):
             lines.append("  （多选：输入编号，如 1 3）")
     lines.append("  回复编号或直接输入你的答案。")

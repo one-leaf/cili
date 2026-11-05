@@ -28,7 +28,7 @@ from web.deps import _csrf_protect, _require_workspace, registry, teen_guard
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_DEFAULT_GLOBAL_RULES = DATA_DIR / "cili" / "approval_rules.json"
+_DEFAULT_GLOBAL_RULES = DATA_DIR / "approval_rules.json"
 
 
 class PermissionUpdateRequest(BaseModel):

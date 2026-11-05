@@ -754,6 +754,9 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
     if runner and runner.is_running():
         raise HTTPException(400, "Runner 正在运行中，无法撤销")
 
+    # 撤销会删除 GoalRunner 依赖的消息，先请求其停止
+    stop_goal_runner(key)
+
     msg_id = request.msg_id
 
     # 优先使用内存中的 runner（revert 会原地截断共享 messages 并物理截断 jsonl）

@@ -627,10 +627,10 @@ class Loop:
                         suggested=decision.suggested_rule, granted_by="judge",
                         summary=decision.summary, decision_id=permission.get("decision_id", ""))
                     if rule:
-                        rules.add_granted(rule)
+                        rules.add_rule(rule, "workspace")
                         for extra in implied_path_rules(permission.get("targets") or [], "judge",
                                                         permission.get("decision_id", "")):
-                            rules.add_granted(extra)
+                            rules.add_rule(extra, "workspace")
                 if store:
                     store.approve(permission.get("decision_id", ""),
                                   str(permission.get("command") or ""),

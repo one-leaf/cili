@@ -254,8 +254,8 @@ class TeenModeManager:
             self._sig = None
         self._cache = state
 
-    def _mutate(self, fn) -> dict:
-        """持锁读-改-写状态。fn(state) 原地修改，返回 state。"""
+    def _mutate(self, fn) -> object:
+        """持锁读-改-写状态。fn(state) 原地修改，返回 fn 的返回值（调用方通常忽略）。"""
         with self._mutex:
             state = self._load()
             state = {**self._default_state(), **state} if state else self._default_state()
@@ -266,9 +266,9 @@ class TeenModeManager:
                                       else DEFAULT_LIMITS if key == "limits" else {})
             state["policy"] = {**DEFAULT_POLICY, **state["policy"]}
             state["limits"] = {**DEFAULT_LIMITS, **state["limits"]}
-            fn(state)
+            result = fn(state)
             self._save(state)
-            return state
+            return result
 
     # ----- 状态查询 -----
 

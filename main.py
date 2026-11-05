@@ -294,6 +294,22 @@ def _ensure_system_workspace() -> None:
         print(f"[setup] Warning: failed to create system workspace: {e}")
 
 
+def _migrate_legacy_cili_paths() -> None:
+    """修复旧双 cili 路径：data/cili/cili/approval_rules.json → data/cili/approval_rules.json。"""
+    legacy_dir = os.path.join(_project_root, "data", "cili", "cili")
+    legacy_file = os.path.join(legacy_dir, "approval_rules.json")
+    target = os.path.join(_project_root, "data", "cili", "approval_rules.json")
+    if not os.path.exists(legacy_file) or os.path.exists(target):
+        return
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.replace(legacy_file, target)
+    try:
+        os.rmdir(legacy_dir)
+    except OSError:
+        pass
+    print("[migration] Moved legacy approval_rules.json out of data/cili/cili/")
+
+
 def _setup_directories() -> None:
     """Create basic directories and ensure workspace index exists."""
     print("[setup] Creating directories...")
@@ -944,11 +960,12 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
 
 # Cached settings dict (read once during startup)
 _settings_cache: dict | None = None
+_settings_load_failed = False
 
 
 def _load_settings_cached() -> dict:
     """Load setting.json once and cache for subsequent calls."""
-    global _settings_cache
+    global _settings_cache, _settings_load_failed
     if _settings_cache is not None:
         return _settings_cache
     try:
@@ -956,8 +973,10 @@ def _load_settings_cached() -> dict:
             with open(_SETTING_FILE, "r", encoding="utf-8") as f:
                 _settings_cache = json.load(f)
                 return _settings_cache
-    except Exception:
-        pass
+    except Exception as e:
+        # 解析失败时缓存空 dict 供本次启动继续运行，但禁止任何回写覆盖用户配置
+        _settings_load_failed = True
+        print(f"[setup] Warning: failed to parse settings ({e}); write-back disabled")
     _settings_cache = {}
     return _settings_cache
 
@@ -988,6 +1007,9 @@ def _get_pip_mirrors_ordered() -> list[str]:
 def _save_pip_mirror(mirror: str) -> None:
     """Save the working pip mirror to config."""
     global _settings_cache
+    if _settings_load_failed:
+        print("[setup] Warning: settings failed to load earlier; skip pip mirror write to avoid overwriting user config")
+        return
     try:
         config = _load_settings_cached()
         if "system" not in config:
@@ -1166,6 +1188,7 @@ def _prepare_environment(args: argparse.Namespace) -> None:
 
     # Setup directories and settings
     _setup_directories()
+    _migrate_legacy_cili_paths()
     _init_settings()
 
     # Migrate old session format to new format (optional, skip if missing)
@@ -1214,9 +1237,14 @@ def _maybe_restart_after_install() -> None:
         sys.exit(1)
     print(f"[setup] New packages installed, restarting service... "
           f"(restart {restart_count + 1}/{_MAX_SETUP_RESTARTS})")
-    # Re-execute the same script with same arguments
+    # Re-execute the same script with same arguments.
+    # 依赖固定装进 data/deps/python；如果当前是系统解释器，重启必须切到 deps Python，
+    # 否则新装的包在本次进程里根本不可见。
+    restart_exe = sys.executable
+    if not _running_in_deps and os.path.exists(_deps_python_exe):
+        restart_exe = _deps_python_exe
     os.environ[_SETUP_RESTART_ENV] = str(restart_count + 1)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    os.execv(restart_exe, [restart_exe] + sys.argv)
 
 
 def _ensure_runtime() -> None:
@@ -1283,8 +1311,8 @@ def _start_core_services() -> None:
         logger.info("自动升级已关闭（system.auto_update=false）")
 
 
-def _start_web_interface(args: argparse.Namespace) -> None:
-    """启动 Web 接入端：鉴权校验 + 端口探测 + 自动开浏览器 + uvicorn。"""
+def _resolve_web_port(args: argparse.Namespace) -> None:
+    """Web 鉴权 + 端口探测。必须在核心服务启动前执行，避免旧实例未终止时双实例并行。"""
     # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网（Web 专属）
     _check_web_auth(args.host)
 
@@ -1300,6 +1328,9 @@ def _start_web_interface(args: argparse.Namespace) -> None:
         print(f"[setup] Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+
+def _start_web_interface(args: argparse.Namespace) -> None:
+    """启动 Web 接入端：自动开浏览器 + uvicorn（鉴权与端口解析已在 _resolve_web_port 完成）。"""
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
     # 隐式执行，改为在此显式调用；web_api 的 lifespan 也会调一次（幂等）。
     from web.deps import init_web_deps
@@ -1361,6 +1392,7 @@ def _start_web_interface(args: argparse.Namespace) -> None:
 
 def _start_services(args: argparse.Namespace) -> None:
     """阶段三：核心服务 + Web 接入端。"""
+    _resolve_web_port(args)
     _start_core_services()
     _start_web_interface(args)
 

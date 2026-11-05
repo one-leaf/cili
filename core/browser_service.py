@@ -65,6 +65,9 @@ _TRUNCATE_SNAPSHOT_CHARS = 20000
 _TYPE_DELAY_MS = 20
 # 下载等待超时（ms）
 _DOWNLOAD_TIMEOUT_MS = 60000
+# worker 等待时间必须大于操作自身超时，否则外层先抛 TimeoutError、操作仍在跑
+_NAV_WORKER_TIMEOUT = _NAV_TIMEOUT_MS / 1000 + 20
+_DOWNLOAD_WORKER_TIMEOUT = _DOWNLOAD_TIMEOUT_MS / 1000 + 20
 # 弹窗自动处理行为：dismiss（记录后关闭）/ accept（记录后确认）
 _DIALOG_BEHAVIOR = "dismiss"
 # 请求详情 body 读取上限（字符），超过则跳过 body
@@ -424,7 +427,7 @@ class BrowserService:
             self._next_task_id_counter += 1
             return self._next_task_id_counter
 
-    def _run_in_worker(self, func, *args, **kwargs):
+    def _run_in_worker(self, func, *args, timeout: float | None = None, **kwargs):
         """在专用工作线程中执行函数。
 
         每次调用分配独立的结果槽位（Event + 结果），多线程并发调用互不串扰。
@@ -447,11 +450,12 @@ class BrowserService:
         # 提交任务到队列
         self._task_queue.put((task_id, func, args, kwargs))
 
-        # 等待结果
-        if not event.wait(timeout=_WORKER_TASK_TIMEOUT):
+        # 等待结果（按操作类型分级；未指定时用全局默认）
+        effective_timeout = timeout if timeout is not None else _WORKER_TASK_TIMEOUT
+        if not event.wait(timeout=effective_timeout):
             with self._task_lock:
                 self._task_events.pop(task_id, None)
-            raise TimeoutError("Task execution timeout (60s)")
+            raise TimeoutError(f"Task execution timeout ({effective_timeout:.0f}s)")
 
         with self._task_lock:
             success, result = self._task_results.pop(task_id)
@@ -1320,7 +1324,8 @@ class BrowserService:
 
     # ==================== 公共操作方法（线程安全）====================
 
-    def _execute_operation(self, operation_name: str, func, tab_index: int | None = None) -> ToolResult:
+    def _execute_operation(self, operation_name: str, func, tab_index: int | None = None,
+                           timeout: float | None = None) -> ToolResult:
         """执行浏览器操作的通用包装。
 
         提供统一的错误处理和详细错误信息。
@@ -1383,7 +1388,7 @@ class BrowserService:
                 )
 
         try:
-            return self._run_in_worker(_do_operation)
+            return self._run_in_worker(_do_operation, timeout=timeout)
         except Exception as e:
             return ToolResult(f"Browser {operation_name} failed with worker error: {e}", error=True)
 
@@ -1446,7 +1451,7 @@ class BrowserService:
             return _do_navigate(page, actual_tab_index)
 
         try:
-            return self._run_in_worker(_do_navigate_tab)
+            return self._run_in_worker(_do_navigate_tab, timeout=_NAV_WORKER_TIMEOUT)
         except Exception as e:
             return ToolResult(f"Browser navigate failed with worker error: {e}", error=True)
 
@@ -1919,7 +1924,8 @@ class BrowserService:
                 meta={"tab_index": actual_tab, "file": abs_path, "filename": suggested},
             )
 
-        return self._execute_operation("download", _do_download, tab_index=tab_index)
+        return self._execute_operation("download", _do_download, tab_index=tab_index,
+                                        timeout=_DOWNLOAD_WORKER_TIMEOUT)
 
     # ==================== 弹窗（dialogs） ====================
 
