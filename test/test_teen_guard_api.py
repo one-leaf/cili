@@ -119,10 +119,10 @@ class TestPathPolicyTeen:
         # outside_workspace 判定；.cili/tmp 在工作区内 → allow
         assert policy.status(target) == "allow"
 
-    def test_outside_downgraded_to_deny(self, teen, test_workspace, monkeypatch):
+    def test_outside_downgraded_to_deny(self, teen, test_workspace, tmp_path, monkeypatch):
         from core.security.path_policy import OP_WRITE, PathTarget
 
-        other_tmp = os.path.join(os.path.dirname(test_workspace), "other-tmp")
+        other_tmp = str(tmp_path / "other-tmp")
         os.makedirs(other_tmp, exist_ok=True)
         monkeypatch.setenv("TMP", other_tmp)
         monkeypatch.setenv("TEMP", other_tmp)

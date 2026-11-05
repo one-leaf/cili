@@ -48,20 +48,19 @@ def make_dgx_config(interface_type: str = "anthropic") -> Config:
 
 
 @pytest.fixture(scope="session")
-def test_workspace():
-    """创建临时测试工作目录（项目根目录下的 .test）"""
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_dir = os.path.join(project_dir, ".test")
-    if os.path.exists(test_dir):
-        shutil.rmtree(test_dir, ignore_errors=True)
-    os.makedirs(test_dir, exist_ok=True)
-    yield test_dir
-    # 清理
-    shutil.rmtree(test_dir, ignore_errors=True)
+def _test_workspace_dir(tmp_path_factory):
+    """会话级测试工作区：放在 pytest 临时目录，不污染项目根。"""
+    return tmp_path_factory.mktemp("cili-test-workspace")
+
+
+@pytest.fixture(scope="session")
+def test_workspace(_test_workspace_dir):
+    """创建临时测试工作目录（pytest 临时目录，不落项目根）。"""
+    yield str(_test_workspace_dir)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _isolate_workspaces_index():
+def _isolate_workspaces_index(_test_workspace_dir):
     """隔离 workspaces.json：测试期间重定向到临时索引，避免读写真实数据。
 
     get_workspace_data_dir() 等路径函数从临时索引解析，测试 workspace_uuid
@@ -72,9 +71,8 @@ def _isolate_workspaces_index():
     """
     import core.config as config_mod
     original = config_mod.WORKSPACES_JSON
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_dir = os.path.join(project_dir, ".test")
-    tmp_index = Path(project_dir) / ".test_workspaces.json"
+    test_dir = str(_test_workspace_dir)
+    tmp_index = Path(test_dir) / ".test_workspaces.json"
     if os.path.exists(tmp_index):
         os.unlink(tmp_index)
     config_mod.WORKSPACES_JSON = tmp_index
