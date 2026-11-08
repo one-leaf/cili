@@ -607,8 +607,8 @@ class SessionStore:
             "agent_count": 0,
         }
         self.name: str = "New Session"
-        # 由 SessionRunner 按 config.images.history_mode 设置；默认 full 兼容旧行为。
-        self.image_history_mode: str = "full"
+        # 由 SessionRunner 按 config.images.history_mode 设置；默认 current_turn。
+        self.image_history_mode: str = "current_turn"
 
         # 确保目录存在
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -831,7 +831,7 @@ class SessionStore:
                 msg["_meta"]["seq"] = seq
                 if "id" not in msg["_meta"]:
                     msg["_meta"]["id"] = generate_short_id()
-                append_lines.append(_jsonl_line(msg, seq, getattr(self, "image_history_mode", "full")))
+                append_lines.append(_jsonl_line(msg, seq, getattr(self, "image_history_mode", "current_turn")))
 
         if append_lines:
             append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)

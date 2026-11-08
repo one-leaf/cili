@@ -920,7 +920,7 @@ class SessionRunner(BaseSessionRunner):
     def _image_history_mode(self) -> str:
         """当前图片历史策略：full | current_turn。"""
         config = getattr(self, "config", None)
-        return getattr(getattr(config, "images", None), "history_mode", "full")
+        return getattr(getattr(config, "images", None), "history_mode", "current_turn")
 
     def _ensure_current_turn_id(self) -> None:
         """恢复路径沿用最近一条 user 消息的 turn_id；没有则新建。"""

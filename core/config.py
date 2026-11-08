@@ -438,10 +438,10 @@ class MCPConfig:
 class ImageConfig:
     """图片处理配置：``setting.json -> images``。
 
-    ``history_mode`` 默认 ``full`` 以保留旧行为；验收后切 ``current_turn``。
+    ``history_mode`` 默认 ``current_turn``；``full`` 仅作为显式回退。
     """
 
-    history_mode: str = "full"  # full | current_turn
+    history_mode: str = "current_turn"  # current_turn（默认） | full（回退）
     keep_recent: int = 3
     max_dimension: int = 2048
     max_image_bytes: int = 5 * 1024 * 1024
@@ -454,9 +454,9 @@ class ImageConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "ImageConfig":
         data = data if isinstance(data, dict) else {}
-        mode = str(data.get("history_mode", "full"))
+        mode = str(data.get("history_mode", "current_turn"))
         if mode not in ("full", "current_turn"):
-            mode = "full"
+            mode = "current_turn"
         return cls(
             history_mode=mode,
             keep_recent=max(0, int(data.get("keep_recent", 3))),
