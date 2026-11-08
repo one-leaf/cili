@@ -13,6 +13,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# 启动等待上限：QQ 网关启动要先拿 token、再取网关地址，都是真实网络请求，
+# 冷启动可能超过 5 秒。等太短会在网关就绪前就判成"启动失败"并强制停止。
+_START_TIMEOUT = 30.0
+
 
 class HostBase:
     """一个账号的宿主：独立 event loop + 守护线程 + ready 生命周期。"""
@@ -25,17 +29,18 @@ class HostBase:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
+        self._stopping = False
         self.ready = False
 
     def start(self) -> bool:
-        """启动宿主线程；等待 loop 就绪（最多 5s），返回是否真正可用。"""
+        """启动宿主线程；等待 loop 就绪（最多 _START_TIMEOUT 秒），返回是否真正可用。"""
         self._thread = threading.Thread(
             target=self._thread_main,
             name=f"{self._thread_prefix}-{self.cfg.id}",
             daemon=True,
         )
         self._thread.start()
-        self._started.wait(timeout=5.0)
+        self._started.wait(timeout=_START_TIMEOUT)
         return self.is_alive()
 
     def is_alive(self) -> bool:
@@ -49,7 +54,10 @@ class HostBase:
         try:
             loop.run_until_complete(self._async_start())
         except Exception:
-            logger.exception(f"[{self._log_tag}/service] 账号 {self.cfg.id} 启动失败")
+            # stop() 在启动完成前打断 loop 会抛 RuntimeError；那是停止请求，
+            # 不是启动失败，静默退出即可。
+            if not self._stopping:
+                logger.exception(f"[{self._log_tag}/service] 账号 {self.cfg.id} 启动失败")
             self._started.set()
             loop.close()
             return
@@ -73,6 +81,7 @@ class HostBase:
 
     def stop(self) -> None:
         self.ready = False
+        self._stopping = True
         loop = self.loop
         if loop is None or loop.is_closed():
             return
