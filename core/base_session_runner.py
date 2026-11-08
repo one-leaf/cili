@@ -19,8 +19,10 @@ from typing import Any, Callable
 
 from core.cache_state import CacheState
 from core.config import Config
+from core.image_pipeline import ensure_user_image_meta
 from core.llm import LLMClient, LLMResponse, Message
 from core.output_sink import OutputSink
+from core.session import generate_short_id
 from core.session_runner_runtime.context import ConversationStore
 from core.session_runner_runtime.runner import (
     RETRY_CLEAR_SENTINEL as RETRY_CLEAR_SENTINEL,
@@ -66,6 +68,11 @@ class BaseSessionRunner:
         self.session_dir = session_dir
         self.stop_check = stop_check
         self.max_iterations = max_iterations
+
+        # 当前用户回合的图片嵌入边界；由 SessionRunner / 队列投递更新。
+        self.current_turn_id: str = ""
+        # 当前回合被 3MB/413 降级为引用的图片 path/id。
+        self._demoted_image_paths: set[str] = set()
 
         # 消息状态层：先建 context（Agent 的 _init_interactive 已在此前注入 session），
         # messages/_usage 属性转发到 context，保证后续所有直接赋值/读取一致
@@ -141,7 +148,19 @@ class BaseSessionRunner:
 
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """Add a message to internal message list (delegated to ConversationStore)."""
+        if role == "user" and isinstance(content, list) and self.current_turn_id:
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "image":
+                    ensure_user_image_meta(block, cwd=self.cwd, turn_id=self.current_turn_id)
+                elif block.get("type") == "tool_result":
+                    block.setdefault("_meta", {}).setdefault("turn_id", self.current_turn_id)
         self.context.add_message(role, content, meta)
+
+    def build_projected_messages(self, *, force_reference: bool = False) -> list[dict]:
+        """构建与实际请求一致的投影消息（委托 Runner）。"""
+        return self.runner.build_projected_messages(force_reference=force_reference)
 
     def save_messages(self, metadata: dict | None = None) -> None:
         """Save messages (delegated to ConversationStore)."""
@@ -166,6 +185,9 @@ class BaseSessionRunner:
         if not items:
             return 0
         user_input, meta = merge_queued_turns(items)
+        # 排队批次是新的用户输入：开启新回合，旧回合图片转引用。
+        self.current_turn_id = generate_short_id()
+        self._demoted_image_paths.clear()
         self.add_message("user", user_input, meta=meta)
         self.context.sync_to_session()
         session = getattr(self, "session", None)
@@ -321,12 +343,16 @@ class BaseSessionRunner:
         *,
         pad_dangling: bool = True,
         resolve_results: bool = True,
+        force_reference: bool = False,
     ) -> list[Message]:
         """Build Message objects for the LLM API from self.messages (delegated to Runner)."""
-        return self.runner._prepare_messages_for_llm(
-            pad_dangling=pad_dangling,
-            resolve_results=resolve_results,
-        )
+        kwargs: dict[str, Any] = {
+            "pad_dangling": pad_dangling,
+            "resolve_results": resolve_results,
+        }
+        if force_reference:
+            kwargs["force_reference"] = True
+        return self.runner._prepare_messages_for_llm(**kwargs)
 
     def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Non-streaming LLM call (delegated to Runner)."""

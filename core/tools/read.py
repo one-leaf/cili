@@ -65,7 +65,10 @@ class ReadTool(Tool):
     @staticmethod
     def _image_to_result(file_path: str, img) -> ToolResult:
         """PIL 图像 → multimodal ToolResult（>16MP 缩放、PNG 编码、体积上限）。"""
-        from PIL import Image
+        from PIL import Image, ImageOps
+
+        # EXIF Orientation 必须先应用到像素；PNG 重编码会丢方向标签。
+        img = ImageOps.exif_transpose(img)
 
         max_pixels = 16_000_000  # 16 megapixels
         width, height = img.size

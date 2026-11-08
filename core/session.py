@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
+from core.image_pipeline import sanitize_images_for_persistence
 from core.teen_mode import guard_or_raise
 
 # exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
@@ -49,6 +50,8 @@ INTERNAL_META_FIELDS = frozenset({
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
     "compacted", "file_card", "model",
+    "turn_id", "path", "attachment_id", "sha256", "width", "height",
+    "reference_only", "image_refs", "image_index", "media_type",
 })
 # 兼容旧名（模块内引用）
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
@@ -242,14 +245,20 @@ def _merge_block_meta(content: Any, blocks: dict | None) -> None:
             block["_meta"] = dict(blocks[key])
 
 
-def _jsonl_line(msg: dict, seq: int) -> dict:
-    """把内存消息序列化为 jsonl 行（含 id + created_at，剥离 _meta）。"""
+def _jsonl_line(msg: dict, seq: int, image_mode: str = "full") -> dict:
+    """把内存消息序列化为 jsonl 行（含 id + created_at，剥离 _meta）。
+
+    ``image_mode=current_turn`` 时把图片块替换为引用文本；full 保持旧行为。
+    """
     meta = msg.get("_meta") or {}
+    content = msg.get("content")
+    if image_mode == "current_turn":
+        content = sanitize_images_for_persistence(content)
     line = {
         "seq": seq,
         "id": meta.get("id", ""),
         "role": msg.get("role"),
-        "content": _strip_block_meta(msg.get("content")),
+        "content": _strip_block_meta(content),
     }
     created_at = meta.get("created_at")
     if not created_at:
@@ -598,6 +607,8 @@ class SessionStore:
             "agent_count": 0,
         }
         self.name: str = "New Session"
+        # 由 SessionRunner 按 config.images.history_mode 设置；默认 full 兼容旧行为。
+        self.image_history_mode: str = "full"
 
         # 确保目录存在
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -820,7 +831,7 @@ class SessionStore:
                 msg["_meta"]["seq"] = seq
                 if "id" not in msg["_meta"]:
                     msg["_meta"]["id"] = generate_short_id()
-                append_lines.append(_jsonl_line(msg, seq))
+                append_lines.append(_jsonl_line(msg, seq, getattr(self, "image_history_mode", "full")))
 
         if append_lines:
             append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)

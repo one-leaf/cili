@@ -19,6 +19,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
+from core.image_pipeline import ensure_user_image_meta, normalize_image_bytes
 from core.media_fetch import InboundMedia
 
 logger = logging.getLogger(__name__)
@@ -43,11 +44,14 @@ def build_user_input(
         if item.kind == "image" and "image" in model_input:
             data, mime = read_image_base64(item)
             if data:
-                blocks.append({
+                block = {
                     "type": "image",
                     "source": {"type": "base64", "media_type": mime, "data": data},
                     "_valid": True,
-                })
+                    "_meta": {"path": item.rel_path, "media_type": mime},
+                }
+                ensure_user_image_meta(block, cwd=getattr(runner, "cwd", None))
+                blocks.append(block)
                 continue
         if item.kind == "voice" and item.transcript:
             text_parts.append(f"[语音转写] {item.transcript}")
@@ -70,11 +74,15 @@ def build_user_input(
 
 
 def read_image_base64(item: InboundMedia) -> tuple[str, str]:
-    """读图片为 base64（失败返回空串）。"""
+    """读图片为 base64；优先应用 EXIF 方向、缩放和重编码。"""
     try:
-        data = Path(item.path).read_bytes()
+        raw = Path(item.path).read_bytes()
     except OSError as e:
         logger.warning(f"[multimodal] 读取图片失败 {item.path}: {e}")
         return "", ""
     mime = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
-    return base64.b64encode(data).decode("ascii"), mime
+    normalized = normalize_image_bytes(raw, mime)
+    if normalized is not None:
+        payload, mime, _, _ = normalized
+        return base64.b64encode(payload).decode("ascii"), mime
+    return base64.b64encode(raw).decode("ascii"), mime

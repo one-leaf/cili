@@ -17,11 +17,18 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from core.handoff import build_handoff_instruction
+from core.image_pipeline import (
+    image_key,
+    image_ref_text,
+    project_images_for_request,
+    write_tool_image_sidecar,
+)
 from core.llm import (
     LLMResponse,
     Message,
@@ -72,6 +79,106 @@ class Runner:
         """执行一个完整回合：先压缩，再调用 LLM。"""
         self._check_and_compress()
         return self._call_llm(streaming=streaming, system_prompt=system_prompt)
+
+    def _image_mode(self) -> str:
+        """图片历史策略：full | current_turn。"""
+        return getattr(getattr(self.runner.config, "images", None), "history_mode", "full")
+
+    def _effective_turn_id(self) -> str:
+        """当前回合 id；恢复路径从最近 user 消息的 meta.turn_id 推导。"""
+        turn_id = getattr(self.runner, "current_turn_id", "")
+        if turn_id:
+            return str(turn_id)
+        for msg in reversed(self.runner.messages):
+            meta = msg.get("_meta") or {}
+            if msg.get("role") == "user" and meta.get("turn_id"):
+                return str(meta["turn_id"])
+        return ""
+
+    def _resolved_messages(self) -> list[dict]:
+        """有效消息 + 外部工具结果解析；保留 _meta，供投影/降级使用。"""
+        messages = self.runner._get_messages_with_header()
+        return self._resolve_tool_results(messages)
+
+    def build_projected_messages(self, *, force_reference: bool = False) -> list[dict]:
+        """构建与实际发送一致的投影消息。
+
+        流程：有效消息 -> 外部工具结果解析 -> 图片按回合投影 -> 剥离内部 _meta。
+        """
+        messages = self._resolved_messages()
+        if self._image_mode() == "current_turn" or force_reference:
+            messages = project_images_for_request(
+                messages,
+                self._effective_turn_id(),
+                force_reference=force_reference,
+                demoted_paths=getattr(self.runner, "_demoted_image_paths", set()),
+            )
+        return self._strip_meta_from_messages(messages)
+
+    def _collect_current_turn_image_keys(self, messages: list[dict]) -> list[str]:
+        """收集投影消息中属于当前回合、仍为图片的稳定 key，按出现顺序。"""
+        current = self._effective_turn_id()
+        if not current:
+            return []
+        keys: list[str] = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "image":
+                    meta = block.get("_meta") or {}
+                    if str(meta.get("turn_id") or "") == current:
+                        key = image_key(block)
+                        if key:
+                            keys.append(key)
+                    continue
+                if block.get("type") != "tool_result":
+                    continue
+                parent_meta = block.get("_meta") or {}
+                if str(parent_meta.get("turn_id") or "") != current:
+                    continue
+                nested = block.get("content")
+                if not isinstance(nested, list):
+                    continue
+                image_index = 0
+                for sub in nested:
+                    if not isinstance(sub, dict) or sub.get("type") != "image":
+                        continue
+                    key = image_key(sub, parent_meta, image_index)
+                    if key:
+                        keys.append(key)
+                    image_index += 1
+        return keys
+
+    def _demote_current_turn_images(self, max_body_size: int, keep_recent: int = 0) -> int:
+        """把当前回合最旧图片降级为引用，直到请求体小于上限或全部降级。"""
+        if self._image_mode() != "current_turn":
+            return 0
+        candidates = self._collect_current_turn_image_keys(self._resolved_messages())
+        if not candidates:
+            return 0
+        if keep_recent > 0:
+            candidates = candidates[:-keep_recent] if len(candidates) > keep_recent else []
+        demoted = getattr(self.runner, "_demoted_image_paths", set())
+        added = 0
+        for key in candidates:
+            if max_body_size > 0 and self._estimate_request_body_size(
+                self.build_projected_messages()
+            ) <= max_body_size:
+                break
+            if key not in demoted:
+                demoted.add(key)
+                added += 1
+        return added
+
+    def _demote_all_current_turn_images(self) -> int:
+        """413 兜底：当前回合图片全部转引用；历史图本来已是引用。"""
+        if self._image_mode() != "current_turn":
+            return 0
+        return self._demote_current_turn_images(max_body_size=0, keep_recent=0)
 
     # ========== 工具执行 ==========
 
@@ -261,6 +368,26 @@ class Runner:
             "content": inline_content,
             "is_error": result.error,
         }
+        result_dict.setdefault("_meta", {})["turn_id"] = getattr(self.runner, "current_turn_id", "")
+        if is_multimodal and self.runner.session_dir:
+            from core.llm.types import ImageBlock
+            image_refs: list[dict] = []
+            image_index = 0
+            for result_block in result.blocks:
+                if not isinstance(result_block, ImageBlock):
+                    continue
+                ref = write_tool_image_sidecar(
+                    self.runner.session_dir,
+                    Path(self.runner.cwd),
+                    tool_use_id,
+                    image_index,
+                    result_block,
+                )
+                if ref:
+                    image_refs.append({"index": image_index, **ref})
+                image_index += 1
+            if image_refs:
+                result_dict["_meta"]["image_refs"] = image_refs
 
         # Add completed=False to block-level _meta for placeholder tools (ask_user, session)
         if result.completed is False:
@@ -345,20 +472,27 @@ class Runner:
                             data = json_module.load(f)
 
                         if data.get("type") == "multimodal":
-                            # 多模态内容：返回 content blocks 列表
                             from core.llm.types import block_from_dict
+                            refs = block_meta.get("image_refs") or []
                             content_blocks = []
+                            image_index = 0
                             for block_data in data.get("blocks", []):
                                 try:
-                                    content_blocks.append(block_from_dict(block_data))
+                                    parsed = block_from_dict(block_data)
+                                    bd = parsed.to_dict() if hasattr(parsed, "to_dict") else parsed
                                 except Exception:
-                                    # 无法解析的块，跳过
-                                    pass
-                            # 将 content blocks 转为 dict 列表
-                            block["content"] = [
-                                cb.to_dict() if hasattr(cb, 'to_dict') else cb
-                                for cb in content_blocks
-                            ]
+                                    continue
+                                if isinstance(bd, dict) and bd.get("type") == "image":
+                                    ref = refs[image_index] if isinstance(refs, list) and image_index < len(refs) else {}
+                                    if self._image_mode() == "current_turn" and (
+                                        str(block_meta.get("turn_id") or "") != self._effective_turn_id()
+                                    ):
+                                        bd = {"type": "text", "text": image_ref_text(bd, block_meta, image_index)}
+                                    elif isinstance(ref, dict):
+                                        bd.setdefault("_meta", {}).update(ref)
+                                    image_index += 1
+                                content_blocks.append(bd)
+                            block["content"] = content_blocks
                         else:
                             block["content"] = "[工具输出格式错误]"
                     else:
@@ -392,31 +526,28 @@ class Runner:
     def _strip_meta_from_messages(self, messages: list[dict]) -> list[dict]:
         """Strip internal _meta fields from messages before sending to LLM API.
 
-        Called after _resolve_tool_results() has populated block content from
-        external files. The _meta fields (output_path, file_size, etc.) are
-        only needed for that resolution step and must not reach the API.
-
-        Modifies blocks in-place (same pattern as _strip_images_from_messages).
+        Recursively strips nested ``tool_result`` content as well, so image path
+        metadata attached for projection never reaches the provider.
         """
+        def strip_block_meta(block: Any) -> None:
+            if not isinstance(block, dict):
+                return
+            if "_meta" in block:
+                stripped = {k: v for k, v in block["_meta"].items() if k not in INTERNAL_META}
+                if stripped:
+                    block["_meta"] = stripped
+                else:
+                    del block["_meta"]
+            nested = block.get("content")
+            if isinstance(nested, list):
+                for sub in nested:
+                    strip_block_meta(sub)
+
         for msg in messages:
             content = msg.get("content", "")
-            if not isinstance(content, list):
-                # Strip message-level _meta
-                if "_meta" in msg:
-                    stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
-                    if stripped:
-                        msg["_meta"] = stripped
-                    else:
-                        del msg["_meta"]
-                continue
-            for block in content:
-                if "_meta" in block:
-                    stripped = {k: v for k, v in block["_meta"].items() if k not in INTERNAL_META}
-                    if stripped:
-                        block["_meta"] = stripped
-                    else:
-                        del block["_meta"]
-            # Strip message-level _meta too
+            if isinstance(content, list):
+                for block in content:
+                    strip_block_meta(block)
             if "_meta" in msg:
                 stripped = {k: v for k, v in msg["_meta"].items() if k not in INTERNAL_META}
                 if stripped:
@@ -448,8 +579,8 @@ class Runner:
             self.runner._invalidate_message_cache()
             self.runner.cache_state.on_compression(1)
 
-        # Calculate tokens
-        messages = self.runner._get_messages_with_header()
+        # Calculate tokens from the projected request shape.
+        messages = self.build_projected_messages()
         total_tokens = self.runner._count_messages_tokens(messages)
 
         # Layer 2: Full compact
@@ -468,7 +599,7 @@ class Runner:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
 
         # Layer 3: Emergency body size (only images)
-        messages = self.runner._get_messages_with_header()
+        messages = self.build_projected_messages()
         body_size = self._estimate_request_body_size(messages)
         logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
 
@@ -482,15 +613,22 @@ class Runner:
                     text_size += len(data.encode('utf-8')) if isinstance(data, str) else len(data)
                 elif btype == "tool_use":
                     tool_size += len(json.dumps(data.get("input", {}), ensure_ascii=False).encode('utf-8'))
-                elif btype == "tool_result_image":
+                elif btype in ("tool_result_image", "image"):
                     image_size += len(data)
             logger.debug(f"[上下文] 大小分布: 文本={text_size:,}B, 图片={image_size:,}B, 工具={tool_size:,}B")
 
-            logger.info("[上下文] 请求体过大，正在替换旧图片为占位符...")
-            saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
-            if saved > 0:
-                logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
-                self.runner.cache_state.on_compression(3)
+            logger.info("[上下文] 请求体过大，正在降级图片为引用...")
+            if self._image_mode() == "current_turn":
+                keep_recent = int(getattr(getattr(self.runner.config, "images", None), "keep_recent", 3))
+                demoted = self._demote_current_turn_images(MAX_BODY_SIZE, keep_recent=keep_recent)
+                if demoted > 0:
+                    logger.info(f"[上下文] 当前回合图片降级 {demoted} 张")
+                    self.runner.cache_state.on_compression(3)
+            else:
+                saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
+                if saved > 0:
+                    logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
+                    self.runner.cache_state.on_compression(3)
 
         # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
         self.runner._invalidate_message_cache()
@@ -511,7 +649,7 @@ class Runner:
         """
 
         all_messages = self.runner.messages
-        total_tokens = self.runner._count_messages_tokens(self.runner.get_valid_messages())
+        total_tokens = self.runner._count_messages_tokens(self.build_projected_messages(force_reference=True))
 
         # Find split point
         valid_messages = self.runner.get_valid_messages()
@@ -630,7 +768,7 @@ class Runner:
         """
         if pending_tool_use_id:
             api_messages = self._prepare_messages_for_llm(
-                pad_dangling=False, resolve_results=True
+                pad_dangling=False, force_reference=True
             )
             self.pad_dangling_in_messages(
                 api_messages, exclude_ids={pending_tool_use_id}
@@ -648,7 +786,7 @@ class Runner:
             ]))
         else:
             api_messages = self._prepare_messages_for_llm(
-                pad_dangling=True, resolve_results=True
+                pad_dangling=True, force_reference=True
             )
             text = instruction or self._SUMMARY_INSTRUCTION_TEMPLATE.format(
                 split_idx=split_idx
@@ -762,7 +900,7 @@ class Runner:
         if invalidated:
             self.runner._invalidate_message_cache()
 
-        messages = self.runner._get_messages_with_header()
+        messages = self.build_projected_messages(force_reference=True)
         total = self.runner._count_messages_tokens(messages)
         projected = total + Tool.approx_token_count(user_text)
         threshold = int(
@@ -880,6 +1018,8 @@ class Runner:
                     btype = block.get("type", "")
                     if btype == "text":
                         yield ("text", block.get("text", ""))
+                    elif btype == "image":
+                        yield ("image", block.get("source", {}).get("data", ""))
                     elif btype == "tool_use":
                         yield ("tool_use", block)
                     elif btype == "tool_result":
@@ -904,7 +1044,7 @@ class Runner:
                 size += len(json.dumps(data.get("input", {}), ensure_ascii=False)) * 2
             elif btype == "tool_result_text":
                 size += len(data) * 2
-            elif btype == "tool_result_image":
+            elif btype in ("tool_result_image", "image"):
                 size += len(data)
             elif btype == "tool_result_str":
                 size += len(data) * 2
@@ -920,25 +1060,19 @@ class Runner:
                 result.append(msg)
                 continue
 
-            has_image = False
-            for block in content:
-                if block.get("type") != "tool_result":
-                    continue
-                rc = block.get("content", "")
-                if isinstance(rc, list):
-                    for sub in rc:
-                        if sub.get("type") == "image":
-                            has_image = True
-                            break
-                if has_image:
-                    break
-
-            if not has_image:
-                result.append(msg)
-                continue
-
+            changed = False
             new_content = []
             for block in content:
+                if not isinstance(block, dict):
+                    new_content.append(block)
+                    continue
+                if block.get("type") == "image":
+                    changed = True
+                    new_content.append({
+                        "type": "text",
+                        "text": "[image - model does not support image input]",
+                    })
+                    continue
                 if block.get("type") != "tool_result":
                     new_content.append(block)
                     continue
@@ -948,7 +1082,8 @@ class Runner:
                     continue
                 new_sub = []
                 for sub in rc:
-                    if sub.get("type") == "image":
+                    if isinstance(sub, dict) and sub.get("type") == "image":
+                        changed = True
                         new_sub.append({
                             "type": "text",
                             "text": "[image - model does not support image input]",
@@ -956,7 +1091,7 @@ class Runner:
                     else:
                         new_sub.append(sub)
                 new_content.append({**block, "content": new_sub})
-            result.append({**msg, "content": new_content})
+            result.append({**msg, "content": new_content} if changed else msg)
         return result
 
     # ========== LLM 调用 ==========
@@ -1053,12 +1188,15 @@ class Runner:
             # Handle 413 by stripping images and retrying
             if self._is_413_error(e):
                 logger.warning("[LLM] 请求体过大，正在重试...")
-                self._mark_all_images_invalid()
+                if self._image_mode() == "current_turn":
+                    self._demote_all_current_turn_images()
+                else:
+                    self._mark_all_images_invalid()
                 self._persist_before_retry()
 
-                # 首轮已 pad/解析过工具输出，重试仅重新组装并去图
+                # 重新解析并按需降级当前回合图片；禁止发送 content=None。
                 retry_message_objects = self._prepare_messages_for_llm(
-                    pad_dangling=False, resolve_results=False
+                    pad_dangling=False
                 )
                 try:
                     retry_start = time.monotonic()
@@ -1151,13 +1289,16 @@ class Runner:
                 # 413 错误：去掉图片后重试
                 if self._is_413_error(e) and not images_stripped:
                     logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
-                    self._mark_all_images_invalid()
+                    if self._image_mode() == "current_turn":
+                        self._demote_all_current_turn_images()
+                    else:
+                        self._mark_all_images_invalid()
                     self._persist_before_retry()
                     self.runner.sink.on_text(RETRY_CLEAR_SENTINEL)
                     text_parts.clear()
                     images_stripped = True
 
-                    # 去图重试：已 pad 过，但需重新解析工具输出（图片标记为无效后重组装）
+                    # 重新组装；当前模式只降级当前回合图片，历史图已是引用。
                     message_objects = self._prepare_messages_for_llm(pad_dangling=False)
                 else:
                     # 统一 taxonomy（三态之二/三）：非瞬态（quota/auth/context_length/

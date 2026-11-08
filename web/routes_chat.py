@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from core.config import get_workspace_data_dir
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
+from core.image_pipeline import ensure_user_image_meta, save_base64_image
 from core.session import SessionStore
 from core.stream_executor import get_stream_executor
 from core.teen_mode import TeenModeDenied, get_teen_mode
@@ -109,21 +110,34 @@ def _session_key(workspace_uuid: str, session_id: str) -> str:
     return f"{workspace_uuid}:{session_id}"
 
 
-def _build_user_input(content: str, images: list[dict] | None) -> Any:
-    """文本 + base64 图片 → runner 入参（str 或 content blocks）。"""
+def _build_user_input(content: str, images: list[dict] | None,
+                      *, uploads_dir: Path | None = None) -> Any:
+    """文本 + base64 图片 → runner 入参；有 uploads_dir 时落盘并写入引用路径。"""
     if not images:
         return content
+    workspace_dir = uploads_dir.parent if uploads_dir is not None else None
     blocks: list[dict] = [{"type": "text", "text": content, "_valid": True}]
     for img in images:
-        blocks.append({
+        media_type = img.get("media_type", "image/png")
+        data = img.get("data", "")
+        block: dict = {
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": img.get("media_type", "image/png"),
-                "data": img.get("data", ""),
+                "media_type": media_type,
+                "data": data,
             },
             "_valid": True,
-        })
+        }
+        if uploads_dir is not None and data:
+            saved = save_base64_image(
+                data, media_type, uploads_dir,
+                workspace_dir=workspace_dir, prefix="paste",
+            )
+            if saved:
+                block["_meta"] = dict(saved)
+        ensure_user_image_meta(block, cwd=workspace_dir)
+        blocks.append(block)
     return blocks
 
 
@@ -350,8 +364,9 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         usage = runner.get_usage()
 
-        # 使用 runner 内部的 token 计数方法（更准确）
-        messages = runner.session.get_valid_messages()
+        # 使用与真实请求一致的投影消息（历史图片为引用，当前回合为 base64）
+        builder = getattr(runner, "build_projected_messages", None)
+        messages = builder() if callable(builder) else runner.session.get_valid_messages()
         context_tokens = runner._count_messages_tokens(messages)
         body_size = runner._estimate_request_body_size(messages)
 
@@ -497,7 +512,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
     # 本轮是「普通消息」还是「ask_user 的答案」——判定与注入逻辑在 core.turn_dispatch
     # （接口无关，Web 与 QQ 共用）。多模态入参在这里构造好一并传入。
-    user_input: Any = _build_user_input(content, getattr(request, "images", None))
+    runner_cwd = getattr(runner, "cwd", "")
+    uploads_dir = Path(runner_cwd) / "uploads" if runner_cwd else None
+    user_input: Any = _build_user_input(
+        content, getattr(request, "images", None),
+        uploads_dir=uploads_dir,
+    )
 
     # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
     # 若留到 run_runner（executor 线程）里取，异常会吞掉结束哨兵把流挂死。
@@ -822,7 +842,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
         item = turn_queue.enqueue(key, QueuedTurn(
             item_id="",
             content=content,
-            user_input=_build_user_input(content, request.images),
+            user_input=_build_user_input(content, request.images, uploads_dir=ws_dir / "uploads"),
             interface=request.interface or "web",
             client_id=request.client_id,
             has_images=bool(request.images),

@@ -13,16 +13,17 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from core.agent_run import ContinuationRequest
 from core.base_session_runner import BaseSessionRunner
 from core.config import DATA_DIR, Config, get_permission_config
 from core.fs_utils import atomic_write_json
-from core.agent_run import ContinuationRequest
 from core.handoff import default_branch_name, user_input_text
 from core.interface_profile import resolve_profile
 from core.llm import create_llm_client
@@ -149,6 +150,8 @@ class SessionRunner(BaseSessionRunner):
         self.role = role
         self.role_cfg = load_role(role, config)
         self.model = config.model_for_role(role)
+        # _init_interactive 早于 BaseSessionRunner.__init__ 使用 config
+        self.config = config
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
         # run_mode 与 role 解耦：默认取角色 JSON 的 mode，接口层可显式覆盖
         # （例如将来 QQ 接口用 interactive 行为但非 master 画像）。
@@ -316,6 +319,9 @@ class SessionRunner(BaseSessionRunner):
             mbus.register_agent(self.current_session_id, self.current_session_id)
         except Exception as e:
             logger.warning(f"Failed to register master with AgentMailbox: {e}")
+
+        if getattr(self, "session", None) is not None:
+            self.session.image_history_mode = self._image_history_mode()
 
     def _init_autonomous(
         self,
@@ -587,6 +593,8 @@ class SessionRunner(BaseSessionRunner):
         """
         if self._mode == "interactive":
             return self._run_interactive(*args, **kwargs)
+        self.current_turn_id = generate_short_id()
+        self._demoted_image_paths.clear()
         return self.loop.run_autonomous()
 
     def _run_interactive(
@@ -604,6 +612,9 @@ class SessionRunner(BaseSessionRunner):
         self._stopped = False
         self._running = True
         self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
+        # 新用户回合：上一回合图片转引用，当前回合图片重新嵌入。
+        self.current_turn_id = generate_short_id()
+        self._demoted_image_paths.clear()
         self._streaming = streaming
         self.sink = layer_sink(self.default_sink, sink)
 
@@ -690,6 +701,15 @@ class SessionRunner(BaseSessionRunner):
         existing = [s.get("name", "") for s in SessionStore.list_sessions(self.sessions_dir)]
         name = default_branch_name(self.session.name, label, existing)
         store = SessionStore.create_new_session(self.sessions_dir, name)
+        store.image_history_mode = self._image_history_mode()
+        # 工具图片 sidecar 在 session 目录；fork 必须复制，否则引用失效。
+        src_attachments = self.session_dir / "attachments"
+        if src_attachments.is_dir():
+            shutil.copytree(
+                src_attachments,
+                store.session_dir / "attachments",
+                dirs_exist_ok=True,
+            )
         snapshot = self.get_valid_messages(strip_meta=False)
         max_tokens = int(getattr(getattr(self.config, "system", None), "fork_max_tokens", 100000))
         try:
@@ -845,6 +865,7 @@ class SessionRunner(BaseSessionRunner):
             logger.warning(f"[SessionRunner:{self.role}] 恢复循环已在运行，忽略重复 resume")
             return
         try:
+            self._ensure_current_turn_id()
             self._stopped = False
             self._running = True
             self.sink = layer_sink(self.default_sink, sink)
@@ -896,6 +917,23 @@ class SessionRunner(BaseSessionRunner):
         logger.info(f"[SessionRunner:{self.role}] 后台 session {exec_id} 完成，自动恢复 master 循环")
         self._resume_loop(sink=self.default_sink)
 
+    def _image_history_mode(self) -> str:
+        """当前图片历史策略：full | current_turn。"""
+        config = getattr(self, "config", None)
+        return getattr(getattr(config, "images", None), "history_mode", "full")
+
+    def _ensure_current_turn_id(self) -> None:
+        """恢复路径沿用最近一条 user 消息的 turn_id；没有则新建。"""
+        if self.current_turn_id:
+            return
+        for msg in reversed(self.messages):
+            meta = msg.get("_meta") or {}
+            tid = meta.get("turn_id")
+            if msg.get("role") == "user" and tid:
+                self.current_turn_id = str(tid)
+                return
+        self.current_turn_id = generate_short_id()
+
     def attach_session(self, session_store: SessionStore) -> None:
         """把 runner 附着到一个 SessionStore（切换会话 / 新建会话共用）。
 
@@ -910,6 +948,10 @@ class SessionRunner(BaseSessionRunner):
         self.session_dir = session_store.session_dir
         self.messages = session_store.messages
         self._usage = session_store.get_usage()
+        session_store.image_history_mode = self._image_history_mode()
+        self.current_turn_id = ""
+        self._demoted_image_paths.clear()
+        self._ensure_current_turn_id()
         for tool in self.tools:
             tool.session = session_store
         # 切换会话后清除 prompt section 缓存（不同会话可能有不同上下文）

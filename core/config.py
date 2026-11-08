@@ -435,6 +435,55 @@ class MCPConfig:
 
 
 @dataclass
+class ImageConfig:
+    """图片处理配置：``setting.json -> images``。
+
+    ``history_mode`` 默认 ``full`` 以保留旧行为；验收后切 ``current_turn``。
+    """
+
+    history_mode: str = "full"  # full | current_turn
+    keep_recent: int = 3
+    max_dimension: int = 2048
+    max_image_bytes: int = 5 * 1024 * 1024
+    max_request_image_bytes: int = 8 * 1024 * 1024
+    max_images_per_request: int = 20
+    jpeg_quality: int = 85
+    ref_text_template: str = ""
+    normalize_on_ingest: bool = True
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ImageConfig":
+        data = data if isinstance(data, dict) else {}
+        mode = str(data.get("history_mode", "full"))
+        if mode not in ("full", "current_turn"):
+            mode = "full"
+        return cls(
+            history_mode=mode,
+            keep_recent=max(0, int(data.get("keep_recent", 3))),
+            max_dimension=max(1, int(data.get("max_dimension", 2048))),
+            max_image_bytes=max(1, int(data.get("max_image_bytes", 5 * 1024 * 1024))),
+            max_request_image_bytes=max(1, int(data.get("max_request_image_bytes", 8 * 1024 * 1024))),
+            max_images_per_request=max(1, int(data.get("max_images_per_request", 20))),
+            jpeg_quality=max(1, min(100, int(data.get("jpeg_quality", 85)))),
+            ref_text_template=str(data.get("ref_text_template", "")),
+            normalize_on_ingest=bool(data.get("normalize_on_ingest", True)),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "history_mode": self.history_mode,
+            "keep_recent": self.keep_recent,
+            "max_dimension": self.max_dimension,
+            "max_image_bytes": self.max_image_bytes,
+            "max_request_image_bytes": self.max_request_image_bytes,
+            "max_images_per_request": self.max_images_per_request,
+            "jpeg_quality": self.jpeg_quality,
+            "ref_text_template": self.ref_text_template,
+            "normalize_on_ingest": self.normalize_on_ingest,
+        }
+
+
+@dataclass
 class Config:
     """Global configuration.
 
@@ -445,6 +494,7 @@ class Config:
     agents: dict[str, AgentConfig] = field(default_factory=dict)  # 键 = 角色名（master/worker/lite）
     system: SystemConfig = field(default_factory=SystemConfig)
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
+    images: ImageConfig = field(default_factory=ImageConfig)
     mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)
 
     # ── 引用解析 ──
@@ -582,6 +632,9 @@ class Config:
         # ── Permissions（顶层 permissions 字段，不放进 system） ──
         config.permissions = PermissionConfig.from_dict(global_config.get("permissions") or {})
 
+        # ── Images（顶层 images 字段） ──
+        config.images = ImageConfig.from_dict(global_config.get("images") or {})
+
         # ── MCP servers ──
         config.mcp_servers = {
             name: MCPConfig.from_dict(cfg)
@@ -598,6 +651,7 @@ class Config:
             "agents": {name: cfg.to_dict() for name, cfg in self.agents.items()},
             "system": self.system.to_dict(),
             "permissions": self.permissions.to_dict(),
+            "images": self.images.to_dict(),
         }
         if self.mcp_servers:
             result["mcp_servers"] = {
