@@ -666,11 +666,25 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
 
     function finalizeThinkBlock() {
         if (thinkDiv) {
+            // 收尾前先同步补画一次：rAF 节流可能还没执行，而正文/工具事件与
+            // 最后一批思考增量常在同一次 SSE 读取里到达，直接清空会丢掉这截尾巴。
+            thinkDiv.innerHTML = renderMarkdown(thinkContent);
             const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
             if (thinkTitle) thinkTitle.textContent = '💭 思考完成';
             thinkDiv = null;
             thinkContent = '';
         }
+    }
+
+    function finalizeAssistantBlock() {
+        // 与思考块同理：切到工具调用/工具结果前，把节流中的最后一段正文补画出来，
+        // 否则 assistantDiv 置 null 后，排队中的 rAF 会因引用为空而放弃渲染。
+        if (assistantDiv) {
+            assistantDiv.dataset.rawContent = assistantContent;
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+        }
+        assistantDiv = null;
+        assistantContent = '';
     }
 
     function handleEvent(event) {
@@ -717,8 +731,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
                     startToolStreaming(event.tool_use_id, event.tool, sessionId);
                 }
             }
-            assistantDiv = null;
-            assistantContent = '';
+            finalizeAssistantBlock();
         } else if (event.type === 'tool_result') {
             stopToolStreaming(event.tool_use_id);
             if (event.tool === 'ask_user') {
@@ -752,8 +765,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             const pre = document.createElement('pre');
             pre.textContent = text;
             contentDiv.appendChild(pre);
-            assistantDiv = null;
-            assistantContent = '';
+            finalizeAssistantBlock();
         } else if (event.type === 'session_start') {
             renderSessionStart(event.exec_id, event.task_summary);
         } else if (event.type === 'session_complete') {
