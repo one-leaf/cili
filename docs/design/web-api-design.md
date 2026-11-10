@@ -704,11 +704,25 @@ POST   /api/files/upload                          # 上传文件（multipart for
 ```
 
 - **POST /api/files** 请求体：`{workspace_uuid, path(父目录), name, type("file"|"folder"), content(初始内容)}`
-- **PUT /api/files** 请求体：`{workspace_uuid, path, new_path(可选，重命名/移动), content(可选，保存内容)}`
+- **PUT /api/files** 请求体：`{workspace_uuid, path, new_path(可选，重命名/移动), content(可选，保存内容), expected_mtime_ns(可选，乐观锁), expected_size(可选，乐观锁)}`
+  - 保存内容（`content`）时为**乐观锁**：`expected_mtime_ns` 为纳秒字符串、`expected_size` 为整数；与磁盘当前值不符返回 **409**，`detail` 含 `current_mtime_ns`（字符串）与 `current_size`。不提供 expected 字段则直接覆盖（兼容旧调用）。
+  - 不可就地编辑时返回 **422**：目标 >512KB（预览必截断）、二进制（含 NUL）、非 UTF-8、保存内容超 20MB。
+  - 成功响应：`{action: "save", path, mtime_ns(字符串), size}`。
 - **DELETE /api/files** 请求体：`{workspace_uuid, paths: ["相对路径", ...]}`，响应 `{"deleted": [...], "errors": [...]}`
 - **POST /api/files/upload** 表单字段：`workspace_uuid`、`path`、`files`（多文件），单个文件最大 100MB，响应 `{"uploaded": [...], "errors": [...]}`
 
 所有端点均校验路径必须位于工作区内，防止路径穿越。
+
+#### 文件预览（只读）
+
+```
+GET /api/file-preview?workspace_uuid={uuid}&path=relative/path
+```
+
+返回工作区文本文件内容供右侧预览面板使用；二进制不解码，超 512KB 截断（`truncated=true`）。响应字段：
+`{path, name, size, mtime, mtime_ns, kind("text"|"binary"), encoding, truncated, content}`。
+其中 `mtime_ns` 为**字符串**（纳秒时间戳超出 JavaScript `Number` 的安全整数范围，避免精度丢失）。
+只读 GET，不挂 CSRF；挂 `_teen_ws_guard` 与路径穿越校验。
 
 ### 3.11 记忆管理（Memory API）
 

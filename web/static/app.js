@@ -44,13 +44,58 @@ const queueClearBtn = document.getElementById('queue-clear-btn');
 const newSessionBtn = document.getElementById('new-session-btn');
 const sessionMenuBtn = document.getElementById('session-menu-btn');
 
-// 聊天区域的链接在新标签页打开（防止离开聊天界面丢失状态）
+// 解析聊天消息里的工作区文件链接，返回相对路径；非文件或跨工作区返回 null。
+// 覆盖 renderMarkdown 产出的两种形态：
+//   /api/workspaces/{uuid}/files/{rel}
+//   /api/files/{rel}?workspace_uuid={uuid}
+function _workspaceFileLinkPath(a) {
+    const uuid = currentWorkspace?.uuid;
+    if (!uuid) return null;
+    let url;
+    try {
+        url = new URL(a.href, window.location.href);
+    } catch {
+        return null;
+    }
+    if (url.origin !== window.location.origin) return null;
+
+    let raw = null;
+    const wsMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/files\/(.*)$/);
+    if (wsMatch) {
+        if (wsMatch[1] !== uuid) return null;  // 跨工作区：不在此工作区预览面板里打开
+        raw = wsMatch[2];
+    } else {
+        const filesMatch = url.pathname.match(/^\/api\/files\/(.*)$/);
+        if (filesMatch && url.searchParams.get('workspace_uuid') === uuid) {
+            raw = filesMatch[1];
+        }
+    }
+    if (!raw) return null;
+    try {
+        return decodeURIComponent(raw);  // normalizePath 期望已解码的相对路径
+    } catch {
+        return null;
+    }
+}
+
+// 聊天区域的链接：工作区文件链接点击后开右侧预览面板，其余在新标签页打开
+// （防止离开聊天界面丢失状态）。带修饰键/非左键点击时尊重"新标签打开"的意图。
 chatMessages.addEventListener('click', (e) => {
     const a = e.target.closest('a');
-    if (a) {
-        e.preventDefault();
-        window.open(a.href, '_blank', 'noopener,noreferrer');
+    if (!a) return;
+
+    const plainClick = e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+    if (plainClick && window.FileTree) {
+        const filePath = _workspaceFileLinkPath(a);
+        if (filePath) {
+            e.preventDefault();
+            window.FileTree.openPreview(filePath);
+            return;
+        }
     }
+
+    e.preventDefault();
+    window.open(a.href, '_blank', 'noopener,noreferrer');
 });
 
 // 输入面板拖拽调整大小

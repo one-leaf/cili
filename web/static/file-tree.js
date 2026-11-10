@@ -57,9 +57,21 @@ const FileTree = (() => {
             open: false,
             path: null,
             mtime: null,
+            mtimeNs: null,
+            size: null,
+            encoding: null,
+            truncated: false,
+            content: null,
             wrap: false,
             requestToken: 0,
             scrollTop: 0,
+            editor: null,            // CodeMirror EditorView（只读/可编辑共用）
+            wrapCompartment: null,   // 切换换行的 Compartment
+            themeCompartment: null,  // 切换明暗主题的 Compartment
+            editing: false,
+            dirty: false,
+            baselineMtimeNs: null,   // 进入编辑时从预览拿到的 mtime_ns（字符串）
+            baselineSize: null,      // 进入编辑时的 size
         },
     };
 
@@ -796,6 +808,10 @@ const FileTree = (() => {
 
     async function renameEntry(path) {
         if (!state.ws) return;
+        if (state.preview.editing && state.preview.dirty && previewTouches(path)) {
+            toast('有未保存的修改，请先保存或退出编辑');
+            return;
+        }
         const oldName = basename(path);
         const raw = prompt('请输入新名称：', oldName);
         const newName = (raw || '').trim();
@@ -818,6 +834,10 @@ const FileTree = (() => {
 
     async function deleteEntry(path, isDir) {
         if (!state.ws) return;
+        if (state.preview.editing && state.preview.dirty && previewTouches(path)) {
+            toast('有未保存的修改，请先保存或退出编辑');
+            return;
+        }
         const name = basename(path);
         const message = isDir
             ? `确定删除文件夹「${name}」及其全部内容吗？`
@@ -956,12 +976,14 @@ const FileTree = (() => {
 
     function closePreview() {
         if (!state.preview.open) return;
+        if (state.preview.editing && state.preview.dirty && !confirmDiscard()) return;
+        exitEditingState();
         state.preview.open = false;
         state.preview.requestToken += 1;
         setMaximized(false);
         el.pane.hidden = true;
         el.previewHandle.hidden = true;
-        el.body.textContent = '';
+        clearPreviewBody();
         savePreviewState();
     }
 
@@ -972,10 +994,20 @@ const FileTree = (() => {
         const item = findItem(clean);
         if (item && !item.is_file) return;
 
+        const changed = state.preview.path !== clean;
+        if (state.preview.editing && state.preview.dirty && !confirmDiscard()) return;
+        exitEditingState();
+
         selectFile(clean);
         openPane();
 
-        const changed = state.preview.path !== clean;
+        if (changed) {
+            state.preview.content = null;
+            state.preview.mtimeNs = null;
+            state.preview.size = null;
+            state.preview.encoding = null;
+            state.preview.truncated = false;
+        }
         state.preview.path = clean;
         state.preview.mtime = item?.modified ?? null;
         state.preview.requestToken += 1;
@@ -1001,6 +1033,7 @@ const FileTree = (() => {
         const cat = categoryOf(state.preview.path);
         el.wrapBtn.hidden = !(cat === 'text' || cat === 'probe');
         el.wrapBtn.classList.toggle('active', state.preview.wrap);
+        updateEditButtons();
     }
 
     function renderPreviewBody() {
@@ -1008,8 +1041,8 @@ const FileTree = (() => {
         const path = state.preview.path;
         const cat = categoryOf(path);
 
+        clearPreviewBody();
         el.body.classList.remove('media', 'pdf', 'office');
-        el.body.textContent = '';
         el.previewStatus.textContent = '';
         el.previewStatus.hidden = true;
 
@@ -1182,7 +1215,7 @@ const FileTree = (() => {
 
     async function loadTextPreview(path) {
         const token = ++state.preview.requestToken;
-        el.body.textContent = '';
+        clearPreviewBody();
         const loading = document.createElement('div');
         loading.className = 'preview-empty';
         loading.textContent = '加载中…';
@@ -1201,19 +1234,35 @@ const FileTree = (() => {
             const data = await res.json();
             if (token !== state.preview.requestToken || state.preview.path !== path) return;
             state.preview.mtime = data.mtime;
+            state.preview.mtimeNs = data.mtime_ns ?? null;
+            state.preview.size = data.size ?? null;
+            state.preview.encoding = data.encoding ?? null;
+            state.preview.truncated = !!data.truncated;
+            state.preview.content = data.content;
+            if (state.preview.editing && !state.preview.dirty) {
+                state.preview.baselineMtimeNs = state.preview.mtimeNs;
+                state.preview.baselineSize = state.preview.size;
+            }
             renderTextData(data, path);
         } catch (err) {
             if (token !== state.preview.requestToken) return;
+            state.preview.content = null;
+            updateEditButtons();
             renderPreviewError(err.message || '加载失败');
         }
     }
 
     function renderTextData(data, path) {
-        el.body.textContent = '';
+        clearPreviewBody();
         el.body.classList.remove('media');
 
         if (data.kind === 'binary') {
             el.wrapBtn.hidden = true;
+            if (state.preview.editing) {
+                exitEditingState();
+                toast('文件已变为二进制，已退出编辑');
+            }
+            updateEditButtons();
             renderUnsupported(path, '二进制文件不支持预览');
             return;
         }
@@ -1233,6 +1282,13 @@ const FileTree = (() => {
         }
 
         if (!data.content) {
+            if (state.preview.editing) {
+                // 编辑态下文件变空：保持可编辑
+                if (!mountCodeView('', path, { editable: true })) exitEditingState();
+                updateEditButtons();
+                restorePreviewScroll();
+                return;
+            }
             const empty = document.createElement('div');
             empty.className = 'preview-empty';
             empty.textContent = '空文件';
@@ -1240,8 +1296,17 @@ const FileTree = (() => {
             return;
         }
 
-        if (categoryOf(path) === 'markdown') {
+        if (state.preview.editing && !canEditCurrent()) {
+            // 自动重载后发现文件已不可编辑（截断/非 UTF-8 等）：退出编辑
+            exitEditingState();
+            toast('文件已不可编辑，已退出编辑');
+        }
+
+        if (state.preview.editing) {
+            if (!mountCodeView(data.content, path, { editable: true })) exitEditingState();
+        } else if (categoryOf(path) === 'markdown') {
             el.body.classList.remove('media');
+            el.wrapBtn.hidden = true;
             const body = document.createElement('div');
             body.className = 'preview-md';
             try {
@@ -1256,16 +1321,306 @@ const FileTree = (() => {
                 window.MathJax.typesetPromise([body]).catch(() => {});
             }
         } else {
-            const pre = document.createElement('pre');
-            pre.className = 'preview-code' + (state.preview.wrap ? ' wrap' : '');
-            pre.tabIndex = 0;
-            const code = document.createElement('code');
-            code.textContent = data.content;
-            pre.appendChild(code);
-            el.body.appendChild(pre);
+            if (!mountCodeView(data.content, path)) {
+                // 兜底：CM 包未加载时沿用纯文本 <pre>
+                const pre = document.createElement('pre');
+                pre.className = 'preview-code' + (state.preview.wrap ? ' wrap' : '');
+                pre.tabIndex = 0;
+                const code = document.createElement('code');
+                code.textContent = data.content;
+                pre.appendChild(code);
+                el.body.appendChild(pre);
+            }
         }
 
+        updateEditButtons();
         restorePreviewScroll();
+    }
+
+    // ---------- CodeMirror 只读代码视图（行号 + 语法高亮 + 换行） ----------
+    const CM_LANG_EXT = {
+        py: 'python', pyw: 'python',
+        java: 'java',
+        c: 'cpp', h: 'cpp', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp',
+        js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+        ts: 'typescript', tsx: 'typescript',
+        json: 'json', jsonl: 'json',
+        yaml: 'yaml', yml: 'yaml',
+        xml: 'xml',
+        sql: 'sql',
+        go: 'go',
+        rs: 'rust',
+        php: 'php',
+        css: 'css', scss: 'css', less: 'css',
+        md: 'markdown', markdown: 'markdown',
+    };
+
+    function cmLanguageFor(path) {
+        const CM = window.CiliCodeMirror;
+        if (!CM) return null;
+        const ext = String(path).split('.').pop().toLowerCase();
+        const name = CM_LANG_EXT[ext];
+        if (!name) return null;
+        if (name === 'typescript') return () => CM.languages.javascript({ typescript: true });
+        return CM.languages[name] || null;
+    }
+
+    function isDarkTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'dark';
+    }
+
+    function destroyCodeView() {
+        if (state.preview.editor) {
+            try { state.preview.editor.destroy(); } catch (e) { /* ignore */ }
+            state.preview.editor = null;
+        }
+        state.preview.wrapCompartment = null;
+        state.preview.themeCompartment = null;
+        if (el && el.body) el.body.classList.remove('has-code');
+    }
+
+    function clearPreviewBody() {
+        destroyCodeView();
+        if (el && el.body) el.body.textContent = '';
+    }
+
+    function buildCmTheme(CM) {
+        const base = CM.EditorView.theme({
+            '&': { height: '100%', fontSize: '14px', backgroundColor: 'var(--code-bg)', color: 'var(--text-color)' },
+            '.cm-scroller': { fontFamily: 'Consolas, "Courier New", monospace', lineHeight: '1.5' },
+            '.cm-gutters': { fontSize: '14px', backgroundColor: 'var(--code-bg)', color: 'var(--text-light)', border: 'none' },
+            '.cm-lineNumbers .cm-gutterElement': { paddingRight: '12px' },
+            '.cm-content': { padding: '8px 0' },
+        });
+        if (!isDarkTheme()) {
+            return [base, CM.syntaxHighlighting(CM.ciliLightHighlight)];
+        }
+        // 暗色：自定义 VS Code Dark+ 近似配色；背景统一为面板色
+        const bg = CM.EditorView.theme({
+            '&': { backgroundColor: 'var(--code-bg)' },
+            '.cm-gutters': { backgroundColor: 'var(--code-bg)' },
+        });
+        return [base, CM.syntaxHighlighting(CM.ciliDarkHighlight), bg];
+    }
+
+    // 挂载 CM 视图（默认只读；opts.editable=true 时为可编辑）；CM 包未加载返回 false
+    function mountCodeView(content, path, opts = {}) {
+        const CM = window.CiliCodeMirror;
+        if (!CM) return false;
+        const editable = !!opts.editable;
+        el.body.classList.add('has-code');
+        const wrapCompartment = new CM.Compartment();
+        const themeCompartment = new CM.Compartment();
+        const langFn = cmLanguageFor(path);
+        const extensions = [
+            CM.lineNumbers(),
+            wrapCompartment.of(state.preview.wrap ? CM.EditorView.lineWrapping : []),
+            themeCompartment.of(buildCmTheme(CM)),
+        ];
+        if (editable) {
+            extensions.push(
+                CM.history(),
+                CM.keymap.of([...CM.defaultKeymap, ...CM.historyKeymap]),
+                CM.drawSelection(),
+                CM.highlightActiveLine(),
+                CM.bracketMatching(),
+                CM.indentOnInput(),
+                CM.EditorView.updateListener.of((update) => {
+                    if (update.docChanged) markDirty();
+                }),
+            );
+        } else {
+            extensions.push(
+                CM.EditorState.readOnly.of(true),
+                CM.EditorView.editable.of(false),
+            );
+        }
+        if (langFn) extensions.push(langFn());
+        const view = new CM.EditorView({ doc: content, extensions, parent: el.body });
+        state.preview.editor = view;
+        state.preview.wrapCompartment = wrapCompartment;
+        state.preview.themeCompartment = themeCompartment;
+        view.scrollDOM.addEventListener('scroll', () => {
+            if (state.preview.editor !== view) return;
+            state.preview.scrollTop = view.scrollDOM.scrollTop;
+            clearTimeout(previewScrollTimer);
+            previewScrollTimer = setTimeout(savePreviewState, 300);
+        });
+        return true;
+    }
+
+    // ---------- 编辑模式 ----------
+    function canEditCurrent() {
+        const cat = categoryOf(state.preview.path || '');
+        if (!(cat === 'text' || cat === 'probe' || cat === 'markdown')) return false;
+        if (state.preview.truncated) return false;
+        const enc = String(state.preview.encoding || '').toLowerCase();
+        if (enc && enc !== 'utf-8' && enc !== 'ascii') return false;
+        if (state.preview.content == null) return false;
+        return true;
+    }
+
+    function updateEditButtons() {
+        if (!el || !el.editBtn) return;
+        const editing = state.preview.editing;
+        el.editBtn.hidden = editing || !canEditCurrent();
+        el.saveBtn.hidden = !editing;
+        el.cancelBtn.hidden = !editing;
+        el.saveBtn.classList.toggle('dirty', !!state.preview.dirty);
+        el.saveBtn.title = state.preview.dirty ? '保存（有未保存修改）' : '保存';
+    }
+
+    function markDirty() {
+        if (!state.preview.editing || state.preview.dirty) return;
+        state.preview.dirty = true;
+        updateEditButtons();
+    }
+
+    function exitEditingState() {
+        state.preview.editing = false;
+        state.preview.dirty = false;
+        clearExternalChangeHint();
+        updateEditButtons();
+    }
+
+    function showExternalChangeHint() {
+        if (!el || !el.previewStatus) return;
+        el.previewStatus.textContent = '文件可能已在磁盘变更，保存时会检测冲突。';
+        el.previewStatus.hidden = false;
+    }
+
+    function clearExternalChangeHint() {
+        if (!el || !el.previewStatus) return;
+        el.previewStatus.textContent = '';
+        el.previewStatus.hidden = true;
+    }
+
+    function confirmDiscard() {
+        if (!state.preview.editing || !state.preview.dirty) return true;
+        return window.confirm('有未保存的修改，确定放弃？');
+    }
+
+    function previewTouches(path) {
+        const p = state.preview.path;
+        if (!p) return false;
+        return p === path || p.startsWith(path + '/');
+    }
+
+    function startEditing() {
+        if (state.preview.editing || !canEditCurrent()) return;
+        if (!window.CiliCodeMirror) {
+            toast('代码编辑器未加载，无法编辑');
+            return;
+        }
+        state.preview.editing = true;
+        state.preview.dirty = false;
+        clearExternalChangeHint();
+        state.preview.baselineMtimeNs = state.preview.mtimeNs;
+        state.preview.baselineSize = state.preview.size;
+        destroyCodeView();
+        el.body.textContent = '';
+        el.body.classList.remove('media', 'pdf', 'office');
+        mountCodeView(state.preview.content ?? '', state.preview.path, { editable: true });
+        el.wrapBtn.hidden = false;
+        el.wrapBtn.classList.toggle('active', state.preview.wrap);
+        updateEditButtons();
+        if (state.preview.editor) state.preview.editor.focus();
+    }
+
+    function cancelEditing() {
+        if (!state.preview.editing) return;
+        if (state.preview.dirty && !window.confirm('放弃未保存的修改？')) return;
+        exitEditingState();
+        renderPreviewBody();
+    }
+
+    function applySaveSuccess(data, content) {
+        if (data && data.mtime_ns != null) state.preview.baselineMtimeNs = data.mtime_ns;
+        if (data && data.size != null) {
+            state.preview.baselineSize = data.size;
+            state.preview.size = data.size;
+        }
+        state.preview.mtimeNs = state.preview.baselineMtimeNs;
+        if (content != null) state.preview.content = content;
+        state.preview.truncated = false;
+        state.preview.dirty = false;
+        clearExternalChangeHint();
+        updateEditButtons();
+    }
+
+    function readSaveDetail(payload) {
+        if (!payload) return null;
+        if (typeof payload.detail === 'string') return payload.detail;
+        if (payload.detail && typeof payload.detail === 'object') return payload.detail.message || '文件已变更';
+        return null;
+    }
+
+    async function saveEditing() {
+        if (!state.preview.editing || !state.ws || !state.preview.editor) return;
+        const content = state.preview.editor.state.doc.toString();
+        const body = {
+            workspace_uuid: state.ws.uuid,
+            path: state.preview.path,
+            content,
+            expected_mtime_ns: state.preview.baselineMtimeNs ?? undefined,
+            expected_size: state.preview.baselineSize ?? undefined,
+        };
+        try {
+            const res = await fetch('/api/files', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                applySaveSuccess(data, content);
+                toast('已保存');
+                return;
+            }
+            let payload = null;
+            try { payload = await res.json(); } catch (e) { /* ignore */ }
+            if (res.status === 409) {
+                const overwrite = window.confirm('文件已在磁盘上变更。\n确定：用当前内容覆盖\n取消：查看其它选项');
+                if (overwrite) {
+                    await forceSave(content);
+                    return;
+                }
+                if (window.confirm('重新加载磁盘上的最新内容？\n确定：重新加载（放弃当前修改）\n取消：保留当前编辑')) {
+                    exitEditingState();
+                    reloadPreview({ preserveScroll: true, force: true });
+                }
+                return;
+            }
+            toast('保存失败：' + (readSaveDetail(payload) || `HTTP ${res.status}`));
+        } catch (e) {
+            toast('保存失败：' + (e.message || '网络错误'));
+        }
+    }
+
+    async function forceSave(content) {
+        if (!state.ws) return;
+        try {
+            const res = await fetch('/api/files', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_uuid: state.ws.uuid,
+                    path: state.preview.path,
+                    content,
+                }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                applySaveSuccess(data, content);
+                toast('已覆盖保存');
+            } else {
+                let payload = null;
+                try { payload = await res.json(); } catch (e) { /* ignore */ }
+                toast('保存失败：' + (readSaveDetail(payload) || `HTTP ${res.status}`));
+            }
+        } catch (e) {
+            toast('保存失败：' + (e.message || '网络错误'));
+        }
     }
 
     function renderPreviewError(message) {
@@ -1288,14 +1643,29 @@ const FileTree = (() => {
     function restorePreviewScroll() {
         const target = state.preview.scrollTop || 0;
         requestAnimationFrame(() => {
-            if (el && state.preview.open) el.body.scrollTop = target;
+            if (!el || !state.preview.open) return;
+            if (state.preview.editor) state.preview.editor.scrollDOM.scrollTop = target;
+            else el.body.scrollTop = target;
         });
     }
 
     function reloadPreview(opts = {}) {
         if (!state.preview.open || !state.preview.path) return;
+        if (state.preview.editing) {
+            if (state.preview.dirty) {
+                if (opts.auto) {
+                    showExternalChangeHint();
+                    return;
+                }
+                if (!opts.force && !confirmDiscard()) return;
+            }
+            if (!opts.keepEditing) exitEditingState();
+        }
+        clearExternalChangeHint();
         if (opts.preserveScroll !== false) {
-            state.preview.scrollTop = el.body.scrollTop;
+            state.preview.scrollTop = state.preview.editor
+                ? state.preview.editor.scrollDOM.scrollTop
+                : el.body.scrollTop;
         }
         const cat = categoryOf(state.preview.path);
         if (cat === 'image' || cat === 'pdf' || cat === 'audio' || cat === 'video' || cat === 'html' || cat === 'office') {
@@ -1309,8 +1679,17 @@ const FileTree = (() => {
     function toggleWrap() {
         state.preview.wrap = !state.preview.wrap;
         el.wrapBtn.classList.toggle('active', state.preview.wrap);
-        const pre = el.body.querySelector('.preview-code');
-        if (pre) pre.classList.toggle('wrap', state.preview.wrap);
+        const CM = window.CiliCodeMirror;
+        if (state.preview.editor && state.preview.wrapCompartment && CM) {
+            state.preview.editor.dispatch({
+                effects: state.preview.wrapCompartment.reconfigure(
+                    state.preview.wrap ? CM.EditorView.lineWrapping : []
+                ),
+            });
+        } else {
+            const pre = el.body.querySelector('.preview-code');
+            if (pre) pre.classList.toggle('wrap', state.preview.wrap);
+        }
         savePreviewState();
     }
 
@@ -1461,7 +1840,7 @@ const FileTree = (() => {
 
         document.addEventListener('mousemove', (event) => {
             if (!dragging) return;
-            const width = clamp(startWidth + (startX - event.clientX), PREVIEW_MIN_WIDTH, previewMaxWidth());
+            const width = clamp(startWidth + (event.clientX - startX), PREVIEW_MIN_WIDTH, previewMaxWidth());
             el.pane.style.width = `${width}px`;
         });
 
@@ -1520,11 +1899,11 @@ const FileTree = (() => {
         state.preview.requestToken += 1;
 
         if (state.preview.open && !first) {
-            state.preview.path = null;
             closePreview();
+            if (!state.preview.open) state.preview.path = null;
         } else if (!state.ws && state.preview.open) {
-            state.preview.path = null;
             closePreview();
+            if (!state.preview.open) state.preview.path = null;
         }
 
         updateSectionState();
@@ -1555,7 +1934,9 @@ const FileTree = (() => {
         await Promise.all(Array.from(targets).map((dir) => loadDir(dir, { force: true })));
         if (token !== state.token) return;
         render();
-        if (state.preview.open) reloadPreview({ preserveScroll: true });
+        if (state.preview.open) {
+            reloadPreview({ preserveScroll: true, auto: true, keepEditing: true });
+        }
     }
 
     function scheduleAutoRefresh() {
@@ -1583,6 +1964,9 @@ const FileTree = (() => {
             previewPath: document.getElementById('preview-path'),
             body: document.getElementById('preview-body'),
             previewStatus: document.getElementById('preview-status'),
+            editBtn: document.getElementById('preview-edit-btn'),
+            saveBtn: document.getElementById('preview-save-btn'),
+            cancelBtn: document.getElementById('preview-cancel-btn'),
             wrapBtn: document.getElementById('preview-wrap-btn'),
             maximizeBtn: document.getElementById('preview-maximize-btn'),
             reloadBtn: document.getElementById('preview-reload-btn'),
@@ -1604,16 +1988,38 @@ const FileTree = (() => {
         el.collapseAllBtn.addEventListener('click', () => collapseTree());
         el.refreshBtn.addEventListener('click', () => refreshTree());
 
+        el.editBtn.addEventListener('click', startEditing);
+        el.saveBtn.addEventListener('click', saveEditing);
+        el.cancelBtn.addEventListener('click', cancelEditing);
         el.closeBtn.addEventListener('click', closePreview);
         el.reloadBtn.addEventListener('click', () => reloadPreview({ preserveScroll: true }));
         el.wrapBtn.addEventListener('click', toggleWrap);
         el.maximizeBtn.addEventListener('click', () => setMaximized(!isMaximized()));
         el.pane.addEventListener('keydown', (event) => {
+            if (state.preview.editing) return;  // 编辑态按键由 document 监听处理
             if (event.key === 'Escape') {
                 if (isMaximized()) setMaximized(false);
                 else closePreview();
             }
         });
+        document.addEventListener('keydown', (event) => {
+            if (!state.preview.editing) return;
+            if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
+                event.preventDefault();
+                saveEditing();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                cancelEditing();
+            }
+        });
+        // 主题切换时重配 CM 主题（保留光标与滚动，不重建视图）
+        new MutationObserver(() => {
+            const CM = window.CiliCodeMirror;
+            if (!state.preview.editor || !state.preview.themeCompartment || !CM) return;
+            state.preview.editor.dispatch({
+                effects: state.preview.themeCompartment.reconfigure(buildCmTheme(CM)),
+            });
+        }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
         el.body.addEventListener('scroll', () => {
             state.preview.scrollTop = el.body.scrollTop;
             clearTimeout(previewScrollTimer);

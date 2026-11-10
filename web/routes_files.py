@@ -50,6 +50,9 @@ _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 上传分块大小（流式写盘，不整�
 _PREVIEW_MAX_BYTES = 512 * 1024
 _PREVIEW_SNIFF_BYTES = 8192
 
+# 预览内编辑保存内容上限，超过拒绝（防磁盘/内存滥用）
+_SAVE_MAX_BYTES = 20 * 1024 * 1024
+
 
 def _decode_preview_text(data: bytes, truncated: bool) -> tuple[str, str]:
     """解码预览文本：utf-8 → gb18030 → utf-8 替换。
@@ -94,6 +97,10 @@ class FileUpdateRequest(BaseModel):
     path: str  # Current relative path
     new_path: str = ""  # New relative path (for rename/move)
     content: str | None = None  # New content (for save)
+    # 乐观锁基线：进入编辑时从 /api/file-preview 取得；不提供则直接覆盖（兼容旧调用）
+    # mtime_ns 以字符串传输：纳秒时间戳约 1.7e18，超出 JS Number 安全整数范围，避免精度丢失
+    expected_mtime_ns: str | None = None
+    expected_size: int | None = None
 
 
 class OpenInExplorerRequest(BaseModel):
@@ -462,6 +469,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
             "name": file_path.name,
             "size": stat.st_size,
             "mtime": stat.st_mtime,
+            "mtime_ns": str(stat.st_mtime_ns),
             "kind": "binary",
             "encoding": None,
             "truncated": False,
@@ -474,6 +482,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
         "name": file_path.name,
         "size": stat.st_size,
         "mtime": stat.st_mtime,
+        "mtime_ns": str(stat.st_mtime_ns),
         "kind": "text",
         "encoding": encoding,
         "truncated": truncated,
@@ -767,9 +776,62 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
         if not file_full_path.is_file():
             raise HTTPException(status_code=400, detail="Cannot save content to a directory")
 
+        # ── 可编辑门控：超大（预览必截断）/二进制/非 UTF-8 一律拒绝（422）──
+        try:
+            st = file_full_path.stat()
+            raw = file_full_path.read_bytes()
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        if st.st_size > _PREVIEW_MAX_BYTES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"文件过大（> {_PREVIEW_MAX_BYTES // 1024} KB），不支持在预览中编辑",
+            )
+        if len(request.content) > _SAVE_MAX_BYTES:
+            raise HTTPException(status_code=422, detail="保存内容超过上限")
+        if b"\x00" in raw[:_PREVIEW_SNIFF_BYTES]:
+            raise HTTPException(status_code=422, detail="二进制文件不支持在预览中编辑")
+        try:
+            raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail="非 UTF-8 文件不支持在预览中编辑")
+
+        # ── 乐观锁：与进入编辑时的基线比对（不提供则直接覆盖）──
+        # expected_mtime_ns 为纳秒字符串，转 int 后再与 st_mtime_ns 比对
+        expected_mtime_ns: int | None = None
+        if request.expected_mtime_ns is not None:
+            try:
+                expected_mtime_ns = int(request.expected_mtime_ns)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail="expected_mtime_ns 无效")
+        stale: list[str] = []
+        if expected_mtime_ns is not None and st.st_mtime_ns != expected_mtime_ns:
+            stale.append("mtime")
+        if request.expected_size is not None and st.st_size != request.expected_size:
+            stale.append("size")
+        if stale:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "file changed on disk",
+                    "fields": stale,
+                    "current_mtime_ns": str(st.st_mtime_ns),
+                    "current_size": st.st_size,
+                },
+            )
+
         try:
             file_full_path.write_text(request.content, encoding="utf-8")
-            return {"action": "save", "path": Path(request.path).as_posix()}
+            st_new = file_full_path.stat()
+            return {
+                "action": "save",
+                "path": Path(request.path).as_posix(),
+                "mtime_ns": str(st_new.st_mtime_ns),
+                "size": st_new.st_size,
+            }
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
         except Exception as e:

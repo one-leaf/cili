@@ -109,6 +109,46 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
 
+        <!-- Preview Pane（中间栏：预览居中、对话靠右） -->
+        <aside class="preview-pane" id="preview-pane" aria-label="文件预览" hidden>
+            <div class="preview-header">
+                <span class="preview-file-icon" id="preview-file-icon">📄</span>
+                <div class="preview-title">
+                    <div class="preview-name" id="preview-name"></div>
+                    <div class="preview-path" id="preview-path"></div>
+                </div>
+                <div class="preview-actions">
+                    <button id="preview-maximize-btn" class="btn-icon-flat" title="最大化预览">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    </button>
+                    <button id="preview-edit-btn" class="btn-icon-flat" title="编辑" hidden>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                    <button id="preview-save-btn" class="btn-icon-flat" title="保存" hidden>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                    <button id="preview-cancel-btn" class="btn-icon-flat" title="取消编辑" hidden>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <button id="preview-wrap-btn" class="btn-icon-flat" title="自动换行" hidden>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><polyline points="15 9 18 12 15 15"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
+                    </button>
+                    <button id="preview-reload-btn" class="btn-icon-flat" title="重新加载">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    </button>
+                    <a id="preview-download-btn" class="btn-icon-flat" title="下载" download>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                    <button id="preview-close-btn" class="btn-icon-flat" title="关闭预览">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="preview-body" id="preview-body"></div>
+            <div class="preview-status" id="preview-status" hidden></div>
+        </aside>
+        <div class="preview-resize-handle" id="preview-resize-handle" title="拖拽调整预览宽度（双击重置）" hidden></div>
+
         <!-- Main Chat Area -->
         <main class="chat-area">
             <div id="teen-badge" class="teen-badge" style="display:none;" title="青少年模式已开启：记录不可删除，开关需家长密码"></div>
@@ -158,34 +198,6 @@
                 </div>
             </div>
         </main>
-        <div class="preview-resize-handle" id="preview-resize-handle" title="拖拽调整预览宽度（双击重置）" hidden></div>
-
-        <aside class="preview-pane" id="preview-pane" aria-label="文件预览" hidden>
-            <div class="preview-header">
-                <span class="preview-file-icon" id="preview-file-icon">📄</span>
-                <div class="preview-title">
-                    <div class="preview-name" id="preview-name"></div>
-                    <div class="preview-path" id="preview-path"></div>
-                </div>
-                <div class="preview-actions">
-                    <button id="preview-maximize-btn" class="btn-icon-flat" title="最大化预览">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                    </button>
-                    <button id="preview-wrap-btn" class="btn-icon-flat" title="自动换行" hidden>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><polyline points="15 9 18 12 15 15"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
-                    </button>
-                    <button id="preview-reload-btn" class="btn-icon-flat" title="重新加载">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    </button>
-                    <a id="preview-download-btn" class="btn-icon-flat" title="下载" download>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </a>
-                    <button id="preview-close-btn" class="btn-icon-flat" title="关闭预览">&times;</button>
-                </div>
-            </div>
-            <div class="preview-body" id="preview-body"></div>
-            <div class="preview-status" id="preview-status" hidden></div>
-        </aside>
     </div>
 
     <!-- 特殊指令帮助 Modal -->
@@ -991,6 +1003,7 @@
         </div>
     </div>
 
+    <script src="/static/libs/codemirror6.bundle.min.js"></script>
     <script src="/static/utils.js"></script>
     <script src="/static/file-tree.js"></script>
     <script src="/static/settings.js"></script>

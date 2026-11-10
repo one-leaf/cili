@@ -366,6 +366,23 @@
     justify-content: center;
 }
 
+/* CodeMirror 只读代码视图：填满预览体、由 CM 自身滚动（行号+高亮+换行） */
+.preview-body.has-code {
+    padding: 0;
+    overflow: hidden;
+}
+.preview-body.has-code .cm-editor {
+    height: 100%;
+}
+.preview-body.has-code .cm-scroller {
+    overflow: auto;
+}
+
+/* 编辑态：有未保存修改时保存按钮高亮 */
+#preview-save-btn.dirty {
+    color: var(--primary-color);
+}
+
 .preview-status {
     flex-shrink: 0;
     padding: 4px 12px;
