@@ -22,6 +22,8 @@ const FileTree = (() => {
     const AUTO_REFRESH_MS = 400;
     const PREVIEW_DEFAULT_WIDTH = 420;
     const PREVIEW_MIN_WIDTH = 280;
+    // 拖拽预览宽度时给对话区保留的最小宽度
+    const PREVIEW_MIN_CHAT_WIDTH = 320;
 
     const MD_EXTS = new Set(['md', 'markdown']);
     const HTML_EXTS = new Set(['html', 'htm']);
@@ -1327,10 +1329,25 @@ const FileTree = (() => {
     }
 
     // ---------- 布局 ----------
+    // 预览宽度上限 = 视口宽 − 侧栏 − 两条拖拽条 − 对话区最小宽度；窄屏覆盖层模式沿用视口比例
+    function previewMaxWidth() {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+            return Math.max(PREVIEW_MIN_WIDTH, Math.floor(window.innerWidth * 0.6));
+        }
+        const sidebar = document.querySelector('.sidebar');
+        const sidebarHandle = document.querySelector('.sidebar-resize-handle');
+        const sidebarWidth = sidebar ? sidebar.getBoundingClientRect().width : 0;
+        const sidebarHandleWidth = sidebarHandle ? sidebarHandle.getBoundingClientRect().width : 0;
+        const previewHandleWidth = el && el.previewHandle ? el.previewHandle.getBoundingClientRect().width : 0;
+        const available = Math.floor(
+            window.innerWidth - sidebarWidth - sidebarHandleWidth - previewHandleWidth - PREVIEW_MIN_CHAT_WIDTH
+        );
+        return Math.max(PREVIEW_MIN_WIDTH, available);
+    }
+
     function applyPreviewWidth() {
         if (!el) return;
-        const maxWidth = Math.min(720, Math.max(PREVIEW_MIN_WIDTH, Math.floor(window.innerWidth * 0.6)));
-        const width = clamp(readNum(KEYS.previewWidth, PREVIEW_DEFAULT_WIDTH), PREVIEW_MIN_WIDTH, maxWidth);
+        const width = clamp(readNum(KEYS.previewWidth, PREVIEW_DEFAULT_WIDTH), PREVIEW_MIN_WIDTH, previewMaxWidth());
         el.pane.style.width = `${width}px`;
     }
 
@@ -1444,8 +1461,7 @@ const FileTree = (() => {
 
         document.addEventListener('mousemove', (event) => {
             if (!dragging) return;
-            const maxWidth = Math.min(720, Math.max(PREVIEW_MIN_WIDTH, Math.floor(window.innerWidth * 0.6)));
-            const width = clamp(startWidth + (startX - event.clientX), PREVIEW_MIN_WIDTH, maxWidth);
+            const width = clamp(startWidth + (startX - event.clientX), PREVIEW_MIN_WIDTH, previewMaxWidth());
             el.pane.style.width = `${width}px`;
         });
 
