@@ -1780,7 +1780,7 @@ const FileTree = (() => {
             if (!dragging) return;
             const bodyHeight = sidebarBodyHeight();
             const height = clamp(
-                startHeight + (event.clientY - startY),
+                startHeight - (event.clientY - startY),
                 140,
                 Math.max(160, bodyHeight - 140)
             );
