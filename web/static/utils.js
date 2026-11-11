@@ -1,48 +1,6 @@
 // ── utils.js ── 工具函数
 // 通用工具，无业务依赖，其他模块均可引用
 
-// ── 图片压缩 ──
-const MAX_IMAGE_DIMENSION = 1920;  // 最大宽高
-const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024;  // 2MB
-
-async function compressImage(file, quality = 0.85) {
-    return new Promise((resolve) => {
-        const img = new Image();
-        const url = URL.createObjectURL(file);
-        img.onload = () => {
-            URL.revokeObjectURL(url);
-            let { width, height } = img;
-            // 缩放
-            if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
-                const scale = Math.min(MAX_IMAGE_DIMENSION / width, MAX_IMAGE_DIMENSION / height);
-                width = Math.round(width * scale);
-                height = Math.round(height * scale);
-            }
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, width, height);
-            canvas.toBlob((blob) => {
-                if (!blob) { resolve({ data: null, media_type: 'image/jpeg' }); return; }
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    const dataUrl = ev.target.result;
-                    const commaIdx = dataUrl.indexOf(',');
-                    const data = dataUrl.substring(commaIdx + 1);
-                    resolve({ data, media_type: 'image/jpeg', preview_url: dataUrl, size: blob.size });
-                };
-                reader.readAsDataURL(blob);
-            }, 'image/jpeg', quality);
-        };
-        img.onerror = () => {
-            URL.revokeObjectURL(url);
-            resolve({ data: null, media_type: 'image/jpeg' });
-        };
-        img.src = url;
-    });
-}
-
 // ── localStorage 位置持久化 ──
 // 存储格式: { workspace_uuid: "当前工作区", ws_sessions: { "ws-uuid": "session_id" } }
 // ws_sessions 按工作区记忆上次访问的会话，刷新或切换回来可恢复

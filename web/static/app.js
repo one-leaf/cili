@@ -21,11 +21,11 @@ let isStopping = false;          // 已发 /stop，等待回合真正收尾
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
-let pendingAttachments = [];  // [{ path: "uploads/x.png", name, media_type }]
 // 消息分页加载状态
 let currentSessionLoadedOffset = 0;  // 已加载的消息数（从末尾算起）
 let currentSessionHasMore = false;   // 是否还有更多历史消息
 let isLoadingMore = false;           // 是否正在加载更多消息
+let pendingAttachments = [];         // [{ path: "uploads/x", name, media_type }]
 
 
 // DOM elements
@@ -332,7 +332,9 @@ function toggleTheme() {
 // ── 输入区按钮状态（发送 / 排队发送 / 停止）──
 // 单点决策：所有分支结束后都调它，不再在 fetch 分支里直接改按钮文案/配色。
 function hasDraft() {
-    return chatInput.value.trim().length > 0 || pendingAttachments.length > 0;
+    return chatInput.value.trim().length > 0
+        || pendingAttachments.length > 0
+        || (typeof getActiveEditorContext === 'function' && getActiveEditorContext() !== null);
 }
 
 // 右下角单按钮图标（Claude Code 插件式）：发送=纸飞机，停止=方块
@@ -390,7 +392,7 @@ function setupEventListeners() {
             sendMessage();
         }
     });
-    // Paste file support：文件（含文档）直接上传到 uploads，再挂底部 chip（模型按需 read_image/read）
+    // Ctrl+V：只上传到 uploads；后续在文件树中预览选择（与预览流程完全一致）
     chatInput.addEventListener('paste', async (e) => {
         const cd = e.clipboardData;
         if (!cd) return;
@@ -432,6 +434,7 @@ function setupEventListeners() {
         };
         try {
             const stamp = Date.now();
+            let uploadedCount = 0;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 const ext = EXT_BY_MIME[file.type] || '';
@@ -444,6 +447,7 @@ function setupEventListeners() {
                 const result = await uploadFiles('uploads', [uploadFile]);
                 const up = (result.uploaded || [])[0];
                 if (up) {
+                    uploadedCount += 1;
                     pendingAttachments.push({
                         path: `uploads/${up.name}`,
                         name: up.name,
@@ -455,7 +459,13 @@ function setupEventListeners() {
                     showToast('上传失败：' + (errors[0].error || '未知错误'));
                 }
             }
-            renderComposerAttachments();
+            if (uploadedCount > 0) {
+                if (window.FileTree && typeof window.FileTree.refresh === 'function') {
+                    window.FileTree.refresh();
+                }
+                showToast(`已上传 ${uploadedCount} 个文件到 uploads`);
+                renderComposerAttachments();
+            }
             updateComposerButtons();
         } catch (err) {
             showToast('上传失败：' + (err.message || '未知错误'));

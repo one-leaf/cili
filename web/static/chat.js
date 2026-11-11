@@ -75,7 +75,7 @@ function clearAllToolStreaming() {
     }
 }
 
-// 输入框底部左侧：附件 / 编辑器上下文 chip
+// 输入框底部左侧：附件 chip（预览选区 + Ctrl+V 上传文件）
 function renderComposerAttachments() {
     const area = document.getElementById('input-attachments');
     if (!area) return;
@@ -122,6 +122,7 @@ function renderComposerAttachments() {
             remove.addEventListener('click', () => {
                 _editorContextChip.suppressedKey = _editorContextKey(_editorContextChip.ctx);
                 renderComposerAttachments();
+                updateComposerButtons();
             });
         } else {
             remove.addEventListener('click', () => {
@@ -156,6 +157,7 @@ function getActiveEditorContext() {
 }
 
 chatInput.addEventListener('focus', renderComposerAttachments);
+window.addEventListener('cili:editor-context-changed', renderComposerAttachments);
 
 // 辅助函数：提取文本内容
 function extractTextContent(content) {
@@ -1328,8 +1330,15 @@ async function stopAgent() {
 // Send message
 async function sendMessage() {
     const message = chatInput.value.trim();
-    const hasAttachments = pendingAttachments.length > 0;
-    if (!message && !hasAttachments) return;
+    const editorContext = getActiveEditorContext();
+    const attachments = [];
+    if (editorContext) {
+        attachments.push({ path: editorContext.path, selection: editorContext.selection });
+    }
+    for (const att of pendingAttachments) {
+        attachments.push({ path: att.path, selection: null, media_type: att.media_type });
+    }
+    if (!message && attachments.length === 0) return;
 
     if (!currentWorkspace || !currentSession) {
         alert('请先选择工作区并创建会话');
@@ -1339,14 +1348,8 @@ async function sendMessage() {
     console.log('Sending message to session:', currentSession.session_id);
     const sessionId = currentSession.session_id;
 
-    // Capture attachments before clearing
-    const attachmentsToSend = hasAttachments ? pendingAttachments.map(att => ({
-        path: att.path,
-        name: att.name,
-        media_type: att.media_type,
-    })) : null;
     const clientId = makeClientId();
-    const editorContext = getActiveEditorContext();
+    const attachmentsToSend = attachments.length > 0 ? attachments : null;
 
     // 运行中：入队，不创建回合容器、不置 isSending（设计 §5.7.2）
     if (sessionRunning) {
@@ -1358,9 +1361,8 @@ async function sendMessage() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         content: message,
-                        attachments: attachmentsToSend,
                         client_id: clientId,
-                        ...(editorContext ? { editor_context: editorContext } : {}),
+                        ...(attachmentsToSend ? { attachments: attachmentsToSend } : {}),
                     }),
                 }
             );
@@ -1414,17 +1416,20 @@ async function sendMessage() {
     // 因此 renderMessages 不会覆盖它；不清就会一直停在用户第一条消息上方。
     chatMessages.querySelector('.welcome-message')?.remove();
 
-    // Add user message to UI (with images if any)
+    // Add user message to UI
     const userDiv = addMessage('user', message);
     if (attachmentsToSend) {
         const contentDiv = userDiv.querySelector('.message-content');
         const attContainer = document.createElement('div');
         attContainer.className = 'user-attachments';
         attachmentsToSend.forEach(att => {
-            const chip = document.createElement('span');
-            chip.className = 'user-attachment';
-            chip.textContent = `📎 ${att.name}`;
-            attContainer.appendChild(chip);
+            const chipEl = document.createElement('span');
+            chipEl.className = 'user-attachment';
+            const sel = att.selection;
+            chipEl.textContent = sel
+                ? `📎 ${att.path}:${sel.startLine}-${sel.endLine}`
+                : `📎 ${att.path}`;
+            attContainer.appendChild(chipEl);
         });
         contentDiv.insertBefore(attContainer, contentDiv.firstChild);
     }
@@ -1458,9 +1463,6 @@ async function sendMessage() {
         const requestBody = { content: message };
         if (attachmentsToSend) {
             requestBody.attachments = attachmentsToSend;
-        }
-        if (editorContext) {
-            requestBody.editor_context = editorContext;
         }
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/messages`,

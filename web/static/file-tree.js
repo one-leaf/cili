@@ -985,6 +985,7 @@ const FileTree = (() => {
         el.previewHandle.hidden = true;
         clearPreviewBody();
         savePreviewState();
+        notifyEditorContextChanged();
     }
 
     function openPreview(path, opts = {}) {
@@ -1017,6 +1018,7 @@ const FileTree = (() => {
         render();
         renderPreviewHeader(item);
         renderPreviewBody();
+        notifyEditorContextChanged();
     }
 
     function renderPreviewHeader(item) {
@@ -1369,6 +1371,15 @@ const FileTree = (() => {
         return document.documentElement.getAttribute('data-theme') === 'dark';
     }
 
+    // 预览打开/关闭/选区变化时通知聊天区刷新附件 chip（无需聚焦输入框）
+    let _editorContextNotifyTimer = null;
+    function notifyEditorContextChanged() {
+        clearTimeout(_editorContextNotifyTimer);
+        _editorContextNotifyTimer = setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('cili:editor-context-changed'));
+        }, 50);
+    }
+
     function destroyCodeView() {
         if (state.preview.editor) {
             try { state.preview.editor.destroy(); } catch (e) { /* ignore */ }
@@ -1436,6 +1447,11 @@ const FileTree = (() => {
                 CM.drawSelection(),  // 只读视图也保住选区高亮（失焦后仍可见）
             );
         }
+        extensions.push(
+            CM.EditorView.updateListener.of((update) => {
+                if (update.selectionSet) notifyEditorContextChanged();
+            })
+        );
         if (langFn) extensions.push(langFn());
         const view = new CM.EditorView({ doc: content, extensions, parent: el.body });
         state.preview.editor = view;
@@ -1447,6 +1463,7 @@ const FileTree = (() => {
             clearTimeout(previewScrollTimer);
             previewScrollTimer = setTimeout(savePreviewState, 300);
         });
+        notifyEditorContextChanged();
         return true;
     }
 

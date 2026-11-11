@@ -3,7 +3,7 @@
 用户发送消息时，若前端提供当前打开文件 / 选区，则把其渲染成一段文本块，随
 用户消息一起进入 LLM 上下文；**正文不预附**，由模型按需 ``read``。
 
-块级 ``_meta.editor_context`` 仅供前端渲染时隐藏（模型仍可见文本）。
+块级 ``_meta.attachment`` 仅供前端渲染时隐藏（模型仍可见文本）。
 """
 
 from __future__ import annotations
@@ -13,24 +13,29 @@ import re
 from pathlib import Path
 
 MAX_SELECTION_CHARS = 4000
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg"}
 
 
-def format_editor_context(ctx: dict | None) -> dict | None:
-    """把 editor_context 渲染成 text content block；无有效内容返回 None。
+def _is_image_path(path: str) -> bool:
+    return Path(path).suffix.lower() in _IMAGE_EXTS
 
-    ctx 形态：``{"path": "src/a.py", "selection": {"startLine", "endLine", "text"} | null}``
+
+def format_attachment(att: dict | None) -> dict | None:
+    """统一格式化附件条目（预览选区 / Ctrl+V 上传文件同一套逻辑）。
+
+    att: ``{"path", "selection": {"startLine","endLine","text"} | None, "media_type"}``
+    - 有选区：输出 [Editor context]（行范围 + 选中文本）
+    - 无选区：输出 [Attachment] 路径提示；图片附 read_image 提示
     """
-    if not isinstance(ctx, dict):
+    if not isinstance(att, dict):
         return None
-    path = str(ctx.get("path") or "").strip()
+    path = str(att.get("path") or "").strip()
     if not path:
         return None
+    media_type = str(att.get("media_type") or "")
+    is_image = media_type.startswith("image/") or _is_image_path(path)
 
-    lines: list[str] = [
-        "[Editor context]",
-        f"The user has file `{path}` open in the preview.",
-    ]
-    selection = ctx.get("selection")
+    selection = att.get("selection")
     if isinstance(selection, dict):
         text = selection.get("text")
         if not isinstance(text, str):
@@ -43,16 +48,28 @@ def format_editor_context(ctx: dict | None) -> dict | None:
         if text and start > 0 and end >= start:
             if len(text) > MAX_SELECTION_CHARS:
                 text = text[:MAX_SELECTION_CHARS] + "\n...(selection truncated)"
-            lines.append(f"The user selected lines {start}-{end} from `{path}`:")
-            lines.append("```text")
-            lines.append(text)
-            lines.append("```")
-    lines.append("[/Editor context]")
+            lines = [
+                "[Editor context]",
+                f"The user selected lines {start}-{end} from `{path}`:",
+                "```text",
+                text,
+                "```",
+                "[/Editor context]",
+            ]
+            return {
+                "type": "text",
+                "text": "\n".join(lines),
+                "_meta": {"attachment": True},
+            }
 
+    label = media_type or ("image" if is_image else "file")
+    lines = [f"[Attachment] `{path}` ({label})"]
+    if is_image:
+        lines.append(f'Use read_image("{path}") to view this image.')
     return {
         "type": "text",
         "text": "\n".join(lines),
-        "_meta": {"editor_context": True},
+        "_meta": {"attachment": True},
     }
 
 

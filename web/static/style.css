@@ -222,9 +222,6 @@ ul, ol {
 [data-theme="dark"] .btn-small:hover { background: #3f3f46; }
 [data-theme="dark"] .section-header .btn-small:hover { background: #3f3f46; }
 
-/* 图片预览 */
-[data-theme="dark"] .image-preview-thumb { background: #27272a; }
-
 /* 子代理卡片 */
 [data-theme="dark"] .session-card {
     background-color: #292524;
@@ -2104,6 +2101,7 @@ mjx-container {
     font-size: 11px;
     color: var(--text-secondary, #6b7280);
 }
+
 
 /* User message images */
 .user-images {
