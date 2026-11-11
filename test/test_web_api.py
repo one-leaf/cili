@@ -806,6 +806,21 @@ class TestUploadEndpointRequest:
         assert (ws_dir / "a.txt").read_text(encoding="utf-8") == "hello"
         assert not result.get("errors")
 
+    def test_upload_does_not_overwrite_same_name(self, tmp_path, monkeypatch):
+        import io
+
+        from fastapi import UploadFile
+
+        from web.routes_files import upload_files
+
+        ws_dir = self._prepare(tmp_path, monkeypatch)
+        (ws_dir / "a.txt").write_text("first", encoding="utf-8")
+        upload = UploadFile(file=io.BytesIO(b"second"), filename="a.txt")
+        result = upload_files(self._fake_request(), "wstraverse", "", [upload])
+        assert (ws_dir / "a.txt").read_text(encoding="utf-8") == "first"
+        assert (ws_dir / "a-1.txt").read_text(encoding="utf-8") == "second"
+        assert result["uploaded"][0]["name"] == "a-1.txt"
+
 
 class TestTokenCookieAuth:
     """P1-32：?token= 首次鉴权成功后下发 HttpOnly cookie；cookie 可单独通过鉴权。"""

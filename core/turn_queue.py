@@ -120,8 +120,19 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
             if isinstance(b, dict) and b.get("type") == "image"
         ]
 
+    def _attachment_hint_blocks(user_input: Any) -> list[dict]:
+        if not isinstance(user_input, list):
+            return []
+        return [
+            b for b in user_input
+            if isinstance(b, dict) and b.get("type") == "text"
+            and (b.get("_meta") or {}).get("attachment")
+        ]
+
     has_mentions = any(_mention_blocks(it.user_input) for it in items)
-    if has_images or has_context or has_mentions:
+    has_attachment_hints = any(_attachment_hint_blocks(it.user_input) for it in items)
+    has_attachment_images = any(_image_blocks(it.user_input) for it in items)
+    if has_images or has_context or has_mentions or has_attachment_hints or has_attachment_images:
         blocks: list[dict] = []
         for it in items:
             ctx = format_editor_context(it.editor_context)
@@ -130,6 +141,7 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
             blocks.extend(_mention_blocks(it.user_input))
             if it.content:
                 blocks.append({"type": "text", "text": it.content, "_valid": True})
+            blocks.extend(_attachment_hint_blocks(it.user_input))
             blocks.extend(_image_blocks(it.user_input))
         user_input: Any = blocks if blocks else "\n\n".join(texts)
     else:

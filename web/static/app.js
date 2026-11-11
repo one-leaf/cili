@@ -21,7 +21,7 @@ let isStopping = false;          // 已发 /stop，等待回合真正收尾
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
-let pendingImages = [];  // [{ data: "base64...", media_type: "image/png", preview_url: "data:..." }]
+let pendingAttachments = [];  // [{ path: "uploads/x.png", name, media_type }]
 // 消息分页加载状态
 let currentSessionLoadedOffset = 0;  // 已加载的消息数（从末尾算起）
 let currentSessionHasMore = false;   // 是否还有更多历史消息
@@ -332,7 +332,7 @@ function toggleTheme() {
 // ── 输入区按钮状态（发送 / 排队发送 / 停止）──
 // 单点决策：所有分支结束后都调它，不再在 fetch 分支里直接改按钮文案/配色。
 function hasDraft() {
-    return chatInput.value.trim().length > 0 || pendingImages.length > 0;
+    return chatInput.value.trim().length > 0 || pendingAttachments.length > 0;
 }
 
 // 右下角单按钮图标（Claude Code 插件式）：发送=纸飞机，停止=方块
@@ -390,28 +390,75 @@ function setupEventListeners() {
             sendMessage();
         }
     });
-    // Paste image support (with compression)
+    // Paste file support：文件（含文档）直接上传到 uploads，再挂底部 chip（模型按需 read_image/read）
     chatInput.addEventListener('paste', async (e) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
-        for (const item of items) {
-            if (item.type.startsWith('image/')) {
-                e.preventDefault();
-                const file = item.getAsFile();
-                if (!file) continue;
-                // 压缩图片
-                const result = await compressImage(file);
-                if (!result.data) continue;
-                // 检查压缩后大小，超过2MB再降低质量
-                if (result.size > MAX_IMAGE_SIZE_BYTES) {
-                    const retry = await compressImage(file, 0.5);
-                    if (retry.data) pendingImages.push({ data: retry.data, media_type: 'image/jpeg', preview_url: retry.preview_url });
-                } else {
-                    pendingImages.push({ data: result.data, media_type: 'image/jpeg', preview_url: result.preview_url });
-                }
-                renderImagePreviews();
-                break;  // Only take the first image
+        const cd = e.clipboardData;
+        if (!cd) return;
+        const files = [];
+        const seen = new Set();
+        const addFile = (f) => {
+            if (!f) return;
+            const key = `${f.name}|${f.size}|${f.type}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            files.push(f);
+        };
+        if (cd.files) {
+            for (const f of cd.files) addFile(f);
+        }
+        if (cd.items) {
+            for (const item of cd.items) {
+                if (item.kind === 'file') addFile(item.getAsFile());
             }
+        }
+        if (files.length === 0) return;
+        e.preventDefault();
+        if (!currentWorkspace) {
+            showToast('请先选择工作区');
+            return;
+        }
+        const EXT_BY_MIME = {
+            'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
+            'image/bmp': '.bmp', 'image/svg+xml': '.svg',
+            'application/pdf': '.pdf',
+            'application/msword': '.doc',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+            'application/vnd.ms-excel': '.xls',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+            'application/vnd.ms-powerpoint': '.ppt',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+            'text/plain': '.txt', 'text/markdown': '.md', 'text/html': '.html',
+            'text/csv': '.csv', 'application/json': '.json', 'application/zip': '.zip',
+        };
+        try {
+            const stamp = Date.now();
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const ext = EXT_BY_MIME[file.type] || '';
+                const uploadName = (file.name && file.name.trim())
+                    ? file.name
+                    : `paste-${stamp}-${i}${ext}`;
+                const uploadFile = new File([file], uploadName, {
+                    type: file.type || 'application/octet-stream',
+                });
+                const result = await uploadFiles('uploads', [uploadFile]);
+                const up = (result.uploaded || [])[0];
+                if (up) {
+                    pendingAttachments.push({
+                        path: `uploads/${up.name}`,
+                        name: up.name,
+                        media_type: file.type || 'application/octet-stream',
+                    });
+                }
+                const errors = result.errors || [];
+                if (errors.length) {
+                    showToast('上传失败：' + (errors[0].error || '未知错误'));
+                }
+            }
+            renderComposerAttachments();
+            updateComposerButtons();
+        } catch (err) {
+            showToast('上传失败：' + (err.message || '未知错误'));
         }
     });
 

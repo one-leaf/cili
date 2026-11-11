@@ -2030,95 +2030,79 @@ mjx-container {
     pointer-events: none;
 }
 
-/* Image preview area */
-.image-preview-area {
-    display: none;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 8px 0 8px;
-}
-
-.image-preview-area.visible {
-    display: flex;
-}
-
-/* 编辑器上下文引用 chip（宽度按内容自适应） */
-.editor-context-chip {
+/* 输入框底部左侧：附件 / 上下文 chip（宽度按内容自适应） */
+.input-attachments {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
     display: flex;
     align-items: center;
     gap: 6px;
-    width: fit-content;
-    max-width: 100%;
-    margin: 8px 8px 0 8px;
-    padding: 4px 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--code-bg);
-    font-size: 12px;
-    color: var(--text-secondary, #6b7280);
+    max-width: calc(100% - 100px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    z-index: 2;
+    scrollbar-width: none;
 }
 
-.editor-context-chip[hidden] {
+.input-attachments[hidden] {
     display: none;
 }
 
-.editor-context-chip-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
+.chat-input-wrap.has-attachments textarea {
+    padding-bottom: 42px;
+}
+
+.input-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    max-width: 220px;
+    padding: 2px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--code-bg);
+    font-size: 11px;
+    color: var(--text-secondary, #6b7280);
     white-space: nowrap;
 }
 
-.editor-context-chip-remove {
+.input-chip-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.input-chip-remove {
     border: none;
     background: transparent;
     color: var(--text-light);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
-    padding: 0 2px;
+    padding: 0 1px;
 }
 
-.editor-context-chip-remove:hover {
+.input-chip-remove:hover {
     color: #dc3545;
 }
 
-.image-preview-thumb {
-    position: relative;
-    width: 60px;
-    height: 60px;
-    border-radius: 6px;
-    overflow: hidden;
-    border: 1px solid var(--border-color);
-    background: #f5f5f5;
-}
-
-.image-preview-thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.image-preview-remove {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    width: 18px;
-    height: 18px;
-    background: rgba(0, 0, 0, 0.6);
-    color: white;
-    border-radius: 50%;
+/* 用户消息里的附件 chip */
+.user-attachments {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    cursor: pointer;
-    line-height: 1;
-    border: none;
-    padding: 0;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
 }
 
-.image-preview-remove:hover {
-    background: rgba(220, 53, 69, 0.9);
+.user-attachment {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    border: 1px solid var(--border-color);
+    font-size: 11px;
+    color: var(--text-secondary, #6b7280);
 }
 
 /* User message images */

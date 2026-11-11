@@ -1,5 +1,5 @@
 // ── chat.js ── 聊天相关逻辑
-// 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingImages,
+// 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingAttachments,
 //   chatMessages, chatInput, composerBtn
 // 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast, loadSession, loadSessions, savePosition
 
@@ -75,38 +75,65 @@ function clearAllToolStreaming() {
     }
 }
 
-// Render image preview thumbnails in the input area
-function renderImagePreviews() {
-    const area = document.getElementById('image-preview-area');
+// 输入框底部左侧：附件 / 编辑器上下文 chip
+function renderComposerAttachments() {
+    const area = document.getElementById('input-attachments');
     if (!area) return;
     area.innerHTML = '';
-    if (pendingImages.length === 0) {
-        area.classList.remove('visible');
-        updateComposerButtons();
+    const items = [];
+
+    const ctx = (window.FileTree && typeof window.FileTree.getEditorContext === 'function')
+        ? window.FileTree.getEditorContext()
+        : null;
+    _editorContextChip.ctx = ctx;
+    if (ctx && !(_editorContextChip.suppressedKey && _editorContextChip.suppressedKey === _editorContextKey(ctx))) {
+        const sel = ctx.selection;
+        items.push({
+            kind: 'editor',
+            label: sel ? `引用 ${ctx.path}:${sel.startLine}-${sel.endLine}` : `已附带 ${ctx.path}`,
+            title: sel ? `${ctx.path}:${sel.startLine}-${sel.endLine}` : ctx.path,
+        });
+    }
+    pendingAttachments.forEach((att, idx) => {
+        items.push({ kind: 'file', idx, label: `📎 ${att.name}`, title: att.path });
+    });
+
+    const wrap = area.parentElement;
+    if (items.length === 0) {
+        area.hidden = true;
+        if (wrap) wrap.classList.remove('has-attachments');
         return;
     }
-    area.classList.add('visible');
-    pendingImages.forEach((img, idx) => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'image-preview-thumb';
-
-        const imgEl = document.createElement('img');
-        imgEl.src = img.preview_url;
-        imgEl.alt = '待发送图片';
-        wrapper.appendChild(imgEl);
-
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'image-preview-remove';
-        removeBtn.textContent = '×';
-        removeBtn.title = '移除图片';
-        removeBtn.onclick = () => {
-            pendingImages.splice(idx, 1);
-            renderImagePreviews();
-        };
-        wrapper.appendChild(removeBtn);
-        area.appendChild(wrapper);
+    area.hidden = false;
+    if (wrap) wrap.classList.add('has-attachments');
+    items.forEach(item => {
+        const chip = document.createElement('span');
+        chip.className = 'input-chip';
+        const text = document.createElement('span');
+        text.className = 'input-chip-text';
+        text.textContent = item.label;
+        text.title = item.title;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'input-chip-remove';
+        remove.title = '移除';
+        remove.textContent = '×';
+        if (item.kind === 'editor') {
+            remove.addEventListener('click', () => {
+                _editorContextChip.suppressedKey = _editorContextKey(_editorContextChip.ctx);
+                renderComposerAttachments();
+            });
+        } else {
+            remove.addEventListener('click', () => {
+                pendingAttachments.splice(item.idx, 1);
+                renderComposerAttachments();
+                updateComposerButtons();
+            });
+        }
+        chip.appendChild(text);
+        chip.appendChild(remove);
+        area.appendChild(chip);
     });
-    updateComposerButtons();
 }
 
 // ── 编辑器上下文引用 chip（预览选区/打开文件 → 随消息发送）──
@@ -128,41 +155,7 @@ function getActiveEditorContext() {
     return ctx;
 }
 
-function refreshEditorContextChip() {
-    const chip = document.getElementById('editor-context-chip');
-    const textEl = document.getElementById('editor-context-chip-text');
-    if (!chip || !textEl) return;
-    if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) {
-        chip.hidden = true;
-        return;
-    }
-    const ctx = window.FileTree.getEditorContext();
-    _editorContextChip.ctx = ctx;
-    if (!ctx) {
-        chip.hidden = true;
-        return;
-    }
-    if (_editorContextChip.suppressedKey && _editorContextChip.suppressedKey === _editorContextKey(ctx)) {
-        chip.hidden = true;
-        return;
-    }
-    const sel = ctx.selection;
-    textEl.textContent = sel
-        ? `引用 ${ctx.path}:${sel.startLine}-${sel.endLine}`
-        : `已附带打开文件 ${ctx.path}`;
-    chip.hidden = false;
-}
-
-chatInput.addEventListener('focus', refreshEditorContextChip);
-{
-    const removeBtn = document.getElementById('editor-context-chip-remove');
-    if (removeBtn) {
-        removeBtn.addEventListener('click', () => {
-            _editorContextChip.suppressedKey = _editorContextKey(_editorContextChip.ctx);
-            refreshEditorContextChip();
-        });
-    }
-}
+chatInput.addEventListener('focus', renderComposerAttachments);
 
 // 辅助函数：提取文本内容
 function extractTextContent(content) {
@@ -285,7 +278,7 @@ function renderMessages(messages) {
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
-                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention || block._meta.attachment)) return;
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
@@ -464,7 +457,7 @@ function prependMessages(messages) {
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
-                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention || block._meta.attachment)) return;
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
@@ -1335,8 +1328,8 @@ async function stopAgent() {
 // Send message
 async function sendMessage() {
     const message = chatInput.value.trim();
-    const hasImages = pendingImages.length > 0;
-    if (!message && !hasImages) return;
+    const hasAttachments = pendingAttachments.length > 0;
+    if (!message && !hasAttachments) return;
 
     if (!currentWorkspace || !currentSession) {
         alert('请先选择工作区并创建会话');
@@ -1346,10 +1339,11 @@ async function sendMessage() {
     console.log('Sending message to session:', currentSession.session_id);
     const sessionId = currentSession.session_id;
 
-    // Capture images before clearing
-    const imagesToSend = hasImages ? pendingImages.map(img => ({
-        data: img.data,
-        media_type: img.media_type,
+    // Capture attachments before clearing
+    const attachmentsToSend = hasAttachments ? pendingAttachments.map(att => ({
+        path: att.path,
+        name: att.name,
+        media_type: att.media_type,
     })) : null;
     const clientId = makeClientId();
     const editorContext = getActiveEditorContext();
@@ -1364,7 +1358,7 @@ async function sendMessage() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         content: message,
-                        images: imagesToSend,
+                        attachments: attachmentsToSend,
                         client_id: clientId,
                         ...(editorContext ? { editor_context: editorContext } : {}),
                     }),
@@ -1376,8 +1370,8 @@ async function sendMessage() {
                 return;
             }
             chatInput.value = '';
-            pendingImages = [];
-            renderImagePreviews();
+            pendingAttachments = [];
+            renderComposerAttachments();
             upsertQueuedItem(data.item);
             updateComposerButtons();
         } catch (error) {
@@ -1392,8 +1386,8 @@ async function sendMessage() {
 
     // Clear input（按钮配色由 updateComposerButtons 统一决定）
     chatInput.value = '';
-    pendingImages = [];
-    renderImagePreviews();
+    pendingAttachments = [];
+    renderComposerAttachments();
     isSending = true;
     foregroundStreamSessionId = sessionId;
     sessionRunning = true;
@@ -1422,17 +1416,17 @@ async function sendMessage() {
 
     // Add user message to UI (with images if any)
     const userDiv = addMessage('user', message);
-    if (imagesToSend) {
+    if (attachmentsToSend) {
         const contentDiv = userDiv.querySelector('.message-content');
-        const imgContainer = document.createElement('div');
-        imgContainer.className = 'user-images';
-        imagesToSend.forEach(img => {
-            const imgEl = document.createElement('img');
-            imgEl.src = `data:${img.media_type};base64,${img.data}`;
-            imgEl.alt = '用户图片';
-            imgContainer.appendChild(imgEl);
+        const attContainer = document.createElement('div');
+        attContainer.className = 'user-attachments';
+        attachmentsToSend.forEach(att => {
+            const chip = document.createElement('span');
+            chip.className = 'user-attachment';
+            chip.textContent = `📎 ${att.name}`;
+            attContainer.appendChild(chip);
         });
-        contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+        contentDiv.insertBefore(attContainer, contentDiv.firstChild);
     }
 
     // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
@@ -1462,8 +1456,8 @@ async function sendMessage() {
 
     try {
         const requestBody = { content: message };
-        if (imagesToSend) {
-            requestBody.images = imagesToSend;
+        if (attachmentsToSend) {
+            requestBody.attachments = attachmentsToSend;
         }
         if (editorContext) {
             requestBody.editor_context = editorContext;

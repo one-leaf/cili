@@ -142,3 +142,70 @@ class TestMergeQueuedTurnsMentions:
         ui, _ = merge_queued_turns([item])
         assert isinstance(ui, list)
         assert any(b.get("_meta", {}).get("file_mention") for b in ui)
+
+
+class TestAttachments:
+    @staticmethod
+    def _workspace(tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "uploads").mkdir()
+        return ws
+
+    def test_image_attachment_hint(self, tmp_path):
+        from web.routes_chat import _build_user_input
+        ws = self._workspace(tmp_path)
+        (ws / "uploads" / "a.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 20)
+        out = _build_user_input(
+            "hi", None,
+            uploads_dir=ws / "uploads",
+            attachments=[{"path": "uploads/a.png", "media_type": "image/png"}],
+        )
+        assert isinstance(out, list)
+        assert any(
+            b.get("type") == "text" and 'read_image("uploads/a.png")' in b.get("text", "")
+            for b in out
+        )
+        assert not any(b.get("type") == "image" for b in out)
+
+    def test_text_attachment_hint(self, tmp_path):
+        from web.routes_chat import _build_user_input
+        ws = self._workspace(tmp_path)
+        (ws / "uploads" / "a.txt").write_text("hello\n", encoding="utf-8")
+        out = _build_user_input(
+            "hi", None,
+            uploads_dir=ws / "uploads",
+            attachments=[{"path": "uploads/a.txt", "media_type": "text/plain"}],
+        )
+        assert any(
+            b.get("type") == "text" and (b.get("_meta") or {}).get("attachment")
+            for b in out
+        )
+
+    def test_attachment_outside_workspace_skipped(self, tmp_path):
+        from web.routes_chat import _build_user_input
+        ws = self._workspace(tmp_path)
+        (tmp_path / "secret.txt").write_text("x\n", encoding="utf-8")
+        out = _build_user_input(
+            "hi", None,
+            uploads_dir=ws / "uploads",
+            attachments=[{"path": "../secret.txt", "media_type": "text/plain"}],
+        )
+        assert out == "hi"
+
+    def test_merge_preserves_attachment_blocks(self):
+        hint = {"type": "text", "text": "x", "_meta": {"attachment": True}}
+        img = {"type": "image", "source": {"type": "base64", "data": "abc"},
+               "_meta": {"attachment": True}}
+        item = QueuedTurn(
+            item_id="q",
+            content="hi",
+            user_input=[hint, img, {"type": "text", "text": "hi"}],
+        )
+        ui, _ = merge_queued_turns([item])
+        assert isinstance(ui, list)
+        assert any(
+            b.get("type") == "text" and (b.get("_meta") or {}).get("attachment")
+            for b in ui
+        )
+        assert any(b.get("type") == "image" for b in ui)

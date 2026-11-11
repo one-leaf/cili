@@ -964,6 +964,17 @@ def upload_files(
                 errors.append({"name": file.filename, "error": "Invalid filename"})
                 continue
 
+            # 同名不覆盖：自动追加 -1/-2…（Ctrl+V/拖放重复上传同名文件时不丢旧文件）
+            if file_path.exists():
+                stem = Path(safe_name).stem
+                suffix = Path(safe_name).suffix
+                for n in range(1, 1000):
+                    candidate = (target_dir / f"{stem}-{n}{suffix}").resolve()
+                    if not candidate.exists():
+                        file_path = candidate
+                        safe_name = candidate.name
+                        break
+
             # 流式写盘：边写边校验大小。此前整文件 read() 入内存（100MB 上限
             # 形同虚设：size 头缺失时先吃满内存才做校验）
             written = 0
@@ -984,7 +995,7 @@ def upload_files(
                 errors.append({"name": file.filename, "error": "File too large (max 100MB)"})
                 continue
 
-            uploaded.append({"name": file.filename, "size": written})
+            uploaded.append({"name": safe_name, "size": written})
         except Exception as e:
             # 写盘中途失败会留下半截文件；只清理本次新建/截断的目标
             if file_path is not None:

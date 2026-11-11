@@ -76,6 +76,8 @@ logger = logging.getLogger(__name__)
 class SendMessageRequest(BaseModel):
     content: str
     images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
+    # 上传附件：[{path, name, media_type}]（前端 Ctrl+V 先上传到 uploads，再挂 chip）
+    attachments: list[dict] | None = None
     # 编辑器上下文：{path, selection:{startLine,endLine,text}|null}（前端预览选区）
     editor_context: dict | None = None
     # 驱动客户端类型（web/tui/...）：run_runner 按它 set_turn_interface，
@@ -88,6 +90,7 @@ class SendMessageRequest(BaseModel):
 class QueueRequest(BaseModel):
     content: str = ""
     images: list[dict] | None = None
+    attachments: list[dict] | None = None
     editor_context: dict | None = None
     interface: str | None = None
     client_id: str | None = None
@@ -114,20 +117,61 @@ def _session_key(workspace_uuid: str, session_id: str) -> str:
     return f"{workspace_uuid}:{session_id}"
 
 
+def _build_attachment_blocks(attachments: list[dict] | None,
+                             workspace_dir: Path | None) -> list[dict]:
+    """上传附件 → 路径提示块（图片由模型用 read_image 打开，不做多模态内联）。"""
+    if not attachments or workspace_dir is None:
+        return []
+    root = Path(workspace_dir).resolve()
+    blocks: list[dict] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        raw = str(att.get("path") or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            continue
+        target = (root / candidate).resolve()
+        try:
+            if not target.is_relative_to(root):
+                continue
+        except ValueError:
+            continue
+        if not target.is_file():
+            continue
+        media_type = str(att.get("media_type") or "")
+        rel = target.relative_to(root).as_posix()
+        hint = f"[Attachment] `{rel}` ({media_type or 'file'})"
+        if media_type.startswith("image/"):
+            hint += f' — use read_image("{rel}") to view'
+        blocks.append({
+            "type": "text",
+            "text": hint,
+            "_valid": True,
+            "_meta": {"attachment": True},
+        })
+    return blocks
+
+
 def _build_user_input(content: str, images: list[dict] | None,
                       *, uploads_dir: Path | None = None,
-                      editor_context: dict | None = None) -> Any:
-    """文本 + 编辑器上下文 + 文件提及 + base64 图片 → runner 入参。"""
+                      editor_context: dict | None = None,
+                      attachments: list[dict] | None = None) -> Any:
+    """文本 + 编辑器上下文 + 文件提及 + 上传附件 + base64 图片 → runner 入参。"""
     ctx_block = format_editor_context(editor_context)
     workspace_dir = uploads_dir.parent if uploads_dir is not None else None
     mention_blocks = expand_file_mentions(content, workspace_dir)
-    if not images and not ctx_block and not mention_blocks:
+    attachment_blocks = _build_attachment_blocks(attachments, workspace_dir)
+    if not images and not ctx_block and not mention_blocks and not attachment_blocks:
         return content
     blocks: list[dict] = []
     if ctx_block:
         blocks.append(ctx_block)
     blocks.extend(mention_blocks)
     blocks.append({"type": "text", "text": content, "_valid": True})
+    blocks.extend(attachment_blocks)
     for img in (images or []):
         media_type = img.get("media_type", "image/png")
         data = img.get("data", "")
@@ -529,6 +573,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         content, getattr(request, "images", None),
         uploads_dir=uploads_dir,
         editor_context=getattr(request, "editor_context", None),
+        attachments=getattr(request, "attachments", None),
     )
 
     # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
@@ -859,6 +904,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
                 content, request.images,
                 uploads_dir=ws_dir / "uploads",
                 editor_context=getattr(request, "editor_context", None),
+                attachments=getattr(request, "attachments", None),
             ),
             interface=request.interface or "web",
             client_id=request.client_id,

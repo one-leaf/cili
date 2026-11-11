@@ -172,12 +172,8 @@
                     <div id="queued-list" class="queued-list"></div>
                 </div>
                 <div class="chat-input-wrap">
-                    <div id="editor-context-chip" class="editor-context-chip" hidden>
-                        <span id="editor-context-chip-text" class="editor-context-chip-text"></span>
-                        <button id="editor-context-chip-remove" class="editor-context-chip-remove" title="移除引用">×</button>
-                    </div>
-                    <div id="image-preview-area" class="image-preview-area"></div>
-                    <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行, Ctrl+V 粘贴图片)" rows="3"></textarea>
+                    <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行, Ctrl+V 粘贴文件)" rows="3"></textarea>
+                    <div id="input-attachments" class="input-attachments" hidden></div>
                     <div class="input-actions">
                         <button id="insert-file-btn" class="btn-icon-floating" title="插入文件名">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
