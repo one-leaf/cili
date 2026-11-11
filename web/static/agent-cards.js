@@ -372,8 +372,10 @@ const AgentCardStore = (() => {
             model.detailEl = detail;
             model.bodyEl = body;
         }
+        // 只在首次出现时挂载；同一 exec_id 的后续引用只更新模型，
+        // 不得把已挂载的卡片移动到新的位置，否则历史顺序会被打乱。
         const target = container || chatMessages;
-        if (target && model.cardEl.parentNode !== target) {
+        if (target && !model.cardEl.parentNode) {
             target.appendChild(model.cardEl);
         }
         model.detailEl.style.display = model.expanded ? 'block' : 'none';
