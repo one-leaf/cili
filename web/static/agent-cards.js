@@ -347,7 +347,26 @@ const AgentCardStore = (() => {
         }
     }
 
-    function _ensureCard(model, container = null) {
+    function _liveContainer() {
+        try {
+            if (typeof _activeTurnContainers !== 'undefined' && currentSession) {
+                const container = _activeTurnContainers.get(currentSession.session_id);
+                if (container) return container;
+            }
+        } catch (e) { /* 回退到 chatMessages */ }
+        return chatMessages;
+    }
+
+    function _liveModel(execId) {
+        let model = MODELS.get(execId);
+        if (!model) {
+            model = _createModel(execId, { status: 'running' });
+            _ensureCard(model, _liveContainer());
+        }
+        return model;
+    }
+
+    function _ensureCard(model, container = null, forceMove = false) {
         if (!model.cardEl) {
             const card = document.createElement('div');
             card.className = 'message assistant session-card';
@@ -372,11 +391,11 @@ const AgentCardStore = (() => {
             model.detailEl = detail;
             model.bodyEl = body;
         }
-        // 只在首次出现时挂载；同一 exec_id 的后续引用只更新模型，
-        // 不得把已挂载的卡片移动到新的位置，否则历史顺序会被打乱。
+        // 历史首次出现时可把运行中卡片从本轮回合容器移回历史位置；
+        // 同一 exec_id 的后续引用只更新模型，不再移动。
         const target = container || chatMessages;
-        if (target && !model.cardEl.parentNode) {
-            target.appendChild(model.cardEl);
+        if (target && (forceMove || !model.cardEl.parentNode)) {
+            if (model.cardEl.parentNode !== target) target.appendChild(model.cardEl);
         }
         model.detailEl.style.display = model.expanded ? 'block' : 'none';
         _renderHeader(model);
@@ -414,8 +433,9 @@ const AgentCardStore = (() => {
             const stats = _statsFrom(seed.stats);
             if (stats) model.stats = stats;
         }
+        const firstInHistory = !_seen.has(seed.exec_id);
         _seen.add(seed.exec_id);
-        _ensureCard(model, container);
+        _ensureCard(model, container, firstInHistory);
         return model;
     }
 
@@ -432,11 +452,15 @@ const AgentCardStore = (() => {
                 background: !!e.background,
             });
         }
-        _ensureCard(model);
+        _ensureCard(model, _liveContainer());
     }
 
     function onProgress(e) {
-        const model = MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' });
+        let model = MODELS.get(e.exec_id);
+        if (!model) {
+            model = _createModel(e.exec_id, { status: 'running' });
+            _ensureCard(model, _liveContainer());
+        }
         const stats = _statsFrom(e.stats);
         if (stats) model.stats = stats;
         if (e.status) model.status = e.status;
@@ -446,7 +470,11 @@ const AgentCardStore = (() => {
     }
 
     function onEpochStarted(e) {
-        const model = MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' });
+        let model = MODELS.get(e.exec_id);
+        if (!model) {
+            model = _createModel(e.exec_id, { status: 'running' });
+            _ensureCard(model, _liveContainer());
+        }
         const stats = _statsFrom(e.stats);
         if (stats) model.stats = stats;
         model.epoch = e.epoch || model.epoch;
@@ -485,34 +513,20 @@ const AgentCardStore = (() => {
                 onComplete(e);
                 return true;
             case 'text':
-                _updateOpenText(
-                    MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' }),
-                    'text', e.content || ''
-                );
+                _updateOpenText(_liveModel(e.exec_id), 'text', e.content || '');
                 return true;
             case 'thinking':
-                _updateOpenText(
-                    MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' }),
-                    'thinking', e.content || ''
-                );
+                _updateOpenText(_liveModel(e.exec_id), 'thinking', e.content || '');
                 return true;
             case 'tool_use':
-                _onToolUse(
-                    MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' }),
-                    e
-                );
+                _onToolUse(_liveModel(e.exec_id), e);
                 return true;
             case 'tool_result':
-                _onToolResult(
-                    MODELS.get(e.exec_id) || _createModel(e.exec_id, { status: 'running' }),
-                    e
-                );
+                _onToolResult(_liveModel(e.exec_id), e);
                 return true;
-            case 'tool_output': {
-                const model = MODELS.get(e.exec_id);
-                if (model) _onToolOutput(model, e);
+            case 'tool_output':
+                _onToolOutput(_liveModel(e.exec_id), e);
                 return true;
-            }
             default:
                 return false;
         }
@@ -563,7 +577,7 @@ const AgentCardStore = (() => {
                     const stats = _statsFrom(log.stats || meta.stats);
                     if (stats) model.stats = stats;
                 }
-                _ensureCard(model);
+                _ensureCard(model, _liveContainer());
             });
         } catch (e) { /* 事件流 agent_start 会兜底建卡 */ }
     }
