@@ -1433,6 +1433,7 @@ const FileTree = (() => {
             extensions.push(
                 CM.EditorState.readOnly.of(true),
                 CM.EditorView.editable.of(false),
+                CM.drawSelection(),  // 只读视图也保住选区高亮（失焦后仍可见）
             );
         }
         if (langFn) extensions.push(langFn());
@@ -2051,6 +2052,27 @@ const FileTree = (() => {
 
     document.addEventListener('DOMContentLoaded', init);
 
+    // 供聊天发送时采集"当前文件 + 选区"（1-based 行；单独光标不采集）
+    function getEditorContext() {
+        if (!state.preview.open || !state.preview.path) return null;
+        let selection = null;
+        const editor = state.preview.editor;
+        if (editor && window.CiliCodeMirror) {
+            const sel = editor.state.selection.main;
+            if (sel && sel.from !== sel.to) {
+                const doc = editor.state.doc;
+                let startLine = doc.lineAt(sel.from).number;
+                let endLine = doc.lineAt(sel.to).number;
+                // 选区结束在行首时，实际末行回退一行
+                if (sel.to === doc.lineAt(sel.to).from && endLine > startLine) endLine -= 1;
+                let text = doc.sliceString(sel.from, sel.to);
+                if (text.length > 4000) text = text.slice(0, 4000) + '\n...(selection truncated)';
+                selection = { startLine, endLine, text };
+            }
+        }
+        return { path: state.preview.path, selection };
+    }
+
     return {
         init,
         setWorkspace,
@@ -2058,6 +2080,7 @@ const FileTree = (() => {
         openPreview,
         closePreview,
         isPreviewOpen: () => state.preview.open,
+        getEditorContext,
     };
 })();
 

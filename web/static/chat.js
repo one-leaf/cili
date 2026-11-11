@@ -109,6 +109,61 @@ function renderImagePreviews() {
     updateComposerButtons();
 }
 
+// ── 编辑器上下文引用 chip（预览选区/打开文件 → 随消息发送）──
+let _editorContextChip = { ctx: null, suppressedKey: null };
+
+function _editorContextKey(ctx) {
+    if (!ctx || !ctx.path) return null;
+    const sel = ctx.selection;
+    return sel ? `${ctx.path}:${sel.startLine}-${sel.endLine}` : ctx.path;
+}
+
+function getActiveEditorContext() {
+    if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) return null;
+    const ctx = window.FileTree.getEditorContext();
+    if (!ctx) return null;
+    if (_editorContextChip.suppressedKey && _editorContextChip.suppressedKey === _editorContextKey(ctx)) {
+        return null;
+    }
+    return ctx;
+}
+
+function refreshEditorContextChip() {
+    const chip = document.getElementById('editor-context-chip');
+    const textEl = document.getElementById('editor-context-chip-text');
+    if (!chip || !textEl) return;
+    if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) {
+        chip.hidden = true;
+        return;
+    }
+    const ctx = window.FileTree.getEditorContext();
+    _editorContextChip.ctx = ctx;
+    if (!ctx) {
+        chip.hidden = true;
+        return;
+    }
+    if (_editorContextChip.suppressedKey && _editorContextChip.suppressedKey === _editorContextKey(ctx)) {
+        chip.hidden = true;
+        return;
+    }
+    const sel = ctx.selection;
+    textEl.textContent = sel
+        ? `引用 ${ctx.path}:${sel.startLine}-${sel.endLine}`
+        : `已附带打开文件 ${ctx.path}`;
+    chip.hidden = false;
+}
+
+chatInput.addEventListener('focus', refreshEditorContextChip);
+{
+    const removeBtn = document.getElementById('editor-context-chip-remove');
+    if (removeBtn) {
+        removeBtn.addEventListener('click', () => {
+            _editorContextChip.suppressedKey = _editorContextKey(_editorContextChip.ctx);
+            refreshEditorContextChip();
+        });
+    }
+}
+
 // 辅助函数：提取文本内容
 function extractTextContent(content) {
     if (typeof content === 'string') {
@@ -131,7 +186,7 @@ function normalizeContent(content) {
     } else if (Array.isArray(content)) {
         content.forEach(block => {
             if (block.type === 'text') {
-                blocks.push({ kind: 'text', text: block.text || '' });
+                blocks.push({ kind: 'text', text: block.text || '', _meta: block._meta || null });
             } else if (block.type === 'image') {
                 const source = block.source || {};
                 blocks.push({ kind: 'image', data: source.data || '', media_type: source.media_type || 'image/png' });
@@ -230,6 +285,7 @@ function renderMessages(messages) {
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
@@ -408,6 +464,7 @@ function prependMessages(messages) {
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
@@ -1295,6 +1352,7 @@ async function sendMessage() {
         media_type: img.media_type,
     })) : null;
     const clientId = makeClientId();
+    const editorContext = getActiveEditorContext();
 
     // 运行中：入队，不创建回合容器、不置 isSending（设计 §5.7.2）
     if (sessionRunning) {
@@ -1308,6 +1366,7 @@ async function sendMessage() {
                         content: message,
                         images: imagesToSend,
                         client_id: clientId,
+                        ...(editorContext ? { editor_context: editorContext } : {}),
                     }),
                 }
             );
@@ -1405,6 +1464,9 @@ async function sendMessage() {
         const requestBody = { content: message };
         if (imagesToSend) {
             requestBody.images = imagesToSend;
+        }
+        if (editorContext) {
+            requestBody.editor_context = editorContext;
         }
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/messages`,

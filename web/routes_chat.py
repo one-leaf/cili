@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.config import get_workspace_data_dir
+from core.editor_context import expand_file_mentions, format_editor_context
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.image_pipeline import ensure_user_image_meta, save_base64_image
@@ -75,6 +76,8 @@ logger = logging.getLogger(__name__)
 class SendMessageRequest(BaseModel):
     content: str
     images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
+    # 编辑器上下文：{path, selection:{startLine,endLine,text}|null}（前端预览选区）
+    editor_context: dict | None = None
     # 驱动客户端类型（web/tui/...）：run_runner 按它 set_turn_interface，
     # 能力档案（Response Surface）与接口专属工具随回合切换。缺省视为 web。
     interface: str | None = None
@@ -85,6 +88,7 @@ class SendMessageRequest(BaseModel):
 class QueueRequest(BaseModel):
     content: str = ""
     images: list[dict] | None = None
+    editor_context: dict | None = None
     interface: str | None = None
     client_id: str | None = None
 
@@ -111,13 +115,20 @@ def _session_key(workspace_uuid: str, session_id: str) -> str:
 
 
 def _build_user_input(content: str, images: list[dict] | None,
-                      *, uploads_dir: Path | None = None) -> Any:
-    """文本 + base64 图片 → runner 入参；有 uploads_dir 时落盘并写入引用路径。"""
-    if not images:
-        return content
+                      *, uploads_dir: Path | None = None,
+                      editor_context: dict | None = None) -> Any:
+    """文本 + 编辑器上下文 + 文件提及 + base64 图片 → runner 入参。"""
+    ctx_block = format_editor_context(editor_context)
     workspace_dir = uploads_dir.parent if uploads_dir is not None else None
-    blocks: list[dict] = [{"type": "text", "text": content, "_valid": True}]
-    for img in images:
+    mention_blocks = expand_file_mentions(content, workspace_dir)
+    if not images and not ctx_block and not mention_blocks:
+        return content
+    blocks: list[dict] = []
+    if ctx_block:
+        blocks.append(ctx_block)
+    blocks.extend(mention_blocks)
+    blocks.append({"type": "text", "text": content, "_valid": True})
+    for img in (images or []):
         media_type = img.get("media_type", "image/png")
         data = img.get("data", "")
         block: dict = {
@@ -517,6 +528,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     user_input: Any = _build_user_input(
         content, getattr(request, "images", None),
         uploads_dir=uploads_dir,
+        editor_context=getattr(request, "editor_context", None),
     )
 
     # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
@@ -550,6 +562,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 interface=iface,
                 client_id=client_id,
                 has_images=bool(getattr(request, "images", None)),
+                editor_context=getattr(request, "editor_context", None),
             ))
         except QueueError as e:
             return StreamingResponse(sse_stream({"type": "error", "content": str(e), "session_id": session_id}), media_type="text/event-stream")
@@ -842,10 +855,15 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
         item = turn_queue.enqueue(key, QueuedTurn(
             item_id="",
             content=content,
-            user_input=_build_user_input(content, request.images, uploads_dir=ws_dir / "uploads"),
+            user_input=_build_user_input(
+                content, request.images,
+                uploads_dir=ws_dir / "uploads",
+                editor_context=getattr(request, "editor_context", None),
+            ),
             interface=request.interface or "web",
             client_id=request.client_id,
             has_images=bool(request.images),
+            editor_context=getattr(request, "editor_context", None),
         ))
     except QueueError as e:
         raise HTTPException(status_code=409, detail=str(e))

@@ -2042,6 +2042,46 @@ mjx-container {
     display: flex;
 }
 
+/* 编辑器上下文引用 chip（宽度按内容自适应） */
+.editor-context-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: fit-content;
+    max-width: 100%;
+    margin: 8px 8px 0 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--code-bg);
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+}
+
+.editor-context-chip[hidden] {
+    display: none;
+}
+
+.editor-context-chip-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-context-chip-remove {
+    border: none;
+    background: transparent;
+    color: var(--text-light);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.editor-context-chip-remove:hover {
+    color: #dc3545;
+}
+
 .image-preview-thumb {
     position: relative;
     width: 60px;

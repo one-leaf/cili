@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from core.editor_context import format_editor_context
 from core.event_bus import get_event_bus
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class QueuedTurn:
     client_id: str | None = None
     created_at: str = ""
     has_images: bool = False
+    editor_context: dict | None = None  # 编辑器上下文（路径 + 选区/null）
 
     def preview(self) -> dict:
         """UI/HTTP 快照：不含 base64 大对象，避免广播放大。"""
@@ -100,16 +102,35 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
     """
     texts = [it.content for it in items if it.content]
     has_images = any(it.has_images for it in items)
-    if has_images:
+    has_context = any(it.editor_context for it in items)
+
+    def _mention_blocks(user_input: Any) -> list[dict]:
+        if not isinstance(user_input, list):
+            return []
+        return [
+            b for b in user_input
+            if isinstance(b, dict) and (b.get("_meta") or {}).get("file_mention")
+        ]
+
+    def _image_blocks(user_input: Any) -> list[dict]:
+        if not isinstance(user_input, list):
+            return []
+        return [
+            b for b in user_input
+            if isinstance(b, dict) and b.get("type") == "image"
+        ]
+
+    has_mentions = any(_mention_blocks(it.user_input) for it in items)
+    if has_images or has_context or has_mentions:
         blocks: list[dict] = []
         for it in items:
+            ctx = format_editor_context(it.editor_context)
+            if ctx:
+                blocks.append(ctx)
+            blocks.extend(_mention_blocks(it.user_input))
             if it.content:
                 blocks.append({"type": "text", "text": it.content, "_valid": True})
-            if isinstance(it.user_input, list):
-                blocks.extend(
-                    b for b in it.user_input
-                    if isinstance(b, dict) and b.get("type") == "image"
-                )
+            blocks.extend(_image_blocks(it.user_input))
         user_input: Any = blocks if blocks else "\n\n".join(texts)
     else:
         user_input = "\n\n".join(texts)
