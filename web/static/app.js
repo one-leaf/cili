@@ -26,6 +26,7 @@ let currentSessionLoadedOffset = 0;  // 已加载的消息数（从末尾算起�
 let currentSessionHasMore = false;   // 是否还有更多历史消息
 let isLoadingMore = false;           // 是否正在加载更多消息
 let pendingAttachments = [];         // [{ path: "uploads/x", name, media_type }]
+let modelSelectBusy = false;         // 模型列表加载/切换请求进行中
 
 
 // DOM elements
@@ -36,6 +37,7 @@ const sessionsList = document.getElementById('sessions-list');
 const chatMessages = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
 const composerBtn = document.getElementById('composer-action-btn');
+const modelSelect = document.getElementById('model-select');
 const queuedMessagesEl = document.getElementById('queued-messages');
 const queuedListEl = document.getElementById('queued-list');
 const queuedLabelEl = document.getElementById('queued-label');
@@ -362,6 +364,84 @@ function updateComposerButtons() {
     composerBtn.disabled = state === 'disabled' || (state === 'stop' && isStopping);
     // 有会话时输入框常开（运行中也能输入）；无会话才禁用
     chatInput.disabled = !hasSession;
+    // 模型下拉：无会话或运行中（含前台请求/后台回合）不可切换
+    if (!hasSession && modelSelect.dataset.currentRef) {
+        modelSelect.dataset.currentRef = '';
+        modelSelect.innerHTML = '<option>模型</option>';
+    }
+    modelSelect.disabled = !hasSession || sessionRunning || isSending || modelSelectBusy;
+}
+
+// 输入区模型下拉：默认显示当前会话模型，允许切换（会话级覆盖）
+async function refreshModelSelect() {
+    if (!currentWorkspace || !currentSession) {
+        modelSelect.innerHTML = '<option>模型</option>';
+        modelSelect.dataset.currentRef = '';
+        modelSelect.disabled = true;
+        return;
+    }
+    const workspaceUuid = currentWorkspace.uuid;
+    const sessionId = currentSession.session_id;
+    modelSelectBusy = true;
+    updateComposerButtons();
+    try {
+        const resp = await fetch(`/api/workspaces/${workspaceUuid}/sessions/${sessionId}/model`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (!currentSession || currentSession.session_id !== sessionId) return;
+        const opts = (data.available || []).map(m => {
+            const ref = m.ref || '';
+            const name = m.name || ref;
+            return `<option value="${escapeHtml(ref)}" title="${escapeHtml(ref)}">${escapeHtml(name)}</option>`;
+        }).join('');
+        modelSelect.innerHTML = opts || '<option>（无可用模型）</option>';
+        modelSelect.dataset.currentRef = data.current_ref || '';
+        modelSelect.value = data.current_ref || '';
+        modelSelect.title = data.current_ref || '切换模型';
+    } catch (e) {
+        if (currentSession && currentSession.session_id === sessionId) {
+            console.warn('加载模型列表失败:', e);
+            modelSelect.innerHTML = '<option>模型</option>';
+            modelSelect.dataset.currentRef = '';
+            modelSelect.title = '模型列表加载失败';
+        }
+    } finally {
+        modelSelectBusy = false;
+        updateComposerButtons();
+    }
+}
+
+async function onModelSelectChange() {
+    if (!currentWorkspace || !currentSession) return;
+    const workspaceUuid = currentWorkspace.uuid;
+    const sessionId = currentSession.session_id;
+    const ref = modelSelect.value;
+    if (!ref || ref === modelSelect.dataset.currentRef) return;
+    const previousRef = modelSelect.dataset.currentRef || '';
+    modelSelectBusy = true;
+    updateComposerButtons();
+    try {
+        const resp = await fetch(`/api/workspaces/${workspaceUuid}/sessions/${sessionId}/model`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_ref: ref }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        if (currentSession && currentSession.session_id === sessionId) {
+            modelSelect.dataset.currentRef = data.current_ref || ref;
+            modelSelect.value = data.current_ref || ref;
+            modelSelect.title = data.current_ref || ref;
+        }
+        showToast(`已切换模型：${data.current_name || ref}`);
+    } catch (e) {
+        console.error('切换模型失败:', e);
+        modelSelect.value = previousRef;
+        showToast('切换模型失败：' + (e.message || e));
+    } finally {
+        modelSelectBusy = false;
+        updateComposerButtons();
+    }
 }
 
 // Setup event listeners
@@ -381,6 +461,7 @@ function setupEventListeners() {
             sendMessage();
         }
     });
+    modelSelect.addEventListener('change', onModelSelectChange);
     updateComposerButtons();
     if (queueResumeBtn) queueResumeBtn.addEventListener('click', () => resumeQueue());
     if (queueClearBtn) queueClearBtn.addEventListener('click', () => clearQueue());
@@ -636,6 +717,8 @@ async function handleWorkspaceChange() {
     if (!selectedUuid) {
         currentWorkspace = null;
         currentSession = null;
+        updateComposerButtons();
+        refreshModelSelect();
         closeEventSource();  // 无工作区：断开事件流
         clearPosition();
         workspaceSettingsBtn.disabled = true;
@@ -1786,6 +1869,7 @@ async function loadSession(sessionId) {
         queuePaused = !!status.queue_paused;
         queueReason = status.queue_reason || '';
         updateComposerButtons();
+        refreshModelSelect();
         renderQueueBar();
         if (sessionRunning) {
             // 恢复该会话运行中的 worker 卡片（历史消息里只有已完成的 agent_ref）
@@ -1845,6 +1929,7 @@ async function createNewSession() {
         queueReason = '';
         isStopping = false;
         updateComposerButtons();
+        refreshModelSelect();
         renderQueueBar();
         chatInput.focus();
     } catch (error) {

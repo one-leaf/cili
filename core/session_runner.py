@@ -150,6 +150,7 @@ class SessionRunner(BaseSessionRunner):
         self.role = role
         self.role_cfg = load_role(role, config)
         self.model = config.model_for_role(role)
+        self.model_ref: str | None = self._role_model_ref(config)
         # _init_interactive 早于 BaseSessionRunner.__init__ 使用 config
         self.config = config
         self._cwd_init = os.path.abspath(cwd or os.getcwd())
@@ -191,7 +192,21 @@ class SessionRunner(BaseSessionRunner):
             max_iterations=self.role_cfg.max_iterations,
         )
 
-        self.model = config.model_for_role(role)
+        # 会话级模型覆盖优先（用户从输入框切换的模型）；未覆盖时用角色默认模型
+        saved_ref = self._session_model_ref()
+        self.model_ref = self._role_model_ref(config)
+        if saved_ref:
+            try:
+                self.model = config.resolve_model(saved_ref)
+                self.model_ref = saved_ref
+            except Exception as e:
+                logger.warning(
+                    f"[SessionRunner:{role}] 会话模型 {saved_ref!r} 不可用，"
+                    f"回退角色模型: {e}"
+                )
+                self.model = config.model_for_role(role)
+        else:
+            self.model = config.model_for_role(role)
 
         # 统一循环编排层（Step 4）：交互/自主共用同一骨架，参数实时读 runner/role_cfg
         self.loop = Loop(
@@ -203,13 +218,8 @@ class SessionRunner(BaseSessionRunner):
             ),
         )
 
-        # Create LLM client（worker/lite 用角色模型，未配置继承 master model）
-        self.client = create_llm_client(self.model)
-        # 角色级 max_tokens 上限：min(角色配置, 模型上限)，避免超过模型实际能力
-        # （isinstance 守卫兼容测试中的 MagicMock 模型）
-        role_max_tokens = self.role_cfg.max_tokens
-        if role_max_tokens and isinstance(self.model.max_output_tokens, int):
-            self.client.max_tokens = min(role_max_tokens, self.model.max_output_tokens)
+        # Create LLM client（角色模型，max_tokens 取角色配置与模型上限的较小值）
+        self.client = self._build_client(self.model)
 
         if self._mode == "interactive":
             # 权限三件套：会话级存储 + 统一规则引擎（全局层 + 工作区层）+ 裁决器。
@@ -349,6 +359,75 @@ class SessionRunner(BaseSessionRunner):
         session = SessionStore.create_new_session(self.sessions_dir, "Default")
         self.session = session
         self.current_session_id = session.session_id
+
+    # ─── 模型选择（会话级覆盖） ─────────────────────────────────
+
+    def _role_model_ref(self, config: "Config | None" = None) -> str | None:
+        """角色默认模型引用（未配置时由 Config 统一兜底）。"""
+        cfg = config or self.config
+        try:
+            return cfg.role_refs().get(self.role)
+        except Exception:
+            return None
+
+    def _session_model_ref(self) -> str | None:
+        """会话元数据里的模型覆盖；非交互模式或未设置时返回 None。"""
+        if getattr(self, "_mode", "") != "interactive":
+            return None
+        session = getattr(self, "session", None)
+        meta = getattr(session, "metadata", None) if session is not None else None
+        if not isinstance(meta, dict):
+            return None
+        ref = meta.get("model_ref")
+        return ref.strip() if isinstance(ref, str) and ref.strip() else None
+
+    def _build_client(self, model):
+        """按模型配置创建客户端，并应用角色级 max_tokens 上限。"""
+        client = create_llm_client(model)
+        role_max_tokens = self.role_cfg.max_tokens
+        if role_max_tokens and isinstance(model.max_output_tokens, int):
+            client.max_tokens = min(role_max_tokens, model.max_output_tokens)
+        return client
+
+    def _set_model_runtime(self, ref: str) -> None:
+        """替换运行时模型与客户端（不落盘；调用方负责持久化）。"""
+        model = self.config.resolve_model(ref)
+        new_client = self._build_client(model)
+        old_client = getattr(self, "client", None)
+        self.client = new_client
+        self.model = model
+        self.model_ref = ref
+        if old_client is not None:
+            try:
+                old_client.close()
+            except Exception:
+                pass
+
+    def set_model(self, ref: str) -> None:
+        """切换当前 runner 使用的模型（会话级运行时覆盖）。"""
+        ref = (ref or "").strip()
+        if not ref:
+            raise ValueError("model_ref 不能为空")
+        if ref not in self.config.available_refs():
+            raise ValueError(f"未知模型引用: {ref}")
+        if ref == getattr(self, "model_ref", None) and getattr(self, "client", None) is not None:
+            return
+        self._set_model_runtime(ref)
+
+    def _apply_session_model(self) -> None:
+        """会话切换后应用其模型覆盖；覆盖失效时回退角色默认模型。"""
+        if getattr(self, "_mode", "") != "interactive":
+            return
+        saved_ref = self._session_model_ref()
+        fallback_ref = self._role_model_ref()
+        for ref in (saved_ref, fallback_ref):
+            if not ref or ref == getattr(self, "model_ref", None):
+                continue
+            try:
+                self._set_model_runtime(ref)
+                return
+            except Exception as e:
+                logger.warning(f"[SessionRunner:{self.role}] 应用模型 {ref!r} 失败: {e}")
 
     def _rebuild_tools(self) -> None:
         """Create tool instances from role whitelist and wire callbacks."""
@@ -561,11 +640,29 @@ class SessionRunner(BaseSessionRunner):
             self.max_iterations = self.role_cfg.max_iterations
             # 先创建新客户端，成功后再替换并关闭旧的；
             # 否则创建失败后 self.client 指向已关闭的客户端，后续调用全部失败
-            new_model = new_config.model_for_role(self.role)
-            new_client = create_llm_client(new_model)
+            saved_ref = self._session_model_ref()
+            default_ref = self._role_model_ref(new_config)
+            new_model = None
+            new_ref = None
+            for ref in (saved_ref, default_ref):
+                if not ref:
+                    continue
+                try:
+                    new_model = new_config.resolve_model(ref)
+                    new_ref = ref
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"[SessionRunner:{self.role}] 模型 {ref!r} 在重载后不可用: {e}"
+                    )
+            if new_model is None:
+                new_model = new_config.model_for_role(self.role)
+                new_ref = default_ref
+            new_client = self._build_client(new_model)
             old_client = self.client
             self.client = new_client
             self.model = new_model
+            self.model_ref = new_ref
             self.config = new_config
             self.permission_policy = PermissionPolicy(
                 get_permission_config(new_config), self.permission_rules, self.permission_store,
@@ -958,6 +1055,8 @@ class SessionRunner(BaseSessionRunner):
         self._prompt_section_cache.clear()
         # 重置缓存基线（不同会话的 cache_read 不可比），但保留累计统计
         self.cache_state.reset_after_compact()
+        # 会话级模型覆盖随会话切换（无覆盖则回退角色默认）
+        self._apply_session_model()
 
     def switch_session(self, session_id: str) -> None:
         """Switch to a different (existing) session."""

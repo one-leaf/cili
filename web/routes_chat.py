@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.config import get_workspace_data_dir
+from core.config import get_workspace_data_dir, load_config
 from core.editor_context import expand_file_mentions, format_attachment
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
@@ -102,6 +102,10 @@ class RevertRequest(BaseModel):
     msg_id: str  # 要撤销到的消息 ID
 
 
+class SetModelRequest(BaseModel):
+    model_ref: str  # "provider/模型键"，空字符串表示清除覆盖、回退角色默认
+
+
 def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
     """Load a SessionStore for the given session (lightweight, no master runner)."""
     sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
@@ -112,6 +116,86 @@ def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
 
 def _session_key(workspace_uuid: str, session_id: str) -> str:
     return f"{workspace_uuid}:{session_id}"
+
+
+def _model_payload(config, sm: SessionStore | None) -> dict:
+    """当前会话模型 + 全部可选模型（供输入框下拉框）。"""
+    refs = config.available_refs()
+    available = []
+    for ref in refs:
+        try:
+            name = config.resolve_model(ref).name or ref
+        except Exception:
+            name = ref
+        available.append({"ref": ref, "name": name})
+    try:
+        default_ref = config.role_refs().get("master") or ""
+    except Exception:
+        default_ref = refs[0] if refs else ""
+    saved_ref = ""
+    if sm is not None and isinstance(getattr(sm, "metadata", None), dict):
+        raw = sm.metadata.get("model_ref")
+        if isinstance(raw, str) and raw.strip():
+            saved_ref = raw.strip()
+    current_ref = saved_ref if saved_ref in refs else default_ref
+    current_name = next(
+        (item["name"] for item in available if item["ref"] == current_ref),
+        current_ref,
+    )
+    return {"current_ref": current_ref, "current_name": current_name, "available": available}
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/model")
+async def get_session_model(
+    workspace_uuid: str,
+    session_id: str,
+    _ws_dir: Path = Depends(_require_workspace),
+):
+    """读取会话当前模型与全部可选模型。"""
+    _validate_session_id(session_id)
+    sm = _get_session(workspace_uuid, session_id)
+    if sm is None:
+        raise HTTPException(404, "Session not found")
+    return _model_payload(load_config(), sm)
+
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/model")
+async def set_session_model(
+    workspace_uuid: str,
+    session_id: str,
+    request: SetModelRequest,
+    _ws_dir: Path = Depends(_require_workspace),
+):
+    """切换会话模型（会话级覆盖，不修改全局配置）。"""
+    _validate_session_id(session_id)
+    config = load_config()
+    ref = request.model_ref.strip()
+    refs = config.available_refs()
+    if ref and ref not in refs:
+        raise HTTPException(400, f"未知模型引用: {ref}")
+
+    key = _session_key(workspace_uuid, session_id)
+    runner = registry.get(key)
+    if runner is not None:
+        checker = getattr(runner, "is_running", None)
+        if callable(checker) and checker():
+            raise HTTPException(409, "会话正在运行，无法切换模型")
+    sm = runner.session if runner is not None else _get_session(workspace_uuid, session_id)
+    if sm is None:
+        raise HTTPException(404, "Session not found")
+
+    sm.set_model_ref(ref or None)
+    sm.save()
+
+    if runner is not None:
+        target_ref = ref or _model_payload(config, sm)["current_ref"]
+        setter = getattr(runner, "set_model", None)
+        if callable(setter) and target_ref:
+            try:
+                setter(target_ref)
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(400, str(e))
+    return _model_payload(config, sm)
 
 
 def _build_user_input(content: str, images: list[dict] | None,

@@ -1092,6 +1092,15 @@ class SessionStore:
         """获取会话隐藏状态。"""
         return self.metadata.get("hidden", False)
 
+    def set_model_ref(self, ref: str | None) -> None:
+        """设置会话级模型覆盖；ref 为空时清除（回退角色默认模型）。"""
+        if ref:
+            self.metadata["model_ref"] = ref
+        else:
+            self.metadata.pop("model_ref", None)
+        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._bump_index_version()
+
     # ========== 使用量追踪 ==========
 
     def update_usage(self, input_tokens: int = 0, output_tokens: int = 0,

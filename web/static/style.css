@@ -1956,9 +1956,37 @@ mjx-container {
 
 .input-actions .btn-icon-floating {
     position: static;
-    /* 这一排（插入文件 / 命令帮助 / 停止）统一小一号，尺寸完全一致 */
+    /* 这一排（模型 / 插入文件 / 命令帮助 / 停止）统一小一号，尺寸完全一致 */
     width: 24px;
     height: 24px;
+}
+
+.input-actions .model-select {
+    max-width: 120px;
+    height: 24px;
+    padding: 0 2px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-light);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    text-overflow: ellipsis;
+}
+
+.input-actions .model-select:hover:not(:disabled) {
+    background: var(--bg-color);
+    color: var(--primary-color);
+}
+
+.input-actions .model-select:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.input-actions .model-select:focus {
+    outline: none;
 }
 
 .btn-icon-floating {
@@ -1981,8 +2009,8 @@ mjx-container {
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    /* 三个 24px 图标 + 4px 间距 + 8px 右边距 = 88px，留 4px 余量 */
-    padding-right: 92px;
+    /* 模型下拉最大 120px + 三个 24px 图标 + 间距 + 8px 右边距 ≈ 216px */
+    padding-right: 216px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;
