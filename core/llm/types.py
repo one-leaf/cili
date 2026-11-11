@@ -52,9 +52,13 @@ class ReasoningBlock:
     text: str = ""
     # Optional: opaque provider-specific replay metadata (e.g., Anthropic signature)
     signature: str | None = None
+    # Anthropic redacted_thinking：加密思考内容，必须原样回传，不能解析为文本
+    redacted_data: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization (Anthropic format)."""
+        if self.redacted_data is not None:
+            return {"type": "redacted_thinking", "data": self.redacted_data}
         result: dict[str, Any] = {"type": "thinking", "thinking": self.text}
         if self.signature:
             result["signature"] = self.signature
@@ -66,6 +70,8 @@ class ReasoningBlock:
 
         Supports both Anthropic format ("thinking") and legacy format ("reasoning").
         """
+        if data.get("type") == "redacted_thinking":
+            return cls(redacted_data=data.get("data", ""))
         # Anthropic format: {"type": "thinking", "thinking": "..."}
         text = data.get("thinking", "")
         if not text:
@@ -267,7 +273,7 @@ def block_from_dict(data: dict[str, Any]) -> ContentBlock:
     block_type = data.get("type", "")
     if block_type == "text":
         return TextBlock.from_dict(data)
-    elif block_type in ("thinking", "reasoning"):  # Both Anthropic and legacy formats
+    elif block_type in ("thinking", "reasoning", "redacted_thinking"):  # Both Anthropic and legacy formats
         return ReasoningBlock.from_dict(data)
     elif block_type == "image":
         return ImageBlock.from_dict(data)
@@ -519,6 +525,11 @@ class StreamChunk:
     def signature_delta(cls, index: int, signature: str) -> StreamChunk:
         """Create signature_delta chunk (for Anthropic thinking block replay)."""
         return cls(type="signature_delta", index=index, data={"signature": signature})
+
+    @classmethod
+    def redacted_block(cls, index: int, data: str) -> StreamChunk:
+        """Create redacted thinking chunk (Anthropic redacted_thinking replay)."""
+        return cls(type="redacted", index=index, data={"data": data})
 
     @classmethod
     def block_end(cls, index: int) -> StreamChunk:

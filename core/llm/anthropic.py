@@ -105,7 +105,15 @@ class AnthropicAdapter(Adapter):
         return body
 
     def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """将内部 Message 转为 Anthropic 格式（tool_call→tool_use、tool_call_id→tool_use_id）。"""
+        """将内部 Message 转为 Anthropic 格式（tool_call→tool_use、tool_call_id→tool_use_id）。
+
+        发送前归一化思考块，避免思考模式下的多轮/跨模型 400：
+        - thinking 关闭时丢弃历史思考块（禁用思考的请求不接受 thinking 块）；
+        - 对不校验签名的上游（DeepSeek 等 Anthropic 兼容端点），给带 tool_use
+          但缺思考块的轮次补一个空 thinking 块（"must be passed back" 修复）。
+        """
+        drop_thinking = self.config.reasoning == "off"
+        fill_missing = not drop_thinking and self._accepts_unsigned_thinking()
         anthropic_messages = []
         for msg in messages:
             if isinstance(msg.content, str):
@@ -113,31 +121,63 @@ class AnthropicAdapter(Adapter):
                     "role": msg.role,
                     "content": msg.content,
                 })
-            else:
-                # Convert content blocks to Anthropic format
-                content = []
-                for block in msg.content:
-                    block_dict = block_to_dict(block)
-                    # Convert tool_call to tool_use (Anthropic's format)
-                    if block_dict.get("type") == "tool_call":
-                        block_dict["type"] = "tool_use"
-                        # Parse arguments string to input dict
-                        arguments = block_dict.get("arguments", "")
-                        try:
-                            block_dict["input"] = json.loads(arguments) if arguments else {}
-                        except json.JSONDecodeError:
-                            block_dict["input"] = {"_raw": arguments}
-                        block_dict.pop("arguments", None)
-                    # Convert tool_call_id to tool_use_id (OpenAI → Anthropic)
-                    elif block_dict.get("type") == "tool_result":
-                        if "tool_call_id" in block_dict:
-                            block_dict["tool_use_id"] = block_dict.pop("tool_call_id")
-                    content.append(block_dict)
-                anthropic_messages.append({
-                    "role": msg.role,
-                    "content": content,
-                })
+                continue
+
+            # Convert content blocks to Anthropic format
+            content = []
+            for block in msg.content:
+                if drop_thinking and isinstance(block, ReasoningBlock):
+                    continue
+                block_dict = block_to_dict(block)
+                # Convert tool_call to tool_use (Anthropic's format)
+                if block_dict.get("type") == "tool_call":
+                    block_dict["type"] = "tool_use"
+                    # Parse arguments string to input dict
+                    arguments = block_dict.get("arguments", "")
+                    try:
+                        block_dict["input"] = json.loads(arguments) if arguments else {}
+                    except json.JSONDecodeError:
+                        block_dict["input"] = {"_raw": arguments}
+                    block_dict.pop("arguments", None)
+                # Convert tool_call_id to tool_use_id (OpenAI → Anthropic)
+                elif block_dict.get("type") == "tool_result":
+                    if "tool_call_id" in block_dict:
+                        block_dict["tool_use_id"] = block_dict.pop("tool_call_id")
+                content.append(block_dict)
+
+            if fill_missing and self._needs_synthetic_thinking(msg, content):
+                content.insert(0, {"type": "thinking", "thinking": "", "signature": ""})
+
+            if not content:
+                continue
+            anthropic_messages.append({
+                "role": msg.role,
+                "content": content,
+            })
         return anthropic_messages
+
+    # 校验 thinking 签名的官方端点：这些地址不能补空签名块
+    _STRICT_SIGNATURE_MARKERS = ("anthropic.com", "amazonaws.com", "googleapis.com")
+
+    def _accepts_unsigned_thinking(self) -> bool:
+        """上游是否接受无签名 thinking 块。
+
+        DeepSeek 官方及同类第三方网关（litellm / new-api / one-api 等）不校验
+        thinking 签名，只要求带 tool_use 的 assistant 轮存在 thinking 块。
+        官方 Anthropic / Bedrock / Vertex 会校验签名，不能补空块。
+        只看 endpoint 地址，不依赖模型别名，网关改映射不影响判断。
+        """
+        base_url = self.base_url.lower()
+        return not any(marker in base_url for marker in self._STRICT_SIGNATURE_MARKERS)
+
+    @staticmethod
+    def _needs_synthetic_thinking(msg: Message, content: list[dict[str, Any]]) -> bool:
+        """assistant 轮带 tool_use 但没有任何思考块时，需要补一个空 thinking 块。"""
+        if msg.role != "assistant":
+            return False
+        if not any(b.get("type") == "tool_use" for b in content):
+            return False
+        return not any(b.get("type") in ("thinking", "redacted_thinking") for b in content)
 
     def _apply_thinking_config(self, body: dict[str, Any]) -> None:
         """Extended thinking：按 reasoning 档位设置思考（anthropic 取值域，§models-provider-design）。
@@ -254,6 +294,8 @@ class AnthropicAdapter(Adapter):
                     text=block.get("thinking", ""),
                     signature=block.get("signature"),
                 ))
+            elif block_type == "redacted_thinking":
+                content_blocks.append(ReasoningBlock(redacted_data=block.get("data", "")))
             elif block_type == "tool_use":
                 # Store arguments as raw JSON string
                 input_data = block.get("input", {})
@@ -306,6 +348,9 @@ class AnthropicAdapter(Adapter):
                     signature = block.get("signature", "")
                     if signature:
                         yield StreamChunk.signature_delta(current_block_index, signature)
+                elif block_type == "redacted_thinking":
+                    yield StreamChunk.block_start(current_block_index, "reasoning")
+                    yield StreamChunk.redacted_block(current_block_index, block.get("data", ""))
 
             elif evt_type == "content_block_delta":
                 delta = event.get("delta", {})
@@ -333,6 +378,13 @@ class AnthropicAdapter(Adapter):
                             current_block_index,
                             arguments=args,
                         )
+
+                # LitellM 新版流式把签名直接挂在 delta.signature 上
+                # （不再使用 signature_delta 事件类型），两种形态都要收。
+                if delta_type != "signature_delta":
+                    signature = delta.get("signature", "")
+                    if signature:
+                        yield StreamChunk.signature_delta(current_block_index, signature)
 
             elif evt_type == "content_block_stop":
                 yield StreamChunk.block_end(current_block_index)

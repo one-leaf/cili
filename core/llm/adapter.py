@@ -19,6 +19,7 @@ from core.config import ModelConfig
 from core.llm.types import (
     ContentBlock,
     Message,
+    ReasoningBlock,
     StreamChunk,
     TextBlock,
     ToolCallBlock,
@@ -60,6 +61,12 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
             isinstance(b, ToolCallBlock) for b in content
         )
 
+    def _has_reasoning(content: str | list[ContentBlock]) -> bool:
+        """判断消息内容是否含 thinking 块。"""
+        return isinstance(content, list) and any(
+            isinstance(b, ReasoningBlock) for b in content
+        )
+
     merged: list[Message] = [messages[0]]
 
     for msg in messages[1:]:
@@ -74,6 +81,14 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
             msg.role == "assistant"
             and _has_tool_calls(prev.content)
             and _has_tool_calls(msg.content)
+        ):
+            merged.append(msg)
+            continue
+
+        # 含思考块的 assistant 消息禁止合并：thinking 必须与 signature 原样回放，
+        # 拼接会把 text 排到 thinking 前或产出多个思考块，Anthropic 直接 400。
+        if msg.role == "assistant" and (
+            _has_reasoning(prev.content) or _has_reasoning(msg.content)
         ):
             merged.append(msg)
             continue

@@ -41,7 +41,8 @@ LLMClient (client.py)
 
 @dataclass ReasoningBlock:
     text: str = ""
-    signature: str | None = None  # provider 私有回放元数据
+    signature: str | None = None  # provider 私有回放元数据（Anthropic thinking signature）
+    redacted_data: str | None = None  # redacted_thinking 的加密内容，原样回放
 
 @dataclass ToolCallBlock:
     id: str = ""
@@ -106,7 +107,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
     data: dict[str, Any] = field(default_factory=dict)
 ```
 
-8 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
+9 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
 
 | type | data 字段 | 说明 |
 |------|-----------|------|
@@ -114,6 +115,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 | `text_delta` | `text` | 文本内容增量 |
 | `reasoning_delta` | `text` | 推理内容增量 |
 | `signature_delta` | `signature` | 思考块签名（赋值替换，非累积；Anthropic 多轮重放） |
+| `redacted` | `data` | Anthropic redacted_thinking 加密内容（原样回放） |
 | `tool_call_delta` | `id?`, `name?`, `arguments?`, `thought_signature?` | 工具调用增量 |
 | `block_end` | — | 内容块结束 |
 | `usage` | `usage: UsageData` | Token 用量更新 |

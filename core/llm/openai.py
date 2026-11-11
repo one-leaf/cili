@@ -32,7 +32,8 @@ class _MsgParts:
     """单条消息 content blocks 的分类结果，供 _convert_message 各分支消费。"""
 
     text: list[str] = field(default_factory=list)
-    reasoning: list[str] = field(default_factory=list)
+    # Anthropic thinking 块（含 signature / redacted），供 thinking_blocks 原样回传
+    reasoning: list[dict[str, Any]] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
@@ -159,8 +160,17 @@ class OpenAIAdapter(Adapter):
             elif btype in ("reasoning", "thinking"):
                 # Anthropic: {"type": "thinking", "thinking": "..."}
                 # Legacy: {"type": "reasoning", "text": "..."}
+                thinking_block: dict[str, Any] = {
+                    "type": "thinking",
+                    "thinking": block_dict.get("thinking", "") or block_dict.get("text", ""),
+                }
+                if block_dict.get("signature"):
+                    thinking_block["signature"] = block_dict["signature"]
+                parts.reasoning.append(thinking_block)
+
+            elif btype == "redacted_thinking":
                 parts.reasoning.append(
-                    block_dict.get("thinking", "") or block_dict.get("text", "")
+                    {"type": "redacted_thinking", "data": block_dict.get("data", "")}
                 )
 
             elif btype == "image":
@@ -221,12 +231,23 @@ class OpenAIAdapter(Adapter):
         # 兼容端点拒绝）
         content = "\n".join(parts.text)
         msg_dict["content"] = content if content else None
-        # CoT passback: reasoning blocks concatenated back to the wire.
+        # CoT passback: reasoning text concatenated back to the wire.
         # Reference: deepseek-harness serializeAssistant() — required on
         # tool-call turns, ignored elsewhere but keeps prefix stable.
-        reasoning = "".join(parts.reasoning)
+        reasoning = "".join(
+            b.get("thinking", "") for b in parts.reasoning if b.get("type") == "thinking"
+        )
         if reasoning:
             msg_dict["reasoning_content"] = reasoning
+        # LitellM 的 OpenAI 兼容端点要求 thinking_blocks（含 signature）原样回传；
+        # 缺了它，Anthropic 上游在工具调用后的下一轮会 400
+        # "The content[].thinking in the thinking mode must be passed back to the API."
+        replayable = any(
+            b.get("type") == "redacted_thinking" or b.get("signature")
+            for b in parts.reasoning
+        )
+        if replayable and self.config.reasoning != "off":
+            msg_dict["thinking_blocks"] = parts.reasoning
         if parts.tool_calls:
             msg_dict["tool_calls"] = parts.tool_calls
         return msg_dict
@@ -293,6 +314,30 @@ class OpenAIAdapter(Adapter):
     def _extract_thought_signature(self, tc: dict[str, Any]) -> str:
         """提取 Google Gemini thought_signature（位于 extra_content.google）。"""
         return tc.get("extra_content", {}).get("google", {}).get("thought_signature", "")
+
+    @staticmethod
+    def _extract_thinking_blocks(obj: dict[str, Any]) -> list[dict[str, Any]]:
+        """提取 LitellM/OpenRouter 风格的 thinking_blocks（含 signature）。
+
+        非流式位于 message.thinking_blocks，流式位于 delta.thinking_blocks，
+        部分版本放在 provider_specific_fields.thinking_blocks。
+        """
+        blocks = obj.get("thinking_blocks")
+        if not blocks:
+            psf = obj.get("provider_specific_fields")
+            if isinstance(psf, dict):
+                blocks = psf.get("thinking_blocks")
+        return [b for b in (blocks or []) if isinstance(b, dict)]
+
+    @staticmethod
+    def _thinking_block_to_content(block: dict[str, Any]) -> ReasoningBlock:
+        """thinking_blocks 项 → ReasoningBlock（保留 signature / redacted data）。"""
+        if block.get("type") == "redacted_thinking":
+            return ReasoningBlock(redacted_data=block.get("data", ""))
+        return ReasoningBlock(
+            text=block.get("thinking", "") or block.get("text", ""),
+            signature=block.get("signature") or None,
+        )
 
     def _prompt_cache_enabled(self) -> bool:
         """根据 cache_control 配置决定是否启用 prompt cache。
@@ -410,10 +455,15 @@ class OpenAIAdapter(Adapter):
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
 
-        # Reasoning content (for o1, o3 models; or DGX which uses 'reasoning')
-        reasoning = message.get("reasoning_content") or message.get("reasoning")
-        if reasoning:
-            content_blocks.append(ReasoningBlock(text=reasoning))
+        # LitellM 把 Anthropic thinking 以 thinking_blocks（含 signature）下发；
+        # 有它时优先，否则退回 reasoning_content（o1/o3、DGX 等）。
+        thinking_blocks = self._extract_thinking_blocks(message)
+        for tb in thinking_blocks:
+            content_blocks.append(self._thinking_block_to_content(tb))
+        if not thinking_blocks:
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if reasoning:
+                content_blocks.append(ReasoningBlock(text=reasoning))
 
         # Text content
         if message.get("content"):
@@ -452,6 +502,10 @@ class OpenAIAdapter(Adapter):
         """
         current_text_index = -1
         current_reasoning_index = -1
+        current_reasoning_text = ""
+        thinking_texts: dict[int, str] = {}      # thinking_blocks 序号 -> 已发送文本
+        thinking_block_idx: dict[int, int] = {}  # thinking_blocks 序号 -> chunk index
+        thinking_redacted: set[int] = set()
         tool_call_indices: dict[int, int] = {}  # openai_index -> chunk_index
         next_block_index = 0
 
@@ -476,17 +530,65 @@ class OpenAIAdapter(Adapter):
             if finish_reason:
                 yield StreamChunk.finish_chunk(self._map_finish_reason(finish_reason))
 
+            # LitellM/OpenRouter 的 OpenAI 兼容流把思考块放在 thinking_blocks，
+            # signature 随块下发；thinking 模式下必须在工具调用后的下一轮原样带回。
+            thinking_blocks = self._extract_thinking_blocks(delta)
+            for pos, tb in enumerate(thinking_blocks):
+                if pos not in thinking_block_idx:
+                    # 首块复用已由 reasoning_content 开出的块，避免同一段思考
+                    # 被拆成两个块（先流式增量、后下发带签名的完整块）。
+                    if pos == 0 and current_reasoning_index >= 0:
+                        chunk_idx = current_reasoning_index
+                        thinking_texts[pos] = current_reasoning_text
+                    else:
+                        chunk_idx = next_block_index
+                        next_block_index += 1
+                        thinking_texts[pos] = ""
+                        yield StreamChunk.block_start(chunk_idx, "reasoning")
+                    thinking_block_idx[pos] = chunk_idx
+
+                idx = thinking_block_idx[pos]
+                if tb.get("type") == "redacted_thinking":
+                    if pos not in thinking_redacted:
+                        thinking_redacted.add(pos)
+                        yield StreamChunk.redacted_block(idx, tb.get("data", ""))
+                    continue
+
+                text = tb.get("thinking", "") or tb.get("text", "")
+                prev = thinking_texts.get(pos, "")
+                if text and text != prev:
+                    if text.startswith(prev):
+                        # 累计式快照：只发新增后缀
+                        yield StreamChunk.reasoning_delta(idx, text[len(prev):])
+                        thinking_texts[pos] = text
+                    elif not prev.startswith(text):
+                        # 增量式分片：直接拼接
+                        yield StreamChunk.reasoning_delta(idx, text)
+                        thinking_texts[pos] = prev + text
+                signature = tb.get("signature")
+                if signature:
+                    yield StreamChunk.signature_delta(idx, signature)
+
             # Handle reasoning content (standard) or reasoning (DGX)
-            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+            reasoning_delta = (
+                None if thinking_blocks
+                else delta.get("reasoning_content") or delta.get("reasoning")
+            )
             if reasoning_delta:
                 if current_reasoning_index < 0:
                     current_reasoning_index = next_block_index
                     next_block_index += 1
                     yield StreamChunk.block_start(current_reasoning_index, "reasoning")
+                current_reasoning_text += reasoning_delta
                 yield StreamChunk.reasoning_delta(
                     current_reasoning_index,
                     reasoning_delta,
                 )
+            elif not thinking_blocks:
+                # 签名也可能单独挂在 delta.signature 上（无 thinking_blocks 时）
+                signature = delta.get("signature", "")
+                if signature and current_reasoning_index >= 0:
+                    yield StreamChunk.signature_delta(current_reasoning_index, signature)
 
             # Handle text content
             if "content" in delta and delta["content"]:
@@ -529,9 +631,16 @@ class OpenAIAdapter(Adapter):
                         )
 
         # Close any open blocks
+        closed: set[int] = set()
         if current_reasoning_index >= 0:
             yield StreamChunk.block_end(current_reasoning_index)
+            closed.add(current_reasoning_index)
         if current_text_index >= 0:
             yield StreamChunk.block_end(current_text_index)
+            closed.add(current_text_index)
         for idx in tool_call_indices.values():
             yield StreamChunk.block_end(idx)
+            closed.add(idx)
+        for idx in thinking_block_idx.values():
+            if idx not in closed:
+                yield StreamChunk.block_end(idx)
