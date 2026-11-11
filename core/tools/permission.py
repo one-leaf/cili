@@ -61,39 +61,33 @@ def _kind_action(kind: str) -> str:
 
 
 def build_permission_question(permission: dict[str, Any]) -> str:
-    """构造权限确认卡文案（含含义/风险/理由）。"""
+    """构造权限确认卡文案（含含义/风险/理由/动态路径说明）。"""
     kind = permission.get("kind", "command")
     summary = str(permission.get("summary") or "").strip()
     risk = str(permission.get("risk") or "").strip()
     reason = str(permission.get("reason") or "").strip()
-    display = str(permission.get("rule_display") or "").strip()
+    display = str(permission.get("display") or permission.get("command") or "").strip()
+    dynamic_kind = str(permission.get("dynamic_kind") or "")
+    source = str(permission.get("source") or "").strip()
+
+    def _path_verb(default: str) -> str:
+        if display.startswith(("读取", "写入", "删除")):
+            return display
+        return f"{default} {display}".strip()
 
     if kind == "browser:navigate":
-        head = (
-            f"检测到非公网地址导航，需要您批准后才能执行：\n\n"
-            f"地址：`{permission['command']}`\n"
-        )
+        head = f"检测到非公网地址导航，需要您批准后才能执行：\n\n地址：`{display}`\n"
     elif kind == "path:read":
-        head = (
-            f"检测到工作区外文件读取，需要您批准后才能执行：\n\n"
-            f"操作：读取 `{permission['command']}`\n"
-        )
+        head = f"检测到工作区外文件读取，需要您批准后才能执行：\n\n操作：{_path_verb('读取')}\n"
     elif kind == "path:delete":
-        head = (
-            f"检测到工作区外文件操作，需要您批准后才能执行：\n\n"
-            f"操作：删除 `{permission['command']}`\n"
-        )
+        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_path_verb('删除')}\n"
     elif kind.startswith("path:"):
-        head = (
-            f"检测到工作区外文件操作，需要您批准后才能执行：\n\n"
-            f"操作：写入 `{permission['command']}`\n"
-        )
+        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_path_verb('写入')}\n"
     else:
-        head = (
-            f"检测到需要确认的操作，需要您批准后才能执行：\n\n"
-            f"操作：`{permission['command']}`\n"
-        )
+        head = f"检测到需要确认的操作，需要您批准后才能执行：\n\n操作：`{display}`\n"
 
+    if source:
+        head += f"位置：{source}\n"
     if summary:
         head += f"含义：{summary}\n"
     if risk:
@@ -103,6 +97,13 @@ def build_permission_question(permission: dict[str, Any]) -> str:
     head += f"判定编号：{permission['decision_id']}\n"
 
     target_label = _target_label(kind)
+    if dynamic_kind == "opaque":
+        return (
+            f"{head}\n"
+            f"「{APPROVE_LABEL}」仅本次会话放行；运行时路径无法生成持久规则。"
+            f"「{REJECT_LABEL}」仅拦截本次执行。"
+        )
+
     persist_desc = f"（{display}）" if display else ""
     return (
         f"{head}\n"
@@ -115,12 +116,15 @@ def permission_placeholder_text(permission: dict[str, Any]) -> str:
     """工具返回给 LLM 的占位文本（completed=False）。"""
     kind = permission.get("kind", "command")
     target_label = _target_label(kind)
+    target = str(permission.get("display") or permission.get("command") or "")
+    dynamic_kind = str(permission.get("dynamic_kind") or "")
+    hint = "该路径在运行时确定，无法生成持久规则；仅可请求本次会话批准。" if dynamic_kind == "opaque" else ""
     return (
         f"Error: 该{target_label}未命中允许规则，已被拦截，等待权限判定（自动判定或用户确认）。\n"
-        f"{target_label}：`{permission.get('command', '')}`\n"
+        f"{target_label}：`{target}`\n"
         f"判定编号：{permission.get('decision_id', '')}\n"
         f"拦截原因：{permission.get('reason', '')}\n\n"
-        f"请勿原样重发；等待判定结果或用户决定。\n"
+        f"{hint}请勿原样重发；等待判定结果或用户决定。\n"
         f"如果你是子代理（worker/lite）：无法等待用户确认，请换用非拦截方式，或向父代理报告此操作。"
     )
 

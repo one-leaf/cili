@@ -47,13 +47,33 @@ def is_path_within(resolved: str, root: str) -> bool:
 
 @dataclass
 class PathTarget:
-    """一个待判定的路径目标。"""
+    """一个待判定的路径目标。
+
+    static / prefixed / opaque 三态：
+    - static: resolved 非空，路径完全可静态确认；
+    - prefixed: resolved 为空但 static_prefix 非空，动态部分位于稳定目录下；
+    - opaque: 两者都为空，只能按代码 + 目标序号做会话级批准。
+    """
 
     op: str  # OP_READ / OP_WRITE / OP_DELETE
     raw: str
     op_name: str = ""
     dynamic: bool = False
     resolved: str | None = None
+    static_prefix: str | None = None
+    display: str = ""
+    source: str = ""
+    code_hash: str = ""
+    target_index: int = 0
+    suggested_rule: dict | None = None
+
+    @property
+    def dynamic_kind(self) -> str:
+        if self.resolved:
+            return "static"
+        if self.static_prefix:
+            return "prefixed"
+        return "opaque"
 
 
 class PathPolicy:
@@ -98,7 +118,12 @@ class PathPolicy:
         return is_path_within(resolved, self.temp_root)
 
     def decision_id(self, target: PathTarget) -> str:
-        return self.permission_policy.path_decision_id(target.op, target.resolved, target.raw)
+        return self.permission_policy.path_decision_id(
+            target.op, target.resolved, target.raw,
+            static_prefix=target.static_prefix,
+            code_hash=target.code_hash,
+            target_index=target.target_index,
+        )
 
     # ── 状态 ─────────────────────────────────────────────────────
 
@@ -134,6 +159,7 @@ class PathPolicy:
         verdict = self.permission_policy.path_verdict(
             kind, target.resolved,
             decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+            static_prefix=target.static_prefix,
         )
         return self._verdict_to_status(verdict, has_channel=self._has_channel())
 
@@ -154,6 +180,7 @@ class PathPolicy:
         target = PathTarget(OP_READ, raw or (resolved or ""), "read", resolved=resolved)
         verdict = self.permission_policy.path_verdict(
             "path:read", resolved, decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+            static_prefix=target.static_prefix,
         )
         return self._verdict_to_status(verdict, has_channel=self._has_channel())
 
@@ -176,30 +203,46 @@ class PathPolicy:
             "op": target.op,
             "raw": target.raw,
             "resolved": target.resolved,
+            "static_prefix": target.static_prefix,
+            "dynamic_kind": target.dynamic_kind,
+            "display": target.display,
+            "source": target.source,
+            "suggested_rule": target.suggested_rule,
             "inside_workspace": bool(target.resolved and self.is_inside(target.resolved)),
             "decision_id": self.decision_id(target),
         }
 
     def permission_meta(self, target: PathTarget, tool: str = "*") -> dict:
-        """构造与命令审批同构的 meta（含 mode，供 Loop 区分 ai/ask）。"""
+        """构造与命令审批同构的 meta（含 display / dynamic_kind / suggested_rule）。"""
         kind = {
             OP_READ: "path:read",
             OP_DELETE: "path:delete",
         }.get(target.op, "path:write")
-        display = target.resolved if target.resolved is not None else target.raw
         action = {"path:read": "读取", "path:delete": "删除"}.get(kind, "写入")
-        reason = f"{target.op_name or action}目标不在工作区 {self.workspace_root!r} 内"
-        if target.dynamic:
-            reason += "（路径含变量/通配符，无法静态解析）"
+        display = target.display or target.resolved or target.raw
+
+        if target.dynamic_kind == "opaque":
+            reason = f"{target.op_name or action}目标无法静态解析（变量/通配符）"
+        elif target.dynamic_kind == "prefixed":
+            reason = f"{target.op_name or action}目标为动态路径，前缀 {target.static_prefix} 已确认"
+        else:
+            reason = f"{target.op_name or action}目标不在工作区 {self.workspace_root!r} 内"
 
         verdict = self.permission_policy.path_verdict(
             kind, target.resolved,
             decision_id=self.decision_id(target), tool=tool, raw=target.raw,
+            static_prefix=target.static_prefix,
         )
         return {
             "decision_id": self.decision_id(target),
             "command": display,
             "path": display,
+            "display": display,
+            "dynamic_kind": target.dynamic_kind,
+            "static_prefix": target.static_prefix,
+            "source": target.source,
+            "target_index": target.target_index,
+            "suggested_rule": target.suggested_rule,
             "kind": kind,
             "reason": reason,
             "mode": verdict.action,

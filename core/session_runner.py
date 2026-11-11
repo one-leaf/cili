@@ -943,16 +943,22 @@ class SessionRunner(BaseSessionRunner):
         })
 
         ask_id = generate_short_id()
+        options = [
+            {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同操作（含委派给子代理）不再询问。"},
+        ]
+        # 运行时路径无法生成可靠前缀，不能提供“一直允许”，否则会假报成功。
+        if permission.get("dynamic_kind") != "opaque":
+            options.append({
+                "label": REMEMBER_LABEL,
+                "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类操作。",
+            })
+        options.append({"label": REJECT_LABEL, "description": "拒绝执行该操作。"})
         ask_input = {
             "questions": [
                 {
                     "question": build_permission_question(permission),
                     "header": "权限确认",
-                    "options": [
-                        {"label": APPROVE_LABEL, "description": "批准后本会话内执行相同操作（含委派给子代理）不再询问。"},
-                        {"label": REMEMBER_LABEL, "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类操作。"},
-                        {"label": REJECT_LABEL, "description": "拒绝执行该操作。"},
-                    ],
+                    "options": options,
                 }
             ]
         }

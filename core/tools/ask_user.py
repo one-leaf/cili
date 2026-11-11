@@ -12,12 +12,12 @@ import secrets
 from typing import Any
 
 from core.security.permission_rules import build_granted_rule, implied_path_rules
+from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     APPROVE_LABEL,
     REMEMBER_LABEL,
     append_permission_audit,
 )
-from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -243,25 +243,41 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
         audit_base = {
             "source": "user", "decision_id": did, "tool": pending.get("tool", ""),
             "kind": kind, "action": str(command)[:300],
+            "dynamic_kind": pending.get("dynamic_kind", ""),
+            "static_prefix": pending.get("static_prefix") or "",
         }
         if stripped.endswith(REMEMBER_LABEL):
+            persisted = False
+            rule_id = ""
+            rule_reason = ""
             if rules is not None:
-                main = build_granted_rule(
+                built = build_granted_rule(
                     kind=kind, tool=pending.get("tool", "*"), action=command,
                     decision="allow",
                     suggested=pending.get("suggested_rule"), granted_by="user",
                     summary=pending.get("summary", ""), decision_id=did,
                 )
-                if main:
-                    rules.add_rule(main, "workspace")
-                    for extra in implied_path_rules(pending.get("targets") or [], "user", did):
-                        rules.add_rule(extra, "workspace")
-                    logger.info(f"[permission] 用户批准并记住（落盘规则）：{command[:80]}")
-                else:
-                    logger.info(f"[permission] 规则落盘被黑名单/降级约束拒绝，仅会话级放行：{command[:80]}")
+                rule_reason = built.reason
+                if built.rule:
+                    added = rules.add_rule(built.rule, "workspace")
+                    if added:
+                        persisted = True
+                        rule_id = str(added.get("id") or "")
+                        for extra in implied_path_rules(pending.get("targets") or [], "user", did):
+                            rules.add_rule(extra, "workspace")
+                        logger.info(f"[permission] 用户批准并记住（落盘规则）：{command[:80]}")
+                if not persisted:
+                    logger.info(
+                        f"[permission] 未生成持久规则（{rule_reason or '规则未落盘'}），"
+                        f"仅会话级放行：{command[:80]}"
+                    )
             store.approve(did, command, kind=kind)
             append_permission_audit(getattr(session, "session_dir", None), "decided",
-                                  {**audit_base, "decision": "persist"})
+                                  {**audit_base,
+                                   "decision": "persist" if persisted else "session",
+                                   "persisted": persisted,
+                                   "rule_id": rule_id,
+                                   "reason": rule_reason})
         elif stripped.endswith(APPROVE_LABEL):
             store.approve(did, command, kind=kind)
             # 会话级放行越界目标：重执行直接通过路径门，无需再判定（设计 §3.4）

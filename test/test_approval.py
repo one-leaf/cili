@@ -19,8 +19,8 @@ from core.security.permission_rules import (
     is_readonly_command,
     is_safe_create_command,
 )
-from core.tools.bash import BashTool
 from core.tools.base import ToolResult
+from core.tools.bash import BashTool
 from core.tools.browser import BrowserTool
 from core.tools.permission import (
     APPROVE_LABEL,
@@ -307,33 +307,35 @@ class TestRuleGeneration:
     def test_two_token_prefix(self):
         rule = build_granted_rule(kind="command", tool="bash", action="git commit -m x",
                                   granted_by="user")
-        assert rule["match"] == {"type": "prefix", "value": "git commit"}
+        assert rule.rule["match"] == {"type": "prefix", "value": "git commit"}
 
     def test_banned_prefix_rejected_for_allow(self):
-        assert build_granted_rule(kind="command", tool="bash", action="python x.py",
-                                  suggested={"type": "prefix", "value": "python x.py"},
-                                  granted_by="user") is None
+        result = build_granted_rule(kind="command", tool="bash", action="python x.py",
+                                    suggested={"type": "prefix", "value": "python x.py"},
+                                    granted_by="user")
+        assert result.rule is None
+        assert result.reason
 
     def test_deny_allows_banned_prefix(self):
         rule = build_granted_rule(kind="command", tool="bash", action="python x.py",
                                   decision="deny",
                                   suggested={"type": "prefix", "value": "python"},
                                   granted_by="user")
-        assert rule is not None and rule["decision"] == "deny"
+        assert rule.rule is not None and rule.rule["decision"] == "deny"
 
     def test_destructive_head_degrades_exact(self):
         rule = build_granted_rule(kind="command", tool="bash", action="rm -rf ./build",
                                   suggested={"type": "prefix", "value": "rm -rf ./build"},
                                   granted_by="user")
-        assert rule["match"]["type"] == "exact"
+        assert rule.rule["match"]["type"] == "exact"
 
     def test_path_and_url(self, tmp_path):
         path_rule = build_granted_rule(kind="path:write", tool="*",
                                        action="E:\\out\\x.txt", granted_by="user")
-        assert path_rule["match"]["type"] == "prefix"
+        assert path_rule.rule["match"]["type"] == "prefix"
         url_rule = build_granted_rule(kind="browser:navigate", tool="browser",
                                       action="http://127.0.0.1:8000/x", granted_by="user")
-        assert "127.0.0.1:8000" in url_rule["match"]["value"]
+        assert "127.0.0.1:8000" in url_rule.rule["match"]["value"]
 
     def test_implied_path_rules(self):
         rules = implied_path_rules(

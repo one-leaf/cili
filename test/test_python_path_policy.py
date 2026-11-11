@@ -11,8 +11,8 @@ import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 from core.security.python_paths import collect_python_targets
-from core.tools.permission import META_KEY, PermissionStore
 from core.tools.base import ToolResult
+from core.tools.permission import META_KEY, PermissionStore
 from core.tools.python_tool import PythonTool
 
 # ─── 单元：AST 收集 ──────────────────────────────────────────────
@@ -120,7 +120,8 @@ class TestPythonExecuteGate:
         assert result.completed is False
         assert not result.error
         assert result.meta[META_KEY]["kind"] == "path:write"
-        assert result.meta[META_KEY]["command"] == str(outside)
+        assert str(outside) in result.meta[META_KEY]["command"]
+        assert result.meta[META_KEY]["dynamic_kind"] == "static"
 
     def test_inside_write_runs(self, test_workspace, monkeypatch):
         tool = self._tool(test_workspace, PermissionStore())

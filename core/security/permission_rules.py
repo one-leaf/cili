@@ -19,6 +19,7 @@ import re
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -381,6 +382,18 @@ def _match_builtin(rules: list[dict], tool: str, command: str) -> dict | None:
 # ─── 规则生成 ──────────────────────────────────────────────────────────
 
 
+@dataclass
+class RuleBuildResult:
+    """规则生成结果：规则本身 + 无法生成时的原因。
+
+    不再用 ``None`` 同时表示“被黑名单拒绝”和“动态路径无法推导”，
+    调用方必须显式处理 session-only 的情况。
+    """
+
+    rule: dict | None
+    reason: str = ""
+
+
 def build_granted_rule(
     *,
     kind: str,
@@ -391,14 +404,14 @@ def build_granted_rule(
     granted_by: str = "user",
     summary: str = "",
     decision_id: str = "",
-) -> dict | None:
-    """把一次放行/拒绝固化为规则；不可落盘时返回 None。
+) -> RuleBuildResult:
+    """把一次放行/拒绝固化为规则。
 
-    allow/ask 规则受 BANNED_PREFIX_HEADS 与 DESTRUCTIVE_HEADS 约束；
-    deny 规则不受限（只会缩小权限）。
+    path 类规则必须是绝对路径；动态路径没有可持久化前缀时返回原因，
+    不再从 raw 变量名或 f-string 源码推导伪规则。
     """
     if kind not in _KINDS or decision not in _DECISIONS:
-        return None
+        return RuleBuildResult(None, "不支持的规则类型或决策")
     tool = tool or "*"
     action = action or ""
     suggested = suggested if isinstance(suggested, dict) else None
@@ -424,20 +437,25 @@ def build_granted_rule(
             head = _norm_head(match["value"])
             if head in BANNED_PREFIX_HEADS:
                 logger.info(f"[permission-rules] 拒绝落盘入口前缀规则：{head!r}（{action[:60]}）")
-                return None
+                return RuleBuildResult(None, "入口前缀命中黑名单")
             if head in DESTRUCTIVE_HEADS or head.startswith("mkfs"):
                 match = {"type": "exact", "value": canonical_text(action)}
+
     elif kind in ("path:read", "path:write", "path:delete"):
         stype = (suggested or {}).get("type")
         svalue = (suggested or {}).get("value")
         if stype in ("prefix", "exact") and isinstance(svalue, str) and svalue.strip():
-            match = {"type": stype, "value": svalue}
+            value = os.path.normpath(svalue.strip())
+            if not os.path.isabs(value):
+                return RuleBuildResult(None, "路径规则前缀不是绝对路径")
+            match = {"type": stype, "value": value}
         else:
             target = action.strip()
-            parent = os.path.dirname(target) if target else ""
-            if not parent:
-                return None
+            if not os.path.isabs(target):
+                return RuleBuildResult(None, "动态路径缺少可持久化前缀")
+            parent = os.path.dirname(target) or target
             match = {"type": "prefix", "value": parent}
+
     elif kind == "browser:navigate":
         stype = (suggested or {}).get("type")
         svalue = (suggested or {}).get("value")
@@ -450,7 +468,7 @@ def build_granted_rule(
             except ValueError:
                 host = ""
             if not host:
-                return None
+                return RuleBuildResult(None, "URL 规则缺少 host")
             match = {"type": "prefix", "value": host}
 
     value_for_display = match["value"]
@@ -459,7 +477,7 @@ def build_granted_rule(
     type_label = {"exact": "精确匹配", "prefix": "以 {v} 开头", "argv_glob": "匹配模式 {v}"}
     display = (suggested or {}).get("display") or type_label[match["type"]].format(v=value_for_display)
 
-    return {
+    rule = {
         "id": new_rule_id(),
         "enabled": True,
         "decision": decision,
@@ -475,6 +493,7 @@ def build_granted_rule(
         "hits": 0,
         "last_used_at": "",
     }
+    return RuleBuildResult(rule)
 
 
 def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str) -> list[dict]:
@@ -492,8 +511,8 @@ def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str) -
             decision="allow", suggested={"type": "prefix", "value": os.path.dirname(resolved) or resolved},
             granted_by=granted_by, summary=f"命令放行隐含（{decision_id}）", decision_id=decision_id,
         )
-        if rule:
-            rules.append(rule)
+        if rule.rule:
+            rules.append(rule.rule)
     return rules
 
 
@@ -632,6 +651,8 @@ class PermissionRules:
         elif not (isinstance(value, str) and value.strip()):
             return None
         if kind != "command" and match["type"] == "argv_glob":
+            return None
+        if kind.startswith("path:") and not os.path.isabs(str(value)):
             return None
         if match["type"] in ("prefix", "argv_glob") and kind == "command" and decision in ("allow", "ask"):
             head = _norm_head(value)

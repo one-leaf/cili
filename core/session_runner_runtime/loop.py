@@ -621,16 +621,18 @@ class Loop:
                                and decision.risk != "high" and decision.source == "judge"
                                and not teen_unlocked)
                 if persistable:
-                    rule = build_granted_rule(
+                    built = build_granted_rule(
                         kind=permission.get("kind", "command"), tool=permission.get("tool", "*"),
                         action=str(permission.get("command") or ""), decision="allow",
                         suggested=decision.suggested_rule, granted_by="judge",
                         summary=decision.summary, decision_id=permission.get("decision_id", ""))
-                    if rule:
-                        rules.add_rule(rule, "workspace")
+                    if built.rule:
+                        rules.add_rule(built.rule, "workspace")
                         for extra in implied_path_rules(permission.get("targets") or [], "judge",
                                                         permission.get("decision_id", "")):
                             rules.add_rule(extra, "workspace")
+                    elif built.reason:
+                        logger.info(f"[permission] 判定放行未落盘：{built.reason}")
                 if store:
                     store.approve(permission.get("decision_id", ""),
                                   str(permission.get("command") or ""),

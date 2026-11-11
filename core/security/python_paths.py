@@ -18,6 +18,7 @@ Pass3 扫函数调用，把写/删操作的目标收成 PathTarget 列表：
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 
 from core.security.path_policy import OP_DELETE, OP_WRITE, PathTarget
@@ -81,7 +82,10 @@ class _Collector:
         self.pathlib_mods = pathlib_mods
         self.targets: list[PathTarget] = []
         self.symtab: dict[str, object] = {}
+        self.prefix_symtab: dict[str, str | None] = {}
         self.path_vars: set[str] = set()
+        self.target_index = 0
+        self.code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
 
     # ── 表达式解析 ──────────────────────────────────────────────
 
@@ -140,6 +144,63 @@ class _Collector:
                 return True
         return False
 
+    def resolve_prefix(self, node: ast.AST) -> str | None:
+        """动态表达式可确定的绝对目录前缀；无法确定时返回 None。"""
+        if isinstance(node, ast.JoinedStr):
+            pieces: list[str] = []
+            for value in node.values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    pieces.append(value.value)
+                else:
+                    break
+            literal = "".join(pieces)
+            if not literal:
+                return None
+            if not literal.endswith(("/", "\\")):
+                literal = os.path.dirname(literal)
+            return self._normalize_prefix(literal)
+
+        if isinstance(node, ast.Name):
+            return self.prefix_symtab.get(node.id)
+
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = self.resolve(node.left)
+            if left is _DYN:
+                return self.resolve_prefix(node.left)
+            return self._normalize_prefix(left)
+
+        if isinstance(node, ast.Call):
+            func = node.func
+            args = None
+            if isinstance(func, ast.Attribute) and func.attr == "join":
+                args = node.args
+            elif isinstance(func, ast.Name) and func.id in self.path_names:
+                args = node.args
+            elif (
+                isinstance(func, ast.Attribute)
+                and func.attr == "Path"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in self.pathlib_mods
+            ):
+                args = node.args
+            if args is None:
+                return None
+            pieces: list[str] = []
+            for arg in args:
+                value = self.resolve(arg)
+                if value is _DYN:
+                    break
+                pieces.append(value)
+            if not pieces:
+                return None
+            return self._normalize_prefix(os.path.join(*pieces))
+        return None
+
+    def _normalize_prefix(self, value: str) -> str | None:
+        if not value or ".." in value or "*" in value or "?" in value:
+            return None
+        return _resolve_py_path(value, self.cwd)
+
     # ── Pass 2：符号表 ──────────────────────────────────────────
 
     def collect_symbols(self, tree) -> None:
@@ -151,27 +212,80 @@ class _Collector:
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         self.symtab[tgt.id] = resolved
+                        self.prefix_symtab[tgt.id] = (
+                            self.resolve_prefix(node.value) if resolved is _DYN else None
+                        )
                         if self.is_path_expr(node.value):
                             self.path_vars.add(tgt.id)
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 if node.value is not None:
                     resolved = self.resolve(node.value)
                     self.symtab[node.target.id] = resolved
+                    self.prefix_symtab[node.target.id] = (
+                        self.resolve_prefix(node.value) if resolved is _DYN else None
+                    )
                     if self.is_path_expr(node.value):
                         self.path_vars.add(node.target.id)
             elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
                 self.symtab[node.target.id] = _DYN  # 拼接改写后不可静态解析
+                self.prefix_symtab[node.target.id] = None
 
     # ── Pass 3：调用扫描 ────────────────────────────────────────
 
     def emit(self, op: str, op_name: str, node: ast.AST, value: object) -> None:
+        self.target_index += 1
+        raw = ast.get_source_segment(self.code, node) or ast.unparse(node)
         if value is _DYN:
-            raw = ast.get_source_segment(self.code, node) or ast.unparse(node)
-            self.targets.append(PathTarget(op, raw, op_name=op_name, dynamic=True))
-        else:
-            self.targets.append(PathTarget(
-                op, value, op_name=op_name, resolved=_resolve_py_path(value, self.cwd),
+            prefix = self.resolve_prefix(node)
+            self.targets.append(self._make_target(
+                op, op_name, node, raw, resolved=None, static_prefix=prefix,
             ))
+        else:
+            resolved = _resolve_py_path(value, self.cwd)
+            self.targets.append(self._make_target(
+                op, op_name, node, raw, resolved=resolved, static_prefix=None,
+            ))
+
+    def _make_target(self, op: str, op_name: str, node: ast.AST, raw: str,
+                     *, resolved: str | None, static_prefix: str | None) -> PathTarget:
+        verb = "删除" if op == "delete" else "写入"
+        target_index = self.target_index
+        source = f"line {getattr(node, 'lineno', 0)}"
+        if resolved:
+            display = f"{verb} {resolved}"
+            parent = os.path.dirname(resolved) or resolved
+            suggested = {
+                "type": "prefix",
+                "value": parent,
+                "display": f"以 {parent} 开头",
+            }
+            dynamic = False
+        elif static_prefix:
+            display = f"{verb} {static_prefix} 下的文件（文件名运行时确定）"
+            suggested = {
+                "type": "prefix",
+                "value": static_prefix,
+                "display": f"以 {static_prefix} 开头",
+            }
+            dynamic = True
+        else:
+            short = raw if len(raw) <= 80 else raw[:77] + "..."
+            display = f"{verb}运行时确定的路径（{short}；无法静态解析）"
+            suggested = None
+            dynamic = True
+        return PathTarget(
+            op=op,
+            raw=raw,
+            op_name=op_name,
+            dynamic=dynamic,
+            resolved=resolved,
+            static_prefix=static_prefix,
+            display=display,
+            source=source,
+            code_hash=self.code_hash,
+            target_index=target_index,
+            suggested_rule=suggested,
+        )
 
     def _mode(self, node: ast.Call):
         """open/Path.open 的 mode 参数 → 字面量 str | _READ | _DYN。"""

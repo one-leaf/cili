@@ -93,11 +93,27 @@ class PermissionPolicy:
             return False
         return _is_within(resolved, self.workspace_root) or _is_within(resolved, self.temp_root)
 
-    def path_decision_id(self, op: str, resolved: str | None, raw: str = "") -> str:
+    def path_decision_id(self, op: str, resolved: str | None, raw: str = "",
+                         *, static_prefix: str | None = None,
+                         code_hash: str = "", target_index: int = 0) -> str:
+        """生成路径审批键。
+
+        - static: 绝对路径；
+        - prefixed / opaque: 代码哈希 + 目标序号，避免不同动态目标碰撞；
+        - 无代码哈希时退回 raw + 序号（非 Python 工具的兜底）。
+        """
         if resolved:
-            key = f"{op}:{os.path.normcase(resolved)}"
+            key = f"{op}:{os.path.normcase(os.path.abspath(resolved))}"
+        elif static_prefix:
+            prefix = os.path.normcase(os.path.abspath(static_prefix))
+            if code_hash:
+                key = f"dyn:{op}:{code_hash}:{target_index}:{prefix}"
+            else:
+                key = f"dyn:{op}:{(raw or '').strip()}:{target_index}:{prefix}"
+        elif code_hash:
+            key = f"dyn:{op}:{code_hash}:{target_index}"
         else:
-            key = f"dyn:{op}:{(raw or '').strip()}"
+            key = f"dyn:{op}:{(raw or '').strip()}:{target_index}"
         return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
@@ -236,6 +252,7 @@ class PermissionPolicy:
         decision_id: str = "",
         tool: str = "*",
         raw: str = "",
+        static_prefix: str | None = None,
     ) -> PermissionVerdict:
         if not self.config.enabled:
             return PermissionVerdict("allow", "权限系统已关闭")
@@ -246,11 +263,10 @@ class PermissionPolicy:
         op = "read" if kind == "path:read" else ("delete" if kind == "path:delete" else "write")
         mode = getattr(self.config.outside, op, "ask")
 
-        if not resolved:
-            return self._mode_or_judge(mode, "动态路径，无法静态解析")
-
-        if self.rules is not None:
-            decision, rule = self.rules.evaluate_path(kind, resolved, tool)
+        # 1. 规则：static 用 resolved，prefixed 用 static_prefix。
+        subject = resolved or static_prefix
+        if subject and self.rules is not None:
+            decision, rule = self.rules.evaluate_path(kind, subject, tool)
             if decision == "deny":
                 return PermissionVerdict("deny", (rule or {}).get("note", "命中黑名单"), rule)
             if decision == "ask":
@@ -258,17 +274,24 @@ class PermissionPolicy:
             if decision == "allow":
                 return PermissionVerdict("allow", (rule or {}).get("display", "命中白名单"), rule, approved=True)
 
-        if (
-            decision_id
-            and self.store is not None
-            and self.store.is_approved(decision_id)
-        ):
+        # 2. 会话批准：必须在“动态路径无法解析”早退之前，否则动态路径永远批不掉。
+        if decision_id and self.store is not None and self.store.is_approved(decision_id):
             return PermissionVerdict("allow", "会话已批准", approved=True)
 
-        if self.is_inside(resolved):
-            return PermissionVerdict("allow", "安全区")
+        # 3. 静态路径在安全区内直接放行。
+        if resolved:
+            if self.is_inside(resolved):
+                return PermissionVerdict("allow", "安全区")
+            return self._mode_or_judge(
+                mode,
+                f"工作区外{('读取' if op == 'read' else ('删除' if op == 'delete' else '写入'))}",
+            )
 
-        return self._mode_or_judge(mode, f"工作区外{('读取' if op == 'read' else ('删除' if op == 'delete' else '写入'))}")
+        # 4. 动态路径：即使前缀在安全区也首次询问，防止运行时后缀逃逸。
+        effective = mode if mode in ("ask", "deny", "ai") else "ask"
+        if static_prefix:
+            return self._mode_or_judge(effective, "动态路径，前缀已确认，等待批准")
+        return self._mode_or_judge(effective, "动态路径，无法静态解析")
 
     # ── URL ───────────────────────────────────────────────────────
 
