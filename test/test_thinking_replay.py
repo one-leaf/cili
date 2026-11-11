@@ -112,7 +112,11 @@ class TestAnthropicThinkingReplay:
             system="", tools=None, model="deepseek-v4-pro", max_tokens=100,
         )
         content = body["messages"][0]["content"]
-        assert content[0] == {"type": "thinking", "thinking": "", "signature": ""}
+        assert content[0] == {
+            "type": "thinking",
+            "thinking": AnthropicAdapter._SYNTHETIC_THINKING_TEXT,
+            "signature": "",
+        }
         assert content[1]["type"] == "tool_use"
 
     def test_fills_for_third_party_gateway_alias(self):
@@ -132,7 +136,11 @@ class TestAnthropicThinkingReplay:
             system="", tools=None, model="ac/dgx", max_tokens=100,
         )
         content = body["messages"][0]["content"]
-        assert content[0] == {"type": "thinking", "thinking": "", "signature": ""}
+        assert content[0] == {
+            "type": "thinking",
+            "thinking": AnthropicAdapter._SYNTHETIC_THINKING_TEXT,
+            "signature": "",
+        }
 
     def test_does_not_fill_for_real_anthropic(self):
         """真 Anthropic 校验签名，补空块会报 invalid signature，必须保持原样。"""
@@ -158,6 +166,21 @@ class TestAnthropicThinkingReplay:
         content = body["messages"][0]["content"]
         assert [b["type"] for b in content] == ["thinking", "tool_use"]
         assert content[0]["thinking"] == "想"
+
+    def test_rewrites_empty_thinking_text(self):
+        """空文本 thinking 等同未回传（实测 400），发送前补成非空占位。"""
+        adapter = self._deepseek_adapter()
+        body = adapter.serialize(
+            [Message(role="assistant", content=[
+                ReasoningBlock(text=""),
+                ToolCallBlock(id="t1", name="read", arguments="{}"),
+            ])],
+            system="", tools=None, model="deepseek-v4-pro", max_tokens=100,
+        )
+        content = body["messages"][0]["content"]
+        assert [b["type"] for b in content] == ["thinking", "tool_use"]
+        assert content[0]["thinking"] == AnthropicAdapter._SYNTHETIC_THINKING_TEXT
+        assert content[0]["signature"] == ""
 
     def test_strips_history_thinking_when_off(self):
         adapter = self._deepseek_adapter("off")

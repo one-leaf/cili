@@ -110,7 +110,8 @@ class AnthropicAdapter(Adapter):
         发送前归一化思考块，避免思考模式下的多轮/跨模型 400：
         - thinking 关闭时丢弃历史思考块（禁用思考的请求不接受 thinking 块）；
         - 对不校验签名的上游（DeepSeek 等 Anthropic 兼容端点），给带 tool_use
-          但缺思考块的轮次补一个空 thinking 块（"must be passed back" 修复）。
+          但缺思考块（或思考文本为空）的轮次补非空占位 thinking 块——空文本
+          同样被判定为未回传（实测 400 "must be passed back"）。
         """
         drop_thinking = self.config.reasoning == "off"
         fill_missing = not drop_thinking and self._accepts_unsigned_thinking()
@@ -145,8 +146,8 @@ class AnthropicAdapter(Adapter):
                         block_dict["tool_use_id"] = block_dict.pop("tool_call_id")
                 content.append(block_dict)
 
-            if fill_missing and self._needs_synthetic_thinking(msg, content):
-                content.insert(0, {"type": "thinking", "thinking": "", "signature": ""})
+            if fill_missing:
+                self._fill_unsigned_thinking(msg, content)
 
             if not content:
                 continue
@@ -170,14 +171,35 @@ class AnthropicAdapter(Adapter):
         base_url = self.base_url.lower()
         return not any(marker in base_url for marker in self._STRICT_SIGNATURE_MARKERS)
 
-    @staticmethod
-    def _needs_synthetic_thinking(msg: Message, content: list[dict[str, Any]]) -> bool:
-        """assistant 轮带 tool_use 但没有任何思考块时，需要补一个空 thinking 块。"""
+    # 补位思考文本：DeepSeek 等端点把空 thinking 文本视为「未回传」（实测 400），
+    # 占位内容必须非空。
+    _SYNTHETIC_THINKING_TEXT = "(reasoning omitted)"
+
+    @classmethod
+    def _fill_unsigned_thinking(cls, msg: Message, content: list[dict[str, Any]]) -> None:
+        """给带 tool_use 的 assistant 轮补齐非空思考块。
+
+        跨模型切换后历史轮次可能没有思考块，或只有空文本；DeepSeek 等不校验
+        签名的上游两种都拒绝（"must be passed back"），发送前统一补占位文本。
+        """
         if msg.role != "assistant":
-            return False
+            return
         if not any(b.get("type") == "tool_use" for b in content):
-            return False
-        return not any(b.get("type") in ("thinking", "redacted_thinking") for b in content)
+            return
+        thinking = [b for b in content if b.get("type") == "thinking"]
+        if not thinking:
+            # redacted_thinking 原样回传，不掺入占位块
+            if not any(b.get("type") == "redacted_thinking" for b in content):
+                content.insert(0, {
+                    "type": "thinking",
+                    "thinking": cls._SYNTHETIC_THINKING_TEXT,
+                    "signature": "",
+                })
+            return
+        for block in thinking:
+            if not block.get("thinking"):
+                block["thinking"] = cls._SYNTHETIC_THINKING_TEXT
+                block.setdefault("signature", "")
 
     def _apply_thinking_config(self, body: dict[str, Any]) -> None:
         """Extended thinking：按 reasoning 档位设置思考（anthropic 取值域，§models-provider-design）。
