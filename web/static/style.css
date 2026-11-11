@@ -1402,6 +1402,8 @@ body {
 .message.tool {
     background-color: #fff9e6;
     border: 1px solid #f0e6c8;
+    /* 工具气泡隐藏了底部操作条，不再需要为它预留 28px 底部空间 */
+    padding-bottom: 15px;
     width: 80% !important;
     max-width: 80% !important;
     max-height: 20em;
