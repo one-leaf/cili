@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.agent_stats import AgentStats
 from core.fs_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class AgentEpoch:
     status: str = "running"
     exit_reason: str = ""
     truncated: bool = False
-    iterations: int = 0
+    stats: AgentStats = field(default_factory=AgentStats)
     max_iterations: int = 0
     summary: str = ""
     started_at: str = ""
@@ -87,13 +88,20 @@ class AgentRunRecord:
     ended_at: str = ""
     summary: str = ""
     epochs: list[AgentEpoch] = field(default_factory=list)
-    legacy: bool = False
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["epochs"] = [e.to_dict() if isinstance(e, AgentEpoch) else e for e in self.epochs]
         return data
+
+    @property
+    def stats(self) -> AgentStats:
+        """整个 AgentRun 的累计统计：各 epoch 原始值之和。"""
+        total = AgentStats()
+        for epoch in self.epochs:
+            total = total + epoch.stats
+        return total
 
 
 @dataclass
@@ -107,8 +115,8 @@ class ContinuationRequest:
     document: str
     next_steps: str
     summary: str
-    iterations: int
     max_iterations: int
+    stats: AgentStats = field(default_factory=AgentStats)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,14 +150,21 @@ class AgentRunStore:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            return self._from_dict(data)
         except Exception as e:
             logger.warning(f"[agent_run] load run.json failed: {exec_id}: {e}")
             return None
-        return self._from_dict(data)
 
     @staticmethod
     def _from_dict(data: dict[str, Any]) -> AgentRunRecord:
-        epochs = [AgentEpoch(**e) if isinstance(e, dict) else e for e in data.pop("epochs", [])]
+        epochs: list[AgentEpoch] = []
+        for raw in data.pop("epochs", []):
+            if not isinstance(raw, dict):
+                epochs.append(raw)
+                continue
+            raw = dict(raw)
+            raw["stats"] = AgentStats.from_dict(raw.get("stats"))
+            epochs.append(AgentEpoch(**raw))
         return AgentRunRecord(**data, epochs=epochs)
 
     def update(self, exec_id: str, **fields: Any) -> AgentRunRecord | None:
@@ -170,7 +185,7 @@ class AgentRunStore:
         status: str,
         exit_reason: str,
         truncated: bool,
-        iterations: int,
+        stats: AgentStats,
         max_iterations: int,
         summary: str,
         messages: list[dict],
@@ -184,7 +199,7 @@ class AgentRunStore:
             status=status,
             exit_reason=exit_reason,
             truncated=truncated,
-            iterations=iterations,
+            stats=stats,
             max_iterations=max_iterations,
             summary=summary,
             started_at=started_at,
@@ -199,7 +214,7 @@ class AgentRunStore:
                 "status": status,
                 "exit_reason": exit_reason,
                 "truncated": truncated,
-                "iterations": iterations,
+                "stats": stats.to_dict(),
                 "max_iterations": max_iterations,
                 "summary": summary,
                 "context_ref": context_ref or {},
@@ -232,31 +247,6 @@ class AgentRunStore:
             if record is not None:
                 runs.append(record)
         return runs
-
-    def derive_legacy(self, exec_id: str) -> AgentRunRecord | None:
-        """Best-effort record for old exec logs without run.json."""
-        log_path = self.run_dir(exec_id) / "index.json"
-        if not log_path.exists():
-            return None
-        try:
-            data = json.loads(log_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        metadata = data.get("metadata") or {}
-        return AgentRunRecord(
-            exec_id=exec_id,
-            root_session_id=str(metadata.get("session_id") or ""),
-            role=str(metadata.get("role") or "worker"),
-            task=str(data.get("task") or ""),
-            status=str(metadata.get("status") or "completed"),
-            exit_reason=str(metadata.get("exit_reason") or metadata.get("status") or ""),
-            truncated=bool(metadata.get("truncated", False)),
-            iterations=int(metadata.get("iterations") or 0),
-            started_at=str(metadata.get("started_at") or ""),
-            ended_at=str(metadata.get("ended_at") or ""),
-            summary=str(data.get("summary") or ""),
-            legacy=True,
-        )
 
 
 class AgentRunManager:

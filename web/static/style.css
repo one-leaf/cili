@@ -2315,6 +2315,20 @@ mjx-container {
     background-color: #fafbfc;
 }
 
+.sa-epoch-divider {
+    margin: 10px 0 6px;
+    padding-top: 6px;
+    border-top: 1px dashed #d1d9e0;
+    color: #8b949e;
+    font-size: 12px;
+    text-align: center;
+}
+
+[data-theme="dark"] .sa-epoch-divider {
+    border-top-color: #3f3f46;
+    color: #71717a;
+}
+
 [data-theme="dark"] .session-detail {
     border-top-color: #3f3f46;
     background-color: #27272a;

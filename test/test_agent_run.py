@@ -1,10 +1,10 @@
 """Tests for AgentRun records, continuation requests and fork support."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.agent_run import AgentRunManager, AgentRunRecord, AgentRunStore
+from core.agent_stats import AgentStats
 from core.session_runner import SessionRunner
 from test.conftest import make_dgx_config
 
@@ -42,7 +42,8 @@ def test_agent_run_store_roundtrip(tmp_path):
 
     store.archive_epoch(
         "exec_x", epoch=1, status="completed", exit_reason="completed",
-        truncated=False, iterations=2, max_iterations=200, summary="done",
+        truncated=False, max_iterations=200, summary="done",
+        stats=AgentStats(iterations=2, message_count=1, tool_call_count=0),
         messages=[{"role": "assistant", "content": "ok"}],
     )
     loaded = store.get("exec_x")
@@ -50,9 +51,12 @@ def test_agent_run_store_roundtrip(tmp_path):
     assert loaded.status == "completed"
     assert len(loaded.epochs) == 1
     assert loaded.epochs[0].epoch == 1
+    assert loaded.epochs[0].stats.iterations == 2
+    assert loaded.stats.iterations == 2
     assert (tmp_path / "exec_x" / "epochs" / "1.json").exists()
     data = json.loads((tmp_path / "exec_x" / "epochs" / "1.json").read_text(encoding="utf-8"))
     assert data["status"] == "completed"
+    assert data["stats"]["iterations"] == 2
     assert data["ended_at"]
 
 

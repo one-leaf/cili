@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.agent_stats import AgentStats
 from core.tools.result import ToolResult
 from core.tools.shell import _GIT_BASH_PATH, _PWSH_PATH, _VENV_DIR, _VENV_SCRIPTS
 
@@ -524,30 +525,14 @@ class BackgroundMixin:
                 task.result = result
                 task.status = "completed"
 
-                # Save Runner log
-                if session and exec_id:
-                    from datetime import datetime
+                # 执行日志由 SessionRunner._finalize 单写；这里只保存主会话状态。
+                if session and hasattr(session, "save"):
                     try:
-                        session.agent_logs.save_agent_log(
-                            exec_id=exec_id,
-                            task=runner.task,
-                            messages=runner.messages,
-                            metadata={
-                                "started_at": runner._started_at.strftime("%Y-%m-%d %H:%M:%S") if runner._started_at else "",
-                                "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "duration_seconds": runner._elapsed_seconds(),
-                                "status": result.get("status", "completed"),
-                                "iterations": result.get("iterations", 0),
-                                "message_count": len(runner.messages),
-                                "max_iterations": runner.max_iterations,
-                            },
-                            summary=result.get("summary") or result.get("message") or "",
-                        )
                         session.save()
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(
-                            f"Failed to save Runner log for {task_id}: {e}"
+                            f"Failed to save session after Runner {task_id}: {e}"
                         )
 
             except Exception as e:
@@ -612,7 +597,9 @@ class BackgroundMixin:
                     try:
                         publish = getattr(self, "_publish", None)
                         if publish:
-                            publish("session_complete", exec_id=exec_id, status=status)
+                            stats = AgentStats.from_dict((task.result or {}).get("stats"))
+                            publish("session_complete", exec_id=exec_id, status=status,
+                                    stats=stats.to_dict())
                         # 通过 message_bus 发送通知给 master，使其在空闲时也能收到通知
                         sm = getattr(self, "session", None)
                         master_session_id = getattr(sm, "session_id", None) if sm else None
@@ -711,14 +698,13 @@ class BackgroundMixin:
             result = task.result
             status = result.get("status", "unknown")
             summary = result.get("summary") or result.get("message") or ""
-            iterations = result.get("iterations", 0)
-            message_count = result.get("message_count", 0)
-            tool_call_count = result.get("tool_call_count", 0)
+            stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+            iterations = int(stats.get("iterations", 0))
 
             # Clean up completed task
             BackgroundTaskManager.remove(task_id)
 
-            meta = {"exec_id": task.exec_id, "completed": True, "iterations": iterations, "message_count": message_count, "tool_call_count": tool_call_count, "background": True}
+            meta = {"exec_id": task.exec_id, "completed": True, "stats": stats, "background": True}
             if summary:
                 return ToolResult(
                     f"Runner {task_id} completed.\n"

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.agent_run import ContinuationRequest
+from core.agent_stats import AgentStats
 from core.base_session_runner import BaseSessionRunner
 from core.config import DATA_DIR, Config, get_permission_config
 from core.fs_utils import atomic_write_json
@@ -127,6 +128,7 @@ class SessionRunner(BaseSessionRunner):
         initial_session: SessionStore | None = None,
         epoch: int = 1,
         max_epochs: int = 1,
+        stats_base: AgentStats | None = None,
     ):
         """Initialize SessionRunner.
 
@@ -146,6 +148,7 @@ class SessionRunner(BaseSessionRunner):
             delegation_depth: 委派深度（master=0；depth1 子代理仅可委派 lite；depth≥2 不可再委派）
             run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
             initial_session: interactive 模式直接使用的会话（fork 分支用；跳过加载最新）
+            stats_base: 续任前已归档 epoch 的累计统计；首轮为 None
         """
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -168,6 +171,8 @@ class SessionRunner(BaseSessionRunner):
         self._resume_lock = threading.Lock()
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
+        self._stats_base = stats_base or AgentStats()
+        self._finalized = False
         # 事件发布回调（由 agent_tool / background 注入，用于广播 session_progress）
         self._event_publisher = None
         # session_progress 事件节流：距上次发送不足 0.5s 则跳过，避免高频 SSE 事件堵塞前端
@@ -692,7 +697,15 @@ class SessionRunner(BaseSessionRunner):
             return self._run_interactive(*args, **kwargs)
         self.current_turn_id = generate_short_id()
         self._demoted_image_paths.clear()
-        return self.loop.run_autonomous()
+        try:
+            return self.loop.run_autonomous()
+        except Exception as exc:
+            self._finalize("error", str(exc), self._turn_iterations)
+            raise
+        finally:
+            if not self._finalized:
+                self._finalize("error", "runner exited without finalize",
+                               self._turn_iterations)
 
     def _run_interactive(
         self,
@@ -770,8 +783,8 @@ class SessionRunner(BaseSessionRunner):
             document=doc,
             next_steps=next_steps,
             summary="迭代额度耗尽，已生成续任交接文档",
-            iterations=iterations,
             max_iterations=self.max_iterations,
+            stats=self.stats(iterations),
         )
         result = self.loop._autonomous_result("handoff", request.summary, iterations)
         result.update(
@@ -1204,6 +1217,45 @@ class SessionRunner(BaseSessionRunner):
             return 0.0
         return (datetime.now() - self._started_at).total_seconds()
 
+    def epoch_stats(self, iterations: int) -> AgentStats:
+        """当前 epoch 的原始统计，用于 epoch 归档。"""
+        return AgentStats(
+            iterations=iterations,
+            message_count=len(self.messages),
+            tool_call_count=self._tool_call_count,
+        )
+
+    def stats(self, iterations: int) -> AgentStats:
+        """整个 exec 的累计统计（stats_base + 当前 epoch）。"""
+        return self._stats_base + self.epoch_stats(iterations)
+
+    def _snapshot(self, iterations: int, status: str, *,
+                  current_tool: str = "", summary: str = "",
+                  final: bool = False) -> dict:
+        """构造完整的执行日志快照；进度与收尾共用同一 schema。"""
+        metadata = {
+            "parent_session_id": "",
+            "session_id": self._session_id,
+            "started_at": self._started_at.strftime("%Y-%m-%d %H:%M:%S") if self._started_at else "",
+            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if final else None,
+            "duration_seconds": self._elapsed_seconds(),
+            "status": status,
+            "epoch": self.epoch,
+            "max_epochs": self.max_epochs,
+            "stats": self.stats(iterations).to_dict(),
+            "max_iterations": self.max_iterations,
+            "current_tool": current_tool,
+            "model": getattr(self.model, "name", ""),
+        }
+        return build_exec_log_data(
+            exec_id=self._exec_id,
+            session_id=self._session_id,
+            task=self.task,
+            metadata=metadata,
+            summary=summary,
+            messages=self.messages,
+        )
+
     def _save_progress(self, iterations: int, status: str = "running",
                        current_tool: str = "", tool_calls: int | None = None) -> None:
         """Save execution progress in real-time.
@@ -1226,29 +1278,7 @@ class SessionRunner(BaseSessionRunner):
         if tool_calls is not None and tool_calls > 0:
             self._tool_call_count += tool_calls
 
-        metadata = {
-            "parent_session_id": "",
-            "session_id": self._session_id,
-            "started_at": self._started_at.strftime("%Y-%m-%d %H:%M:%S") if self._started_at else "",
-            "ended_at": None,
-            "duration_seconds": self._elapsed_seconds(),
-            "status": status,
-            "iterations": iterations,
-            "max_iterations": self.max_iterations,
-            "message_count": len(self.messages),
-            "current_tool": current_tool,
-            "tool_call_count": self._tool_call_count,
-            "model": getattr(self.model, "name", ""),
-        }
-
-        log_data = build_exec_log_data(
-            exec_id=exec_id,
-            session_id=self._session_id,
-            task=self.task,
-            metadata=metadata,
-            summary="",
-            messages=self.messages,
-        )
+        log_data = self._snapshot(iterations, status, current_tool=current_tool)
 
         try:
             log_file = self.session_dir / "index.json"
@@ -1262,51 +1292,30 @@ class SessionRunner(BaseSessionRunner):
             if now - self._last_progress_event_time >= 0.5:
                 self._last_progress_event_time = now
                 try:
-                    self._event_publisher("session_progress",
-                                          exec_id=exec_id,
-                                          iterations=iterations,
-                                          message_count=len(self.messages),
-                                          tool_call_count=self._tool_call_count,
-                                          current_tool=current_tool,
-                                          status=status)
+                    self._event_publisher(
+                        "session_progress",
+                        exec_id=exec_id,
+                        status=status,
+                        current_tool=current_tool,
+                        epoch=self.epoch,
+                        stats=self.stats(iterations).to_dict(),
+                    )
                 except Exception:
                     pass
 
     def _finalize(self, status: str, summary: str, iterations: int) -> None:
-        """Finalize execution: save final log."""
-        ended_at = datetime.now()
-        duration_seconds = (ended_at - self._started_at).total_seconds() if self._started_at else 0.0
-
-        if self.session_dir:
-            metadata = {
-                "parent_session_id": "",
-                "session_id": self._session_id,
-                "started_at": self._started_at.strftime("%Y-%m-%d %H:%M:%S") if self._started_at else "",
-                "ended_at": ended_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "duration_seconds": duration_seconds,
-                "status": status,
-                "epoch": self.epoch,
-                "max_epochs": self.max_epochs,
-                "iterations": iterations,
-                "max_iterations": self.max_iterations,
-                "message_count": len(self.messages),
-                "tool_call_count": self._tool_call_count,
-                "summary": summary,
-                "model": getattr(self.model, "name", ""),
-            }
-
-            log_data = build_exec_log_data(
-                exec_id=self._exec_id,
-                session_id=self._session_id,
-                task=self.task,
-                metadata=metadata,
-                summary=summary,
-                messages=self.messages,
-            )
-
-            try:
-                self.session_dir.mkdir(parents=True, exist_ok=True)
-                log_file = self.session_dir / "index.json"
-                atomic_write_json(log_file, log_data)
-            except Exception as e:
-                logger.warning(f"[SessionRunner:{self.role}] Failed to finalize: {e}")
+        """写入最终执行日志，幂等；同一个 runner 只写一次。"""
+        if self._finalized:
+            return
+        self._finalized = True
+        if not self.session_dir:
+            return
+        log_data = self._snapshot(
+            iterations, status, current_tool="", summary=summary, final=True
+        )
+        try:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+            log_file = self.session_dir / "index.json"
+            atomic_write_json(log_file, log_data)
+        except Exception as e:
+            logger.warning(f"[SessionRunner:{self.role}] Failed to finalize: {e}")

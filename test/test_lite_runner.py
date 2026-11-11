@@ -113,7 +113,7 @@ class TestLiteRunFlow:
 
         assert result["status"] == "completed"
         assert result["summary"] == "已完成"
-        assert result["iterations"] == 2
+        assert result["stats"]["iterations"] == 2
         assert "check_iterations" not in result
         assert not any(m.get("_meta", {}).get("budget") for m in runner.messages)
         assert not any(
@@ -144,7 +144,7 @@ class TestLiteRunFlow:
             result = runner.run()
 
         assert result["status"] == "stopped"
-        assert result["iterations"] == 0
+        assert result["stats"]["iterations"] == 0
 
     def test_stop_from_background_thread(self):
         """后台线程 run + runner.stop() → 返回 stopped。"""

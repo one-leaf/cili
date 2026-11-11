@@ -169,7 +169,7 @@ class GoalRunner:
             except Exception as e:
                 logger.error(f"[goal] 第 {round_no} 轮执行异常: {e}")
                 if sm is not None and exec_id:
-                    self._finish_round_ref(sm, exec_id, {"status": "error", "summary": str(e), "iterations": 0})
+                    self._finish_round_ref(sm, exec_id, {"status": "error", "summary": str(e), "stats": {}})
                 m.block("round_error")
                 self._round_finish(f"❌ 第 {round_no} 轮执行异常：{e}")
                 break
@@ -251,8 +251,7 @@ class GoalRunner:
                     "tool_name": "agent",
                     "exec_id": exec_id,
                     "completed": False,
-                    "iterations": 0,
-                    "message_count": 0,
+                    "stats": {"iterations": 0, "message_count": 0, "tool_call_count": 0},
                     "task_summary": task[:_SUMMARY_MAX],
                 },
             }])
@@ -274,8 +273,7 @@ class GoalRunner:
                     if block.get("type") == "tool_result" and block.get("_meta", {}).get("exec_id") == exec_id:
                         meta = block.setdefault("_meta", {})
                         meta["completed"] = True
-                        meta["iterations"] = result.get("iterations", 0)
-                        meta["message_count"] = result.get("message_count", 0)
+                        meta["stats"] = result.get("stats") or {}
                         # 原地改 _meta 不触发版本变化，save() 会短路 → 必须强制重写 meta.json
                         sm.save(force=True)
                         return

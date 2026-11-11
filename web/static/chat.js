@@ -69,10 +69,6 @@ function clearAllToolStreaming() {
     for (const id of Object.keys(_toolStreamTimers)) {
         stopToolStreaming(id);
     }
-    // 一并清理 worker 子代理卡片状态（sse-client.js，修复切会话泄漏）
-    if (typeof clearAllAgentStreaming === 'function') {
-        clearAllAgentStreaming();
-    }
 }
 
 // 输入框底部左侧：附件 chip（预览选区 + Ctrl+V 上传文件）
@@ -359,9 +355,7 @@ function renderMessages(messages) {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
                         status: block._meta.status || (isCompleted ? 'completed' : 'running'),
-                        iterations: block._meta.iterations || 0,
-                        message_count: block._meta.message_count || 0,
-                        tool_call_count: block._meta.tool_call_count || 0,
+                        stats: block._meta.stats || null,
                         background: block._meta.background || false,
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
@@ -470,7 +464,8 @@ function renderMessages(messages) {
 
 // 渲染子代理引用（可折叠卡片）——委托 sse-client.js 卡片状态机
 function renderAgentRef(msg, idx, msgId) {
-    sessionCardForMessage(msg, msgId);
+    const model = AgentCardStore.mountFromHistory(msg);
+    if (model && msgId && model.cardEl) model.cardEl.dataset.msgId = msgId;
 }
 
 // ── 历史消息分页加载 ──
@@ -549,12 +544,10 @@ function prependMessages(messages) {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
                         status: block._meta.status || (isCompleted ? 'completed' : 'running'),
-                        iterations: block._meta.iterations || 0,
-                        message_count: block._meta.message_count || 0,
-                        tool_call_count: block._meta.tool_call_count || 0,
+                        stats: block._meta.stats || null,
                         background: block._meta.background || false,
                     };
-                    renderAgentRef(saMsg, idx, msgId);
+                    AgentCardStore.mountFromHistory(saMsg, fragment);
                     return;
                 }
                 if (block._meta && block._meta.completed === false) return;
@@ -879,7 +872,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         } else if (event.type === 'session_start') {
             renderSessionStart(event.exec_id, event.task_summary);
         } else if (event.type === 'session_complete') {
-            renderSessionComplete(event.exec_id);
+            renderSessionComplete(event.exec_id, event.stats);
         } else if (event.type === 'todo_update') {
             renderTodoList(event.todos);
         } else if (event.type === 'file') {
@@ -919,15 +912,14 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
     return { handleEvent, flush };
 }
 
-// 子代理开始执行时立即渲染占位卡片（SSE 推送，无需等待完成）
-// 委托 sse-client.js 幂等 ensureSessionCard（POST SSE 与事件流双源共用）
+// 子代理开始执行时立即渲染占位卡片（POST SSE 推送）
 function renderSessionStart(execId, taskSummary) {
-    ensureSessionCard(execId, taskSummary, { status: 'running' });
+    AgentCardStore.onStart({ exec_id: execId, task_summary: taskSummary, status: 'running' });
 }
 
-// 子代理完成时更新卡片状态——委托 sse-client.js 幂等 markAgentComplete
-function renderSessionComplete(execId) {
-    markAgentComplete(execId, 'completed');
+// 子代理完成时更新卡片状态（POST SSE 不带 stats 时保留已有快照）
+function renderSessionComplete(execId, stats) {
+    AgentCardStore.onComplete({ exec_id: execId, status: 'completed', stats });
 }
 
 // 渲染 AskUser 问题卡片

@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.agent_stats import AgentStats
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
 from core.image_pipeline import sanitize_images_for_persistence
 from core.teen_mode import guard_or_raise
@@ -67,8 +68,7 @@ def build_exec_log_data(*, exec_id: str, session_id: str, task: str,
                         metadata: dict, summary: str, messages: list[dict]) -> dict:
     """构造 exec 日志（{exec_dir}/index.json）的统一 schema。
 
-    ``SessionStore.save_agent_log`` 与 ``SessionRunner`` 自主模式的进度/收尾写盘共用，
-    避免两处各自拼 schema 而漂移。
+    ``SessionRunner`` 自主模式的进度/收尾共用此 schema，避免两处各自拼而漂移。
     """
     return {
         "exec_id": exec_id,
@@ -456,38 +456,6 @@ class ExecLogStore:
         """生成执行日志 ID：exec_{8位hex}。"""
         return f"exec_{secrets.token_hex(4)}"
 
-    def save_agent_log(self, exec_id: str, task: str, messages: list[dict],
-                       metadata: dict, summary: str = "") -> str:
-        """保存 Agent 执行日志到 {session_dir}/exec_{id}/index.json。
-
-        Args:
-            exec_id: 执行日志 ID
-            task: 任务描述
-            messages: 完整消息列表
-            metadata: 元数据（started_at, ended_at, duration_seconds, status, iterations, max_iterations）
-            summary: 执行摘要
-
-        Returns:
-            exec_id
-        """
-        exec_dir = self.session_dir / exec_id
-        exec_dir.mkdir(parents=True, exist_ok=True)
-        log_file = exec_dir / "index.json"
-        data = build_exec_log_data(
-            exec_id=exec_id,
-            session_id=self._sm.session_id,
-            task=task,
-            metadata=metadata,
-            summary=summary,
-            messages=messages,
-        )
-        try:
-            atomic_write_json(log_file, data)
-        except Exception as e:
-            logger.error(f"Failed to save agent log {exec_id}: {e}")
-            return ""  # 落盘失败不得返回 exec_id，否则调用方误以为已保存
-        return exec_id
-
     def load_agent_log(self, exec_id: str) -> dict | None:
         """加载单个 Agent 执行日志。
 
@@ -508,6 +476,83 @@ class ExecLogStore:
         except Exception as e:
             logger.error(f"Failed to load agent log {exec_id}: {e}")
             return None
+
+    def load_execution(self, exec_id: str) -> dict | None:
+        """加载执行日志，并把所有 epoch 的消息合并为一条时间线。
+
+        - 已归档 epoch 从 ``epochs/{n}.json`` 读取；
+        - 当前运行中的 epoch 从 ``index.json`` 读取（它还没有归档文件）；
+        - 每条消息附 ``_meta.epoch``，供前端渲染轮次分隔；
+        - 顶层 ``stats`` 取 ``index.json.metadata.stats``。
+        """
+        if not _EXEC_ID_RE.match(exec_id):
+            raise ValueError(f"Invalid exec_id: {exec_id!r}")
+        log = self.load_agent_log(exec_id)
+        if not log:
+            return None
+
+        from core.agent_run import AgentRunStore
+
+        run = AgentRunStore(self.session_dir).get(exec_id)
+        metadata = log.get("metadata") or {}
+        messages: list[dict] = []
+        epochs: list[dict] = []
+        archived: set[int] = set()
+
+        if run is not None:
+            for epoch in run.epochs:
+                epoch_file = self.session_dir / exec_id / "epochs" / f"{epoch.epoch}.json"
+                epoch_messages: list[dict] = []
+                if epoch_file.exists():
+                    try:
+                        with open(epoch_file, "r", encoding="utf-8") as f:
+                            epoch_messages = json.load(f).get("messages") or []
+                        archived.add(epoch.epoch)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to load epoch {epoch.epoch} for {exec_id}: {e}"
+                        )
+                for msg in epoch_messages:
+                    msg = copy.deepcopy(msg)
+                    meta = msg.setdefault("_meta", {})
+                    if isinstance(meta, dict):
+                        meta["epoch"] = epoch.epoch
+                    messages.append(msg)
+                epochs.append({
+                    "epoch": epoch.epoch,
+                    "status": epoch.status,
+                    "stats": epoch.stats.to_dict(),
+                    "summary": epoch.summary,
+                    "started_at": epoch.started_at,
+                    "ended_at": epoch.ended_at,
+                })
+            if run.epochs and run.epochs[-1].epoch not in archived:
+                current = run.epochs[-1]
+                for msg in log.get("messages") or []:
+                    msg = copy.deepcopy(msg)
+                    meta = msg.setdefault("_meta", {})
+                    if isinstance(meta, dict):
+                        meta["epoch"] = current.epoch
+                    messages.append(msg)
+        else:
+            messages = copy.deepcopy(log.get("messages") or [])
+
+        if metadata.get("stats"):
+            stats = AgentStats.from_dict(metadata.get("stats"))
+        elif run is not None:
+            stats = run.stats
+        else:
+            stats = AgentStats()
+
+        return {
+            "exec_id": exec_id,
+            "task": log.get("task") or "",
+            "summary": log.get("summary") or "",
+            "status": metadata.get("status") or "",
+            "stats": stats.to_dict(),
+            "epochs": epochs,
+            "messages": messages,
+        }
 
     def list_agent_logs(self) -> list[dict]:
         """列出所有 Agent 执行日志（仅元数据，不含消息）。

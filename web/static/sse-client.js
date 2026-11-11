@@ -1,55 +1,21 @@
-// ── sse-client.js ── 全局 SSE 事件流客户端（worker 消息 + 工具输出，去前端轮询）
-// 依赖 app.js 全局变量: currentWorkspace, currentSession, chatMessages
-// 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast
-// 依赖 chat.js 全局变量: _toolStreamTimers（master 工具流气泡注册表）
-// 事件流（GET /api/events）按 workspace_uuid/session_id 过滤，本文件按 exec_id 路由。
+// ── sse-client.js ── 全局 SSE 事件流客户端（master 工具流 + 子代理事件路由）
+// 子代理卡片的全部状态与渲染由 agent-cards.js 的 AgentCardStore 负责。
+// 依赖 app.js: currentWorkspace, currentSession, chatMessages, loadSession,
+//   setQueueState, _handleDeliveredBatch, addMessage, foregroundStreamSessionId,
+//   isSending, isStopping, updateComposerButtons
+// 依赖 utils.js: renderMarkdown
+// 依赖 chat.js: _toolStreamTimers, _activeTurnContainers
 
 // ── 全局状态 ──
 let _eventSource = null;          // 当前 EventSource
 let _esWasDisconnected = false;   // 曾断线（onopen 时用于对齐）
 let _lastHidden = document.hidden;  // 上次可见性：重复派发/加载期事件据此短路
-const _sessionCards = {};           // exec_id -> entry（worker 卡片状态机）
 
 // master 自动恢复流式渲染（后台 agent 完成后 master 继续执行，text 逐 token 推送）
 let _masterResumeOpenBlock = null; // {kind:'text'|'thinking', text, el}
 
-const _STATUS_ICONS = {
-    'completed': '✅',
-    'error': '❌',
-    'failed': '❌',
-    'timeout': '⏱️',
-    'running': '🔄',
-    'stopped': '⏹️'
-};
-// 折叠期事件缓冲上限：防止长 worker 折叠时无限增长
-const _PENDING_MAX = 5000;
-
-// ── 卡片状态机：entry 结构 ──
-// {
-//   execId, taskSummary, status,
-//   card, header, detail, msgsDiv,
-//   expanded, loadedOnce,
-//   closedBlocks,          // 事件流已定稿的 block 数（不含 openBlock）
-//   openBlock: null|{kind:'text'|'thinking', text, el},
-//   pending: [],           // 折叠期缓冲事件（展开时重放）
-//   needsFullReload,       // 缓冲溢出等，展开时全量重建
-//   logBlocksRendered,     // 全量拉取已渲染的 block 数
-//   toolStreams: {},       // tool_use_id -> {pre, div, offset, lastAppliedOffset}
-// }
-//
-// 坐标系约定：事件流的 block（text/thinking/tool_use/tool_result）全部来自
-// worker 的 assistant 侧；全量拉取 messages 里第一条是 user（task 描述）。
-// 因此全量拉取的 "assistant 块序列" 与事件流 block 序列一一对应。
-// _eventBlockCount = closedBlocks + (openBlock ? 1 : 0) —— 全量拉取据此跳过
-// 事件流已呈现的 assistant 块，避免重复渲染。
-
-function _eventBlockCountOf(entry) {
-    return entry.closedBlocks + (entry.openBlock ? 1 : 0);
-}
-
 // ── 事件流生命周期 ──
 
-// 连接到当前会话的事件流；切会话时由 app.js 先 close 再 connect
 function connectEventSource() {
     closeEventSource();
     if (!currentWorkspace || !currentSession) return;
@@ -69,7 +35,6 @@ function connectEventSource() {
         }
     };
     es.onopen = () => {
-        // 首次连接不触发对齐；断线自动重连成功后补齐丢失区间
         if (_esWasDisconnected) {
             _esWasDisconnected = false;
             alignAfterReconnect();
@@ -85,16 +50,12 @@ function closeEventSource(markDisconnected = false) {
         _eventSource.close();
         _eventSource = null;
     }
-    // 仅当确实断开过连接时才标记，避免无连接时空跑一次重连对齐
     _esWasDisconnected = markDisconnected && had;
 }
 
-// 标签页切到后台时断开事件流：浏览器对同一源的并发连接上限是 6，后台标签页若继续
-// 持有长连接，多开几个就会占满槽位——该源上任何新请求（页面加载、设置面板的 fetch）
-// 都会无限排队。回前台重连，并按「刷新恢复」的同一路径自愈后台期间的丢失
-// （断线区间由 onopen → alignAfterReconnect 补齐；后台漏掉的 turn_complete 在此补一次）。
+// 标签页切到后台时断开事件流，回前台重连并按「刷新恢复」的路径自愈。
 document.addEventListener('visibilitychange', () => {
-    if (document.hidden === _lastHidden) return;   // 状态未变（含加载期派发）→ 不动作
+    if (document.hidden === _lastHidden) return;
     _lastHidden = document.hidden;
     if (document.hidden) {
         closeEventSource(true);
@@ -106,13 +67,10 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// 重连对齐：running 卡片的展开内容增量补拉 + master 工具流按 offset 补拉
+// 重连对齐：展开中的 running 卡片补拉详情 + master 工具流按 offset 补拉
 async function alignAfterReconnect() {
-    for (const execId of Object.keys(_sessionCards)) {
-        const entry = _sessionCards[execId];
-        if (entry.expanded && entry.status === 'running') {
-            await loadExecutionFull(entry, { fresh: false });
-        }
+    if (window.AgentCardStore) {
+        await AgentCardStore.alignAfterReconnect();
     }
     await syncMasterToolStreams();
 }
@@ -129,18 +87,15 @@ function scheduleLoadSessions() {
 
 function handleBusEvent(e) {
     if (!e || typeof e !== 'object') return;
-    // 只处理当前会话的事件，防止切会话后旧流串入
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
-    // 队列事件必须在下面「前台流去重早退」之前处理：队列条与投递气泡是
-    // 服务端权威状态，本页是否持有前台流不影响它们（设计 §5.7.1）
+    // 队列事件必须在任何去重早退之前处理：队列条是服务端权威状态。
     if (e.type === 'queue_update') {
         setQueueState(e.items, e.paused, e.reason);
         return;
     }
     if (e.type === 'user_message') {
         const fresh = _handleDeliveredBatch(e);
-        // 本页正用前台请求流渲染该回合时由请求级帧负责校正气泡，这里只清队列条
         if (foregroundStreamSessionId !== currentSession.session_id && fresh && e.content) {
             addMessage('user', e.content);
         }
@@ -151,505 +106,61 @@ function handleBusEvent(e) {
         return;
     }
 
-    if (e.type === 'session_start') {
-        ensureSessionCard(e.exec_id, e.task_summary || '', { status: 'running', background: e.background || false });
-        return;
-    }
-    if (e.type === 'session_complete') {
-        markAgentComplete(e.exec_id, e.status || 'completed');
-        return;
-    }
-    if (e.type === 'agent_epoch_started') {
-        const entry = ensureSessionCard(e.exec_id, '', { status: 'running' });
-        if (entry) updateHeaderMeta(entry, { iterations: 0, message_count: 0, tool_call_count: 0 });
-        return;
-    }
-    if (e.type === 'agent_run_settled') {
-        markAgentComplete(e.exec_id, e.status || 'completed');
-        return;
-    }
-    // 后台 agent 完成后，如果 master 空闲，自动触发 master 继续处理通知
+    // 后台 agent 完成后，如果 master 空闲，自动触发 master 继续处理通知。
     if (e.type === 'background_runner_resume') {
-        // 检查 master 是否空闲（通过 isSending 标志）
         if (typeof isSending !== 'undefined' && !isSending) {
-            // 延迟一点再触发，确保事件流稳定
-            setTimeout(() => {
-                triggerResumeForBackgroundAgent();
-            }, 100);
-        }
-        return;
-    }
-    // 实时更新子代理卡片 header（iterations/message_count/tool_call_count）
-    if (e.type === 'session_progress') {
-        const entry = _sessionCards[e.exec_id];
-        if (entry) {
-            updateHeaderMeta(entry, {
-                iterations: e.iterations || 0,
-                message_count: e.message_count || 0,
-                tool_call_count: e.tool_call_count || 0,
-                current_tool: e.current_tool || '',
-            });
+            setTimeout(() => triggerResumeForBackgroundAgent(), 100);
         }
         return;
     }
 
     // 本回合已落盘（master run / resume 结束）
-    // 前台请求流还在时由它自己重拉会话，这里跳过；页面刷新后请求流已断，
-    // 这条全局事件是界面唯一能知道「本回合结束了」的途径。
     if (e.type === 'turn_complete') {
-        // 回合真正收尾：停止中状态复位（队列若被停止暂停，由 loadSession 的
-        // /status 快照呈现「已暂停 + 继续/清空」）
         isStopping = false;
         updateComposerButtons();
-        // 本页正持有该会话的前台流时由它自己重拉，否则（典型：刷新过页面）靠这里自愈。
-        // 用 foregroundStreamSessionId 而非 isSending —— 后者在刷新后也为 true
-        // （loadSession 查到 /status.running），会把自愈也一起挡掉。
         if (foregroundStreamSessionId !== currentSession.session_id) {
             loadSession(currentSession.session_id);
         }
-        window.dispatchEvent(new CustomEvent('cili:turn-complete', { detail: { session_id: e.session_id } }));
+        window.dispatchEvent(new CustomEvent('cili:turn-complete', {
+            detail: { session_id: e.session_id },
+        }));
         return;
     }
 
-    // worker 工具输出（无 exec_id）→ master 工具流
-    if (e.type === 'tool_output' && !e.exec_id) {
+    // 带 exec_id 的事件全部属于子代理卡片：模型、统计、详情都由 store 处理。
+    if (e.exec_id) {
+        if (window.AgentCardStore) AgentCardStore.handle(e);
+        return;
+    }
+
+    // master 工具实时输出（无 exec_id）
+    if (e.type === 'tool_output') {
         handleMasterToolOutput(e);
         return;
     }
 
-    // 无 exec_id 的事件：master 自动恢复循环产生的 text/thinking/tool_use/tool_result
-    // text 是逐 token 推送，需累积到同一个气泡（类似 worker 的 openBlock 模式）
-    if (!e.exec_id) {
-        // 本页正用请求级流（POST SSE）渲染「当前会话」的本回合：忽略全局流的
-        // 同类事件，避免双份渲染。刷新页面后本页没有前台流，由下面这些渲染器
-        // 接手 —— 这正是刷新后正文不丢的原因。切到别的会话时本页持有的前台流
-        // 属于旧会话，不等于 currentSession，故不会误伤当前会话的全局事件。
-        if (foregroundStreamSessionId === currentSession.session_id) return;
-        if (e.type === 'text') {
-            _handleMasterResumeText(e.content || '');
-        } else if (e.type === 'thinking') {
-            _handleMasterResumeThinking(e.content || '');
-        } else if (e.type === 'tool_use') {
-            _finalizeMasterResumeBlock();
-            _handleMasterResumeToolUse(e);
-        } else if (e.type === 'tool_result') {
-            _finalizeMasterResumeBlock();
-            _handleMasterResumeToolResult(e);
-        }
-        return;
-    }
-
-    const entry = _sessionCards[e.exec_id];
-    if (!entry) return;  // agent_start 先于一切 worker 事件，卡片未建则忽略
-
-    // 折叠期：只缓冲，展开时一次性重放（避免展开前状态重复累积）
-    if (!entry.expanded) {
-        if (entry.pending.length < _PENDING_MAX) {
-            entry.pending.push(e);
-        } else {
-            entry.needsFullReload = true;  // 缓冲溢出，展开时全量重建兜底
-        }
-        return;
-    }
-
-    switch (e.type) {
-        case 'text': handleWorkerText(entry, e.content || ''); break;
-        case 'thinking': handleWorkerThinking(entry, e.content || ''); break;
-        case 'tool_use': handleWorkerToolUse(entry, e); break;
-        case 'tool_result': handleWorkerToolResult(entry, e); break;
-        case 'tool_output': handleWorkerToolOutput(entry, e); break;
-        default: break;
+    // 无 exec_id 的 text/thinking/tool_use/tool_result：master 自动恢复循环。
+    // 本页正持有当前会话的前台流时由请求级渲染负责，避免双份。
+    if (foregroundStreamSessionId === currentSession.session_id) return;
+    if (e.type === 'text') {
+        _handleMasterResumeText(e.content || '');
+    } else if (e.type === 'thinking') {
+        _handleMasterResumeThinking(e.content || '');
+    } else if (e.type === 'tool_use') {
+        _finalizeMasterResumeBlock();
+        _handleMasterResumeToolUse(e);
+    } else if (e.type === 'tool_result') {
+        _finalizeMasterResumeBlock();
+        _handleMasterResumeToolResult(e);
     }
 }
 
-// ── worker 卡片创建 / 完成（幂等，POST SSE 与事件流共用）──
-
-// 创建占位卡片（或返回已存在的 entry）。opts: {status, iterations, message_count}
-function ensureSessionCard(execId, taskSummary, opts = {}) {
-    if (!execId || !currentSession) return null;
-    const existing = _sessionCards[execId];
-    if (existing) return existing;
-
-    const task = taskSummary || '';
-    const card = document.createElement('div');
-    card.className = 'message assistant session-card';
-    card.dataset.execId = execId;
-
-    const header = document.createElement('div');
-    header.className = 'session-header';
-
-    const detail = document.createElement('div');
-    detail.className = 'session-detail';
-    detail.style.display = 'none';
-
-    card.appendChild(header);
-    card.appendChild(detail);
-    chatMessages.appendChild(card);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-
-    const entry = {
-        execId,
-        taskSummary: task,
-        status: opts.status || 'running',
-        background: opts.background || false,
-        card, header, detail,
-        msgsDiv: null,
-        expanded: false,
-        loadedOnce: false,
-        closedBlocks: 0,
-        openBlock: null,
-        pending: [],
-        needsFullReload: false,
-        logBlocksRendered: 0,
-        toolStreams: {},
-    };
-    _sessionCards[execId] = entry;
-
-    _renderHeader(entry, {
-        iterations: opts.iterations || 0,
-        message_count: opts.message_count || 0,
-    });
-    header.addEventListener('click', () => toggleSessionEntry(execId));
-    return entry;
-}
-
-// 子代理完成：定稿 openBlock、更新状态、展开则全量重建消除流式合并差异
-// 状态不降级：事件流带真实 status（error/timeout/failed），POST SSE 固定 completed；
-// 两者到达顺序不定，用 rank 保证错误状态不被 completed 覆盖
-async function markAgentComplete(execId, status) {
-    const entry = _sessionCards[execId];
-    if (!entry) return;
-    const nextStatus = status || 'completed';
-    const rank = { 'completed': 0, 'stopped': 1, 'error': 2, 'failed': 2, 'timeout': 2 };
-    const cur = rank[entry.status] !== undefined ? rank[entry.status] : 0;
-    const next = rank[nextStatus] !== undefined ? rank[nextStatus] : 0;
-    if (next > cur || entry.status === 'running') {
-        entry.status = nextStatus;
-    }
-    finalizeOpenBlock(entry);
-    _renderHeader(entry);
-    if (entry.expanded) {
-        await loadExecutionFull(entry, { fresh: true });
-    }
-    // 折叠时无需处理：展开时 fresh 全量重建（见 openAgentEntry）
-}
-
-// chat.js renderAgentRef 委托：按历史消息渲染静态卡并注册状态机
-function sessionCardForMessage(msg, msgId) {
-    const entry = ensureSessionCard(msg.exec_id, msg.task_summary || msg.task || '', {
-        status: msg.status || 'completed',
-        iterations: msg.iterations || 0,
-        message_count: msg.message_count || 0,
-        tool_call_count: msg.tool_call_count || 0,
-        background: msg.background || false,
-    });
-    if (msgId) entry.card.dataset.msgId = msgId;
-    return entry;
-}
-
-// 展开/折叠卡片（chat.js 与卡片头部点击共用）
-async function toggleSessionEntry(execId) {
-    const entry = _sessionCards[execId];
-    if (!entry) return;
-    if (entry.expanded) {
-        closeSessionEntry(entry);
-    } else {
-        await openAgentEntry(entry);
-    }
-}
-
-function closeSessionEntry(entry) {
-    entry.expanded = false;
-    entry.detail.style.display = 'none';
-    _updateHeaderToggle(entry);
-    // 折叠不清状态/缓冲，只切 DOM 显隐；事件流折叠期改为缓冲（handleBusEvent）
-}
-
-async function openAgentEntry(entry) {
-    if (entry.expanded) return;
-    entry.expanded = true;
-    entry.detail.style.display = 'block';
-    _updateHeaderToggle(entry);
-
-    // 已完成或缓冲溢出：全量重建最干净（消除流式 text 合并差异、补齐丢失）
-    if (entry.needsFullReload || entry.status !== 'running') {
-        await loadExecutionFull(entry, { fresh: true });
-        entry.needsFullReload = false;
-        return;
-    }
-
-    // 运行中：先建 openBlock 的 DOM（折叠期只累积文本未建 DOM），再重放缓冲
-    if (entry.openBlock && !entry.openBlock.el) {
-        const msgsDiv = ensureMsgsDiv(entry);
-        const div = document.createElement('div');
-        div.className = 'sa-msg assistant';
-        div.innerHTML = renderMarkdown(entry.openBlock.text);
-        msgsDiv.appendChild(div);
-        entry.openBlock.el = div;
-        _scrollChatIfNearBottom();
-    }
-    replayPending(entry);
-
-    // 首次展开：全量拉取对齐（跳过事件流已渲染的 assistant 块）
-    if (!entry.loadedOnce) {
-        await loadExecutionFull(entry, { fresh: false });
-    }
-}
-
-// 重放折叠期缓冲（按顺序重新分派，事件流已按序缓冲）
-function replayPending(entry) {
-    if (!entry.pending.length) return;
-    const pending = entry.pending;
-    entry.pending = [];
-    pending.forEach(e => {
-        switch (e.type) {
-            case 'text': handleWorkerText(entry, e.content || ''); break;
-            case 'thinking': handleWorkerThinking(entry, e.content || ''); break;
-            case 'tool_use': handleWorkerToolUse(entry, e); break;
-            case 'tool_result': handleWorkerToolResult(entry, e); break;
-            case 'tool_output': handleWorkerToolOutput(entry, e); break;
-            default: break;
-        }
-    });
-}
-
-// ── worker 事件增量渲染 ──
-
-function handleWorkerText(entry, content) {
-    if (entry.openBlock && entry.openBlock.kind === 'text') {
-        entry.openBlock.text += content;
-        if (entry.openBlock.el) {
-            entry.openBlock.el.innerHTML = renderMarkdown(entry.openBlock.text);
-        }
-    } else {
-        finalizeOpenBlock(entry);
-        entry.openBlock = { kind: 'text', text: content, el: null };
-        const msgsDiv = ensureMsgsDiv(entry);
-        const div = document.createElement('div');
-        div.className = 'sa-msg assistant';
-        div.innerHTML = renderMarkdown(content);
-        msgsDiv.appendChild(div);
-        entry.openBlock.el = div;
-    }
-    _scrollChatIfNearBottom();
-}
-
-function handleWorkerThinking(entry, content) {
-    if (entry.openBlock && entry.openBlock.kind === 'thinking') {
-        entry.openBlock.text += content;
-        if (entry.openBlock.el) {
-            const tc = entry.openBlock.el.querySelector('.think-content');
-            if (tc) tc.innerHTML = renderMarkdown(entry.openBlock.text);
-        }
-    } else {
-        finalizeOpenBlock(entry);
-        entry.openBlock = { kind: 'thinking', text: content, el: null };
-        const msgsDiv = ensureMsgsDiv(entry);
-        const div = document.createElement('div');
-        div.className = 'sa-msg thinking';
-        div.innerHTML = `<div class="think-content">${renderMarkdown(content)}</div>`;
-        msgsDiv.appendChild(div);
-        entry.openBlock.el = div;
-    }
-    _scrollChatIfNearBottom();
-}
-
-function handleWorkerToolUse(entry, e) {
-    finalizeOpenBlock(entry);
-    const msgsDiv = ensureMsgsDiv(entry);
-    const div = renderToolCall(msgsDiv, e.tool, e.input);
-    entry.closedBlocks++;
-    // bash/python 的实时输出挂在该 tool_use 块下
-    if (e.tool === 'bash' || e.tool === 'python') {
-        entry.toolStreams[e.tool_use_id] = { pre: null, div, lastAppliedOffset: 0 };
-    }
-    _scrollChatIfNearBottom();
-}
-
-function handleWorkerToolResult(entry, e) {
-    finalizeOpenBlock(entry);
-    const msgsDiv = ensureMsgsDiv(entry);
-    renderToolResult(msgsDiv, e.content, e.is_error);
-    entry.closedBlocks++;
-    delete entry.toolStreams[e.tool_use_id];
-    _scrollChatIfNearBottom();
-}
-
-// worker 工具实时输出：按 offset 去重，append 到 tool_use 块下的 pre
-function handleWorkerToolOutput(entry, e) {
-    const ts = entry.toolStreams[e.tool_use_id];
-    if (!ts) return;
-    if (e.offset <= ts.lastAppliedOffset) return;
-    let pre = ts.pre;
-    if (!pre) {
-        pre = document.createElement('pre');
-        pre.className = 'sa-tool-output';
-        if (ts.div) ts.div.appendChild(pre);
-        ts.pre = pre;
-    }
-    pre.textContent += e.content;
-    ts.lastAppliedOffset = e.offset;
-    _scrollChatIfNearBottom();
-}
-
-// 定稿当前 openBlock（不计入 closedBlocks 前的块转为定稿计数）
-function finalizeOpenBlock(entry) {
-    if (entry.openBlock) {
-        entry.openBlock = null;
-        entry.closedBlocks++;
-    }
-}
-
-// ── 全量拉取（index.json）──
-
-// 与事件流坐标系对齐的增量渲染。
-// opts.fresh: 清空重建（agent_complete、缓冲溢出、已完成卡展开）。
-async function loadExecutionFull(entry, opts = {}) {
-    const ws = currentWorkspace && currentWorkspace.uuid;
-    const sid = currentSession && currentSession.session_id;
-    if (!ws || !sid || !entry.execId) return;
-
-    try {
-        const resp = await fetch(`/api/workspaces/${ws}/sessions/${sid}/executions/${entry.execId}`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const meta = data.metadata || {};
-        const blocks = normalizeContentToBlocks(data.messages || []);
-        updateHeaderMeta(entry, meta);
-
-        if (opts.fresh) {
-            if (entry.msgsDiv) entry.msgsDiv.remove();
-            entry.msgsDiv = null;
-            entry.closedBlocks = 0;
-            entry.openBlock = null;
-            entry.pending = [];
-            entry.needsFullReload = false;
-            entry.loadedOnce = true;
-            const msgsDiv = ensureMsgsDiv(entry);
-            blocks.forEach(b => renderBlock(msgsDiv, b));
-            entry.logBlocksRendered = blocks.length;
-        } else if (entry.logBlocksRendered > 0) {
-            // 已渲染过全量：只追加新增总块（精确，无重复）
-            if (blocks.length > entry.logBlocksRendered) {
-                const msgsDiv = ensureMsgsDiv(entry);
-                blocks.slice(entry.logBlocksRendered).forEach(b => renderBlock(msgsDiv, b));
-                entry.logBlocksRendered = blocks.length;
-            }
-        } else {
-            // 首次全量拉取：user 块照常渲染，跳过事件流已呈现的 assistant 块
-            const fromAssistant = _eventBlockCountOf(entry);
-            const msgsDiv = ensureMsgsDiv(entry);
-            let assistantSeen = 0;
-            blocks.forEach(b => {
-                if (b.role === 'user') {
-                    renderBlock(msgsDiv, b);
-                    return;
-                }
-                if (assistantSeen < fromAssistant) {
-                    assistantSeen++;
-                    return;
-                }
-                assistantSeen++;
-                renderBlock(msgsDiv, b);
-            });
-            entry.logBlocksRendered = blocks.length;
-        }
-        entry.loadedOnce = true;
-        _scrollChatIfNearBottom();
-    } catch (err) {
-        console.error('加载执行详情失败:', err);
-    }
-}
-
-// 全量 messages -> 扁平 block 列表（保留 role，user 块用于 task 描述展示）
-function normalizeContentToBlocks(messages) {
-    const blocks = [];
-    (messages || []).forEach(message => {
-        const role = message.role || 'assistant';
-        normalizeContent(message.content).forEach(block => {
-            blocks.push(Object.assign({}, block, { role }));
-        });
-    });
-    return blocks;
-}
-
-function renderBlock(msgsDiv, block) {
-    if (block.kind === 'text' && block.text) {
-        const div = document.createElement('div');
-        div.className = `sa-msg ${block.role === 'user' ? 'user' : 'assistant'}`;
-        div.innerHTML = renderMarkdown(block.text);
-        msgsDiv.appendChild(div);
-    } else if (block.kind === 'thinking' && block.text) {
-        const div = document.createElement('div');
-        div.className = 'sa-msg thinking';
-        div.innerHTML = `<div class="think-content">${renderMarkdown(block.text)}</div>`;
-        msgsDiv.appendChild(div);
-    } else if (block.kind === 'tool_call') {
-        renderToolCall(msgsDiv, block.name, block.input);
-    } else if (block.kind === 'tool_result') {
-        renderToolResult(msgsDiv, block.content, block.is_error);
-    }
-    // image 块在 worker 日志中罕见，忽略
-}
-
-function renderToolCall(msgsDiv, name, input) {
-    const div = document.createElement('div');
-    div.className = 'sa-msg tool-use';
-    const inputStr = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-    div.innerHTML = `<strong>[工具调用: ${escapeHtml(name)}]</strong><pre>${escapeHtml(inputStr)}</pre>`;
-    msgsDiv.appendChild(div);
-    return div;
-}
-
-function renderToolResult(msgsDiv, content, isError) {
-    const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-    const div = document.createElement('div');
-    div.className = 'sa-msg tool-result';
-    if (isError) div.classList.add('tool-error');
-    div.innerHTML = `<strong>[工具结果]</strong><pre>${escapeHtml(text.substring(0, 500))}${text.length > 500 ? '...' : ''}</pre>`;
-    msgsDiv.appendChild(div);
-}
-
-// ── header 渲染 ──
-
-function _renderHeader(entry, meta = {}) {
-    const task = entry.taskSummary || '';
-    const toolCalls = meta.tool_call_count || 0;
-    const toolCallsDisplay = toolCalls > 0 ? ` · ${toolCalls} 次工具` : '';
-    const modeBadge = entry.background ? '<span class="sa-mode-badge">异步</span>' : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
-    entry.header.innerHTML = `
-        <span class="sa-icon">${_STATUS_ICONS[entry.status] || '📋'}</span>
-        <span class="sa-title">${entry.status === 'running' ? '任务执行中' : '任务已结束'}</span>
-        ${modeBadge}
-        <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
-        <span class="sa-meta">${meta.iterations || 0} 轮 · ${meta.message_count || 0} 条消息${toolCallsDisplay}</span>
-        <span class="sa-toggle">${entry.expanded ? '▼' : '▶'}</span>
-    `;
-}
-
-function updateHeaderMeta(entry, meta = {}) {
-    const iters = meta.iterations || 0;
-    const msgs = meta.message_count || 0;
-    const toolCalls = meta.tool_call_count || 0;
-    const currentTool = meta.current_tool || '';
-    const toolCallsDisplay = toolCalls > 0 ? ` · ${toolCalls} 次工具` : '';
-    const toolSuffix = currentTool ? ` · 正在: ${currentTool}` : '';
-    const metaEl = entry.header.querySelector('.sa-meta');
-    if (metaEl) metaEl.textContent = `${iters} 轮 · ${msgs} 条消息${toolCallsDisplay}${toolSuffix}`;
-}
-
-function _updateHeaderToggle(entry) {
-    const toggle = entry.header.querySelector('.sa-toggle');
-    if (toggle) toggle.textContent = entry.expanded ? '▼' : '▶';
-}
-
-// ── master 工具流（无 exec_id 的 tool_output）──
+// ── master 工具流 ──
 
 function handleMasterToolOutput(e) {
     const entry = _toolStreamTimers[e.tool_use_id];
-    if (!entry) return;  // 无对应气泡（工具瞬间完成或非 bash/python），忽略
+    if (!entry) return;
 
-    // 事件驱动：首次有输出立即建气泡，跳过 5 秒延迟（有输出说明工具在跑）
     if (entry.delayTimer) {
         clearTimeout(entry.delayTimer);
         entry.delayTimer = null;
@@ -664,12 +175,10 @@ function handleMasterToolOutput(e) {
     }
 }
 
-// 创建 master 工具输出气泡（chat.js startToolStreaming 的 5 秒延迟定时器也调用；
-// 事件流与定时器两者都调，幂等）
+// 创建 master 工具输出气泡（chat.js startToolStreaming 的延迟定时器也调用，幂等）
 function ensureMasterToolBubble(toolUseId, toolName) {
     const entry = _toolStreamTimers[toolUseId];
     if (!entry || entry.div) return;
-    // 只在仍查看该工具所属会话时创建：切走后创建会把气泡塞进别的会话界面
     if (!currentSession || entry.sessionId !== currentSession.session_id) return;
 
     const div = document.createElement('div');
@@ -690,8 +199,6 @@ function ensureMasterToolBubble(toolUseId, toolName) {
     contentDiv.appendChild(pre);
 
     div.appendChild(contentDiv);
-    // 渲染进本会话在飞回合的专属容器（若有），与同回合的正文/工具卡片同属一块；
-    // 容器脱离文档时（用户切走）不滚动，避免拽动别人正在看的会话
     const container = _activeTurnContainers.get(entry.sessionId) || chatMessages;
     container.appendChild(div);
     if (chatMessages.contains(div)) {
@@ -703,11 +210,7 @@ function ensureMasterToolBubble(toolUseId, toolName) {
 }
 
 // ── master 自动恢复流式渲染 ──
-// 后台 agent 完成后 master 自动恢复循环，text 逐 token 推送到事件总线。
-// 用 openBlock 模式累积：连续 text 追加到同一个气泡，遇到 thinking/tool 则定稿开新块。
 
-// 视图被重渲染（切会话 / 重拉消息）后调用：丢弃已脱离文档的气泡引用，
-// 让下一个事件重建气泡。否则后续 token 会写进不再显示的元素里。
 function resetMasterStreamBlocks() {
     _masterResumeOpenBlock = null;
 }
@@ -722,8 +225,7 @@ function _handleMasterResumeText(content) {
     } else {
         _finalizeMasterResumeBlock();
         _masterResumeOpenBlock = { kind: 'text', text: content, el: null };
-        const div = addMessage('assistant', content);
-        _masterResumeOpenBlock.el = div;
+        _masterResumeOpenBlock.el = addMessage('assistant', content);
     }
     _scrollChatIfNearBottom();
 }
@@ -738,7 +240,6 @@ function _handleMasterResumeThinking(content) {
     } else {
         _finalizeMasterResumeBlock();
         _masterResumeOpenBlock = { kind: 'thinking', text: content, el: null };
-        // 复用 master 的 thinking 渲染逻辑
         const div = addMessage('assistant', '');
         div.classList.add('thinking');
         const contentDiv = div.querySelector('.message-content');
@@ -757,7 +258,6 @@ function _handleMasterResumeThinking(content) {
 
 function _handleMasterResumeToolUse(e) {
     _finalizeMasterResumeBlock();
-    // 复用 master 的 tool_call 渲染逻辑
     const div = addMessage('assistant', '');
     div.classList.add('tool');
     const contentDiv = div.querySelector('.message-content');
@@ -772,7 +272,6 @@ function _handleMasterResumeToolUse(e) {
 
 function _handleMasterResumeToolResult(e) {
     _finalizeMasterResumeBlock();
-    // 复用 master 的 tool_result 渲染逻辑
     const text = typeof e.content === 'string' ? e.content : JSON.stringify(e.content, null, 2);
     const div = addMessage('assistant', '');
     div.classList.add('tool');
@@ -795,7 +294,7 @@ function _finalizeMasterResumeBlock() {
     _masterResumeOpenBlock = null;
 }
 
-// 重连时按已应用 offset 补拉 master 工具流（/stream 增量，事件流丢失兜底）
+// 重连时按已应用 offset 补拉 master 工具流（事件流丢失兜底）
 async function syncMasterToolStreams() {
     if (!currentWorkspace || !currentSession) return;
     for (const id of Object.keys(_toolStreamTimers)) {
@@ -814,62 +313,17 @@ async function syncMasterToolStreams() {
     }
 }
 
-// ── 会话切换清理 / 恢复 ──
-
-// 清空 worker 卡片状态与 DOM（app.js 切会话时调用，修复现存泄漏）
-function clearAllAgentStreaming() {
-    for (const execId of Object.keys(_sessionCards)) {
-        const entry = _sessionCards[execId];
-        if (entry.card && entry.card.parentNode) entry.card.remove();
-    }
-    for (const k of Object.keys(_sessionCards)) delete _sessionCards[k];
-}
-
-// 加载会话时若该会话有运行中的 worker，恢复 running 卡片
-// （历史 messages 里只有已完成的 agent_ref，running 的需从 /executions 恢复）
-async function recoverRunningCards() {
-    if (!currentWorkspace || !currentSession) return;
-    try {
-        const ws = currentWorkspace.uuid;
-        const sid = currentSession.session_id;
-        const resp = await fetch(`/api/workspaces/${ws}/sessions/${sid}/executions`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        (data.executions || []).forEach(log => {
-            const execId = log.exec_id;
-            const status = log.metadata && log.metadata.status;
-            if (execId && status === 'running') {
-                ensureSessionCard(execId, log.task || log.summary || '', {
-                    status: 'running',
-                    iterations: (log.metadata && log.metadata.iterations) || 0,
-                });
-            }
-        });
-    } catch (e) { /* 恢复失败静默，事件流 agent_start 仍会建卡 */ }
-}
-
-// ── 内部工具函数 ──
-
-function ensureMsgsDiv(entry) {
-    if (entry.msgsDiv) return entry.msgsDiv;
-    const msgsDiv = document.createElement('div');
-    msgsDiv.className = 'sa-messages';
-    entry.detail.appendChild(msgsDiv);
-    entry.msgsDiv = msgsDiv;
-    return msgsDiv;
-}
-
 function _scrollChatIfNearBottom() {
     const el = document.getElementById('chat-messages');
     if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    if (near) el.scrollTop = el.scrollHeight;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
+        el.scrollTop = el.scrollHeight;
+    }
 }
 
 // ── 后台 agent 完成后触发 master 继续 ──
 
 async function triggerResumeForBackgroundAgent() {
-    // 再次检查 master 是否空闲
     if (typeof isSending !== 'undefined' && isSending) return;
     if (!currentWorkspace || !currentSession) return;
 
@@ -877,7 +331,6 @@ async function triggerResumeForBackgroundAgent() {
     const sessionId = currentSession.session_id;
 
     try {
-        // 发送一个特殊请求来触发 master 继续处理通知
         const resp = await fetch(`/api/workspaces/${wsUuid}/sessions/${sessionId}/resume`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

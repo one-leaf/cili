@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from core.agent_run import AgentRunStore
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
@@ -23,7 +24,6 @@ from core.config import (
     save_workspace_config,
     validate_workspace_name,
 )
-from core.agent_run import AgentRunStore
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.session import (
     MESSAGES_FILE,
@@ -813,25 +813,8 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
         raise HTTPException(status_code=404, detail="Session not found")
 
     logs = sm.agent_logs.list_agent_logs()
-    run_store = AgentRunStore(sm.session_dir)
     for log in logs:
-        exec_id = log.get("exec_id", "")
-        run = run_store.get(exec_id) or run_store.derive_legacy(exec_id)
-        if run is not None:
-            meta = log.setdefault("metadata", {})
-            meta.update({
-                "parent_exec_id": run.parent_exec_id,
-                "owner_task_id": run.owner_task_id,
-                "relation": run.relation,
-                "source_exec_id": run.source_exec_id,
-                "epoch": run.epochs[-1].epoch if run.epochs else 0,
-                "max_epochs": run.max_epochs,
-                "status": run.status,
-                "delivery_state": run.delivery_state,
-                "exit_reason": run.exit_reason,
-                "truncated": run.truncated,
-                "legacy": run.legacy,
-            })
+        log["stats"] = (log.get("metadata") or {}).get("stats") or {}
     return {"executions": logs}
 
 
@@ -843,7 +826,12 @@ async def list_agent_runs(workspace_uuid: str, session_id: str, ws_dir: Path = D
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
     run_store = AgentRunStore(sm.session_dir)
-    return {"agent_runs": [r.to_dict() for r in run_store.list()]}
+    runs = []
+    for run in run_store.list():
+        data = run.to_dict()
+        data["stats"] = run.stats.to_dict()
+        runs.append(data)
+    return {"agent_runs": runs}
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
@@ -856,17 +844,18 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    log = sm.agent_logs.load_agent_log(exec_id)
-    if not log:
+    payload = sm.agent_logs.load_execution(exec_id)
+    if not payload:
         raise HTTPException(status_code=404, detail="Execution not found")
 
     # 从外部文件按需注入工具结果内容（前端渲染需要）；
     # 同步读多文件，放线程池避免阻塞事件循环（审查 P2）
-    messages = log.get("messages", [])
     exec_dir = sessions_dir / session_id / exec_id
-    await asyncio.to_thread(_resolve_tool_results_for_session, messages, exec_dir)
+    await asyncio.to_thread(
+        _resolve_tool_results_for_session, payload["messages"], exec_dir
+    )
 
-    return log
+    return payload
 
 
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}",

@@ -823,13 +823,11 @@ class Loop:
             logger.warning(f"[Loop] 后台通知注入失败: {e}")
 
     def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
-        """组装 autonomous 结果 dict（usage 恒取当前快照）。"""
+        """组装 autonomous 结果 dict（stats 与 usage 都取当前快照）。"""
         result = {
             "status": status,
             "summary": summary,
-            "iterations": iterations,
-            "message_count": len(self.runner.messages),
-            "tool_call_count": self.runner._tool_call_count,
+            "stats": self.runner.stats(iterations).to_dict(),
             # 拷贝：调用方改动不得污染 runner 的内部 usage
             "usage": dict(self.runner._usage),
         }

@@ -146,7 +146,7 @@ BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`doc
 统一 `SessionRunner` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`run_mode`（默认取 `role_cfg.mode`）决定运行分叉：
 
 - `interactive`（master）→ `run(user_input, sink=...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
-- `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `iterations` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
+- `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `stats` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
 
 > **role 与 run_mode 解耦**：`role` 决定画像（工具白名单/提示/预算），`run_mode` 决定循环行为
 > （interactive/autonomous）。默认 `run_mode=None` 时取角色 JSON 的 `mode`；接口层可显式覆盖
@@ -408,7 +408,7 @@ master 与 autonomous 子代理共享 `PermissionRules` / `PermissionStore` / `P
 ### 5.1 职责
 
 `mode="autonomous"` 即 worker/lite 角色（原子代理行为），用于 agent 工具委派：
-- `run()` 返回结构化 dict：`{"status", "summary", "iterations", "usage", ...}`
+- `run()` 返回结构化 dict：`{"status", "summary", "stats", "usage", ...}`
 - 隔离执行环境，避免污染主会话上下文
 - 支持并行处理多个独立任务（后台线程）
 
@@ -449,7 +449,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 | `failed` | 连续失败次数达到 `max_consecutive_failures` |
 | `timeout` | 迭代额度耗尽（`wrapped_up=True` 表示兜底总结成功） |
 
-返回字段：`status` / `summary`（或 `message`）/ `iterations` / `usage`，检查完成时含 `check_iterations`，预算兜底下含 `budget_wrapup=True`。
+返回字段：`status` / `summary`（或 `message`）/ `stats`（嵌套 iterations/message_count/tool_call_count）/ `usage`，检查完成时含 `check_iterations`，预算兜底下含 `budget_wrapup=True`。
 
 ### 5.4 行为开关
 
@@ -479,7 +479,7 @@ def _run_autonomous(self) -> dict[str, Any]:
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
 - 构造统一 SessionRunner：`SessionRunner(config, role=subagent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`subagent_type` 为 `worker`（默认）或 `lite`
 - **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `agent_id`，用统一 `action` 枚举管理（`action="status"` 查状态、`action="stop"` 终止、`action="list"` 列出）
-- 子代理 usage 转发到主会话；完成后保存执行日志并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
+- 子代理 usage 转发到主会话；完成后由 `SessionRunner._finalize` 单写执行日志，并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
 ```
 主会话 index.json:
@@ -487,7 +487,7 @@ def _run_autonomous(self) -> dict[str, Any]:
     {role: "user", content: "处理这个大文件"},
     {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "agent", input: {task: "处理文件...", subagent_type: "worker"}}]},
     {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_001",
-     _meta: {exec_id: "exec_abc123", completed: true, iterations: 15, message_count: 42}}]},
+     _meta: {exec_id: "exec_abc123", completed: true, stats: {iterations: 15, message_count: 42, tool_call_count: 8}}}]},
     {role: "assistant", content: "处理完成！"}
   ]
 
@@ -505,9 +505,8 @@ def _run_autonomous(self) -> dict[str, Any]:
       "ended_at": "2026-08-25 10:05:00",
       "duration_seconds": 300,
       "status": "completed",
-      "iterations": 15,
+      "stats": {"iterations": 15, "message_count": 42, "tool_call_count": 8},
       "max_iterations": 200,
-      "message_count": 42,
       "summary": "处理完成，共处理 42 个文件"
     }
   }

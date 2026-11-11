@@ -133,7 +133,7 @@ class TestWorkerLLMError:
 
         assert result["status"] == "error"
         assert "500" in (result.get("summary") or result.get("message") or "")
-        assert result["iterations"] == 0
+        assert result["stats"]["iterations"] == 0
 
     def test_llm_error_stops_immediately(self):
         """错误后不应继续迭代（只调用一次 _call_llm）"""
@@ -208,7 +208,7 @@ class TestWorkerBudgetAwareness:
         assert result["status"] == "completed"
         assert result["budget_wrapup"] is True
         assert result["summary"] == "最终总结"
-        assert result["iterations"] == 10
+        assert result["stats"]["iterations"] == 10
         # 未注入检查提示
         assert not any(
             isinstance(m.get("content"), str) and "检查阶段" in m["content"]

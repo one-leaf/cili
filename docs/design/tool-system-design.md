@@ -771,11 +771,12 @@ agent(action="list")
 **返回值**：
 ```python
 # 同步模式
-{"status": "completed", "summary": "翻译完成", "iterations": 12}
-# 或 {"status": "error", "summary": "...", "iterations": 3}       # LLM 调用失败
-# 或 {"status": "timeout", "summary": "...", "iterations": 50}     # 超过最大迭代次数
-# 或 {"status": "stopped", "summary": "Stopped by user", "iterations": 5}  # 用户手动停止
-# 或 {"status": "failed", "summary": "...", "iterations": 10}     # 连续工具调用失败
+{"status": "completed", "summary": "翻译完成",
+ "stats": {"iterations": 12, "message_count": 30, "tool_call_count": 7}}
+# 或 {"status": "error", "summary": "...", "stats": {...}}       # LLM 调用失败
+# 或 {"status": "timeout", "summary": "...", "stats": {...}}     # 超过最大迭代次数
+# 或 {"status": "stopped", "summary": "Stopped by user", "stats": {...}}  # 用户手动停止
+# 或 {"status": "failed", "summary": "...", "stats": {...}}      # 连续工具调用失败
 
 # 后台模式
 "Background Runner started.\nTask ID: agent-1\n..."

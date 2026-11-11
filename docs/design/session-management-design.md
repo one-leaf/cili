@@ -164,7 +164,7 @@ Agent 执行日志独立存储在子目录中：
     "ended_at": "2026-08-25 10:32:00",
     "duration_seconds": 120,
     "status": "completed",
-    "iterations": 5
+    "stats": {"iterations": 5, "message_count": 12, "tool_call_count": 8}
   },
   "messages": [
     // Agent 的完整消息历史
@@ -237,7 +237,7 @@ class SessionStore:
 | `get_usage()` | 获取使用量统计 |
 | `microcompact_mark_orphans_and_errors()` | Microcompact 压缩（core/compression.py 模块级函数，标记孤立 tool_result 和旧错误结果对） |
 | `mark_old_images_invalid(max_body_size)` | 替换旧图片为占位符直到请求体小于阈值（BaseSessionRunner 方法） |
-| `save_agent_log(...)` | 保存 Agent 执行日志 |
+| `load_execution(exec_id)` | 合并读取执行日志、epoch 消息与累计 stats |
 | `load_agent_log(exec_id)` | 加载 Agent 执行日志 |
 | `list_agent_logs()` | 列出所有执行日志 |
 | `delete_agent_log(exec_id)` | 删除执行日志 |
@@ -381,19 +381,13 @@ Agent 在主会话中以 tool_use + tool_result 消息对的形式呈现，与�
 Agent 执行完成后保存完整日志到独立文件：
 
 ```python
-session.save_agent_log(
-    exec_id="exec_a1b2c3d4",
-    task="优化爬虫性能",
-    messages=agent_messages,
-    metadata={
-        "started_at": "2026-08-25 10:30:00",
-        "ended_at": "2026-08-25 10:32:00",
-        "duration_seconds": 120,
-        "status": "completed",
-        "iterations": 5
-    },
-    summary="已完成性能优化"
-)
+# SessionRunner._finalize 内部调用 _snapshot()，写 {exec_dir}/index.json
+# metadata 关键字段：
+{
+    "status": "completed",
+    "stats": {"iterations": 5, "message_count": 12, "tool_call_count": 8},
+    "max_iterations": 200,
+}
 ```
 
 ### 5.4 查询日志

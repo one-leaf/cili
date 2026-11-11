@@ -1,6 +1,7 @@
 // State
 let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
+let _renderedSessionKey = null;
 let sessionLoadEpoch = 0;  // 会话加载代次：旧响应到达时丢弃
 let sessions = [];
 let isSending = false;
@@ -777,6 +778,10 @@ async function handleWorkspaceChange() {
     }
 
     currentSession = null;
+    if (window.AgentCardStore) {
+        AgentCardStore.clear();
+    }
+    _renderedSessionKey = null;
     isMultiSelectMode = false;
     showHiddenSessions = false;
     selectedSessions.clear();
@@ -1836,6 +1841,8 @@ async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
     const epoch = ++sessionLoadEpoch;
+    const sessionKey = `${currentWorkspace.uuid}:${sessionId}`;
+    const sameSession = _renderedSessionKey === sessionKey;
     try {
         // 初始加载最近 50 条消息
         const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}?limit=50&offset=0`);
@@ -1849,7 +1856,11 @@ async function loadSession(sessionId) {
 
         console.log('Session switched to:', currentSession.session_id);
 
-        // 清理所有正在进行的工具输出轮询与 worker 卡片状态（修复切会话泄漏）
+        if (window.AgentCardStore) {
+            AgentCardStore.beginSession(sessionKey, { keepModels: sameSession });
+        }
+
+        // 清理 master 工具流；子代理卡片由 AgentCardStore 按会话保留/清理
         clearAllToolStreaming();
 
         // 重连全局事件流到当前会话（worker 消息 + 工具输出实时推送）
@@ -1871,13 +1882,14 @@ async function loadSession(sessionId) {
         updateComposerButtons();
         refreshModelSelect();
         renderQueueBar();
-        if (sessionRunning) {
-            // 恢复该会话运行中的 worker 卡片（历史消息里只有已完成的 agent_ref）
-            recoverRunningCards();
-        }
-
         renderSessions();
         renderMessages(session.messages || []);
+
+        if (window.AgentCardStore) {
+            AgentCardStore.reconcile();
+            await AgentCardStore.mountRunning();
+        }
+        _renderedSessionKey = sessionKey;
 
         // Render initial todos if any
         const todos = session.metadata?.todos;
@@ -1919,6 +1931,10 @@ async function createNewSession() {
 
         // 完整重置发送/停止状态（可能在旧会话运行中创建新会话）
         clearAllToolStreaming();
+        if (window.AgentCardStore) {
+            AgentCardStore.clear();
+        }
+        _renderedSessionKey = null;
         // 重连事件流到新会话
         connectEventSource();
         chatInput.disabled = false;

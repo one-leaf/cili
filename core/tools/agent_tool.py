@@ -9,6 +9,7 @@ import threading
 from datetime import datetime
 
 from core.agent_run import AgentRunManager, root_session_dir
+from core.agent_stats import AgentStats
 from core.output_sink import OutputSink
 from core.tools.base import Tool, ToolResult
 
@@ -100,15 +101,22 @@ class AgentTool(Tool):
         if exec_id:
             self._publish("session_start", exec_id=exec_id, task_summary=task_summary, background=background)
 
-    def _notify_session_complete(self, exec_id: str, status: str = "completed") -> None:
+    def _notify_session_complete(self, exec_id: str, status: str = "completed",
+                                 stats: AgentStats | None = None) -> None:
         """广播 session_complete：保留 on_session_complete 回调 + 全局事件流。"""
         if exec_id:
-            self._publish("session_complete", exec_id=exec_id, status=status)
+            extra = {"stats": stats.to_dict()} if stats is not None else {}
+            self._publish("session_complete", exec_id=exec_id, status=status, **extra)
         if self.on_session_complete:
             try:
                 self.on_session_complete(exec_id)
             except Exception as e:
                 logger.warning(f"on_session_complete callback error: {e}")
+
+    @staticmethod
+    def _result_stats(result: dict | None) -> AgentStats:
+        """从 runner 结果读取累计统计；缺失按 0 处理。"""
+        return AgentStats.from_dict((result or {}).get("stats"))
 
     @property
     def parameters(self) -> dict:
@@ -395,7 +403,6 @@ class AgentTool(Tool):
             handoff = False
             try:
                 result = runner.run()
-                result["message_count"] = len(runner.messages)
                 self._archive_epoch(run_mgr, exec_id, 1, result, runner)
                 handoff = bool(result.get("status") == "handoff" and result.get("continuation"))
                 if handoff:
@@ -411,28 +418,6 @@ class AgentTool(Tool):
                         summary=result.get("summary") or result.get("message") or "",
                     )
                 entry["result"] = result
-
-                # Save Agent execution log via SessionStore
-                # worker/lite 的 session 是 _SessionRef（无 agent_logs），跳过
-                if self.session and exec_id and hasattr(self.session, "agent_logs"):
-                    try:
-                        final_status = result.get("status", "error")
-                        self.session.agent_logs.save_agent_log(
-                            exec_id=exec_id,
-                            task=task,
-                            messages=runner.messages,
-                            metadata={
-                                "started_at": runner._started_at.strftime("%Y-%m-%d %H:%M:%S") if runner._started_at else "",
-                                "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "duration_seconds": runner._elapsed_seconds(),
-                                "status": final_status,
-                                "iterations": result.get("iterations", 0),
-                                "message_count": result.get("message_count", 0),
-                            },
-                            summary=result.get("summary") or result.get("message") or "",
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to save Agent log: {e}")
 
                 # Forward sub-runner usage to session metadata
                 sub_usage = result.get("usage", {})
@@ -450,7 +435,7 @@ class AgentTool(Tool):
 
             except Exception as e:
                 logger.error(f"Agent tool error: {e}")
-                entry["result"] = {"status": "error", "summary": str(e), "iterations": 0}
+                entry["result"] = {"status": "error", "summary": str(e), "stats": {}}
             finally:
                 runner.close()
                 # 注销子代理的 AgentMailbox 注册（exec_id + 所有别名如 label）
@@ -485,7 +470,10 @@ class AgentTool(Tool):
                     )
                 else:
                     status = (entry.get("result") or {}).get("status", "completed")
-                    self._notify_session_complete(exec_id, status=status)
+                    self._notify_session_complete(
+                        exec_id, status=status,
+                        stats=self._result_stats(entry.get("result")),
+                    )
 
         thread = threading.Thread(target=run_session, daemon=True)
         entry["thread"] = thread
@@ -502,14 +490,19 @@ class AgentTool(Tool):
             logger.warning(f"[AgentTool] 委派执行超时，停止子 runner {exec_id}")
             runner.stop()
             entry["event"].wait(timeout=10)
-        result = entry.get("result") or {"status": "timeout", "summary": "Agent 执行超时", "iterations": 0}
+        result = entry.get("result") or {
+            "status": "timeout",
+            "summary": "Agent 执行超时",
+            "stats": runner.stats(getattr(runner, "_turn_iterations", 0)).to_dict(),
+        }
 
         # Clean up pending entry
         with self._pending_lock:
             self._pending_sessions.pop(exec_id, None)
 
         result_json = json.dumps(result, ensure_ascii=False, indent=2)
-        meta = {"exec_id": exec_id, "completed": True, "iterations": result.get("iterations", 0), "message_count": result.get("message_count", 0), "tool_call_count": result.get("tool_call_count", 0), "background": False}
+        meta = {"exec_id": exec_id, "completed": True,
+                "stats": self._result_stats(result).to_dict(), "background": False}
         if result.get("status") == "continuation":
             meta["status"] = "running"
             meta["continuation"] = True
@@ -559,7 +552,7 @@ class AgentTool(Tool):
             status=status,
             exit_reason=result.get("exit_reason") or ("max_iterations" if status == "handoff" else status),
             truncated=bool(result.get("truncated")),
-            iterations=int(result.get("iterations", 0)),
+            stats=self._epoch_stats_from_result(runner, result),
             max_iterations=int(getattr(runner, "max_iterations", 0) or 0),
             summary=result.get("summary") or result.get("message") or "",
             messages=runner.messages,
@@ -568,6 +561,19 @@ class AgentTool(Tool):
                 runner._started_at.strftime("%Y-%m-%d %H:%M:%S")
                 if isinstance(getattr(runner, "_started_at", None), datetime) else ""
             ),
+        )
+
+    @staticmethod
+    def _epoch_stats_from_result(runner, result: dict) -> AgentStats:
+        """把累计结果换算为当前 epoch 的原始统计。"""
+        base = getattr(runner, "_stats_base", AgentStats())
+        if not isinstance(base, AgentStats):
+            base = AgentStats()
+        total = AgentStats.from_dict((result or {}).get("stats"))
+        return AgentStats(
+            iterations=max(0, total.iterations - base.iterations),
+            message_count=max(0, total.message_count - base.message_count),
+            tool_call_count=max(0, total.tool_call_count - base.tool_call_count),
         )
 
     def _start_continuation_chain(self, *, run_mgr, exec_id: str, exec_dir,
@@ -586,8 +592,10 @@ class AgentTool(Tool):
                     context_ref={"kind": "handoff"},
                 )
                 run_mgr.start(exec_id, epoch=epoch)
+                current_run = run_mgr.store.get(exec_id)
+                stats_base = current_run.stats if current_run else AgentStats()
                 self._publish("agent_epoch_started", exec_id=exec_id, epoch=epoch,
-                              max_epochs=max_epochs)
+                              max_epochs=max_epochs, stats=stats_base.to_dict())
                 runner = SessionRunner(
                     config=self.config,
                     role=subagent_type,
@@ -604,6 +612,7 @@ class AgentTool(Tool):
                     master_session_id=root_sid,
                     epoch=epoch,
                     max_epochs=max_epochs,
+                    stats_base=stats_base,
                 )
                 sink = self._make_sink(exec_id)
                 runner.sink = sink
@@ -616,14 +625,13 @@ class AgentTool(Tool):
                     mbus.register_agent(exec_id, exec_id)
                 except Exception as e:
                     logger.warning(f"continuation mailbox register failed: {e}")
-                result: dict = {"status": "error", "summary": "continuation failed", "iterations": 0}
+                result: dict = {"status": "error", "summary": "continuation failed", "stats": {}}
                 try:
                     result = runner.run() or result
-                    result["message_count"] = len(runner.messages)
                     self._archive_epoch(run_mgr, exec_id, epoch, result, runner)
                 except Exception as e:
                     logger.error(f"continuation {exec_id} epoch {epoch} failed: {e}")
-                    result = {"status": "error", "summary": str(e), "iterations": 0}
+                    result = {"status": "error", "summary": str(e), "stats": {}}
                 finally:
                     try:
                         runner.close()
@@ -674,13 +682,16 @@ class AgentTool(Tool):
                             delivery_state = "delivered"
                     except Exception as e:
                         logger.warning(f"continuation delivery failed: {e}")
+                final_stats = self._result_stats(result)
                 self._publish("agent_run_settled", exec_id=exec_id,
                               epoch=epoch, status=final_status,
                               exit_reason=exit_reason, truncated=truncated,
-                              delivery_state=delivery_state, summary=summary[:500])
-                self._notify_session_complete(exec_id, status=final_status)
+                              delivery_state=delivery_state, summary=summary[:500],
+                              stats=final_stats.to_dict())
+                self._notify_session_complete(exec_id, status=final_status,
+                                              stats=final_stats)
                 self._publish("background_runner_resume", exec_id=exec_id,
-                              status=final_status)
+                              status=final_status, stats=final_stats.to_dict())
                 if getattr(self, "on_background_complete", None):
                     try:
                         self.on_background_complete(exec_id, final_status)
