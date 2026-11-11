@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import secrets
 from pathlib import Path
 
 MAX_SELECTION_CHARS = 4000
@@ -58,8 +59,14 @@ def format_attachment(att: dict | None) -> dict | None:
             ]
             return {
                 "type": "text",
+                "id": f"att_{secrets.token_hex(4)}",
                 "text": "\n".join(lines),
-                "_meta": {"attachment": True},
+                "_meta": {
+                    "attachment": {
+                        "path": path,
+                        "selection": {"startLine": start, "endLine": end},
+                    }
+                },
             }
 
     label = media_type or ("image" if is_image else "file")
@@ -68,8 +75,15 @@ def format_attachment(att: dict | None) -> dict | None:
         lines.append(f'Use read_image("{path}") to view this image.')
     return {
         "type": "text",
+        "id": f"att_{secrets.token_hex(4)}",
         "text": "\n".join(lines),
-        "_meta": {"attachment": True},
+        "_meta": {
+            "attachment": {
+                "path": path,
+                "media_type": media_type or ("image" if is_image else "file"),
+                "selection": None,
+            }
+        },
     }
 
 

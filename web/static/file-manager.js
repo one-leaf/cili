@@ -150,7 +150,7 @@ async function openFileBrowser() {
             <div class="modal-backdrop" onclick="closeFileBrowser()"></div>
             <div class="modal-content file-browser-modal-content">
                 <div class="modal-header">
-                    <h2>选择文件</h2>
+                    <h2>添加附件</h2>
                     <button class="modal-close" onclick="closeFileBrowser()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -221,7 +221,7 @@ async function loadFileBrowser(path) {
                 const el = document.createElement('div');
                 el.className = 'file-browser-item';
                 el.textContent = `📄 ${file.name}`;
-                el.onclick = () => insertFilePath(file.path);
+                el.onclick = () => attachFilePath(file.path);
                 listEl.appendChild(el);
             }
         }
@@ -243,21 +243,25 @@ function filePathToInsert(absPath) {
     return absPath;
 }
 
-function insertFilePath(filePath) {
-    const insertText = filePathToInsert(filePath);
-    const chatInput = document.getElementById('chat-input');
-    const cursorPos = chatInput.selectionStart;
-    const textBefore = chatInput.value.substring(0, cursorPos);
-    const textAfter = chatInput.value.substring(chatInput.selectionEnd);
-
-    // 插入文件路径，后面加一个空格方便继续输入
-    chatInput.value = textBefore + insertText + ' ' + textAfter;
-
-    // 移动光标到插入位置之后（跳过空格）
-    const newPos = cursorPos + insertText.length + 1;
-    chatInput.setSelectionRange(newPos, newPos);
-    chatInput.focus();
-
+// 从文件浏览器选择文件 → 加入输入区附件 chip（与 Ctrl+V/预览选择同一套逻辑）
+function attachFilePath(filePath) {
+    const rel = filePathToInsert(filePath);
+    // 只接受工作区内的文件（相对路径）；工作区外返回绝对路径，拒绝
+    if (!rel || rel === '.' || rel.startsWith('/') || /^[A-Za-z]:/.test(rel)) {
+        showToast('只能添加工作区内的文件');
+        return;
+    }
+    if (pendingAttachments.some(a => a.path === rel)) {
+        closeFileBrowser();
+        return;
+    }
+    pendingAttachments.push({
+        path: rel,
+        name: rel.split('/').pop(),
+        media_type: '',
+    });
+    renderComposerAttachments();
+    updateComposerButtons();
     closeFileBrowser();
 }
 

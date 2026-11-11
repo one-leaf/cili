@@ -14,7 +14,7 @@ class TestFormatAttachment:
         assert block["type"] == "text"
         assert "src/a.py" in block["text"]
         assert "selected lines" not in block["text"]
-        assert block["_meta"]["attachment"] is True
+        assert block["_meta"]["attachment"]["path"] == "src/a.py"
 
     def test_selection(self):
         block = format_attachment({
@@ -36,6 +36,17 @@ class TestFormatAttachment:
         block = format_attachment({"path": "uploads/a.png", "media_type": "image/png"})
         assert 'read_image("uploads/a.png")' in block["text"]
 
+    def test_block_meta_persists_via_commit(self):
+        from core.session import _commit_for_message, _merge_block_meta
+        block = format_attachment({"path": "uploads/a.png", "media_type": "image/png"})
+        msg = {"role": "user", "content": [block], "_meta": {"id": "m1"}}
+        commit = _commit_for_message(msg, 1)
+        assert block["id"] in commit["blocks"]
+        restored = [dict(block)]
+        restored[0].pop("_meta", None)  # 模拟 jsonl 剥离 block meta
+        _merge_block_meta(restored, commit["blocks"])
+        assert restored[0]["_meta"]["attachment"]["path"] == "uploads/a.png"
+
     def test_invalid(self):
         assert format_attachment(None) is None
         assert format_attachment({}) is None
@@ -54,7 +65,7 @@ class TestBuildUserInput:
             attachments=[{"path": "a.py", "selection": {"startLine": 1, "endLine": 1, "text": "x"}}],
         )
         assert isinstance(out, list)
-        assert out[0]["_meta"]["attachment"] is True
+        assert out[0]["_meta"]["attachment"]["path"] == "a.py"
         assert out[-1] == {"type": "text", "text": "hi", "_valid": True}
 
     def test_multiple_attachments(self):

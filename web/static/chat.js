@@ -90,12 +90,13 @@ function renderComposerAttachments() {
         const sel = ctx.selection;
         items.push({
             kind: 'editor',
-            label: sel ? `引用 ${ctx.path}:${sel.startLine}-${sel.endLine}` : `已附带 ${ctx.path}`,
+            label: sel ? `@${ctx.path}:${sel.startLine}-${sel.endLine}` : `@${ctx.path}`,
             title: sel ? `${ctx.path}:${sel.startLine}-${sel.endLine}` : ctx.path,
         });
     }
     pendingAttachments.forEach((att, idx) => {
-        items.push({ kind: 'file', idx, label: `📎 ${att.name}`, title: att.path });
+        if (ctx && att.path === ctx.path) return;
+        items.push({ kind: 'file', idx, label: `@${att.name}`, title: att.path });
     });
 
     const wrap = area.parentElement;
@@ -239,6 +240,37 @@ function _renderFileCardGroup(cards) {
     addMessage('assistant', lines.join('\n'));
 }
 
+// 兼容旧消息：从 [Attachment]/[Editor context] 文本中恢复附件信息（新消息走 _meta.attachment）
+function _attachmentFromLegacyText(text) {
+    const s = String(text || '');
+    let m = s.match(/^\[Attachment\] `([^`]+)`/);
+    if (m) return { path: m[1], selection: null };
+    m = s.match(/^\[Editor context\]\nThe user selected lines (\d+)-(\d+) from `([^`]+)`:/);
+    if (m) return { path: m[3], selection: { startLine: Number(m[1]), endLine: Number(m[2]) } };
+    m = s.match(/^\[Editor context\]\nThe user has file `([^`]+)` open/);
+    if (m) return { path: m[1], selection: null };
+    return null;
+}
+
+function _renderUserAttachmentChips(container, attachments) {
+    if (!container || !attachments || attachments.length === 0) return;
+    const existing = container.querySelector('.user-attachments');
+    if (existing) existing.remove();
+    const row = document.createElement('div');
+    row.className = 'user-attachments';
+    attachments.forEach(att => {
+        const chip = document.createElement('span');
+        chip.className = 'user-attachment';
+        const path = att.path || '';
+        const sel = att.selection;
+        chip.textContent = sel && sel.startLine
+            ? `@${path}:${sel.startLine}-${sel.endLine}`
+            : `@${path}`;
+        row.appendChild(chip);
+    });
+    container.insertBefore(row, container.firstChild);
+}
+
 function renderMessages(messages) {
     chatMessages.innerHTML = '';
     // 全局事件流那条路的渲染器持有 DOM 引用，清空后必须重置
@@ -277,10 +309,20 @@ function renderMessages(messages) {
         if (role === 'user') {
             const textParts = [];
             const imageParts = [];
+            const attachmentParts = [];
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
-                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention || block._meta.attachment)) return;
+                if (block.kind === 'text' && block._meta && block._meta.attachment) {
+                    const att = block._meta.attachment;
+                    if (att && typeof att === 'object' && att.path) attachmentParts.push(att);
+                    return;
+                }
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
+                if (block.kind === 'text') {
+                    const legacy = _attachmentFromLegacyText(block.text);
+                    if (legacy) { attachmentParts.push(legacy); return; }
+                }
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
@@ -288,10 +330,10 @@ function renderMessages(messages) {
 
             // Only create user bubble if there's actual user content
             const combinedText = textParts.join('\n');
-            if (combinedText || imageParts.length > 0) {
+            if (combinedText || imageParts.length > 0 || attachmentParts.length > 0) {
                 const div = addMessage('user', combinedText, msgId, msg._meta?.created_at);
+                const contentDiv = div.querySelector('.message-content');
                 if (imageParts.length > 0) {
-                    const contentDiv = div.querySelector('.message-content');
                     const imgContainer = document.createElement('div');
                     imgContainer.className = 'user-images';
                     imageParts.forEach(img => {
@@ -301,6 +343,9 @@ function renderMessages(messages) {
                         imgContainer.appendChild(imgEl);
                     });
                     contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                }
+                if (attachmentParts.length > 0) {
+                    _renderUserAttachmentChips(contentDiv, attachmentParts);
                 }
             }
 
@@ -456,20 +501,30 @@ function prependMessages(messages) {
         if (role === 'user') {
             const textParts = [];
             const imageParts = [];
+            const attachmentParts = [];
             const toolResultBlocks = [];
 
             blocks.forEach(block => {
-                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention || block._meta.attachment)) return;
+                if (block.kind === 'text' && block._meta && block._meta.attachment) {
+                    const att = block._meta.attachment;
+                    if (att && typeof att === 'object' && att.path) attachmentParts.push(att);
+                    return;
+                }
+                if (block.kind === 'text' && block._meta && (block._meta.editor_context || block._meta.file_mention)) return;
+                if (block.kind === 'text') {
+                    const legacy = _attachmentFromLegacyText(block.text);
+                    if (legacy) { attachmentParts.push(legacy); return; }
+                }
                 if (block.kind === 'text' && block.text) textParts.push(block.text);
                 else if (block.kind === 'image') imageParts.push(block);
                 else if (block.kind === 'tool_result') toolResultBlocks.push(block);
             });
 
             const combinedText = textParts.join('\n');
-            if (combinedText || imageParts.length > 0) {
+            if (combinedText || imageParts.length > 0 || attachmentParts.length > 0) {
                 const div = addMessage('user', combinedText, msgId, msg._meta?.created_at, null);
+                const contentDiv = div.querySelector('.message-content');
                 if (imageParts.length > 0) {
-                    const contentDiv = div.querySelector('.message-content');
                     const imgContainer = document.createElement('div');
                     imgContainer.className = 'user-images';
                     imageParts.forEach(img => {
@@ -479,6 +534,9 @@ function prependMessages(messages) {
                         imgContainer.appendChild(imgEl);
                     });
                     contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                }
+                if (attachmentParts.length > 0) {
+                    _renderUserAttachmentChips(contentDiv, attachmentParts);
                 }
                 fragment.appendChild(div);
             }
@@ -1332,10 +1390,14 @@ async function sendMessage() {
     const message = chatInput.value.trim();
     const editorContext = getActiveEditorContext();
     const attachments = [];
+    const attachmentPaths = new Set();
     if (editorContext) {
         attachments.push({ path: editorContext.path, selection: editorContext.selection });
+        attachmentPaths.add(editorContext.path);
     }
     for (const att of pendingAttachments) {
+        if (attachmentPaths.has(att.path)) continue;
+        attachmentPaths.add(att.path);
         attachments.push({ path: att.path, selection: null, media_type: att.media_type });
     }
     if (!message && attachments.length === 0) return;
@@ -1419,19 +1481,7 @@ async function sendMessage() {
     // Add user message to UI
     const userDiv = addMessage('user', message);
     if (attachmentsToSend) {
-        const contentDiv = userDiv.querySelector('.message-content');
-        const attContainer = document.createElement('div');
-        attContainer.className = 'user-attachments';
-        attachmentsToSend.forEach(att => {
-            const chipEl = document.createElement('span');
-            chipEl.className = 'user-attachment';
-            const sel = att.selection;
-            chipEl.textContent = sel
-                ? `📎 ${att.path}:${sel.startLine}-${sel.endLine}`
-                : `📎 ${att.path}`;
-            attContainer.appendChild(chipEl);
-        });
-        contentDiv.insertBefore(attContainer, contentDiv.firstChild);
+        _renderUserAttachmentChips(userDiv.querySelector('.message-content'), attachmentsToSend);
     }
 
     // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
@@ -1448,7 +1498,12 @@ async function sendMessage() {
             _handleDeliveredBatch(event);
             if (optimisticUserDiv && event.content) {
                 const contentDiv = optimisticUserDiv.querySelector('.message-content');
-                if (contentDiv) contentDiv.innerHTML = renderMarkdown(event.content);
+                if (contentDiv) {
+                    contentDiv.innerHTML = renderMarkdown(event.content);
+                    if (attachmentsToSend) {
+                        _renderUserAttachmentChips(contentDiv, attachmentsToSend);
+                    }
+                }
                 optimisticUserDiv.dataset.rawContent = event.content;
             }
         },

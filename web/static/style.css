@@ -2060,6 +2060,7 @@ mjx-container {
     border: 1px solid var(--border-color);
     border-radius: 5px;
     background: var(--code-bg);
+    font-family: Consolas, 'Courier New', monospace;
     font-size: 11px;
     color: var(--text-secondary, #6b7280);
     white-space: nowrap;
@@ -2098,6 +2099,7 @@ mjx-container {
     border-radius: 4px;
     background: var(--code-bg);
     border: 1px solid var(--border-color);
+    font-family: Consolas, 'Courier New', monospace;
     font-size: 11px;
     color: var(--text-secondary, #6b7280);
 }
