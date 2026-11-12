@@ -60,10 +60,10 @@ LOCATIONS: list[dict[str, str]] = [
 ]
 
 def _official_catalog():
-    """惰性读取官方教材目录（首次访问可能触发抓取/读缓存）。"""
-    from core.textbooks.smartedu import get_catalog
+    """教材目录以数据包索引为准（内置 dataset_index.json 兜底，不访问官方缓存）。"""
+    from core.textbooks.pack_store import dataset_catalog
 
-    return get_catalog()
+    return dataset_catalog()
 
 
 def stage_options() -> list[str]:

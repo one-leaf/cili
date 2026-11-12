@@ -147,10 +147,12 @@ class TestSmartEduAuth:
             f'MAC id="tok",nonce="{nonce}",mac="{mac}"'
         )
 
-    def test_placeholder_without_mac_key(self):
+    def test_anonymous_without_mac_key(self):
+        """无 mac_key 时使用随机匿名头，不再输出全零占位。"""
         header = build_nd_auth("https://example.com/x.pdf", "GET",
                                SmartEduCredentials(access_token="tok"))
-        assert header == 'MAC id="tok",nonce="0",mac="0"'
+        assert header.startswith('MAC id="')
+        assert 'nonce="0"' not in header and 'mac="0"' not in header
 
     def test_is_auth_expired(self):
         assert is_auth_expired(401)

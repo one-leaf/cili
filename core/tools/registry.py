@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from core.config import Config
 from core.role_config import RoleConfig, load_role
+from core.tools.agent_tool import AgentTool
 from core.tools.ask_user import AskUserTool
 from core.tools.base import Tool
 from core.tools.bash import BashTool
@@ -24,8 +25,8 @@ from core.tools.latex import LatexTool
 from core.tools.loop import LoopTool
 from core.tools.memory import MemoryTool
 from core.tools.message_bus_tool import MessageBusTool
-from core.tools.pdf2markdown import PDF2MarkdownTool
 from core.tools.office2pdf import Office2PDFTool
+from core.tools.pdf2markdown import PDF2MarkdownTool
 from core.tools.pwsh import PwshTool
 from core.tools.python_tool import PythonTool
 from core.tools.read import ReadTool
@@ -33,9 +34,13 @@ from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
-from core.tools.agent_tool import AgentTool
 from core.tools.skill import SkillTool
 from core.tools.temp import TempTool
+from core.tools.textbook_find import TextbookFindTool
+from core.tools.textbook_original import TextbookOriginalTool
+from core.tools.textbook_outline import TextbookOutlineTool
+from core.tools.textbook_read import TextbookReadTool
+from core.tools.textbook_search import TextbookSearchTool
 from core.tools.todo import TodoWriteTool
 from core.tools.tool_search import ToolSearchTool
 from core.tools.web_search import WebSearchTool
@@ -100,6 +105,11 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "agent": _factory(AgentTool, needs_config=True, needs_permission=True),
     "ask_user": _factory(AskUserTool),
     "tool_search": _factory(ToolSearchTool),
+    "textbook_find": _factory(TextbookFindTool),
+    "textbook_outline": _factory(TextbookOutlineTool),
+    "textbook_read": _factory(TextbookReadTool),
+    "textbook_search": _factory(TextbookSearchTool),
+    "textbook_original": _factory(TextbookOriginalTool),
     # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户
     "send_user_file": _factory(SendUserFileTool),
 }

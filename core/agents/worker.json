@@ -229,7 +229,12 @@
     "skill",
     "agent",
     "office2pdf",
-    "tool_search"
+    "tool_search",
+    "textbook_find",
+    "textbook_outline",
+    "textbook_read",
+    "textbook_search",
+    "textbook_original"
   ],
   "deferred_tools": [
     "browser",

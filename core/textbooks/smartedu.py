@@ -5,8 +5,10 @@
 - 版本清单：``zxx/ndrs/resources/tch_material/version/data_version.json``
   返回逗号分隔的分片 URL，逐片拉取得到课本数组。
 
-教材 PDF 位于私有 CDN（``r1/r2/r3-ndr-private.ykt.cbern.com.cn``），下载需要
-平台登录凭据（access_token + mac_key）并按每条 URL 现算 ``X-ND-AUTH`` MAC 签名。
+教材 PDF 位于私有 CDN（``r1/r2/r3-ndr-private.ykt.cbern.com.cn``）。该 CDN 对大
+多数教材只要求请求带 ``Authorization`` 头（内容不校验），因此**无需登录即可下载**；
+登录凭据（access_token + mac_key）仅用于个别更严格的资源——此时按每条 URL 现算
+``X-ND-AUTH`` MAC 签名。无凭据时使用随机匿名身份（见 ``anonymous_nd_auth``）。
 
 缓存策略：内存 + 磁盘（``data/cili/cache/smartedu_catalog.json``），TTL 24 小时；
 过期时先用旧缓存并在后台线程刷新，抓取失败继续沿用旧数据。首次无缓存时同步抓取。
@@ -21,6 +23,7 @@ import json
 import logging
 import math
 import random
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -88,14 +91,32 @@ def normalize_subject(subject: str) -> str:
     """把官方学科名映射为学科模板使用的规范名。"""
     return SUBJECT_ALIASES.get(subject, subject)
 
+NONCE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# ── 匿名下载身份 ─────────────────────────────────────────────────────────────
+# 实测：私有 CDN 对绝大多数教材只校验“Authorization 头存在”，不校验其内容
+# （Bearer 任意值均可，缺头才 401）；X-ND-AUTH 的 MAC 签名不生效。
+# 无登录凭据时用随机身份而非全零占位，避免与其他抓取器共用同一特征。
+_ANON_ID = secrets.token_hex(16)
+
+
+def anonymous_nd_auth() -> str:
+    """匿名的 X-ND-AUTH：随机 id + 当前时间 nonce + 随机 mac（形如真实签名）。"""
+    nonce = (f"{int(time.time() * 1000)}:"
+             f"{''.join(secrets.choice(NONCE_ALPHABET) for _ in range(8))}")
+    mac = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+    return f'MAC id="{_ANON_ID}",nonce="{nonce}",mac="{mac}"'
+
+
 BASE_HEADERS = {
+    "Authorization": f"Bearer {_ANON_ID}",
     "Origin": "https://basic.smartedu.cn",
     "Referer": "https://basic.smartedu.cn/",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
     ),
-    "X-ND-AUTH": 'MAC id="0",nonce="0",mac="0"',
+    "X-ND-AUTH": anonymous_nd_auth(),
 }
 
 
@@ -118,8 +139,6 @@ def _order_index(value: str, order: Iterable[str]) -> int:
 
 
 # ── 登录凭据与 MAC 签名 ────────────────────────────────────────────────────────
-
-NONCE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 @dataclass(frozen=True)
@@ -229,12 +248,11 @@ def build_nd_auth(
     creds: SmartEduCredentials | None = None,
 ) -> str:
     creds = creds or credentials()
-    token_id = creds.access_token or "0"
-    if not creds.mac_key:
-        return f'MAC id="{token_id}",nonce="0",mac="0"'
+    if not creds.mac_key:   # 无凭据/凭据不完整 → 匿名占位（见 BASE_HEADERS 注释）
+        return anonymous_nd_auth()
     nonce = generate_nonce(creds.diff)
     mac = sign_mac(signature_string(url, method, nonce), creds.mac_key)
-    return f'MAC id="{token_id}",nonce="{nonce}",mac="{mac}"'
+    return f'MAC id="{creds.access_token}",nonce="{nonce}",mac="{mac}"'
 
 
 def cdn_url(storage: str) -> str:

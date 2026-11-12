@@ -3629,8 +3629,64 @@ details.p-headers-panel .p-headers {
     margin-bottom: 12px;
 }
 
+/* 教材下载工具栏：标签与选择框紧凑同行（默认 .form-group 的 140px 标签列会拉开间距） */
 .textbook-toolbar .form-group {
     margin-bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.textbook-toolbar .form-group > label {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.textbook-toolbar .form-group > select,
+.textbook-toolbar .form-group > input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 科目与版本：整行块级布局（标签在上，勾选列表在下） */
+.textbook-subjects-group {
+    display: block;
+    margin-bottom: 10px;
+}
+
+/* 两列布局：左列科目勾选（单列排列），右列匹配结果 */
+.textbook-columns {
+    display: grid;
+    grid-template-columns: minmax(260px, 2fr) minmax(280px, 3fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.textbook-columns .wizard-subject-list {
+    grid-template-columns: 1fr;
+}
+
+.textbook-results {
+    min-width: 0;
+}
+
+.textbook-columns .textbook-list {
+    max-height: calc(100vh - 460px);
+}
+
+@media (max-width: 720px) {
+    .textbook-columns {
+        grid-template-columns: 1fr;
+    }
+}
+
+.textbook-subjects-group > label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: var(--text-light);
 }
 
 .textbook-actions {
@@ -3678,7 +3734,6 @@ details.p-headers-panel .p-headers {
 .textbook-item:hover {
     background: rgba(0, 0, 0, 0.04);
 }
-
 .textbook-item input {
     margin-top: 3px;
 }
@@ -3697,6 +3752,9 @@ details.p-headers-panel .p-headers {
 
 [data-theme="dark"] .textbook-item:hover {
     background: rgba(255, 255, 255, 0.05);
+}
+[data-theme="dark"] .textbook-list {
+    background: #1c1c1f;
 }
 
 /* ─── 新建工作区向导 ────────────────────────────────────────────────────── */
@@ -3795,6 +3853,27 @@ details.p-headers-panel .p-headers {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 0 16px;
+}
+
+/* 向导内表单：标签与输入框紧凑同行（与教材工具栏一致） */
+.wizard-grid .form-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.wizard-grid .form-group > label {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.wizard-grid .form-group > input,
+.wizard-grid .form-group > select {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .wizard-checkbox-row,

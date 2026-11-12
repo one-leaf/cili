@@ -46,13 +46,12 @@ class AppContext:
         # MCP provider：后台连接已配置的服务器（不阻塞启动）
         threading.Thread(target=self._connect_mcp_servers, daemon=True).start()
 
-        # 官方教材目录缓存预热（后台；失败只告警，不影响启动）
+        # 教材数据包后台同步（cili-data Release；失败只告警，不影响启动）
         try:
-            from core.textbooks.smartedu import warmup as warmup_textbook_catalog
-            threading.Thread(target=warmup_textbook_catalog, daemon=True,
-                             name="smartedu-catalog-warmup").start()
+            from core.textbooks.pack_sync import start_background as start_pack_sync
+            start_pack_sync()
         except Exception as e:
-            logger.warning(f"[AppContext] 启动教材目录预热失败: {e}")
+            logger.warning(f"[AppContext] 启动教材数据同步失败: {e}")
 
         # Cron 调度器
         try:

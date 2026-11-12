@@ -1,8 +1,9 @@
 """教材下载任务：官方平台源文件流式下载、断点续传、重试与进度。
 
 数据来自国家中小学智慧教育平台：目录由 ``smartedu`` 模块抓取并缓存；每本书
-下载前按其 content_id 查询详情接口取源文件地址（私有 CDN，需要登录凭据，
-``X-ND-AUTH`` MAC 签名按每条 URL 现算）。凭据由浏览器登录流程抓取并缓存。
+下载前按其 content_id 查询详情接口取源文件地址（私有 CDN）。该 CDN 对多数
+教材只要求带 ``Authorization`` 头，**匿名即可下载**；登录凭据仅用于个别严格
+资源（此时 ``X-ND-AUTH`` 按每条 URL 现算 MAC 签名）。
 
 任务由 FastAPI 路由创建后在当前事件循环里后台执行；不阻塞工作区创建。
 目标文件平铺写到工作区 ``教材/`` 下（重名自动加版本前缀），临时文件写在
@@ -34,6 +35,7 @@ from core.textbooks.smartedu import (
     OfficialCatalog,
     build_nd_auth,
     clear_credentials,
+    credentials,
     fetch_book_source,
 )
 
@@ -54,6 +56,10 @@ MIN_FREE_HEADROOM = 64 * 1024 * 1024
 
 class TextbookDownloadError(RuntimeError):
     """下载任务创建或执行失败。"""
+
+
+class TextbookAuthError(TextbookDownloadError):
+    """需要平台账号授权（登录过期或匿名被拒），无需重试。"""
 
 
 @dataclass
@@ -561,14 +567,19 @@ class TextbookTaskManager:
                             await asyncio.sleep(delay)
                             continue
                         if "InvalidArgument" in body:
-                            clear_credentials()
-                            raise TextbookDownloadError(
-                                "平台登录已过期，请重新登录后再下载"
-                            )
+                            if credentials().complete:
+                                clear_credentials()
+                                raise TextbookAuthError(
+                                    "平台登录已过期，请重新登录后再下载"
+                                )
+                            raise TextbookAuthError("该资源需平台账号授权（匿名被拒）")
                         raise TextbookDownloadError("教材源文件下载失败: HTTP 400")
                     if response.status_code in (401, 403):
-                        clear_credentials()
-                        raise TextbookDownloadError("平台登录已过期，请重新登录后再下载")
+                        if credentials().complete:
+                            clear_credentials()
+                            raise TextbookAuthError(
+                                "平台登录已过期，请重新登录后再下载")
+                        raise TextbookAuthError("该资源需平台账号授权（匿名被拒）")
                     if response.status_code == 416 and expected_size and offset == expected_size:
                         break
                     if response.status_code == 200 and offset:
@@ -603,7 +614,7 @@ class TextbookTaskManager:
                     attempt + 1, urlparse(candidate).hostname or candidate,
                     book.content_id, e,
                 )
-                if isinstance(e, TextbookDownloadError) and "登录" in str(e):
+                if isinstance(e, TextbookAuthError):
                     raise
                 if attempt + 1 < MAX_ATTEMPTS:
                     await asyncio.sleep(

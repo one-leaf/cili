@@ -2648,8 +2648,8 @@ const textbookState = {
     initialized: false,
     loading: false,
     workspaceUuid: null,
-    books: [],
-    filtered: [],
+    options: null,        // /api/workspace-wizard/options：学段/年级/科目/教材版本
+    books: [],            // 匹配到的教材
     taskId: null,
     pollTimer: null,
 };
@@ -2658,298 +2658,286 @@ function textbookFormatSize(bytes) {
     const value = Number(bytes || 0);
     if (value >= 1024 * 1024 * 1024) return (value / 1024 / 1024 / 1024).toFixed(2) + ' GB';
     if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
-    if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
+    if (value >= 1024) return (value / 1024).toFixed(0) + ' KB';
     return value + ' B';
 }
 
 function textbookSetStatus(message, type = '') {
     const el = document.getElementById('textbook-task-status');
     if (!el) return;
-    el.textContent = message;
+    el.textContent = message || '';
     el.className = 'settings-status' + (type ? ' ' + type : '');
 }
 
+function textbookSelectedBooks() {
+    return textbookState.books.filter(book =>
+        document.querySelector(`#textbook-list input[data-book-key="${book.book_key}"]`)?.checked
+    );
+}
+
 function textbookSetButtons(taskRunning = false, hasFailures = false) {
-    document.getElementById('textbook-download-btn').disabled = textbookState.loading || taskRunning;
-    document.getElementById('textbook-refresh-btn').disabled = textbookState.loading || taskRunning;
+    const downloadBtn = document.getElementById('textbook-download-btn');
+    if (downloadBtn) downloadBtn.disabled = textbookState.loading || taskRunning || !textbookState.books.length;
+    const refreshBtn = document.getElementById('textbook-refresh-btn');
+    if (refreshBtn) refreshBtn.disabled = textbookState.loading || taskRunning;
     document.getElementById('textbook-cancel-btn').style.display = taskRunning ? '' : 'none';
     document.getElementById('textbook-retry-btn').style.display = (!taskRunning && hasFailures) ? '' : 'none';
 }
 
-function initTextbookPanel() {
-    if (!currentWorkspace) return;
-    const isSystem = currentWorkspace.system || currentWorkspace.uuid === 'system';
-    if (isSystem) {
-        stopTextbookPolling(null);
-        textbookState.taskId = null;
-        textbookState.books = [];
-        textbookState.filtered = [];
+async function initTextbookPanel() {
+    const ws = currentWorkspace;
+    if (!ws || ws.system || ws.uuid === 'system') {
         textbookSetStatus('系统工作区不支持教材下载', 'error');
         document.getElementById('textbook-list').innerHTML =
             '<div class="textbook-empty">系统工作区不支持教材下载。</div>';
         return;
     }
-
-    // 切换工作区后清空上一个工作区的任务与选择，避免跨工作区误操作。
-    if (textbookState.workspaceUuid !== currentWorkspace.uuid) {
-        stopTextbookPolling(null);
-        textbookState.workspaceUuid = currentWorkspace.uuid;
-        textbookState.taskId = null;
+    if (textbookState.workspaceUuid !== ws.uuid) {
+        textbookState.workspaceUuid = ws.uuid;
         textbookState.books = [];
-        textbookState.filtered = [];
-        textbookState.loading = false;
+        textbookState.taskId = null;
+        if (textbookState.pollTimer) {
+            clearInterval(textbookState.pollTimer);
+            textbookState.pollTimer = null;
+        }
         document.getElementById('textbook-progress').style.display = 'none';
         document.getElementById('textbook-progress').value = 0;
     }
-
     if (!textbookState.initialized) {
-        const stage = document.getElementById('textbook-stage');
-        const system = document.getElementById('textbook-system');
-        const subject = document.getElementById('textbook-subject');
-        const edition = document.getElementById('textbook-edition');
-        const grade = document.getElementById('textbook-grade');
-        const semester = document.getElementById('textbook-semester');
-        const highScope = document.getElementById('textbook-high-scope');
-        stage.addEventListener('change', () => {
-            syncTextbookStageControls();
-            loadTextbookSubjects();
+        document.getElementById('textbook-stage').addEventListener('change', () => {
+            renderTextbookGrades();
+            renderTextbookSubjects();
         });
-        system.addEventListener('change', loadTextbookSubjects);
-        subject.addEventListener('change', () => {
-            subject.dataset.value = subject.value;
-            loadTextbookBooks();
-        });
-        edition.addEventListener('change', loadTextbookBooks);
-        grade.addEventListener('change', loadTextbookBooks);
-        semester.addEventListener('change', renderTextbookBooks);
-        highScope.addEventListener('change', loadTextbookBooks);
-        document.getElementById('textbook-refresh-btn').addEventListener('click', loadTextbookBooks);
+        document.getElementById('textbook-grade').addEventListener('change', renderTextbookSubjects);
+        document.getElementById('textbook-refresh-btn').addEventListener('click', refreshTextbookPanel);
         document.getElementById('textbook-select-all-btn').addEventListener('click', () => {
-            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(box => {
-                box.checked = true;
-            });
+            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(cb => { cb.checked = true; });
             updateTextbookSummary();
         });
         document.getElementById('textbook-clear-btn').addEventListener('click', () => {
-            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(box => {
-                box.checked = false;
-            });
+            document.querySelectorAll('#textbook-list input[type="checkbox"]').forEach(cb => { cb.checked = false; });
             updateTextbookSummary();
         });
         document.getElementById('textbook-download-btn').addEventListener('click', downloadSelectedTextbooks);
         document.getElementById('textbook-cancel-btn').addEventListener('click', cancelTextbookTask);
         document.getElementById('textbook-retry-btn').addEventListener('click', retryFailedTextbooks);
         textbookState.initialized = true;
+        refreshTextbookPanel();
+    } else if (!textbookState.options) {
+        refreshTextbookPanel();
     }
-
-    syncTextbookStageControls();
-    loadTextbookSubjects();
 }
 
-function syncTextbookStageControls() {
-    const stage = document.getElementById('textbook-stage').value;
-    const system = document.getElementById('textbook-system');
-    const highScopeGroup = document.getElementById('textbook-high-scope-group');
-    const isHighSchool = stage === '高中';
-    system.disabled = isHighSchool;
-    if (isHighSchool) system.value = '六三制';
-    highScopeGroup.style.display = isHighSchool ? '' : 'none';
-}
-
-async function loadTextbookSubjects() {
-    if (!currentWorkspace || textbookState.loading) return;
-    const subjectSelect = document.getElementById('textbook-subject');
-    const stage = document.getElementById('textbook-stage').value;
-    const system = document.getElementById('textbook-system').value;
-    textbookState.loading = true;
-    textbookSetButtons();
-    syncTextbookStageControls();
-    subjectSelect.innerHTML = '<option value="">加载中...</option>';
-    textbookState.books = [];
-    textbookState.filtered = [];
-    document.getElementById('textbook-list').innerHTML =
-        '<div class="textbook-empty">选择科目后自动列出可下载课本。</div>';
-    updateTextbookSummary();
-    textbookSetStatus('加载科目...');
+async function refreshTextbookPanel() {
+    textbookSetStatus('加载教材目录...');
     try {
-        const params = new URLSearchParams({ stage, system, book_types: 'textbook' });
-        const response = await fetch('/api/textbooks/subjects?' + params.toString());
-        if (!response.ok) throw new Error((await response.json()).detail || '加载科目失败');
+        const response = await fetch('/api/workspace-wizard/options');
         const data = await response.json();
-        const oldSubject = subjectSelect.dataset.value || '';
-        subjectSelect.innerHTML = '<option value="">选择科目...</option>';
-        (data.subjects || []).forEach(item => {
+        if (!response.ok) throw new Error(data.detail || '加载失败');
+        textbookState.options = data;
+        const stageSelect = document.getElementById('textbook-stage');
+        const stages = data.stages || [];
+        stageSelect.innerHTML = '';
+        stages.forEach(stage => {
             const option = document.createElement('option');
-            option.value = item.subject;
-            option.textContent = item.subject + '（' + item.count + ' 本，' + textbookFormatSize(item.total_size) + '）';
-            subjectSelect.appendChild(option);
+            option.value = stage;
+            option.textContent = stage;
+            stageSelect.appendChild(option);
         });
-        if (oldSubject && (data.subjects || []).some(item => item.subject === oldSubject)) {
-            subjectSelect.value = oldSubject;
-            subjectSelect.dataset.value = oldSubject;
-        } else {
-            subjectSelect.dataset.value = '';
-        }
-        if (!(data.subjects || []).length) {
-            subjectSelect.innerHTML = '<option value="">暂无科目</option>';
-        }
-        if (subjectSelect.value) {
-            await loadTextbookBooks();
-            return;
-        }
-        textbookSetStatus('请选择科目。');
+        if (stages.includes('小学')) stageSelect.value = '小学';
+        textbookSetStatus('');
+        renderTextbookGrades();
+        renderTextbookSubjects();
     } catch (error) {
-        subjectSelect.innerHTML = '<option value="">加载失败</option>';
-        textbookSetStatus('✗ ' + error.message, 'error');
-    } finally {
-        textbookState.loading = false;
-        textbookSetButtons();
+        textbookSetStatus('✗ 加载教材目录失败: ' + (error.message || error), 'error');
     }
+}
+
+function renderTextbookGrades() {
+    const stage = document.getElementById('textbook-stage').value;
+    const gradeSelect = document.getElementById('textbook-grade');
+    const grades = textbookState.options?.grades?.[stage] || [];
+    const previous = gradeSelect.value;
+    gradeSelect.innerHTML = '';
+    grades.forEach(grade => {
+        const option = document.createElement('option');
+        option.value = grade;
+        option.textContent = grade;
+        gradeSelect.appendChild(option);
+    });
+    if (grades.includes(previous)) gradeSelect.value = previous;
+}
+
+function textbookEditionCoversGrade(item, grade) {
+    const grades = item.grades || [];
+    if (!grades.length) return true;
+    return !grade || grades.includes(grade);
+}
+
+function renderTextbookSubjects() {
+    const stage = document.getElementById('textbook-stage').value;
+    const grade = document.getElementById('textbook-grade').value;
+    const container = document.getElementById('textbook-subjects');
+    const subjects = textbookState.options?.study_subjects?.[stage] || [];
+    // 保留已有勾选状态（切换学段/年级/刷新时不丢）
+    const previous = {};
+    container.querySelectorAll('.wizard-subject-row').forEach(row => {
+        const cb = row.querySelector('input[type="checkbox"]');
+        const sel = row.querySelector('select');
+        if (cb && sel && sel.dataset.subject) {
+            previous[sel.dataset.subject] = { checked: cb.checked, edition: sel.value };
+        }
+    });
+    container.innerHTML = '';
+    subjects.forEach(subject => {
+        const row = document.createElement('div');
+        row.className = 'wizard-subject-row';
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = subject;
+        checkbox.checked = previous[subject]
+            ? previous[subject].checked
+            : ['语文', '数学', '英语'].includes(subject);
+        checkbox.addEventListener('change', loadTextbookBooks);
+        label.appendChild(checkbox);
+        label.append(subject);
+        row.appendChild(label);
+
+        const select = document.createElement('select');
+        select.className = 'wizard-subject-edition';
+        select.dataset.subject = subject;
+        select.title = `${subject} 教材版本`;
+        const allEditions = textbookState.options?.textbook_editions?.[stage]?.[subject] || [];
+        const editions = allEditions.filter(item => textbookEditionCoversGrade(item, grade));
+        const usable = editions.length ? editions : allEditions;
+        if (usable.length) {
+            usable.forEach(edition => {
+                const option = document.createElement('option');
+                option.value = edition.name;
+                option.textContent = edition.publisher
+                    ? `${edition.name}（${edition.publisher}）` : edition.name;
+                select.appendChild(option);
+            });
+            const preserved = previous[subject]?.edition;
+            if (preserved && usable.some(item => item.name === preserved)) {
+                select.value = preserved;
+            } else {
+                const fallback = usable.find(edition => edition.default) || usable[0];
+                select.value = fallback.name;
+            }
+        } else {
+            select.disabled = true;
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = '暂无教材';
+            select.appendChild(option);
+        }
+        select.addEventListener('change', loadTextbookBooks);
+        row.appendChild(select);
+        container.appendChild(row);
+    });
+    loadTextbookBooks();
+}
+
+function textbookSelections() {
+    const selections = [];
+    document.querySelectorAll('#textbook-subjects .wizard-subject-row').forEach(row => {
+        const cb = row.querySelector('input[type="checkbox"]');
+        const sel = row.querySelector('select');
+        if (cb && cb.checked && sel && sel.value) {
+            selections.push({ subject: sel.dataset.subject, edition: sel.value });
+        }
+    });
+    return selections;
 }
 
 async function loadTextbookBooks() {
-    if (!currentWorkspace) return;
-    // 由 loadTextbookSubjects 恢复上一次科目时会嵌套调用；避免在这里被外层 loading 拦截。
     const stage = document.getElementById('textbook-stage').value;
-    const system = document.getElementById('textbook-system').value;
-    const subject = document.getElementById('textbook-subject').value;
-    const edition = document.getElementById('textbook-edition').value;
-    const highScope = document.getElementById('textbook-high-scope').value;
-    const listEl = document.getElementById('textbook-list');
-
-    if (!subject) {
+    const grade = document.getElementById('textbook-grade').value;
+    const selections = textbookSelections();
+    if (!selections.length) {
         textbookState.books = [];
-        textbookState.filtered = [];
-        listEl.innerHTML = '<div class="textbook-empty">选择科目后自动列出可下载课本。</div>';
-        updateTextbookSummary();
+        renderTextbookBooks();
         return;
     }
-
     textbookState.loading = true;
     textbookSetButtons();
-    listEl.innerHTML = '<div class="textbook-empty">加载教材...</div>';
-    textbookSetStatus('加载教材清单...');
     try {
-        const params = new URLSearchParams({
-            stage: stage,
-            system: system,
-            subject: subject,
-            edition: edition,
-            edition_grade: document.getElementById('textbook-grade').value,
-            high_scope: highScope,
-            book_types: 'textbook',
+        const responses = await Promise.all(selections.map(({ subject, edition }) => {
+            const params = new URLSearchParams({ stage, subject, edition, grade });
+            return fetch('/api/textbooks/options?' + params.toString()).then(r => r.json());
+        }));
+        const seen = new Set();
+        const books = [];
+        responses.forEach(data => {
+            (data.books || []).forEach(book => {
+                if (seen.has(book.book_key)) return;
+                seen.add(book.book_key);
+                books.push(book);
+            });
         });
-        const response = await fetch('/api/textbooks/options?' + params.toString());
-        if (!response.ok) throw new Error((await response.json()).detail || '加载教材失败');
-        const data = await response.json();
-        textbookState.books = data.books || [];
-
-        const editionSelect = document.getElementById('textbook-edition');
-        const oldEdition = editionSelect.value;
-        editionSelect.innerHTML = '<option value="">全部版本</option>';
-        (data.editions || []).forEach(item => {
-            const option = document.createElement('option');
-            option.value = item.edition_raw;
-            option.textContent = item.edition_raw + '（' + item.count + ' 本，' + textbookFormatSize(item.total_size) + '）';
-            editionSelect.appendChild(option);
-        });
-        editionSelect.value = (data.editions || []).some(item => item.edition_raw === oldEdition)
-            ? oldEdition : '';
-
-        const grades = [...new Set(textbookState.books.map(item => item.grade).filter(Boolean))].sort();
-        const semesters = [...new Set(textbookState.books.map(item => item.semester).filter(Boolean))].sort();
-        populateTextbookSelect('textbook-grade', grades, '全部年级');
-        populateTextbookSelect('textbook-semester', semesters, '全部学期');
+        books.sort((a, b) =>
+            (a.subject || '').localeCompare(b.subject || '', 'zh') ||
+            (a.grade || '').localeCompare(b.grade || '', 'zh') ||
+            (a.volume || '').localeCompare(b.volume || '', 'zh'));
+        textbookState.books = books;
         renderTextbookBooks();
-        const warning = (data.warnings || []).join('；');
-        textbookSetStatus(warning ? warning : '已加载 ' + textbookState.books.length + ' 本教材，默认全选。');
     } catch (error) {
-        textbookState.books = [];
-        textbookState.filtered = [];
-        listEl.innerHTML = '<div class="textbook-empty">加载失败</div>';
-        updateTextbookSummary();
-        textbookSetStatus('✗ ' + error.message, 'error');
+        textbookSetStatus('✗ 加载教材列表失败: ' + (error.message || error), 'error');
     } finally {
         textbookState.loading = false;
         textbookSetButtons();
     }
 }
 
-function populateTextbookSelect(id, values, emptyLabel) {
-    const select = document.getElementById(id);
-    const old = select.value;
-    select.innerHTML = '<option value="">' + emptyLabel + '</option>';
-    values.forEach(value => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = value;
-        select.appendChild(option);
-    });
-    select.value = values.includes(old) ? old : '';
-}
-
 function renderTextbookBooks() {
-    const grade = document.getElementById('textbook-grade').value;
-    const semester = document.getElementById('textbook-semester').value;
-    textbookState.filtered = textbookState.books.filter(book =>
-        (!grade || book.grade === grade) && (!semester || book.semester === semester)
-    );
     const listEl = document.getElementById('textbook-list');
-    if (!textbookState.filtered.length) {
-        listEl.innerHTML = '<div class="textbook-empty">没有匹配的教材。</div>';
+    if (!textbookState.books.length) {
+        listEl.innerHTML = '<div class="textbook-empty">没有匹配的教材。可换学段/年级或调整科目版本。</div>';
         updateTextbookSummary();
         return;
     }
     listEl.innerHTML = '';
-    textbookState.filtered.forEach(book => {
+    textbookState.books.forEach(book => {
         const label = document.createElement('label');
         label.className = 'textbook-item';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.value = book.book_key;
         checkbox.checked = true;
+        checkbox.dataset.bookKey = book.book_key;
         checkbox.addEventListener('change', updateTextbookSummary);
         const text = document.createElement('span');
         text.className = 'textbook-item-text';
-        text.textContent = [
-            book.title,
-            book.edition_raw,
-            book.grade || '',
-            book.semester || book.high_type || '',
-            book.split ? '分片 ' + book.chunk_count : '',
-            textbookFormatSize(book.total_size),
-        ].filter(Boolean).join(' · ');
-        label.append(checkbox, text);
+        const sizeText = Number(book.total_size) > 0 ? ' · ' + textbookFormatSize(book.total_size) : '';
+        text.textContent = `${book.title} · ${book.grade || ''}${book.semester || ''}${sizeText}`;
+        label.appendChild(checkbox);
+        label.appendChild(text);
         listEl.appendChild(label);
     });
     updateTextbookSummary();
 }
 
 function updateTextbookSummary() {
-    const selected = selectedTextbookBooks();
+    const selected = textbookSelectedBooks();
     const totalSize = selected.reduce((sum, book) => sum + Number(book.total_size || 0), 0);
-    const splitCount = selected.filter(book => book.split).length;
-    document.getElementById('textbook-summary').textContent =
-        '已选 ' + selected.length + ' 本，共 ' + textbookFormatSize(totalSize) +
-        '；其中 ' + splitCount + ' 本需分片合并。';
+    const el = document.getElementById('textbook-summary');
+    if (el) {
+        const sizeText = totalSize > 0 ? '，共 ' + textbookFormatSize(totalSize) : '';
+        el.textContent = textbookState.books.length
+            ? '已选 ' + selected.length + ' 本' + sizeText + '（共匹配 ' + textbookState.books.length + ' 本）'
+            : '';
+    }
     textbookSetButtons(Boolean(textbookState.taskId && isTextbookTaskRunning()));
 }
 
-function selectedTextbookBooks() {
-    const selected = new Set(Array.from(
-        document.querySelectorAll('#textbook-list input[type="checkbox"]:checked')
-    ).map(box => box.value));
-    return textbookState.filtered.filter(book => selected.has(book.book_key));
-}
-
 function isTextbookTaskRunning(status) {
-    return status === 'running';
+    return ['queued', 'running'].includes(status || 'running');
 }
 
 async function downloadSelectedTextbooks() {
-    if (!currentWorkspace) return;
-    const books = selectedTextbookBooks();
-    if (!books.length) {
+    const selected = textbookSelectedBooks();
+    if (!selected.length) {
         textbookSetStatus('请先选择要下载的教材。', 'error');
         return;
     }
@@ -2962,16 +2950,15 @@ async function downloadSelectedTextbooks() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 workspace_uuid: currentWorkspace.uuid,
-                book_keys: books.map(book => book.book_key),
-                overwrite: false,
+                book_keys: selected.map(book => book.book_key),
             }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '创建下载任务失败');
+        if (!response.ok) throw new Error(data.detail || '创建任务失败');
         startTextbookPolling(data.task_id);
     } catch (error) {
-        textbookSetStatus('✗ ' + error.message, 'error');
         downloadBtn.disabled = false;
+        textbookSetStatus('✗ ' + error.message, 'error');
     }
 }
 
@@ -2983,20 +2970,15 @@ function startTextbookPolling(taskId) {
     progress.value = 0;
     if (textbookState.pollTimer) clearInterval(textbookState.pollTimer);
     textbookState.pollTimer = setInterval(pollTextbookTask, 1000);
-    pollTextbookTask();
 }
 
 async function pollTextbookTask() {
     if (!textbookState.taskId) return;
     try {
         const response = await fetch('/api/textbooks/download/' + textbookState.taskId);
-        if (response.status === 404) {
-            stopTextbookPolling('任务不存在（服务可能已重启）', 'error');
-            return;
-        }
-        if (!response.ok) throw new Error((await response.json()).detail || '查询任务失败');
         const task = await response.json();
-        const percent = task.total_bytes > 0
+        if (!response.ok) throw new Error(task.detail || '查询失败');
+        const percent = task.total_bytes
             ? Math.min(100, Math.round(task.downloaded_bytes / task.total_bytes * 100))
             : 100;
         document.getElementById('textbook-progress').value = percent;

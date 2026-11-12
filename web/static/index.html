@@ -792,53 +792,11 @@
                     <div class="textbook-toolbar">
                         <div class="form-group">
                             <label>学段</label>
-                            <select id="textbook-stage">
-                                <option value="小学">小学</option>
-                                <option value="初中">初中</option>
-                                <option value="高中">高中</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>学制</label>
-                            <select id="textbook-system">
-                                <option value="六三制">六三制</option>
-                                <option value="五四制">五四制</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>科目</label>
-                            <select id="textbook-subject">
-                                <option value="">加载中...</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>教材版本</label>
-                            <select id="textbook-edition">
-                                <option value="">全部版本</option>
-                            </select>
+                            <select id="textbook-stage"></select>
                         </div>
                         <div class="form-group">
                             <label>年级</label>
-                            <select id="textbook-grade">
-                                <option value="">全部年级</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>学期</label>
-                            <select id="textbook-semester">
-                                <option value="">全部学期</option>
-                                <option value="上册">上册</option>
-                                <option value="下册">下册</option>
-                                <option value="全一册">全一册</option>
-                            </select>
-                        </div>
-                        <div class="form-group" id="textbook-high-scope-group" style="display:none;">
-                            <label>高中范围</label>
-                            <select id="textbook-high-scope">
-                                <option value="all_textbook_volumes">必修 + 选择性必修</option>
-                                <option value="required_only">仅必修</option>
-                                <option value="manual">全部展示，手动勾选</option>
-                            </select>
+                            <select id="textbook-grade"></select>
                         </div>
                     </div>
                     <div class="textbook-actions">
@@ -849,10 +807,18 @@
                         <button type="button" id="textbook-cancel-btn" class="btn btn-small" style="display:none;">取消任务</button>
                         <button type="button" id="textbook-retry-btn" class="btn btn-small" style="display:none;">重试失败</button>
                     </div>
-                    <div id="textbook-summary" class="textbook-summary">选择科目后自动列出可下载课本。</div>
-                    <progress id="textbook-progress" value="0" max="100" style="display:none;"></progress>
-                    <div id="textbook-task-status" class="settings-status"></div>
-                    <div id="textbook-list" class="textbook-list"><div class="textbook-empty">选择科目后自动列出可下载课本。</div></div>
+                    <div class="textbook-columns">
+                        <div class="form-group textbook-subjects-group">
+                            <label>科目与教材版本（勾选科目并选择版本）</label>
+                            <div id="textbook-subjects" class="wizard-subject-list"></div>
+                        </div>
+                        <div class="textbook-results">
+                            <div id="textbook-summary" class="textbook-summary">勾选科目并选择版本后自动匹配教材。</div>
+                            <progress id="textbook-progress" value="0" max="100" style="display:none;"></progress>
+                            <div id="textbook-task-status" class="settings-status"></div>
+                            <div id="textbook-list" class="textbook-list"><div class="textbook-empty">勾选科目并选择版本后自动匹配教材。</div></div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">

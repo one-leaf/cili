@@ -19,21 +19,14 @@ from core.teen_mode import get_teen_mode
 from core.textbooks import (
     OfficialBook,
     TextbookDownloadError,
-    get_official_catalog,
     textbook_tasks,
 )
 from core.textbooks.markdown_store import copy_textbook_markdown
-from core.textbooks.smartedu import SmartEduError
 from core.textbooks.smartedu_login import credentials_ready, login_status, start_login
 from web.deps import _SAFE_ID_RE, _csrf_protect, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-LOGIN_REQUIRED_MESSAGE = (
-    "需要先在浏览器完成教材平台登录（已自动打开登录页）；"
-    "用手机号注册/登录后回到本页重试下载。"
-)
 
 
 class TextbookDownloadRequest(BaseModel):
@@ -47,12 +40,12 @@ class TextbookRetryRequest(BaseModel):
 
 
 def _catalog_or_503():
+    """教材列表以数据包索引为准（内置索引兜底），不再访问官方平台缓存。"""
     try:
-        return get_official_catalog()
-    except SmartEduError as e:
-        raise HTTPException(status_code=503, detail=f"平台教材目录不可用: {e}") from e
-    except Exception as e:  # noqa: BLE001 —— 平台异常统一转 503
-        raise HTTPException(status_code=503, detail=f"平台教材目录不可用: {e}") from e
+        from core.textbooks.pack_store import dataset_catalog
+        return dataset_catalog()
+    except Exception as e:  # noqa: BLE001 —— 索引缺失统一转 503
+        raise HTTPException(status_code=503, detail=f"教材索引不可用: {e}") from e
 
 
 def _workspace_or_404(workspace_uuid: str) -> dict[str, Any]:
@@ -153,7 +146,7 @@ async def textbook_login(request: Request):
 @router.post("/api/textbooks/download",
              dependencies=[Depends(teen_guard("config_update"))])
 async def download_textbooks(request: Request, body: TextbookDownloadRequest):
-    """创建后台教材下载任务；未登录时自动打开浏览器登录页。"""
+    """创建后台教材下载任务（匿名可下载；登录凭据仅用于个别严格资源）。"""
     _csrf_protect(request)
     info = _workspace_or_404(body.workspace_uuid)
     workspace_dir = info.get("directory") or ""
@@ -164,10 +157,6 @@ async def download_textbooks(request: Request, body: TextbookDownloadRequest):
     # 无论 PDF 是否下载成功，先把已生成的教材 Markdown 复制到 教材/
     copied = await asyncio.to_thread(copy_textbook_markdown, workspace_dir, catalog, books)
 
-    if not credentials_ready():
-        status = start_login()
-        raise HTTPException(status_code=409, detail=LOGIN_REQUIRED_MESSAGE,
-                            headers={"X-Cili-Login": str(status.get("running", False)).lower()})
     try:
         task = textbook_tasks.start(
             workspace_uuid=body.workspace_uuid,

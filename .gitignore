@@ -59,7 +59,9 @@ cili-update.zip.downloading
 
 # 本地 pytest 配置（仅本地保留，不入库）
 pytest.ini
-core/templates/textbooks/
+core/templates/textbooks/*
+# 例外：数据包索引随 cili 分发（由 build_textbook_pack.py --export-index 生成）
+!core/templates/textbooks/dataset_index.json
 
 # PDF.js viewer 运行时构建文件（随仓库分发）
 !web/static/libs/pdfjs/build/
