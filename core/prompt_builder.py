@@ -67,7 +67,17 @@ def _gen_skills(block: dict, runner) -> str:
     from core.interface_profile import resolve_profile
     from core.prompt_sections import _build_skills_section
     profile = resolve_profile(runner)
-    return _build_skills_section(runner.role, profile.name if profile else None)
+    profile_name = profile.name if profile else None
+    # interactive 每轮重建 system prompt；skills 段要扫目录并解析 18 个 skill.md，
+    # 按（角色，接口档案）缓存，接口切换时自然换 key。
+    cache = getattr(runner, "_prompt_section_cache", None)
+    if cache is None:
+        cache = {}
+        runner._prompt_section_cache = cache
+    key = f"skills:{runner.role}:{profile_name}"
+    if key not in cache:
+        cache[key] = _build_skills_section(runner.role, profile_name)
+    return cache[key]
 
 
 def _gen_interface_hint(block: dict, runner) -> str:
@@ -206,12 +216,6 @@ def build_system_prompt(runner) -> list[str]:
         result = result + [DYNAMIC_BOUNDARY] + dynamic_parts
 
     return result
-
-
-def clear_prompt_section_cache(runner) -> None:
-    """清除 session 内的 prompt section 缓存（/clear、/compact 时调用）。"""
-    if hasattr(runner, "_prompt_section_cache"):
-        runner._prompt_section_cache.clear()
 
 
 # ─── user 层注入生成器（返回 "user" 消息 dict 或 None）───────────────

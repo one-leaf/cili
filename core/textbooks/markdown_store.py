@@ -22,10 +22,6 @@ def markdown_path(content_id: str) -> Path:
     return MD_DIR / f"{content_id}.md"
 
 
-def has_markdown(content_id: str) -> bool:
-    return markdown_path(content_id).is_file()
-
-
 def copy_textbook_markdown(
     workspace_dir: str | Path,
     catalog: Any,

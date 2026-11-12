@@ -8,12 +8,6 @@ const MEMORY_TYPE_LABELS = {
     skill: '技能',
     reference: '参考',
 };
-const MEMORY_STATUS_LABELS = {
-    active: '活跃',
-    stale: '待验证',
-    archived: '已归档',
-};
-
 let memoryEntries = [];
 let memorySelectedName = null;
 

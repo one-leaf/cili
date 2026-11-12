@@ -258,7 +258,6 @@ class Loop:
         # 批处理跨轮状态（熔断计数跨轮累计；审批/等待每轮重置）
         state: dict[str, Any] = {
             "consecutive_failures": 0,
-            "approval": None,
             "wait_for_external": False,
             "external_already": False,
             "loop_history": [],      # 循环重复检测：[(text_sig, tool_sig), ...]
@@ -527,9 +526,9 @@ class Loop:
         - ai：调用 lite 判定器，按 allow/ask/deny 分派；allow 可落盘规则并重执行。
         同批多条 pending 只处理第一条（单槽语义不变）。
         """
-        judge = getattr(runner, "permission_judge", None) or getattr(runner, "approval_judge", None)
-        rules = getattr(runner, "permission_rules", None) or getattr(runner, "approval_rules", None)
-        store = getattr(runner, "permission_store", None) or getattr(runner, "approval_store", None)
+        judge = getattr(runner, "permission_judge", None)
+        rules = getattr(runner, "permission_rules", None)
+        store = getattr(runner, "permission_store", None)
         cfg = get_permission_config(runner.config) if getattr(runner, "config", None) is not None else PermissionConfig()
         from core.teen_mode import get_teen_mode
 
@@ -701,7 +700,6 @@ class Loop:
         # 合成确认卡（放在所有工具结果之后，保持消息配对正确；本批已有模型自发的
         # 占位时顺延不合成——判定结论已缓存，模型下轮重发该命令零判定开销）
         if ask_permission and not state["external_already"] and not runner._stopped:
-            state["approval"] = ask_permission
             runner._handle_permission_required(ask_permission)
             state["wait_for_external"] = True
         # 迭代边界批量落盘一次：本批工具结果已入内存，一次性追加 jsonl + fsync（非逐条）。

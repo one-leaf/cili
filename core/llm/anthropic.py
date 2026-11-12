@@ -237,16 +237,16 @@ class AnthropicAdapter(Adapter):
         非官方端点（中转/网关）不识别 cache_control 会直接 400，由
         _prompt_cache_enabled 统一关闭。
         """
+        from core.prompt_builder import DYNAMIC_BOUNDARY
+
         if not self._prompt_cache_enabled:
             # 非官方端点：system 直接 join 为字符串（或透传 str）
             if isinstance(system, list):
                 body["system"] = "\n\n".join(s for s in system
-                                              if s != "__CILI_DYNAMIC_BOUNDARY__")
+                                              if s != DYNAMIC_BOUNDARY)
             elif system:
                 body["system"] = system
             return
-
-        from core.prompt_builder import DYNAMIC_BOUNDARY
 
         # ── system 分块：按 DYNAMIC_BOUNDARY 分割静态/动态区 ──────────────
         static_parts: list[str] = []

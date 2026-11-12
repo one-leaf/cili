@@ -284,6 +284,10 @@ class CronTask:
                 logger.debug(f"[cron] Task {self.name}: restored last_run={saved_last_run}, "
                             f"run_count={self._run_count}, next_run={self._next_run}, "
                             f"session_id={self._session_id}, remaining={self._remaining}")
+            else:
+                # 状态文件可能只写了 remaining（cron_tool 先设上限）：没有 last_run
+                # 时不能把 _next_run 留成 None，否则 should_run() 会立即首跑。
+                self._calculate_next_run(datetime.now())
         except Exception as e:
             logger.warning(f"[cron] Task {self.name}: failed to restore state: {e}")
 

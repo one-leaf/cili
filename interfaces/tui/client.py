@@ -84,9 +84,6 @@ class CiliClient:
         body = {"name": name} if name else {}
         return self._post(f"/api/workspaces/{workspace_uuid}/sessions", body)
 
-    def session_messages(self, workspace_uuid: str, session_id: str) -> list:
-        return self._get(f"/api/workspaces/{workspace_uuid}/sessions/{session_id}").get("messages", [])
-
     # ---------- 回合 ----------
 
     def chat_stream(

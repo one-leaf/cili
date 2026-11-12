@@ -113,11 +113,10 @@ class LoopTool(Tool):
         workspace_uuid: str = "",
         session=None,
         permission_rules=None,
-        approval_rules=None,
     ):
         super().__init__(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
-            permission_rules=permission_rules, approval_rules=approval_rules,
+            permission_rules=permission_rules,
         )
 
     @property

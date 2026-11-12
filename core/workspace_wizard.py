@@ -187,7 +187,6 @@ def validate_workspace_directory(
     directory: Path | str,
     *,
     existing_workspaces: list[dict[str, Any]] | None = None,
-    exclude_uuid: str = "",
 ) -> list[str]:
     """校验新工作区目录，返回警告；非法时抛出 ``WorkspaceWizardError``。"""
     candidate = _canonical(directory)
@@ -202,7 +201,7 @@ def validate_workspace_directory(
         raise WorkspaceWizardError("不能把系统工作区数据目录作为工作区")
 
     for entry in existing_workspaces or []:
-        if entry.get("uuid") == exclude_uuid or not entry.get("directory"):
+        if not entry.get("directory"):
             continue
         registered = _canonical(entry["directory"])
         label = entry.get("workspace_name", "")

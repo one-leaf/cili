@@ -93,7 +93,3 @@ class ReplyLimiter:
                 "tracked_messages": len(self._messages),
                 "total_replies": sum(t.count for t in self._messages.values()),
             }
-
-    def clear(self) -> None:
-        with self._lock:
-            self._messages.clear()

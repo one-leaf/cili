@@ -99,17 +99,18 @@ class InboundHandler:
         entry = find_workspace_entry(chat.workspace_uuid) or {}
         ws_dir = Path(entry.get("directory") or ".")
 
-        items = []
-        for ref in inbound.media:
-            item = await media.download_media(
+        async def _download(ref):
+            return await media.download_media(
                 ref,
                 cfg=self._rt.cfg,
                 client=self._rt.client,
                 uploads_dir=ws_dir / "uploads",
                 workspace_dir=ws_dir,
             )
-            if item is not None:
-                items.append(item)
+
+        # 与 QQ 接入端一致：同一条消息的多个媒体并发下载
+        results = await asyncio.gather(*(_download(ref) for ref in inbound.media))
+        items = [item for item in results if item is not None]
         return items, len(inbound.media) - len(items)
 
     # ── 回合 ────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 
 import httpx
@@ -99,6 +100,16 @@ def _is_masked(v: str | None) -> bool:
     return bool(v) and "..." in v
 
 
+_ACCOUNT_ID_RE = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.@-]{1,128}")
+
+
+def _validate_account_id(acct_id: str) -> str:
+    """账号 id 会被拼进数据目录/凭证文件名，必须挡住路径分隔与 ..。"""
+    if not _ACCOUNT_ID_RE.fullmatch(acct_id or ""):
+        raise HTTPException(status_code=400, detail=f"Invalid account id: {acct_id!r}")
+    return acct_id
+
+
 def _mask_mcp_server(cfg: dict) -> dict:
     """掩码单个 MCP server 配置中的 headers 值（保留 key 名）。"""
     c = dict(cfg)
@@ -179,6 +190,12 @@ def _mask_api_key(config: dict) -> dict:
                 else:
                     masked_accounts.append(acct)
             qq_copy["accounts"] = masked_accounts
+        else:
+            # 旧扁平段（迁移前布局）同样含明文 secret，不能原样回显
+            flat_secret = qq_copy.get("secret", "")
+            if flat_secret:
+                qq_copy["secret_masked"] = _mask_secret(flat_secret)
+            qq_copy.pop("secret", None)
         result["qq"] = qq_copy
     return result
 
@@ -317,6 +334,7 @@ async def update_config(request: UpdateConfigRequest):
             acct_id = cfg_obj.id.strip()
             if not acct_id:
                 acct_id = secrets.token_hex(4)
+            _validate_account_id(acct_id)
             cfg_obj.id = acct_id
             # app_id / secret 留空 → 继承已保存值（凭据只由扫码绑定写入、由
             # 「断开连接」清除，表单里已经没有凭据输入框）
@@ -358,6 +376,7 @@ async def update_config(request: UpdateConfigRequest):
             cfg_obj = WechatConfig.from_dict(item)  # 白名单归一化：未知键丢弃、类型兜底
             if not cfg_obj.id:
                 cfg_obj.id = secrets.token_hex(4)
+            _validate_account_id(cfg_obj.id)
             new_accounts.append(cfg_obj.to_dict())
         config["wechat"] = {"accounts": new_accounts}
         wechat_enable_before = {

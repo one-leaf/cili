@@ -17,10 +17,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 
 from core.config import PermissionConfig
+from core.fs_utils import is_path_within, os_temp_root
 from core.security.permission_rules import (
     PermissionRules,
     is_readonly_command,
@@ -52,21 +52,6 @@ class PermissionVerdict:
     force_ask: bool = False
 
 
-def _os_temp_root() -> str:
-    for var in ("TMP", "TEMP"):
-        value = os.environ.get(var)
-        if value:
-            return os.path.realpath(value)
-    return os.path.realpath(tempfile.gettempdir())
-
-
-def _is_within(path: str, root: str) -> bool:
-    try:
-        return os.path.normcase(os.path.commonpath([path, root])) == os.path.normcase(root)
-    except ValueError:
-        return False
-
-
 class PermissionPolicy:
     """配置 + 规则 + 会话批准 → 统一裁决。"""
 
@@ -84,14 +69,14 @@ class PermissionPolicy:
         self.store = store
         self.cwd = os.path.abspath(cwd or workspace_root or os.getcwd())
         self.workspace_root = os.path.realpath(workspace_root or self.cwd)
-        self.temp_root = _os_temp_root()
+        self.temp_root = os_temp_root()
 
     # ── 基础 ──────────────────────────────────────────────────────
 
     def is_inside(self, resolved: str | None) -> bool:
         if not resolved:
             return False
-        return _is_within(resolved, self.workspace_root) or _is_within(resolved, self.temp_root)
+        return is_path_within(resolved, self.workspace_root) or is_path_within(resolved, self.temp_root)
 
     def path_decision_id(self, op: str, resolved: str | None, raw: str = "",
                          *, static_prefix: str | None = None,

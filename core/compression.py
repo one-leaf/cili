@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 # ─── 压缩阈值与 token 估算常量 ────────────────────────────────────────
 _ERROR_RESULT_KEEP_RECENT = 10  # 错误结果对保留最近 10 条
-_IMAGE_KEEP_RECENT = 3  # Emergency 层保留最近 3 张图片
 _IMAGE_BASE_TOKENS = 750  # 单张图片的基准 token 估算
 _IMAGE_DATA_BYTES_PER_TOKEN = 100  # 图片 base64 数据每 100 字节折合 1 token
 _CHINESE_CHARS_PER_TOKEN = 2.5  # 中文约 2.5 字符/token

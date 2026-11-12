@@ -199,11 +199,6 @@
             return div.innerHTML;
         }
 
-        function hasToolUse(content) {
-            if (!Array.isArray(content)) return false;
-            return content.some(b => b.type === 'tool_use' || b.type === 'tool_call');
-        }
-
         function imageBlockHtml(block) {
             const src = block.source || {};
             if (src.type === 'base64') {
@@ -246,12 +241,6 @@
                 }
             );
             return text;
-        }
-
-        function extractTextContent(content) {
-            if (typeof content === 'string') return content;
-            if (!Array.isArray(content)) return '';
-            return content.filter(b => b.type === 'text').map(b => b.text || '').join('\n');
         }
 
         function buildDisplayMessages(messages) {

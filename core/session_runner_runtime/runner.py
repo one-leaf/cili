@@ -105,7 +105,14 @@ class Runner:
 
         流程：有效消息 -> 外部工具结果解析 -> 图片按回合投影 -> 剥离内部 _meta。
         """
-        messages = self._resolved_messages()
+        return self._project_resolved_messages(
+            self._resolved_messages(), force_reference=force_reference
+        )
+
+    def _project_resolved_messages(
+        self, messages: list[dict], *, force_reference: bool = False
+    ) -> list[dict]:
+        """对已解析消息做图片投影与 meta 剥离（不含磁盘读取，供循环内复用）。"""
         if self._image_mode() == "current_turn" or force_reference:
             messages = project_images_for_request(
                 messages,
@@ -157,7 +164,9 @@ class Runner:
         """把当前回合最旧图片降级为引用，直到请求体小于上限或全部降级。"""
         if self._image_mode() != "current_turn":
             return 0
-        candidates = self._collect_current_turn_image_keys(self._resolved_messages())
+        # 解析一次（含外部工具结果 IO），循环内只重复廉价的投影/估算
+        resolved = self._resolved_messages()
+        candidates = self._collect_current_turn_image_keys(resolved)
         if not candidates:
             return 0
         if keep_recent > 0:
@@ -166,7 +175,7 @@ class Runner:
         added = 0
         for key in candidates:
             if max_body_size > 0 and self._estimate_request_body_size(
-                self.build_projected_messages()
+                self._project_resolved_messages(resolved)
             ) <= max_body_size:
                 break
             if key not in demoted:
@@ -595,11 +604,12 @@ class Runner:
                 self._perform_full_compact(KEEP_USER_MESSAGES)
                 self.runner.cache_state.reset_after_compact()   # 先清旧状态（含 last_cache_read 基线）
                 self.runner.cache_state.on_compression(2)       # 再标记 L2，供下次失效诊断
+                # 压缩改写了历史，必须重建投影；未压缩时复用上面的结果
+                messages = self.build_projected_messages()
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
 
         # Layer 3: Emergency body size (only images)
-        messages = self.build_projected_messages()
         body_size = self._estimate_request_body_size(messages)
         logger.debug(f"[上下文] 估算请求体大小: {body_size:,} 字节 ({body_size/1024/1024:.2f} MB)")
 
@@ -967,11 +977,10 @@ class Runner:
         # Replace images from oldest to newest until body < max_body_size
         placeholder_bytes = len("[image removed to reduce request size]".encode('utf-8'))
 
-        for msg_idx, block_idx, sub_idx, data_len in image_refs:
-            # Check current body size
-            messages = self.runner._get_messages_with_header()
-            body_size = self._estimate_request_body_size(messages)
+        # 初始体积只算一次；每替换一张图按已知字节数递减（估算函数本身是线性的）
+        body_size = self._estimate_request_body_size(self.runner._get_messages_with_header())
 
+        for msg_idx, block_idx, sub_idx, data_len in image_refs:
             if body_size <= max_body_size:
                 break  # Done
 
@@ -980,6 +989,7 @@ class Runner:
             rc[sub_idx] = {"type": "text", "text": "[image removed to reduce request size]"}
             # Net savings = image data - placeholder text
             saved += data_len - placeholder_bytes
+            body_size -= max(0, data_len - placeholder_bytes)
 
         return saved
 
@@ -1109,6 +1119,7 @@ class Runner:
         *,
         pad_dangling: bool = True,
         resolve_results: bool = True,
+        force_reference: bool = False,
     ) -> list[Message]:
         """Build Message objects for the LLM API from runner.messages.
 
@@ -1116,12 +1127,22 @@ class Runner:
         ``pad_dangling``：为悬挂 tool_use 补占位（重试或超时兜底路径已修补过，跳过）。
         ``resolve_results``：从外部文件解析工具输出并剥离内部 _meta
         （non-streaming 413 重试路径首轮已解析过，跳过）。
+        ``force_reference``：图片全部降级为路径引用（摘要/交接用，避免重复发送 base64）。
         """
         if pad_dangling:
             self.runner._pad_dangling_tool_results()
         messages = self.runner._get_messages_with_header()
         if resolve_results:
             messages = self._resolve_tool_results(messages)
+        # 图片投影依赖 _meta（turn_id/path），必须在剥离内部元数据之前执行
+        if self._image_mode() == "current_turn" or force_reference:
+            messages = project_images_for_request(
+                messages,
+                self._effective_turn_id(),
+                force_reference=force_reference,
+                demoted_paths=getattr(self.runner, "_demoted_image_paths", set()),
+            )
+        if resolve_results:
             messages = self._strip_meta_from_messages(messages)
         if "image" not in (self.runner.model.input or []):
             messages = self._strip_images_from_messages(messages)

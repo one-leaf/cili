@@ -21,17 +21,11 @@ from core.config import DATA_DIR, PROJECT_ROOT, SYSTEM_DATA_DIR, load_workspaces
 
 logger = logging.getLogger(__name__)
 
+from core.fs_utils import is_path_within
+
 
 def _norm(path: str | Path) -> str:
     return os.path.normcase(os.path.abspath(str(path)))
-
-
-def _is_within(child: str, root: str) -> bool:
-    """child 是否在 root 内（双方 normcase；跨盘符 ValueError → False）。"""
-    try:
-        return os.path.commonpath([child, root]) == root
-    except ValueError:
-        return False
 
 
 def protected_roots() -> list[str]:
@@ -68,9 +62,9 @@ def teen_path_verdict(resolved: str | None, op: str) -> str | None:
         return None
     target = _norm(resolved)
     for root in protected_roots():
-        if _is_within(target, root):
+        if is_path_within(target, root):
             tmp = _norm(os.path.join(root, "tmp"))
-            if _is_within(target, tmp):
+            if is_path_within(target, tmp):
                 return None  # 临时目录不持久化，放行
             return "deny"
     return None

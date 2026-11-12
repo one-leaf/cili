@@ -281,7 +281,7 @@ class TestEnhancedDispatch:
         from core.tools.browser import BrowserTool
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
-            result = BrowserTool(approval_store=PermissionStore()).execute(
+            result = BrowserTool(permission_store=PermissionStore()).execute(
                 action="navigate", url="http://127.0.0.1:8885/tcmp-war/")
         assert result.completed is False
         assert not result.error
@@ -298,11 +298,11 @@ class TestEnhancedDispatch:
         store.approve(permission_decision_id(url), url, kind="browser:navigate")
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
-            BrowserTool(approval_store=store).execute(action="navigate", url=url)
+            BrowserTool(permission_store=store).execute(action="navigate", url=url)
         svc.navigate.assert_called_once_with(url, tab_index=None, approved_non_public=True)
 
     def test_navigate_private_url_no_store_fail_closed(self):
-        """无 approval_store（独立/worker 无共享实例）时 fail-closed 拒绝而非放行。"""
+        """无 permission_store（独立/worker 无共享实例）时 fail-closed 拒绝而非放行。"""
         svc = self._service()
         result = self._execute(svc, action="navigate", url="http://192.168.1.5/")
         assert result.error
@@ -323,16 +323,16 @@ class TestEnhancedDispatch:
             # 即便规则已批准，也应直接硬拒绝、不调用 service
             store.approve(permission_decision_id(url), url, kind="browser:navigate")
             with patch("core.browser_service.get_service", return_value=svc):
-                result = BrowserTool(approval_store=store).execute(action="navigate", url=url)
+                result = BrowserTool(permission_store=store).execute(action="navigate", url=url)
             assert result.error
             assert META_KEY not in (result.meta or {})
         svc.navigate.assert_not_called()
 
-    def test_create_tools_wires_approval_store_to_browser(self):
-        """回归：create_tools 必须把共享 approval_store 注入 BrowserTool。
+    def test_create_tools_wires_permission_store_to_browser(self):
+        """回归：create_tools 必须把共享 permission_store 注入 BrowserTool。
 
         曾因 registry 中 browser 工厂缺 needs_approval=True，导致工具侧
-        self.approval_store 恒为 None，即使规则已写入 approvals.json，
+        self.permission_store 恒为 None，即使规则已写入 approvals.json，
         navigate 门也永远返回审批占位（用户批准后反复弹卡）。
         """
         from core.role_config import load_role
@@ -344,10 +344,10 @@ class TestEnhancedDispatch:
         tools = create_tools(
             load_role("master"),
             cwd=".", workspace_uuid="d1b45267",
-            config=None, approval_store=store,
+            config=None, permission_store=store,
         )
         bt = next(t for t in tools if t.name == "browser")
-        assert bt.approval_store is store
+        assert bt.permission_store is store
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
             bt.execute(action="navigate", url=url)

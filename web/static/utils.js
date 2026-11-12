@@ -212,13 +212,13 @@ function getFileIcon(filename) {
     return icons[ext] || '📄';
 }
 
-// ── 格式化文件大小 ──
-function formatFileSize(bytes) {
-    if (!bytes) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+// ── 聊天区贴底滚动（SSE 与子代理卡片共用）──
+function scrollChatIfNearBottom() {
+    const el = document.getElementById('chat-messages');
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
+        el.scrollTop = el.scrollHeight;
+    }
 }
 
 // ── 访问令牌 (access_token) ──

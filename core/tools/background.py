@@ -56,17 +56,13 @@ class BackgroundTask:
     task_type: str = "shell"  # "shell" or "session"
     command: str = ""  # For shell tasks
     process: subprocess.Popen | None = None  # For shell tasks
-    output_file: str | None = None
     output_queue: queue.Queue[str | None] = field(default_factory=queue.Queue)
-    reader_thread: threading.Thread | None = None
     status: str = "running"  # running, completed, killed, error
     exit_code: int | None = None
     created_at: float = field(default_factory=time.time)
-    stdin_pipe: Any = None  # subprocess.PIPE for write_stdin
 
     # Runner-specific fields
     runner: Any = None  # SessionRunner instance
-    session: Any = None  # Session reference
     result: dict | None = None  # Runner execution result
     exec_id: str | None = None  # Runner execution ID for UI card rendering
 
@@ -186,49 +182,27 @@ class BackgroundMixin:
     def _start_background_task(
         self,
         command: str,
-        shell_path: str | None = None,
-        env_prefix: str = "",
         *,
         shell: str = "bash",
     ) -> ToolResult:
         """Start a command in background and return task_id.
 
-        _start_pwsh_background_task() 的共享实现。命令前缀构造与 Popen argv 因 shell 而异，
-        其余（reader 线程、文件流式、注册）共用一份。
-
         Args:
             command: Shell command to execute.
-            shell_path: Path to shell executable. Defaults to Git Bash.
-            env_prefix: Environment setup prefix (e.g., PATH export).
             shell: "bash"（默认）或 "pwsh"，决定命令前缀与 Popen argv。
         """
         task_id = BackgroundTaskManager.allocate_task_id()
 
         if shell == "pwsh":
-            # Build full command with environment prefix
-            if env_prefix:
-                full_command = f"{env_prefix}; {command}"
-            else:
-                full_command = command
-
             # UTF-8 encoding preamble
             encoding_preamble = (
                 "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                 "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
             )
-            full_command = f"{encoding_preamble}{full_command}"
+            full_command = f"{encoding_preamble}{command}"
             argv = [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command]
         else:
-            # Determine shell
-            if shell_path is None:
-                shell_path = _GIT_BASH_PATH
-
-            # Build full command with environment prefix
-            if env_prefix:
-                full_command = f"{env_prefix} && {command}"
-            else:
-                full_command = command
-            argv = [shell_path, "-c", full_command]
+            argv = [_GIT_BASH_PATH, "-c", command]
 
         # Determine output file
         output_file = self.output_file
@@ -292,10 +266,7 @@ class BackgroundMixin:
                 task_id=task_id,
                 command=command,
                 process=proc,
-                output_file=output_file,
                 output_queue=output_queue,
-                reader_thread=thread,
-                stdin_pipe=proc.stdin,
             )
 
             BackgroundTaskManager.register(task)
@@ -310,14 +281,6 @@ class BackgroundMixin:
 
         except Exception as e:
             return ToolResult(f"Error starting background task: {e}", error=True)
-
-    def _start_pwsh_background_task(self, command: str, env_prefix: str = "") -> ToolResult:
-        """Start a PowerShell command in background and return task_id.
-
-        Mirrors _start_background_task() but uses pwsh invocation.
-        (delegates to _start_background_task)
-        """
-        return self._start_background_task(command, env_prefix=env_prefix, shell="pwsh")
 
     def _read_background_task(self, task_id: str) -> ToolResult:
         """Read accumulated output from a background task (non-blocking)."""
@@ -657,7 +620,6 @@ class BackgroundMixin:
             task_type="session",
             command=task_summary,
             runner=runner,
-            session=session,
             status="running",
             exec_id=exec_id,
         )
@@ -667,7 +629,6 @@ class BackgroundMixin:
         # Start Runner in background thread
         thread = threading.Thread(target=run_runner, daemon=True)
         thread.start()
-        task.reader_thread = thread
 
         return ToolResult(
             f"Background Runner started.\n"

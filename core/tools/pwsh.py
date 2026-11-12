@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from core.tools.base import ToolResult
-from core.tools.shell_command import ShellCommandTool
+from core.tools.shell_command import COMMON_DESTRUCTIVE_PATTERNS, ShellCommandTool
 
 # PowerShell 静态证据模式（原 ask/deny 黑名单转为判定证据，设计 §3.2.4 / §3.3.2）：
 # 命中不再拒绝，而是作为 static_findings 交给 lite 判定器。
@@ -34,10 +34,6 @@ _PATTERNS = [
     (re.compile(r"\bdiskpart\b", re.I), "system-destructive", "diskpart (disk management)"),
     (re.compile(r"\bStop-Computer\b", re.I), "system-destructive", "Stop-Computer (shutdown)"),
     (re.compile(r"\bRestart-Computer\b", re.I), "system-destructive", "Restart-Computer (reboot)"),
-    # Also flag legacy cmd-style dangerous commands
-    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "system-destructive", "format (disk format)"),
-    (re.compile(r"\bshutdown\b", re.I), "system-destructive", "shutdown"),
-    (re.compile(r"\breboot\b", re.I), "system-destructive", "reboot"),
     (re.compile(r"\bStop-Process\s+-Id\s+0\b", re.I), "system-destructive", "Stop-Process -Id 0 (system process)"),
     # Code execution from string: the payload lives in a string literal that
     # string-stripping would hide from the scan, so flag the invocation itself
@@ -46,13 +42,11 @@ _PATTERNS = [
     # Cross-tool isolation: use dedicated tools instead of calling from pwsh
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:bash|sh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cross-tool-isolation", "Bash invocation from PowerShell (use the bash tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "cross-tool-isolation", "cmd/WSL invocation from PowerShell (cross-tool isolation)"),
     # UAC 提权（Start-Process powershell -Verb RunAs）是合法需求；嵌套 -Command 载荷
     # 不参与本扫描，判定器会提示用户确认完整命令
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cross-tool-isolation", "PowerShell re-invocation (nested -Command payload bypasses the safety scan; verify before approving)"),
-]
+] + COMMON_DESTRUCTIVE_PATTERNS
 
 
 class PwshTool(ShellCommandTool):
@@ -99,4 +93,4 @@ class PwshTool(ShellCommandTool):
         return self._run_pwsh(command, timeout=timeout)
 
     def _run_background(self, command: str) -> ToolResult:
-        return self._start_pwsh_background_task(command)
+        return self._start_background_task(command, shell="pwsh")

@@ -100,7 +100,7 @@ class TestDecisionId:
 
 class TestStatus:
     def _policy(self, tmp_path, store=None):
-        return PathPolicy(workspace_root=str(tmp_path), approval_store=store)
+        return PathPolicy(workspace_root=str(tmp_path), permission_store=store)
 
     def test_inside_allow(self, tmp_path):
         p = self._policy(tmp_path)
@@ -108,7 +108,7 @@ class TestStatus:
         assert p.status(t) == "allow"
 
     def test_outside_deny_without_store(self, tmp_path):
-        p = self._policy(tmp_path)  # approval_store=None → fail-closed
+        p = self._policy(tmp_path)  # permission_store=None → fail-closed
         t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
         assert p.status(t) == "deny"
 
@@ -139,12 +139,12 @@ class TestTempRootAllowlist:
     """系统临时目录安全区：bash /tmp、pwsh $env:TEMP 的真实落点免审批。"""
 
     def test_temp_write_allowed(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        p = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         t = PathTarget(OP_WRITE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
         assert p.status(t) == "allow"
 
     def test_temp_delete_allowed(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        p = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         t = PathTarget(OP_DELETE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
         assert p.status(t) == "allow"
 
@@ -154,13 +154,13 @@ class TestTempRootAllowlist:
             os.path.realpath(os.environ["TEMP"]))
 
     def test_temp_deny_without_store(self, tmp_path):
-        # 安全区判定走 is_inside，先于 approval_store 检查 → 无 store 也放行
+        # 安全区判定走 is_inside，先于 permission_store 检查 → 无 store 也放行
         p = PathPolicy(workspace_root=str(tmp_path))
         t = PathTarget(OP_WRITE, "/tmp/x", resolved=os.path.join(os.environ["TEMP"], "x"))
         assert p.status(t) == "allow"
 
     def test_outside_still_gated(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        p = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         t = PathTarget(OP_WRITE, "C:\\out", resolved="C:\\out")
         assert p.status(t) == "needs_approval"
 
@@ -168,7 +168,7 @@ class TestTempRootAllowlist:
 class TestAggregation:
     def test_first_pending_skips_allow_and_approved(self, tmp_path):
         store = PermissionStore()
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=store)
+        p = PathPolicy(workspace_root=str(tmp_path), permission_store=store)
         inside = PathTarget(OP_WRITE, "in", resolved=os.path.join(str(tmp_path), "in"))
         approved = PathTarget(OP_WRITE, "C:\\a", resolved="C:\\a")
         pending = PathTarget(OP_DELETE, "C:\\b", resolved="C:\\b")
@@ -176,7 +176,7 @@ class TestAggregation:
         assert p.first_pending([inside, approved, pending]) is pending
 
     def test_first_pending_none_when_all_ok(self, tmp_path):
-        p = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        p = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         inside = PathTarget(OP_WRITE, "in", resolved=os.path.join(str(tmp_path), "in"))
         assert p.first_pending([inside]) is None
 
@@ -195,7 +195,7 @@ class TestApprovalMeta:
     def test_write_kind(self, tmp_path):
         p = self._policy(tmp_path)
         t = PathTarget(OP_WRITE, "C:\\out", op_name="write", resolved="C:\\out")
-        meta = p.approval_meta(t)
+        meta = p.permission_meta(t)
         assert meta["kind"] == "path:write"
         assert meta["command"] == "C:\\out"
         assert meta["decision_id"] == p.decision_id(t)
@@ -205,12 +205,12 @@ class TestApprovalMeta:
     def test_delete_kind(self, tmp_path):
         p = self._policy(tmp_path)
         t = PathTarget(OP_DELETE, "rm out", op_name="rm", resolved="C:\\out")
-        assert p.approval_meta(t)["kind"] == "path:delete"
+        assert p.permission_meta(t)["kind"] == "path:delete"
 
     def test_dynamic_reason_notes_unresolvable(self, tmp_path):
         p = self._policy(tmp_path)
         t = PathTarget(OP_DELETE, "$DIR/x", op_name="rm", dynamic=True)
-        meta = p.approval_meta(t)
+        meta = p.permission_meta(t)
         assert meta["kind"] == "path:delete"
         assert meta["command"] == "$DIR/x"
         assert "无法静态解析" in meta["reason"]

@@ -113,7 +113,7 @@ class TestMessageBusModule:
     def test_register_agent(self):
         bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
-        assert bus.get_agent_session("worker-1") == "session-1"
+        assert bus._agent_registry.get("worker-1") == "session-1"
         assert "worker-1" in bus.get_session_agents("session-1")
 
     def test_register_agent_creates_session_queue(self):
@@ -131,8 +131,8 @@ class TestMessageBusModule:
         bus = AgentMailbox()
         bus.register_agent("agent-1", "session-1")
         bus.register_agent("translate-doc", "session-1")
-        assert bus.get_agent_session("agent-1") == "session-1"
-        assert bus.get_agent_session("translate-doc") == "session-1"
+        assert bus._agent_registry.get("agent-1") == "session-1"
+        assert bus._agent_registry.get("translate-doc") == "session-1"
         agents = bus.get_session_agents("session-1")
         assert set(agents) == {"agent-1", "translate-doc"}
 
@@ -140,7 +140,7 @@ class TestMessageBusModule:
         bus = AgentMailbox()
         bus.register_agent("worker-1", "session-1")
         bus.unregister_agent("worker-1")
-        assert bus.get_agent_session("worker-1") is None
+        assert bus._agent_registry.get("worker-1") is None
         assert bus.get_session_agents("session-1") == []
 
     def test_unregister_agent_preserves_session(self):
@@ -209,7 +209,7 @@ class TestMessageBusModule:
         bus = AgentMailbox()
         bus.register_agent("worker-1", "sess-1")
         bus.unregister_session("sess-1")
-        assert bus.get_agent_session("worker-1") is None
+        assert bus._agent_registry.get("worker-1") is None
         assert bus.list_agents() == []
 
 

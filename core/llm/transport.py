@@ -93,11 +93,6 @@ class HttpTransport:
             headers={"User-Agent": f"cili-agent/{_USER_AGENT_VERSION}"},
         )
 
-    @property
-    def client(self) -> httpx.Client:
-        """Access the underlying httpx client."""
-        return self._client
-
     def post(
         self,
         url: str,

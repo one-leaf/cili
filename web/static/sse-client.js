@@ -147,10 +147,8 @@ function handleBusEvent(e) {
     } else if (e.type === 'thinking') {
         _handleMasterResumeThinking(e.content || '');
     } else if (e.type === 'tool_use') {
-        _finalizeMasterResumeBlock();
         _handleMasterResumeToolUse(e);
     } else if (e.type === 'tool_result') {
-        _finalizeMasterResumeBlock();
         _handleMasterResumeToolResult(e);
     }
 }
@@ -171,7 +169,7 @@ function handleMasterToolOutput(e) {
     if (entry.div && entry.pre) {
         entry.pre.textContent += e.content;
         entry.offset = Math.max(entry.offset || 0, e.offset);
-        _scrollChatIfNearBottom();
+        scrollChatIfNearBottom();
     }
 }
 
@@ -227,7 +225,7 @@ function _handleMasterResumeText(content) {
         _masterResumeOpenBlock = { kind: 'text', text: content, el: null };
         _masterResumeOpenBlock.el = addMessage('assistant', content);
     }
-    _scrollChatIfNearBottom();
+    scrollChatIfNearBottom();
 }
 
 function _handleMasterResumeThinking(content) {
@@ -253,7 +251,7 @@ function _handleMasterResumeThinking(content) {
         contentDiv.appendChild(thinkDiv);
         _masterResumeOpenBlock.el = div;
     }
-    _scrollChatIfNearBottom();
+    scrollChatIfNearBottom();
 }
 
 function _handleMasterResumeToolUse(e) {
@@ -310,14 +308,6 @@ async function syncMasterToolStreams() {
                 entry.offset = Math.max(entry.offset || 0, data.offset);
             }
         } catch (e) { /* 补拉失败静默，tool_result SSE 兜底 */ }
-    }
-}
-
-function _scrollChatIfNearBottom() {
-    const el = document.getElementById('chat-messages');
-    if (!el) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
-        el.scrollTop = el.scrollHeight;
     }
 }
 

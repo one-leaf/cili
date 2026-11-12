@@ -253,11 +253,6 @@ class AgentMailbox:
                 })
             return result
 
-    def get_agent_session(self, agent_name: str) -> str | None:
-        """Get the session_id for an agent name. Returns None if not registered."""
-        with self._lock:
-            return self._agent_registry.get(agent_name)
-
     def get_session_agents(self, session_id: str) -> list[str]:
         """Get all agent names registered for a session."""
         with self._lock:

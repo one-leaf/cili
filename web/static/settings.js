@@ -865,11 +865,21 @@ function renderWechatQr(data) {
 
     const needCode = data.challenge === 'verify_code';
     document.getElementById('wechat-verify-wrap').style.display = needCode ? '' : 'none';
-    if (needCode) document.getElementById('wechat-verify-code').focus();
+    if (needCode) {
+        // 轮询每 2 秒重绘一次二维码；只在验证码首次出现时抢一次焦点，
+        // 否则用户在其他输入框打字会被反复打断。
+        const input = document.getElementById('wechat-verify-code');
+        if (input.dataset.autoFocused !== '1') {
+            input.dataset.autoFocused = '1';
+            input.focus();
+        }
+    }
 }
 
 function openWechatLoginModal() {
     document.getElementById('wechat-login-modal').style.display = 'flex';
+    const input = document.getElementById('wechat-verify-code');
+    if (input) delete input.dataset.autoFocused;
 }
 
 function closeWechatLoginModal(cancel = true) {

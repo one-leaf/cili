@@ -106,7 +106,6 @@ const resizeHandle = document.querySelector('.input-resize-handle');
 const chatInputArea = document.querySelector('.chat-input-area');
 const INPUT_MIN_HEIGHT = 80;
 const INPUT_MAX_HEIGHT = 500;
-const INPUT_DEFAULT_HEIGHT = 0; // 0 = 使用默认内容高度
 const STORAGE_KEY = 'chat-input-height';
 
 function initInputResize() {
@@ -1565,8 +1564,10 @@ function openAnchoredMenu(dropdown, anchorEl, alignRight = false) {
     }
     dropdown.style.left = left + 'px';
     dropdown.style.top = top + 'px';
-    window.addEventListener('scroll', closeSessionMenus, { once: true, capture: true });
 }
+
+// 滚动关闭菜单：全局注册一次，避免每次打开菜单都新增一次性监听器
+window.addEventListener('scroll', closeSessionMenus, { capture: true, passive: true });
 
 // 切换会话面板头部菜单（活跃/隐藏切换 + 多选切换）
 function toggleSessionPanelMenu(e) {
@@ -1837,8 +1838,8 @@ async function showSessionInfo(session) {
                 <div class="session-info-content">
                     <table class="session-info-table">
                         <tbody>
-                            <tr><td class="info-key">会话ID</td><td class="info-value">${session.session_id}</td></tr>
-                            <tr><td class="info-key">会话名称</td><td class="info-value">${session.name || '未命名'}</td></tr>
+                            <tr><td class="info-key">会话ID</td><td class="info-value">${escapeHtml(session.session_id)}</td></tr>
+                            <tr><td class="info-key">会话名称</td><td class="info-value">${escapeHtml(session.name || '未命名')}</td></tr>
                             <tr><td class="info-key">创建时间</td><td class="info-value">${metadata.created_at || '未知'}</td></tr>
                             <tr><td class="info-key">更新时间</td><td class="info-value">${metadata.updated_at || '未知'}</td></tr>
                             <tr><td class="info-key">总消息数</td><td class="info-value">${messages.length} 条</td></tr>
@@ -2263,20 +2264,33 @@ async function generateInstructions() {
     }
 }
 
+let generatePollTimer = null;
+
+function stopGeneratePolling() {
+    if (generatePollTimer) {
+        clearTimeout(generatePollTimer);
+        generatePollTimer = null;
+    }
+}
+
 async function pollGenerateStatus(taskId) {
     const statusEl = document.getElementById('instructions-status');
     const generateBtn = document.getElementById('instructions-generate-btn');
     const editor = document.getElementById('instructions-editor');
     const filenameEl = document.getElementById('instructions-filename');
+    // 轮询期间切换工作区后不能拿旧 taskId 去查新工作区
+    const workspaceUuid = currentWorkspace?.uuid;
 
     const poll = async () => {
+        generatePollTimer = null;
+        if (!currentWorkspace || currentWorkspace.uuid !== workspaceUuid) return;
         try {
-            const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/instructions/generate/${taskId}`);
+            const response = await fetch(`/api/workspaces/${workspaceUuid}/instructions/generate/${taskId}`);
             const data = await response.json();
 
             if (data.status === 'running') {
                 statusEl.textContent = 'AI 正在分析代码...';
-                setTimeout(poll, 3000);
+                generatePollTimer = setTimeout(poll, 3000);
             } else if (data.status === 'completed') {
                 statusEl.textContent = '✓ 生成完成';
                 statusEl.className = 'settings-status success';
@@ -2299,6 +2313,7 @@ async function pollGenerateStatus(taskId) {
         }
     };
 
+    stopGeneratePolling();
     poll();
 }
 
@@ -2674,6 +2689,7 @@ const textbookState = {
     options: null,        // /api/workspace-wizard/options：学段/年级/科目/教材版本
     books: [],            // 匹配到的教材
     taskId: null,
+    taskRunning: false,   // 任务是否仍在 queued/running（与 taskId 分离，便于失败后重试）
     pollTimer: null,
 };
 
@@ -2719,6 +2735,7 @@ async function initTextbookPanel() {
         textbookState.workspaceUuid = ws.uuid;
         textbookState.books = [];
         textbookState.taskId = null;
+        textbookState.taskRunning = false;
         if (textbookState.pollTimer) {
             clearInterval(textbookState.pollTimer);
             textbookState.pollTimer = null;
@@ -2791,12 +2808,6 @@ function renderTextbookGrades() {
     if (grades.includes(previous)) gradeSelect.value = previous;
 }
 
-function textbookEditionCoversGrade(item, grade) {
-    const grades = item.grades || [];
-    if (!grades.length) return true;
-    return !grade || grades.includes(grade);
-}
-
 function renderTextbookSubjects() {
     const stage = document.getElementById('textbook-stage').value;
     const grade = document.getElementById('textbook-grade').value;
@@ -2832,7 +2843,7 @@ function renderTextbookSubjects() {
         select.dataset.subject = subject;
         select.title = `${subject} 教材版本`;
         const allEditions = textbookState.options?.textbook_editions?.[stage]?.[subject] || [];
-        const editions = allEditions.filter(item => textbookEditionCoversGrade(item, grade));
+        const editions = allEditions.filter(item => editionCoversGrade(item, grade));
         const usable = editions.length ? editions : allEditions;
         if (usable.length) {
             usable.forEach(edition => {
@@ -2951,11 +2962,11 @@ function updateTextbookSummary() {
             ? '已选 ' + selected.length + ' 本' + sizeText + '（共匹配 ' + textbookState.books.length + ' 本）'
             : '';
     }
-    textbookSetButtons(Boolean(textbookState.taskId && isTextbookTaskRunning()));
+    textbookSetButtons(textbookState.taskRunning);
 }
 
 function isTextbookTaskRunning(status) {
-    return ['queued', 'running'].includes(status || 'running');
+    return status === 'queued' || status === 'running';
 }
 
 async function downloadSelectedTextbooks() {
@@ -2987,6 +2998,7 @@ async function downloadSelectedTextbooks() {
 
 function startTextbookPolling(taskId) {
     textbookState.taskId = taskId;
+    textbookState.taskRunning = true;
     textbookSetButtons(true);
     const progress = document.getElementById('textbook-progress');
     progress.style.display = '';
@@ -3015,6 +3027,7 @@ async function pollTextbookTask() {
             (failed.length ? '；首个错误：' + failed[0].error : '')
         );
         if (!isTextbookTaskRunning(task.status)) {
+            textbookState.taskRunning = false;
             stopTextbookPolling(null, task.status === 'done' ? 'success' : 'error');
             textbookSetButtons(false, failed.length > 0);
         } else {

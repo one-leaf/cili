@@ -31,7 +31,3 @@ class QQRuntime:
     http: Any = None                         # httpx.AsyncClient（分片 PUT / 附件下载共用）
     uploader: Any = None                     # qqbot_agent_sdk.MediaUploader
     limiter: ReplyLimiter = field(default_factory=ReplyLimiter)
-
-    def ready(self) -> bool:
-        """SDK 对象是否齐备（缺 SDK 时启动会跳过，不应走到这里）。"""
-        return self.api is not None and self.uploader is not None

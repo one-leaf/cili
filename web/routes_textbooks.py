@@ -22,7 +22,6 @@ from core.textbooks import (
     textbook_tasks,
 )
 from core.textbooks.markdown_store import copy_textbook_markdown
-from core.textbooks.smartedu_login import credentials_ready, login_status, start_login
 from web.deps import _SAFE_ID_RE, _csrf_protect, teen_guard
 
 router = APIRouter()
@@ -76,17 +75,6 @@ def _validate_books(catalog, book_keys: list[str]) -> list[OfficialBook]:
     return books
 
 
-@router.get("/api/textbooks/subjects")
-async def textbook_subjects(stage: str = "", system: str = "", book_types: str = "textbook"):
-    """返回可选学科（``system``/``book_types`` 仅保留参数兼容）。"""
-    del system, book_types
-    catalog = await asyncio.to_thread(_catalog_or_503)
-    return {
-        "source_commit": catalog.source_commit,
-        "subjects": catalog.subjects(stage=stage.strip()),
-    }
-
-
 @router.get("/api/textbooks/options")
 async def textbook_options(
     stage: str = "",
@@ -125,22 +113,6 @@ async def textbook_options(
         "split_count": 0,
         "warnings": warnings,
     }
-
-
-@router.get("/api/textbooks/login/status")
-async def textbook_login_status():
-    """查询教材平台登录状态（凭据缓存于 data/cili/cache，登录一次长期有效）。"""
-    return {**login_status(), "credentials_ready": credentials_ready()}
-
-
-@router.post("/api/textbooks/login",
-             dependencies=[Depends(teen_guard("config_update"))])
-async def textbook_login(request: Request):
-    """打开浏览器引导用户手机号登录，并抓取平台凭据写入缓存。"""
-    _csrf_protect(request)
-    if credentials_ready():
-        return {"ok": True, "message": "已有登录凭据", "running": False}
-    return start_login()
 
 
 @router.post("/api/textbooks/download",

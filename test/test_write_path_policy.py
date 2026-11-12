@@ -16,7 +16,7 @@ from core.tools.write import WriteTool
 
 class TestWriteGate:
     def _tool(self, cwd, store=None):
-        return WriteTool(cwd=cwd, workspace_uuid="test-ws", approval_store=store)
+        return WriteTool(cwd=cwd, workspace_uuid="test-ws", permission_store=store)
 
     def test_inside_workspace_writes(self, test_workspace):
         tool = self._tool(test_workspace)
@@ -41,7 +41,7 @@ class TestWriteGate:
         store = PermissionStore()
         tool = self._tool(test_workspace, store)
         outside = tmp_path / "x.txt"
-        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, approval_store=store)
+        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, permission_store=store)
         # 用与 execute 相同的解析结果批准
         did = policy.decision_id(PathTarget(OP_WRITE, str(outside), resolved=policy.resolve(str(outside))))
         store.approve(did, str(outside), kind="path:write")
@@ -59,7 +59,7 @@ class TestWriteGate:
 
 class TestEditGate:
     def _tool(self, cwd, store=None):
-        return EditTool(cwd=cwd, workspace_uuid="test-ws", approval_store=store)
+        return EditTool(cwd=cwd, workspace_uuid="test-ws", permission_store=store)
 
     def test_inside_workspace_edits(self, test_workspace):
         target = os.path.join(test_workspace, "a.txt")

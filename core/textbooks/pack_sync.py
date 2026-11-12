@@ -179,6 +179,8 @@ def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
             dest.unlink(missing_ok=True)
             logger.warning(f"[教材数据] 源码归档内 {name} SHA256 不符")
             return False
+        # 解包成功后删除整仓归档，避免每轮回退都在 data/cili 留一份
+        archive.unlink(missing_ok=True)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[教材数据] 解包源码归档失败: {e}")
@@ -254,10 +256,25 @@ def _install(manifest: dict[str, Any]) -> bool:
     (staging / "pack_meta.json").write_text(
         json.dumps({**manifest, "installed_at": _now()},
                    ensure_ascii=False, indent=1), encoding="utf-8")
+    preserved_original = None
     if PACK_DIR.exists():
         import shutil
+        # originals.zip 是用户本地安装的清洗版原文（分发包不含），同步不能删掉
+        local_original = PACK_DIR / "originals.zip"
+        if local_original.is_file():
+            preserved_original = PACK_DIR.with_name("textbooks.originals.zip")
+            try:
+                local_original.replace(preserved_original)
+            except OSError as e:
+                logger.warning(f"[教材数据] 保留 originals.zip 失败，同步继续: {e}")
+                preserved_original = None
         shutil.rmtree(PACK_DIR)
     staging.rename(PACK_DIR)
+    if preserved_original is not None:
+        try:
+            preserved_original.replace(PACK_DIR / "originals.zip")
+        except OSError as e:
+            logger.warning(f"[教材数据] 恢复 originals.zip 失败: {e}")
     return True
 
 

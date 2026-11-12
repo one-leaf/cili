@@ -10,13 +10,13 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from core.fs_utils import normalize_bash_path
 from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
-from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.background import (
     BackgroundMixin,
 )
 from core.tools.background import (
     BackgroundTaskManager as BackgroundTaskManager,
 )
+from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.result import ToolResult
 from core.tools.shell import (
     _GIT_BASH_PATH as _GIT_BASH_PATH,
@@ -149,23 +149,19 @@ class Tool(ShellMixin, BackgroundMixin):
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session: SessionHandle | None = None,
                  permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None, **kwargs):
+                 **kwargs):
         """统一构造协议。
 
         子类若重写 ``__init__``，应显式声明所需参数并透传 ``**kwargs``，否则
-        ``registry._factory`` 注入的参数（config/approval_store/approval_rules）
-        会导致实例化失败。
+        ``registry._factory`` 注入的参数（config/permission_*）会导致实例化失败。
         """
         self.cwd = os.path.abspath(cwd)
         self.workspace_uuid = workspace_uuid
         self.session = session  # For accessing session info (e.g., in python tool)
         # 权限存储 / 规则 / 裁决（根/子代理共享同一实例，由 runner 注入）
-        self.permission_store = permission_store if permission_store is not None else approval_store
-        self.permission_rules = permission_rules if permission_rules is not None else approval_rules
+        self.permission_store = permission_store
+        self.permission_rules = permission_rules
         self.permission_policy = permission_policy
-        # 旧属性别名（过渡；新代码不要依赖）
-        self.approval_store = self.permission_store
-        self.approval_rules = self.permission_rules
         # 工具输出文件路径：由 agent 在 execute() 前设置
         # _run_bash() 逐行写入此文件（实时流式），前端可轮询读取
         # save_output_to_file() 兜底确保所有工具输出都落盘
@@ -221,7 +217,7 @@ class Tool(ShellMixin, BackgroundMixin):
             permission_rules=self.permission_rules,
         )
 
-    def _path_gate(self, targets: list, findings: list | None = None) -> ToolResult | None:
+    def _path_gate(self, targets: list) -> ToolResult | None:
         """统一写/删路径审批门。返回 None 表示放行；否则返回拒绝/占位结果。
 
         - 任一目标越界且无审批通道（store 与 rules 均为 None）→ 硬拒绝（fail-closed）
@@ -243,7 +239,7 @@ class Tool(ShellMixin, BackgroundMixin):
         if pending is not None:
             approval = policy.permission_meta(pending, tool=self.name)
             approval["targets"] = [policy.target_evidence(t) for t in targets]
-            approval["findings"] = list(findings or [])
+            approval["findings"] = []
             return ToolResult(
                 permission_placeholder_text(approval),
                 completed=False,
@@ -251,7 +247,7 @@ class Tool(ShellMixin, BackgroundMixin):
             )
         return None
 
-    def _read_gate(self, paths: list[str], findings: list | None = None) -> ToolResult | None:
+    def _read_gate(self, paths: list[str]) -> ToolResult | None:
         """统一读侧门：工作区外读取按 outside.read 裁决（allow/ai/ask/deny）。"""
         if not paths:
             return None
@@ -278,7 +274,7 @@ class Tool(ShellMixin, BackgroundMixin):
         if pending is not None:
             approval = policy.permission_meta(pending, tool=self.name)
             approval["targets"] = [policy.target_evidence(t) for t in targets]
-            approval["findings"] = list(findings or [])
+            approval["findings"] = []
             return ToolResult(
                 permission_placeholder_text(approval),
                 completed=False,
@@ -304,9 +300,6 @@ class Tool(ShellMixin, BackgroundMixin):
             "verdict": mode,
             "rule": rule,
         }
-
-    # 旧名兼容（过渡）
-    _pending_approval = _pending_permission
 
     def _teen_command_guard(self, command: str) -> ToolResult | None:
         """青少年模式：回退类命令硬拒（开启且未解锁时）。返回 None 表示放行。

@@ -153,7 +153,7 @@ async def get_session_model(
 ):
     """读取会话当前模型与全部可选模型。"""
     _validate_session_id(session_id)
-    sm = _get_session(workspace_uuid, session_id)
+    sm = await asyncio.to_thread(_get_session, workspace_uuid, session_id)
     if sm is None:
         raise HTTPException(404, "Session not found")
     return _model_payload(load_config(), sm)
@@ -180,12 +180,15 @@ async def set_session_model(
         checker = getattr(runner, "is_running", None)
         if callable(checker) and checker():
             raise HTTPException(409, "会话正在运行，无法切换模型")
-    sm = runner.session if runner is not None else _get_session(workspace_uuid, session_id)
+    if runner is not None:
+        sm = runner.session
+    else:
+        sm = await asyncio.to_thread(_get_session, workspace_uuid, session_id)
     if sm is None:
         raise HTTPException(404, "Session not found")
 
     sm.set_model_ref(ref or None)
-    sm.save()
+    await asyncio.to_thread(sm.save)
 
     if runner is not None:
         target_ref = ref or _model_payload(config, sm)["current_ref"]
@@ -317,6 +320,36 @@ def _start_pump(key: str) -> None:
 
 # ----- Tool Output Streaming -----
 
+_MAX_STREAM_CHUNK = 256 * 1024
+
+
+def _read_tool_output_chunk(session_dir: Path, tool_use_id: str, offset: int) -> dict:
+    """在线程池里做 glob/stat/read（轮询接口，不能阻塞事件循环）。"""
+    matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
+    for exec_dir in session_dir.glob("exec_*"):
+        if exec_dir.is_dir():
+            matches.extend(exec_dir.glob(f"{tool_use_id}.txt"))
+            matches.extend(exec_dir.glob(f"{tool_use_id}_*.txt"))
+
+    if not matches:
+        return {"content": "", "offset": 0, "exists": False}
+
+    output_file = matches[0]
+    file_size = output_file.stat().st_size
+    if offset >= file_size:
+        return {"content": "", "offset": file_size, "exists": True}
+
+    with open(output_file, "rb") as f:
+        f.seek(offset)
+        chunk = f.read(_MAX_STREAM_CHUNK)
+
+    return {
+        "content": chunk.decode("utf-8", "replace"),
+        "offset": offset + len(chunk),
+        "exists": True,
+    }
+
+
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stream/{tool_use_id}")
 async def stream_tool_output(
     workspace_uuid: str,
@@ -346,35 +379,10 @@ async def stream_tool_output(
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 查找匹配 {tool_use_id}.txt 或 {tool_use_id}_*.txt 的文件
-    # 同时在 session 目录和 exec_* 子目录中搜索（子代理的输出在 exec_* 目录）
-    matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
-    # 搜索 exec_* 子目录
-    for exec_dir in session_dir.glob("exec_*"):
-        if exec_dir.is_dir():
-            matches.extend(exec_dir.glob(f"{tool_use_id}.txt"))
-            matches.extend(exec_dir.glob(f"{tool_use_id}_*.txt"))
-
-    if not matches:
-        return {"content": "", "offset": 0, "exists": False}
-
-    output_file = matches[0]  # 只取第一个匹配
-
     try:
-        file_size = output_file.stat().st_size
-        if offset >= file_size:
-            # 没有新内容
-            return {"content": "", "offset": file_size, "exists": True}
-
-        with open(output_file, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(offset)
-            new_content = f.read()
-
-        return {
-            "content": new_content,
-            "offset": file_size,
-            "exists": True,
-        }
+        return await asyncio.to_thread(
+            _read_tool_output_chunk, session_dir, tool_use_id, offset
+        )
     except Exception as e:
         logger.warning(f"Failed to read stream file for {tool_use_id}: {e}")
         return {"content": "", "offset": offset, "exists": True}
@@ -638,7 +646,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             else:
                 error_text = "当前会话正在执行中，请等待完成后再发送消息"
             return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
-        prepared = prepare_turn(runner, content=content, user_input=user_input)
+        try:
+            prepared = prepare_turn(runner, content=content, user_input=user_input)
+        except Exception:
+            # 认领后到 SSE 建立前的任何异常都必须释放，否则会话永久“执行中”
+            _release_session_run(session_key)
+            raise
     else:
         # 普通消息：先入队再尝试启动——运行中不再报错，「接收」与「执行」解耦
         try:
@@ -663,21 +676,25 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                 "queue_paused": turn_queue.is_paused(session_key),
             }), media_type="text/event-stream")
 
-        items = turn_queue.drain_batch(session_key)
-        if not items:
-            # 暂停态（并发的 /stop）：不启动，释放认领，消息留在队列
-            _release_session_run(session_key)
-            return StreamingResponse(sse_stream({
-                "type": "queued",
-                "session_id": session_id,
-                "item": item.preview(),
-                "queue_paused": True,
-            }), media_type="text/event-stream")
+        try:
+            items = turn_queue.drain_batch(session_key)
+            if not items:
+                # 暂停态（并发的 /stop）：不启动，释放认领，消息留在队列
+                _release_session_run(session_key)
+                return StreamingResponse(sse_stream({
+                    "type": "queued",
+                    "session_id": session_id,
+                    "item": item.preview(),
+                    "queue_paused": True,
+                }), media_type="text/event-stream")
 
-        merged_input, merged_meta = merge_queued_turns(items)
-        prepared = PreparedTurn(runner=runner, mode="run",
-                                user_input=merged_input, meta=merged_meta)
-        delivered = _delivery_payload(items)
+            merged_input, merged_meta = merge_queued_turns(items)
+            prepared = PreparedTurn(runner=runner, mode="run",
+                                    user_input=merged_input, meta=merged_meta)
+            delivered = _delivery_payload(items)
+        except Exception:
+            _release_session_run(session_key)
+            raise
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
     event_queue: queue.Queue[str | None] = queue.Queue()

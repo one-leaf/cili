@@ -139,14 +139,6 @@ class BlockAssembler:
         """Return whether a finish chunk was received."""
         return self._finished
 
-    def get_text(self) -> str:
-        """Return concatenated text from all TextBlocks."""
-        parts = []
-        for block in self._blocks:
-            if isinstance(block, TextBlock):
-                parts.append(block.text)
-        return "".join(parts)
-
     def get_tool_calls(self) -> list[ToolCallBlock]:
         """Return all ToolCallBlocks."""
         return [b for b in self._blocks if isinstance(b, ToolCallBlock)]

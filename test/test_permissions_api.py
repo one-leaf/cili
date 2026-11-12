@@ -14,7 +14,7 @@ from web import routes_permissions as rp
 def _fake_global_config(tmp_path, monkeypatch):
     """把 setting.json 读写重定向到内存，规则文件落到 tmp。"""
     cfg = PermissionConfig.from_dict({
-        "global_rules_path": str(tmp_path / "approval_rules.json"),
+        "global_rules_path": str(tmp_path / "permission_rules.json"),
     })
     state = {"providers": {"keep": {"x": 1}}, "permissions": cfg.to_dict()}
 
@@ -26,7 +26,7 @@ def _fake_global_config(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(rp, "save_global_config", _save)
-    monkeypatch.setattr(rp, "_DEFAULT_GLOBAL_RULES", tmp_path / "approval_rules.json")
+    monkeypatch.setattr(rp, "_DEFAULT_GLOBAL_RULES", tmp_path / "permission_rules.json")
     return state
 
 
@@ -70,7 +70,7 @@ class TestRuleApi:
 
         listed = asyncio.run(rp.list_permission_rules("global", "all"))
         assert any(r["id"] == rule_id for r in listed["rules"])
-        assert (tmp_path / "approval_rules.json").exists()
+        assert (tmp_path / "permission_rules.json").exists()
 
         updated = asyncio.run(rp.update_permission_rule(
             rule_id, _request(), "global", rp.RuleUpdateRequest(enabled=False)))

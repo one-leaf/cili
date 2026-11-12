@@ -40,7 +40,3 @@ class WechatRuntime:
     client: "WechatClient | None" = None
     typing: "TypingManager | None" = None
     outbound: "OutboundSender | None" = None
-
-    def ready(self) -> bool:
-        """运行时依赖是否齐备（缺就说明启动没走完）。"""
-        return self.client is not None and self.outbound is not None

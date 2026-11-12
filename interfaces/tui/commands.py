@@ -79,6 +79,3 @@ def build_commands(app) -> dict[str, Command]:
     return table
 
 
-def build_completer_words() -> list[str]:
-    """/ 前缀补全词表（M2 的 completer 用，先收敛在一处）。"""
-    return ["/h", "/help", "/s", "/new", "/status", "/stop", "/quit"]

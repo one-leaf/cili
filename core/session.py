@@ -638,6 +638,9 @@ class SessionStore:
         self._counter_lock = threading.Lock()
         # 磁盘 jsonl 已知最大 seq（load 时扫描一次；崩溃自愈防新消息序号碰撞）
         self._jsonl_max_seq: int = -1
+        # 首个可能缺少 seq 的消息下标：稳态 flush 只从这里往后扫描，
+        # 避免长会话每个工具批都 O(n) 全量遍历。
+        self._pending_seq_start: int = 0
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.metadata: dict = {
             "created_at": now,
@@ -702,10 +705,6 @@ class SessionStore:
         """线程安全递增 _index_version（并发 append/revert 下 `+=` 非原子，审查 P1-2）。"""
         with self._counter_lock:
             self._index_version += 1
-
-    def get_messages(self) -> list[dict]:
-        """获取所有消息。"""
-        return self.messages
 
     def get_valid_messages(self) -> list[dict]:
         """获取有效的消息（递归过滤 _meta.valid=False 的消息和 blocks）。
@@ -795,12 +794,9 @@ class SessionStore:
             })
             # 先重置 _jsonl_max_seq 再写 meta，否则 message_count 会残留旧值
             self._jsonl_max_seq = -1
+            self._pending_seq_start = 0
             atomic_write_json(self.session_dir / META_FILE, self._meta_payload())
             self._persisted_version = self._index_version
-
-    def get_last_n_messages(self, n: int) -> list[dict]:
-        """获取最后 N 条消息。"""
-        return self.messages[-n:] if n > 0 else []
 
     def get_message_count(self) -> int:
         """获取消息数量。"""
@@ -844,6 +840,7 @@ class SessionStore:
         if lines is None:
             lines = read_jsonl(self.session_dir / MESSAGES_FILE)
         self._jsonl_max_seq = max((line.get("seq", -1) for line in lines), default=-1)
+        self._pending_seq_start = 0
 
     def _append_pending_messages(self) -> bool:
         """为无 seq 的新消息分配 seq/id 并追加 jsonl。返回是否追加了行。
@@ -861,7 +858,8 @@ class SessionStore:
         next_seq = max(disk_next_seq, self._jsonl_max_seq + 1)
         append_lines: list[dict] = []
 
-        for msg in self.messages:
+        start = min(self._pending_seq_start, len(self.messages))
+        for msg in self.messages[start:]:
             if not isinstance(msg, dict):
                 continue
             meta = msg.get("_meta") or {}
@@ -881,6 +879,7 @@ class SessionStore:
         if append_lines:
             append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)
             self._jsonl_max_seq = max(self._jsonl_max_seq, next_seq - 1)
+        self._pending_seq_start = len(self.messages)
         return bool(append_lines)
 
     def _persist(self) -> None:
@@ -1132,10 +1131,6 @@ class SessionStore:
         self.metadata["hidden"] = hidden
         self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._bump_index_version()
-
-    def is_hidden(self) -> bool:
-        """获取会话隐藏状态。"""
-        return self.metadata.get("hidden", False)
 
     def set_model_ref(self, ref: str | None) -> None:
         """设置会话级模型覆盖；ref 为空时清除（回退角色默认模型）。"""

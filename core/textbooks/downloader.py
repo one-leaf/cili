@@ -339,10 +339,6 @@ class TextbookTaskManager:
     def get(self, task_id: str) -> TextbookDownloadTask | None:
         return self._tasks.get(task_id)
 
-    def status(self, task_id: str) -> dict[str, Any] | None:
-        task = self._tasks.get(task_id)
-        return task.public_dict() if task else None
-
     def failed_book_keys(self, task_id: str) -> list[str]:
         task = self._tasks.get(task_id)
         if not task:

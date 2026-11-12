@@ -15,7 +15,7 @@ _TEX = "\\documentclass{article}\n\\begin{document}hi\\end{document}\n"
 
 class TestLatexGate:
     def _tool(self, cwd, store=None):
-        return LatexTool(cwd=cwd, approval_store=store)
+        return LatexTool(cwd=cwd, permission_store=store)
 
     def test_outside_output_placeholder(self, test_workspace, tmp_path):
         (Path(test_workspace) / "doc.tex").write_text(_TEX, encoding="utf-8")
@@ -44,7 +44,7 @@ class TestLatexGate:
 
 class TestPDF2MarkdownGate:
     def _tool(self, cwd, store=None):
-        return PDF2MarkdownTool(cwd=cwd, approval_store=store)
+        return PDF2MarkdownTool(cwd=cwd, permission_store=store)
 
     def test_outside_output_placeholder(self, test_workspace, tmp_path):
         (Path(test_workspace) / "doc.pdf").write_bytes(b"%PDF-1.4 fake")

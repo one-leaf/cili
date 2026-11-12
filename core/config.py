@@ -575,11 +575,6 @@ class Config:
         )
         return models["master"]
 
-    @property
-    def model(self) -> ModelConfig:
-        """master 模型（运行时形态）。供少量旧调用点过渡使用。"""
-        return self.resolve_model(self.master_ref())
-
     # ── 构建 ──
 
     @classmethod

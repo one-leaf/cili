@@ -24,7 +24,6 @@ import time
 import webbrowser
 import zipfile
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -56,86 +55,6 @@ if _running_in_deps and _deps_site_packages not in sys.path:
 # Also add project root for imports
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
-
-
-class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
-    """Windows 兼容的按日期轮转日志处理器。
-
-    Python 默认的 TimedRotatingFileHandler 在轮转时使用 os.rename，
-    但 Windows 会在文件被打开时锁定文件，导致午夜轮转失败并抛出
-    PermissionError。本类重写 rotate() 方法，改用 "复制 + 原地截断"
-    策略：先把日志复制到带日期后缀的备份文件，再把原文件清空。
-    原文件句柄在 rotate 调用前已由父类关闭，复制与截断都使用独立
-    的临时句柄，完成后父类会重新 _open() 继续写入，整个过程无需
-    重命名已打开的文件，因此不受 Windows 文件锁影响。
-    """
-
-    def doRollover(self):
-        """重写 doRollover 以处理 "备份文件已存在" 的边界情况。
-
-        父类在发现目标备份文件已存在时会直接 return，但此时原 stream 已
-        被关闭，若不调用 _open() 后续日志将无处可写。本实现确保无论是否
-        真正轮转，stream 都会被重新打开。
-        """
-        currentTime = int(time.time())
-        t = self.rolloverAt - self.interval
-        if self.utc:
-            timeTuple = time.gmtime(t)
-        else:
-            timeTuple = time.localtime(t)
-            dstNow = time.localtime(currentTime)[-1]
-            dstThen = timeTuple[-1]
-            if dstNow != dstThen:
-                timeTuple = time.localtime(t + (3600 if dstNow else -3600))
-        dfn = self.rotation_filename(
-            self.baseFilename + "." + time.strftime(self.suffix, timeTuple)
-        )
-
-        # 关闭当前 stream
-        if self.stream:
-            self.stream.close()
-            self.stream = None
-
-        if os.path.exists(dfn):
-            # 父类在此处直接 return 导致 stream 未重开；这里改为跳过 rotate
-            # 但仍继续执行清理与重新打开逻辑
-            pass
-        else:
-            self.rotate(self.baseFilename, dfn)
-
-        if self.backupCount > 0:
-            for s in self.getFilesToDelete():
-                try:
-                    os.remove(s)
-                except OSError:
-                    pass
-        if not self.delay:
-            self.stream = self._open()
-        self.rolloverAt = self.computeRollover(currentTime)
-
-    def rotate(self, source, dest):
-        """用 "复制 + 截断" 替代 os.rename，绕过 Windows 文件锁。
-
-        在调用此方法前，父类（或 doRollover）已关闭原 stream，因此 source
-        当前无句柄持有。
-        """
-        try:
-            if os.path.exists(source):
-                # 复制当前日志内容到带日期的备份文件
-                with open(source, "rb") as fsrc, open(dest, "wb") as fdst:
-                    while True:
-                        buf = fsrc.read(64 * 1024)
-                        if not buf:
-                            break
-                        fdst.write(buf)
-                # 原地清空原文件：以 "w" 模式打开即截断为 0 字节
-                # 随后立即关闭，让父类的 _open() 能以相同方式重新打开
-                with open(source, "w"):
-                    pass
-        except OSError:
-            # 任何文件 I/O 异常都降级处理：放弃轮转，继续向原文件追加
-            # 这样既不会丢失日志，也不会阻塞业务线程
-            pass
 
 
 # Project paths

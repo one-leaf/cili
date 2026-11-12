@@ -25,9 +25,8 @@ from typing import Any
 from core.config import PROJECT_ROOT
 from core.textbooks.smartedu import (
     DETAIL_PAGE,
-    GRADE_ALIASES,
-    GRADE_COVERAGE,
     OfficialCatalog,
+    grade_covers,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,20 +96,6 @@ def dataset_catalog() -> OfficialCatalog:
     })
 
 
-def grade_covers(book_grade: str, selected: str) -> bool:
-    """教材年级标签是否覆盖用户选择的年级（别名/合并册/高中通用）。"""
-    if not selected:
-        return True
-    if book_grade == selected:
-        return True
-    if GRADE_ALIASES.get(book_grade) == selected:
-        return True
-    if selected in GRADE_COVERAGE.get(book_grade, ()):
-        return True
-    # 高中教材统一标「高中年级」，视为覆盖高一/高二/高三
-    return book_grade in ("", "高中年级") and selected in ("高一", "高二", "高三")
-
-
 def find_books(stage: str = "", subject: str = "", grade: str = "",
                edition: str = "", volume: str = "", keyword: str = "",
                limit: int = 10) -> list[dict[str, Any]]:
@@ -144,6 +129,13 @@ def stage_matrix() -> list[tuple[str, int, int]]:
         acc[b.get("stage", "")][0] += 1
         acc[b.get("stage", "")][1] += int(b.get("chars") or 0)
     return sorted((s, n, c // 10000) for s, (n, c) in acc.items())
+
+
+def format_book_candidates(candidates: list[dict[str, Any]], hint: str = "请指定 id：") -> str:
+    """把「书名匹配到多本」的候选列表渲染成统一提示文本。"""
+    lines = [f"书名匹配到 {len(candidates)} 本，{hint}"]
+    lines += [format_book_line(b) for b in candidates]
+    return "\n".join(lines)
 
 
 def format_book_line(b: dict[str, Any]) -> str:

@@ -15,6 +15,7 @@ import os
 
 from core.config import PROJECT_ROOT
 from core.security.path_policy import OP_WRITE, PathTarget
+from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
     denied_rule_text,
@@ -22,7 +23,6 @@ from core.tools.permission import (
     permission_decision_id,
     permission_placeholder_text,
 )
-from core.tools.base import Tool, ToolResult
 
 
 class BrowserTool(Tool):
@@ -267,18 +267,11 @@ Use web_search for simple lookups; use browser when search results are insuffici
                 )
                 if verdict.action == "allow":
                     return service.navigate(url, tab_index=tab_index, approved_non_public=True)
-                approval = {
-                    "kind": "browser:navigate",
-                    "decision_id": did,
-                    "command": url,
-                    "reason": block_reason,
-                    "tool": self.name,
-                    "targets": [],
-                    "findings": [],
-                    "mode": verdict.action,
-                    "verdict": verdict.action,
-                    "rule": verdict.rule,
-                }
+                approval = self._pending_permission(
+                    url, did, [], [],
+                    kind="browser:navigate", reason=block_reason,
+                    mode=verdict.action, rule=verdict.rule,
+                )
                 if not self._permission_has_channel():
                     if verdict.action == "deny":
                         return ToolResult(denied_rule_text(approval, verdict.rule), error=True)
@@ -474,12 +467,26 @@ Use web_search for simple lookups; use browser when search results are insuffici
             path = screenshot_path or os.path.join(self.cwd, "screenshot.png")
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)
+            target = PathTarget(
+                OP_WRITE, path, "browser.screenshot",
+                resolved=self._path_policy().resolve(path),
+            )
+            gate = self._path_gate([target])
+            if gate:
+                return gate
             return service.screenshot(path, tab_index=tab_index)
 
         elif action == "save_pdf":
             path = pdf_path or os.path.join(self.cwd, "page.pdf")
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)
+            target = PathTarget(
+                OP_WRITE, path, "browser.save_pdf",
+                resolved=self._path_policy().resolve(path),
+            )
+            gate = self._path_gate([target])
+            if gate:
+                return gate
             return service.save_pdf(path, tab_index=tab_index)
 
         elif action == "execute":
@@ -523,10 +530,3 @@ Use web_search for simple lookups; use browser when search results are insuffici
         会切断所有会话共享的 page 池并误伤其他会话。
         """
 
-    def kill_chrome(self) -> None:
-        """终止 Chrome 进程。"""
-        try:
-            from core.browser_service import get_service
-            get_service().kill_chrome()
-        except Exception:
-            pass

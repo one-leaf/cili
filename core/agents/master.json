@@ -1,6 +1,5 @@
 {
   "name": "master",
-  "label": "Master",
   "mode": "interactive",
   "system_prompt": {
     "blocks": [
@@ -290,9 +289,7 @@
   ],
   "streaming": true,
   "mcp": true,
-  "ask_user": true,
   "approval": true,
-  "session_persistence": true,
   "max_iterations": null,
   "max_tokens": 16384
 }

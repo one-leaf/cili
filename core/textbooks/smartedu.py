@@ -76,7 +76,21 @@ GRADE_COVERAGE = {
     "五至六年级": ("五年级", "六年级"),
     "七至九年级": ("七年级", "八年级", "九年级"),
 }
-VOLUME_ORDER = ("上册", "下册", "全一册", "上册、下册")
+
+
+def grade_covers(book_grade: str, selected: str) -> bool:
+    """教材年级标签是否覆盖用户选择的年级（别名/合并册/高中通用）。"""
+    if not selected:
+        return True
+    if book_grade == selected:
+        return True
+    if GRADE_ALIASES.get(book_grade) == selected:
+        return True
+    if selected in GRADE_COVERAGE.get(book_grade, ()):
+        return True
+    # 高中教材统一标「高中年级」，视为覆盖高一/高二/高三
+    return book_grade in ("", "高中年级") and selected in ("高一", "高二", "高三")
+
 
 # 学科模板文件名使用的别名（官方学科名 → 模板命名）
 SUBJECT_ALIASES = {
@@ -281,24 +295,8 @@ class OfficialBook:
     url: str              # 平台详情页
 
     @property
-    def book_key(self) -> str:
-        return self.content_id
-
-    @property
     def system(self) -> str:
         return "五四制" if "五•四学制" in self.stage else "六三制"
-
-    @property
-    def subject_raw(self) -> str:
-        return self.subject
-
-    @property
-    def edition_raw(self) -> str:
-        return self.edition
-
-    @property
-    def semester(self) -> str:
-        return self.volume
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -355,14 +353,6 @@ class OfficialCatalog:
     @property
     def source_commit(self) -> str:
         return self.fetched_at
-
-    @property
-    def raw_base(self) -> str:
-        return ""
-
-    @property
-    def default_book_types(self) -> tuple[str, ...]:
-        return ("textbook",)
 
     def _build_flat_names(self) -> dict[str, str]:
         names: dict[str, str] = {}
@@ -497,17 +487,7 @@ class OfficialCatalog:
 
     def grade_covers(self, book_grade: str, selected: str) -> bool:
         """判断教材的年级标签是否覆盖用户选择的年级（别名、合并册、高中通用）。"""
-        if not selected:
-            return True
-        if book_grade == selected:
-            return True
-        if GRADE_ALIASES.get(book_grade) == selected:
-            return True
-        if selected in GRADE_COVERAGE.get(book_grade, ()):
-            return True
-        if book_grade in ("", "高中年级") and selected in ("高一", "高二", "高三"):
-            return True
-        return False
+        return grade_covers(book_grade, selected)
 
     def get_by_key(self, content_id: str) -> OfficialBook | None:
         return self._by_key.get(content_id)
@@ -711,14 +691,6 @@ def get_catalog(*, force_refresh: bool = False) -> OfficialCatalog:
         catalog = OfficialCatalog(data)
         _set_memory(catalog, time.time())
         return catalog
-
-
-def warmup() -> None:
-    """启动时预热：后台抓取一次，不阻塞启动流程。"""
-    try:
-        get_catalog()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[smartedu] 预热失败: {e}")
 
 
 def fetch_book_source(content_id: str) -> dict[str, Any]:

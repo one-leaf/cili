@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 HANDOFF_TEMPLATE = """请把上面的对话压缩成一份交接文档，供一个新的 Agent 接手继续执行。
@@ -94,8 +93,3 @@ def default_branch_name(
     return base
 
 
-def write_handoff_file(path: Path, doc: str) -> None:
-    """Persist the handoff document next to the new session/exec dir."""
-    from core.fs_utils import atomic_write_text
-
-    atomic_write_text(Path(path), doc)

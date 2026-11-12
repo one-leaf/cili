@@ -72,17 +72,11 @@ class SessionRegistry:
         hosted = self._hosted.get(key)
         return hosted.runner if hosted else None
 
-    def hosted(self, key: str) -> HostedSession | None:
-        return self._hosted.get(key)
-
     def keys(self) -> list[str]:
         return list(self._hosted.keys())
 
     def items(self) -> list[tuple[str, SessionRunner]]:
         return [(k, h.runner) for k, h in self._hosted.items()]
-
-    def values(self) -> list[SessionRunner]:
-        return [h.runner for h in self._hosted.values()]
 
     def __len__(self) -> int:
         return len(self._hosted)

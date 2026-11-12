@@ -215,7 +215,3 @@ class OutboundSender:
             queue.pop(client_id, None)
         if not queue:
             self._deferred.pop(user_id, None)
-
-    def drop_deferred(self, user_id: str) -> None:
-        """清掉某用户的 defer 队列（登出/重启时用）。"""
-        self._deferred.pop(user_id, None)

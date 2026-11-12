@@ -55,7 +55,7 @@ def _rule(decision="allow", match_type="prefix", value="git status",
 
 
 def _rules(tmp_path, rules):
-    path = tmp_path / "approval_rules.json"
+    path = tmp_path / "permission_rules.json"
     path.write_text(json.dumps({"version": 1, "rules": rules, "constraints": []},
                                ensure_ascii=False), encoding="utf-8")
     return PermissionRules(path, workspace_root=str(tmp_path))
@@ -347,7 +347,7 @@ class TestRuleGeneration:
 
 class TestLegacyApprovalFile:
     def test_rule_without_decision_defaults_allow(self, tmp_path):
-        path = tmp_path / "approval_rules.json"
+        path = tmp_path / "permission_rules.json"
         path.write_text(json.dumps({
             "version": 1,
             "rules": [{

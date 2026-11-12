@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from dataclasses import dataclass
 
 from core.config import PermissionConfig
-from core.fs_utils import normalize_bash_path
+from core.fs_utils import is_path_within, normalize_bash_path, os_temp_root
 from core.security.permission_policy import PermissionPolicy
 from core.security.protected_paths import teen_path_verdict
 
@@ -22,28 +21,6 @@ logger = logging.getLogger(__name__)
 OP_WRITE = "write"
 OP_DELETE = "delete"
 OP_READ = "read"
-
-_DYN_KEY_PREFIX = "dyn"
-
-
-def os_temp_root() -> str:
-    """进程环境下的临时目录根（realpath 后），作为路径白名单安全区。"""
-    for var in ("TMP", "TEMP"):
-        v = os.environ.get(var)
-        if v:
-            return os.path.realpath(v)
-    return os.path.realpath(tempfile.gettempdir())
-
-
-def is_path_within(resolved: str, root: str) -> bool:
-    """resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。"""
-    try:
-        return os.path.normcase(
-            os.path.commonpath([resolved, root])
-        ) == os.path.normcase(root)
-    except ValueError:
-        return False
-
 
 @dataclass
 class PathTarget:
@@ -87,15 +64,12 @@ class PathPolicy:
         permission_policy: PermissionPolicy | None = None,
         permission_store=None,
         permission_rules=None,
-        # 过渡参数：旧调用点仍在传 approval_store / approval_rules
-        approval_store=None,
-        approval_rules=None,
     ):
         self.cwd = os.path.abspath(cwd or workspace_root)
         self.workspace_root = os.path.realpath(workspace_root)
         self.temp_root = os_temp_root()
-        store = permission_store if permission_store is not None else approval_store
-        rules = permission_rules if permission_rules is not None else approval_rules
+        store = permission_store
+        rules = permission_rules
         if rules is not None and not hasattr(rules, "evaluate_path"):
             rules = None
         self.permission_policy = permission_policy or PermissionPolicy(
@@ -250,6 +224,3 @@ class PathPolicy:
             "rule": verdict.rule,
             "tool": tool,
         }
-
-    # 旧名兼容（过渡）
-    approval_meta = permission_meta

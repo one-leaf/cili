@@ -119,8 +119,6 @@ class SessionRunner(BaseSessionRunner):
         exec_id: str = "",
         permission_store=None,
         permission_rules=None,
-        approval_store=None,
-        approval_rules=None,
         max_consecutive_failures: int | None = None,
         delegation_depth: int = 0,
         run_mode: str | None = None,
@@ -259,8 +257,8 @@ class SessionRunner(BaseSessionRunner):
             self.default_sink = OutputSink()
             self.sink = self.default_sink
         else:
-            self.permission_store = permission_store if permission_store is not None else approval_store
-            self.permission_rules = permission_rules if permission_rules is not None else approval_rules
+            self.permission_store = permission_store
+            self.permission_rules = permission_rules
             self.max_consecutive_failures = (
                 max_consecutive_failures
                 if max_consecutive_failures is not None
@@ -282,17 +280,14 @@ class SessionRunner(BaseSessionRunner):
             workspace_root=self._cwd_init, cwd=self._cwd_init,
             session_dir=init_session_dir,
         )
-        # 过渡别名（新代码使用 permission_*）
-        self.approval_store = self.permission_store
-        self.approval_rules = self.permission_rules
-        self.approval_judge = self.permission_judge
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
         # prompt section 缓存：context 块等动态内容 session 内只算一次
         self._prompt_section_cache: dict[str, str] = {}
-        # autonomous 用缓存的 system prompt（interactive 每轮在 run 入口重建）
-        self._system_prompt = self._build_system_prompt()
+        # autonomous 用缓存的 system prompt（interactive 每轮在 run 入口重建，
+        # 构造时构建只会白扫一次 skills/memory）
+        self._system_prompt = self._build_system_prompt() if self._mode == "autonomous" else []
 
     # ─── mode 专属初始化 ────────────────────────────────────────────
 
@@ -679,9 +674,6 @@ class SessionRunner(BaseSessionRunner):
                 workspace_root=self._cwd_init, cwd=self._cwd_init,
                 session_dir=getattr(self, "session_dir", None),
             )
-            self.approval_store = self.permission_store
-            self.approval_rules = self.permission_rules
-            self.approval_judge = self.permission_judge
             old_client.close()
             self._rebuild_tools()
         except Exception as e:
@@ -968,9 +960,6 @@ class SessionRunner(BaseSessionRunner):
         self._sync_to_session()
         self.session.save()
 
-    # 过渡别名（新代码使用 _handle_permission_required）
-    _handle_approval_required = _handle_permission_required
-
     def _resume_loop(self, sink: OutputSink | None = None) -> None:
         """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。
 
@@ -1086,15 +1075,6 @@ class SessionRunner(BaseSessionRunner):
         else:
             logger.warning(f"Session not found: {session_id}")
 
-    def reset(self) -> None:
-        """Clear conversation history."""
-        self.messages.clear()
-        self.session.clear()
-        # 清除 prompt section 缓存，下次构建时重新计算
-        self._prompt_section_cache.clear()
-        # 重置缓存状态追踪（新会话无历史基线）
-        self.cache_state.reset()
-
     def get_usage(self) -> dict[str, float]:
         """返回 usage 统计（只读，不回写 session）。
 
@@ -1103,16 +1083,6 @@ class SessionRunner(BaseSessionRunner):
         速度由 ConversationStore 按调用计速并随 _usage 持久化，直接读取即可。
         """
         return self.context.get_usage()
-
-    def compact(self) -> tuple[int, int]:
-        """Manually compress conversation history."""
-        result = self._perform_full_compact(3)
-        # 压缩后清除 prompt section 缓存
-        self._prompt_section_cache.clear()
-        # 手动 compact 等同于 L2，重置缓存基线后标记 L2 供下次失效诊断
-        self.cache_state.reset_after_compact()
-        self.cache_state.on_compression(2)
-        return result
 
     def cleanup(self) -> None:
         """Clean up resources before exit."""
@@ -1185,9 +1155,6 @@ class SessionRunner(BaseSessionRunner):
             result["_meta"].pop(META_KEY, None)
             result["_meta"].pop("completed", None)
 
-    # 过渡别名
-    _downgrade_approval_result = _downgrade_permission_result
-
     def _wrapup_timeout_summary(self) -> str:
         """额度耗尽时兜底生成一次执行总结。
 
@@ -1199,9 +1166,11 @@ class SessionRunner(BaseSessionRunner):
         # 消息预处理与 _call_llm_non_streaming 一致（此处已 pad，复用共享管道）
         message_objects = self._prepare_messages_for_llm(pad_dangling=False)
 
+        # interactive 不在构造时预建 system prompt，兜底总结时按需构建
+        system_prompt = self._system_prompt or self._build_system_prompt()
         response = self.client.chat(
             messages=message_objects,
-            system=self._system_prompt,
+            system=system_prompt,
             session_id=self.master_session_id,
         )
         if response.usage:

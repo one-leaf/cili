@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 BUSY_RETRIES = 12
 BUSY_RETRY_INTERVAL = 0.5
 
-# QQ 的 message_type：0=普通文本，103=引用消息（正文在 msg_elements 里）
-_MSG_TYPE_TEXT = 0
+# QQ 的 message_type：103=引用消息（正文在 msg_elements 里）
 _MSG_TYPE_QUOTED = 103
 
 
@@ -245,6 +244,9 @@ class InboundHandler:
                 "c2c", openid, text, reply_to=msg_id,
                 markdown=self._rt.cfg.msg_format == "markdown",
             )
+            # 普通文本回复同样消耗被动回复配额，必须记账，否则后续文件发送会超限
+            if self._rt.limiter is not None:
+                self._rt.limiter.record(msg_id)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[qq/inbound] 发送文本失败：{e}")
 

@@ -488,6 +488,9 @@ class ShellMixin:
 
             # 收集输出，同时写入流文件
             output_parts: list[str] = []
+            output_chars = 0
+            # 持续输出的命令可能永不进入 queue.Empty 分支，缓冲必须有硬上限
+            output_buffer_limit = max(max_chars * 2, 1_000_000)
             start_time = time.monotonic()
             timed_out = False
 
@@ -517,7 +520,23 @@ class ShellMixin:
                         continue
                     if chunk is None:
                         break  # EOF
+                    # 超时检查不能只放在 queue.Empty 分支：命令持续产输出时
+                    # get(timeout=0.5) 永不超时，此前 `yes` 类命令会永久挂住。
+                    if time.monotonic() - start_time > timeout:
+                        timed_out = True
+                        self._kill_process_tree(proc)
+                        break
                     output_parts.append(chunk)
+                    output_chars += len(chunk)
+                    if output_chars > output_buffer_limit:
+                        dropped = 0
+                        while output_chars > output_buffer_limit and len(output_parts) > 1:
+                            old = output_parts.pop(0)
+                            output_chars -= len(old)
+                            dropped += len(old)
+                        if dropped:
+                            output_parts.insert(0, f"... ({dropped:,} chars dropped)\n")
+                            output_chars += len(output_parts[0])
                     if f_out:
                         try:
                             f_out.write(chunk)
@@ -565,12 +584,7 @@ class ShellMixin:
 
             # Truncate by character count (primary limit for context window)
             if len(output) > max_chars:
-                # Find a safe truncation point at line boundary
-                truncated = output[:max_chars]
-                last_newline = truncated.rfind('\n')
-                if last_newline > max_chars * 0.9:  # Only use if close to limit
-                    truncated = truncated[:last_newline]
-                output = truncated + f"\n\n... (truncated from {len(output):,} to {max_chars:,} chars)"
+                output = self.truncate_result(output, max_chars)
             else:
                 # Also truncate by line count if under char limit
                 lines = output.split('\n')

@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 
 from core.security.shell_paths import normalize_shell_path
-from core.tools.base import _GIT_BASH_PATH, ToolResult, _to_bash_path
-from core.tools.shell_command import ShellCommandTool
+from core.tools.base import ToolResult, _to_bash_path
+from core.tools.shell_command import COMMON_DESTRUCTIVE_PATTERNS, ShellCommandTool
 
 # 静态证据模式（原 ask/deny 黑名单转为判定证据，设计 §3.2.4 / §3.3.2）：
 # 命中不再拒绝，而是作为 static_findings 交给 lite 判定器，由判定器结合上下文
@@ -17,11 +17,8 @@ _PATTERNS = [
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+/", re.I),         "system-destructive",   "rm -rf / (destructive recursive delete)"),
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+\*", re.I),        "system-destructive",   "rm -rf * (destructive wildcard delete)"),
     (re.compile(r"\brm\s+(-\w+\s+)*-[rf]+\s+~", re.I),         "system-destructive",   "rm -rf ~ (destructive home dir delete)"),
-    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I),                "system-destructive",   "format (disk format)"),
     (re.compile(r"\bdd\s+.*\bof=/dev/", re.I),                 "system-destructive",   "dd of=/dev/ (device write)"),
     (re.compile(r"\bmkfs\b", re.I),                            "system-destructive",   "mkfs (filesystem format)"),
-    (re.compile(r"\bshutdown\b", re.I),                        "system-destructive",   "shutdown"),
-    (re.compile(r"\breboot\b", re.I),                          "system-destructive",   "reboot"),
     (re.compile(r":\(\)\s*\{", re.I),                          "system-destructive",   "fork bomb"),
     (re.compile(r"\bcd\s+\.\.\s*&&\s*rm\s", re.I),             "system-destructive",   "cd .. && rm (parent dir delete)"),
     (re.compile(r">\s*/dev/sd[a-z]", re.I),                    "system-destructive",   "redirect to disk device"),
@@ -31,9 +28,7 @@ _PATTERNS = [
     # Cross-tool isolation: use the pwsh tool instead of calling from bash
     (re.compile(r"(?<![a-zA-Z0-9_-])(?:powershell|pwsh)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
      "cross-tool-isolation", "PowerShell invocation from bash (use the pwsh tool instead)"),
-    (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
-     "cross-tool-isolation", "cmd/WSL invocation from bash (cross-tool isolation)"),
-]
+] + COMMON_DESTRUCTIVE_PATTERNS
 
 
 class BashTool(ShellCommandTool):
@@ -78,4 +73,4 @@ class BashTool(ShellCommandTool):
         return self._run_bash(command, timeout=timeout)
 
     def _run_background(self, command: str) -> ToolResult:
-        return self._start_background_task(command, shell_path=_GIT_BASH_PATH)
+        return self._start_background_task(command)

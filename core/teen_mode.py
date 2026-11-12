@@ -583,7 +583,11 @@ class TeenModeManager:
         last_enabled = None
         for entry in reversed(self.read_audit(limit=500)):
             if entry.get("event") in ("enable", "disable", "startup_state_change"):
-                last_enabled = bool(entry.get("enabled"))
+                # disable 事件在真正关闭前写审计，快照仍是 enabled=True；
+                # 不能把它当成"上次状态为开启"，否则正常关闭后每次重启都误报外部干预
+                last_enabled = (
+                    entry.get("event") != "disable" and bool(entry.get("enabled"))
+                )
                 break
         current = self.is_enabled()
         if last_enabled and not current:

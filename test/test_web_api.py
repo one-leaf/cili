@@ -399,7 +399,7 @@ class TestAskUserDirectInput:
             "command": "rm -rf /tmp/x",
             "reason": "destructive recursive delete",
         })
-        rules = PermissionRules(tmp_path / "approval_rules.json")
+        rules = PermissionRules(tmp_path / "permission_rules.json")
         agent = SimpleNamespace(session=sm, permission_store=store, permission_rules=rules)
         return agent, tool_use_id, store, rules
 
@@ -414,7 +414,7 @@ class TestAskUserDirectInput:
         assert store.is_approved(did)
         assert store.pending is None
         # 规则已落盘（含命令），新实例回灌后仍放行
-        path = tmp_path / "approval_rules.json"
+        path = tmp_path / "permission_rules.json"
         assert path.exists()
         assert "rm -rf /tmp/x" in path.read_text(encoding="utf-8")
         reloaded = PermissionRules(path)
@@ -430,7 +430,7 @@ class TestAskUserDirectInput:
         assert store.is_approved(did)
         assert store.pending is None
         # 仅会话级：不落盘
-        assert not (tmp_path / "approval_rules.json").exists()
+        assert not (tmp_path / "permission_rules.json").exists()
 
     def test_inject_answer_remember_persists_path_kind(self, tmp_path):
         """路径审批（kind=path:write）经「一直允许」后，kind 落盘并回灌为路径规则。"""
@@ -445,13 +445,13 @@ class TestAskUserDirectInput:
             "reason": "工作区外写入",
             "kind": "path:write",
         })
-        rules = PermissionRules(tmp_path / "approval_rules.json")
+        rules = PermissionRules(tmp_path / "permission_rules.json")
         assert inject_ask_user_answer(sm, tool_use_id, f"批准写入 {REMEMBER_LABEL}",
                                       store, rules) is True
         assert store.is_approved("pathwrite1234567890ab")
         assert store.pending is None
         # 规则已落盘（含 kind），新实例回灌后仍按路径规则放行
-        path = tmp_path / "approval_rules.json"
+        path = tmp_path / "permission_rules.json"
         assert path.exists()
         assert "path:write" in path.read_text(encoding="utf-8")
         reloaded = PermissionRules(path)
@@ -468,7 +468,7 @@ class TestAskUserDirectInput:
                                       f"批准命令 {REJECT_LABEL}", store, rules) is True
         assert not store.is_approved(did)
         assert store.pending is None
-        assert not (tmp_path / "approval_rules.json").exists()
+        assert not (tmp_path / "permission_rules.json").exists()
 
     def test_send_message_resumes_ask_user_with_other_answer(self, monkeypatch, tmp_path):
         """send_message 检测到待回答 ask_user 时：注入输入为"其他"答案并 resume，

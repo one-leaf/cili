@@ -194,42 +194,20 @@ class ToolResultBlock:
 
     Uses Anthropic format (tool_use_id) for session storage.
     This is both a content block AND the content of a tool result message.
-
-    Extended fields for delegated (Worker/Lite sub-agent) execution:
-    - exec_id: sub-agent execution ID
-    - iterations: number of iterations
-    - message_count: number of messages
-    - duration_seconds: execution duration
     """
 
     tool_use_id: str = ""
     content: str | list[dict] = ""  # str for plain text, list[dict] for multimodal (text + image blocks)
     is_error: bool = False
 
-    # sub-agent extension fields (optional)
-    exec_id: str = ""
-    iterations: int = 0
-    message_count: int = 0
-    duration_seconds: float = 0
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization (Anthropic format)."""
-        result: dict[str, Any] = {
+        return {
             "type": "tool_result",
             "tool_use_id": self.tool_use_id,
             "content": self.content,
             "is_error": self.is_error,
         }
-        # Include sub-agent fields if present
-        if self.exec_id:
-            result["exec_id"] = self.exec_id
-        if self.iterations:
-            result["iterations"] = self.iterations
-        if self.message_count:
-            result["message_count"] = self.message_count
-        if self.duration_seconds:
-            result["duration_seconds"] = self.duration_seconds
-        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolResultBlock:
@@ -245,10 +223,6 @@ class ToolResultBlock:
             tool_use_id=data.get("tool_use_id", data.get("tool_call_id", "")),
             content=content,
             is_error=data.get("is_error", False),
-            exec_id=data.get("exec_id", ""),
-            iterations=data.get("iterations", 0),
-            message_count=data.get("message_count", 0),
-            duration_seconds=data.get("duration_seconds", 0),
         )
 
 
@@ -387,9 +361,6 @@ class Message:
     - "assistant": model output
     - "tool": tool execution result (separate from user message)
 
-    Compression fields (message-level, aligned with pi-main/harness):
-    - compacted: tool results compressed, send placeholder to LLM
-    - invalidated: message invalid, exclude from filtering
     """
 
     role: str  # "user" | "assistant" | "tool"
@@ -400,10 +371,6 @@ class Message:
     model: str = ""
     usage: UsageData | None = None
     stop_reason: str = ""
-
-    # Compression fields (message-level)
-    compacted: bool = False  # Tool results compressed, send placeholder to LLM
-    invalidated: bool = False  # Message invalid, exclude from filtering
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization."""
@@ -426,12 +393,6 @@ class Message:
             result["usage"] = self.usage.to_dict()
         if self.stop_reason:
             result["stop_reason"] = self.stop_reason
-
-        # Compression fields (only if True, to save space)
-        if self.compacted:
-            result["compacted"] = True
-        if self.invalidated:
-            result["invalidated"] = True
 
         return result
 
@@ -456,8 +417,6 @@ class Message:
             model=data.get("model", ""),
             usage=usage,
             stop_reason=data.get("stop_reason", ""),
-            compacted=data.get("compacted", False),
-            invalidated=data.get("invalidated", False),
         )
 
 
@@ -578,10 +537,6 @@ class LLMResponse:
     def get_tool_calls(self) -> list[ToolCallBlock]:
         """Extract all tool call blocks."""
         return [b for b in self.content if isinstance(b, ToolCallBlock)]
-
-    def has_tool_calls(self) -> bool:
-        """Check if response contains any tool calls."""
-        return any(isinstance(b, ToolCallBlock) for b in self.content)
 
     def content_as_dicts(self) -> list[dict[str, Any]]:
         """Convert content blocks to dicts for serialization."""

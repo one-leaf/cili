@@ -42,20 +42,10 @@ class ToolResult:
         is_error: bool = False,
         meta: dict | None = None,
         completed: bool | None = None,
-        # Deprecated alias (backward compat)
-        wait_for_user: bool = False,
     ):
         # Normalize error flags
         self.is_error = is_error or error
-
-        # Handle both old (wait_for_user) and new (completed) interface
-        # wait_for_user=True → completed=False (not yet done, loop should exit)
-        if completed is not None:
-            self.completed = completed
-        elif wait_for_user:
-            self.completed = False
-        else:
-            self.completed = None
+        self.completed = completed
 
         # Convert old interface to new interface
         if blocks is not None:
@@ -89,11 +79,6 @@ class ToolResult:
     def error(self) -> bool:
         """Backward compat alias for is_error."""
         return self.is_error
-
-    @property
-    def wait_for_user(self) -> bool:
-        """Backward compat: completed=False means wait_for_user=True."""
-        return self.completed is False
 
     def __repr__(self) -> str:
         return f"ToolResult(blocks={self.blocks!r}, is_error={self.is_error})"

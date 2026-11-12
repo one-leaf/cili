@@ -82,7 +82,7 @@ def test_prefixed_rule_persisted_and_matched(tmp_path):
     assert result.rule is not None
     assert result.rule["match"]["type"] == "prefix"
 
-    rules = PermissionRules(tmp_path / "approval_rules.json")
+    rules = PermissionRules(tmp_path / "permission_rules.json")
     added = rules.add_rule(result.rule, "workspace")
     assert added is not None
     assert rules.evaluate_path(
@@ -123,7 +123,7 @@ def test_prefixed_path_verdict_hits_rule(tmp_path):
         kind="path:write", tool="python", action=target.display,
         suggested=target.suggested_rule, granted_by="user",
     )
-    rules = PermissionRules(tmp_path / "approval_rules.json")
+    rules = PermissionRules(tmp_path / "permission_rules.json")
     rules.add_rule(built.rule, "workspace")
     policy = PathPolicy(
         workspace_root=str(tmp_path), cwd=str(tmp_path),
@@ -136,7 +136,7 @@ def test_prefixed_path_verdict_hits_rule(tmp_path):
 
 
 def test_relative_path_rule_is_rejected(tmp_path):
-    rules = PermissionRules(tmp_path / "approval_rules.json")
+    rules = PermissionRules(tmp_path / "permission_rules.json")
     rule = {
         "kind": "path:write", "decision": "allow", "tool": "python",
         "match": {"type": "prefix", "value": "f'.cili/tmp"},

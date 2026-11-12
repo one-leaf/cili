@@ -199,14 +199,6 @@ const AgentCardStore = (() => {
         if (el) model.bodyEl.appendChild(el);
     }
 
-    function _scrollIfNearBottom() {
-        const el = document.getElementById('chat-messages');
-        if (!el) return;
-        if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
-            el.scrollTop = el.scrollHeight;
-        }
-    }
-
     function _renderDetail(model) {
         if (!model.bodyEl) return;
         model.bodyEl.innerHTML = '';
@@ -219,7 +211,7 @@ const AgentCardStore = (() => {
             }
             _appendBlock(model, block);
         });
-        _scrollIfNearBottom();
+        scrollChatIfNearBottom();
     }
 
     function _trimBlocks(model) {
@@ -245,7 +237,7 @@ const AgentCardStore = (() => {
                 _appendEpochDivider(model, block.epoch);
             }
             _appendBlock(model, block);
-            _scrollIfNearBottom();
+            scrollChatIfNearBottom();
         }
     }
 
@@ -307,7 +299,7 @@ const AgentCardStore = (() => {
                 block.preEl = pre;
             }
             if (block.preEl) block.preEl.textContent = block.output;
-            _scrollIfNearBottom();
+            scrollChatIfNearBottom();
         }
     }
 
@@ -603,7 +595,6 @@ const AgentCardStore = (() => {
         onEpochStarted,
         onComplete,
         alignAfterReconnect,
-        get: execId => MODELS.get(execId),
     };
 })();
 

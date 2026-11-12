@@ -80,17 +80,11 @@ ul, ol {
 
 /* 输入区 */
 [data-theme="dark"] .chat-input-area { background: #18181b; border-top-color: var(--border-color); }
-[data-theme="dark"] .chat-input-box { background: #27272a; border-color: var(--border-color); color: var(--text-color); }
-[data-theme="dark"] .chat-input-box::placeholder { color: #71717a; }
-
-/* 顶栏 */
-[data-theme="dark"] .chat-header { background: #18181b; border-bottom-color: var(--border-color); }
 
 /* 会话列表 */
 [data-theme="dark"] .session-item { color: var(--text-color); }
 [data-theme="dark"] .session-item:hover { background: var(--hover-bg); }
 [data-theme="dark"] .session-item.active { background: #3f3f46; }
-[data-theme="dark"] .session-time { color: #71717a; }
 
 /* 按钮 */
 [data-theme="dark"] .workspace-controls select {
@@ -138,7 +132,6 @@ ul, ol {
 }
 
 /* 工具调用/结果 */
-[data-theme="dark"] .tool-use-title { color: #fbbf24; }
 [data-theme="dark"] .tool-result pre { background: var(--tool-result-bg); }
 
 /* 模态框 */
@@ -167,7 +160,6 @@ ul, ol {
     border: 1px solid #3f3f46;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
-[data-theme="dark"] .panel-menu-item:hover { background: #3f3f46; }
 
 /* 工具流式输出 */
 [data-theme="dark"] .tool-streaming-bubble {
@@ -183,8 +175,6 @@ ul, ol {
 [data-theme="dark"] .sa-title { color: #e4e4e7; }
 [data-theme="dark"] .sa-task { color: #a1a1aa; }
 [data-theme="dark"] .sa-meta { color: #71717a; }
-[data-theme="dark"] .sa-loading { color: #a1a1aa; }
-[data-theme="dark"] .sa-error { color: #ef4444; }
 
 /* Todo 进度条 */
 [data-theme="dark"] .todo-progress-bar { background-color: #3f3f46; }
@@ -270,18 +260,11 @@ ul, ol {
 [data-theme="dark"] .settings-tab { color: var(--text-light); }
 [data-theme="dark"] .settings-tab.active { color: var(--primary-color); }
 
-/* 思考块 */
-[data-theme="dark"] .thinking-content { background: #1c1917; border-color: var(--border-color); color: var(--text-light); }
-
-/* 文件管理器 */
-[data-theme="dark"] .file-tree-item:hover { background: var(--hover-bg); }
-
 /* 多选模式 */
 [data-theme="dark"] .session-item.selected { background: #292524; }
 
 /* 记忆管理 */
 [data-theme="dark"] .memory-footer { background: #18181b; border-top-color: var(--border-color); }
-[data-theme="dark"] .memory-item { background: #27272a; border-color: var(--border-color); }
 
 /* Mermaid 错误提示 */
 [data-theme="dark"] .mermaid-error {
@@ -852,48 +835,6 @@ body {
 
 [data-theme="dark"] .model-description code {
     background: rgba(255, 255, 255, 0.1);
-}
-
-/* Temperature slider */
-.temperature-slider {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.temperature-slider input[type="range"] {
-    flex: 1;
-    height: 6px;
-    -webkit-appearance: none;
-    appearance: none;
-    background: #ddd;
-    border-radius: 3px;
-    outline: none;
-}
-
-.temperature-slider input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--primary-color);
-    cursor: pointer;
-}
-
-.temperature-slider input[type="range"]::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--primary-color);
-    cursor: pointer;
-    border: none;
-}
-
-.temp-label {
-    font-size: 12px;
-    color: var(--text-light);
-    white-space: nowrap;
 }
 
 .input-with-icon {
@@ -2353,22 +2294,6 @@ mjx-container {
     background-color: #27272a;
 }
 
-.sa-summary {
-    padding: 8px 12px;
-    background-color: #ffffff;
-    border-radius: 4px;
-    border: 1px solid #e1e4e8;
-    margin-bottom: 12px;
-    font-size: 13px;
-    color: #2c3e50;
-}
-
-[data-theme="dark"] .sa-summary {
-    background-color: #18181b;
-    border-color: #3f3f46;
-    color: #e4e4e7;
-}
-
 .sa-messages {
     max-height: 400px;
     overflow-y: auto;
@@ -2446,18 +2371,6 @@ mjx-container {
 [data-theme="dark"] .sa-msg pre {
     background-color: #18181b;
     color: #e4e4e7;
-}
-
-.sa-loading,
-.sa-error {
-    text-align: center;
-    padding: 12px;
-    color: #7f8c8d;
-    font-size: 12px;
-}
-
-.sa-error {
-    color: #e74c3c;
 }
 
 /* ===== Todo List Styles ===== */
@@ -3888,15 +3801,6 @@ details.p-headers-panel .p-headers {
     flex-wrap: wrap;
     gap: 14px;
     margin-bottom: 10px;
-}
-
-.wizard-checkbox-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 8px;
-    padding: 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
 }
 
 .wizard-subject-list {

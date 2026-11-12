@@ -107,7 +107,11 @@ class SessionSearchTool(Tool):
                 lines.append(f"- [{m['role']} #{m['seq']}] {m['text']}")
             lines.append("")
         lines.append(f"Scanned {scanned} message(s) across {len(sessions)} session(s).")
-        return ToolResult("\n".join(lines))
+        # SEC-18：跨会话消息属于外部不可信数据，与 message_bus 保持一致
+        from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
+        return ToolResult(
+            UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END
+        )
 
     @staticmethod
     def _extract_text(content: object) -> str:

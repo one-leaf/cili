@@ -100,19 +100,19 @@ class TestCompilerDiscovery:
 class TestErrorExtraction:
     def test_latex_error_bang(self, tool):
         out = "line1\n! Undefined control sequence.\nl.1 \\nope\n"
-        assert tool._extract_error(out, "pdflatex") == "! Undefined control sequence."
+        assert tool._extract_error(out) == "! Undefined control sequence."
 
     def test_tectonic_error(self, tool):
         out = "some output\nError: cannot find package\nmore"
-        assert "cannot find package" in tool._extract_error(out, "tectonic")
+        assert "cannot find package" in tool._extract_error(out)
 
     def test_missing_package(self, tool):
         out = "! LaTeX Error: File `nope.sty' not found.\nPackage xxx not found."
-        assert "not found" in tool._extract_error(out, "pdflatex")
+        assert "not found" in tool._extract_error(out)
 
     def test_falls_back_to_last_lines(self, tool):
         out = "a\nb\nc\n"
-        assert tool._extract_error(out, "pdflatex") == "a\nb\nc"
+        assert tool._extract_error(out) == "a\nb\nc"
 
 
 class TestFormatSize:

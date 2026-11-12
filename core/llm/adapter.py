@@ -117,8 +117,6 @@ def merge_consecutive_same_role(messages: list[Message]) -> list[Message]:
         new_msg.provider = prev.provider or msg.provider
         new_msg.model = prev.model or msg.model
         new_msg.stop_reason = prev.stop_reason or msg.stop_reason
-        new_msg.compacted = prev.compacted or msg.compacted
-        new_msg.invalidated = prev.invalidated or msg.invalidated
         if prev.usage and msg.usage:
             pu, mu = prev.usage, msg.usage
             new_msg.usage = UsageData(

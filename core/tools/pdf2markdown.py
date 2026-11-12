@@ -317,13 +317,11 @@ class PDF2MarkdownTool(Tool):
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
                  session=None, config: Config | None = None,
                  permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None,
                  tmp_dir: str | None = None):
         super().__init__(
             cwd=cwd, workspace_uuid=workspace_uuid, session=session,
             permission_store=permission_store, permission_rules=permission_rules,
             permission_policy=permission_policy,
-            approval_store=approval_store, approval_rules=approval_rules,
         )
         self._config = config
         # 超限 PDF 分割临时目录：默认 cwd 下的 .cili/tmp（与系统临时目录约定一致），外部调用可覆盖
@@ -545,8 +543,7 @@ class PDF2MarkdownTool(Tool):
             max_pages=_AGENT_MAX_PAGES,
         )
 
-    def _build_result(self, markdown: str, output_path: str, api_mode: str,
-                      fallback_reason: str = "") -> ToolResult:
+    def _build_result(self, markdown: str, output_path: str, api_mode: str) -> ToolResult:
         """Build successful result with metadata."""
         char_count = len(markdown)
         line_count = markdown.count('\n') + 1
@@ -563,9 +560,6 @@ class PDF2MarkdownTool(Tool):
             f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
         )
         meta = {"output_path": output_path, "api_mode": api_mode}
-        if fallback_reason:
-            output += f"\n\n[降级] Precision API 失败，已回退免费 Agent API。原因: {fallback_reason}"
-            meta["fallback_reason"] = fallback_reason
         return ToolResult(output, meta=meta)
 
     def _save_markdown(self, content: str, output_path: str) -> None:

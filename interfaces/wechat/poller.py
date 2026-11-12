@@ -148,16 +148,6 @@ class Poller:
     def running(self) -> bool:
         return self._running
 
-    @property
-    def consecutive_failures(self) -> int:
-        return self._consecutive_failures
-
-    def seen_count(self) -> int:
-        return len(self._processed_ids)
-
-    def mark_seen(self, message_id: str) -> bool:
-        """测试/外部注入用：见 ``_seen``。"""
-        return self._seen(message_id)
 
 
 __all__ = ["Poller", "MAX_CONSECUTIVE_FAILURES", "BACKOFF_DELAY_S", "RETRY_DELAY_S"]

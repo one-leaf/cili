@@ -171,7 +171,7 @@ class TestExtractPwsh:
 
 class TestBashExecuteGate:
     def _tool(self, cwd, store=None):
-        return BashTool(cwd=cwd, approval_store=store)
+        return BashTool(cwd=cwd, permission_store=store)
 
     def test_outside_write_placeholder(self, test_workspace, tmp_path):
         tool = self._tool(test_workspace, PermissionStore())
@@ -205,7 +205,7 @@ class TestBashExecuteGate:
         store = PermissionStore()
         tool = self._tool(test_workspace, store)
         outside = tmp_path / "o.txt"
-        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, approval_store=store)
+        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, permission_store=store)
         did = policy.decision_id(PathTarget(OP_WRITE, str(outside), resolved=policy.resolve(str(outside))))
         store.approve(did, str(outside), kind="path:write")
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran"))
@@ -254,7 +254,7 @@ class TestBashExecuteGate:
 
 class TestPwshExecuteGate:
     def test_outside_remove_placeholder(self, test_workspace, tmp_path):
-        tool = PwshTool(cwd=test_workspace, approval_store=PermissionStore())
+        tool = PwshTool(cwd=test_workspace, permission_store=PermissionStore())
         outside = tmp_path / "o.txt"
         result = tool.execute(command=f"Remove-Item {outside}", timeout=5)
         assert result.completed is False
@@ -263,7 +263,7 @@ class TestPwshExecuteGate:
         assert any(not t["inside_workspace"] and t["decision_id"] for t in targets)
 
     def test_inside_write_runs(self, test_workspace, monkeypatch):
-        tool = PwshTool(cwd=test_workspace, approval_store=PermissionStore())
+        tool = PwshTool(cwd=test_workspace, permission_store=PermissionStore())
         monkeypatch.setattr(tool, "_run_pwsh", lambda command, timeout: ToolResult("ran"))
         result = tool.execute(command="New-Item -ItemType File out.txt", timeout=5)
         assert result.output == "ran"
@@ -299,16 +299,16 @@ class TestTempZoneBash:
 
     def test_tmp_delete_allowed(self, tmp_path):
         targets = self._t("rm -rf /tmp/build", str(tmp_path))
-        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        policy = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         assert policy.status(targets[0]) == "allow"
 
     def test_tmpx_not_mapped_still_gated(self, tmp_path):
         targets = self._t("echo hi > /tmpx/out.txt", str(tmp_path))
-        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        policy = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         assert policy.status(targets[0]) == "needs_approval"
 
     def test_working_dir_tmp_allowed(self, test_workspace, monkeypatch):
-        tool = BashTool(cwd=test_workspace, approval_store=PermissionStore())
+        tool = BashTool(cwd=test_workspace, permission_store=PermissionStore())
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout: ToolResult("ran"))
         result = tool.execute(command="ls", working_dir="/tmp", timeout=5)
         assert result.output == "ran"
@@ -353,5 +353,5 @@ class TestTempZonePwsh:
 
     def test_env_temp_status_allow(self, tmp_path):
         targets = self._t("Set-Content -Path $env:TEMP\\foo.txt -Value x", str(tmp_path))
-        policy = PathPolicy(workspace_root=str(tmp_path), approval_store=PermissionStore())
+        policy = PathPolicy(workspace_root=str(tmp_path), permission_store=PermissionStore())
         assert policy.status(targets[0]) == "allow"

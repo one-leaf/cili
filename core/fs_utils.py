@@ -15,11 +15,31 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def os_temp_root() -> str:
+    """进程环境的临时目录根（realpath 后），作为路径白名单安全区。"""
+    for var in ("TMP", "TEMP"):
+        value = os.environ.get(var)
+        if value:
+            return os.path.realpath(value)
+    return os.path.realpath(tempfile.gettempdir())
+
+
+def is_path_within(resolved: str, root: str) -> bool:
+    """resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。"""
+    try:
+        return os.path.normcase(
+            os.path.commonpath([resolved, root])
+        ) == os.path.normcase(root)
+    except ValueError:
+        return False
 
 
 def normalize_bash_path(path: str) -> str:

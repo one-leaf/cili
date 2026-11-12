@@ -148,8 +148,7 @@ def build_other_answer(session, ask_user_tool_use_id: str, content: str) -> str:
 
 
 def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
-                           permission_store=None, permission_rules=None,
-                           approval_store=None, approval_rules=None) -> bool:
+                           permission_store=None, permission_rules=None) -> bool:
     """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
 
     返回是否找到占位符。消息块是 runner 与 session 的共享引用，就地修改对两者都生效
@@ -159,8 +158,8 @@ def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
     走同一落盘管道（build_granted_rule，granted_by=user）；拒绝时给模型附加引导文案。
     """
     logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
-    store = permission_store if permission_store is not None else approval_store
-    rules = permission_rules if permission_rules is not None else approval_rules
+    store = permission_store
+    rules = permission_rules
     pending = store.pending if store else None
     # 拒绝/自由输入时给模型附加引导（§3.6 用户拒绝文案），注入占位符内容尾部
     hint = ""

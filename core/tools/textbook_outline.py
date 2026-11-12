@@ -44,9 +44,9 @@ class TextbookOutlineTool(Tool):
         if found is not None:
             return found, None
         if candidates:
-            lines = [f"书名匹配到 {len(candidates)} 本，请用更精确的关键词或 id："]
-            lines += [pack_store.format_book_line(b) for b in candidates]
-            return None, ToolResult("\n".join(lines))
+            return None, ToolResult(
+                pack_store.format_book_candidates(candidates, "请用更精确的关键词或 id：")
+            )
         return None, ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
                                 error=True)
 

@@ -517,21 +517,6 @@ class BrowserService:
                 self._worker_thread.join(timeout=5)
                 self._worker_thread = None
 
-    def disconnect(self) -> None:
-        """断开浏览器连接，但保持 Chrome 进程运行。
-
-        下次操作时会重新连接并复用现有的 Chrome 和 tab。
-        """
-        with self._lock:
-            def _disconnect():
-                self._disconnect_internal()
-                return None
-
-            try:
-                self._run_in_worker(_disconnect)
-            except Exception as e:
-                logger.warning(f"[BrowserService] Error during disconnect: {e}")
-
     def is_running(self) -> bool:
         """检查服务是否可用。
 
@@ -1383,7 +1368,7 @@ class BrowserService:
                     f"  Chrome: {chrome_info}\n"
                     f"  Tab pool: {len(self._page_pool)} page(s)\n"
                     f"  Port listening: {self._is_port_listening(self._cdp_port)}\n\n"
-                    f"Suggestion: Try kill_chrome action to restart browser, then retry.",
+                    f"Suggestion: Close unnecessary tabs or restart the browser, then retry.",
                     error=True,
                 )
 
@@ -2177,24 +2162,6 @@ class BrowserService:
         except Exception as e:
             return ToolResult(f"Browser close_tab failed with worker error: {e}", error=True)
 
-    def get_current_tab_index(self) -> int | None:
-        """获取当前活跃 tab 的 index（同步方法，不走 worker）。"""
-        return self._active_tab_index
-
-    def kill_chrome(self) -> None:
-        """终止 Chrome 进程（公共方法）。
-
-        只杀死属于当前 cili 实例的进程，不会影响其他实例。
-        """
-        def _do_kill():
-            self._kill_chrome_internal()
-            return None
-
-        try:
-            self._run_in_worker(_do_kill)
-        except Exception as e:
-            logger.warning(f"[BrowserService] Error killing Chrome: {e}")
-
 
 # ==================== 模块级 API（遵循 CronScheduler 模式）====================
 
@@ -2215,11 +2182,6 @@ def get_service() -> BrowserService:
                 _service = BrowserService()
                 _service.start()
     return _service
-
-
-def start_browser_service() -> BrowserService:
-    """启动全局浏览器服务。"""
-    return get_service()
 
 
 def stop_browser_service() -> None:

@@ -225,7 +225,9 @@ async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateR
     warnings = list(result.get("warnings") or [])
     if body.category == "study" and body.download_textbooks and result.get("created"):
         try:
-            textbook_tasks_response = _start_textbook_tasks(result["created"], body.profile)
+            textbook_tasks_response = await asyncio.to_thread(
+                _start_textbook_tasks, result["created"], body.profile
+            )
         except TextbookDownloadError as e:
             warnings.append(f"教材下载任务创建失败: {e}")
         except Exception as e:  # noqa: BLE001 —— 教材下载失败不回滚工作区

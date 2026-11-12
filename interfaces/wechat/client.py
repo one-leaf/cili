@@ -60,13 +60,6 @@ class WechatClient:
 
     # ── 生命周期 ────────────────────────────────────────────────────
 
-    @property
-    def token(self) -> str:
-        return self._token
-
-    def set_token(self, token: str) -> None:
-        self._token = token
-
     async def aclose(self) -> None:
         if self._own_client:
             await self._client.aclose()
@@ -207,13 +200,6 @@ class WechatClient:
         的是「能 ``stream`` 的对象」。与其把 httpx 实例暴露出去，只开这一个口。
         """
         return self._client.stream(method, url, **kwargs)
-
-    async def upload_encrypted(self, url: str, data: bytes) -> str:
-        """把密文 POST 到 CDN，返回响应头 ``x-encrypted-param``（即下载参数）。
-
-        这个请求不打 iLink 主域，所以不走 ``_request``（没有 base_info、没有重试语义）。
-        """
-        return await self.upload_encrypted_stream(url, data)
 
     async def upload_encrypted_stream(self, url: str, chunks) -> str:
         """流式上传：``chunks`` 可以是 bytes，也可以是异步可迭代的密文分块。"""

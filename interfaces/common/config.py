@@ -28,6 +28,9 @@ def coerce_value(type_name, value):
         if name == "float":
             return float(value)
         if name == "str":
+            # JSON null 表示"清空"，不能落成字符串 "None"（会被 is_ready 误判为已配置）
+            if value is None:
+                return ""
             return value if isinstance(value, str) else str(value)
     except (TypeError, ValueError):
         return INVALID

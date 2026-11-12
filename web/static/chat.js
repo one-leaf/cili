@@ -38,7 +38,7 @@ function startToolStreaming(toolUseId, toolName, sessionId) {
     // 先记录 entry；5 秒后若无 tool_output 事件，由延迟定时器创建气泡。
     // 记下所属会话：气泡只在仍查看该会话时创建，否则会塞进别的会话界面。
     _toolStreamTimers[toolUseId] = {
-        delayTimer: null, timer: null, pre: null, offset: 0, div: null,
+        delayTimer: null, pre: null, offset: 0, div: null,
         sessionId: sessionId || currentSession.session_id,
     };
     _toolStreamTimers[toolUseId].delayTimer = setTimeout(() => {
@@ -54,8 +54,6 @@ function stopToolStreaming(toolUseId) {
     if (entry) {
         // 清除延迟定时器（如果5秒内完成，气泡还没创建）
         if (entry.delayTimer) clearTimeout(entry.delayTimer);
-        // 清除轮询定时器（如果已经启动）
-        if (entry.timer) clearInterval(entry.timer);
         // 删除独立的输出气泡（如果已经创建）
         if (entry.div && entry.div.parentNode) {
             entry.div.remove();
@@ -155,20 +153,6 @@ function getActiveEditorContext() {
 
 chatInput.addEventListener('focus', renderComposerAttachments);
 window.addEventListener('cili:editor-context-changed', renderComposerAttachments);
-
-// 辅助函数：提取文本内容
-function extractTextContent(content) {
-    if (typeof content === 'string') {
-        return content;
-    }
-    if (Array.isArray(content)) {
-        return content
-            .filter(block => block.type === 'text')
-            .map(block => block.text || '')
-            .join('\n');
-    }
-    return '';
-}
 
 // Normalize message content into blocks
 function normalizeContent(content) {
@@ -690,7 +674,6 @@ function renderTodoList(todos) {
     // 计算统计
     const total = todos.length;
     const completed = todos.filter(t => t.status === 'completed').length;
-    const inProgress = todos.filter(t => t.status === 'in_progress').length;
 
     // 查找或创建 todo 容器
     let container = document.getElementById('todo-list');
@@ -1729,6 +1712,17 @@ function formatMessageTime(isoStr) {
     return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + time;
 }
 
+// 批量渲染时合并滚动：每追加一个气泡都同步写 scrollTop 会触发一次布局，
+// 50 条历史消息就是 50 次。统一在下一帧滚一次。
+let scrollToBottomFrame = null;
+function scheduleScrollToBottom() {
+    if (scrollToBottomFrame !== null) return;
+    scrollToBottomFrame = requestAnimationFrame(() => {
+        scrollToBottomFrame = null;
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    });
+}
+
 // Add message to UI
 // container: 可选，指定添加到哪个容器。默认为 chatMessages。传 null 则不添加。
 function addMessage(role, content, msgId, createdAt, container = chatMessages) {
@@ -1798,7 +1792,7 @@ function addMessage(role, content, msgId, createdAt, container = chatMessages) {
         // 只在追加到「正在显示」的消息区时跟随滚动。容器已脱离文档时（用户切走
         // 去看别的会话）不能动滚动条，否则会把那个会话的视图拽到底部。
         if (container === chatMessages || chatMessages.contains(container)) {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scheduleScrollToBottom();
         }
     }
 

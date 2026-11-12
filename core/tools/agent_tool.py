@@ -47,20 +47,14 @@ class AgentTool(Tool):
 
     def __init__(self, *args, config=None,
                  permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None,
                  delegation_depth: int = 0, **kwargs):
         super().__init__(
             *args,
             permission_store=permission_store, permission_rules=permission_rules,
             permission_policy=permission_policy,
-            approval_store=approval_store, approval_rules=approval_rules,
             **kwargs,
         )
         self.config = config  # 全局配置，构造子 SessionRunner 用（角色模型继承）
-        self.permission_store = self.permission_store  # 根 runner 的会话级权限存储
-        self.permission_rules = self.permission_rules  # 权限规则引擎（共享同一实例）
-        self.approval_store = self.permission_store  # 过渡别名
-        self.approval_rules = self.permission_rules
         self.delegation_depth = delegation_depth  # 当前 runner 的委派深度（master=0；depth1 仅可委派 lite；depth≥2 禁止）
         self.stop_check = None  # Set by master SessionRunner after tool creation
         self.on_session_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
@@ -351,18 +345,7 @@ class AgentTool(Tool):
 
         # 全局事件流：worker 逐 token 消息与工具增量 → 事件总线（实时推送，去前端轮询）。
         # 通过 OutputSink 绑定，run() 前赋值即可，无需改 runner 循环。
-        sink = OutputSink(
-            on_text=lambda content, _id=exec_id: self._publish("text", exec_id=_id, content=content),
-            on_thinking=lambda content, _id=exec_id: self._publish("thinking", exec_id=_id, content=content),
-            on_tool_call=lambda tool, input_data, tool_use_id, _id=exec_id: self._publish(
-                "tool_use", exec_id=_id, tool=tool, input=input_data, tool_use_id=tool_use_id),
-            on_tool_result=lambda tool, content, is_error, tool_use_id, _id=exec_id: self._publish(
-                "tool_result", exec_id=_id, tool=tool, content=content, is_error=is_error,
-                tool_use_id=tool_use_id),
-            on_tool_output=lambda tool, content, offset, tool_use_id, _id=exec_id: self._publish(
-                "tool_output", exec_id=_id, tool=tool, content=content, offset=offset,
-                tool_use_id=tool_use_id),
-        )
+        sink = self._make_sink(exec_id)
         runner.sink = sink
         runner.default_sink = sink
         # 进度事件发布回调（_save_progress 调用时广播 iterations/message_count/tool_call_count）
@@ -712,8 +695,3 @@ class AgentTool(Tool):
         """Get pending session info by exec_id."""
         with self._pending_lock:
             return self._pending_sessions.get(exec_id)
-
-    def remove_pending_session(self, exec_id: str) -> None:
-        """Remove a completed session from pending dict."""
-        with self._pending_lock:
-            self._pending_sessions.pop(exec_id, None)

@@ -36,6 +36,37 @@ def user_tasks_lock():
         yield
 
 
+def _validate_schedule(schedule: dict) -> str | None:
+    """校验并就地归一化 schedule；返回错误文案，None 表示合法。"""
+    schedule_type = schedule.get("type")
+    if schedule_type == "interval":
+        try:
+            minutes = int(schedule.get("minutes"))
+        except (TypeError, ValueError):
+            return "'minutes' must be positive for interval schedule"
+        if minutes <= 0:
+            return "'minutes' must be positive for interval schedule"
+        schedule["minutes"] = minutes
+        init_delay = schedule.get("initial_delay_minutes")
+        if init_delay is not None:
+            try:
+                init_delay = int(init_delay)
+            except (TypeError, ValueError):
+                return "'initial_delay_minutes' must be a positive integer"
+            if init_delay <= 0:
+                return "'initial_delay_minutes' must be a positive integer"
+            schedule["initial_delay_minutes"] = init_delay
+        return None
+    if schedule_type == "cron":
+        expr = schedule.get("expr")
+        if not expr:
+            return "'expr' is required for cron schedule"
+        if len(str(expr).split()) != 5:
+            return "cron expression must have 5 fields (minute hour day month weekday)"
+        return None
+    return "schedule type must be 'interval' or 'cron'"
+
+
 def _load_user_tasks(workspace_uuid: str = "") -> list[dict]:
     """Load user task configs from JSON file."""
     user_tasks_file = get_user_tasks_file(workspace_uuid)
@@ -264,24 +295,9 @@ class CronTool(Tool):
             return ToolResult("Error: 'schedule' is required for create action", error=True)
 
         # Validate schedule
-        schedule_type = schedule.get("type")
-        if schedule_type == "interval":
-            minutes = schedule.get("minutes")
-            if not minutes or minutes <= 0:
-                return ToolResult("Error: 'minutes' must be positive for interval schedule", error=True)
-            init_delay = schedule.get("initial_delay_minutes")
-            if init_delay is not None and (not isinstance(init_delay, int) or init_delay <= 0):
-                return ToolResult("Error: 'initial_delay_minutes' must be a positive integer", error=True)
-        elif schedule_type == "cron":
-            expr = schedule.get("expr")
-            if not expr:
-                return ToolResult("Error: 'expr' is required for cron schedule", error=True)
-            # Basic cron expression validation (5 fields)
-            parts = expr.split()
-            if len(parts) != 5:
-                return ToolResult("Error: cron expression must have 5 fields (minute hour day month weekday)", error=True)
-        else:
-            return ToolResult("Error: schedule type must be 'interval' or 'cron'", error=True)
+        schedule_error = _validate_schedule(schedule)
+        if schedule_error:
+            return ToolResult(f"Error: {schedule_error}", error=True)
 
         # Validate max_executions
         if max_executions < 1 or max_executions > 9999:
@@ -403,23 +419,9 @@ class CronTool(Tool):
 
         # Validate schedule if provided
         if schedule:
-            schedule_type = schedule.get("type")
-            if schedule_type == "interval":
-                minutes = schedule.get("minutes")
-                if not minutes or minutes <= 0:
-                    return ToolResult("Error: 'minutes' must be positive for interval schedule", error=True)
-                init_delay = schedule.get("initial_delay_minutes")
-                if init_delay is not None and (not isinstance(init_delay, int) or init_delay <= 0):
-                    return ToolResult("Error: 'initial_delay_minutes' must be a positive integer", error=True)
-            elif schedule_type == "cron":
-                expr = schedule.get("expr")
-                if not expr:
-                    return ToolResult("Error: 'expr' is required for cron schedule", error=True)
-                parts = expr.split()
-                if len(parts) != 5:
-                    return ToolResult("Error: cron expression must have 5 fields (minute hour day month weekday)", error=True)
-            else:
-                return ToolResult("Error: schedule type must be 'interval' or 'cron'", error=True)
+            schedule_error = _validate_schedule(schedule)
+            if schedule_error:
+                return ToolResult(f"Error: {schedule_error}", error=True)
 
         # Validate max_executions if provided
         if max_executions is not None and (max_executions < 1 or max_executions > 9999):

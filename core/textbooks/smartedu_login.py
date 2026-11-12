@@ -141,8 +141,3 @@ def start_login(timeout_s: int = 600, poll_s: float = 2.0) -> dict:
     return login_status()
 
 
-def ensure_credentials() -> dict:
-    """下载前调用：已有凭据直接返回；缺失时打开浏览器引导登录。"""
-    if credentials_ready():
-        return {"ok": True, "message": "已有登录凭据", "running": False}
-    return start_login()

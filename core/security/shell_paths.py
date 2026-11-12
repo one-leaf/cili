@@ -473,6 +473,8 @@ def extract_shell_targets(command: str, mode: str, cwd: str, initial_dir: str) -
         if mode == "bash":
             targets.extend(_bash_targets(cmd, tokens[1:], cur, cwd_unknown, mode))
         else:
+            # pwsh 内置别名（rm/del/cp/mv/...）先归一到 cmdlet，否则删/写目标漏检
+            cmd = _PWSH_ALIASES.get(cmd, cmd)
             targets.extend(_pwsh_targets(cmd, tokens[1:], cur, cwd_unknown, mode))
         targets.extend(_redirect_targets(tokens[1:], cmd, cur, cwd_unknown, mode))
     return targets

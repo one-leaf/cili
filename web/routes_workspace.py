@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import re
-import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.agent_run import AgentRunStore
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
@@ -203,49 +201,12 @@ async def create_workspace(request: CreateWorkspaceRequest):
     }
 
 
-def _remove_workspace_data(workspace_uuid: str) -> None:
-    """Remove workspace .cili data directory (filesystem only, does not touch sessions dict or index)."""
-    get_teen_mode().ensure_allowed("workspace_delete", hard=True, target=workspace_uuid)
-    if not find_workspace_entry(workspace_uuid):
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    ws_data_dir = get_workspace_data_dir(workspace_uuid)
-    if not ws_data_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace data directory not found")
-    # Delete workspace .cili data directory
-    shutil.rmtree(ws_data_dir)
-
-
 def _cleanup_runners_for_workspace(workspace_uuid: str) -> None:
     """Remove runners belonging to the given workspace from the registry.
 
     Must be called under _sessions_lock.
     """
     registry.remove_workspace(workspace_uuid)
-
-
-@router.delete("/api/workspaces/{workspace_uuid}")
-async def delete_workspace(workspace_uuid: str):
-    """Delete a workspace and all its data."""
-    _validate_workspace_uuid(workspace_uuid)
-    if workspace_uuid == "system":
-        raise HTTPException(status_code=403, detail="System workspace cannot be deleted")
-    with _sessions_lock:
-        for key in registry.keys():
-            if key.startswith(f"{workspace_uuid}:"):
-                stop_goal_runner(key)
-        _cleanup_runners_for_workspace(workspace_uuid)
-    # 丢弃该工作区所有会话的 GoalManager 缓存
-    from core.goal import release_goal_manager
-    sessions_root = get_workspace_data_dir(workspace_uuid) / "sessions"
-    if sessions_root.exists():
-        for sd in sessions_root.iterdir():
-            release_goal_manager(sd)
-    # 删除工作区前取消未完成的教材下载，避免任务继续写已删除目录
-    await textbook_tasks.cancel_for_workspace(workspace_uuid)
-    # rmtree 属阻塞 IO（大工作区可达数秒），放线程里执行
-    await asyncio.to_thread(_remove_workspace_data, workspace_uuid)
-    remove_workspace_entry(workspace_uuid)
-    return {"success": True}
 
 
 @router.put("/api/workspaces/{workspace_uuid}",
@@ -664,6 +625,7 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
 
 def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> None:
     """停止并摘除会话的 GoalRunner/队列/runner，再删目录（唯一删除顺序）。"""
+    from core.agent_mailbox import get_agent_mailbox
     from core.goal import release_goal_manager
 
     key = f"{workspace_uuid}:{session_id}"
@@ -672,6 +634,8 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
     with _sessions_lock:
         turn_queue.remove_session(key)
         registry.remove(key)
+    # 邮箱按 session_id 分键：不清会让消息与 agent 名字在进程内永久累积
+    get_agent_mailbox().unregister_session(session_id)
     delete_session_dir(sessions_dir, session_id)
     release_goal_manager(session_dir)
 
@@ -807,8 +771,11 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions")
 async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """List all sub-agent executions for a session."""
+    _validate_session_id(session_id)
     sessions_dir = ws_dir / "sessions"
-    sm = SessionStore.load_session(session_id, sessions_dir)
+    if not (sessions_dir / session_id / "index.json").exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    sm = await asyncio.to_thread(SessionStore.load_session, session_id, sessions_dir)
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -818,29 +785,15 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
     return {"executions": logs}
 
 
-@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/agent-runs")
-async def list_agent_runs(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
-    """Return AgentRun records (including epoch indexes) for this session."""
-    sessions_dir = ws_dir / "sessions"
-    sm = SessionStore.load_session(session_id, sessions_dir)
-    if not sm:
-        raise HTTPException(status_code=404, detail="Session not found")
-    run_store = AgentRunStore(sm.session_dir)
-    runs = []
-    for run in run_store.list():
-        data = run.to_dict()
-        data["stats"] = run.stats.to_dict()
-        runs.append(data)
-    return {"agent_runs": runs}
-
-
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
 async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Get a specific sub-agent execution log with full messages."""
     _validate_session_id(session_id)
     _validate_exec_id(exec_id)
     sessions_dir = ws_dir / "sessions"
-    sm = SessionStore.load_session(session_id, sessions_dir)
+    if not (sessions_dir / session_id / "index.json").exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    sm = await asyncio.to_thread(SessionStore.load_session, session_id, sessions_dir)
     if not sm:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -856,22 +809,6 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     )
 
     return payload
-
-
-@router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}",
-               dependencies=[Depends(teen_guard("exec_log_delete", hard=True))])
-async def delete_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
-    """Delete a specific sub-agent execution log."""
-    _validate_session_id(session_id)
-    _validate_exec_id(exec_id)
-    sessions_dir = ws_dir / "sessions"
-    sm = SessionStore.load_session(session_id, sessions_dir)
-    if not sm:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if sm.agent_logs.delete_agent_log(exec_id):
-        return {"success": True}
-    raise HTTPException(status_code=404, detail="Execution not found")
 
 
 # ----- Project Instructions (AGENTS.md / CLAUDE.md) -----

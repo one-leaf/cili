@@ -242,10 +242,12 @@ class GrepTool(Tool):
         cmd += " || true"
 
         result = self._run_bash(cmd, max_chars=self.MAX_LIST_OUTPUT_CHARS)
-        # _run_bash 无输出时返回占位符 "(no output)"（而非空串），且命令带 `|| true`
-        # 使退出码恒为 0：grep 无匹配（退出码 1）会落到这里，须按"无匹配文件"处理，
-        # 否则 "(no output)" 会被当成文件名，最终产出空结果而非 "No matches found."
-        if result.error or not result.output or result.output.startswith("[exit code: 1]"):
+        # _run_bash 无输出时返回占位符 "(no output)"（而非空串）；命令带 `|| true`
+        # 使退出码恒为 0，grep 无匹配（退出码 1）也走这里，按"无匹配文件"处理。
+        # 但 result.error 表示超时/启动失败，不能伪装成"无匹配"。
+        if result.error:
+            raise ValueError(f"grep failed: {result.output.strip()[:300]}")
+        if not result.output:
             return []
         if result.output.strip() == "(no output)":
             return []

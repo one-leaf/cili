@@ -238,6 +238,17 @@ const FileTree = (() => {
         }
     }
 
+    // 展开目录恢复会对多个目录并行 loadDir，逐次同步 render 会重建整棵树多次；
+    // 统一用 rAF 合并到下一帧渲染一次。
+    let renderFrame = null;
+    function scheduleRender() {
+        if (renderFrame !== null) return;
+        renderFrame = requestAnimationFrame(() => {
+            renderFrame = null;
+            render();
+        });
+    }
+
     async function loadDir(dir, opts = {}) {
         if (!state.ws) return null;
         const token = state.token;
@@ -246,7 +257,7 @@ const FileTree = (() => {
         if (state.inflight.has(dir)) return state.inflight.get(dir);
 
         state.dirs.set(dir, { ...current, loading: true, error: null });
-        render();
+        scheduleRender();
 
         const promise = (async () => {
             const res = await fetch(`/api/files?${wsQuery()}&path=${encodeURIComponent(dir)}`);
@@ -281,7 +292,7 @@ const FileTree = (() => {
             return null;
         } finally {
             state.inflight.delete(dir);
-            if (token === state.token) render();
+            if (token === state.token) scheduleRender();
         }
     }
 
@@ -1058,9 +1069,6 @@ const FileTree = (() => {
             renderAv(path, cat);
         } else if (cat === 'office') {
             renderOffice(path);
-        } else if (cat === 'unsupported') {
-            el.body.classList.remove('media');
-            renderUnsupported(path);
         } else {
             el.body.classList.remove('media');
             loadTextPreview(path);
@@ -1918,9 +1926,6 @@ const FileTree = (() => {
         if (state.preview.open && !first) {
             closePreview();
             if (!state.preview.open) state.preview.path = null;
-        } else if (!state.ws && state.preview.open) {
-            closePreview();
-            if (!state.preview.open) state.preview.path = null;
         }
 
         updateSectionState();
@@ -2090,12 +2095,9 @@ const FileTree = (() => {
     }
 
     return {
-        init,
         setWorkspace,
         refresh: refreshTree,
         openPreview,
-        closePreview,
-        isPreviewOpen: () => state.preview.open,
         getEditorContext,
     };
 })();

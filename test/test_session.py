@@ -36,7 +36,7 @@ class TestSessionManagement:
         session.add_message("assistant", [{"type": "text", "text": "Hi!"}])
 
         assert session.get_message_count() == 2
-        messages = session.get_messages()
+        messages = session.messages
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
 

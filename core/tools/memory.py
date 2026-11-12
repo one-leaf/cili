@@ -18,8 +18,6 @@ from core.memory_store import (
 )
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
-_STALE_NOTE = "⚠ 此为历史观察（>30 天未更新），使用前请对照当前代码/事实验证"
-
 
 class MemoryTool(Tool):
     name = "memory"
@@ -103,10 +101,10 @@ class MemoryTool(Tool):
     }
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
-                 permission_rules=None, approval_rules=None):
+                 permission_rules=None):
         super().__init__(
             cwd, workspace_uuid, session,
-            permission_rules=permission_rules, approval_rules=approval_rules,
+            permission_rules=permission_rules,
         )
         self.memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
         self.store = MemoryStore(self.memory_dir)

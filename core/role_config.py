@@ -18,19 +18,15 @@ VALID_MODES = ("interactive", "autonomous")
 
 # Defaults applied to any role field not present in its JSON
 _DEFAULTS = {
-    "label": "",
     "mode": "autonomous",
     "tools": [],
     "deferred_tools": [],
     "skills": [],
     "streaming": True,
-    "ask_user": False,
     "approval": False,
-    "session_persistence": False,
     "check_phase": False,
     "check_iterations": 10,  # 检查阶段允许的最大工具调用轮次；null = 不设上限（仅由总迭代额度兜底）
     "budget_notice": False,
-    "progress_persistence": False,
     "max_iterations": None,  # None -> config.system.max_iterations
     "max_epochs": 1,  # same logical worker run can continue in a new epoch
     "max_consecutive_failures": 5,
@@ -46,19 +42,15 @@ class RoleConfig:
     """A single runner role loaded from core/agents/{role}.json."""
 
     name: str
-    label: str = ""
     mode: str = "autonomous"  # "interactive" | "autonomous"
     tools: list[str] = field(default_factory=list)  # tool name whitelist
     deferred_tools: list[str] = field(default_factory=list)  # tools whose schemas are hidden until activated
     skills: list[str] = field(default_factory=list)  # [] or ["*"] = all visible
     streaming: bool = True
-    ask_user: bool = False
     approval: bool = False
-    session_persistence: bool = False
     check_phase: bool = False
     check_iterations: int | None = 10  # 检查阶段允许的最大工具调用轮次；None = 不设上限（仅由总迭代额度兜底）
     budget_notice: bool = False
-    progress_persistence: bool = False
     max_iterations: int | None = None  # None -> config.system.max_iterations
     max_epochs: int = 1  # continuation epochs for worker/lite
     max_consecutive_failures: int = 5
@@ -70,13 +62,6 @@ class RoleConfig:
 
 def _role_file(role: str) -> Path:
     return ROLE_DIR / f"{role}.json"
-
-
-def list_roles() -> list[str]:
-    """Return available role names from core/agents/*.json."""
-    if not ROLE_DIR.is_dir():
-        return []
-    return sorted(p.stem for p in ROLE_DIR.glob("*.json"))
 
 
 def load_role(role: str, config: Config | None = None) -> RoleConfig:
@@ -104,19 +89,15 @@ def load_role(role: str, config: Config | None = None) -> RoleConfig:
 
     role_cfg = RoleConfig(
         name=role,
-        label=merged["label"],
         mode=merged["mode"],
         tools=list(merged["tools"]),
         deferred_tools=list(merged["deferred_tools"]),
         skills=list(merged["skills"]),
         streaming=bool(merged["streaming"]),
-        ask_user=bool(merged["ask_user"]),
         approval=bool(merged["approval"]),
-        session_persistence=bool(merged["session_persistence"]),
         check_phase=bool(merged["check_phase"]),
         check_iterations=int(merged["check_iterations"]) if merged["check_iterations"] is not None else None,
         budget_notice=bool(merged["budget_notice"]),
-        progress_persistence=bool(merged["progress_persistence"]),
         max_iterations=merged["max_iterations"],
         max_epochs=int(merged["max_epochs"]),
         max_consecutive_failures=int(merged["max_consecutive_failures"]),

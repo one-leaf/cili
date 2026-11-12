@@ -48,18 +48,6 @@ def _target_label(kind: str) -> str:
     return "操作"
 
 
-def _kind_action(kind: str) -> str:
-    if kind == "browser:navigate":
-        return "导航"
-    if kind == "path:read":
-        return "读取"
-    if kind == "path:delete":
-        return "删除"
-    if kind.startswith("path:"):
-        return "写入"
-    return "执行"
-
-
 def build_permission_question(permission: dict[str, Any]) -> str:
     """构造权限确认卡文案（含含义/风险/理由/动态路径说明）。"""
     kind = permission.get("kind", "command")

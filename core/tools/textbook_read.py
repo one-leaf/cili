@@ -37,9 +37,7 @@ class TextbookReadTool(Tool):
             found, candidates = store.resolve_book(book)
             if found is None:
                 if candidates:
-                    lines = [f"书名匹配到 {len(candidates)} 本，请指定 id："]
-                    lines += [pack_store.format_book_line(b) for b in candidates]
-                    return ToolResult("\n".join(lines))
+                    return ToolResult(pack_store.format_book_candidates(candidates))
                 return ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
                                   error=True)
             max_chars = max(1000, min(int(max_chars or 8000), 60000))

@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
+from core.tools.base import _VENV_DIR, Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
     denied_rule_text,
@@ -22,7 +23,6 @@ from core.tools.permission import (
     permission_decision_id,
     permission_placeholder_text,
 )
-from core.tools.base import _GIT_BASH_PATH, _VENV_DIR, Tool, ToolResult
 
 
 def _resolve_python_exe() -> str:
@@ -83,13 +83,11 @@ class PythonTool(Tool):
     name = "python"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,
-                 permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None):
+                 permission_store=None, permission_rules=None, permission_policy=None):
         super().__init__(
             cwd, workspace_uuid, session,
             permission_store=permission_store, permission_rules=permission_rules,
             permission_policy=permission_policy,
-            approval_store=approval_store, approval_rules=approval_rules,
         )
         self._config = config
         self.description = self._build_description()
@@ -281,7 +279,7 @@ class PythonTool(Tool):
             cmd += " " + " ".join(shlex.quote(a) for a in args.split())
 
         if run_in_background:
-            return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
+            return self._start_background_task(cmd)
         return self._run_bash(cmd, timeout=300)
 
     def _execute_code(self, code: str, run_in_background: bool = False) -> ToolResult:
@@ -308,7 +306,7 @@ class PythonTool(Tool):
                 f.write(code)
                 temp_path = f.name
             cmd = f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" "{temp_path}"'
-            return self._start_background_task(cmd, shell_path=_GIT_BASH_PATH)
+            return self._start_background_task(cmd)
 
         return self._run_bash(f'MPLCONFIGDIR="{mpl_config_dir}" PYTHONIOENCODING=utf-8 "{python_exe}" -', timeout=300, stdin=code)
 
@@ -432,13 +430,6 @@ class PythonTool(Tool):
             display, permission_decision_id(code), targets, findings,
             reason=reason, mode=mode, rule=rule,
         )
-
-    def _pending_python_result(self, code: str, targets: list, findings: list,
-                               mode: str = "ai", rule: dict | None = None,
-                               reason: str = "代码命中动态执行/shell 逃逸证据，需要权限判定") -> ToolResult:
-        """构造 python 代码的判定占位结果（判定编号按完整代码哈希，卡片截断展示）。"""
-        approval = self._python_approval(code, targets, findings, mode=mode, rule=rule, reason=reason)
-        return ToolResult(permission_placeholder_text(approval), completed=False, meta={META_KEY: approval})
 
     @staticmethod
     def _find_dynamic_exec(code: str) -> str | None:

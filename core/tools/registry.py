@@ -125,17 +125,10 @@ def create_tools(
     permission_rules=None,
     permission_policy=None,
     role: str | None = None,
-    # 过渡参数（旧调用点）
-    approval_store=None,
-    approval_rules=None,
 ) -> list[Tool]:
     """按角色工具白名单实例化工具。"""
     if role_cfg is None:
         role_cfg = load_role(role or "master", config)
-    if permission_store is None:
-        permission_store = approval_store
-    if permission_rules is None:
-        permission_rules = approval_rules
 
     tools: list[Tool] = []
     for name in role_cfg.tools:

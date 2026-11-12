@@ -94,13 +94,11 @@ class LatexTool(Tool):
     }
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
-                 permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None):
+                 permission_store=None, permission_rules=None, permission_policy=None):
         super().__init__(
             cwd, workspace_uuid, session,
             permission_store=permission_store, permission_rules=permission_rules,
             permission_policy=permission_policy,
-            approval_store=approval_store, approval_rules=approval_rules,
         )
         self._compiler_cache: str | None = None
 
@@ -315,7 +313,7 @@ class LatexTool(Tool):
         # Check result
         if result.returncode != 0:
             # Extract error from output
-            error_msg = self._extract_error(result.stdout + result.stderr, compiler)
+            error_msg = self._extract_error(result.stdout + result.stderr)
             return ToolResult(
                 f"Compilation failed:\n{error_msg}\n\n"
                 f"Full output:\n{result.stdout[-2000:] if result.stdout else ''}",
@@ -340,7 +338,7 @@ class LatexTool(Tool):
 
         return ToolResult(output="OK")
 
-    def _extract_error(self, output: str, compiler: str) -> str:
+    def _extract_error(self, output: str) -> str:
         """Extract meaningful error message from compiler output."""
         lines = output.split("\n")
 

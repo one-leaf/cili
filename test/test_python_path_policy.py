@@ -111,7 +111,7 @@ class TestCollectPythonTargets:
 
 class TestPythonExecuteGate:
     def _tool(self, cwd, store=None):
-        return PythonTool(cwd=cwd, approval_store=store)
+        return PythonTool(cwd=cwd, permission_store=store)
 
     def test_outside_write_placeholder(self, test_workspace, tmp_path):
         tool = self._tool(test_workspace, PermissionStore())
@@ -141,7 +141,7 @@ class TestPythonExecuteGate:
         store = PermissionStore()
         tool = self._tool(test_workspace, store)
         outside = tmp_path / "o.txt"
-        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, approval_store=store)
+        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace, permission_store=store)
         did = policy.decision_id(PathTarget(OP_WRITE, str(outside), resolved=policy.resolve(str(outside))))
         store.approve(did, str(outside), kind="path:write")
         monkeypatch.setattr(tool, "_run_bash", lambda command, timeout, stdin: ToolResult("ran"))

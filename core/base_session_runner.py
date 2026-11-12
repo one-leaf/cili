@@ -141,11 +141,6 @@ class BaseSessionRunner:
     def _usage(self, value: dict[str, float]) -> None:
         self.context._usage = value
 
-    @staticmethod
-    def _convert_to_message_objects(messages: list[dict]) -> list[Message]:
-        """Convert dict-based messages to Message objects (delegated to Runner)."""
-        return Runner._convert_to_message_objects(messages)
-
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """Add a message to internal message list (delegated to ConversationStore)."""
         if role == "user" and isinstance(content, list) and self.current_turn_id:
@@ -203,10 +198,6 @@ class BaseSessionRunner:
         })
         return len(items)
 
-    def load_messages(self) -> bool:
-        """Load messages from session_dir/index.json (delegated to ConversationStore)."""
-        return self.context.load_messages()
-
     def invalidate_all_messages(self) -> int:
         """Mark all messages as invalid (_meta.valid=False). Returns count."""
         return self.context.invalidate_all_messages()
@@ -226,17 +217,9 @@ class BaseSessionRunner:
         """Execute a tool and return result metadata (delegated to Runner)."""
         return self.runner.execute_tool(name, input_data, tool_use_id)
 
-    def _get_tool_by_name(self, name: str) -> Tool | None:
-        """Find tool by name (delegated to Runner)."""
-        return self.runner._get_tool_by_name(name)
-
     def _resolve_tool_results(self, messages: list[dict]) -> list[dict]:
         """Read tool output from external files before sending to LLM (delegated to Runner)."""
         return self.runner._resolve_tool_results(messages)
-
-    def _strip_meta_from_messages(self, messages: list[dict]) -> list[dict]:
-        """Strip internal _meta fields from messages (delegated to Runner)."""
-        return self.runner._strip_meta_from_messages(messages)
 
     # ========== Compression ==========
 
@@ -305,10 +288,6 @@ class BaseSessionRunner:
         """Estimate JSON request body size in bytes (delegated to Runner)."""
         return self.runner._estimate_request_body_size(messages)
 
-    def _strip_images_from_messages(self, messages: list[dict]) -> list[dict]:
-        """Strip images from messages for non-multimodal models (delegated to Runner)."""
-        return self.runner._strip_images_from_messages(messages)
-
     def _get_messages_with_header(self) -> list[dict]:
         """Get valid messages for LLM call (delegated to ConversationStore).
 
@@ -353,10 +332,6 @@ class BaseSessionRunner:
         if force_reference:
             kwargs["force_reference"] = True
         return self.runner._prepare_messages_for_llm(**kwargs)
-
-    def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
-        """Non-streaming LLM call (delegated to Runner)."""
-        return self.runner._call_llm_non_streaming(system_prompt)
 
     def _call_llm_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Streaming LLM call. Think content passes through as-is (delegated to Runner)."""

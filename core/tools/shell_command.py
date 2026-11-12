@@ -8,6 +8,7 @@ and execution hooks.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from core.security.path_policy import OP_WRITE, PathTarget
@@ -20,6 +21,15 @@ from core.tools.permission import (
     permission_decision_id,
     permission_placeholder_text,
 )
+
+# bash / pwsh 共用的静态证据模式（避免两份表逐渐漂移）
+COMMON_DESTRUCTIVE_PATTERNS = [
+    (re.compile(r"\bformat\s+[a-zA-Z]:", re.I), "system-destructive", "format (disk format)"),
+    (re.compile(r"\bshutdown\b", re.I), "system-destructive", "shutdown"),
+    (re.compile(r"\breboot\b", re.I), "system-destructive", "reboot"),
+    (re.compile(r"(?<![a-zA-Z0-9_-])(?:cmd|wsl)(?:\.exe)?(?![a-zA-Z0-9_-])", re.I),
+     "cross-tool-isolation", "cmd/WSL invocation (cross-tool isolation)"),
+]
 
 
 class ShellCommandTool(Tool):
@@ -39,12 +49,11 @@ class ShellCommandTool(Tool):
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None,
                  permission_store=None, permission_rules=None, permission_policy=None,
-                 approval_store=None, approval_rules=None, **kwargs):
+                 **kwargs):
         super().__init__(
             cwd, workspace_uuid, session,
             permission_store=permission_store, permission_rules=permission_rules,
             permission_policy=permission_policy,
-            approval_store=approval_store, approval_rules=approval_rules,
             **kwargs,
         )
         self.description = self._build_description()

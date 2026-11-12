@@ -243,11 +243,6 @@ def is_revert_command(tool: str, command: str) -> bool:
 # ─── 只读 / 安全创建判定 ────────────────────────────────────────────────
 
 
-def _split_git_args(tokens: list[str]) -> list[str]:
-    """git 子命令后的非 flag token（用于区分 config/branch 读写形态）。"""
-    return [t for t in tokens[1:] if not t.startswith("-")]
-
-
 def _readonly_git_segment(tokens: list[str]) -> bool:
     sub = _head_token(tokens[1]) if len(tokens) > 1 else ""
     if sub not in _READONLY_GIT_SUBCOMMANDS:
@@ -686,12 +681,6 @@ class PermissionRules:
             else:
                 source = self._workspace_rules + self._global_rules
             return [dict(r) for r in source]
-
-    def get_rule(self, rule_id: str, scope: str) -> dict | None:
-        with self._lock:
-            self._ensure_loaded()
-            source = self._rules_for(scope)
-            return next((dict(r) for r in source if r.get("id") == rule_id), None)
 
     def _rules_for(self, scope: str) -> list[dict]:
         return self._workspace_rules if scope == "workspace" else self._global_rules
