@@ -665,8 +665,8 @@ async function loadWorkspaces() {
         workspaceSettingsBtn.disabled = true;
         document.getElementById('memory-btn').disabled = true;
 
-        // 先渲染普通工作区（青少年模式：受限工作区带锁标记）
-        data.workspaces.filter(ws => !ws.system).forEach(ws => {
+        // 先渲染普通工作区；按名称排序（同一孩子/同名前缀的挨在一起）
+        sortWorkspacesByName(data.workspaces.filter(ws => !ws.system)).forEach(ws => {
             const option = document.createElement('option');
             option.value = ws.uuid;
             option.textContent = ws.locked ? `🔒 ${ws.name}（需家长解锁）` : ws.name;
@@ -921,11 +921,11 @@ function applyWizardCategoryInputs() {
     const slugInput = document.getElementById('wizard-slug');
     if (nameInput) {
         nameInput.disabled = isStudy;
-        nameInput.placeholder = isStudy ? '学习项目自动按「年级-科目」命名' : '输入项目名称（选填）';
+        nameInput.placeholder = isStudy ? '学习项目自动按「孩子称呼-年级-科目」命名' : '输入项目名称（选填）';
     }
     if (slugInput) {
         slugInput.disabled = isStudy;
-        slugInput.placeholder = isStudy ? '自动按科目生成' : '默认按名称生成，选填';
+        slugInput.placeholder = isStudy ? '自动按「孩子称呼-年级-科目」生成' : '默认按名称生成，选填';
     }
 }
 

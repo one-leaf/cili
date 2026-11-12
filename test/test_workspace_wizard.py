@@ -89,6 +89,14 @@ def test_preview_study_creates_one_workspace_per_subject(tmp_path):
     )
     assert preview["group"]["name"] == "学生A-初中"
     assert [item["subject"] for item in preview["workspaces"]] == ["数学", "英语"]
+    # 工作区名与目录名都带「孩子称呼」，多个孩子的工作区可区分
+    assert [item["name"] for item in preview["workspaces"]] == [
+        "学生A-八年级-数学", "学生A-八年级-英语",
+    ]
+    # 目录名 slug 同样带「孩子称呼」（Windows 下解析后的绝对路径会规范化大小写）
+    assert [item["slug"] for item in preview["workspaces"]] == [
+        "学生A-八年级-数学", "学生A-八年级-英语",
+    ]
     assert preview["workspaces"][0]["directory"] != preview["workspaces"][1]["directory"]
     assert "课前小测" in preview["workspaces"][0]["agents_md"]
     assert preview["workspaces"][0]["scaffold"]["files"]
@@ -124,7 +132,7 @@ def test_preview_rejects_duplicate_workspace_name(tmp_path):
 
 
 def test_preview_rejects_duplicate_study_title(tmp_path):
-    existing = [{"uuid": "w1", "name": "八年级-数学", "directory": str(tmp_path / "w1")}]
+    existing = [{"uuid": "w1", "name": "学生A-八年级-数学", "directory": str(tmp_path / "w1")}]
     with pytest.raises(WorkspaceWizardError, match="同名工作区"):
         preview_workspaces(
             category="study", base_name="学生A", location="cili",
@@ -145,7 +153,7 @@ def test_study_stage_and_grade_validated():
         category="study", base_name="学生A", location="cili",
         profile=_profile(stage="初中（五•四学制）", grade="六年级"), subjects=["数学"],
     )
-    assert preview["workspaces"][0]["name"] == "六年级-数学"
+    assert preview["workspaces"][0]["name"] == "学生A-六年级-数学"
 
 
 def test_study_agents_md_uses_subject_template(tmp_path, monkeypatch):

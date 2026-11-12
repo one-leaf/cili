@@ -505,9 +505,9 @@ async function loadSettingsWorkspaceOptions() {
     try {
         const resp = await fetch('/api/workspaces');
         const data = await resp.json();
-        settingsWorkspaceOptions = (data.workspaces || [])
-            .filter(ws => !ws.system)
-            .map(ws => ({ uuid: ws.uuid, name: ws.name }));
+        settingsWorkspaceOptions = sortWorkspacesByName(
+            (data.workspaces || []).filter(ws => !ws.system)
+        ).map(ws => ({ uuid: ws.uuid, name: ws.name }));
     } catch (e) {
         settingsWorkspaceOptions = [];
         settingsLoadError = '工作区列表加载失败';
@@ -2018,7 +2018,7 @@ async function renderTeenWorkspaceList(st) {
     try {
         const response = await fetch('/api/workspaces');
         const data = await response.json();
-        const workspaces = (data.workspaces || []).filter(ws => !ws.system);
+        const workspaces = sortWorkspacesByName((data.workspaces || []).filter(ws => !ws.system));
         if (!workspaces.length) {
             container.innerHTML = '<span class="teen-hint">暂无其他工作区</span>';
             return;

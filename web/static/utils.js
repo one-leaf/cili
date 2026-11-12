@@ -35,6 +35,16 @@ function escapeHtml(text) {
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ── 工作区列表排序 ──
+// 中文按拼音排序（区域设置影响不大，数字按数值比较），同名/同前缀（如同一孩子）自然相邻
+const _workspaceNameCollator = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+
+function sortWorkspacesByName(workspaces) {
+    return (workspaces || []).slice().sort(
+        (a, b) => _workspaceNameCollator.compare(a?.name || '', b?.name || '')
+    );
+}
+
 // ── 显示提示信息 ──
 function showToast(message, duration = 2000) {
     let toast = document.getElementById('toast');
