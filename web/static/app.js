@@ -452,6 +452,39 @@ async function onModelSelectChange() {
     }
 }
 
+// ─── 上传到 uploads/ 并加入输入区附件 chip ────────────────────────────
+// Ctrl+V、拖放共用：与文件浏览器「添加文件」同一套 pendingAttachments 流程，
+// 文件随消息作为附件发送，不再把路径文本插入对话输入框。
+async function uploadFilesAsAttachments(files) {
+    let uploadedCount = 0;
+    const errors = [];
+    for (const file of files) {
+        const result = await uploadFiles('uploads', [file]);
+        const up = (result.uploaded || [])[0];
+        if (up) {
+            const rel = `uploads/${up.name}`;
+            if (!pendingAttachments.some((a) => a.path === rel)) {
+                pendingAttachments.push({
+                    path: rel,
+                    name: up.name,
+                    media_type: file.type || 'application/octet-stream',
+                });
+            }
+            uploadedCount += 1;
+        }
+        errors.push(...(result.errors || []));
+    }
+    if (uploadedCount > 0) {
+        if (window.FileTree && typeof window.FileTree.refresh === 'function') {
+            window.FileTree.refresh();
+        }
+        showToast(`已上传 ${uploadedCount} 个文件到 uploads`);
+        renderComposerAttachments();
+    }
+    updateComposerButtons();
+    return { uploadedCount, errors };
+}
+
 // Setup event listeners
 function setupEventListeners() {
     workspaceSelect.addEventListener('change', handleWorkspaceChange);
@@ -521,41 +554,20 @@ function setupEventListeners() {
             'text/plain': '.txt', 'text/markdown': '.md', 'text/html': '.html',
             'text/csv': '.csv', 'application/json': '.json', 'application/zip': '.zip',
         };
+        // 截图粘贴等无名文件补默认名，再交给共用上传流程
+        const stamp = Date.now();
+        const uploadables = files.map((file, i) => {
+            if (file.name && file.name.trim()) return file;
+            const ext = EXT_BY_MIME[file.type] || '';
+            return new File([file], `paste-${stamp}-${i}${ext}`, {
+                type: file.type || 'application/octet-stream',
+            });
+        });
         try {
-            const stamp = Date.now();
-            let uploadedCount = 0;
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                const ext = EXT_BY_MIME[file.type] || '';
-                const uploadName = (file.name && file.name.trim())
-                    ? file.name
-                    : `paste-${stamp}-${i}${ext}`;
-                const uploadFile = new File([file], uploadName, {
-                    type: file.type || 'application/octet-stream',
-                });
-                const result = await uploadFiles('uploads', [uploadFile]);
-                const up = (result.uploaded || [])[0];
-                if (up) {
-                    uploadedCount += 1;
-                    pendingAttachments.push({
-                        path: `uploads/${up.name}`,
-                        name: up.name,
-                        media_type: file.type || 'application/octet-stream',
-                    });
-                }
-                const errors = result.errors || [];
-                if (errors.length) {
-                    showToast('上传失败：' + (errors[0].error || '未知错误'));
-                }
+            const { errors } = await uploadFilesAsAttachments(uploadables);
+            if (errors.length) {
+                showToast('上传失败：' + (errors[0].error || '未知错误'));
             }
-            if (uploadedCount > 0) {
-                if (window.FileTree && typeof window.FileTree.refresh === 'function') {
-                    window.FileTree.refresh();
-                }
-                showToast(`已上传 ${uploadedCount} 个文件到 uploads`);
-                renderComposerAttachments();
-            }
-            updateComposerButtons();
         } catch (err) {
             showToast('上传失败：' + (err.message || '未知错误'));
         }
@@ -2579,8 +2591,8 @@ document.getElementById('git-pull-btn')?.addEventListener('click', gitPull);
 document.getElementById('git-push-btn')?.addEventListener('click', gitPush);
 
 // ─── 全局文件拖放上传 ─────────────────────────────────────────────
-// 拖放文件到任意窗口，自动上传到当前工作区；若文件管理器已打开且拖放落在其内，则上传到当前文件夹
-// 复用 file-manager.js 的 uploadFiles
+// 拖放文件到任意窗口，上传到当前工作区 uploads/，并加入输入区附件 chip
+// （与「添加文件」/Ctrl+V 同一套 pendingAttachments 流程，随消息发送）
 
 const dropOverlay = document.createElement('div');
 dropOverlay.className = 'drop-overlay';
@@ -2595,7 +2607,7 @@ function isFileDrag(e) {
 }
 
 function showDropOverlay(e) {
-    dropOverlayInner.textContent = '松开以上传到工作区';
+    dropOverlayInner.textContent = '松开以上传并添加到输入区';
     dropOverlay.classList.add('show');
 }
 
@@ -2652,28 +2664,13 @@ document.addEventListener('drop', async (e) => {
         return;
     }
 
-    // 主界面拖放统一落到 uploads/（与 QQ 入站附件同目录，便于两边一致）
-    const path = 'uploads';
+    // 主界面拖放统一落到 uploads/，与「添加文件」/Ctrl+V 同一流程：
+    // 上传后进入输入区附件 chip，随消息发送（不再插入输入框文本）
     try {
-        const result = await uploadFiles(path, files);
-        const uploaded = result.uploaded || [];
-        const errList = result.errors || [];
-        if (uploaded.length > 0) {
-            // 上传成功后，将带路径的文件名插入对话输入框
-            const lines = uploaded
-                .map((f) => (path ? `${path}/${f.name}` : f.name))
-                .join('\n');
-            const input = document.getElementById('chat-input');
-            if (input) {
-                if (input.value && !input.value.endsWith('\n')) input.value += '\n';
-                input.value += lines;
-                input.focus();
-            }
-            showToast(`✓ 已上传 ${uploaded.length} 个文件，文件名已插入输入框`);
-        }
-        if (errList.length > 0) {
-            const reasons = errList.map((err) => `${err.name}: ${err.error}`).join('；');
-            showToast(`✗ ${errList.length} 个文件上传失败：${reasons}`, 4000);
+        const { errors } = await uploadFilesAsAttachments(files);
+        if (errors.length > 0) {
+            const reasons = errors.map((err) => `${err.name}: ${err.error}`).join('；');
+            showToast(`✗ ${errors.length} 个文件上传失败：${reasons}`, 4000);
         }
     } catch (error) {
         showToast('✗ 上传失败: ' + (error.message || error), 3000);
