@@ -71,6 +71,8 @@ ul, ol {
 
 /* 侧栏 */
 [data-theme="dark"] .sidebar { background-color: var(--sidebar-bg); }
+/* 暗色下对话区与会话/文件区同底色（#18181b），比预览区（#0f0f11）略浅 */
+[data-theme="dark"] .chat-area { background-color: var(--sidebar-bg); }
 [data-theme="dark"] .sidebar-footer { background: #18181b; border-top-color: var(--border-color); }
 [data-theme="dark"] .footer-content { color: #71717a; }
 [data-theme="dark"] .footer-dev,
@@ -1035,6 +1037,8 @@ body {
 
 /* 多选模式下 footer 按钮样式 */
 .footer-content .btn-small {
+    flex-shrink: 0;
+    white-space: nowrap;
     padding: 4px 12px;
     font-size: 12px;
     border-radius: 6px;
@@ -1102,8 +1106,21 @@ body {
 }
 
 .footer-content > .theme-toggle {
-    position: absolute;
-    left: 0;
+    flex-shrink: 0;
+}
+
+/* 文字区单行自适应：窄侧栏下整体收缩省略，不换行、不遮挡主题按钮 */
+.footer-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.footer-text > .footer-sep {
+    margin: 0 4px;
 }
 
 .footer-dev {

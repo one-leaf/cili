@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>会话查看</title>
     <script>
+        // 立即应用已保存的主题，避免闪烁；存 cookie（跨端口保持，端口顺延后 localStorage 会因换源丢失）
         (function() {
-            var theme = localStorage.getItem('cili-theme');
+            var m = document.cookie.match(/(?:^|;\s*)cili-theme=(dark|light)/);
+            var theme = m ? m[1] : null;
+            if (!theme) {
+                try { theme = localStorage.getItem('cili-theme'); } catch (e) {}
+                if (theme === 'dark' || theme === 'light') {
+                    document.cookie = 'cili-theme=' + theme + ';path=/;max-age=31536000;samesite=lax';
+                } else { theme = null; }
+            }
             if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
         })();
     </script>

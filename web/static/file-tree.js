@@ -1396,22 +1396,21 @@ const FileTree = (() => {
     }
 
     function buildCmTheme(CM) {
+        const dark = isDarkTheme();
+        // 暗色下编辑器底色与预览面板一致（--bg-color），浅色维持代码底色
+        const editorBg = dark ? 'var(--bg-color)' : 'var(--code-bg)';
         const base = CM.EditorView.theme({
-            '&': { height: '100%', fontSize: '14px', backgroundColor: 'var(--code-bg)', color: 'var(--text-color)' },
+            '&': { height: '100%', fontSize: '14px', backgroundColor: editorBg, color: 'var(--text-color)' },
             '.cm-scroller': { fontFamily: 'Consolas, "Courier New", monospace', lineHeight: '1.5' },
-            '.cm-gutters': { fontSize: '14px', backgroundColor: 'var(--code-bg)', color: 'var(--text-light)', border: 'none' },
+            '.cm-gutters': { fontSize: '14px', backgroundColor: editorBg, color: 'var(--text-light)', border: 'none' },
             '.cm-lineNumbers .cm-gutterElement': { paddingRight: '12px' },
             '.cm-content': { padding: '8px 0' },
         });
-        if (!isDarkTheme()) {
+        if (!dark) {
             return [base, CM.syntaxHighlighting(CM.ciliLightHighlight)];
         }
-        // 暗色：自定义 VS Code Dark+ 近似配色；背景统一为面板色
-        const bg = CM.EditorView.theme({
-            '&': { backgroundColor: 'var(--code-bg)' },
-            '.cm-gutters': { backgroundColor: 'var(--code-bg)' },
-        });
-        return [base, CM.syntaxHighlighting(CM.ciliDarkHighlight), bg];
+        // 暗色：自定义 VS Code Dark+ 近似配色
+        return [base, CM.syntaxHighlighting(CM.ciliDarkHighlight)];
     }
 
     // 挂载 CM 视图（默认只读；opts.editable=true 时为可编辑）；CM 包未加载返回 false

@@ -529,6 +529,16 @@
 }
 
 /* 暗色补充（正文排版规则在 style.css 中与聊天正文共用） */
+/* 暗色下预览区用对话区原底色（#0f0f11），比对话区（#18181b）略深 */
+[data-theme="dark"] .preview-pane {
+    background: var(--bg-color);
+}
+
+/* 代码显示/编辑窗口底色与预览区一致 */
+[data-theme="dark"] .preview-code {
+    background: var(--bg-color);
+}
+
 [data-theme="dark"] .preview-md pre {
     background: #0f0f11;
     border-color: #3f3f46;
@@ -548,8 +558,20 @@
     background: #27272a;
 }
 
+/* 暗色文件树配色对齐 VS Code Dark+ Explorer：正文 #cccccc，悬停 #2a2d2e，选中 #37373d/白字 */
+[data-theme="dark"] .file-tree { color: #cccccc; }
+
+[data-theme="dark"] .ft-row {
+    color: #cccccc;
+}
+
+[data-theme="dark"] .ft-row:hover {
+    background: #2a2d2e;
+}
+
 [data-theme="dark"] .ft-row.selected {
-    background: #27272a;
+    background: #37373d;
+    color: #ffffff;
 }
 
 [data-theme="dark"] .preview-notice {

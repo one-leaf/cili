@@ -278,11 +278,13 @@ async function loadFooter() {
                 <button class="theme-toggle" id="theme-toggle-btn" title="切换亮色/暗色主题">
                     ${getThemeIcon()}
                 </button>
-                <span class="footer-dev">${data.app_name}</span>
-                <span class="footer-sep">by</span>
-                <span class="footer-company">${data.author}</span>
-                <span class="footer-sep">·</span>
-                <span class="footer-version">${data.version}</span>
+                <span class="footer-text">
+                    <span class="footer-dev">${data.app_name}</span>
+                    <span class="footer-sep">by</span>
+                    <span class="footer-company">${data.author}</span>
+                    <span class="footer-sep">·</span>
+                    <span class="footer-version">${data.version}</span>
+                </span>
             `;
             document.getElementById('theme-toggle-btn').addEventListener('click', toggleTheme);
         }
@@ -303,16 +305,22 @@ function getThemeIcon() {
     }
 }
 
+// 持久化主题偏好：cookie 跨端口保持（服务端口顺延后 localStorage 会因换源丢失），localStorage 兜底
+function persistTheme(theme) {
+    try { localStorage.setItem('cili-theme', theme); } catch (e) { /* 隐私模式等场景忽略 */ }
+    document.cookie = `cili-theme=${theme};path=/;max-age=31536000;samesite=lax`;
+}
+
 // 切换主题
 function toggleTheme() {
     const html = document.documentElement;
     const isDark = html.getAttribute('data-theme') === 'dark';
     if (isDark) {
         html.removeAttribute('data-theme');
-        localStorage.setItem('cili-theme', 'light');
+        persistTheme('light');
     } else {
         html.setAttribute('data-theme', 'dark');
-        localStorage.setItem('cili-theme', 'dark');
+        persistTheme('dark');
     }
     // 更新按钮图标
     const btn = document.getElementById('theme-toggle-btn');
