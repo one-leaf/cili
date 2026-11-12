@@ -241,6 +241,11 @@ class TestUpgrade:
         result = updater.apply_zip(str(zip_path))
         assert result["success"] is True
         assert "v20260911 → v20260912" in result["message"]
+        assert "更新 2 个" in result["message"]
+        # 变更清单：实际写入的文件（内容未变的不列入，排除目录不出现）
+        assert result["changes"]["updated"] == ["main.py", "web/static/version.json"]
+        assert result["changes"]["added"] == []
+        assert result["changes"]["deleted"] == []
         assert (project_root / "main.py").read_text(encoding="utf-8") == "new main"
         # 版本文件随升级更新为包内版本
         new_version = json.loads(
@@ -293,6 +298,11 @@ class TestUpgrade:
         assert (project_root / ".claude" / "settings.local.json").read_text(
             encoding="utf-8") == "local"
         assert (project_root / "pytest.ini").read_text(encoding="utf-8") == "[pytest]"
+        # 变更清单：被覆盖的与被删除的残余文件；__pycache__ 清理不进报告
+        assert result["changes"]["updated"] == [
+            "core/cron.d/memory_consolidation.json", "main.py", "web/static/version.json"]
+        assert result["changes"]["deleted"] == ["core/cron.d/obsolete_task.json"]
+        assert not any("__pycache__" in p for p in result["changes"]["deleted"])
 
     def test_apply_zip_rollback_on_failure(self, tmp_path, monkeypatch):
         """复制中途失败时回滚到升级前版本，升级新增的文件被删除"""
@@ -309,14 +319,14 @@ class TestUpgrade:
         # 复制到项目根：a/b/c 全部先复制，随后对 c.py 抛异常，模拟半成品升级
         real_copy_tree = updater._copy_tree
 
-        def flaky_copy_tree(src_dir, dst, exclude_dirs):
+        def flaky_copy_tree(src_dir, dst, exclude_dirs, *args, **kwargs):
             for item in sorted(os.listdir(src_dir)):
                 if item in exclude_dirs:
                     continue
                 s = os.path.join(src_dir, item)
                 d = os.path.join(dst, item)
                 if os.path.isdir(s):
-                    real_copy_tree(s, d, exclude_dirs)
+                    real_copy_tree(s, d, exclude_dirs, *args, **kwargs)
                 else:
                     shutil.copy2(s, d)
                     if item == "c.py" and os.path.abspath(dst) == os.path.abspath(str(project_root)):
@@ -327,6 +337,7 @@ class TestUpgrade:
         result = updater.apply_zip(str(zip_path))
         assert result["success"] is False
         assert "回滚" in result["error"]
+        assert "changes" not in result
         # 被覆盖的文件恢复，升级新增的文件被删除
         assert (project_root / "a.py").read_text(encoding="utf-8") == "old-a"
         assert (project_root / "b.py").read_text(encoding="utf-8") == "old-b"
@@ -365,9 +376,26 @@ class TestApplyPendingUpgrade:
         # 应用成功后升级包被删除
         assert not dest.exists()
 
-    def test_skips_and_deletes_not_newer_zip(self, tmp_path, monkeypatch):
-        """包版本不高于本地：不解压覆盖，删除升级包"""
+    def test_applies_equal_version_zip(self, tmp_path, monkeypatch):
+        """包版本与本地一致：也解压覆盖（修复本地文件损坏场景），删除升级包"""
         project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
+
+        zip_path = _make_remote_zip(tmp_path, "v20260911", "new main")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(zip_path, dest)
+
+        result = updater.apply_pending_upgrade()
+        assert result is not None and result["success"] is True
+        # 版本一致也覆盖，代码被替换
+        assert (project_root / "main.py").read_text(encoding="utf-8") == "new main"
+        assert "版本一致" in result["message"]
+        # 升级包被清理
+        assert not dest.exists()
+
+    def test_skips_and_deletes_older_zip(self, tmp_path, monkeypatch):
+        """本地版本高于升级包（防降级）：不解压覆盖，删除升级包"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260912")
         monkeypatch.setattr(updater, "PROJECT_ROOT", project_root)
 
         zip_path = _make_remote_zip(tmp_path, "v20260911", "new main")

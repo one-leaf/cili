@@ -4,8 +4,9 @@
   scripts/upgrade.ps1 手动下载也落到同一位置）：检查 GitHub 远端版本，
   有更新则把代码包 zip 下载到脚本目录（项目根，cili-update.zip），不动本地代码。
 - 应用（main.py 启动时调用 apply_pending_upgrade）：启动时检测到脚本目录有
-  升级包，先比对包内 version.json 与本地版本，包版本更高才解压覆盖
-  （备份 + 残余清理 + 失败回滚），然后继续启动；不更高则删除升级包。
+  升级包，先比对包内 version.json 与本地版本，包版本不低于本地才解压覆盖
+  （版本一致也应用，用于修复本地文件损坏；备份 + 残余清理 + 失败回滚），
+  然后继续启动并在日志中逐条列出变更文件；本地版本更高时删除升级包（防降级）。
 
 覆盖逻辑只在 apply_zip 一处实现（下载方不直接改代码，统一收敛到启动时应用）。
 
@@ -324,12 +325,18 @@ def _files_equal(a: str, b: str) -> bool:
         return False
 
 
-def _copy_tree(src: str, dst: str, exclude_dirs: set[str]) -> None:
+def _copy_tree(src: str, dst: str, exclude_dirs: set[str],
+               changes: dict | None = None, root: str | None = None) -> None:
     """递归复制文件树，跳过 exclude_dirs 中的顶层目录。
 
     内容未变的文件跳过写入（与 scripts/upgrade.ps1 的 Copy-WithLog 检查逻辑一致），
     避免改写未变更文件的 mtime，也减少对运行中文件的无谓写入。
+
+    changes 传入 {"added": [], "updated": []} 时收集实际写入的文件（相对 root
+    的路径，root 缺省取首次调用的 dst）；None 时不收集（备份/回滚路径）。
     """
+    if root is None:
+        root = dst
     for item in os.listdir(src):
         s = os.path.join(src, item)
         d = os.path.join(dst, item)
@@ -337,15 +344,25 @@ def _copy_tree(src: str, dst: str, exclude_dirs: set[str]) -> None:
             continue
         if os.path.isdir(s):
             os.makedirs(d, exist_ok=True)
-            _copy_tree(s, d, exclude_dirs)
+            _copy_tree(s, d, exclude_dirs, changes, root)
         elif os.path.exists(d) and _files_equal(s, d):
             continue
         else:
+            if changes is not None:
+                key = "updated" if os.path.exists(d) else "added"
+                changes[key].append(os.path.relpath(d, root).replace("\\", "/"))
             shutil.copy2(s, d)
 
 
-def _prune_dir(dst_dir: str, src_dir: str) -> None:
-    """递归删除 dst_dir 中 src_dir 不存在的内容（共享代码目录内部的清理）。"""
+def _prune_dir(dst_dir: str, src_dir: str, removed: list | None = None,
+               root: str | None = None) -> None:
+    """递归删除 dst_dir 中 src_dir 不存在的内容（共享代码目录内部的清理）。
+
+    removed 传入列表时收集被删除的条目（相对 root 的路径，root 缺省取首次
+    调用的 dst_dir）；None 时不收集。
+    """
+    if root is None:
+        root = dst_dir
     for item in os.listdir(dst_dir):
         s = os.path.join(dst_dir, item)
         if not os.path.exists(os.path.join(src_dir, item)):
@@ -353,11 +370,14 @@ def _prune_dir(dst_dir: str, src_dir: str) -> None:
                 shutil.rmtree(s)
             else:
                 os.remove(s)
+            if removed is not None:
+                removed.append(os.path.relpath(s, root).replace("\\", "/"))
         elif os.path.isdir(s) and not os.path.islink(s):
-            _prune_dir(s, os.path.join(src_dir, item))
+            _prune_dir(s, os.path.join(src_dir, item), removed, root)
 
 
-def _prune_stale_files(dst: str, src: str, exclude_dirs: set[str]) -> None:
+def _prune_stale_files(dst: str, src: str, exclude_dirs: set[str],
+                       removed: list | None = None) -> None:
     """删除升级前存在、但新版本代码包已移除的残余文件/目录。
 
     覆盖语义只处理"新增/覆盖"，不处理"删除"，导致旧版曾发布、新版已移除的
@@ -366,6 +386,8 @@ def _prune_stale_files(dst: str, src: str, exclude_dirs: set[str]) -> None:
     仅清理新版本仍保留的代码目录内部（如 core/cron.d/ 下被移除的配置）；
     顶层本地目录（.claude/、reference/、.pytest_cache/、__pycache__/ 等不在
     代码包中的目录）与本地顶层文件整体保留，避免误删用户本地资源。
+
+    removed 传入列表时收集被删除文件的相对路径（相对 dst）。
     """
     top_src_dirs = set()
     if os.path.isdir(src):
@@ -380,7 +402,7 @@ def _prune_stale_files(dst: str, src: str, exclude_dirs: set[str]) -> None:
             # 本地目录（新代码包中不存在）整体保留，不进入清理
             if item not in top_src_dirs:
                 continue
-            _prune_dir(abs_item, os.path.join(src, item))
+            _prune_dir(abs_item, os.path.join(src, item), removed, dst)
         # 顶层文件：新版本仍在的文件已由覆盖阶段处理；本地独有文件一律保留
 
 
@@ -462,13 +484,16 @@ def apply_zip(zip_path: str) -> dict:
     避免代码树不一致导致无法启动。
 
     Returns:
-        成功: {"success": True, "message": str}
+        成功: {"success": True, "message": str,
+               "changes": {"updated": [...], "added": [...], "deleted": [...]}}
+               changes 为实际写入/删除文件的相对路径清单（内容未变的文件不列入）
         失败: {"success": False, "error": str}
     """
     if not _upgrade_lock.acquire(blocking=False):
         return {"success": False, "error": "已有升级任务进行中，请稍后重试"}
 
     old_version = get_local_version()
+    changes = {"updated": [], "added": [], "deleted": []}
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_extract = os.path.join(temp_dir, "extract")
@@ -486,8 +511,9 @@ def apply_zip(zip_path: str) -> dict:
                 return {"success": False, "error": f"备份当前代码失败：{str(e)}"}
 
             try:
-                _copy_tree(extracted_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
-                _prune_stale_files(str(PROJECT_ROOT), extracted_dir, _EXCLUDE_DIRS)
+                _copy_tree(extracted_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS, changes)
+                _prune_stale_files(str(PROJECT_ROOT), extracted_dir, _EXCLUDE_DIRS,
+                                   changes["deleted"])
             except Exception as e:
                 rollback_error = _restore_tree(backup_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
                 if rollback_error:
@@ -501,9 +527,25 @@ def apply_zip(zip_path: str) -> dict:
         if cleaned:
             logger.info(f"[updater] 已清理 {cleaned} 个残留 memory git 目录")
 
+    for files in changes.values():
+        files.sort()
+    # __pycache__/.pyc 属运行产物回收而非版本变更，每次升级都会成批删除，不进报告
+    changes["deleted"] = [p for p in changes["deleted"]
+                          if "__pycache__" not in p and not p.endswith((".pyc", ".pyo"))]
+
     new_version = get_local_version()
-    change = f"（{old_version} → {new_version}）" if new_version != old_version else ""
-    return {"success": True, "message": f"升级完成{change}"}
+    version_part = (f"{old_version} → {new_version}"
+                    if new_version != old_version else f"{new_version}，版本一致")
+    parts = []
+    if changes["updated"]:
+        parts.append(f"更新 {len(changes['updated'])} 个")
+    if changes["added"]:
+        parts.append(f"新增 {len(changes['added'])} 个")
+    if changes["deleted"]:
+        parts.append(f"删除 {len(changes['deleted'])} 个")
+    detail = "，".join(parts) if parts else "无文件变更"
+    return {"success": True, "message": f"升级完成（{version_part}）：{detail}",
+            "changes": changes}
 
 
 def _safe_unlink(path: Path) -> None:
@@ -514,12 +556,22 @@ def _safe_unlink(path: Path) -> None:
         logger.warning(f"[updater] 删除 {path.name} 失败: {e}")
 
 
+def _log_changes(changes: dict | None) -> None:
+    """逐条列出升级变更的文件（启动日志中可见哪些文件被更新/新增/删除）。"""
+    if not changes:
+        return
+    for label, key in (("更新", "updated"), ("新增", "added"), ("删除", "deleted")):
+        for rel in changes.get(key, ()):
+            logger.info(f"[updater] {label}: {rel}")
+
+
 def apply_pending_upgrade() -> dict | None:
     """启动时应用脚本目录下的升级包（main.py 启动早期调用）。
 
     检查脚本目录下是否存在升级包，存在时：
-    - 包内版本高于本地 → 解压覆盖（apply_zip），成功后删除升级包，继续启动
-    - 包内版本不高于本地 / 包无效 → 删除升级包，按原版本启动
+    - 包内版本不低于本地 → 解压覆盖（apply_zip；版本一致也应用，用于修复
+      本地文件损坏），成功后删除升级包，继续启动并逐条列出变更文件
+    - 本地版本高于包内（防降级）/ 包无效 → 删除升级包，按原版本启动
     - 应用失败 → 保留升级包，下次启动重试
 
     Returns:
@@ -538,16 +590,17 @@ def apply_pending_upgrade() -> dict | None:
         _safe_unlink(zip_path)
         return {"success": False, "error": "升级包无效，已删除"}
 
-    if not is_newer_version(zip_version, local):
-        logger.info(f"[updater] 升级包版本 {zip_version} 不高于当前版本 {local}，删除升级包")
+    if is_newer_version(local, zip_version):
+        logger.info(f"[updater] 本地版本 {local} 高于升级包 {zip_version}，跳过（防降级），删除升级包")
         _safe_unlink(zip_path)
-        return {"success": True, "message": f"升级包版本 {zip_version} 不高于当前版本，已跳过"}
+        return {"success": True, "message": f"本地版本 {local} 高于升级包 {zip_version}，已跳过"}
 
     logger.info(f"[updater] 发现待应用升级包 {zip_version}（当前 {local}），开始解压覆盖...")
     result = apply_zip(str(zip_path))
     if result.get("success"):
         _safe_unlink(zip_path)
         logger.info(f"[updater] {result.get('message')}，继续启动")
+        _log_changes(result.get("changes"))
     else:
         logger.warning(f"[updater] 应用升级包失败: {result.get('error')}（保留升级包，下次启动重试）")
     return result

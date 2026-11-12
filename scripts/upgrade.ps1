@@ -84,6 +84,6 @@ Write-Host ""
 Write-Host "提示：" -ForegroundColor Cyan
 Write-Host "  - 升级包位置: $destZip"
 Write-Host "  - 重新启动服务（start.cmd / python main.py）后自动比对版本并解压覆盖"
-Write-Host "  - 升级包版本不高于当前版本时，启动时会自动删除该升级包"
+Write-Host "  - 版本一致也会重新覆盖（用于修复文件损坏）；仅升级包版本低于当前版本时（防降级），启动时会自动删除该升级包"
 Write-Host ""
 Read-Host "按回车键退出"
