@@ -126,58 +126,61 @@ class TestFormatSize:
         assert tool._format_size(3 * 1024 * 1024) == "3.0 MB"
 
 
-class TestCleanAux:
-    def test_removes_aux_files(self, tool, tmp_path):
-        tex = tmp_path / "doc.tex"
-        tex.write_text("x", encoding="utf-8")
-        (tmp_path / "doc.aux").write_text("a", encoding="utf-8")
-        (tmp_path / "doc.log").write_text("l", encoding="utf-8")
-        (tmp_path / "doc.pdf").write_text("p", encoding="utf-8")  # 不属于 aux，保留
-        tool._clean_aux_files(str(tex))
-        assert not (tmp_path / "doc.aux").exists()
-        assert not (tmp_path / "doc.log").exists()
-        assert (tmp_path / "doc.pdf").exists()
-
-
 class TestRunCompiler:
-    def test_timeout(self, tool, monkeypatch):
+    @staticmethod
+    def _output_dir(cmd):
+        for i, arg in enumerate(cmd):
+            if arg.startswith("-output-directory="):
+                return arg.split("=", 1)[1]
+            if arg == "--outdir":
+                return cmd[i + 1]
+        raise AssertionError(f"no output dir in {cmd}")
+
+    def test_timeout(self, tool, monkeypatch, tmp_path):
+        tex = tmp_path / "a.tex"
+        tex.write_text("x", encoding="utf-8")
+
         def boom(*args, **kwargs):
             raise subprocess.TimeoutExpired(["tectonic"], 120)
 
         monkeypatch.setattr("core.tools.latex.subprocess.run", boom)
-        result = tool._run_compiler("tectonic", "/fake/tectonic.exe", "a.tex", "a.pdf")
+        result = tool._run_compiler("tectonic", "/fake/tectonic.exe", str(tex), str(tmp_path / "a.pdf"))
         assert result.error
         assert "timed out" in result.output.lower()
 
-    def test_nonzero_returncode(self, tool, monkeypatch):
+    def test_nonzero_returncode(self, tool, monkeypatch, tmp_path):
+        tex = tmp_path / "a.tex"
+        tex.write_text("x", encoding="utf-8")
         monkeypatch.setattr(
             "core.tools.latex.subprocess.run",
             lambda *a, **k: _fake_process(returncode=1, stdout="! Missing $ inserted."),
         )
-        result = tool._run_compiler("pdflatex", "/fake/pdflatex", "a.tex", "a.pdf")
+        result = tool._run_compiler("pdflatex", "/fake/pdflatex", str(tex), str(tmp_path / "a.pdf"))
         assert result.error
         assert "Compilation failed" in result.output
         assert "Missing" in result.output
 
-    def test_pdf_not_created(self, tool, monkeypatch):
+    def test_pdf_not_created(self, tool, monkeypatch, tmp_path):
+        tex = tmp_path / "a.tex"
+        tex.write_text("x", encoding="utf-8")
         monkeypatch.setattr(
             "core.tools.latex.subprocess.run",
             lambda *a, **k: _fake_process(returncode=0),
         )
-        result = tool._run_compiler("tectonic", "/fake/tectonic.exe", "a.tex", "a.pdf")
+        result = tool._run_compiler("tectonic", "/fake/tectonic.exe", str(tex), str(tmp_path / "a.pdf"))
         assert result.error
         assert "PDF file was not created" in result.output
 
     def test_tectonic_success_and_move(self, tool, monkeypatch, tmp_path):
-        """tectonic 在 tex 同目录产出 pdf，指定不同 output 时被移动到目标。"""
+        """tectonic 在 --outdir 产出 pdf，指定不同 output 时被移动到目标。"""
         tex = tmp_path / "doc.tex"
         tex.write_text("\\documentclass{article}", encoding="utf-8")
         custom_out = tmp_path / "out" / "renamed.pdf"
         custom_out.parent.mkdir(parents=True)
 
         def fake_run(cmd, **kwargs):
-            # tectonic 默认在 tex 同目录产出同名 pdf
-            (tmp_path / "doc.pdf").write_text("%PDF-fake", encoding="utf-8")
+            outdir = Path(self._output_dir(cmd))
+            (outdir / "doc.pdf").write_text("%PDF-fake", encoding="utf-8")
             return _fake_process(returncode=0)
 
         monkeypatch.setattr("core.tools.latex.subprocess.run", fake_run)
@@ -187,6 +190,71 @@ class TestRunCompiler:
         assert not result.error
         assert custom_out.exists()
         assert custom_out.read_text(encoding="utf-8") == "%PDF-fake"
+
+    def test_existing_same_name_pdf_not_clobbered(self, tool, monkeypatch, tmp_path):
+        """输出到别的文件名时，源目录里既有的同名 PDF 必须原样保留。
+
+        回归 2026-11-12 自检：编译器此前直接写 <tex名>.pdf，覆盖了用户文件，
+        随后被 move 走，表现为「编译一次丢掉一个无关 PDF」。
+        """
+        tex = tmp_path / "doc.tex"
+        tex.write_text("\\documentclass{article}", encoding="utf-8")
+        user_pdf = tmp_path / "doc.pdf"
+        user_pdf.write_text("USER-PDF-DO-NOT-TOUCH", encoding="utf-8")
+        custom_out = tmp_path / "out" / "renamed.pdf"
+        custom_out.parent.mkdir(parents=True)
+
+        def fake_run(cmd, **kwargs):
+            outdir = Path(self._output_dir(cmd))
+            (outdir / "doc.pdf").write_text("%PDF-fake", encoding="utf-8")
+            return _fake_process(returncode=0)
+
+        monkeypatch.setattr("core.tools.latex.subprocess.run", fake_run)
+        result = tool._run_compiler(
+            "pdflatex", "/fake/pdflatex", str(tex), str(custom_out)
+        )
+        assert not result.error
+        assert custom_out.read_text(encoding="utf-8") == "%PDF-fake"
+        assert user_pdf.exists()
+        assert user_pdf.read_text(encoding="utf-8") == "USER-PDF-DO-NOT-TOUCH"
+
+    def test_clean_true_leaves_no_aux(self, tool, monkeypatch, tmp_path):
+        tex = tmp_path / "doc.tex"
+        tex.write_text("\\documentclass{article}", encoding="utf-8")
+
+        def fake_run(cmd, **kwargs):
+            outdir = Path(self._output_dir(cmd))
+            (outdir / "doc.pdf").write_text("%PDF-fake", encoding="utf-8")
+            (outdir / "doc.aux").write_text("a", encoding="utf-8")
+            (outdir / "doc.log").write_text("l", encoding="utf-8")
+            return _fake_process(returncode=0)
+
+        monkeypatch.setattr("core.tools.latex.subprocess.run", fake_run)
+        result = tool._run_compiler(
+            "pdflatex", "/fake/pdflatex", str(tex), str(tmp_path / "doc.pdf"), True
+        )
+        assert not result.error
+        assert not (tmp_path / "doc.aux").exists()
+        assert not (tmp_path / "doc.log").exists()
+
+    def test_clean_false_restores_aux(self, tool, monkeypatch, tmp_path):
+        tex = tmp_path / "doc.tex"
+        tex.write_text("\\documentclass{article}", encoding="utf-8")
+
+        def fake_run(cmd, **kwargs):
+            outdir = Path(self._output_dir(cmd))
+            (outdir / "doc.pdf").write_text("%PDF-fake", encoding="utf-8")
+            (outdir / "doc.aux").write_text("a", encoding="utf-8")
+            (outdir / "doc.log").write_text("l", encoding="utf-8")
+            return _fake_process(returncode=0)
+
+        monkeypatch.setattr("core.tools.latex.subprocess.run", fake_run)
+        result = tool._run_compiler(
+            "pdflatex", "/fake/pdflatex", str(tex), str(tmp_path / "doc.pdf"), False
+        )
+        assert not result.error
+        assert (tmp_path / "doc.aux").read_text(encoding="utf-8") == "a"
+        assert (tmp_path / "doc.log").read_text(encoding="utf-8") == "l"
 
 
 class TestCompileFlow:
@@ -201,7 +269,7 @@ class TestCompileFlow:
         monkeypatch.setattr(tool, "_find_compiler", lambda name: f"/fake/{name}")
         monkeypatch.setattr(
             tool, "_run_compiler",
-            lambda c, p, t, out: ToolResult("OK"),
+            lambda c, p, t, out, clean: ToolResult("OK"),
         )
         result = tool.execute(action="compile", tex_file=str(tex))
         assert not result.error
