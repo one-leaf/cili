@@ -1532,7 +1532,7 @@ function toggleSessionItemMenu(session, btn) {
         });
     });
 
-    btn.parentElement.appendChild(dropdown);
+    openAnchoredMenu(dropdown, btn, true);
 
     // 添加全局点击事件关闭菜单
     setTimeout(() => {
@@ -1543,6 +1543,29 @@ function toggleSessionItemMenu(session, btn) {
 // 关闭所有会话菜单
 function closeSessionMenus() {
     document.querySelectorAll('.session-dropdown').forEach(menu => menu.remove());
+}
+
+// 把下拉菜单挂到 body 并用 fixed 定位：
+// 侧栏分区是 overflow:hidden，菜单挂在分区内会被文件区裁剪/遮挡
+function openAnchoredMenu(dropdown, anchorEl, alignRight = false) {
+    document.body.appendChild(dropdown);
+    const rect = anchorEl.getBoundingClientRect();
+    const margin = 6;
+    dropdown.style.position = 'fixed';
+    dropdown.style.right = 'auto';
+    dropdown.style.left = '0px';
+    dropdown.style.top = '0px';
+    const width = dropdown.offsetWidth || 160;
+    const height = dropdown.offsetHeight || 0;
+    let left = alignRight ? rect.right - width : rect.left;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+    let top = rect.bottom + margin;
+    if (top + height > window.innerHeight - margin) {
+        top = Math.max(margin, rect.top - height - margin);
+    }
+    dropdown.style.left = left + 'px';
+    dropdown.style.top = top + 'px';
+    window.addEventListener('scroll', closeSessionMenus, { once: true, capture: true });
 }
 
 // 切换会话面板头部菜单（活跃/隐藏切换 + 多选切换）
@@ -1591,7 +1614,7 @@ function toggleSessionPanelMenu(e) {
         });
     });
 
-    sessionMenuBtn.parentElement.appendChild(dropdown);
+    openAnchoredMenu(dropdown, sessionMenuBtn, false);
 
     setTimeout(() => {
         document.addEventListener('click', () => dropdown.remove(), { once: true });
