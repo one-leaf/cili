@@ -146,6 +146,49 @@ class Test429Subclassification:
         assert info.error_code == "billing"
 
 
+class Test429MessageDetail:
+    """429 文案附带上游错误消息（error.message > message > _raw > 原文）。"""
+
+    def test_rate_limit_message_includes_upstream_message(self):
+        body = '{"error": {"type": "rate_limit_error", "message": "Rate limit reached for gpt-4o: please try again in 2s"}}'
+        info = classify_llm_error(_http_error(429, body))
+        assert info.kind == "rate_limit"
+        assert "请求过于频繁" in info.message
+        assert "Rate limit reached for gpt-4o" in info.message
+
+    def test_quota_message_includes_upstream_message(self):
+        body = '{"error": {"type": "insufficient_quota", "message": "You exceeded your current quota"}}'
+        info = classify_llm_error(_http_error(429, body))
+        assert info.kind == "quota"
+        assert "配额" in info.message
+        assert "You exceeded your current quota" in info.message
+
+    def test_top_level_message_fallback(self):
+        info = classify_llm_error(_http_error(429, '{"message": "too many requests"}'))
+        assert "too many requests" in info.message
+
+    def test_raw_wrapper_unwrapped(self):
+        # 非 JSON 上游响应经 transport 包装为 {"_raw": ...}，展示时还原原文
+        info = classify_llm_error(_http_error(429, '{"_raw": "Too Many Requests"}'))
+        assert "Too Many Requests" in info.message
+        assert "_raw" not in info.message
+
+    def test_non_json_body_falls_back_to_raw_text(self):
+        info = classify_llm_error(_http_error(429, "Too Many Requests"))
+        assert "Too Many Requests" in info.message
+
+    def test_long_message_truncated_to_200(self):
+        import json as _json
+        body = _json.dumps({"error": {"message": "x" * 500}})
+        info = classify_llm_error(_http_error(429, body))
+        assert "x" * 200 in info.message
+        assert "x" * 201 not in info.message
+
+    def test_empty_body_no_trailing_colon(self):
+        info = classify_llm_error(_http_error(429))
+        assert info.message == "LLM API 请求过于频繁 (HTTP 429)，上游限流"
+
+
 class TestRetryAfter:
     """Retry-After 提取：优先头，其次响应体。"""
 

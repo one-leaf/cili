@@ -155,6 +155,31 @@ def _classify_429(body_text: str | None) -> tuple[str, bool, str | None, str | N
     return KIND_RATE_LIMIT, True, error_type, error_code
 
 
+def _extract_error_message(body_text: str | None) -> str:
+    """从响应体提取人类可读的上游错误消息。
+
+    优先级：error.message > message > _raw（非 JSON 响应包装）> 原文，
+    截断 200 字符（与 5xx 分支的 body_text[:200] 一致）。
+    """
+    if not body_text:
+        return ""
+    text = body_text.strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        err = data.get("error") if isinstance(data.get("error"), dict) else {}
+        for source in (err, data):
+            msg = source.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()[:200]
+        raw = data.get("_raw")
+        if isinstance(raw, str) and raw.strip():
+            text = raw.strip()
+    return text[:200]
+
+
 def _safe_response_text(response) -> str:
     try:
         text = response.text
@@ -237,6 +262,7 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
             )
         elif status == 429:
             kind, should_retry, _, _ = _classify_429(body_text)
+            detail = _extract_error_message(body_text)
             if kind == KIND_QUOTA:
                 message = (
                     f"LLM API 配额/余额不足（{error_type or error_code or 'HTTP 429'}），"
@@ -244,6 +270,8 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
                 )
             else:
                 message = "LLM API 请求过于频繁 (HTTP 429)，上游限流"
+            if detail:
+                message = f"{message}: {detail}"
             info = LLMErrorInfo(
                 kind=kind, status_code=status, message=message,
                 error_type=error_type, error_code=error_code,
