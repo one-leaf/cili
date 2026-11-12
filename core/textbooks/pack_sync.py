@@ -5,7 +5,8 @@ Release 资产 → **Release 源码归档**（GitHub 按 tag 自动生成，天�
 ``textbook/dist/`` 三件套，无需手工上传资产）→ raw dist 文件。
 
 1. 取远端 manifest.json，比对本地 pack_meta.json 的 dataset_version；
-2. 版本不一致 / 本地缺失 → 下载 chapters.zip + catalog.json（gh-proxy 镜像优先，
+2. 版本不一致 / 本地缺失 → 下载 chapters.zip + catalog.json（国内镜像链
+   gh-proxy.com / ghfast.top / ghproxy.net 依次失败转移，直连兜底，
    Range 断点续传）；
 3. 按 manifest 的 sha256 校验 → 临时目录解压安装 → 原子替换
    ``data/cili/textbooks/``；
@@ -37,12 +38,18 @@ CFG_DEFAULTS: dict[str, Any] = {
     "auto_sync": True,
     "repo": "one-leaf/cili-data",
     "channel": "release",       # release | raw
-    "mirror": "gh-proxy",       # gh-proxy | direct
+    "mirror": "auto",           # auto（镜像链+直连）| direct（仅直连）；旧值 gh-proxy 等同 auto
     "check_interval_hours": 24,
 }
 _TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 _BLOCK = 256 * 1024
-_DOWNLOAD_ATTEMPTS = 3
+
+# GitHub 代理前缀：按顺序失败转移，最后回落直连（与 core/updater.py 的镜像列表一致）
+PROXY_PREFIXES = (
+    "https://gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+)
 
 STATE: dict[str, Any] = {"status": "idle", "progress": 0.0, "message": ""}
 _thread: threading.Thread | None = None
@@ -71,15 +78,24 @@ def _settings() -> dict[str, Any]:
     return cfg
 
 
+def _proxied(cfg: dict[str, Any], url: str) -> list[str]:
+    """镜像全前缀 + 直连；mirror=direct 时仅直连。"""
+    if cfg.get("mirror") == "direct":
+        return [url]
+    return [f"{p}{url}" for p in PROXY_PREFIXES] + [url]
+
+
 def _urls(cfg: dict[str, Any], name: str) -> list[str]:
     repo = cfg["repo"]
     bases: list[str] = []
     if cfg.get("channel") == "release":
         bases.append(f"https://github.com/{repo}/releases/latest/download/{name}")
     bases.append(f"https://raw.githubusercontent.com/{repo}/main/textbook/dist/{name}")
-    if cfg.get("mirror") == "gh-proxy":
-        return [f"https://gh-proxy.com/{u}" for u in bases] + bases
-    return bases
+    if cfg.get("mirror") == "direct":
+        return bases
+    # 先跑完所有镜像（release → raw 各自过一遍代理），直连最后兜底
+    return ([f"{p}{base}" for base in bases for p in PROXY_PREFIXES]
+            + bases)
 
 
 def _fetch_json(cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -97,7 +113,7 @@ def _fetch_json(cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
 def _latest_tag(cfg: dict[str, Any]) -> str:
     """取最新 release 的 tag（用于回退到源码归档 zip）。"""
     api = f"https://api.github.com/repos/{cfg['repo']}/releases/latest"
-    urls = ([f"https://gh-proxy.com/{api}"] if cfg.get("mirror") == "gh-proxy" else []) + [api]
+    urls = _proxied(cfg, api)
     for url in urls:
         try:
             r = httpx.get(url, timeout=_TIMEOUT, follow_redirects=True,
@@ -109,6 +125,13 @@ def _latest_tag(cfg: dict[str, Any]) -> str:
     return ""
 
 
+def _reject_html(resp: httpx.Response) -> None:
+    """镜像/网关错误时可能返回 200 + HTML 错误页，直接判为失败换下一个源。"""
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "text/html" in ctype:
+        raise RuntimeError(f"源返回 HTML 页面（{ctype}）")
+
+
 def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
                           dest: Path, expect_sha: str = "") -> bool:
     """从 release 源码归档（GitHub 自动生成）抽取 textbook/dist/<name>。
@@ -118,11 +141,10 @@ def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
     import zipfile
     repo = cfg["repo"]
     base = f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
-    urls = ([f"https://gh-proxy.com/{base}"] if cfg.get("mirror") == "gh-proxy" else []) + [base]
+    urls = _proxied(cfg, base)
     archive = dest.parent / f"src-{tag}.zip"
     part = archive.with_suffix(".zip.part")
-    for attempt in range(_DOWNLOAD_ATTEMPTS):
-        url = urls[attempt % len(urls)]
+    for attempt, url in enumerate(urls):
         try:
             offset = part.stat().st_size if part.exists() else 0
             headers = {"Range": f"bytes={offset}-"} if offset else {}
@@ -133,14 +155,15 @@ def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
                         part.unlink(missing_ok=True)
                     elif resp.status_code not in (200, 206):
                         raise RuntimeError(f"HTTP {resp.status_code}")
+                    _reject_html(resp)
                     with open(part, "ab" if resp.status_code == 206 else "wb") as f:
                         for block in resp.iter_bytes(_BLOCK):
                             f.write(block)
             part.replace(archive)
             break
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[教材数据] 下载源码归档第 {attempt + 1} 次失败: {e}")
-            time.sleep(2.0 * (attempt + 1))
+        except Exception as e:  # noqa: BLE001 —— 换下一个源
+            logger.warning(f"[教材数据] 下载源码归档第 {attempt + 1}/{len(urls)} 个源失败: {e}")
+            time.sleep(min(2.0 * (attempt + 1), 6.0))
     else:
         return False
     try:
@@ -175,8 +198,7 @@ def _download(cfg: dict[str, Any], name: str, dest: Path,
     """Range 断点续传到 dest；校验大小与 sha256。"""
     part = dest.with_suffix(dest.suffix + ".part")
     urls = _urls(cfg, name)
-    for attempt in range(_DOWNLOAD_ATTEMPTS):
-        url = urls[attempt % len(urls)]
+    for attempt, url in enumerate(urls):
         try:
             offset = part.stat().st_size if part.exists() else 0
             if expected and offset > expected:
@@ -190,6 +212,7 @@ def _download(cfg: dict[str, Any], name: str, dest: Path,
                         part.unlink(missing_ok=True)
                     elif resp.status_code not in (200, 206):
                         raise RuntimeError(f"HTTP {resp.status_code}")
+                    _reject_html(resp)
                     mode = "ab" if resp.status_code == 206 else "wb"
                     total = expected or int(resp.headers.get("content-length") or 0)
                     done = offset
@@ -207,9 +230,9 @@ def _download(cfg: dict[str, Any], name: str, dest: Path,
                 raise RuntimeError("SHA256 校验失败")
             part.replace(dest)
             return True
-        except Exception as e:  # noqa: BLE001 —— 重试
-            logger.warning(f"[教材数据] 下载 {name} 第 {attempt + 1} 次失败: {e}")
-            time.sleep(2.0 * (attempt + 1))
+        except Exception as e:  # noqa: BLE001 —— 换下一个源
+            logger.warning(f"[教材数据] 下载 {name} 第 {attempt + 1}/{len(urls)} 个源失败: {e}")
+            time.sleep(min(2.0 * (attempt + 1), 6.0))
     return False
 
 
