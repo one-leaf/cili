@@ -196,11 +196,13 @@ def _kill_office_pid(pid_file: Path) -> None:
 
 def _run_worker(source: str, output: str, kind: str, pid_file: Path, timeout: int) -> str:
     """Run the COM conversion in an isolated subprocess with a hard timeout."""
+    # 用 -c 而不是 -m：core.tools.__init__ 会先导入本模块，runpy 再执行 -m
+    # 会触发 "found in sys.modules" RuntimeWarning，并混进失败时的错误详情。
     cmd = [
         sys.executable,
-        "-m",
-        "core.tools.office2pdf",
-        "--worker",
+        "-c",
+        "import sys; from core.tools.office2pdf import _worker_main;"
+        " raise SystemExit(_worker_main(sys.argv[1:]))",
         source,
         output,
         kind,
@@ -643,6 +645,11 @@ def _configure_app(app: Any, kind: str) -> None:
 def _convert_with_com(source: str, output: str, kind: str, pid_file: str) -> str:
     import win32com.client as win32
 
+    # PowerPoint 的 SaveAs 不接受正斜杠路径（报「无法将 … 保存到 …」），
+    # 统一转成 Windows 原生分隔符；Word/Excel 同样兼容。
+    source = os.path.normpath(source)
+    output = os.path.normpath(output)
+
     errors: list[str] = []
     for label, progid in _ENGINE_PROGIDS[kind]:
         app = None
@@ -672,7 +679,22 @@ def _convert_with_com(source: str, output: str, kind: str, pid_file: str) -> str
                 wb.Close(False)
             else:
                 pres = app.Presentations.Open(source, True, False, False)
-                pres.ExportAsFixedFormat(output, 2)  # ppFixedFormatTypePDF
+                try:
+                    # ppSaveAsPDF=32。不要用 ExportAsFixedFormat：新版 PowerPoint
+                    # 类型库把最后一个参数 ExternalExporter 标成对象，pywin32 动态
+                    # 调用补默认值时抛 TypeError: The Python instance can not be
+                    # converted to a COM object（2026-11-12 自检复现）。
+                    pres.SaveAs(output, 32)
+                except Exception as save_err:
+                    # 老版本 PowerPoint / 特殊文件回退到导出接口；两个错误都保留，
+                    # 否则只会看到回退接口的报错，反而掩盖真实原因。
+                    try:
+                        pres.ExportAsFixedFormat(output, 2)  # ppFixedFormatTypePDF
+                    except Exception as export_err:
+                        raise RuntimeError(
+                            f"SaveAs failed: {save_err}; "
+                            f"ExportAsFixedFormat failed: {export_err}"
+                        ) from export_err
                 pres.Close()
 
             if not Path(output).exists() or Path(output).stat().st_size == 0:

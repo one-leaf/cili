@@ -1,12 +1,63 @@
 """office2pdf 工具测试（COM 转换被 mock，不依赖本机 Office）。"""
 
 import os
+import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from core.tools import office2pdf as mod
 from core.tools.office2pdf import Office2PDFTool
+
+
+class _FakePresentation:
+    """PowerPoint Presentation 的最小替身。"""
+
+    def __init__(self, output_writer):
+        self.output_writer = output_writer
+        self.calls = []
+        self.saveas_fails = False
+        self.export_fails = False
+        self.closed = False
+
+    def SaveAs(self, path, fmt):
+        self.calls.append(("SaveAs", path, fmt))
+        if self.saveas_fails:
+            raise RuntimeError("saveas failed")
+        self.output_writer(path)
+
+    def ExportAsFixedFormat(self, path, fmt):
+        self.calls.append(("Export", path, fmt))
+        if self.export_fails:
+            raise RuntimeError("export failed")
+        self.output_writer(path)
+
+    def Close(self):
+        self.closed = True
+
+
+class _FakeApp:
+    """PowerPoint.Application 的最小替身。"""
+
+    def __init__(self, pres):
+        self.presentations = pres
+        self.Presentations = SimpleNamespace(Open=lambda *a, **k: pres)
+        self.quit_called = False
+
+    def Quit(self):
+        self.quit_called = True
+
+
+def _install_fake_win32(monkeypatch, app):
+    """把 win32com.client 替换成返回 *app* 的假模块。"""
+    pkg = types.ModuleType("win32com")
+    client = types.ModuleType("win32com.client")
+    client.DispatchEx = lambda progid: app
+    pkg.client = client
+    monkeypatch.setitem(sys.modules, "win32com", pkg)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
 
 
 @pytest.fixture
@@ -158,6 +209,79 @@ class TestOffice2PDFConversion:
         src.write_bytes(b"two-two")
         key2, stat2 = mod._cache_key(str(src))
         assert key1 != key2
+
+
+class TestComConversion:
+    def _pres(self):
+        return _FakePresentation(
+            lambda path: Path(path).write_bytes(b"%PDF-1.7 fake pdf")
+        )
+
+    def test_slides_uses_saveas_pdf(self, tmp_path, monkeypatch):
+        """PowerPoint 走 SaveAs(ppSaveAsPDF=32)，不再调用易崩的 ExportAsFixedFormat。"""
+        pres = self._pres()
+        app = _FakeApp(pres)
+        _install_fake_win32(monkeypatch, app)
+        out = tmp_path / "slides.pdf"
+
+        engine = mod._convert_with_com(
+            str(tmp_path / "a.pptx"), str(out), "slides", str(tmp_path / "p.pid")
+        )
+
+        assert engine == "Microsoft Office PowerPoint"
+        assert pres.calls == [("SaveAs", os.path.normpath(str(out)), 32)]
+        assert out.read_bytes().startswith(b"%PDF-")
+        assert pres.closed and app.quit_called
+
+    def test_slides_falls_back_to_export(self, tmp_path, monkeypatch):
+        pres = self._pres()
+        pres.saveas_fails = True
+        app = _FakeApp(pres)
+        _install_fake_win32(monkeypatch, app)
+        out = tmp_path / "slides.pdf"
+
+        engine = mod._convert_with_com(
+            str(tmp_path / "a.pptx"), str(out), "slides", str(tmp_path / "p.pid")
+        )
+
+        assert engine == "Microsoft Office PowerPoint"
+        assert [c[0] for c in pres.calls] == ["SaveAs", "Export"]
+        assert pres.calls[1][2] == 2
+        assert out.exists()
+
+    def test_paths_normalized_to_native_separators(self, tmp_path, monkeypatch):
+        """PowerPoint 的 SaveAs 拒绝正斜杠路径，传入前统一 normpath。"""
+        pres = self._pres()
+        app = _FakeApp(pres)
+        _install_fake_win32(monkeypatch, app)
+        out = tmp_path / "slides.pdf"
+        forward_out = str(out).replace("\\", "/")
+
+        mod._convert_with_com(
+            str(tmp_path / "a.pptx").replace("\\", "/"),
+            forward_out,
+            "slides",
+            str(tmp_path / "p.pid"),
+        )
+
+        assert pres.calls[0][1] == os.path.normpath(forward_out)
+
+    def test_both_engines_failing_reports_both(self, tmp_path, monkeypatch):
+        pres = self._pres()
+        pres.saveas_fails = True
+        pres.export_fails = True
+        app = _FakeApp(pres)
+        _install_fake_win32(monkeypatch, app)
+
+        with pytest.raises(RuntimeError) as exc:
+            mod._convert_with_com(
+                str(tmp_path / "a.pptx"), str(tmp_path / "s.pdf"),
+                "slides", str(tmp_path / "p.pid"),
+            )
+        assert "Microsoft Office PowerPoint" in str(exc.value)
+        assert "WPS Presentation" in str(exc.value)
+        assert "SaveAs failed" in str(exc.value)
+        assert "ExportAsFixedFormat failed" in str(exc.value)
 
 
 class TestWorkspaceCacheAndSync:
