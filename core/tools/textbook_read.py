@@ -23,13 +23,15 @@ class TextbookReadTool(Tool):
             "chapter": {"type": "string",
                         "description": "章节序号（如 3）或章节标题关键词（如 勾股）"},
             "max_chars": {"type": "integer",
-                          "description": "正文最大字符数，默认 20000，最大 60000"},
+                          "description": "正文最大字符数，默认 8000（避免超过 1 万字符被落盘）；"
+                                         "整章较长时建议先用 textbook_outline(chapter=...) "
+                                         "定位小节，或用 textbook_search 取精确段落"},
         },
         "required": ["book", "chapter"],
     }
 
     def execute(self, book: str = "", chapter: str = "",
-                max_chars: int = 20000, **_kwargs) -> ToolResult:
+                max_chars: int = 8000, **_kwargs) -> ToolResult:
         try:
             store = pack_store.PackStore()
             found, candidates = store.resolve_book(book)
@@ -40,7 +42,7 @@ class TextbookReadTool(Tool):
                     return ToolResult("\n".join(lines))
                 return ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
                                   error=True)
-            max_chars = max(1000, min(int(max_chars or 20000), 60000))
+            max_chars = max(1000, min(int(max_chars or 8000), 60000))
             title, body = store.read_chapter(found["cid"], chapter, max_chars)
             meta = "·".join(x for x in (found.get("stage"), found.get("subject"),
                                         found.get("edition"), found.get("grade"),

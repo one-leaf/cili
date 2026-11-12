@@ -156,6 +156,24 @@ def format_book_line(b: dict[str, Any]) -> str:
 
 # ── 数据包访问 ────────────────────────────────────────────────────────────────
 
+_HEADING_NOISE = frozenset({
+    "思考", "探究", "归纳", "观察", "练习", "小结", "复习巩固", "综合运用",
+    "拓广探索", "阅读与思考", "探究与发现", "数学探究", "信息技术应用",
+    "数学文化", "学习提示", "单元导语", "做一做", "想一想", "说一说",
+    "活动", "小资料", "欣赏与交流", "自我评价", "表现与创意", "探索与理解",
+    "本章小结", "章末总结",
+})
+_NOISE_PREFIX_RE = re.compile(r"^(习题|练习|复习参考题|复习题|例题)\s*\d")
+
+
+def _is_noise_heading(text: str) -> bool:
+    """教材正文里的活动类小标题（思考/练习/习题等），目录列表应过滤。"""
+    s = text.strip()
+    if s in _HEADING_NOISE:
+        return True
+    return bool(_NOISE_PREFIX_RE.match(s))
+
+
 class PackStore:
     """章节/原文读取与全文检索（只读；同步线程是唯一写入方）。"""
 
@@ -220,7 +238,7 @@ class PackStore:
                 mapping[int(m.group(1))] = (m.group(2), int(m.group(3)))
         return mapping
 
-    def read_chapter(self, cid: str, chapter: str, max_chars: int = 20000) -> tuple[str, str]:
+    def read_chapter(self, cid: str, chapter: str, max_chars: int = 8000) -> tuple[str, str]:
         """读取单章。chapter 可为序号或标题关键词。返回 (标题, 正文)。"""
         if not self.available:
             raise PackUnavailable(self._missing_message())
@@ -251,19 +269,28 @@ class PackStore:
                     + f"\n\n……（本章共 {len(body)} 字，已截断；可调大 max_chars 继续读取）")
         return title, body
 
-    def chapter_headings(self, cid: str, chapter: str) -> tuple[str, list[str]]:
-        """列出某一章内部的标题（课文/篇目），返回 (章节标题, 标题列表)。"""
+    def chapter_headings(self, cid: str, chapter: str,
+                         compact: bool = True) -> tuple[str, list[str]]:
+        """列出某一章内部的标题（课文/篇目）。
+
+        compact=True 时过滤活动类小标题（思考/练习/习题/复习巩固等），
+        只保留有意义的章节/课文标题。
+        """
         title, body = self.read_chapter(cid, chapter, max_chars=0)
         headings: list[str] = []
         for line in body.splitlines():
             stripped = line.strip()
-            if stripped.startswith("#"):
-                text = stripped.lstrip("#").strip()
-                if text:
-                    headings.append(text)
+            if not stripped.startswith("#"):
+                continue
+            text = stripped.lstrip("#").strip()
+            if not text:
+                continue
+            if compact and _is_noise_heading(text):
+                continue
+            headings.append(text)
         return title, headings
 
-    def original(self, cid: str, offset: int = 0, limit: int = 20000) -> str:
+    def original(self, cid: str, offset: int = 0, limit: int = 8000) -> str:
         """读取清洗版原文（仅本地安装的 originals.zip 提供）。"""
         path = self.pack_dir / "originals.zip"
         if not path.is_file():

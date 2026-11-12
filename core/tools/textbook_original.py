@@ -22,13 +22,13 @@ class TextbookOriginalTool(Tool):
             "book": {"type": "string",
                      "description": "教材 id（8 位前缀即可）或书名关键词"},
             "offset": {"type": "integer", "description": "起始字符偏移，默认 0"},
-            "limit": {"type": "integer", "description": "本次返回字符数，默认 20000，最大 50000"},
+            "limit": {"type": "integer", "description": "本次返回字符数，默认 8000，最大 50000"},
         },
         "required": ["book"],
     }
 
     def execute(self, book: str = "", offset: int = 0,
-                limit: int = 20000, **_kwargs) -> ToolResult:
+                limit: int = 8000, **_kwargs) -> ToolResult:
         try:
             store = pack_store.PackStore()
             found, candidates = store.resolve_book(book)
