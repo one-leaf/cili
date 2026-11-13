@@ -2010,6 +2010,16 @@ mjx-container {
     border-style: dashed;
 }
 
+/* 推荐输入按钮：输入框左下角（独立于右下角工具条） */
+#suggest-btn {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    width: 24px;
+    height: 24px;
+    z-index: 2;
+}
+
 #suggest-btn:disabled {
     opacity: 0.45;
     cursor: default;
@@ -2032,8 +2042,10 @@ mjx-container {
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    /* 模型下拉最大 120px + 四个 24px 图标（推荐/附件/帮助/发送） + 间距 + 8px 右边距 ≈ 248px */
-    padding-right: 248px;
+    /* 右侧：模型下拉最大 120px + 三个 24px 图标（附件/帮助/发送） + 间距 + 8px 右边距 ≈ 216px */
+    padding-right: 216px;
+    /* 左侧不缩进（文字与消息区左对齐）；底部留出左下角推荐按钮的高度 */
+    padding-bottom: 32px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;
@@ -2095,6 +2107,12 @@ mjx-container {
 
 .input-attachments[hidden] {
     display: none;
+}
+
+/* 有附件 chip 时右移，给左下角的推荐按钮让位 */
+.chat-input-wrap.has-attachments .input-attachments {
+    left: 40px;
+    max-width: calc(100% - 132px);
 }
 
 .chat-input-wrap.has-attachments textarea {
