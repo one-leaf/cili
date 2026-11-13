@@ -2975,6 +2975,14 @@ function isTextbookTaskRunning(status) {
     return status === 'queued' || status === 'running';
 }
 
+const TEXTBOOK_STATUS_TEXT = {
+    running: '下载中',
+    done: '已完成',
+    partial_failed: '部分失败',
+    failed: '失败',
+    cancelled: '已取消',
+};
+
 async function downloadSelectedTextbooks() {
     const selected = textbookSelectedBooks();
     if (!selected.length) {
@@ -3021,13 +3029,14 @@ async function pollTextbookTask() {
         if (!response.ok) throw new Error(task.detail || '查询失败');
         const percent = task.total_bytes
             ? Math.min(100, Math.round(task.downloaded_bytes / task.total_bytes * 100))
-            : 100;
+            : 0;
         document.getElementById('textbook-progress').value = percent;
         const failed = (task.books || []).filter(book => book.status === 'failed');
         const skipped = (task.books || []).filter(book => book.status === 'skipped');
         const done = (task.books || []).filter(book => book.status === 'done');
         textbookSetStatus(
-            task.status + '：完成 ' + done.length + '，跳过 ' + skipped.length +
+            '下载状态：' + (TEXTBOOK_STATUS_TEXT[task.status] || task.status) +
+            '，完成 ' + done.length + '，跳过 ' + skipped.length +
             '，失败 ' + failed.length + '；' + textbookFormatSize(task.downloaded_bytes) +
             ' / ' + textbookFormatSize(task.total_bytes) + '（' + percent + '%）' +
             (failed.length ? '；首个错误：' + failed[0].error : '')

@@ -257,6 +257,23 @@ class TestOfficialDownloader:
 
         return asyncio.run(run())
 
+    def test_totals_derived_from_books_without_catalog_size(self, tmp_path, monkeypatch):
+        """官方目录不带文件大小（total_size=0）时，任务总量/已下载量按书本进度汇总。
+
+        回归：旧实现任务级 downloaded_bytes 在流式块与完成时各加一次（双重计数），
+        total_bytes 只在创建时按目录求和且从不回填，显示成 "18.0MB / 0 B"。
+        """
+        body = _pdf_body(80)
+        book = _book(size=0)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body)
+
+        task, _ = self._run(tmp_path, book, handler, monkeypatch)
+        data = task.public_dict()
+        assert data["total_bytes"] == len(body)
+        assert data["downloaded_bytes"] == len(body)
+
     def test_downloads_with_signed_header(self, tmp_path, monkeypatch):
         body = _pdf_body(80)
         book = _book(size=len(body))
@@ -355,3 +372,83 @@ class TestMarkdownStore:
         workspace = tmp_path / "ws"
         workspace.mkdir()
         assert markdown_store.copy_textbook_markdown(workspace, catalog, catalog.books) == []
+
+
+class TestWizardTextbookLaunch:
+    """向导「创建学习项目后自动下载教材」：阻塞准备在工作线程，start() 回事件循环。
+
+    回归：_prepare_textbook_tasks 经 asyncio.to_thread 在工作线程执行，
+    textbook_tasks.start 里的 asyncio.create_task 必须回到事件循环调用，
+    否则抛 "no running event loop"。
+    """
+
+    def test_prepare_in_thread_launch_on_loop(self, tmp_path, monkeypatch):
+        from web import routes_workspace_wizard as wizard_mod
+
+        catalog = _catalog(_book())
+        monkeypatch.setattr(wizard_mod, "get_official_catalog", lambda: catalog)
+        monkeypatch.setattr(wizard_mod, "copy_textbook_markdown",
+                            lambda *a, **k: ["x.pdf"])
+        monkeypatch.setattr(wizard_mod, "get_workspace_data_dir",
+                            lambda uuid: tmp_path / "data" / uuid)
+
+        manager = TextbookTaskManager()
+        monkeypatch.setattr(wizard_mod, "textbook_tasks", manager)
+
+        async def fake_run(self, task, client_factory=None):
+            task.status = "done"
+
+        monkeypatch.setattr(downloader_mod.TextbookTaskManager, "_run", fake_run)
+
+        created = [{
+            "uuid": "ws-1",
+            "directory": str(tmp_path / "ws"),
+            "subject": "数学",
+            "profile": {"textbook_edition": "人教版"},
+        }]
+        profile = {"stage": "小学", "grade": "一年级"}
+
+        async def scenario():
+            # 复刻路由用法：to_thread 准备 → 事件循环内启动
+            cat, specs = await asyncio.to_thread(
+                wizard_mod._prepare_textbook_tasks, created, profile
+            )
+            responses = [wizard_mod._launch_textbook_task(cat, spec)
+                         for spec in specs]
+            for resp in responses:
+                task = manager.get(resp["task_id"])
+                if task and task.async_task:
+                    await task.async_task
+            return responses
+
+        responses = asyncio.run(scenario())
+
+        assert len(responses) == 1
+        resp = responses[0]
+        assert resp["workspace_uuid"] == "ws-1"
+        assert resp["subject"] == "数学"
+        assert resp["total_books"] == 1
+        task = manager.get(resp["task_id"])
+        assert task is not None and task.status == "done"
+
+    def test_prepare_skips_items_without_books(self, tmp_path, monkeypatch):
+        from web import routes_workspace_wizard as wizard_mod
+
+        catalog = _catalog(_book())  # 只有数学一年级，匹配不到英语
+        monkeypatch.setattr(wizard_mod, "get_official_catalog", lambda: catalog)
+
+        created = [{
+            "uuid": "ws-2",
+            "directory": str(tmp_path / "ws"),
+            "subject": "英语",
+            "profile": {},
+        }]
+
+        async def scenario():
+            return await asyncio.to_thread(
+                wizard_mod._prepare_textbook_tasks, created, {"stage": "小学"}
+            )
+
+        cat, specs = asyncio.run(scenario())
+        assert cat is catalog
+        assert specs == []

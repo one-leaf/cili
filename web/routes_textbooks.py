@@ -147,7 +147,7 @@ async def download_textbooks(request: Request, body: TextbookDownloadRequest):
     return {
         "task_id": task.task_id,
         "total_books": len(books),
-        "total_bytes": task.total_bytes,
+        "total_bytes": sum(b.total_size for b in task.books.values()),
         "status": task.status,
         "markdown_copies": len(copied),
     }
@@ -190,7 +190,7 @@ async def retry_textbook_download(
     return {
         "task_id": task.task_id,
         "total_books": len(task.books),
-        "total_bytes": task.total_bytes,
+        "total_bytes": sum(b.total_size for b in task.books.values()),
         "status": task.status,
     }
 

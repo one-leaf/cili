@@ -105,8 +105,6 @@ class TextbookDownloadTask:
     books: dict[str, BookProgress]
     catalog_books: dict[str, OfficialBook]
     status: str = "running"
-    downloaded_bytes: int = 0
-    total_bytes: int = 0
     error: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -119,8 +117,9 @@ class TextbookDownloadTask:
             "workspace_uuid": self.workspace_uuid,
             "status": self.status,
             "total_books": len(self.books),
-            "total_bytes": self.total_bytes,
-            "downloaded_bytes": self.downloaded_bytes,
+            # 官方目录不含文件大小，总量/已下载量只能按每本书进度实时汇总
+            "total_bytes": sum(b.total_size for b in self.books.values()),
+            "downloaded_bytes": sum(b.downloaded_bytes for b in self.books.values()),
             "error": self.error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -303,7 +302,6 @@ class TextbookTaskManager:
             overwrite=overwrite,
             books=progress_books,
             catalog_books=catalog_books,
-            total_bytes=sum(book.total_size for book in books),
         )
         self._tasks[task.task_id] = task
         self._workspace_tasks[workspace_uuid] = task
@@ -407,7 +405,10 @@ class TextbookTaskManager:
         client_factory: Callable[[], httpx.AsyncClient] | None,
     ) -> None:
         try:
-            _ensure_disk_space(task.workspace_dir, task.total_bytes)
+            _ensure_disk_space(
+                task.workspace_dir,
+                sum(b.total_size for b in task.books.values()),
+            )
             _ensure_textbook_gitignore(task.workspace_dir)
             semaphore = asyncio.Semaphore(MAX_CONCURRENT_BOOKS)
             factory = client_factory or _default_client_factory
@@ -473,7 +474,6 @@ class TextbookTaskManager:
                     progress.status = "skipped"
                     size = target.stat().st_size
                     progress.total_size = progress.downloaded_bytes = size
-                    task.downloaded_bytes += size
                     progress.sha256 = _file_sha256(target)
                     _record_book(task.workspace_dir, task.source_commit, progress)
                     return
@@ -482,6 +482,8 @@ class TextbookTaskManager:
             source = await asyncio.to_thread(fetch_book_source, book.content_id)
             url = _validate_source_url(str(source["url"]))
             expected_size = int(source.get("size") or book.total_size or 0)
+            if expected_size:
+                progress.total_size = expected_size
 
             part_path = temp_dir / "source.part"
             done_path = temp_dir / "source.done"
@@ -508,7 +510,6 @@ class TextbookTaskManager:
             progress.status = "done"
             progress.total_size = progress.downloaded_bytes = size
             progress.sha256 = _file_sha256(target)
-            task.downloaded_bytes += size
             shutil.rmtree(temp_dir, ignore_errors=True)
             _record_book(task.workspace_dir, task.source_commit, progress)
         except asyncio.CancelledError:
@@ -594,7 +595,6 @@ class TextbookTaskManager:
                                 continue
                             out.write(block)
                             task.books[book.content_id].downloaded_bytes += len(block)
-                            task.downloaded_bytes += len(block)
                 if expected_size and part_path.stat().st_size != expected_size:
                     raise TextbookDownloadError(
                         f"下载不完整: 实际 {part_path.stat().st_size}，平台 {expected_size}"

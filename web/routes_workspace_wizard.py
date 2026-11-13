@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from core.config import PROJECT_ROOT, get_workspace_data_dir
 from core.textbooks import (
+    OfficialCatalog,
     TextbookDownloadError,
     get_official_catalog,
     textbook_tasks,
@@ -157,12 +158,18 @@ async def workspace_wizard_preview(request: WorkspaceWizardRequest):
         raise _wizard_error(e) from e
 
 
-def _start_textbook_tasks(created: list[dict[str, Any]], profile: dict[str, Any]) -> list[dict[str, Any]]:
-    """为学习项目工作区启动匹配教材的下载任务（官方目录 + 浏览器登录凭据）。"""
+def _prepare_textbook_tasks(
+    created: list[dict[str, Any]], profile: dict[str, Any]
+) -> tuple[OfficialCatalog, list[dict[str, Any]]]:
+    """学习项目教材任务的阻塞准备（工作线程执行）：匹配书目并复制 Markdown。
+
+    ``textbook_tasks.start`` 内部 ``asyncio.create_task`` 需要运行中的事件循环，
+    不能在工作线程调用，启动单独放到 ``_launch_textbook_task``。
+    """
     catalog = get_official_catalog()
     stage = str(profile.get("stage") or "")
     grade = str(profile.get("grade") or "")
-    tasks: list[dict[str, Any]] = []
+    specs: list[dict[str, Any]] = []
     for item in created:
         subject = str(item.get("subject") or "")
         if not subject:
@@ -178,23 +185,35 @@ def _start_textbook_tasks(created: list[dict[str, Any]], profile: dict[str, Any]
             continue
         # 与 PDF 下载成功与否无关：先把已生成的教材 Markdown 复制到 教材/
         copied = copy_textbook_markdown(item["directory"], catalog, books)
-        task = textbook_tasks.start(
-            workspace_uuid=str(item["uuid"]),
-            workspace_dir=item["directory"],
-            data_dir=get_workspace_data_dir(str(item["uuid"])),
-            catalog=catalog,
-            books=books,
-            overwrite=False,
-        )
-        tasks.append({
-            "workspace_uuid": item["uuid"],
+        specs.append({
+            "item": item,
             "subject": subject,
-            "task_id": task.task_id,
-            "total_books": len(books),
-            "total_bytes": task.total_bytes,
+            "books": books,
             "markdown_copies": len(copied),
         })
-    return tasks
+    return catalog, specs
+
+
+def _launch_textbook_task(catalog: OfficialCatalog,
+                          spec: dict[str, Any]) -> dict[str, Any]:
+    """在事件循环里启动一个教材下载任务。"""
+    item = spec["item"]
+    task = textbook_tasks.start(
+        workspace_uuid=str(item["uuid"]),
+        workspace_dir=item["directory"],
+        data_dir=get_workspace_data_dir(str(item["uuid"])),
+        catalog=catalog,
+        books=spec["books"],
+        overwrite=False,
+    )
+    return {
+        "workspace_uuid": item["uuid"],
+        "subject": spec["subject"],
+        "task_id": task.task_id,
+        "total_books": len(spec["books"]),
+        "total_bytes": sum(b.total_size for b in task.books.values()),
+        "markdown_copies": spec["markdown_copies"],
+    }
 
 
 @router.post("/api/workspace-wizard/create",
@@ -225,9 +244,12 @@ async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateR
     warnings = list(result.get("warnings") or [])
     if body.category == "study" and body.download_textbooks and result.get("created"):
         try:
-            textbook_tasks_response = await asyncio.to_thread(
-                _start_textbook_tasks, result["created"], body.profile
+            catalog, specs = await asyncio.to_thread(
+                _prepare_textbook_tasks, result["created"], body.profile
             )
+            textbook_tasks_response = [
+                _launch_textbook_task(catalog, spec) for spec in specs
+            ]
         except TextbookDownloadError as e:
             warnings.append(f"教材下载任务创建失败: {e}")
         except Exception as e:  # noqa: BLE001 —— 教材下载失败不回滚工作区
