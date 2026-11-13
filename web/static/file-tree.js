@@ -1177,8 +1177,11 @@ const FileTree = (() => {
         frame.title = basename(path);
         frame.src = workspaceFileUrl(path, state.preview.mtime);
         // 隔离渲染：脚本可运行，但处于 opaque origin，拿不到父页面/同源存储；
-        // 表单、弹窗与顶层导航均被 sandbox 禁用。
+        // 表单、弹窗与顶层导航均被 sandbox 禁用。全屏需显式 allowfullscreen，
+        // 否则 Fullscreen API 在 iframe 内直接返回 false（课件“全屏”无反应）。
         frame.setAttribute('sandbox', 'allow-scripts');
+        frame.setAttribute('allowfullscreen', '');
+        frame.setAttribute('allow', 'fullscreen');
         frame.referrerPolicy = 'no-referrer';
         el.body.appendChild(frame);
     }

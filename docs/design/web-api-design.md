@@ -839,6 +839,30 @@ Content-Type: application/json
 
 ---
 
+### 3.13 课件答题记录（Courseware）
+
+```text
+POST /api/courseware/quiz-result
+Content-Type: text/plain;charset=UTF-8
+```
+
+课件 HTML 在 `sandbox="allow-scripts"` 的 iframe 中运行（opaque origin），因此该接口：
+
+- 接受 `text/plain` 的 JSON 字符串，避免预检；
+- 响应带 `Access-Control-Allow-Origin: *`；
+- 只追加记录，不提供读取接口；校验工作区与 `courseware_path` 均在工作区内；
+- 载荷上限 32KB，字段截断后写入。
+
+落盘：
+
+- 全部问答 → `<workspace>/.cili/courseware/quiz-results.jsonl`；
+- 错题每题一条 → 学习项目根 `错题本.md`（其他工作区在课件目录），使用 `cw-q` 标记维护；
+- 成绩汇总 → 输出根目录 `成绩记录.html`（学习项目为 `学习资料/成绩记录.html`）。
+
+实现：`web/routes_courseware.py` + `core/courseware_records.py`。
+
+---
+
 ## 四、特殊命令
 
 以下命令在服务端直接处理，不经过 LLM：
@@ -1259,6 +1283,7 @@ def _mask_api_key(config: dict) -> dict:
 | `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
 | `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/browse`） |
 | `web/routes_memory.py` | 记忆管理（`/api/workspaces/{uuid}/memory*`） |
+| `web/routes_courseware.py` | 课件答题记录（`POST /api/courseware/quiz-result`） |
 | `web/deps.py` | 共享依赖：registry 引用 + 会话认领封装 + workspace 解析 + 默认 sink 绑定 |
 | `web/sse.py` | SSE 适配层：`make_sse_callbacks`（回调→SSE 帧）、`sse_stream`、`sse_run_response`（同步执行→SSE 流执行壳） |
 | `web/static/index.html` | 主页面 |

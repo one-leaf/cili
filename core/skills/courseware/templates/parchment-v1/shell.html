@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{TITLE}}</title>
+<style>{{STYLE}}</style>
+</head>
+<body class="cw-theme-parchment">
+<div class="cw-app">
+  <header class="cw-topbar">
+    <div class="cw-brand">
+      <span class="cw-brand-mark" aria-hidden="true"></span>
+      <span class="cw-brand-title">{{TITLE}}</span>
+    </div>
+    <div class="cw-tools">
+      <button class="cw-btn cw-btn-ghost" id="cwNotesBtn" type="button" title="查看讲稿（N）">讲稿</button>
+      <button class="cw-btn cw-btn-icon" id="cwPrevBtn" type="button" title="上一页">‹</button>
+      <button class="cw-btn cw-btn-icon" id="cwNextBtn" type="button" title="下一页">›</button>
+      <button class="cw-btn cw-btn-ghost" id="cwFullBtn" type="button" title="全屏（F）">全屏</button>
+    </div>
+  </header>
+
+  <div class="cw-viewport" id="cwViewport">
+    <div class="cw-stage" id="cwStage">
+      <div class="cw-deck" id="cwDeck">{{BODY}}</div>
+    </div>
+  </div>
+
+  <div class="cw-bottombar">
+    <div class="cw-progress"><i id="cwProgressBar"></i></div>
+    <span class="cw-pageno" id="cwPageNo"></span>
+  </div>
+
+  <aside class="cw-notes" id="cwNotes" hidden>
+    <div class="cw-notes-head">
+      <strong>讲稿</strong>
+      <button class="cw-btn cw-btn-icon" id="cwNotesClose" type="button" title="关闭">×</button>
+    </div>
+    <div class="cw-notes-body" id="cwNotesBody"></div>
+  </aside>
+</div>
+<script>window.CW_META = {{META_JSON}};</script>
+<script>{{SCRIPT}}</script>
+</body>
+</html>
