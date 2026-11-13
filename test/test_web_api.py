@@ -180,6 +180,39 @@ class TestEvictIdleAgent:
         finally:
             self._restore(snap)
 
+    def test_any_running_with_claims(self):
+        """any_running：claims 命中即视为忙（覆盖认领到运行之间的窗口）"""
+        from core.session_registry import registry
+        snap = self._snapshot()
+        try:
+            registry._hosted.clear()
+            registry._access.clear()
+            # 注意 any_running 内部要拿 _claims_lock（非重入），外层不能持锁调用
+            with registry._claims_lock:
+                registry._claims.add("w:s")
+            assert registry.any_running() is True
+            with registry._claims_lock:
+                registry._claims.discard("w:s")
+            assert registry.any_running() is False
+        finally:
+            self._restore(snap)
+
+    def test_any_running_with_runner_state(self):
+        """any_running：无 claims 时逐个检查 runner 的 is_running"""
+        from core.session_registry import HostedSession, registry
+        snap = self._snapshot()
+        try:
+            registry._hosted.clear()
+            registry._access.clear()
+            agent = MagicMock()
+            agent.is_running.return_value = False
+            registry._hosted["k"] = HostedSession(key="k", runner=agent)
+            assert registry.any_running() is False
+            agent.is_running.return_value = True
+            assert registry.any_running() is True
+        finally:
+            self._restore(snap)
+
 
 class TestGlobalEvents:
     """GET /api/events 全局 SSE 事件流测试（直接调端点函数，迭代 body_iterator）。
@@ -1068,6 +1101,86 @@ class TestUpdateRoutes:
         # 状态接口同样把它算作下载中——前端轮询因此在窗口期不会提前停止
         status = asyncio.run(routes_update.update_status())
         assert status["downloading"] is True
+
+    def test_update_status_reports_launcher(self, tmp_path, monkeypatch):
+        """状态接口透出 launcher_managed（前端据此显示自动重启提示与重启按钮）"""
+        import asyncio
+
+        from core import updater
+        from web import routes_update
+
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+
+        result = asyncio.run(routes_update.update_status())
+        assert result["zip_present"] is False
+        assert result["launcher_managed"] is True
+
+    def test_restart_rejected_without_launcher(self, monkeypatch):
+        """直接启动（python main.py）时手动重启不可用"""
+        import asyncio
+
+        from core import updater
+        from web import routes_update
+
+        monkeypatch.setattr(updater, "is_launcher_managed", lambda: False)
+        result = asyncio.run(routes_update.restart_service())
+        assert result["success"] is False
+        assert "直接启动" in result["error"]
+
+    def test_restart_rejected_without_zip(self, tmp_path, monkeypatch):
+        """没有待应用的升级包时拒绝重启"""
+        import asyncio
+
+        from core import updater
+        from web import routes_update
+
+        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        result = asyncio.run(routes_update.restart_service())
+        assert result["success"] is False
+        assert "升级包" in result["error"]
+
+    def test_restart_rejected_when_busy(self, tmp_path, monkeypatch):
+        """有会话运行中时拒绝重启并带 busy 标记"""
+        import asyncio
+        import zipfile
+
+        from core import updater
+        from web import routes_update
+
+        zip_path = tmp_path / updater.UPGRADE_ZIP_NAME
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("cili-main/web/static/version.json", '{"version": "v20261018"}')
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(updater, "all_sessions_idle", lambda: False)
+
+        result = asyncio.run(routes_update.restart_service())
+        assert result["success"] is False
+        assert result["busy"] is True
+
+    def test_restart_success_requests_restart(self, tmp_path, monkeypatch):
+        """升级包就绪且空闲时发起重启：调用 request_restart 并返回成功"""
+        import asyncio
+        import zipfile
+
+        from core import updater
+        from web import routes_update
+
+        zip_path = tmp_path / updater.UPGRADE_ZIP_NAME
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("cili-main/web/static/version.json", '{"version": "v20261018"}')
+        monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(updater, "all_sessions_idle", lambda: True)
+        requested = []
+        monkeypatch.setattr(
+            updater, "request_restart", lambda reason: requested.append(reason) or True)
+
+        result = asyncio.run(routes_update.restart_service())
+        assert result["success"] is True
+        assert requested
 
 
 class TestCreateWorkspaceDefaults:

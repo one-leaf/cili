@@ -1012,6 +1012,11 @@ def parse_args() -> argparse.Namespace:
         default="127.0.0.1",
         help="Host for web server (default: 127.0.0.1)",
     )
+    parser.add_argument(
+        "--apply-upgrade-only",
+        action="store_true",
+        help=argparse.SUPPRESS,  # internal: start.ps1 启动循环在独立进程中应用升级包
+    )
     return parser.parse_args()
 
 
@@ -1196,11 +1201,57 @@ def _ensure_runtime() -> None:
     _auto_detect_browser()
 
 
+def _apply_upgrade_and_exit() -> None:
+    """--apply-upgrade-only：在独立短进程中应用升级包后立即退出。
+
+    start.ps1 启动循环在每次拉起服务前调用本模式：升级包在没有业务模块
+    import 的干净进程里解压覆盖，服务进程从磁盘全新代码启动，不存在新旧
+    代码混跑。依赖缺失（首次启动尚未装包）时导入失败退出非零码，由启动
+    循环容忍并继续拉起服务（服务进程内的兜底应用在依赖就绪后生效）。
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    from core.updater import apply_pending_upgrade
+    result = apply_pending_upgrade()
+    if result is not None and result.get("success"):
+        print(f"[setup] Upgrade applied: {result.get('message')}")
+    elif result is not None:
+        print(f"[setup] Upgrade apply failed: {result.get('error')}", file=sys.stderr)
+    # 无升级包（result is None）为常规路径，静默退出避免每次启动刷屏
+
+
 def _start_core_services() -> None:
     """启动接口无关的服务（cron / 浏览器 / MCP / AgentMailbox / 自动升级）。
 
     其他接入端（如将来的 QQ bot 入口）复用本函数，只需替换 _start_web_interface。
     """
+    # 应用脚本目录下已下载的升级包（服务进程内兜底；start.ps1 启动循环已在
+    # 独立进程中先行应用，此处通常无包可应用）。包内版本不低于当前才解压覆盖
+    # （版本一致也应用，用于修复文件损坏），然后继续启动。
+    # 自动升级 / Web UI / 手动脚本都只负责下载 zip，覆盖统一收敛到启动时这一处。
+    # 注意：本进程此前已 import 的模块在应用后仍是旧实现——start.ps1 托管时
+    # 以退出码交回启动循环、以全新进程重新加载；直接 python main.py 启动时
+    # 无循环接管，只能提示用户手动重启。
+    try:
+        from core.updater import apply_pending_upgrade
+        upgrade_result = apply_pending_upgrade()
+    except Exception as e:
+        upgrade_result = None
+        logger.warning(f"应用升级包失败（按原版本继续启动）: {e}")
+    if upgrade_result and upgrade_result.get("restart"):
+        from core import updater
+        if updater.is_launcher_managed():
+            logger.info(
+                f"升级包已应用，以退出码 {updater.RESTART_EXIT_CODE} 交回启动循环加载新代码"
+            )
+            sys.exit(updater.RESTART_EXIT_CODE)
+        logger.warning(
+            "升级包已应用，但当前为直接启动（python main.py），已加载的模块仍是旧实现，"
+            "建议改用 start.cmd 启动或稍后手动重启服务"
+        )
+
     # 幂等：uvicorn lifespan 会再次调用，此时为空操作。
     from core.app_context import app_context
     app_context.startup()
@@ -1212,15 +1263,6 @@ def _start_core_services() -> None:
         get_teen_mode().check_startup_state()
     except Exception as e:
         logger.warning(f"Teen mode startup check failed (ignored): {e}")
-
-    # 应用脚本目录下已下载的升级包：包内版本不低于当前才解压覆盖（版本一致也
-    # 应用，用于修复文件损坏），然后继续启动。
-    # 自动升级 / Web UI / 手动脚本都只负责下载 zip，覆盖统一收敛到启动时这一处。
-    try:
-        from core.updater import apply_pending_upgrade
-        apply_pending_upgrade()
-    except Exception as e:
-        logger.warning(f"应用升级包失败（按原版本继续启动）: {e}")
 
     # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
     from core.updater import start_auto_upgrade
@@ -1263,6 +1305,9 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     # Auto-open browser after server starts
     def _open_browser():
         """等待 2 秒后自动打开浏览器（让服务器有时间就绪）"""
+        # 升级重启的迭代不再弹新标签页（CILI_LAUNCH_RESTART 由 start.ps1 置位）
+        if os.environ.get("CILI_LAUNCH_RESTART"):
+            return
         time.sleep(2)
         webbrowser.open(f"http://localhost:{args.port}")
 
@@ -1293,14 +1338,26 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     except OSError:
         pass  # 落盘失败只影响 TUI 自动发现，服务端照常启动
 
+    # Server 显式创建（而非 uvicorn.run）：升级重启需要句柄触发优雅停机
+    # （request_restart 置 should_exit）。timeout_graceful_shutdown 给优雅停机
+    # 一个上限——SSE 长连接不会主动结束，没有它升级重启会卡在等连接关闭。
+    config = uvicorn.Config(
+        "web.web_api:app",
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        log_config=log_config,
+        timeout_graceful_shutdown=15,
+    )
+    server = uvicorn.Server(config)
     try:
-        uvicorn.run(
-            "web.web_api:app",
-            host=args.host,
-            port=args.port,
-            log_level="info",
-            log_config=log_config,
-        )
+        from core import updater
+        updater.set_uvicorn_server(server)
+    except Exception as e:
+        logger.warning(f"注册 uvicorn server 句柄失败（升级自动重启不可用）: {e}")
+
+    try:
+        server.run()
     except KeyboardInterrupt:
         pass  # Ctrl+C: exit silently
     finally:
@@ -1308,6 +1365,13 @@ def _start_web_interface(args: argparse.Namespace) -> None:
             os.remove(server_info_path)
         except OSError:
             pass
+
+    # uvicorn 退出后处理升级重启请求：以退出码交回 start.ps1 循环（应用升级包后重启）
+    try:
+        from core import updater
+        updater.shutdown_and_restart_if_requested()
+    except Exception as e:
+        logger.warning(f"处理升级重启请求失败: {e}")
 
 
 def _start_services(args: argparse.Namespace) -> None:
@@ -1319,6 +1383,9 @@ def _start_services(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.apply_upgrade_only:
+        _apply_upgrade_and_exit()
+        return
     _prepare_environment(args)
     _ensure_runtime()
     _start_services(args)

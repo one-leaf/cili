@@ -44,6 +44,17 @@ def _atexit_cleanup_runners() -> None:
             pass
 
 
+def any_background_runner_running() -> bool:
+    """是否存在运行中的后台子代理 Runner（升级自动重启的空闲判定）。
+
+    只统计 session 型后台 Runner（LLM 子代理）：它们是进程内的线程与
+    Runner 状态，重启即中断，代价高。shell 型后台命令是独立子进程，
+    服务进程退出后仍可继续运行，只丢失输出捕获，不阻塞重启判定。
+    """
+    with _background_runners_cond:
+        return bool(_active_background_runners)
+
+
 @dataclass
 class BackgroundTask:
     """A background task (shell command or SessionRunner).

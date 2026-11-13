@@ -1213,3 +1213,30 @@ class TestCronInitialDelay:
         }
         task = CronTask(config)
         assert task._next_run == last_run + timedelta(minutes=1440)
+
+
+def test_any_cron_runner_running():
+    """空闲判定：任一 cron master runner 运行中即忙，否则空闲"""
+    from types import SimpleNamespace
+
+    import core.cron as cron_module
+
+    with cron_module._cron_sessions_lock:
+        saved = dict(cron_module._cron_sessions)
+        cron_module._cron_sessions.clear()
+    try:
+        assert cron_module.any_cron_runner_running() is False
+
+        idle_runner = SimpleNamespace(is_running=lambda: False)
+        with cron_module._cron_sessions_lock:
+            cron_module._cron_sessions["ws"] = idle_runner
+        assert cron_module.any_cron_runner_running() is False
+
+        busy_runner = SimpleNamespace(is_running=lambda: True)
+        with cron_module._cron_sessions_lock:
+            cron_module._cron_sessions["ws"] = busy_runner
+        assert cron_module.any_cron_runner_running() is True
+    finally:
+        with cron_module._cron_sessions_lock:
+            cron_module._cron_sessions.clear()
+            cron_module._cron_sessions.update(saved)

@@ -1,12 +1,25 @@
-"""自动升级模块：新版本代码包 zip 的下载与应用，两段式分工。
+"""自动升级模块：新版本代码包 zip 的下载与应用，三段式分工。
 
 - 下载（download_upgrade_zip，由启动后台线程与 Web UI 升级按钮触发；
   scripts/upgrade.ps1 手动下载也落到同一位置）：检查 GitHub 远端版本，
   有更新则把代码包 zip 下载到脚本目录（项目根，cili-update.zip），不动本地代码。
-- 应用（main.py 启动时调用 apply_pending_upgrade）：启动时检测到脚本目录有
-  升级包，先比对包内 version.json 与本地版本，包版本不低于本地才解压覆盖
-  （版本一致也应用，用于修复本地文件损坏；备份 + 残余清理 + 失败回滚），
-  然后继续启动并在日志中逐条列出变更文件；本地版本更高时删除升级包（防降级）。
+- 应用（apply_pending_upgrade，两条路径都收敛到它）：
+  a) start.ps1 启动循环：每次拉起服务前先跑 ``main.py --apply-upgrade-only``
+     在独立短进程中应用升级包（应用后即退出），服务进程从磁盘全新代码启动，
+     不存在新旧代码混跑；
+  b) main.py 服务进程内兜底（直接 python main.py 启动等场景）：启动早期检测
+     到升级包，包版本不低于本地才解压覆盖（版本一致也应用，用于修复本地文件
+     损坏；备份 + 残余清理 + 失败回滚）。应用成功且由 start.ps1 托管时以退出
+     码 RESTART_EXIT_CODE 退出，交回启动循环以全新进程重新加载代码。
+- 运行中重启（运行期间下载完升级包后）：schedule_idle_restart 等待会话空闲
+  （registry / 排队回合 / 后台子代理 / cron 均无运行），request_restart 通知
+  uvicorn 优雅停机，main.py 在 uvicorn.run 返回后以 RESTART_EXIT_CODE 退出
+  交回启动循环——重启后走路径 a 应用升级包并加载新代码。
+
+重启协议只在 start.ps1 托管下生效（启动前设 CILI_LAUNCHER=ps1，重启迭代前设
+CILI_LAUNCH_RESTART=1 抑制浏览器自动打开）。直接 python main.py 启动时无循环
+接管，进程退出后无人拉起，因此自动重启与手动重启端点均拒绝执行，保持旧行为：
+提示「重启服务后自动应用」。
 
 覆盖逻辑只在 apply_zip 一处实现（下载方不直接改代码，统一收敛到启动时应用）。
 
@@ -27,11 +40,13 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from core.config import PROJECT_ROOT
 from core.memory_store import cleanup_memory_git
@@ -43,6 +58,15 @@ VERSION_FILE = PROJECT_ROOT / "web" / "static" / "version.json"
 
 # 升级包文件名（下载到脚本目录，即项目根目录，启动时从这里检测）
 UPGRADE_ZIP_NAME = "cili-update.zip"
+
+# ── 启动脚本托管的重启协议 ──────────────────────────────────────────────
+# start.ps1 启动服务前设 CILI_LAUNCHER=ps1；重启迭代前设 CILI_LAUNCH_RESTART=1
+#（抑制浏览器自动打开）。服务请求重启时以 RESTART_EXIT_CODE 退出，start.ps1
+# 据此重新走「应用升级包 → 启动」循环。直接 python main.py 启动时无循环托管，
+# 自动/手动重启不可用（退出后无人拉起，服务会直接停掉）。
+LAUNCHER_ENV = "CILI_LAUNCHER"
+LAUNCH_RESTART_ENV = "CILI_LAUNCH_RESTART"
+RESTART_EXIT_CODE = 42
 
 
 # 代码包镜像 URL（与 scripts/upgrade.ps1 一致）
@@ -78,6 +102,16 @@ _download_in_progress = False
 def get_upgrade_zip_path() -> Path:
     """升级包存放路径（脚本目录，即项目根目录）。"""
     return PROJECT_ROOT / UPGRADE_ZIP_NAME
+
+
+def is_launcher_managed() -> bool:
+    """当前服务是否由 start.ps1 启动循环托管（决定能否自动重启）。"""
+    return os.environ.get(LAUNCHER_ENV, "") == "ps1"
+
+
+def _post_download_hint() -> str:
+    """下载完成后的提示语（是否自动重启取决于启动方式）。"""
+    return "将在空闲时自动重启应用" if is_launcher_managed() else "重启服务后自动应用"
 
 
 def get_local_version() -> str:
@@ -236,7 +270,7 @@ def _do_download(remote_version: str | None) -> dict:
         existing = read_zip_version(str(zip_path))
         if existing == remote_version:
             return {"success": True, "skipped": True,
-                    "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
+                    "message": f"升级包 {remote_version} 已下载，{_post_download_hint()}"}
 
     tmp_path = zip_path.parent / (zip_path.name + ".downloading")
     try:
@@ -251,7 +285,7 @@ def _do_download(remote_version: str | None) -> dict:
         tmp_path.unlink(missing_ok=True)
 
     return {"success": True, "skipped": False,
-            "message": f"升级包 {remote_version} 已下载，重启服务后自动应用"}
+            "message": f"升级包 {remote_version} 已下载，{_post_download_hint()}"}
 
 
 def _download_zip(urls: list[str], dest: str, timeout: float = 120) -> tuple[bool, str]:
@@ -548,12 +582,14 @@ def apply_zip(zip_path: str) -> dict:
             "changes": changes}
 
 
-def _safe_unlink(path: Path) -> None:
-    """尽力删除文件，失败仅记录日志（如被杀毒软件短暂占用）。"""
+def _safe_unlink(path: Path) -> bool:
+    """尽力删除文件，失败仅记录日志（如被杀毒软件短暂占用）。返回是否删除成功。"""
     try:
         path.unlink(missing_ok=True)
+        return True
     except OSError as e:
         logger.warning(f"[updater] 删除 {path.name} 失败: {e}")
+        return False
 
 
 def _log_changes(changes: dict | None) -> None:
@@ -575,7 +611,9 @@ def apply_pending_upgrade() -> dict | None:
     - 应用失败 → 保留升级包，下次启动重试
 
     Returns:
-        None 表示无升级包；否则返回处理结果 dict（success/message/error）。
+        None 表示无升级包；否则返回处理结果 dict（success/message/error，
+        应用成功且升级包删除成功时额外带 restart=True——调用方据此决定是否
+        交回启动循环以全新进程加载新代码）。
     """
     zip_path = get_upgrade_zip_path()
     # 清理上次下载中断残留的临时文件（正常由 download_upgrade_zip 的 finally 清理）
@@ -598,12 +636,173 @@ def apply_pending_upgrade() -> dict | None:
     logger.info(f"[updater] 发现待应用升级包 {zip_version}（当前 {local}），开始解压覆盖...")
     result = apply_zip(str(zip_path))
     if result.get("success"):
-        _safe_unlink(zip_path)
-        logger.info(f"[updater] {result.get('message')}，继续启动")
+        # 删除失败时不置 restart 标记：升级包残留会让下次启动重复应用，
+        # 若配合启动循环的退出码协议会形成重启循环
+        if _safe_unlink(zip_path):
+            result["restart"] = True
+            logger.info(f"[updater] {result.get('message')}，继续启动")
+        else:
+            logger.warning("[updater] 升级包删除失败，本次不请求重启（下次启动重试删除）")
         _log_changes(result.get("changes"))
     else:
         logger.warning(f"[updater] 应用升级包失败: {result.get('error')}（保留升级包，下次启动重试）")
     return result
+
+
+# ── 运行中重启（升级包下载完成后的自动重启 / Web UI 手动重启） ─────────────
+# 协议：request_restart 记录原因并通知 uvicorn 优雅停机 → uvicorn.run 返回后
+# main.py 调 shutdown_and_restart_if_requested，以 RESTART_EXIT_CODE 退出 →
+# start.ps1 检测退出码重新走「应用升级包 → 启动」循环，新进程加载全新代码。
+
+_uvicorn_server: Any = None
+_restart_requested: str | None = None
+_restart_lock = threading.Lock()
+
+
+def set_uvicorn_server(server: Any) -> None:
+    """main.py 启动 uvicorn 后注入 Server 句柄（request_restart 需要它触发优雅停机）。"""
+    global _uvicorn_server
+    _uvicorn_server = server
+
+
+def request_restart(reason: str) -> bool:
+    """请求优雅重启：记录原因并通知 uvicorn 停机。
+
+    仅在 start.ps1 托管下可用（退出码协议需要启动循环接住）。重启流程已在
+    进行中时幂等返回 True。
+    """
+    global _restart_requested
+    if not is_launcher_managed():
+        logger.warning("[updater] 非 start.ps1 托管启动，无法自动重启（请改用 start.cmd/start.ps1）")
+        return False
+    with _restart_lock:
+        if _restart_requested:
+            return True
+        _restart_requested = reason
+    logger.info(f"[updater] 请求重启: {reason}")
+    if _uvicorn_server is not None:
+        _uvicorn_server.should_exit = True
+    return True
+
+
+def shutdown_and_restart_if_requested() -> None:
+    """main.py 在 uvicorn.run 返回后调用：有未决重启请求时以退出码交回启动循环。
+
+    此刻进程已完成优雅停机（lifespan shutdown / app_context.shutdown 均已
+    执行），sys.exit 即可安全退出。
+    """
+    global _restart_requested
+    with _restart_lock:
+        reason = _restart_requested
+        _restart_requested = None
+    if reason:
+        logger.info(
+            f"[updater] {reason}，以退出码 {RESTART_EXIT_CODE} 交回启动脚本"
+            "（应用升级包后以新代码重启）"
+        )
+        sys.exit(RESTART_EXIT_CODE)
+
+
+def all_sessions_idle() -> bool:
+    """升级自动重启的空闲判定：无运行中会话、无排队回合、无后台子代理与 cron 任务。
+
+    各子系统逐一探测，任一探测器不可用（导入失败等）按该子系统空闲处理——
+    判定目标是「别打断正在跑的工作」，失败只意味着没探测到活动。
+    """
+    try:
+        from core.session_registry import registry
+        if registry.any_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.turn_queue import queue as turn_queue
+        if turn_queue.any_pending():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.tools.background import any_background_runner_running
+        if any_background_runner_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.cron import any_cron_runner_running
+        if any_cron_runner_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _auto_restart_enabled() -> bool:
+    """读取 setting.json 的 system.auto_restart_after_upgrade，未配置时默认开启。"""
+    try:
+        from core.config import load_global_config
+        cfg = load_global_config()
+        return bool((cfg.get("system") or {}).get("auto_restart_after_upgrade", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+_idle_restart_scheduled = False
+_idle_restart_lock = threading.Lock()
+
+
+def is_idle_restart_waiting() -> bool:
+    """是否已有「等空闲自动重启」任务在等待中。"""
+    return _idle_restart_scheduled
+
+
+def schedule_idle_restart(reason: str, poll_interval: float = 30.0,
+                          max_wait: float = 1800.0,
+                          confirm_delay: float = 3.0) -> bool:
+    """升级包下载完成后安排「等空闲即优雅重启」。
+
+    空闲判定见 all_sessions_idle；确认空闲后由 request_restart 触发优雅停机，
+    进程以 RESTART_EXIT_CODE 退出、由 start.ps1 循环重新拉起（先应用升级包）。
+    超过 max_wait 仍未空闲则放弃（升级包保留，下次启动或手动重启时应用）。
+    同一时刻只允许一个等待任务；仅在 start.ps1 托管且未关闭自动重启时生效。
+
+    Args:
+        reason: 重启原因（日志用）。
+        poll_interval: 空闲轮询间隔（秒）。
+        max_wait: 最长等待空闲时间（秒），超时放弃。
+        confirm_delay: 空闲确认后的二次确认前等待（秒），避免恰好踩中
+            「刚认领运行权但尚未标记运行」的会话窗口。
+    """
+    global _idle_restart_scheduled
+    if not is_launcher_managed():
+        return False
+    if not _auto_restart_enabled():
+        logger.info("[updater] 自动重启已关闭（system.auto_restart_after_upgrade=false），跳过")
+        return False
+    with _idle_restart_lock:
+        if _idle_restart_scheduled:
+            return False
+        _idle_restart_scheduled = True
+
+    def _worker() -> None:
+        global _idle_restart_scheduled
+        deadline = time.monotonic() + max_wait
+        try:
+            while time.monotonic() < deadline:
+                if all_sessions_idle():
+                    time.sleep(confirm_delay)
+                    if all_sessions_idle():
+                        if request_restart(reason):
+                            return
+                        logger.warning("[updater] 发起重启失败，放弃自动重启（升级包保留）")
+                        return
+                time.sleep(poll_interval)
+            logger.warning("[updater] 等待空闲超时，取消自动重启（升级包保留，重启服务后应用）")
+        finally:
+            with _idle_restart_lock:
+                _idle_restart_scheduled = False
+
+    threading.Thread(target=_worker, daemon=True, name="UpgradeIdleRestart").start()
+    return True
 
 
 def _auto_upgrade_worker(delay: float) -> None:
@@ -624,6 +823,9 @@ def _auto_upgrade_worker(delay: float) -> None:
         result = download_upgrade_zip(remote)
         if result.get("success"):
             logger.info(f"[updater] {result.get('message')}")
+            # 下载完成后安排「等空闲自动重启」（仅 start.ps1 托管且未关闭时生效）
+            if schedule_idle_restart(f"自动下载的升级包 {remote} 已就绪"):
+                logger.info("[updater] 已安排：等待会话空闲后自动重启应用升级包")
         else:
             logger.warning(f"[updater] 下载升级包失败: {result.get('error')}")
     except Exception as e:

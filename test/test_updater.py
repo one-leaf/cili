@@ -3,7 +3,11 @@
 import json
 import os
 import shutil
+import time
 import zipfile
+from types import SimpleNamespace
+
+import pytest
 
 from core import updater
 
@@ -651,3 +655,152 @@ class TestPruneStaleFiles:
         updater._prune_stale_files(str(dst), str(src), updater._EXCLUDE_DIRS)
 
         assert not (dst / "core" / "legacy").exists()
+
+
+class TestLauncherRestartProtocol:
+    """启动脚本托管的重启协议（退出码 42 + 空闲等待自动重启）"""
+
+    def test_is_launcher_managed(self, monkeypatch):
+        """CILI_LAUNCHER=ps1 表示由启动脚本托管，未设置时不托管"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        assert updater.is_launcher_managed() is True
+        monkeypatch.delenv("CILI_LAUNCHER", raising=False)
+        assert updater.is_launcher_managed() is False
+
+    def test_apply_pending_upgrade_sets_restart_flag(self, tmp_path, monkeypatch):
+        """应用成功且升级包删除成功时置 restart 标记（启动循环据此重启进程）"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main")
+        dest = project_root / updater.UPGRADE_ZIP_NAME
+        shutil.copy(zip_path, dest)
+
+        result = updater.apply_pending_upgrade()
+        assert result["success"] is True
+        assert result.get("restart") is True
+
+    def test_apply_no_restart_when_unlink_fails(self, tmp_path, monkeypatch):
+        """升级包删除失败时不置 restart 标记——包残留会导致启动循环反复应用"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main")
+        shutil.copy(zip_path, project_root / updater.UPGRADE_ZIP_NAME)
+        monkeypatch.setattr(updater, "_safe_unlink", lambda p: False)
+
+        result = updater.apply_pending_upgrade()
+        assert result["success"] is True
+        assert result.get("restart") is None
+
+    def test_request_restart_requires_launcher(self, monkeypatch):
+        """非启动脚本托管时拒绝重启（进程退出后无人拉起）"""
+        monkeypatch.delenv("CILI_LAUNCHER", raising=False)
+        monkeypatch.setattr(updater, "_uvicorn_server", None)
+        monkeypatch.setattr(updater, "_restart_requested", None)
+        assert updater.request_restart("测试") is False
+        assert updater._restart_requested is None
+
+    def test_request_restart_sets_flag_and_notifies_uvicorn(self, monkeypatch):
+        """托管下请求重启：置原因标记并通知 uvicorn 优雅停机，幂等"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        sentinel = SimpleNamespace(should_exit=False)
+        monkeypatch.setattr(updater, "_uvicorn_server", None)
+        monkeypatch.setattr(updater, "_restart_requested", None)
+        updater.set_uvicorn_server(sentinel)
+
+        assert updater.request_restart("测试重启") is True
+        assert sentinel.should_exit is True
+        assert updater._restart_requested == "测试重启"
+        # 幂等：已在重启流程中时再次请求不覆盖原因
+        assert updater.request_restart("再次请求") is True
+        assert updater._restart_requested == "测试重启"
+
+    def test_shutdown_and_restart_exits_with_code(self, monkeypatch):
+        """uvicorn 退出后有未决重启请求时以退出码 42 交回启动循环"""
+        monkeypatch.setattr(updater, "_restart_requested", "升级包已下载")
+        with pytest.raises(SystemExit) as exc_info:
+            updater.shutdown_and_restart_if_requested()
+        assert exc_info.value.code == updater.RESTART_EXIT_CODE
+        # 请求已消费：再次调用不再退出
+        updater.shutdown_and_restart_if_requested()
+
+    def test_auto_restart_enabled_setting(self, monkeypatch):
+        """system.auto_restart_after_upgrade 未配置默认开启，false 关闭"""
+        import core.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod, "load_global_config",
+            lambda: {"system": {"auto_restart_after_upgrade": False}})
+        assert updater._auto_restart_enabled() is False
+        monkeypatch.setattr(config_mod, "load_global_config", lambda: {})
+        assert updater._auto_restart_enabled() is True
+
+
+def _wait_idle_restart_done(timeout: float = 5.0) -> None:
+    """等待空闲重启等待任务结束（标志复位），避免影响后续测试"""
+    deadline = time.time() + timeout
+    while updater.is_idle_restart_waiting() and time.time() < deadline:
+        time.sleep(0.02)
+
+
+class TestScheduleIdleRestart:
+    """下载完成后的「等空闲自动重启」调度"""
+
+    def test_disabled_without_launcher(self, monkeypatch):
+        """非启动脚本托管时不安排自动重启"""
+        monkeypatch.delenv("CILI_LAUNCHER", raising=False)
+        assert updater.schedule_idle_restart("x", poll_interval=0.01, max_wait=0.05) is False
+        assert updater.is_idle_restart_waiting() is False
+
+    def test_disabled_by_setting(self, monkeypatch):
+        """system.auto_restart_after_upgrade=false 时不安排"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        monkeypatch.setattr(updater, "_auto_restart_enabled", lambda: False)
+        assert updater.schedule_idle_restart("x", poll_interval=0.01, max_wait=0.05) is False
+
+    def test_fires_when_idle(self, monkeypatch):
+        """空闲时触发 request_restart 并结束等待"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        monkeypatch.setattr(updater, "_auto_restart_enabled", lambda: True)
+        monkeypatch.setattr(updater, "all_sessions_idle", lambda: True)
+        called = []
+        monkeypatch.setattr(
+            updater, "request_restart", lambda reason: called.append(reason) or True)
+
+        assert updater.schedule_idle_restart(
+            "测试", poll_interval=0.02, max_wait=5.0, confirm_delay=0.01) is True
+        deadline = time.time() + 5
+        while not called and time.time() < deadline:
+            time.sleep(0.02)
+        assert called
+        _wait_idle_restart_done()
+        assert updater.is_idle_restart_waiting() is False
+
+    def test_gives_up_when_busy_until_timeout(self, monkeypatch):
+        """一直忙碌时等待超时放弃，不触发重启"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        monkeypatch.setattr(updater, "_auto_restart_enabled", lambda: True)
+        monkeypatch.setattr(updater, "all_sessions_idle", lambda: False)
+        called = []
+        monkeypatch.setattr(
+            updater, "request_restart", lambda reason: called.append(reason) or True)
+
+        assert updater.schedule_idle_restart(
+            "测试", poll_interval=0.02, max_wait=0.15, confirm_delay=0.01) is True
+        _wait_idle_restart_done()
+        assert not called
+        assert updater.is_idle_restart_waiting() is False
+
+    def test_dedup_while_waiting(self, monkeypatch):
+        """已有等待任务时拒绝重复安排，任务结束后可再次安排"""
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        monkeypatch.setattr(updater, "_auto_restart_enabled", lambda: True)
+        monkeypatch.setattr(updater, "all_sessions_idle", lambda: False)
+        monkeypatch.setattr(
+            updater, "request_restart", lambda reason: True)
+
+        assert updater.schedule_idle_restart(
+            "第一次", poll_interval=0.05, max_wait=0.3, confirm_delay=0.01) is True
+        assert updater.schedule_idle_restart(
+            "第二次", poll_interval=0.05, max_wait=0.3, confirm_delay=0.01) is False
+        _wait_idle_restart_done()
+        assert updater.schedule_idle_restart(
+            "第三次", poll_interval=0.05, max_wait=0.3, confirm_delay=0.01) is True
+        _wait_idle_restart_done()

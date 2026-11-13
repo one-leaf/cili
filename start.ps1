@@ -458,11 +458,33 @@ if ($HostName -ne "127.0.0.1") {
     $scriptArgs += $HostName
 }
 
-# 启动 main.py
-try {
-    $mainScript = Join-Path $ProjectRoot "main.py"
-    & $pythonPath $mainScript @scriptArgs
-} catch {
-    Write-Status "Error: Failed to start Cili Agent" "Red"
-    exit 1
+# 启动 main.py（升级重启循环）
+# 协议：服务请求重启（升级包下载完成）时以退出码 42 退出；循环先在独立进程
+# 中应用升级包（main.py --apply-upgrade-only），再重新拉起服务，保证新代码
+# 完整加载。直接 python main.py 启动无此循环，升级包需手动重启应用。
+$mainScript = Join-Path $ProjectRoot "main.py"
+$env:CILI_LAUNCHER = "ps1"
+$restartCount = 0
+$maxRestarts = 5
+for ($i = 0; ; $i++) {
+    # 应用待升级包（独立短进程，无业务模块 import，避免服务进程新旧代码混跑）。
+    # 首次启动依赖可能尚未装齐（依赖由 main.py 安装），失败容忍并继续。
+    & $pythonPath $mainScript --apply-upgrade-only 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Status "Upgrade apply skipped (exit $LASTEXITCODE), continuing startup" "DarkGray"
+    }
+    if ($i -gt 0) { $env:CILI_LAUNCH_RESTART = "1" }  # 重启迭代不再自动开浏览器
+    try {
+        & $pythonPath $mainScript @scriptArgs
+    } catch {
+        Write-Status "Error: Failed to start Cili Agent" "Red"
+        exit 1
+    }
+    if ($LASTEXITCODE -ne 42) { break }
+    $restartCount++
+    if ($restartCount -ge $maxRestarts) {
+        Write-Status "Upgrade restart limit reached ($maxRestarts), stopping" "Yellow"
+        break
+    }
+    Write-Status "Service requested restart (exit 42), applying upgrade and restarting..." "Cyan"
 }

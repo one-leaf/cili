@@ -1580,7 +1580,8 @@ function collectProviders() {
 })();
 
 // ─── 关于 Tab：版本与升级 ─────────────────────────────────────────────
-// 只负责检查版本和下载升级包到脚本目录；解压覆盖统一在服务重启时进行。
+// 只负责检查版本和下载升级包到脚本目录；解压覆盖由启动循环在服务重启时进行
+// （下载完成后服务端会等会话空闲自动重启，也可手动「立即重启应用」）。
 
 let updatePollTimer = null;
 // 轮询间隔 10 秒；上限 15 分钟（后台最坏情况：4 个镜像 × 120s 超时 + 传输）
@@ -1595,8 +1596,16 @@ async function loadAboutStatus() {
         const data = await resp.json();
         document.getElementById('about-local-version').textContent = data.local_version || '-';
         const zipEl = document.getElementById('about-zip-status');
-        zipEl.textContent = (data.zip_present && data.zip_version)
-            ? `（升级包 ${data.zip_version} 已就绪，重启服务后自动应用）` : '';
+        const restartBtn = document.getElementById('btn-restart-update');
+        if (data.zip_present && data.zip_version) {
+            zipEl.textContent = data.launcher_managed
+                ? `（升级包 ${data.zip_version} 已就绪，空闲时将自动重启应用）`
+                : `（升级包 ${data.zip_version} 已就绪，重启服务后自动应用）`;
+            if (restartBtn) restartBtn.style.display = data.launcher_managed ? '' : 'none';
+        } else {
+            zipEl.textContent = '';
+            if (restartBtn) restartBtn.style.display = 'none';
+        }
         if (data.downloading) {
             statusEl.textContent = '正在下载升级包...';
             pollDownloadStatus();
@@ -1646,6 +1655,53 @@ async function downloadUpdate() {
     }
 }
 
+async function restartUpdateNow() {
+    const statusEl = document.getElementById('about-update-status');
+    try {
+        const resp = await fetch('/api/update/restart', { method: 'POST' });
+        const data = await resp.json();
+        if (!data.success) {
+            statusEl.textContent = '✗ ' + (data.error || '重启失败');
+            return;
+        }
+        statusEl.textContent = '服务重启中，等待新实例上线...';
+        pollRestartStatus();
+    } catch (e) {
+        statusEl.textContent = '✗ 发起重启失败: ' + e.message;
+    }
+}
+
+function pollRestartStatus() {
+    if (updatePollTimer) { clearInterval(updatePollTimer); updatePollTimer = null; }
+    const startedAt = Date.now();
+    updatePollTimer = setInterval(async () => {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed > 3 * 60 * 1000) {
+            clearInterval(updatePollTimer);
+            updatePollTimer = null;
+            document.getElementById('about-update-status').textContent =
+                '⚠ 等待重启超时，请稍后刷新页面确认';
+            return;
+        }
+        try {
+            const resp = await fetch('/api/update/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            // 新实例已上线的标志：升级包应用后已删除（zip_present 变 false）。
+            // 前 8 秒旧实例可能仍在优雅停机，避免把旧实例当作重启完成。
+            if (elapsed > 8000 && data.zip_present === false) {
+                clearInterval(updatePollTimer);
+                updatePollTimer = null;
+                document.getElementById('about-update-status').textContent =
+                    '✓ 服务已重启，页面即将刷新';
+                setTimeout(() => location.reload(), 800);
+            }
+        } catch (e) {
+            // 服务下线中：继续等待新实例上线
+        }
+    }, 3000);
+}
+
 function pollDownloadStatus() {
     if (updatePollTimer) return;
     const startedAt = Date.now();
@@ -1684,8 +1740,10 @@ function pollDownloadStatus() {
     document.addEventListener('DOMContentLoaded', () => {
         const checkBtn = document.getElementById('btn-check-update');
         const downloadBtn = document.getElementById('btn-download-update');
+        const restartBtn = document.getElementById('btn-restart-update');
         if (checkBtn) checkBtn.addEventListener('click', checkForUpdate);
         if (downloadBtn) downloadBtn.addEventListener('click', downloadUpdate);
+        if (restartBtn) restartBtn.addEventListener('click', restartUpdateNow);
         // 切到「关于」页签时刷新状态
         document.querySelectorAll('.settings-tab').forEach(tab => {
             tab.addEventListener('click', () => {

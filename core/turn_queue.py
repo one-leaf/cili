@@ -248,6 +248,11 @@ class TurnQueue:
             q = self._queues.get(key)
             return bool(q and q.items)
 
+    def any_pending(self) -> bool:
+        """是否存在待投递的排队回合（跨全部会话，升级自动重启的空闲判定）。"""
+        with self._lock:
+            return any(q.items for q in self._queues.values())
+
     def is_paused(self, key: str) -> bool:
         with self._lock:
             q = self._queues.get(key)

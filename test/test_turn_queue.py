@@ -193,3 +193,30 @@ class TestMergeQueuedTurns:
         assert data == ["AAA", "BBB"]
         assert user_input[-1]["text"] == "third"
         assert meta["merged_count"] == 3
+
+
+class TestAnyPending:
+    """any_pending：跨会话的待投递判定（升级自动重启的空闲判定）"""
+
+    def test_empty_queue_not_pending(self):
+        queue = TurnQueue()
+        assert queue.any_pending() is False
+
+    def test_pending_item_detected(self):
+        queue = TurnQueue()
+        try:
+            queue.enqueue(KEY, _item("hello"))
+            assert queue.any_pending() is True
+        finally:
+            queue.clear(KEY)
+        assert queue.any_pending() is False
+
+    def test_paused_queue_still_counts_as_pending(self):
+        """暂停队列里的项仍视为待投递（重启同样会丢）"""
+        queue = TurnQueue()
+        try:
+            queue.enqueue(KEY, _item("hello"))
+            queue.pause(KEY, "test")
+            assert queue.any_pending() is True
+        finally:
+            queue.clear(KEY)

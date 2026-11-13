@@ -289,6 +289,17 @@ class SessionRegistry:
                 return False
             return True
 
+    def any_running(self) -> bool:
+        """是否存在已认领运行权或正在运行的会话（升级自动重启的空闲判定）。
+
+        claims 命中即视为忙——覆盖「已认领但尚未进入 is_running」的窗口；
+        否则逐个检查 runner 的 is_running。
+        """
+        with self._claims_lock:
+            if self._claims:
+                return True
+        return any(h.runner.is_running() for h in list(self._hosted.values()))
+
     # ---------- Attachment（多接口附着；D 阶段接入路由） ----------
 
     def attach(

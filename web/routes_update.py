@@ -1,4 +1,5 @@
-"""系统升级 路由域：版本检查、升级包下载（只下载，重启时统一应用）、状态查询。"""
+"""系统升级 路由域：版本检查、升级包下载（只下载，启动循环统一应用）、
+状态查询、手动重启。"""
 
 from __future__ import annotations
 
@@ -28,6 +29,9 @@ def _download_worker() -> None:
         logger.info(
             "[update] 升级包下载结束: %s", result.get("message") or result.get("error")
         )
+        # 下载成功后安排「等空闲自动重启」（仅 start.ps1 托管且未关闭时生效）
+        if result.get("success") and updater.schedule_idle_restart("升级包下载完成"):
+            logger.info("[update] 已安排：等待会话空闲后自动重启应用升级包")
     except Exception as e:  # noqa: BLE001 —— 线程异常只记日志，状态接口仍会结束
         logger.exception("[update] 升级包下载线程异常: %s", e)
     finally:
@@ -49,7 +53,7 @@ async def check_update():
 
 @router.get("/api/update/status")
 async def update_status():
-    """升级状态：本地/升级包版本、是否下载中、最近一次下载结果。"""
+    """升级状态：本地/升级包版本、是否下载中、最近一次下载结果、启动方式。"""
     zip_path = updater.get_upgrade_zip_path()
     zip_exists = zip_path.exists()
     zip_version = updater.read_zip_version(str(zip_path)) if zip_exists else None
@@ -60,12 +64,14 @@ async def update_status():
         "last_result": updater.get_last_download_result(),
         "zip_present": zip_exists,
         "zip_version": zip_version,
+        # 前端据此展示「自动重启」提示与立即重启按钮
+        "launcher_managed": updater.is_launcher_managed(),
     }
 
 
 @router.post("/api/update/download")
 async def download_update():
-    """下载升级包到脚本目录（后台线程执行，完成后重启服务自动应用）。"""
+    """下载升级包到脚本目录（后台线程执行；start.ps1 托管时空闲后自动重启应用）。"""
     global _starting
     with _start_guard:
         if updater.is_downloading() or _starting:
@@ -78,4 +84,25 @@ async def download_update():
         with _start_guard:
             _starting = False
         raise
-    return {"success": True, "message": "开始下载升级包，完成后重启服务自动应用"}
+    return {"success": True, "message": "开始下载升级包，完成后将自动重启应用"}
+
+
+@router.post("/api/update/restart")
+async def restart_service():
+    """立即重启服务以应用已就绪的升级包（有会话运行中时拒绝）。
+
+    仅 start.ps1 托管下可用：request_restart 触发优雅停机，进程以退出码 42
+    交回启动循环，由循环重新应用升级包并拉起新实例。
+    """
+    if not updater.is_launcher_managed():
+        return {"success": False,
+                "error": "当前为直接启动（python main.py），自动重启不可用；请手动重启服务"}
+    if not updater.get_upgrade_zip_path().exists():
+        return {"success": False, "error": "没有待应用的升级包"}
+    if updater.is_downloading() or _starting:
+        return {"success": False, "busy": True, "error": "升级包正在下载，请稍后再试"}
+    if not updater.all_sessions_idle():
+        return {"success": False, "busy": True, "error": "有会话正在运行，请等待结束后重试"}
+    if not updater.request_restart("Web UI 手动触发重启"):
+        return {"success": False, "error": "发起重启失败"}
+    return {"success": True, "message": "服务重启中，新实例将自动应用升级包"}

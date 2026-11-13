@@ -180,6 +180,19 @@ _cron_sessions: dict[str, Any] = {}
 _cron_sessions_lock = threading.Lock()
 
 
+def any_cron_runner_running() -> bool:
+    """是否存在正在运行的 cron master runner（升级自动重启的空闲判定）。"""
+    with _cron_sessions_lock:
+        runners = list(_cron_sessions.values())
+    for runner in runners:
+        try:
+            if runner.is_running():
+                return True
+        except Exception:  # noqa: BLE001 —— 单个 runner 探测失败不阻塞整体判定
+            continue
+    return False
+
+
 def _normalize_task_item(item: Any, default_ws_uuid: str = "") -> dict | None:
     """规范化单个任务项 → {task, plan, workspace_uuid}；非 dict 或 task 为空返回 None。"""
     if not isinstance(item, dict):
