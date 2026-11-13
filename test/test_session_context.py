@@ -220,7 +220,7 @@ class TestContextUnit:
         # 模拟重启：新 runner 从 session 恢复 _usage（含速度），无任何时间戳
         restored = ConversationStore()
         restored._usage = dict(persisted)
-        # 只读路径（/status 等）多次读取，速度保持不变
+        # 只读路径（/context 等）多次读取，速度保持不变
         for _ in range(3):
             assert restored.get_usage()["prefill_speed"] == persisted["prefill_speed"]
             assert restored.get_usage()["generation_speed"] == persisted["generation_speed"]

@@ -67,6 +67,28 @@ RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
 _SYSTEM_OVERHEAD_BYTES = 10_000
 
 
+def estimate_request_body_size(messages: list[dict]) -> int:
+    """估算 JSON 请求体大小（字节）。
+
+    模块级函数：无 runner 的只读路径（如上下文占用接口）也要同一口径；
+    ``Runner._estimate_request_body_size`` 委托到这里，避免两份实现漂移。
+    """
+    size = 0
+    for btype, data in Runner.iter_content_blocks(messages):
+        if btype == "text":
+            size += len(data) * 2
+        elif btype == "tool_use":
+            size += len(json.dumps(data.get("input", {}), ensure_ascii=False)) * 2
+        elif btype == "tool_result_text":
+            size += len(data) * 2
+        elif btype in ("tool_result_image", "image"):
+            size += len(data)
+        elif btype == "tool_result_str":
+            size += len(data) * 2
+    size += _SYSTEM_OVERHEAD_BYTES
+    return size
+
+
 class Runner:
     """单回合执行层：压缩 → LLM 调用 → 工具执行。"""
 
@@ -1045,21 +1067,8 @@ class Runner:
                             yield ("tool_result_str", str(rc))
 
     def _estimate_request_body_size(self, messages: list[dict]) -> int:
-        """Estimate JSON request body size in bytes."""
-        size = 0
-        for btype, data in self.iter_content_blocks(messages):
-            if btype == "text":
-                size += len(data) * 2
-            elif btype == "tool_use":
-                size += len(json.dumps(data.get("input", {}), ensure_ascii=False)) * 2
-            elif btype == "tool_result_text":
-                size += len(data) * 2
-            elif btype in ("tool_result_image", "image"):
-                size += len(data)
-            elif btype == "tool_result_str":
-                size += len(data) * 2
-        size += _SYSTEM_OVERHEAD_BYTES
-        return size
+        """Estimate JSON request body size in bytes (delegates to module helper)."""
+        return estimate_request_body_size(messages)
 
     def _strip_images_from_messages(self, messages: list[dict]) -> list[dict]:
         """Strip images from messages for non-multimodal models."""

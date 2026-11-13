@@ -205,6 +205,15 @@
                                 <line x1="12" y1="17" x2="12.01" y2="17"></line>
                             </svg>
                         </button>
+                        <button id="context-gauge-btn" class="context-gauge" type="button"
+                                title="上下文占用" aria-label="上下文占用" aria-expanded="false" hidden>
+                            <svg class="context-gauge-ring" viewBox="0 0 36 36" aria-hidden="true">
+                                <circle class="ring-track" cx="18" cy="18" r="15"></circle>
+                                <circle class="ring-bar" cx="18" cy="18" r="15" pathLength="100"
+                                        stroke-dasharray="100" stroke-dashoffset="100"></circle>
+                            </svg>
+                            <span class="context-gauge-pct">—</span>
+                        </button>
                         <button id="composer-action-btn" class="btn-icon-floating composer-action" data-state="disabled" title="发送" aria-label="发送">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M22 2L11 13"></path>
@@ -229,10 +238,9 @@
             </div>
             <div class="modal-body">
                 <div class="help-section">
-                    <h3>对话与状态</h3>
+                    <h3>对话</h3>
                     <table class="help-table">
                         <tr><td class="help-cmd"><code>/help</code></td><td>显示本帮助信息</td></tr>
-                        <tr><td class="help-cmd"><code>/status</code></td><td>查看会话状态（模型、上下文长度、token 用量等）</td></tr>
                     </table>
                 </div>
                 <div class="help-section">
@@ -993,6 +1001,7 @@
     <script src="/static/file-manager.js"></script>
     <script src="/static/memory.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/context-gauge.js"></script>
     <script src="/static/chat.js"></script>
     <script src="/static/agent-cards.js"></script>
     <script src="/static/sse-client.js"></script>

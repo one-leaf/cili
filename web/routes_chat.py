@@ -13,12 +13,22 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.compression import count_messages_tokens
 from core.config import get_workspace_data_dir, load_config
 from core.editor_context import expand_file_mentions, format_attachment
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
-from core.image_pipeline import ensure_user_image_meta, save_base64_image
+from core.image_pipeline import (
+    ensure_user_image_meta,
+    project_images_for_request,
+    save_base64_image,
+)
 from core.session import SessionStore
+from core.session_runner_runtime.context import ConversationStore
+from core.session_runner_runtime.runner import (
+    FULL_COMPACT_TOKEN_RATIO,
+    estimate_request_body_size,
+)
 from core.stream_executor import get_stream_executor
 from core.teen_mode import TeenModeDenied, get_teen_mode
 from core.tools.ask_user import find_pending_ask_user
@@ -43,6 +53,9 @@ from web.goal_runner import (
     start_goal_runner,
     stop_goal_runner,
 )
+
+# 复用 UI 拉取会话时的外置工具输出注入逻辑（同一份路径校验与读取）
+from web.routes_workspace import _resolve_tool_results_for_session
 from web.sse import (
     drain_outbox_events,
     make_sse_callbacks,
@@ -57,7 +70,7 @@ _resume_tasks: set[asyncio.Task] = set()
 
 
 def _persist_command_exchange(sm, session_key: str, content: str, reply: str) -> None:
-    """信息类命令（/help、/status、/goal status）落盘 user/assistant 两条消息。
+    """信息类命令（/help、/goal status）落盘 user/assistant 两条消息。
 
     仅在会话空闲时写：运行中的 runner 循环正在改写同一份 messages，并发
     add_message 会打乱消息顺序。这里不认领会话 —— 控制类命令（/stop、
@@ -143,6 +156,33 @@ def _model_payload(config, sm: SessionStore | None) -> dict:
         current_ref,
     )
     return {"current_ref": current_ref, "current_name": current_name, "available": available}
+
+
+def _cache_hit_ratio(usage: dict, interface_type: str) -> float:
+    """缓存比 = 缓存读取 / 全部输入 token。
+
+    - Anthropic 协议：input_tokens 不含缓存，分母 = input + cache_read + cache_creation；
+    - OpenAI 协议：input_tokens 即 prompt_tokens，缓存已含在其中，分母 = input_tokens；
+    - 未知协议按 Anthropic 语义兜底；分母为 0 时返回 0。
+
+    与 core/cache_state.py 的日志用 ``hit_rate`` 不同：这里把 cache_creation
+    计入分母并按协议区分，面向用户的「缓存比」口径更准确。
+    """
+    read = int(usage.get("cache_read_tokens", 0) or 0)
+    inp = int(usage.get("input_tokens", 0) or 0)
+    if interface_type == "openai":
+        total = inp
+    else:
+        total = inp + read + int(usage.get("cache_creation_tokens", 0) or 0)
+    return round(read / total, 4) if total > 0 else 0.0
+
+
+def _count_user_turns(messages: list[dict]) -> int:
+    """纯文本 user 消息数（工具结果载体是 list content，不计入用户轮次）。"""
+    return sum(
+        1 for m in messages
+        if m.get("role") == "user" and isinstance(m.get("content"), str)
+    )
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/model")
@@ -455,7 +495,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         help_text = """**特殊命令：**
 
 - `/help` - 显示本帮助信息
-- `/status` - 显示当前会话状态（上下文长度、用量等）
 - `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
 
 **工具使用：**
@@ -465,51 +504,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         sm = _get_session(workspace_uuid, session_id)
         _persist_command_exchange(sm, f"{workspace_uuid}:{session_id}", content, help_text)
         return StreamingResponse(sse_stream({"type": "text", "content": help_text, "session_id": session_id}), media_type="text/event-stream")
-
-    if content == "/status":
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        usage = runner.get_usage()
-
-        # 使用与真实请求一致的投影消息（历史图片为引用，当前回合为 base64）
-        builder = getattr(runner, "build_projected_messages", None)
-        messages = builder() if callable(builder) else runner.session.get_valid_messages()
-        context_tokens = runner._count_messages_tokens(messages)
-        body_size = runner._estimate_request_body_size(messages)
-
-        # Format body size
-        if body_size > 1_000_000:
-            body_size_str = f"{body_size / 1_000_000:.2f} MB"
-        else:
-            body_size_str = f"{body_size / 1_000:.1f} KB"
-
-        model_buckets = usage.get("models") or {}
-        bucket_lines = ""
-        if model_buckets:
-            bucket_lines = "\n**按模型用量：**\n"
-            for model_name, b in model_buckets.items():
-                bucket_lines += (
-                    f"- **{model_name}**：{b.get('api_calls', 0)} 次调用，"
-                    f"输入 {b.get('input_tokens', 0):,} / 输出 {b.get('output_tokens', 0):,} tokens\n"
-                )
-
-        status_text = f"""**当前会话状态：**
-
-- **模型：** {runner.model.name} ({runner.model.interface_type})
-- **上下文长度：** ~{context_tokens} tokens
-- **请求体大小：** {body_size_str}
-- **API 调用次数：** {usage['api_calls']}
-- **输入 tokens：** {usage['input_tokens']:,}
-- **输出 tokens：** {usage['output_tokens']:,}
-- **缓存读取：** {usage.get('cache_read_tokens', 0):,} tokens
-- **缓存创建：** {usage.get('cache_creation_tokens', 0):,} tokens
-- **预填充速度：** {usage.get('prefill_speed', 0):,.2f} tokens/s
-- **生成速度：** {usage.get('generation_speed', 0):,.2f} tokens/s
-{bucket_lines}"""
-        # Save to session via SessionStore
-        _persist_command_exchange(
-            runner.session, f"{workspace_uuid}:{session_id}", content, status_text
-        )
-        return StreamingResponse(sse_stream({"type": "text", "content": status_text, "session_id": session_id}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
     if content == "/goal" or content == "/goal status":
@@ -932,6 +926,104 @@ async def get_runner_status(workspace_uuid: str, session_id: str):
         "queue_items": snap["items"],
         "queue_paused": snap["paused"],
         "queue_reason": snap["reason"],
+    }
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/context")
+async def get_session_context(
+    workspace_uuid: str,
+    session_id: str,
+    _ws_dir: Path = Depends(_require_workspace),
+):
+    """上下文占用报告：消息体投影 token、窗口上限、压缩阈值与会话用量。
+
+    口径与自动压缩一致：只统计消息体（不含 system prompt 与工具定义），
+    图片按真实请求投影处理。只读：有 runner 时复用其请求投影；无 runner 时从存盘
+    消息估算 —— 不创建 runner、不触发压缩、不落盘。
+    """
+    _validate_session_id(session_id)
+    config = load_config()
+    key = _session_key(workspace_uuid, session_id)
+    runner = registry.get(key)
+
+    if runner is not None:
+        # 与主循环真实的请求投影同口径（历史图片按引用、工具结果已解析）
+        builder = getattr(runner, "build_projected_messages", None)
+        messages = builder() if callable(builder) else runner.session.get_valid_messages()
+        counter = getattr(runner, "_count_messages_tokens", None)
+        context_tokens = (
+            counter(messages) if callable(counter) else count_messages_tokens(messages)
+        )
+        model = getattr(runner, "model", None)
+        model_ref = getattr(runner, "model_ref", "") or ""
+        usage_getter = getattr(runner, "get_usage", None)
+        usage = dict(usage_getter() or {}) if callable(usage_getter) else {}
+        sm = getattr(runner, "session", None)
+        running_checker = getattr(runner, "is_running", None)
+        running = bool(running_checker()) if callable(running_checker) else False
+        estimated = False
+    else:
+        sm = await asyncio.to_thread(_get_session, workspace_uuid, session_id)
+        if sm is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        # 注意：不能用 SessionStore.get_valid_messages()——它会剥掉 output_path /
+        # turn_id 等内部 _meta，既读不到外置工具输出，也做不了图片投影。这里复用
+        # runner 侧「哪些消息进入上下文」的单一定义，保留 _meta 后自行投影。
+        messages = [
+            m for m in sm.messages
+            if ConversationStore.is_message_in_context(m)
+        ]
+        await asyncio.to_thread(
+            _resolve_tool_results_for_session, messages, sm.session_dir
+        )
+        history_mode = getattr(
+            getattr(config, "images", None), "history_mode", "current_turn"
+        )
+        if history_mode != "full":
+            messages = project_images_for_request(messages, "", force_reference=True)
+        context_tokens = count_messages_tokens(messages)
+        payload = _model_payload(config, sm)
+        model_ref = payload.get("current_ref") or ""
+        try:
+            model = config.resolve_model(model_ref) if model_ref else None
+        except Exception:
+            model = None  # 无可用模型配置：max=0、ratio=0，接口仍 200
+        usage = dict(sm.get_usage() or {})
+        running = False
+        estimated = True
+
+    max_tokens = int(getattr(model, "max_context_tokens", 0) or 0)
+    interface_type = getattr(model, "interface_type", "") or ""
+    usage["cache_hit_ratio"] = _cache_hit_ratio(usage, interface_type)
+    metadata = getattr(sm, "metadata", {}) if sm is not None else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return {
+        "session_id": session_id,
+        "model": {
+            "ref": model_ref,
+            "name": getattr(model, "name", "") or "",
+            "interface_type": interface_type,
+            "max_context_tokens": max_tokens,
+        },
+        "context_tokens": context_tokens,
+        "max_context_tokens": max_tokens,
+        "ratio": round(context_tokens / max_tokens, 4) if max_tokens > 0 else 0.0,
+        "compact_threshold_tokens": int(max_tokens * FULL_COMPACT_TOKEN_RATIO),
+        "compact_threshold_ratio": FULL_COMPACT_TOKEN_RATIO,
+        "remaining_tokens": max(0, max_tokens - context_tokens),
+        "body_size": estimate_request_body_size(messages),
+        "estimated": estimated,
+        "running": running,
+        "usage": usage,
+        "session": {
+            "name": getattr(sm, "name", "") or "",
+            "message_count": len(messages),
+            "user_turn_count": _count_user_turns(messages),
+            "created_at": metadata.get("created_at", ""),
+            "updated_at": metadata.get("updated_at", ""),
+        },
     }
 
 

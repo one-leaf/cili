@@ -1084,7 +1084,7 @@ class SessionRunner(BaseSessionRunner):
         """返回 usage 统计（只读，不回写 session）。
 
         此前实现先 _sync_to_session() 再读：从未运行过 LLM 调用的 runner
-        （重启/淘汰重建后的首次 /status 等）会把已持久化的速度覆盖为 0。
+        （重启/淘汰重建后的首次 /context 等）会把已持久化的速度覆盖为 0。
         速度由 ConversationStore 按调用计速并随 _usage 持久化，直接读取即可。
         """
         return self.context.get_usage()

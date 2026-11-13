@@ -73,14 +73,12 @@ class TuiApp:
                 continue
             if line.startswith("/"):
                 try:
-                    if not self._dispatch_command(line):
-                        continue
+                    self._dispatch_command(line)
                 except CiliServerError as e:
                     self.renderer.error_line(str(e))
-                    continue
                 except Exception as e:
                     self.renderer.error_line(f"命令执行失败: {e}")
-                    continue
+                continue
             content = line
             if self.router.ask_labels:
                 # ask_user 问题卡待答：编号答案映射回 label（QQ 同款），自由文本原样。
@@ -140,28 +138,24 @@ class TuiApp:
 
     # ---------- 命令 ----------
 
-    def _dispatch_command(self, line: str) -> bool:
-        """返回 True 表示回合照常发送（/status 等透传服务端）；False 表示已处理。"""
+    def _dispatch_command(self, line: str) -> None:
+        """执行本地斜杠指令；未知指令报错。斜杠行不再发往服务端。"""
         parts = line.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
-
-        if cmd == "/status":
-            return True  # 服务端识别为文本命令，走回合流渲染 usage 报告
 
         if cmd in ("/s", "/session"):
             if arg.isdigit():
                 self.switch_session_by_index(int(arg))
             else:
                 self.commands["s"].handler()
-            return False
+            return
 
         command = self.commands.get(cmd.lstrip("/"))
         if command is None:
             self.renderer.error_line(f"未知命令 {cmd}（/h 查看帮助）")
-            return False
+            return
         command.handler()
-        return False
 
     # ---------- 回合 ----------
 

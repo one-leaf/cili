@@ -1,9 +1,8 @@
-"""TUI 客户端本地命令（方案 §九）：/h /s /new /status /stop /quit。
+"""TUI 客户端本地命令（方案 §九）：/h /s /new /stop /quit。
 
 与 QQ 接入端的 commands.py 同一组织方式：每条指令一个 handler，声明式注册。
-差异：workspace 锁定 cwd，**无 /w**；/status 不本地实现——作为消息发给服务端
-（服务端把 "/status" 识别为文本命令并返回 usage 报告的 SSE 流），渲染路径与
-普通回合完全一致。
+差异：workspace 锁定 cwd，**无 /w**；不提供 /status（上下文与用量看 Web 端
+输入区的上下文面板）。
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ HELP_TEXT = """**命令：**
 - `/h` — 显示本帮助
 - `/s [序号]` — 列出/切换本 workspace 的最近会话
 - `/new` — 新建会话
-- `/status` — 当前会话状态（上下文与用量，服务端返回）
 - `/stop` — 停止当前正在执行的回合（回合中也可按 Ctrl+C）
 - `/quit` — 退出（Ctrl+D 等价）
 

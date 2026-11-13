@@ -27,7 +27,7 @@ interfaces/tui/            终端客户端（瘦：不 import 任何 core/* 模�
   client.py                httpx API 客户端 + SSE 帧解析
   render.py                渲染原语（纯函数为主：工具行摘要、ask_user 卡、答案映射）
   sink.py                  SseFrameRouter：SSE 帧 → 渲染回调（缓冲 + 提交点）
-  commands.py              /h /s /new /stop /quit（/status 透传服务端）
+  commands.py              /h /s /new /stop /quit
   app.py                   TuiApp：输入循环 + 回合驱动 + Ctrl+C 语义
   profile.py               能力档案（服务端 import 注册，客户端自身不用）
 
@@ -146,7 +146,6 @@ runner continues running in background`）。与 web 前端 EventSource 同语�
 | `/h` `/help` | 本地帮助文本（markdown 渲染） |
 | `/s` `/session` | 列出最近 10 条；`/s <序号>` 切换 |
 | `/new` | 新建会话 |
-| `/status` | **透传服务端**（服务端把 "/status" 识别为文本命令返回 usage 报告），走回合流渲染 |
 | `/stop` | `POST .../stop`（服务端 `runner.stop()`：当前回合在下一步中断） |
 | `/quit` `/q` `/exit` | 退出（Ctrl+D 等价） |
 | 未知命令 | 报错提示 /h |

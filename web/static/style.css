@@ -34,6 +34,8 @@ ul, ol {
     --composer-stop-hover: #c82333;
     --composer-disabled-bg: #e5e7eb;
     --composer-disabled-fg: #9ca3af;
+    /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
+    --context-warn: #d97706;
 }
 
 /* ── 暗色主题 ── */
@@ -63,6 +65,8 @@ ul, ol {
     --composer-stop-hover: #b91c1c;
     --composer-disabled-bg: #3f3f46;
     --composer-disabled-fg: #71717a;
+    /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
+    --context-warn: #fbbf24;
 }
 
 [data-theme="dark"] body {
@@ -1235,44 +1239,6 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-/* Session Info Modal */
-.session-info-content {
-    padding: 20px;
-    max-height: 450px;
-    overflow-y: auto;
-}
-
-.session-info-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.session-info-table tr {
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.session-info-table tr:last-child {
-    border-bottom: none;
-}
-
-.session-info-table td {
-    padding: 10px 12px;
-    font-size: 14px;
-    vertical-align: top;
-}
-
-.session-info-table .info-key {
-    color: var(--text-light);
-    font-weight: 500;
-    width: 140px;
-    white-space: nowrap;
-}
-
-.session-info-table .info-value {
-    color: var(--text-color);
-    word-break: break-all;
-}
-
 .empty-state {
     text-align: center;
     color: #aaa;
@@ -1966,6 +1932,223 @@ mjx-container {
     color: var(--primary-color);
 }
 
+/* ── 上下文占用指示器（输入区工具栏） ─────────────────────────────── */
+.context-gauge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 6px;
+    border: none;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-light);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition: color 0.2s, background 0.2s;
+}
+
+.context-gauge[hidden] {
+    display: none; /* 覆盖 display: inline-flex */
+}
+
+.context-gauge:hover {
+    background: var(--bg-color);
+}
+
+.context-gauge[data-level="warn"] {
+    color: var(--context-warn);
+}
+
+.context-gauge[data-level="danger"] {
+    color: var(--error-color);
+}
+
+.context-gauge-ring {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    transform: rotate(-90deg);
+}
+
+.context-gauge-ring circle {
+    fill: none;
+    stroke-width: 4;
+}
+
+.context-gauge-ring .ring-track {
+    stroke: var(--border-color);
+}
+
+.context-gauge-ring .ring-bar {
+    stroke: currentColor;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.3s ease;
+}
+
+/* ── 上下文面板（openAnchoredMenu 定位，fixed） ───────────────────── */
+.context-popover {
+    width: 320px;
+    max-width: calc(100vw - 24px);
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 12px 14px;
+    background: var(--sidebar-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    z-index: 120;
+    font-size: 12px;
+    color: var(--text-color);
+}
+
+.context-popover .ctx-loading {
+    padding: 8px 0;
+    color: var(--text-light);
+}
+
+.ctx-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.ctx-title {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.ctx-pct {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--primary-color);
+    font-variant-numeric: tabular-nums;
+}
+
+.ctx-pct[data-level="warn"] {
+    color: var(--context-warn);
+}
+
+.ctx-pct[data-level="danger"] {
+    color: var(--error-color);
+}
+
+.ctx-bar {
+    position: relative;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--border-color);
+    overflow: hidden;
+}
+
+.ctx-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--primary-color);
+    transition: width 0.3s ease;
+}
+
+.ctx-bar[data-level="warn"] .ctx-bar-fill {
+    background: var(--context-warn);
+}
+
+.ctx-bar[data-level="danger"] .ctx-bar-fill {
+    background: var(--error-color);
+}
+
+.ctx-bar-mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--text-light);
+    opacity: 0.55;
+}
+
+.ctx-bar-meta {
+    margin-top: 4px;
+    color: var(--text-light);
+    font-variant-numeric: tabular-nums;
+}
+
+.ctx-warning {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--tool-use-bg);
+    color: var(--error-color);
+}
+
+.ctx-section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+}
+
+.ctx-section-title {
+    margin-top: 10px;
+    color: var(--text-light);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+}
+
+.ctx-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 2px 0;
+}
+
+.ctx-key {
+    flex: 0 0 auto;
+    color: var(--text-light);
+}
+
+.ctx-val {
+    text-align: right;
+    word-break: break-all;
+}
+
+.ctx-copy {
+    padding: 0 0 0 4px;
+    border: none;
+    background: transparent;
+    color: var(--text-light);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.ctx-copy:hover {
+    color: var(--primary-color);
+}
+
+.ctx-tag {
+    margin-left: 6px;
+    padding: 1px 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-light);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.ctx-model {
+    padding: 1px 0;
+    color: var(--text-light);
+}
+
+.ctx-footnote {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-light);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
 /* 推荐输入：输入框上方气泡条。宽度按内容自适应、不撑满，溢出横向滚动 */
 .suggest-bar {
     display: flex;
@@ -2042,8 +2225,9 @@ mjx-container {
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    /* 右侧：模型下拉最大 120px + 三个 24px 图标（附件/帮助/发送） + 间距 + 8px 右边距 ≈ 216px */
-    padding-right: 216px;
+    /* 右侧：模型下拉最大 120px + 三个 24px 图标（附件/帮助/发送）+ 上下文胶囊（≈60px）
+       + 间距 + 8px 右边距 ≈ 272px */
+    padding-right: 272px;
     /* 左侧不缩进（文字与消息区左对齐）；底部留出左下角推荐按钮的高度 */
     padding-bottom: 32px;
     border: 1px solid var(--border-color);

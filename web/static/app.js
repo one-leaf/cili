@@ -222,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initInputResize();
     initSidebarResize();
     initSidebarState();
+    if (window.ContextGauge) ContextGauge.init();
 });
 
 // Sidebar collapse / expand
@@ -577,6 +578,8 @@ async function onModelSelectChange() {
             modelSelect.title = data.current_ref || ref;
         }
         showToast(`已切换模型：${data.current_name || ref}`);
+        // 窗口上限随模型变化，立即刷新上下文指示器
+        if (window.ContextGauge) ContextGauge.refresh();
     } catch (e) {
         console.error('切换模型失败:', e);
         modelSelect.value = previousRef;
@@ -879,6 +882,7 @@ async function handleWorkspaceChange() {
         currentSession = null;
         updateComposerButtons();
         refreshModelSelect();
+        if (window.ContextGauge) ContextGauge.refresh();  // 无会话：隐藏指示器
         closeEventSource();  // 无工作区：断开事件流
         clearPosition();
         workspaceSettingsBtn.disabled = true;
@@ -1671,7 +1675,6 @@ function toggleSessionItemMenu(session, btn) {
         <div class="session-dropdown-item" data-action="fork">分支会话</div>
         ${showDelete ? '<div class="session-dropdown-item" data-action="delete">删除会话</div>' : ''}
         ${showShare ? '<div class="session-dropdown-item" data-action="share">分享会话</div>' : ''}
-        <div class="session-dropdown-item" data-action="info">会话信息</div>
     `;
 
     // 添加菜单项点击事件
@@ -1837,9 +1840,6 @@ async function handleSessionAction(session, action) {
         case 'share':
             shareSession(session);
             break;
-        case 'info':
-            await showSessionInfo(session);
-            break;
     }
 }
 
@@ -1963,69 +1963,12 @@ function shareSession(session) {
     window.open(url, '_blank');
 }
 
-// 显示会话信息
-async function showSessionInfo(session) {
-    if (!currentWorkspace) return;
-
-    try {
-        // 获取完整会话数据
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${session.session_id}`);
-        const data = await response.json();
-
-        const messages = data.messages || [];
-        const userMessages = messages.filter(m => m.role === 'user').length;
-        const assistantMessages = messages.filter(m => m.role === 'assistant').length;
-        const metadata = data.metadata || {};
-        const usage = metadata.usage || {};
-
-        // 创建模态框
-        const modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-backdrop" onclick="this.parentElement.remove()"></div>
-            <div class="modal-content" style="max-width: 550px;">
-                <div class="modal-header">
-                    <h2>会话信息</h2>
-                    <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
-                </div>
-                <div class="session-info-content">
-                    <table class="session-info-table">
-                        <tbody>
-                            <tr><td class="info-key">会话ID</td><td class="info-value">${escapeHtml(session.session_id)}</td></tr>
-                            <tr><td class="info-key">会话名称</td><td class="info-value">${escapeHtml(session.name || '未命名')}</td></tr>
-                            <tr><td class="info-key">创建时间</td><td class="info-value">${metadata.created_at || '未知'}</td></tr>
-                            <tr><td class="info-key">更新时间</td><td class="info-value">${metadata.updated_at || '未知'}</td></tr>
-                            <tr><td class="info-key">总消息数</td><td class="info-value">${messages.length} 条</td></tr>
-                            <tr><td class="info-key">用户消息</td><td class="info-value">${userMessages} 条</td></tr>
-                            <tr><td class="info-key">助手消息</td><td class="info-value">${assistantMessages} 条</td></tr>
-                            <tr><td class="info-key">API调用次数</td><td class="info-value">${usage.api_calls || 0}</td></tr>
-                            <tr><td class="info-key">输入Tokens</td><td class="info-value">${(usage.input_tokens || 0).toLocaleString()}</td></tr>
-                            <tr><td class="info-key">输出Tokens</td><td class="info-value">${(usage.output_tokens || 0).toLocaleString()}</td></tr>
-                            <tr><td class="info-key">缓存读取Tokens</td><td class="info-value">${(usage.cache_read_tokens || 0).toLocaleString()}</td></tr>
-                            <tr><td class="info-key">缓存创建Tokens</td><td class="info-value">${(usage.cache_creation_tokens || 0).toLocaleString()}</td></tr>
-                            <tr><td class="info-key">预填充速度</td><td class="info-value">${(usage.prefill_speed || 0).toLocaleString()} tokens/s</td></tr>
-                            <tr><td class="info-key">生成速度</td><td class="info-value">${(usage.generation_speed || 0).toLocaleString()} tokens/s</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-primary" onclick="this.closest('.modal').remove()">关闭</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-
-    } catch (error) {
-        console.error('获取会话信息失败:', error);
-        alert('获取会话信息失败: ' + error.message);
-    }
-}
-
 // Load session
 async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
     hideSuggestBar({ invalidate: true });  // 切换会话：收起推荐、作废在途请求
+    if (window.ContextGauge) ContextGauge.close();  // 上下文面板随会话切换关闭
     const epoch = ++sessionLoadEpoch;
     const sessionKey = `${currentWorkspace.uuid}:${sessionId}`;
     const sameSession = _renderedSessionKey === sessionKey;
@@ -2067,6 +2010,7 @@ async function loadSession(sessionId) {
         queueReason = status.queue_reason || '';
         updateComposerButtons();
         refreshModelSelect();
+        if (window.ContextGauge) ContextGauge.refresh();
         renderQueueBar();
         renderSessions();
         renderMessages(session.messages || []);
@@ -2133,6 +2077,7 @@ async function createNewSession() {
         isStopping = false;
         updateComposerButtons();
         refreshModelSelect();
+        if (window.ContextGauge) ContextGauge.refresh();
         renderQueueBar();
         chatInput.focus();
     } catch (error) {

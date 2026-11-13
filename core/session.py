@@ -1149,7 +1149,7 @@ class SessionStore:
         """更新使用量统计（仅计数器；速度由 ConversationStore 按调用计速并随 sync 持久化）。
 
         ``model`` 非空时同步记入 per-model 分桶（usage.models[model_name]），master/worker/lite
-        的 token 用量分开归属；``total`` 保留旧的平铺字段供 /status 兼容读取。
+        的 token 用量分开归属；``total`` 保留旧的平铺字段供上下文面板与用量统计读取。
         """
         usage = self.metadata.get("usage", {})
         usage["input_tokens"] = usage.get("input_tokens", 0) + input_tokens

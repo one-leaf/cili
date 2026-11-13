@@ -12,7 +12,7 @@ Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原�
 - **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置。工作区元数据集中存储在 `data/cili/workspaces.json` 索引（uuid/workspace_name/directory/created_at/updated_at/memory_enabled/system），各工作区数据位于其 `{directory}/.cili/`（sessions/memory/tmp/approvals.json），不再有全局 `data/projects/`
 - **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
 - **LRU 淘汰**：内存中最多保留 20 个 Master SessionRunner，自动清理最久未访问的
-- **特殊命令**：/help、/status、/goal 在服务端处理，不经过 LLM
+- **特殊命令**：/help、/goal 在服务端处理，不经过 LLM
 - **统一数据访问**：消息收发等核心写入通过 SessionStore；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionStore 原子落盘
 
 ---
@@ -349,6 +349,17 @@ GET /api/workspaces/{uuid}/sessions/{id}/status
   "running": true
 }
 ```
+
+#### 上下文占用报告
+
+```
+GET /api/workspaces/{uuid}/sessions/{id}/context
+```
+
+返回 `context_tokens / max_context_tokens / ratio / compact_threshold_tokens / body_size / usage / session`，
+口径与自动压缩一致（消息体投影 token，不含 system prompt 与工具定义）。有 runner 时复用
+真实请求投影；无 runner 时从存盘消息估算并置 `estimated: true`——只读，不创建 runner、
+不触发压缩、不落盘。
 
 #### 停止 Agent
 
@@ -880,33 +891,14 @@ Content-Type: text/plain;charset=UTF-8
 **特殊命令：**
 
 - `/help` - 显示本帮助信息
-- `/status` - 显示当前会话状态（上下文长度、用量等）
 - `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
 
 **工具使用：**
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
 ```
 
-### 4.2 /status
-
-显示当前会话状态：
-
-```
-/status
-```
-
-**响应**：
-```
-**当前会话状态：**
-- **模型：** claude-sonnet-4-6 (anthropic)
-- **上下文长度：** ~15000 tokens
-- **请求体大小：** 1.2 MB
-- **API 调用次数：** 8
-- **输入 tokens：** 15,000
-- **输出 tokens：** 3,000
-- **缓存读取：** 12,000 tokens
-- **缓存创建：** 5,000 tokens
-```
+> `/status` 命令已移除（2026-11-13）：会话状态改由输入区上下文占用面板展示
+> （`GET /api/workspaces/{uuid}/sessions/{id}/context`，见 §3.5）。
 
 ---
 
@@ -978,7 +970,7 @@ except asyncio.CancelledError:
 - 会话列表（按更新时间倒序）
 - 创建、重命名、删除会话
 - 批量隐藏/取消隐藏/删除会话
-- 查看会话信息（消息数、token 统计）
+- 输入区上下文占用面板（上下文占比、模型/会话/用量，替代原侧栏「会话信息」弹窗）
 - 分享会话/指定消息（打开独立只读查看页 `session.html`，即 `/s/{workspace}/{session}` 完整会话路由，或 `/s/{workspace}/{session}/{msg_ids}` 指定消息路由）
 
 #### 聊天界面
@@ -1260,7 +1252,7 @@ def _mask_api_key(config: dict) -> dict:
 
 ### 9.3 为什么特殊命令不经过 LLM？
 
-- **速度**：/help、/status 立即响应
+- **速度**：/help、/goal 立即响应
 - **成本**：不消耗 API token
 - **可靠性**：即使 LLM 不可用也能工作
 
