@@ -1336,7 +1336,7 @@ function renderModelRow(key, m, iface) {
         + '<div class="field"><label class="field-label">最大输出</label>'
         + '<input type="number" class="p-model-max-output" data-model-key="' + key + '" value="' + (m.max_output_tokens || 8192) + '" title="max_output_tokens：单次响应最大输出 token"></div>'
         + '<div class="field"><label class="field-label">上下文窗口</label>'
-        + '<input type="number" class="p-model-max-context" data-model-key="' + key + '" value="' + (m.max_context_tokens || 128000) + '" title="max_context_tokens：上下文窗口大小"></div>'
+        + '<input type="number" class="p-model-max-context" data-model-key="' + key + '" value="' + (m.max_context_tokens || 300000) + '" title="max_context_tokens：上下文窗口大小"></div>'
         + '<button type="button" class="btn-outline p-model-test" data-model-key="' + key + '">▶ 测试</button>'
         + '<button type="button" class="btn-outline-danger p-model-remove" data-model-key="' + key + '" title="删除模型">✕</button>'
         + '</div>'
@@ -1493,7 +1493,7 @@ function collectProviders() {
             const name = row.querySelector('.p-model-name').value.trim();
             if (name) spec.name = name;
             spec.max_output_tokens = parseInt(row.querySelector('.p-model-max-output').value) || 8192;
-            spec.max_context_tokens = parseInt(row.querySelector('.p-model-max-context').value) || 128000;
+            spec.max_context_tokens = parseInt(row.querySelector('.p-model-max-context').value) || 300000;
             spec.model_type = row.querySelector('.p-model-type').value;
             spec.reasoning = row.querySelector('.p-model-reasoning').value;
             spec.input = Array.prototype.map.call(row.querySelectorAll('.p-model-input:checked'), function (el) { return el.value; });

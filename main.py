@@ -94,7 +94,7 @@ _DEFAULT_MODEL = {
     "interface_type": "anthropic",
     "base_url": "https://api.anthropic.com",
     "max_output_tokens": 8192,
-    "max_context_tokens": 128000,
+    "max_context_tokens": 300000,
     "multimodal": True,
     "temperature": 0.2,
 }
