@@ -15,6 +15,23 @@ class TestDefaultPort:
         monkeypatch.setattr(main_mod.sys, "argv", ["main.py", "--port", "9000"])
         assert main_mod.parse_args().port == 9000
 
+    def test_no_browser_flag(self, monkeypatch):
+        monkeypatch.setattr(main_mod.sys, "argv", ["main.py", "--no-browser"])
+        assert main_mod.parse_args().no_browser is True
+
+
+class TestAutoOpenBrowser:
+    def test_no_browser_flag_suppresses(self):
+        assert main_mod._should_open_browser(SimpleNamespace(no_browser=True)) is False
+
+    def test_restart_env_suppresses(self, monkeypatch):
+        monkeypatch.setenv("CILI_LAUNCH_RESTART", "1")
+        assert main_mod._should_open_browser(SimpleNamespace(no_browser=False)) is False
+
+    def test_opens_on_first_launch(self, monkeypatch):
+        monkeypatch.delenv("CILI_LAUNCH_RESTART", raising=False)
+        assert main_mod._should_open_browser(SimpleNamespace(no_browser=False)) is True
+
 
 class TestStartWebInterfacePortResolution:
     def test_resolved_port_reaches_args_server_info_and_uvicorn(
@@ -31,12 +48,19 @@ class TestStartWebInterfacePortResolution:
             captured["probe_token"] = probe_token
             return 8123
 
-        def _uvicorn_run(*args, **kwargs):
-            info_path = tmp_path / "data" / "cili" / "server.json"
-            captured["server_info"] = json.loads(
-                info_path.read_text(encoding="utf-8")
-            )
-            captured["uvicorn"] = kwargs
+        class _FakeServer:
+            """替身 uvicorn.Server：捕获配置，不真正启动服务。"""
+
+            def __init__(self, config):
+                self.config = config
+                self.should_exit = False
+                captured["config"] = config
+
+            def run(self):
+                info_path = tmp_path / "data" / "cili" / "server.json"
+                captured["server_info"] = json.loads(
+                    info_path.read_text(encoding="utf-8")
+                )
 
         monkeypatch.setattr(core.port_guard, "resolve_web_port", _resolve)
         monkeypatch.setattr(main_mod, "_check_web_auth", lambda host: None)
@@ -53,13 +77,16 @@ class TestStartWebInterfacePortResolution:
             lambda *args, **kwargs: SimpleNamespace(start=lambda: None),
         )
         monkeypatch.setattr(main_mod.webbrowser, "open", lambda url: None)
-        monkeypatch.setattr(uvicorn, "run", _uvicorn_run)
+        monkeypatch.setattr(uvicorn, "Server", _FakeServer)
+        # 端口解析发生在 _start_services 里（核心服务启动前），这里验证整条接线
+        monkeypatch.setattr(main_mod, "_start_core_services", lambda: None)
 
-        args = SimpleNamespace(host="127.0.0.1", port=8000)
-        main_mod._start_web_interface(args)
+        args = SimpleNamespace(host="127.0.0.1", port=8000, no_browser=True)
+        main_mod._start_services(args)
 
         assert args.port == 8123
         assert captured["probe_token"] == "tok"
         assert captured["server_info"]["port"] == 8123
-        assert captured["uvicorn"]["port"] == 8123
+        assert captured["config"].port == 8123
+        assert captured["config"].timeout_graceful_shutdown == 15
         assert not (tmp_path / "data" / "cili" / "server.json").exists()

@@ -601,6 +601,13 @@ def _log_changes(changes: dict | None) -> None:
             logger.info(f"[updater] {label}: {rel}")
 
 
+# 本次服务进程启动时是否出现过升级包应用失败（apply_pending_upgrade 记录）。
+# 失败时升级包保留、升级不会发生，若仍安排空闲重启会变成「重启 → 失败 → 再
+# 重启」的循环，最终耗尽 start.ps1 的重启上限导致服务停掉；因此本次启动内
+# 出现失败后不再自动安排重启（升级包保留，用户可手动重试或下次启动再应用）。
+_apply_failed_this_boot = False
+
+
 def apply_pending_upgrade() -> dict | None:
     """启动时应用脚本目录下的升级包（main.py 启动早期调用）。
 
@@ -635,6 +642,11 @@ def apply_pending_upgrade() -> dict | None:
 
     logger.info(f"[updater] 发现待应用升级包 {zip_version}（当前 {local}），开始解压覆盖...")
     result = apply_zip(str(zip_path))
+    # 记录本次启动是否出现过应用失败：失败时升级包保留、版本不变，自动升级
+    # 线程下次仍会看到「有新版本 + 包已下载」，若继续安排空闲重启会形成
+    # 「重启 → 应用失败 → 再重启」的循环（启动循环上限耗尽后服务会停掉）
+    global _apply_failed_this_boot
+    _apply_failed_this_boot = not result.get("success")
     if result.get("success"):
         # 删除失败时不置 restart 标记：升级包残留会让下次启动重复应用，
         # 若配合启动循环的退出码协议会形成重启循环
@@ -660,9 +672,15 @@ _restart_lock = threading.Lock()
 
 
 def set_uvicorn_server(server: Any) -> None:
-    """main.py 启动 uvicorn 后注入 Server 句柄（request_restart 需要它触发优雅停机）。"""
+    """main.py 启动 uvicorn 后注入 Server 句柄（request_restart 需要它触发优雅停机）。
+
+    若重启请求在注入前已到达（启动窗口内触发自动重启），这里补发停机通知，
+    避免请求只记了标志却没人通知 uvicorn。
+    """
     global _uvicorn_server
     _uvicorn_server = server
+    if _restart_requested is not None:
+        server.should_exit = True
 
 
 def request_restart(reason: str) -> bool:
@@ -777,6 +795,9 @@ def schedule_idle_restart(reason: str, poll_interval: float = 30.0,
         return False
     if not _auto_restart_enabled():
         logger.info("[updater] 自动重启已关闭（system.auto_restart_after_upgrade=false），跳过")
+        return False
+    if _apply_failed_this_boot:
+        logger.warning("[updater] 本次启动升级包应用失败，暂不安排自动重启（避免重启循环）")
         return False
     with _idle_restart_lock:
         if _idle_restart_scheduled:

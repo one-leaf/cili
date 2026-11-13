@@ -459,32 +459,51 @@ if ($HostName -ne "127.0.0.1") {
 }
 
 # 启动 main.py（升级重启循环）
-# 协议：服务请求重启（升级包下载完成）时以退出码 42 退出；循环先在独立进程
-# 中应用升级包（main.py --apply-upgrade-only），再重新拉起服务，保证新代码
+# 协议：服务请求重启（升级包下载完成）时以退出码 42 退出；循环先在有升级包时
+# 用独立进程应用（main.py --apply-upgrade-only），再重新拉起服务，保证新代码
 # 完整加载。直接 python main.py 启动无此循环，升级包需手动重启应用。
 $mainScript = Join-Path $ProjectRoot "main.py"
+$upgradeZip = Join-Path $ProjectRoot "cili-update.zip"  # 与 core/updater.py 的 UPGRADE_ZIP_NAME 一致
 $env:CILI_LAUNCHER = "ps1"
 $restartCount = 0
 $maxRestarts = 5
 for ($i = 0; ; $i++) {
     # 应用待升级包（独立短进程，无业务模块 import，避免服务进程新旧代码混跑）。
-    # 首次启动依赖可能尚未装齐（依赖由 main.py 安装），失败容忍并继续。
-    & $pythonPath $mainScript --apply-upgrade-only 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Status "Upgrade apply skipped (exit $LASTEXITCODE), continuing startup" "DarkGray"
+    # 只在包存在时运行；首次启动依赖可能尚未装齐（依赖由 main.py 安装），失败容忍并继续。
+    # 注意：$ErrorActionPreference=Stop 下原生命令写 stderr 会抛终止错误（即使
+    # 2>$null 也照抛），而 apply 过程必然有日志输出，故必须临时切到 Continue 并合并捕获。
+    if (Test-Path $upgradeZip) {
+        $oldEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $applyOut = & $pythonPath $mainScript --apply-upgrade-only 2>&1
+        $applyCode = $LASTEXITCODE
+        $ErrorActionPreference = $oldEAP
+        if ($applyCode -ne 0) {
+            Write-Status "Upgrade apply skipped (exit $applyCode), continuing startup" "DarkGray"
+        } elseif ($applyOut) {
+            $applyOut | ForEach-Object { Write-Host $_ }
+        }
     }
-    if ($i -gt 0) { $env:CILI_LAUNCH_RESTART = "1" }  # 重启迭代不再自动开浏览器
+    # 重启迭代不再自动打开浏览器（--no-browser 为主，CILI_LAUNCH_RESTART 兜底）
+    $iterArgs = $scriptArgs
+    if ($i -gt 0) {
+        $env:CILI_LAUNCH_RESTART = "1"
+        $iterArgs = @($scriptArgs) + "--no-browser"
+    }
+    $startedAt = Get-Date
     try {
-        & $pythonPath $mainScript @scriptArgs
+        & $pythonPath $mainScript @iterArgs
     } catch {
         Write-Status "Error: Failed to start Cili Agent" "Red"
         exit 1
     }
     if ($LASTEXITCODE -ne 42) { break }
+    # 只把「短时间内连续重启」计入上限：运行已久的服务偶发升级重启不累计
+    if (((Get-Date) - $startedAt).TotalSeconds -gt 300) { $restartCount = 0 }
     $restartCount++
     if ($restartCount -ge $maxRestarts) {
-        Write-Status "Upgrade restart limit reached ($maxRestarts), stopping" "Yellow"
-        break
+        Write-Status "Upgrade restart limit reached ($maxRestarts consecutive), stopping" "Red"
+        exit 1
     }
     Write-Status "Service requested restart (exit 42), applying upgrade and restarting..." "Cyan"
 }

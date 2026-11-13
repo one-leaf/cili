@@ -697,6 +697,13 @@ class TestLauncherRestartProtocol:
         assert updater.request_restart("测试") is False
         assert updater._restart_requested is None
 
+    def test_set_uvicorn_server_replays_pending_restart(self, monkeypatch):
+        """重启请求早于 server 句柄注入时，注入后补发停机通知"""
+        monkeypatch.setattr(updater, "_restart_requested", "启动窗口中触发的重启")
+        sentinel = SimpleNamespace(should_exit=False)
+        updater.set_uvicorn_server(sentinel)
+        assert sentinel.should_exit is True
+
     def test_request_restart_sets_flag_and_notifies_uvicorn(self, monkeypatch):
         """托管下请求重启：置原因标记并通知 uvicorn 优雅停机，幂等"""
         monkeypatch.setenv("CILI_LAUNCHER", "ps1")
@@ -731,6 +738,35 @@ class TestLauncherRestartProtocol:
         assert updater._auto_restart_enabled() is False
         monkeypatch.setattr(config_mod, "load_global_config", lambda: {})
         assert updater._auto_restart_enabled() is True
+
+    def test_apply_failure_marks_boot_and_blocks_auto_restart(self, tmp_path, monkeypatch):
+        """应用失败后记录标记，不再安排自动重启（避免「重启→失败→再重启」循环）"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main")
+        shutil.copy(zip_path, project_root / updater.UPGRADE_ZIP_NAME)
+        monkeypatch.setattr(updater, "_apply_failed_this_boot", False)
+        monkeypatch.setattr(
+            updater, "apply_zip", lambda p: {"success": False, "error": "文件被占用"})
+
+        result = updater.apply_pending_upgrade()
+        assert result["success"] is False
+        assert updater._apply_failed_this_boot is True
+
+        monkeypatch.setenv("CILI_LAUNCHER", "ps1")
+        monkeypatch.setattr(updater, "_auto_restart_enabled", lambda: True)
+        assert updater.schedule_idle_restart(
+            "测试", poll_interval=0.01, max_wait=0.05) is False
+
+    def test_apply_success_clears_failed_marker(self, tmp_path, monkeypatch):
+        """应用成功后清除失败标记，自动重启恢复可用"""
+        project_root = _make_project(tmp_path, monkeypatch, "v20260911")
+        zip_path = _make_remote_zip(tmp_path, "v20260912", "new main")
+        shutil.copy(zip_path, project_root / updater.UPGRADE_ZIP_NAME)
+        monkeypatch.setattr(updater, "_apply_failed_this_boot", True)
+
+        result = updater.apply_pending_upgrade()
+        assert result["success"] is True
+        assert updater._apply_failed_this_boot is False
 
 
 def _wait_idle_restart_done(timeout: float = 5.0) -> None:

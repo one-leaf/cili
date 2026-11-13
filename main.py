@@ -1017,6 +1017,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,  # internal: start.ps1 启动循环在独立进程中应用升级包
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help=argparse.SUPPRESS,  # internal: start.ps1 升级重启迭代不重复打开浏览器
+    )
     return parser.parse_args()
 
 
@@ -1291,6 +1296,12 @@ def _resolve_web_port(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _should_open_browser(args: argparse.Namespace) -> bool:
+    """是否自动打开浏览器：升级重启迭代（--no-browser / CILI_LAUNCH_RESTART）不重复开。"""
+    return not (getattr(args, "no_browser", False)
+                or os.environ.get("CILI_LAUNCH_RESTART"))
+
+
 def _start_web_interface(args: argparse.Namespace) -> None:
     """启动 Web 接入端：自动开浏览器 + uvicorn（鉴权与端口解析已在 _resolve_web_port 完成）。"""
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
@@ -1305,8 +1316,9 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     # Auto-open browser after server starts
     def _open_browser():
         """等待 2 秒后自动打开浏览器（让服务器有时间就绪）"""
-        # 升级重启的迭代不再弹新标签页（CILI_LAUNCH_RESTART 由 start.ps1 置位）
-        if os.environ.get("CILI_LAUNCH_RESTART"):
+        # 升级重启的迭代不再弹新标签页：start.ps1 传 --no-browser（环境变量
+        # CILI_LAUNCH_RESTART 作为兜底，供其它启动方式标记重启迭代）
+        if not _should_open_browser(args):
             return
         time.sleep(2)
         webbrowser.open(f"http://localhost:{args.port}")
@@ -1356,17 +1368,21 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     except Exception as e:
         logger.warning(f"注册 uvicorn server 句柄失败（升级自动重启不可用）: {e}")
 
+    interrupted = False
     try:
         server.run()
     except KeyboardInterrupt:
-        pass  # Ctrl+C: exit silently
+        interrupted = True  # Ctrl+C: exit silently
     finally:
         try:
             os.remove(server_info_path)
         except OSError:
             pass
 
-    # uvicorn 退出后处理升级重启请求：以退出码交回 start.ps1 循环（应用升级包后重启）
+    # uvicorn 退出后处理升级重启请求：以退出码交回 start.ps1 循环（应用升级包后重启）。
+    # Ctrl+C 是用户主动停止，即使有空闲重启在等待也不能退出码 42 被启动循环拉起。
+    if interrupted:
+        return
     try:
         from core import updater
         updater.shutdown_and_restart_if_requested()
