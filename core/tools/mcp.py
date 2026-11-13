@@ -531,6 +531,9 @@ class MCPProvider:
                 parameters=parameters,
                 tool_timeout=cfg.tool_timeout,
             ))
+        # 排序：server 的 list_tools() 返回顺序不定，tools 数组顺序影响 prompt cache
+        # 前缀的字节一致性（见 workspace 设计文档 §3.2）。
+        wrappers.sort(key=lambda w: w.name)
         return wrappers
 
     # ── 工具执行 ──────────────────────────────────────────────────────────
@@ -574,10 +577,15 @@ class MCPProvider:
     # ── 查询 / reload ─────────────────────────────────────────────────────
 
     def get_wrappers(self) -> list[MCPToolWrapper]:
-        """返回当前所有已连接 server 的 wrapper（同步，读共享列表）。"""
+        """返回当前所有已连接 server 的 wrapper（同步，读共享列表）。
+
+        按 name 排序：``_wrappers`` 的插入序 = 各 server 连接完成时序（``_connect_all``
+        并发建连），跨重启不稳定，排序保证 tools 前缀字节一致（设计文档 §3.2）。
+        """
         result: list[MCPToolWrapper] = []
         for wrappers in list(self._wrappers.values()):
             result.extend(wrappers)
+        result.sort(key=lambda w: w.name)
         return result
 
     def status(self) -> dict[str, dict]:

@@ -29,6 +29,7 @@ from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
 from web.routes_permissions import router as permissions_router
 from web.routes_qq import router as qq_router
+from web.routes_suggest import router as suggest_router
 from web.routes_teen import router as teen_router
 from web.routes_textbooks import router as textbooks_router
 from web.routes_update import router as update_router
@@ -258,6 +259,7 @@ app.include_router(workspace_router)
 app.include_router(workspace_wizard_router)
 app.include_router(chat_router)
 app.include_router(ask_user_router)
+app.include_router(suggest_router)
 app.include_router(config_router)
 app.include_router(permissions_router)
 app.include_router(update_router)

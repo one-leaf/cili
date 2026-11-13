@@ -1176,6 +1176,27 @@ class Runner:
         else:
             self.runner.save_messages()
 
+    def _capture_request_prefix(self, system_prompt, response) -> None:
+        """记录本次请求的 system/tools 配置与缓存统计，供建议生成原样复用（§3.2）。
+
+        必须捕获而不是事后重算：回合结束路由会把接口重置为 None，接口专属工具与
+        system 的 interface_caps 段会变，重算出来的字节与上一次请求不同会静默 miss。
+        """
+        try:
+            client = self.runner.client
+            usage = getattr(response, "usage", None)
+            self.runner._last_request_prefix = {
+                "system": system_prompt,
+                "tools": list(self.runner.tool_schemas),
+                "model": getattr(client, "model_name", ""),
+                "base_url": getattr(client, "base_url", "") or "",
+                "session_id": self.runner.master_session_id,
+                "cache_read": int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0,
+                "cache_write": int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0,
+            }
+        except Exception:  # noqa: BLE001 —— 捕获失败不影响主流程
+            logger.debug("[suggest] 捕获请求前缀失败", exc_info=True)
+
     def _call_llm_non_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
         """Non-streaming LLM call."""
         message_objects = self._prepare_messages_for_llm()
@@ -1204,6 +1225,7 @@ class Runner:
                     cache_write=response.usage.cache_write_tokens,
                     input_tokens=response.usage.input_tokens,
                 )
+            self._capture_request_prefix(system_prompt, response)
             return response
         except Exception as e:
             # Handle 413 by stripping images and retrying
@@ -1242,6 +1264,7 @@ class Runner:
                             cache_write=response.usage.cache_write_tokens,
                             input_tokens=response.usage.input_tokens,
                         )
+                    self._capture_request_prefix(system_prompt, response)
                     return response
                 except Exception as retry_e:
                     err_msg = format_llm_error(retry_e, self.runner.client.base_url if self.runner.client else "")
@@ -1363,6 +1386,7 @@ class Runner:
                 input_tokens=response.usage.input_tokens,
             )
 
+        self._capture_request_prefix(system_prompt, response)
         return response
 
     @staticmethod

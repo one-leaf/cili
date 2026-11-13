@@ -831,6 +831,8 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
                     }
                     askCard.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
                     askCard.querySelectorAll('input').forEach(el => el.disabled = true);
+                    settleAskUserCard(askCard);
+                    updateComposerButtons();
                 }
                 return;
             }
@@ -905,6 +907,16 @@ function renderSessionComplete(execId, stats) {
     AgentCardStore.onComplete({ exec_id: execId, status: 'completed', stats });
 }
 
+// 是否存在待答的 ask_user / 审批卡（推荐输入按钮据此置灰）。
+// 数据属性在卡片渲染时设置，提交/工具结果/停止时清除——历史加载渲染的卡片同样计数。
+function hasPendingAskUser() {
+    return !!document.querySelector('.ask-user-card[data-ask-pending="1"]');
+}
+
+function settleAskUserCard(card) {
+    if (card) card.removeAttribute('data-ask-pending');
+}
+
 // 渲染 AskUser 问题卡片
 function renderAskUserQuestions(container, input, toolUseId) {
     const questions = input.questions || [];
@@ -912,6 +924,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
 
     const card = document.createElement('div');
     card.className = 'ask-user-card';
+    card.dataset.askPending = '1';
     if (toolUseId) card.dataset.toolUseId = toolUseId;
 
     const title = document.createElement('div');
@@ -1075,8 +1088,10 @@ function renderAskUserQuestions(container, input, toolUseId) {
             // 标记卡片为已提交
             submitBtn.textContent = '✓ 已提交';
             submitBtn.classList.add('ask-submitted');
+            settleAskUserCard(card);
             card.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
             card.querySelectorAll('input').forEach(el => el.disabled = true);
+            updateComposerButtons();
 
             // 处理 SSE 流
             const reader = response.body.getReader();
@@ -1162,6 +1177,8 @@ function renderAskUserQuestions(container, input, toolUseId) {
     card.appendChild(submitBtn);
     container.appendChild(card);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    // 新卡片出现即刷新推荐按钮门控（历史加载/实时推送共用本函数）
+    if (typeof updateComposerButtons === 'function') updateComposerButtons();
 }
 
 // ── 排队队列条与投递 ──
@@ -1312,6 +1329,8 @@ async function refreshSessionStatus(sessionId) {
 async function stopAgent() {
     if (!currentWorkspace || !currentSession || isStopping) return;
 
+    // 停止即收起推荐并作废在途请求（设计 §2.3）
+    if (typeof hideSuggestBar === 'function') hideSuggestBar({ invalidate: true });
     isStopping = true;
     updateComposerButtons();
 
@@ -1357,7 +1376,9 @@ async function stopAgent() {
         }
         card.querySelectorAll('.ask-option').forEach(el => el.style.pointerEvents = 'none');
         card.querySelectorAll('input').forEach(el => el.disabled = true);
+        settleAskUserCard(card);
     });
+    updateComposerButtons();
 }
 
 // Send message
@@ -1384,6 +1405,8 @@ async function sendMessage() {
 
     console.log('Sending message to session:', currentSession.session_id);
     const sessionId = currentSession.session_id;
+    // 发送（含排队）即收起推荐并作废在途请求（设计 §2.3）
+    if (typeof hideSuggestBar === 'function') hideSuggestBar({ invalidate: true });
 
     const clientId = makeClientId();
     const attachmentsToSend = attachments.length > 0 ? attachments : null;

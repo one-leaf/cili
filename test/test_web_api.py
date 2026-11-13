@@ -1229,3 +1229,76 @@ class TestCreateWorkspaceDefaults:
         entry = config_mod.load_workspace_config(result["uuid"])
         assert entry["git_enabled"] is True
         assert entry["memory_enabled"] is True
+
+
+class TestSuggestRoute:
+    """suggest 端点：runner 经 _get_or_create_runner 获取、404/503、不 claim。"""
+
+    def test_returns_generation_result(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from web import routes_suggest
+
+        (tmp_path / "sessions" / "sid").mkdir(parents=True)
+        calls = {}
+
+        async def fake_get_runner(workspace_uuid, session_id):
+            calls["runner"] = (workspace_uuid, session_id)
+            return "runner-stub"
+
+        def fake_generate(runner, refresh, exclude):
+            calls["generate"] = (runner, refresh, exclude)
+            return {"suggestions": ["aa", "bb"], "source": "context", "route": "prefixed"}
+
+        monkeypatch.setattr(routes_suggest, "_get_or_create_runner", fake_get_runner)
+        monkeypatch.setattr(routes_suggest, "generate_suggestions", fake_generate)
+
+        def _claim_forbidden(*args, **kwargs):
+            raise AssertionError("suggest 不应 claim 运行权")
+
+        monkeypatch.setattr("web.deps._claim_session_run", _claim_forbidden)
+
+        body = routes_suggest.SuggestRequest(refresh=True, exclude=["旧建议"])
+        result = asyncio.run(
+            routes_suggest.suggest("ws-uuid", "sid", body, ws_dir=tmp_path)
+        )
+
+        assert result["route"] == "prefixed"
+        assert calls["runner"] == ("ws-uuid", "sid")
+        assert calls["generate"][1:] == (True, ["旧建议"])
+
+    def test_missing_session_returns_404(self, tmp_path):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from web import routes_suggest
+
+        body = routes_suggest.SuggestRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(routes_suggest.suggest("ws-uuid", "nope", body, ws_dir=tmp_path))
+        assert exc_info.value.status_code == 404
+
+    def test_suggest_error_returns_503(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from core.suggest_service import SuggestError
+        from web import routes_suggest
+
+        (tmp_path / "sessions" / "sid").mkdir(parents=True)
+
+        async def fake_get_runner(workspace_uuid, session_id):
+            return "runner-stub"
+
+        def fake_generate(runner, refresh, exclude):
+            raise SuggestError("生成建议失败")
+
+        monkeypatch.setattr(routes_suggest, "_get_or_create_runner", fake_get_runner)
+        monkeypatch.setattr(routes_suggest, "generate_suggestions", fake_generate)
+
+        body = routes_suggest.SuggestRequest()
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(routes_suggest.suggest("ws-uuid", "sid", body, ws_dir=tmp_path))
+        assert exc_info.value.status_code == 503

@@ -1966,11 +1966,74 @@ mjx-container {
     color: var(--primary-color);
 }
 
+/* 推荐输入：输入框上方气泡条。宽度按内容自适应、不撑满，溢出横向滚动 */
+.suggest-bar {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.suggest-bar[hidden] {
+    display: none;
+}
+
+.suggest-pill {
+    flex: 0 0 auto;
+    max-width: 320px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-color);
+    font-size: 12px;
+    font-family: inherit;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.suggest-pill:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: var(--bg-color);
+}
+
+.suggest-refresh {
+    color: var(--text-light);
+    border-style: dashed;
+}
+
+#suggest-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+#suggest-btn:disabled:hover {
+    background: transparent;
+    color: var(--text-light);
+}
+
+.suggest-loading svg {
+    animation: suggest-spin 0.9s linear infinite;
+}
+
+@keyframes suggest-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 .chat-input-area textarea {
     width: 100%;
     padding: 12px;
-    /* 模型下拉最大 120px + 三个 24px 图标 + 间距 + 8px 右边距 ≈ 216px */
-    padding-right: 216px;
+    /* 模型下拉最大 120px + 四个 24px 图标（推荐/附件/帮助/发送） + 间距 + 8px 右边距 ≈ 248px */
+    padding-right: 248px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 14px;

@@ -94,6 +94,9 @@ class BaseSessionRunner:
         # LLM client
         self.client: LLMClient | None = None
 
+        # 上一次主请求的 system/tools 配置与缓存统计（建议生成原样复用，见 suggest_service）
+        self._last_request_prefix: dict | None = None
+
         # Tools
         self.tools: list[Tool] = []
         self.tool_schemas: list[dict] = []

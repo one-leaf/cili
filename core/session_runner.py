@@ -520,7 +520,12 @@ class SessionRunner(BaseSessionRunner):
         eligible = self._eligible_tools()
         self._deferred_tools = [t for t in eligible if t.name in self._deferred_names]
         self._active_tools = [t for t in eligible if t.name not in self._deferred_names]
-        self.tool_schemas = [t.to_schema() for t in self._active_tools]
+        # 按 name 排序：tools 数组顺序影响 prompt cache 前缀的字节一致性
+        # （内置工具顺序本已稳定，这里兜住 MCP/未来工具来源的顺序抖动，见设计文档 §3.2）
+        self.tool_schemas = sorted(
+            (t.to_schema() for t in self._active_tools),
+            key=lambda s: s.get("name", ""),
+        )
         # tool_search 的可见 deferred 列表随接口变化
         ts = get_tool_by_name(self.tools, "tool_search")
         if ts:

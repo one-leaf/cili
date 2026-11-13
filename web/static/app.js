@@ -28,6 +28,10 @@ let currentSessionHasMore = false;   // 是否还有更多历史消息
 let isLoadingMore = false;           // 是否正在加载更多消息
 let pendingAttachments = [];         // [{ path: "uploads/x", name, media_type }]
 let modelSelectBusy = false;         // 模型列表加载/切换请求进行中
+// 推荐输入（suggest）：当前气泡内容 / 生成中 / 请求序号（丢弃过期响应）
+let suggestItems = [];
+let suggestLoading = false;
+let suggestRequestSeq = 0;
 
 
 // DOM elements
@@ -38,6 +42,8 @@ const sessionsList = document.getElementById('sessions-list');
 const chatMessages = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
 const composerBtn = document.getElementById('composer-action-btn');
+const suggestBtn = document.getElementById('suggest-btn');
+const suggestBar = document.getElementById('suggest-bar');
 const modelSelect = document.getElementById('model-select');
 const queuedMessagesEl = document.getElementById('queued-messages');
 const queuedListEl = document.getElementById('queued-list');
@@ -378,6 +384,135 @@ function updateComposerButtons() {
         modelSelect.innerHTML = '<option>模型</option>';
     }
     modelSelect.disabled = !hasSession || sessionRunning || isSending || modelSelectBusy;
+
+    // 推荐输入：回合结束（含发送中）、无待答 ask_user/审批卡、未在生成时才可用
+    if (suggestBtn) {
+        const pendingAsk = typeof hasPendingAskUser === 'function' && hasPendingAskUser();
+        suggestBtn.disabled = !hasSession || sessionRunning || isSending
+            || suggestLoading || pendingAsk;
+        if (!hasSession) {
+            suggestBtn.title = '推荐输入';
+        } else if (pendingAsk) {
+            suggestBtn.title = '请先回答上方的问题';
+        } else if (sessionRunning || isSending) {
+            suggestBtn.title = '本轮完成后可用';
+        } else {
+            suggestBtn.title = '推荐输入';
+        }
+    }
+}
+
+// ── 推荐输入（suggest）────────────────────────────────────────────────
+// 设计：workspace/default/cili-input-suggest-plan-2026-11-13.md
+// 仅在回合结束、无待答 ask_user、未生成中可用；点击气泡只填充不发送。
+
+function hideSuggestBar({ invalidate = false } = {}) {
+    if (invalidate) suggestRequestSeq++;  // 丢弃在途/过期响应
+    suggestItems = [];
+    suggestLoading = false;
+    if (suggestBtn) suggestBtn.classList.remove('suggest-loading');
+    if (suggestBar) {
+        suggestBar.hidden = true;
+        suggestBar.innerHTML = '';
+    }
+    updateComposerButtons();
+}
+
+async function handleSuggest() {
+    if (suggestLoading) return;
+    if (suggestBar && !suggestBar.hidden) {
+        hideSuggestBar();  // 已弹出则收起
+        return;
+    }
+    await requestSuggestions(false);
+}
+
+async function requestSuggestions(refresh) {
+    if (!currentWorkspace || !currentSession) return;
+    const workspaceUuid = currentWorkspace.uuid;
+    const sessionId = currentSession.session_id;
+    const seq = ++suggestRequestSeq;
+    suggestLoading = true;
+    if (suggestBtn) suggestBtn.classList.add('suggest-loading');
+    updateComposerButtons();
+
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${workspaceUuid}/sessions/${sessionId}/suggest`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    refresh: !!refresh,
+                    exclude: refresh ? suggestItems.slice() : [],
+                }),
+            }
+        );
+        // 过期判定：序号变化、会话切换/新建、已开始新回合
+        if (seq !== suggestRequestSeq) return;
+        if (!currentSession || currentSession.session_id !== sessionId) return;
+
+        if (!resp.ok) {
+            let detail = '';
+            try {
+                detail = (await resp.json()).detail || '';
+            } catch (e) { /* 非 JSON 错误体，用兜底文案 */ }
+            showToast(detail || (resp.status === 503
+                ? '暂时拿不到建议，请稍后再试'
+                : '获取建议失败，请稍后再试'));
+            return;
+        }
+        const data = await resp.json();
+        const items = Array.isArray(data.suggestions) ? data.suggestions : [];
+        if (!items.length) {
+            showToast('暂时拿不到建议，请稍后再试');
+            return;
+        }
+        renderSuggestBar(items);
+    } catch (error) {
+        if (seq === suggestRequestSeq) {
+            console.error('获取推荐输入失败:', error);
+            showToast('获取建议失败，请稍后再试');
+        }
+    } finally {
+        if (seq === suggestRequestSeq) {
+            suggestLoading = false;
+            if (suggestBtn) suggestBtn.classList.remove('suggest-loading');
+            updateComposerButtons();
+        }
+    }
+}
+
+function renderSuggestBar(items) {
+    if (!suggestBar) return;
+    suggestItems = items.slice();
+    suggestBar.innerHTML = '';
+    items.forEach((text) => {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'suggest-pill';
+        pill.textContent = text;  // textContent：防 XSS
+        pill.title = text;
+        pill.addEventListener('click', () => fillSuggestion(text));
+        suggestBar.appendChild(pill);
+    });
+    const refreshChip = document.createElement('button');
+    refreshChip.type = 'button';
+    refreshChip.className = 'suggest-pill suggest-refresh';
+    refreshChip.textContent = '换一批';
+    refreshChip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!suggestLoading) requestSuggestions(true);
+    });
+    suggestBar.appendChild(refreshChip);
+    suggestBar.hidden = false;
+}
+
+function fillSuggestion(text) {
+    const existing = chatInput.value.trim();
+    chatInput.value = existing ? existing + ' ' + text : text;
+    chatInput.focus();
+    hideSuggestBar();
 }
 
 // 输入区模型下拉：默认显示当前会话模型，允许切换（会话级覆盖）
@@ -503,10 +638,15 @@ function setupEventListeners() {
         }
     });
     modelSelect.addEventListener('change', onModelSelectChange);
+    if (suggestBtn) suggestBtn.addEventListener('click', handleSuggest);
     updateComposerButtons();
     if (queueResumeBtn) queueResumeBtn.addEventListener('click', () => resumeQueue());
     if (queueClearBtn) queueClearBtn.addEventListener('click', () => clearQueue());
-    chatInput.addEventListener('input', updateComposerButtons);
+    chatInput.addEventListener('input', () => {
+        // 开始输入即收起推荐并作废在途请求（设计 §2.3）
+        hideSuggestBar({ invalidate: true });
+        updateComposerButtons();
+    });
     chatInput.addEventListener('keydown', (e) => {
         // isComposing：中文输入法组合期间的 Enter 不提交（避免截断误发）
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -1795,6 +1935,7 @@ async function deleteSession(session) {
             // 如果删除的是当前会话，清空聊天区域
             if (currentSession && currentSession.session_id === session.session_id) {
                 currentSession = null;
+                hideSuggestBar({ invalidate: true });
                 savePosition({ session_id: '' });
                 chatMessages.innerHTML = '<div class="empty-state">请选择或创建会话</div>';
                 sessionRunning = false;
@@ -1884,6 +2025,7 @@ async function showSessionInfo(session) {
 async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
+    hideSuggestBar({ invalidate: true });  // 切换会话：收起推荐、作废在途请求
     const epoch = ++sessionLoadEpoch;
     const sessionKey = `${currentWorkspace.uuid}:${sessionId}`;
     const sameSession = _renderedSessionKey === sessionKey;
@@ -1959,6 +2101,7 @@ async function createNewSession() {
         return;
     }
 
+    hideSuggestBar({ invalidate: true });  // 新建会话：收起推荐、作废在途请求
     try {
         const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions`, {
             method: 'POST',
