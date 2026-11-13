@@ -21,7 +21,7 @@ class TextbookFindTool(Tool):
         "type": "object",
         "properties": {
             "stage": {"type": "string",
-                      "description": "学段：小学 / 小学（五•四学制）/ 初中 / 初中（五•四学制）/ 高中 / 特殊教育"},
+                      "description": "学段：小学 / 小学（五•四学制）/ 初中 / 初中（五•四学制）/ 高中"},
             "subject": {"type": "string",
                         "description": "学科，如 数学 / 语文 / 英语 / 物理"},
             "grade": {"type": "string",
