@@ -445,3 +445,24 @@ class TestEnsureDefaultWorkspace:
         assert config.ensure_default_workspace() == "once-ws"
         assert config.ensure_default_workspace() == "once-ws"
         assert inited == ["once-ws"]
+
+
+class TestModelContextDefaults:
+    """max_context_tokens 兜底默认值 200k（128k 及以下模型需显式配置）。"""
+
+    def test_model_config_default(self):
+        from core.config import ModelConfig
+
+        assert ModelConfig(name="m").max_context_tokens == 200000
+        assert ModelConfig.from_dict({}).max_context_tokens == 200000
+
+    def test_model_spec_default(self):
+        from core.config import ModelSpec
+
+        assert ModelSpec().max_context_tokens == 200000
+        assert ModelSpec.from_dict({}).max_context_tokens == 200000
+
+    def test_legacy_migration_default(self):
+        from core.config import _convert_legacy_model_spec
+
+        assert _convert_legacy_model_spec({})["max_context_tokens"] == 200000

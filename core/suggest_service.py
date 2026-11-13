@@ -344,7 +344,7 @@ def _norm_key(text: str) -> str:
 def _guard_context_size(runner, messages: list[Message]) -> None:
     """fresh 路径下请求可能远超上下文（历史会话未压缩）。超限直接失败，不裁剪。"""
     max_ctx = int(getattr(getattr(runner, "model", None),
-                          "max_context_tokens", 300000) or 300000)
+                          "max_context_tokens", 200000) or 200000)
     estimate = 0
     for msg in messages:
         content = msg.content

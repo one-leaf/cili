@@ -122,7 +122,7 @@ function _renderGauge(data) {
 
     const label = maxTokens > 0
         ? `上下文占用 ${pct}%（${_fmtInt(tokens)} / ${_fmtInt(maxTokens)} tokens）`
-        : '上下文占用（模型窗口未配置）';
+        : '上下文占用（上下文预算未配置）';
     _ctxBtn.title = label;
     _ctxBtn.setAttribute('aria-label', label);
 }
@@ -186,7 +186,7 @@ function _renderPopover(data) {
         ${warning}
         <div class="ctx-section">
             ${_row('模型', modelLabel)}
-            ${_row('窗口', `${_fmtInt(maxTokens)} tokens`)}
+            ${_row('预算', `${_fmtInt(maxTokens)} tokens`)}
             ${_row('请求体大小', _fmtBytes(data.body_size))}
         </div>
         <div class="ctx-section-title">会话</div>

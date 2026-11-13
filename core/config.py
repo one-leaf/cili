@@ -80,7 +80,7 @@ class ModelConfig:
     backend: str = "custom"  # "custom" | "codex" | "claude-code" | "opencode" | "openrouter" | "litellm"
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
     max_output_tokens: int = 8192  # 单次响应最大输出 token
-    max_context_tokens: int = 300000  # 上下文窗口
+    max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
     model_type: str = "reasoning"  # "reasoning" | "chat"：思考选项按此设置
     input: list[str] = field(default_factory=lambda: ["text", "image"])  # 输入模态，必须含 "text"
     reasoning: str = "default"  # 思考档位：default/off/low/medium/high（openai 另支持 none/minimal）
@@ -98,7 +98,7 @@ class ModelConfig:
             backend=data.get("backend", "custom"),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
             max_output_tokens=int(data.get("max_output_tokens", data.get("max_tokens", 8192))),
-            max_context_tokens=int(data.get("max_context_tokens", 300000)),
+            max_context_tokens=int(data.get("max_context_tokens", 200000)),
             model_type=data.get("model_type", "reasoning"),
             input=list(data.get("input") or ["text", "image"]),
             reasoning=data.get("reasoning", "default"),
@@ -129,7 +129,7 @@ class ModelSpec:
     """模型条目（provider 下 models 表的值；键为自由别名，``name`` 省略时用键名作 API 模型 ID）。"""
     name: str = ""  # 发给 API 的真实模型 ID；空 = 用键名
     max_output_tokens: int = 8192  # 单次响应最大输出 token
-    max_context_tokens: int = 300000  # 上下文窗口
+    max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
     model_type: str = "reasoning"  # "reasoning" | "chat"
     input: list[str] = field(default_factory=lambda: ["text", "image"])
     reasoning: str = "default"  # 取值域按 provider 的 interface_type 各自定义
@@ -140,7 +140,7 @@ class ModelSpec:
         return cls(
             name=str(data.get("name", "")),
             max_output_tokens=int(data.get("max_output_tokens", data.get("max_tokens", 8192))),
-            max_context_tokens=int(data.get("max_context_tokens", 300000)),
+            max_context_tokens=int(data.get("max_context_tokens", 200000)),
             model_type=data.get("model_type", "reasoning"),
             input=list(data.get("input") or ["text", "image"]),
             reasoning=data.get("reasoning", "default"),
@@ -665,7 +665,7 @@ def _convert_legacy_model_spec(obj: dict) -> dict:
     spec = {k: v for k, v in obj.items() if k not in _LEGACY_MODEL_SPEC_EXCLUDE}
     spec["name"] = obj.get("name", "")
     spec["max_output_tokens"] = int(obj.get("max_tokens", 8192))
-    spec["max_context_tokens"] = int(obj.get("max_context_tokens", 300000))
+    spec["max_context_tokens"] = int(obj.get("max_context_tokens", 200000))
     if "multimodal" in obj:
         spec["input"] = ["text", "image"] if obj.get("multimodal") else ["text"]
     effort = obj.get("reasoning_effort", "")

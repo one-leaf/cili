@@ -94,7 +94,7 @@ _DEFAULT_MODEL = {
     "interface_type": "anthropic",
     "base_url": "https://api.anthropic.com",
     "max_output_tokens": 8192,
-    "max_context_tokens": 300000,
+    "max_context_tokens": 200000,
     "multimodal": True,
     "temperature": 0.2,
 }
@@ -148,7 +148,7 @@ def _create_example_config() -> None:
                     "main": {  # 键 = 自由别名（agents 里的引用用它）
                         "name": "ac/qwen3.7-plus",  # 发给 API 的真实模型 ID；省略时用键名
                         "max_output_tokens": 36000,  # 单次响应最大输出 token
-                        "max_context_tokens": 256000,  # 上下文窗口
+                        "max_context_tokens": 256000,  # 上下文工作预算
                         "model_type": "reasoning",  # reasoning（有思考档位）| chat（无思考设置）
                         "input": ["text", "image"],  # 输入模态：text/image/audio/video/pdf，必须含 text
                         "reasoning": "default",  # default(不传) | off | low | medium | high；openai 另支持 none/minimal
