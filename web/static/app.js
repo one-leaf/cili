@@ -921,11 +921,11 @@ function applyWizardCategoryInputs() {
     const slugInput = document.getElementById('wizard-slug');
     if (nameInput) {
         nameInput.disabled = isStudy;
-        nameInput.placeholder = isStudy ? '学习项目自动按「孩子称呼-年级-科目」命名' : '输入项目名称（选填）';
+        nameInput.placeholder = isStudy ? '学习项目自动按「孩子称呼-科目」命名' : '输入项目名称（选填）';
     }
     if (slugInput) {
         slugInput.disabled = isStudy;
-        slugInput.placeholder = isStudy ? '自动按「孩子称呼-年级-科目」生成' : '默认按名称生成，选填';
+        slugInput.placeholder = isStudy ? '自动按「孩子称呼-科目」生成' : '默认按名称生成，选填';
     }
 }
 
@@ -2793,6 +2793,15 @@ async function refreshTextbookPanel() {
 function renderTextbookGrades() {
     const stage = document.getElementById('textbook-stage').value;
     const gradeSelect = document.getElementById('textbook-grade');
+    const gradeGroup = document.getElementById('textbook-grade-group');
+    // 高中教材统一标「高中年级」（按必修/选择性必修分册，不按年级），
+    // 年级筛选无区分度，隐藏以免"选了年级列表不变"的困惑
+    if (stage.includes('高中')) {
+        gradeGroup.style.display = 'none';
+        gradeSelect.value = '';
+        return;
+    }
+    gradeGroup.style.display = '';
     const grades = textbookState.options?.grades?.[stage] || [];
     const previous = gradeSelect.value;
     gradeSelect.innerHTML = '';

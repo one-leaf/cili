@@ -443,9 +443,10 @@ def _workspace_title(
         return base_name
     # 孩子称呼放在最前：同一孩子的工作区按名称排序时自然聚在一起，
     # 家里多个孩子也能靠名称/目录名区分。
+    # 目录名不带年级：年级是会随学年变化的进度状态，写入 AGENTS.md 即可
+    # （升级时只改 AGENTS.md，工作区与学习记录跨学年延续）。
     learner = _clean_line(profile.get("learner_name"), "", 40)
-    grade = _clean_line(profile.get("grade"), "", 20)
-    title = "-".join(item for item in (learner, grade, subject) if item)
+    title = "-".join(item for item in (learner, subject) if item)
     return title or base_name
 
 
