@@ -194,11 +194,16 @@ class ConversationStore:
         else:
             return 0
 
-        # Don't tear a tool round in half: a split is invalid if the last kept
-        # message is an assistant tool_use (its tool_result would be discarded)
-        # or the first kept message is a user tool_result (its tool_use would be
-        # discarded). 回退到轮起点（assistant tool_use）为止，而不是一路退回 0——
-        # 否则 worker 的全链式历史（全是 tool_use/tool_result 轮）永远切不动。
+        return ConversationStore.adjust_split_for_tool_rounds(messages, split_idx)
+
+    @staticmethod
+    def adjust_split_for_tool_rounds(messages: list[dict], split_idx: int) -> int:
+        """Don't tear a tool round in half.
+
+        最后一个被压缩的消息不能是 assistant tool_use（它的 tool_result 会被保留），
+        第一条被保留的消息不能是 user tool_result（它的 tool_use 会被压缩）。
+        回退到轮起点为止，而不是一路退回 0——否则全链式历史永远切不动。
+        """
         while split_idx > 0:
             prev = messages[split_idx - 1]
             prev_content = prev.get("content", [])
@@ -216,6 +221,23 @@ class ConversationStore:
                 continue
             break
         return split_idx
+
+    def find_split_by_token_budget(self, messages: list[dict], keep_tokens: int) -> int:
+        """从最新消息向前保留约 keep_tokens，返回第一条被保留消息的下标。
+
+        切分点仍避开 tool_use/tool_result 边界；可能落在某一轮中间（保留工具链尾部）。
+        """
+        if not messages or keep_tokens <= 0:
+            return 0
+        total = 0
+        split_idx = len(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            tokens = self.count_messages_tokens([messages[i]])
+            if total + tokens > keep_tokens and split_idx < len(messages):
+                break
+            total += tokens
+            split_idx = i
+        return ConversationStore.adjust_split_for_tool_rounds(messages, split_idx)
 
     # ─── 持久化 ──────────────────────────────────────────────────
 

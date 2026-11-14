@@ -253,16 +253,28 @@ class BaseSessionRunner:
 
     def _perform_full_compact(self, keep_user_messages: int, *,
                               next_steps: str | None = None,
-                              reason: str = "") -> tuple[int, int]:
+                              reason: str = "",
+                              split_idx: int | None = None,
+                              insert_before: int | None = None,
+                              keep_tokens: int | None = None) -> tuple[int, int]:
         """Full auto compact: summarize old messages (delegated to Runner)."""
         return self.runner._perform_full_compact(
-            keep_user_messages, next_steps=next_steps, reason=reason
+            keep_user_messages,
+            next_steps=next_steps,
+            reason=reason,
+            split_idx=split_idx,
+            insert_before=insert_before,
+            keep_tokens=keep_tokens,
         )
 
     @staticmethod
     def _find_split_by_user_messages(messages: list[dict], keep_user_count: int) -> int:
         """Find split point keeping last N user messages (delegated to ConversationStore)."""
         return ConversationStore.find_split_by_user_messages(messages, keep_user_count)
+
+    def _find_split_by_token_budget(self, messages: list[dict], keep_tokens: int) -> int:
+        """Keep the newest messages within a token budget (delegated to ConversationStore)."""
+        return self.context.find_split_by_token_budget(messages, keep_tokens)
 
     def _summarize_messages(self, split_idx: int = 0, *,
                             instruction: str | None = None,

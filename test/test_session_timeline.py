@@ -147,7 +147,20 @@ def test_timeline_strips_untrusted_data_markers(tmp_path):
     assert "真实内容" in snippet
 
 
-def test_emergency_compact_inserts_summary_before_current_turn(tmp_path):
+def test_token_budget_split_keeps_recent_messages():
+    from core.session_runner_runtime.context import ConversationStore
+
+    store = ConversationStore(messages=[])
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": "a" * 400, "_meta": {}}
+        for i in range(10)
+    ]
+    split = store.find_split_by_token_budget(messages, 500)
+    assert 0 < split < len(messages)
+    assert split >= 4  # 500 tokens 大约保留最近 5 条
+
+
+def test_compact_inserts_summary_before_kept_messages(tmp_path):
     runner = BaseSessionRunner(config=make_dgx_config("anthropic"), session_dir=tmp_path)
     runner.messages = [
         {"role": "user", "content": "旧问题", "_meta": {}},
@@ -162,7 +175,7 @@ def test_emergency_compact_inserts_summary_before_current_turn(tmp_path):
         runner._perform_full_compact(
             keep_user_messages=1,
             next_steps="当前任务",
-            reason="emergency_turn_boundary",
+            reason="threshold",
             split_idx=2,
             insert_before=2,
         )

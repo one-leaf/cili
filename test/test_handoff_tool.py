@@ -285,7 +285,7 @@ class TestFullCompactInstruction:
             runner.runner, "_summarize_messages", side_effect=fake_summarize
         ):
             runner._perform_full_compact(
-                keep_user_messages=1, next_steps="继续登录"
+                keep_user_messages=1, keep_tokens=0, next_steps="继续登录"
             )
 
         assert captured and captured[0]
