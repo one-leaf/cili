@@ -213,7 +213,7 @@ function getFileIcon(filename) {
         'js': '📜', 'ts': '📜', 'py': '🐍', 'java': '☕', 'go': '🔷',
         'html': '🌐', 'css': '🎨', 'scss': '🎨',
         'json': '📋', 'yaml': '📋', 'yml': '📋', 'xml': '📋', 'toml': '📋',
-        'md': '📝', 'txt': '📄', 'log': '📃',
+        'md': '📝', 'mmd': '📝', 'txt': '📄', 'log': '📃',
         'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'gif': '🖼️', 'svg': '🖼️', 'webp': '🖼️',
         'pdf': '📕', 'doc': '📘', 'docx': '📘',
         'zip': '📦', 'tar': '📦', 'gz': '📦', 'rar': '📦',

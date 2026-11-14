@@ -25,7 +25,7 @@ const FileTree = (() => {
     // 拖拽预览宽度时给对话区保留的最小宽度
     const PREVIEW_MIN_CHAT_WIDTH = 320;
 
-    const MD_EXTS = new Set(['md', 'markdown']);
+    const MD_EXTS = new Set(['md', 'markdown', 'mmd']);
     const HTML_EXTS = new Set(['html', 'htm']);
     const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg']);
     const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
@@ -1350,9 +1350,14 @@ const FileTree = (() => {
             el.wrapBtn.hidden = true;
             const body = document.createElement('div');
             body.className = 'preview-md';
+            // .mmd 是纯 Mermaid 源码：包成 ```mermaid 代码块交给 renderMarkdown，
+            // 复用 .md 里 mermaid 图表的渲染链路。
+            const source = extOf(basename(path)) === 'mmd'
+                ? '```mermaid\n' + data.content + '\n```'
+                : data.content;
             try {
                 body.innerHTML = typeof renderMarkdown === 'function'
-                    ? renderMarkdown(data.content)
+                    ? renderMarkdown(source)
                     : (typeof escapeHtml === 'function' ? escapeHtml(data.content) : '');
             } catch (e) {
                 body.textContent = data.content;
