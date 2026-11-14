@@ -65,7 +65,11 @@ def _set(status: str, message: str = "", progress: float | None = None) -> None:
     STATE["message"] = message
     if progress is not None:
         STATE["progress"] = progress
-    logger.info(f"[教材数据] {status}: {message}")
+    # 例行状态走 DEBUG：启动/定时检查不应刷屏；失败仍用 WARNING 保留可诊断性。
+    if status == "error":
+        logger.warning(f"[教材数据] {status}: {message}")
+    else:
+        logger.debug(f"[教材数据] {status}: {message}")
 
 
 def _settings() -> dict[str, Any]:
@@ -332,7 +336,7 @@ def sync_once(cfg: dict[str, Any] | None = None) -> bool:
             tag = _latest_tag(cfg)
         if tag and _extract_from_archive(cfg, tag, name, dest,
                                          str(item.get("sha256") or "")):
-            logger.info(f"[教材数据] {name} 来自源码归档 {tag}")
+            logger.debug(f"[教材数据] {name} 来自源码归档 {tag}")
             continue
         _set("error", f"下载失败: {name}")
         ok = False
@@ -379,5 +383,5 @@ def start_background() -> bool:
         _thread = threading.Thread(target=_worker, daemon=True,
                                    name="textbook-pack-sync")
         _thread.start()
-    logger.info(f"[教材数据] 后台同步已启动（repo={cfg['repo']}）")
+    logger.debug(f"[教材数据] 后台同步已启动（repo={cfg['repo']}）")
     return True
