@@ -4490,3 +4490,21 @@ details.p-headers-panel .p-headers {
 .sidebar-footer:not(:last-child) {
     margin-top: 0;
 }
+
+/* 会话「+ 新建」：用主题主色提高可见度 */
+#new-session-btn {
+    background: var(--primary-color);
+    color: #fff;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    font-weight: 600;
+    padding: 4px 10px;
+}
+#new-session-btn:hover {
+    background: var(--primary-hover);
+    color: #fff;
+}
+[data-theme="dark"] #new-session-btn,
+[data-theme="dark"] #new-session-btn:hover {
+    color: #18181b;
+}
