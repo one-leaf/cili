@@ -11,10 +11,13 @@ Web 的 ``/api/events`` 只是该总线的订阅者之一；QQ 绑同一个 sink
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from core.event_bus import get_event_bus
 from core.output_sink import OutputSink
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # 避免运行时循环导入
     from core.session_runner import SessionRunner
@@ -78,6 +81,19 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
         })
 
     def _default_on_turn_complete() -> None:
+        # 后台泵 / 看门狗自动恢复等回合没有请求级 sink，接口层不会调用
+        # drain_outbox_events：在 turn_complete 前由持久 sink 补齐 Web 文件交付。
+        # 前台/IM 回合有专属 sink，由对应接入端取走，不能在这里抢。
+        try:
+            # 未声明接口（后台通知/cron 恢复）也按 Web 卡片兜底：没有入站上下文时
+            # 无法走 IM 富媒体上传，落 file_card 至少不会丢失。
+            if (getattr(runner, "_turn_interface", None) in ("web", "tui", None)
+                    and not getattr(runner, "_turn_has_custom_sink", False)):
+                from core.outbox import drain_web_files
+                drain_web_files(runner, publish_global=True)
+        except Exception:  # noqa: BLE001 —— 交付失败不影响回合收尾
+            logger.exception("[default-sink] 出站文件交付失败")
+
         # 回合已落盘：前端据此重拉会话。刷新页面后请求级流已断开，
         # 这条全局事件是界面唯一能知道「本回合结束了」的途径。
         bus.publish({

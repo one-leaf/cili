@@ -165,6 +165,9 @@ class SessionRunner(BaseSessionRunner):
         # 本次 run/resume 的驱动接口（"web"/"qq"/None）。None 等价于「无接口专属工具」，
         # 由接口层在 run() 前设置；决定 INTERFACE_TOOLS 的可见性。
         self._turn_interface: str | None = None
+        # 本次回合是否有接口专属 sink（请求级 SSE / IM 输出）。
+        # 无专属 sink 的后台/自动恢复回合，出站文件由 default_sink 兜底交付。
+        self._turn_has_custom_sink = False
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
         # 恢复循环互斥：后台完成回调可能来自多个线程，防止同一 runner 双循环
         self._resume_lock = threading.Lock()
@@ -725,6 +728,7 @@ class SessionRunner(BaseSessionRunner):
         self._demoted_image_paths.clear()
         self._streaming = streaming
         self.sink = layer_sink(self.default_sink, sink)
+        self._turn_has_custom_sink = sink is not None and sink is not self.default_sink
 
         try:
             # 用户输入到达时先检查全压缩：把本次输入作为「下一阶段任务」
@@ -1038,6 +1042,7 @@ class SessionRunner(BaseSessionRunner):
             self._stopped = False
             self._running = True
             self.sink = layer_sink(self.default_sink, sink)
+            self._turn_has_custom_sink = sink is not None and sink is not self.default_sink
             try:
                 # loop.run_interactive 在回合前做 checkpoint save
                 self.loop.run_interactive()

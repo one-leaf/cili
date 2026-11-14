@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import queue
 from typing import Callable
 
@@ -39,47 +38,16 @@ def drain_outbox_events(runner, event_queue: queue.Queue[str | None]) -> None:
     内容用工作区相对路径的 markdown 链接，前端 ``renderMarkdown`` 会自动改写成
     ``/api/workspaces/{uuid}/files/...`` 下载地址。
     """
-    session_key = f"{runner.workspace_uuid}:{runner.current_session_id}"
     try:
-        from core.outbox import drain_files
-        files = drain_files(session_key)
+        from core.outbox import build_web_file_card, drain_web_files
+        files = drain_web_files(runner, publish_global=False)
     except Exception:  # noqa: BLE001 —— 取件失败绝不能影响回合收尾（哨兵在调用方）
         logger.exception("[sse] drain outbox 失败")
         return
 
     for f in files:
-        name = os.path.basename(f.path)
-        try:
-            rel = os.path.relpath(f.path, runner.cwd).replace("\\", "/")
-        except ValueError:
-            # 不同盘符（理论不可达：send_user_file 已做工作区边界校验）；退化为裸文件名
-            rel = name
-        # 空格会截断 markdown 链接，URL 编码之（文件路由按解码后的 path 服务）
-        link = rel.replace(" ", "%20")
-        note = f" —— {f.note}" if f.note else ""
-        content = f"📎 [{name}]({link}){note}"
-
-        size = None
-        try:
-            size = os.path.getsize(f.path)
-        except OSError:
-            pass
-        event_queue.put("data: " + json.dumps({
-            "type": "file", "name": name, "path": link, "size": size,
-            "note": f.note, "session_id": runner.current_session_id,
-        }, ensure_ascii=False) + "\n\n")
-
-        # flush=True：回合的 checkpoint save 已在此之前完成，之后没人保证再 save——
-        # 不 flush 的话卡片只是内存脏消息，下一次 save（往往是下一回合）才落盘；
-        # 期间刷新页面/服务重启都会丢（刷新后看不到下载链接）。
-        try:
-            runner.session.add_message(
-                "assistant", content,
-                meta={"file_card": {"name": name, "path": link, "note": f.note}},
-                flush=True,
-            )
-        except Exception:  # noqa: BLE001 —— 落盘失败只记日志，帧已发出
-            logger.exception("[sse] file_card 消息落盘失败")
+        _content, event, _meta = build_web_file_card(runner, f)
+        event_queue.put("data: " + json.dumps(event, ensure_ascii=False) + "\n\n")
 
 
 def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSink:

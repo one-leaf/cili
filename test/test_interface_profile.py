@@ -401,3 +401,82 @@ class TestTuiSampleProfile:
         assert "markdown" in profile.renders
         assert profile.image_protocol in ("none", "sixel", "kitty", "iterm2")
         assert not profile.can_send_file
+
+
+# ─── 后台/自动恢复回合的出站文件兜底 ─────────────────────────────────
+
+
+class TestDefaultSinkOutboxDelivery:
+    """没有请求级 sink 的 Web 回合，由 default_sink 在 turn_complete 前交付。"""
+
+    @staticmethod
+    def _runner(tmp_path, *, interface="web", has_custom=False):
+        added: list[tuple] = []
+        session = SimpleNamespace(
+            add_message=lambda role, content, meta=None, flush=False: added.append(
+                (role, content, meta, flush)
+            )
+        )
+        runner = SimpleNamespace(
+            workspace_uuid="ws-auto",
+            current_session_id="s-auto",
+            cwd=str(tmp_path),
+            session=session,
+            _turn_interface=interface,
+            _turn_has_custom_sink=has_custom,
+        )
+        from core.default_sink import bind_default_sink
+        bind_default_sink(runner, "ws-auto", "s-auto")
+        return runner, added
+
+    def test_background_web_turn_delivers_outbox(self, tmp_path):
+        from core import outbox
+        from core.event_bus import get_event_bus
+
+        f = tmp_path / "diagram.mmd"
+        f.write_text("graph TD", encoding="utf-8")
+        assert outbox.enqueue_file("ws-auto:s-auto", str(f), "架构图")
+
+        runner, added = self._runner(tmp_path)
+        q: queue.Queue = queue.Queue()
+        bus = get_event_bus()
+        bus.subscribe(q, "ws-auto", "s-auto")
+        try:
+            runner.default_sink.on_turn_complete()
+        finally:
+            bus.unsubscribe(q)
+
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        assert any(e.get("type") == "file" and e.get("name") == "diagram.mmd" for e in events)
+        assert any(e.get("type") == "turn_complete" for e in events)
+        assert added and added[0][2]["file_card"]["name"] == "diagram.mmd"
+        assert added[0][3] is True  # flush：回合 checkpoint 之后必须立即落盘
+        assert outbox.drain_files("ws-auto:s-auto") == []
+
+    def test_custom_sink_turn_does_not_steal_files(self, tmp_path):
+        from core import outbox
+
+        f = tmp_path / "x.txt"
+        f.write_text("x", encoding="utf-8")
+        assert outbox.enqueue_file("ws-auto:s-auto", str(f))
+
+        runner, added = self._runner(tmp_path, has_custom=True)
+        runner.default_sink.on_turn_complete()
+
+        assert added == []
+        assert outbox.drain_files("ws-auto:s-auto")  # 留给请求级/接口层取走
+
+    def test_im_turn_not_delivered_as_web_card(self, tmp_path):
+        from core import outbox
+
+        f = tmp_path / "x.txt"
+        f.write_text("x", encoding="utf-8")
+        assert outbox.enqueue_file("ws-auto:s-auto", str(f))
+
+        runner, added = self._runner(tmp_path, interface="qq")
+        runner.default_sink.on_turn_complete()
+
+        assert added == []
+        assert outbox.drain_files("ws-auto:s-auto")  # 由 QQ 接入端上传
