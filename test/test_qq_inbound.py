@@ -789,3 +789,47 @@ class TestResolveAnswer:
                 messages = []
         from interfaces.qq.inbound import InboundHandler
         assert InboundHandler._resolve_answer(_Empty(), "1") == "1"
+
+
+class TestResolveAnswerAbortOption:
+    """审批卡第 4 项「终止任务」：编号 4 经 IM 映射后进入 abort 决策。
+
+    IM 侧不特判终止，靠「编号 → 选项 label」通用映射；这里锁住语义，
+    防止以后调整选项顺序却没同步编号。
+    """
+
+    @staticmethod
+    def _runner(options):
+        from types import SimpleNamespace
+
+        messages = [
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "tu1", "name": "ask_user",
+                "input": {"questions": [{
+                    "question": "检测到需要确认的操作", "header": "权限确认",
+                    "options": options,
+                }]},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "tu1",
+                "content": "等待用户确认", "is_error": True,
+                "_meta": {"completed": False, "tool_name": "ask_user", "kind": "approval"},
+            }]},
+        ]
+        return SimpleNamespace(session=SimpleNamespace(messages=messages))
+
+    def test_fourth_option_maps_to_abort(self):
+        from core.tools.ask_user import decision_from_text
+        from core.tools.permission import (
+            ABORT_LABEL,
+            APPROVE_LABEL,
+            REJECT_LABEL,
+            REMEMBER_LABEL,
+        )
+        from interfaces.qq.inbound import InboundHandler
+
+        options = [{"label": label, "description": ""} for label in
+                   (APPROVE_LABEL, REMEMBER_LABEL, REJECT_LABEL, ABORT_LABEL)]
+        reply = InboundHandler._resolve_answer(self._runner(options), "4")
+        assert reply == ABORT_LABEL
+        assert decision_from_text(reply) == "abort"

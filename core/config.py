@@ -315,6 +315,46 @@ class JudgeConfig:
 
 
 @dataclass
+class ApprovalConfig:
+    """审批卡生命周期参数（权限配置的 approval 子块）。
+
+    - ``timeout_seconds``：卡片存活时长；0 = 不自动过期（兼容/调试）。
+    - ``auto_resume``：超时后是否自动恢复循环。``web`` 只对有服务端推送
+      通道的 Web 接口恢复（IM 无入站消息时送不出去，只结算）；``all`` 尝试
+      全部接口；``none`` 一律只结算。
+    """
+
+    timeout_seconds: int = 300
+    auto_resume: str = "web"  # web | all | none
+
+    _AUTO_RESUME = ("web", "all", "none")
+    _MIN_TIMEOUT = 30
+    _MAX_TIMEOUT = 86400
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ApprovalConfig":
+        data = data if isinstance(data, dict) else {}
+        try:
+            timeout = int(data.get("timeout_seconds", 300))
+        except (TypeError, ValueError):
+            timeout = 300
+        if timeout < 0:
+            timeout = 300
+        if timeout > 0:
+            timeout = max(cls._MIN_TIMEOUT, min(cls._MAX_TIMEOUT, timeout))
+        auto_resume = str(data.get("auto_resume", "web"))
+        if auto_resume not in cls._AUTO_RESUME:
+            auto_resume = "web"
+        return cls(timeout_seconds=timeout, auto_resume=auto_resume)
+
+    def to_dict(self) -> dict:
+        return {
+            "timeout_seconds": self.timeout_seconds,
+            "auto_resume": self.auto_resume,
+        }
+
+
+@dataclass
 class PermissionConfig:
     """顶层权限配置：``setting.json → permissions``（不放进 system 块）。
 
@@ -329,6 +369,7 @@ class PermissionConfig:
     rules_hot_reload: bool = True
     global_rules_path: str = ""  # 空 = data/cili/approval_rules.json
     judge: JudgeConfig = field(default_factory=JudgeConfig)
+    approval: ApprovalConfig = field(default_factory=ApprovalConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PermissionConfig":
@@ -344,6 +385,7 @@ class PermissionConfig:
             rules_hot_reload=bool(data.get("rules_hot_reload", True)),
             global_rules_path=str(data.get("global_rules_path", "")),
             judge=JudgeConfig.from_dict(data.get("judge") or {}),
+            approval=ApprovalConfig.from_dict(data.get("approval") or {}),
         )
 
     def to_dict(self) -> dict:
@@ -355,6 +397,7 @@ class PermissionConfig:
             "rules_hot_reload": self.rules_hot_reload,
             "global_rules_path": self.global_rules_path,
             "judge": self.judge.to_dict(),
+            "approval": self.approval.to_dict(),
         }
 
 

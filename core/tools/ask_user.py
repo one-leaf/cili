@@ -2,6 +2,11 @@
 
 设计：工具返回 completed=False 的 ToolResult，Agent 循环退出。
 前端检测到 ask_user 后渲染选择面板，用户提交后作为新 user message 继续循环。
+
+审批卡与提问卡共用本模块的占位符管道，但语义分开：
+- 提问：自由文本/选项回答，`_meta.kind="question"`；
+- 审批：固定决策（approve/remember/deny/abort），`_meta.kind="approval"` +
+  `_meta.pending_approval`，载荷随消息落盘，超时由看门狗结算。
 """
 
 from __future__ import annotations
@@ -9,17 +14,37 @@ from __future__ import annotations
 import logging
 import re
 import secrets
-from typing import Any
+import time
+from datetime import datetime
+from typing import Any, Iterable
 
 from core.security.permission_rules import build_granted_rule, implied_path_rules
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
+    ABORT_LABEL,
     APPROVE_LABEL,
+    REJECT_LABEL,
     REMEMBER_LABEL,
     append_permission_audit,
 )
 
 logger = logging.getLogger(__name__)
+
+APPROVAL_META_KEY = "pending_approval"
+DECISION_APPROVE = "approve"
+DECISION_REMEMBER = "remember"
+DECISION_DENY = "deny"
+DECISION_ABORT = "abort"
+DECISIONS = (DECISION_APPROVE, DECISION_REMEMBER, DECISION_DENY, DECISION_ABORT)
+
+APPROVE_TEXT = "用户已允许该操作（本次会话）。可以继续执行。"
+REMEMBER_TEXT = "用户已允许此类操作，并已写入工作区规则。可以继续执行。"
+DENY_TEXT = "用户拒绝了该操作。请改用其他方式完成目标，不要原样重发该命令。"
+ABORT_TEXT = "用户终止了当前任务。不要继续执行。"
+EXPIRED_TEXT = (
+    "审批超时（{window}），用户未响应，该操作未执行。"
+    "不要原样重试；可换方案，或请用户重新发起。"
+)
 
 
 class AskUserTool(Tool):
@@ -96,10 +121,9 @@ class AskUserTool(Tool):
         )
 
 
-# ─── ask_user 占位符流程（接口无关：Web / QQ 等接入端共用） ───────────────
+# ─── ask_user / 审批卡占位符流程（接口无关：Web / QQ / 微信共用） ─────────
 # 占位符由 AskUserTool.execute 返回 completed=False 的 ToolResult 生成；接入端渲染
-# 问题卡，用户提交后经 inject_ask_user_answer 注入答案并恢复 runner 循环。
-# 原先这些逻辑住在 web/routes_ask_user.py，第二个接入端只能复制一份。
+# 问题卡，用户提交后经 apply_answer 注入答案并恢复 runner 循环。
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -111,191 +135,501 @@ def _safe_answer_filename(tool_use_id: str) -> str:
     return f"{secrets.token_hex(4)}.txt"
 
 
+def _block_tool_id(block: dict) -> str:
+    return str(block.get("tool_use_id") or block.get("tool_call_id") or "")
+
+
+def _iter_tool_result_blocks(
+    session, max_messages: int | None = None,
+) -> Iterable[tuple[dict, dict]]:
+    """逆序产出 (消息, tool_result 块)；消息是 runner 与 session 的共享引用。
+
+    ``max_messages`` 限制只扫描最近 N 条 user 消息——看门狗高频轮询用它避免
+    长会话全量扫描；待决占位符总是位于会话尾部（循环退出后不会再追加）。
+    """
+    scanned = 0
+    for msg in reversed(session.messages):
+        if msg.get("role") != "user":
+            continue
+        scanned += 1
+        if max_messages is not None and scanned > max_messages:
+            return
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in reversed(content):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                yield msg, block
+
+
+def _find_pending_block(session, max_messages: int | None = None) -> dict | None:
+    """最后一个未完成的占位 tool_result 块（ask_user 或审批卡）。"""
+    for _msg, block in _iter_tool_result_blocks(session, max_messages=max_messages):
+        meta = block.get("_meta") or {}
+        if meta.get("completed") is False:
+            return block
+    return None
+
+
+def _find_tool_result_block(session, tool_use_id: str) -> dict | None:
+    for _msg, block in _iter_tool_result_blocks(session):
+        if _block_tool_id(block) == tool_use_id:
+            return block
+    return None
+
+
+def _find_tool_use_block(session, tool_use_id: str) -> dict | None:
+    for msg in session.messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == tool_use_id:
+                return block
+    return None
+
+
+def _questions_of(session, tool_use_id: str) -> list[dict]:
+    block = _find_tool_use_block(session, tool_use_id)
+    if not block:
+        return []
+    return list((block.get("input") or {}).get("questions") or [])
+
+
+def classify_pending(session, permission_store=None) -> tuple[str, str] | None:
+    """返回 ("approval"|"question", tool_use_id)；无待决占位符时返回 None。
+
+    审批判定优先级：显式 `_meta.kind=="approval"` / `pending_approval` 载荷 →
+    旧卡片（无标记）但 PermissionStore 有 pending。
+    """
+    block = _find_pending_block(session)
+    if block is None:
+        return None
+    tool_use_id = _block_tool_id(block)
+    meta = block.get("_meta") or {}
+    if meta.get("kind") == "approval" or APPROVAL_META_KEY in meta:
+        return "approval", tool_use_id
+    questions = _questions_of(session, tool_use_id)
+    if questions and str(questions[0].get("header") or "") == "权限确认":
+        return "approval", tool_use_id
+    if permission_store is not None and getattr(permission_store, "pending", None):
+        return "approval", tool_use_id
+    if meta.get("tool_name") == "ask_user":
+        return "question", tool_use_id
+    return None
+
+
 def find_pending_ask_user(session) -> str | None:
-    """查找最后一个待回答的 ask_user 占位 tool_result，返回其 tool_use_id（无则 None）。
+    """查找最后一个待回答的 ask_user/审批占位 tool_result，返回其 tool_use_id。
 
     占位符由 _execute_tool 生成：user 消息中的 tool_result 块带
     ``_meta.completed=False`` 且 ``_meta.tool_name="ask_user"``。
     """
-    for msg in reversed(session.messages):
-        if msg["role"] != "user":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if block.get("type") == "tool_result":
-                meta = block.get("_meta") or {}
-                if meta.get("completed") is False and meta.get("tool_name") == "ask_user":
-                    return block.get("tool_use_id") or block.get("tool_call_id")
-    return None
+    block = _find_pending_block(session)
+    if block is None:
+        return None
+    meta = block.get("_meta") or {}
+    if meta.get("tool_name") != "ask_user" and meta.get("kind") != "approval":
+        return None
+    return _block_tool_id(block) or None
+
+
+def find_pending_approval(session, *, max_messages: int | None = 200) -> dict[str, Any] | None:
+    """返回最近一条未结算的审批占位（含载荷/期限/接口），无则 None。
+
+    ``max_messages`` 默认只看最近 200 条 user 消息（看门狗高频调用）；
+    调用方需要全量扫描时传 ``None``。
+    """
+    block = _find_pending_block(session, max_messages=max_messages)
+    if block is None:
+        return None
+    meta = block.get("_meta") or {}
+    permission = meta.get(APPROVAL_META_KEY)
+    if meta.get("kind") != "approval" and not permission:
+        return None
+    return {
+        "tool_use_id": _block_tool_id(block),
+        "permission": dict(permission or {}),
+        "meta": meta,
+        "block": block,
+    }
+
+
+def pending_deadline(pending: dict[str, Any] | None) -> float:
+    if not pending:
+        return 0.0
+    try:
+        return float((pending.get("permission") or {}).get("deadline_ts") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_expired(pending: dict[str, Any] | None, now: float | None = None) -> bool:
+    deadline = pending_deadline(pending)
+    return deadline > 0 and (time.time() if now is None else now) >= deadline
+
+
+def _format_window(seconds: int) -> str:
+    if seconds and seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} 分钟"
+    if seconds and seconds > 60:
+        return f"{seconds // 60} 分 {seconds % 60} 秒"
+    return f"{int(seconds or 0)} 秒"
+
+
+def decision_from_text(text: str | None) -> str:
+    """旧客户端/IM 文本 → 决策。精确 label 优先，保留 endswith 兼容。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return DECISION_DENY
+    if stripped == ABORT_LABEL or stripped.endswith(ABORT_LABEL):
+        return DECISION_ABORT
+    if stripped == REMEMBER_LABEL or stripped.endswith(REMEMBER_LABEL):
+        return DECISION_REMEMBER
+    if stripped == APPROVE_LABEL or stripped.endswith(APPROVE_LABEL):
+        return DECISION_APPROVE
+    if stripped == REJECT_LABEL or stripped.endswith(REJECT_LABEL):
+        return DECISION_DENY
+    return DECISION_DENY
 
 
 def build_other_answer(session, ask_user_tool_use_id: str, content: str) -> str:
     """以用户输入作为 ask_user 的「其他」回复，按卡片 formatAnswers 格式组装（`问题 答案`）。"""
-    for msg in session.messages:
-        if msg["role"] != "assistant":
-            continue
-        blocks = msg.get("content", [])
-        if not isinstance(blocks, list):
-            continue
-        for block in blocks:
-            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == ask_user_tool_use_id:
-                questions = (block.get("input") or {}).get("questions", [])
-                parts = [f"{q.get('question', '')} {content}" for q in questions if q.get("question")]
-                return "\n".join(parts) if parts else content
-    return content
+    questions = _questions_of(session, ask_user_tool_use_id)
+    if not questions:
+        return content
+    parts = [f"{q.get('question', '')} {content}" for q in questions if q.get("question")]
+    return "\n".join(parts) if parts else content
 
 
-def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
-                           permission_store=None, permission_rules=None) -> bool:
-    """把用户答案注入 ask_user 占位 tool_result 并标记 answered/approval 后持久化。
+def format_structured_answers(session, ask_user_tool_use_id: str, answers: list[dict]) -> str:
+    """把结构化答案 [{id, selected[], custom}] 还原成模型可读文本（`问题 答案`）。"""
+    questions = _questions_of(session, ask_user_tool_use_id)
+    if not questions:
+        return "\n".join(
+            ", ".join([*(a.get("selected") or []), a.get("custom") or ""]).strip(", ")
+            for a in answers if isinstance(a, dict)
+        ).strip()
+    by_id = {str(a.get("id")): a for a in answers if isinstance(a, dict)}
+    lines: list[str] = []
+    for idx, q in enumerate(questions):
+        ans = by_id.get(str(q.get("id") or idx)) or by_id.get(str(idx)) or {}
+        selected = [str(s) for s in (ans.get("selected") or [])]
+        custom = str(ans.get("custom") or "").strip()
+        value = ", ".join([*selected, custom] if custom else selected)
+        lines.append(f"{q.get('question', '')} {value}".strip())
+    return "\n".join(lines)
 
-    返回是否找到占位符。消息块是 runner 与 session 的共享引用，就地修改对两者都生效
-    （answer_ask_user 与 send_message 共用）。
 
-    审批卡三态（设计 §3.4/§3.5）按答案 label 后缀判定：「一直允许」与 AI 判定 allow
-    走同一落盘管道（build_granted_rule，granted_by=user）；拒绝时给模型附加引导文案。
-    """
-    logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
-    store = permission_store
-    rules = permission_rules
-    pending = store.pending if store else None
-    # 拒绝/自由输入时给模型附加引导（§3.6 用户拒绝文案），注入占位符内容尾部
-    hint = ""
-    if pending is not None:
-        probe = answer.rstrip()
-        if not (probe.endswith(APPROVE_LABEL) or probe.endswith(REMEMBER_LABEL)):
-            summary = str(pending.get("summary") or "").strip()
-            meaning = f"（{summary}）" if summary else ""
-            hint = f"\n\n（系统提示：用户拒绝了该命令{meaning}。请改用其他方式完成目标，不要原样重发该命令。）"
-    guided_answer = answer + hint
-    found_placeholder = False
-    for msg in reversed(session.messages):
-        if msg["role"] != "user":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            # 检查两种字段名（tool_use_id 或 tool_call_id）
-            block_tool_id = block.get("tool_use_id") or block.get("tool_call_id")
-            if block.get("type") == "tool_result" and block_tool_id == ask_user_tool_use_id:
-                # 替换占位符内容（内存视图；jsonl 行保持占位）
-                block["content"] = guided_answer
-                found_placeholder = True
-                logger.info(f"[ask-user] 找到并替换 tool_result: tool_use_id={ask_user_tool_use_id}")
+def _write_answer_file(session, tool_use_id: str, text: str) -> dict[str, Any]:
+    """答案写入外部文件并返回应合并进 _meta 的字段。"""
+    output_path = _safe_answer_filename(tool_use_id)
+    try:
+        ext_file = session.session_dir / output_path
+        ext_file.write_text(text, encoding="utf-8")
+        logger.info(f"[ask-user] 已写入答案文件: {output_path}")
+    except Exception as e:  # noqa: BLE001 —— 写文件失败不阻断内存答复
+        logger.warning(f"[ask-user] 写入答案文件失败: {e}")
+    return {
+        "output_path": output_path,
+        "file_size": len(text.encode("utf-8")),
+    }
 
-                # 总是写答案到外部文件并置 completed/output_path/file_size：
-                # 消息已有 seq 不会被 jsonl 重写，reload 时模型/UI 从文件恢复答案
-                output_path = _safe_answer_filename(ask_user_tool_use_id)
-                if "_meta" not in block:
-                    block["_meta"] = {}
-                block["_meta"].update({
-                    "completed": True,
-                    "output_path": output_path,
-                    "file_size": len(guided_answer.encode("utf-8")),
-                })
-                try:
-                    ext_file = session.session_dir / output_path
-                    ext_file.write_text(guided_answer, encoding="utf-8")
-                    logger.info(f"[ask-user] 已写入答案文件: {output_path}")
-                except Exception as e:
-                    logger.warning(f"[ask-user] 写入答案文件失败: {e}")
-                break
-        if found_placeholder:
-            break
 
-    if not found_placeholder:
-        logger.error(f"[ask-user] 未找到占位符 tool_result: tool_use_id={ask_user_tool_use_id}")
+def settle_placeholder(
+    session,
+    tool_use_id: str,
+    text: str,
+    *,
+    outcome: str,
+    extra_meta: dict[str, Any] | None = None,
+) -> bool:
+    """把占位 tool_result 结算为最终结果并落盘（提问/审批共用）。"""
+    block = _find_tool_result_block(session, tool_use_id)
+    if block is None:
+        logger.error(f"[ask-user] 未找到占位符 tool_result: tool_use_id={tool_use_id}")
         return False
 
-    # 在对应的 tool_use/tool_call 块上添加 _answered 标记
-    found_tool_use = False
-    for msg in session.messages:
-        if msg["role"] != "assistant":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            # 同时检查 tool_use 和 tool_call 两种类型
-            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == ask_user_tool_use_id:
-                if "_meta" not in block:
-                    block["_meta"] = {}
-                block["_meta"]["answered"] = True
-                found_tool_use = True
-                logger.info(f"[ask-user] 在 {block.get('type')} 上添加 _meta.answered=true: id={ask_user_tool_use_id}")
-                break
-        if found_tool_use:
-            break
+    block["content"] = text
+    meta = block.setdefault("_meta", {})
+    meta.update({
+        "completed": True,
+        "outcome": outcome,
+        "settled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **_write_answer_file(session, tool_use_id, text),
+        **(extra_meta or {}),
+    })
 
-    if not found_tool_use:
-        logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={ask_user_tool_use_id}")
-
-    # 审批卡三态：答案格式 "{question} {label}"，用 label 后缀精确匹配（避免子串误判）
-    if store and pending:
-        stripped = answer.rstrip()
-        did = pending.get("decision_id", "")
-        command = pending.get("command", "")
-        kind = pending.get("kind", "command")
-        audit_base = {
-            "source": "user", "decision_id": did, "tool": pending.get("tool", ""),
-            "kind": kind, "action": str(command)[:300],
-            "dynamic_kind": pending.get("dynamic_kind", ""),
-            "static_prefix": pending.get("static_prefix") or "",
-        }
-        if stripped.endswith(REMEMBER_LABEL):
-            persisted = False
-            rule_id = ""
-            rule_reason = ""
-            if rules is not None:
-                built = build_granted_rule(
-                    kind=kind, tool=pending.get("tool", "*"), action=command,
-                    decision="allow",
-                    suggested=pending.get("suggested_rule"), granted_by="user",
-                    summary=pending.get("summary", ""), decision_id=did,
-                )
-                rule_reason = built.reason
-                if built.rule:
-                    added = rules.add_rule(built.rule, "workspace")
-                    if added:
-                        persisted = True
-                        rule_id = str(added.get("id") or "")
-                        for extra in implied_path_rules(pending.get("targets") or [], "user", did):
-                            rules.add_rule(extra, "workspace")
-                        logger.info(f"[permission] 用户批准并记住（落盘规则）：{command[:80]}")
-                if not persisted:
-                    logger.info(
-                        f"[permission] 未生成持久规则（{rule_reason or '规则未落盘'}），"
-                        f"仅会话级放行：{command[:80]}"
-                    )
-            store.approve(did, command, kind=kind)
-            append_permission_audit(getattr(session, "session_dir", None), "decided",
-                                  {**audit_base,
-                                   "decision": "persist" if persisted else "session",
-                                   "persisted": persisted,
-                                   "rule_id": rule_id,
-                                   "reason": rule_reason})
-        elif stripped.endswith(APPROVE_LABEL):
-            store.approve(did, command, kind=kind)
-            # 会话级放行越界目标：重执行直接通过路径门，无需再判定（设计 §3.4）
-            for t in pending.get("targets") or []:
-                if isinstance(t, dict) and t.get("decision_id") and not t.get("inside_workspace"):
-                    t_kind = "path:read" if t.get("op") == "read" else (
-                        "path:delete" if t.get("op") == "delete" else "path:write"
-                    )
-                    store.approve(t["decision_id"], str(t.get("raw") or ""), kind=t_kind)
-            logger.info(f"[approval] 用户批准高风险命令(本次会话): {command[:80]}")
-            append_permission_audit(getattr(session, "session_dir", None), "decided",
-                                  {**audit_base, "decision": "approve"})
-        else:
-            logger.info(f"[approval] 用户拒绝高风险命令: {command[:80]}")
-            append_permission_audit(getattr(session, "session_dir", None), "decided",
-                                  {**audit_base, "decision": "reject"})
-        store.clear_pending()
+    tool_use = _find_tool_use_block(session, tool_use_id)
+    if tool_use is not None:
+        tu_meta = tool_use.setdefault("_meta", {})
+        tu_meta["answered"] = True
+        tu_meta["answered_outcome"] = outcome
+    else:
+        logger.warning(f"[ask-user] 未找到对应的 tool_use/tool_call: id={tool_use_id}")
 
     # 就地修改了共享消息块（未走 add_message），须置脏否则 save 短路不落盘
     session.mark_dirty()
     session.save()
     return True
+
+
+def _clear_pending_if_match(permission_store, decision_id: str) -> None:
+    """只清与本次结算对应的 pending（单槽并发时避免误清更新的卡）。"""
+    if permission_store is None:
+        return
+    pending = getattr(permission_store, "pending", None)
+    if not pending:
+        return
+    if not decision_id or pending.get("decision_id") == decision_id:
+        permission_store.clear_pending()
+
+
+def _audit_decision(session, permission: dict, decision: str, *, persisted: bool = False,
+                    rule_id: str = "", reason: str = "") -> None:
+    decision_map = {
+        DECISION_APPROVE: "approve",
+        DECISION_REMEMBER: "persist" if persisted else "session",
+        DECISION_DENY: "reject",
+        DECISION_ABORT: "abort",
+    }
+    append_permission_audit(getattr(session, "session_dir", None), "decided", {
+        "source": "user",
+        "decision_id": permission.get("decision_id", ""),
+        "tool": permission.get("tool", ""),
+        "kind": permission.get("kind", "command"),
+        "action": str(permission.get("command", ""))[:300],
+        "dynamic_kind": permission.get("dynamic_kind", ""),
+        "static_prefix": permission.get("static_prefix") or "",
+        "decision": decision_map.get(decision, "reject"),
+        "persisted": persisted,
+        "rule_id": rule_id,
+        "reason": reason,
+    })
+
+
+def _apply_permission_side_effects(
+    session,
+    permission: dict,
+    decision: str,
+    permission_store=None,
+    permission_rules=None,
+) -> tuple[bool, str, str]:
+    """按决策更新会话批准/规则。返回 (persisted, rule_id, reason)。"""
+    store = permission_store
+    rules = permission_rules
+    did = str(permission.get("decision_id", ""))
+    command = str(permission.get("command", ""))
+    kind = str(permission.get("kind", "command"))
+
+    if decision == DECISION_REMEMBER:
+        persisted = False
+        rule_id = ""
+        reason = ""
+        if rules is not None:
+            built = build_granted_rule(
+                kind=kind, tool=permission.get("tool", "*"), action=command,
+                decision="allow",
+                suggested=permission.get("suggested_rule"), granted_by="user",
+                summary=permission.get("summary", ""), decision_id=did,
+            )
+            reason = built.reason
+            if built.rule:
+                added = rules.add_rule(built.rule, "workspace")
+                if added:
+                    persisted = True
+                    rule_id = str(added.get("id") or "")
+                    for extra in implied_path_rules(permission.get("targets") or [],
+                                                    "user", did):
+                        rules.add_rule(extra, "workspace")
+                    logger.info(f"[permission] 用户批准并记住（落盘规则）：{command[:80]}")
+            if not persisted:
+                logger.info(
+                    f"[permission] 未生成持久规则（{reason or '规则未落盘'}），"
+                    f"仅会话级放行：{command[:80]}"
+                )
+        if store is not None:
+            store.approve(did, command, kind=kind)
+        return persisted, rule_id, reason
+
+    if decision == DECISION_APPROVE:
+        if store is not None:
+            store.approve(did, command, kind=kind)
+            # 会话级放行越界目标：重执行直接通过路径门，无需再判定（设计 §3.4）
+            for t in permission.get("targets") or []:
+                if isinstance(t, dict) and t.get("decision_id") and not t.get("inside_workspace"):
+                    t_kind = "path:read" if t.get("op") == "read" else (
+                        "path:delete" if t.get("op") == "delete" else "path:write"
+                    )
+                    store.approve(t["decision_id"], str(t.get("raw") or ""), kind=t_kind)
+        logger.info(f"[approval] 用户批准高风险命令(本次会话): {command[:80]}")
+        return False, "", ""
+
+    if decision == DECISION_DENY:
+        logger.info(f"[approval] 用户拒绝高风险命令: {command[:80]}")
+    else:
+        logger.info(f"[approval] 用户终止任务（命令未执行）: {command[:80]}")
+    return False, "", ""
+
+
+def apply_answer(
+    session,
+    tool_use_id: str,
+    *,
+    text: str | None = None,
+    decision: str | None = None,
+    answers: list[dict] | None = None,
+    permission_store=None,
+    permission_rules=None,
+) -> str:
+    """结算一次待答占位符。
+
+    返回 ``answered`` / ``aborted`` / ``expired`` / ``not_found``。
+    - 审批卡：decision 优先；只有 text 时按 label 映射（未知文本 = 拒绝）。
+    - 提问卡：answers 优先，否则用 text。
+    """
+    block = _find_tool_result_block(session, tool_use_id)
+    if block is None:
+        logger.error(f"[ask-user] 未找到占位符 tool_result: tool_use_id={tool_use_id}")
+        return "not_found"
+
+    meta = block.get("_meta") or {}
+    if meta.get("completed") is True:
+        # 已结算（用户先答、看门狗先结算、或重复提交）：不再改写历史
+        logger.info(f"[ask-user] 占位符已结算，忽略重复提交: tool_use_id={tool_use_id}")
+        return "expired" if meta.get("outcome") == "expired" else "not_found"
+    permission = meta.get(APPROVAL_META_KEY)
+    questions = _questions_of(session, tool_use_id)
+    legacy_approval = bool(questions) and str(questions[0].get("header") or "") == "权限确认"
+    is_approval = (
+        meta.get("kind") == "approval"
+        or permission is not None
+        or legacy_approval
+        or (permission_store is not None and getattr(permission_store, "pending", None))
+    )
+    # 旧卡片缺失载荷（升级前发出、重启后 pending 已丢）：退化为自由文本答复，
+    # 不做任何批准/落盘副作用（fail closed）。
+    if is_approval and not permission and not (
+            permission_store is not None and getattr(permission_store, "pending", None)):
+        is_approval = False
+
+    if is_approval:
+        permission = dict(permission or getattr(permission_store, "pending", {}) or {})
+        pending = {"tool_use_id": tool_use_id, "permission": permission, "meta": meta,
+                   "block": block}
+        if decision is None:
+            decision = decision_from_text(text)
+        if decision not in DECISIONS:
+            decision = DECISION_DENY
+
+        if is_expired(pending):
+            timeout = int(permission.get("timeout_seconds") or 0)
+            settle_placeholder(
+                session, tool_use_id,
+                EXPIRED_TEXT.format(window=_format_window(timeout)),
+                outcome="expired",
+                extra_meta={"permission_outcome": "expired"},
+            )
+            append_permission_audit(getattr(session, "session_dir", None), "expired", {
+                "source": "user",
+                "decision_id": permission.get("decision_id", ""),
+                "tool": permission.get("tool", ""),
+                "kind": permission.get("kind", "command"),
+                "action": str(permission.get("command", ""))[:300],
+            })
+            _clear_pending_if_match(permission_store, permission.get("decision_id", ""))
+            return "expired"
+
+        persisted, rule_id, reason = _apply_permission_side_effects(
+            session, permission, decision, permission_store, permission_rules)
+        _audit_decision(session, permission, decision, persisted=persisted,
+                        rule_id=rule_id, reason=reason)
+        _clear_pending_if_match(permission_store, permission.get("decision_id", ""))
+
+        if decision == DECISION_APPROVE:
+            settle_placeholder(session, tool_use_id, APPROVE_TEXT, outcome="approved",
+                               extra_meta={"permission_outcome": "approved"})
+            return "answered"
+        if decision == DECISION_REMEMBER:
+            settle_placeholder(session, tool_use_id, REMEMBER_TEXT, outcome="remembered",
+                               extra_meta={"permission_outcome": "remembered"})
+            return "answered"
+        if decision == DECISION_ABORT:
+            settle_placeholder(session, tool_use_id, ABORT_TEXT, outcome="aborted",
+                               extra_meta={"permission_outcome": "aborted"})
+            return "aborted"
+        settle_placeholder(session, tool_use_id, DENY_TEXT, outcome="denied",
+                           extra_meta={"permission_outcome": "denied"})
+        return "answered"
+
+    # 提问卡：结构化答案优先，否则自由文本
+    answer_text = text or ""
+    if answers is not None:
+        answer_text = format_structured_answers(session, tool_use_id, answers)
+    settle_placeholder(session, tool_use_id, answer_text, outcome="answered")
+    return "answered"
+
+
+def inject_ask_user_answer(session, ask_user_tool_use_id: str, answer: str,
+                           permission_store=None, permission_rules=None) -> bool:
+    """兼容入口：把用户答案注入占位 tool_result 并标记 answered，返回是否找到占位符。
+
+    审批卡走结构化决策（文本按 label 映射）；提问卡保持自由文本语义。
+    """
+    logger.info(f"[ask-user] 注入答案: tool_use_id={ask_user_tool_use_id}")
+    outcome = apply_answer(
+        session, ask_user_tool_use_id, text=answer,
+        permission_store=permission_store, permission_rules=permission_rules,
+    )
+    return outcome != "not_found"
+
+
+def settle_expired_approvals(
+    session,
+    *,
+    permission_store=None,
+    now: float | None = None,
+    audit: bool = True,
+) -> list[str]:
+    """结算会话内所有已过期的审批占位（只结算，不恢复）。返回 tool_use_id 列表。"""
+    settled: list[str] = []
+    for _msg, block in list(_iter_tool_result_blocks(session)):
+        meta = block.get("_meta") or {}
+        if meta.get("completed") is not False:
+            continue
+        permission = meta.get(APPROVAL_META_KEY)
+        if meta.get("kind") != "approval" and not permission:
+            continue
+        tool_use_id = _block_tool_id(block)
+        pending = {
+            "tool_use_id": tool_use_id,
+            "permission": dict(permission or {}),
+            "meta": meta,
+            "block": block,
+        }
+        if not is_expired(pending, now=now):
+            continue
+        timeout = int((permission or {}).get("timeout_seconds") or 0)
+        settle_placeholder(
+            session, tool_use_id,
+            EXPIRED_TEXT.format(window=_format_window(timeout)),
+            outcome="expired",
+            extra_meta={"permission_outcome": "expired"},
+        )
+        if audit:
+            append_permission_audit(getattr(session, "session_dir", None), "expired", {
+                "source": "watchdog",
+                "decision_id": (permission or {}).get("decision_id", ""),
+                "tool": (permission or {}).get("tool", ""),
+                "kind": (permission or {}).get("kind", "command"),
+                "action": str((permission or {}).get("command", ""))[:300],
+            })
+        _clear_pending_if_match(
+            permission_store, (permission or {}).get("decision_id", ""))
+        settled.append(tool_use_id)
+    return settled

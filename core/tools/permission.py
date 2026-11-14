@@ -21,6 +21,7 @@ META_KEY = "permission_required"
 APPROVE_LABEL = "允许本次会话"
 REMEMBER_LABEL = "一直允许（此类操作）"
 REJECT_LABEL = "拒绝"
+ABORT_LABEL = "终止任务"
 
 _RISK_LABELS = {"low": "低", "medium": "中", "high": "高"}
 

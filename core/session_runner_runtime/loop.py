@@ -218,6 +218,11 @@ class Loop:
     def run_interactive(self) -> None:
         """交互回合循环主体（run()/resume_* 薄入口调用）。"""
         runner = self.runner
+        # 入口结算过期审批（只结算、不恢复）：重启/淘汰后首次加载或看门狗
+        # 未覆盖时，避免用户新消息被误判为旧审批的答案。duck-typing：测试替身可缺。
+        settle = getattr(runner, "_settle_expired_approvals", None)
+        if callable(settle):
+            settle()
         # 入口排空：用户发新消息前后台子代理已完成的通知，注入到 messages，LLM 第一轮即可见
         self._drain_session_notifications()
         runner._sync_to_session()

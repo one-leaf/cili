@@ -101,3 +101,37 @@ class TestRuleApi:
         asyncio.run(rp.create_permission_rule(_request(), "global", deny))
         only_deny = asyncio.run(rp.list_permission_rules("global", "deny"))
         assert only_deny["rules"] and all(r["decision"] == "deny" for r in only_deny["rules"])
+
+
+class TestApprovalConfigApi:
+    """权限配置的 ``approval`` 子块：默认值、往返与 clamp。"""
+
+    def test_defaults_present(self, tmp_path, monkeypatch):
+        _fake_global_config(tmp_path, monkeypatch)
+        data = asyncio.run(rp.get_permissions())
+        approval = data["permissions"]["approval"]
+        assert approval["timeout_seconds"] == 300
+        assert approval["auto_resume"] == "web"
+
+    def test_round_trip_and_clamp(self, tmp_path, monkeypatch):
+        state = _fake_global_config(tmp_path, monkeypatch)
+        body = rp.PermissionUpdateRequest(permissions={
+            "approval": {"timeout_seconds": 5, "auto_resume": "all"},
+        })
+        result = asyncio.run(rp.update_permissions(_request(), body))
+        assert result["success"] is True
+        # 下界 clamp 到 30：避免误配成秒级、卡片还没来得及看就过期
+        assert state["permissions"]["approval"]["timeout_seconds"] == 30
+        assert state["permissions"]["approval"]["auto_resume"] == "all"
+        # 回读一致（设置页刷新后不应回到默认值）
+        data = asyncio.run(rp.get_permissions())
+        assert data["permissions"]["approval"] == {"timeout_seconds": 30, "auto_resume": "all"}
+
+    def test_invalid_auto_resume_falls_back(self, tmp_path, monkeypatch):
+        _fake_global_config(tmp_path, monkeypatch)
+        body = rp.PermissionUpdateRequest(permissions={
+            "approval": {"timeout_seconds": 600, "auto_resume": "bogus"},
+        })
+        result = asyncio.run(rp.update_permissions(_request(), body))
+        assert result["permissions"]["approval"] == {
+            "timeout_seconds": 600, "auto_resume": "web"}

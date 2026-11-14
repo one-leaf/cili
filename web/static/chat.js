@@ -400,8 +400,26 @@ function renderMessages(messages) {
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
                 if (block.name === 'ask_user' && (!block._meta || !block._meta.answered)) {
-                    // Render interactive question card only if unanswered
-                    renderAskUserQuestions(contentDiv, block.input, block.id);
+                    // Render interactive question/approval card only if unanswered
+                    if (isApprovalInput(block.input)) {
+                        renderApprovalCard(contentDiv, block.input, block.id);
+                    } else {
+                        renderAskUserQuestions(contentDiv, block.input, block.id);
+                    }
+                } else if (block.name === 'ask_user' && block._meta?.answered
+                           && isApprovalInput(block.input)) {
+                    // 已结算的审批卡：紧凑展示，不再渲染 JSON 参数
+                    const settled = document.createElement('div');
+                    settled.className = 'approval-settled';
+                    const outcomeText = {
+                        approved: '已允许（本次会话）',
+                        remembered: '已允许并记住',
+                        denied: '已拒绝',
+                        expired: '已超时未响应（已按拒绝处理）',
+                        aborted: '已终止任务',
+                    }[block._meta.answered_outcome] || '已处理';
+                    settled.textContent = `🛡️ 审批${outcomeText}`;
+                    contentDiv.appendChild(settled);
                 } else {
                     const pre = document.createElement('pre');
                     pre.textContent = JSON.stringify(block.input, null, 2);
@@ -804,7 +822,11 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             div.classList.add('tool');
             const contentDiv = div.querySelector('.message-content');
             if (event.tool === 'ask_user') {
-                renderAskUserQuestions(contentDiv, event.input, event.tool_use_id);
+                if (isApprovalInput(event.input)) {
+                    renderApprovalCard(contentDiv, event.input, event.tool_use_id);
+                } else {
+                    renderAskUserQuestions(contentDiv, event.input, event.tool_use_id);
+                }
             } else {
                 const toolTitle = document.createElement('div');
                 toolTitle.className = 'tool-title';
@@ -1179,6 +1201,191 @@ function renderAskUserQuestions(container, input, toolUseId) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
     // 新卡片出现即刷新推荐按钮门控（历史加载/实时推送共用本函数）
     if (typeof updateComposerButtons === 'function') updateComposerButtons();
+}
+
+// ── 审批卡（与提问卡分开渲染，共享 answer-ask-user 管道） ──
+
+function isApprovalInput(input) {
+    const q = input && input.questions && input.questions[0];
+    return !!(q && q.intent && q.intent.kind === 'approval');
+}
+
+// 倒计时：单个全局定时器，扫描带 data-deadline 的卡片
+setInterval(() => {
+    document.querySelectorAll('.approval-card[data-deadline]').forEach(card => {
+        const deadline = parseInt(card.dataset.deadline, 10) || 0;
+        const el = card.querySelector('.approval-countdown');
+        if (!el) return;
+        if (!deadline) { el.textContent = ''; return; }
+        const remain = deadline * 1000 - Date.now();
+        if (remain <= 0) {
+            el.textContent = '已超时，等待结算…';
+            el.classList.add('expired');
+            card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        } else if (!card.classList.contains('submitted')) {
+            const sec = Math.ceil(remain / 1000);
+            el.textContent = sec >= 60
+                ? `剩余 ${Math.floor(sec / 60)} 分 ${sec % 60} 秒`
+                : `剩余 ${sec} 秒`;
+        }
+    });
+}, 1000);
+
+function renderApprovalCard(container, input, toolUseId) {
+    const q = (input.questions || [])[0] || {};
+    const intent = q.intent || {};
+    const card = document.createElement('div');
+    card.className = 'approval-card ask-user-card';
+    card.dataset.askPending = '1';
+    card.dataset.deadline = String(intent.deadline_ts || 0);
+    if (toolUseId) card.dataset.toolUseId = toolUseId;
+
+    const title = document.createElement('div');
+    title.className = 'ask-title';
+    title.textContent = '🛡️ 命令审批';
+    card.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'approval-body';
+    body.innerHTML = renderMarkdown(q.question || '');
+    card.appendChild(body);
+
+    const countdown = document.createElement('div');
+    countdown.className = 'approval-countdown';
+    card.appendChild(countdown);
+
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+
+    const options = [
+        {decision: 'approve', label: intent.approve || '允许本次会话', desc: '本会话内相同操作不再询问', cls: 'btn-primary'},
+        {decision: 'remember', label: intent.always || '一直允许（此类操作）', desc: '写入工作区规则，重启后仍生效', cls: 'btn-secondary'},
+        {decision: 'deny', label: intent.reject || '拒绝', desc: '仅拦截本次，Agent 可换方案', cls: 'btn-secondary'},
+        {decision: 'abort', label: intent.abort || '终止任务', desc: '结束当前任务，不再自动继续', cls: 'btn-danger'},
+    ];
+    options.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = `btn ${opt.cls} approval-btn`;
+        btn.dataset.decision = opt.decision;
+
+        const label = document.createElement('span');
+        label.className = 'approval-btn-label';
+        label.textContent = opt.label;
+        btn.appendChild(label);
+
+        const desc = document.createElement('span');
+        desc.className = 'approval-btn-desc';
+        desc.textContent = opt.desc;
+        btn.appendChild(desc);
+
+        btn.addEventListener('click', () => {
+            if (card.classList.contains('submitted') || isSending) return;
+            if (opt.decision === 'abort' && !confirm('终止当前任务？本回合将结束，不再自动继续。')) return;
+            submitApprovalDecision(toolUseId, opt.decision, card);
+        });
+        actions.appendChild(btn);
+    });
+    card.appendChild(actions);
+
+    container.appendChild(card);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    if (typeof updateComposerButtons === 'function') updateComposerButtons();
+}
+
+async function submitApprovalDecision(toolUseId, decision, card) {
+    if (!currentSession) return;
+    const sessionId = currentSession.session_id;
+    card.classList.add('submitted');
+    card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    const countdown = card.querySelector('.approval-countdown');
+    if (countdown && !countdown.classList.contains('expired')) {
+        countdown.textContent = '已提交…';
+    }
+
+    isSending = true;
+    foregroundStreamSessionId = sessionId;
+    sessionRunning = true;
+    updateComposerButtons();
+
+    try {
+        const response = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/answer-ask-user`,
+            {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tool_use_id: toolUseId, decision}),
+            }
+        );
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        }
+        if (decision === 'abort') {
+            countdown.textContent = '已终止任务';
+            card.classList.add('aborted');
+        }
+
+        // 与提问卡提交共用同一套 SSE 消费方式
+        const turnContainer = document.createElement('div');
+        turnContainer.className = 'turn-stream';
+        chatMessages.appendChild(turnContainer);
+        _activeTurnContainers.set(sessionId, turnContainer);
+        const addTurnMessage = (role, content) =>
+            addMessage(role, content, undefined, undefined, turnContainer);
+        const scrollIfViewing = () => {
+            if (currentSession && currentSession.session_id === sessionId) {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        };
+        const renderer = createTurnStreamRenderer({
+            sessionId, turnContainer, addTurnMessage, scrollIfViewing,
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, {stream: true});
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const dataStr = line.slice(6).trim();
+                if (!dataStr || dataStr === '[DONE]') continue;
+                try {
+                    const event = JSON.parse(dataStr);
+                    if (event.session_id && event.session_id !== sessionId) continue;
+                    renderer.handleEvent(event);
+                } catch (e) {
+                    console.error('Failed to parse approval SSE event:', e, dataStr);
+                }
+            }
+        }
+        renderer.flush();
+        _activeTurnContainers.delete(sessionId);
+        if (currentSession && currentSession.session_id === sessionId) {
+            await loadSession(sessionId);
+        }
+    } catch (error) {
+        console.error('Failed to submit approval decision:', error);
+        countdown.textContent = '提交失败，请重试';
+        card.classList.remove('submitted');
+        card.querySelectorAll('button').forEach(b => { b.disabled = false; });
+        if (currentSession && currentSession.session_id === sessionId) {
+            addMessage('assistant', '提交审批失败: ' + error.message);
+        }
+    } finally {
+        _activeTurnContainers.delete(sessionId);
+        if (currentSession && currentSession.session_id === sessionId) {
+            isSending = false;
+            isStopping = false;
+            updateComposerButtons();
+        }
+        if (foregroundStreamSessionId === sessionId) {
+            foregroundStreamSessionId = null;
+        }
+    }
 }
 
 // ── 排队队列条与投递 ──

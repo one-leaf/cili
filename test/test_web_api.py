@@ -1302,3 +1302,228 @@ class TestSuggestRoute:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(routes_suggest.suggest("ws-uuid", "sid", body, ws_dir=tmp_path))
         assert exc_info.value.status_code == 503
+
+
+# ─── 审批卡路由（decision / answers / 过期 / 终止） ──────────────────────
+
+class TestAnswerAskUserApprovalRoute:
+    """``/answer-ask-user`` 的结构化决策分支。
+
+    覆盖审批卡四态（approve/remember/deny/abort）、过期结算、卡片类型错配拦截
+    与旧客户端 ``answer`` 文本兼容；断言「终止不恢复循环」「过期不恢复循环」。
+    """
+
+    @staticmethod
+    def _session(tmp_path, *, deadline_ts: float, header: str = "权限确认", payload: bool = True):
+        from types import SimpleNamespace
+
+        tool_use_id = "call_approval_route"
+        permission = {
+            "decision_id": "route1234567890ab",
+            "command": "rm -rf /tmp/x",
+            "tool": "bash",
+            "kind": "command",
+            "reason": "destructive",
+            "timeout_seconds": 60,
+            "deadline_ts": deadline_ts,
+            "auto_resume": "web",
+            "interface": "web",
+        }
+        meta = {"tool_name": "ask_user", "completed": False, "kind": "approval"}
+        if payload:
+            meta["pending_approval"] = permission
+        messages = [
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": tool_use_id, "name": "ask_user",
+                "input": {"questions": [{
+                    "question": "检测到需要确认的操作", "header": header,
+                    "options": [{"label": "允许本次会话", "description": ""}],
+                    "intent": {"kind": "approval"},
+                }]},
+            }], "_meta": {"id": "m1"}},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": tool_use_id,
+                "content": "等待用户确认", "is_error": True, "_meta": meta,
+            }], "_meta": {"id": "m2"}},
+        ]
+        session_dir = tmp_path / "sessions" / "sess-approval"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        sm = SimpleNamespace(messages=messages, session_dir=session_dir)
+        sm.saved = []
+        sm.save = lambda: sm.saved.append(True)
+        sm.mark_dirty = lambda: None
+        return sm, tool_use_id, permission
+
+    @staticmethod
+    def _runner(sm, permission):
+        from types import SimpleNamespace
+
+        from core.tools.permission import PermissionStore
+
+        store = PermissionStore()
+        if permission is not None:
+            store.set_pending(permission)
+        runner = SimpleNamespace(
+            session=sm,
+            permission_store=store,
+            permission_rules=None,
+            current_session_id="sess-approval",
+            workspace_uuid="ws-approval",
+            default_sink=None,
+            resume_calls=[],
+            stopped=False,
+        )
+        runner.resume_after_ask_user = lambda sink=None: runner.resume_calls.append(sink)
+
+        def _no_run(**_kw):
+            raise AssertionError("路由不应走 run()")
+
+        runner.run = _no_run
+        runner.stop = lambda: setattr(runner, "stopped", True)
+        runner.set_turn_interface = lambda name: setattr(runner, "turn_interface", name)
+        return runner, store
+
+    @staticmethod
+    def _patch(monkeypatch, runner):
+        from types import SimpleNamespace
+
+        from web import routes_ask_user as routes
+
+        class _Registry:
+            @staticmethod
+            def get(key):
+                return runner
+
+        released = []
+        monkeypatch.setattr(routes, "registry", _Registry())
+        monkeypatch.setattr(routes, "_claim_session_run", lambda key: True)
+        monkeypatch.setattr(routes, "_release_session_run", lambda key: released.append(key))
+        monkeypatch.setattr(routes, "get_teen_mode", lambda: SimpleNamespace(
+            guard_workspace=lambda *a, **kw: None))
+        return released
+
+    @staticmethod
+    def _post(routes, request):
+        import asyncio
+        import json
+
+        async def run():
+            resp = await routes.answer_ask_user("ws-approval", "sess-approval", request)
+            text = ""
+            agen = resp.body_iterator
+            while True:
+                try:
+                    chunk = await agen.__anext__()
+                except StopAsyncIteration:
+                    break
+                text += chunk if isinstance(chunk, str) else chunk.decode()
+            return [json.loads(line[6:]) for line in text.split("\n")
+                    if line.startswith("data: ")]
+
+        return asyncio.run(run())
+
+    def test_abort_does_not_resume_and_ends_turn(self, tmp_path, monkeypatch):
+        import time
+
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() + 3600)
+        runner, store = self._runner(sm, permission)
+        released = self._patch(monkeypatch, runner)
+
+        events = self._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id, decision="abort"))
+
+        assert runner.resume_calls == [], "终止后不应恢复循环（否则模型会继续执行）"
+        block = sm.messages[1]["content"][0]
+        assert block["_meta"]["outcome"] == "aborted"
+        assert block["_meta"]["completed"] is True
+        assert not store.is_approved(permission["decision_id"])
+        assert store.pending is None
+        assert released == ["ws-approval:sess-approval"]
+        # 首帧关闭卡片，另有终止提示
+        assert events[0]["type"] == "tool_result"
+        assert events[0]["tool_use_id"] == tool_use_id
+        assert any(e["type"] == "text" and "任务已终止" in e.get("content", "") for e in events)
+        assert events[-1]["type"] == "done"
+
+    def test_approve_resumes_once(self, tmp_path, monkeypatch):
+        import time
+
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() + 3600)
+        runner, store = self._runner(sm, permission)
+        self._patch(monkeypatch, runner)
+
+        self._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id, decision="approve"))
+
+        assert len(runner.resume_calls) == 1
+        assert store.is_approved(permission["decision_id"])
+        assert sm.messages[1]["content"][0]["_meta"]["outcome"] == "approved"
+
+    def test_legacy_answer_label_still_works(self, tmp_path, monkeypatch):
+        import time
+
+        from core.tools.permission import REMEMBER_LABEL
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() + 3600)
+        runner, store = self._runner(sm, permission)
+        self._patch(monkeypatch, runner)
+
+        # 旧前端只发 answer 文本：按 label 映射为决策（不能当成提问卡自由文本）
+        self._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id, answer=REMEMBER_LABEL))
+
+        assert len(runner.resume_calls) == 1
+        assert sm.messages[1]["content"][0]["_meta"]["outcome"] == "remembered"
+
+    def test_expired_returns_error_without_resume(self, tmp_path, monkeypatch):
+        import time
+
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() - 5)
+        runner, store = self._runner(sm, permission)
+        self._patch(monkeypatch, runner)
+
+        events = self._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id, decision="approve"))
+
+        assert runner.resume_calls == []
+        assert not store.is_approved(permission["decision_id"])
+        assert sm.messages[1]["content"][0]["_meta"]["outcome"] == "expired"
+        assert any(e["type"] == "error" and "超时" in e.get("content", "") for e in events)
+
+    def test_decision_on_question_card_rejected(self, tmp_path, monkeypatch):
+        from fastapi import HTTPException
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
+        runner, _store = self._runner(sm, None)
+        self._patch(monkeypatch, runner)
+
+        with pytest.raises(HTTPException) as exc:
+            self._post(routes, routes.AnswerAskUserRequest(
+                tool_use_id=tool_use_id, decision="approve"))
+        assert exc.value.status_code == 400
+
+    def test_answers_on_approval_card_rejected(self, tmp_path, monkeypatch):
+        import time
+
+        from fastapi import HTTPException
+        from web import routes_ask_user as routes
+
+        sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() + 3600)
+        runner, _store = self._runner(sm, permission)
+        self._patch(monkeypatch, runner)
+
+        with pytest.raises(HTTPException) as exc:
+            self._post(routes, routes.AnswerAskUserRequest(
+                tool_use_id=tool_use_id,
+                answers=[{"id": "0", "selected": ["允许本次会话"]}]))
+        assert exc.value.status_code == 400
+        # 拦截后卡片仍待决、未产生副作用
+        assert sm.messages[1]["content"][0]["_meta"]["completed"] is False

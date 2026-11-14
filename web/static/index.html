@@ -534,6 +534,23 @@
                         </div>
                         <div class="form-group"><label>连错降级次数:</label><input type="number" id="permission-judge-failures" min="1" max="10"></div>
                     </details>
+
+                    <details style="margin-top: 16px;">
+                        <summary style="cursor: pointer; font-weight: 500;">审批卡设置</summary>
+                        <div class="form-group">
+                            <label>审批超时（秒）:</label>
+                            <input type="number" id="permission-approval-timeout" min="0" max="86400" placeholder="300">
+                        </div>
+                        <div class="form-hint" style="margin-bottom: 8px;">0 表示不自动过期；超时后默认拒绝执行，Web 端自动恢复循环，IM 端等下次消息带走。</div>
+                        <div class="form-group">
+                            <label>超时自动恢复:</label>
+                            <select id="permission-approval-auto-resume">
+                                <option value="web">仅 Web</option>
+                                <option value="all">Web 与 TUI</option>
+                                <option value="none">不自动恢复</option>
+                            </select>
+                        </div>
+                    </details>
                 </div>
 
                 <!-- MCP Servers Tab -->

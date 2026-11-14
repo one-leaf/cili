@@ -50,6 +50,7 @@ from core.session_runner_runtime.loop import (
 )
 from core.tools import create_tools, get_tool_by_name
 from core.tools.permission import (
+    ABORT_LABEL,
     APPROVE_LABEL,
     META_KEY,
     REJECT_LABEL,
@@ -926,17 +927,32 @@ class SessionRunner(BaseSessionRunner):
             logger.warning("[fork] persist clone error failed", exc_info=True)
 
     def _handle_permission_required(self, permission: dict) -> None:
-        """合成 ask_user 卡询问用户是否批准，随后暂停循环等待回答。
+        """合成审批卡询问用户是否批准，随后暂停循环等待回答。
 
         在批处理所有工具结果之后调用，保证消息配对正确：
         [assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]
+
+        卡片载荷（`_meta.pending_approval`）随消息落盘：含期限、发卡接口与
+        auto_resume 快照，供看门狗超时结算/自动恢复与重启后重建。
         """
-        self.permission_store.set_pending(permission)
-        # 审计：卡片询问（asked）——用户决定（decided）在 inject_ask_user_answer 落
+        approval_cfg = get_permission_config(self.config).approval
+        now = time.time()
+        pending_payload = dict(permission)
+        pending_payload.update({
+            "timeout_seconds": int(approval_cfg.timeout_seconds),
+            "deadline_ts": (now + approval_cfg.timeout_seconds)
+            if approval_cfg.timeout_seconds > 0 else 0,
+            "auto_resume": approval_cfg.auto_resume,
+            "interface": self._turn_interface or "",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        self.permission_store.set_pending(pending_payload)
+        # 审计：卡片询问（asked）——用户决定（decided）在 apply_answer 落
         append_permission_audit(self.session.session_dir, "asked", {
             "source": "user", "decision_id": permission.get("decision_id", ""),
             "tool": permission.get("tool", ""), "kind": permission.get("kind", "command"),
             "action": str(permission.get("command", ""))[:300],
+            "deadline_ts": pending_payload.get("deadline_ts", 0),
         })
 
         ask_id = generate_short_id()
@@ -949,21 +965,64 @@ class SessionRunner(BaseSessionRunner):
                 "label": REMEMBER_LABEL,
                 "description": "批准并写入此工作区（按展示的规则粒度），重启后仍自动放行同类操作。",
             })
-        options.append({"label": REJECT_LABEL, "description": "拒绝执行该操作。"})
+        options.append({"label": REJECT_LABEL, "description": "拒绝执行该操作，Agent 可以换个方式继续。"})
+        options.append({"label": ABORT_LABEL, "description": "终止当前任务，本次回合结束，不再自动继续。"})
         ask_input = {
             "questions": [
                 {
                     "question": build_permission_question(permission),
                     "header": "权限确认",
                     "options": options,
+                    # 展示意图：只影响前端渲染与 label → decision 的映射，不改变答案编码
+                    "intent": {
+                        "kind": "approval",
+                        "approve": APPROVE_LABEL,
+                        "always": REMEMBER_LABEL,
+                        "reject": REJECT_LABEL,
+                        "abort": ABORT_LABEL,
+                        # 展示元数据（前端倒计时用）；模型可见但无副作用
+                        "deadline_ts": pending_payload.get("deadline_ts", 0),
+                        "timeout_seconds": pending_payload.get("timeout_seconds", 0),
+                    },
                 }
             ]
         }
         # 手动补 assistant tool_use 块，避免悬挂 tool_result（否则 API 400 或触发 _pad_dangling_tool_results）
         self.add_message("assistant", [{"type": "tool_use", "id": ask_id, "name": "ask_user", "input": ask_input}])
-        self.add_message("user", [self._execute_tool("ask_user", ask_input, ask_id)])
+        result = self._execute_tool("ask_user", ask_input, ask_id)
+        # 审批载荷挂在占位 tool_result 上（_meta 发给 LLM 前会被剥除）：
+        # 视觉上仍是 ask_user 卡，语义上可被前端/看门狗识别为审批。
+        from core.tools.ask_user import APPROVAL_META_KEY
+        result.setdefault("_meta", {}).update({
+            "kind": "approval",
+            APPROVAL_META_KEY: pending_payload,
+        })
+        self.add_message("user", [result])
         self._sync_to_session()
         self.session.save()
+
+    def _settle_expired_approvals(self) -> int:
+        """入口扫描：把已过期的审批占位结算为「超时未响应」（只结算，不恢复）。
+
+        覆盖看门狗看不到的场景：runner 被 LRU 淘汰、服务重启后首次加载、
+        看门狗停止期间到达的期限。新回合在投递排队消息前先结算，避免用户
+        的新消息被误判为旧审批的答案。
+        """
+        if self._mode != "interactive":
+            return 0
+        try:
+            from core.tools.ask_user import settle_expired_approvals
+            settled = settle_expired_approvals(
+                self.session, permission_store=self.permission_store)
+        except Exception as e:  # noqa: BLE001 —— 结算失败不能阻断回合启动
+            logger.warning(f"[SessionRunner:{self.role}] 过期审批结算失败: {e}")
+            return 0
+        if settled:
+            logger.info(
+                f"[SessionRunner:{self.role}] 已结算 {len(settled)} 条过期审批"
+                f"（session={getattr(self, 'current_session_id', '')}）"
+            )
+        return len(settled)
 
     def _resume_loop(self, sink: OutputSink | None = None) -> None:
         """共享恢复路径：重新进入 interactive 循环，不重置本轮迭代计数。
@@ -1000,7 +1059,15 @@ class SessionRunner(BaseSessionRunner):
         """恢复 interactive 循环以处理待处理的后台通知（不追加新用户消息）。
 
         供接口层在后台子代理完成、master 空闲时继续循环（/resume 端点）。
+        有未答复的 ask_user/审批占位时拒绝恢复：先让用户处理卡片。
         """
+        try:
+            from core.tools.ask_user import find_pending_ask_user
+            if find_pending_ask_user(self.session):
+                logger.info("[SessionRunner] 有待答复卡片，忽略通知恢复")
+                return
+        except Exception:  # noqa: BLE001
+            logger.debug("[SessionRunner] 待答占位检查失败", exc_info=True)
         self._resume_loop(sink=sink)
 
     def _handle_background_session_complete(self, exec_id: str, status: str) -> None:
@@ -1015,6 +1082,14 @@ class SessionRunner(BaseSessionRunner):
         if self.is_running():
             # master 正在运行，不需要恢复（循环会在下次迭代时拾取通知）
             return
+        # 有未答复的 ask_user/审批占位：回合处于「等待外部输入」，通知不能
+        # 抢先恢复循环（否则模型会在卡片未答时继续执行）。
+        try:
+            from core.tools.ask_user import find_pending_ask_user
+            if find_pending_ask_user(self.session):
+                return
+        except Exception:  # noqa: BLE001 —— 检查失败按可恢复处理（与旧行为一致）
+            logger.debug("[SessionRunner] 待答占位检查失败", exc_info=True)
         # 检查 message_bus 是否有未读通知
         try:
             from core.agent_mailbox import get_agent_mailbox

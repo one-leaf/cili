@@ -2223,6 +2223,7 @@ function fillPermissionForm(cfg) {
     cfg = cfg || {};
     const outside = cfg.outside || {};
     const judge = cfg.judge || {};
+    const approval = cfg.approval || {};
     setPermissionField('permission-enabled', cfg.enabled !== false, 'checked');
     setPermissionField('permission-default-mode', cfg.default_mode || 'allow');
     setPermissionField('permission-outside-read', outside.read || 'allow');
@@ -2236,6 +2237,9 @@ function fillPermissionForm(cfg) {
     setPermissionField('permission-judge-persist', judge.persist_allow !== false, 'checked');
     setPermissionField('permission-judge-cache', judge.cache || 'session');
     setPermissionField('permission-judge-failures', judge.max_consecutive_failures || 3);
+    setPermissionField('permission-approval-timeout',
+        approval.timeout_seconds == null ? 300 : approval.timeout_seconds);
+    setPermissionField('permission-approval-auto-resume', approval.auto_resume || 'web');
 }
 
 function renderPermissionScopeOptions() {
@@ -2287,6 +2291,13 @@ function collectPermissionConfig() {
             persist_allow: document.getElementById('permission-judge-persist').checked,
             cache: document.getElementById('permission-judge-cache').value,
             max_consecutive_failures: parseInt(document.getElementById('permission-judge-failures').value, 10) || 3,
+        },
+        approval: {
+            timeout_seconds: (() => {
+                const v = parseInt(document.getElementById('permission-approval-timeout').value, 10);
+                return Number.isFinite(v) ? v : 300;
+            })(),
+            auto_resume: document.getElementById('permission-approval-auto-resume').value || 'web',
         },
     };
 }

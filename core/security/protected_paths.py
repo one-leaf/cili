@@ -18,10 +18,9 @@ import os
 from pathlib import Path
 
 from core.config import DATA_DIR, PROJECT_ROOT, SYSTEM_DATA_DIR, load_workspaces_index
+from core.fs_utils import is_path_within
 
 logger = logging.getLogger(__name__)
-
-from core.fs_utils import is_path_within
 
 
 def _norm(path: str | Path) -> str:
@@ -61,7 +60,9 @@ def teen_path_verdict(resolved: str | None, op: str) -> str | None:
     if not get_teen_mode().is_enabled():
         return None
     target = _norm(resolved)
-    for root in protected_roots():
+    # 最长根优先：宽根（如 workspace/default/.cili）的 tmp 例外不能抢先
+    # 放行嵌在它 tmp/ 里的更具体工作区数据目录（后者的 .cili 根更长）。
+    for root in sorted(protected_roots(), key=len, reverse=True):
         if is_path_within(target, root):
             tmp = _norm(os.path.join(root, "tmp"))
             if is_path_within(target, tmp):

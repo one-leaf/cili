@@ -30,9 +30,12 @@ from typing import Any, Callable, Literal
 from core.output_sink import OutputSink
 from core.session_runner import SessionRunner
 from core.tools.ask_user import (
+    apply_answer,
     build_other_answer,
-    find_pending_ask_user,
-    inject_ask_user_answer,
+    classify_pending,
+    decision_from_text,
+    find_pending_approval,
+    is_expired,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,9 +46,9 @@ class PreparedTurn:
     """一次回合的准备结果。"""
 
     runner: SessionRunner
-    mode: Literal["run", "resume"]
+    mode: Literal["run", "resume", "aborted"]
     user_input: Any = None                      # mode == "run" 时的入参
-    pending_ask_user_id: str | None = None      # mode == "resume" 时的占位 tool_use_id
+    pending_ask_user_id: str | None = None      # mode == "resume"/"aborted" 时的占位 tool_use_id
     answer: str | None = None                   # mode == "resume" 时注入的答案
     # mode == "run" 时随 user 消息写入的 _meta（队列合并批次审计：queued_ids 等）
     meta: dict | None = None
@@ -57,19 +60,75 @@ def prepare_turn(
     content: str,
     user_input: Any = None,
 ) -> PreparedTurn:
-    """判定这一轮是「普通消息」还是「ask_user 的答案」。
+    """判定这一轮是「普通消息」「ask_user 的答案」还是「审批决策」。
 
-    与 Web 既有行为一致：会话里若有待答的 ask_user 占位符，就把用户这次输入当作
-    该问题的「其他」回复注入，**不追加新 user message**（避免 LLM 双重处理），
-    然后恢复循环。
+    与既有行为一致：会话里若有待答占位符，就把用户这次输入视为答复注入，
+    **不追加新 user message**（避免 LLM 双重处理），然后恢复循环。
+
+    审批卡分支：
+    - 过期 → 先结算为「超时未响应」，本次输入按普通消息处理；
+    - 「终止任务」→ 结算为 aborted，**不恢复循环**，回合结束；
+    - 其余文本按 label 映射为决策（未知文本 = 拒绝），恢复循环。
 
     注入有竞态：占位符可能已消失，此时回退为普通消息。
     """
-    pending_id = find_pending_ask_user(runner.session) if content else None
-    if pending_id:
+    pending_id = None
+    kind = None
+    if content:
+        classified = classify_pending(
+            runner.session, getattr(runner, "permission_store", None))
+        if classified is not None:
+            kind, pending_id = classified
+
+    if pending_id and kind == "approval":
+        pending = find_pending_approval(runner.session)
+        if pending is not None and is_expired(pending):
+            apply_answer(
+                runner.session, pending_id, text=content,
+                permission_store=getattr(runner, "permission_store", None),
+                permission_rules=getattr(runner, "permission_rules", None),
+            )
+            logger.info("[turn_dispatch] 审批已过期并结算，本次输入按普通消息处理")
+            return PreparedTurn(runner=runner, mode="run",
+                                user_input=user_input if user_input is not None else content)
+
+        decision = decision_from_text(content)
+        outcome = apply_answer(
+            runner.session, pending_id, decision=decision,
+            permission_store=getattr(runner, "permission_store", None),
+            permission_rules=getattr(runner, "permission_rules", None),
+        )
+        if outcome == "aborted":
+            return PreparedTurn(
+                runner=runner,
+                mode="aborted",
+                pending_ask_user_id=pending_id,
+                answer=content,
+            )
+        if outcome == "expired":
+            # 超时结算完成：本次输入是用户的新消息，不能被旧审批吞掉
+            return PreparedTurn(runner=runner, mode="run",
+                                user_input=user_input if user_input is not None else content)
+        if outcome == "answered":
+            return PreparedTurn(
+                runner=runner,
+                mode="resume",
+                pending_ask_user_id=pending_id,
+                answer=content,
+            )
+        # 竞态：占位符已消失，回退普通消息
+        logger.info("[turn_dispatch] 审批占位符已消失，回退为普通消息")
+        return PreparedTurn(runner=runner, mode="run",
+                            user_input=user_input if user_input is not None else content)
+
+    if pending_id and kind == "question":
         answer = build_other_answer(runner.session, pending_id, content)
-        if inject_ask_user_answer(runner.session, pending_id, answer, runner.permission_store,
-                                  getattr(runner, "permission_rules", None)):
+        outcome = apply_answer(
+            runner.session, pending_id, text=answer,
+            permission_store=getattr(runner, "permission_store", None),
+            permission_rules=getattr(runner, "permission_rules", None),
+        )
+        if outcome == "answered":
             return PreparedTurn(
                 runner=runner,
                 mode="resume",
@@ -108,6 +167,15 @@ def execute_turn(
 
     _turn_started = _time.monotonic()
     try:
+        if prepared.mode == "aborted":
+            # 用户终止：结算已完成，不恢复循环、不跑模型；接入端据回调关闭卡片。
+            if on_ask_user_answered is not None and prepared.pending_ask_user_id:
+                on_ask_user_answered(prepared.pending_ask_user_id, prepared.answer or "")
+            try:
+                sink.on_text("\n\n[任务已终止]")
+            except Exception:  # noqa: BLE001 —— 通知失败不影响终止语义
+                logger.debug("[turn_dispatch] 终止通知发送失败", exc_info=True)
+            return
         if prepared.mode == "resume":
             if on_ask_user_answered is not None and prepared.pending_ask_user_id:
                 on_ask_user_answered(prepared.pending_ask_user_id, prepared.answer or "")
