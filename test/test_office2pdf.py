@@ -98,6 +98,14 @@ class TestOffice2PDFToolSchema:
         coerced = tool.coerce_input({"action": "sync"})
         assert not isinstance(coerced, ToolResult)
 
+    def test_diagnose_action_reports_progids(self):
+        tool = Office2PDFTool(cwd=".")
+        result = tool.execute(action="diagnose")
+        assert not result.is_error
+        assert "Office/WPS COM 诊断" in result.output
+        assert "Word.Application" in result.output
+        assert "KWPS.Application" in result.output
+
     def test_supported_extensions(self):
         assert ".docx" in mod.SUPPORTED_EXTENSIONS
         assert ".xlsx" in mod.SUPPORTED_EXTENSIONS
@@ -282,6 +290,98 @@ class TestComConversion:
         assert "WPS Presentation" in str(exc.value)
         assert "SaveAs failed" in str(exc.value)
         assert "ExportAsFixedFormat failed" in str(exc.value)
+        # 引擎能创建、只是转换失败 → 不附注册表诊断（避免噪音）
+        assert "COM 注册检查" not in str(exc.value)
+
+
+class TestEngineDiscovery:
+    """ProgID 候选与注册表扫描（失败兜底）。"""
+
+    def test_engine_candidates_include_wps_aliases(self):
+        """WPS 各发行版命名不一致：带 K 前缀与别名 ProgID 都要尝试。"""
+        assert [p for _l, p in mod._engine_candidates("word")] == [
+            "Word.Application", "KWPS.Application", "WPS.Application",
+        ]
+        assert [p for _l, p in mod._engine_candidates("excel")] == [
+            "Excel.Application", "KET.Application", "ET.Application",
+        ]
+        assert [p for _l, p in mod._engine_candidates("slides")] == [
+            "PowerPoint.Application", "KWPP.Application", "WPP.Application",
+        ]
+
+    def test_server_exe_name_parses_commands(self):
+        assert mod._server_exe_name(
+            r'"C:\Program Files\WPS\wps.exe" /automation') == "wps.exe"
+        assert mod._server_exe_name(
+            r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE /automation") == "excel.exe"
+        assert mod._server_exe_name("") == ""
+
+    def test_discovered_candidates_uses_exe_label(self, monkeypatch):
+        view = "64" if sys.maxsize > 2 ** 32 else "32"
+        status = {
+            "64": {"progid": True, "clsid": "{x}", "clsid_visible": view == "64",
+                   "server": r"C:\WPS\wps.exe"},
+            "32": {"progid": True, "clsid": "{x}", "clsid_visible": view == "32",
+                   "server": r"C:\WPS\wps.exe"},
+        }
+        monkeypatch.setattr(
+            mod, "_discover_office_engines",
+            lambda: [("word", "WPS.Office.Application", status)],
+        )
+        assert mod._discovered_candidates("word") == [("WPS Writer", "WPS.Office.Application")]
+
+    def test_discovered_candidates_skips_other_view_only(self, monkeypatch):
+        """CLSID 只在另一注册表视图：本进程无法激活，不能当作候选。"""
+        other = "32" if sys.maxsize > 2 ** 32 else "64"
+        status = {
+            "64": {"progid": True, "clsid": "{x}", "clsid_visible": other == "64",
+                   "server": r"C:\WPS\wps.exe"},
+            "32": {"progid": True, "clsid": "{x}", "clsid_visible": other == "32",
+                   "server": r"C:\WPS\wps.exe"},
+        }
+        monkeypatch.setattr(
+            mod, "_discover_office_engines",
+            lambda: [("word", "WPS.Office.Application", status)],
+        )
+        assert mod._discovered_candidates("word") == []
+
+    def test_convert_falls_back_to_discovered_progid(self, tmp_path, monkeypatch):
+        """静态 ProgID 全部无效时，用注册表扫描到的 ProgID 完成转换。"""
+        pres = _FakePresentation(lambda path: Path(path).write_bytes(b"%PDF-1.7 fake"))
+        app = _FakeApp(pres)
+
+        pkg = types.ModuleType("win32com")
+        client = types.ModuleType("win32com.client")
+
+        def dispatch(progid):
+            if progid == "Found.Application":
+                return app
+            raise RuntimeError("invalid class string")
+
+        client.DispatchEx = dispatch
+        pkg.client = client
+        monkeypatch.setitem(sys.modules, "win32com", pkg)
+        monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+        monkeypatch.setattr(mod, "_ENGINE_PROGIDS", {
+            "slides": [("Microsoft Office PowerPoint", ("Missing.Application",))],
+        })
+        monkeypatch.setattr(mod, "_discover_office_engines", lambda: [
+            ("slides", "Found.Application", {
+                "64": {"progid": True, "clsid": "{x}", "clsid_visible": True,
+                       "server": r"C:\WPS\wpp.exe"},
+                "32": {"progid": True, "clsid": "{x}", "clsid_visible": True,
+                       "server": r"C:\WPS\wpp.exe"},
+            }),
+        ])
+
+        engine = mod._convert_with_com(
+            str(tmp_path / "a.pptx"), str(tmp_path / "a.pdf"),
+            "slides", str(tmp_path / "p.pid"),
+        )
+
+        assert engine == "WPS Presentation"
+        assert (tmp_path / "a.pdf").read_bytes().startswith(b"%PDF-")
 
 
 class TestWorkspaceCacheAndSync:
