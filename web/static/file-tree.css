@@ -2,7 +2,7 @@
 
 /* 侧栏会话/文件分区手柄 */
 .sidebar-h-split {
-    height: 6px;
+    height: 2px;
     flex-shrink: 0;
     cursor: ns-resize;
     background: transparent;
@@ -16,7 +16,7 @@
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    height: 3px;
+    height: 2px;
     width: 40px;
     border-radius: 2px;
     background: var(--border-color);
@@ -45,6 +45,7 @@
 .sessions-section {
     flex: 1 1 0;
     min-height: 120px;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .files-section {
@@ -53,6 +54,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    border-top: 1px solid var(--border-color);
 }
 
 .files-section.collapsed {
@@ -247,7 +249,7 @@
 
 /* 预览面板 */
 .preview-resize-handle {
-    width: 6px;
+    width: 2px;
     flex-shrink: 0;
     cursor: ew-resize;
     background: transparent;
@@ -262,7 +264,7 @@
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    width: 3px;
+    width: 2px;
     height: 40px;
     border-radius: 2px;
     background: var(--border-color);
@@ -297,6 +299,13 @@
     min-width: 0;
     height: 100%;
     background: var(--sidebar-bg);
+    border-left: 1px solid var(--border-color);
+    border-right: 1px solid var(--border-color);
+}
+
+/* 对话区左侧分隔线：侧栏可见或预览打开时，和左侧分区的边界保持一致 */
+.container:has(.sidebar:not(.collapsed)) .chat-area,
+.container:has(.preview-pane:not([hidden])) .chat-area {
     border-left: 1px solid var(--border-color);
 }
 

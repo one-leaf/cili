@@ -261,6 +261,20 @@ const FileTree = (() => {
 
         const promise = (async () => {
             const res = await fetch(`/api/files?${wsQuery()}&path=${encodeURIComponent(dir)}`);
+            if (res.status === 404 && dir !== '') {
+                // 持久化的展开状态可能指向已删除/重命名的目录：静默清理，
+                // 不渲染错误节点，也不反复重试。
+                // 根目录 404 说明工作区本身有问题，仍按错误展示。
+                if (token === state.token) {
+                    state.expanded.delete(dir);
+                    for (const p of Array.from(state.expanded)) {
+                        if (p.startsWith(dir + '/')) state.expanded.delete(p);
+                    }
+                    state.dirs.delete(dir);
+                    scheduleSaveTreeState();
+                }
+                return null;
+            }
             if (!res.ok) {
                 let detail = `HTTP ${res.status}`;
                 try {
@@ -344,9 +358,23 @@ const FileTree = (() => {
         const dirs = Array.from(state.expanded).sort(
             (a, b) => a.split('/').length - b.split('/').length
         );
+        let pruned = false;
         for (const dir of dirs) {
+            if (!state.expanded.has(dir)) continue;  // 已被上层清理
+            // 父目录已加载时先核对：已删除/重命名的目录直接从展开状态剔除，
+            // 不发请求。
+            const slash = dir.lastIndexOf('/');
+            const parent = slash >= 0 ? dir.slice(0, slash) : '';
+            const parentEntry = state.dirs.get(parent);
+            if (parentEntry?.items
+                    && !parentEntry.items.some((it) => !it.is_file && it.path === dir)) {
+                state.expanded.delete(dir);
+                pruned = true;
+                continue;
+            }
             loadDir(dir);
         }
+        if (pruned) scheduleSaveTreeState();
     }
 
     // ---------- 渲染层 ----------

@@ -16,10 +16,8 @@ ul, ol {
     --border-color: #e0e0e0;
     --text-color: #333;
     --text-light: #666;
-    --user-message-bg: #95EC69;
     --assistant-message-bg: #fff;
     --tool-use-bg: #fef5e7;
-    --tool-result-bg: #e8f4f8;
     --tool-error-bg: #fde8e8;
     --code-bg: #f4f4f4;
     /* 提问/审批卡统一底色：卡片与内部控件同色，且与所在气泡区分 */
@@ -49,10 +47,8 @@ ul, ol {
     --border-color: #3f3f46;
     --text-color: #f4f4f5;
     --text-light: #a1a1aa;
-    --user-message-bg: #166534;
     --assistant-message-bg: #27272a;
     --tool-use-bg: #292524;
-    --tool-result-bg: #1c1917;
     --tool-error-bg: #2c1a1c;
     --code-bg: #18181b;
     --ask-card-bg: #1c1c1e;
@@ -123,7 +119,7 @@ ul, ol {
 [data-theme="dark"] .message.thinking { background-color: #1c1917; border-left-color: #52525b; }
 [data-theme="dark"] .message.tool { background-color: #292524; border-color: #3f3f46; }
 [data-theme="dark"] .message.tool.tool-result { background-color: #1c1917; border-color: #3f3f46; }
-[data-theme="dark"] .message.tool.tool-error { background-color: #2c1a1c; border-color: #5c2d30; }
+[data-theme="dark"] .message.tool.tool-error { background-color: var(--tool-error-bg); border-color: #5c2d30; }
 [data-theme="dark"] .think-content { background-color: #18181b; border-color: #3f3f46; color: #a1a1aa; }
 [data-theme="dark"] .think-title { color: #71717a; }
 
@@ -137,9 +133,6 @@ ul, ol {
 [data-theme="dark"] .message .message-content pre code {
     background: none; color: #e4e4e7;
 }
-
-/* 工具调用/结果 */
-[data-theme="dark"] .tool-result pre { background: var(--tool-result-bg); }
 
 /* 模态框 */
 [data-theme="dark"] .modal-content { background: #27272a; color: var(--text-color); }
@@ -196,7 +189,7 @@ ul, ol {
 /* 文件预览 */
 
 /* 询问用户选项 */
-[data-theme="dark"] .ask-option { background: var(--ask-card-bg); border-color: #3f3f46; }
+[data-theme="dark"] .ask-option { background: var(--ask-card-bg); border-color: #3f3f46; color: #e4e4e7; }
 [data-theme="dark"] .ask-option:hover { background: #3f3f46; border-color: #f97316; }
 [data-theme="dark"] .ask-option.selected { background: #3f3f46; border-color: #f97316; }
 [data-theme="dark"] .ask-option-label { color: #e4e4e7; }
@@ -242,23 +235,10 @@ ul, ol {
     background: var(--ask-card-bg);
     border-color: #3f3f46;
 }
-[data-theme="dark"] .ask-option {
-    background: var(--ask-card-bg);
-    border-color: #3f3f46;
-    color: #e4e4e7;
-}
 [data-theme="dark"] .ask-other-input {
     background: var(--ask-card-bg);
     border-color: #3f3f46;
     color: #e4e4e7;
-}
-[data-theme="dark"] .ask-option:hover {
-    background: #3f3f46;
-    border-color: #f97316;
-}
-[data-theme="dark"] .ask-option.selected {
-    background: #3f3f46;
-    border-color: #f97316;
 }
 
 /* 文件管理器 */
@@ -280,7 +260,7 @@ ul, ol {
 
 /* Mermaid 错误提示 */
 [data-theme="dark"] .mermaid-error {
-    background: #2c1a1c; border-color: #5c2d30; color: #fca5a5;
+    background: var(--tool-error-bg); border-color: #5c2d30; color: #fca5a5;
 }
 
 /* 滚动条 */
@@ -1288,6 +1268,7 @@ body {
     overflow-x: hidden;
     padding: 20px;
     min-width: 0;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .welcome-message {
@@ -1364,7 +1345,7 @@ body {
 }
 
 .message.tool.tool-error {
-    background-color: #fde8e8;
+    background-color: var(--tool-error-bg);
     border: 1px solid #f0c8c8;
 }
 
@@ -1721,7 +1702,7 @@ mjx-container {
 }
 
 .input-resize-handle {
-    height: 6px;
+    height: 2px;
     background: transparent;
     cursor: ns-resize;
     position: relative;
@@ -1736,7 +1717,7 @@ mjx-container {
     top: 50%;
     transform: translate(-50%, -50%);
     width: 40px;
-    height: 3px;
+    height: 2px;
     border-radius: 2px;
     background: var(--border-color);
     opacity: 0;
@@ -1762,7 +1743,7 @@ mjx-container {
 
 /* Sidebar 宽度拖拽把手（纵向分隔条） */
 .sidebar-resize-handle {
-    width: 6px;
+    width: 2px;
     background: transparent;
     cursor: ew-resize;
     position: relative;
@@ -1777,7 +1758,7 @@ mjx-container {
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    width: 3px;
+    width: 2px;
     height: 40px;
     border-radius: 2px;
     background: var(--border-color);
@@ -2266,6 +2247,13 @@ mjx-container {
 .chat-input-area textarea:focus {
     outline: none;
     border-color: var(--primary-color);
+}
+
+/* 输入框变窄时提示文字不折行，按内容区裁切（输入文本仍正常换行） */
+.chat-input-area textarea::placeholder {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* 右下角主操作按钮（Claude Code 插件式单按钮）：
@@ -4202,8 +4190,7 @@ details.p-headers-panel .p-headers {
     min-width: 0;
 }
 
-.wizard-checkbox-row,
-.wizard-checkbox-grid label {
+.wizard-checkbox-row {
     display: flex;
     align-items: center;
     gap: 6px;
