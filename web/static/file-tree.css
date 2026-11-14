@@ -759,3 +759,33 @@
     0% { left: -40%; }
     100% { left: 100%; }
 }
+
+/* 文件搜索过滤 */
+.file-search {
+    flex: 0 0 auto;
+    padding: 4px 8px 6px;
+}
+.file-search input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--sidebar-bg);
+    color: var(--text-color);
+    outline: none;
+}
+.file-search input:focus {
+    border-color: var(--primary-color);
+}
+.file-search input::placeholder {
+    color: var(--text-light);
+}
+.file-search[hidden] {
+    display: none;
+}
+#files-search-btn.active {
+    color: var(--primary-color);
+    background: rgba(128, 128, 128, 0.14);
+}

@@ -417,6 +417,65 @@ def list_files(workspace_uuid: str, path: str = ""):
     }
 
 
+_SEARCH_SKIP_DIRS = {
+    "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build",
+    "target", ".next", ".nuxt", ".tox", ".mypy_cache", ".pytest_cache",
+    ".idea", ".vscode", "coverage",
+}
+
+
+@router.get("/api/files/search")
+def search_files(workspace_uuid: str, q: str = "", limit: int = 200):
+    """按文件名递归搜索工作区（名称包含，大小写不敏感）。"""
+    _validate_workspace_uuid(workspace_uuid)
+    ws_config = load_workspace_config(workspace_uuid)
+    if not ws_config:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
+
+    workspace_dir = Path(ws_config.get("directory", ""))
+    if not workspace_dir.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    root = workspace_dir.resolve()
+
+    query = q.strip().casefold()
+    limit = max(1, min(int(limit), 500))
+    if not query:
+        return {"items": [], "truncated": False, "query": q}
+
+    items = []
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if not name.startswith(".") and name not in _SEARCH_SKIP_DIRS
+        )
+        for name in sorted(filenames):
+            if name.startswith(".") or query not in name.casefold():
+                continue
+            full = Path(dirpath) / name
+            try:
+                stat = full.stat()
+                rel_path = full.relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            items.append({
+                "name": name,
+                "path": rel_path,
+                "is_file": True,
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+            if len(items) >= limit:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    items.sort(key=lambda item: item["path"].casefold())
+    return {"items": items, "truncated": truncated, "query": q}
+
+
 # ----- File Preview (只读文本预览) -----
 @router.get("/api/file-preview")
 def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dict:

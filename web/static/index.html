@@ -93,6 +93,9 @@
                         <span class="section-title" id="files-title">文件</span>
                     </button>
                     <div class="files-header-actions">
+                        <button id="files-search-btn" class="btn-icon-flat" title="搜索文件" aria-pressed="false" disabled>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
+                        </button>
                         <button id="files-collapse-all-btn" class="btn-icon-flat" title="全部折叠" disabled>
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 4 12 10 18 4"/><polyline points="6 20 12 14 18 20"/></svg>
                         </button>
@@ -100,6 +103,9 @@
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                         </button>
                     </div>
+                </div>
+                <div class="file-search" id="file-search-wrap" hidden>
+                    <input id="file-search-input" type="search" placeholder="搜索文件（名称包含）" autocomplete="off" spellcheck="false" disabled>
                 </div>
                 <div id="file-tree" class="file-tree" role="tree" aria-label="工作区文件" tabindex="0"></div>
                 <div id="file-tree-status" class="file-tree-status" hidden></div>

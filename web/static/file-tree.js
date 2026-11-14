@@ -53,6 +53,15 @@ const FileTree = (() => {
         focusPath: null,
         rows: [],
         restoreScroll: null,
+        search: {
+            query: '',
+            items: null,
+            loading: false,
+            error: null,
+            truncated: false,
+            timer: null,
+            seq: 0,
+        },
         preview: {
             open: false,
             path: null,
@@ -379,6 +388,14 @@ const FileTree = (() => {
 
     // ---------- 渲染层 ----------
     function buildRows() {
+        if (state.search.query) {
+            return (state.search.items || []).map((item) => ({
+                item: { ...item, displayName: item.path },
+                level: 0,
+                type: 'file',
+            }));
+        }
+
         const rows = [];
 
         const walk = (dir, level) => {
@@ -493,7 +510,7 @@ const FileTree = (() => {
 
         const name = document.createElement('span');
         name.className = 'ft-name';
-        name.textContent = item.name;
+        name.textContent = item.displayName || item.name;
         name.title = item.path;
         div.appendChild(name);
 
@@ -509,11 +526,17 @@ const FileTree = (() => {
         if (!state.ws) {
             el.tree.appendChild(emptyNode('选择一个工作区'));
         } else if (state.rows.length === 0) {
-            const root = state.dirs.get('');
-            if (root?.loading) el.tree.appendChild(emptyNode('加载中…'));
-            else if (root?.error) el.tree.appendChild(emptyNode(`加载失败：${root.error}`));
-            else if (root?.items) el.tree.appendChild(emptyNode('空目录'));
-            else el.tree.appendChild(emptyNode(state.ws ? '加载中…' : '选择一个工作区'));
+            if (state.search.query) {
+                if (state.search.loading) el.tree.appendChild(emptyNode('搜索中…'));
+                else if (state.search.error) el.tree.appendChild(emptyNode(`搜索失败：${state.search.error}`));
+                else el.tree.appendChild(emptyNode('没有匹配的文件'));
+            } else {
+                const root = state.dirs.get('');
+                if (root?.loading) el.tree.appendChild(emptyNode('加载中…'));
+                else if (root?.error) el.tree.appendChild(emptyNode(`加载失败：${root.error}`));
+                else if (root?.items) el.tree.appendChild(emptyNode('空目录'));
+                else el.tree.appendChild(emptyNode(state.ws ? '加载中…' : '选择一个工作区'));
+            }
         } else {
             const frag = document.createDocumentFragment();
             state.rows.forEach((row, index) => frag.appendChild(renderRow(row, index)));
@@ -529,7 +552,13 @@ const FileTree = (() => {
     function updateStatus() {
         if (!el) return;
         let text = '';
-        if (state.ws && state.rows.length >= MAX_ROWS) {
+        if (state.search.query) {
+            if (state.search.truncated) {
+                text = `匹配项过多，仅显示前 ${state.search.items ? state.search.items.length : 0} 个`;
+            } else if (state.search.error) {
+                text = `搜索失败：${state.search.error}`;
+            }
+        } else if (state.ws && state.rows.length >= MAX_ROWS) {
             text = `仅显示前 ${MAX_ROWS} 项，请折叠部分目录后查看`;
         } else {
             const root = state.dirs.get('');
@@ -1943,6 +1972,7 @@ const FileTree = (() => {
         el.refreshBtn.disabled = disabled;
         el.collapseAllBtn.disabled = disabled;
         el.toggleBtn.disabled = disabled;
+        if (el.searchBtn) el.searchBtn.disabled = disabled;
     }
 
     function setWorkspace(ws) {
@@ -1976,6 +2006,13 @@ const FileTree = (() => {
         state.rows = [];
         state.restoreScroll = null;
         state.preview.requestToken += 1;
+        clearSearch(true);
+        if (el && el.searchInput) el.searchInput.disabled = !state.ws;
+        if (!state.ws && el && el.searchWrap && el.searchBtn) {
+            el.searchWrap.hidden = true;
+            el.searchBtn.classList.remove('active');
+            el.searchBtn.setAttribute('aria-pressed', 'false');
+        }
 
         if (state.preview.open && !first) {
             closePreview();
@@ -2009,10 +2046,88 @@ const FileTree = (() => {
         }
         await Promise.all(Array.from(targets).map((dir) => loadDir(dir, { force: true })));
         if (token !== state.token) return;
+        if (state.search.query) {
+            state.search.seq += 1;
+            runSearch(state.search.query, state.search.seq);
+        }
         render();
         if (state.preview.open) {
             reloadPreview({ preserveScroll: true, auto: true, keepEditing: true });
         }
+    }
+
+    // ---------- 文件搜索过滤 ----------
+    function toggleSearch(force) {
+        if (!el || !el.searchWrap || !el.searchBtn) return;
+        const show = force === undefined ? el.searchWrap.hidden : force;
+        el.searchWrap.hidden = !show;
+        el.searchBtn.classList.toggle('active', show);
+        el.searchBtn.setAttribute('aria-pressed', String(show));
+        if (show) {
+            el.searchInput.focus();
+        } else {
+            clearSearch();
+        }
+    }
+
+    function clearSearch(silent) {
+        const search = state.search;
+        if (search.timer) clearTimeout(search.timer);
+        search.timer = null;
+        search.seq += 1;
+        search.query = '';
+        search.items = null;
+        search.loading = false;
+        search.error = null;
+        search.truncated = false;
+        if (el && el.searchInput) el.searchInput.value = '';
+        if (!silent) render();
+    }
+
+    function applySearchQuery(value) {
+        const query = String(value || '').trim();
+        const search = state.search;
+        if (search.timer) {
+            clearTimeout(search.timer);
+            search.timer = null;
+        }
+        if (!query) {
+            clearSearch();
+            return;
+        }
+        search.seq += 1;
+        search.query = query;
+        search.items = null;
+        search.loading = true;
+        search.error = null;
+        search.truncated = false;
+        render();
+        const seq = search.seq;
+        search.timer = setTimeout(() => runSearch(query, seq), 180);
+    }
+
+    async function runSearch(query, seq) {
+        const search = state.search;
+        search.timer = null;
+        try {
+            const url = `/api/files/search?workspace_uuid=${encodeURIComponent(state.ws?.uuid || '')}`
+                + `&q=${encodeURIComponent(query)}&limit=200`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            if (seq !== search.seq) return;
+            search.items = data.items || [];
+            search.truncated = !!data.truncated;
+            search.loading = false;
+            search.error = null;
+        } catch (err) {
+            if (seq !== search.seq) return;
+            search.items = [];
+            search.loading = false;
+            search.error = err.message || '搜索失败';
+            search.truncated = false;
+        }
+        render();
     }
 
     function scheduleAutoRefresh() {
@@ -2031,6 +2146,9 @@ const FileTree = (() => {
             filesSection: document.getElementById('files-section'),
             hSplit: document.getElementById('sidebar-h-split'),
             toggleBtn: document.getElementById('files-toggle-btn'),
+            searchBtn: document.getElementById('files-search-btn'),
+            searchWrap: document.getElementById('file-search-wrap'),
+            searchInput: document.getElementById('file-search-input'),
             collapseAllBtn: document.getElementById('files-collapse-all-btn'),
             refreshBtn: document.getElementById('files-refresh-btn'),
             pane: document.getElementById('preview-pane'),
@@ -2063,6 +2181,18 @@ const FileTree = (() => {
         el.toggleBtn.addEventListener('click', () => toggleFilesSection());
         el.collapseAllBtn.addEventListener('click', () => collapseTree());
         el.refreshBtn.addEventListener('click', () => refreshTree());
+        if (el.searchBtn) {
+            el.searchBtn.addEventListener('click', () => toggleSearch());
+        }
+        if (el.searchInput) {
+            el.searchInput.addEventListener('input', () => applySearchQuery(el.searchInput.value));
+            el.searchInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    event.stopPropagation();
+                    toggleSearch(false);
+                }
+            });
+        }
 
         el.editBtn.addEventListener('click', startEditing);
         el.saveBtn.addEventListener('click', saveEditing);
