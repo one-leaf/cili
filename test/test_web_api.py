@@ -419,6 +419,19 @@ class TestAskUserDirectInput:
     # ─── 审批分支三态 ─────────────────────────────────────────────
 
     @staticmethod
+    def _as_approval_card(sm, tool_use_id, permission):
+        """把占位卡按真实审批卡形状标记（header + kind + 载荷）。
+
+        卡片类型以卡片自身为准（kind/header/载荷），PermissionStore.pending 只是
+        残留状态的兜底——所以审批用例必须造出真实审批卡，不能靠 pending 顶替。
+        """
+        sm.messages[1]["content"][0]["input"]["questions"][0]["header"] = "权限确认"
+        sm.messages[2]["content"][0]["_meta"].update({
+            "kind": "approval",
+            "pending_approval": dict(permission),
+        })
+
+    @staticmethod
     def _approval_agent(tmp_path):
         """构造带待批准命令的 agent（permission_store.pending 非空）。"""
         from types import SimpleNamespace
@@ -432,6 +445,7 @@ class TestAskUserDirectInput:
             "command": "rm -rf /tmp/x",
             "reason": "destructive recursive delete",
         })
+        TestAskUserDirectInput._as_approval_card(sm, tool_use_id, store.pending)
         rules = PermissionRules(tmp_path / "permission_rules.json")
         agent = SimpleNamespace(session=sm, permission_store=store, permission_rules=rules)
         return agent, tool_use_id, store, rules
@@ -478,6 +492,7 @@ class TestAskUserDirectInput:
             "reason": "工作区外写入",
             "kind": "path:write",
         })
+        TestAskUserDirectInput._as_approval_card(sm, tool_use_id, store.pending)
         rules = PermissionRules(tmp_path / "permission_rules.json")
         assert inject_ask_user_answer(sm, tool_use_id, f"批准写入 {REMEMBER_LABEL}",
                                       store, rules) is True
@@ -1527,3 +1542,63 @@ class TestAnswerAskUserApprovalRoute:
         assert exc.value.status_code == 400
         # 拦截后卡片仍待决、未产生副作用
         assert sm.messages[1]["content"][0]["_meta"]["completed"] is False
+
+
+class TestAnswerAskUserQuestionRoute:
+    """提问卡走结构化 ``answers``：结算 → 恢复 → 模型可读文本。"""
+
+    @staticmethod
+    def _placeholder(sm, tool_use_id):
+        for msg in sm.messages:
+            if not isinstance(msg.get("content"), list):
+                continue
+            for block in msg["content"]:
+                if block.get("type") == "tool_result" and block.get("tool_use_id") == tool_use_id:
+                    return block
+        raise AssertionError("未找到占位符")
+
+    @staticmethod
+    def _tool_use(sm, tool_use_id):
+        for msg in sm.messages:
+            if not isinstance(msg.get("content"), list):
+                continue
+            for block in msg["content"]:
+                if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
+                    return block
+        raise AssertionError("未找到 tool_use")
+
+    def test_structured_answers_resume(self, tmp_path, monkeypatch):
+        from web import routes_ask_user as routes
+
+        helper = TestAnswerAskUserApprovalRoute
+        sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
+        runner, _store = helper._runner(sm, None)
+        helper._patch(monkeypatch, runner)
+
+        helper._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id,
+            answers=[{"id": "0", "selected": ["Python"], "custom": ""},
+                     {"id": "1", "selected": [], "custom": "每周"}]),
+        )
+
+        assert len(runner.resume_calls) == 1
+        block = self._placeholder(sm, tool_use_id)
+        assert block["content"] == "你喜欢哪种语言？ Python\n多久反馈一次？ 每周"
+        assert block["_meta"]["outcome"] == "answered"
+        assert self._tool_use(sm, tool_use_id)["_meta"]["answered"] is True
+
+    def test_legacy_text_answer_resume(self, tmp_path, monkeypatch):
+        """Web 前端实际发的是 ``answer`` 文本（问题 答案 分行），不是 answers。"""
+        from web import routes_ask_user as routes
+
+        helper = TestAnswerAskUserApprovalRoute
+        sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
+        runner, _store = helper._runner(sm, None)
+        helper._patch(monkeypatch, runner)
+
+        answer = "你喜欢哪种语言？ Python\n多久反馈一次？ 每周"
+        helper._post(routes, routes.AnswerAskUserRequest(
+            tool_use_id=tool_use_id, answer=answer))
+
+        assert len(runner.resume_calls) == 1
+        assert self._placeholder(sm, tool_use_id)["content"] == answer

@@ -669,3 +669,283 @@ class TestResolveToolResultsForSession:
                     # 前端逻辑：block._meta.answered 为 falsy 时渲染交互式卡片
                     answered = block.get("_meta", {}).get("answered", False)
                     assert not answered, "未回答时 _meta.answered 应为 false/undefined，前端应渲染交互卡片"
+
+
+# ── 工具契约：参数校验与卡片契约 ──────────────────────────────────────
+
+class TestAskUserContract:
+    def test_empty_questions_is_error(self, runner):
+        """questions 为空 → error，不产生等待用户的占位符（否则会挂死会话）。"""
+        tool = get_tool_by_name(runner.tools, "ask_user")
+        result = tool.execute(questions=[])
+        assert result.error is True
+        assert result.completed is not False
+
+    def test_empty_questions_via_execute_tool(self, runner):
+        result = runner._execute_tool("ask_user", {"questions": []}, "tu_empty")
+        assert result["is_error"] is True
+        assert result["_meta"].get("completed") is not False
+
+    def test_schema_matches_card_contract(self, runner):
+        """1-4 题、每题 2-6 选项、多选题标记——前端卡片按这套字段渲染。"""
+        params = get_tool_by_name(runner.tools, "ask_user").parameters
+        questions = params["properties"]["questions"]
+        assert questions["minItems"] == 1 and questions["maxItems"] == 4
+        item = questions["items"]
+        assert item["required"] == ["question", "header", "options"]
+        assert item["properties"]["options"]["minItems"] == 2
+        assert item["properties"]["options"]["maxItems"] == 6
+        assert item["properties"]["multi_select"]["type"] == "boolean"
+
+
+# ── 结构化答案：多题 / 多选 / 自定义 / id 与下标 ─────────────────────
+
+def _question_session(tmp_path, questions, tool_use_id="tu_q1"):
+    """构造带提问卡占位符的最小 session 替身。"""
+    from types import SimpleNamespace
+
+    messages = [
+        {"role": "assistant", "content": [{
+            "type": "tool_use", "id": tool_use_id, "name": "ask_user",
+            "input": {"questions": questions},
+        }]},
+        {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": "Waiting for user input...", "is_error": False,
+            "_meta": {"tool_name": "ask_user", "completed": False},
+        }]},
+    ]
+    session_dir = tmp_path / "sessions" / "sess-q"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    sm = SimpleNamespace(messages=messages, session_dir=session_dir)
+    sm.saved = []
+    sm.save = lambda: sm.saved.append(True)
+    sm.mark_dirty = lambda: None
+    return sm, tool_use_id
+
+
+TWO_QUESTIONS = [
+    {"question": "你喜欢的颜色？", "header": "颜色",
+     "options": [{"label": "红色", "description": ""}, {"label": "蓝色", "description": ""}]},
+    {"question": "接受的方案？", "header": "方案", "multi_select": True,
+     "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""},
+                 {"label": "C", "description": ""}]},
+]
+
+
+class TestStructuredAnswers:
+    def test_multi_question_by_index(self, tmp_path):
+        from core.tools.ask_user import format_structured_answers
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        text = format_structured_answers(sm, tu, [
+            {"id": "0", "selected": ["红色"], "custom": ""},
+            {"id": "1", "selected": ["A", "B"], "custom": "并把 C 记下来"},
+        ])
+        assert text == "你喜欢的颜色？ 红色\n接受的方案？ A, B, 并把 C 记下来"
+
+    def test_by_question_id(self, tmp_path):
+        from core.tools.ask_user import format_structured_answers
+
+        questions = [dict(TWO_QUESTIONS[0], id="q-color"),
+                     dict(TWO_QUESTIONS[1], id="q-plan")]
+        sm, tu = _question_session(tmp_path, questions)
+        text = format_structured_answers(sm, tu, [
+            {"id": "q-plan", "selected": ["C"], "custom": ""},
+            {"id": "q-color", "selected": [], "custom": "紫色"},
+        ])
+        assert text == "你喜欢的颜色？ 紫色\n接受的方案？ C"
+
+    def test_missing_answer_keeps_question_line(self, tmp_path):
+        from core.tools.ask_user import format_structured_answers
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        text = format_structured_answers(sm, tu, [{"id": "0", "selected": ["蓝色"], "custom": ""}])
+        lines = text.split("\n")
+        assert lines[0] == "你喜欢的颜色？ 蓝色"
+        assert lines[1].startswith("接受的方案？")
+
+    def test_no_questions_falls_back_to_join(self, tmp_path):
+        from core.tools.ask_user import format_structured_answers
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        sm.messages[0]["content"] = []  # tool_use 丢失（旧数据/裁剪）
+        text = format_structured_answers(sm, tu, [
+            {"id": "0", "selected": ["A", "B"], "custom": "X"},
+        ])
+        assert text == "A, B, X"
+
+    def test_apply_answer_settles_and_writes_file(self, tmp_path):
+        from core.tools.ask_user import apply_answer, format_structured_answers
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        answers = [{"id": "0", "selected": ["红色"], "custom": ""},
+                   {"id": "1", "selected": ["A"], "custom": ""}]
+        assert apply_answer(sm, tu, answers=answers) == "answered"
+
+        expected = format_structured_answers(sm, tu, answers)
+        block = sm.messages[1]["content"][0]
+        assert block["content"] == expected
+        assert block["_meta"]["completed"] is True
+        assert block["_meta"]["outcome"] == "answered"
+        assert sm.messages[0]["content"][0]["_meta"]["answered"] is True
+        path = sm.session_dir / block["_meta"]["output_path"]
+        assert path.read_text(encoding="utf-8") == expected
+
+    def test_apply_answer_single_turn_idempotent(self, tmp_path):
+        from core.tools.ask_user import apply_answer
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        assert apply_answer(sm, tu, text="红色") == "answered"
+        # 重复提交不再改写历史
+        assert apply_answer(sm, tu, text="蓝色") != "answered"
+        assert "红色" in sm.messages[1]["content"][0]["content"]
+
+
+# ── 卡片分类：提问卡不能被审批状态劫持 ───────────────────────────────
+
+class TestClassifyPending:
+    def test_question_card(self, tmp_path):
+        from core.tools.ask_user import classify_pending
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        assert classify_pending(sm) == ("question", tu)
+
+    def test_settled_card_is_none(self, tmp_path):
+        from core.tools.ask_user import apply_answer, classify_pending
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        apply_answer(sm, tu, text="红色")
+        assert classify_pending(sm) is None
+
+    def test_legacy_approval_by_header(self, tmp_path):
+        """升级前的审批卡没有 kind/payload，靠 header「权限确认」识别。"""
+        from core.tools.ask_user import classify_pending
+
+        questions = [{"question": "批准该命令？", "header": "权限确认",
+                      "options": [{"label": "允许本次会话", "description": ""}]}]
+        sm, tu = _question_session(tmp_path, questions)
+        assert classify_pending(sm) == ("approval", tu)
+
+    def test_approval_payload_wins(self, tmp_path):
+        from core.tools.ask_user import APPROVAL_META_KEY, classify_pending
+
+        questions = [{"question": "批准该命令？", "header": "命令",
+                      "options": [{"label": "允许本次会话", "description": ""}]}]
+        sm, tu = _question_session(tmp_path, questions)
+        sm.messages[1]["content"][0]["_meta"].update({
+            "kind": "approval", APPROVAL_META_KEY: {"decision_id": "d1", "command": "ls"}})
+        assert classify_pending(sm) == ("approval", tu)
+
+    def test_question_card_with_approval_header_not_hijacked(self, tmp_path):
+        """header 恰好叫「权限确认」的普通提问卡，不能只因 header 被当成审批。"""
+        from core.tools.ask_user import apply_answer, classify_pending
+        from core.tools.permission import PermissionStore
+
+        questions = [{"question": "继续吗？", "header": "权限确认",
+                      "options": [{"label": "继续", "description": ""}]}]
+        sm, tu = _question_session(tmp_path, questions)
+        store = PermissionStore()
+        store.set_pending({"decision_id": "stale", "command": "rm -rf /tmp/x"})
+
+        assert classify_pending(sm, store) == ("question", tu)
+        assert apply_answer(sm, tu, text="继续", permission_store=store) == "answered"
+        block = sm.messages[1]["content"][0]
+        assert block["content"] == "继续"
+        assert block["_meta"]["outcome"] == "answered"
+
+    def test_question_card_not_hijacked_by_stale_pending(self, tmp_path):
+        """回归：单槽 pending 残留时，提问卡不能被判成审批卡。
+
+        曾经的顺序是「header → store.pending → tool_name」，残留 pending 会让
+        提问卡走审批分支，用户答案被按「未知文本＝拒绝」处理掉。
+        """
+        from core.tools.ask_user import classify_pending
+        from core.tools.permission import PermissionStore
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        store = PermissionStore()
+        store.set_pending({"decision_id": "stale", "command": "rm -rf /tmp/x"})
+        assert classify_pending(sm, store) == ("question", tu)
+
+    def test_apply_answer_treats_question_card_as_question(self, tmp_path):
+        """结算路径与分类路径一致：残留 pending 不该把提问卡结算成「拒绝」。"""
+        from core.tools.ask_user import apply_answer
+        from core.tools.permission import PermissionStore
+
+        sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
+        store = PermissionStore()
+        store.set_pending({"decision_id": "stale", "command": "rm -rf /tmp/x"})
+
+        outcome = apply_answer(
+            sm, tu,
+            answers=[{"id": "0", "selected": ["红色"], "custom": ""},
+                     {"id": "1", "selected": ["A"], "custom": ""}],
+            permission_store=store,
+        )
+        assert outcome == "answered"
+        block = sm.messages[1]["content"][0]
+        assert block["content"] == "你喜欢的颜色？ 红色\n接受的方案？ A"
+        assert block["_meta"]["outcome"] == "answered"
+        # 提问卡结算不碰别人的 pending
+        assert store.pending is not None
+
+
+# ── 端到端：答案真的进了模型上下文 ──────────────────────────────────
+
+class TestAnswerReachesModel:
+    @staticmethod
+    def _ask(runner, questions, tool_use_id="tu_ask_e2e"):
+        response = LLMResponse(
+            content=[ToolCallBlock(
+                id=tool_use_id, name="ask_user",
+                arguments=json.dumps({"questions": questions}),
+            )],
+            stop_reason="tool_use",
+        )
+        with patch.object(runner, "_call_llm", return_value=response):
+            runner.run("问用户一个问题")
+        return tool_use_id
+
+    def test_text_answer_is_visible_to_model(self, runner, monkeypatch):
+        import asyncio  # noqa: F401 —— 仅为与既有测试同风格保留
+
+        from core.output_sink import OutputSink
+        from core.tools.ask_user import find_pending_ask_user
+        from core.turn_dispatch import execute_turn, prepare_turn
+
+        tool_use_id = self._ask(runner, make_test_questions())
+        assert find_pending_ask_user(runner.session) == tool_use_id
+
+        seen: list[str] = []
+
+        def fake_llm(**_kw):
+            msgs = runner._prepare_messages_for_llm()
+            seen.append(json.dumps([m.to_dict() for m in msgs], ensure_ascii=False))
+            return LLMResponse(content=[TextBlock(text="收到")], stop_reason="end_turn")
+
+        monkeypatch.setattr(runner, "_call_llm", fake_llm)
+        prepared = prepare_turn(runner, content="红色")
+        assert prepared.mode == "resume"
+        execute_turn(prepared, OutputSink(), after_turn_hooks=False)
+
+        assert seen, "回答后应恢复循环并调用 LLM"
+        assert "你喜欢的颜色？ 红色" in seen[0]
+        assert "Waiting for user input..." not in seen[0], "占位文本不应原样送到模型"
+
+        block = next(b for m in runner.session.messages
+                     if m.get("role") == "user" and isinstance(m.get("content"), list)
+                     for b in m["content"]
+                     if b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id)
+        assert block["_meta"]["completed"] is True
+        assert block["_meta"]["outcome"] == "answered"
+        answer_file = runner.session.session_dir / block["_meta"]["output_path"]
+        assert answer_file.read_text(encoding="utf-8") == "你喜欢的颜色？ 红色"
+
+    def test_multi_question_other_text_repeats_each_question(self, runner):
+        """自由文本回答多个问题时，按卡片约定给每个问题都带上原文。"""
+        from core.tools.ask_user import build_other_answer
+
+        tool_use_id = self._ask(runner, TWO_QUESTIONS)
+        answer = build_other_answer(runner.session, tool_use_id, "都听你的")
+        assert answer == "你喜欢的颜色？ 都听你的\n接受的方案？ 都听你的"

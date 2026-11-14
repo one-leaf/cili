@@ -200,11 +200,27 @@ def _questions_of(session, tool_use_id: str) -> list[dict]:
     return list((block.get("input") or {}).get("questions") or [])
 
 
+def _is_legacy_approval_card(questions: list[dict]) -> bool:
+    """旧审批卡（无 kind/payload）：header + 审批选项标签双重判定。
+
+    只看 header 会把模型恰好用「权限确认」当 header 的普通提问卡误判为审批；
+    旧审批卡一定带「允许本次会话」选项，用它作为第二重信号。
+    """
+    if not questions:
+        return False
+    q = questions[0]
+    if str(q.get("header") or "") != "权限确认":
+        return False
+    labels = {str(o.get("label") or "") for o in (q.get("options") or [])
+              if isinstance(o, dict)}
+    return APPROVE_LABEL in labels
+
+
 def classify_pending(session, permission_store=None) -> tuple[str, str] | None:
     """返回 ("approval"|"question", tool_use_id)；无待决占位符时返回 None。
 
     审批判定优先级：显式 `_meta.kind=="approval"` / `pending_approval` 载荷 →
-    旧卡片（无标记）但 PermissionStore 有 pending。
+    旧审批卡（header + 审批标签）→ 卡片自身类型 → PermissionStore 残留兜底。
     """
     block = _find_pending_block(session)
     if block is None:
@@ -214,12 +230,14 @@ def classify_pending(session, permission_store=None) -> tuple[str, str] | None:
     if meta.get("kind") == "approval" or APPROVAL_META_KEY in meta:
         return "approval", tool_use_id
     questions = _questions_of(session, tool_use_id)
-    if questions and str(questions[0].get("header") or "") == "权限确认":
+    if _is_legacy_approval_card(questions):
         return "approval", tool_use_id
+    # 卡片自身先定类型，再看 store 残留：单槽 pending 可能因竞态没清掉，不能让一张
+    # 提问卡被残留 pending 劫持成审批——那会把用户答案按「未知文本=拒绝」处理掉。
+    if meta.get("kind") == "question" or meta.get("tool_name") == "ask_user":
+        return "question", tool_use_id
     if permission_store is not None and getattr(permission_store, "pending", None):
         return "approval", tool_use_id
-    if meta.get("tool_name") == "ask_user":
-        return "question", tool_use_id
     return None
 
 
@@ -505,17 +523,21 @@ def apply_answer(
         return "expired" if meta.get("outcome") == "expired" else "not_found"
     permission = meta.get(APPROVAL_META_KEY)
     questions = _questions_of(session, tool_use_id)
-    legacy_approval = bool(questions) and str(questions[0].get("header") or "") == "权限确认"
+    legacy_approval = _is_legacy_approval_card(questions)
+    store_pending = bool(
+        permission_store is not None and getattr(permission_store, "pending", None))
+    # 类型以卡片自身为准，与 classify_pending 同一优先级：单槽 pending 残留时提问卡
+    # 不能被判成审批，否则用户答案会被当成「未知文本＝拒绝」直接吃掉。
+    hint = classify_pending(session, permission_store)
     is_approval = (
         meta.get("kind") == "approval"
         or permission is not None
         or legacy_approval
-        or (permission_store is not None and getattr(permission_store, "pending", None))
+        or (hint is not None and hint[0] == "approval" and hint[1] == tool_use_id)
     )
     # 旧卡片缺失载荷（升级前发出、重启后 pending 已丢）：退化为自由文本答复，
     # 不做任何批准/落盘副作用（fail closed）。
-    if is_approval and not permission and not (
-            permission_store is not None and getattr(permission_store, "pending", None)):
+    if is_approval and not permission and not store_pending:
         is_approval = False
 
     if is_approval:
