@@ -589,6 +589,17 @@ class Runner:
 
     # ========== 压缩 ==========
 
+    def _record_compaction_event(self, content: str, event: dict) -> None:
+        """把 L1/L3 压缩记为仅 UI 可见的事件行（有 SessionStore 时）。"""
+        session = getattr(self.runner, "session", None)
+        append = getattr(session, "append_ui_event", None)
+        if not callable(append):
+            return
+        try:
+            append(content, event)
+        except Exception as exc:  # noqa: BLE001 —— 记录失败不影响压缩主流程
+            logger.warning("[上下文] 记录压缩事件失败: %s", exc)
+
     def _check_and_compress(self) -> None:
         """3-layer compression before LLM call.
 
@@ -609,6 +620,10 @@ class Runner:
             logger.debug(f"[Microcompact] 标记 {invalidated} 条消息为无效")
             self.runner._invalidate_message_cache()
             self.runner.cache_state.on_compression(1)
+            self._record_compaction_event(
+                f"[上下文压缩] L1 轻量压缩：标记 {invalidated} 条消息无效",
+                {"layer": 1, "invalidated": invalidated},
+            )
 
         # Calculate tokens from the projected request shape.
         messages = self.build_projected_messages()
@@ -656,11 +671,19 @@ class Runner:
                 if demoted > 0:
                     logger.info(f"[上下文] 当前回合图片降级 {demoted} 张")
                     self.runner.cache_state.on_compression(3)
+                    self._record_compaction_event(
+                        f"[上下文压缩] L3 紧急压缩：降级 {demoted} 张图片",
+                        {"layer": 3, "images_demoted": demoted},
+                    )
             else:
                 saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
                 if saved > 0:
                     logger.info(f"[上下文] 图片替换完成，节省 {saved} 字节")
                     self.runner.cache_state.on_compression(3)
+                    self._record_compaction_event(
+                        f"[上下文压缩] L3 紧急压缩：替换旧图片，节省 {saved} 字节",
+                        {"layer": 3, "bytes_saved": saved},
+                    )
 
         # 上述各层压缩都可能原地修改 self.messages，统一失效 valid 缓存
         self.runner._invalidate_message_cache()
@@ -719,6 +742,7 @@ class Runner:
             pos for pos, msg in enumerate(valid_messages[:split_idx])
             if msg.get("_meta", {}).get("pinned")
         }
+        invalidated_count = max(0, split_idx - len(pinned_positions))
         cursor = 0
         for msg in all_messages:
             if cursor >= split_idx:
@@ -731,18 +755,37 @@ class Runner:
                 msg["_meta"]["valid"] = False
             cursor += 1
 
-        # Add summary messages（summary=True：进 commits 视图内嵌摘要，不进 jsonl，
-        # UI 完整历史保留压缩前原始消息，不展示摘要）
+        # Add summary messages：随会话历史落盘（persist_history），
+        # 时间线据此展示压缩点；模型视图仍把它们当作正常摘要消息。
         self.runner.add_message(
             "user",
             "[Our previous conversation has been compacted due to context length.]",
-            meta={"summary": True},
+            meta={"summary": True, "persist_history": True},
         )
-        self.runner.add_message("assistant", summary, meta={"summary": True})
+        self.runner.add_message(
+            "assistant",
+            summary,
+            meta={"summary": True, "persist_history": True},
+        )
 
         self.runner._invalidate_message_cache()
 
         new_tokens = self.runner._count_messages_tokens(self.runner.get_valid_messages())
+        compaction_meta = {
+            "layer": 2,
+            "before_tokens": total_tokens,
+            "after_tokens": new_tokens,
+            "invalidated": invalidated_count,
+            "reason": reason or "threshold",
+            "keep_user_messages": keep_user_messages,
+        }
+        try:
+            last = self.runner.messages[-1] if self.runner.messages else None
+            if isinstance(last, dict) and (last.get("_meta") or {}).get("summary"):
+                last.setdefault("_meta", {})["compaction"] = compaction_meta
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[上下文] 记录完整压缩元数据失败: %s", exc)
+
         logger.info(f"[Full Compact] 完成: {total_tokens:,} → {new_tokens:,} tokens")
         return total_tokens, new_tokens
 
@@ -931,6 +974,10 @@ class Runner:
         invalidated = microcompact_mark_orphans_and_errors(self.runner.messages)
         if invalidated:
             self.runner._invalidate_message_cache()
+            self._record_compaction_event(
+                f"[上下文压缩] L1 轻量压缩：标记 {invalidated} 条消息无效",
+                {"layer": 1, "invalidated": invalidated},
+            )
 
         messages = self.build_projected_messages(force_reference=True)
         total = self.runner._count_messages_tokens(messages)

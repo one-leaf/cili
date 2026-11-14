@@ -51,11 +51,18 @@ INTERNAL_META_FIELDS = frozenset({
     "tool_name", "multimodal", "completed", "answered", "exec_id",
     "id", "seq", "summary", "error_notice", "background_notification",
     "compacted", "file_card", "model",
+    "persist_history", "compaction", "compaction_event",
     "turn_id", "path", "attachment_id", "sha256", "width", "height",
     "reference_only", "image_refs", "image_index", "media_type",
 })
 # 兼容旧名（模块内引用）
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
+
+# 只属于 messages.jsonl 行、不写入 index.json commits 的压缩元数据。
+# 重载时由 _message_from_line 从 jsonl 行恢复，避免两处存储漂移。
+_HISTORY_ONLY_META = frozenset({
+    "summary", "persist_history", "compaction", "compaction_event",
+})
 
 
 def _strip_internal_meta(meta: dict) -> dict | None:
@@ -260,6 +267,17 @@ def _jsonl_line(msg: dict, seq: int, image_mode: str = "full") -> dict:
         "role": msg.get("role"),
         "content": _strip_block_meta(content),
     }
+    # 压缩信息需要跨重载识别；只保存白名单键，避免把内部 _meta 写进 jsonl
+    line_meta: dict[str, Any] = {}
+    event_meta = meta.get("compaction_event")
+    if isinstance(event_meta, dict):
+        line_meta["compaction_event"] = event_meta
+    if isinstance(meta.get("compaction"), dict):
+        line_meta["compaction"] = meta["compaction"]
+    if meta.get("summary"):
+        line_meta["summary"] = True
+    if line_meta:
+        line["meta"] = line_meta
     created_at = meta.get("created_at")
     if not created_at:
         # 兜底注入（agent.add_message 等未走 session.add_message 的路径）
@@ -274,6 +292,9 @@ def _jsonl_line(msg: dict, seq: int, image_mode: str = "full") -> dict:
 def _message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
     """从 jsonl 行 + 消息级 _meta 重建内存消息。"""
     meta = dict(msg_meta or {})
+    line_meta = line.get("meta")
+    if isinstance(line_meta, dict):
+        meta.update(line_meta)
     meta["id"] = line.get("id") or meta.get("id") or generate_short_id()
     meta["seq"] = seq
     created_at = line.get("created_at")
@@ -283,11 +304,17 @@ def _message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
 
 
 def _commit_for_message(msg: dict, seq: int) -> dict:
-    """普通消息 → 提交记录（内容读 jsonl，_meta 内嵌）。"""
+    """普通消息 → 提交记录（内容读 jsonl，_meta 内嵌）。
+
+    压缩元数据只存 messages.jsonl 行，不写入 commits；重载时从行恢复。
+    """
     meta = msg.get("_meta") or {}
     return {
         "seq": seq,
-        "msg_meta": {k: v for k, v in meta.items() if k not in ("id", "seq")},
+        "msg_meta": {
+            k: v for k, v in meta.items()
+            if k not in ("id", "seq") and k not in _HISTORY_ONLY_META
+        },
         "blocks": _extract_block_meta(msg.get("content")),
     }
 
@@ -399,9 +426,10 @@ def ensure_new_format(session_dir: Path | str) -> bool:
 
 
 def load_history_messages(session_dir: Path | str) -> list[dict]:
-    """完整历史（UI 数据源）：所有 jsonl 行 + 从 commits 合并 _meta。
+    """聊天界面历史：所有 jsonl 行 + 从 commits 合并 _meta。
 
-    不解析外部工具输出文件（由 web_api._resolve_tool_results_for_session 完成）。
+    压缩摘要与 compaction_event 行不进入聊天界面（由「关于会话」时间线展示），
+    保持与旧行为一致。不解析外部工具输出文件。
     """
     ensure_new_format(session_dir)
     session_dir = Path(session_dir)
@@ -412,6 +440,9 @@ def load_history_messages(session_dir: Path | str) -> list[dict]:
         seq = line.get("seq")
         commit = by_seq.get(seq)
         msg = _message_from_line(line, commit.get("msg_meta") if commit else None, seq)
+        meta = msg.get("_meta") or {}
+        if meta.get("summary") or meta.get("compaction_event"):
+            continue
         if commit:
             _merge_block_meta(msg.get("content"), commit.get("blocks"))
         messages.append(msg)
@@ -701,6 +732,18 @@ class SessionStore:
             with lock:
                 self._append_pending_messages()
 
+    def append_ui_event(self, content: str, event: dict[str, Any]) -> None:
+        """追加一条仅 UI 可见的事件行（如 L1/L3 压缩）。
+
+        写入 messages.jsonl，但不进入模型提交视图；重载后由 line.meta 识别。
+        """
+        self.add_message(
+            "system",
+            content,
+            meta={"compaction_event": dict(event)},
+            flush=True,
+        )
+
     def _bump_index_version(self) -> None:
         """线程安全递增 _index_version（并发 append/revert 下 `+=` 非原子，审查 P1-2）。"""
         with self._counter_lock:
@@ -732,6 +775,8 @@ class SessionStore:
                 continue  # send_user_file 的出站文件卡片（下载链接），仅 UI 展示
             if meta.get("delivery_notice"):
                 continue  # 交付回执（哪些文件没发出去），仅 UI 展示
+            if meta.get("compaction_event"):
+                continue  # 压缩事件行仅 UI 展示，不进入 LLM 上下文
 
             role = msg.get("role")
             content = msg.get("content", "")
@@ -863,8 +908,8 @@ class SessionStore:
             if not isinstance(msg, dict):
                 continue
             meta = msg.get("_meta") or {}
-            if meta.get("summary"):
-                continue  # 摘要只进提交视图，不进 jsonl
+            if meta.get("summary") and not meta.get("persist_history"):
+                continue  # 旧会话的摘要仍只进提交视图；新压缩摘要随历史落盘
             seq = meta.get("seq")
             if seq is None:
                 seq = next_seq
@@ -913,9 +958,11 @@ class SessionStore:
             if not isinstance(msg, dict):
                 continue
             meta = msg.get("_meta") or {}
-            if meta.get("summary"):
+            if meta.get("compaction_event"):
+                continue  # 仅 UI 可见的压缩事件行，不进模型提交视图
+            if meta.get("summary") and not meta.get("persist_history"):
                 commits.append(_summary_commit(msg))
-                continue  # 摘要只进提交视图，不进 jsonl（UI 不显示摘要）
+                continue  # 旧会话摘要只进提交视图（新摘要已随 jsonl 落盘）
             seq = meta.get("seq")
             if seq is None:
                 # 未落 jsonl 的新消息（如并发 add_message 在 _append_pending_messages
@@ -1007,6 +1054,9 @@ class SessionStore:
         for line in lines:
             seq = line.get("seq", -1)
             if seq > max_committed:
+                line_meta = line.get("meta")
+                if isinstance(line_meta, dict) and line_meta.get("compaction_event"):
+                    continue  # 仅 UI 事件，不进入模型视图
                 msg = _message_from_line(line, None, seq)
                 _apply_model_content_rules(msg)
                 self.messages.append(msg)

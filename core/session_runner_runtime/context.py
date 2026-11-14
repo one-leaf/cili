@@ -94,6 +94,8 @@ class ConversationStore:
             return False  # send_user_file 的出站文件卡片（下载链接），仅 UI 展示
         if meta.get("delivery_notice"):
             return False  # 交付回执（哪些文件没发出去），仅 UI 展示
+        if meta.get("compaction_event"):
+            return False  # 压缩事件行仅 UI 展示，不进入 LLM 上下文
         content = msg.get("content", "")
         if isinstance(content, list) and not content:
             return False

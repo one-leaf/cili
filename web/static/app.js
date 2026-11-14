@@ -1732,6 +1732,7 @@ function toggleSessionItemMenu(session, btn) {
         <div class="session-dropdown-item" data-action="rename">修改名称</div>
         ${showHide ? `<div class="session-dropdown-item" data-action="hide">${hideLabel}</div>` : ''}
         <div class="session-dropdown-item" data-action="fork">分支会话</div>
+        <div class="session-dropdown-item" data-action="about">关于会话</div>
         ${showDelete ? '<div class="session-dropdown-item" data-action="delete">删除会话</div>' : ''}
         ${showShare ? '<div class="session-dropdown-item" data-action="share">分享会话</div>' : ''}
     `;
@@ -1892,6 +1893,9 @@ async function handleSessionAction(session, action) {
             break;
         case 'fork':
             await forkSession(session);
+            break;
+        case 'about':
+            if (window.SessionAbout) window.SessionAbout.open(session);
             break;
         case 'delete':
             await deleteSession(session);

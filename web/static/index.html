@@ -276,6 +276,38 @@
         </div>
     </div>
 
+    <!-- Session About Modal -->
+    <div id="session-about-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="session-about-modal"></div>
+        <div class="modal-content session-about-modal">
+            <div class="modal-header">
+                <h2>关于会话</h2>
+                <button class="modal-close" data-modal="session-about-modal">&times;</button>
+            </div>
+            <div class="modal-body session-about-body">
+                <div class="about-head">
+                    <div class="about-title-row">
+                        <span id="about-name" class="about-name"></span>
+                        <span id="about-hidden" class="about-badge" hidden>已隐藏</span>
+                        <code id="about-id"></code>
+                        <button type="button" id="about-copy-id" class="btn btn-small">复制</button>
+                    </div>
+                    <div id="about-meta" class="about-meta"></div>
+                    <div id="about-usage" class="about-meta"></div>
+                </div>
+                <div class="about-filters" id="about-filters">
+                    <button type="button" class="about-filter active" data-about-filter="all">全部</button>
+                    <button type="button" class="about-filter" data-about-filter="user,assistant">对话</button>
+                    <button type="button" class="about-filter" data-about-filter="tool">工具</button>
+                    <button type="button" class="about-filter" data-about-filter="compaction">压缩</button>
+                </div>
+                <div id="about-timeline" class="about-timeline">
+                    <div class="about-loading">加载中…</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="settings-modal"></div>
@@ -1126,6 +1158,7 @@
     <script src="/static/file-manager.js"></script>
     <script src="/static/memory.js"></script>
     <script src="/static/cron_settings.js"></script>
+    <script src="/static/session_about.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/context-gauge.js"></script>
     <script src="/static/chat.js"></script>
