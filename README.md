@@ -294,7 +294,7 @@ cili/
 │       ├── session.html        # 会话页面
 │       ├── app.js / chat.js    # 前端逻辑
 │       ├── memory.js           # 记忆管理页面
-│       ├── settings.js         # 设置说明（加载 docs/settings-guide.md）
+│       ├── settings.js         # 设置相关逻辑
 │       ├── file-manager.js     # 文件管理
 │       ├── utils.js            # 工具函数
 │       └── style.css           # 样式

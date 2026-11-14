@@ -281,13 +281,21 @@ async function loadFooter() {
         const footerContent = document.getElementById('footer-content');
         if (footerContent) {
             footerContent.innerHTML = `
+                <button class="theme-toggle" id="settings-btn" title="系统设置" onclick="openSettings()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <line x1="4" y1="6" x2="20" y2="6"></line>
+                        <circle cx="9" cy="6" r="2"></circle>
+                        <line x1="4" y1="12" x2="20" y2="12"></line>
+                        <circle cx="15" cy="12" r="2"></circle>
+                        <line x1="4" y1="18" x2="20" y2="18"></line>
+                        <circle cx="7" cy="18" r="2"></circle>
+                    </svg>
+                </button>
                 <button class="theme-toggle" id="theme-toggle-btn" title="切换亮色/暗色主题">
                     ${getThemeIcon()}
                 </button>
-                <span class="footer-text">
+                <span class="footer-text" title="${data.app_name} by ${data.author} · ${data.version}">
                     <span class="footer-dev">${data.app_name}</span>
-                    <span class="footer-sep">by</span>
-                    <span class="footer-company">${data.author}</span>
                     <span class="footer-sep">·</span>
                     <span class="footer-version">${data.version}</span>
                 </span>
@@ -716,8 +724,7 @@ function setupEventListeners() {
         }
     });
 
-    // Global settings
-    document.getElementById('settings-btn').addEventListener('click', openSettings);
+    // Global settings 按钮由 loadFooter() 注入（内联 onclick）
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
 
     // Workspace settings
@@ -953,6 +960,7 @@ async function handleWorkspaceChange() {
         document.getElementById('footer-content').innerHTML = _footerOriginalHTML;
         _footerOriginalHTML = null;
     }
+    setFooterAboveFiles(false);
     savePosition({ workspace_uuid: selectedUuid });
 
     if (!currentWorkspace) {
@@ -1613,8 +1621,22 @@ function renderSessions() {
 // 保存的原始 footer 内容
 let _footerOriginalHTML = null;
 
+// 多选时把批量操作面板移到文件列表上方，普通状态放回侧栏底部
+function setFooterAboveFiles(above) {
+    const footer = document.querySelector('.sidebar-footer');
+    const files = document.getElementById('files-section');
+    if (!footer || !files || !footer.parentElement) return;
+    const parent = footer.parentElement;
+    if (above) {
+        if (footer.nextElementSibling !== files) parent.insertBefore(footer, files);
+    } else if (footer !== parent.lastElementChild) {
+        parent.appendChild(footer);
+    }
+}
+
 // 更新底部工具条（复用 footer-content）
 function updateFooterToolbar() {
+    setFooterAboveFiles(isMultiSelectMode);
     const footerContent = document.getElementById('footer-content');
     if (isMultiSelectMode) {
         const count = selectedSessions.size;
