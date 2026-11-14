@@ -156,6 +156,23 @@ class BaseSessionRunner:
                     block.setdefault("_meta", {}).setdefault("turn_id", self.current_turn_id)
         self.context.add_message(role, content, meta)
 
+    def insert_message(self, index: int, role: str, content: Any,
+                       meta: dict | None = None) -> None:
+        """在消息列表中段插入一条消息（压缩摘要插到当前轮之前）。"""
+        if getattr(self, "session", None) is not None:
+            self.session.insert_message(index, role, content, meta=meta)
+            return
+        from core.session import generate_short_id
+        from datetime import datetime
+
+        index = max(0, min(int(index), len(self.context.messages)))
+        msg_meta = dict(meta or {})
+        msg_meta.setdefault("id", generate_short_id())
+        msg_meta.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self.context.messages.insert(index, {
+            "role": role, "content": content, "_meta": msg_meta,
+        })
+
     def build_projected_messages(self, *, force_reference: bool = False) -> list[dict]:
         """构建与实际请求一致的投影消息（委托 Runner）。"""
         return self.runner.build_projected_messages(force_reference=force_reference)

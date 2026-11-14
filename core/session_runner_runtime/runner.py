@@ -50,6 +50,9 @@ _FALLBACK_EXEC_LOCK = threading.Lock()
 # 压缩常量
 KEEP_USER_MESSAGES = 3
 FULL_COMPACT_TOKEN_RATIO = 0.80
+# 常规 L2 压缩推迟到下一轮开始前（用户输入触发）；只有超过该硬阈值才在
+# 当前工具循环中途紧急压缩，避免打断 thinking/tool_use 的连续回合。
+EMERGENCY_COMPACT_TOKEN_RATIO = 0.95
 _LARGE_OUTPUT_THRESHOLD = 10_000
 
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
@@ -600,6 +603,62 @@ class Runner:
         except Exception as exc:  # noqa: BLE001 —— 记录失败不影响压缩主流程
             logger.warning("[上下文] 记录压缩事件失败: %s", exc)
 
+    def _user_text_from_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        return ""
+
+    def _current_turn_start_index(self) -> int | None:
+        """当前轮第一条消息在 all_messages 中的下标（用于紧急压缩边界）。"""
+        messages = self.runner.messages
+        turn_id = str(getattr(self.runner, "current_turn_id", "") or "")
+        if turn_id:
+            for idx, msg in enumerate(messages):
+                if msg.get("role") != "user":
+                    continue
+                if str((msg.get("_meta") or {}).get("turn_id") or "") == turn_id:
+                    return idx
+        # 旧会话/无 turn_id：退回最后一条非 pinned 的纯文本 user 消息
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            meta = msg.get("_meta") or {}
+            if msg.get("role") == "user" and not meta.get("pinned") and not meta.get("summary") \
+                    and isinstance(msg.get("content"), str):
+                return idx
+        return None
+
+    def _valid_index_for_all(self, all_index: int) -> int:
+        """all_messages 下标 → 有效消息下标（游标对齐 is_message_in_context）。"""
+        cursor = 0
+        for idx, msg in enumerate(self.runner.messages):
+            if idx == all_index:
+                return cursor
+            if self.runner.context.is_message_in_context(msg):
+                cursor += 1
+        return cursor
+
+    def _current_turn_user_text(self, all_start: int | None) -> str:
+        if all_start is None:
+            return ""
+        messages = self.runner.messages
+        turn_id = str(getattr(self.runner, "current_turn_id", "") or "")
+        for msg in messages[all_start:]:
+            if msg.get("role") != "user":
+                continue
+            meta = msg.get("_meta") or {}
+            if turn_id and str(meta.get("turn_id") or "") != turn_id:
+                continue
+            text = self._user_text_from_content(msg.get("content"))
+            if text.strip():
+                return text
+        return ""
+
     def _check_and_compress(self) -> None:
         """3-layer compression before LLM call.
 
@@ -630,21 +689,51 @@ class Runner:
         total_tokens = self.runner._count_messages_tokens(messages)
 
         # Layer 2: Full compact
+        # 常规阈值只提示，推迟到下一轮开始前（maybe_full_compact_for_user_input）；
+        # 只有接近硬上限时才在当前回合中途紧急压缩，避免在工具循环里插入摘要轮。
         full_compact_threshold = int(MAX_TOKENS * FULL_COMPACT_TOKEN_RATIO)
+        emergency_threshold = int(MAX_TOKENS * EMERGENCY_COMPACT_TOKEN_RATIO)
 
-        if total_tokens > full_compact_threshold:
-            logger.info(
-                f"[上下文] token 超过阈值 ({total_tokens:,} > {full_compact_threshold:,})，"
-                f"执行完整压缩"
+        if total_tokens > emergency_threshold:
+            logger.warning(
+                f"[上下文] token 超过硬阈值 ({total_tokens:,} > {emergency_threshold:,})，"
+                f"执行紧急完整压缩"
             )
             try:
-                self._perform_full_compact(KEEP_USER_MESSAGES)
+                all_start = self._current_turn_start_index()
+                user_text = self._current_turn_user_text(all_start)
+                valid_start = (
+                    self._valid_index_for_all(all_start)
+                    if all_start is not None and all_start > 0
+                    else 0
+                )
+                if valid_start > 0:
+                    # 只压缩当前轮开始之前的历史，摘要插到本轮之前；本轮工具照常继续
+                    self._perform_full_compact(
+                        KEEP_USER_MESSAGES,
+                        next_steps=user_text or None,
+                        reason="emergency_turn_boundary",
+                        split_idx=valid_start,
+                        insert_before=all_start,
+                    )
+                else:
+                    # 无法定位当前轮边界（如 autonomous）：退回常规切分
+                    self._perform_full_compact(
+                        KEEP_USER_MESSAGES,
+                        next_steps=user_text or None,
+                        reason="emergency",
+                    )
                 self.runner.cache_state.reset_after_compact()   # 先清旧状态（含 last_cache_read 基线）
                 self.runner.cache_state.on_compression(2)       # 再标记 L2，供下次失效诊断
                 # 压缩改写了历史，必须重建投影；未压缩时复用上面的结果
                 messages = self.build_projected_messages()
             except Exception as e:
                 logger.warning(f"[上下文] 完整压缩失败: {e}")
+        elif total_tokens > full_compact_threshold:
+            logger.info(
+                f"[上下文] token 超过常规阈值 ({total_tokens:,} > {full_compact_threshold:,})，"
+                f"将在下一轮开始前压缩"
+            )
 
         # Layer 3: Emergency body size (only images)
         body_size = self._estimate_request_body_size(messages)
@@ -694,10 +783,13 @@ class Runner:
         *,
         next_steps: str | None = None,
         reason: str = "",
+        split_idx: int | None = None,
+        insert_before: int | None = None,
     ) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
 
-        Returns (before_tokens, after_tokens) tuple.
+        ``split_idx`` 可显式指定切分点（相对有效消息）；``insert_before`` 可把摘要
+        插入到 all_messages 的指定位置（紧急压缩时插到当前轮之前）。默认追加到末尾。
 
         摘要复用主对话的 system+tools+messages prefix，末尾追加摘要指令。
         Anthropic cache 按 prefix 匹配，前面全部 cache_read，只有末尾指令是 cache_write。
@@ -708,7 +800,9 @@ class Runner:
 
         # Find split point
         valid_messages = self.runner.get_valid_messages()
-        split_idx = self.runner._find_split_by_user_messages(valid_messages, keep_user_messages)
+        if split_idx is None:
+            split_idx = self.runner._find_split_by_user_messages(valid_messages, keep_user_messages)
+        split_idx = max(0, min(int(split_idx), len(valid_messages)))
         if split_idx <= 0:
             raise ValueError("Not enough messages to compress")
 
@@ -755,18 +849,23 @@ class Runner:
                 msg["_meta"]["valid"] = False
             cursor += 1
 
-        # Add summary messages：随会话历史落盘（persist_history），
-        # 时间线据此展示压缩点；模型视图仍把它们当作正常摘要消息。
-        self.runner.add_message(
-            "user",
-            "[Our previous conversation has been compacted due to context length.]",
-            meta={"summary": True, "persist_history": True},
-        )
-        self.runner.add_message(
-            "assistant",
-            summary,
-            meta={"summary": True, "persist_history": True},
-        )
+        # 摘要作为 user 角色上下文写入，而不是伪造一个没有 thinking 块的 assistant 轮：
+        # thinking 模式要求 assistant 消息原样回传思考块，本地合成的 assistant 摘要
+        # 会触发网关 400（"content[].thinking ... must be passed back"）。
+        summary_content = "[Previous conversation summary]\n\n" + summary
+        if insert_before is None:
+            self.runner.add_message(
+                "user", summary_content,
+                meta={"summary": True, "persist_history": True},
+            )
+            summary_msg = self.runner.messages[-1] if self.runner.messages else None
+        else:
+            insert_at = max(0, min(int(insert_before), len(self.runner.messages)))
+            self.runner.insert_message(
+                insert_at, "user", summary_content,
+                meta={"summary": True, "persist_history": True},
+            )
+            summary_msg = self.runner.messages[insert_at]
 
         self.runner._invalidate_message_cache()
 
@@ -780,9 +879,8 @@ class Runner:
             "keep_user_messages": keep_user_messages,
         }
         try:
-            last = self.runner.messages[-1] if self.runner.messages else None
-            if isinstance(last, dict) and (last.get("_meta") or {}).get("summary"):
-                last.setdefault("_meta", {})["compaction"] = compaction_meta
+            if isinstance(summary_msg, dict) and (summary_msg.get("_meta") or {}).get("summary"):
+                summary_msg.setdefault("_meta", {})["compaction"] = compaction_meta
         except Exception as exc:  # noqa: BLE001
             logger.warning("[上下文] 记录完整压缩元数据失败: %s", exc)
 

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
+from core.base_session_runner import BaseSessionRunner
 from core.session import SessionStore, load_history_messages, read_jsonl, read_view
 from core.session_timeline import build_timeline
+from test.conftest import make_dgx_config
 
 
 def _make_session(tmp_path: Path):
@@ -21,8 +24,8 @@ def test_compaction_summary_persisted_to_jsonl(tmp_path):
     sm = _make_session(tmp_path)
     sm.add_message("user", "生成日报", flush=True)
     sm.add_message(
-        "assistant",
-        "压缩摘要正文",
+        "user",
+        "[Previous conversation summary]\n\n压缩摘要正文",
         meta={
             "summary": True,
             "persist_history": True,
@@ -79,13 +82,7 @@ def test_summary_reload_does_not_duplicate(tmp_path):
     sm.add_message("user", "问题", flush=True)
     sm.add_message(
         "user",
-        "[Our previous conversation has been compacted due to context length.]",
-        meta={"summary": True, "persist_history": True},
-        flush=True,
-    )
-    sm.add_message(
-        "assistant",
-        "摘要",
+        "[Previous conversation summary]\n\n摘要",
         meta={
             "summary": True,
             "persist_history": True,
@@ -98,12 +95,13 @@ def test_summary_reload_does_not_duplicate(tmp_path):
 
     loaded = SessionStore.load_session(sm.session_id, sm.sessions_dir)
     assert loaded is not None
-    assert len(loaded.messages) == 3
+    assert len(loaded.messages) == 2
+    assert loaded.messages[-1]["role"] == "user"
     loaded.save()
     loaded2 = SessionStore.load_session(sm.session_id, sm.sessions_dir)
     assert loaded2 is not None
-    assert len(loaded2.messages) == 3
-    assert len(_jsonl_rows(loaded2)) == 3
+    assert len(loaded2.messages) == 2
+    assert len(_jsonl_rows(loaded2)) == 2
 
 
 def test_timeline_orders_oldest_first_and_pairs_tools(tmp_path):
@@ -147,6 +145,38 @@ def test_timeline_strips_untrusted_data_markers(tmp_path):
     snippet = data["events"][0]["snippet"]
     assert "不可信数据" not in snippet
     assert "真实内容" in snippet
+
+
+def test_emergency_compact_inserts_summary_before_current_turn(tmp_path):
+    runner = BaseSessionRunner(config=make_dgx_config("anthropic"), session_dir=tmp_path)
+    runner.messages = [
+        {"role": "user", "content": "旧问题", "_meta": {}},
+        {"role": "assistant", "content": "旧回答", "_meta": {}},
+        {"role": "user", "content": "当前任务", "_meta": {"turn_id": "t1"}},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "bash", "input": {}}],
+         "_meta": {}},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}],
+         "_meta": {}},
+    ]
+    with patch.object(runner.runner, "_summarize_messages", return_value="摘要内容") as mock:
+        runner._perform_full_compact(
+            keep_user_messages=1,
+            next_steps="当前任务",
+            reason="emergency_turn_boundary",
+            split_idx=2,
+            insert_before=2,
+        )
+
+    messages = runner.messages
+    assert messages[2]["role"] == "user"
+    assert "Previous conversation summary" in messages[2]["content"]
+    assert messages[2]["_meta"]["compaction"]["layer"] == 2
+    assert messages[0]["_meta"].get("valid") is False
+    assert messages[1]["_meta"].get("valid") is False
+    assert messages[3]["content"] == "当前任务"
+    assert messages[3]["_meta"].get("valid") is not False
+    # 当前用户输入被传给摘要指令
+    assert "当前任务" in (mock.call_args.kwargs.get("instruction") or "")
 
 
 def test_old_summary_commit_not_persisted(tmp_path):

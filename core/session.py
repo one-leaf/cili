@@ -732,6 +732,33 @@ class SessionStore:
             with lock:
                 self._append_pending_messages()
 
+    def insert_message(self, index: int, role: str, content: Any, *,
+                       meta: dict | None = None, flush: bool = False) -> None:
+        """在消息列表中段插入一条消息（压缩摘要插到当前轮之前）。
+
+        jsonl 仍按 seq 追加；模型视图顺序由 messages/commits 的逻辑顺序决定。
+        插入点之前的消息已有序号，新消息在下次 checkpoint 时分配新 seq。
+        """
+        index = max(0, min(int(index), len(self.messages)))
+        message = {"role": role, "content": content}
+        if meta:
+            message["_meta"] = dict(meta)
+        msg_meta = message.get("_meta") or {}
+        msg_meta.setdefault("id", generate_short_id())
+        msg_meta.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        message["_meta"] = msg_meta
+
+        self.messages.insert(index, message)
+        self._messages_dirty = True
+        self._bump_index_version()
+        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 新消息无 seq，且位于已有序号的消息之间：从插入点开始扫描分配
+        self._pending_seq_start = min(self._pending_seq_start, index)
+        if flush:
+            lock = _get_session_lock(self.session_dir)
+            with lock:
+                self._append_pending_messages()
+
     def append_ui_event(self, content: str, event: dict[str, Any]) -> None:
         """追加一条仅 UI 可见的事件行（如 L1/L3 压缩）。
 
@@ -1108,6 +1135,14 @@ class SessionStore:
             self._refresh_jsonl_max_seq()
             del self.messages[target_idx:]
             self._messages_dirty = True
+            # 中段插入的摘要可能持有大于目标 seq 的序号（逻辑位置在目标之前），
+            # 其 jsonl 行已被截断；清掉序号，让 _persist 重新分配并补写。
+            for msg in self.messages:
+                meta = msg.get("_meta") or {}
+                seq = meta.get("seq")
+                if isinstance(seq, int) and seq >= target_seq:
+                    meta.pop("seq", None)
+            self._pending_seq_start = 0
             # 预置 next_seq，让 _persist 复用被截断的序号
             atomic_write_json(self.session_dir / INDEX_FILE, {
                 "schema_version": SCHEMA_VERSION,

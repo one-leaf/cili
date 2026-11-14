@@ -737,7 +737,10 @@ class SessionRunner(BaseSessionRunner):
                 self.runner.maybe_full_compact_for_user_input(user_text)
 
             # Add user message（loop.run_interactive 在回合前做 checkpoint save）
-            self.add_message("user", user_input, meta=meta)
+            # turn_id 用于压缩时定位「本轮起点」，不进入模型上下文。
+            user_meta = dict(meta or {})
+            user_meta.setdefault("turn_id", self.current_turn_id)
+            self.add_message("user", user_input, meta=user_meta)
 
             self.loop.run_interactive()
         finally:
