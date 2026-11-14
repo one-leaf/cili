@@ -68,11 +68,16 @@
 
             <div class="sidebar-section sessions-section">
                 <div class="section-header">
-                    <button id="session-menu-btn" class="btn-icon-flat" title="会话菜单">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+                    <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开会话" aria-expanded="true">
+                        <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        <span class="section-title">会话</span>
                     </button>
-                    <h3>会话</h3>
-                    <button id="new-session-btn" class="btn btn-small">+ 新建</button>
+                    <div class="section-actions">
+                        <button id="new-session-btn" class="btn btn-small">+ 新建</button>
+                        <button id="session-menu-btn" class="btn-icon-flat" title="会话菜单">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+                        </button>
+                    </div>
                 </div>
                 <div id="sessions-list" class="sessions-list">
                     <div class="empty-state">选择一个工作区</div>
@@ -83,13 +88,13 @@
 
             <div class="sidebar-section files-section" id="files-section">
                 <div class="section-header files-header">
-                    <button id="files-toggle-btn" class="btn-icon-flat" title="折叠文件区">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    <button class="section-toggle" id="files-toggle-btn" title="折叠/展开文件区" aria-expanded="true">
+                        <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        <span class="section-title" id="files-title">文件</span>
                     </button>
-                    <h3>文件</h3>
                     <div class="files-header-actions">
                         <button id="files-collapse-all-btn" class="btn-icon-flat" title="全部折叠" disabled>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 9 12 17 20 9"/><polyline points="4 4 12 12 20 4" opacity=".45"/></svg>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 4 12 10 18 4"/><polyline points="6 20 12 14 18 20"/></svg>
                         </button>
                         <button id="files-refresh-btn" class="btn-icon-flat" title="刷新文件树" disabled>
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>

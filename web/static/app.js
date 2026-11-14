@@ -222,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initInputResize();
     initSidebarResize();
     initSidebarState();
+    initSessionsSection();
     if (window.ContextGauge) ContextGauge.init();
 });
 
@@ -270,6 +271,42 @@ function toggleSidebar() {
     toggleBtn.style.display = isCollapsed ? 'none' : '';
     openBtn.style.display = isCollapsed ? '' : 'none';
     localStorage.setItem('sidebar-collapsed', isCollapsed);
+}
+
+// ── 会话分区折叠（VS Code 风格） ──
+const SESSIONS_COLLAPSED_KEY = 'cili_sessions_collapsed';
+
+function applySessionsCollapsed(collapsed) {
+    const section = document.querySelector('.sessions-section');
+    const toggle = document.getElementById('sessions-toggle-btn');
+    if (!section) return;
+    section.classList.toggle('collapsed', collapsed);
+    section.style.flex = collapsed ? '0 0 auto' : '';
+    if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
+    if (window.FileTree && typeof window.FileTree.relayout === 'function') {
+        window.FileTree.relayout();
+    }
+}
+
+function toggleSessionsSection() {
+    const section = document.querySelector('.sessions-section');
+    if (!section) return;
+    const collapsed = !section.classList.contains('collapsed');
+    try {
+        localStorage.setItem(SESSIONS_COLLAPSED_KEY, collapsed ? '1' : '0');
+    } catch (e) { /* ignore */ }
+    applySessionsCollapsed(collapsed);
+}
+
+function initSessionsSection() {
+    const toggle = document.getElementById('sessions-toggle-btn');
+    if (!toggle) return;
+    toggle.addEventListener('click', toggleSessionsSection);
+    let collapsed = false;
+    try {
+        collapsed = localStorage.getItem(SESSIONS_COLLAPSED_KEY) === '1';
+    } catch (e) { /* ignore */ }
+    applySessionsCollapsed(collapsed);
 }
 
 // Load footer info from JSON

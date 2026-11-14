@@ -1805,15 +1805,25 @@ const FileTree = (() => {
         );
     }
 
+    function sessionsCollapsed() {
+        return !!document.querySelector('.sessions-section.collapsed');
+    }
+
     function applyFilesHeight() {
         if (!el) return;
         const collapsed = localStorage.getItem(KEYS.filesCollapsed) === '1';
         el.filesSection.classList.toggle('collapsed', collapsed);
-        el.hSplit.classList.toggle('hidden', collapsed);
+        el.hSplit.classList.toggle('hidden', collapsed || sessionsCollapsed());
         if (collapsed) {
             el.filesSection.style.flex = '';
             return;
         }
+        if (sessionsCollapsed()) {
+            el.filesSection.style.flex = '1 1 0';
+            el.filesSection.style.minHeight = '0';
+            return;
+        }
+        el.filesSection.style.minHeight = '';
         const bodyHeight = sidebarBodyHeight();
         let height = readNum(KEYS.filesHeight, 0);
         if (!height) height = Math.round(bodyHeight * 0.55);
@@ -1877,8 +1887,9 @@ const FileTree = (() => {
         } catch (e) { /* ignore */ }
         if (collapsed) {
             el.filesSection.classList.add('collapsed');
-            el.hSplit.classList.add('hidden');
+            el.hSplit.classList.toggle('hidden', true);
             el.filesSection.style.flex = '';
+            el.filesSection.style.minHeight = '';
         } else {
             applyFilesHeight();
         }
@@ -1950,6 +1961,13 @@ const FileTree = (() => {
         state.token += 1;
         const token = state.token;
         state.ws = ws || null;
+        const titleEl = document.getElementById('files-title');
+        if (titleEl) {
+            const directory = String(ws?.directory || '').replace(/[\\/]+$/, '');
+            const dirName = directory ? directory.split(/[\\/]/).pop() : '';
+            titleEl.textContent = dirName || '文件';
+            titleEl.title = directory || '';
+        }
         state.dirs.clear();
         state.inflight.clear();
         state.expanded.clear();
@@ -2135,6 +2153,7 @@ const FileTree = (() => {
         refresh: refreshTree,
         openPreview,
         getEditorContext,
+        relayout: applyFilesHeight,
     };
 })();
 

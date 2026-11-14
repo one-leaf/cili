@@ -4429,3 +4429,64 @@ details.p-headers-panel .p-headers {
     color: #fca5a5;
     border-color: #7f1d1d;
 }
+
+/* ─── VS Code 风格的可折叠分区标题 ───────────────────────── */
+.section-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 2px 4px;
+    border: none;
+    background: none;
+    border-radius: 4px;
+    color: #666;
+    font: inherit;
+    cursor: pointer;
+}
+.section-toggle:hover {
+    color: var(--text-color);
+    background: rgba(128, 128, 128, 0.12);
+}
+.section-chevron {
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+}
+.section-title {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.section-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.sessions-section.collapsed {
+    flex: 0 0 auto !important;
+    min-height: 0;
+}
+.sessions-section.collapsed #sessions-list {
+    display: none;
+}
+.sessions-section.collapsed .section-chevron,
+.files-section.collapsed .section-chevron {
+    transform: rotate(-90deg);
+}
+[data-theme="dark"] .section-toggle { color: var(--text-light); }
+[data-theme="dark"] .section-toggle:hover {
+    color: var(--text-color);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* 两个分区都收起时，底部栏仍然贴在侧栏底部 */
+.sidebar-footer {
+    margin-top: auto;
+}
+/* 多选模式下 footer 被前移到文件区上方，此时不占用底部弹簧空间 */
+.sidebar-footer:not(:last-child) {
+    margin-top: 0;
+}
