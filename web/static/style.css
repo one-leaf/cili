@@ -4274,3 +4274,149 @@ details.p-headers-panel .p-headers {
     justify-content: flex-end;
     gap: 8px;
 }
+
+/* ─── Cron 设置页签 ─────────────────────────────────────── */
+.cron-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.cron-task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.cron-empty {
+    color: var(--text-light);
+    padding: 16px 4px;
+    text-align: center;
+}
+.cron-card {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--sidebar-bg);
+}
+.cron-card-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.cron-name {
+    font-weight: 600;
+}
+.cron-badge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    color: var(--text-light);
+}
+.cron-badge.on {
+    color: #2e7d32;
+    border-color: #2e7d32;
+}
+.cron-badge.off {
+    color: var(--text-light);
+}
+.cron-badge.readonly {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+.cron-desc,
+.cron-meta,
+.cron-task-text {
+    font-size: 12px;
+    color: var(--text-light);
+    margin-top: 5px;
+    line-height: 1.5;
+}
+.cron-task-text {
+    white-space: pre-wrap;
+}
+.cron-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.cron-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-light);
+}
+.cron-history {
+    margin-top: 8px;
+    border-top: 1px dashed var(--border-color);
+    padding-top: 6px;
+}
+.cron-history-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-light);
+    padding: 2px 0;
+}
+.cron-history-error {
+    color: var(--error-color);
+    width: 100%;
+}
+.cron-form {
+    border-top: 1px solid var(--border-color);
+    margin-top: 14px;
+    padding-top: 12px;
+}
+.cron-form h3 {
+    margin: 0 0 10px;
+    font-size: 14px;
+}
+.cron-schedule-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 240px));
+    gap: 8px 14px;
+}
+.cron-row {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+}
+.cron-row .form-group {
+    margin-bottom: 0;
+}
+.cron-form-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+/* 定时任务页签：列表与表单各自滚动，避免大批任务被裁切 */
+#tab-ws-cron.active {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+#tab-ws-cron .cron-toolbar {
+    flex-shrink: 0;
+}
+#cron-task-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+#cron-form {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    margin-top: 0;
+    padding-right: 6px;
+}

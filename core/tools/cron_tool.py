@@ -1,119 +1,41 @@
-"""Cron tool - user-level scheduled task management.
-
-Allows users to create, list, delete, and manage scheduled tasks through conversation.
-Tasks are persisted in {workspace}/.cili/cron.d/user_tasks.json and executed by the CronScheduler.
-
-Usage:
-    cron(action="create", name="daily-report", schedule={"type": "interval", "minutes": 1440}, task="Generate daily report")
-    cron(action="list")
-    cron(action="delete", name="daily-report")
-    cron(action="run", name="daily-report")
-    cron(action="enable", name="daily-report")
-    cron(action="disable", name="daily-report")
-"""
+"""Cron tool - scheduled task management (v2)."""
 
 from __future__ import annotations
 
 import logging
-import re
-from contextlib import contextmanager
 
-from core.cron import cron_config_lock, get_user_tasks_file
-from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.config import get_all_workspace_uuids
+from core.cron import service, store
+from core.cron.flags import cron_run_active
+from core.cron.model import CronValidationError
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def user_tasks_lock():
-    """串行化 user_tasks.json 的读-改-写。
-
-    与 scheduler 的 state 写入共用同一把可重入锁（core.cron.cron_config_lock），
-    避免两处锁序相反造成死锁。
-    """
-    with cron_config_lock():
-        yield
-
-
-def _validate_schedule(schedule: dict) -> str | None:
-    """校验并就地归一化 schedule；返回错误文案，None 表示合法。"""
-    schedule_type = schedule.get("type")
-    if schedule_type == "interval":
-        try:
-            minutes = int(schedule.get("minutes"))
-        except (TypeError, ValueError):
-            return "'minutes' must be positive for interval schedule"
-        if minutes <= 0:
-            return "'minutes' must be positive for interval schedule"
-        schedule["minutes"] = minutes
-        init_delay = schedule.get("initial_delay_minutes")
-        if init_delay is not None:
-            try:
-                init_delay = int(init_delay)
-            except (TypeError, ValueError):
-                return "'initial_delay_minutes' must be a positive integer"
-            if init_delay <= 0:
-                return "'initial_delay_minutes' must be a positive integer"
-            schedule["initial_delay_minutes"] = init_delay
-        return None
-    if schedule_type == "cron":
-        expr = schedule.get("expr")
-        if not expr:
-            return "'expr' is required for cron schedule"
-        if len(str(expr).split()) != 5:
-            return "cron expression must have 5 fields (minute hour day month weekday)"
-        return None
-    return "schedule type must be 'interval' or 'cron'"
-
-
-def _load_user_tasks(workspace_uuid: str = "") -> list[dict]:
-    """Load user task configs from JSON file."""
-    user_tasks_file = get_user_tasks_file(workspace_uuid)
-    return load_json_or_backup(user_tasks_file, [])
-
-
-def _save_user_tasks(tasks: list[dict], workspace_uuid: str = "") -> None:
-    """Save user task configs to JSON file."""
-    try:
-        user_tasks_file = get_user_tasks_file(workspace_uuid)
-        user_tasks_file.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(user_tasks_file, tasks)
-    except Exception as e:
-        logger.error(f"[cron_tool] Failed to save user tasks: {e}")
-
-
-def _find_task_by_name(name: str) -> tuple[list[dict], dict, str] | None:
-    """Find a task by name across all workspaces.
-
-    Returns: (tasks_list, task_config, workspace_uuid) or None if not found.
-    """
-    from core.config import get_all_workspace_uuids
-    for ws_uuid in get_all_workspace_uuids():
-        tasks = _load_user_tasks(ws_uuid)
-        for t in tasks:
-            if t["name"] == name:
-                return (tasks, t, ws_uuid)
-    return None
 
 
 class CronTool(Tool):
     name = "cron"
     description = (
         "**action is REQUIRED** — always include it.\n"
-        "Manage user-level scheduled tasks: create / list / update / delete / run / enable / disable.\n"
-        "Tasks persist across restarts and run in a 'Cron Tasks' session via the master agent.\n\n"
+        "Manage scheduled tasks: create / list / update / delete / run / enable / disable / history.\n"
+        "Tasks persist across restarts and run in their own '[Cron] <name>' session via the master agent.\n\n"
         "## Schedule\n"
-        "- interval: {\"type\": \"interval\", \"minutes\": N}\n"
-        "  - optional initial_delay_minutes: 首次运行延迟（从服务启动/创建起算），之后按 minutes 间隔。"
-        "例：{\"type\":\"interval\",\"minutes\":1440,\"initial_delay_minutes\":60} = 启动 1 小时后首跑，之后每 24 小时\n"
-        "- cron: {\"type\": \"cron\", \"expr\": \"minute hour day month weekday\"} (e.g. \"0 9 * * *\" = daily 9am)\n\n"
+        '- interval: {"type": "interval", "minutes": N} (optional initial_delay_minutes)\n'
+        '- cron: {"type": "cron", "expr": "minute hour day month weekday", "timezone": "Asia/Shanghai"}\n'
+        '- at: {"type": "at", "time": "2026-11-15T09:00:00+08:00"} (one-shot)\n'
+        "timezone is optional; omit it to use the server local time.\n\n"
+        "## Delivery\n"
+        '- delivery: {"mode": "origin"} returns the result to the session that created the task; '
+        '{"mode": "session", "workspace_uuid": "...", "session_id": "..."} targets another session; '
+        '{"mode": "none"} keeps it only in the task\'s cron session.\n'
+        "- QQ / WeChat cannot push proactively: a result written to those sessions becomes visible "
+        "the next time the user interacts.\n\n"
         "## Rules\n"
-        "- **Default to one-time**: unless the user explicitly wants recurring (\"every day/hour\", \"每X分钟/小时/天\"), "
-        "create one-time tasks (one_time=true, auto-deleted after first run); use action=\"run\" for immediate execution.\n"
+        "- Default to one-time: unless the user explicitly wants recurring, create one_time=true tasks "
+        "(deleted after the first run); use action=\"run\" for immediate execution.\n"
+        "- Managed global tasks (managed=true) are read-only: only list/history are allowed.\n"
         "- update only touches the fields provided.\n"
-        "- workspace_uuid=\"system\" runs system maintenance tasks (cwd: data/).\n"
-        "- Example: cron(action=\"create\", name=\"daily-report\", schedule={\"type\":\"cron\",\"expr\":\"0 9 * * *\"}, task=\"Generate daily report\")"
+        "- workspace_uuid=\"system\" runs the task in the System workspace."
     )
 
     @property
@@ -123,85 +45,108 @@ class CronTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "update", "delete", "run", "enable", "disable"],
-                    "description": "Action to perform. REQUIRED - must be explicitly specified.",
+                    "enum": [
+                        "create",
+                        "list",
+                        "update",
+                        "delete",
+                        "run",
+                        "enable",
+                        "disable",
+                        "history",
+                    ],
+                    "description": "Action to perform. REQUIRED.",
                 },
                 "name": {
                     "type": "string",
-                    "description": "Task name (required for create/update/delete/run/enable/disable).",
+                    "description": "Task id or display name (required for most actions).",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Human-readable task description (for create/update).",
+                    "description": "Human-readable task description.",
                 },
                 "schedule": {
                     "type": "object",
                     "description": (
-                        "When to run the task. Required for create. Optional for update. "
-                        "Either {\"type\": \"interval\", \"minutes\": N} or "
-                        "{\"type\": \"cron\", \"expr\": \"minute hour day month weekday\"}."
+                        "When to run. Required for create. "
+                        '{"type":"interval","minutes":N}, '
+                        '{"type":"cron","expr":"0 9 * * *","timezone":"Asia/Shanghai"}, '
+                        '{"type":"at","time":"..."}'
                     ),
                     "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["interval", "cron"],
-                            "description": "Schedule type.",
-                        },
-                        "minutes": {
-                            "type": "integer",
-                            "description": "Interval in minutes (for type='interval').",
-                        },
-                        "initial_delay_minutes": {
-                            "type": "integer",
-                            "description": "(interval only) 首次运行延迟（分钟），从创建/服务启动起算；之后按 minutes 间隔。例：minutes=1440, initial_delay_minutes=60 = 启动 1 小时后首跑，之后每 24 小时。",
-                        },
-                        "expr": {
-                            "type": "string",
-                            "description": "Cron expression (for type='cron'). Example: '0 9 * * *' = daily at 9am.",
-                        },
+                        "type": {"type": "string", "enum": ["at", "interval", "cron"]},
+                        "minutes": {"type": "integer"},
+                        "initial_delay_minutes": {"type": "integer"},
+                        "expr": {"type": "string"},
+                        "time": {"type": "string"},
+                        "timezone": {"type": "string"},
                     },
                     "required": ["type"],
                 },
+                "misfire": {
+                    "type": "object",
+                    "description": 'Missed-run policy: {"policy":"once"|"skip"|"none","grace_minutes":120}',
+                    "properties": {
+                        "policy": {"type": "string", "enum": ["once", "skip", "none"]},
+                        "grace_minutes": {"type": "integer"},
+                    },
+                },
                 "task": {
                     "type": "string",
-                    "description": "Task description for the master agent (required for create, optional for update).",
+                    "description": "Task description for the master agent (required for create).",
                 },
                 "plan": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Execution steps (optional, for create/update).",
+                    "description": "Execution steps (optional).",
+                },
+                "delivery": {
+                    "type": "object",
+                    "description": "Where the result should be delivered.",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["none", "origin", "session"],
+                        },
+                        "workspace_uuid": {"type": "string"},
+                        "session_id": {"type": "string"},
+                    },
                 },
                 "workspace_uuid": {
                     "type": "string",
-                    "description": (
-                        "Target workspace for task execution (for create/update). "
-                        "Defaults to current workspace. "
-                        "Use \"system\" for system maintenance tasks (cwd: data/)."
-                    ),
+                    "description": "Target workspace (defaults to current workspace; use 'system' for system tasks).",
                 },
                 "one_time": {
                     "type": "boolean",
-                    "description": (
-                        "If true, task is automatically deleted after first execution. "
-                        "Default: true. Set to false only for recurring tasks "
-                        "(e.g., 'every day', 'every hour')."
-                    ),
+                    "description": "Delete after first execution. Default: true.",
                     "default": True,
                 },
                 "max_executions": {
                     "type": "integer",
-                    "description": (
-                        "Maximum execution count (1-9999). Default: 9999. "
-                        "Used with remaining counter for auto-disable. "
-                        "Ignored if one_time=true."
-                    ),
+                    "description": "Maximum execution count (1-9999). Default: 9999.",
                     "minimum": 1,
                     "maximum": 9999,
                     "default": 9999,
                 },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Per-run timeout in seconds (0 = no limit). Default: 900.",
+                    "minimum": 0,
+                    "default": 900,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "History entries to return (default 20, max 100).",
+                    "minimum": 1,
+                    "default": 20,
+                },
             },
             "required": ["action"],
         }
+
+    def set_interface_profile(self, profile) -> None:
+        self._interface_name = getattr(profile, "name", "") or ""
+        return None
 
     def execute(
         self,
@@ -209,344 +154,256 @@ class CronTool(Tool):
         name: str | None = None,
         description: str | None = None,
         schedule: dict | None = None,
+        misfire: dict | None = None,
         task: str | None = None,
         plan: list[str] | None = None,
+        delivery: dict | None = None,
         workspace_uuid: str | None = None,
         one_time: bool | None = None,
         max_executions: int | None = None,
+        timeout_seconds: int | None = None,
+        limit: int = 20,
     ) -> ToolResult:
-        """Execute cron action."""
-        # 参数校验：action 缺失时智能推断
         if action is None:
-            # 如果传了 create 专属参数，自动推断为 create
             if schedule is not None or task is not None:
                 action = "create"
-                logger.warning("[cron_tool] action 参数缺失，根据 schedule/task 参数自动推断为 'create'")
+                logger.warning("[cron_tool] action missing, inferred 'create'")
             else:
                 return ToolResult(
-                    "Error: 'action' 参数是必需的。可用值: create, list, update, delete, run, enable, disable",
-                    error=True
+                    "Error: 'action' is required. Available: create, list, update, delete, run, enable, disable, history",
+                    error=True,
                 )
 
-        # 青少年模式：定时任务增删改禁用（避免孩子挂无人值守长任务），
-        # list / run 已存在任务不受限（§2.3）
+        if action in ("create", "update", "delete", "enable", "disable") and cron_run_active.get():
+            return ToolResult(
+                "Error: cron tasks cannot be created or modified from inside a cron run",
+                error=True,
+            )
+
         from core.teen_mode import get_teen_mode
 
-        _tm = get_teen_mode()
+        tm = get_teen_mode()
         if action in ("create", "update", "delete", "enable", "disable") \
-                and _tm.is_enabled() and (_tm.policy().get("cron") or "deny") == "deny" \
-                and not _tm.is_unlocked():
-            _tm.audit("deny", action="cron_modify", target=name or "", source="tool")
-            _tm.record_denied("cron_modify")
+                and tm.is_enabled() and (tm.policy().get("cron") or "deny") == "deny" \
+                and not tm.is_unlocked():
+            tm.audit("deny", action="cron_modify", target=name or "", source="tool")
+            tm.record_denied("cron_modify")
             return ToolResult("Error: 青少年模式已开启：定时任务的增删改需要家长授权。", error=True)
 
-        if action == "create":
-            # create 使用默认值
-            return self._create(
-                name, description, schedule, task, plan,
-                workspace_uuid,
-                one_time if one_time is not None else True,
-                max_executions if max_executions is not None else 9999,
-            )
-        elif action == "list":
-            return self._list()
-        elif action == "update":
-            # find → 改 → 落盘须在同一锁内，否则并发写丢更新
-            with user_tasks_lock():
-                return self._update(name, description, schedule, task, plan, workspace_uuid, one_time, max_executions)
-        elif action == "delete":
-            with user_tasks_lock():
-                return self._delete(name)
-        elif action == "run":
-            return self._run(name)
-        elif action == "enable":
-            with user_tasks_lock():
-                return self._set_enabled(name, True)
-        elif action == "disable":
-            with user_tasks_lock():
-                return self._set_enabled(name, False)
-        else:
+        try:
+            if action == "create":
+                return self._create(
+                    name,
+                    description,
+                    schedule,
+                    misfire,
+                    task,
+                    plan,
+                    delivery,
+                    workspace_uuid,
+                    one_time if one_time is not None else True,
+                    max_executions if max_executions is not None else 9999,
+                    timeout_seconds if timeout_seconds is not None else 900,
+                )
+            if action == "list":
+                return self._list()
+            if action == "history":
+                if not name:
+                    return ToolResult("Error: 'name' is required for history", error=True)
+                workspace, job = self._resolve(name, workspace_uuid)
+                records = service.history(workspace, job.id, limit)
+                return self._format_history(job, records)
+            if action == "run":
+                if not name:
+                    return ToolResult("Error: 'name' is required for run", error=True)
+                workspace, job = self._resolve(name, workspace_uuid)
+                service.run_now(workspace, job.id)
+                return ToolResult(f"Task '{job.name}' triggered (extra run).")
+            if action == "delete":
+                if not name:
+                    return ToolResult("Error: 'name' is required for delete", error=True)
+                workspace, job = self._resolve(name, workspace_uuid)
+                service.delete_job(workspace, job.id)
+                return ToolResult(f"Deleted scheduled task '{job.name}'.")
+            if action in ("enable", "disable"):
+                if not name:
+                    return ToolResult(f"Error: 'name' is required for {action}", error=True)
+                workspace, job = self._resolve(name, workspace_uuid)
+                service.set_enabled(workspace, job.id, action == "enable")
+                return ToolResult(f"Task '{job.name}' {action}d.")
+            if action == "update":
+                if not name:
+                    return ToolResult("Error: 'name' is required for update", error=True)
+                workspace, job = self._resolve(name, workspace_uuid)
+                updates = self._build_updates(
+                    job, description, schedule, misfire, task, plan,
+                    delivery, one_time, max_executions, timeout_seconds,
+                )
+                updated = service.update_job(workspace, job.id, updates)
+                return ToolResult(
+                    f"Updated task '{updated.name}': {', '.join(sorted(updates))}"
+                )
             return ToolResult(f"Error: unknown action '{action}'", error=True)
+        except (CronValidationError, service.CronError) as exc:
+            return ToolResult(f"Error: {exc}", error=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[cron_tool] action %s failed", action)
+            return ToolResult(f"Error: {exc}", error=True)
+
+    # ─── helpers ────────────────────────────────────────────────
+
+    def _origin(self) -> dict | None:
+        session_id = str(getattr(self.session, "session_id", "") or "")
+        if not session_id:
+            return None
+        return {
+            "workspace_uuid": self.workspace_uuid,
+            "session_id": session_id,
+            "interface": getattr(self, "_interface_name", "") or None,
+        }
+
+    def _resolve(self, name: str, workspace_uuid: str | None = None):
+        workspaces = [workspace_uuid] if workspace_uuid else get_all_workspace_uuids()
+        for workspace in workspaces:
+            job = store.load_job(workspace, name)
+            if job is not None:
+                return workspace, job
+        for workspace in workspaces:
+            for job in store.list_jobs(workspace):
+                if job.name == name:
+                    return workspace, job
+        raise service.CronError(f"task '{name}' not found")
 
     def _create(
         self,
         name: str | None,
         description: str | None,
         schedule: dict | None,
+        misfire: dict | None,
         task: str | None,
         plan: list[str] | None,
-        workspace_uuid: str | None = None,
-        one_time: bool = True,
-        max_executions: int = 9999,
+        delivery: dict | None,
+        workspace_uuid: str | None,
+        one_time: bool,
+        max_executions: int,
+        timeout_seconds: int,
     ) -> ToolResult:
-        """Create a new scheduled task."""
         if not name:
-            return ToolResult("Error: 'name' is required for create action", error=True)
-        # 任务名用作 state 文件名（CRON_STATE_DIR / f"{name}.json"），
-        # 必须限制字符集防止路径穿越
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-            return ToolResult(
-                "Error: 'name' may only contain letters, digits, hyphens, and underscores (max 64 chars)",
-                error=True,
-            )
+            return ToolResult("Error: 'name' is required for create", error=True)
         if not task:
-            return ToolResult("Error: 'task' is required for create action", error=True)
+            return ToolResult("Error: 'task' is required for create", error=True)
         if not schedule:
-            return ToolResult("Error: 'schedule' is required for create action", error=True)
+            return ToolResult("Error: 'schedule' is required for create", error=True)
 
-        # Validate schedule
-        schedule_error = _validate_schedule(schedule)
-        if schedule_error:
-            return ToolResult(f"Error: {schedule_error}", error=True)
-
-        # Validate max_executions
-        if max_executions < 1 or max_executions > 9999:
-            return ToolResult("Error: 'max_executions' must be between 1 and 9999", error=True)
-
-        # Load existing tasks from the target workspace
-        ws = workspace_uuid or self.workspace_uuid
-
-        # 去重检查 + 追加 + 落盘须在同一锁内，否则并发创建会丢任务
-        with user_tasks_lock():
-            tasks = _load_user_tasks(ws)
-
-            # Check for duplicate name
-            for t in tasks:
-                if t["name"] == name:
-                    return ToolResult(f"Error: task '{name}' already exists. Delete it first or use a different name.", error=True)
-
-            # Create new task config
-            new_task = {
-                "name": name,
-                "workspace_uuid": ws,
-                "description": description or "",
-                "enabled": True,
-                "schedule": schedule,
-                "one_time": one_time,
-                "config": {
-                    "max_executions": max_executions,
-                },
-                "content": {
-                    "task": task,
-                    "plan": plan or [],
-                },
-            }
-
-            tasks.append(new_task)
-            _save_user_tasks(tasks, ws)
-
-        # Reload scheduler to pick up new task
-        self._reload_scheduler()
-
-        ws_label = ws or "system"
-        task_type = "one-time" if one_time else "recurring"
+        data = {
+            "name": name,
+            "description": description or "",
+            "schedule": schedule,
+            "content": {"task": task, "plan": plan or []},
+            "execution": {
+                "timeout_seconds": timeout_seconds,
+                "max_executions": max_executions,
+            },
+            "one_time": one_time,
+            "workspace_uuid": workspace_uuid or self.workspace_uuid,
+            "delivery": delivery,
+        }
+        if misfire:
+            data["misfire"] = misfire
+        if not delivery:
+            data.pop("delivery")
+        job = service.create_job(data, origin=self._origin())
         return ToolResult(
-            f"Created {task_type} scheduled task '{name}' in workspace '{ws_label}'. "
-            f"It will run according to the schedule: {schedule}"
+            f"Created {'one-time' if one_time else 'recurring'} task '{job.name}' "
+            f"(id={job.id}) in workspace '{job.workspace_uuid or 'default'}'. "
+            f"Schedule: {job.schedule}"
         )
 
-    def _list(self) -> ToolResult:
-        """List all scheduled tasks across all workspaces."""
-        from core.config import get_all_workspace_uuids
-
-        all_tasks = []
-        for ws_uuid in get_all_workspace_uuids():
-            tasks = _load_user_tasks(ws_uuid)
-            for t in tasks:
-                t["_source_workspace"] = ws_uuid
-            all_tasks.extend(tasks)
-
-        if not all_tasks:
-            return ToolResult("No scheduled tasks found.")
-
-        lines = [f"Found {len(all_tasks)} scheduled task(s):\n"]
-        for t in all_tasks:
-            name = t["name"]
-            desc = t.get("description", "")
-            enabled = t.get("enabled", True)
-            schedule = t.get("schedule", {})
-            schedule_type = schedule.get("type", "unknown")
-            ws_uuid = t.get("workspace_uuid", "")
-            ws_label = ws_uuid if ws_uuid else "system"
-            source_ws = t.get("_source_workspace", "")
-            source_label = source_ws if source_ws else "system"
-
-            status = "enabled" if enabled else "disabled"
-            one_time = t.get("one_time", False)
-            task_type = "one-time" if one_time else "recurring"
-            if schedule_type == "interval":
-                minutes = schedule.get('minutes', '?')
-                init_delay = schedule.get('initial_delay_minutes')
-                schedule_str = f"every {minutes} minutes"
-                if init_delay:
-                    schedule_str += f" (首次 {init_delay} 分钟后)"
-            elif schedule_type == "cron":
-                schedule_str = f"cron: {schedule.get('expr', '?')}"
-            else:
-                schedule_str = "unknown schedule"
-
-            lines.append(f"• {name} [{status}] [{task_type}] (runs in: {ws_label}, config in: {source_label})")
-            if desc:
-                lines.append(f"  {desc}")
-            lines.append(f"  Schedule: {schedule_str}")
-            task_desc = t.get("content", {}).get("task", "")
-            if task_desc:
-                lines.append(f"  Task: {task_desc[:80]}{'...' if len(task_desc) > 80 else ''}")
-            lines.append("")
-
-        return ToolResult("\n".join(lines))
-
-    def _update(
+    def _build_updates(
         self,
-        name: str | None,
+        job,
         description: str | None,
         schedule: dict | None,
+        misfire: dict | None,
         task: str | None,
         plan: list[str] | None,
-        workspace_uuid: str | None,
+        delivery: dict | None,
         one_time: bool | None,
         max_executions: int | None,
-    ) -> ToolResult:
-        """Update an existing scheduled task. Only updates provided fields."""
-        if not name:
-            return ToolResult("Error: 'name' is required for update action", error=True)
-
-        # Find the task across all workspaces
-        result = _find_task_by_name(name)
-        if not result:
-            return ToolResult(f"Error: task '{name}' not found", error=True)
-        tasks, task_config, task_ws = result
-
-        # Validate schedule if provided
-        if schedule:
-            schedule_error = _validate_schedule(schedule)
-            if schedule_error:
-                return ToolResult(f"Error: {schedule_error}", error=True)
-
-        # Validate max_executions if provided
-        if max_executions is not None and (max_executions < 1 or max_executions > 9999):
-            return ToolResult("Error: 'max_executions' must be between 1 and 9999", error=True)
-
-        # Update fields that are provided
-        updated_fields = []
-
+        timeout_seconds: int | None,
+    ) -> dict:
+        updates: dict = {}
         if description is not None:
-            task_config["description"] = description
-            updated_fields.append("description")
-
+            updates["description"] = description
         if schedule is not None:
-            task_config["schedule"] = schedule
-            updated_fields.append("schedule")
-
-        if task is not None:
-            if "content" not in task_config:
-                task_config["content"] = {}
-            task_config["content"]["task"] = task
-            updated_fields.append("task")
-
-        if plan is not None:
-            if "content" not in task_config:
-                task_config["content"] = {}
-            task_config["content"]["plan"] = plan
-            updated_fields.append("plan")
-
-        if workspace_uuid is not None:
-            task_config["workspace_uuid"] = workspace_uuid
-            updated_fields.append("workspace_uuid")
-
+            updates["schedule"] = schedule
+        if misfire is not None:
+            updates["misfire"] = misfire
+        if task is not None or plan is not None:
+            content = dict(job.content) if isinstance(job.content, dict) else {}
+            if task is not None:
+                content["task"] = task
+            if plan is not None:
+                content["plan"] = plan
+            updates["content"] = content
+        if delivery is not None:
+            updates["delivery"] = delivery
         if one_time is not None:
-            task_config["one_time"] = one_time
-            updated_fields.append("one_time")
-
+            updates["one_time"] = one_time
+        execution: dict = {}
         if max_executions is not None:
-            if "config" not in task_config:
-                task_config["config"] = {}
-            task_config["config"]["max_executions"] = max_executions
-            # Also reset remaining counter in state（T13：经任务级锁 RMW，避免并发丢更新）
-            try:
-                from core.cron import update_task_state
-                update_task_state(name, task_ws, remaining=max_executions)
-            except Exception as e:
-                logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
-            updated_fields.append("max_executions")
+            execution["max_executions"] = max_executions
+        if timeout_seconds is not None:
+            execution["timeout_seconds"] = timeout_seconds
+        if execution:
+            updates["execution"] = execution
+        if not updates:
+            raise service.CronError("no fields to update")
+        return updates
 
-        if not updated_fields:
-            return ToolResult("Error: No fields to update. Specify at least one field to update.", error=True)
+    def _list(self) -> ToolResult:
+        items = service.list_jobs()
+        if not items:
+            return ToolResult("No scheduled tasks found.")
+        lines = [f"Found {len(items)} scheduled task(s):\n"]
+        for item in items:
+            state = item.get("state") or {}
+            flags = []
+            flags.append("enabled" if item.get("enabled") else "disabled")
+            flags.append("managed-readonly" if item.get("managed") else "user")
+            flags.append("one-time" if item.get("one_time") else "recurring")
+            lines.append(
+                f"• {item.get('name')} [{', '.join(flags)}] "
+                f"(workspace: {item.get('workspace_uuid') or 'default'})"
+            )
+            if item.get("description"):
+                lines.append(f"  {item['description']}")
+            lines.append(f"  Schedule: {item.get('schedule_summary')}")
+            lines.append(
+                f"  Next: {state.get('next_run') or '-'} | "
+                f"Last: {state.get('last_status') or '-'} "
+                f"({state.get('last_run') or '-'}) | "
+                f"runs={state.get('run_count', 0)} remaining={state.get('remaining')}"
+            )
+            delivery_mode = (item.get("delivery") or {}).get("mode", "none")
+            lines.append(f"  Delivery: {delivery_mode}")
+            if state.get("last_error"):
+                lines.append(f"  Last error: {str(state['last_error'])[:200]}")
+            content = item.get("content")
+            task_text = content.get("task") if isinstance(content, dict) else ""
+            if task_text:
+                lines.append(f"  Task: {str(task_text)[:120]}")
+            lines.append("")
+        return ToolResult("\n".join(lines))
 
-        _save_user_tasks(tasks, task_ws)
-        self._reload_scheduler()
-
-        return ToolResult(f"Updated task '{name}': {', '.join(updated_fields)}")
-
-    def _delete(self, name: str | None) -> ToolResult:
-        """Delete a scheduled task."""
-        if not name:
-            return ToolResult("Error: 'name' is required for delete action", error=True)
-
-        # Find the task across all workspaces
-        result = _find_task_by_name(name)
-        if not result:
-            return ToolResult(f"Error: task '{name}' not found", error=True)
-        tasks, _, task_ws = result
-
-        tasks = [t for t in tasks if t["name"] != name]
-        _save_user_tasks(tasks, task_ws)
-        self._reload_scheduler()
-
-        return ToolResult(f"Deleted scheduled task '{name}'.")
-
-    def _run(self, name: str | None) -> ToolResult:
-        """Immediately execute a task."""
-        if not name:
-            return ToolResult("Error: 'name' is required for run action", error=True)
-
-        # Trigger task via scheduler
-        from core.cron import get_scheduler
-        scheduler = get_scheduler()
-        result = scheduler.run_task_now(name)
-
-        if result is None:
-            return ToolResult(f"Error: task '{name}' not found or not loaded", error=True)
-
-        return ToolResult(f"Task '{name}' triggered. Check logs for execution status.")
-
-    def _set_enabled(self, name: str | None, enabled: bool) -> ToolResult:
-        """Enable or disable a task."""
-        if not name:
-            action = "enable" if enabled else "disable"
-            return ToolResult(f"Error: 'name' is required for {action} action", error=True)
-
-        # Find the task across all workspaces
-        result = _find_task_by_name(name)
-        if not result:
-            return ToolResult(f"Error: task '{name}' not found", error=True)
-        tasks, task_config, task_ws = result
-
-        task_config["enabled"] = enabled
-        _save_user_tasks(tasks, task_ws)
-        self._reload_scheduler()
-
-        # If enabling, reset remaining counter
-        if enabled and task_config:
-            max_executions = task_config.get("config", {}).get("max_executions", 9999)
-
-            try:
-                # T13: 经任务级锁 RMW 重置 remaining，避免与 scheduler 写冲突
-                from core.cron import update_task_state
-                update_task_state(name, task_ws, remaining=max_executions)
-                logger.info(f"[cron_tool] Reset remaining={max_executions} for task '{name}'")
-            except Exception as e:
-                logger.warning(f"[cron_tool] Failed to reset remaining for task '{name}': {e}")
-
-        status = "enabled" if enabled else "disabled"
-        return ToolResult(f"Task '{name}' {status}.")
-
-    def _reload_scheduler(self) -> None:
-        """Reload the cron scheduler to pick up changes."""
-        try:
-            from core.cron import get_scheduler
-            scheduler = get_scheduler()
-            scheduler.load_tasks()
-            logger.info("[cron_tool] Scheduler reloaded")
-        except Exception as e:
-            logger.warning(f"[cron_tool] Failed to reload scheduler: {e}")
+    def _format_history(self, job, records: list[dict]) -> ToolResult:
+        if not records:
+            return ToolResult(f"No run history for task '{job.name}'.")
+        lines = [f"Run history for '{job.name}' ({len(records)}):"]
+        for record in records:
+            lines.append(
+                f"• {record.get('slot')} | {record.get('status')} | "
+                f"{record.get('duration_ms')}ms | delivery={record.get('delivery')}"
+                + (f" | {record.get('error')}" if record.get("error") else "")
+            )
+        return ToolResult("\n".join(lines))

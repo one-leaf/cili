@@ -2110,6 +2110,14 @@ async function openWorkspaceSettings() {
     deleteBtn.style.display = isSystem ? 'none' : '';
     saveBtn.style.display = isSystem ? 'none' : '';
 
+    // System 工作区不适用项目提示词 / 版本管理 / 教材下载
+    const systemHiddenTabs = ['ws-instructions', 'ws-git', 'ws-textbooks'];
+    document.querySelectorAll('#workspace-settings-modal .settings-tab').forEach(tabBtn => {
+        if (systemHiddenTabs.includes(tabBtn.dataset.tab)) {
+            tabBtn.style.display = isSystem ? 'none' : '';
+        }
+    });
+
     if (isSystem) {
         statusEl.textContent = `${currentWorkspace.uuid}（系统工作区，不可修改）`;
     }
@@ -2255,6 +2263,13 @@ function switchWorkspaceSettingsTab(tabName) {
         footerSaveBtn.style.display = 'none';
         deleteBtn.style.display = 'none';
         initTextbookPanel();
+    } else if (tabName === 'ws-cron') {
+        // 定时任务 tab：面板内按钮，隐藏底部保存/删除
+        footerSaveBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
+        if (window.CronSettings) {
+            window.CronSettings.init(currentWorkspace?.uuid || '');
+        }
     } else {
         // 基本设置 tab：显示 footer 按钮
         footerSaveBtn.textContent = '保存';

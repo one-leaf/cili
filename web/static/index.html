@@ -742,6 +742,7 @@
                 <button class="settings-tab" data-tab="ws-instructions" onclick="switchWorkspaceSettingsTab('ws-instructions')">项目提示词</button>
                 <button class="settings-tab" data-tab="ws-git" onclick="switchWorkspaceSettingsTab('ws-git')">版本管理</button>
                 <button class="settings-tab" data-tab="ws-textbooks" onclick="switchWorkspaceSettingsTab('ws-textbooks')">教材下载</button>
+                <button class="settings-tab" data-tab="ws-cron" onclick="switchWorkspaceSettingsTab('ws-cron')">定时任务</button>
             </div>
             <div class="modal-body">
                 <!-- 基本设置 Tab -->
@@ -852,6 +853,104 @@
                             <div id="textbook-list" class="textbook-list"><div class="textbook-empty">勾选科目并选择版本后自动匹配教材。</div></div>
                         </div>
                     </div>
+                </div>
+                <!-- 定时任务 Tab -->
+                <div class="tab-content" id="tab-ws-cron">
+                    <div class="cron-toolbar">
+                        <button type="button" id="cron-new-btn" class="btn btn-small btn-primary">新建任务</button>
+                        <button type="button" id="cron-refresh-btn" class="btn btn-small btn-secondary">刷新</button>
+                        <span id="cron-status" class="settings-status"></span>
+                    </div>
+                    <div id="cron-task-list" class="cron-task-list">
+                        <div class="cron-empty">加载中...</div>
+                    </div>
+                    <form id="cron-form" class="cron-form" style="display:none;">
+                        <h3 id="cron-form-title">新建定时任务</h3>
+                        <input type="hidden" id="cron-form-key">
+                        <div class="form-group">
+                            <label>名称</label>
+                            <input type="text" id="cron-name" placeholder="例如：daily-report">
+                        </div>
+                        <div class="form-group">
+                            <label>描述</label>
+                            <input type="text" id="cron-description" placeholder="人类可读的任务说明">
+                        </div>
+                        <div class="form-group">
+                            <label>调度类型</label>
+                            <select id="cron-schedule-type">
+                                <option value="interval">按间隔</option>
+                                <option value="cron">cron 表达式</option>
+                                <option value="at">一次性时刻</option>
+                            </select>
+                        </div>
+                        <div class="cron-schedule-fields" id="cron-fields-interval">
+                            <div class="form-group">
+                                <label>间隔（分钟）</label>
+                                <input type="number" id="cron-interval-minutes" min="1" value="60">
+                            </div>
+                            <div class="form-group">
+                                <label>首次延迟（分钟，可空）</label>
+                                <input type="number" id="cron-initial-delay" min="1">
+                            </div>
+                        </div>
+                        <div class="cron-schedule-fields" id="cron-fields-cron" style="display:none;">
+                            <div class="form-group">
+                                <label>cron 表达式</label>
+                                <input type="text" id="cron-expr" placeholder="0 9 * * *">
+                            </div>
+                            <div class="form-group">
+                                <label>时区（可空 = 服务器本地）</label>
+                                <input type="text" id="cron-timezone" placeholder="Asia/Shanghai">
+                            </div>
+                        </div>
+                        <div class="cron-schedule-fields" id="cron-fields-at" style="display:none;">
+                            <div class="form-group">
+                                <label>触发时刻</label>
+                                <input type="text" id="cron-at-time" placeholder="2026-11-15T09:00:00+08:00">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>任务描述</label>
+                            <textarea id="cron-task" rows="3" placeholder="告诉 master agent 要做什么"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>执行计划（每行一步）</label>
+                            <textarea id="cron-plan" rows="3" placeholder="1. ...&#10;2. ..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>投递目标</label>
+                            <select id="cron-delivery-mode">
+                                <option value="none">不回传（仅 cron 会话）</option>
+                                <option value="origin">回创建会话</option>
+                                <option value="session">指定会话</option>
+                            </select>
+                        </div>
+                        <div id="cron-delivery-session-fields" style="display:none;">
+                            <div class="form-group">
+                                <label>工作区 UUID</label>
+                                <input type="text" id="cron-delivery-ws" placeholder="留空 = 当前工作区">
+                            </div>
+                            <div class="form-group">
+                                <label>会话 ID</label>
+                                <input type="text" id="cron-delivery-session" placeholder="目标会话 ID">
+                            </div>
+                        </div>
+                        <div class="cron-row">
+                            <label class="checkbox-label"><input type="checkbox" id="cron-one-time" checked> 一次性（执行后删除）</label>
+                            <div class="form-group">
+                                <label>最大执行次数</label>
+                                <input type="number" id="cron-max-executions" min="1" max="9999" value="9999">
+                            </div>
+                            <div class="form-group">
+                                <label>超时（秒，0=不限）</label>
+                                <input type="number" id="cron-timeout" min="0" value="900">
+                            </div>
+                        </div>
+                        <div class="cron-form-actions">
+                            <button type="button" id="cron-save-btn" class="btn btn-primary">保存</button>
+                            <button type="button" id="cron-cancel-btn" class="btn">取消</button>
+                        </div>
+                    </form>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1017,6 +1116,7 @@
     <script src="/static/settings.js"></script>
     <script src="/static/file-manager.js"></script>
     <script src="/static/memory.js"></script>
+    <script src="/static/cron_settings.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/context-gauge.js"></script>
     <script src="/static/chat.js"></script>

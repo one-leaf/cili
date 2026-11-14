@@ -1,1242 +1,584 @@
-"""Tests for cron scheduler (core/cron.py)."""
+"""Cron v2 测试：规则、迁移、种子、服务、引擎、投递。"""
+
+from __future__ import annotations
 
 import json
+import shutil
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from core.cron import CronScheduler, CronTask
+from core.cron import delivery, migration, rules, seeds, service, store
+from core.cron import engine as engine_mod
+from core.cron import sessions as cron_sessions
+from core.cron.flags import cron_run_active
+from core.cron.model import CronValidationError, Job, RunResult
+from core.cron.sessions import ensure_cron_session
+from core.session import SessionStore
 
 
-class TestCronTask:
-    """Test CronTask creation and state management."""
+def _write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    def test_create_task(self, temp_cron_state):
-        """任务从配置创建"""
-        config = {
-            "name": "test-task",
-            "description": "测试任务",
-            "enabled": True,
+
+# ─── rules ──────────────────────────────────────────────────────
+
+
+class TestRules:
+    def test_interval_first_run_uses_initial_delay(self):
+        job = Job.from_dict({
+            "id": "j", "name": "j",
+            "schedule": {"type": "interval", "minutes": 60, "initial_delay_minutes": 5},
+            "content": {"task": "x"},
+        })
+        now = datetime(2026, 11, 14, 10, 0, 0)
+        assert rules.compute_next_run(job, None, now=now) == datetime(2026, 11, 14, 10, 5, 0)
+
+    def test_interval_after_base(self):
+        job = Job.from_dict({
+            "id": "j", "name": "j",
             "schedule": {"type": "interval", "minutes": 30},
-            "content": "test.py",
-            "config": {"max_executions": 10},
-        }
-        task = CronTask(config)
-        assert task.name == "test-task"
-        assert task.description == "测试任务"
-        assert task.enabled is True
-        assert task.runtime_config == {"max_executions": 10}
-        # T9: 新建任务按当前时间计算首次 _next_run，而非 None 立即触发
-        assert task._next_run is not None
-        assert task._last_run is None
-        assert task._run_count == 0
+            "content": {"task": "x"},
+        })
+        base = datetime(2026, 11, 14, 10, 0, 0)
+        assert rules.compute_next_run(job, base) == datetime(2026, 11, 14, 10, 30, 0)
 
-    def test_should_run_first_time(self, temp_cron_state):
-        """T9: 新建任务不立即触发，按当前时间计算首跑（interval 60min 后）"""
-        config = {
-            "name": "test",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        assert task.should_run(datetime.now()) is False
-        # 60 分钟后到点触发
-        assert task.should_run(datetime.now() + timedelta(minutes=61)) is True
+    def test_cron_next_occurrence(self):
+        job = Job.from_dict({
+            "id": "j", "name": "j",
+            "schedule": {"type": "cron", "expr": "0 9 * * *"},
+            "content": {"task": "x"},
+        })
+        base = rules.parse_iso("2026-11-14T08:30:00")
+        assert rules.compute_next_run(job, base) == datetime(2026, 11, 14, 9, 0, 0)
 
-    def test_should_run_disabled(self, temp_cron_state):
-        """禁用的任务不应触发"""
-        config = {
-            "name": "test",
-            "enabled": False,
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        assert task.should_run(datetime.now()) is False
+    def test_cron_timezone_offset(self):
+        job = Job.from_dict({
+            "id": "j", "name": "j",
+            "schedule": {"type": "cron", "expr": "0 9 * * *", "timezone": "Asia/Shanghai"},
+            "content": {"task": "x"},
+        })
+        base = rules.parse_iso("2026-11-14T08:30:00+08:00")
+        assert rules.compute_next_run(job, base).isoformat() == "2026-11-14T09:00:00+08:00"
 
-    def test_should_run_after_interval(self, temp_cron_state):
-        """到期任务应触发"""
-        config = {
-            "name": "test",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        now = datetime.now()
-        task._next_run = now - timedelta(minutes=1)  # 已到期
-        assert task.should_run(now) is True
-
-    def test_should_not_run_before_interval(self, temp_cron_state):
-        """未到期的任务不应触发"""
-        config = {
-            "name": "test",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        now = datetime.now()
-        task._next_run = now + timedelta(minutes=30)  # 30分钟后
-        assert task.should_run(now) is False
-
-    def test_mark_executed(self, temp_cron_state):
-        """执行后更新下次运行时间"""
-        config = {
-            "name": "test",
-            "schedule": {"type": "interval", "minutes": 30},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        now = datetime(2026, 8, 25, 10, 0, 0)
-        task.mark_executed(now)
-
-        assert task._last_run == now
-        assert task._run_count == 1
-        assert task._next_run == now + timedelta(minutes=30)
-
-    def test_mark_executed_multiple(self, temp_cron_state):
-        """多次执行累计计数"""
-        config = {
-            "name": "test-mark-multi",  # 使用唯一名称避免状态冲突
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        for i in range(3):
-            task.mark_executed(datetime(2026, 8, 25, 10 + i, 0, 0))
-        assert task._run_count == 3
-
-    def test_to_dict(self, temp_cron_state):
-        """序列化为 dict"""
-        config = {
-            "name": "test-task",
-            "description": "测试任务",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "执行测试",
-        }
-        task = CronTask(config)
-        d = task.to_dict()
-        assert d["name"] == "test-task"
-        assert d["description"] == "测试任务"
-        assert d["enabled"] is True
-        assert d["last_run"] is None
-        # T9: 新建任务即有首次 _next_run（interval 序列化为 ISO 字符串）
-        assert d["next_run"] is not None
-        assert d["run_count"] == 0
-
-    def test_to_dict_after_execution(self, temp_cron_state):
-        """执行后序列化包含运行信息"""
-        config = {
-            "name": "test-task",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        task.mark_executed(datetime(2026, 8, 25, 10, 0, 0))
-        d = task.to_dict()
-        assert d["run_count"] == 1
-        assert d["last_run"] == "2026-08-25T10:00:00"
-        assert d["next_run"] == "2026-08-25T11:00:00"
-
-
-class TestCronScheduler:
-    """Test CronScheduler task management."""
-
-    def test_scheduler_creation(self):
-        """调度器创建"""
-        scheduler = CronScheduler()
-        assert scheduler.tasks == []
-        assert scheduler._running is False
-
-    def test_load_tasks_from_directory(self, tmp_path):
-        """从目录加载任务"""
-        # 创建临时任务文件
-        task_config = {
-            "name": "test-load",
-            "description": "加载测试",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "测试任务", "plan": ["步骤一"]},
-        }
-        (tmp_path / "test_task.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        # 临时替换 CRON_DIR 和 USER_TASKS_FILE
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            count = scheduler.load_tasks()
-            assert count == 1
-            assert len(scheduler.tasks) == 1
-            assert scheduler.tasks[0].name == "test-load"
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_load_multiple_tasks(self, tmp_path):
-        """加载多个任务"""
-        for i in range(3):
-            config = {
-                "name": f"task-{i}",
-                "schedule": {"type": "interval", "minutes": 60},
-                "content": {"task": f"任务 {i}", "plan": []},
-            }
-            (tmp_path / f"task_{i}.json").write_text(
-                json.dumps(config, ensure_ascii=False), encoding="utf-8"
-            )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            count = scheduler.load_tasks()
-            assert count == 3
-            names = {t.name for t in scheduler.tasks}
-            assert names == {"task-0", "task-1", "task-2"}
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_load_invalid_json(self, tmp_path):
-        """无效 JSON 文件跳过不崩溃"""
-        (tmp_path / "bad.json").write_text("{invalid json", encoding="utf-8")
-        good_config = {
-            "name": "good",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "好任务", "plan": []},
-        }
-        (tmp_path / "good.json").write_text(
-            json.dumps(good_config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            count = scheduler.load_tasks()
-            assert count == 1
-            assert scheduler.tasks[0].name == "good"
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_get_task_by_name(self, tmp_path):
-        """按名称获取任务"""
-        config = {
-            "name": "find-me",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "找到我", "plan": []},
-        }
-        (tmp_path / "find_me.json").write_text(
-            json.dumps(config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            scheduler.load_tasks()
-            task = scheduler.get_task("find-me")
-            assert task is not None
-            assert task.name == "find-me"
-            assert scheduler.get_task("nonexistent") is None
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_list_tasks(self, tmp_path):
-        """列出所有任务状态"""
-        for i in range(2):
-            config = {
-                "name": f"task-{i}",
-                "schedule": {"type": "interval", "minutes": 60},
-                "content": {"task": f"任务 {i}", "plan": []},
-            }
-            (tmp_path / f"task_{i}.json").write_text(
-                json.dumps(config, ensure_ascii=False), encoding="utf-8"
-            )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            scheduler.load_tasks()
-            task_list = scheduler.list_tasks()
-            assert len(task_list) == 2
-            assert all(isinstance(t, dict) for t in task_list)
-            names = {t["name"] for t in task_list}
-            assert names == {"task-0", "task-1"}
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_scheduler_start_stop(self, tmp_path):
-        """调度器启动和停止"""
-        config = {
-            "name": "start-stop-test",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        (tmp_path / "test.json").write_text(
-            json.dumps(config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
-        try:
-            scheduler.load_tasks()
-            scheduler._running = True
-            assert scheduler._running is True
-            scheduler.stop()
-            assert scheduler._running is False
-        finally:
-            cron_module.CRON_DIR = original_dir
-
-    def test_no_tasks_no_start(self, tmp_path):
-        """没有任务时不启动线程"""
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path  # empty dir, no tasks
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            scheduler.start()
-            # 没有任务，_running 仍为 False
-            assert scheduler._running is False
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-
-class TestCronCondition:
-    """Test execution condition checking via get_tasks()."""
-
-    def test_get_tasks_no_task_fn(self, temp_cron_state):
-        """无 task_fn 时返回空列表"""
-        config = {"name": "test", "schedule": {"type": "interval", "minutes": 60}, "content": "test.py"}
-        task = CronTask(config)
-        assert task.get_tasks() == []
-
-    def test_get_tasks_returns_tasks(self, temp_cron_state):
-        """task_fn 返回任务列表时正常返回"""
-        config = {"name": "test", "schedule": {"type": "interval", "minutes": 60}, "content": "test.py"}
-        tasks = [{"task": "执行任务1", "plan": ["步骤一"]}, {"task": "执行任务2", "plan": ["步骤二"]}]
-        task = CronTask(config, task_fn=lambda: tasks)
-        result = task.get_tasks()
-        assert len(result) == 2
-        assert result[0]["task"] == "执行任务1"
-        assert result[1]["task"] == "执行任务2"
-
-    def test_get_tasks_returns_single_task(self, temp_cron_state):
-        """task_fn 返回单个任务时转换为列表"""
-        config = {"name": "test", "schedule": {"type": "interval", "minutes": 60}, "content": "test.py"}
-        task = CronTask(config, task_fn=lambda: {"task": "单个任务", "plan": ["步骤一"]})
-        result = task.get_tasks()
-        assert len(result) == 1
-        assert result[0]["task"] == "单个任务"
-
-    def test_get_tasks_returns_empty_to_skip(self, temp_cron_state):
-        """task_fn 返回空列表表示跳过"""
-        config = {"name": "test", "schedule": {"type": "interval", "minutes": 60}, "content": "test.py"}
-        task = CronTask(config, task_fn=lambda: [])
-        assert task.get_tasks() == []
-
-    def test_get_tasks_exception(self, temp_cron_state):
-        """task_fn 抛出异常时返回空列表"""
-        config = {"name": "test", "schedule": {"type": "interval", "minutes": 60}, "content": "test.py"}
-
-        def bad_task_fn():
-            raise RuntimeError("boom")
-
-        task = CronTask(config, task_fn=bad_task_fn)
-        assert task.get_tasks() == []
-
-    def test_load_task_fn_from_content(self, tmp_path):
-        """从 content 指定的 Python 文件加载 get_tasks 函数"""
-        task_config = {
-            "name": "content-test",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": "content_test.py",
-        }
-        (tmp_path / "content_test.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
-        )
-        (tmp_path / "content_test.py").write_text(
-            "def get_tasks():\n    return [{'task': '任务内容', 'plan': ['步骤一']}]\n", encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.CRON_DIR = tmp_path
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "nonexistent_user_tasks.json"
-        try:
-            scheduler.load_tasks()
-            assert len(scheduler.tasks) == 1
-            assert scheduler.tasks[0]._task_fn is not None
-            tasks = scheduler.tasks[0].get_tasks()
-            assert len(tasks) == 1
-            assert tasks[0]["task"] == "任务内容"
-            assert tasks[0]["plan"] == ["步骤一"]
-        finally:
-            cron_module.CRON_DIR = original_dir
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_load_no_content_field(self, tmp_path):
-        """没有 content 字段时无 task_fn"""
-        task_config = {
-            "name": "no-content",
-            "schedule": {"type": "interval", "minutes": 60},
-        }
-        (tmp_path / "no_content.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
-        try:
-            scheduler.load_tasks()
-            assert scheduler.tasks[0]._task_fn is None
-            assert scheduler.tasks[0].get_tasks() == []
-        finally:
-            cron_module.CRON_DIR = original_dir
-
-    def test_load_content_file_missing(self, tmp_path):
-        """content 指向的文件不存在时无 task_fn"""
-        task_config = {
-            "name": "missing-file",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": "nonexistent.py",
-        }
-        (tmp_path / "missing_file.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
-        try:
-            scheduler.load_tasks()
-            assert scheduler.tasks[0]._task_fn is None
-        finally:
-            cron_module.CRON_DIR = original_dir
-
-    def test_load_content_as_inline_dict(self, tmp_path):
-        """content 为内联 dict 时直接提取 task/plan"""
-        task_config = {
-            "name": "inline-task",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {
-                "task": "执行内联任务",
-                "plan": ["步骤一", "步骤二"],
+    def test_dst_gap_is_skipped(self):
+        job = Job.from_dict({
+            "id": "j", "name": "j",
+            "schedule": {
+                "type": "cron",
+                "expr": "30 2 * * *",
+                "timezone": "America/New_York",
             },
-        }
-        (tmp_path / "inline_task.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
+            "content": {"task": "x"},
+        })
+        # 2026-03-08 02:30  America/New_York 不存在（春季跳变）
+        base = rules.parse_iso("2026-03-08T00:00:00-05:00")
+        nxt = rules.compute_next_run(job, base)
+        assert nxt.isoformat() == "2026-03-09T02:30:00-04:00"
+
+    def test_invalid_cron_rejected(self):
+        with pytest.raises(CronValidationError):
+            Job.from_dict({
+                "id": "j", "name": "j",
+                "schedule": {"type": "cron", "expr": "bad expr"},
+                "content": {"task": "x"},
+            })
+
+
+# ─── migration ──────────────────────────────────────────────────
+
+
+class TestMigration:
+    def _legacy(self, cron_env, tasks, state=None):
+        legacy = Path(cron_env["workspace_dir"]) / ".cili" / "cron.d"
+        (legacy / "state").mkdir(parents=True)
+        _write_json(legacy / "user_tasks.json", tasks)
+        if state:
+            for name, payload in state.items():
+                _write_json(legacy / "state" / f"{name}.json", payload)
+        return legacy
+
+    def test_migrate_success_and_delete_legacy(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        legacy = self._legacy(
+            cron_env,
+            [{
+                "name": "daily-report",
+                "description": "report",
+                "enabled": True,
+                "schedule": {"type": "interval", "minutes": 120},
+                "one_time": False,
+                "config": {"max_executions": 7},
+                "content": {"task": "make report", "plan": ["a"]},
+            }],
+            {"daily-report": {"last_run": "2026-11-14T08:00:00", "run_count": 3,
+                              "session_id": "sess-old", "remaining": 4}},
         )
 
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
-        try:
-            scheduler.load_tasks()
-            assert scheduler.tasks[0]._task_fn is not None
-            tasks = scheduler.tasks[0].get_tasks()
-            assert len(tasks) == 1
-            assert tasks[0]["task"] == "执行内联任务"
-            assert tasks[0]["plan"] == ["步骤一", "步骤二"]
-        finally:
-            cron_module.CRON_DIR = original_dir
+        report = migration.migrate_workspace(ws)
+        assert report["status"] == "migrated"
+        root = store.cron_root(ws)
+        assert (root / "daily-report" / "job.json").exists()
+        assert (root / ".migrated.json").exists()
+        job = store.load_job(ws, "daily-report")
+        assert job.execution["max_executions"] == 7
+        state = store.load_state(ws, "daily-report")
+        assert state.remaining == 4 and state.run_count == 3
+        assert state.cron_session_id == "sess-old"
+        # 迁移不写 next_run；引擎首次加载时按 last_run 规则计算
+        assert state.next_run is None
+        engine_mod.CronEngine()._load_all()
+        assert store.load_state(ws, "daily-report").next_run is not None
+        assert not legacy.exists()
 
-    def test_load_content_dict_empty_task(self, tmp_path):
-        """content dict 的 task 为空时无 task_fn"""
-        task_config = {
-            "name": "empty-inline",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {
-                "task": "",
-                "plan": ["步骤一"],
+    def test_migration_is_idempotent(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        self._legacy(cron_env, [{
+            "name": "t", "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        }])
+        assert migration.migrate_workspace(ws)["status"] == "migrated"
+        assert migration.migrate_workspace(ws)["status"] == "already"
+
+    def test_invalid_task_keeps_legacy(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        legacy = self._legacy(cron_env, [{
+            "name": "bad", "schedule": {"type": "interval", "minutes": 0},
+            "content": {"task": "x"},
+        }])
+        with pytest.raises(migration.v1.MigrationError):
+            migration.migrate_workspace(ws)
+        assert legacy.exists()
+        assert not store.cron_root(ws).exists()
+
+    def test_python_content_file_copied(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        legacy = self._legacy(cron_env, [{
+            "name": "dyn", "schedule": {"type": "interval", "minutes": 10},
+            "content": "task.py",
+        }])
+        (legacy / "task.py").write_text(
+            "def get_tasks():\n    return [{'task': 'dynamic'}]\n", encoding="utf-8"
+        )
+        migration.migrate_workspace(ws)
+        job = store.load_job(ws, "dyn")
+        assert job.content == "task.py"
+        assert (store.job_dir(ws, "dyn") / "task.py").exists()
+
+    def test_system_state_migrated_to_system_workspace(self, cron_env):
+        system_state = (
+            Path(cron_env["root"]) / "system" / ".cili" / "cron.d" / "state"
+        )
+        _write_json(system_state / "memory-consolidation.json", {
+            "last_run": "2026-11-14T08:00:00",
+            "run_count": 2,
+            "session_id": "sess-sys",
+            "remaining": 10,
+        })
+        migration.migrate_system_states(["memory-consolidation"])
+        state = store.load_state("system", "memory-consolidation")
+        assert state.run_count == 2 and state.cron_session_id == "sess-sys"
+        assert not (system_state / "memory-consolidation.json").exists()
+
+
+# ─── seeds ──────────────────────────────────────────────────────
+
+
+class TestSeeds:
+    def test_install_and_idempotent(self, cron_env):
+        first = seeds.install_seeds()
+        assert {item["status"] for item in first} == {"installed"}
+        second = seeds.install_seeds()
+        assert {item["status"] for item in second} == {"unchanged"}
+        job = store.load_job("system", "memory-consolidation")
+        assert job.managed and job.scope == "global"
+        assert job.seed_checksum
+
+    def test_reinstall_after_delete(self, cron_env):
+        seeds.install_seeds()
+        store.delete_job("system", "office-pdf-sync")
+        result = seeds.install_seeds()
+        assert any(
+            item["id"] == "office-pdf-sync" and item["status"] == "installed"
+            for item in result
+        )
+
+    def test_corrupt_job_reinstalled(self, cron_env):
+        seeds.install_seeds()
+        path = store.job_path("system", "office-pdf-sync")
+        path.write_text("{not json", encoding="utf-8")
+        result = seeds.install_seeds()
+        assert any(
+            item["id"] == "office-pdf-sync" and item["status"] == "reinstalled"
+            for item in result
+        )
+        assert store.load_job("system", "office-pdf-sync") is not None
+        assert list(path.parent.glob("job.json.corrupt-*"))
+
+    def test_revision_upgrade_keeps_state(self, cron_env, monkeypatch, tmp_path):
+        seed_dir = tmp_path / "seeds"
+        seed_dir.mkdir()
+        for path in seeds.SEED_DIR.glob("*.json"):
+            shutil.copy(path, seed_dir / path.name)
+        monkeypatch.setattr(seeds, "SEED_DIR", seed_dir)
+
+        seeds.install_seeds()
+        state = store.load_state("system", "memory-consolidation")
+        state.remaining = 5
+        store.save_state("system", "memory-consolidation", state)
+
+        path = seed_dir / "memory-consolidation.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["seed_revision"] = 2
+        data["description"] = "v2 description"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        seeds.install_seeds()
+        job = store.load_job("system", "memory-consolidation")
+        assert job.description == "v2 description"
+        assert job.seed_revision == 2
+        assert store.load_state("system", "memory-consolidation").remaining == 5
+
+    def test_checksum_drift_restored(self, cron_env):
+        seeds.install_seeds()
+        path = store.job_path("system", "memory-consolidation")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["description"] = "tampered"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = seeds.install_seeds()
+        assert any(item["status"] == "restored" for item in result)
+        assert store.load_job("system", "memory-consolidation").description != "tampered"
+
+
+# ─── service ────────────────────────────────────────────────────
+
+
+class TestService:
+    def test_create_with_origin_and_paths(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job(
+            {
+                "name": "New Task",
+                "workspace_uuid": ws,
+                "schedule": {"type": "interval", "minutes": 10},
+                "content": {"task": "do"},
+                "execution": {"timeout_seconds": 30},
             },
-        }
-        (tmp_path / "empty_inline.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
+            origin={"workspace_uuid": ws, "session_id": "sess-1", "interface": "web"},
         )
+        assert job.id == "new-task"
+        assert job.delivery["mode"] == "origin"
+        assert job.origin["session_id"] == "sess-1"
+        assert store.job_path(ws, job.id).exists()
+        state = store.load_state(ws, job.id)
+        assert state.next_run and state.remaining == 9999
 
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
+    def test_unique_id_suffix(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        first = service.create_job({
+            "name": "same", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        second = service.create_job({
+            "name": "same", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        assert first.id == "same"
+        assert second.id == "same-2"
+
+    def test_update_schedule_resets_next_run(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job({
+            "name": "u", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        before = store.load_state(ws, job.id).next_run
+        time.sleep(1.1)
+        service.update_job(ws, job.id, {"schedule": {"type": "interval", "minutes": 60}})
+        after = store.load_state(ws, job.id).next_run
+        assert after != before
+        assert service.get_job(ws, job.id).schedule["minutes"] == 60
+
+    def test_enable_resets_remaining(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job({
+            "name": "e", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"}, "execution": {"max_executions": 3},
+        })
+        service.set_enabled(ws, job.id, False)
+        state = store.load_state(ws, job.id)
+        state.remaining = 0
+        store.save_state(ws, job.id, state)
+        service.set_enabled(ws, job.id, True)
+        assert store.load_state(ws, job.id).remaining == 3
+
+    def test_delete(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job({
+            "name": "d", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        service.delete_job(ws, job.id)
+        assert store.load_job(ws, job.id) is None
+
+    def test_managed_task_read_only(self, cron_env):
+        seeds.install_seeds()
+        with pytest.raises(service.CronError, match="只读"):
+            service.set_enabled("system", "memory-consolidation", False)
+        with pytest.raises(service.CronError, match="只读"):
+            service.delete_job("system", "memory-consolidation")
+        with pytest.raises(service.CronError, match="只读"):
+            service.run_now("system", "memory-consolidation")
+
+
+# ─── sessions / delivery ────────────────────────────────────────
+
+
+class TestSessionsAndDelivery:
+    def test_each_job_gets_its_own_session(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job_a = service.create_job({
+            "name": "a", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        job_b = service.create_job({
+            "name": "b", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 10},
+            "content": {"task": "x"},
+        })
+        state_a = store.load_state(ws, job_a.id)
+        state_b = store.load_state(ws, job_b.id)
+        session_a = ensure_cron_session(ws, job_a, state_a)
+        session_b = ensure_cron_session(ws, job_b, state_b)
+        assert session_a.session_id != session_b.session_id
+        assert session_a.name == "[Cron] a"
+        # 同一任务复用
+        again = ensure_cron_session(ws, job_a, store.load_state(ws, job_a.id))
+        assert again.session_id == session_a.session_id
+
+    def test_deliver_to_origin_session(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        sessions_dir = Path(cron_env["workspace_dir"]) / ".cili" / "sessions"
+        target = SessionStore.create_new_session(sessions_dir, "Target")
+        job = service.create_job(
+            {
+                "name": "notify",
+                "workspace_uuid": ws,
+                "schedule": {"type": "interval", "minutes": 10},
+                "content": {"task": "x"},
+            },
+            origin={"workspace_uuid": ws, "session_id": target.session_id, "interface": "web"},
+        )
+        state = store.load_state(ws, job.id)
+        result = RunResult(
+            job_id=job.id, slot="s1", status="ok", final_text="hello", duration_ms=1
+        )
+        receipt = delivery.deliver(job, state, result)
+        assert receipt["status"] == "delivered"
+        loaded = SessionStore.load_session(target.session_id, sessions_dir)
+        assert loaded.messages[-1]["content"] == "hello"
+        assert loaded.messages[-1]["_meta"]["cron_delivery"]["job_id"] == job.id
+
+    def test_missing_target_falls_back_to_cron_session(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job(
+            {
+                "name": "fallback",
+                "workspace_uuid": ws,
+                "schedule": {"type": "interval", "minutes": 10},
+                "content": {"task": "x"},
+            },
+            origin={"workspace_uuid": ws, "session_id": "missing", "interface": "web"},
+        )
+        state = store.load_state(ws, job.id)
+        receipt = delivery.deliver(
+            job, state, RunResult(job_id=job.id, slot="s1", status="ok", final_text="text")
+        )
+        assert receipt["status"] == "fallback"
+        assert state.cron_session_id
+        cron_session = SessionStore.load_session(
+            state.cron_session_id, cron_sessions.workspace_sessions_dir(ws)
+        )
+        assert cron_session is not None
+
+
+# ─── engine ─────────────────────────────────────────────────────
+
+
+class TestEngine:
+    def _due_job(self, ws, **overrides):
+        data = {
+            "name": "due",
+            "workspace_uuid": ws,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "x"},
+            "misfire": {"policy": "once", "grace_minutes": 120},
+        }
+        data.update(overrides)
+        job = service.create_job(data)
+        state = store.load_state(ws, job.id)
+        state.next_run = (datetime.now() - timedelta(minutes=1)).isoformat()
+        store.save_state(ws, job.id, state)
+        return job
+
+    def test_due_job_runs_and_records_history(self, cron_env, monkeypatch):
+        ws = cron_env["workspace_uuid"]
+        job = self._due_job(ws)
+        calls: list[str] = []
+
+        def fake_execute(job, state, slot, scheduled_iso, *, timeout_seconds):
+            calls.append(slot)
+            return RunResult(job_id=job.id, slot=slot, status="ok",
+                             final_text="done", duration_ms=5)
+
+        monkeypatch.setattr(engine_mod.executor, "execute", fake_execute)
+        engine = engine_mod.CronEngine()
+        engine._load_all()
+        engine._tick(time.time())
+        deadline = time.time() + 5
+        while engine._queue_depth.get(ws, 0) and time.time() < deadline:
+            time.sleep(0.02)
+        state = store.load_state(ws, job.id)
+        assert calls and calls[0].startswith("due@")
+        assert state.last_status == "ok"
+        assert state.history[0]["status"] == "ok"
+        assert state.remaining == 9998
+        engine.stop()
+
+    def test_misfire_skip_does_not_execute(self, cron_env, monkeypatch):
+        ws = cron_env["workspace_uuid"]
+        job = self._due_job(ws, misfire={"policy": "skip", "grace_minutes": 120})
+        state = store.load_state(ws, job.id)
+        state.next_run = (datetime.now() - timedelta(hours=3)).isoformat()
+        store.save_state(ws, job.id, state)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            engine_mod.executor,
+            "execute",
+            lambda *a, **k: calls.append("x"),
+        )
+        engine = engine_mod.CronEngine()
+        engine._load_all()
+        engine._tick(time.time())
+        assert calls == []
+        state = store.load_state(ws, job.id)
+        assert state.missed_count == 1
+        assert rules.parse_iso(state.next_run).timestamp() > time.time()
+        engine.stop()
+
+    def test_at_task_fires_once_and_is_deleted(self, cron_env, monkeypatch):
+        ws = cron_env["workspace_uuid"]
+        at_time = (datetime.now() - timedelta(seconds=5)).isoformat()
+        job = service.create_job({
+            "name": "once", "workspace_uuid": ws,
+            "schedule": {"type": "at", "time": at_time},
+            "content": {"task": "x"},
+            "misfire": {"policy": "once", "grace_minutes": 120},
+        })
+        assert job.one_time is True
+        calls: list[str] = []
+        monkeypatch.setattr(
+            engine_mod.executor,
+            "execute",
+            lambda job, state, slot, iso, *, timeout_seconds: (
+                calls.append(slot) or RunResult(job_id=job.id, slot=slot, status="ok", final_text="done")
+            ),
+        )
+        engine = engine_mod.CronEngine()
+        engine._load_all()
+        engine._tick(time.time())
+        deadline = time.time() + 5
+        while engine._queue_depth.get(ws, 0) and time.time() < deadline:
+            time.sleep(0.02)
+        assert calls
+        assert store.load_job(ws, job.id) is None  # one-time 删除
+        engine.stop()
+
+    def test_running_slot_recovered_only_on_startup(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job({
+            "name": "recover", "workspace_uuid": ws,
+            "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "x"},
+        })
+        state = store.load_state(ws, job.id)
+        state.running = {"slot": "recover@x", "started_at": "2026-11-14 10:00:00"}
+        store.save_state(ws, job.id, state)
+
+        engine = engine_mod.CronEngine()
+        engine._load_all()  # reload 路径：运行中的槽位保持，不误判 interrupted
+        assert store.load_state(ws, job.id).running is not None
+
+        engine._load_all(recover_running=True)  # 启动路径：标记 interrupted
+        recovered = store.load_state(ws, job.id)
+        assert recovered.running is None
+        assert recovered.last_status == "interrupted"
+        assert recovered.history[0]["status"] == "interrupted"
+        engine.stop()
+
+    def test_manual_run_is_extra_fire(self, cron_env, monkeypatch):
+        ws = cron_env["workspace_uuid"]
+        job = service.create_job({
+            "name": "manual", "workspace_uuid": ws, "schedule": {"type": "interval", "minutes": 60},
+            "content": {"task": "x"},
+        })
+        before = store.load_state(ws, job.id).next_run
+        monkeypatch.setattr(
+            engine_mod.executor,
+            "execute",
+            lambda job, state, slot, iso, *, timeout_seconds: RunResult(
+                job_id=job.id, slot=slot, status="ok", final_text="manual"
+            ),
+        )
+        engine = engine_mod.CronEngine()
+        engine._load_all()
+        assert engine.run_now(ws, job.id)
+        deadline = time.time() + 5
+        while engine._queue_depth.get(ws, 0) and time.time() < deadline:
+            time.sleep(0.02)
+        state = store.load_state(ws, job.id)
+        assert state.next_run == before
+        assert state.remaining == 9999
+        assert any(item.get("extra") for item in state.history)
+        engine.stop()
+
+
+# ─── tool guards ────────────────────────────────────────────────
+
+
+class TestTool:
+    def _tool(self, ws):
+        from core.tools.cron_tool import CronTool
+
+        tool = CronTool(
+            cwd=str(Path(ws) / "x"),
+            workspace_uuid=ws,
+            session=SimpleNamespace(session_id="sess-tool", session_dir=None),
+        )
+        return tool
+
+    def test_recursion_guard(self, cron_env):
+        ws = cron_env["workspace_uuid"]
+        tool = self._tool(ws)
+        token = cron_run_active.set(True)
         try:
-            scheduler.load_tasks()
-            assert scheduler.tasks[0]._task_fn is None
+            result = tool.execute(
+                action="create",
+                name="nested",
+                schedule={"type": "interval", "minutes": 10},
+                task="x",
+            )
         finally:
-            cron_module.CRON_DIR = original_dir
-
-    def test_load_content_as_inline_list(self, tmp_path):
-        """content 为内联 list 时提取多个任务"""
-        task_config = {
-            "name": "multi-tasks",
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": [
-                {"task": "任务1", "plan": ["步骤A"]},
-                {"task": "任务2", "plan": ["步骤B", "步骤C"]},
-            ],
-        }
-        (tmp_path / "multi_tasks.json").write_text(
-            json.dumps(task_config, ensure_ascii=False), encoding="utf-8"
-        )
-
-        scheduler = CronScheduler()
-        import core.cron as cron_module
-        original_dir = cron_module.CRON_DIR
-        cron_module.CRON_DIR = tmp_path
-        try:
-            scheduler.load_tasks()
-            assert scheduler.tasks[0]._task_fn is not None
-            tasks = scheduler.tasks[0].get_tasks()
-            assert len(tasks) == 2
-            assert tasks[0]["task"] == "任务1"
-            assert tasks[1]["task"] == "任务2"
-        finally:
-            cron_module.CRON_DIR = original_dir
-
-
-class TestCronTaskRemainingCounter:
-    """Test remaining counter functionality in CronTask."""
-
-    def test_task_initializes_remaining_none(self, temp_cron_state):
-        """新建任务 _remaining 初始为 None"""
-        config = {
-            "name": "test-remaining-init",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        assert task._remaining is None
-
-    def test_task_restores_remaining_from_state(self, temp_cron_state):
-        """从状态文件恢复 remaining"""
-        import core.cron as cron_module
-
-        # 先创建状态文件
-        state_path = cron_module.get_cron_state_dir() / "restore-task.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({
-            "remaining": 50,
-            "run_count": 10,
-            "last_run": "2026-08-25T10:00:00",
-        }))
-
-        config = {
-            "name": "restore-task",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        assert task._remaining == 50
-
-    def test_task_saves_remaining_to_state(self, temp_cron_state):
-        """保存 remaining 到状态文件"""
-        import core.cron as cron_module
-
-        config = {
-            "name": "save-remaining-task",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        task._remaining = 100
-        task._run_count = 5
-        task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
-
-        # 读取状态文件验证
-        state_path = cron_module.get_cron_state_dir() / "save-remaining-task.json"
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        assert state["remaining"] == 100
-
-    def test_task_state_without_remaining(self, temp_cron_state):
-        """_remaining 为 None 时不写入状态文件"""
-        import core.cron as cron_module
-
-        config = {
-            "name": "no-remaining-task",
-            "schedule": {"type": "interval", "minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        task._run_count = 5
-        task._save_state(datetime(2026, 8, 25, 10, 0, 0), None)
-
-        # 读取状态文件验证
-        state_path = cron_module.get_cron_state_dir() / "no-remaining-task.json"
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        assert "remaining" not in state
-
-
-class TestCronSchedulerRemainingCounter:
-    """Test CronScheduler remaining counter logic."""
-
-    def test_execute_task_decrements_remaining(self, temp_cron_state, tmp_path):
-        """_execute_task 每次递减 remaining"""
-        import core.cron as cron_module
-
-        # 创建任务
-        config = {
-            "name": "decrement-task",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "测试", "plan": []},
-            "config": {"max_executions": 100},
-        }
-
-        # 创建用户任务文件
-        user_tasks_file = tmp_path / "user_tasks.json"
-        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
-
-        try:
-            scheduler = CronScheduler()
-            scheduler.load_tasks()
-            task = scheduler.get_task("decrement-task")
-            assert task is not None
-
-            # 初始 remaining 为 None，应该使用 max_executions
-            assert task._remaining is None
-
-            # 模拟 _execute_task 中的 remaining 逻辑
-            max_exec = task.runtime_config.get("max_executions", 9999)
-            remaining = task._remaining if task._remaining is not None else max_exec
-            remaining -= 1
-            task._remaining = remaining
-
-            assert task._remaining == 99
-
-        finally:
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_skipped_execution_does_not_decrement_remaining(self, temp_cron_state, tmp_path):
-        """T10: _execute_task 中 skipped 结果不计 remaining，真正执行才递减"""
-        import core.cron as cron_module
-
-        config = {
-            "name": "skip-task",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "测试", "plan": []},
-            "config": {"max_executions": 3},
-        }
-        user_tasks_file = tmp_path / "user_tasks.json"
-        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
-
-        try:
-            scheduler = CronScheduler()
-            scheduler.load_tasks()
-            task = scheduler.get_task("skip-task")
-            assert task is not None and task._remaining is None
-
-            from unittest.mock import patch
-            now = datetime.now()
-            # skipped：remaining 不递减
-            with patch.object(task, "execute", return_value={"status": "skipped", "message": "busy"}):
-                scheduler._execute_task(task, now)
-            assert task._remaining is None  # 未消耗
-
-            # completed：remaining 递减（max_executions=3 → 2）
-            with patch.object(task, "execute", return_value={"status": "completed"}):
-                scheduler._execute_task(task, now)
-            assert task._remaining == 2
-        finally:
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_run_task_now_reuses_execute_task(self, temp_cron_state, tmp_path):
-        """T10: run_task_now 走 _execute_task（尊重 remaining/锁），而非直接 task.execute"""
-        import core.cron as cron_module
-
-        config = {
-            "name": "now-task",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "测试", "plan": []},
-            "config": {"max_executions": 5},
-        }
-        user_tasks_file = tmp_path / "user_tasks.json"
-        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
-
-        try:
-            scheduler = CronScheduler()
-            scheduler.load_tasks()
-            task = scheduler.get_task("now-task")
-            assert task is not None
-
-            from unittest.mock import patch
-            # 直接调用 task.execute() 不应发生：run_task_now 必须经 _execute_task
-            with patch.object(task, "execute", return_value={"status": "completed"}) as mock_exec:
-                with patch.object(scheduler, "_execute_task") as mock_execute_task:
-                    result = scheduler.run_task_now("now-task")
-                    assert result == {"status": "triggered", "message": "Task now-task triggered"}
-                    mock_execute_task.assert_called_once()
-                    mock_exec.assert_not_called()  # 未绕过
-                    # 等后台线程执行完（mock 即时返回）
-                    import time
-                    for _ in range(20):
-                        if mock_execute_task.call_count == 1 and mock_exec.call_count >= 0:
-                            time.sleep(0.05)
-        finally:
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-    def test_auto_disable_when_remaining_zero(self, temp_cron_state, tmp_path):
-        """remaining <= 0 时自动 disable"""
-        import core.cron as cron_module
-
-        # 创建任务配置
-        config = {
-            "name": "auto-disable-task",
-            "enabled": True,
-            "schedule": {"type": "interval", "minutes": 60},
-            "content": {"task": "测试", "plan": []},
-            "config": {"max_executions": 5},
-        }
-
-        # 创建用户任务文件
-        user_tasks_file = tmp_path / "user_tasks.json"
-        user_tasks_file.write_text(json.dumps([config], ensure_ascii=False), encoding="utf-8")
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        cron_module.get_user_tasks_file = lambda ws="", _f=user_tasks_file: _f
-
-        try:
-            scheduler = CronScheduler()
-            scheduler.load_tasks()
-            task = scheduler.get_task("auto-disable-task")
-            assert task is not None
-
-            # 设置 remaining = 1
-            task._remaining = 1
-            task._save_state(datetime.now(), None)
-
-            # 模拟 remaining 递减逻辑
-            remaining = task._remaining - 1  # 1 - 1 = 0
-            task._remaining = remaining
-
-            # remaining <= 0 应该触发 disable
-            if remaining <= 0:
-                task.enabled = False
-
-            assert task.enabled is False
-
-        finally:
-            cron_module.get_user_tasks_file = original_get_user_tasks_file
-
-
-class TestCronToolMaxExecutions:
-    """Test CronTool max_executions parameter."""
-
-    @pytest.fixture
-    def temp_cron_files(self, tmp_path):
-        """临时替换 cron 相关文件路径"""
-        import core.cron as cron_module
-        import core.tools.cron_tool as cron_tool_module
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        original_get_cron_state_dir = cron_module.get_cron_state_dir
-        original_tool_get_user_tasks_file = cron_tool_module.get_user_tasks_file
-
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
-        cron_module.get_cron_state_dir = lambda ws="": tmp_path / "state"
-        cron_tool_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
-
-        yield tmp_path
-
-        cron_module.get_user_tasks_file = original_get_user_tasks_file
-        cron_module.get_cron_state_dir = original_get_cron_state_dir
-        cron_tool_module.get_user_tasks_file = original_tool_get_user_tasks_file
-
-    def test_create_with_max_executions(self, temp_cron_files):
-        """创建任务时设置 max_executions"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-        result = tool.execute(
-            action="create",
-            name="test-max-exec-50",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-            max_executions=50,
-        )
-
-        assert "Created" in result.output
-
-        # 验证任务配置
-        tasks = _load_user_tasks()
-        assert len(tasks) == 1
-        assert tasks[0]["config"]["max_executions"] == 50
-
-    def test_create_with_default_max_executions(self, temp_cron_files):
-        """默认 max_executions 为 9999"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-        tool.execute(
-            action="create",
-            name="test-default-max-9999",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-        )
-
-        tasks = _load_user_tasks()
-        assert tasks[0]["config"]["max_executions"] == 9999
-
-    def test_create_with_invalid_max_executions(self, temp_cron_files):
-        """max_executions 超出范围时报错"""
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 超过最大值
-        result = tool.execute(
-            action="create",
-            name="test-invalid-max-10000",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-            max_executions=10000,
-        )
-        assert result.is_error
-
-        # 小于最小值
-        result = tool.execute(
-            action="create",
-            name="test-invalid-max-0",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-            max_executions=0,
-        )
-        assert result.is_error
-
-    def test_enable_resets_remaining(self, temp_cron_files):
-        """enable 时重置 remaining 为 max_executions"""
-        import json
-
-        import core.cron as cron_module
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-enable-reset-remaining",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-            max_executions=100,
-        )
-
-        # 手动设置 remaining 为较小值
-        state_path = cron_module.get_cron_state_dir() / "test-enable-reset-remaining.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"remaining": 10}))
-
-        # enable 任务
-        tool.execute(action="enable", name="test-enable-reset-remaining")
-
-        # 验证 remaining 已重置
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        assert state["remaining"] == 100
-
-
-class TestCronToolUpdate:
-    """Test CronTool update action."""
-
-    @pytest.fixture
-    def temp_cron_files(self, tmp_path):
-        """临时替换 cron 相关文件路径"""
-        import core.cron as cron_module
-        import core.tools.cron_tool as cron_tool_module
-
-        original_get_user_tasks_file = cron_module.get_user_tasks_file
-        original_get_cron_state_dir = cron_module.get_cron_state_dir
-        original_tool_get_user_tasks_file = cron_tool_module.get_user_tasks_file
-
-        cron_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
-        cron_module.get_cron_state_dir = lambda ws="": tmp_path / "state"
-        cron_tool_module.get_user_tasks_file = lambda ws="": tmp_path / "user_tasks.json"
-
-        yield tmp_path
-
-        cron_module.get_user_tasks_file = original_get_user_tasks_file
-        cron_module.get_cron_state_dir = original_get_cron_state_dir
-        cron_tool_module.get_user_tasks_file = original_tool_get_user_tasks_file
-
-    def test_update_task_description(self, temp_cron_files):
-        """更新任务描述"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-desc",
-            schedule={"type": "interval", "minutes": 60},
-            task="原始任务",
-            description="原始描述",
-        )
-
-        # 更新描述
-        result = tool.execute(
-            action="update",
-            name="test-update-desc",
-            description="新描述",
-        )
-
-        assert "Updated" in result.output
-        assert "description" in result.output
-
-        # 验证更新
-        tasks = _load_user_tasks()
-        assert tasks[0]["description"] == "新描述"
-        # 其他字段保持不变
-        assert tasks[0]["content"]["task"] == "原始任务"
-
-    def test_update_task_content(self, temp_cron_files):
-        """更新任务内容"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-task",
-            schedule={"type": "interval", "minutes": 60},
-            task="原始任务",
-        )
-
-        # 更新任务内容
-        result = tool.execute(
-            action="update",
-            name="test-update-task",
-            task="新任务内容",
-            plan=["步骤一", "步骤二"],
-        )
-
-        assert "Updated" in result.output
-        assert "task" in result.output
-        assert "plan" in result.output
-
-        # 验证更新
-        tasks = _load_user_tasks()
-        assert tasks[0]["content"]["task"] == "新任务内容"
-        assert tasks[0]["content"]["plan"] == ["步骤一", "步骤二"]
-
-    def test_update_schedule(self, temp_cron_files):
-        """更新调度配置"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-schedule",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-        )
-
-        # 更新调度
-        result = tool.execute(
-            action="update",
-            name="test-update-schedule",
-            schedule={"type": "cron", "expr": "0 9 * * *"},
-        )
-
-        assert "Updated" in result.output
-        assert "schedule" in result.output
-
-        # 验证更新
-        tasks = _load_user_tasks()
-        assert tasks[0]["schedule"]["type"] == "cron"
-        assert tasks[0]["schedule"]["expr"] == "0 9 * * *"
-
-    def test_update_max_executions(self, temp_cron_files):
-        """更新 max_executions 时重置 remaining"""
-        import json
-
-        import core.cron as cron_module
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-max-exec",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-            max_executions=100,
-        )
-
-        # 模拟执行几次，remaining 递减
-        state_path = cron_module.get_cron_state_dir() / "test-update-max-exec.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"remaining": 50}))
-
-        # 更新 max_executions
-        result = tool.execute(
-            action="update",
-            name="test-update-max-exec",
-            max_executions=200,
-        )
-
-        assert "Updated" in result.output
-        assert "max_executions" in result.output
-
-        # 验证 remaining 已重置为新的 max_executions
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-
-        assert state["remaining"] == 200
-
-    def test_update_nonexistent_task(self, temp_cron_files):
-        """更新不存在的任务时报错"""
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        result = tool.execute(
-            action="update",
-            name="nonexistent-task",
-            description="新描述",
-        )
-
-        assert result.is_error
-        assert "not found" in result.output
-
-    def test_update_without_name(self, temp_cron_files):
-        """没有 name 时报错"""
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        result = tool.execute(
-            action="update",
-            description="新描述",
-        )
-
-        assert result.is_error
-        assert "required" in result.output
-
-    def test_update_without_fields(self, temp_cron_files):
-        """没有任何要更新的字段时报错"""
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-empty",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-        )
-
-        # 不提供任何更新字段
-        result = tool.execute(
-            action="update",
-            name="test-update-empty",
-        )
-
-        assert result.is_error
-        assert "No fields to update" in result.output
-
-    def test_update_invalid_schedule(self, temp_cron_files):
-        """无效调度配置时报错"""
-        from core.tools.cron_tool import CronTool
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-invalid-schedule",
-            schedule={"type": "interval", "minutes": 60},
-            task="测试任务",
-        )
-
-        # 无效调度类型
-        result = tool.execute(
-            action="update",
-            name="test-update-invalid-schedule",
-            schedule={"type": "invalid"},
-        )
-
-        assert result.is_error
-
-    def test_update_partial_fields(self, temp_cron_files):
-        """只更新部分字段，其他保持不变"""
-        from core.tools.cron_tool import CronTool, _load_user_tasks
-
-        tool = CronTool(cwd=".", workspace_uuid="test")
-
-        # 创建任务
-        tool.execute(
-            action="create",
-            name="test-update-partial",
-            schedule={"type": "interval", "minutes": 60},
-            task="原始任务",
-            description="原始描述",
-            plan=["原始步骤"],
-        )
-
-        # 只更新 task，不更新 description 和 plan
-        tool.execute(
-            action="update",
-            name="test-update-partial",
-            task="新任务",
-        )
-
-        # 验证只更新了 task
-        tasks = _load_user_tasks()
-        assert tasks[0]["content"]["task"] == "新任务"
-        assert tasks[0]["description"] == "原始描述"
-        assert tasks[0]["content"]["plan"] == ["原始步骤"]
-
-
-class TestWorkspaceLock:
-    """_get_workspace_lock 每工作区串行锁（A43: 并发创建竞态）。"""
-
-    def test_same_workspace_returns_same_lock(self):
-        scheduler = CronScheduler()
-        lock1 = scheduler._get_workspace_lock("ws-1")
-        lock2 = scheduler._get_workspace_lock("ws-1")
-        assert lock1 is lock2
-
-    def test_different_workspaces_distinct_locks(self):
-        scheduler = CronScheduler()
-        lock_a = scheduler._get_workspace_lock("ws-a")
-        lock_b = scheduler._get_workspace_lock("ws-b")
-        assert lock_a is not lock_b
-
-
-class TestCronInitialDelay:
-    """interval 的 initial_delay_minutes：首次延迟 + 后续固定间隔。"""
-
-    def test_first_run_uses_initial_delay(self, temp_cron_state):
-        """无历史（新任务/服务首次启动）→ 首跑用 initial_delay_minutes"""
-        config = {
-            "name": "init-delay",
-            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        now = datetime(2026, 9, 12, 8, 0, 0)
-        assert task._last_run is None
-        task._calculate_next_run(now)
-        assert task._next_run == now + timedelta(minutes=60)
-
-    def test_after_execution_uses_regular_interval(self, temp_cron_state):
-        """首跑之后按固定 minutes 间隔（24 小时），不再用 initial_delay"""
-        config = {
-            "name": "init-delay-after",
-            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        run_time = datetime(2026, 9, 12, 9, 0, 0)
-        task.mark_executed(run_time)
-        assert task._next_run == run_time + timedelta(minutes=1440)
-
-    def test_without_initial_delay_unaffected(self, temp_cron_state):
-        """未配置 initial_delay → 行为不变，首跑即 minutes 后"""
-        config = {
-            "name": "no-init-delay",
-            "schedule": {"type": "interval", "minutes": 1440},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        now = datetime(2026, 9, 12, 8, 0, 0)
-        task._calculate_next_run(now)
-        assert task._next_run == now + timedelta(minutes=1440)
-
-    def test_restore_from_state_uses_regular_interval(self, temp_cron_state):
-        """有 last_run 状态文件（服务重启后）→ 按固定间隔续跑，不重置 initial_delay"""
-        import core.cron as cron_module
-        state_path = cron_module.get_cron_state_dir() / "init-delay-restore.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        last_run = datetime(2026, 9, 11, 10, 0, 0)
-        state_path.write_text(json.dumps({
-            "last_run": last_run.isoformat(), "run_count": 3,
-        }))
-
-        config = {
-            "name": "init-delay-restore",
-            "schedule": {"type": "interval", "minutes": 1440, "initial_delay_minutes": 60},
-            "task": "测试",
-        }
-        task = CronTask(config)
-        assert task._next_run == last_run + timedelta(minutes=1440)
-
-
-def test_any_cron_runner_running():
-    """空闲判定：任一 cron master runner 运行中即忙，否则空闲"""
-    from types import SimpleNamespace
-
-    import core.cron as cron_module
-
-    with cron_module._cron_sessions_lock:
-        saved = dict(cron_module._cron_sessions)
-        cron_module._cron_sessions.clear()
-    try:
-        assert cron_module.any_cron_runner_running() is False
-
-        idle_runner = SimpleNamespace(is_running=lambda: False)
-        with cron_module._cron_sessions_lock:
-            cron_module._cron_sessions["ws"] = idle_runner
-        assert cron_module.any_cron_runner_running() is False
-
-        busy_runner = SimpleNamespace(is_running=lambda: True)
-        with cron_module._cron_sessions_lock:
-            cron_module._cron_sessions["ws"] = busy_runner
-        assert cron_module.any_cron_runner_running() is True
-    finally:
-        with cron_module._cron_sessions_lock:
-            cron_module._cron_sessions.clear()
-            cron_module._cron_sessions.update(saved)
+            cron_run_active.reset(token)
+        assert result.error
+        assert "cron run" in result.output
+
+    def test_managed_tool_action_rejected(self, cron_env):
+        seeds.install_seeds()
+        tool = self._tool(cron_env["workspace_uuid"])
+        result = tool.execute(action="disable", name="memory-consolidation")
+        assert result.error
+        assert "只读" in result.output

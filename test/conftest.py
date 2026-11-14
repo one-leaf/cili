@@ -5,7 +5,6 @@ import secrets
 import shutil
 import socket
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,6 @@ import pytest
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
-import core.cron
 from core.config import (
     AgentConfig,
     Config,
@@ -190,17 +188,32 @@ def runner(config, test_workspace):
 
 
 @pytest.fixture
-def temp_cron_state(monkeypatch):
-    """临时替换 cron 状态目录，避免测试读取真实状态文件"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        # Monkeypatch the functions that return cron directories
-        monkeypatch.setattr(core.cron, "get_cron_state_dir", lambda workspace_uuid="": temp_path / "state")
-        monkeypatch.setattr(core.cron, "get_user_tasks_file", lambda workspace_uuid="": temp_path / "user_tasks.json")
-        # Also patch in cron_tool module which imports these
-        import core.tools.cron_tool as cron_tool
-        monkeypatch.setattr(cron_tool, "get_user_tasks_file", lambda workspace_uuid="": temp_path / "user_tasks.json")
-        yield temp_dir
+def cron_env(monkeypatch, tmp_path):
+    """隔离的 cron 环境：独立 workspace + System 数据目录。"""
+    import core.config as config_mod
+
+    ws_uuid = f"cron-{secrets.token_hex(4)}"
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+    config_mod.upsert_workspace_entry({
+        "uuid": ws_uuid,
+        "workspace_name": ws_uuid,
+        "directory": str(ws_dir),
+    })
+    monkeypatch.setattr(config_mod, "SYSTEM_DATA_DIR", tmp_path / "system" / ".cili")
+
+    from core.cron import engine as engine_mod
+
+    engine_mod._engine = None
+    yield {
+        "workspace_uuid": ws_uuid,
+        "workspace_dir": str(ws_dir),
+        "root": tmp_path,
+    }
+    if engine_mod._engine is not None:
+        engine_mod._engine.stop()
+        engine_mod._engine = None
+    config_mod.remove_workspace_entry(ws_uuid)
 
 
 @pytest.fixture

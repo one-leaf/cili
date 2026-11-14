@@ -1,6 +1,10 @@
-# Cron 定时任务调度器设计文档
+# Cron 定时任务调度器设计文档（v1 历史）
 
-本文档描述 Cili Agent 的轻量级后台任务调度系统（Cron Scheduler）。
+> **已由 Cron v2 取代。** 现行实现见 `core/cron/` 包，设计与迁移方案见
+> `workspace/default/cron-redesign-plan-2026-11-14.md`。本文档仅保留 v1 行为说明
+> 供追溯，其中路径（`core/cron.d/`、`{ws}/.cili/cron.d/`）与执行语义均已变更。
+
+本文档描述 Cili Agent 的轻量级后台任务调度系统（Cron Scheduler v1）。
 
 ---
 

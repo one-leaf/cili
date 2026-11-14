@@ -25,6 +25,7 @@ from web.routes_ask_user import router as ask_user_router
 from web.routes_chat import router as chat_router
 from web.routes_config import router as config_router
 from web.routes_courseware import router as courseware_router
+from web.routes_cron import router as cron_router
 from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
 from web.routes_permissions import router as permissions_router
@@ -265,6 +266,7 @@ app.include_router(permissions_router)
 app.include_router(update_router)
 app.include_router(teen_router)
 app.include_router(textbooks_router)
+app.include_router(cron_router)
 app.include_router(files_router)
 app.include_router(courseware_router)
 app.include_router(memory_router)
