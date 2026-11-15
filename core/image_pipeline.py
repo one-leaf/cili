@@ -64,6 +64,11 @@ def _merged_image_meta(
         refs = parent_meta.get("image_refs") or []
         if isinstance(refs, list) and image_index < len(refs) and isinstance(refs[image_index], dict):
             meta = {**meta, **refs[image_index]}
+        # 内嵌图片的回合归属挂在父 tool_result 上（image_refs 条目里没有）。
+        # 不继承会让当前回合刚读的图片被 _should_reference 判成历史图、
+        # 投影成引用文本 —— 模型看不到 read_image 返回的图。
+        if not meta.get("turn_id") and parent_meta.get("turn_id"):
+            meta["turn_id"] = parent_meta["turn_id"]
     return meta
 
 

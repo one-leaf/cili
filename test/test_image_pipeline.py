@@ -91,6 +91,29 @@ def test_project_nested_tool_result_images():
     assert "sessions/s/attachments/t1-0.png" in subs[1]["text"]
 
 
+def test_project_nested_tool_result_images_keeps_current_turn():
+    """当前回合的 tool_result 图片必须保留 base64：回合归属挂在父块上，
+    image_refs 条目里没有 turn_id，不继承会被误判成历史图投影成引用。"""
+    current = "turn_current"
+    tool_result = {
+        "type": "tool_result",
+        "tool_use_id": "t1",
+        "content": [
+            {"type": "text", "text": "shot"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"}},
+        ],
+        "_meta": {
+            "turn_id": current,
+            "image_refs": [{"path": "sessions/s/attachments/t1-0.png", "media_type": "image/png"}],
+        },
+    }
+    messages = [{"role": "user", "content": [tool_result]}]
+    projected = project_images_for_request(messages, current)
+    subs = projected[0]["content"][0]["content"]
+    assert [b["type"] for b in subs] == ["text", "image"]
+    assert subs[1]["source"]["data"] == "BBBB"
+
+
 def test_sanitize_images_for_persistence_replaces_top_and_nested():
     top = _image_block("turn_current", "uploads/a.png")
     tool_result = {
