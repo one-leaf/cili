@@ -32,7 +32,7 @@ def root_session_dir(workspace_uuid: str, session: Any) -> Path | None:
     """Resolve the root master session directory for an AgentTool session.
 
     Master SessionStore: ``session.session_dir`` is already the root.
-    Worker/lite _SessionRef: only has ``master_session_id`` and its own exec
+    Worker/lite SessionIdentity: only has ``master_session_id`` and its own exec
     directory; derive the root from workspace data.
     """
     if session is None:

@@ -211,6 +211,9 @@ def build_timeline(session_dir: Path | str) -> dict[str, Any]:
             continue
 
     usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+    # 会话总量 = 主会话自身 + 各子执行记录（读取时聚合）
+    from core.session import usage_total_for_session_dir
+    usage = usage_total_for_session_dir(session_dir, base=usage)
     return {
         "session": {
             "session_id": meta.get("session_id") or session_dir.name,

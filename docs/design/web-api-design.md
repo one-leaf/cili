@@ -360,7 +360,8 @@ GET /api/workspaces/{uuid}/sessions/{id}/context
 返回 `context_tokens / max_context_tokens / ratio / compact_threshold_tokens / body_size / usage / session`，
 口径与自动压缩一致（消息体投影 token，不含 system prompt 与工具定义）。有 runner 时复用
 真实请求投影；无 runner 时从存盘消息估算并置 `estimated: true`——只读，不创建 runner、
-不触发压缩、不落盘。
+不触发压缩、不落盘。`usage` 为**会话总量**：主会话自身用量 + 所有子执行记录的用量
+（读取时聚合，含 per-model 分桶），不是主会话单独的计数器。
 
 #### 停止 Agent
 

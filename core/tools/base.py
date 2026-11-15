@@ -47,7 +47,7 @@ class SessionHandle(Protocol):
     """工具持有的 session 引用契约。
 
     interactive 模式传入 SessionStore（额外具备 save()/agent_logs），autonomous 模式
-    传入 _SessionRef（仅 session_id/session_dir）。工具应只依赖下面两个属性，不要靠
+    传入 SessionIdentity（仅 session_id/session_dir）。工具应只依赖下面两个属性，不要靠
     ``hasattr`` 探测能力，以免换一种载体时静默走错分支。
     """
     session_id: str

@@ -18,6 +18,7 @@ from typing import Any
 from core.fs_utils import atomic_write_json
 from core.session import INTERNAL_META_FIELDS as INTERNAL_META
 from core.session import generate_short_id
+from core.usage import add_usage
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +418,14 @@ class ConversationStore:
         mean = (mean * weight + sample * window) / (weight + window)
         self._usage[key] = round(mean, 2)
         self._usage[weight_key] = round(min(weight + window, SPEED_WEIGHT_CAP), 3)
+
+    def merge_usage(self, sub_usage: dict) -> None:
+        """并入一份 usage 快照（计数器 + per-model 分桶）。
+
+        用于两个场景：epoch 续任时播种上一 epoch 的累计用量；子代理执行记录
+        在读取会话总量时聚合。速度滚动平均不参与合并。
+        """
+        add_usage(self._usage, sub_usage)
 
     def get_usage(self) -> dict:
         """返回 usage 快照拷贝（速度为按调用计速的滚动平均，无样本时为 0）。"""

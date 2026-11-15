@@ -167,6 +167,30 @@ class TestContextUnit:
         ctx.update_usage(input_tokens=3)
         assert ctx.get_usage()["input_tokens"] == 13
 
+    def test_merge_usage_adds_subagent_counters_and_buckets(self):
+        """子代理用量并入父 runner：计数器 + per-model 分桶，速度不参与合并。"""
+        ctx = ConversationStore()
+        ctx.update_usage(input_tokens=100, output_tokens=10, api_calls=1,
+                         model="parent-model")
+        ctx.merge_usage({
+            "input_tokens": 500, "output_tokens": 200, "api_calls": 2,
+            "cache_read_tokens": 50, "cache_creation_tokens": 5,
+            "prefill_speed": 9999, "generation_speed": 9999,
+            "models": {"lite-model": {
+                "input_tokens": 500, "output_tokens": 200, "api_calls": 2,
+                "cache_read_tokens": 50, "cache_creation_tokens": 5,
+            }},
+        })
+        usage = ctx.get_usage()
+        assert usage["input_tokens"] == 600
+        assert usage["output_tokens"] == 210
+        assert usage["api_calls"] == 3
+        assert usage["cache_read_tokens"] == 50
+        assert usage["models"]["lite-model"]["input_tokens"] == 500
+        assert usage["models"]["parent-model"]["input_tokens"] == 100
+        # 速度只由父 runner 自身调用产生，子代理的速度样本不并入
+        assert usage["prefill_speed"] != 9999
+
     def test_speed_computed_per_call_with_duration(self):
         """带 duration 的调用按单次时段计速：ttft 拆分预填充与生成窗口。"""
         ctx = ConversationStore()

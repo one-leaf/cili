@@ -539,22 +539,8 @@ class BackgroundMixin:
                     runner.close()
                 except Exception:
                     pass
-                usage = (task.result or {}).get("usage", {})
-                if session and usage:
-                    try:
-                        session.update_usage(
-                            input_tokens=usage.get("input_tokens", 0),
-                            output_tokens=usage.get("output_tokens", 0),
-                            api_calls=0,
-                            cache_read_tokens=usage.get("cache_read_tokens", 0),
-                            cache_creation_tokens=usage.get("cache_creation_tokens", 0),
-                        )
-                        session.save()
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            f"Failed to forward usage for background Runner {task_id}: {e}"
-                        )
+                # 用量不在这里转发：runner 已把累计用量写进 exec 日志
+                # metadata.usage，会话总量由读取端聚合。
                 status = (task.result or {}).get("status", "completed")
                 # handoff 是内部续任信号；无续任走到这里说明任务未完成
                 if status == "handoff":

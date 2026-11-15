@@ -222,7 +222,7 @@ class SendUserFileTool(Tool):
         )
 
     def _session_key(self) -> str:
-        """当前会话键。session 可能是 SessionStore 或 _SessionRef，二者都有 session_id。"""
+        """当前会话键。session 可能是 SessionStore 或 SessionIdentity，二者都有 session_id。"""
         session_id = getattr(self.session, "session_id", "") or ""
         if not session_id:
             return ""

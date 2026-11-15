@@ -111,19 +111,12 @@ class TestAgentToolExecute:
         # execute() waits synchronously, no need to wait for background thread
         mock_agent.close.assert_called_once()
 
-    def test_forwards_usage_to_session(self, agent_tool):
-        """SessionRunner usage is forwarded to session manager."""
+    def test_does_not_write_session_usage(self, agent_tool):
+        """用量归集不在工具层：agent_tool 不得写 session.usage（读取时聚合）。"""
         mock_agent = MagicMock()
         mock_agent.run.return_value = {
-            "status": "completed",
-            "summary": "done",
-            "iterations": 5,
-            "usage": {
-                "input_tokens": 500,
-                "output_tokens": 200,
-                "cache_read_tokens": 50,
-                "cache_creation_tokens": 10,
-            },
+            "status": "completed", "summary": "done", "iterations": 1,
+            "usage": {"input_tokens": 500, "output_tokens": 200},
         }
         mock_agent.close.return_value = None
         mock_agent.messages = []
@@ -131,11 +124,7 @@ class TestAgentToolExecute:
         with patch("core.session_runner.SessionRunner", return_value=mock_agent):
             agent_tool.execute(task="test")
 
-        # execute() waits synchronously, usage is forwarded before return
-        agent_tool.session.update_usage.assert_called_once()
-        call_kwargs = agent_tool.session.update_usage.call_args.kwargs
-        assert call_kwargs["input_tokens"] == 500
-        assert call_kwargs["output_tokens"] == 200
+        agent_tool.session.update_usage.assert_not_called()
 
     def test_fires_start_callback(self, agent_tool):
         """on_session_start callback is fired before run."""

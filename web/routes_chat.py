@@ -25,7 +25,7 @@ from core.image_pipeline import (
     project_images_for_request,
     save_image_payload,
 )
-from core.session import SessionStore
+from core.session import SessionStore, usage_total_for_session_dir
 from core.session_runner_runtime.context import ConversationStore
 from core.session_runner_runtime.runner import (
     FULL_COMPACT_TOKEN_RATIO,
@@ -987,6 +987,10 @@ async def get_session_context(
         usage_getter = getattr(runner, "get_usage", None)
         usage = dict(usage_getter() or {}) if callable(usage_getter) else {}
         sm = getattr(runner, "session", None)
+        # 会话总量 = 主会话自身 + 各子执行记录（读取时聚合，不写入）
+        session_dir = getattr(sm, "session_dir", None)
+        if session_dir is not None:
+            usage = usage_total_for_session_dir(session_dir, base=usage)
         running_checker = getattr(runner, "is_running", None)
         running = bool(running_checker()) if callable(running_checker) else False
         estimated = False
@@ -1016,7 +1020,7 @@ async def get_session_context(
             model = config.resolve_model(model_ref) if model_ref else None
         except Exception:
             model = None  # 无可用模型配置：max=0、ratio=0，接口仍 200
-        usage = dict(sm.get_usage() or {})
+        usage = sm.get_usage_total() if hasattr(sm, "get_usage_total") else dict(sm.get_usage() or {})
         running = False
         estimated = True
 

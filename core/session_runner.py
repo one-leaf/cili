@@ -95,10 +95,11 @@ def _all_interface_scoped_tools() -> frozenset[str]:
     return frozenset(out)
 
 
-class _SessionRef:
-    """简单的 session 引用，供工具获取 session 标识和目录。
+class SessionIdentity:
+    """最小会话身份：autonomous（worker/lite）下工具可见的全部会话信息。
 
-    autonomous 模式使用 exec_id 作为 session 标识。
+    刻意只暴露标识与目录，不含 save()/update_usage() 等会话写操作——
+    工具层不得直接改会话状态（用量由各自 runner 记账、读取时聚合）。
     """
 
     def __init__(self, session_id: str, session_dir: Path | None = None,
@@ -134,6 +135,7 @@ class SessionRunner(BaseSessionRunner):
         epoch: int = 1,
         max_epochs: int = 1,
         stats_base: AgentStats | None = None,
+        usage_base: dict | None = None,
     ):
         """Initialize SessionRunner.
 
@@ -154,6 +156,7 @@ class SessionRunner(BaseSessionRunner):
             run_mode: 运行模式覆盖（interactive/autonomous），None 时取角色 JSON 的 mode
             initial_session: interactive 模式直接使用的会话（fork 分支用；跳过加载最新）
             stats_base: 续任前已归档 epoch 的累计统计；首轮为 None
+            usage_base: 续任前已归档 epoch 的累计用量（含 per-model 分桶）；首轮为 None
         """
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -180,6 +183,7 @@ class SessionRunner(BaseSessionRunner):
         # 工具调用累计计数（每批工具调用数累加）
         self._tool_call_count = 0
         self._stats_base = stats_base or AgentStats()
+        self._usage_base = usage_base or {}
         self._finalized = False
         # 事件发布回调（由 agent_tool / background 注入，用于广播 session_progress）
         self._event_publisher = None
@@ -204,6 +208,10 @@ class SessionRunner(BaseSessionRunner):
             stop_check=stop_check,
             max_iterations=self.role_cfg.max_iterations,
         )
+        if self._usage_base:
+            # epoch 续任播种：本 runner 的用量从上一 epoch 累计值继续，
+            # 使 exec 日志里的 usage 始终是整个 AgentRun 的累计值
+            self.context.merge_usage(self._usage_base)
 
         # 会话级模型覆盖优先（用户从输入框切换的模型）；未覆盖时用角色默认模型
         saved_ref = self._session_model_ref()
@@ -360,7 +368,7 @@ class SessionRunner(BaseSessionRunner):
         # master session id：创建方透传，LLM 后端会话头按它聚合（含子代理）
         self.master_session_id = master_session_id
         # 创建 session 引用，供工具获取 session_id 和 session_dir
-        self._session_ref = _SessionRef(exec_id, session_dir,
+        self._session_ref = SessionIdentity(exec_id, session_dir,
                                         master_session_id=master_session_id)
         logger.debug(f"[SessionRunner:{self.role}] Session ID set to: {exec_id}")
 
@@ -1321,6 +1329,9 @@ class SessionRunner(BaseSessionRunner):
             "epoch": self.epoch,
             "max_epochs": self.max_epochs,
             "stats": self.stats(iterations).to_dict(),
+            # 每个 runner 只记自己的（含 epoch 播种后的累计）用量；
+            # 会话总量在读取时聚合子执行记录，工具层不做任何转发
+            "usage": self.context.get_usage(),
             "max_iterations": self.max_iterations,
             "current_tool": current_tool,
             "model": getattr(self.model, "name", ""),

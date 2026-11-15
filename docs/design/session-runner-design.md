@@ -498,7 +498,15 @@ def _run_autonomous(self) -> dict[str, Any]:
 - 创建 `{主会话 session_dir}/{exec_id}/` 目录
 - 构造统一 SessionRunner：`SessionRunner(config, role=subagent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`subagent_type` 为 `worker`（默认）或 `lite`
 - **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `agent_id`，用统一 `action` 枚举管理（`action="status"` 查状态、`action="stop"` 终止、`action="list"` 列出）
-- 子代理 usage 转发到主会话；完成后由 `SessionRunner._finalize` 单写执行日志，并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
+- 子代理用量**不在工具层转发**：每个 runner 把自己的累计用量写进各自 exec 日志的 `metadata.usage`，会话总量在读取时聚合（见 §6.2）；完成后由 `SessionRunner._finalize` 单写执行日志，并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
+
+### 6.2 用量记账（各自记账 + 读取时聚合）
+
+- **单一写入者**：每个 runner 只记录自己的 LLM 用量（`ConversationStore._usage`），进度/收尾时整体写入 `{exec_dir}/index.json` 的 `metadata.usage`。
+- **epoch 续任**：续任 runner 以 `usage_base` 播种上一 epoch 的累计值，因此每个 exec 日志里的 `usage` 始终是该 AgentRun 的累计值；续任链把上一 epoch 的 `result.usage` 作为下一 epoch 的 `usage_base`。
+- **会话总量在读取时聚合**：`core.session.usage_total_for_session_dir(session_dir, base)` = 主会话自身用量 + 所有 `exec_*/index.json` 的 usage（含 per-model 分桶）；`SessionStore.get_usage_total()` 供 `/context`、「关于会话」时间线等读取端使用。
+- **工具层不接触会话用量**：`agent`/后台委派的上下文中不存在 `session.update_usage` / `on_usage` 回调；worker/lite 的会话对象退化为最小身份（`SessionIdentity`：`session_id` / `session_dir` / `master_session_id`），从类型上就不存在误调会话写方法的可能。
+- **好处**：同步/后台/续任/多层委派同一语义；进程重启不丢账（用量已持久化在执行记录里）；每层执行详情看到的用量都是真实值。
 
 ```
 主会话 index.json:

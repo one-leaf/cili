@@ -371,6 +371,43 @@ def read_meta(session_dir: Path | str) -> dict:
     return load_json_or_backup(Path(session_dir) / META_FILE, {}) or {}
 
 
+def usage_total_for_session_dir(
+    session_dir: Path | str,
+    base: dict | None = None,
+) -> dict:
+    """会话级用量 = 主会话自身用量 + 所有子执行记录的用量。
+
+    每个 runner 只在自己的 exec 日志 ``metadata.usage`` 里记自己的累计用量
+    （worker 的 epoch 续任用量已由 runner 播种累计），所以会话总量在读取时
+    把 ``{session_dir}/exec_*/index.json`` 逐一相加即可，不存在双重记账。
+
+    ``base`` 为主会话自身用量；缺省读 meta.json 的 usage。读取失败/旧日志
+    无 usage 字段时跳过。
+    """
+    from core.usage import add_usage
+
+    if isinstance(base, dict):
+        total = copy.deepcopy(base)
+    else:
+        total = copy.deepcopy((read_meta(session_dir) or {}).get("usage") or {})
+        if not isinstance(total, dict):
+            total = {}
+    root = Path(session_dir)
+    for exec_dir in sorted(root.glob("exec_*")):
+        index_file = exec_dir / "index.json"
+        if not index_file.is_file():
+            continue
+        try:
+            data = json.loads(index_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        meta = data.get("metadata") if isinstance(data, dict) else None
+        if not isinstance(meta, dict):
+            continue
+        add_usage(total, meta.get("usage"))
+    return total
+
+
 # 新建会话时的占位名：此时展示名应改用首条消息预览（见 session_display_name）
 PLACEHOLDER_SESSION_NAME = "新会话"
 UNNAMED_SESSION_NAME = "未命名"
@@ -1283,6 +1320,10 @@ class SessionStore:
         usage.setdefault("generation_speed", 0)
 
         return usage
+
+    def get_usage_total(self) -> dict:
+        """会话总用量：主会话自身 + 所有子执行记录（读取时聚合，见模块函数）。"""
+        return usage_total_for_session_dir(self.session_dir, base=self.get_usage())
 
     # ========== 工具方法 ==========
 

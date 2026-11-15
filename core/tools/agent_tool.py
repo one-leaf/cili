@@ -280,7 +280,7 @@ class AgentTool(Tool):
         from core.session_runner import SessionRunner
 
         # Generate exec_id upfront so we can notify the UI immediately
-        # _SessionRef（worker/lite 的 session 引用）无 agent_logs，
+        # SessionIdentity（worker/lite 的 session 引用）无 agent_logs，
         # 深度限制放开委派时避免 AttributeError，回退生成随机 exec_id（T28）
         # GoalRunner 会预生成 exec_id 传入，以便占位消息引用同一 id
         if not exec_id:
@@ -401,20 +401,9 @@ class AgentTool(Tool):
                         summary=result.get("summary") or result.get("message") or "",
                     )
                 entry["result"] = result
-
-                # Forward sub-runner usage to session metadata
-                sub_usage = result.get("usage", {})
-                if self.session and sub_usage:
-                    try:
-                        self.session.update_usage(
-                            input_tokens=sub_usage.get("input_tokens", 0),
-                            output_tokens=sub_usage.get("output_tokens", 0),
-                            api_calls=0,
-                            cache_read_tokens=sub_usage.get("cache_read_tokens", 0),
-                            cache_creation_tokens=sub_usage.get("cache_creation_tokens", 0),
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to forward sub-runner usage: {e}")
+                # 用量不在这里转发：每个 runner 把自己的累计用量写进 exec 日志
+                # metadata.usage，会话总量由读取端聚合（core.session.
+                # usage_total_for_session_dir），工具层不接触会话状态。
 
             except Exception as e:
                 logger.error(f"Agent tool error: {e}")
@@ -430,7 +419,7 @@ class AgentTool(Tool):
                 except Exception as e:
                     logger.warning(f"Failed to unregister sub-runner from AgentMailbox: {e}")
                 # Persist main session after sub-runner writes.
-                # worker/lite 的 _SessionRef 无 save()：此处若抛异常，
+                # worker/lite 的 SessionIdentity 无 save()：此处若抛异常，
                 # 下方 event.set() 永不执行，委派方会永久阻塞在 event.wait(3600)。
                 try:
                     if self.session and hasattr(self.session, "save"):
@@ -450,6 +439,7 @@ class AgentTool(Tool):
                         label=label,
                         stop_check=self.stop_check,
                         continuation=(entry.get("result") or {}).get("continuation") or {},
+                        usage_base=(entry.get("result") or {}).get("usage") or {},
                     )
                 else:
                     status = self._terminal_status(entry.get("result") or {})
@@ -517,6 +507,7 @@ class AgentTool(Tool):
                 label=label,
                 stop_check=self.stop_check,
                 continuation=result.get("continuation") or {},
+                usage_base=result.get("usage") or {},
             )
             return True
         run_mgr.complete(
@@ -574,13 +565,17 @@ class AgentTool(Tool):
     def _start_continuation_chain(self, *, run_mgr, exec_id: str, exec_dir,
                                   root_sid: str, subagent_type: str,
                                   max_epochs: int, label: str | None,
-                                  stop_check, continuation: dict) -> None:
+                                  stop_check, continuation: dict,
+                                  usage_base: dict | None = None) -> None:
         """Run epoch 2..N in the background, reusing the same exec_id."""
         from core.session_runner import SessionRunner
 
         def run_chain() -> None:
             epoch = int(continuation.get("epoch") or 1) + 1
             doc = str(continuation.get("document") or "")
+            # 用量随 epoch 累计：每个 epoch 的 runner 从上一 epoch 的累计值继续，
+            # 使 exec 日志里的 usage 始终是整个 AgentRun 的累计值
+            cum_usage: dict = dict(usage_base or {})
             while epoch <= max_epochs and doc:
                 run_mgr.store.update(
                     exec_id, relation="continuation", source_exec_id=exec_id,
@@ -612,6 +607,7 @@ class AgentTool(Tool):
                     epoch=epoch,
                     max_epochs=max_epochs,
                     stats_base=stats_base,
+                    usage_base=cum_usage,
                 )
                 sink = self._make_sink(exec_id)
                 runner.sink = sink
@@ -642,6 +638,9 @@ class AgentTool(Tool):
                                 mbus.unregister_agent(name)
                         except Exception:
                             pass
+
+                # result.usage 已是「累计值」（本轮从 cum_usage 播种），直接替换
+                cum_usage = dict(result.get("usage") or {})
 
                 cont = result.get("continuation") if result.get("status") == "handoff" else None
                 if cont and epoch < max_epochs:
