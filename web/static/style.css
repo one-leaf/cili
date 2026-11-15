@@ -1266,8 +1266,36 @@ body {
 
 .welcome-message {
     text-align: center;
-    padding: 60px 20px;
+    padding: 52px 20px 60px;
     color: var(--text-light);
+}
+
+/* 空状态图腾：透明底草履虫，轻微浮动 + 绿色柔光（装饰性，不参与读屏） */
+.welcome-message::before {
+    content: "";
+    display: block;
+    width: clamp(112px, 18vh, 156px);
+    aspect-ratio: 1;
+    margin: 0 auto 12px;
+    background: url("cili-paramecium.png") center / contain no-repeat;
+    filter: drop-shadow(0 10px 18px rgba(74, 148, 92, 0.18))
+            drop-shadow(0 0 24px rgba(126, 200, 132, 0.25));
+    animation: welcome-float 7s ease-in-out infinite;
+    will-change: transform;
+}
+
+@keyframes welcome-float {
+    0%, 100% { transform: translateY(0) rotate(-1.2deg); }
+    50%      { transform: translateY(-7px) rotate(1.2deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .welcome-message::before { animation: none; }
+}
+
+[data-theme="dark"] .welcome-message::before {
+    filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.55))
+            drop-shadow(0 0 28px rgba(96, 200, 128, 0.28));
 }
 
 .welcome-message h2 {

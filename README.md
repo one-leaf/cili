@@ -4,7 +4,7 @@
 
 **Agent Harness · 多端接入 · 浏览器自动化 · 学习工作一体 · 开箱即用**
 
-![草履虫](web/static/favicon.png)
+<img src="web/static/cili-paramecium.png" width="220" alt="草履虫">
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
