@@ -126,7 +126,7 @@ ul, ol {
 [data-theme="dark"] .message.tool.tool-result { background-color: #1c1917; border-color: #3f3f46; }
 [data-theme="dark"] .message.tool.tool-error { background-color: var(--tool-error-bg); border-color: #5c2d30; }
 [data-theme="dark"] .think-content { color: #a1a1aa; }
-[data-theme="dark"] .think-title { color: #8fb3d9; }
+[data-theme="dark"] .think-title { color: #9ca3af; }
 
 /* 代码块 */
 [data-theme="dark"] .message .message-content pre {
@@ -1662,18 +1662,18 @@ mjx-container {
     opacity: 1;
 }
 
-/* Thinking block styles：雾蓝底与普通消息卡片区分（浅色/深色各一套配色）。
+/* Thinking block styles：加深一档的中性灰底与普通消息卡片区分（浅色/深色各一套配色）。
    浅色规则必须限定在非深色主题，否则会在深色主题下把卡片底色刷成亮色；
    深色下 .message-content 自带 --assistant-message-bg，需刷透明保证内外一致。 */
 html:not([data-theme="dark"]) .message.thinking {
-    background-color: #eef3f9;
-    border-color: #d3e0ee;
+    background-color: #f3f4f6;
+    border-color: #e3e5e8;
 }
 
-/* 深色主题：卡片底色单独设成暗蓝灰，同时把内容区刷透明，避免内外两层颜色 */
+/* 深色主题：卡片底色单独设成深一档的中性灰，同时把内容区刷透明，避免内外两层颜色 */
 [data-theme="dark"] .message.thinking {
-    background-color: #1e2733;
-    border-color: #33465c;
+    background-color: #1f1f23;
+    border-color: #35353b;
 }
 
 [data-theme="dark"] .message.thinking .message-content {
@@ -1682,7 +1682,7 @@ html:not([data-theme="dark"]) .message.thinking {
 
 .think-title {
     font-size: 12px;
-    color: #4a6fa5;
+    color: #6b7280;
     margin-bottom: 8px;
     font-weight: 600;
     font-style: italic;
