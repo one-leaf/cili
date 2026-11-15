@@ -482,17 +482,35 @@ class ImageConfig:
     """图片处理配置：``setting.json -> images``。
 
     ``history_mode`` 默认 ``current_turn``；``full`` 仅作为显式回退。
+
+    预算口径：
+    - ``max_images_per_request``：请求内图片块数量上限（默认 100）。
+    - ``outbound_image_hard_limit``：所有图片都 ≤ ``max_dimension`` 时的放宽上限。
+    - ``max_request_image_bytes``：请求内图片 base64 总字节预算。
+    - ``max_images_per_tool_result``：单个工具结果最多内联几张，超出转引用。
+    - ``eviction_batch`` / ``eviction_floor``：请求级退役的步进量子与最新载体保底数。
     """
 
     history_mode: str = "current_turn"  # current_turn（默认） | full（回退）
-    keep_recent: int = 3
-    max_dimension: int = 2048
-    max_image_bytes: int = 5 * 1024 * 1024
-    max_request_image_bytes: int = 8 * 1024 * 1024
-    max_images_per_request: int = 20
+    # DeepSeek：单请求 ≥15 张图时 provider 单边上限 4096px；统一按 4096 归一化
+    max_dimension: int = 4096
+    # 每张请求图的编码目标（DeepSeek DEFAULT_REQUEST_IMAGE_MAX_BYTES = 2 MiB）
+    request_image_max_bytes: int = 2 * 1024 * 1024
+    # 请求内图片 base64 总字节预算：20 MiB，对齐 deepseek-harness 的 inline 默认值
+    max_request_image_bytes: int = 20 * 1024 * 1024
+    # 请求内图片块数量上限：deepseek 单消息准入 20 / 请求上限 600；
+    # 取 100（hermes hard limit）作为桌面端默认
+    max_images_per_request: int = 100
+    # 所有图片都 ≤ max_dimension 时的放宽上限（hermes: 100）
+    outbound_image_hard_limit: int = 100
+    # 单个工具结果内联图片上限：超出部分转路径引用
+    max_images_per_tool_result: int = 8
+    # 请求级退役：每次退役的载体数 / 最新载体保底数
+    eviction_batch: int = 4
+    eviction_floor: int = 3
+    # 重读去重：同一内容已内联且未退役时不再新增图片块
+    dedupe_inline_images: bool = True
     jpeg_quality: int = 85
-    ref_text_template: str = ""
-    normalize_on_ingest: bool = True
 
     @classmethod
     def from_dict(cls, data: dict) -> "ImageConfig":
@@ -502,27 +520,39 @@ class ImageConfig:
             mode = "current_turn"
         return cls(
             history_mode=mode,
-            keep_recent=max(0, int(data.get("keep_recent", 3))),
-            max_dimension=max(1, int(data.get("max_dimension", 2048))),
-            max_image_bytes=max(1, int(data.get("max_image_bytes", 5 * 1024 * 1024))),
-            max_request_image_bytes=max(1, int(data.get("max_request_image_bytes", 8 * 1024 * 1024))),
-            max_images_per_request=max(1, int(data.get("max_images_per_request", 20))),
+            max_dimension=max(1, int(data.get("max_dimension", 4096))),
+            request_image_max_bytes=max(
+                1, int(data.get("request_image_max_bytes", 2 * 1024 * 1024))
+            ),
+            max_request_image_bytes=max(
+                1, int(data.get("max_request_image_bytes", 20 * 1024 * 1024))
+            ),
+            max_images_per_request=max(1, int(data.get("max_images_per_request", 100))),
+            outbound_image_hard_limit=max(
+                1, int(data.get("outbound_image_hard_limit", 100))
+            ),
+            max_images_per_tool_result=max(
+                1, int(data.get("max_images_per_tool_result", 8))
+            ),
+            eviction_batch=max(1, int(data.get("eviction_batch", 4))),
+            eviction_floor=max(0, int(data.get("eviction_floor", 3))),
+            dedupe_inline_images=bool(data.get("dedupe_inline_images", True)),
             jpeg_quality=max(1, min(100, int(data.get("jpeg_quality", 85)))),
-            ref_text_template=str(data.get("ref_text_template", "")),
-            normalize_on_ingest=bool(data.get("normalize_on_ingest", True)),
         )
 
     def to_dict(self) -> dict:
         return {
             "history_mode": self.history_mode,
-            "keep_recent": self.keep_recent,
             "max_dimension": self.max_dimension,
-            "max_image_bytes": self.max_image_bytes,
+            "request_image_max_bytes": self.request_image_max_bytes,
             "max_request_image_bytes": self.max_request_image_bytes,
             "max_images_per_request": self.max_images_per_request,
+            "outbound_image_hard_limit": self.outbound_image_hard_limit,
+            "max_images_per_tool_result": self.max_images_per_tool_result,
+            "eviction_batch": self.eviction_batch,
+            "eviction_floor": self.eviction_floor,
+            "dedupe_inline_images": self.dedupe_inline_images,
             "jpeg_quality": self.jpeg_quality,
-            "ref_text_template": self.ref_text_template,
-            "normalize_on_ingest": self.normalize_on_ingest,
         }
 
 

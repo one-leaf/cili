@@ -188,6 +188,28 @@ def _safe_response_text(response) -> str:
     return text or ""
 
 
+_IMAGE_REJECTION_HINTS = (
+    "image exceeds",
+    "image dimensions",
+    "too many images",
+    "maximum number of images",
+    "many-image",
+    "invalid image",
+    "image is too large",
+    "image size",
+    "image format",
+    "could not process image",
+    "unsupported image",
+    "image content",
+    "image data",
+)
+
+
+def _looks_like_image_rejection(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(hint in lowered for hint in _IMAGE_REJECTION_HINTS)
+
+
 def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
     """把任意 LLM 调用异常分类为结构化 LLMErrorInfo（三态重试的输入）。
 
@@ -283,6 +305,17 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
                 message=f"LLM 服务器错误 (HTTP {status}): {body_text[:200]}",
                 error_type=error_type, error_code=error_code,
                 should_retry=True,
+            )
+        elif status == 400 and _looks_like_image_rejection(body_text):
+            info = LLMErrorInfo(
+                kind=KIND_BAD_REQUEST, status_code=status,
+                message=(
+                    "LLM 拒绝了请求中的图片 (HTTP 400)：单图 base64 需 ≤5MB，"
+                    "多图时单边尺寸与图片数量也有上限。"
+                    "请减少单次图片数量或降低分辨率。"
+                    f"原始错误: {body_text[:300]}"
+                ),
+                error_type=error_type, error_code=error_code,
             )
         else:
             info = LLMErrorInfo(

@@ -931,7 +931,11 @@ class SessionStore:
         append_lines: list[dict] = []
 
         start = min(self._pending_seq_start, len(self.messages))
-        for msg in self.messages[start:]:
+        # 快照本次扫描范围：并发 add_message 在扫描期间追加的消息要留到下次
+        # 持久化，不能被末尾的「已处理到 len(self.messages)」直接跳过
+        # （test_concurrent_save_no_loss_no_dup 的丢 1 条即此竞态）。
+        pending = self.messages[start:]
+        for msg in pending:
             if not isinstance(msg, dict):
                 continue
             meta = msg.get("_meta") or {}
@@ -951,7 +955,7 @@ class SessionStore:
         if append_lines:
             append_jsonl(self.session_dir / MESSAGES_FILE, append_lines)
             self._jsonl_max_seq = max(self._jsonl_max_seq, next_seq - 1)
-        self._pending_seq_start = len(self.messages)
+        self._pending_seq_start = start + len(pending)
         return bool(append_lines)
 
     def _persist(self) -> None:

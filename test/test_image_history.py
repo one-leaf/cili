@@ -71,7 +71,7 @@ def test_tool_result_images_follow_parent_turn():
 def test_demote_current_turn_images_marks_paths():
     messages = [{"role": "user", "content": [_image("turn_current", "uploads/current.png")]}]
     handler = _make_handler(messages)
-    demoted = handler._demote_current_turn_images(max_body_size=1, keep_recent=0)
+    demoted = handler._demote_current_turn_images(max_body_size=1)
     assert demoted >= 1
     assert "uploads/current.png" in handler.runner._demoted_image_paths
     projected = handler.build_projected_messages()

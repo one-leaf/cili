@@ -19,7 +19,11 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from core.image_pipeline import ensure_user_image_meta, normalize_image_bytes
+from core.image_pipeline import (
+    DEFAULT_MAX_BYTES,
+    ensure_user_image_meta,
+    normalize_image_bytes,
+)
 from core.media_fetch import InboundMedia
 
 logger = logging.getLogger(__name__)
@@ -39,18 +43,36 @@ def build_user_input(
     if content:
         blocks.append({"type": "text", "text": content, "_valid": True})
 
+    images_cfg = getattr(getattr(runner, "config", None), "images", None)
+    max_dimension = int(getattr(images_cfg, "max_dimension", 4096) or 4096)
+    request_target = int(
+        getattr(images_cfg, "request_image_max_bytes", DEFAULT_MAX_BYTES)
+        or DEFAULT_MAX_BYTES
+    )
+    raw_target = max(1, min(request_target, DEFAULT_MAX_BYTES))
+    jpeg_quality = int(getattr(images_cfg, "jpeg_quality", 85) or 85)
+
     model_input = list(getattr(getattr(runner, "model", None), "input", []) or [])
     for item in media_items:
         if item.kind == "image" and "image" in model_input:
-            data, mime = read_image_base64(item)
+            data, mime = read_image_base64(
+                item,
+                max_dimension=max_dimension,
+                max_bytes=raw_target,
+                jpeg_quality=jpeg_quality,
+            )
             if data:
                 block = {
                     "type": "image",
                     "source": {"type": "base64", "media_type": mime, "data": data},
                     "_valid": True,
-                    "_meta": {"path": item.rel_path, "media_type": mime},
+                    "_meta": {"path": item.rel_path, "media_type": mime, "normalized": True},
                 }
-                ensure_user_image_meta(block, cwd=getattr(runner, "cwd", None))
+                ensure_user_image_meta(
+                    block, cwd=getattr(runner, "cwd", None),
+                    max_dimension=max_dimension, max_bytes=raw_target,
+                    jpeg_quality=jpeg_quality,
+                )
                 blocks.append(block)
                 continue
         if item.kind == "voice" and item.transcript:
@@ -73,7 +95,13 @@ def build_user_input(
     return blocks
 
 
-def read_image_base64(item: InboundMedia) -> tuple[str, str]:
+def read_image_base64(
+    item: InboundMedia,
+    *,
+    max_dimension: int = 2000,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    jpeg_quality: int = 85,
+) -> tuple[str, str]:
     """读图片为 base64；优先应用 EXIF 方向、缩放和重编码。"""
     try:
         raw = Path(item.path).read_bytes()
@@ -81,7 +109,10 @@ def read_image_base64(item: InboundMedia) -> tuple[str, str]:
         logger.warning(f"[multimodal] 读取图片失败 {item.path}: {e}")
         return "", ""
     mime = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
-    normalized = normalize_image_bytes(raw, mime)
+    normalized = normalize_image_bytes(
+        raw, mime,
+        max_dimension=max_dimension, max_bytes=max_bytes, jpeg_quality=jpeg_quality,
+    )
     if normalized is not None:
         payload, mime, _, _ = normalized
         return base64.b64encode(payload).decode("ascii"), mime

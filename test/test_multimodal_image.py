@@ -373,7 +373,7 @@ class TestMultimodalDGX:
     @pytest.fixture(params=["anthropic", "openai"], ids=["anthropic", "openai"])
     def dgx_client(self, request, dgx_available):
         config = make_dgx_config(request.param)
-        client = create_llm_client(config.model)
+        client = create_llm_client(config.model_for_role("master"))
         yield client, request.param
         client.close()
 

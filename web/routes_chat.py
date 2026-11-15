@@ -19,9 +19,11 @@ from core.editor_context import expand_file_mentions, format_attachment
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
 from core.image_pipeline import (
+    DEFAULT_MAX_BYTES,
     ensure_user_image_meta,
+    normalize_base64_image,
     project_images_for_request,
-    save_base64_image,
+    save_image_payload,
 )
 from core.session import SessionStore
 from core.session_runner_runtime.context import ConversationStore
@@ -243,7 +245,8 @@ async def set_session_model(
 
 def _build_user_input(content: str, images: list[dict] | None,
                       *, uploads_dir: Path | None = None,
-                      attachments: list[dict] | None = None) -> Any:
+                      attachments: list[dict] | None = None,
+                      image_config=None) -> Any:
     """文本 + 附件（预览选区/Ctrl+V 上传）+ 文件提及 + base64 图片 → runner 入参。"""
     attachment_blocks: list[dict] = []
     for att in (attachments or []):
@@ -252,6 +255,13 @@ def _build_user_input(content: str, images: list[dict] | None,
             attachment_blocks.append(block)
     workspace_dir = uploads_dir.parent if uploads_dir is not None else None
     mention_blocks = expand_file_mentions(content, workspace_dir)
+    max_dimension = int(getattr(image_config, "max_dimension", 4096) or 4096)
+    request_target = int(
+        getattr(image_config, "request_image_max_bytes", DEFAULT_MAX_BYTES)
+        or DEFAULT_MAX_BYTES
+    )
+    raw_target = max(1, min(request_target, DEFAULT_MAX_BYTES))
+    jpeg_quality = int(getattr(image_config, "jpeg_quality", 85) or 85)
     if not images and not attachment_blocks and not mention_blocks:
         return content
     blocks: list[dict] = []
@@ -260,6 +270,19 @@ def _build_user_input(content: str, images: list[dict] | None,
     for img in (images or []):
         media_type = img.get("media_type", "image/png")
         data = img.get("data", "")
+        # 请求体里的原始 base64 必须归一化后再发给模型：服务端按 base64 长度
+        # 与尺寸校验，原图（手机照片/高分截图）会直接触发 400。
+        payload: bytes | None = None
+        width: int | None = None
+        height: int | None = None
+        if data:
+            normalized = normalize_base64_image(
+                str(data), media_type,
+                max_dimension=max_dimension, max_bytes=raw_target,
+                jpeg_quality=jpeg_quality,
+            )
+            if normalized is not None:
+                data, media_type, payload, width, height = normalized
         block: dict = {
             "type": "image",
             "source": {
@@ -269,14 +292,18 @@ def _build_user_input(content: str, images: list[dict] | None,
             },
             "_valid": True,
         }
-        if uploads_dir is not None and data:
-            saved = save_base64_image(
-                data, media_type, uploads_dir,
+        if payload is not None and uploads_dir is not None:
+            saved = save_image_payload(
+                payload, media_type, uploads_dir,
                 workspace_dir=workspace_dir, prefix="paste",
+                width=width, height=height,
             )
-            if saved:
-                block["_meta"] = dict(saved)
-        ensure_user_image_meta(block, cwd=workspace_dir)
+            block["_meta"] = {**saved, "normalized": True}
+        ensure_user_image_meta(
+            block, cwd=workspace_dir,
+            max_dimension=max_dimension, max_bytes=raw_target,
+            jpeg_quality=jpeg_quality,
+        )
         blocks.append(block)
     blocks.append({"type": "text", "text": content, "_valid": True})
     return blocks
@@ -618,6 +645,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         content, getattr(request, "images", None),
         uploads_dir=uploads_dir,
         attachments=getattr(request, "attachments", None),
+        image_config=getattr(getattr(runner, "config", None), "images", None),
     )
 
     # 驱动客户端类型在返回 SSE 响应**之前**取好：取值异常走普通 HTTP 500，
@@ -1054,6 +1082,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
                 content, request.images,
                 uploads_dir=ws_dir / "uploads",
                 attachments=getattr(request, "attachments", None),
+                image_config=load_config().images,
             ),
             interface=request.interface or "web",
             client_id=request.client_id,

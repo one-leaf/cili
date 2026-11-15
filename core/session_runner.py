@@ -698,6 +698,8 @@ class SessionRunner(BaseSessionRunner):
             return self._run_interactive(*args, **kwargs)
         self.current_turn_id = generate_short_id()
         self._demoted_image_paths.clear()
+        self._retired_image_carriers.clear()
+        self._turn_image_index.clear()
         try:
             return self.loop.run_autonomous()
         except Exception as exc:
@@ -726,6 +728,8 @@ class SessionRunner(BaseSessionRunner):
         # 新用户回合：上一回合图片转引用，当前回合图片重新嵌入。
         self.current_turn_id = generate_short_id()
         self._demoted_image_paths.clear()
+        self._retired_image_carriers.clear()
+        self._turn_image_index.clear()
         self._streaming = streaming
         self.sink = layer_sink(self.default_sink, sink)
         self._turn_has_custom_sink = sink is not None and sink is not self.default_sink
@@ -1141,6 +1145,8 @@ class SessionRunner(BaseSessionRunner):
         session_store.image_history_mode = self._image_history_mode()
         self.current_turn_id = ""
         self._demoted_image_paths.clear()
+        self._retired_image_carriers.clear()
+        self._turn_image_index.clear()
         self._ensure_current_turn_id()
         for tool in self.tools:
             tool.session = session_store

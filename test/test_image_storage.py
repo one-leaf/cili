@@ -12,7 +12,7 @@ pytest.importorskip("PIL")
 from PIL import Image
 
 from core.config import Config, ImageConfig
-from core.image_pipeline import write_tool_image_sidecar
+from core.image_pipeline import normalize_image_block, write_tool_image_sidecar
 from core.llm.types import ImageBlock
 from core.session import SessionStore
 from core.session_runner_runtime.runner import Runner
@@ -115,3 +115,21 @@ def test_write_tool_image_sidecar(tmp_path):
     assert ref is not None
     assert ref["path"].startswith("sessions/sess/attachments/")
     assert (tmp_path / ref["path"]).exists()
+
+
+def test_normalize_image_block_downscales_before_send():
+    """工具图必须在进请求前归一化：原图 >4096px 会被服务端拒绝。"""
+    buf = io.BytesIO()
+    Image.new("RGB", (5000, 3500), (0, 200, 0)).save(buf, format="JPEG", quality=95)
+    block = ImageBlock(
+        data=base64.b64encode(buf.getvalue()).decode(), mime_type="image/jpeg"
+    )
+    info = normalize_image_block(block)
+    assert info is not None
+    payload, mime, width, height = info
+    assert max(width, height) <= 4096
+    # 就地改写后的 data 与 sidecar payload 一致
+    assert base64.b64decode(block.data) == payload
+    assert block.mime_type == mime
+    out = Image.open(io.BytesIO(payload))
+    assert max(out.size) <= 4096

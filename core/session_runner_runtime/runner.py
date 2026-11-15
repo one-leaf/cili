@@ -11,6 +11,7 @@ tools/回调），不自己持有会话状态 —— 会话状态归 Conversatio
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,8 +25,11 @@ import httpx
 
 from core.handoff import build_handoff_instruction
 from core.image_pipeline import (
-    image_key,
+    DEFAULT_MAX_BYTES,
+    apply_image_budget,
+    collect_current_turn_image_keys,
     image_ref_text,
+    normalize_image_block,
     project_images_for_request,
     write_tool_image_sidecar,
 )
@@ -132,13 +136,19 @@ class Runner:
         流程：有效消息 -> 外部工具结果解析 -> 图片按回合投影 -> 剥离内部 _meta。
         """
         return self._project_resolved_messages(
-            self._resolved_messages(), force_reference=force_reference
+            self._resolved_messages(), force_reference=force_reference,
+            latch_budget=False,
         )
 
     def _project_resolved_messages(
-        self, messages: list[dict], *, force_reference: bool = False
+        self, messages: list[dict], *, force_reference: bool = False,
+        latch_budget: bool = True,
     ) -> list[dict]:
-        """对已解析消息做图片投影与 meta 剥离（不含磁盘读取，供循环内复用）。"""
+        """对已解析消息做图片投影、请求预算与 meta 剥离（不含磁盘读取）。
+
+        ``latch_budget=False`` 用于 UI/估算等只读路径：预算照常计算，
+        但不把新退役的载体写入 runner 状态。
+        """
         if self._image_mode() == "current_turn" or force_reference:
             messages = project_images_for_request(
                 messages,
@@ -146,47 +156,82 @@ class Runner:
                 force_reference=force_reference,
                 demoted_paths=getattr(self.runner, "_demoted_image_paths", set()),
             )
+        if not force_reference:
+            messages = self._apply_image_budget(messages, latch=latch_budget)
         return self._strip_meta_from_messages(messages)
+
+    def _image_budget_limits(self) -> dict[str, int]:
+        """读取 ``setting.json -> images`` 的请求预算参数。"""
+        cfg = getattr(getattr(self.runner, "config", None), "images", None)
+
+        def _int(name: str, default: int) -> int:
+            try:
+                return max(0, int(getattr(cfg, name, default)))
+            except (TypeError, ValueError):
+                return default
+
+        return {
+            "max_images": _int("max_images_per_request", 100) or 100,
+            "hard_limit": _int("outbound_image_hard_limit", 100) or 100,
+            "max_bytes": _int("max_request_image_bytes", 20 * 1024 * 1024),
+            "eviction_batch": _int("eviction_batch", 4) or 4,
+            "eviction_floor": _int("eviction_floor", 3),
+        }
+
+    def _apply_image_budget(
+        self, messages: list[dict], *, latch: bool
+    ) -> list[dict]:
+        """请求级图片预算：退役最旧的含图 tool_result（用户上传图保留）。"""
+        limits = self._image_budget_limits()
+        retired = getattr(self.runner, "_retired_image_carriers", None)
+        if not isinstance(retired, set):
+            retired = set()
+            setattr(self.runner, "_retired_image_carriers", retired)
+        result = apply_image_budget(
+            messages,
+            max_images=limits["max_images"],
+            hard_limit=limits["hard_limit"],
+            max_bytes=limits["max_bytes"],
+            eviction_batch=limits["eviction_batch"],
+            eviction_floor=limits["eviction_floor"],
+            retired_ids=retired,
+        )
+        if latch:
+            retired.update(result.newly_retired_ids)
+            if result.removed_images:
+                self._append_budget_notice(messages, result)
+        return messages
+
+    @staticmethod
+    def _append_budget_notice(messages: list[dict], result) -> None:
+        """把本次退役的提示追加到最后一条 user 消息（请求副本，不落盘）。"""
+        paths = result.removed_paths[:3]
+        shown = ", ".join(f'"{p}"' for p in paths)
+        more = f" (+{len(result.removed_paths) - len(paths)} more)" if len(result.removed_paths) > len(paths) else ""
+        detail = f": {shown}{more}" if shown else ""
+        notice = (
+            f"[image budget] {result.removed_images} earlier image(s) were removed "
+            f"from this request to stay within provider limits{detail}. "
+            'Use read_image("<path>") to view one again.'
+        )
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append({"type": "text", "text": notice})
+            elif isinstance(content, str):
+                msg["content"] = [
+                    {"type": "text", "text": content},
+                    {"type": "text", "text": notice},
+                ]
+            return
 
     def _collect_current_turn_image_keys(self, messages: list[dict]) -> list[str]:
         """收集投影消息中属于当前回合、仍为图片的稳定 key，按出现顺序。"""
-        current = self._effective_turn_id()
-        if not current:
-            return []
-        keys: list[str] = []
-        for msg in messages:
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "image":
-                    meta = block.get("_meta") or {}
-                    if str(meta.get("turn_id") or "") == current:
-                        key = image_key(block)
-                        if key:
-                            keys.append(key)
-                    continue
-                if block.get("type") != "tool_result":
-                    continue
-                parent_meta = block.get("_meta") or {}
-                if str(parent_meta.get("turn_id") or "") != current:
-                    continue
-                nested = block.get("content")
-                if not isinstance(nested, list):
-                    continue
-                image_index = 0
-                for sub in nested:
-                    if not isinstance(sub, dict) or sub.get("type") != "image":
-                        continue
-                    key = image_key(sub, parent_meta, image_index)
-                    if key:
-                        keys.append(key)
-                    image_index += 1
-        return keys
+        return collect_current_turn_image_keys(messages, self._effective_turn_id())
 
-    def _demote_current_turn_images(self, max_body_size: int, keep_recent: int = 0) -> int:
+    def _demote_current_turn_images(self, max_body_size: int) -> int:
         """把当前回合最旧图片降级为引用，直到请求体小于上限或全部降级。"""
         if self._image_mode() != "current_turn":
             return 0
@@ -195,13 +240,11 @@ class Runner:
         candidates = self._collect_current_turn_image_keys(resolved)
         if not candidates:
             return 0
-        if keep_recent > 0:
-            candidates = candidates[:-keep_recent] if len(candidates) > keep_recent else []
         demoted = getattr(self.runner, "_demoted_image_paths", set())
         added = 0
         for key in candidates:
             if max_body_size > 0 and self._estimate_request_body_size(
-                self._project_resolved_messages(resolved)
+                self._project_resolved_messages(resolved, latch_budget=False)
             ) <= max_body_size:
                 break
             if key not in demoted:
@@ -213,7 +256,7 @@ class Runner:
         """413 兜底：当前回合图片全部转引用；历史图本来已是引用。"""
         if self._image_mode() != "current_turn":
             return 0
-        return self._demote_current_turn_images(max_body_size=0, keep_recent=0)
+        return self._demote_current_turn_images(max_body_size=0)
 
     # ========== 工具执行 ==========
 
@@ -370,6 +413,116 @@ class Runner:
         from core.llm.types import ImageBlock
         is_multimodal = any(isinstance(block, ImageBlock) for block in result.blocks)
 
+        image_cfg = getattr(getattr(self.runner, "config", None), "images", None)
+        max_dimension = int(getattr(image_cfg, "max_dimension", 4096) or 4096)
+        request_target = int(
+            getattr(image_cfg, "request_image_max_bytes", DEFAULT_MAX_BYTES)
+            or DEFAULT_MAX_BYTES
+        )
+        # DeepSeek 单图编码目标 2 MiB；不允许超过 image_pipeline 的默认目标
+        raw_target = max(1, min(request_target, DEFAULT_MAX_BYTES))
+        jpeg_quality = int(getattr(image_cfg, "jpeg_quality", 85) or 85)
+        per_result_limit = max(
+            1, int(getattr(image_cfg, "max_images_per_tool_result", 8) or 8)
+        )
+        dedupe_enabled = bool(getattr(image_cfg, "dedupe_inline_images", True))
+
+        # 工具图归一化（单一收口点）：read_image/PDF 渲染等返回的 ImageBlock
+        # 可能带着原始分辨率与体积。必须在这里就地改写，否则写进 .json 的
+        # 原图会在下一轮请求里原样发给服务端（多图/大图直接 400）。
+        normalized_images: dict[int, tuple[bytes, str, int | None, int | None]] = {}
+        image_digests: dict[int, str] = {}
+        if is_multimodal:
+            for block_idx, result_block in enumerate(result.blocks):
+                if not isinstance(result_block, ImageBlock):
+                    continue
+                info = normalize_image_block(
+                    result_block,
+                    max_dimension=max_dimension,
+                    max_bytes=raw_target,
+                    jpeg_quality=jpeg_quality,
+                )
+                if info is not None:
+                    normalized_images[block_idx] = info
+                    image_digests[block_idx] = hashlib.sha256(info[0]).hexdigest()
+
+        notes: list[str] = []
+
+        # 重读去重：同一内容已内联且未退役 → 不再新增图片块
+        image_index_map = getattr(self.runner, "_turn_image_index", None)
+        retired_carriers = getattr(self.runner, "_retired_image_carriers", set())
+        if dedupe_enabled and isinstance(image_index_map, dict):
+            for block_idx, result_block in enumerate(result.blocks):
+                if not isinstance(result_block, ImageBlock):
+                    continue
+                digest = image_digests.get(block_idx)
+                if not digest:
+                    continue
+                existing = image_index_map.get(digest)
+                if existing and existing not in retired_carriers:
+                    result.blocks[block_idx] = TextBlock(
+                        text="[image already in context; identical image not re-attached]"
+                    )
+                    normalized_images.pop(block_idx, None)
+                    image_digests.pop(block_idx, None)
+                    notes.append("[image already in context]")
+
+        # 单批工具结果上限：保留前 N 张，其余写 sidecar 后转引用
+        image_blocks = [
+            idx for idx, block in enumerate(result.blocks)
+            if isinstance(block, ImageBlock)
+        ]
+        image_refs: list[dict] = []
+        kept_indices: set[int] = set()
+        if image_blocks:
+            for image_index, block_idx in enumerate(image_blocks):
+                result_block = result.blocks[block_idx]
+                info = normalized_images.get(block_idx)
+                ref = None
+                if self.runner.session_dir:
+                    ref = write_tool_image_sidecar(
+                        self.runner.session_dir,
+                        Path(self.runner.cwd),
+                        tool_use_id,
+                        image_index,
+                        result_block,
+                        payload=info[0] if info else None,
+                        mime=info[1] if info else None,
+                        width=info[2] if info else None,
+                        height=info[3] if info else None,
+                    )
+                if image_index < per_result_limit:
+                    kept_indices.add(block_idx)
+                    if ref:
+                        image_refs.append({"index": len(image_refs), **ref})
+                else:
+                    path = ref["path"] if ref else ""
+                    if path:
+                        text = (
+                            f'[image omitted from this tool result: {path}; '
+                            f'use read_image("{path}") to view]'
+                        )
+                    else:
+                        text = "[image omitted from this tool result]"
+                    result.blocks[block_idx] = TextBlock(text=text)
+                    notes.append(text)
+
+        # 登记本回合内联图片摘要，供重读去重
+        if dedupe_enabled:
+            if not isinstance(image_index_map, dict):
+                image_index_map = {}
+                setattr(self.runner, "_turn_image_index", image_index_map)
+            for block_idx in kept_indices:
+                digest = image_digests.get(block_idx)
+                if digest:
+                    image_index_map[digest] = tool_use_id
+
+        if notes:
+            # 多模态路径发送 blocks（含 TextBlock）；纯文本路径发送 output，两处都补
+            result.output = "\n".join([result.output, *notes]) if result.output else "\n".join(notes)
+
+        is_multimodal = any(isinstance(block, ImageBlock) for block in result.blocks)
+
         # Only save external file when needed (streaming already saved, skip)
         needs_external_file = truncated or is_multimodal
         if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
@@ -404,25 +557,8 @@ class Runner:
             "is_error": result.error,
         }
         result_dict.setdefault("_meta", {})["turn_id"] = getattr(self.runner, "current_turn_id", "")
-        if is_multimodal and self.runner.session_dir:
-            from core.llm.types import ImageBlock
-            image_refs: list[dict] = []
-            image_index = 0
-            for result_block in result.blocks:
-                if not isinstance(result_block, ImageBlock):
-                    continue
-                ref = write_tool_image_sidecar(
-                    self.runner.session_dir,
-                    Path(self.runner.cwd),
-                    tool_use_id,
-                    image_index,
-                    result_block,
-                )
-                if ref:
-                    image_refs.append({"index": image_index, **ref})
-                image_index += 1
-            if image_refs:
-                result_dict["_meta"]["image_refs"] = image_refs
+        if image_refs:
+            result_dict["_meta"]["image_refs"] = image_refs
 
         # Add completed=False to block-level _meta for placeholder tools (ask_user, session)
         if result.completed is False:
@@ -634,7 +770,10 @@ class Runner:
             microcompact_mark_orphans_and_errors,
         )
 
-        MAX_BODY_SIZE = 3_000_000
+        # 10MB：仅用于 full 模式的应急降级。current_turn 模式的图片由请求级
+        # 载体预算（apply_image_budget）负责，L3 不再重复降级，否则会把预算
+        # 刚保留下来的图片再次砍掉。
+        MAX_BODY_SIZE = 10_000_000
 
         # Layer 1: Microcompact
         invalidated = microcompact_mark_orphans_and_errors(self.runner.messages)
@@ -671,15 +810,8 @@ class Runner:
 
             logger.info("[上下文] 请求体过大，正在降级图片为引用...")
             if self._image_mode() == "current_turn":
-                keep_recent = int(getattr(getattr(self.runner.config, "images", None), "keep_recent", 3))
-                demoted = self._demote_current_turn_images(MAX_BODY_SIZE, keep_recent=keep_recent)
-                if demoted > 0:
-                    logger.info(f"[上下文] 当前回合图片降级 {demoted} 张")
-                    self.runner.cache_state.on_compression(3)
-                    self._record_compaction_event(
-                        f"[上下文压缩] L3 紧急压缩：降级 {demoted} 张图片",
-                        {"layer": 3, "images_demoted": demoted},
-                    )
+                # current_turn：数量/字节预算已在上一步执行；这里只记录，不重复降级
+                logger.debug("[上下文] current_turn 模式由请求级图片预算处理，跳过 L3")
             else:
                 saved = self._mark_old_images_invalid(max_body_size=MAX_BODY_SIZE)
                 if saved > 0:
@@ -718,7 +850,9 @@ class Runner:
         # Find split point
         valid_messages = self.runner.get_valid_messages()
         if split_idx is None:
-            budget = keep_tokens or self._compact_keep_tokens()
+            # 显式 keep_tokens=0 表示「不按 token 预算」，退回 keep_user_messages 切分；
+            # 只有未传（None）时才用模型上下文比例推导预算。
+            budget = self._compact_keep_tokens() if keep_tokens is None else keep_tokens
             if budget > 0:
                 split_idx = self.runner._find_split_by_token_budget(valid_messages, budget)
             else:
@@ -1209,7 +1343,7 @@ class Runner:
         messages = self.runner._get_messages_with_header()
         if resolve_results:
             messages = self._resolve_tool_results(messages)
-        # 图片投影依赖 _meta（turn_id/path），必须在剥离内部元数据之前执行
+        # 图片投影/预算依赖 _meta（turn_id/path），必须在剥离内部元数据之前执行
         if self._image_mode() == "current_turn" or force_reference:
             messages = project_images_for_request(
                 messages,
@@ -1217,6 +1351,8 @@ class Runner:
                 force_reference=force_reference,
                 demoted_paths=getattr(self.runner, "_demoted_image_paths", set()),
             )
+        if not force_reference:
+            messages = self._apply_image_budget(messages, latch=True)
         if resolve_results:
             messages = self._strip_meta_from_messages(messages)
         if "image" not in (self.runner.model.input or []):
@@ -1303,9 +1439,9 @@ class Runner:
             self._capture_request_prefix(system_prompt, response)
             return response
         except Exception as e:
-            # Handle 413 by stripping images and retrying
+            # 413（请求体过大）应急去图重试；图片类 400 由请求预算提前避免
             if self._is_413_error(e):
-                logger.warning("[LLM] 请求体过大，正在重试...")
+                logger.warning("[LLM] 请求体过大，正在去图重试...")
                 if self._image_mode() == "current_turn":
                     self._demote_all_current_turn_images()
                 else:
@@ -1405,7 +1541,7 @@ class Runner:
                     logger.error(f"[LLM] {err_msg}")
                     raise RuntimeError(err_msg) from e
 
-                # 413 错误：去掉图片后重试
+                # 413：去掉图片后重试（只做一次）
                 if self._is_413_error(e) and not images_stripped:
                     logger.warning("[LLM] 请求体过大，正在去掉图片重试...")
                     if self._image_mode() == "current_turn":

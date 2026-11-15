@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from core.cache_state import CacheState
 from core.config import Config
-from core.image_pipeline import ensure_user_image_meta
+from core.image_pipeline import DEFAULT_MAX_BYTES, ensure_user_image_meta
 from core.llm import LLMClient, LLMResponse, Message
 from core.output_sink import OutputSink
 from core.session import generate_short_id
@@ -73,6 +73,10 @@ class BaseSessionRunner:
         self.current_turn_id: str = ""
         # 当前回合被 3MB/413 降级为引用的图片 path/id。
         self._demoted_image_paths: set[str] = set()
+        # 请求级图片预算状态：已退役的 tool_use_id 与本回合已内联图片摘要。
+        # 新用户回合清空（见 SessionRunner / 队列投递）。
+        self._retired_image_carriers: set[str] = set()
+        self._turn_image_index: dict[str, str] = {}
 
         # 消息状态层：先建 context（Agent 的 _init_interactive 已在此前注入 session），
         # messages/_usage 属性转发到 context，保证后续所有直接赋值/读取一致
@@ -147,11 +151,26 @@ class BaseSessionRunner:
     def add_message(self, role: str, content: Any, meta: dict | None = None) -> None:
         """Add a message to internal message list (delegated to ConversationStore)."""
         if role == "user" and isinstance(content, list) and self.current_turn_id:
+            images_cfg = getattr(getattr(self, "config", None), "images", None)
+            max_dimension = int(getattr(images_cfg, "max_dimension", 4096) or 4096)
+            request_target = int(
+                getattr(images_cfg, "request_image_max_bytes", DEFAULT_MAX_BYTES)
+                or DEFAULT_MAX_BYTES
+            )
+            raw_target = max(1, min(request_target, DEFAULT_MAX_BYTES))
+            jpeg_quality = int(getattr(images_cfg, "jpeg_quality", 85) or 85)
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "image":
-                    ensure_user_image_meta(block, cwd=self.cwd, turn_id=self.current_turn_id)
+                    ensure_user_image_meta(
+                        block,
+                        cwd=self.cwd,
+                        turn_id=self.current_turn_id,
+                        max_dimension=max_dimension,
+                        max_bytes=raw_target,
+                        jpeg_quality=jpeg_quality,
+                    )
                 elif block.get("type") == "tool_result":
                     block.setdefault("_meta", {}).setdefault("turn_id", self.current_turn_id)
         self.context.add_message(role, content, meta)
@@ -162,8 +181,9 @@ class BaseSessionRunner:
         if getattr(self, "session", None) is not None:
             self.session.insert_message(index, role, content, meta=meta)
             return
-        from core.session import generate_short_id
         from datetime import datetime
+
+        from core.session import generate_short_id
 
         index = max(0, min(int(index), len(self.context.messages)))
         msg_meta = dict(meta or {})
@@ -203,6 +223,8 @@ class BaseSessionRunner:
         # 排队批次是新的用户输入：开启新回合，旧回合图片转引用。
         self.current_turn_id = generate_short_id()
         self._demoted_image_paths.clear()
+        self._retired_image_carriers.clear()
+        self._turn_image_index.clear()
         self.add_message("user", user_input, meta=meta)
         self.context.sync_to_session()
         session = getattr(self, "session", None)

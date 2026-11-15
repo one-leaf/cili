@@ -20,7 +20,7 @@ class TestCommands:
         session_mgr = runner.session
         # 验证所有会话管理方法存在
         assert hasattr(session_mgr, 'add_message')
-        assert hasattr(session_mgr, 'get_messages')
+        assert hasattr(session_mgr, 'messages')
         assert hasattr(session_mgr, 'get_valid_messages')
         assert hasattr(session_mgr, 'save')
         assert hasattr(session_mgr, 'load')
