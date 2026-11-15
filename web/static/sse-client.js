@@ -85,6 +85,17 @@ function scheduleLoadSessions() {
     }, 300);
 }
 
+// 子代理开始/结束、回合收尾后，后台计数可能变化；以 /status 快照为准刷新黄态。
+let _activityRefreshTimer = null;
+function scheduleActivityRefresh() {
+    clearTimeout(_activityRefreshTimer);
+    _activityRefreshTimer = setTimeout(() => {
+        if (typeof refreshSessionStatus === 'function' && currentSession) {
+            refreshSessionStatus(currentSession.session_id);
+        }
+    }, 250);
+}
+
 function handleBusEvent(e) {
     if (!e || typeof e !== 'object') return;
     if (!currentSession || e.session_id !== currentSession.session_id) return;
@@ -121,6 +132,7 @@ function handleBusEvent(e) {
         if (foregroundStreamSessionId !== currentSession.session_id) {
             loadSession(currentSession.session_id);
         }
+        scheduleActivityRefresh();
         window.dispatchEvent(new CustomEvent('cili:turn-complete', {
             detail: { session_id: e.session_id },
         }));
@@ -130,6 +142,19 @@ function handleBusEvent(e) {
     // 带 exec_id 的事件全部属于子代理卡片：模型、统计、详情都由 store 处理。
     if (e.exec_id) {
         if (window.AgentCardStore) AgentCardStore.handle(e);
+        if (e.type === 'session_start' || e.type === 'session_complete'
+            || e.type === 'agent_run_settled') {
+            scheduleActivityRefresh();
+        }
+        // session_start 在后台任务注册前广播，250ms 可能过早；补一次延迟刷新，
+        // 保证黄态最终出现（快照仍是服务端权威状态）。
+        if (e.type === 'session_start' && e.background) {
+            setTimeout(() => {
+                if (currentSession && typeof refreshSessionStatus === 'function') {
+                    refreshSessionStatus(currentSession.session_id);
+                }
+            }, 1200);
+        }
         return;
     }
 

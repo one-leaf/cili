@@ -7,12 +7,13 @@ import json
 import logging
 import queue
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import core.session_activity as session_activity
 from core.compression import count_messages_tokens
 from core.config import get_workspace_data_dir, load_config
 from core.editor_context import expand_file_mentions, format_attachment
@@ -106,6 +107,11 @@ class QueueRequest(BaseModel):
     attachments: list[dict] | None = None
     interface: str | None = None
     client_id: str | None = None
+
+
+class StopRequest(BaseModel):
+    """停止作用域：turn = 红方块；background = 黄方块/徽标。"""
+    scope: Literal["turn", "background", "session"] = "turn"
 
 
 class ForkSessionRequest(BaseModel):
@@ -776,12 +782,41 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop")
-async def stop_runner(workspace_uuid: str, session_id: str):
-    """直接结束当前会话正在运行的 runner（队列不暂停：排队项由泵继续）。"""
-    key = _session_key(workspace_uuid, session_id)
+async def stop_runner(workspace_uuid: str, session_id: str,
+                      request: StopRequest | None = None):
+    """两级停止：turn = 只停 master（红方块）；background = 停全部后台（黄方块）。
 
+    队列不暂停：排队项由泵继续。``background`` 不要求 master runner 已加载，
+    因此刷新后/其他标签页也能停后台。
+    """
+    key = _session_key(workspace_uuid, session_id)
+    scope = request.scope if request is not None else "turn"
+
+    if scope == "background":
+        stopped = await asyncio.to_thread(
+            session_activity.stop_background, workspace_uuid, session_id
+        )
+        return {
+            "success": stopped > 0,
+            "message": f"已停止 {stopped} 个后台任务" if stopped else "没有可停止的后台任务",
+            "stopped": {"turn": False, "background": stopped},
+        }
+
+    if scope == "session":
+        result = await asyncio.to_thread(
+            session_activity.stop_session, workspace_uuid, session_id
+        )
+        total = int(result["turn"]) + int(result["background"])
+        return {
+            "success": total > 0,
+            "message": "已停止当前会话全部活动" if total else "没有可停止的任务",
+            "stopped": result,
+        }
+
+    # scope == "turn"
     if key not in registry:
-        return {"success": False, "message": "没有正在运行的 master runner"}
+        return {"success": False, "message": "没有正在运行的 master runner",
+                "stopped": {"turn": False, "background": 0}}
 
     runner = registry.get(key)
     is_running = getattr(runner, "is_running", None)
@@ -795,9 +830,11 @@ async def stop_runner(workspace_uuid: str, session_id: str):
             # 目标循环在跑时同样置 master._stopped：goal 轮间检查后暂停并跳出
             stopper()
         message = "已发送停止信号" if runner_running else "已发送停止信号（目标循环将在本轮结束后暂停）"
-        return {"success": True, "message": message}
+        return {"success": True, "message": message,
+                "stopped": {"turn": True, "background": 0}}
 
-    return {"success": False, "message": "master runner 当前未在运行"}
+    return {"success": False, "message": "master runner 当前未在运行",
+            "stopped": {"turn": False, "background": 0}}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/resume")
@@ -948,8 +985,9 @@ async def get_runner_status(workspace_uuid: str, session_id: str):
     if runner is not None:
         checker = getattr(runner, "is_running", None)
         running = bool(checker()) if callable(checker) else False
+    activity = session_activity.snapshot(workspace_uuid, session_id, running=running)
     return {
-        "running": running,
+        **activity,
         "queue_length": len(snap["items"]),
         "queue_items": snap["items"],
         "queue_paused": snap["paused"],

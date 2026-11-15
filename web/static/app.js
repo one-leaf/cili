@@ -15,6 +15,9 @@ let isSending = false;
 let foregroundStreamSessionId = null;
 // 服务端会话状态与排队队列（与 isSending 解耦：isSending 只表示本页持有前台流）
 let sessionRunning = false;      // 服务端该会话正在运行（/status、turn_complete）
+// 后台任务状态（/status.background、session_start/session_complete 后刷新）。
+// 只用于 Composer 黄态/徽标，绝不参与 sendMessage 的排队判断。
+let sessionBackground = { agents: 0, shells: 0, active: 0, items: [] };
 let queuedItems = [];            // 服务端队列快照（queue_update / /status）
 let queuePaused = false;         // 队列已暂停（停止/出错后需显式继续或清空）
 let queueReason = '';            // 暂停原因：stopped / error
@@ -406,19 +409,30 @@ const COMPOSER_STOP_ICON = '<svg width="10" height="10" viewBox="0 0 10 10" fill
 function updateComposerButtons() {
     const hasSession = !!currentSession;
     const draft = hasDraft();
-    // 有草稿=发送（运行中即排队发送）；运行中空草稿=停止；否则禁用
+    const bgActive = !!(sessionBackground && sessionBackground.active > 0);
+    // 红只表示 master；黄只表示后台；有草稿永远是发送。
     let state = 'disabled';
     if (hasSession) {
         if (draft) {
             state = 'send';
         } else if (sessionRunning) {
-            state = 'stop';
+            state = 'stop';           // 红：停 master
+        } else if (bgActive) {
+            state = 'stop-bg';        // 黄：停全部后台
         }
     }
     composerBtn.dataset.state = state;
-    composerBtn.innerHTML = state === 'stop' ? COMPOSER_STOP_ICON : COMPOSER_SEND_ICON;
-    const title = state === 'stop' ? '停止当前回合'
-        : (state === 'send' && sessionRunning ? '排队发送' : '发送');
+    composerBtn.innerHTML = (state === 'stop' || state === 'stop-bg')
+        ? COMPOSER_STOP_ICON : COMPOSER_SEND_ICON;
+
+    let title = '发送';
+    if (state === 'stop') {
+        title = '停止当前回合';
+    } else if (state === 'stop-bg') {
+        title = '停止后台任务';
+    } else if (state === 'send' && sessionRunning) {
+        title = '排队发送';
+    }
     composerBtn.title = title;
     composerBtn.setAttribute('aria-label', title);
     composerBtn.disabled = state === 'disabled' || (state === 'stop' && isStopping);
@@ -677,10 +691,13 @@ function setupEventListeners() {
     sessionMenuBtn.addEventListener('click', toggleSessionPanelMenu);
     document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
     document.getElementById('sidebar-open-btn').addEventListener('click', toggleSidebar);
-    // 右下角单按钮：停止态点停止，发送态点发送/排队
+    // 右下角单按钮：红=停 master，黄=停后台，发送=发送/排队
     composerBtn.addEventListener('click', () => {
-        if (composerBtn.dataset.state === 'stop') {
+        const state = composerBtn.dataset.state;
+        if (state === 'stop') {
             stopAgent();
+        } else if (state === 'stop-bg') {
+            stopBackground();
         } else {
             sendMessage();
         }
@@ -1023,6 +1040,7 @@ async function handleWorkspaceChange() {
     } else {
         // 没有会话时禁用输入框（有会话时运行中也保持可输入）
         sessionRunning = false;
+        sessionBackground = { agents: 0, shells: 0, active: 0, items: [] };
         queuedItems = [];
         queuePaused = false;
         queueReason = '';
@@ -2002,6 +2020,7 @@ async function deleteSession(session) {
                 savePosition({ session_id: '' });
                 chatMessages.innerHTML = '<div class="empty-state">请选择或创建会话</div>';
                 sessionRunning = false;
+                sessionBackground = { agents: 0, shells: 0, active: 0, items: [] };
                 queuedItems = [];
                 queuePaused = false;
                 queueReason = '';
@@ -2068,6 +2087,7 @@ async function loadSession(sessionId) {
         const status = await statusResponse.json();
         if (epoch !== sessionLoadEpoch) return;
         sessionRunning = !!status.running;
+        sessionBackground = status.background || { agents: 0, shells: 0, active: 0, items: [] };
         queuedItems = status.queue_items || [];
         queuePaused = !!status.queue_paused;
         queueReason = status.queue_reason || '';
@@ -2134,6 +2154,7 @@ async function createNewSession() {
         chatInput.disabled = false;
         isSending = false;
         sessionRunning = false;
+        sessionBackground = { agents: 0, shells: 0, active: 0, items: [] };
         queuedItems = [];
         queuePaused = false;
         queueReason = '';

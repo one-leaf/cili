@@ -107,8 +107,11 @@ class CiliClient:
         except httpx.HTTPError as e:
             raise CiliServerError(f"与服务端通信失败：{e}") from e
 
-    def stop(self, workspace_uuid: str, session_id: str) -> dict:
-        return self._post(f"/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop", {})
+    def stop(self, workspace_uuid: str, session_id: str, *, scope: str = "turn") -> dict:
+        return self._post(
+            f"/api/workspaces/{workspace_uuid}/sessions/{session_id}/stop",
+            {"scope": scope},
+        )
 
     # ---------- 内部 ----------
 

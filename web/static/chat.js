@@ -1529,9 +1529,11 @@ async function refreshSessionStatus(sessionId) {
         if (!resp.ok) return;
         const status = await resp.json();
         sessionRunning = !!status.running;
+        sessionBackground = status.background || { agents: 0, shells: 0, active: 0, items: [] };
         queuedItems = status.queue_items || queuedItems;
         queuePaused = !!status.queue_paused;
         queueReason = status.queue_reason || '';
+        updateComposerButtons();
     } catch (e) { /* 状态刷新失败时沿用本地推断 */ }
 }
 
@@ -1548,7 +1550,11 @@ async function stopAgent() {
     try {
         const response = await fetch(
             `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stop`,
-            { method: 'POST' }
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scope: 'turn' }),
+            }
         );
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
@@ -1589,6 +1595,32 @@ async function stopAgent() {
         settleAskUserCard(card);
     });
     updateComposerButtons();
+}
+
+// 停后台：黄方块/黄色徽标。只停 agent + shell，不动 master 回合。
+async function stopBackground() {
+    if (!currentWorkspace || !currentSession) return;
+    const sessionId = currentSession.session_id;
+    if (typeof hideSuggestBar === 'function') hideSuggestBar({ invalidate: true });
+    try {
+        const resp = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/stop`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scope: 'background' }),
+            }
+        );
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok || !result.success) {
+            showToast(result.message || '停止后台任务失败');
+            return;
+        }
+        await refreshSessionStatus(sessionId);
+    } catch (e) {
+        console.error('Failed to stop background tasks:', e);
+        showToast('停止后台任务失败');
+    }
 }
 
 // Send message

@@ -500,6 +500,14 @@ def _run_autonomous(self) -> dict[str, Any]:
 - **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `agent_id`，用统一 `action` 枚举管理（`action="status"` 查状态、`action="stop"` 终止、`action="list"` 列出）
 - 子代理用量**不在工具层转发**：每个 runner 把自己的累计用量写进各自 exec 日志的 `metadata.usage`，会话总量在读取时聚合（见 §6.2）；完成后由 `SessionRunner._finalize` 单写执行日志，并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
 
+#### 两级停止（2026-11-15）
+
+- **红方块 = `stop_turn`**：只停 master 回合及其前台子树（同步子代理），后台 agent/shell 保留；
+- **黄方块/徽标 = `stop_background`**：停本会话全部后台执行（agent + shell + tool_job + cron），不要求 master 正在运行；
+- 停后台时任务只置 `stop_requested` / `suppress_auto_resume`，由 `runner.run()` 自然收尾并写 `stopped` 终态；不从 `BackgroundTaskManager` 立即移除，避免丢失卡片终态与 epoch 归档；
+- 被停任务完成后仍向 mailbox 写 `stopped` 通知，但不发布 `background_runner_resume`、不调用 `on_background_complete`，避免自动复活；
+- 后台任务按 `workspace_uuid + master_session_id` 归属；嵌套子代理及其后台 shell 归到根会话。
+
 ### 6.2 用量记账（各自记账 + 读取时聚合）
 
 - **单一写入者**：每个 runner 只记录自己的 LLM 用量（`ConversationStore._usage`），进度/收尾时整体写入 `{exec_dir}/index.json` 的 `metadata.usage`。

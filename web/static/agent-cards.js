@@ -31,6 +31,7 @@ const AgentCardStore = (() => {
         check: '任务检查中',
         handoff: '任务续跑中',
         finalizing: '任务收尾中',
+        stopping: '任务停止中',
     };
 
     function isTerminalStatus(status) {

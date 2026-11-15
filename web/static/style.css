@@ -32,6 +32,9 @@ ul, ol {
     --composer-stop-bg: #dc3545;
     --composer-stop-fg: #ffffff;
     --composer-stop-hover: #c82333;
+    --composer-bg-bg: #d97706;
+    --composer-bg-fg: #ffffff;
+    --composer-bg-hover: #b45309;
     --composer-disabled-bg: #e5e7eb;
     --composer-disabled-fg: #9ca3af;
     /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
@@ -62,6 +65,9 @@ ul, ol {
     --composer-stop-bg: #dc2626;
     --composer-stop-fg: #ffffff;
     --composer-stop-hover: #b91c1c;
+    --composer-bg-bg: #f59e0b;
+    --composer-bg-fg: #1f2937;
+    --composer-bg-hover: #d97706;
     --composer-disabled-bg: #3f3f46;
     --composer-disabled-fg: #71717a;
     /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
@@ -2262,6 +2268,16 @@ mjx-container {
 
 .composer-action[data-state="stop"]:hover {
     background: var(--composer-stop-hover);
+}
+
+/* 黄态：仅后台任务运行中；点击停全部后台（agent + shell） */
+.composer-action[data-state="stop-bg"] {
+    background: var(--composer-bg-bg);
+    color: var(--composer-bg-fg);
+}
+
+.composer-action[data-state="stop-bg"]:hover {
+    background: var(--composer-bg-hover);
 }
 
 .composer-action[data-state="disabled"] {

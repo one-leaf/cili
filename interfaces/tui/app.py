@@ -151,6 +151,10 @@ class TuiApp:
                 self.commands["s"].handler()
             return
 
+        if cmd == "/stop":
+            self.stop_turn(background=(arg.lower() in ("bg", "background")))
+            return
+
         command = self.commands.get(cmd.lstrip("/"))
         if command is None:
             self.renderer.error_line(f"未知命令 {cmd}（/h 查看帮助）")
@@ -192,9 +196,12 @@ class TuiApp:
             frames.close()
             self.router.finish()
 
-    def stop_turn(self) -> None:
+    def stop_turn(self, *, background: bool = False) -> None:
         try:
-            result = self.client.stop(self.workspace_uuid, self.session_id)
+            result = self.client.stop(
+                self.workspace_uuid, self.session_id,
+                scope="background" if background else "turn",
+            )
             message = result.get("message", "")
             if message:
                 self.renderer.status_line(message)

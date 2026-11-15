@@ -347,9 +347,26 @@ GET /api/workspaces/{uuid}/sessions/{id}/status
 **响应**：
 ```json
 {
-  "running": true
+  "running": true,
+  "busy": true,
+  "background": {
+    "agents": 1,
+    "shells": 1,
+    "active": 2,
+    "items": [
+      {"task_id": "agent-3", "exec_id": "exec_ab12", "kind": "agent", "label": "翻译目录"},
+      {"task_id": "bg-4", "exec_id": null, "kind": "shell", "label": "npm run dev"}
+    ]
+  },
+  "queue_length": 0,
+  "queue_items": [],
+  "queue_paused": false,
+  "queue_reason": ""
 }
 ```
+
+`running` 只表示 master 回合；`busy = running || background.active > 0`。后台任务按
+`workspace_uuid + 根会话 id` 聚合，嵌套子代理及其后台 shell 归到根会话。
 
 #### 上下文占用报告
 
@@ -369,15 +386,27 @@ GET /api/workspaces/{uuid}/sessions/{id}/context
 POST /api/workspaces/{uuid}/sessions/{id}/stop
 ```
 
+**请求体（可选）**：
+```json
+{"scope": "turn"}
+```
+
+- `turn`（默认）：只停 master 回合，后台 agent/shell 保留；红方块调用它。
+- `background`：停本会话全部后台执行（agent + shell + tool_job + cron），不要求 master runner 已加载；黄方块/徽标调用它。
+- `session`：内部全停（删除会话/重置），前端不调用。
+
 **响应**：
 ```json
 {
   "success": true,
-  "message": "已发送停止信号"
+  "message": "已发送停止信号",
+  "stopped": {"turn": true, "background": 0}
 }
 ```
 
-Agent 不存在或未在运行时返回 `{"success": false, "message": "..."}`。
+`scope=turn` 时 Agent 不存在或未运行返回 `{"success": false, "message": "..."}`；
+`scope=background` 在 master 空闲时仍可成功停止后台任务。被停的后台任务
+`suppress_auto_resume=True`，完成后不发布 `background_runner_resume`、不自动唤醒 master。
 
 #### 撤销消息
 

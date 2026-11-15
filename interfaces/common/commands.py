@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+import core.session_activity as session_activity
 from core.config import (
     find_workspace_entry,
     get_workspace_data_dir,
@@ -199,11 +200,14 @@ def _cmd_status(
     if owner_lines:
         lines.extend(owner_lines(ctx))
 
-    runner = registry.get(session_key(ctx.chat.workspace_uuid, ctx.chat.session_id))
+    key = session_key(ctx.chat.workspace_uuid, ctx.chat.session_id)
+    runner = registry.get(key)
+    runner_running = False
     if runner is None:
         lines.append("- 运行中：否（runner 未加载）")
     else:
-        lines.append(f"- 运行中：{'是' if runner.is_running() else '否'}")
+        runner_running = bool(runner.is_running())
+        lines.append(f"- 运行中：{'是' if runner_running else '否'}")
         try:
             usage = runner.get_usage()
             lines.append(f"- API 调用：{usage.get('api_calls', 0)}")
@@ -212,12 +216,27 @@ def _cmd_status(
         except Exception as e:  # noqa: BLE001 — 状态展示不该因统计失败而中断
             lines.append(f"- 用量统计不可用：{e}")
 
+    activity = session_activity.snapshot(
+        ctx.chat.workspace_uuid, ctx.chat.session_id, running=runner_running
+    )
+    bg = activity["background"]
+    lines.append(
+        f"- 后台任务：{bg['active']}（agent {bg['agents']} / shell {bg['shells']}）"
+    )
+
     if footer_lines:
         lines.extend(footer_lines(ctx))
     return "\n".join(lines)
 
 
 def _cmd_stop(ctx: CommandContext) -> str:
+    if ctx.args.strip().lower() in ("bg", "background"):
+        stopped = session_activity.stop_background(
+            ctx.chat.workspace_uuid, ctx.chat.session_id
+        )
+        if stopped:
+            return f"已停止 {stopped} 个后台任务。"
+        return "当前没有正在执行的后台任务。"
     runner = registry.get(session_key(ctx.chat.workspace_uuid, ctx.chat.session_id))
     if runner is None or not runner.is_running():
         return "当前没有正在执行的任务。"
@@ -270,7 +289,7 @@ def build_commands(
                     owner_lines=status_owner_lines,
                     footer_lines=status_footer_lines,
                 )),
-        Command("stop", "停止当前正在执行的回合", "/stop", _cmd_stop),
+        Command("stop", "停止当前回合；/stop bg 停止后台任务", "/stop [bg]", _cmd_stop),
     ]
     for c in commands:
         table[c.name] = c

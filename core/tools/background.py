@@ -55,6 +55,22 @@ def any_background_runner_running() -> bool:
         return bool(_active_background_runners)
 
 
+def owner_session_id(session: Any) -> str:
+    """后台任务归属的根会话 id。
+
+    master 的 SessionStore 只有 ``session_id``；worker/lite 的 SessionIdentity
+    另外带 ``master_session_id``。嵌套子代理（及其后台 shell）必须归到根会话，
+    否则主会话的 /status 聚合不到。
+    """
+    if session is None:
+        return ""
+    return (
+        getattr(session, "master_session_id", "")
+        or getattr(session, "session_id", "")
+        or ""
+    )
+
+
 @dataclass
 class BackgroundTask:
     """A background task (shell command or SessionRunner).
@@ -68,9 +84,19 @@ class BackgroundTask:
     command: str = ""  # For shell tasks
     process: subprocess.Popen | None = None  # For shell tasks
     output_queue: queue.Queue[str | None] = field(default_factory=queue.Queue)
-    status: str = "running"  # running, completed, killed, error
+    status: str = "running"  # running, stopping, completed, killed, stopped, error
     exit_code: int | None = None
     created_at: float = field(default_factory=time.time)
+
+    # 会话归属（/status 聚合与后台停止按 workspace+session 过滤）
+    workspace_uuid: str = ""
+    session_id: str = ""  # root master session id
+    kind: str = ""  # "agent" | "shell"
+    label: str = ""
+
+    # 停止意图：UI 停后台后置位；run_runner 收尾时据此抑制自动恢复
+    stop_requested: bool = False
+    suppress_auto_resume: bool = False
 
     # Runner-specific fields
     runner: Any = None  # SessionRunner instance
@@ -107,13 +133,65 @@ class BackgroundTaskManager:
     @staticmethod
     def _is_finished(task: BackgroundTask) -> bool:
         """任务是否已结束（不依赖 list_tasks 的轮询刷新）。"""
-        if task.status in ("completed", "killed", "error"):
+        if task.status in ("completed", "killed", "stopped", "error"):
             return True
         if task.task_type == "shell" and task.process is not None:
             return task.process.poll() is not None
         if task.task_type == "session":
             return task.result is not None
         return False
+
+    @classmethod
+    def is_active(cls, task: BackgroundTask) -> bool:
+        """任务是否仍占用后台槽位（running / stopping）。
+
+        不修改任务状态；供 /status 与 stop_background 做只读快照。
+        """
+        if task.status in ("completed", "killed", "stopped", "error"):
+            return False
+        if task.task_type == "shell" and task.process is not None:
+            return task.process.poll() is None
+        if task.task_type == "session":
+            return task.result is None
+        return task.status in ("running", "stopping")
+
+    @classmethod
+    def session_tasks(cls, workspace_uuid: str, session_id: str,
+                      *, active_only: bool = True) -> list[BackgroundTask]:
+        """按 workspace + 根会话过滤后台任务（线程安全快照）。"""
+        with cls._lock:
+            tasks = [
+                task for task in cls._tasks.values()
+                if task.workspace_uuid == workspace_uuid
+                and task.session_id == session_id
+            ]
+        if active_only:
+            tasks = [task for task in tasks if cls.is_active(task)]
+        return tasks
+
+    @classmethod
+    def session_snapshot(cls, workspace_uuid: str, session_id: str) -> dict[str, Any]:
+        """会话后台任务快照：计数 + 活跃项。"""
+        tasks = cls.session_tasks(workspace_uuid, session_id, active_only=True)
+        items = [
+            {
+                "task_id": task.task_id,
+                "exec_id": task.exec_id,
+                "kind": task.kind or ("agent" if task.task_type == "session" else "shell"),
+                "label": task.label or task.command,
+                "status": task.status,
+                "created_at": task.created_at,
+            }
+            for task in sorted(tasks, key=lambda t: t.created_at)
+        ]
+        agents = sum(1 for task in tasks if (task.kind or task.task_type) in ("agent", "session"))
+        shells = len(tasks) - agents
+        return {
+            "agents": agents,
+            "shells": shells,
+            "active": len(tasks),
+            "items": items,
+        }
 
     @classmethod
     def _evict_completed_locked(cls) -> None:
@@ -147,12 +225,13 @@ class BackgroundTaskManager:
             for task_id, task in cls._tasks.items():
                 # Check status
                 if task.task_type == "shell" and task.process:
-                    if task.process.poll() is not None:
+                    if task.process.poll() is not None and task.status not in ("killed", "stopped"):
                         task.status = "completed"
                         task.exit_code = task.process.returncode
-                elif task.task_type == "session" and task.runner:
-                    if not task.runner._running and task.status == "running":
-                        task.status = "completed"
+                elif task.task_type == "session" and task.result is not None:
+                    # 终态以 run() 的结果为准：stopped 不能被误写成 completed
+                    result_status = task.result.get("status") or "completed"
+                    task.status = "timeout" if result_status == "handoff" else result_status
 
                 result.append({
                     "task_id": task_id,
@@ -278,6 +357,10 @@ class BackgroundMixin:
                 command=command,
                 process=proc,
                 output_queue=output_queue,
+                workspace_uuid=getattr(self, "workspace_uuid", ""),
+                session_id=owner_session_id(getattr(self, "session", None)),
+                kind="shell",
+                label=command[:100],
             )
 
             BackgroundTaskManager.register(task)
@@ -361,14 +444,11 @@ class BackgroundMixin:
             return ToolResult(f"Error: task '{task_id}' is a session/agent task (no process)", error=True)
 
         try:
-            # Kill process tree
+            # Kill process tree；保留任务记录供终态/审计，活跃快照按状态过滤。
             self._kill_process_tree(task.process)
             task.process.wait(timeout=5)
             task.status = "killed"
-
-            # Clean up
-            BackgroundTaskManager.remove(task_id)
-
+            task.stop_requested = True
             return ToolResult(f"Task {task_id} terminated")
 
         except subprocess.TimeoutExpired:
@@ -377,7 +457,8 @@ class BackgroundMixin:
                 self._kill_process_tree(task.process)
             except Exception:
                 pass
-            BackgroundTaskManager.remove(task_id)
+            task.status = "killed"
+            task.stop_requested = True
             return ToolResult(f"Task {task_id} force terminated")
 
         except Exception as e:
@@ -497,7 +578,11 @@ class BackgroundMixin:
             try:
                 result = runner.run()
                 task.result = result
-                task.status = "completed"
+                result_status = (result or {}).get("status", "completed")
+                # handoff 是内部续任信号；无续任走到这里说明任务未完成
+                if result_status == "handoff":
+                    result_status = "timeout"
+                task.status = result_status
 
                 # 执行日志由 SessionRunner._finalize 单写；这里只保存主会话状态。
                 if session and hasattr(session, "save"):
@@ -580,18 +665,21 @@ class BackgroundMixin:
                                     f"[子 Runner 完成通知] exec_id={exec_id}, status={status}\nsummary: {summary_text[:200]}",
                                     message_type="notification",
                                 )
-                                # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）
-                                try:
-                                    from core.event_bus import get_event_bus
-                                    get_event_bus().publish({
-                                        "type": "background_runner_resume",
-                                        "workspace_uuid": self.workspace_uuid,
-                                        "session_id": master_session_id,
-                                        "exec_id": exec_id,
-                                        "status": status,
-                                    })
-                                except Exception:
-                                    pass  # 事件发布失败不影响主流程
+                                # 发送特殊事件通知前端触发 master 继续（作为后端回调的兜底）。
+                                # 用户主动停止的后台任务不唤醒会话：通知留在 mailbox，
+                                # 下一次用户回合仍能看到「已停止」。
+                                if not task.suppress_auto_resume:
+                                    try:
+                                        from core.event_bus import get_event_bus
+                                        get_event_bus().publish({
+                                            "type": "background_runner_resume",
+                                            "workspace_uuid": self.workspace_uuid,
+                                            "session_id": master_session_id,
+                                            "exec_id": exec_id,
+                                            "status": status,
+                                        })
+                                    except Exception:
+                                        pass  # 事件发布失败不影响主流程
                             except Exception as e:
                                 import logging
                                 logging.getLogger(__name__).debug(
@@ -604,8 +692,9 @@ class BackgroundMixin:
                         logging.getLogger(__name__).warning(
                             f"Failed to notify background Runner complete {task_id}: {e}"
                         )
-                    # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）
-                    if getattr(self, "on_background_complete", None):
+                    # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）。
+                    # 用户主动停止的任务不自动恢复；通知留待下一次用户回合。
+                    if not task.suppress_auto_resume and getattr(self, "on_background_complete", None):
                         try:
                             self.on_background_complete(exec_id, status)
                         except Exception as e:
@@ -622,6 +711,10 @@ class BackgroundMixin:
             runner=runner,
             status="running",
             exec_id=exec_id,
+            workspace_uuid=getattr(self, "workspace_uuid", ""),
+            session_id=owner_session_id(session),
+            kind="agent",
+            label=task_summary,
         )
 
         BackgroundTaskManager.register(task)
@@ -637,7 +730,10 @@ class BackgroundMixin:
             f"You will receive an automatic notification when it completes — do NOT poll with "
             f"action=\"read\" or sleep to wait. Continue your other work in the meantime.\n"
             f"Use action=\"kill\", task_id=\"{task_id}\" only if you need to terminate it early.",
-            meta={"exec_id": exec_id, "completed": False, "task_id": task_id, "background": True},
+            # 工具调用本身已完成；completed=False 是 ask_user/审批占位协议，
+            # 后台任务仍在运行不能用它，否则主循环会误判为等待外部输入。
+            meta={"exec_id": exec_id, "completed": True, "task_id": task_id,
+                  "background": True, "background_running": True},
         )
 
     def _read_background_runner(self, task_id: str) -> ToolResult:
@@ -688,7 +784,8 @@ class BackgroundMixin:
                 f"Runner {task_id} still running.\n"
                 f"Estimated iterations: {iterations}\n"
                 f"Current tool: {getattr(runner, '_current_tool', 'none')}",
-                meta={"exec_id": task.exec_id, "completed": False, "background": True},
+                meta={"exec_id": task.exec_id, "completed": True,
+                      "background": True, "background_running": True},
             )
 
     def _kill_background_runner(self, task_id: str) -> ToolResult:
@@ -705,17 +802,25 @@ class BackgroundMixin:
             return ToolResult(f"Error: Runner for '{task_id}' not found", error=True)
 
         try:
-            # Set stop flag
+            # 只请求停止，不从注册表移除：线程需要自然收尾、写终态/归档 epoch，
+            # 否则卡片会停在 running 且执行日志丢失。
+            task.stop_requested = True
+            task.suppress_auto_resume = True
+            task.status = "stopping"
             runner._stopped = True
-            task.status = "killed"
-
-            # Clean up
-            BackgroundTaskManager.remove(task_id)
+            publish = getattr(self, "_publish", None)
+            if callable(publish):
+                try:
+                    publish("session_progress", exec_id=task.exec_id, status="running",
+                            phase="stopping", current_tool="", stats={})
+                except Exception:
+                    pass
 
             return ToolResult(
-                f"Runner {task_id} terminated",
-                meta={"exec_id": task.exec_id, "completed": True, "status": "killed", "background": True},
+                f"Runner {task_id} stop requested",
+                meta={"exec_id": task.exec_id, "completed": True,
+                      "status": "stopping", "background": True},
             )
 
         except Exception as e:
-            return ToolResult(f"Error killing Runner {task_id}: {e}", error=True)
+            return ToolResult(f"Error stopping Runner {task_id}: {e}", error=True)
