@@ -1,8 +1,10 @@
 """教材数据包后台同步：从 cili-data 仓库静默下载并展开。
 
 数据分发在独立仓库 ``github.com/one-leaf/cili-data``。下载源优先级：
-Release 资产 → **Release 源码归档**（GitHub 按 tag 自动生成，天然包含
-``textbook/dist/`` 三件套，无需手工上传资产）→ raw dist 文件。
+Release 资产（**仅当该 release 确实带此资产时**）→ **Release 源码归档**
+（GitHub 按 tag 自动生成，天然包含 ``textbook/dist/`` 三件套，无需手工
+上传资产）→ raw dist 文件。release 经常只打 tag、不带资产，此时 404
+属于预期：直接跳过该源，且不等待、不刷 WARNING（仅在全部源失败时报错）。
 
 1. 取远端 manifest.json，比对本地 pack_meta.json 的 dataset_version；
 2. 版本不一致 / 本地缺失 → 下载 chapters.zip + catalog.json（国内镜像链
@@ -89,11 +91,63 @@ def _proxied(cfg: dict[str, Any], url: str) -> list[str]:
     return [f"{p}{url}" for p in PROXY_PREFIXES] + [url]
 
 
+# 最新 release 的 (tag, 资产名集合)；API 不可用时为 None（退回「照常尝试资产 URL」）。
+# TTL 1 小时：同一进程内的多轮失败重试不必反复打 API（匿名 60 次/小时）。
+_RELEASE_TTL_SECONDS = 3600
+_release_cache: dict[str, tuple[float, tuple[str, frozenset[str]] | None]] = {}
+_release_lock = threading.Lock()
+
+
+def _latest_release(cfg: dict[str, Any]) -> tuple[str, frozenset[str]] | None:
+    """最新 release 的 (tag, 资产名集合)；API 不可用返回 None。
+
+    数据仓库的 release 可能**没有任何资产**（数据直接发布在 main 的
+    textbook/dist/）。此时 ``releases/latest/download/<name>`` 必然 404，
+    不应把它排进下载源——否则每个文件都要先浪费 4 个必然失败的尝试。
+    """
+    repo = cfg["repo"]
+    now = time.monotonic()
+    with _release_lock:
+        cached = _release_cache.get(repo)
+        if cached and now - cached[0] < _RELEASE_TTL_SECONDS:
+            return cached[1]
+    api = f"https://api.github.com/repos/{repo}/releases/latest"
+    info: tuple[str, frozenset[str]] | None = None
+    for url in _proxied(cfg, api):
+        try:
+            r = httpx.get(url, timeout=_TIMEOUT, follow_redirects=True,
+                          headers={"Accept": "application/vnd.github+json"})
+            if r.status_code != 200:
+                logger.debug(f"[教材数据] {url} -> HTTP {r.status_code}")
+                continue
+            data = r.json() or {}
+            assets = frozenset(
+                str(a.get("name")) for a in (data.get("assets") or [])
+                if isinstance(a, dict) and a.get("name")
+            )
+            info = (str(data.get("tag_name") or ""), assets)
+            break
+        except Exception as e:  # noqa: BLE001 —— 换下一个源
+            logger.debug(f"[教材数据] 获取 release 信息失败: {e}")
+    with _release_lock:
+        _release_cache[repo] = (now, info)
+    return info
+
+
 def _urls(cfg: dict[str, Any], name: str) -> list[str]:
     repo = cfg["repo"]
     bases: list[str] = []
     if cfg.get("channel") == "release":
-        bases.append(f"https://github.com/{repo}/releases/latest/download/{name}")
+        release = _latest_release(cfg)
+        if release is None:
+            # API 不可用：保留旧行为（照常尝试），404 只记 DEBUG
+            bases.append(f"https://github.com/{repo}/releases/latest/download/{name}")
+        elif name in release[1]:
+            bases.append(f"https://github.com/{repo}/releases/latest/download/{name}")
+        else:
+            logger.debug(
+                f"[教材数据] release {release[0] or '(no tag)'} 无 {name} 资产，跳过 release 源"
+            )
     bases.append(f"https://raw.githubusercontent.com/{repo}/main/textbook/dist/{name}")
     if cfg.get("mirror") == "direct":
         return bases
@@ -116,24 +170,19 @@ def _fetch_json(cfg: dict[str, Any], name: str) -> dict[str, Any] | None:
 
 def _latest_tag(cfg: dict[str, Any]) -> str:
     """取最新 release 的 tag（用于回退到源码归档 zip）。"""
-    api = f"https://api.github.com/repos/{cfg['repo']}/releases/latest"
-    urls = _proxied(cfg, api)
-    for url in urls:
-        try:
-            r = httpx.get(url, timeout=_TIMEOUT, follow_redirects=True,
-                          headers={"Accept": "application/vnd.github+json"})
-            if r.status_code == 200:
-                return str((r.json() or {}).get("tag_name") or "")
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[教材数据] 获取 release tag 失败: {e}")
-    return ""
+    release = _latest_release(cfg)
+    return release[0] if release else ""
+
+
+class _SourceUnavailable(RuntimeError):
+    """该源明确没有此文件（404/410）或返回错误页：换下一个源，不重试、不等待。"""
 
 
 def _reject_html(resp: httpx.Response) -> None:
     """镜像/网关错误时可能返回 200 + HTML 错误页，直接判为失败换下一个源。"""
     ctype = (resp.headers.get("content-type") or "").lower()
     if "text/html" in ctype:
-        raise RuntimeError(f"源返回 HTML 页面（{ctype}）")
+        raise _SourceUnavailable(f"源返回 HTML 页面（{ctype}）")
 
 
 def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
@@ -158,6 +207,8 @@ def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
                         offset = 0
                         part.unlink(missing_ok=True)
                     elif resp.status_code not in (200, 206):
+                        if resp.status_code in (404, 410):
+                            raise _SourceUnavailable(f"HTTP {resp.status_code}")
                         raise RuntimeError(f"HTTP {resp.status_code}")
                     _reject_html(resp)
                     with open(part, "ab" if resp.status_code == 206 else "wb") as f:
@@ -165,9 +216,11 @@ def _extract_from_archive(cfg: dict[str, Any], tag: str, name: str,
                             f.write(block)
             part.replace(archive)
             break
-        except Exception as e:  # noqa: BLE001 —— 换下一个源
-            logger.warning(f"[教材数据] 下载源码归档第 {attempt + 1}/{len(urls)} 个源失败: {e}")
-            time.sleep(min(2.0 * (attempt + 1), 6.0))
+        except _SourceUnavailable as e:
+            logger.debug(f"[教材数据] 源码归档第 {attempt + 1}/{len(urls)} 个源不可用: {e}")
+        except Exception as e:  # noqa: BLE001 —— 网络/5xx：换下一个源并短暂等待
+            logger.info(f"[教材数据] 下载源码归档第 {attempt + 1}/{len(urls)} 个源失败: {e}")
+            time.sleep(min(1.5 * (attempt + 1), 4.0))
     else:
         return False
     try:
@@ -217,6 +270,8 @@ def _download(cfg: dict[str, Any], name: str, dest: Path,
                         offset = 0
                         part.unlink(missing_ok=True)
                     elif resp.status_code not in (200, 206):
+                        if resp.status_code in (404, 410):
+                            raise _SourceUnavailable(f"HTTP {resp.status_code}")
                         raise RuntimeError(f"HTTP {resp.status_code}")
                     _reject_html(resp)
                     mode = "ab" if resp.status_code == 206 else "wb"
@@ -236,9 +291,13 @@ def _download(cfg: dict[str, Any], name: str, dest: Path,
                 raise RuntimeError("SHA256 校验失败")
             part.replace(dest)
             return True
-        except Exception as e:  # noqa: BLE001 —— 换下一个源
-            logger.warning(f"[教材数据] 下载 {name} 第 {attempt + 1}/{len(urls)} 个源失败: {e}")
-            time.sleep(min(2.0 * (attempt + 1), 6.0))
+        except _SourceUnavailable as e:
+            # 源明确没有该文件（如 release 无资产）：换源即可，等待没有意义
+            logger.debug(f"[教材数据] {name} 第 {attempt + 1}/{len(urls)} 个源不可用: {e}")
+        except Exception as e:  # noqa: BLE001 —— 网络/5xx：换下一个源并短暂等待
+            logger.info(f"[教材数据] 下载 {name} 第 {attempt + 1}/{len(urls)} 个源失败: {e}")
+            time.sleep(min(1.5 * (attempt + 1), 4.0))
+    logger.warning(f"[教材数据] {name} 所有下载源均失败")
     return False
 
 
