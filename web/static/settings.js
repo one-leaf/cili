@@ -1091,8 +1091,8 @@ async function detectProviderModels(btn) {
 
 function renderReasoningOptions(interfaceType, selected) {
     const opts = interfaceType === 'openai'
-        ? [['default', '缺省（不传）'], ['off', '关闭 (none)'], ['minimal', '最小 (minimal)'], ['low', '低'], ['medium', '中'], ['high', '高']]
-        : [['default', '缺省（不传）'], ['off', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高']];
+        ? [['default', '跟随服务端（不传）'], ['off', '关闭 (none)'], ['minimal', '最小 (minimal)'], ['low', '低'], ['medium', '中'], ['high', '高']]
+        : [['default', '跟随服务端（不传）'], ['off', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高']];
     // 默认档位 medium：新建模型行/旧数据缺省字段时选中「中」
     return opts.map(function (o) {
         return '<option value="' + o[0] + '"' + (o[0] === (selected || 'medium') ? ' selected' : '') + '>' + o[1] + '</option>';
