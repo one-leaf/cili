@@ -233,8 +233,8 @@ class QQSink:
     def on_session_start(self, exec_id: str, task_summary: str) -> None:
         self._base.on_session_start(exec_id, task_summary)
 
-    def on_session_complete(self, exec_id: str) -> None:
-        self._base.on_session_complete(exec_id)
+    def on_session_complete(self, exec_id: str, status: str = "completed") -> None:
+        self._base.on_session_complete(exec_id, status)
 
     def on_turn_complete(self) -> None:
         """回合收尾：关流 + 降级兜底 + 通知全局流。"""

@@ -448,8 +448,27 @@ def _run_autonomous(self) -> dict[str, Any]:
 | `error` | LLM 调用失败（内部重试耗尽） |
 | `failed` | 连续失败次数达到 `max_consecutive_failures` |
 | `timeout` | 迭代额度耗尽（`wrapped_up=True` 表示兜底总结成功） |
+| `handoff` | 迭代额度耗尽但产出续任交接文档（内部信号；AgentRun 由下一 epoch 接管） |
 
 返回字段：`status` / `summary`（或 `message`）/ `stats`（嵌套 iterations/message_count/tool_call_count）/ `usage`，检查完成时含 `check_iterations`，预算兜底下含 `budget_wrapup=True`。
+
+> `run()` 返回值里的 `handoff` 是内部续任信号；落盘与事件对外只用下节的 `status`/`phase` 词表。
+
+### 5.3.1 执行状态与阶段（status / phase）
+
+执行日志（`{exec_dir}/index.json` 的 `metadata`）与 `session_progress` 事件使用两个正交字段：
+
+- **status**：生命周期，只有 `running` 与终态集合 `completed / failed / error / timeout / stopped`。
+  `TERMINAL_STATUSES`（`core/session_runner.py`）为唯一权威定义。
+- **phase**：当前阶段，仅在 `status=running` 时有意义：
+  `initializing / running / check / handoff / finalizing / done`。
+
+规则：
+
+1. **阶段不得写进 status**——历史上检查阶段以 `status="check"` 广播，前端按「非 running = 已结束」渲染，导致检查期间卡片误显示「任务已结束」。
+2. 进入检查阶段、检查通过收尾时，`_save_progress(..., force=True)` 立即广播阶段切换，不等下一批工具调用。
+3. `handoff`（迭代耗尽待续任）落盘为 `status=running, phase=handoff, exit_reason=handoff`；终态落盘 `phase=done`。
+4. 前端只在收到终态时把子代理卡片标为「任务已结束」；`running` + `phase=check/handoff` 分别显示「任务检查中 / 任务续跑中」。
 
 ### 5.4 行为开关
 
@@ -505,6 +524,8 @@ def _run_autonomous(self) -> dict[str, Any]:
       "ended_at": "2026-08-25 10:05:00",
       "duration_seconds": 300,
       "status": "completed",
+      "phase": "done",
+      "exit_reason": "completed",
       "stats": {"iterations": 15, "message_count": 42, "tool_call_count": 8},
       "max_iterations": 200,
       "summary": "处理完成，共处理 42 个文件"
@@ -512,7 +533,7 @@ def _run_autonomous(self) -> dict[str, Any]:
   }
 ```
 
-`metadata` 还可能在执行期间包含 `current_tool`（`_save_progress` 写入），供前端显示当前正在执行的工具。
+`metadata` 还可能在执行期间包含 `current_tool` 与 `phase`（`_save_progress` 写入），供前端显示当前正在执行的工具与阶段。
 
 ### 6.1 master fork 与 worker continuation
 

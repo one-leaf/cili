@@ -323,7 +323,7 @@ data: {"type": "done"}
 | `tool_use` | 工具调用 | `tool`, `input`, `tool_use_id` |
 | `tool_result` | 工具结果 | `tool`, `content`, `is_error`, `tool_use_id` |
 | `session_start` | 子代理会话启动 | `exec_id`, `task_summary` |
-| `session_complete` | 子代理会话执行完成 | `exec_id` |
+| `session_complete` | 子代理会话执行完成 | `exec_id`, `status`（终态） |
 | `todo_update` | todo_write 工具后的待办列表更新 | `todos` |
 | `retry_clear` | 413 重试清除 | （无） |
 | `error` | 错误 | `content` |
@@ -332,7 +332,8 @@ data: {"type": "done"}
 **事件说明**：
 - `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
 - `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
-- `session_complete`：子代理会话后台执行完成时发送，前端据此更新子代理卡片状态。
+- `session_complete`：子代理会话执行完成时发送，`status` 为终态（`completed/failed/error/timeout/stopped`）。前端只在收到终态时把卡片标为结束。
+- 子代理进度事件（全局流 `session_progress`）：`status` 恒为 `running`，阶段信息在 `phase`（`running/check/handoff/finalizing`）——阶段不得写进 `status`，否则卡片会把「检查中」误显示为「已结束」。
 - `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session.metadata.todos`），前端实时更新任务清单。
 
 ### 3.5 Runner 控制

@@ -103,7 +103,7 @@ class AgentTool(Tool):
             self._publish("session_complete", exec_id=exec_id, status=status, **extra)
         if self.on_session_complete:
             try:
-                self.on_session_complete(exec_id)
+                self.on_session_complete(exec_id, status)
             except Exception as e:
                 logger.warning(f"on_session_complete callback error: {e}")
 
@@ -395,8 +395,8 @@ class AgentTool(Tool):
                 else:
                     run_mgr.complete(
                         exec_id,
-                        status=result.get("status", "completed"),
-                        exit_reason=result.get("exit_reason") or result.get("status", "completed"),
+                        status=self._terminal_status(result),
+                        exit_reason=result.get("exit_reason") or self._terminal_status(result),
                         truncated=bool(result.get("truncated")),
                         summary=result.get("summary") or result.get("message") or "",
                     )
@@ -452,7 +452,7 @@ class AgentTool(Tool):
                         continuation=(entry.get("result") or {}).get("continuation") or {},
                     )
                 else:
-                    status = (entry.get("result") or {}).get("status", "completed")
+                    status = self._terminal_status(entry.get("result") or {})
                     self._notify_session_complete(
                         exec_id, status=status,
                         stats=self._result_stats(entry.get("result")),
@@ -488,11 +488,13 @@ class AgentTool(Tool):
                 "stats": self._result_stats(result).to_dict(), "background": False}
         if result.get("status") == "continuation":
             meta["status"] = "running"
+            meta["phase"] = "handoff"
             meta["continuation"] = True
             meta["epoch"] = result.get("epoch", 1)
             meta["max_epochs"] = result.get("max_epochs", 1)
         else:
-            meta["status"] = result.get("status", "completed")
+            meta["status"] = self._terminal_status(result)
+            meta["phase"] = "done"
         if label:
             meta["label"] = label[:64]
         return ToolResult(result_json, completed=True, meta=meta)
@@ -519,12 +521,22 @@ class AgentTool(Tool):
             return True
         run_mgr.complete(
             exec_id,
-            status=result.get("status", "completed"),
-            exit_reason=result.get("exit_reason") or result.get("status", "completed"),
+            status=self._terminal_status(result),
+            exit_reason=result.get("exit_reason") or self._terminal_status(result),
             truncated=bool(result.get("truncated")),
             summary=result.get("summary") or result.get("message") or "",
         )
         return False
+
+    @staticmethod
+    def _terminal_status(result: dict) -> str:
+        """执行结果 → 终态。
+
+        ``handoff`` 是内部续任信号；走到终止路径说明没有可用的续任（交接文档
+        缺失或续任链不可用），此时任务并未完成，按 ``timeout`` 对外呈现。
+        """
+        status = (result or {}).get("status", "completed")
+        return "timeout" if status == "handoff" else status
 
     def _archive_epoch(self, run_mgr, exec_id: str, epoch: int,
                        result: dict, runner) -> None:
@@ -579,6 +591,10 @@ class AgentTool(Tool):
                 stats_base = current_run.stats if current_run else AgentStats()
                 self._publish("agent_epoch_started", exec_id=exec_id, epoch=epoch,
                               max_epochs=max_epochs, stats=stats_base.to_dict())
+                # 续任 epoch 启动即恢复 running（界面上是「任务续跑中」而非已结束）
+                self._publish("session_progress", exec_id=exec_id, status="running",
+                              phase="handoff", epoch=epoch, current_tool="",
+                              stats=stats_base.to_dict())
                 runner = SessionRunner(
                     config=self.config,
                     role=subagent_type,
@@ -633,7 +649,7 @@ class AgentTool(Tool):
                     epoch += 1
                     continue
 
-                final_status = result.get("status", "completed")
+                final_status = self._terminal_status(result)
                 exit_reason = result.get("exit_reason") or final_status
                 truncated = bool(result.get("truncated"))
                 if cont:

@@ -61,6 +61,12 @@ from core.tools.permission import (
     build_permission_question,
 )
 
+# 状态词表：status 只表达生命周期，终态之外一律 running。
+# 阶段（phase：running/check/handoff/finalizing）只用于展示，绝不写进 status。
+TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "error", "timeout", "stopped",
+})
+
 logger = logging.getLogger(__name__)
 
 
@@ -501,7 +507,7 @@ class SessionRunner(BaseSessionRunner):
                     lambda exec_id, task_summary: self.sink.on_session_start(exec_id, task_summary)
                 )
                 agent_tool.on_session_complete = (
-                    lambda exec_id: self.sink.on_session_complete(exec_id)
+                    lambda exec_id, status: self.sink.on_session_complete(exec_id, status)
                 )
                 # 后台 session 完成后自动恢复 master 循环
                 agent_tool.on_background_complete = self._handle_background_session_complete
@@ -1296,9 +1302,13 @@ class SessionRunner(BaseSessionRunner):
         return self._stats_base + self.epoch_stats(iterations)
 
     def _snapshot(self, iterations: int, status: str, *,
-                  current_tool: str = "", summary: str = "",
-                  final: bool = False) -> dict:
-        """构造完整的执行日志快照；进度与收尾共用同一 schema。"""
+                  phase: str = "", current_tool: str = "", summary: str = "",
+                  exit_reason: str = "", final: bool = False) -> dict:
+        """构造完整的执行日志快照；进度与收尾共用同一 schema。
+
+        ``status`` 只表达生命周期（running + 终态集合）；``phase`` 表达当前阶段
+        （initializing/running/check/handoff/finalizing），仅供展示。
+        """
         metadata = {
             "parent_session_id": "",
             "session_id": self._session_id,
@@ -1306,6 +1316,8 @@ class SessionRunner(BaseSessionRunner):
             "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if final else None,
             "duration_seconds": self._elapsed_seconds(),
             "status": status,
+            "phase": phase,
+            "exit_reason": exit_reason,
             "epoch": self.epoch,
             "max_epochs": self.max_epochs,
             "stats": self.stats(iterations).to_dict(),
@@ -1322,18 +1334,18 @@ class SessionRunner(BaseSessionRunner):
             messages=self.messages,
         )
 
-    def _save_progress(self, iterations: int, status: str = "running",
-                       current_tool: str = "", tool_calls: int | None = None) -> None:
-        """Save execution progress in real-time.
-
-        Writes to {exec_dir}/index.json in the format SessionStore.agent_logs.load_agent_log() expects.
-        This ensures the file always has exec_id and task, even before the final save.
+    def _save_progress(self, iterations: int, *, phase: str = "running",
+                       current_tool: str = "", tool_calls: int | None = None,
+                       force: bool = False) -> None:
+        """保存执行进度（index.json + session_progress 事件）。
 
         Args:
             iterations: LLM 调用轮次数
-            status: 当前状态（running/check/completed 等）
+            phase: 当前阶段（initializing/running/check/handoff/finalizing）；
+                **不要**把阶段传给 status —— status 在整个执行期恒为 running
             current_tool: 正在执行的工具名
             tool_calls: 本批新增的工具调用数（累加到 _tool_call_count）
+            force: 绕过 0.5s 事件节流（检查阶段进出等需要立即反馈的切换）
         """
         # interactive 模式可能没有 _exec_id（只有 autonomous/worker 才有）
         exec_id = getattr(self, '_exec_id', None)
@@ -1344,7 +1356,9 @@ class SessionRunner(BaseSessionRunner):
         if tool_calls is not None and tool_calls > 0:
             self._tool_call_count += tool_calls
 
-        log_data = self._snapshot(iterations, status, current_tool=current_tool)
+        log_data = self._snapshot(
+            iterations, "running", phase=phase, current_tool=current_tool
+        )
 
         try:
             log_file = self.session_dir / "index.json"
@@ -1355,13 +1369,14 @@ class SessionRunner(BaseSessionRunner):
         # 发布进度事件供前端实时更新 header（节流：每 0.5s 最多一次）
         if self._event_publisher:
             now = time.monotonic()
-            if now - self._last_progress_event_time >= 0.5:
+            if force or now - self._last_progress_event_time >= 0.5:
                 self._last_progress_event_time = now
                 try:
                     self._event_publisher(
                         "session_progress",
                         exec_id=exec_id,
-                        status=status,
+                        status="running",
+                        phase=phase,
                         current_tool=current_tool,
                         epoch=self.epoch,
                         stats=self.stats(iterations).to_dict(),
@@ -1370,14 +1385,23 @@ class SessionRunner(BaseSessionRunner):
                     pass
 
     def _finalize(self, status: str, summary: str, iterations: int) -> None:
-        """写入最终执行日志，幂等；同一个 runner 只写一次。"""
+        """写入最终执行日志，幂等；同一个 runner 只写一次。
+
+        ``handoff`` 不是终态：迭代耗尽但 AgentRun 会由续任 epoch 接管，
+        对外仍记 running + phase=handoff（exit_reason 保留 handoff）。
+        """
         if self._finalized:
             return
         self._finalized = True
         if not self.session_dir:
             return
+        if status == "handoff":
+            log_status, phase = "running", "handoff"
+        else:
+            log_status, phase = status, "done"
         log_data = self._snapshot(
-            iterations, status, current_tool="", summary=summary, final=True
+            iterations, log_status, phase=phase, current_tool="", summary=summary,
+            exit_reason=status, final=True,
         )
         try:
             self.session_dir.mkdir(parents=True, exist_ok=True)

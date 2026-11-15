@@ -102,8 +102,9 @@ def make_sse_callbacks(event_queue: queue.Queue[str | None], runner) -> OutputSi
         event = json.dumps({"type": "session_start", "exec_id": exec_id, "task_summary": task_summary, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
-    def on_session_complete(exec_id: str) -> None:
-        event = json.dumps({"type": "session_complete", "exec_id": exec_id, "session_id": sid}, ensure_ascii=False)
+    def on_session_complete(exec_id: str, status: str = "completed") -> None:
+        event = json.dumps({"type": "session_complete", "exec_id": exec_id,
+                            "status": status, "session_id": sid}, ensure_ascii=False)
         event_queue.put(f"data: {event}\n\n")
 
     def on_user_message(payload: dict) -> None:

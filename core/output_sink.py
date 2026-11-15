@@ -36,7 +36,8 @@ class OutputSink:
     # 故此处保留 None 语义，不能像其他字段那样默认 no-op。
     on_tool_output: Callable[[str, str, int, str], None] | None = None
     on_session_start: Callable[[str, str], None] = _noop
-    on_session_complete: Callable[[str], None] = _noop
+    # (exec_id, status)：status 为终态词汇（completed/failed/error/timeout/stopped），接入端据此展示结果
+    on_session_complete: Callable[[str, str], None] = _noop
     # 一次 interactive 回合（run / resume）结束、会话已落盘后调用。
     # 接入端据此重拉会话状态：请求级流断开（刷新页面）后，界面靠这条信号自愈。
     on_turn_complete: Callable[[], None] = _noop

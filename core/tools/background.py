@@ -556,6 +556,9 @@ class BackgroundMixin:
                             f"Failed to forward usage for background Runner {task_id}: {e}"
                         )
                 status = (task.result or {}).get("status", "completed")
+                # handoff 是内部续任信号；无续任走到这里说明任务未完成
+                if status == "handoff":
+                    status = "timeout"
                 defer_completion = False
                 if on_complete is not None:
                     try:
@@ -609,7 +612,7 @@ class BackgroundMixin:
                                     f"Failed to send notification via message_bus: {e}"
                                 )
                         if getattr(self, "on_session_complete", None):
-                            self.on_session_complete(exec_id)
+                            self.on_session_complete(exec_id, status)
                     except Exception as e:
                         import logging
                         logging.getLogger(__name__).warning(

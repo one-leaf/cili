@@ -381,6 +381,7 @@ class Loop:
                     pm.mark_check_complete()
                     summary = response.get_text()
                     runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
+                    runner._save_progress(n, phase="finalizing", force=True)
                     runner._finalize("completed", summary, n)
                     return self._autonomous_result(
                         "completed", summary, n, check_iterations=pm.check_iters
@@ -391,6 +392,9 @@ class Loop:
                 runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                 runner.add_message("user", CHECK_PROMPT, meta={"pinned": True})
                 pm.enter_check(n - 1)
+                # 立即广播阶段切换（不等下一批工具调用，否则前端最长几十秒
+                # 仍显示旧状态；检查阶段曾被误渲染为「任务已结束」）
+                runner._save_progress(n - 1, phase="check", force=True)
                 logger.debug(
                     f"[SessionRunner:{runner.role}] 进入检查阶段 (iter={n - 1}, "
                     f"max_check={pm.max_check_iterations}, exec={runner._exec_id})"
@@ -490,13 +494,13 @@ class Loop:
         """
         runner = self.runner
         policy = self.policy
-        runner._save_progress(n, status=phase, tool_calls=len(tool_calls))
+        runner._save_progress(n, phase=phase, tool_calls=len(tool_calls))
         parallel = bool(getattr(runner.config, "system", None)
                         and getattr(runner.config.system, "parallel_tools", True))
         results = execute_tool_calls(
             runner, tool_calls,
             parallel=parallel,
-            on_execute=lambda names: runner._save_progress(n, status=phase, current_tool=names),
+            on_execute=lambda names: runner._save_progress(n, phase=phase, current_tool=names),
         )
 
         # lite 判定分派（autonomous 无询问通道：allow 落盘并重执行，ask/deny 拒绝）
@@ -516,7 +520,7 @@ class Loop:
                     return True
             else:
                 state["consecutive_failures"] = 0
-        runner._save_progress(n, status=phase)
+        runner._save_progress(n, phase=phase)
         return False
 
     # ── lite 判定分派（设计 §3.1 ②③） ─────────────────────────────
@@ -684,7 +688,7 @@ class Loop:
         parallel = bool(getattr(runner.config, "system", None)
                         and getattr(runner.config.system, "parallel_tools", True))
         # 记录本轮工具调用数（供前端实时显示）
-        runner._save_progress(runner._turn_iterations, status="running", tool_calls=len(tool_calls))
+        runner._save_progress(runner._turn_iterations, phase="running", tool_calls=len(tool_calls))
         results = execute_tool_calls(runner, tool_calls, parallel=parallel)
 
         # lite 判定分派（设计 §3.1 ②③）：META_KEY 占位在此被替换/降级

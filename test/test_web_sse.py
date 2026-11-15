@@ -114,13 +114,18 @@ class TestFanOutToDefaultSink:
         sink.on_tool_call("bash", {}, "t1")
         sink.on_tool_result("bash", "out", False, "t1")
         sink.on_session_start("e1", "task")
-        sink.on_session_complete("e1")
+        sink.on_session_complete("e1", "failed")
 
         frames = _drain(q)
         assert len(frames) == 6
         for frame in frames:
             payload = json.loads(frame[len("data: "):].strip())
             assert payload["session_id"] == "sess-A", payload
+
+        # 终态透传：前端不得再把失败/超时硬编码成「完成」
+        complete = json.loads(frames[-1][len("data: "):].strip())
+        assert complete["type"] == "session_complete"
+        assert complete["status"] == "failed"
 
     def test_retry_clear_frame_carries_session_id(self):
         from core.base_session_runner import RETRY_CLEAR_SENTINEL

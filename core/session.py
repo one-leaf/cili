@@ -54,6 +54,9 @@ INTERNAL_META_FIELDS = frozenset({
     "persist_history", "compaction", "compaction_event",
     "turn_id", "path", "attachment_id", "sha256", "width", "height",
     "reference_only", "image_refs", "image_index", "media_type",
+    # 子代理执行状态（UI 用）：agent 工具结果的 _meta 不应下发到模型
+    "status", "phase", "stats", "background", "label", "epoch",
+    "max_epochs", "continuation",
 })
 # 兼容旧名（模块内引用）
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS

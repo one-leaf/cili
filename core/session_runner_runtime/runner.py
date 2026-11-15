@@ -1401,7 +1401,7 @@ class Runner:
     def _persist_before_retry(self) -> None:
         """413 去图重试前落盘：autonomous 写 exec 进度，interactive 写会话 schema。"""
         if getattr(self.runner, "_mode", "interactive") == "autonomous":
-            self.runner._save_progress(self.runner._turn_iterations, status="running")
+            self.runner._save_progress(self.runner._turn_iterations, phase="running")
         else:
             self.runner.save_messages()
 

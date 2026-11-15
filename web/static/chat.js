@@ -339,6 +339,7 @@ function renderMessages(messages) {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
                         status: block._meta.status || (isCompleted ? 'completed' : 'running'),
+                        phase: block._meta.phase || '',
                         stats: block._meta.stats || null,
                         background: block._meta.background || false,
                     };
@@ -546,6 +547,7 @@ function prependMessages(messages) {
                         exec_id: execId,
                         task_summary: block._meta.task_summary || '',
                         status: block._meta.status || (isCompleted ? 'completed' : 'running'),
+                        phase: block._meta.phase || '',
                         stats: block._meta.stats || null,
                         background: block._meta.background || false,
                     };
@@ -879,7 +881,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         } else if (event.type === 'session_start') {
             renderSessionStart(event.exec_id, event.task_summary);
         } else if (event.type === 'session_complete') {
-            renderSessionComplete(event.exec_id, event.stats);
+            renderSessionComplete(event.exec_id, event.stats, event.status);
         } else if (event.type === 'todo_update') {
             renderTodoList(event.todos);
         } else if (event.type === 'file') {
@@ -925,8 +927,9 @@ function renderSessionStart(execId, taskSummary) {
 }
 
 // 子代理完成时更新卡片状态（POST SSE 不带 stats 时保留已有快照）
-function renderSessionComplete(execId, stats) {
-    AgentCardStore.onComplete({ exec_id: execId, status: 'completed', stats });
+function renderSessionComplete(execId, stats, status) {
+    // status 由后端终态透传；缺失时回落 completed（旧后端兼容）
+    AgentCardStore.onComplete({ exec_id: execId, status: status || 'completed', stats });
 }
 
 // 是否存在待答的 ask_user / 审批卡（推荐输入按钮据此置灰）。

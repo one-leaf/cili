@@ -12,6 +12,8 @@ const AgentCardStore = (() => {
     const EXPANDED_PREFIX = 'cili:agent-expanded:';
     const MAX_BLOCKS = 2000;
     const MAX_BLOCK_CHARS = 2 * 1024 * 1024;
+    // 状态只表达生命周期：终态之外一律视为进行中（阶段由 phase 表达）
+    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'timeout', 'stopped']);
     const STATUS_ICONS = {
         completed: '✅',
         error: '❌',
@@ -19,7 +21,35 @@ const AgentCardStore = (() => {
         timeout: '⏱️',
         running: '🔄',
         stopped: '⏹️',
+        check: '🔍',
+        handoff: '🔄',
+        continuation: '🔄',
+        queued: '⏳',
     };
+    // 进行中状态的标题：按 phase 细化；未知 phase 回落「任务执行中」
+    const PHASE_TITLES = {
+        check: '任务检查中',
+        handoff: '任务续跑中',
+        finalizing: '任务收尾中',
+    };
+
+    function isTerminalStatus(status) {
+        return TERMINAL_STATUSES.has(status);
+    }
+
+    // 旧数据归一化：历史版本把阶段写进 status（check/handoff/continuation）
+    function _normalizeStatus(seed) {
+        let status = seed && seed.status ? seed.status : 'running';
+        let phase = (seed && seed.phase) || '';
+        if (status === 'check') {
+            status = 'running';
+            phase = phase || 'check';
+        } else if (status === 'handoff' || status === 'continuation') {
+            status = 'running';
+            phase = phase || 'handoff';
+        }
+        return { status, phase };
+    }
 
     function _expandedKey() {
         return EXPANDED_PREFIX + (_sessionKey || '');
@@ -89,10 +119,12 @@ const AgentCardStore = (() => {
     }
 
     function _createModel(execId, seed = {}) {
+        const norm = _normalizeStatus(seed);
         const model = {
             execId,
             taskSummary: seed.task_summary || seed.task || '',
-            status: seed.status || 'running',
+            status: norm.status,
+            phase: norm.phase,
             background: !!seed.background,
             expanded: _loadExpanded().has(execId),
             stats: _statsFrom(seed.stats),
@@ -121,16 +153,19 @@ const AgentCardStore = (() => {
         let meta = stats
             ? `${stats.iterations} 轮 · ${stats.message_count} 条消息 · ${stats.tool_call_count} 次工具`
             : '统计中…';
-        if (model.status === 'running' && model.currentTool) {
+        const active = !isTerminalStatus(model.status);
+        if (active && model.currentTool) {
             meta += ` · 正在: ${model.currentTool}`;
         }
         const task = model.taskSummary || '';
-        const title = model.status === 'running' ? '任务执行中' : '任务已结束';
+        const title = active
+            ? (PHASE_TITLES[model.phase] || '任务执行中')
+            : '任务已结束';
         const mode = model.background
             ? '<span class="sa-mode-badge">异步</span>'
             : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
         model.headerEl.innerHTML = `
-            <span class="sa-icon">${STATUS_ICONS[model.status] || '📋'}</span>
+            <span class="sa-icon">${STATUS_ICONS[active ? (model.phase || model.status) : model.status] || (active ? '🔄' : '📋')}</span>
             <span class="sa-title">${title}</span>
             ${mode}
             <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
@@ -420,7 +455,12 @@ const AgentCardStore = (() => {
             model = _createModel(seed.exec_id, seed);
         } else {
             if (seed.task_summary) model.taskSummary = seed.task_summary;
-            if (seed.status) model.status = seed.status;
+            const norm = _normalizeStatus(seed);
+            if ((seed.status || seed.phase)
+                && (isTerminalStatus(norm.status) || !isTerminalStatus(model.status))) {
+                model.status = norm.status;
+                model.phase = norm.phase;
+            }
             if (seed.background !== undefined) model.background = !!seed.background;
             const stats = _statsFrom(seed.stats);
             if (stats) model.stats = stats;
@@ -437,6 +477,7 @@ const AgentCardStore = (() => {
             if (e.task_summary) model.taskSummary = e.task_summary;
             if (e.background !== undefined) model.background = !!e.background;
             model.status = 'running';
+            model.phase = 'running';
         } else {
             model = _createModel(e.exec_id, {
                 task_summary: e.task_summary || '',
@@ -455,7 +496,13 @@ const AgentCardStore = (() => {
         }
         const stats = _statsFrom(e.stats);
         if (stats) model.stats = stats;
-        if (e.status) model.status = e.status;
+        // 终态不可被迟到的进度事件回退；续任由 agent_epoch_started 显式恢复 running
+        if (e.status && (!isTerminalStatus(model.status) || e.status !== 'running')) {
+            model.status = e.status;
+        }
+        if (e.phase !== undefined && !isTerminalStatus(model.status)) {
+            model.phase = e.phase || '';
+        }
         if (e.epoch) model.epoch = e.epoch;
         model.currentTool = e.current_tool || '';
         _renderHeader(model);
@@ -471,16 +518,25 @@ const AgentCardStore = (() => {
         if (stats) model.stats = stats;
         model.epoch = e.epoch || model.epoch;
         model.maxEpochs = e.max_epochs || model.maxEpochs;
+        // 续任 epoch 开始：AgentRun 仍在进行，状态必须回到 running
+        if (isTerminalStatus(model.status)) {
+            model.status = 'running';
+        }
+        model.phase = 'handoff';
         _renderHeader(model);
     }
 
     function onComplete(e) {
         const model = MODELS.get(e.exec_id) || _createModel(e.exec_id, {});
-        const rank = { completed: 0, stopped: 1, error: 2, failed: 2, timeout: 2 };
-        const cur = rank[model.status] !== undefined ? rank[model.status] : 0;
-        const next = rank[e.status] !== undefined ? rank[e.status] : 0;
-        if (next > cur || model.status === 'running') {
-            model.status = e.status || 'completed';
+        // 只有终态才能写 finished：非终态（如 running/handoff）一律忽略
+        if (isTerminalStatus(e.status)) {
+            const rank = { completed: 0, stopped: 1, error: 2, failed: 2, timeout: 2 };
+            const cur = rank[model.status] !== undefined ? rank[model.status] : -1;
+            const next = rank[e.status];
+            if (next > cur || !isTerminalStatus(model.status)) {
+                model.status = e.status;
+                model.phase = 'done';
+            }
         }
         const stats = _statsFrom(e.stats);
         if (stats) model.stats = stats;
@@ -539,7 +595,7 @@ const AgentCardStore = (() => {
 
     function reconcile() {
         for (const [execId, model] of [...MODELS.entries()]) {
-            if (_seen.has(execId) || model.status === 'running') continue;
+            if (_seen.has(execId) || !isTerminalStatus(model.status)) continue;
             if (model.cardEl && model.cardEl.parentNode) model.cardEl.remove();
             MODELS.delete(execId);
         }
@@ -555,17 +611,22 @@ const AgentCardStore = (() => {
             const data = await resp.json();
             (data.executions || []).forEach(log => {
                 const meta = log.metadata || {};
-                if (meta.status !== 'running') return;
+                // 归一化旧数据：status 里可能残留 check/handoff 阶段值
+                const norm = _normalizeStatus({ status: meta.status, phase: meta.phase });
+                if (isTerminalStatus(norm.status)) return;
                 let model = MODELS.get(log.exec_id);
                 if (!model) {
                     model = _createModel(log.exec_id, {
                         task_summary: log.task || log.summary || '',
-                        status: 'running',
+                        status: norm.status,
+                        phase: norm.phase,
                         stats: log.stats || meta.stats,
                         epoch: meta.epoch || 0,
                         max_epochs: meta.max_epochs || 0,
                     });
                 } else {
+                    model.status = norm.status;
+                    if (norm.phase) model.phase = norm.phase;
                     const stats = _statsFrom(log.stats || meta.stats);
                     if (stats) model.stats = stats;
                 }
@@ -576,7 +637,7 @@ const AgentCardStore = (() => {
 
     async function alignAfterReconnect() {
         for (const model of MODELS.values()) {
-            if (model.expanded && model.status === 'running') {
+            if (model.expanded && !isTerminalStatus(model.status)) {
                 await _loadExecution(model);
             }
         }

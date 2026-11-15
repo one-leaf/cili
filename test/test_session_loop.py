@@ -180,6 +180,50 @@ class TestLoopPolicyLiveReads:
         assert worker.loop.policy.max_consecutive_failures == 5
 
 
+# ─── 阶段切换的进度事件 ──────────────────────────────────────────────
+
+class TestPhaseProgressEvents:
+    """检查阶段是 phase，不是 status。
+
+    回归：曾把 phase 写进 _save_progress 的 status，前端按「非 running =
+    任务已结束」渲染，检查阶段（实际仍在干活）被误显示为已完成。
+    """
+
+    def _run_worker(self, responses):
+        worker = _make_agent(role="worker", task="t")
+        with patch.object(worker, "_check_and_compress"),              patch.object(worker, "_call_llm", side_effect=responses),              patch.object(worker, "_save_progress") as progress,              patch.object(worker, "_finalize"):
+            worker.run()
+        return progress
+
+    def test_enter_check_emits_check_phase_immediately(self):
+        """主阶段结束立刻以 force 广播 phase=check，不等下一批工具调用。"""
+        progress = self._run_worker([
+            _make_text_response("主阶段完成"),
+            _make_text_response("检查通过"),
+        ])
+        check_calls = [c for c in progress.call_args_list
+                       if c.kwargs.get("phase") == "check"]
+        assert check_calls, "进入检查阶段必须广播 phase=check"
+        assert check_calls[0].kwargs.get("force") is True
+
+    def test_check_complete_emits_finalizing(self):
+        """检查通过后、写终态前广播 phase=finalizing。"""
+        progress = self._run_worker([
+            _make_text_response("主阶段完成"),
+            _make_text_response("检查通过"),
+        ])
+        phases = [c.kwargs.get("phase") for c in progress.call_args_list]
+        assert "finalizing" in phases
+
+    def test_progress_never_uses_status_kwarg(self):
+        """所有进度调用只用 phase，不得把阶段塞进 status。"""
+        progress = self._run_worker([
+            _make_text_response("主阶段完成"),
+            _make_text_response("检查通过"),
+        ])
+        for call in progress.call_args_list:
+            assert "status" not in call.kwargs, call
+
 # ─── Loop 统一骨架 ────────────────────────────────────────────────────
 
 class TestLoopUnifiedSkeleton:

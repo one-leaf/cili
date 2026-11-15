@@ -441,6 +441,27 @@ class TestSessionRunnerLifecycleBroadcast:
         assert complete["exec_id"] == "exec_123"
         assert complete["session_id"] == "sess-1"
 
+    def test_orphan_handoff_reported_as_timeout(self, agent_tool):
+        """handoff 但没有续任文档：任务未完成，终态按 timeout 广播（不得显示完成）。"""
+        agent_tool.session.session_id = "sess-h"
+
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = {
+            "status": "handoff", "summary": "迭代耗尽", "iterations": 1, "usage": {},
+        }
+        mock_agent.close.return_value = None
+        mock_agent.messages = []
+
+        published = []
+        mock_bus = MagicMock()
+        mock_bus.publish.side_effect = published.append
+
+        with patch("core.session_runner.SessionRunner", return_value=mock_agent),              patch("core.event_bus.get_event_bus", return_value=mock_bus):
+            agent_tool.execute(task="test task")
+
+        complete = next(e for e in published if e["type"] == "session_complete")
+        assert complete["status"] == "timeout"
+
     def test_background_complete_republished(self, agent_tool, monkeypatch):
         """后台模式：线程结束后补发 agent_complete（修复原先缺失的缺陷）"""
         import time
