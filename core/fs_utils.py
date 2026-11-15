@@ -7,6 +7,9 @@
   旧文件要么是新文件，不会是半写内容
 - load_json_or_backup: 加载失败时把损坏文件改名备份（保留现场供恢复），
   再返回默认值，避免下一次保存无痕覆盖原始数据
+
+Windows 上 os.replace 会因目标/临时文件被短暂占用而报 WinError 5（读者没有
+FILE_SHARE_DELETE、杀软扫描等），替换带指数退避重试。
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import logging
 import os
 import secrets
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +73,33 @@ def _atomic_temp_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.tmp.{secrets.token_hex(3)}")
 
 
+# Windows 上 os.replace 会因目标/临时文件被短暂占用而失败：
+# - 读者（前端轮询 exec 日志、会话详情）用 Python open 读取时没有
+#   FILE_SHARE_DELETE，替换目标会得到 WinError 5（拒绝访问）；
+# - 杀毒/索引服务扫描刚写出的 .tmp 也会短暂锁住它。
+# 这类占用是瞬时的，重试几次即可成功；不重试会丢一次进度写入并刷 WARNING。
+_REPLACE_ATTEMPTS = 6
+_REPLACE_BASE_DELAY = 0.02
+_REPLACE_MAX_DELAY = 0.25
+
+
+def _replace_with_retry(tmp_path: Path, path: Path) -> None:
+    """os.replace，遇到 PermissionError（被占用）按指数退避重试。"""
+    delay = _REPLACE_BASE_DELAY
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(tmp_path, path)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_ATTEMPTS:
+                raise
+            logger.debug(
+                f"[fs] replace 被占用，重试 {attempt}/{_REPLACE_ATTEMPTS}: {path}"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, _REPLACE_MAX_DELAY)
+
+
 def atomic_write_text(path: Path | str, content: str, newline: str = "",
                       encoding: str = "utf-8") -> None:
     """原子写入任意文本文件：唯一临时文件 + fsync + os.replace。
@@ -84,7 +115,7 @@ def atomic_write_text(path: Path | str, content: str, newline: str = "",
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
     except BaseException:
         # 失败时清理临时文件，避免残留（.tmp 后缀文件会一直留在目录里）
         tmp_path.unlink(missing_ok=True)
@@ -105,7 +136,7 @@ def atomic_write_json(path: Path | str, data: Any, indent: int = 2) -> None:
             json.dump(data, f, ensure_ascii=False, indent=indent)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
     except BaseException:
         # 失败时清理临时文件（序列化失败会留下带随机后缀的 .tmp）
         tmp_path.unlink(missing_ok=True)

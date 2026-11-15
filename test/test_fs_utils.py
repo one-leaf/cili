@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+
+import core.fs_utils as fs_utils
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
 
 
@@ -36,6 +39,45 @@ class TestAtomicWriteJson:
         path.write_text('{"old": true}', encoding="utf-8")
         atomic_write_json(path, {"new": True})
         assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
+
+
+class TestReplaceRetry:
+    """Windows 上目标/临时文件被短暂占用（WinError 5）时重试替换。"""
+
+    def _flaky_replace(self, monkeypatch, failures: int):
+        real_replace = fs_utils.os.replace
+        calls = {"n": 0}
+        sleeps = []
+
+        def fake_replace(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= failures:
+                raise PermissionError(13, "拒绝访问", str(dst))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(fs_utils.os, "replace", fake_replace)
+        monkeypatch.setattr(fs_utils.time, "sleep", lambda s: sleeps.append(s))
+        return calls, sleeps
+
+    def test_retries_transient_permission_error(self, monkeypatch, tmp_path):
+        calls, sleeps = self._flaky_replace(monkeypatch, failures=2)
+        path = tmp_path / "index.json"
+
+        atomic_write_json(path, {"ok": True})
+
+        assert calls["n"] == 3
+        assert len(sleeps) == 2
+        assert json.loads(path.read_text(encoding="utf-8")) == {"ok": True}
+        assert not list(tmp_path.glob("index.json.tmp*"))
+
+    def test_gives_up_after_attempts_and_cleans_tmp(self, monkeypatch, tmp_path):
+        self._flaky_replace(monkeypatch, failures=99)
+        path = tmp_path / "index.json"
+
+        with pytest.raises(PermissionError):
+            atomic_write_json(path, {"ok": True})
+
+        assert not list(tmp_path.glob("index.json.tmp*"))
 
 
 class TestAtomicWriteText:
