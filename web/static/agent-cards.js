@@ -223,6 +223,8 @@ const AgentCardStore = (() => {
     }
 
     function _appendEpochDivider(model, epoch) {
+        // 第 1 轮固定在面板最开头，标「第 1 轮」没有信息量；只给续任轮次（>1）加分隔
+        if (!epoch || epoch <= 1) return;
         const div = document.createElement('div');
         div.className = 'sa-epoch-divider';
         div.textContent = `第 ${epoch} 轮`;

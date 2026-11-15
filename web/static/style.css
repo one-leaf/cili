@@ -122,12 +122,11 @@ ul, ol {
 [data-theme="dark"] .message.user { background-color: #3f3f46; }
 [data-theme="dark"] .message.user .message-content { color: #f4f4f5; }
 [data-theme="dark"] .message.assistant .message-content { background: var(--assistant-message-bg); }
-[data-theme="dark"] .message.thinking { background-color: #1c1917; border-left-color: #52525b; }
 [data-theme="dark"] .message.tool { background-color: #292524; border-color: #3f3f46; }
 [data-theme="dark"] .message.tool.tool-result { background-color: #1c1917; border-color: #3f3f46; }
 [data-theme="dark"] .message.tool.tool-error { background-color: var(--tool-error-bg); border-color: #5c2d30; }
-[data-theme="dark"] .think-content { background-color: #18181b; border-color: #3f3f46; color: #a1a1aa; }
-[data-theme="dark"] .think-title { color: #71717a; }
+[data-theme="dark"] .think-content { color: #a1a1aa; }
+[data-theme="dark"] .think-title { color: #8fb3d9; }
 
 /* 代码块 */
 [data-theme="dark"] .message .message-content pre {
@@ -1663,15 +1662,27 @@ mjx-container {
     opacity: 1;
 }
 
-/* Thinking block styles */
-.message.thinking {
-    background-color: #f8f9fa;
-    border-left: 3px solid #6c757d;
+/* Thinking block styles：雾蓝底与普通消息卡片区分（浅色/深色各一套配色）。
+   浅色规则必须限定在非深色主题，否则会在深色主题下把卡片底色刷成亮色；
+   深色下 .message-content 自带 --assistant-message-bg，需刷透明保证内外一致。 */
+html:not([data-theme="dark"]) .message.thinking {
+    background-color: #eef3f9;
+    border-color: #d3e0ee;
+}
+
+/* 深色主题：卡片底色单独设成暗蓝灰，同时把内容区刷透明，避免内外两层颜色 */
+[data-theme="dark"] .message.thinking {
+    background-color: #1e2733;
+    border-color: #33465c;
+}
+
+[data-theme="dark"] .message.thinking .message-content {
+    background: transparent;
 }
 
 .think-title {
     font-size: 12px;
-    color: #6c757d;
+    color: #4a6fa5;
     margin-bottom: 8px;
     font-weight: 600;
     font-style: italic;
@@ -1681,10 +1692,6 @@ mjx-container {
     font-size: 13px;
     color: #5a6268;
     line-height: 1.5;
-    padding: 8px 12px;
-    background-color: #ffffff;
-    border-radius: 4px;
-    border: 1px solid #e9ecef;
 }
 
 .think-content p {
@@ -2619,6 +2626,16 @@ mjx-container {
     border-left-color: #71717a;
 }
 
+.sa-msg.thinking {
+    background-color: #f8f9fa;
+    border-left: 3px solid #6c757d;
+}
+
+[data-theme="dark"] .sa-msg.thinking {
+    background-color: #1c1917;
+    border-left-color: #52525b;
+}
+
 .sa-msg.tool-use {
     background-color: #fff8e1;
     border-left: 3px solid #ffc107;
@@ -2637,6 +2654,16 @@ mjx-container {
 [data-theme="dark"] .sa-msg.tool-result {
     background-color: #1c1917;
     border-left-color: #4ade80;
+}
+
+/* 错误工具结果：沿用主聊天区的错误配色，不再显示成成功绿 */
+.sa-msg.tool-result.tool-error {
+    background-color: var(--tool-error-bg);
+    border-left-color: #dc3545;
+}
+
+[data-theme="dark"] .sa-msg.tool-result.tool-error {
+    border-left-color: #f87171;
 }
 
 .sa-msg pre {
