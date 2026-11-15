@@ -405,7 +405,9 @@ class Runner:
         # 空输出兜底：任何工具返回空内容时（竞态、空结果、无输出），统一补非空
         # 哨兵，避免实时流显示空白、会话重载被 hydration 误标为"[工具输出文件路径缺失]"
         if not result.output:
-            from core.llm.types import TextBlock
+            # 注意：不要在此处局部 import TextBlock —— 局部导入会把它变成整个
+            # 函数的局部名，模块级导入被遮蔽；result.output 非空时该分支不执行，
+            # 后面的限量/去重分支再引用 TextBlock 就抛 UnboundLocalError。
             result.blocks.append(TextBlock(text="(no output)"))
 
         elapsed = time.perf_counter() - start_time
@@ -533,8 +535,9 @@ class Runner:
                     image_index_map[digest] = tool_use_id
 
         if notes:
-            # 多模态路径发送 blocks（含 TextBlock）；纯文本路径发送 output，两处都补
-            result.output = "\n".join([result.output, *notes]) if result.output else "\n".join(notes)
+            # 多模态路径发送 blocks（含 TextBlock）；纯文本路径发送 output，两处都补。
+            # output 是只读 property（由 blocks 推导），只能追加块，不能赋值。
+            result.blocks.append(TextBlock(text="\n".join(notes)))
 
         is_multimodal = any(isinstance(block, ImageBlock) for block in result.blocks)
 

@@ -13,7 +13,7 @@ from PIL import Image
 
 from core.config import Config, ImageConfig
 from core.image_pipeline import normalize_image_block, write_tool_image_sidecar
-from core.llm.types import ImageBlock
+from core.llm.types import ImageBlock, TextBlock
 from core.session import SessionStore
 from core.session_runner_runtime.runner import Runner
 from core.tools.read import ReadTool
@@ -106,6 +106,54 @@ def test_resolve_tool_results_filters_historical_images(tmp_path):
     assert [b["type"] for b in current_subs] == ["text", "image"]
     assert [b["type"] for b in old_subs] == ["text", "text"]
     assert "sessions/sess/attachments/t2-0.png" in old_subs[1]["text"]
+
+
+def test_tool_image_limit_replaces_excess_without_crashing(tmp_path):
+    """工具返回多图且 output 非空时，超限图片转引用不能崩。
+
+    回归：_execute_tool_impl 里一度局部 import TextBlock（遮蔽模块级导入），
+    output 非空时该分支不执行，后面的限量分支引用 TextBlock 抛
+    UnboundLocalError；紧随其后的 notes 又赋值只读 property result.output。
+    """
+    from core.tools.base import Tool, ToolResult
+
+    def _png(color) -> str:
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+
+    class _DummyImageTool(Tool):
+        name = "dummy_img"
+        description = "returns two images"
+        parameters = {"type": "object", "properties": {}}
+
+        def execute(self, **kwargs):
+            return ToolResult(blocks=[
+                TextBlock(text="two shots"),
+                ImageBlock(data=_png((255, 0, 0)), mime_type="image/png"),
+                ImageBlock(data=_png((0, 0, 255)), mime_type="image/png"),
+            ])
+
+    session_dir = tmp_path / "sessions" / "sess"
+    session_dir.mkdir(parents=True)
+    sink = SimpleNamespace(on_tool_call=lambda *a: None, on_tool_result=lambda *a: None)
+    fake = SimpleNamespace(
+        tools=[_DummyImageTool()],
+        session_dir=session_dir,
+        cwd=str(tmp_path),
+        sink=sink,
+        config=Config(images=ImageConfig(max_images_per_tool_result=1)),
+        _retired_image_carriers=set(),
+    )
+
+    out = Runner(fake).execute_tool("dummy_img", {}, "t1")
+
+    refs = (out.get("_meta") or {}).get("image_refs") or []
+    assert len(refs) == 1  # 只内联 1 张，其余转引用
+    payload = json.loads((session_dir / out["_meta"]["output_path"]).read_text(encoding="utf-8"))
+    texts = [b.get("text", "") for b in payload["blocks"] if b.get("type") == "text"]
+    assert any("image omitted" in t for t in texts)
+    assert sum(1 for b in payload["blocks"] if b.get("type") == "image") == 1
 
 
 def test_write_tool_image_sidecar(tmp_path):
