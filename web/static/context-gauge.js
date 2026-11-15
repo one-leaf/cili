@@ -5,6 +5,12 @@
 //
 // 依赖 app.js 的全局：currentWorkspace / currentSession / sessionRunning / isSending /
 // openAnchoredMenu；utils.js 的 escapeHtml / showToast。
+//
+// 整文件包在 IIFE 里：文件内的 open()/close() 若是全局函数声明，会覆盖同名的
+// window.open / window.close（经典 script 的顶层函数即 window 属性），
+// 导致其它脚本里的 window.open（分享会话等）被顶掉。
+
+(function () {
 
 const CONTEXT_POLL_MS = 4000;
 const CONTEXT_LEVEL_WARN = 0.60;   // 注意
@@ -322,3 +328,5 @@ function init() {
 }
 
 window.ContextGauge = { init, refresh, close, isOpen: _isOpen };
+
+})();
