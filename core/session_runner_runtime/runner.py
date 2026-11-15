@@ -304,6 +304,21 @@ class Runner:
                 "_meta": {"tool_name": name},
             }
 
+        # 参数 JSON 解析失败（响应在参数中途被截断 / 模型输出非法 JSON）：
+        # 直接报「缺必填参数」会让模型以为是自己漏了字段而原样重发，
+        # 给出可行动的提示（拆分调用）才能让它真正绕开截断。
+        if isinstance(input_data, dict) and input_data.get("_parse_error"):
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    f"Error: '{name}' 的参数不是合法 JSON，响应可能在生成参数途中被截断。"
+                    "请把这次调用拆小后重试（例如分多次写入文件，或先写骨架再编辑补齐）。"
+                ),
+                "is_error": True,
+                "_meta": {"tool_name": name},
+            }
+
         logger.debug(f"[工具调用] {name}")
 
         if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
