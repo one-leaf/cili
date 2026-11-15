@@ -13,7 +13,10 @@ class WriteTool(Tool):
     name = "write"
     description = (
         "Create a new file or overwrite an existing file with the given content. "
-        "Automatically creates parent directories if they don't exist."
+        "Automatically creates parent directories if they don't exist. "
+        "Keep each call's content moderate in size (roughly under 8000 characters). "
+        "For longer content, write the first part, then append the rest with the "
+        "edit tool — a single oversized call risks being cut off mid-generation."
     )
     parameters = {
         "type": "object",

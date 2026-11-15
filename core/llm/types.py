@@ -135,7 +135,9 @@ class ToolCallBlock:
         try:
             input_data = json.loads(self.arguments) if self.arguments else {}
         except json.JSONDecodeError:
-            input_data = {"_raw": self.arguments}
+            # 保留 _parse_error 标记：会话落盘—重载—再执行的链路（审批补卡、
+            # 停止后重试等）若丢了标记，截断调用会被误报成「缺少必填参数」。
+            input_data = {"_raw": self.arguments, "_parse_error": True}
         result = {
             "type": "tool_use",
             "id": self.id,
@@ -183,9 +185,14 @@ class ToolCallBlock:
         if not self.arguments:
             return {}
         try:
-            return json.loads(self.arguments)
+            data = json.loads(self.arguments)
         except json.JSONDecodeError:
             return {"_raw": self.arguments, "_parse_error": True}
+        # 兼容旧会话里已落盘的截断参数（当时 to_dict 只存了 {"_raw": ...}，
+        # 没有 _parse_error 标记）：仅 _raw 一个键的 dict 视为解析失败包装。
+        if isinstance(data, dict) and set(data) == {"_raw"} and isinstance(data["_raw"], str):
+            data["_parse_error"] = True
+        return data
 
 
 @dataclass

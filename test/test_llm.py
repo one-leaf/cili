@@ -20,6 +20,7 @@ from core.llm import (
 )
 from core.llm.adapter import join_api_url
 from core.llm.transport import HttpTransport
+from core.llm.types import block_from_dict
 
 # ========== LLMResponse ==========
 
@@ -775,6 +776,27 @@ class TestOpenAIAdapter:
         args = blocks[0].parse_arguments()
         assert args.get("_raw") == "invalid json{"
         assert args.get("_parse_error") is True
+
+    def test_parse_arguments_legacy_raw_wrapper_marked(self):
+        """旧会话落盘的 {"_raw": ...} 包装（无标记）→ parse_arguments 补 _parse_error。"""
+        block = ToolCallBlock(
+            id="call_1", name="write",
+            arguments='{"_raw": "{\\"file_path\\": \\"a.md\\", \\"content\\": \\"abc"}',
+        )
+        args = block.parse_arguments()
+        assert args["_parse_error"] is True
+        assert args["_raw"].startswith('{"file_path"')
+
+    def test_to_dict_preserves_parse_error(self):
+        """落盘序列化保留 _parse_error，重载后再执行不会被误报成缺必填参数。"""
+        block = ToolCallBlock(
+            id="call_1", name="write",
+            arguments='{"file_path": "a.md", "content": "abc',
+        )
+        serialized = block.to_dict()
+        assert serialized["input"]["_parse_error"] is True
+        reloaded = block_from_dict(serialized)
+        assert reloaded.parse_arguments()["_parse_error"] is True
 
     def test_parse_response_finish_reason_mapping(self, adapter):
         for openai_reason, expected in [

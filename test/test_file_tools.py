@@ -254,3 +254,41 @@ class TestEditEncodingDetection:
         assert "UTF-8" in result.output and "GB18030" in result.output
         # 原文件不得被改写
         assert path.read_bytes() == b"\xff\xfe\xff\xfe"
+
+
+class TestTruncatedToolArgs:
+    """参数 JSON 被截断（_parse_error）的工具调用一律不执行。
+
+    回归：模型一次 write 超长内容在生成途中被截断时，旧行为先走「缺少必填参数」
+    再让模型原样重发；现在的约定是显式报「被截断、未执行」，提示拆小重试，
+    绝不把截断的半截内容写进文件（那样文件内容不符合预期）。
+    """
+
+    def test_write_truncated_args_not_executed(self, runner, test_workspace):
+        result = runner._execute_tool(
+            "write",
+            {"_raw": '{"file_path": "half.md", "content": "# 标题', "_parse_error": True},
+            "toolu_truncated",
+        )
+
+        assert result["is_error"]
+        assert "截断" in result["content"]
+        assert "未执行" in result["content"]
+        assert not os.path.exists(os.path.join(test_workspace, "half.md"))
+
+    def test_legacy_raw_wrapper_reports_truncation_not_missing_params(
+        self, runner, test_workspace
+    ):
+        """旧会话落盘的 {"_raw": ...}（无标记）也要报截断，而不是缺必填参数。"""
+        from core.llm.types import ToolCallBlock
+
+        block = ToolCallBlock(
+            id="toolu_legacy", name="write",
+            arguments='{"_raw": "{\\"file_path\\": \\"half.md\\"}"}',
+        )
+        result = runner._execute_tool(block.name, block.parse_arguments(), block.id)
+
+        assert result["is_error"]
+        assert "缺少必填参数" not in result["content"]
+        assert "截断" in result["content"]
+        assert not os.path.exists(os.path.join(test_workspace, "half.md"))

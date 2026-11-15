@@ -307,13 +307,17 @@ class Runner:
         # 参数 JSON 解析失败（响应在参数中途被截断 / 模型输出非法 JSON）：
         # 直接报「缺必填参数」会让模型以为是自己漏了字段而原样重发，
         # 给出可行动的提示（拆分调用）才能让它真正绕开截断。
+        # 截断内容一律不执行：半截的 write 会写出不符合预期的文件，
+        # 半截的 bash/edit 更危险；宁可这一步失败，让模型拆小重发。
         if isinstance(input_data, dict) and input_data.get("_parse_error"):
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
                 "content": (
-                    f"Error: '{name}' 的参数不是合法 JSON，响应可能在生成参数途中被截断。"
-                    "请把这次调用拆小后重试（例如分多次写入文件，或先写骨架再编辑补齐）。"
+                    f"Error: '{name}' 的参数不是合法 JSON，响应在生成参数途中被截断，"
+                    "本次调用未执行（文件未被写入或修改）。\n"
+                    "不要把截断内容当作完整内容重发；请把内容拆小后重试："
+                    "先写入开头部分，再用 edit 分批补齐剩余内容。"
                 ),
                 "is_error": True,
                 "_meta": {"tool_name": name},
