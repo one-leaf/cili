@@ -51,10 +51,10 @@ def test_compaction_summary_persisted_to_jsonl(tmp_path):
     commit = next(c for c in read_view(sm.session_dir)["commits"] if c.get("seq") == 1)
     assert "summary" not in commit["msg_meta"]
     assert "compaction" not in commit["msg_meta"]
-    # 时间线可以读到
+    # 时间线可以读到（事件按时间顺序，压缩节点在用户消息之后）
     data = build_timeline(sm.session_dir)
-    assert data["events"][0]["type"] == "compaction"
-    assert data["events"][0]["meta"]["before_tokens"] == 1000
+    event = next(e for e in data["events"] if e["type"] == "compaction")
+    assert event["meta"]["before_tokens"] == 1000
 
 
 def test_compaction_event_row_is_ui_only(tmp_path):

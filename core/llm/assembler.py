@@ -143,6 +143,10 @@ class BlockAssembler:
         """Return all ToolCallBlocks."""
         return [b for b in self._blocks if isinstance(b, ToolCallBlock)]
 
+    def get_text(self) -> str:
+        """Return text from all TextBlocks concatenated in block order."""
+        return "".join(b.text for b in self._blocks if isinstance(b, TextBlock))
+
     def reset(self) -> None:
         """Reset assembler state for reuse."""
         self._blocks.clear()

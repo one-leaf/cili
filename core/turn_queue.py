@@ -131,10 +131,23 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
     if has_images or has_mentions or has_attachments:
         blocks: list[dict] = []
         for it in items:
-            blocks.extend(_attachment_blocks(it.user_input))
-            blocks.extend(_mention_blocks(it.user_input))
-            blocks.extend(_image_blocks(it.user_input))
-            if it.content:
+            ui = it.user_input
+            content_added = False
+            if isinstance(ui, list):
+                # 保持单条输入内部的块顺序（附件/提及/图片/正文的相对顺序不变）；
+                # 只合并不属于当前条目的其他块的类别。
+                for block in ui:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype not in ("image", "text"):
+                        continue
+                    if btype == "text" and not str(block.get("text") or "").strip():
+                        continue  # 纯图片项不产生空文本块
+                    blocks.append(block)
+                    if btype == "text" and block.get("text") == it.content:
+                        content_added = True
+            if it.content and not content_added:
                 blocks.append({"type": "text", "text": it.content, "_valid": True})
         user_input: Any = blocks if blocks else "\n\n".join(texts)
     else:

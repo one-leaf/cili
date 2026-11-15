@@ -30,6 +30,8 @@ def _normalize_text(text: str) -> str:
     text = str(text or "")
     for marker in _UNTRUSTED_MARKERS:
         text = text.replace(marker, "")
+        # 兼容标记前后没有换行的旧数据/手工构造文本
+        text = text.replace(marker.strip("\n"), "")
     return re.sub(r"\s+", " ", text).strip()
 
 

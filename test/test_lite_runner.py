@@ -78,7 +78,12 @@ class TestLiteConstruction:
         ]
 
     def test_tools_instantiated(self):
-        tools = [MagicMock() for _ in range(4)]
+        tools = []
+        for i in range(4):
+            tool = MagicMock()
+            tool.name = f"tool{i}"
+            tool.to_schema.return_value = {"name": f"tool{i}"}
+            tools.append(tool)
         runner = _make_runner(task="t", tools=tools)
         assert len(runner.tools) == 4
 

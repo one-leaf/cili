@@ -1385,7 +1385,7 @@ class TestLLMClientDGX:
     def dgx_client(self, request, dgx_available):
         """创建 DGX LLMClient，参数化为两种协议。"""
         config = make_dgx_config(request.param)
-        client = create_llm_client(config.model)
+        client = create_llm_client(config.model_for_role("master"))
         yield client, request.param
         client.close()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,6 +59,7 @@ def test_render_minimal_courseware(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, str(SCRIPTS / "render_html.py"), str(plan), str(out)],
         cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
     html = out.read_text(encoding="utf-8")
@@ -77,6 +79,7 @@ def test_render_rejects_unknown_layout(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, str(SCRIPTS / "render_html.py"), str(plan_path), str(tmp_path / "bad.html")],
         cwd=tmp_path, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == 2
     assert "layout" in result.stdout
