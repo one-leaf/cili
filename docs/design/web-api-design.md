@@ -515,7 +515,7 @@ GET /api/config
         "backend": "litellm",
         "base_url": "https://api.anthropic.com",
         "headers": {},
-        "models": { "main": { "name": "claude-sonnet-4-6", "max_output_tokens": 8192, "max_context_tokens": 128000, "model_type": "reasoning", "input": ["text", "image"], "reasoning": "default", "cache_control": "auto" } }
+        "models": { "main": { "name": "claude-sonnet-4-6", "max_output_tokens": 8192, "max_context_tokens": 128000, "model_type": "reasoning", "input": ["text", "image"], "reasoning": "medium", "cache_control": "auto" } }
       }
     },
     "agents": { "master": { "model": "bg/main" }, "worker": { "model": "bg/main" } },

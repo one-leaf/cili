@@ -21,8 +21,8 @@ from core.role_config import load_role
 from core.session_runner import SessionRunner
 
 ROLE_DEFAULTS = {
-    "master": 16384,
-    "worker": 16384,
+    "master": 32768,
+    "worker": 32768,
     "lite": 8192,
 }
 
@@ -77,4 +77,4 @@ class TestAgentAppliesCap:
     def test_role_max_tokens_stored(self):
         """角色 max_tokens 保存在 role_cfg 中。"""
         runner, _ = self._make_runner("master", model_max_tokens=36000)
-        assert runner.role_cfg.max_tokens == 16384
+        assert runner.role_cfg.max_tokens == 32768

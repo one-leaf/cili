@@ -208,7 +208,7 @@ class TestConfig:
         master = result.model_for_role("master")
         assert master.name == "ac/old-model"
         assert master.input == ["text", "image"]
-        assert master.reasoning == "default"
+        assert master.reasoning == "medium"
 
     def test_migrate_idempotent(self, tmp_path, monkeypatch):
         """新格式二次加载不再触发迁移（.bak 不存在）"""

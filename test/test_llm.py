@@ -314,7 +314,7 @@ class TestAnthropicAdapter:
         )
         return AnthropicAdapter(config).serialize(
             [Message(role="user", content="hi")],
-            system="", tools=None, model="claude-sonnet-4-6", max_tokens=100,
+            system="", tools=None, model="claude-sonnet-4-6", max_tokens=32768,
         )
 
     def test_thinking_disabled_for_off(self):
@@ -333,6 +333,22 @@ class TestAnthropicAdapter:
         assert self._body_with_reasoning("high")["thinking"] == {
             "type": "enabled", "budget_tokens": 10000,
         }
+
+    def test_thinking_skipped_for_chat_model(self):
+        """model_type='chat' 不发送 thinking，即使配置了 medium 档位。"""
+        config = ModelConfig(
+            name="chat-model",
+            api_key="key",
+            base_url="https://api.anthropic.com",
+            interface_type="anthropic",
+            reasoning="medium",
+            model_type="chat",
+        )
+        body = AnthropicAdapter(config).serialize(
+            [Message(role="user", content="hi")],
+            system="", tools=None, model="chat-model", max_tokens=100,
+        )
+        assert "thinking" not in body
 
     def test_translate_stream_signature_delta(self, adapter):
         """Anthropic 流式 signature_delta 必须转成 StreamChunk，供 thinking 重放。"""
@@ -500,6 +516,26 @@ class TestOpenAIAdapter:
 
     def test_api_url(self, adapter):
         assert adapter.api_url == "https://api.openai.com/v1/chat/completions"
+
+    def _body(self, reasoning: str, model_type: str = "reasoning") -> dict:
+        config = ModelConfig(
+            name="gpt-4o",
+            api_key="sk-test-key",
+            base_url="https://api.openai.com",
+            interface_type="openai",
+            reasoning=reasoning,
+            model_type=model_type,
+        )
+        return OpenAIAdapter(config).serialize(
+            [Message(role="user", content="hi")],
+            system="", tools=None, model="gpt-4o", max_tokens=100,
+        )
+
+    def test_reasoning_effort_passed_for_reasoning_model(self):
+        assert self._body("medium")["reasoning_effort"] == "medium"
+
+    def test_reasoning_effort_skipped_for_chat_model(self):
+        assert "reasoning_effort" not in self._body("medium", model_type="chat")
 
     def test_parse_modelscope_null_fields(self, adapter):
         """ModelScope 响应带显式 null 字段（tool_calls/function_calls、空 content），parse 不得崩。"""

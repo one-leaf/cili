@@ -113,7 +113,10 @@ class AnthropicAdapter(Adapter):
           但缺思考块（或思考文本为空）的轮次补非空占位 thinking 块——空文本
           同样被判定为未回传（实测 400 "must be passed back"）。
         """
-        drop_thinking = self.config.reasoning == "off"
+        drop_thinking = (
+            self.config.reasoning == "off"
+            or getattr(self.config, "model_type", "reasoning") == "chat"
+        )
         fill_missing = not drop_thinking and self._accepts_unsigned_thinking()
         anthropic_messages = []
         for msg in messages:
@@ -210,6 +213,9 @@ class AnthropicAdapter(Adapter):
           从 ~27s 降到 ~6s）
         - ``low``/``medium``/``high``：``thinking.budget_tokens`` 1024/4096/10000
         """
+        # chat 模型（非推理模型）不携带任何思考参数
+        if getattr(self.config, "model_type", "reasoning") == "chat":
+            return
         effort = self.config.reasoning
         if effort == "off":
             body["thinking"] = {"type": "disabled"}
@@ -221,6 +227,13 @@ class AnthropicAdapter(Adapter):
                 "high": 10000,
             }
             budget_tokens = budget_map[effort]
+            # API 约束 max_tokens > budget_tokens：max_output_tokens 配得很小时
+            # 按请求上限收窄，而不是发一个必然 400 的预算。
+            max_out = body.get("max_tokens")
+            if isinstance(max_out, int) and max_out > 0:
+                budget_tokens = min(budget_tokens, max_out - 1)
+            if budget_tokens <= 0:
+                return
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
         # default / 其他值：不发送 thinking 参数，也不发送 temperature（已移除）
 

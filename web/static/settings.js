@@ -1093,8 +1093,9 @@ function renderReasoningOptions(interfaceType, selected) {
     const opts = interfaceType === 'openai'
         ? [['default', '缺省（不传）'], ['off', '关闭 (none)'], ['minimal', '最小 (minimal)'], ['low', '低'], ['medium', '中'], ['high', '高']]
         : [['default', '缺省（不传）'], ['off', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高']];
+    // 默认档位 medium：新建模型行/旧数据缺省字段时选中「中」
     return opts.map(function (o) {
-        return '<option value="' + o[0] + '"' + (o[0] === (selected || 'default') ? ' selected' : '') + '>' + o[1] + '</option>';
+        return '<option value="' + o[0] + '"' + (o[0] === (selected || 'medium') ? ' selected' : '') + '>' + o[1] + '</option>';
     }).join('');
 }
 
@@ -1130,7 +1131,7 @@ function renderModelRow(key, m, iface) {
         + '<div class="field"><label class="field-label">模型 ID</label>'
         + '<input type="text" class="p-model-name" data-model-key="' + key + '" value="' + String(m.name || '').replace(/"/g, '&quot;') + '" placeholder="API 模型 ID（留空=用别名）"></div>'
         + '<div class="field"><label class="field-label">最大输出</label>'
-        + '<input type="number" class="p-model-max-output" data-model-key="' + key + '" value="' + (m.max_output_tokens || 8192) + '" title="max_output_tokens：单次响应最大输出 token"></div>'
+        + '<input type="number" class="p-model-max-output" data-model-key="' + key + '" value="' + (m.max_output_tokens || 32768) + '" title="max_output_tokens：单次响应最大输出 token"></div>'
         + '<div class="field"><label class="field-label">上下文预算</label>'
         + '<input type="number" class="p-model-max-context" data-model-key="' + key + '" value="' + (m.max_context_tokens || 200000) + '" title="max_context_tokens：上下文工作预算（达到 80% 触发压缩）"></div>'
         + '<button type="button" class="btn-outline p-model-test" data-model-key="' + key + '">▶ 测试</button>'
@@ -1141,7 +1142,9 @@ function renderModelRow(key, m, iface) {
         + '<option value="reasoning"' + ((m.model_type || 'reasoning') === 'reasoning' ? ' selected' : '') + '>reasoning</option>'
         + '<option value="chat"' + (m.model_type === 'chat' ? ' selected' : '') + '>chat</option>'
         + '</select></label>'
-        + '<label>思考: <select class="p-model-reasoning" data-model-key="' + key + '">' + renderReasoningOptions(iface || 'anthropic', m.reasoning) + '</select></label>'
+        + '<label>思考: <select class="p-model-reasoning" data-model-key="' + key + '"'
+        + ((m.model_type === 'chat') ? ' disabled title="chat 模型不发送思考参数"' : '') + '>'
+        + renderReasoningOptions(iface || 'anthropic', m.reasoning) + '</select></label>'
         + '<span class="modality-group">输入模态: ' + renderModalities(m.input) + '</span>'
         + '</div></div>';
 }
@@ -1288,7 +1291,7 @@ function collectProviders() {
             const spec = {};
             const name = row.querySelector('.p-model-name').value.trim();
             if (name) spec.name = name;
-            spec.max_output_tokens = parseInt(row.querySelector('.p-model-max-output').value) || 8192;
+            spec.max_output_tokens = parseInt(row.querySelector('.p-model-max-output').value) || 32768;
             spec.max_context_tokens = parseInt(row.querySelector('.p-model-max-context').value) || 200000;
             spec.model_type = row.querySelector('.p-model-type').value;
             spec.reasoning = row.querySelector('.p-model-reasoning').value;
@@ -1372,6 +1375,17 @@ function collectProviders() {
             const current = sel.value;
             sel.innerHTML = renderReasoningOptions(iface, current);
         });
+    });
+
+    // model_type 变化 → chat 模型禁用思考档位（请求不携带任何思考参数）
+    list.addEventListener('change', function (e) {
+        if (!e.target.classList.contains('p-model-type')) return;
+        const row = e.target.closest('.p-model-row');
+        const sel = row && row.querySelector('.p-model-reasoning');
+        if (!sel) return;
+        const isChat = e.target.value === 'chat';
+        sel.disabled = isChat;
+        sel.title = isChat ? 'chat 模型不发送思考参数' : '';
     });
 })();
 

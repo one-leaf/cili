@@ -433,8 +433,12 @@ class OpenAIAdapter(Adapter):
 
         # Reasoning effort for reasoning models（openai 取值域，§models-provider-design）
         # default：不发送，由 API/网关默认行为决定；off → "none"；其余直传
+        # chat 模型（非推理模型）不携带 reasoning_effort
         reasoning = self.config.reasoning
-        if reasoning and reasoning != "default":
+        if (
+            reasoning and reasoning != "default"
+            and getattr(self.config, "model_type", "reasoning") != "chat"
+        ):
             body["reasoning_effort"] = "none" if reasoning == "off" else reasoning
 
         if tools:

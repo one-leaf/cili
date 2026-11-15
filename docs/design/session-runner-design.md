@@ -265,7 +265,7 @@ runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（
 | **budget_notice** | ✗ | ✓ | ✗ |
 | **progress_persistence** | ✗ | ✓ | ✓ |
 | **max_iterations** | null → system（200） | null → system（200） | 200 |
-| **max_tokens** | 16384 | 16384 | 8192 |
+| **max_tokens** | 32768 | 32768 | 8192 |
 | **system_prompt.blocks** | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + text(security) + dynamic_boundary + context |
 | **user_layers** | claude_md | task + runtime | task |
 
@@ -531,7 +531,7 @@ Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的�
 
 - **流式模式**：thinking 内容通过 `on_thinking` 回调实时推送到前端
 - **消息存储**：thinking blocks 保留在消息历史中，Anthropic API 要求后续请求包含之前的 thinking blocks
-- **启用条件**：`reasoning` 档位为 `low`/`medium`/`high` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000；`default`/`off` 不发送 thinking 参数）
+- **启用条件**：`reasoning` 档位为 `low`/`medium`/`high` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000；`default`/`off` 不发送 thinking 参数；模型配置的默认档位为 `medium`）
 
 ### 7.2 LLM 配置
 

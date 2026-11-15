@@ -135,7 +135,7 @@ JSON 对象。值支持 `{session_id}` 占位符（请求时展开为当前会�
 
 #### max_output_tokens — 最大输出
 
-单次响应最大输出 token，默认 **8192**。
+单次响应最大输出 token，默认 **32768**。
 
 #### max_context_tokens — 上下文预算
 
@@ -156,7 +156,7 @@ JSON 对象。值支持 `{session_id}` 占位符（请求时展开为当前会�
 
 #### reasoning — 思考档位
 
-仅 `model_type="reasoning"` 时有效，默认 `default`（不发送思考参数，由 API 默认行为决定）。取值域按协议：
+仅 `model_type="reasoning"` 时有效，默认 **`medium`**（Anthropic 协议 → `budget_tokens=4096`；OpenAI 协议 → `reasoning_effort="medium"`）。`default` 表示不发送思考参数、由 API 默认行为决定。取值域按协议：
 
 | 协议 | 取值 | 发送行为 |
 |------|------|---------|
