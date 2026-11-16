@@ -466,3 +466,45 @@ class TestModelContextDefaults:
         from core.config import _convert_legacy_model_spec
 
         assert _convert_legacy_model_spec({})["max_context_tokens"] == 200000
+
+
+class TestProtocolDefaults:
+    """协议感知的缺省 Base URL 与 api_path 读写。"""
+
+    def test_default_base_url_by_protocol(self):
+        from core.config import default_base_url
+
+        assert default_base_url("anthropic") == "https://api.anthropic.com"
+        assert default_base_url("openai") == "https://api.openai.com/v1"
+        assert default_base_url("openai-compatible") == "https://api.openai.com/v1"
+        assert default_base_url("openai-responses") == "https://api.openai.com/v1"
+        assert default_base_url("") == "https://api.anthropic.com"
+
+    def test_provider_config_missing_base_url_is_protocol_aware(self):
+        from core.config import ProviderConfig
+
+        assert ProviderConfig.from_dict({"interface_type": "openai"}).base_url == "https://api.openai.com/v1"
+        assert ProviderConfig.from_dict({"interface_type": "openai-responses"}).base_url == "https://api.openai.com/v1"
+        assert ProviderConfig.from_dict({"interface_type": "anthropic"}).base_url == "https://api.anthropic.com"
+
+    def test_api_path_roundtrip(self):
+        from core.config import ModelConfig, ProviderConfig
+
+        provider = ProviderConfig.from_dict({"base_url": "https://x.test", "api_path": "/responses"})
+        assert provider.api_path == "/responses"
+        assert provider.to_dict()["api_path"] == "/responses"
+
+        model = ModelConfig.from_dict({"name": "m", "api_path": "/responses"})
+        assert model.api_path == "/responses"
+        assert model.to_dict()["api_path"] == "/responses"
+
+        assert ProviderConfig.from_dict({}).api_path == ""
+        assert ModelConfig.from_dict({"name": "m"}).api_path == ""
+
+    def test_api_path_must_start_with_slash(self):
+        from core.config import ModelConfig, ProviderConfig
+
+        with pytest.raises(ValueError, match="api_path"):
+            ProviderConfig.from_dict({"api_path": "responses"})
+        with pytest.raises(ValueError, match="api_path"):
+            ModelConfig.from_dict({"name": "m", "api_path": "responses"})

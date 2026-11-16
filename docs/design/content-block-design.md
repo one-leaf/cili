@@ -10,7 +10,8 @@ Cili Agent 的 LLM 底层采用 **Adapter 分层架构**，通过类型化的内
 LLMClient (client.py)
   ├── Adapter (adapter.py) — 抽象基类
   │     ├── AnthropicAdapter (anthropic.py)
-  │     └── OpenAIAdapter (openai.py)
+  │     ├── OpenAIAdapter (openai.py)          — Chat Completions
+  │     └── OpenAIResponsesAdapter (openai_responses.py) — Responses
   ├── HttpTransport (transport.py) — HTTP 请求、重试、SSE 解析
   └── BlockAssembler (assembler.py) — 流式数据块累积
 
@@ -41,14 +42,15 @@ LLMClient (client.py)
 
 @dataclass ReasoningBlock:
     text: str = ""
-    signature: str | None = None  # provider 私有回放元数据（Anthropic thinking signature）
+    signature: str | None = None  # provider 私有回放元数据（Anthropic signature / Responses reasoning item JSON）
     redacted_data: str | None = None  # redacted_thinking 的加密内容，原样回放
 
 @dataclass ToolCallBlock:
-    id: str = ""
+    id: str = ""                  # tool_use_id / Responses call_id
     name: str = ""
     arguments: str = ""           # 原始 JSON 字符串，延迟解析
     thought_signature: str = ""   # Google Gemini API 兼容字段
+    item_id: str = ""             # Responses 的 fc_... item id（与 reasoning 配对）
 
     def parse_arguments(self) -> dict[str, Any]:
         """工具执行时调用，解析 JSON → dict"""
@@ -116,7 +118,7 @@ Provider 无关的统一消息格式。`content` 可以是字符串（纯文本�
 | `reasoning_delta` | `text` | 推理内容增量 |
 | `signature_delta` | `signature` | 思考块签名（赋值替换，非累积；Anthropic 多轮重放） |
 | `redacted` | `data` | Anthropic redacted_thinking 加密内容（原样回放） |
-| `tool_call_delta` | `id?`, `name?`, `arguments?`, `thought_signature?` | 工具调用增量 |
+| `tool_call_delta` | `id?`, `name?`, `arguments?`, `thought_signature?`, `item_id?` | 工具调用增量 |
 | `block_end` | — | 内容块结束 |
 | `usage` | `usage: UsageData` | Token 用量更新 |
 | `finish` | `stop_reason` | 流结束 |
@@ -166,6 +168,14 @@ class Adapter(ABC):
 - **工具调用**: 内部 `tool_call` ↔ API `function` calling（`arguments` 保持 str）
 - **消息转换**: system 消息前置，tool_result → role=tool 消息
 - **推理模型**: `reasoning` 除 `default` 外均发送 `reasoning_effort`（`off` → `"none"`，`minimal`/`low`/`medium`/`high` 直传）；`default` 不发送该参数。**模型配置的默认档位为 `medium`**
+
+### OpenAIResponsesAdapter
+
+- **API**: `/v1/responses`，`Bearer` 认证；`interface_type = "openai-responses"`
+- **消息转换**: system → 顶层 `instructions`；user/assistant → `input` items；`tool_result` → `function_call_output`（`call_id` 配对）；工具定义 → 扁平 `{type:"function", name, parameters, strict:false}`
+- **无服务端会话**: 始终 `store: false`，每回合重放完整历史；`prompt_cache_key` 取会话 ID（`cache_control="false"` 时关闭）
+- **推理模型**: `reasoning` → `reasoning: {effort, summary:"auto"}`（`off` → `"none"`，`default` 不发送）；同时 `include: ["reasoning.encrypted_content"]`，思考 item 的完整 JSON 存入 `ReasoningBlock.signature`，下一轮原样回放
+- **流式**: `response.output_item.*` / `response.output_text.delta` / `response.function_call_arguments.delta` → StreamChunks；终态以 `response.completed` 的 `response.output` 补发缺失 item 并覆盖思考签名
 
 ---
 
@@ -320,7 +330,8 @@ class ToolResult:
 | `core/llm/types.py` | ContentBlock, Message, StreamChunk, UsageData, LLMResponse |
 | `core/llm/adapter.py` | Adapter 抽象基类 |
 | `core/llm/anthropic.py` | AnthropicAdapter |
-| `core/llm/openai.py` | OpenAIAdapter |
+| `core/llm/openai.py` | OpenAIAdapter（Chat Completions） |
+| `core/llm/openai_responses.py` | OpenAIResponsesAdapter（Responses） |
 | `core/llm/transport.py` | HttpTransport（HTTP、重试、SSE） |
 | `core/llm/assembler.py` | BlockAssembler |
 | `core/llm/client.py` | LLMClient（公共 API） |
@@ -334,5 +345,6 @@ class ToolResult:
 
 - Anthropic Messages API
 - OpenAI Chat Completions API
+- OpenAI Responses API
 - DeepSeek Harness ContentBlock / StreamChunk 设计
 - Pi-main 消息类型设计

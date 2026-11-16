@@ -43,7 +43,7 @@ class OpenAIAdapter(Adapter):
     """Adapter for OpenAI Chat Completions API."""
 
     @property
-    def api_path(self) -> str:
+    def default_api_path(self) -> str:
         return "/v1/chat/completions"
 
     def default_auth_headers(self) -> dict[str, str]:

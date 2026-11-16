@@ -170,7 +170,8 @@ def _cache_hit_ratio(usage: dict, interface_type: str) -> float:
     """缓存比 = 缓存读取 / 全部输入 token。
 
     - Anthropic 协议：input_tokens 不含缓存，分母 = input + cache_read + cache_creation；
-    - OpenAI 协议：input_tokens 即 prompt_tokens，缓存已含在其中，分母 = input_tokens；
+    - OpenAI 协议（含 Chat Completions / Responses）：input_tokens 含缓存命中，
+      分母 = input_tokens；
     - 未知协议按 Anthropic 语义兜底；分母为 0 时返回 0。
 
     与 core/cache_state.py 的日志用 ``hit_rate`` 不同：这里把 cache_creation
@@ -178,7 +179,7 @@ def _cache_hit_ratio(usage: dict, interface_type: str) -> float:
     """
     read = int(usage.get("cache_read_tokens", 0) or 0)
     inp = int(usage.get("input_tokens", 0) or 0)
-    if interface_type == "openai":
+    if interface_type in ("openai", "openai-compatible", "openai-responses"):
         total = inp
     else:
         total = inp + read + int(usage.get("cache_creation_tokens", 0) or 0)

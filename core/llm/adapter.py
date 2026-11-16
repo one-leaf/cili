@@ -16,6 +16,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from core.config import ModelConfig
+from core.llm.server_presets import BACKEND_SESSION_HEADERS, preset_headers
 from core.llm.types import (
     ContentBlock,
     Message,
@@ -27,15 +28,6 @@ from core.llm.types import (
 )
 
 logger = logging.getLogger(__name__)
-
-# backend 预设 → 会话标识头模板（值在请求时展开为当前会话 ID，无会话时整条省略）
-BACKEND_SESSION_HEADERS: dict[str, dict[str, str]] = {
-    "codex": {"session-id": "{session_id}"},
-    "openrouter": {"x-session-id": "{session_id}"},
-    "opencode": {"x-opencode-session": "{session_id}"},
-    "litellm": {"x-litellm-session-id": "{session_id}"},
-    "claude-code": {"x-claude-code-session-id": "{session_id}"},
-}
 
 _SESSION_ID_PLACEHOLDER = "{session_id}"
 
@@ -189,9 +181,14 @@ class Adapter(ABC):
 
     @property
     @abstractmethod
-    def api_path(self) -> str:
-        """API endpoint path (e.g., '/v1/messages' for Anthropic)."""
+    def default_api_path(self) -> str:
+        """协议默认 API 路径（如 Anthropic 的 '/v1/messages'）。"""
         ...
+
+    @property
+    def api_path(self) -> str:
+        """实际 API 路径：provider 的 api_path 覆盖优先，否则用协议默认。"""
+        return self.config.api_path or self.default_api_path
 
     @property
     def api_url(self) -> str:
@@ -232,6 +229,14 @@ class Adapter(ABC):
         for name, template in BACKEND_SESSION_HEADERS.get(self.config.backend, {}).items():
             if session_id:
                 headers[name] = template.replace(_SESSION_ID_PLACEHOLDER, session_id)
+
+        # 预设静态 headers（如 Kimi / StepFun 要求的 Coding-Agent UA）；显式 headers 同名覆盖。
+        for name, value in preset_headers(self.config.backend).items():
+            if _SESSION_ID_PLACEHOLDER in value:
+                if not session_id:
+                    continue
+                value = value.replace(_SESSION_ID_PLACEHOLDER, session_id)
+            headers[name] = value
 
         for name, value in self.config.headers.items():
             if _SESSION_ID_PLACEHOLDER in value:

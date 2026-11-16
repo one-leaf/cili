@@ -6,6 +6,8 @@
 let settingsLoading = false;
 let settingsLoadError = '';
 let teenWorkspaceLoadFailed = false;
+// 接入服务商预设（GET /api/config 下发；静态文件与后端版本错配时用内置兜底）
+let settingsServerPresets = [];
 
 // 设置弹窗统一使用的线性图标（与 style.css 的 icon-btn 配套）
 const MS_ICONS = {
@@ -851,6 +853,7 @@ async function openSettings() {
         const cfg = data.config || {};
 
         // ── Providers（模型列表 tab） ──
+        settingsServerPresets = Array.isArray(data.server_presets) ? data.server_presets : [];
         renderProviders(cfg.providers || {});
         restoreAgentSelection(cfg.agents || {});
 
@@ -1030,10 +1033,13 @@ async function testProviderModel(btn) {
     const nameInput = card.querySelector('.p-model-name[data-model-key="' + modelKey + '"]');
     const apiId = nameInput ? nameInput.value.trim() : '';
 
+    const apiPathInput = card.querySelector('.p-api-path');
     const payload = {
         interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
+        backend: card.querySelector('.p-server').value || 'custom',
         base_url: card.querySelector('.p-base-url').value.trim(),
+        api_path: apiPathInput ? apiPathInput.value.trim() : '',
         model_name: apiId || (keyInput ? keyInput.value.trim() : modelKey),
         // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
         provider: card.querySelector('.p-key').value.trim(),
@@ -1073,10 +1079,13 @@ async function detectProviderModels(btn) {
     statusEl.textContent = '检测模型列表中...';
     const card = btn.closest('.provider-card');
 
+    const detectPreset = getServerPreset(card.querySelector('.p-server').value);
     const payload = {
         interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
+        backend: card.querySelector('.p-server').value || 'custom',
         base_url: card.querySelector('.p-base-url').value.trim(),
+        models_url: detectPreset && detectPreset.models_url ? detectPreset.models_url : '',
         // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
         provider: card.querySelector('.p-key').value.trim(),
     };
@@ -1127,13 +1136,143 @@ async function detectProviderModels(btn) {
 // ===== Providers 渲染与收集（模型列表 tab）=====
 
 function renderReasoningOptions(interfaceType, selected) {
-    const opts = interfaceType === 'openai'
+    // openai / openai-responses 的 reasoning.effort 取值域相同（含 minimal）
+    const openaiFamily = interfaceType === 'openai' || interfaceType === 'openai-responses';
+    const opts = openaiFamily
         ? [['default', '跟随服务端（不传）'], ['off', '关闭 (none)'], ['minimal', '最小 (minimal)'], ['low', '低'], ['medium', '中'], ['high', '高']]
         : [['default', '跟随服务端（不传）'], ['off', '关闭'], ['low', '低'], ['medium', '中'], ['high', '高']];
     // 默认档位 medium：新建模型行/旧数据缺省字段时选中「中」
     return opts.map(function (o) {
         return '<option value="' + o[0] + '"' + (o[0] === (selected || 'medium') ? ' selected' : '') + '>' + o[1] + '</option>';
     }).join('');
+}
+
+// ===== 接入服务商预设联动 =====
+
+// 前端兜底：后端未下发 server_presets（静态文件与后端版本错配）时至少保留自定义
+const PRESET_FALLBACK = [{ key: 'custom', label: '自定义', group: 'direct', default_protocol: null, base_urls: {}, api_paths: {}, auth_type: 'auto', headers: {}, hint: '', models_url: '' }];
+
+function serverPresets() {
+    return settingsServerPresets.length ? settingsServerPresets : PRESET_FALLBACK;
+}
+
+function getServerPreset(key) {
+    return serverPresets().find(function (p) { return p.key === key; }) || null;
+}
+
+function serverPresetUrl(preset, iface) {
+    return (preset && preset.base_urls && preset.base_urls[iface]) || '';
+}
+
+function serverPresetApiPath(preset, iface) {
+    return (preset && preset.api_paths && preset.api_paths[iface]) || '';
+}
+
+// 任一预设的已知地址 / 路径都算「自动值」（切换服务商时旧预设地址也能被覆盖）
+function isKnownPresetUrl(value) {
+    if (!value) return false;
+    const v = String(value).replace(/\/+$/, '');
+    return serverPresets().some(function (p) {
+        return Object.keys(p.base_urls || {}).some(function (k) {
+            return String(p.base_urls[k]).replace(/\/+$/, '') === v;
+        });
+    });
+}
+
+function isKnownPresetApiPath(value) {
+    if (!value) return false;
+    return serverPresets().some(function (p) {
+        return Object.keys(p.api_paths || {}).some(function (k) { return p.api_paths[k] === value; });
+    });
+}
+
+function isAutoBaseUrl(card) {
+    const input = card.querySelector('.p-base-url');
+    if (!input) return true;
+    if (input.dataset.urlCustom === '1') return false;
+    if (!input.value.trim()) return true;
+    return isKnownPresetUrl(input.value.trim());
+}
+
+function isAutoApiPath(card) {
+    const input = card.querySelector('.p-api-path');
+    if (!input) return true;
+    if (input.dataset.pathCustom === '1') return false;
+    if (!input.value.trim()) return true;
+    return isKnownPresetApiPath(input.value.trim());
+}
+
+function renderServerOptions(selected) {
+    const groups = { plan: [], direct: [] };
+    serverPresets().forEach(function (p) {
+        (groups[p.group] || groups.direct).push(p);
+    });
+    return [['plan', '订阅套餐'], ['direct', '直连 / 网关']].map(function (g) {
+        if (!groups[g[0]].length) return '';
+        return '<optgroup label="' + g[1] + '">' + groups[g[0]].map(function (p) {
+            return '<option value="' + escAttr(p.key) + '"' + (p.key === selected ? ' selected' : '') + '>' + escAttr(p.label) + '</option>';
+        }).join('') + '</optgroup>';
+    }).join('');
+}
+
+function refreshReasoningOptions(card) {
+    const iface = card.querySelector('.p-interface-type').value || 'anthropic';
+    card.querySelectorAll('.p-model-row').forEach(function (row) {
+        const sel = row.querySelector('.p-model-reasoning');
+        if (!sel) return;
+        sel.innerHTML = renderReasoningOptions(iface, sel.value);
+    });
+}
+
+function updateUrlPlaceholder(card) {
+    const input = card.querySelector('.p-base-url');
+    if (!input) return;
+    const preset = getServerPreset(card.querySelector('.p-server').value);
+    const iface = card.querySelector('.p-interface-type').value || 'anthropic';
+    input.placeholder = serverPresetUrl(preset, iface) || 'https://api.anthropic.com';
+}
+
+// 选择接入服务商 / 切换协议后，按预设填充默认值（手改过的 URL / 路径不覆盖）
+function applyPresetDefaults(card) {
+    const preset = getServerPreset(card.querySelector('.p-server').value);
+    const iface = card.querySelector('.p-interface-type').value || 'anthropic';
+    if (!preset) return;
+    const urlInput = card.querySelector('.p-base-url');
+    if (urlInput && isAutoBaseUrl(card)) {
+        urlInput.value = serverPresetUrl(preset, iface);
+        urlInput.dataset.urlCustom = '';
+    }
+    const pathInput = card.querySelector('.p-api-path');
+    if (pathInput && isAutoApiPath(card)) {
+        pathInput.value = serverPresetApiPath(preset, iface);
+        pathInput.dataset.pathCustom = '';
+    }
+    updateUrlPlaceholder(card);
+}
+
+// 选服务商是显式动作：直接套用该预设的协议默认值（认证、URL、路径）；
+// 选「自定义」时不改动用户已填的 URL / 路径。
+function applyServerSelection(card) {
+    const preset = getServerPreset(card.querySelector('.p-server').value);
+    if (!preset) return;
+    if (preset.auth_type) {
+        const authSel = card.querySelector('.p-auth-type');
+        if (authSel) authSel.value = preset.auth_type;
+    }
+    if (preset.key !== 'custom') {
+        const iface = card.querySelector('.p-interface-type').value || 'anthropic';
+        const urlInput = card.querySelector('.p-base-url');
+        if (urlInput) {
+            urlInput.value = serverPresetUrl(preset, iface);
+            urlInput.dataset.urlCustom = '';
+        }
+        const pathInput = card.querySelector('.p-api-path');
+        if (pathInput) {
+            pathInput.value = serverPresetApiPath(preset, iface);
+            pathInput.dataset.pathCustom = '';
+        }
+    }
+    updateUrlPlaceholder(card);
 }
 
 function renderModalities(selected) {
@@ -1194,6 +1333,15 @@ function renderModelRow(key, m, iface) {
 
 function renderProviderCard(key, p) {
     p = p || {};
+    // 兼容手写旧别名：openai-compatible 等价于 openai（Chat Completions）
+    const iface = p.interface_type === 'openai-compatible' ? 'openai' : (p.interface_type || 'anthropic');
+    // 未知 / 已移除的 backend（codex / claude-code / opencode）一律按自定义显示
+    const serverKey = getServerPreset(p.backend) ? p.backend : 'custom';
+    const preset = getServerPreset(serverKey);
+    const urlCustom = p.base_url && !isKnownPresetUrl(p.base_url) ? '1' : '';
+    const pathCustom = p.api_path && !isKnownPresetApiPath(p.api_path) ? '1' : '';
+    const defaultUrl = serverPresetUrl(preset, iface);
+    const defaultPath = serverPresetApiPath(preset, iface);
     const configured = Boolean(p.api_key_masked || p.api_key);
     const status = '<span class="provider-status" data-masked="' + (p.api_key_masked ? 1 : 0) + '">'
         + '<span class="status-dot ' + (configured ? 'ok' : 'pending') + '"></span>'
@@ -1204,7 +1352,7 @@ function renderProviderCard(key, p) {
     const models = p.models && Object.keys(p.models).length ? p.models : { default: {} };
     const modelKeys = Object.keys(models);
     const modelRows = modelKeys.map(function (mk) {
-        return renderModelRow(mk, models[mk], p.interface_type);
+        return renderModelRow(mk, models[mk], iface);
     }).join('');
     const esc = escAttr;
     const initial = (String(key || '?').trim().charAt(0) || '?').toUpperCase();
@@ -1219,9 +1367,13 @@ function renderProviderCard(key, p) {
         + '</div>'
         + '<div class="provider-body">'
         + '<div class="field-grid">'
+        + '<div class="field w-server"><label class="field-label">接入服务商</label><select class="p-server">'
+        + renderServerOptions(serverKey)
+        + '</select></div>'
         + '<div class="field w-protocol"><label class="field-label">协议</label><select class="p-interface-type">'
-        + '<option value="anthropic"' + ((p.interface_type || 'anthropic') === 'anthropic' ? ' selected' : '') + '>Anthropic</option>'
-        + '<option value="openai"' + (p.interface_type === 'openai' ? ' selected' : '') + '>OpenAI</option>'
+        + '<option value="anthropic"' + (iface === 'anthropic' ? ' selected' : '') + '>Anthropic Messages</option>'
+        + '<option value="openai"' + (iface === 'openai' ? ' selected' : '') + '>OpenAI Chat Completions</option>'
+        + '<option value="openai-responses"' + (iface === 'openai-responses' ? ' selected' : '') + '>OpenAI Responses</option>'
         + '</select></div>'
         + '<div class="field w-auth"><label class="field-label">认证</label><select class="p-auth-type">'
         + '<option value="auto"' + ((p.auth_type || 'auto') === 'auto' ? ' selected' : '') + '>自动</option>'
@@ -1229,15 +1381,7 @@ function renderProviderCard(key, p) {
         + '<option value="x-api-key"' + (p.auth_type === 'x-api-key' ? ' selected' : '') + '>X-API-Key</option>'
         + '<option value="none"' + (p.auth_type === 'none' ? ' selected' : '') + '>无</option>'
         + '</select></div>'
-        + '<div class="field w-backend"><label class="field-label">后端服务器</label><select class="p-backend">'
-        + '<option value="custom"' + ((p.backend || 'custom') === 'custom' ? ' selected' : '') + '>自定义</option>'
-        + '<option value="codex"' + (p.backend === 'codex' ? ' selected' : '') + '>Codex</option>'
-        + '<option value="claude-code"' + (p.backend === 'claude-code' ? ' selected' : '') + '>Claude Code</option>'
-        + '<option value="opencode"' + (p.backend === 'opencode' ? ' selected' : '') + '>OpenCode</option>'
-        + '<option value="openrouter"' + (p.backend === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>'
-        + '<option value="litellm"' + (p.backend === 'litellm' ? ' selected' : '') + '>LiteLLM</option>'
-        + '</select></div>'
-        + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" placeholder="https://api.anthropic.com"></div>'
+        + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" data-url-custom="' + urlCustom + '" placeholder="' + esc(defaultUrl || 'https://api.anthropic.com') + '"></div>'
         + '<div class="field w-key">'
         + '<label class="field-label">API Key</label>'
         + '<div class="key-wrap">'
@@ -1248,7 +1392,11 @@ function renderProviderCard(key, p) {
         + '</div>'
         + '</div>'
         + '<details class="p-headers-panel">'
-        + '<summary>高级：自定义请求参数 / Headers</summary>'
+        + '<summary>高级：API 路径 / 请求参数 / Headers</summary>'
+        + '<div class="p-advanced-grid">'
+        + '<label class="p-advanced-label">API 路径<span>留空 = 协议默认</span></label>'
+        + '<input type="text" class="p-api-path" value="' + esc(p.api_path || '') + '" data-path-custom="' + pathCustom + '" placeholder="' + esc(defaultPath || '自动') + '">'
+        + '</div>'
         + '<textarea class="p-headers" placeholder="JSON 对象，值支持 {session_id} 占位符，如 {\"X-Session-ID\": \"{session_id}\"}">' + JSON.stringify(p.headers || {}).replace(/</g, '&lt;') + '</textarea>'
         + '</details>'
         + '<div class="models-section">'
@@ -1277,6 +1425,9 @@ function renderProviders(providers) {
         .filter(function (key) { return key !== '_comment'; })
         .map(function (key) { return [key, providers[key] || {}]; });
     list.innerHTML = entries.map(function (e) { return renderProviderCard(e[0], e[1]); }).join('');
+    list.querySelectorAll('.provider-card').forEach(function (card) {
+            updateUrlPlaceholder(card);
+    });
     fillAgentSelects(collectAllRefs(providers));
 }
 
@@ -1375,8 +1526,9 @@ function collectProviders() {
         const provider = {
             interface_type: card.querySelector('.p-interface-type').value,
             auth_type: card.querySelector('.p-auth-type').value,
-            backend: card.querySelector('.p-backend').value,
+            backend: card.querySelector('.p-server').value,
             base_url: card.querySelector('.p-base-url').value.trim(),
+            api_path: card.querySelector('.p-api-path').value.trim(),
             headers: headers,
             models: models,
         };
@@ -1439,8 +1591,16 @@ function collectProviders() {
         if (detectBtn) detectProviderModels(detectBtn);
     });
 
-    // provider 名称 / API Key 输入 → 更新徽标与状态 chip
+    // provider 名称 / URL / 路径 / API Key 输入 → 更新徽标、自定义标记与状态 chip
     list.addEventListener('input', function (e) {
+        if (e.target.classList.contains('p-base-url')) {
+            e.target.dataset.urlCustom = (!e.target.value.trim() || isKnownPresetUrl(e.target.value.trim())) ? '' : '1';
+            return;
+        }
+        if (e.target.classList.contains('p-api-path')) {
+            e.target.dataset.pathCustom = (!e.target.value.trim() || isKnownPresetApiPath(e.target.value.trim())) ? '' : '1';
+            return;
+        }
         if (e.target.classList.contains('p-key')) {
             const avatar = e.target.closest('.provider-card').querySelector('.provider-avatar');
             if (avatar) avatar.textContent = (e.target.value.trim().charAt(0) || '?').toUpperCase();
@@ -1455,16 +1615,24 @@ function collectProviders() {
             + (configured ? '已配置' : '未配置');
     });
 
-    // interface_type 变化 → 重渲染各模型行的思考下拉（选项集按协议）
+    // 接入服务商变化 → 默认协议 + 地址/路径/认证
+    list.addEventListener('change', function (e) {
+        if (!e.target.classList.contains('p-server')) return;
+        const card = e.target.closest('.provider-card');
+        const preset = getServerPreset(e.target.value);
+        if (preset && preset.default_protocol) {
+            card.querySelector('.p-interface-type').value = preset.default_protocol;
+            refreshReasoningOptions(card);
+        }
+        applyServerSelection(card);
+    });
+
+    // interface_type 变化 → 重渲染思考下拉 + 跟随预设换地址/路径
     list.addEventListener('change', function (e) {
         if (!e.target.classList.contains('p-interface-type')) return;
         const card = e.target.closest('.provider-card');
-        const iface = e.target.value;
-        card.querySelectorAll('.p-model-row').forEach(function (row) {
-            const sel = row.querySelector('.p-model-reasoning');
-            const current = sel.value;
-            sel.innerHTML = renderReasoningOptions(iface, current);
-        });
+        refreshReasoningOptions(card);
+        applyPresetDefaults(card);
     });
 
     // model_type 变化 → chat 模型禁用思考档位（请求不携带任何思考参数）

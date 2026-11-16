@@ -14,11 +14,13 @@ from pydantic import BaseModel
 from core.config import (
     GLOBAL_CONFIG_PATH,
     MCPConfig,
+    default_base_url,
     load_config,
     load_global_config,
     migrate_legacy_config,
     save_global_config,
 )
+from core.llm.server_presets import preset_headers, preset_payloads
 from core.stream_executor import get_stream_executor
 from core.teen_mode import deny_message, get_teen_mode
 from core.tools.mcp import get_provider
@@ -48,6 +50,7 @@ class ProviderRequest(BaseModel):
     auth_type: str | None = None
     backend: str | None = None
     base_url: str | None = None
+    api_path: str | None = None
     headers: dict[str, str] | None = None
     models: dict[str, ModelSpecRequest] | None = None
 
@@ -72,7 +75,9 @@ class TestConfigRequest(BaseModel):
     interface_type: str | None = None
     api_key: str | None = None
     auth_type: str | None = None
+    backend: str | None = None
     base_url: str | None = None
+    api_path: str | None = None
     headers: dict[str, str] | None = None
     model_name: str | None = None  # 发给 API 的模型 ID
     provider: str | None = None    # provider 名：api_key 留空时按它取已保存的 key
@@ -83,8 +88,10 @@ class DetectModelsRequest(BaseModel):
     interface_type: str | None = None
     api_key: str | None = None
     auth_type: str | None = None
+    backend: str | None = None
     base_url: str | None = None
     headers: dict[str, str] | None = None
+    models_url: str | None = None  # 独立模型清单端点（如 OpenCode Go）；空 = 按 base 推导
     provider: str | None = None    # provider 名：api_key 留空时按它取已保存的 key
 
 
@@ -249,6 +256,7 @@ async def get_config():
     return {
         "config": masked_config,
         "config_path": str(GLOBAL_CONFIG_PATH),
+        "server_presets": preset_payloads(),
     }
 
 
@@ -281,6 +289,9 @@ async def update_config(request: UpdateConfigRequest):
                 provider["api_key"] = saved_key
             if provider.get("base_url"):
                 provider["base_url"] = provider["base_url"].rstrip("/")
+            api_path = provider.get("api_path") or ""
+            if api_path and not api_path.startswith("/"):
+                raise HTTPException(status_code=400, detail=f"{name}: api_path 必须以 / 开头")
             new_providers[name] = provider
         config["providers"] = new_providers
 
@@ -538,8 +549,10 @@ async def test_config(request: TestConfigRequest | None = None):
             name=request.model_name or "claude-sonnet-4-6",
             interface_type=interface_type,
             api_key=api_key,
-            base_url=base_url or "https://api.anthropic.com",
+            base_url=base_url or default_base_url(interface_type),
+            api_path=request.api_path or "",
             auth_type=request.auth_type or "auto",
+            backend=request.backend or "custom",
             headers=extra_headers,
         )
 
@@ -598,14 +611,17 @@ async def detect_models(request: DetectModelsRequest | None = None):
     api_key = _resolve_api_key(request.api_key, request.provider)
     base_url = (request.base_url or "").rstrip("/")
     if not base_url:
-        base_url = "https://api.anthropic.com" if interface_type == "anthropic" else "https://api.openai.com/v1"
+        base_url = default_base_url(interface_type)
 
-    if interface_type == "anthropic":
-        url = f"{base_url}/v1/models"
-    else:
-        url = f"{base_url}/models"
+    # 预设提供独立清单端点时优先（如 OpenCode Go 不在 base + /models）
+    url = (request.models_url or "").strip()
+    if not url:
+        url = f"{base_url}/v1/models" if interface_type == "anthropic" else f"{base_url}/models"
 
     headers = _session_headers_for(interface_type, request.auth_type or "auto", api_key, request.headers or {})
+    # 预设静态头（如 Kimi/StepFun 的 UA）：显式 headers 已写入，setdefault 不覆盖
+    for name, value in preset_headers(request.backend).items():
+        headers.setdefault(name, value)
     model_ids: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=15) as client:

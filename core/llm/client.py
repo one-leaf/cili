@@ -454,8 +454,10 @@ def create_llm_client(config: ModelConfig) -> LLMClient:
     """Factory function to create an LLMClient from ModelConfig.
 
     Auto-detects the provider based on interface_type:
-    - "anthropic" → AnthropicAdapter
-    - "openai"    → OpenAIAdapter
+    - "anthropic"       → AnthropicAdapter
+    - "openai"          → OpenAIAdapter (Chat Completions；兼容第三方网关)
+    - "openai-compatible" → OpenAIAdapter（别名）
+    - "openai-responses"  → OpenAIResponsesAdapter
 
     Args:
         config: Model configuration
@@ -468,13 +470,16 @@ def create_llm_client(config: ModelConfig) -> LLMClient:
     """
     from core.llm.anthropic import AnthropicAdapter
     from core.llm.openai import OpenAIAdapter
+    from core.llm.openai_responses import OpenAIResponsesAdapter
 
     interface_type = config.interface_type.lower()
 
     if interface_type == "anthropic":
         adapter = AnthropicAdapter(config)
-    elif interface_type == "openai":
+    elif interface_type in ("openai", "openai-compatible"):
         adapter = OpenAIAdapter(config)
+    elif interface_type == "openai-responses":
+        adapter = OpenAIResponsesAdapter(config)
     else:
         raise ValueError(f"Unsupported interface_type: {interface_type}")
 

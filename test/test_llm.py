@@ -1158,22 +1158,43 @@ class TestAdapterBaseUrl:
             AnthropicAdapter(config)
 
     def test_backend_headers_all_presets(self):
-        """六种 backend 预设的会话头名单"""
+        """当前预设的会话头名单；codex / claude-code / opencode 已彻底移除。"""
         from core.config import ModelConfig
         from core.llm.adapter import BACKEND_SESSION_HEADERS
 
         assert "custom" not in BACKEND_SESSION_HEADERS
-        assert BACKEND_SESSION_HEADERS["codex"] == {"session-id": "{session_id}"}
         assert BACKEND_SESSION_HEADERS["openrouter"] == {"x-session-id": "{session_id}"}
-        assert BACKEND_SESSION_HEADERS["opencode"] == {"x-opencode-session": "{session_id}"}
+        assert BACKEND_SESSION_HEADERS["opencode-go"] == {"x-opencode-session": "{session_id}"}
         assert BACKEND_SESSION_HEADERS["litellm"] == {"x-litellm-session-id": "{session_id}"}
-        assert BACKEND_SESSION_HEADERS["claude-code"] == {"x-claude-code-session-id": "{session_id}"}
+        for removed in ("codex", "claude-code", "opencode"):
+            assert removed not in BACKEND_SESSION_HEADERS
 
         for backend, expected in BACKEND_SESSION_HEADERS.items():
             cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", backend=backend)
             headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
             for header_name, template in expected.items():
                 assert headers[header_name] == "s"
+
+    def test_api_path_override(self):
+        """provider.api_path 覆盖协议默认路径。"""
+        cfg = ModelConfig(
+            name="m", api_key="k", base_url="https://api.deepseek.com",
+            interface_type="openai-responses", api_path="/responses",
+        )
+        assert create_llm_client(cfg).adapter.api_url == "https://api.deepseek.com/responses"
+
+    def test_preset_static_headers(self):
+        """Kimi 预设的 UA 头自动携带，显式 headers 同名覆盖。"""
+        cfg = ModelConfig(
+            name="m", api_key="k", base_url="https://api.kimi.com/coding",
+            interface_type="anthropic", auth_type="bearer", backend="kimi-coding",
+        )
+        headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
+        assert headers["User-Agent"] == "claude-code/0.1.0"
+
+        cfg.headers = {"User-Agent": "custom-agent"}
+        headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
+        assert headers["User-Agent"] == "custom-agent"
 
 
 class TestChatTimeoutParam:

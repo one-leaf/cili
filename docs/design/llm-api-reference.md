@@ -1,6 +1,6 @@
 # LLM API 接口参考
 
-本文档详细记录 Anthropic Messages API 和 OpenAI Chat Completions API 的原始接口结构，供开发参考。
+本文档详细记录 Anthropic Messages API、OpenAI Chat Completions API 和 OpenAI Responses API 的原始接口结构，供开发参考。
 
 ---
 
@@ -14,7 +14,11 @@
   - [2.1 请求格式](#21-请求格式)
   - [2.2 非流式响应](#22-非流式响应)
   - [2.3 流式响应 (SSE)](#23-流式响应-sse)
-- [三、内部统一格式](#三内部统一格式)
+- [三、OpenAI Responses API](#三openai-responses-api)
+  - [3.1 请求格式](#31-请求格式)
+  - [3.2 非流式响应](#32-非流式响应)
+  - [3.3 流式响应 (SSE)](#33-流式响应-sse)
+- [四、内部统一格式](#四内部统一格式)
 
 ---
 
@@ -411,7 +415,175 @@ data: [DONE]
 
 ---
 
-## 三、内部统一格式
+## 三、OpenAI Responses API
+
+### 3.1 请求格式
+
+**端点**: `POST /v1/responses`
+
+**请求头**:
+```http
+Content-Type: application/json
+Authorization: Bearer sk-...
+```
+
+**请求体**:
+```jsonc
+{
+  "model": "gpt-5.1",
+  "instructions": "你是一个助手...",       // 系统提示词（顶层字段）
+  "input": [                               // input items，而不是 messages
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "你好"},
+        {"type": "input_image", "image_url": "data:image/png;base64,...", "detail": "auto"}
+      ]
+    },
+    {
+      "type": "message", "role": "assistant", "status": "completed",
+      "content": [{"type": "output_text", "text": "我来读取文件"}]
+    },
+    {
+      "type": "function_call",              // 工具调用是独立 item
+      "call_id": "call_abc123",             // 与 function_call_output 配对
+      "name": "read_file",
+      "arguments": "{\"file_path\":\"/tmp/test.txt\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_abc123",
+      "output": "文件内容..."                // 或 input_text/input_image 列表
+    },
+    {
+      "type": "reasoning",                  // 思考回放（store=false 多轮必需）
+      "summary": [{"type": "summary_text", "text": "..."}],
+      "encrypted_content": "gAAAA..."
+    }
+  ],
+  "tools": [                               // 扁平 function 格式
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "读取文件内容",
+      "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}},
+      "strict": false
+    }
+  ],
+  "tool_choice": "auto",
+  "max_output_tokens": 16384,              // 下限 16
+  "reasoning": {"effort": "medium", "summary": "auto"},  // low/medium/high/minimal/none
+  "include": ["reasoning.encrypted_content"],            // 取回加密思考内容
+  "store": false,                          // cili 无服务端会话，始终 false
+  "stream": false,
+  "prompt_cache_key": "<session id>"       // 可选；改善网关缓存路由
+}
+```
+
+**与 Chat Completions 的关键差异**:
+
+| 维度 | Chat Completions | Responses |
+|------|------------------|-----------|
+| 消息 | `messages`（role/tool_calls） | `input` items（message/function_call/function_call_output/reasoning） |
+| 系统提示 | `role: system` 消息 | 顶层 `instructions` |
+| 工具定义 | `{"type":"function","function":{...}}` | `{"type":"function","name","parameters",...}`（无 function 包裹） |
+| 工具结果 | `role: tool` 消息 | `function_call_output` item（用 `call_id` 配对） |
+| 思考回放 | `reasoning_content` 文本 | `reasoning` item（含 `encrypted_content`） |
+| 输出上限 | `max_tokens` | `max_output_tokens` |
+| 流式完成信号 | `finish_reason` + `[DONE]` | `response.completed` / `response.incomplete` |
+
+### 3.2 非流式响应
+
+**响应体**:
+```jsonc
+{
+  "id": "resp_abc123",
+  "object": "response",
+  "status": "completed",                   // completed | incomplete | failed | cancelled
+  "model": "gpt-5.1",
+  "output": [
+    {
+      "type": "reasoning", "id": "rs_abc123",
+      "summary": [{"type": "summary_text", "text": "让我思考一下..."}],
+      "encrypted_content": "gAAAA..."
+    },
+    {
+      "type": "message", "role": "assistant", "status": "completed",
+      "content": [{"type": "output_text", "text": "这是回复内容"}]
+    },
+    {
+      "type": "function_call", "id": "fc_abc123", "call_id": "call_abc123",
+      "name": "read_file", "arguments": "{\"file_path\":\"/tmp/test.txt\"}"
+    }
+  ],
+  "incomplete_details": null,              // incomplete 时为 {"reason": "max_output_tokens"}
+  "usage": {
+    "input_tokens": 100,                   // 已包含缓存命中部分
+    "input_tokens_details": {"cached_tokens": 80, "cache_write_tokens": 0},
+    "output_tokens": 50,
+    "output_tokens_details": {"reasoning_tokens": 20},
+    "total_tokens": 150
+  }
+}
+```
+
+**status → stop_reason 映射**:
+
+| Responses status | 条件 | 内部 stop_reason |
+|------------------|------|------------------|
+| `completed` | 无 function_call | `end_turn` |
+| `completed` | 有 function_call | `tool_use` |
+| `incomplete` | `max_output_tokens` | `length` |
+| `incomplete` | `content_filter` | `content_filter` |
+| `failed` / `cancelled` | — | `error` |
+
+### 3.3 流式响应 (SSE)
+
+**事件序列**（节选）:
+```
+data: {"type":"response.created","response":{"id":"resp_...","model":"gpt-5.1","status":"in_progress"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_...","summary":[]}}
+
+data: {"type":"response.reasoning_summary_text.delta","output_index":0,"item_id":"rs_...","summary_index":0,"delta":"让我"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_...","summary":[{"type":"summary_text","text":"让我思考"}],"encrypted_content":"gAAAA..."}}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_...","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","output_index":1,"item_id":"msg_...","content_index":0,"delta":"这是"}
+
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_...","call_id":"call_...","name":"read_file","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_...","call_id":"call_...","delta":"{\"file_"}
+
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_...","call_id":"call_...","name":"read_file","arguments":"{\"file_path\":\"/tmp\"}","status":"completed"}}
+
+data: {"type":"response.completed","response":{"id":"resp_...","status":"completed","model":"gpt-5.1","output":[...],"usage":{"input_tokens":100,"output_tokens":50,"total_tokens":150}}}
+```
+
+**SSE 事件类型**:
+
+| 事件 | 说明 | 关键字段 |
+|------|------|----------|
+| `response.created` | 响应开始 | `response.id`, `response.model` |
+| `response.output_item.added` | 输出 item 开始 | `output_index`, `item.type` |
+| `response.output_text.delta` | 文本增量 | `output_index`, `item_id`, `delta` |
+| `response.refusal.delta` | 拒绝原因增量 | 同上 |
+| `response.reasoning_summary_text.delta` | 思考摘要增量 | `output_index`, `summary_index`, `delta` |
+| `response.reasoning_text.delta` | 原始思考增量（部分端点） | 同上 |
+| `response.function_call_arguments.delta` | 工具参数增量 | `output_index`, `call_id`, `delta` |
+| `response.function_call_arguments.done` | 工具参数完整值 | `arguments` |
+| `response.output_item.done` | 输出 item 完成 | `item`（含 `encrypted_content`） |
+| `response.completed` / `response.incomplete` | 终态 | `response.status`, `response.output`, `response.usage` |
+| `response.failed` | 失败 | `response.error.code/message` |
+
+**注意**: Responses 的 `response.completed` 是唯一可信终态；思考的 `encrypted_content`
+可能只在终态 `response.output` 里下发（Azure 等），cili 会以终态 item 覆盖流式签名。
+
+---
+
+## 四、内部统一格式
 
 Cili 内部使用统一的 `LLMResponse` 格式，屏蔽两种 API 的差异。
 
@@ -449,10 +621,11 @@ class ReasoningBlock:
 ```python
 @dataclass
 class ToolCallBlock:
-    id: str = ""
+    id: str = ""                 # tool_use_id / Responses call_id
     name: str = ""
-    arguments: str = ""  # 原始 JSON 字符串（延迟解析，工具执行时才 parse）
+    arguments: str = ""          # 原始 JSON 字符串（延迟解析，工具执行时才 parse）
     thought_signature: str = ""  # Google Gemini API 兼容字段
+    item_id: str = ""            # Responses 的 fc_... item id（与 reasoning 配对）
 ```
 
 **ImageBlock**（image 块）:
@@ -583,20 +756,20 @@ Message(
 
 ## 附录：关键差异总结
 
-| 特性 | Anthropic | OpenAI |
-|------|-----------|--------|
-| **端点** | `/v1/messages` | `/v1/chat/completions` |
-| **认证** | `x-api-key` | `Authorization: Bearer` |
-| **系统提示** | 顶层 `system` 字段 | `messages` 中 `role: system` |
-| **工具参数** | `input_schema` | `function.parameters` |
-| **工具参数格式** | JSON 对象 | JSON 字符串 |
-| **工具结果** | `tool_result` in user message | 独立 `role: tool` message |
-| **Thinking** | `thinking.budget_tokens` / `effort` | `reasoning_effort` (仅推理模型) |
-| **Thinking 与 temperature** | 互斥 | reasoning_effort 与 temperature 互斥 |
-| **流式 usage** | `message_delta` 事件 | `stream_options.include_usage` |
-| **Thinking 多轮** | 必须保留在消息中 | `reasoning_content` 会重发（CoT passback） |
+| 特性 | Anthropic | OpenAI Chat Completions | OpenAI Responses |
+|------|-----------|-------------------------|------------------|
+| **端点** | `/v1/messages` | `/v1/chat/completions` | `/v1/responses`（可由 `provider.api_path` 覆盖，如 DeepSeek 用 `/responses`） |
+| **认证** | `x-api-key` | `Authorization: Bearer` | `Authorization: Bearer` |
+| **系统提示** | 顶层 `system` 字段 | `messages` 中 `role: system` | 顶层 `instructions` |
+| **工具参数** | `input_schema` | `function.parameters` | 扁平 `parameters` |
+| **工具参数格式** | JSON 对象 | JSON 字符串 | JSON 字符串 |
+| **工具结果** | `tool_result` in user message | 独立 `role: tool` message | `function_call_output` item |
+| **Thinking** | `thinking.budget_tokens` / `effort` | `reasoning_effort` (仅推理模型) | `reasoning.effort` + `summary` |
+| **Thinking 与 temperature** | 互斥 | reasoning_effort 与 temperature 互斥 | reasoning 与 temperature 互斥 |
+| **流式 usage** | `message_delta` 事件 | `stream_options.include_usage` | `response.completed.usage` |
+| **Thinking 多轮** | 必须保留在消息中 | `reasoning_content` 会重发（CoT passback） | `reasoning` item + `encrypted_content` |
 
 ---
 
-*文档版本: v1.0*
-*最后更新: 2026-08-28*
+*文档版本: v1.1*
+*最后更新: 2026-11-16*

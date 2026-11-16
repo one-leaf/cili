@@ -33,7 +33,7 @@ class AnthropicAdapter(Adapter):
     _CACHEABLE_BLOCK_TYPES = ("text", "tool_use", "tool_result", "image")
 
     @property
-    def api_path(self) -> str:
+    def default_api_path(self) -> str:
         return "/v1/messages"
 
     @property
@@ -133,6 +133,8 @@ class AnthropicAdapter(Adapter):
                 if drop_thinking and isinstance(block, ReasoningBlock):
                     continue
                 block_dict = block_to_dict(block)
+                # Responses 的回放 item id 不属于 Anthropic wire 格式
+                block_dict.pop("item_id", None)
                 # Convert tool_call to tool_use (Anthropic's format)
                 if block_dict.get("type") == "tool_call":
                     block_dict["type"] = "tool_use"

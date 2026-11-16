@@ -19,6 +19,28 @@ from core.fs_utils import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
+# 协议缺省地址（与 core/llm/server_presets.py 的预设表保持同一口径）
+_PROTOCOL_DEFAULT_BASE_URLS = {
+    "anthropic": "https://api.anthropic.com",
+    "openai": "https://api.openai.com/v1",
+    "openai-compatible": "https://api.openai.com/v1",
+    "openai-responses": "https://api.openai.com/v1",
+}
+
+
+def default_base_url(interface_type: str) -> str:
+    """按协议返回缺省 Base URL（openai 系统一 /v1）。"""
+    return _PROTOCOL_DEFAULT_BASE_URLS.get((interface_type or "").lower(), "https://api.anthropic.com")
+
+
+def _normalize_api_path(value) -> str:
+    """路径覆盖：空 = 协议默认；非空必须以 / 开头（fail-fast）。"""
+    path = str(value or "").strip()
+    if path and not path.startswith("/"):
+        raise ValueError(f"api_path 必须以 / 开头: {path!r}")
+    return path
+
+
 def _detect_browser_path() -> str:
     """检测系统中可用的浏览器路径（Edge → Chrome 顺序）。
 
@@ -73,11 +95,12 @@ class ModelConfig:
     auth_type/backend/headers 属接入层，随 provider 一起带入（adapter 构造请求头用）。
     """
     name: str
-    interface_type: str = "anthropic"  # "anthropic" | "openai"
+    interface_type: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
     api_key: str = ""
     base_url: str = "https://api.anthropic.com"
+    api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
     auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
-    backend: str = "custom"  # "custom" | "codex" | "claude-code" | "opencode" | "openrouter" | "litellm"
+    backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
     max_output_tokens: int = 32768  # 单次响应最大输出 token
     max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
@@ -93,7 +116,8 @@ class ModelConfig:
             name=data.get("name", ""),
             interface_type=data.get("interface_type", "anthropic"),
             api_key=data.get("api_key", ""),
-            base_url=data.get("base_url", "https://api.anthropic.com").rstrip("/"),
+            base_url=(data.get("base_url") or default_base_url(data.get("interface_type", "anthropic"))).rstrip("/"),
+            api_path=_normalize_api_path(data.get("api_path")),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
@@ -112,6 +136,7 @@ class ModelConfig:
             "interface_type": self.interface_type,
             "api_key": self.api_key,
             "base_url": self.base_url,
+            "api_path": self.api_path,
             "auth_type": self.auth_type,
             "backend": self.backend,
             "headers": dict(self.headers),
@@ -162,11 +187,12 @@ class ModelSpec:
 @dataclass
 class ProviderConfig:
     """接入层配置：管 api_key / base_url / 协议与多个模型条目。"""
-    interface_type: str = "anthropic"  # "anthropic" | "openai"
+    interface_type: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
     api_key: str = ""  # 支持 ${ENV_VAR} 整值插值
     auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
-    backend: str = "custom"  # "custom" | "codex" | "claude-code" | "opencode" | "openrouter" | "litellm"
+    backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
     base_url: str = "https://api.anthropic.com"
+    api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
     models: dict[str, ModelSpec] = field(default_factory=dict)  # 键 = 自由别名；省略时视为 {"default": {}}
 
@@ -183,7 +209,8 @@ class ProviderConfig:
             api_key=_expand_env_value(str(data.get("api_key", ""))),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
-            base_url=data.get("base_url", "https://api.anthropic.com").rstrip("/"),
+            base_url=(data.get("base_url") or default_base_url(data.get("interface_type", "anthropic"))).rstrip("/"),
+            api_path=_normalize_api_path(data.get("api_path")),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
             models=models,
         )
@@ -195,6 +222,7 @@ class ProviderConfig:
             "auth_type": self.auth_type,
             "backend": self.backend,
             "base_url": self.base_url,
+            "api_path": self.api_path,
             "headers": dict(self.headers),
             "models": {key: spec.to_dict() for key, spec in self.models.items()},
         }
@@ -595,6 +623,7 @@ class Config:
             interface_type=provider.interface_type,
             api_key=provider.api_key,
             base_url=provider.base_url,
+            api_path=provider.api_path,
             auth_type=provider.auth_type,
             backend=provider.backend,
             headers=dict(provider.headers),
@@ -783,7 +812,7 @@ def convert_legacy_config(global_config: dict) -> dict | None:
         cred = (
             obj.get("interface_type", "anthropic"),
             obj.get("api_key", ""),
-            (obj.get("base_url") or "https://api.anthropic.com").rstrip("/"),
+            (obj.get("base_url") or default_base_url(obj.get("interface_type", "anthropic"))).rstrip("/"),
         )
         provider_key = next(
             (key for key, raw in providers_raw.items() if raw["_cred"] == cred), None

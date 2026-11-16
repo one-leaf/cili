@@ -128,6 +128,9 @@ class ToolCallBlock:
     name: str = ""
     arguments: str = ""  # Raw JSON string internally
     thought_signature: str = ""  # For Google Gemini API compatibility
+    # Provider 输出 item 的 ID（Responses 的 fc_...；store=false 重放时与
+    # reasoning item 配对，不能当作 tool_use_id 使用）
+    item_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization (Anthropic format)."""
@@ -147,6 +150,8 @@ class ToolCallBlock:
         # Include thought_signature if present (for Google Gemini compatibility)
         if self.thought_signature:
             result["thought_signature"] = self.thought_signature
+        if self.item_id:
+            result["item_id"] = self.item_id
         return result
 
     @classmethod
@@ -175,6 +180,7 @@ class ToolCallBlock:
             name=data.get("name", ""),
             arguments=arguments,
             thought_signature=data.get("thought_signature", ""),
+            item_id=data.get("item_id", ""),
         )
 
     def parse_arguments(self) -> dict[str, Any]:
@@ -331,6 +337,21 @@ class UsageData:
         )
 
     @classmethod
+    def from_responses(cls, data: dict[str, Any]) -> UsageData:
+        """Create from OpenAI Responses usage format.
+
+        Responses 的 input_tokens 同样已包含缓存命中部分（与 Chat Completions
+        语义一致），缓存明细位于 input_tokens_details。
+        """
+        details = data.get("input_tokens_details") or {}
+        return cls(
+            input_tokens=data.get("input_tokens", 0) or 0,
+            output_tokens=data.get("output_tokens", 0) or 0,
+            cache_read_tokens=details.get("cached_tokens", 0) or 0,
+            cache_write_tokens=details.get("cache_write_tokens", 0) or 0,
+        )
+
+    @classmethod
     def from_openai(cls, data: dict[str, Any]) -> UsageData:
         """Create from OpenAI usage format."""
         # 标准字段 prompt_tokens_details.cached_tokens；DeepSeek/OpenRouter 等在
@@ -474,6 +495,7 @@ class StreamChunk:
         name: str | None = None,
         arguments: str | None = None,
         thought_signature: str | None = None,
+        item_id: str | None = None,
     ) -> StreamChunk:
         """Create tool_call_delta chunk."""
         data: dict[str, Any] = {}
@@ -485,6 +507,8 @@ class StreamChunk:
             data["arguments"] = arguments
         if thought_signature is not None:
             data["thought_signature"] = thought_signature
+        if item_id is not None:
+            data["item_id"] = item_id
         return cls(type="tool_call_delta", index=index, data=data)
 
     @classmethod

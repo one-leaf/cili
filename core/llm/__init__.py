@@ -24,6 +24,7 @@ from core.llm.assembler import BlockAssembler
 from core.llm.client import LLMClient
 from core.llm.errors import LLMErrorInfo, classify_llm_error
 from core.llm.openai import OpenAIAdapter
+from core.llm.openai_responses import OpenAIResponsesAdapter
 from core.llm.transport import _RETRY_STATUS_CODES
 from core.llm.types import (
     ContentBlock,
@@ -55,8 +56,10 @@ def create_llm_client(config: ModelConfig) -> LLMClient:
     """Create an LLMClient from ModelConfig (factory function).
 
     Auto-detects the provider based on config.interface_type:
-    - "anthropic" → AnthropicAdapter
-    - "openai"    → OpenAIAdapter
+    - "anthropic"        → AnthropicAdapter
+    - "openai"           → OpenAIAdapter (Chat Completions)
+    - "openai-compatible" → OpenAIAdapter（别名）
+    - "openai-responses" → OpenAIResponsesAdapter
     """
     from core.llm.client import create_llm_client as _create
     return _create(config)
@@ -92,5 +95,6 @@ __all__ = [
     "LLMClient",
     "AnthropicAdapter",
     "OpenAIAdapter",
+    "OpenAIResponsesAdapter",
     "create_llm_client",
 ]

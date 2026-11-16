@@ -78,7 +78,8 @@ Cili Agent/
 | 值 | 说明 |
 |----|------|
 | `anthropic` | Anthropic Messages API（`/v1/messages`），默认值 |
-| `openai` | OpenAI Chat Completions API（`/v1/chat/completions`） |
+| `openai` | OpenAI Chat Completions API（`/v1/chat/completions`），兼容第三方网关 |
+| `openai-responses` | OpenAI Responses API（`/v1/responses`） |
 
 ### api_key — API 密钥
 
@@ -98,24 +99,31 @@ Cili Agent/
 | `x-api-key` | 强制 `x-api-key: <key>` |
 | `none` | 不自动加认证头，用 `headers` 手动给 |
 
-### backend — 后端服务器类型
+### backend — 接入服务商预设
 
-自动填充会话标识头（网关按会话做粘性路由用）。每个预设填充的头：
+设置页「接入服务商」下拉对应 `backend` 值。预设把「默认协议 / 各协议 Base URL / 路径覆盖 / 认证方式 / 静态请求头 / 会话标识头」收敛成一份表（`core/llm/server_presets.py`）：
+
+- **订阅套餐**：`opencode-go`（OpenCode Go）、`qwen-token-plan`（阿里云 Token Plan）、`qianfan-coding`（百度千帆）、`volcengine-coding`（火山方舟）、`glm-coding`（智谱 GLM）、`kimi-coding`、`minimax-plan`、`tencent-token-plan`、`xfyun-coding`（讯飞星辰）、`stepfun-step-plan`（阶跃）、`xiaomi-token-plan`（小米 MiMo）。默认协议均为 `anthropic`，认证默认 `bearer`。
+- **直连 / 网关**：`custom`（默认，全部手填）、`deepseek`、`anthropic`、`openai`、`openrouter`、`litellm`。
+
+会话标识头（值为当前会话 ID，无会话时省略）：
 
 | 值 | 自动填充的头 |
 |----|-------------|
-| `custom`（默认） | 不填充，`headers` 手写 |
-| `codex` | `session-id` |
-| `claude-code` | `x-claude-code-session-id` |
-| `opencode` | `x-opencode-session` |
+| `opencode-go` | `x-opencode-session` |
 | `openrouter` | `x-session-id` |
 | `litellm` | `x-litellm-session-id` |
+| 其它 | 不填充（`headers` 可手写） |
 
-头的值是当前会话 ID（每请求携带，无会话时省略）。`headers` 里也可以用 `{session_id}` 占位符手写任意会话头，显式值覆盖预设。
+`codex` / `claude-code` / `opencode` 已移除；旧配置加载时按 `custom` 处理，不再发送对应会话头。
 
 ### base_url — API 地址
 
-默认 `https://api.anthropic.com`。走聚合网关时填网关地址。
+缺省按协议：`anthropic` → `https://api.anthropic.com`；`openai` / `openai-responses` → `https://api.openai.com/v1`。设置页选择接入服务商后自动填对应协议的地址，手改过的地址不会被预设覆盖。
+
+### api_path — API 路径覆盖（可选）
+
+空值 = 用协议默认（`/v1/messages`、`/v1/chat/completions`、`/v1/responses`）。部分厂商路径不带 `/v1`（百度千帆、火山方舟、腾讯 Token Plan、讯飞星辰的 Chat），或 Responses 端点特殊（DeepSeek 为 `/responses`），由预设自动写入。`join_api_url` 会对 base 末尾与路径开头的重复 `/v1` 去重。
 
 ### headers — 附加请求头
 
@@ -160,16 +168,17 @@ JSON 对象。值支持 `{session_id}` 占位符（请求时展开为当前会�
 
 | 协议 | 取值 | 发送行为 |
 |------|------|---------|
-| anthropic | `default` / `off` / `low` / `medium` / `high` | low/medium/high → `thinking.budget_tokens` 1024/4096/10000；default/off 不发送 |
+| anthropic | `default` / `off` / `low` / `medium` / `high` | low/medium/high → `thinking.budget_tokens` 1024/4096/10000；default 不发送；off → `thinking: {type: "disabled"}` |
 | openai | `default` / `none` / `minimal` / `low` / `medium` / `high` | 除 default 外 `reasoning_effort` 直传（none/minimal 需模型支持，不支持时等同缺省） |
+| openai-responses | 同 openai | 除 default 外写入 `reasoning.effort`；off → `"none"`，其余附 `summary: "auto"` 并索取 `reasoning.encrypted_content` |
 
 #### cache_control — 缓存控制
 
 | 值 | 说明 |
 |----|------|
-| `auto`（默认） | Anthropic 协议启用 prompt cache，OpenAI 协议禁用 |
+| `auto`（默认） | Anthropic 协议启用显式 prompt cache；OpenAI Chat 协议不加显式标记；Responses 协议发送 `prompt_cache_key`（会话 ID）改善隐式缓存路由 |
 | `true` | 强制启用（不支持的网关会失败） |
-| `false` | 禁用 |
+| `false` | 禁用；Responses 不发送 `prompt_cache_key` |
 
 ---
 

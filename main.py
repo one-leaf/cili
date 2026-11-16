@@ -145,7 +145,7 @@ def _create_example_config() -> None:
         "providers": {
             "_comment": "接入层：一个凭据（api_key/base_url/协议）管理多个模型；api_key 支持 ${ENV_VAR} 引用环境变量",
             "bg": {
-                "interface_type": "anthropic",  # "anthropic" 或 "openai"
+                "interface_type": "anthropic",  # anthropic | openai（Chat Completions）| openai-responses
                 "api_key": "sk-xxx",
                 "auth_type": "auto",  # auto | bearer | x-api-key | none（认证头补充方式）
                 "backend": "litellm",  # custom | codex | claude-code | opencode | openrouter | litellm（会话头自动填充）
@@ -158,7 +158,7 @@ def _create_example_config() -> None:
                         "max_context_tokens": 256000,  # 上下文工作预算
                         "model_type": "reasoning",  # reasoning（有思考档位）| chat（无思考设置）
                         "input": ["text", "image"],  # 输入模态：text/image/audio/video/pdf，必须含 text
-                        "reasoning": "default",  # default(不传) | off | low | medium | high；openai 另支持 none/minimal
+                        "reasoning": "default",  # default(不传) | off | low | medium | high；openai / openai-responses 另支持 none/minimal
                         "cache_control": "auto",
                     },
                     "cheap": {
