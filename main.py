@@ -100,7 +100,7 @@ _DEFAULT_MODEL = {
     "name": "claude-sonnet-4-6",
     "interface_type": "anthropic",
     "base_url": "https://api.anthropic.com",
-    "max_output_tokens": 8192,
+    "max_output_tokens": 32768,
     "max_context_tokens": 200000,
     "multimodal": True,
     "temperature": 0.2,
