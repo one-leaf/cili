@@ -19,6 +19,18 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: Guard: refuse to run from inside a ZIP archive.
+:: Explorer runs a double-clicked file by extracting ONLY that file to
+:: %%TEMP%%, so start.ps1 is missing there and PowerShell fails with a
+:: confusing -File error (exit -196608).
+if not exist "%~dp0start.ps1" (
+    echo [error] start.ps1 was not found next to start.cmd.
+    echo         You probably double-clicked start.cmd inside a ZIP archive.
+    echo         Extract the WHOLE package to a folder first, then run start.cmd there.
+    pause
+    exit /b 1
+)
+
 :: Pass all args to PowerShell script
 powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0start.ps1" %*
 
