@@ -311,7 +311,7 @@
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="settings-modal"></div>
-        <div class="modal-content settings-modal_content">
+        <div class="modal-content settings-modal_content ms-scope">
             <div class="modal-header">
                 <h2>设置</h2>
                 <div class="modal-header-right">
@@ -332,379 +332,570 @@
             <div class="modal-body">
                 <!-- Models Tab: Providers + model tables -->
                 <div class="tab-content active" id="tab-models">
-                    <div class="model-description">
-                        <strong>模型提供商</strong> — 一个凭据（API Key / Base URL / 协议）支持多个模型。会话标识头按「后端服务器」类型自动填充。
-                    </div>
-                    <div id="providers-list"></div>
-                    <div class="provider-add-row">
-                        <button id="provider-add-btn" class="btn btn-small">+ 新增 模型提供商</button>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>模型提供商</strong> — 一个凭据（API Key / Base URL / 协议）支持多个模型。会话标识头按「后端服务器」类型自动填充。</div>
+                        <div id="providers-list"></div>
+                        <div class="provider-add-row">
+                            <button id="provider-add-btn" class="btn">＋ 新增模型提供商</button>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Agents Tab: role → model reference -->
                 <div class="tab-content" id="tab-agents">
-                    <div class="model-description">
-                        <strong>角色模型分配</strong> — Master 必选；Worker / Lite 默认与 Master 一致（改 Master 自动跟随），也可显式指定其他模型。
-                    </div>
-                    <div class="form-group">
-                        <label>Master 模型（必选）:</label>
-                        <select id="agent-master-model"></select>
-                        <small class="form-hint">日常对话与任务执行的主模型</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Worker 模型:</label>
-                        <select id="agent-worker-model"></select>
-                        <small class="form-hint">完整工具集 + 检查阶段，负责大多数委派任务</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Lite 模型:</label>
-                        <select id="agent-lite-model"></select>
-                        <small class="form-hint">最小工具集（read/write/edit/bash），用于简单快速任务；记忆整合也用它</small>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>角色模型分配</strong> — Master 必选；Worker / Lite 默认与 Master 一致（改 Master 自动跟随），也可显式指定其他模型。</div>
+                        <div class="agent-grid">
+                            <div class="agent-card">
+                                <div class="head">
+                                    <span class="name">Master</span>
+                                    <span class="role primary-role">主模型</span>
+                                </div>
+                                <div class="desc">日常对话与任务执行的主模型</div>
+                                <select id="agent-master-model"></select>
+                                <div class="effective">生效：<code id="agent-master-effective">-</code></div>
+                            </div>
+                            <div class="agent-card">
+                                <div class="head">
+                                    <span class="name">Worker</span>
+                                    <span class="role">委派执行</span>
+                                </div>
+                                <div class="desc">完整工具集 + 检查阶段，负责大多数委派任务</div>
+                                <select id="agent-worker-model"></select>
+                                <div class="effective">生效：<code id="agent-worker-effective">-</code></div>
+                            </div>
+                            <div class="agent-card">
+                                <div class="head">
+                                    <span class="name">Lite</span>
+                                    <span class="role">轻量任务</span>
+                                </div>
+                                <div class="desc">最小工具集（read/write/edit/bash），用于简单快速任务；记忆整合也用它</div>
+                                <select id="agent-lite-model"></select>
+                                <div class="effective">生效：<code id="agent-lite-effective">-</code></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
                 <!-- System Parameters Tab -->
                 <div class="tab-content" id="tab-system">
-                    <div class="model-description">
-                        <strong>系统级参数</strong> — 影响 Python 环境、包安装等底层行为。
-                    </div>
-                    <div class="form-group">
-                        <label>Pip 镜像源:</label>
-                        <select id="system-pip-mirror">
-                            <option value="">PyPI 官方源</option>
-                            <option value="https://repo.huaweicloud.com/repository/pypi/simple/">华为云</option>
-                            <option value="https://mirrors.aliyun.com/pypi/simple/">阿里云</option>
-                            <option value="https://pypi.tuna.tsinghua.edu.cn/simple/">清华源</option>
-                            <option value="https://pypi.doubanio.com/simple/">豆瓣源</option>
-                        </select>
-                        <small class="form-hint">用于 Python 包安装，首次启动时随机选择一个</small>
-                    </div>
-                    <div class="form-group">
-                        <label>浏览器路径:</label>
-                        <input type="text" id="system-browser-path" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe">
-                        <small class="form-hint">浏览器可执行文件路径，留空则自动检测（优先 Edge，其次 Chrome）。修改后需重启服务生效</small>
-                    </div>
-                    <div class="form-group">
-                        <label>网页搜索引擎:</label>
-                        <select id="system-search-engine">
-                            <option value="bing">Bing（默认）</option>
-                            <option value="google">Google</option>
-                        </select>
-                        <small class="form-hint">web_search 工具使用的搜索引擎</small>
-                    </div>
-                    <div class="form-group">
-                        <label>MinerU API Key:</label>
-                        <div>
-                            <div class="input-with-icon">
-                                <input type="password" id="system-mineru-api-key" placeholder="留空则使用免费 Agent API（≤10MB/≤20页）">
-                                <button type="button" class="toggle-password" data-target="system-mineru-api-key">
-                                    <svg class="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                                        <circle cx="12" cy="12" r="3"></circle>
-                                    </svg>
-                                </button>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>系统级参数</strong> — 影响 Python 环境、包安装与底层运行行为。</div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">运行环境</span></div>
+                            <div class="setting-row">
+                                <label for="system-pip-mirror">Pip 镜像源</label>
+                                <div class="control">
+                                    <select id="system-pip-mirror" style="width:220px">
+                                        <option value="">PyPI 官方源</option>
+                                        <option value="https://repo.huaweicloud.com/repository/pypi/simple/">华为云</option>
+                                        <option value="https://mirrors.aliyun.com/pypi/simple/">阿里云</option>
+                                        <option value="https://pypi.tuna.tsinghua.edu.cn/simple/">清华源</option>
+                                        <option value="https://pypi.doubanio.com/simple/">豆瓣源</option>
+                                    </select>
+                                    <div class="hint">用于 Python 包安装，首次启动时随机选择一个</div>
+                                </div>
                             </div>
-                            <small class="form-hint">pdf2markdown 工具使用的 MinerU API Key。未配置时仅支持免费 ≤10MB、≤20页；配置后可使用 ≤200MB、≤200页。可在 <a href="https://mineru.net/OpenSourceTools/Extractor" target="_blank" rel="noopener">mineru.net</a> 免费申请</small>
+                            <div class="setting-row">
+                                <label for="system-browser-path">浏览器路径</label>
+                                <div class="control">
+                                    <input type="text" id="system-browser-path" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe">
+                                    <div class="hint">留空则自动检测（优先 Edge，其次 Chrome）；修改后需重启服务生效</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="system-search-engine">网页搜索引擎</label>
+                                <div class="control">
+                                    <select id="system-search-engine" style="width:200px">
+                                        <option value="bing">Bing（默认）</option>
+                                        <option value="google">Google</option>
+                                    </select>
+                                    <div class="hint">web_search 工具使用的搜索引擎</div>
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                    <div class="form-group">
-                        <label>允许访问IP:</label>
-                        <input type="text" id="system-allowed-ips" placeholder="192.168.1.100, 10.0.0.5">
-                        <small class="form-hint">逗号分隔的IP白名单，留空则仅允许本机访问</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Agent 最大迭代次数:</label>
-                        <input type="number" id="system-max-iterations" min="10" max="1000" value="200" placeholder="200">
-                        <small class="form-hint">Agent 单次会话中最大工具调用迭代次数（默认 200）</small>
-                    </div>
-                    <div class="form-group">
-                        <label>同时运行后台任务数:</label>
-                        <input type="number" id="system-max-concurrent-agents" min="1" max="10" value="2" placeholder="2">
-                        <small class="form-hint">同时运行的后台任务上限（默认 2，范围 1-10）</small>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">文档与网络</span></div>
+                            <div class="setting-row">
+                                <label for="system-mineru-api-key">MinerU API Key</label>
+                                <div class="control">
+                                    <div class="key-wrap">
+                                        <input type="password" id="system-mineru-api-key" placeholder="留空则使用免费 Agent API（≤10MB/≤20页）">
+                                        <button type="button" class="icon-btn toggle-password" data-target="system-mineru-api-key" title="显示">
+                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                                <circle cx="12" cy="12" r="3"></circle>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div class="hint">pdf2markdown 工具使用；未配置时仅支持免费 ≤10MB、≤20页；配置后可使用 ≤200MB、≤200页。可在 <a href="https://mineru.net/OpenSourceTools/Extractor" target="_blank" rel="noopener">mineru.net</a> 免费申请</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="system-allowed-ips">允许访问 IP</label>
+                                <div class="control">
+                                    <input type="text" id="system-allowed-ips" placeholder="192.168.1.100, 10.0.0.5">
+                                    <div class="hint">逗号分隔的 IP 白名单，留空则仅允许本机访问</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">会话与任务</span></div>
+                            <div class="setting-row">
+                                <label for="system-max-iterations">最大迭代次数</label>
+                                <div class="control">
+                                    <input type="number" id="system-max-iterations" min="10" max="1000" value="200" placeholder="200">
+                                    <div class="hint">Agent 单次会话中最大工具调用迭代次数（默认 200）</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="system-max-concurrent-agents">并发后台任务</label>
+                                <div class="control">
+                                    <input type="number" id="system-max-concurrent-agents" min="1" max="10" value="2" placeholder="2">
+                                    <div class="hint">同时运行的后台任务上限（默认 2，范围 1–10）</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Permissions Tab -->
                 <div class="tab-content" id="tab-permissions">
-                    <div class="model-description">
-                        <strong>权限</strong> — 控制命令、工作区外读写、浏览器导航与只读白名单。配置独立于系统参数，写入 setting.json 顶层 permissions。
-                    </div>
-                    <div class="form-group">
-                        <label>启用权限系统:</label>
-                        <input type="checkbox" id="permission-enabled">
-                        <small class="form-hint">关闭后跳过用户规则与默认策略；青少年约束与执行层不变式仍然生效。</small>
-                    </div>
-                    <div class="form-group">
-                        <label>默认策略:</label>
-                        <select id="permission-default-mode">
-                            <option value="allow">默认允许（未命中规则直接执行）</option>
-                            <option value="ai">AI 识别（lite 判定）</option>
-                            <option value="ask">人工询问</option>
-                        </select>
-                        <small class="form-hint">作用于未命中允许规则、且不在工作区/临时目录安全区的命令与代码。</small>
-                    </div>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>权限</strong> — 控制命令、工作区外读写、浏览器导航与只读白名单。配置独立于系统参数，写入 setting.json 顶层 permissions。</div>
 
-                    <div class="model-description" style="margin-top: 16px;"><strong>外部访问</strong> — 工作区与系统临时目录之外。</div>
-                    <div class="form-group">
-                        <label>读取:</label>
-                        <select id="permission-outside-read">
-                            <option value="allow">允许</option>
-                            <option value="ai">AI 识别（仅路径元数据）</option>
-                            <option value="ask">询问</option>
-                            <option value="deny">禁止</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>写入:</label>
-                        <select id="permission-outside-write">
-                            <option value="allow">允许</option>
-                            <option value="ai">AI 识别</option>
-                            <option value="ask">询问</option>
-                            <option value="deny">禁止</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>删除:</label>
-                        <select id="permission-outside-delete">
-                            <option value="allow">允许</option>
-                            <option value="ai">AI 识别</option>
-                            <option value="ask">询问</option>
-                            <option value="deny">禁止</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>非公网导航:</label>
-                        <select id="permission-outside-navigate">
-                            <option value="allow">允许</option>
-                            <option value="ai">AI 识别</option>
-                            <option value="ask">询问</option>
-                            <option value="deny">禁止</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>只读白名单:</label>
-                        <input type="checkbox" id="permission-readonly-bypass">
-                        <small class="form-hint">纯只读命令（ls/cat/git status 等）不进入判定流程。</small>
-                    </div>
-                    <div id="permission-readonly-groups" class="form-hint" style="margin: -8px 0 16px 152px;"></div>
-
-                    <div class="model-description" style="margin-top: 16px;"><strong>规则管理</strong> — 白名单 / 黑名单 / 灰名单。</div>
-                    <div class="form-group">
-                        <label>作用域:</label>
-                        <select id="permission-scope">
-                            <option value="global">全局</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>视图:</label>
-                        <select id="permission-decision-filter">
-                            <option value="all">全部</option>
-                            <option value="allow">白名单（允许）</option>
-                            <option value="deny">黑名单（拒绝）</option>
-                            <option value="ask">灰名单（询问）</option>
-                        </select>
-                        <button id="permission-revoke-ai-btn" class="btn btn-small" type="button">回收 AI 规则</button>
-                        <span id="permission-status" class="settings-status"></span>
-                    </div>
-                    <div id="permission-rules-list"></div>
-
-                    <div class="model-description" style="margin-top: 16px;"><strong>添加规则</strong></div>
-                    <div class="form-group">
-                        <label>裁决:</label>
-                        <select id="permission-rule-decision">
-                            <option value="allow">白名单（允许）</option>
-                            <option value="deny">黑名单（拒绝）</option>
-                            <option value="ask">灰名单（询问）</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>工具:</label>
-                        <input type="text" id="permission-rule-tool" value="*" placeholder="* / bash / read / write">
-                    </div>
-                    <div class="form-group">
-                        <label>类型:</label>
-                        <select id="permission-rule-kind">
-                            <option value="command">命令</option>
-                            <option value="path:read">读取路径</option>
-                            <option value="path:write">写入路径</option>
-                            <option value="path:delete">删除路径</option>
-                            <option value="browser:navigate">浏览器导航</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>匹配方式:</label>
-                        <select id="permission-rule-match-type">
-                            <option value="exact">精确匹配</option>
-                            <option value="prefix">前缀匹配</option>
-                            <option value="argv_glob">argv 通配</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>匹配值:</label>
-                        <input type="text" id="permission-rule-value" placeholder="例如 rm -rf /">
-                    </div>
-                    <div class="form-group">
-                        <label>备注:</label>
-                        <input type="text" id="permission-rule-note" placeholder="可选">
-                    </div>
-                    <div class="form-group">
-                        <label></label>
-                        <button id="permission-add-rule-btn" class="btn btn-small" type="button">添加规则</button>
-                    </div>
-
-                    <details style="margin-top: 16px;">
-                        <summary style="cursor: pointer; font-weight: 500;">高级判定器设置</summary>
-                        <div class="form-group"><label>启用 AI 判定:</label><input type="checkbox" id="permission-judge-enabled"></div>
-                        <div class="form-group"><label>判定超时（秒）:</label><input type="number" id="permission-judge-timeout" min="5" max="300"></div>
-                        <div class="form-group">
-                            <label>失败策略:</label>
-                            <select id="permission-judge-on-error">
-                                <option value="ask">询问</option>
-                                <option value="deny">拒绝</option>
-                                <option value="allow">允许</option>
-                            </select>
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">通用</span></div>
+                            <div class="setting-row">
+                                <label for="permission-enabled">启用权限系统</label>
+                                <div class="control">
+                                    <div class="inline"><input type="checkbox" id="permission-enabled"><span class="hint">关闭后跳过用户规则与默认策略；青少年约束与执行层不变式仍然生效。</span></div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-default-mode">默认策略</label>
+                                <div class="control">
+                                    <select id="permission-default-mode">
+                                        <option value="allow">默认允许（未命中规则直接执行）</option>
+                                        <option value="ai">AI 识别（lite 判定）</option>
+                                        <option value="ask">人工询问</option>
+                                    </select>
+                                    <div class="hint">作用于未命中允许规则、且不在工作区/临时目录安全区的命令与代码。</div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group"><label>AI 放行自动落盘:</label><input type="checkbox" id="permission-judge-persist"></div>
-                        <div class="form-group">
-                            <label>判定缓存:</label>
-                            <select id="permission-judge-cache">
-                                <option value="session">会话</option>
-                                <option value="none">关闭</option>
-                            </select>
-                        </div>
-                        <div class="form-group"><label>连错降级次数:</label><input type="number" id="permission-judge-failures" min="1" max="10"></div>
-                    </details>
 
-                    <details style="margin-top: 16px;">
-                        <summary style="cursor: pointer; font-weight: 500;">审批卡设置</summary>
-                        <div class="form-group">
-                            <label>审批超时（秒）:</label>
-                            <input type="number" id="permission-approval-timeout" min="0" max="86400" placeholder="300">
+                    <div class="settings-card">
+                        <div class="settings-card-head"><span class="title">外部访问</span><span class="sub">工作区与系统临时目录之外</span></div>
+                        <div class="settings-grid">
+                            <div class="setting-row">
+                                <label for="permission-outside-read">读取</label>
+                                <div class="control">
+                                    <select id="permission-outside-read">
+                                        <option value="allow">允许</option>
+                                        <option value="ai">AI 识别（仅路径元数据）</option>
+                                        <option value="ask">询问</option>
+                                        <option value="deny">禁止</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-outside-write">写入</label>
+                                <div class="control">
+                                    <select id="permission-outside-write">
+                                        <option value="allow">允许</option>
+                                        <option value="ai">AI 识别</option>
+                                        <option value="ask">询问</option>
+                                        <option value="deny">禁止</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-outside-delete">删除</label>
+                                <div class="control">
+                                    <select id="permission-outside-delete">
+                                        <option value="allow">允许</option>
+                                        <option value="ai">AI 识别</option>
+                                        <option value="ask">询问</option>
+                                        <option value="deny">禁止</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-outside-navigate">非公网导航</label>
+                                <div class="control">
+                                    <select id="permission-outside-navigate">
+                                        <option value="allow">允许</option>
+                                        <option value="ai">AI 识别</option>
+                                        <option value="ask">询问</option>
+                                        <option value="deny">禁止</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-hint" style="margin-bottom: 8px;">0 表示不自动过期；超时后默认拒绝执行，Web 端自动恢复循环，IM 端等下次消息带走。</div>
-                        <div class="form-group">
-                            <label>超时自动恢复:</label>
-                            <select id="permission-approval-auto-resume">
-                                <option value="web">仅 Web</option>
-                                <option value="all">Web 与 TUI</option>
-                                <option value="none">不自动恢复</option>
-                            </select>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head"><span class="title">只读白名单</span></div>
+                        <div class="setting-row">
+                            <label for="permission-readonly-bypass">免判定</label>
+                            <div class="control">
+                                <div class="inline"><input type="checkbox" id="permission-readonly-bypass"><span class="hint">纯只读命令（ls/cat/git status 等）不进入判定流程。</span></div>
+                                <div id="permission-readonly-groups" class="hint"></div>
+                            </div>
                         </div>
-                    </details>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head"><span class="title">规则管理</span><span class="sub">白名单 / 黑名单 / 灰名单</span></div>
+                        <div class="setting-row">
+                            <label for="permission-scope">作用域</label>
+                            <div class="control">
+                                <select id="permission-scope" style="width:160px">
+                                    <option value="global">全局</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <label for="permission-decision-filter">视图</label>
+                            <div class="control">
+                                <div class="inline">
+                                    <select id="permission-decision-filter" style="width:200px">
+                                        <option value="all">全部</option>
+                                        <option value="allow">白名单（允许）</option>
+                                        <option value="deny">黑名单（拒绝）</option>
+                                        <option value="ask">灰名单（询问）</option>
+                                    </select>
+                                    <button id="permission-revoke-ai-btn" class="btn-secondary" type="button">回收 AI 规则</button>
+                                </div>
+                                <span id="permission-status" class="settings-status"></span>
+                            </div>
+                        </div>
+                        <div id="permission-rules-list"></div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head"><span class="title">添加规则</span></div>
+                        <div class="settings-grid">
+                            <div class="setting-row">
+                                <label for="permission-rule-decision">裁决</label>
+                                <div class="control">
+                                    <select id="permission-rule-decision">
+                                        <option value="allow">白名单（允许）</option>
+                                        <option value="deny">黑名单（拒绝）</option>
+                                        <option value="ask">灰名单（询问）</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-rule-tool">工具</label>
+                                <div class="control">
+                                    <input type="text" id="permission-rule-tool" value="*" placeholder="* / bash / read / write" style="width:220px">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-rule-kind">类型</label>
+                                <div class="control">
+                                    <select id="permission-rule-kind">
+                                        <option value="command">命令</option>
+                                        <option value="path:read">读取路径</option>
+                                        <option value="path:write">写入路径</option>
+                                        <option value="path:delete">删除路径</option>
+                                        <option value="browser:navigate">浏览器导航</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-rule-match-type">匹配方式</label>
+                                <div class="control">
+                                    <select id="permission-rule-match-type">
+                                        <option value="exact">精确匹配</option>
+                                        <option value="prefix">前缀匹配</option>
+                                        <option value="argv_glob">argv 通配</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-rule-value">匹配值</label>
+                                <div class="control">
+                                    <input type="text" id="permission-rule-value" placeholder="例如 rm -rf /" style="width:220px">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="permission-rule-note">备注</label>
+                                <div class="control">
+                                    <input type="text" id="permission-rule-note" placeholder="可选" style="width:220px">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-actions">
+                            <button id="permission-add-rule-btn" class="btn-primary" type="button">添加规则</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <details class="p-adv">
+                            <summary>高级判定器设置</summary>
+                            <div class="settings-grid" style="margin-top: 12px">
+                                <div class="setting-row">
+                                    <label for="permission-judge-enabled">启用 AI 判定</label>
+                                    <div class="control"><div class="inline"><input type="checkbox" id="permission-judge-enabled"></div></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-timeout">判定超时（秒）</label>
+                                    <div class="control"><input type="number" id="permission-judge-timeout" min="5" max="300"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-on-error">失败策略</label>
+                                    <div class="control">
+                                        <select id="permission-judge-on-error">
+                                            <option value="ask">询问</option>
+                                            <option value="deny">拒绝</option>
+                                            <option value="allow">允许</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-persist">AI 放行自动落盘</label>
+                                    <div class="control"><div class="inline"><input type="checkbox" id="permission-judge-persist"></div></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-cache">判定缓存</label>
+                                    <div class="control">
+                                        <select id="permission-judge-cache">
+                                            <option value="session">会话</option>
+                                            <option value="none">关闭</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-failures">连错降级次数</label>
+                                    <div class="control"><input type="number" id="permission-judge-failures" min="1" max="10"></div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+
+                    <div class="settings-card">
+                        <details class="p-adv">
+                            <summary>审批卡设置</summary>
+                            <div class="settings-grid" style="margin-top: 12px">
+                                <div class="setting-row">
+                                    <label for="permission-approval-timeout">审批超时（秒）</label>
+                                    <div class="control"><input type="number" id="permission-approval-timeout" min="0" max="86400" placeholder="300"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-approval-auto-resume">超时自动恢复</label>
+                                    <div class="control">
+                                        <select id="permission-approval-auto-resume">
+                                            <option value="web">仅 Web</option>
+                                            <option value="all">Web 与 TUI</option>
+                                            <option value="none">不自动恢复</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="hint" style="margin-top: 10px; font-size: var(--ms-fs-label); color: var(--ms-muted);">0 表示不自动过期；超时后默认拒绝执行，Web 端自动恢复循环，IM 端等下次消息带走。</div>
+                        </details>
+                    </div>
+                    </div>
                 </div>
 
                 <!-- MCP Servers Tab -->
                 <div class="tab-content" id="tab-mcp">
-                    <div class="model-description">
-                        <strong>MCP 服务器</strong> — 连接外部 MCP 服务器，把其工具注入 agent（默认 deferred，聊天中用 tool_search 激活）。
-                        <button id="mcp-reload-btn" class="btn btn-small" style="margin-left: 8px;">重新连接</button>
-                        <span id="mcp-status" class="form-hint" style="margin-left: 8px;"></span>
-                    </div>
-                    <div id="mcp-server-list" style="margin-top: 8px;"></div>
-                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 16px 0;">
-                    <div class="model-description"><strong>添加服务器</strong></div>
-                    <div class="form-group">
-                        <label>名称:</label>
-                        <input type="text" id="mcp-name" placeholder="filesystem">
-                        <small class="form-hint">唯一标识，将作为工具名前缀 mcp_{名称}_*</small>
-                    </div>
-                    <div class="form-group">
-                        <label>端点 URL:</label>
-                        <input type="text" id="mcp-url" placeholder="http://localhost:3000/mcp">
-                        <small class="form-hint">streamableHttp 端点（MCP 仅支持此传输）</small>
-                    </div>
-                    <div class="form-group">
-                        <label>请求头（认证）:</label>
-                        <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx, X-API-Key=yyy">
-                        <small class="form-hint">逗号分隔 KEY=VALUE，用于 API Key / Bearer Token 认证</small>
-                    </div>
-                    <div class="form-group">
-                        <label>工具超时（秒）:</label>
-                        <input type="number" id="mcp-tool-timeout" min="1" max="600" value="30">
-                    </div>
-                    <div class="form-group">
-                        <label>工具白名单:</label>
-                        <input type="text" id="mcp-enabled-tools" placeholder="*（全部）" value="*">
-                        <small class="form-hint">逗号分隔的 MCP 工具名；* = 全部</small>
-                    </div>
-                    <div class="form-group">
-                        <label></label>
-                        <button id="mcp-test-new-btn" class="btn btn-small">测试连接</button>
-                        <button id="mcp-add-btn" class="btn btn-small btn-primary">添加服务器</button>
-                        <span id="mcp-test-new-result" class="form-hint" style="margin-left: 8px;"></span>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>MCP 服务器</strong> — 连接外部 MCP 服务器，把其工具注入 agent（默认 deferred，聊天中用 tool_search 激活）。</div>
+                        <div class="settings-actions" style="margin: 0 0 12px">
+                            <button id="mcp-reload-btn" class="btn-secondary" type="button">重新连接</button>
+                            <span id="mcp-status" class="hint" style="font-size: var(--ms-fs-label); color: var(--ms-muted);"></span>
+                        </div>
+                        <div id="mcp-server-list"></div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">添加服务器</span></div>
+                            <div class="setting-row">
+                                <label for="mcp-name">名称</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-name" placeholder="filesystem">
+                                    <div class="hint">唯一标识，将作为工具名前缀 mcp_{名称}_*</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="mcp-url">端点 URL</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-url" placeholder="http://localhost:3000/mcp">
+                                    <div class="hint">streamableHttp 端点（MCP 仅支持此传输）</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="mcp-headers">请求头</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx, X-API-Key=yyy">
+                                    <div class="hint">逗号分隔 KEY=VALUE，用于 API Key / Bearer Token 认证</div>
+                                </div>
+                            </div>
+                            <div class="settings-grid">
+                                <div class="setting-row">
+                                    <label for="mcp-tool-timeout">工具超时</label>
+                                    <div class="control"><input type="number" id="mcp-tool-timeout" min="1" max="600" value="30"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="mcp-enabled-tools">工具白名单</label>
+                                    <div class="control">
+                                        <input type="text" id="mcp-enabled-tools" placeholder="*（全部）" value="*" style="width:180px">
+                                        <div class="hint">逗号分隔；* = 全部</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-actions">
+                                <button id="mcp-test-new-btn" class="btn-secondary" type="button">测试连接</button>
+                                <button id="mcp-add-btn" class="btn-primary" type="button">添加服务器</button>
+                                <span id="mcp-test-new-result" class="hint"></span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
                 <!-- QQ 接入端 Tab -->
                 <div class="tab-content" id="tab-qq">
-                    <div class="model-description">
-                        <strong>QQ 接入端</strong> — 用官方 QQ 机器人与 Cili 对话，与网页端
-                        <b>共享同一会话</b>。
-                    </div>
-
-                    <div id="qq-accounts-list"></div>
-
-                    <div class="form-group">
-                        <button id="qq-add-account-btn" class="btn btn-small btn-primary">添加新账号</button>
-                    </div>
-
-                    <div class="model-description" style="margin-top: 12px;">
-                        <small class="form-hint">
-                            保存后即刻生效（无需重启）。每个账号可绑定独立的默认工作空间，
-                            不同账号配不同工作区，记忆也相互隔离。
-                        </small>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>QQ 接入端</strong> — 用官方 QQ 机器人与 Cili 对话，与网页端<strong>共享同一会话</strong>。仅支持私聊。</div>
+                        <div id="qq-accounts-list"></div>
+                        <button id="qq-add-account-btn" class="add-entry-btn" type="button">＋ 添加新账号</button>
+                        <div class="settings-note">保存后即刻生效（无需重启）。每个账号可绑定独立的默认工作空间，不同账号配不同工作区，记忆也相互隔离。</div>
                     </div>
                 </div>
 
                 <div class="tab-content" id="tab-wechat">
-                    <div class="model-description">
-                        <strong>微信接入端</strong> — 用个人微信（iLink）与 Cili 对话，与网页端
-                        <b>共享同一会话</b>。仅支持私聊。
-                    </div>
-
-                    <div id="wechat-accounts-list"></div>
-
-                    <div class="form-group">
-                        <button id="wechat-add-account-btn" class="btn btn-small btn-primary">添加新账号</button>
-                    </div>
-
-                    <div class="model-description" style="margin-top: 12px;">
-                        <small class="form-hint">
-                            凭证来自扫码，按账号存放，不写进设置文件；保存后即刻生效（无需重启）。
-                            不同账号可绑定不同默认工作空间来隔离记忆。
-                        </small>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>微信接入端</strong> — 用个人微信（iLink）与 Cili 对话，与网页端<strong>共享同一会话</strong>。仅支持私聊。</div>
+                        <div id="wechat-accounts-list"></div>
+                        <button id="wechat-add-account-btn" class="add-entry-btn" type="button">＋ 添加新账号</button>
+                        <div class="settings-note">凭证来自扫码，按账号存放，不写进设置文件；保存后即刻生效（无需重启）。不同账号可绑定不同默认工作空间来隔离记忆。</div>
                     </div>
                 </div>
 
                 <!-- Teen Mode Tab: 青少年模式（面板由 settings.js 按状态渲染） -->
                 <div class="tab-content" id="tab-teen">
-                    <div class="model-description">
-                        <strong>青少年模式</strong> — 面向家长可控的受限模式：开启后聊天与执行记录不可删除/撤销、行为受限（越界写删直接拒绝）、开关与放宽需家长密码。所有限制在服务端强制执行。
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>青少年模式</strong> — 面向家长可控的受限模式：开启后聊天与执行记录不可删除/撤销、行为受限（越界写删直接拒绝）、开关与放宽需家长密码。所有限制在服务端强制执行。</div>
+                        <div id="teen-panel"></div>
                     </div>
-                    <div id="teen-panel"></div>
                 </div>
 
                 <!-- About Tab: 版本与升级 -->
                 <div class="tab-content" id="tab-about">
-                    <div class="model-description">
-                        <strong>版本与升级</strong> — 检查新版本并下载升级包（zip 落在脚本目录）；下载完成后等待会话空闲自动重启应用，也可手动点「立即重启应用」（需通过 start.cmd 启动）。
+                    <div class="settings-pane">
+                        <div class="about-hero">
+                            <div class="about-logo"><img src="/static/cili-paramecium.png" alt="草履虫"></div>
+                            <div>
+                                <div class="about-name" id="about-app-name">草履虫</div>
+                                <div class="about-tagline">自托管的个人 AI 助理 · Windows 本地运行</div>
+                            </div>
+                            <div class="about-chips">
+                                <span class="chip chip-version" id="about-hero-version">-</span>
+                                <span class="chip chip-author" id="about-author">by OneLeaf</span>
+                            </div>
+                        </div>
+
+                        <div class="about-card" id="about-card">
+                            <div class="about-card-title">版本与升级</div>
+                            <div class="version-row">
+                                <div class="version-col">
+                                    <div class="label">当前版本</div>
+                                    <div class="value" id="about-local-version">-</div>
+                                </div>
+                                <span class="version-arrow">→</span>
+                                <div class="version-col">
+                                    <div class="label">远程版本</div>
+                                    <div class="value-line">
+                                        <span class="value pending" id="about-remote-version">未检查</span>
+                                        <span class="chip badge-update" id="about-update-badge" hidden>可升级</span>
+                                    </div>
+                                </div>
+                                <span class="spacer"></span>
+                                <button class="btn-secondary" id="btn-check-update" type="button">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                                    检查更新
+                                </button>
+                            </div>
+                            <div class="about-progress"><i></i></div>
+                            <div class="about-status" id="about-update-status">点击「检查更新」获取远端版本</div>
+
+                            <div class="about-divider"></div>
+                            <div class="about-actions">
+                                <button class="btn-primary" id="btn-download-update" type="button" style="display:none">下载升级包</button>
+                                <button class="btn-soft" id="btn-restart-update" type="button" style="display:none">立即重启应用</button>
+                                <span class="about-note" id="about-launcher" style="margin:0">当前运行方式：手动启动</span>
+                            </div>
+                            <div class="about-note" id="about-zip-status"></div>
+                            <div class="about-note">升级包下载到脚本目录；由 <code>start.cmd</code> 托管时，下载完成后会在会话空闲时自动重启应用。手动运行 Python 时需自行重启服务。</div>
+                        </div>
+
+                        <div class="about-card about-intro">
+                            <div class="about-card-title">关于草履虫</div>
+                            <p>草履虫是一个自托管的个人 AI 助理：学习、编程、科研、办公、协作和日常工具都在同一个 Agent 里完成，支持网页、QQ 与微信多端对话。数据、模型配置与会话记录全部留在本机。</p>
+                            <div class="feature-grid">
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H2z"/><path d="M22 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">学习</div>
+                                        <div class="fd">六种学习模式、教材精读、错题与课程记录</div>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">编程</div>
+                                        <div class="fd">读写文件、执行命令、运行 Python、调试网页</div>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><path d="M7.5 15h9"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">科研</div>
+                                        <div class="fd">文献调研、LaTeX 排版、PDF 解析</div>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">办公</div>
+                                        <div class="fd">文档转 Markdown、批量整理、定时任务</div>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">协作</div>
+                                        <div class="fd">远程 Git 工作区、多人共用、多端共享会话</div>
+                                    </div>
+                                </div>
+                                <div class="feature">
+                                    <span class="fi">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="ft">工具</div>
+                                        <div class="fd">浏览器自动化、联网搜索、长期记忆</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>当前版本:</label>
-                        <span id="about-local-version">-</span>
-                        <small class="form-hint" id="about-zip-status"></small>
-                    </div>
-                    <div class="form-group">
-                        <label>远程版本:</label>
-                        <span id="about-remote-version">未检查</span>
-                    </div>
-                    <div style="display: flex; gap: 8px; margin: 12px 0;">
-                        <button class="btn btn-small" id="btn-check-update">检查更新</button>
-                        <button class="btn btn-small" id="btn-download-update" style="display:none">下载升级包</button>
-                        <button class="btn btn-small" id="btn-restart-update" style="display:none">立即重启应用</button>
-                    </div>
-                    <div id="about-update-status" class="form-hint"></div>
                 </div>
 
             </div>
@@ -773,7 +964,7 @@
     <!-- Workspace Settings Modal -->
     <div id="workspace-settings-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="workspace-settings-modal"></div>
-        <div class="modal-content">
+        <div class="modal-content ms-scope">
             <div class="modal-header">
                 <h2>工作区设置</h2>
                 <button class="modal-close" data-modal="workspace-settings-modal">&times;</button>
@@ -788,210 +979,287 @@
             <div class="modal-body">
                 <!-- 基本设置 Tab -->
                 <div class="tab-content active" id="tab-ws-basic">
-                    <div class="form-group">
-                        <label>工作区名称:</label>
-                        <input type="text" id="ws-setting-name" placeholder="输入工作区名称">
-                        <small class="form-hint">最多50个字符</small>
-                    </div>
-                    <div class="form-group">
-                        <label>工作目录:</label>
-                        <div class="input-with-button">
-                            <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
-                            <button type="button" id="ws-browse-dir-btn" class="btn btn-small">浏览...</button>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>工作区信息</strong> — 名称用于列表展示，目录是 Agent 执行操作的根路径。</div>
+                        <div class="settings-card">
+                            <div class="settings-card-head">
+                                <span class="title">基本信息</span>
+                                <span class="chip chip-ask" id="ws-system-badge" hidden>系统工作区 · 只读</span>
+                            </div>
+                            <div class="setting-row">
+                                <label for="ws-setting-name">工作区名称</label>
+                                <div class="control">
+                                    <input type="text" id="ws-setting-name" placeholder="输入工作区名称">
+                                    <div class="hint">最多 50 个字符</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="ws-setting-directory">工作目录</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
+                                        <button type="button" id="ws-browse-dir-btn" class="btn-secondary">浏览…</button>
+                                    </div>
+                                    <div class="hint">Agent 在此目录下执行操作</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>工作区 UUID</label>
+                                <div class="control">
+                                    <span id="workspace-settings-status" class="settings-status"></span>
+                                </div>
+                            </div>
                         </div>
-                        <small class="form-hint">Agent 在此目录下执行操作</small>
-                    </div>
-                    <div class="form-group">
-                        <label>工作区 UUID:</label>
-                        <span id="workspace-settings-status" class="settings-status"></span>
                     </div>
                 </div>
                 <!-- 项目提示词 Tab -->
                 <div class="tab-content" id="tab-ws-instructions">
-                    <div class="instructions-header">
-                        <span id="instructions-filename">AGENTS.md</span>
-                        <div class="instructions-actions">
-                            <select id="instructions-template-select" class="template-select">
-                                <option value="">加载模板...</option>
-                            </select>
-                            <button type="button" id="instructions-generate-btn" class="btn btn-small btn-secondary">AI 生成</button>
+                    <div class="settings-pane instructions-pane">
+                        <div class="settings-card instructions-card">
+                            <div class="settings-card-head">
+                                <span class="title" id="instructions-filename">AGENTS.md</span>
+                                <span class="sub">项目提示词会注入每次对话的 system prompt</span>
+                                <span class="spacer"></span>
+                                <select id="instructions-template-select" class="template-select">
+                                    <option value="">加载模板...</option>
+                                </select>
+                                <button type="button" id="instructions-generate-btn" class="btn-secondary">AI 生成</button>
+                            </div>
+                            <textarea id="instructions-editor" class="instructions-editor" placeholder="项目提示词内容（AGENTS.md / CLAUDE.md）..."></textarea>
+                            <div id="instructions-status" class="settings-status"></div>
                         </div>
                     </div>
-                    <textarea id="instructions-editor" class="instructions-editor" placeholder="项目提示词内容（AGENTS.md / CLAUDE.md）..."></textarea>
-                    <div id="instructions-status" class="settings-status"></div>
                 </div>
                 <!-- 版本管理 Tab -->
                 <div class="tab-content" id="tab-ws-git">
-                    <div class="form-group" style="grid-template-columns: 1fr; align-items: center;">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <label class="checkbox-label" style="grid-column: auto; text-align: left; display: flex; align-items: center; gap: 8px;">
-                                <input type="checkbox" id="git-enabled-toggle">
-                                <span>启用 Git 版本管理</span>
-                            </label>
-                            <small class="form-hint" style="margin:0;">开启后，每次对话结束会自动提交工作区文件变更</small>
-                        </div>
-                    </div>
-                    <div id="git-remote-section" style="display:none;">
-                        <div class="git-remote-header">
-                            <span class="git-section-title">远程仓库</span>
-                            <div class="git-remote-actions">
-                                <button type="button" id="git-pull-btn" class="btn btn-small btn-secondary">拉取</button>
-                                <button type="button" id="git-push-btn" class="btn btn-small btn-secondary">推送</button>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>版本管理</strong> — 每次对话结束自动提交工作区变更；远程仓库用于多端协作与备份。</div>
+
+                        <div class="settings-card">
+                            <div class="setting-row">
+                                <label for="git-enabled-toggle">启用 Git</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <input type="checkbox" id="git-enabled-toggle">
+                                        <span class="hint">开启后，每次对话结束会自动提交工作区文件变更</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>远程地址:</label>
-                            <input type="text" id="git-remote-url" placeholder="https://github.com/user/repo.git">
+
+                        <div class="settings-card" id="git-remote-section" style="display:none;">
+                            <div class="settings-card-head">
+                                <span class="title">远程仓库</span>
+                                <span class="spacer"></span>
+                                <button type="button" id="git-pull-btn" class="btn-secondary">拉取</button>
+                                <button type="button" id="git-push-btn" class="btn-secondary">推送</button>
+                            </div>
+                            <div class="setting-row">
+                                <label for="git-remote-url">远程地址</label>
+                                <div class="control">
+                                    <input type="text" id="git-remote-url" placeholder="https://github.com/user/repo.git">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="git-username">用户名</label>
+                                <div class="control">
+                                    <input type="text" id="git-username" placeholder="Git 用户名">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="git-token">Token</label>
+                                <div class="control">
+                                    <input type="password" id="git-token" placeholder="Personal Access Token">
+                                    <div class="hint">仅保存在本机配置，不写入远端</div>
+                                </div>
+                            </div>
+                            <div id="git-remote-info" class="hint"></div>
                         </div>
-                        <div class="form-group">
-                            <label>用户名:</label>
-                            <input type="text" id="git-username" placeholder="Git 用户名">
+
+                        <div class="settings-card" id="git-status-section" style="display:none;">
+                            <div class="settings-card-head">
+                                <span class="title">最近提交</span>
+                                <span class="spacer"></span>
+                                <button type="button" id="git-refresh-btn" class="btn-secondary">刷新</button>
+                            </div>
+                            <div id="git-commits-list" class="git-commits-list"></div>
                         </div>
-                        <div class="form-group">
-                            <label>Token:</label>
-                            <input type="password" id="git-token" placeholder="Personal Access Token">
-                        </div>
-                        <div id="git-remote-info" class="form-hint"></div>
+
+                        <div id="git-settings-status" class="settings-status"></div>
                     </div>
-                    <div id="git-status-section" style="display:none;">
-                        <div class="git-status-header">
-                            <span class="git-status-label">最近提交</span>
-                            <button type="button" id="git-refresh-btn" class="btn btn-small btn-secondary">刷新</button>
-                        </div>
-                        <div id="git-commits-list" class="git-commits-list"></div>
-                    </div>
-                    <div id="git-settings-status" class="settings-status"></div>
                 </div>
                 <!-- 教材下载 Tab -->
                 <div class="tab-content" id="tab-ws-textbooks">
-                    <div class="textbook-toolbar">
-                        <div class="form-group">
-                            <label>学段</label>
-                            <select id="textbook-stage"></select>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>教材下载</strong> — 按学段与年级匹配官方教材，勾选后下载到工作区。</div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head">
+                                <span class="title">筛选与操作</span>
+                                <span class="spacer"></span>
+                                <button type="button" id="textbook-refresh-btn" class="btn-secondary">刷新教材</button>
+                                <button type="button" id="textbook-select-all-btn" class="btn-ghost">全选</button>
+                                <button type="button" id="textbook-clear-btn" class="btn-ghost">清空</button>
+                                <button type="button" id="textbook-download-btn" class="btn-primary">下载选中教材</button>
+                                <button type="button" id="textbook-cancel-btn" class="btn-soft" style="display:none;">取消任务</button>
+                                <button type="button" id="textbook-retry-btn" class="btn-soft" style="display:none;">重试失败</button>
+                            </div>
+                            <div class="setting-row">
+                                <label for="textbook-stage">学段</label>
+                                <div class="control">
+                                    <select id="textbook-stage" style="width:200px"></select>
+                                </div>
+                            </div>
+                            <div class="setting-row" id="textbook-grade-group">
+                                <label for="textbook-grade">年级</label>
+                                <div class="control">
+                                    <select id="textbook-grade" style="width:200px"></select>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group" id="textbook-grade-group">
-                            <label>年级</label>
-                            <select id="textbook-grade"></select>
-                        </div>
-                    </div>
-                    <div class="textbook-actions">
-                        <button type="button" id="textbook-refresh-btn" class="btn btn-small btn-secondary">刷新教材</button>
-                        <button type="button" id="textbook-select-all-btn" class="btn btn-small">全选</button>
-                        <button type="button" id="textbook-clear-btn" class="btn btn-small">清空</button>
-                        <button type="button" id="textbook-download-btn" class="btn btn-small btn-primary">下载选中教材</button>
-                        <button type="button" id="textbook-cancel-btn" class="btn btn-small" style="display:none;">取消任务</button>
-                        <button type="button" id="textbook-retry-btn" class="btn btn-small" style="display:none;">重试失败</button>
-                    </div>
-                    <div class="textbook-columns">
-                        <div class="form-group textbook-subjects-group">
-                            <label>科目与教材版本（勾选科目并选择版本）</label>
-                            <div id="textbook-subjects" class="wizard-subject-list"></div>
-                        </div>
-                        <div class="textbook-results">
-                            <div id="textbook-summary" class="textbook-summary">勾选科目并选择版本后自动匹配教材。</div>
-                            <progress id="textbook-progress" value="0" max="100" style="display:none;"></progress>
-                            <div id="textbook-task-status" class="settings-status"></div>
-                            <div id="textbook-list" class="textbook-list"><div class="textbook-empty">勾选科目并选择版本后自动匹配教材。</div></div>
+
+                        <div class="textbook-columns">
+                            <div class="settings-card">
+                                <div class="settings-card-head"><span class="title">科目与教材版本</span><span class="sub">勾选科目并选择版本</span></div>
+                                <div id="textbook-subjects" class="wizard-subject-list"></div>
+                            </div>
+                            <div class="settings-card">
+                                <div class="settings-card-head">
+                                    <span class="title">匹配结果</span>
+                                    <div id="textbook-summary" class="sub">勾选科目并选择版本后自动匹配教材。</div>
+                                </div>
+                                <progress id="textbook-progress" value="0" max="100" style="display:none;"></progress>
+                                <div id="textbook-task-status" class="settings-status"></div>
+                                <div id="textbook-list" class="textbook-list"><div class="textbook-empty">勾选科目并选择版本后自动匹配教材。</div></div>
+                            </div>
                         </div>
                     </div>
                 </div>
                 <!-- 定时任务 Tab -->
                 <div class="tab-content" id="tab-ws-cron">
-                    <div class="cron-toolbar">
-                        <button type="button" id="cron-new-btn" class="btn btn-small btn-primary">新建任务</button>
-                        <button type="button" id="cron-refresh-btn" class="btn btn-small btn-secondary">刷新</button>
-                        <span id="cron-status" class="settings-status"></span>
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>定时任务</strong> — 让 agent 按间隔、cron 表达式或指定时刻自动执行任务。</div>
+                        <div id="cron-status" class="settings-status" style="margin-bottom: 8px;"></div>
+
+                        <div class="settings-card" id="cron-list-card">
+                            <div class="settings-card-head">
+                                <span class="title">任务列表</span>
+                                <span class="spacer"></span>
+                                <button type="button" id="cron-new-btn" class="btn-primary">新建任务</button>
+                                <button type="button" id="cron-refresh-btn" class="btn-secondary">刷新</button>
+                            </div>
+                            <div id="cron-task-list" class="cron-task-list">
+                                <div class="cron-empty">加载中...</div>
+                            </div>
+                        </div>
+
+                        <div id="cron-form" class="settings-card cron-form" style="display:none;">
+                            <div class="settings-card-head">
+                                <span class="title" id="cron-form-title">新建定时任务</span>
+                            </div>
+                            <input type="hidden" id="cron-form-key">
+                            <div class="setting-row">
+                                <label for="cron-name">名称</label>
+                                <div class="control">
+                                    <input type="text" id="cron-name" placeholder="例如：daily-report">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="cron-description">描述</label>
+                                <div class="control">
+                                    <input type="text" id="cron-description" placeholder="人类可读的任务说明">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="cron-schedule-type">调度类型</label>
+                                <div class="control">
+                                    <select id="cron-schedule-type" style="width:200px">
+                                        <option value="interval">按间隔</option>
+                                        <option value="cron">cron 表达式</option>
+                                        <option value="at">一次性时刻</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-grid" id="cron-fields-interval">
+                                <div class="setting-row">
+                                    <label for="cron-interval-minutes">间隔（分钟）</label>
+                                    <div class="control"><input type="number" id="cron-interval-minutes" min="1" value="60"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="cron-initial-delay">首次延迟</label>
+                                    <div class="control"><input type="number" id="cron-initial-delay" min="1" placeholder="可空"></div>
+                                </div>
+                            </div>
+                            <div class="settings-grid" id="cron-fields-cron" style="display:none;">
+                                <div class="setting-row">
+                                    <label for="cron-expr">cron 表达式</label>
+                                    <div class="control"><input type="text" id="cron-expr" placeholder="0 9 * * *" style="width:220px"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="cron-timezone">时区</label>
+                                    <div class="control"><input type="text" id="cron-timezone" placeholder="Asia/Shanghai" style="width:200px"></div>
+                                </div>
+                            </div>
+                            <div class="settings-grid" id="cron-fields-at" style="display:none;">
+                                <div class="setting-row">
+                                    <label for="cron-at-time">触发时刻</label>
+                                    <div class="control"><input type="text" id="cron-at-time" placeholder="2026-11-15T09:00:00+08:00" style="width:320px"></div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="cron-task">任务描述</label>
+                                <div class="control">
+                                    <textarea id="cron-task" rows="3" placeholder="告诉 master agent 要做什么"></textarea>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="cron-plan">执行计划</label>
+                                <div class="control">
+                                    <textarea id="cron-plan" rows="3" placeholder="每行一步，例如：&#10;1. ...&#10;2. ..."></textarea>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="cron-delivery-mode">投递目标</label>
+                                <div class="control">
+                                    <select id="cron-delivery-mode" style="width:220px">
+                                        <option value="none">不回传（仅 cron 会话）</option>
+                                        <option value="origin">回创建会话</option>
+                                        <option value="session">指定会话</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-grid" id="cron-delivery-session-fields" style="display:none;">
+                                <div class="setting-row">
+                                    <label for="cron-delivery-ws">工作区 UUID</label>
+                                    <div class="control"><input type="text" id="cron-delivery-ws" placeholder="留空 = 当前工作区" style="width:220px"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="cron-delivery-session">会话 ID</label>
+                                    <div class="control"><input type="text" id="cron-delivery-session" placeholder="目标会话 ID" style="width:220px"></div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>执行方式</label>
+                                <div class="control">
+                                    <div class="inline"><label class="switch"><input type="checkbox" id="cron-one-time" checked>一次性（执行后删除）</label></div>
+                                </div>
+                            </div>
+                            <div class="settings-grid">
+                                <div class="setting-row">
+                                    <label for="cron-max-executions">最大执行次数</label>
+                                    <div class="control"><input type="number" id="cron-max-executions" min="1" max="9999" value="9999"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="cron-timeout">超时（秒）</label>
+                                    <div class="control"><input type="number" id="cron-timeout" min="0" value="900"><div class="hint">0 = 不限</div></div>
+                                </div>
+                            </div>
+                            <div class="settings-actions">
+                                <button type="button" id="cron-save-btn" class="btn-primary">保存</button>
+                                <button type="button" id="cron-cancel-btn" class="btn-secondary">取消</button>
+                            </div>
+                        </div>
                     </div>
-                    <div id="cron-task-list" class="cron-task-list">
-                        <div class="cron-empty">加载中...</div>
-                    </div>
-                    <form id="cron-form" class="cron-form" style="display:none;">
-                        <h3 id="cron-form-title">新建定时任务</h3>
-                        <input type="hidden" id="cron-form-key">
-                        <div class="form-group">
-                            <label>名称</label>
-                            <input type="text" id="cron-name" placeholder="例如：daily-report">
-                        </div>
-                        <div class="form-group">
-                            <label>描述</label>
-                            <input type="text" id="cron-description" placeholder="人类可读的任务说明">
-                        </div>
-                        <div class="form-group">
-                            <label>调度类型</label>
-                            <select id="cron-schedule-type">
-                                <option value="interval">按间隔</option>
-                                <option value="cron">cron 表达式</option>
-                                <option value="at">一次性时刻</option>
-                            </select>
-                        </div>
-                        <div class="cron-schedule-fields" id="cron-fields-interval">
-                            <div class="form-group">
-                                <label>间隔（分钟）</label>
-                                <input type="number" id="cron-interval-minutes" min="1" value="60">
-                            </div>
-                            <div class="form-group">
-                                <label>首次延迟（分钟，可空）</label>
-                                <input type="number" id="cron-initial-delay" min="1">
-                            </div>
-                        </div>
-                        <div class="cron-schedule-fields" id="cron-fields-cron" style="display:none;">
-                            <div class="form-group">
-                                <label>cron 表达式</label>
-                                <input type="text" id="cron-expr" placeholder="0 9 * * *">
-                            </div>
-                            <div class="form-group">
-                                <label>时区（可空 = 服务器本地）</label>
-                                <input type="text" id="cron-timezone" placeholder="Asia/Shanghai">
-                            </div>
-                        </div>
-                        <div class="cron-schedule-fields" id="cron-fields-at" style="display:none;">
-                            <div class="form-group">
-                                <label>触发时刻</label>
-                                <input type="text" id="cron-at-time" placeholder="2026-11-15T09:00:00+08:00">
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label>任务描述</label>
-                            <textarea id="cron-task" rows="3" placeholder="告诉 master agent 要做什么"></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label>执行计划（每行一步）</label>
-                            <textarea id="cron-plan" rows="3" placeholder="1. ...&#10;2. ..."></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label>投递目标</label>
-                            <select id="cron-delivery-mode">
-                                <option value="none">不回传（仅 cron 会话）</option>
-                                <option value="origin">回创建会话</option>
-                                <option value="session">指定会话</option>
-                            </select>
-                        </div>
-                        <div id="cron-delivery-session-fields" style="display:none;">
-                            <div class="form-group">
-                                <label>工作区 UUID</label>
-                                <input type="text" id="cron-delivery-ws" placeholder="留空 = 当前工作区">
-                            </div>
-                            <div class="form-group">
-                                <label>会话 ID</label>
-                                <input type="text" id="cron-delivery-session" placeholder="目标会话 ID">
-                            </div>
-                        </div>
-                        <div class="cron-row">
-                            <label class="checkbox-label"><input type="checkbox" id="cron-one-time" checked> 一次性（执行后删除）</label>
-                            <div class="form-group">
-                                <label>最大执行次数</label>
-                                <input type="number" id="cron-max-executions" min="1" max="9999" value="9999">
-                            </div>
-                            <div class="form-group">
-                                <label>超时（秒，0=不限）</label>
-                                <input type="number" id="cron-timeout" min="0" value="900">
-                            </div>
-                        </div>
-                        <div class="cron-form-actions">
-                            <button type="button" id="cron-save-btn" class="btn btn-primary">保存</button>
-                            <button type="button" id="cron-cancel-btn" class="btn">取消</button>
-                        </div>
-                    </form>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1079,7 +1347,7 @@
     <!-- Memory Manager Modal -->
     <div id="memory-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="memory-modal"></div>
-        <div class="modal-content memory-modal-content">
+        <div class="modal-content memory-modal-content ms-scope">
             <div class="modal-header">
                 <h2>记忆管理</h2>
                 <button class="modal-close" data-modal="memory-modal">&times;</button>
@@ -1089,7 +1357,7 @@
                     <label class="memory-toggle">
                         <input type="checkbox" id="memory-enabled-toggle"> 启用记忆
                     </label>
-                    <button class="btn btn-small" id="memory-consolidate-btn">立即整合</button>
+                    <button class="btn-secondary" id="memory-consolidate-btn">立即整合</button>
                     <span class="memory-pending" id="memory-pending-label"></span>
                 </div>
                 <div class="memory-toolbar-right">
@@ -1115,33 +1383,35 @@
                 <div class="memory-detail">
                     <div class="empty-state" id="memory-detail-empty">选择左侧条目查看详情</div>
                     <div id="memory-detail-content" style="display:none;">
-                        <div class="form-group">
-                            <label>名称:</label>
-                            <span class="memory-name" id="mem-name"></span>
+                        <div class="setting-row">
+                            <label>名称</label>
+                            <div class="control"><span class="memory-name" id="mem-name"></span></div>
                         </div>
-                        <div class="form-group">
-                            <label>标题:</label>
-                            <input type="text" id="mem-title">
+                        <div class="setting-row">
+                            <label for="mem-title">标题</label>
+                            <div class="control"><input type="text" id="mem-title"></div>
                         </div>
-                        <div class="form-group">
-                            <label>描述:</label>
-                            <input type="text" id="mem-description" maxlength="200">
+                        <div class="setting-row">
+                            <label for="mem-description">描述</label>
+                            <div class="control"><input type="text" id="mem-description" maxlength="200"></div>
                         </div>
-                        <div class="form-group">
-                            <label>标签 (逗号分隔):</label>
-                            <input type="text" id="mem-tags">
+                        <div class="setting-row">
+                            <label for="mem-tags">标签</label>
+                            <div class="control">
+                                <input type="text" id="mem-tags" placeholder="用逗号分隔，例如：学习, 偏好">
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>内容:</label>
-                            <textarea id="mem-content" class="memory-content-input"></textarea>
+                        <div class="setting-row">
+                            <label for="mem-content">内容</label>
+                            <div class="control"><textarea id="mem-content" class="memory-content-input"></textarea></div>
+                        </div>
+                        <div class="memory-detail-actions">
+                            <button class="btn-primary" id="mem-save-btn">保存</button>
+                            <button class="btn-secondary" id="mem-archive-btn">归档</button>
+                            <button class="btn-secondary" id="mem-restore-btn" style="display:none;">恢复</button>
+                            <button class="btn-danger" id="mem-delete-btn">删除</button>
                         </div>
                         <div class="memory-meta" id="mem-meta"></div>
-                        <div class="memory-detail-actions">
-                            <button class="btn btn-small btn-primary" id="mem-save-btn">保存</button>
-                            <button class="btn btn-small" id="mem-archive-btn">归档</button>
-                            <button class="btn btn-small" id="mem-restore-btn" style="display:none;">恢复</button>
-                            <button class="btn btn-small btn-danger" id="mem-delete-btn">删除</button>
-                        </div>
                     </div>
                 </div>
             </div>

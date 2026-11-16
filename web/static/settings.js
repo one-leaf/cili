@@ -7,6 +7,15 @@ let settingsLoading = false;
 let settingsLoadError = '';
 let teenWorkspaceLoadFailed = false;
 
+// 设置弹窗统一使用的线性图标（与 style.css 的 icon-btn 配套）
+const MS_ICONS = {
+    play: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M8 5l11 7-11 7z"/></svg>',
+    trash: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
+    refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+    eye: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+    eyeOff: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>',
+};
+
 // 加载某个角色（worker/lite）模型配置到表单
 // 收集某个角色（worker/lite）模型配置；name 留空 → 信号后端移除、回退继承 Master
 // ── MCP 服务器管理 ──
@@ -40,49 +49,40 @@ async function loadMcpServers() {
     renderMcpServers();
 }
 
+function mcpStatusChip(s) {
+    if (s.status === 'connected') return `<span class="chip chip-ok"><i></i>已连接 · ${s.tool_count} 工具</span>`;
+    if (s.status === 'connecting') return '<span class="chip chip-ask"><i></i>连接中…</span>';
+    if (s.status === 'failed') return '<span class="chip chip-deny"><i></i>连接失败</span>';
+    return '<span class="chip chip-ask"><i></i>离线</span>';
+}
+
 function renderMcpServers() {
     const container = document.getElementById('mcp-server-list');
     const statusEl = document.getElementById('mcp-status');
     const names = Object.keys(mcpServers);
     if (names.length === 0) {
-        container.innerHTML = '<div class="form-hint" style="color: var(--text-secondary);">尚未配置任何 MCP 服务器。</div>';
+        container.innerHTML = '<div class="settings-empty" style="margin-bottom: 14px;">尚未配置任何 MCP 服务器。</div>';
         statusEl.textContent = '';
         return;
     }
-    const statusText = (s) => {
-        if (s.status === 'connected') return `已连接（${s.tool_count} 工具）`;
-        if (s.status === 'connecting') return '连接中...';
-        if (s.status === 'failed') return '连接失败';
-        return '离线';
-    };
-    const statusColor = (s) => {
-        if (s.status === 'connected') return '#4caf50';
-        if (s.status === 'failed') return '#e74c3c';
-        return 'var(--text-secondary)';
-    };
     container.innerHTML = names.map(name => {
         const s = mcpServers[name];
         const target = (s.url || '').trim();
         const headersInfo = Object.keys(s.headers_masked || {}).map(k => `${k}=${s.headers_masked[k]}`).join(', ');
         return `
-        <div class="mcp-server-card" style="border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                <strong>${escapeHtml(name)}</strong>
-                <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-                    <span style="font-size:12px;color:${statusColor(s)};">${statusText(s)}</span>
-                    <button class="btn btn-small mcp-expand-btn" data-name="${escapeHtml(name)}">工具清单</button>
-                </span>
+        <div class="settings-card mcp-server-card">
+            <div class="settings-card-head">
+                <span class="title">${escapeHtml(name)}</span>
+                ${mcpStatusChip(s)}
+                <span class="spacer" style="flex:1"></span>
+                <button class="icon-btn play mcp-test-btn" data-name="${escapeHtml(name)}" title="测试连接">${MS_ICONS.play}</button>
+                <button class="btn-ghost mcp-expand-btn" data-name="${escapeHtml(name)}" style="height:28px;">工具清单</button>
+                <button class="icon-btn danger mcp-remove-btn" data-name="${escapeHtml(name)}" title="删除服务器">${MS_ICONS.trash}</button>
             </div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
-                ${escapeHtml(target || '未配置 URL')}
-                ${headersInfo ? '<br>认证: ' + escapeHtml(headersInfo) : ''}
-            </div>
-            <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
-                <button class="btn btn-small mcp-test-btn" data-name="${escapeHtml(name)}">测试连接</button>
-                <button class="btn btn-small mcp-remove-btn" data-name="${escapeHtml(name)}">删除</button>
-                <span class="mcp-test-result" style="font-size:12px;"></span>
-            </div>
-            <div class="mcp-tools-list" style="display:none;margin-top:8px;border-top:1px dashed var(--border-color);padding-top:8px;"></div>
+            <div class="mcp-target">${escapeHtml(target || '未配置 URL')}</div>
+            ${headersInfo ? '<div class="mcp-auth">认证：' + escapeHtml(headersInfo) + '</div>' : ''}
+            <div class="mcp-test-result"></div>
+            <div class="mcp-tools-list" style="display:none;"></div>
         </div>`;
     }).join('');
     statusEl.textContent = `共 ${names.length} 个服务器`;
@@ -114,8 +114,8 @@ function buildMcpTestConfig(s) {
 async function testMcpServer(name, btn) {
     const row = btn.closest('.mcp-server-card');
     const resultEl = row.querySelector('.mcp-test-result');
-    resultEl.textContent = '测试中...';
-    resultEl.style.color = 'var(--text-secondary)';
+    resultEl.textContent = '测试中…';
+    resultEl.className = 'mcp-test-result';
     btn.disabled = true;
     const post = (body) => fetch('/api/mcp/test', {
         method: 'POST',
@@ -134,14 +134,14 @@ async function testMcpServer(name, btn) {
         if (!response.ok) throw new Error('HTTP ' + response.status);
         if (data.status === 'connected') {
             resultEl.textContent = `✓ 连接成功（${data.tool_count} 工具）`;
-            resultEl.style.color = '#4caf50';
+            resultEl.className = 'mcp-test-result ok';
         } else {
             resultEl.textContent = '✗ 连接失败: ' + (data.error || '未知错误');
-            resultEl.style.color = '#e74c3c';
+            resultEl.className = 'mcp-test-result err';
         }
     } catch (e) {
         resultEl.textContent = '✗ 请求失败: ' + e.message;
-        resultEl.style.color = '#e74c3c';
+        resultEl.className = 'mcp-test-result err';
     } finally {
         btn.disabled = false;
     }
@@ -158,12 +158,12 @@ function toggleMcpTools(btn) {
     }
     const tools = (mcpServers[btn.dataset.name] || {}).tools || [];
     if (tools.length === 0) {
-        listEl.innerHTML = '<div class="form-hint" style="color:var(--text-secondary);">未连接或无工具（连接后可见，或点击"重新连接"刷新）。</div>';
+        listEl.innerHTML = '<div class="settings-empty">未连接或无工具（连接后可见，或点击「重新连接」刷新）。</div>';
     } else {
         listEl.innerHTML = tools.map(t => `
-            <div style="margin-bottom:8px;">
-                <code style="font-size:12px;color:var(--primary-color);">${escapeHtml(t.name)}</code>
-                ${t.description ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:2px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(t.description)}</div>` : ''}
+            <div class="mcp-tool-item">
+                <code class="mcp-tool-name">${escapeHtml(t.name)}</code>
+                ${t.description ? `<div class="mcp-tool-desc">${escapeHtml(t.description)}</div>` : ''}
             </div>
         `).join('');
     }
@@ -292,9 +292,6 @@ async function testNewMcp() {
 // 多账号（设计 §8）：每个接入端是一个账号列表；每个账号可绑定默认工作空间
 // 与锁定开关。工作区下拉在 openSettings 时取一次、所有卡片复用。
 
-const ACCOUNT_CARD_STYLE =
-    'border:1px solid var(--border-color,#ddd);border-radius:6px;padding:10px 14px;margin:10px 0;';
-
 let settingsWorkspaceOptions = [];
 
 async function loadSettingsWorkspaceOptions() {
@@ -323,46 +320,48 @@ function workspaceOptionsHtml(selected) {
     return opts.join('');
 }
 
-function accountHeaderHtml(acc) {
+function accountHeaderHtml(acc, connected, statusText) {
+    const chipCls = connected ? 'chip chip-ok' : 'chip chip-ask';
+    const label = statusText || (connected ? '已连接' : '未连接');
     return `
-        <div class="form-group" style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
-            <input class="acc-label" placeholder="账号备注（仅用于区分）"
-                   value="${escapeHtml(acc.label || '')}" style="flex:1;">
-            <label style="white-space:nowrap;margin:0;">
-                <input type="checkbox" class="acc-enabled" ${acc.enabled ? 'checked' : ''}> 启用
-            </label>
-            <button type="button" class="acc-delete btn btn-small">删除</button>
+        <div class="settings-card-head">
+            <input class="acc-title acc-label" placeholder="账号备注（仅用于区分）"
+                   value="${escapeHtml(acc.label || '')}">
+            <span class="acc-login-status ${chipCls}">${escapeHtml(label)}</span>
+            <span class="spacer"></span>
+            <label class="switch"><input type="checkbox" class="acc-enabled" ${acc.enabled ? 'checked' : ''}>启用</label>
+            <button type="button" class="acc-delete icon-btn danger" title="删除账号">${MS_ICONS.trash}</button>
         </div>`;
 }
 
 function workspaceFieldsHtml(acc) {
     const mode = acc.session_mode === 'latest' ? 'latest' : 'dedicated';
     const modeOpts = [
-        ['dedicated', '独立会话（每个账号/聊天各一条，互不影响）'],
-        ['latest', '接着最新会话（与 Web/其他通道连续）'],
+        ['dedicated', '独立会话（每个账号/聊天各一条）'],
+        ['latest', '接着最新会话（与 Web 连续）'],
     ].map(([val, text]) =>
         `<option value="${val}"${val === mode ? ' selected' : ''}>${text}</option>`
     ).join('');
     return `
-        <div class="form-group">
-            <label>默认工作空间:</label>
-            <select class="acc-workspace">${workspaceOptionsHtml(acc.default_workspace_uuid || '')}</select>
-            <small class="form-hint">该账号的对话默认落在这个工作区；不同账号配不同工作区可隔离记忆</small>
+        <div class="setting-row">
+            <label>工作区</label>
+            <div class="control">
+                <div class="inline">
+                    <select class="acc-workspace">${workspaceOptionsHtml(acc.default_workspace_uuid || '')}</select>
+                    <label class="switch"><input type="checkbox" class="acc-locked" ${acc.workspace_locked ? 'checked' : ''}>锁定</label>
+                </div>
+                <div class="hint">对话默认落在这个工作区；锁定后 /w 不可用，需在此解锁</div>
+            </div>
         </div>
-        <div class="form-group">
-            <label>会话方式:</label>
-            <select class="acc-session-mode">${modeOpts}</select>
-            <small class="form-hint">独立会话：按本账号与该聊天的标记找回自己的会话；接着最新会话：直接续用工作区里最近更新的会话</small>
-        </div>
-        <div class="form-group">
-            <label>锁定工作空间:</label>
-            <input type="checkbox" class="acc-locked" ${acc.workspace_locked ? 'checked' : ''}>
-            <small class="form-hint">锁定后该账号的 /w 不可用，需在此解锁；需先选择默认工作空间</small>
-        </div>
-        <div class="form-group">
-            <label>锁定会话:</label>
-            <input type="checkbox" class="acc-session-locked" ${acc.session_locked ? 'checked' : ''}>
-            <small class="form-hint">锁定后该账号不能切换会话（/s、/new、/mode 不可用），固定使用自己的独立会话</small>
+        <div class="setting-row">
+            <label>会话</label>
+            <div class="control">
+                <div class="inline">
+                    <select class="acc-session-mode">${modeOpts}</select>
+                    <label class="switch"><input type="checkbox" class="acc-session-locked" ${acc.session_locked ? 'checked' : ''}>锁定</label>
+                </div>
+                <div class="hint">独立会话按账号与聊天标记找回；锁定后不能切换会话（/s、/new、/mode 不可用）</div>
+            </div>
         </div>`;
 }
 
@@ -386,26 +385,25 @@ function enableAccountCard(card) {
     if (cb) cb.checked = true;
 }
 
-// 连接状态字体风格与 MCP 服务器卡片一致（12px，已连接=绿）
-function connStatusColor(connected) {
-    return connected ? '#4caf50' : 'var(--text-secondary)';
-}
 
 // ─── QQ 接入端设置 ───────────────────────────────────────────────────
 
 function buildQQCard(acc) {
     const card = document.createElement('div');
-    card.className = 'account-card';
+    card.className = 'account-card settings-card';
     card.dataset.accountId = acc.id || '';
-    card.style.cssText = ACCOUNT_CARD_STYLE;
     const bound = !!(acc.app_id && acc.secret_masked);
     card.innerHTML = `
-        ${accountHeaderHtml(acc)}
-        <div class="form-group">
-            <label>连接状态:</label>
-            <span class="acc-login-status" style="font-size:12px;color:${connStatusColor(bound)};">${bound ? '已连接' : '未连接'}</span>
-            <button type="button" class="acc-onboard-btn btn btn-small btn-primary">扫码连接</button>
-            <button type="button" class="acc-disconnect-btn btn btn-small">断开连接</button>
+        ${accountHeaderHtml(acc, bound, bound ? '已连接' : '未连接')}
+        <div class="setting-row">
+            <label>连接</label>
+            <div class="control">
+                <div class="inline">
+                    <button type="button" class="acc-onboard-btn btn-secondary">扫码连接</button>
+                    <button type="button" class="acc-disconnect-btn btn-soft">断开连接</button>
+                    <span class="hint">凭据由扫码写入，不显示在表单里</span>
+                </div>
+            </div>
         </div>
         ${workspaceFieldsHtml(acc)}`;
     bindAccountCommon(card, '删除该账号？保存后其配置与会话绑定将被移除。');
@@ -558,8 +556,9 @@ async function refreshQQStatus() {
             if (connected && acc.app_id) parts.push(`机器人 ${acc.app_id}`);
             if (acc.running) parts.push('运行中');
             const el = card.querySelector('.acc-login-status');
+            if (!el) return;
             el.textContent = parts.join(' · ');
-            el.style.color = connStatusColor(connected);
+            el.className = 'acc-login-status chip ' + (connected ? 'chip-ok' : 'chip-ask');
         });
     } catch (e) {
         // 状态刷新失败不打扰用户
@@ -587,19 +586,23 @@ let wechatLoginAccountId = '';
 
 function buildWechatCard(acc) {
     const card = document.createElement('div');
-    card.className = 'account-card';
+    card.className = 'account-card settings-card';
     card.dataset.accountId = acc.id || '';
-    card.style.cssText = ACCOUNT_CARD_STYLE;
-    const parts = [acc.logged_in ? '已连接' : '未连接'];
-    if (acc.logged_in && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
+    const connected = !!acc.logged_in;
+    const parts = [connected ? '已连接' : '未连接'];
+    if (connected && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
     if (acc.running) parts.push('运行中');
     card.innerHTML = `
-        ${accountHeaderHtml(acc)}
-        <div class="form-group">
-            <label>连接状态:</label>
-            <span class="acc-login-status" style="font-size:12px;color:${connStatusColor(acc.logged_in)};">${escapeHtml(parts.join(' · '))}</span>
-            <button type="button" class="acc-login-btn btn btn-small btn-primary">扫码连接</button>
-            <button type="button" class="acc-logout-btn btn btn-small">断开连接</button>
+        ${accountHeaderHtml(acc, connected, parts.join(' · '))}
+        <div class="setting-row">
+            <label>连接</label>
+            <div class="control">
+                <div class="inline">
+                    <button type="button" class="acc-login-btn btn-secondary">扫码连接</button>
+                    <button type="button" class="acc-logout-btn btn-soft">断开连接</button>
+                    <span class="hint">凭证来自扫码，按账号存放，不写进设置文件</span>
+                </div>
+            </div>
         </div>
         ${workspaceFieldsHtml(acc)}`;
     bindAccountCommon(card);
@@ -640,8 +643,9 @@ async function refreshWechatStatus() {
             if (connected && acc.ilink_user_id) parts.push(`账号 ${acc.ilink_user_id}`);
             if (acc.running) parts.push('运行中');
             const el = card.querySelector('.acc-login-status');
+            if (!el) return;
             el.textContent = parts.join(' · ');
-            el.style.color = connStatusColor(connected);
+            el.className = 'acc-login-status chip ' + (connected ? 'chip-ok' : 'chip-ask');
         });
     } catch (e) {
         // 状态刷新失败不打扰用户
@@ -1010,12 +1014,18 @@ async function saveSettings() {
     }
 }
 
-// 测试某个 provider 下的具体模型连接（btn 在 provider 卡片内，取同卡片字段）
+// 测试某个 provider 下的具体模型连接（结果就地显示在该行，不再写到弹窗页脚）
 async function testProviderModel(btn) {
-    const statusEl = document.getElementById('settings-status');
-    statusEl.textContent = '测试连接中...';
     const card = btn.closest('.provider-card');
+    const row = btn.closest('.p-model-row');
     const modelKey = btn.dataset.modelKey;
+    const resultEl = row ? row.querySelector('.p-model-result') : null;
+    const setResult = function (text, cls) {
+        if (!resultEl) return;
+        resultEl.hidden = false;
+        resultEl.className = 'p-model-result' + (cls ? ' ' + cls : '');
+        resultEl.textContent = text;
+    };
     const keyInput = card.querySelector('.p-model-key[data-model-key="' + modelKey + '"]');
     const nameInput = card.querySelector('.p-model-name[data-model-key="' + modelKey + '"]');
     const apiId = nameInput ? nameInput.value.trim() : '';
@@ -1033,9 +1043,11 @@ async function testProviderModel(btn) {
     const headersJson = card.querySelector('.p-headers').value.trim();
     if (headersJson) {
         try { payload.headers = JSON.parse(headersJson); }
-        catch (e) { statusEl.textContent = '✗ Headers JSON 语法错误: ' + e.message; return; }
+        catch (e) { setResult('✗ Headers JSON 语法错误: ' + e.message, 'err'); return; }
     }
 
+    btn.disabled = true;
+    setResult('测试中…', '');
     try {
         const response = await fetch('/api/config/test', {
             method: 'POST',
@@ -1044,12 +1056,14 @@ async function testProviderModel(btn) {
         });
         const data = await response.json();
         if (data.success) {
-            statusEl.textContent = '✓ ' + modelKey + ' 连接成功 (' + payload.interface_type + ')';
+            setResult('✓ 连接成功 (' + payload.interface_type + ')', 'ok');
         } else {
-            statusEl.textContent = '✗ 连接失败: ' + data.message;
+            setResult('✗ 连接失败: ' + data.message, 'err');
         }
     } catch (error) {
-        statusEl.textContent = '✗ 测试失败: ' + error.message;
+        setResult('✗ 测试失败: ' + error.message, 'err');
+    } finally {
+        btn.disabled = false;
     }
 }
 
@@ -1102,6 +1116,8 @@ async function detectProviderModels(btn) {
         candidates.forEach(function (id) {
             modelsContainer.insertAdjacentHTML('beforeend', renderModelRow(id, {}, iface));
         });
+        updateModelCount(card);
+        fillAgentSelects(collectAllRefs());
         statusEl.textContent = '✓ 已加入 ' + candidates.length + ' 个模型（保存后生效）';
     } catch (error) {
         statusEl.textContent = '✗ 检测失败: ' + error.message;
@@ -1131,43 +1147,49 @@ function renderModalities(selected) {
 }
 
 function toggleProviderKeyVisibility(btn) {
-    const input = btn.parentElement.querySelector('.p-api-key');
+    const wrap = btn.closest('.key-wrap') || btn.parentElement;
+    const input = wrap.querySelector('.p-api-key');
     if (!input) return;
     if (input.type === 'password') {
         input.type = 'text';
-        btn.textContent = '🙈';
+        btn.innerHTML = MS_ICONS.eyeOff;
+        btn.title = '隐藏';
     } else {
         input.type = 'password';
-        btn.textContent = '👁';
+        btn.innerHTML = MS_ICONS.eye;
+        btn.title = '显示';
     }
 }
 
+function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); }
+
+// 模型行：一行值 + 一行元数据；列头只在区块顶部出现一次
 function renderModelRow(key, m, iface) {
     m = m || {};
+    const type = m.model_type || 'reasoning';
     return '<div class="p-model-row">'
-        + '<div class="p-model-row-main">'
-        + '<div class="field"><label class="field-label">别名</label>'
-        + '<input type="text" class="p-model-key" data-model-key="' + key + '" value="' + key + '" placeholder="别名" title="别名（agents 引用它）"></div>'
-        + '<span class="model-arrow">→</span>'
-        + '<div class="field"><label class="field-label">模型 ID</label>'
-        + '<input type="text" class="p-model-name" data-model-key="' + key + '" value="' + String(m.name || '').replace(/"/g, '&quot;') + '" placeholder="API 模型 ID（留空=用别名）"></div>'
-        + '<div class="field"><label class="field-label">最大输出</label>'
-        + '<input type="number" class="p-model-max-output" data-model-key="' + key + '" value="' + (m.max_output_tokens || 32768) + '" title="max_output_tokens：单次响应最大输出 token"></div>'
-        + '<div class="field"><label class="field-label">上下文预算</label>'
-        + '<input type="number" class="p-model-max-context" data-model-key="' + key + '" value="' + (m.max_context_tokens || 200000) + '" title="max_context_tokens：上下文工作预算（达到 80% 触发压缩）"></div>'
-        + '<button type="button" class="btn-outline p-model-test" data-model-key="' + key + '">▶ 测试</button>'
-        + '<button type="button" class="btn-outline-danger p-model-remove" data-model-key="' + key + '" title="删除模型">✕</button>'
+        + '<input type="text" class="p-model-key" data-model-key="' + escAttr(key) + '" value="' + escAttr(key) + '" placeholder="别名" title="别名（agents 引用它）">'
+        + '<input type="text" class="p-model-name" data-model-key="' + escAttr(key) + '" value="' + escAttr(m.name) + '" placeholder="API 模型 ID（留空=用别名）">'
+        + '<input type="number" class="p-model-max-output" data-model-key="' + escAttr(key) + '" value="' + (m.max_output_tokens || 32768) + '" title="max_output_tokens：单次响应最大输出 token">'
+        + '<input type="number" class="p-model-max-context" data-model-key="' + escAttr(key) + '" value="' + (m.max_context_tokens || 200000) + '" title="max_context_tokens：上下文工作预算（达到 80% 触发压缩）">'
+        + '<span class="p-model-actions">'
+        + '<button type="button" class="icon-btn play p-model-test" data-model-key="' + escAttr(key) + '" title="测试连接">' + MS_ICONS.play + '</button>'
+        + '<button type="button" class="icon-btn danger p-model-remove" data-model-key="' + escAttr(key) + '" title="删除模型">' + MS_ICONS.trash + '</button>'
+        + '</span>'
+        + '<div class="p-model-meta">'
+        + '<span class="group">类型'
+        + '<select class="p-model-type" data-model-key="' + escAttr(key) + '">'
+        + '<option value="reasoning"' + (type === 'reasoning' ? ' selected' : '') + '>reasoning</option>'
+        + '<option value="chat"' + (type === 'chat' ? ' selected' : '') + '>chat</option>'
+        + '</select></span>'
+        + '<span class="group">思考'
+        + '<select class="p-model-reasoning" data-model-key="' + escAttr(key) + '"'
+        + (type === 'chat' ? ' disabled title="chat 模型不发送思考参数"' : '') + '>'
+        + renderReasoningOptions(iface || 'anthropic', m.reasoning) + '</select></span>'
+        + '<span class="group">输入模态<span class="modality-group">' + renderModalities(m.input) + '</span></span>'
+        + '<span class="p-model-result" data-model-key="' + escAttr(key) + '" hidden></span>'
         + '</div>'
-        + '<div class="p-model-row-opts">'
-        + '<label>类型: <select class="p-model-type" data-model-key="' + key + '">'
-        + '<option value="reasoning"' + ((m.model_type || 'reasoning') === 'reasoning' ? ' selected' : '') + '>reasoning</option>'
-        + '<option value="chat"' + (m.model_type === 'chat' ? ' selected' : '') + '>chat</option>'
-        + '</select></label>'
-        + '<label>思考: <select class="p-model-reasoning" data-model-key="' + key + '"'
-        + ((m.model_type === 'chat') ? ' disabled title="chat 模型不发送思考参数"' : '') + '>'
-        + renderReasoningOptions(iface || 'anthropic', m.reasoning) + '</select></label>'
-        + '<span class="modality-group">输入模态: ' + renderModalities(m.input) + '</span>'
-        + '</div></div>';
+        + '</div>';
 }
 
 function renderProviderCard(key, p) {
@@ -1177,50 +1199,37 @@ function renderProviderCard(key, p) {
         + '<span class="status-dot ' + (configured ? 'ok' : 'pending') + '"></span>'
         + (configured ? '已配置' : '未配置') + '</span>';
     const masked = p.api_key_masked
-        ? '<div class="apikey-hint" title="留空保持不变">当前: ' + p.api_key_masked + '</div>'
+        ? '<div class="apikey-hint" title="留空保持不变">已保存：' + p.api_key_masked + '，留空则保持不变</div>'
         : '';
     const models = p.models && Object.keys(p.models).length ? p.models : { default: {} };
-    const modelRows = Object.keys(models).map(function (mk) {
+    const modelKeys = Object.keys(models);
+    const modelRows = modelKeys.map(function (mk) {
         return renderModelRow(mk, models[mk], p.interface_type);
     }).join('');
-    const esc = function (s) { return String(s).replace(/"/g, '&quot;'); };
+    const esc = escAttr;
+    const initial = (String(key || '?').trim().charAt(0) || '?').toUpperCase();
     return '<div class="provider-card">'
         + '<div class="provider-header">'
-        + '<div class="provider-name-row">'
-        + '<label class="field-label">模型提供商</label>'
+        + '<span class="provider-avatar">' + esc(initial) + '</span>'
         + '<input type="text" class="provider-key-input p-key" value="' + esc(key) + '" placeholder="模型提供商名称">'
-        + status
-        + '</div>'
         + '<span class="spacer"></span>'
-        + '<button type="button" class="btn-outline p-detect">🔍 自动检测模型</button>'
-        + '<button type="button" class="btn-outline-danger p-remove">🗑 删除</button>'
+        + status
+        + '<button type="button" class="btn-ghost p-detect" title="自动检测网关模型列表">' + MS_ICONS.refresh + '检测模型</button>'
+        + '<button type="button" class="icon-btn danger p-remove" title="删除提供商">' + MS_ICONS.trash + '</button>'
         + '</div>'
         + '<div class="provider-body">'
         + '<div class="field-grid">'
-        + '<div class="field"><label class="field-label">协议</label><select class="p-interface-type">'
+        + '<div class="field w-protocol"><label class="field-label">协议</label><select class="p-interface-type">'
         + '<option value="anthropic"' + ((p.interface_type || 'anthropic') === 'anthropic' ? ' selected' : '') + '>Anthropic</option>'
         + '<option value="openai"' + (p.interface_type === 'openai' ? ' selected' : '') + '>OpenAI</option>'
         + '</select></div>'
-        + '<div class="field"><label class="field-label">认证</label><select class="p-auth-type">'
+        + '<div class="field w-auth"><label class="field-label">认证</label><select class="p-auth-type">'
         + '<option value="auto"' + ((p.auth_type || 'auto') === 'auto' ? ' selected' : '') + '>自动</option>'
         + '<option value="bearer"' + (p.auth_type === 'bearer' ? ' selected' : '') + '>Bearer</option>'
         + '<option value="x-api-key"' + (p.auth_type === 'x-api-key' ? ' selected' : '') + '>X-API-Key</option>'
         + '<option value="none"' + (p.auth_type === 'none' ? ' selected' : '') + '>无</option>'
         + '</select></div>'
-        + '<div class="field"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" placeholder="https://api.anthropic.com"></div>'
-        + '</div>'
-        + '<div class="field-grid keys-row">'
-        + '<div class="field">'
-        + '<label class="field-label">API Key</label>'
-        + '<div class="apikey-row">'
-        + '<div class="apikey-group">'
-        + '<input type="password" class="p-api-key" placeholder="sk-...（留空保持不变）">'
-        + '<button type="button" class="toggle-password" onclick="toggleProviderKeyVisibility(this)">👁</button>'
-        + '</div>'
-        + masked
-        + '</div>'
-        + '</div>'
-        + '<div class="field"><label class="field-label">后端服务器</label><select class="p-backend">'
+        + '<div class="field w-backend"><label class="field-label">后端服务器</label><select class="p-backend">'
         + '<option value="custom"' + ((p.backend || 'custom') === 'custom' ? ' selected' : '') + '>自定义</option>'
         + '<option value="codex"' + (p.backend === 'codex' ? ' selected' : '') + '>Codex</option>'
         + '<option value="claude-code"' + (p.backend === 'claude-code' ? ' selected' : '') + '>Claude Code</option>'
@@ -1228,18 +1237,38 @@ function renderProviderCard(key, p) {
         + '<option value="openrouter"' + (p.backend === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>'
         + '<option value="litellm"' + (p.backend === 'litellm' ? ' selected' : '') + '>LiteLLM</option>'
         + '</select></div>'
+        + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" placeholder="https://api.anthropic.com"></div>'
+        + '<div class="field w-key">'
+        + '<label class="field-label">API Key</label>'
+        + '<div class="key-wrap">'
+        + '<input type="password" class="p-api-key" placeholder="sk-...（留空保持不变）">'
+        + '<button type="button" class="icon-btn toggle-password" onclick="toggleProviderKeyVisibility(this)" title="显示">' + MS_ICONS.eye + '</button>'
+        + '</div>'
+        + masked
+        + '</div>'
         + '</div>'
         + '<details class="p-headers-panel">'
-        + '<summary>自定义请求参数 / Headers</summary>'
+        + '<summary>高级：自定义请求参数 / Headers</summary>'
         + '<textarea class="p-headers" placeholder="JSON 对象，值支持 {session_id} 占位符，如 {\"X-Session-ID\": \"{session_id}\"}">' + JSON.stringify(p.headers || {}).replace(/</g, '&lt;') + '</textarea>'
         + '</details>'
         + '<div class="models-section">'
-        + '<div class="models-section-title">☰ 模型配置</div>'
+        + '<div class="models-head">'
+        + '<span class="models-section-title">模型</span>'
+        + '<span class="chip chip-count p-model-count">' + modelKeys.length + '</span>'
+        + '<span class="spacer"></span>'
+        + '<button type="button" class="btn-ghost p-model-add">＋ 新增模型</button>'
+        + '</div>'
+        + '<div class="p-model-head"><span>别名</span><span>模型 ID</span><span>最大输出 (tokens)</span><span>上下文预算 (tokens)</span><span>操作</span></div>'
         + '<div class="p-models-list">' + modelRows + '</div>'
-        + '<div class="provider-add-row"><button type="button" class="btn-outline p-model-add">+ 新增模型</button></div>'
         + '</div>'
         + '</div>'
         + '</div>';
+}
+
+function updateModelCount(card) {
+    if (!card) return;
+    const countEl = card.querySelector('.p-model-count');
+    if (countEl) countEl.textContent = card.querySelectorAll('.p-model-row').length;
 }
 
 function renderProviders(providers) {
@@ -1281,6 +1310,7 @@ function fillAgentSelects(refs) {
         sel.innerHTML = (sel !== master ? '<option value="">（与 Master 一致）</option>' : '') + options;
         if (current && refs.includes(current)) sel.value = current;
     });
+    updateAgentEffective();
 }
 
 function restoreAgentSelection(agents) {
@@ -1288,7 +1318,29 @@ function restoreAgentSelection(agents) {
     if (a.master && a.master.model) document.getElementById('agent-master-model').value = a.master.model;
     if (a.worker && a.worker.model) document.getElementById('agent-worker-model').value = a.worker.model;
     if (a.lite && a.lite.model) document.getElementById('agent-lite-model').value = a.lite.model;
+    updateAgentEffective();
 }
+
+// 角色卡底部显示实际生效模型（Worker/Lite 留空时回落 Master）
+function updateAgentEffective() {
+    const master = document.getElementById('agent-master-model');
+    if (!master) return;
+    const masterRef = master.value || '';
+    const set = function (id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value || '-';
+    };
+    set('agent-master-effective', masterRef);
+    const worker = document.getElementById('agent-worker-model');
+    const lite = document.getElementById('agent-lite-model');
+    set('agent-worker-effective', (worker && worker.value) || masterRef);
+    set('agent-lite-effective', (lite && lite.value) || masterRef);
+}
+
+['agent-master-model', 'agent-worker-model', 'agent-lite-model'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', updateAgentEffective);
+});
 
 function collectProviders() {
     const statusEl = document.getElementById('settings-status');
@@ -1351,10 +1403,14 @@ function collectProviders() {
     list.addEventListener('click', function (e) {
         const card = e.target.closest('.provider-card');
         if (!card) return;
-        if (e.target.classList.contains('p-remove')) {
+        const removeBtn = e.target.closest('.p-remove');
+        if (removeBtn) {
             card.remove();
             fillAgentSelects(collectAllRefs());
-        } else if (e.target.classList.contains('p-model-add')) {
+            return;
+        }
+        const addBtn = e.target.closest('.p-model-add');
+        if (addBtn) {
             const iface = card.querySelector('.p-interface-type').value;
             const modelsList = card.querySelector('.p-models-list');
             let key = 'model-1';
@@ -1362,21 +1418,34 @@ function collectProviders() {
             const taken = new Set(Array.from(card.querySelectorAll('.p-model-key')).map(function (el) { return el.value.trim(); }));
             while (taken.has(key)) { i += 1; key = 'model-' + i; }
             modelsList.insertAdjacentHTML('beforeend', renderModelRow(key, {}, iface));
+            updateModelCount(card);
             fillAgentSelects(collectAllRefs());
-        } else if (e.target.classList.contains('p-model-remove')) {
-            const key = e.target.dataset.modelKey;
-            const row = card.querySelector('.p-model-key[data-model-key="' + key + '"]');
-            if (row) row.closest('.p-model-row').remove();
-            fillAgentSelects(collectAllRefs());
-        } else if (e.target.classList.contains('p-model-test')) {
-            testProviderModel(e.target);
-        } else if (e.target.classList.contains('p-detect')) {
-            detectProviderModels(e.target);
+            return;
         }
+        const modelRemove = e.target.closest('.p-model-remove');
+        if (modelRemove) {
+            const row = modelRemove.closest('.p-model-row');
+            if (row) row.remove();
+            updateModelCount(card);
+            fillAgentSelects(collectAllRefs());
+            return;
+        }
+        const testBtn = e.target.closest('.p-model-test');
+        if (testBtn) {
+            testProviderModel(testBtn);
+            return;
+        }
+        const detectBtn = e.target.closest('.p-detect');
+        if (detectBtn) detectProviderModels(detectBtn);
     });
 
-    // API Key 输入 → 更新状态点
+    // provider 名称 / API Key 输入 → 更新徽标与状态 chip
     list.addEventListener('input', function (e) {
+        if (e.target.classList.contains('p-key')) {
+            const avatar = e.target.closest('.provider-card').querySelector('.provider-avatar');
+            if (avatar) avatar.textContent = (e.target.value.trim().charAt(0) || '?').toUpperCase();
+            return;
+        }
         if (!e.target.classList.contains('p-api-key')) return;
         const card = e.target.closest('.provider-card');
         const status = card.querySelector('.provider-status');
@@ -1419,70 +1488,126 @@ let updatePollTimer = null;
 const UPDATE_POLL_INTERVAL_MS = 10000;
 const UPDATE_POLL_MAX_MS = 15 * 60 * 1000;
 
+let aboutVersionPromise = null;
+
+// 读取 version.json 填充品牌头（静态文件缺失时保留默认文案）
+async function loadAboutVersionInfo() {
+    if (aboutVersionPromise) return aboutVersionPromise;
+    aboutVersionPromise = (async () => {
+        try {
+            const resp = await fetch(`/static/version.json?t=${Date.now()}`);
+            const v = await resp.json();
+            const nameEl = document.getElementById('about-app-name');
+            const authorEl = document.getElementById('about-author');
+            if (nameEl && v.app_name) nameEl.textContent = v.app_name;
+            if (authorEl && v.author) authorEl.textContent = 'by ' + v.author;
+        } catch (e) {
+            // 保留默认文案
+        }
+    })();
+    return aboutVersionPromise;
+}
+
+function setAboutStatus(el, text, kind) {
+    if (!el) return;
+    el.className = 'about-status' + (kind ? ' ' + kind : '');
+    el.textContent = text;
+}
+
+function setAboutLocalVersion(version) {
+    const v = version || '-';
+    const localEl = document.getElementById('about-local-version');
+    const heroEl = document.getElementById('about-hero-version');
+    if (localEl) localEl.textContent = v;
+    if (heroEl) heroEl.textContent = v;
+}
+
 async function loadAboutStatus() {
     const statusEl = document.getElementById('about-update-status');
     if (!statusEl) return;
+    loadAboutVersionInfo();
+    const card = document.getElementById('about-card');
     try {
         const resp = await fetch('/api/update/status');
         const data = await resp.json();
-        document.getElementById('about-local-version').textContent = data.local_version || '-';
+        setAboutLocalVersion(data.local_version);
         const zipEl = document.getElementById('about-zip-status');
         const restartBtn = document.getElementById('btn-restart-update');
+        const launcherEl = document.getElementById('about-launcher');
+        if (launcherEl) {
+            launcherEl.textContent = data.launcher_managed
+                ? '当前运行方式：由 start.cmd 托管'
+                : '当前运行方式：手动启动';
+        }
         if (data.zip_present && data.zip_version) {
             zipEl.textContent = data.launcher_managed
-                ? `（升级包 ${data.zip_version} 已就绪，空闲时将自动重启应用）`
-                : `（升级包 ${data.zip_version} 已就绪，重启服务后自动应用）`;
+                ? `升级包 ${data.zip_version} 已就绪，空闲时将自动重启应用。`
+                : `升级包 ${data.zip_version} 已就绪，重启服务后自动应用。`;
             if (restartBtn) restartBtn.style.display = data.launcher_managed ? '' : 'none';
         } else {
             zipEl.textContent = '';
             if (restartBtn) restartBtn.style.display = 'none';
         }
         if (data.downloading) {
-            statusEl.textContent = '正在下载升级包...';
+            if (card) card.classList.add('downloading');
+            setAboutStatus(statusEl, '正在下载升级包…', '');
             pollDownloadStatus();
-        } else if (data.last_result && !data.last_result.success) {
-            // 自动下载的失败也在这里可见（结果由 core.updater 统一记录）
-            statusEl.textContent = '✗ ' + (data.last_result.error || '上次下载失败');
+        } else {
+            if (card) card.classList.remove('downloading');
+            if (data.last_result && !data.last_result.success) {
+                // 自动下载的失败也在这里可见（结果由 core.updater 统一记录）
+                setAboutStatus(statusEl, '✗ ' + (data.last_result.error || '上次下载失败'), 'err');
+            }
         }
     } catch (e) {
-        statusEl.textContent = '✗ 加载升级状态失败: ' + e.message;
+        setAboutStatus(statusEl, '✗ 加载升级状态失败: ' + e.message, 'err');
     }
 }
 
 async function checkForUpdate() {
     const statusEl = document.getElementById('about-update-status');
-    statusEl.textContent = '正在检查更新...';
+    const remoteEl = document.getElementById('about-remote-version');
+    const badge = document.getElementById('about-update-badge');
+    setAboutStatus(statusEl, '正在检查更新…', '');
     try {
         const resp = await fetch('/api/update/check');
         const data = await resp.json();
         if (data.error) {
-            document.getElementById('about-remote-version').textContent = '检查失败';
-            statusEl.textContent = '✗ ' + data.error;
+            remoteEl.textContent = '检查失败';
+            remoteEl.classList.add('pending');
+            if (badge) badge.hidden = true;
+            setAboutStatus(statusEl, '✗ ' + data.error, 'err');
             return;
         }
-        document.getElementById('about-remote-version').textContent = data.remote_version;
+        remoteEl.textContent = data.remote_version;
+        remoteEl.classList.remove('pending');
+        if (badge) badge.hidden = !data.has_update;
         document.getElementById('btn-download-update').style.display = data.has_update ? '' : 'none';
-        statusEl.textContent = data.has_update
-            ? `发现新版本 ${data.remote_version}（当前 ${data.local_version}）`
-            : '已是最新版本';
+        if (data.has_update) {
+            setAboutStatus(statusEl, `发现新版本 ${data.remote_version}（当前 ${data.local_version}）`, 'info');
+        } else {
+            setAboutStatus(statusEl, '已是最新版本', 'ok');
+        }
     } catch (e) {
-        statusEl.textContent = '✗ 检查更新失败: ' + e.message;
+        setAboutStatus(statusEl, '✗ 检查更新失败: ' + e.message, 'err');
     }
 }
 
 async function downloadUpdate() {
     const statusEl = document.getElementById('about-update-status');
+    const card = document.getElementById('about-card');
     try {
         const resp = await fetch('/api/update/download', { method: 'POST' });
         const data = await resp.json();
         if (!data.success) {
-            statusEl.textContent = '✗ ' + (data.error || '下载失败');
+            setAboutStatus(statusEl, '✗ ' + (data.error || '下载失败'), 'err');
             return;
         }
-        statusEl.textContent = '正在下载升级包...';
+        if (card) card.classList.add('downloading');
+        setAboutStatus(statusEl, '正在下载升级包…', '');
         pollDownloadStatus();
     } catch (e) {
-        statusEl.textContent = '✗ 发起下载失败: ' + e.message;
+        setAboutStatus(statusEl, '✗ 发起下载失败: ' + e.message, 'err');
     }
 }
 
@@ -1492,13 +1617,13 @@ async function restartUpdateNow() {
         const resp = await fetch('/api/update/restart', { method: 'POST' });
         const data = await resp.json();
         if (!data.success) {
-            statusEl.textContent = '✗ ' + (data.error || '重启失败');
+            setAboutStatus(statusEl, '✗ ' + (data.error || '重启失败'), 'err');
             return;
         }
-        statusEl.textContent = '服务重启中，等待新实例上线...';
+        setAboutStatus(statusEl, '服务重启中，等待新实例上线…', '');
         pollRestartStatus();
     } catch (e) {
-        statusEl.textContent = '✗ 发起重启失败: ' + e.message;
+        setAboutStatus(statusEl, '✗ 发起重启失败: ' + e.message, 'err');
     }
 }
 
@@ -1510,8 +1635,8 @@ function pollRestartStatus() {
         if (elapsed > 3 * 60 * 1000) {
             clearInterval(updatePollTimer);
             updatePollTimer = null;
-            document.getElementById('about-update-status').textContent =
-                '⚠ 等待重启超时，请稍后刷新页面确认';
+            setAboutStatus(document.getElementById('about-update-status'),
+                '⚠ 等待重启超时，请稍后刷新页面确认', 'err');
             return;
         }
         try {
@@ -1523,8 +1648,8 @@ function pollRestartStatus() {
             if (elapsed > 8000 && data.zip_present === false) {
                 clearInterval(updatePollTimer);
                 updatePollTimer = null;
-                document.getElementById('about-update-status').textContent =
-                    '✓ 服务已重启，页面即将刷新';
+                setAboutStatus(document.getElementById('about-update-status'),
+                    '✓ 服务已重启，页面即将刷新', 'ok');
                 setTimeout(() => location.reload(), 800);
             }
         } catch (e) {
@@ -1546,17 +1671,19 @@ function pollDownloadStatus() {
             clearInterval(updatePollTimer);
             updatePollTimer = null;
             const statusEl = document.getElementById('about-update-status');
+            const card = document.getElementById('about-card');
             if (data.downloading) {
                 // 超时兜底：后台仍在下载但轮询已达上限，停止轮询并提示
-                statusEl.textContent = '⚠ 下载耗时过长，仍在后台进行；稍后重新打开本页查看结果';
+                setAboutStatus(statusEl, '⚠ 下载耗时过长，仍在后台进行；稍后重新打开本页查看结果', '');
                 return;
             }
+            if (card) card.classList.remove('downloading');
             const result = data.last_result;
             if (result && result.success) {
-                statusEl.textContent = '✓ ' + (result.message || '升级包已下载');
+                setAboutStatus(statusEl, '✓ ' + (result.message || '升级包已下载'), 'ok');
                 loadAboutStatus();  // 刷新升级包就绪提示
             } else if (result) {
-                statusEl.textContent = '✗ ' + (result.error || '下载失败');
+                setAboutStatus(statusEl, '✗ ' + (result.error || '下载失败'), 'err');
             } else {
                 // 无结果记录（异常路径兜底）：刷新整体状态并停止轮询
                 loadAboutStatus();
@@ -2197,12 +2324,14 @@ function renderPermissionRules(data) {
         const matchType = (rule.match && rule.match.type) || '';
         const value = permissionRuleDisplay(rule);
         const enabled = rule.enabled !== false;
+        const decisionCls = rule.decision === 'allow' ? 'chip chip-ok'
+            : rule.decision === 'deny' ? 'chip chip-deny' : 'chip chip-ask';
         const actions = isBuiltin
-            ? '<span class="form-hint">只读</span>'
-            : `<button class="btn btn-small" data-perm-toggle="${escapeHtml(rule.id)}" data-enabled="${enabled ? '0' : '1'}">${enabled ? '停用' : '启用'}</button>
-               <button class="btn btn-small" data-perm-delete="${escapeHtml(rule.id)}">删除</button>`;
+            ? '<span class="chip chip-ask">只读</span>'
+            : `<button class="btn-ghost" data-perm-toggle="${escapeHtml(rule.id)}" data-enabled="${enabled ? '0' : '1'}">${enabled ? '停用' : '启用'}</button>
+               <button class="icon-btn danger" title="删除规则" data-perm-delete="${escapeHtml(rule.id)}">${MS_ICONS.trash}</button>`;
         return `<tr>
-            <td>${escapeHtml(decision)}</td>
+            <td><span class="${decisionCls}">${escapeHtml(decision)}</span></td>
             <td>${escapeHtml(value)}</td>
             <td>${escapeHtml(rule.tool || '*')}</td>
             <td>${escapeHtml(rule.kind || '')} / ${escapeHtml(matchType)}</td>
@@ -2211,7 +2340,7 @@ function renderPermissionRules(data) {
             <td>${actions}</td>
         </tr>`;
     }).join('');
-    root.innerHTML = `<table class="help-table" style="margin-top:8px;">
+    root.innerHTML = `<table class="settings-table" style="margin-top:8px;">
         <thead><tr><th>裁决</th><th>描述</th><th>工具</th><th>类型</th><th>来源</th><th>命中</th><th>操作</th></tr></thead>
         <tbody>${rows}</tbody>
     </table>`;

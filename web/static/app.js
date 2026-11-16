@@ -2206,6 +2206,8 @@ async function openWorkspaceSettings() {
     dirInput.disabled = isSystem;
     deleteBtn.style.display = isSystem ? 'none' : '';
     saveBtn.style.display = isSystem ? 'none' : '';
+    const systemBadge = document.getElementById('ws-system-badge');
+    if (systemBadge) systemBadge.hidden = !isSystem;
 
     // System 工作区不适用项目提示词 / 版本管理 / 教材下载
     const systemHiddenTabs = ['ws-instructions', 'ws-git', 'ws-textbooks'];

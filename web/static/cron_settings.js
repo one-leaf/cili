@@ -97,16 +97,17 @@
     }
     if (taskText.length > 160) taskText = taskText.slice(0, 160) + '...';
 
+    const trashIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
     const actions = [];
     if (!managed) {
       actions.push('<label class="cron-toggle"><input type="checkbox" data-action="toggle" ' +
         (item.enabled ? 'checked' : '') + '> 启用</label>');
-      actions.push('<button type="button" class="btn btn-small btn-secondary" data-action="run">立即运行</button>');
+      actions.push('<button type="button" class="btn-secondary" data-action="run">立即运行</button>');
     }
-    actions.push('<button type="button" class="btn btn-small btn-secondary" data-action="history">历史</button>');
+    actions.push('<button type="button" class="btn-ghost" data-action="history">历史</button>');
     if (!managed) {
-      actions.push('<button type="button" class="btn btn-small" data-action="edit">编辑</button>');
-      actions.push('<button type="button" class="btn btn-small btn-danger" data-action="delete">删除</button>');
+      actions.push('<button type="button" class="btn-ghost" data-action="edit">编辑</button>');
+      actions.push('<button type="button" class="icon-btn danger" title="删除任务" data-action="delete">' + trashIcon + '</button>');
     }
 
     return '' +
@@ -245,7 +246,8 @@
 
     syncScheduleFields();
     syncDeliveryFields();
-    $('cron-task-list').style.display = 'none';
+    const listCard = $('cron-list-card');
+    if (listCard) listCard.style.display = 'none';
     $('cron-form').style.display = 'block';
     $('cron-form').scrollTop = 0;
   }
@@ -253,6 +255,8 @@
   function closeForm() {
     state.editingKey = '';
     $('cron-form').style.display = 'none';
+    const listCard = $('cron-list-card');
+    if (listCard) listCard.style.display = '';
     $('cron-task-list').style.display = '';
   }
 
@@ -381,6 +385,8 @@
       bind();
       $('cron-form').style.display = 'none';
       $('cron-task-list').style.display = '';
+      const listCard = $('cron-list-card');
+      if (listCard) listCard.style.display = '';
       state.workspaceUuid = workspaceUuid || '';
       load();
     },
