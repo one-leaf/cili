@@ -371,6 +371,26 @@ def read_meta(session_dir: Path | str) -> dict:
     return load_json_or_backup(Path(session_dir) / META_FILE, {}) or {}
 
 
+def mark_session_meta(session_dir: Path | str, metadata: dict) -> bool:
+    """给已存在的会话补写 metadata（只原子重写 meta.json，不动消息文件）。
+
+    用于通道归属标记的旧会话收养（见 ``interfaces/common/state.py``）。
+    有活跃 runner 时应改走 ``runner.session.metadata`` + ``save()``，否则
+    runner 下一次 checkpoint 会用内存里的 metadata 覆盖本函数写入的标记。
+    """
+    session_dir = Path(session_dir)
+    meta = read_meta(session_dir)
+    if not meta:
+        return False
+    current = meta.get("metadata")
+    if not isinstance(current, dict):
+        current = {}
+    current.update(metadata or {})
+    meta["metadata"] = current
+    atomic_write_json(session_dir / META_FILE, meta)
+    return True
+
+
 def usage_total_for_session_dir(
     session_dir: Path | str,
     base: dict | None = None,
@@ -1328,11 +1348,20 @@ class SessionStore:
     # ========== 工具方法 ==========
 
     @staticmethod
-    def create_new_session(sessions_dir: Path, name: str = "New Session") -> SessionStore:
-        """创建新会话（使用短 ID）。"""
+    def create_new_session(
+        sessions_dir: Path, name: str = "New Session", *,
+        metadata: dict | None = None,
+    ) -> SessionStore:
+        """创建新会话（使用短 ID）。
+
+        ``metadata`` 会在首次落盘前合并进 ``session.metadata``——通道归属
+        标记（``core.channels.marker_metadata``）由此写入。
+        """
         session_id = generate_short_id()
         session = SessionStore(session_id, sessions_dir)
         session.name = name
+        if metadata:
+            session.metadata.update(metadata)
         # force：新会话无脏标记也需写出初始三件套文件
         session.save(force=True)
         return session

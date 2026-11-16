@@ -50,7 +50,7 @@ def build_commands(app) -> dict[str, Command]:
         return None
 
     def cmd_new() -> str | None:
-        session = app.client.create_session(app.workspace_uuid)
+        session = app.client.create_session(app.workspace_uuid, channel="cli")
         app.set_session(session)
         return None
 

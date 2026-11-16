@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, fields
 
+from core.channels import normalize_session_mode
 from core.config import load_global_config, save_global_config
 from interfaces.common.config import INVALID as _INVALID
 from interfaces.common.config import coerce_value as _coerce
@@ -66,6 +67,8 @@ _PERSIST_FIELDS = (
     "enabled",
     "default_workspace_uuid",
     "workspace_locked",
+    "session_mode",
+    "session_locked",
 )
 
 @dataclass
@@ -82,6 +85,10 @@ class WechatConfig:
     enabled: bool = False
     default_workspace_uuid: str = ""
     workspace_locked: bool = False
+    # 会话方式：dedicated（默认，每个账号/聊天独立）/ latest（接着最新会话）
+    session_mode: str = "dedicated"
+    # 锁定对话：不可切换会话（/s、/new、/mode 变更被拒绝）
+    session_locked: bool = False
 
     # —— 运行参数（固定默认值，不进配置文件） ——
     typing_enabled: bool = DEFAULT_TYPING_ENABLED
@@ -114,6 +121,8 @@ class WechatConfig:
                 )
                 continue
             kwargs[name] = coerced
+        if "session_mode" in kwargs:
+            kwargs["session_mode"] = normalize_session_mode(kwargs["session_mode"])
         return cls(**kwargs)
 
     def to_dict(self) -> dict:

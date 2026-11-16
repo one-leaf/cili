@@ -80,8 +80,15 @@ class CiliClient:
         data = self._get(f"/api/workspaces/{workspace_uuid}/sessions")
         return data.get("sessions", [])
 
-    def create_session(self, workspace_uuid: str, name: str | None = None) -> dict:
-        body = {"name": name} if name else {}
+    def create_session(
+        self, workspace_uuid: str, name: str | None = None, *,
+        channel: str | None = None,
+    ) -> dict:
+        body: dict = {}
+        if name:
+            body["name"] = name
+        if channel:
+            body["channel"] = channel
         return self._post(f"/api/workspaces/{workspace_uuid}/sessions", body)
 
     # ---------- 回合 ----------

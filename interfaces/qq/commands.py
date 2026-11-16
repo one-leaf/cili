@@ -44,6 +44,7 @@ def _status_footer(ctx: CommandContext) -> list[str]:
 def build_commands() -> dict[str, Command]:
     """构建指令表：键含别名，别名指向同一个 ``Command`` 对象。"""
     return _build_commands(
+        channel="qq",
         session_title="QQ 会话",
         status_owner_label="Owner OpenID",
         status_footer_lines=_status_footer,
@@ -62,5 +63,6 @@ async def dispatch(
     """执行一条指令，返回要回给用户的文本；不是已知指令则返回 None。"""
     return await _dispatch(
         runtime, state, chat_id, text,
+        channel="qq",
         build=build_commands, resolve_current=resolve_current,
     )

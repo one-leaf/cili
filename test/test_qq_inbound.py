@@ -279,14 +279,16 @@ class TestCommands:
         assert parse("") is None
 
     def test_build_commands_registry(self):
-        """键 = 短名 + 别名；去重后恰好 6 条指令。"""
+        """键 = 短名 + 别名；去重后恰好 7 条指令。"""
         from interfaces.qq.commands import build_commands, unique_commands
         cmds = build_commands()
         assert set(cmds) == {
             "h", "help", "w", "workspace", "s", "session",
-            "new", "status", "stop",
+            "new", "mode", "status", "stop",
         }
-        assert [c.name for c in unique_commands()] == ["h", "w", "s", "new", "status", "stop"]
+        assert [c.name for c in unique_commands()] == [
+            "h", "w", "s", "new", "mode", "status", "stop",
+        ]
         for c in cmds.values():
             assert c.usage.startswith("/")
             assert callable(c.handler)
@@ -306,7 +308,7 @@ class TestCommands:
         from interfaces.qq.commands import dispatch
         from interfaces.qq.state import QQAccountState
         out = asyncio.run(dispatch(_FakeRuntime(), QQAccountState(), "c1", "/h"))
-        for name in ("/h", "/w", "/s", "/new", "/status", "/stop"):
+        for name in ("/h", "/w", "/s", "/new", "/mode", "/status", "/stop"):
             assert name in out
 
     def test_help_does_not_duplicate_aliases(self):

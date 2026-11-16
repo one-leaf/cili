@@ -24,13 +24,15 @@ class TuiApp:
         client: CiliClient,
         renderer: Renderer,
         *,
-        continue_last: bool = False,
+        mode: str = "dedicated",
         session_id: str | None = None,
     ):
         self.client = client
         self.renderer = renderer
         self.router = SseFrameRouter(renderer)
-        self.continue_last = continue_last
+        # 会话模式：dedicated（默认，续本通道自己的会话）/
+        # latest（接着最新会话）/ new（强制新建）
+        self.mode = mode
         self.initial_session_id = session_id
         self.quit_requested = False
         self.workspace_uuid = ""
@@ -97,17 +99,24 @@ class TuiApp:
     # ---------- 会话 ----------
 
     def _setup_session(self) -> bool:
-        """按 -c / --session / 默认新建 三个来源确定当前会话。"""
+        """按 --session / 会话模式（dedicated 默认 / latest / new）确定当前会话。"""
         try:
             if self.initial_session_id:
                 self._adopt(self.initial_session_id, "(指定会话)")
                 return True
-            sessions = self.client.list_sessions(self.workspace_uuid)
-            if self.continue_last and sessions:
-                first = sessions[0]
-                self._adopt(first.get("session_id", ""), first.get("name", "Unnamed"))
-                return True
-            session = self.client.create_session(self.workspace_uuid)
+            if self.mode != "new":
+                sessions = self.client.list_sessions(self.workspace_uuid)
+                if self.mode == "latest":
+                    if sessions:
+                        first = sessions[0]
+                        self._adopt(first.get("session_id", ""), first.get("name", "Unnamed"))
+                        return True
+                else:  # dedicated：找本通道自己的会话
+                    for s in sessions:
+                        if s.get("channel") == "cli":
+                            self._adopt(s.get("session_id", ""), s.get("name", "Unnamed"))
+                            return True
+            session = self.client.create_session(self.workspace_uuid, channel="cli")
             self.set_session(session)
             return True
         except CiliServerError as e:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import core.session_activity as session_activity
+from core.channels import SESSION_MODE_DEDICATED, SESSION_MODE_LATEST, SESSION_MODES
 from core.config import (
     find_workspace_entry,
     get_workspace_data_dir,
@@ -24,6 +25,15 @@ LOCKED_WORKSPACE_REPLY = (
     "⚠️ 本账号已锁定工作空间，不支持切换。如需切换，请到设置页取消「锁定工作空间」。"
 )
 
+LOCKED_SESSION_REPLY = (
+    "⚠️ 本账号已锁定会话，不支持切换。如需切换，请到设置页取消「锁定会话」。"
+)
+
+_MODE_LABELS = {
+    SESSION_MODE_LATEST: "接着最新会话",
+    SESSION_MODE_DEDICATED: "独立会话",
+}
+
 
 @dataclass
 class CommandContext:
@@ -34,6 +44,29 @@ class CommandContext:
     chat: Any
     chat_id: str = ""
     args: str = ""
+    channel: str = ""       # qq / wechat ……（会话归属标记用）
+
+
+def _account_id(ctx: CommandContext) -> str:
+    return str(getattr(ctx.runtime, "account_id", "") or "")
+
+
+def _session_locked(ctx: CommandContext) -> bool:
+    return bool(getattr(ctx.runtime.cfg, "session_locked", False))
+
+
+def _peek(ctx: CommandContext) -> str:
+    """按当前模式预览本回合会用哪条会话（不建会话）。"""
+    from interfaces.common.state import peek_turn_session
+
+    return peek_turn_session(
+        ctx.chat, ctx.runtime.cfg,
+        channel=ctx.channel, account_id=_account_id(ctx), chat_id=ctx.chat_id,
+    )
+
+
+def _mode_label(mode: str) -> str:
+    return _MODE_LABELS.get(mode, mode)
 
 
 @dataclass
@@ -134,9 +167,10 @@ def _cmd_workspace(ctx: CommandContext, save_state) -> str:
     if teen.workspace_access(str(picked.get("uuid") or "")) == "locked":
         return "🔒 该工作区已锁定，需家长解锁后才能使用。"
     ctx.chat.workspace_uuid = str(picked.get("uuid") or "")
-    # 延迟导入避免与 state 模块形成循环（state 不依赖 commands，但保持惰性更稳）
-    from interfaces.common.state import latest_session_id
-    ctx.chat.session_id = latest_session_id(ctx.chat.workspace_uuid)
+    # 换工作区 = 解除会话 pin，按当前模式预览落点（不新建）
+    ctx.chat.session_id = ""
+    ctx.chat.pinned = False
+    ctx.chat.session_id = _peek(ctx)
     save_state(ctx.runtime.account_id, ctx.state)
     return f"已切换工作区 → {_current_label(ctx.chat)}"
 
@@ -145,18 +179,26 @@ def _cmd_session(ctx: CommandContext, save_state) -> str:
     if not ctx.chat.workspace_uuid:
         return "尚未设置工作区，先执行 `/w`。"
     items = _sessions(ctx.chat.workspace_uuid)
+    locked = _session_locked(ctx)
+    current = _peek(ctx) or ctx.chat.session_id
 
     if not ctx.args:
         if not items:
-            return "当前工作区还没有会话，用 `/new` 新建。"
+            return "当前工作区还没有会话，直接发消息会自动新建。"
         lines = ["**会话列表**", ""]
         for i, s in enumerate(items[:MAX_LIST_ITEMS], start=1):
             sid = str(s.get("session_id") or "")
             name = s.get("display_name") or s.get("name") or sid
-            mark = " ✅" if sid == ctx.chat.session_id else ""
+            mark = " ✅" if sid == current else ""
             lines.append(f"{i}. {name}{mark}")
-        lines += ["", "用 `/s <序号>` 切换。"]
+        if locked:
+            lines += ["", "🔒 已锁定会话，不可切换。"]
+        else:
+            lines += ["", "用 `/s <序号>` 切换。"]
         return "\n".join(lines)
+
+    if locked:
+        return LOCKED_SESSION_REPLY
 
     # 只按序号切换：列表不显示 id，再让用户敲 id 是自相矛盾的
     if not ctx.args.isdigit():
@@ -166,21 +208,73 @@ def _cmd_session(ctx: CommandContext, save_state) -> str:
         return f"序号超出范围：{ctx.args}（当前共 {len(items)} 个会话）"
     picked = items[idx]
     ctx.chat.session_id = str(picked.get("session_id") or "")
+    ctx.chat.pinned = True
     save_state(ctx.runtime.account_id, ctx.state)
     name = picked.get("display_name") or picked.get("name") or ctx.chat.session_id
     return f"已切换会话 → {name}"
 
 
+def _cmd_mode(ctx: CommandContext, save_state) -> str:
+    cfg = ctx.runtime.cfg
+    locked = _session_locked(ctx)
+
+    if not ctx.args:
+        from interfaces.common.state import effective_session_mode
+
+        mode = effective_session_mode(ctx.chat, cfg)
+        if locked:
+            source = "已锁定"
+        else:
+            source = "聊天级设置" if ctx.chat.session_mode in SESSION_MODES else "账号默认"
+        lines = [
+            "**会话方式**",
+            "",
+            f"- 当前：{_mode_label(mode)}（来源：{source}）",
+        ]
+        target = _peek(ctx)
+        if target:
+            label = _session_label(ctx.chat.workspace_uuid, target)
+            lines.append(f"- 下条消息：{label}")
+        else:
+            lines.append("- 下条消息：自动新建独立会话")
+        if locked:
+            lines.append("- 🔒 已锁定会话：/s、/new、/mode 不可用")
+        else:
+            lines.append(
+                "用 `/mode latest`（接着最新会话）或 `/mode dedicated`"
+                "（独立会话）切换；切换会清除 /s 手动指定的会话。"
+            )
+        return "\n".join(lines)
+
+    if locked:
+        return LOCKED_SESSION_REPLY
+
+    arg = ctx.args.strip().lower()
+    if arg not in SESSION_MODES:
+        return "用法：`/mode latest` 或 `/mode dedicated`"
+    ctx.chat.session_mode = arg
+    ctx.chat.pinned = False
+    ctx.chat.session_id = ""
+    save_state(ctx.runtime.account_id, ctx.state)
+    return f"已切换会话方式 → {_mode_label(arg)}"
+
+
 def _cmd_new(ctx: CommandContext, session_title: str, save_state) -> str:
     if not ctx.chat.workspace_uuid:
         return "尚未设置工作区，先执行 `/w`。"
+    if _session_locked(ctx):
+        return LOCKED_SESSION_REPLY
+    from interfaces.common.state import create_marked_session
+
     name = ctx.args or session_title
-    sessions_dir = get_workspace_data_dir(ctx.chat.workspace_uuid) / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    store = SessionStore.create_new_session(sessions_dir, name)
-    ctx.chat.session_id = store.session_id
+    sid = create_marked_session(
+        ctx.chat.workspace_uuid, name, ctx.channel,
+        account_id=_account_id(ctx), chat_id=ctx.chat_id, log_tag=ctx.channel,
+    )
+    ctx.chat.session_id = sid
+    ctx.chat.pinned = True
     save_state(ctx.runtime.account_id, ctx.state)
-    return f"已新建并切换到会话：{name}  `{store.session_id[:8]}`"
+    return f"已新建并切换到会话：{name}  `{sid[:8]}`"
 
 
 def _cmd_status(
@@ -190,7 +284,16 @@ def _cmd_status(
     owner_lines: Callable[[CommandContext], list[str]] | None = None,
     footer_lines: Callable[[CommandContext], list[str]] | None = None,
 ) -> str:
-    lines = ["**当前状态**", "", f"- 工作区/会话：{_current_label(ctx.chat)}"]
+    from interfaces.common.state import effective_session_mode
+
+    mode = effective_session_mode(ctx.chat, ctx.runtime.cfg)
+    lines = [
+        "**当前状态**",
+        "",
+        f"- 工作区/会话：{_current_label(ctx.chat)}",
+        f"- 会话方式：{_mode_label(mode)}"
+        + ("（🔒 已锁定）" if _session_locked(ctx) else ""),
+    ]
     if ctx.runtime.cfg.workspace_locked:
         lines.append("- 工作空间：已锁定（/w 不可用）")
     owner = ctx.state.owner or "(未绑定)"
@@ -257,6 +360,7 @@ def _unique(table: dict[str, Command]) -> list[Command]:
 
 def build_commands(
     *,
+    channel: str,
     session_title: str,
     status_owner_label: str,
     save_state,
@@ -268,10 +372,13 @@ def build_commands(
 
     def _help(ctx: CommandContext) -> str:
         lines = ["**可用指令**", ""]
-        locked = ctx.runtime.cfg.workspace_locked
+        ws_locked = ctx.runtime.cfg.workspace_locked
+        ses_locked = _session_locked(ctx)
         for cmd in _unique(table):
             usage = cmd.usage
-            if locked and cmd.name == "w":
+            if ws_locked and cmd.name == "w":
+                usage += "（本账号已锁定）"
+            if ses_locked and cmd.name in ("s", "new", "mode"):
                 usage += "（本账号已锁定）"
             lines.append(f"- `{usage}` — {cmd.description}")
         lines += ["", "直接发消息即与 AI 对话。"]
@@ -280,9 +387,11 @@ def build_commands(
     commands = [
         Command("h", "显示本帮助", "/h", _help, aliases=("help",)),
         Command("w", "查看/切换工作区", "/w [序号|名称]", lambda ctx: _cmd_workspace(ctx, save_state), aliases=("workspace",)),
-        Command("s", "查看/切换会话", "/s <序号>", lambda ctx: _cmd_session(ctx, save_state), aliases=("session",)),
+        Command("s", "查看/切换会话", "/s [序号]", lambda ctx: _cmd_session(ctx, save_state), aliases=("session",)),
         Command("new", "在当前工作区新建会话", "/new [名称]",
                 lambda ctx: _cmd_new(ctx, session_title, save_state)),
+        Command("mode", "查看/切换会话方式（独立会话 / 接着最新会话）",
+                "/mode [latest|dedicated]", lambda ctx: _cmd_mode(ctx, save_state)),
         Command("status", "显示当前工作区/会话与用量", "/status",
                 lambda ctx: _cmd_status(
                     ctx, owner_label=status_owner_label,
@@ -321,6 +430,7 @@ async def dispatch(
     chat_id: str,
     text: str,
     *,
+    channel: str,
     build: Callable[[], dict[str, Command]],
     resolve_current: Callable[[Any, str, Any], Any],
 ) -> str | None:
@@ -334,7 +444,15 @@ async def dispatch(
         return f"未知指令：`/{name}`。用 `/h` 查看可用指令。"
 
     chat = resolve_current(state, chat_id, runtime.cfg)
-    ctx = CommandContext(runtime=runtime, state=state, chat=chat, chat_id=chat_id, args=args)
+    ctx = CommandContext(
+        runtime=runtime, state=state, chat=chat, chat_id=chat_id,
+        args=args, channel=channel,
+    )
+    # 展示口径与真实解析一致（latest 模式下当前会话可能不是 state 里的旧值）
+    if chat.workspace_uuid:
+        target = _peek(ctx)
+        if target:
+            chat.session_id = target
     result: Any = cmd.handler(ctx)
     if hasattr(result, "__await__"):
         result = await result

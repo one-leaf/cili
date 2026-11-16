@@ -336,6 +336,13 @@ function accountHeaderHtml(acc) {
 }
 
 function workspaceFieldsHtml(acc) {
+    const mode = acc.session_mode === 'latest' ? 'latest' : 'dedicated';
+    const modeOpts = [
+        ['dedicated', '独立会话（每个账号/聊天各一条，互不影响）'],
+        ['latest', '接着最新会话（与 Web/其他通道连续）'],
+    ].map(([val, text]) =>
+        `<option value="${val}"${val === mode ? ' selected' : ''}>${text}</option>`
+    ).join('');
     return `
         <div class="form-group">
             <label>默认工作空间:</label>
@@ -343,9 +350,19 @@ function workspaceFieldsHtml(acc) {
             <small class="form-hint">该账号的对话默认落在这个工作区；不同账号配不同工作区可隔离记忆</small>
         </div>
         <div class="form-group">
+            <label>会话方式:</label>
+            <select class="acc-session-mode">${modeOpts}</select>
+            <small class="form-hint">独立会话：按本账号与该聊天的标记找回自己的会话；接着最新会话：直接续用工作区里最近更新的会话</small>
+        </div>
+        <div class="form-group">
             <label>锁定工作空间:</label>
             <input type="checkbox" class="acc-locked" ${acc.workspace_locked ? 'checked' : ''}>
             <small class="form-hint">锁定后该账号的 /w 不可用，需在此解锁；需先选择默认工作空间</small>
+        </div>
+        <div class="form-group">
+            <label>锁定会话:</label>
+            <input type="checkbox" class="acc-session-locked" ${acc.session_locked ? 'checked' : ''}>
+            <small class="form-hint">锁定后该账号不能切换会话（/s、/new、/mode 不可用），固定使用自己的独立会话</small>
         </div>`;
 }
 
@@ -412,6 +429,8 @@ function collectQQAccounts() {
         enabled: card.querySelector('.acc-enabled').checked,
         default_workspace_uuid: card.querySelector('.acc-workspace').value,
         workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+        session_mode: card.querySelector('.acc-session-mode').value,
+        session_locked: card.querySelector('.acc-session-locked').checked,
     }));
 }
 
@@ -602,6 +621,8 @@ function collectWechatAccounts() {
         enabled: card.querySelector('.acc-enabled').checked,
         default_workspace_uuid: card.querySelector('.acc-workspace').value,
         workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+        session_mode: card.querySelector('.acc-session-mode').value,
+        session_locked: card.querySelector('.acc-session-locked').checked,
     }));
 }
 

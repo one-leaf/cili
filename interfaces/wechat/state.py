@@ -69,7 +69,11 @@ def save_account_state(account_id: str, account: WechatAccountState) -> bool:
     )
 
 
-def ensure_session(account: WechatAccountState, chat_id: str, cfg) -> WechatChatState:
+def ensure_session(
+    account: WechatAccountState, chat_id: str, cfg, *, account_id: str = "",
+) -> WechatChatState:
     return _ensure_session(
-        account, chat_id, cfg, session_title="微信会话", log_tag=_LOG_TAG,
+        account, chat_id, cfg,
+        session_title="微信会话", log_tag=_LOG_TAG,
+        channel="wechat", account_id=account_id,
     )

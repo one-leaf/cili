@@ -24,13 +24,23 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cli.cmd",
         description="Cili terminal client - connect to a running Cili server",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "-c",
         "--continue",
-        dest="continue_session",
-        action="store_true",
+        dest="mode",
+        action="store_const",
+        const="latest",
         help="attach to the most recent session of the resolved workspace",
     )
+    mode_group.add_argument(
+        "--new",
+        dest="mode",
+        action="store_const",
+        const="new",
+        help="always start a new CLI session",
+    )
+    parser.set_defaults(mode="dedicated")  # 默认：续本通道自己的独立会话
     parser.add_argument("--session", metavar="ID", help="attach to a specific session id")
     parser.add_argument("--server", metavar="URL", help="server base url (default: auto-discover)")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
@@ -50,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     app = TuiApp(
         client,
         renderer,
-        continue_last=args.continue_session,
+        mode=args.mode,
         session_id=args.session,
     )
     try:

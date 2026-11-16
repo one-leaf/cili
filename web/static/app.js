@@ -1,3 +1,8 @@
+// 会话来源通道的展示名（core/channels.py 的 id → 中文标签）
+const SESSION_CHANNEL_LABELS = {
+    web: '网页', qq: 'QQ', wechat: '微信', cli: '终端', email: '邮件', cron: '定时',
+};
+
 // State
 let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
@@ -1640,7 +1645,15 @@ function renderSessions() {
         const displayName = session.display_name || session.name || session.preview || '未命名';
         const preview = document.createElement('div');
         preview.className = 'session-preview';
-        preview.textContent = displayName;
+        // 通道徽标：只标非 Web 来源（QQ/微信/终端/定时），网页会话不占位
+        const channelLabel = SESSION_CHANNEL_LABELS[session.channel];
+        if (channelLabel && session.channel !== 'web') {
+            const badge = document.createElement('span');
+            badge.className = 'session-channel-badge';
+            badge.textContent = channelLabel;
+            preview.appendChild(badge);
+        }
+        preview.appendChild(document.createTextNode(displayName));
         div.appendChild(preview);
 
         if (!isMultiSelectMode) {

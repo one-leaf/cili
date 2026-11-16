@@ -61,6 +61,7 @@ def _status_footer(ctx: CommandContext) -> list[str]:
 def build_commands() -> dict[str, Command]:
     """构建指令表：键含别名，别名指向同一个 ``Command`` 对象。"""
     return _build_commands(
+        channel="wechat",
         session_title="微信会话",
         status_owner_label="Owner",
         status_owner_lines=_status_owner_lines,
@@ -80,5 +81,6 @@ async def dispatch(
     """执行一条指令，返回要回给用户的文本；不是已知指令则返回 None。"""
     return await _dispatch(
         runtime, state, chat_id, text,
+        channel="wechat",
         build=build_commands, resolve_current=resolve_current,
     )

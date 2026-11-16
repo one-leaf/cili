@@ -119,7 +119,10 @@ class InboundHandler:
         # 真要跑回合了：工作区没有会话时自动建一个（§3.6；指令路径不建）
         from interfaces.wechat.state import ensure_session
 
-        chat = ensure_session(self._rt.state, user_id, self._rt.cfg)
+        chat = ensure_session(
+            self._rt.state, user_id, self._rt.cfg,
+            account_id=self._rt.account_id,
+        )
         workspace_uuid, session_id = chat.workspace_uuid, chat.session_id
         if not workspace_uuid or not session_id:
             await self._send_text(user_id, "尚未确定工作区/会话，请先执行 `/w`。")

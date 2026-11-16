@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.channels import marker_metadata
 from core.config import get_workspace_data_dir
 from core.cron import store
 from core.cron.model import Job, State
@@ -26,7 +27,10 @@ def ensure_cron_session(
         if loaded is not None:
             return loaded
 
-    session = SessionStore.create_new_session(sessions_dir, f"[Cron] {job.name}")
+    session = SessionStore.create_new_session(
+        sessions_dir, f"[Cron] {job.name}",
+        metadata=marker_metadata("cron"),
+    )
     state.cron_session_id = session.session_id
     store.save_state(workspace_uuid, job.id, state)
     return session

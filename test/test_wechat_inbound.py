@@ -198,7 +198,7 @@ class TestCommands:
     def test_unique_commands_dedupes_aliases(self):
         from interfaces.wechat.commands import unique_commands
         names = [c.name for c in unique_commands()]
-        assert names == ["h", "w", "s", "new", "status", "stop"]
+        assert names == ["h", "w", "s", "new", "mode", "status", "stop"]
 
     def test_unknown_command(self):
         rt = _runtime()

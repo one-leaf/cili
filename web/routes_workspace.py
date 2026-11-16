@@ -13,6 +13,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from core.channels import (
+    API_CREATE_CHANNEL_IDS,
+    MARKER_ACCOUNT,
+    MARKER_CHANNEL,
+    marker_metadata,
+)
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
@@ -82,6 +88,8 @@ def _evict_finished_generate_tasks_locked() -> None:
 
 class CreateSessionRequest(BaseModel):
     name: str = "New Session"
+    # 会话归属通道：Web 界面默认 web；CLI 客户端显式传 cli
+    channel: str = "web"
 
 
 class CreateWorkspaceRequest(BaseModel):
@@ -424,6 +432,8 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                     "preview": preview,
                     "display_name": session_display_name(meta.get("name", ""), preview),
                     "hidden": metadata.get("hidden", False),
+                    "channel": metadata.get(MARKER_CHANNEL, ""),
+                    "channel_account": metadata.get(MARKER_ACCOUNT, ""),
                     "_mtime": mtime,
                 })
             else:
@@ -445,6 +455,8 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                         old.get("name", ""), preview_from_messages(old_messages)
                     ),
                     "hidden": metadata.get("hidden", False),
+                    "channel": metadata.get(MARKER_CHANNEL, ""),
+                    "channel_account": metadata.get(MARKER_ACCOUNT, ""),
                     "_mtime": index_file.stat().st_mtime,
                 })
         except Exception as e:
@@ -615,8 +627,14 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Create a new session."""
     sessions_dir = ws_dir / "sessions"
+    channel = (request.channel or "web").strip().lower()
+    if channel not in API_CREATE_CHANNEL_IDS:
+        raise HTTPException(status_code=400, detail=f"不支持的会话通道：{channel}")
     try:
-        session = SessionStore.create_new_session(sessions_dir, request.name)
+        session = SessionStore.create_new_session(
+            sessions_dir, request.name,
+            metadata=marker_metadata(channel),
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create session: {e}")
 
