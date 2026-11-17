@@ -13,10 +13,16 @@ import pytest
 
 @pytest.fixture
 def isolated_config(tmp_path, monkeypatch):
-    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
+    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。
+
+    同时清掉 ANTHROPIC_* 环境变量：Config.from_global_config 会用环境变量覆盖
+    provider 的 api_key，CI 注入占位 key 时会让「取已保存 key」的断言失真。
+    """
     import core.config as config_mod
     cfg_path = tmp_path / "setting.json"
     monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
+    for env in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+        monkeypatch.delenv(env, raising=False)
     return cfg_path
 
 

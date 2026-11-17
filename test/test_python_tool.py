@@ -40,10 +40,17 @@ print(f"Python {sys.version_info.major}.{sys.version_info.minor}")
         assert "Python" in result.output
         assert "Installed packages" in result.output
 
-    def test_python_install_package(self, tools):
+    def test_python_install_package(self, tools, monkeypatch):
         """测试 python 工具 - 安装包"""
+        from types import SimpleNamespace
+
         from core.tools import get_tool_by_name
 
+        # 安装要先读全局配置的 pip mirror；CI 无 setting.json，注入最小替身
+        monkeypatch.setattr(
+            "core.config.load_config",
+            lambda: SimpleNamespace(system=SimpleNamespace(pip_mirror="")),
+        )
         python_tool = get_tool_by_name(tools, "python")
         # 安装一个小包用于测试
         result = python_tool.execute(action="install", packages="six")

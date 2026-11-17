@@ -367,7 +367,8 @@ class TestQQAccountsConfig:
         data = json.loads(isolated_config.read_text(encoding="utf-8"))
         assert data["qq"] == {"accounts": [
             {"id": "a1", "label": "", "enabled": True, "default_workspace_uuid": "",
-             "workspace_locked": False, "app_id": "1", "secret": "s", "msg_format": "markdown"},
+             "workspace_locked": False, "session_mode": "dedicated", "session_locked": False,
+             "app_id": "1", "secret": "s", "msg_format": "markdown"},
         ]}
 
 

@@ -299,7 +299,7 @@ class TestGlobalEvents:
             asyncio.run(stream_global_events(session_id="bad/id"))
         assert exc_info.value.status_code == 400
 
-    def test_master_on_tool_output_publishes_to_event_bus(self, monkeypatch, tmp_path):
+    def test_master_on_tool_output_publishes_to_event_bus(self, monkeypatch, tmp_path, config):
         """回归：master 的 _on_tool_output 必须发布到事件总线。
 
         此前 _get_or_create_runner 里 event bus 变量被后面的 get_agent_mailbox() 闭包
@@ -315,6 +315,8 @@ class TestGlobalEvents:
         ws, sid = "ws-regress", "sess-regress-1"
         (tmp_path / "sessions").mkdir(exist_ok=True)
         monkeypatch.setattr(web_api, "_get_workspace_info", lambda uuid: {"directory": str(tmp_path)})
+        # runner 池建 runner 时会 load_config()；CI 无 setting.json，注入测试配置
+        monkeypatch.setattr("core.session_registry.load_config", lambda: config)
         # Agent._init_interactive 内部通过 get_workspace_data_dir 解析数据目录
         monkeypatch.setattr("core.config.get_workspace_data_dir", lambda uuid: tmp_path)
         # 测试结束后清理全局 runner 池，避免泄漏

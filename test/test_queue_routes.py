@@ -22,6 +22,13 @@ def _no_pump(monkeypatch):
     monkeypatch.setattr(routes_chat, "_start_pump", lambda key: None)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_global_config(monkeypatch):
+    """入队要读全局配置的 images 段；CI 无 setting.json，注入最小替身保持确定性。"""
+    from types import SimpleNamespace
+    monkeypatch.setattr(routes_chat, "load_config", lambda: SimpleNamespace(images=None))
+
+
 def _enqueue(key, content="hi"):
     return turn_queue.enqueue(key, QueuedTurn(item_id="", content=content, user_input=content))
 

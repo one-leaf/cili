@@ -95,8 +95,11 @@ class TestConfigTestEndpointDoesNotBlockLoop:
         )
         monkeypatch.setattr(core_llm, "create_llm_client", lambda cfg: _FakeClient())
         try:
+            # 字段需与 TestConfigRequest 对齐：路由会读 api_path/backend/credential
             req = SimpleNamespace(model_name="m", api_key="k", base_url="",
-                                  interface_type=None, auth_type=None, headers=None)
+                                  interface_type=None, auth_type=None, headers=None,
+                                  api_path=None, backend=None, credential=None,
+                                  provider=None)
             out = asyncio.run(routes_config.test_config(req))
             assert out["success"] is True
             assert rec.submissions >= 1

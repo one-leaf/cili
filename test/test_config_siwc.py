@@ -55,7 +55,9 @@ def test_env_does_not_override_oauth(monkeypatch):
     assert model.name == "m"
 
 
-def test_non_oauth_provider_still_requires_key():
+def test_non_oauth_provider_still_requires_key(monkeypatch):
+    # 清掉环境变量：否则 ANTHROPIC_API_KEY 会作为兜底 key 掩盖「缺 key」的断言
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     raw = {
         "providers": {"p": {"interface_type": "openai", "models": {"m": {}}}},
         "agents": {"master": {"model": "p/m"}},

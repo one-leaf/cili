@@ -12,8 +12,10 @@ from core.llm.siwc.login import (
     complete_manual,
     poll,
     set_authorized_hook,
-    shutdown as shutdown_login,
     start_login,
+)
+from core.llm.siwc.login import (
+    shutdown as shutdown_login,
 )
 from core.llm.siwc.manager import (
     SiwcAuthRequired,
@@ -21,8 +23,10 @@ from core.llm.siwc.manager import (
     get_access_token,
     logout,
     save_login_result,
-    shutdown as shutdown_tokens,
     status,
+)
+from core.llm.siwc.manager import (
+    shutdown as shutdown_tokens,
 )
 from core.llm.siwc.profile import shape_request
 

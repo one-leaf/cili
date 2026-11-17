@@ -10,7 +10,6 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from core.fs_utils import normalize_bash_path
 from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
-from core.untrusted import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 from core.tools.background import (
     BackgroundMixin,
 )
@@ -40,6 +39,13 @@ from core.tools.shell import (
 
 # 提示注入防护（SEC-18）：UNTRUSTED_DATA_BEGIN/END 定义在 core/untrusted.py，
 # 这里 import 后继续作为兼容出口（工具与测试从 core.tools.base 引用）。
+# 显式 `as` 别名标记为有意 re-export，避免被 ruff F401 当作未使用导入清掉。
+from core.untrusted import (
+    UNTRUSTED_DATA_BEGIN as UNTRUSTED_DATA_BEGIN,
+)
+from core.untrusted import (
+    UNTRUSTED_DATA_END as UNTRUSTED_DATA_END,
+)
 
 
 @runtime_checkable

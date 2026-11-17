@@ -308,9 +308,14 @@ class TestOfficialDownloader:
         assert task.books[book["content_id"]].status == "skipped"
 
     def test_auth_expired_clears_cached_credentials(self, tmp_path, monkeypatch):
+        """已有登录凭据时遇 401 → 清凭据并提示重新登录（不依赖本机真实凭据缓存）。"""
+        from core.textbooks.smartedu import SmartEduCredentials
+
         body = _pdf_body(80)
         book = _book(size=len(body))
         cleared: list[bool] = []
+        monkeypatch.setattr(downloader_mod, "credentials",
+                            lambda: SmartEduCredentials(access_token="t", mac_key="m"))
         monkeypatch.setattr(downloader_mod, "clear_credentials",
                             lambda: cleared.append(True))
 
@@ -322,6 +327,26 @@ class TestOfficialDownloader:
         assert progress.status == "failed"
         assert "登录" in progress.error
         assert cleared
+
+    def test_anonymous_401_reports_authorization_required(self, tmp_path, monkeypatch):
+        """匿名（无凭据）遇 401 → 提示需授权，且不去清空不存在的凭据。"""
+        from core.textbooks.smartedu import SmartEduCredentials
+
+        body = _pdf_body(80)
+        book = _book(size=len(body))
+        cleared: list[bool] = []
+        monkeypatch.setattr(downloader_mod, "credentials", SmartEduCredentials)
+        monkeypatch.setattr(downloader_mod, "clear_credentials",
+                            lambda: cleared.append(True))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, content=b"unauthorized")
+
+        task, _ = self._run(tmp_path, book, handler, monkeypatch)
+        progress = task.books[book["content_id"]]
+        assert progress.status == "failed"
+        assert "授权" in progress.error
+        assert not cleared
 
     def test_resumes_from_partial_file(self, tmp_path, monkeypatch):
         body = _pdf_body(96)

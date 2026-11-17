@@ -65,6 +65,7 @@ class TestWechatAccountsConfig:
         assert WechatConfig.from_dict(cfg.to_dict()) == cfg
         assert set(cfg.to_dict()) == {
             "id", "label", "enabled", "default_workspace_uuid", "workspace_locked",
+            "session_mode", "session_locked",
         }
 
     def test_bad_bool_type_falls_back(self):
@@ -112,6 +113,7 @@ class TestPutConfigWechat:
         assert saved[0] == {
             "id": "w1", "label": "主号", "enabled": True,
             "default_workspace_uuid": "", "workspace_locked": False,
+            "session_mode": "dedicated", "session_locked": False,
         }
 
     def test_assigns_missing_id(self, isolated_config):
