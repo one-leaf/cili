@@ -81,8 +81,24 @@ class TestOpenInExplorer:
         result = _call("a.md")
 
         assert result["ok"] is True
-        args = popen_calls[0][0]
-        assert args[1] == f"/select,{(ws_dir / 'a.md').resolve()}"
+        # /select 必须用原始命令行字符串：引号只包路径，不能包住「/select,」前缀
+        cmd = popen_calls[0][0]
+        assert isinstance(cmd, str)
+        assert cmd == f'explorer.exe /select,"{(ws_dir / "a.md").resolve()}"'
+
+    def test_file_with_spaces_quotes_only_path(self, tmp_path, monkeypatch, popen_calls):
+        """文件名含空格时，引号必须只包住路径本体（回归：曾把 /select, 一起包起来导致打不开）。"""
+        ws_dir = _prepare(tmp_path, monkeypatch)
+        name = "报告 终稿.md"
+        (ws_dir / name).write_text("x", encoding="utf-8")
+
+        result = _call(name)
+
+        assert result["ok"] is True
+        cmd = popen_calls[0][0]
+        assert isinstance(cmd, str)
+        assert not cmd.startswith('explorer.exe "/select')
+        assert cmd == f'explorer.exe /select,"{(ws_dir / name).resolve()}"'
 
     def test_empty_path_opens_workspace_root(self, tmp_path, monkeypatch, popen_calls):
         ws_dir = _prepare(tmp_path, monkeypatch)

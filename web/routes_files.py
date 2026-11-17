@@ -945,7 +945,12 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
         if target.is_dir():
             subprocess.Popen(["explorer.exe", str(target)])
         else:
-            subprocess.Popen(["explorer.exe", f"/select,{target}"])
+            # 文件名/路径可含空格。explorer 的 /select 语法要求引号只包住路径本体：
+            #   explorer.exe /select,"C:\a b\f.txt"
+            # 用列表传参时 Python（list2cmdline）会把整个「/select,C:\a b\f.txt」包进引号，
+            # explorer 解析失败，只会打开「文档」而不定位文件。故按原始命令行字符串传入
+            # （shell=False 时 Windows 下字符串原样交给 CreateProcess；文件名不可能含双引号，安全）。
+            subprocess.Popen(f'explorer.exe /select,"{target}"')
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to open explorer: {e}")
 
