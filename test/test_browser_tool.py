@@ -184,3 +184,9 @@ class TestBrowserToolSchemaAndParsing:
             {"role": "button", "name": None, "exact": False},
             {"nth": 1},
         ]
+
+    def test_reset_action_exposed(self):
+        """被原生弹窗/渲染器卡死时的恢复入口必须对模型可见。"""
+        from core.tools.browser import BrowserTool
+
+        assert "reset" in BrowserTool.parameters["properties"]["action"]["enum"]

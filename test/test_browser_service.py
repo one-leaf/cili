@@ -934,3 +934,181 @@ class TestEnhancedActions:
             result = service.navigate(url, approved_non_public=True)
             assert result.error
         service._run_in_worker.assert_not_called()
+
+
+class TestWaitForTimeoutAlignment:
+    """wait_for 的等待必须小于 worker 预算，否则结果被丢弃、线程继续被占住。"""
+
+    def test_clamps_model_timeout_to_worker_budget(self):
+        from core.browser_service import _WAIT_FOR_MAX_TIMEOUT_MS, BrowserService
+
+        service = BrowserService.__new__(BrowserService)
+        captured = {}
+
+        def fake_execute(name, func, tab_index=None, timeout=None):
+            captured["worker_timeout"] = timeout
+            return MagicMock()
+
+        service._execute_operation = fake_execute
+        service.wait_for("#x", timeout=600000)  # 模型传 10 分钟
+
+        assert captured["worker_timeout"] is not None
+        # worker 等待必须严格大于操作自身等待，否则结果必然被丢弃
+        assert captured["worker_timeout"] > _WAIT_FOR_MAX_TIMEOUT_MS / 1000
+        assert captured["worker_timeout"] < 120
+
+    def test_short_timeout_kept(self):
+        from core.browser_service import BrowserService
+
+        service = BrowserService.__new__(BrowserService)
+        captured = {}
+
+        def fake_execute(name, func, tab_index=None, timeout=None):
+            captured["worker_timeout"] = timeout
+            return MagicMock()
+
+        service._execute_operation = fake_execute
+        service.wait_for("#x", timeout=5000)
+        assert captured["worker_timeout"] == pytest.approx(20.0)
+
+
+class TestWorkerTimeoutMessaging:
+    """worker 超时返回可操作错误（弹窗提示 + reset 指引）。"""
+
+    def test_operation_timeout_returns_actionable_error(self):
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        with patch.object(service, "_run_in_worker",
+                          side_effect=TimeoutError("Task execution timeout (60s)")):
+            result = service._execute_operation("snapshot", lambda page: None)
+        assert result.error
+        assert "reset" in result.output
+        assert "native dialog" in result.output
+
+    def test_navigate_timeout_returns_actionable_error(self):
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        with patch.object(service, "_run_in_worker",
+                          side_effect=TimeoutError("Task execution timeout (80s)")):
+            result = service.navigate("https://example.com")
+        assert result.error
+        assert "reset" in result.output
+
+
+class TestWorkerRecovery:
+    """超时自愈：杀 Chrome 释放卡住的调用；线程不退出则换代重建。"""
+
+    def test_timeout_recovers_and_restarts_wedged_worker(self):
+        import threading as _threading
+        import time
+
+        import core.browser_service as mod
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        block = _threading.Event()
+
+        def stuck():
+            block.wait(10)  # 模拟被原生弹窗/渲染器挡住的 sync 调用
+            return "late"
+
+        with patch.object(service, "_kill_chrome_internal") as kill, \
+             patch.object(mod, "_RECOVERY_WORKER_GRACE_S", 0.1):
+            with pytest.raises(TimeoutError):
+                service._run_in_worker(stuck, timeout=0.2)
+
+            deadline = time.time() + 5
+            while service._recovering and time.time() < deadline:
+                time.sleep(0.01)
+
+        assert kill.called, "超时应触发杀 Chrome 以释放卡住的调用"
+        assert service._worker_generation >= 2, "卡死的线程应被换代重建"
+        assert service._worker_thread is not None and service._worker_thread.is_alive()
+
+        block.set()
+        # 新 worker 能继续执行任务（旧队列/旧实例已被替代）
+        assert service._run_in_worker(lambda: "ok", timeout=5) == "ok"
+
+
+class TestResetAction:
+    """browser(action='reset')：手动恢复入口。"""
+
+    def test_reset_invalidates_and_returns_ok(self):
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        with patch.object(service, "_kill_chrome_internal") as kill, \
+             patch.object(service, "_run_in_worker", return_value=None):
+            result = service.reset()
+        assert not result.error
+        assert "reset" in result.output.lower()
+        kill.assert_called_once()
+
+    def test_reset_while_recovering_is_rejected(self):
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        service._recovering = True
+        result = service.reset()
+        assert result.error
+        assert "in progress" in result.output.lower()
+
+
+class TestKillChromeSafety:
+    """_kill_chrome_internal 的 PID 复用防护：只杀确认属于本项目的 Chrome。
+
+    Windows 会复用 PID：服务运行久了，记录的旧 PID 可能已属于用户自己的浏览器
+    或其他程序。杀前必须重新校验（存活 + 命令行含本项目 profile），
+    拿不到身份就跳过，绝不能误杀。
+    """
+
+    @staticmethod
+    def _service_with_process(pid=4321, alive=True):
+        from core.browser_service import BrowserService
+
+        service = BrowserService()
+        proc = MagicMock()
+        proc.pid = pid
+        proc.poll.return_value = None if alive else 0
+        service._chrome_process = proc
+        return service
+
+    def test_skips_when_profile_unverifiable(self):
+        service = self._service_with_process()
+        with patch.object(service, "_pid_uses_our_profile", return_value=False), \
+             patch.object(service, "_remove_chrome_locks") as locks, \
+             patch("core.browser_service.subprocess.run") as run:
+            service._kill_chrome_internal()
+
+        run.assert_not_called()  # 没有 taskkill / os.kill
+        locks.assert_not_called()  # 无法确认已死，不碰 profile 锁文件
+        assert service._chrome_process is None
+
+    def test_skips_when_process_already_exited(self):
+        service = self._service_with_process(alive=False)
+        with patch.object(service, "_pid_uses_our_profile") as profile, \
+             patch.object(service, "_remove_chrome_locks"), \
+             patch("core.browser_service.subprocess.run") as run:
+            service._kill_chrome_internal()
+
+        profile.assert_not_called()  # 已退出：不再按旧 PID 探测/杀
+        run.assert_not_called()
+        assert service._chrome_process is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill")
+    def test_kills_only_verified_profile(self):
+        service = self._service_with_process(pid=777)
+        with patch.object(service, "_pid_uses_our_profile", return_value=True), \
+             patch.object(service, "_is_port_listening", return_value=False), \
+             patch.object(service, "_remove_chrome_locks"), \
+             patch("core.browser_service.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            service._kill_chrome_internal()
+
+        argv = run.call_args[0][0]
+        assert argv[0] == "taskkill"
+        assert "/T" in argv
+        assert argv[-1] == "777"
+        assert service._chrome_process is None

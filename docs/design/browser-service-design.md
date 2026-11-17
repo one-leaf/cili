@@ -887,10 +887,38 @@ def _execute_operation(self, operation_name: str, func, tab_index: int | None = 
 | "Cannot switch to a different thread" | Playwright greenlet 线程绑定 | 工作线程模式解决 |
 | "Chrome started but CDP not ready" | Chrome 锁文件未清理 | `_remove_chrome_locks()` 解决 |
 | "asyncio.run() cannot be called from a running event loop" | Playwright 在 async 上下文中启动 | 延迟初始化解决 |
-| "Task execution timeout (60s)" | 工作线程死锁 | 嵌套调用检测解决 |
+| "Task execution timeout (60s)" | 工作线程被卡住的同步调用占住 | 杀 Chrome 释放 + 必要时换代重建（见 7.4） |
 | "Connection closed (probably due to tab closure)" | CDP 连接无效 | `_connect_browser()` 先关闭旧 browser |
 
-### 7.4 Stealth 反检测
+### 7.4 超时自愈与 reset
+
+同步 Playwright 调用无法取消，且所有操作共用同一个工作线程：页面被原生弹窗
+（打印预览、证书/权限提示）或渲染器阻塞时，`page.title()/inner_text()/`
+`aria_snapshot()/evaluate()` 等无超时调用会永久占住工作线程，之后所有浏览器
+操作排队超时（工具表现为「一直不返回」）。
+
+```
+调用方超时（_run_in_worker event.wait）
+  └─ _schedule_recovery()（节流 10s、去重）
+       └─ _recover()
+            ├─ 杀 Chrome（卡住的 CDP 调用立即失败）
+            ├─ 等 worker 退出（宽限 8s）
+            ├─ 已退出 → worker 内复位连接/page 池；下次操作重启 Chrome
+            └─ 未退出 → _restart_worker()：换代（新队列 + 新线程 + 新 Playwright）
+```
+
+- `wait_for` 的 timeout 钳制在 45s 以内，worker 等待 = 操作等待 + 15s
+  （结果不会因 worker 先超时被丢弃、线程继续被占住）。
+- **终止安全边界**：杀进程前重新校验「PID 仍存活 + 命令行包含本项目 profile」。
+  Windows 会复用 PID，旧 PID 可能已属于用户浏览器/其他程序——身份无法确认时
+  跳过 kill（只清本项目 profile 锁文件或换端口）。用户个人 Chrome 使用独立
+  profile，不会被 tree kill 波及。
+- 超时错误文案提示「页面可能被原生弹窗/渲染器阻塞」并给出恢复动作。
+- `browser(action="reset")` 手动触发同一恢复流程（刻意不走工作线程）。
+- 换代后旧线程 daemon 化：从卡死调用返回时按 sentinel 退出，
+  不会消费新队列的任务。
+
+### 7.5 Stealth 反检测
 
 每次操作前自动应用 `playwright-stealth`：
 

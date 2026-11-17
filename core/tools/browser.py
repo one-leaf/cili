@@ -57,6 +57,9 @@ Available actions:
 - get_text / get_links: extract page text or links
 - wait_for: wait for a CSS selector (for JS-rendered content)
 - switch_tab / list_tabs / close_tab: manage tabs by tab_index
+- reset: force-recover the browser when operations keep timing out or a native
+  dialog (print preview, certificate/permission prompt) blocks the page
+  (kills Chrome and invalidates the connection; the next action restarts it)
 
 Element interaction flow:
 1. Run 'snapshot' to get the accessibility tree (each interactive element has a ref like r3).
@@ -86,7 +89,7 @@ Use web_search for simple lookups; use browser when search results are insuffici
                          "get_links", "wait_for", "switch_tab", "list_tabs", "close_tab",
                          "scroll", "download", "fill_form", "extract", "extract_table",
                          "dialogs", "upload", "hover", "drag", "get_frames",
-                         "get_cookies", "clear_cookies", "set_cookie"],
+                         "get_cookies", "clear_cookies", "set_cookie", "reset"],
                 "description": "Action to perform on the browser.",
             },
             "url": {
@@ -519,6 +522,9 @@ Use web_search for simple lookups; use browser when search results are insuffici
             if tab_index is None:
                 return ToolResult("Error: 'tab_index' is required for close_tab action", error=True)
             return service.close_tab(tab_index)
+
+        elif action == "reset":
+            return service.reset("browser tool action")
 
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)

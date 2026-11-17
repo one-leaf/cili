@@ -68,6 +68,13 @@ _DOWNLOAD_TIMEOUT_MS = 60000
 # worker 等待时间必须大于操作自身超时，否则外层先抛 TimeoutError、操作仍在跑
 _NAV_WORKER_TIMEOUT = _NAV_TIMEOUT_MS / 1000 + 20
 _DOWNLOAD_WORKER_TIMEOUT = _DOWNLOAD_TIMEOUT_MS / 1000 + 20
+# wait_for 最大等待（ms）：模型传入的 timeout 必须钳在 worker 预算以内，
+# 否则 worker 先超时 → 结果被丢弃、工作线程继续被占住（后续操作全部排队超时）
+_WAIT_FOR_MAX_TIMEOUT_MS = 45000
+# 超时自愈：杀 Chrome 后等待 worker 从卡住的调用里退出的宽限（秒）
+_RECOVERY_WORKER_GRACE_S = 8.0
+# 两次自动恢复之间的最小间隔（秒），防止多个排队超时的调用反复杀 Chrome
+_RECOVERY_MIN_INTERVAL_S = 10.0
 # 弹窗自动处理行为：dismiss（记录后关闭）/ accept（记录后确认）
 _DIALOG_BEHAVIOR = "dismiss"
 # 请求详情 body 读取上限（字符），超过则跳过 body
@@ -370,31 +377,53 @@ class BrowserService:
         # 已挂监听器的 page（按 id(page) 去重）
         self._listener_pages: set[int] = set()
 
+        # 自愈状态：工作线程卡死（被原生弹窗/渲染器阻塞的 sync 调用占住）时，
+        # 杀 Chrome 让卡住的调用失败；仍未退出则换代重建 worker
+        self._worker_generation = 0
+        # RLock：_run_in_worker 持锁提交任务，_start_worker_thread 内部再次加锁
+        self._worker_start_lock = threading.RLock()
+        self._recovery_lock = threading.Lock()
+        self._recovering = False
+        self._last_recovery_ts = 0.0
+        self._stopping = False
+
     # ==================== 生命周期方法 ====================
 
     def _start_worker_thread(self) -> None:
-        """启动专用工作线程。"""
-        if self._worker_thread and self._worker_thread.is_alive():
-            return
+        """启动专用工作线程；每次启动分配新队列与代号（换代）。"""
+        with self._worker_start_lock:
+            if self._worker_thread and self._worker_thread.is_alive():
+                return
 
-        self._worker_thread = threading.Thread(
-            target=self._worker_loop,
-            name="BrowserService-Worker",
-            daemon=True
+            self._worker_generation += 1
+            generation = self._worker_generation
+            task_queue: queue.Queue = queue.Queue()
+            self._task_queue = task_queue
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
+                args=(task_queue, generation),
+                name=f"BrowserService-Worker-{generation}",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        logger.debug(
+            f"[BrowserService] Worker thread started (generation {generation})"
         )
-        self._worker_thread.start()
-        logger.debug("[BrowserService] Worker thread started")
 
-    def _worker_loop(self) -> None:
+    def _worker_loop(self, task_queue: queue.Queue, generation: int) -> None:
         """工作线程主循环，处理任务队列中的任务。
 
         每次执行任务前，自动清理超时的 tab（> TAB_IDLE_TIMEOUT 无活动）。
+        队列与代号在启动时绑定：换代后旧线程从卡住调用返回时按 sentinel 退出，
+        不会误消费新队列的任务。
         """
         while True:
             try:
-                item = self._task_queue.get()
+                item = task_queue.get()
                 if item is None or (isinstance(item, tuple) and item and item[0] is None):
                     break  # 退出信号
+                if generation != self._worker_generation:
+                    break  # 旧代线程：让位给新一代
 
                 task_id, task_func, task_args, task_kwargs = item
 
@@ -438,23 +467,31 @@ class BrowserService:
             # 直接执行，不通过队列
             return func(*args, **kwargs)
 
-        # 确保工作线程已启动
-        self._start_worker_thread()
+        # 启动线程与提交任务在同一把锁内：换代重建期间不会把任务投进
+        # 已被废弃的旧队列（否则新 worker 看不到，调用方只能等超时）
+        with self._worker_start_lock:
+            self._start_worker_thread()
 
-        # 为本次调用分配独立结果槽位
-        task_id = self._next_task_id()
-        event = threading.Event()
-        with self._task_lock:
-            self._task_events[task_id] = event
+            # 为本次调用分配独立结果槽位
+            task_id = self._next_task_id()
+            event = threading.Event()
+            with self._task_lock:
+                self._task_events[task_id] = event
 
-        # 提交任务到队列
-        self._task_queue.put((task_id, func, args, kwargs))
+            # 提交任务到队列
+            self._task_queue.put((task_id, func, args, kwargs))
 
         # 等待结果（按操作类型分级；未指定时用全局默认）
         effective_timeout = timeout if timeout is not None else _WORKER_TASK_TIMEOUT
         if not event.wait(timeout=effective_timeout):
             with self._task_lock:
                 self._task_events.pop(task_id, None)
+            # 同步 Playwright 调用无法取消：任务仍在 worker 里跑，且 worker 是全局
+            # 单线程——不恢复的话后续所有浏览器操作都会排队超时。异步自愈：
+            # 杀 Chrome 让卡住的 CDP 调用立即失败；worker 仍不退出则换代重建。
+            self._schedule_recovery(
+                f"worker task timeout ({effective_timeout:.0f}s)"
+            )
             raise TimeoutError(f"Task execution timeout ({effective_timeout:.0f}s)")
 
         with self._task_lock:
@@ -462,6 +499,122 @@ class BrowserService:
         if not success:
             raise result
         return result
+
+    # ─── 超时自愈（原生弹窗/渲染器阻塞导致工作线程卡死）────────────────
+
+    def _schedule_recovery(self, reason: str) -> None:
+        """异步触发恢复；节流并去重（多个排队超时的调用只恢复一次）。"""
+        if self._stopping:
+            return
+        with self._recovery_lock:
+            now = time.time()
+            if self._recovering or (now - self._last_recovery_ts) < _RECOVERY_MIN_INTERVAL_S:
+                return
+            self._recovering = True
+            self._last_recovery_ts = now
+        threading.Thread(
+            target=self._recover,
+            args=(reason,),
+            name="BrowserService-Recovery",
+            daemon=True,
+        ).start()
+
+    def _recover(self, reason: str) -> None:
+        """杀 Chrome 释放卡住的 CDP 调用；worker 仍未退出则换代重建。
+
+        调用方须已置 ``_recovering``（``_schedule_recovery`` 或 ``reset``）。
+        """
+        try:
+            logger.warning(f"[BrowserService] 自动恢复浏览器（{reason}）")
+            try:
+                self._kill_chrome_internal()
+            except Exception as e:  # noqa: BLE001 —— 恢复流程尽力而为
+                logger.warning(f"[BrowserService] 恢复时终止 Chrome 失败: {e}")
+
+            worker = self._worker_thread
+            if worker is not None:
+                worker.join(timeout=_RECOVERY_WORKER_GRACE_S)
+
+            if worker is not None and worker.is_alive():
+                # 杀 Chrome 也没能让卡住的调用退出（如 driver 线程死锁）：
+                # 放弃旧线程，换代重建（旧 Playwright 实例随之废弃）
+                logger.warning(
+                    "[BrowserService] 工作线程未退出，换代重建 worker"
+                )
+                self._restart_worker()
+                return
+
+            # worker 已恢复：作废旧连接与 page 池，下一次操作重连/重启 Chrome
+            if self._worker_thread is not None:
+                try:
+                    self._run_in_worker(self._reset_state_in_worker, timeout=5)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[BrowserService] 复位连接状态失败，换代重建 worker: {e}"
+                    )
+                    self._restart_worker()
+        finally:
+            with self._recovery_lock:
+                self._recovering = False
+
+    def _restart_worker(self) -> None:
+        """丢弃可能卡死的 worker：换代启动新线程，旧实例引用全部作废。
+
+        新 worker 在首次操作时懒启动新的 Playwright 实例；旧线程从卡住调用
+        返回后按 sentinel 退出（daemon，不阻塞进程退出）。
+        """
+        # 与 _run_in_worker 的提交串行化：交换期间不会有任务落进旧队列
+        with self._worker_start_lock:
+            old_queue = self._task_queue
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page_pool.clear()
+            self._active_tab_index = None
+            self._free_tab_indices.clear()
+            self._listener_pages.clear()
+            self._snapshot_refs.clear()
+            self._console_buffers.clear()
+            self._request_buffers.clear()
+            self._dialog_buffers.clear()
+            self._worker_thread = None
+            try:
+                old_queue.put(None)
+            except Exception:  # noqa: BLE001
+                pass
+            self._start_worker_thread()
+
+    def _reset_state_in_worker(self) -> None:
+        """作废连接与 page 池（必须在 worker 线程内执行）。"""
+        self._disconnect_internal()
+        # page 已全部关闭：监听器/快照/缓冲区状态一并作废，避免旧 tab_index 残留
+        self._listener_pages.clear()
+        self._snapshot_refs.clear()
+        self._console_buffers.clear()
+        self._request_buffers.clear()
+        self._dialog_buffers.clear()
+        self._browser = None
+        self._context = None
+
+    def reset(self, reason: str = "manual") -> ToolResult:
+        """强制恢复浏览器：杀 Chrome、作废连接；卡死的工作线程会被换代重建。
+
+        刻意不走工作线程——卡死时工作线程已不可用。供 ``browser(action="reset")``
+        在页面被原生弹窗/渲染器阻塞、操作持续超时时手动恢复。
+        """
+        with self._recovery_lock:
+            if self._recovering:
+                return ToolResult(
+                    "Browser reset already in progress; retry shortly.", error=True
+                )
+            self._recovering = True
+            self._last_recovery_ts = time.time()
+        logger.warning(f"[BrowserService] 手动重置浏览器（{reason}）")
+        self._recover(reason)
+        return ToolResult(
+            "Browser reset: Chrome was stopped and the connection invalidated. "
+            "The next browser action will restart Chrome automatically."
+        )
 
     def _ensure_playwright(self) -> bool:
         """确保 Playwright 已启动（延迟初始化）。"""
@@ -490,6 +643,7 @@ class BrowserService:
 
     def stop(self) -> None:
         """完整清理：断连接 -> 停 Playwright -> 杀 Chrome。"""
+        self._stopping = True
         with self._lock:
             def _cleanup():
                 self._disconnect_internal()
@@ -507,15 +661,38 @@ class BrowserService:
                 return None
 
             try:
-                self._run_in_worker(_cleanup)
+                self._run_in_worker(_cleanup, timeout=15)
             except Exception as e:
                 logger.warning(f"[BrowserService] Error during cleanup: {e}")
 
-            # 停止工作线程
-            if self._worker_thread:
-                self._task_queue.put(None)  # 退出信号
-                self._worker_thread.join(timeout=5)
+            # 停止工作线程；卡死的 sync 调用无法从外部中断，杀 Chrome 令其失败后
+            # 放弃旧线程（daemon），进程退出时由 OS 回收
+            worker = self._worker_thread
+            if worker is not None:
+                try:
+                    self._task_queue.put(None)  # 退出信号
+                except Exception:  # noqa: BLE001
+                    pass
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    logger.warning(
+                        "[BrowserService] Worker thread did not exit; abandoning it"
+                    )
+                    try:
+                        self._kill_chrome_internal()
+                    except Exception:  # noqa: BLE001
+                        pass
                 self._worker_thread = None
+
+            # 旧线程可能仍持有 Playwright 实例：引用置空，避免下次使用误判为可用
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page_pool.clear()
+            self._active_tab_index = None
+            self._free_tab_indices.clear()
+            self._listener_pages.clear()
+            self._running = False
 
     def is_running(self) -> bool:
         """检查服务是否可用。
@@ -839,17 +1016,44 @@ class BrowserService:
             return False, f"Failed to start Chrome: {e}"
 
     def _kill_chrome_internal(self) -> None:
-        """内部方法：终止 Chrome 进程（不持锁）。
+        """内部方法：终止本项目 Chrome 进程（不持锁）。
 
-        只杀死 self._chrome_process 记录的进程，不会影响其他 cili 实例的进程。
+        安全边界：只终结「记录的 PID 仍存活且命令行确认使用本项目 profile」的
+        进程。Windows 会复用 PID——服务运行久了，旧 PID 可能已属于用户自己的
+        浏览器或其他程序；拿不到命令行（PowerShell 失败）时宁可不杀，也不能
+        误伤。用户个人 Chrome 使用独立 profile，因此不会被这里的 tree kill 波及。
         """
         if not self._chrome_process:
-            # 没有我们自己的进程，只清理锁文件并等待端口释放
+            # 没有我们自己的进程，只清理本项目 profile 的锁文件
             self._remove_chrome_locks(self._chrome_profile_dir)
             return
 
+        pid = self._chrome_process.pid
+
+        # 1) 进程已退出：PID 可能已被系统复用，绝不能按旧 PID 继续杀
         try:
-            pid = self._chrome_process.pid
+            alive = self._chrome_process.poll() is None
+        except Exception:
+            alive = False
+        if not alive:
+            logger.debug(
+                f"[BrowserService] Chrome PID {pid} already exited; skip kill"
+            )
+            self._chrome_process = None
+            self._remove_chrome_locks(self._chrome_profile_dir)
+            return
+
+        # 2) 身份校验：命令行必须包含本项目 profile（防 PID 复用误杀用户浏览器）
+        if not self._pid_uses_our_profile(pid):
+            logger.warning(
+                f"[BrowserService] PID {pid} is not verified as this project's "
+                "Chrome (possibly a reused PID); skip kill to avoid harming "
+                "other browsers or programs"
+            )
+            self._chrome_process = None
+            return
+
+        try:
             logger.debug(f"[BrowserService] Terminating Chrome PID {pid}")
 
             # Windows: 使用 taskkill /T 杀死进程树（包括子进程）
@@ -1374,6 +1578,16 @@ class BrowserService:
 
         try:
             return self._run_in_worker(_do_operation, timeout=timeout)
+        except TimeoutError as e:
+            # _run_in_worker 已在超时处触发自愈（杀 Chrome → 必要时换代重建）
+            return ToolResult(
+                f"Browser {operation_name} timed out ({e}).\n"
+                "The page may be blocked by a native dialog (print preview, "
+                "certificate/permission prompt) or a frozen renderer.\n"
+                "Recovery was started automatically; if the next call still fails, "
+                "close the blocking dialog and retry, or call browser(action=\"reset\").",
+                error=True,
+            )
         except Exception as e:
             return ToolResult(f"Browser {operation_name} failed with worker error: {e}", error=True)
 
@@ -1437,6 +1651,15 @@ class BrowserService:
 
         try:
             return self._run_in_worker(_do_navigate_tab, timeout=_NAV_WORKER_TIMEOUT)
+        except TimeoutError as e:
+            return ToolResult(
+                f"Browser navigate timed out ({e}).\n"
+                "The page may be blocked by a native dialog (print preview, "
+                "certificate/permission prompt) or a frozen renderer.\n"
+                "Recovery was started automatically; if the next call still fails, "
+                "close the blocking dialog and retry, or call browser(action=\"reset\").",
+                error=True,
+            )
         except Exception as e:
             return ToolResult(f"Browser navigate failed with worker error: {e}", error=True)
 
@@ -1499,14 +1722,21 @@ class BrowserService:
 
         Args:
             selector: CSS 选择器
-            timeout: 超时时间（毫秒）
+            timeout: 超时时间（毫秒）。会钳制在 ``_WAIT_FOR_MAX_TIMEOUT_MS`` 以内——
+                等待时间超过 worker 预算时，调用方会先超时丢结果，而工作线程
+                仍被占住（后续操作全部排队超时）。
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
         """
+        effective_ms = max(1000, min(int(timeout), _WAIT_FOR_MAX_TIMEOUT_MS))
+
         def _do_wait(page):
-            page.wait_for_selector(selector, timeout=timeout)
+            page.wait_for_selector(selector, timeout=effective_ms)
             return ToolResult(f"Element '{selector}' found")
 
-        return self._execute_operation(f"wait_for({selector})", _do_wait, tab_index=tab_index)
+        return self._execute_operation(
+            f"wait_for({selector})", _do_wait, tab_index=tab_index,
+            timeout=effective_ms / 1000 + 15,
+        )
 
     def get_text(self, tab_index: int | None = None) -> ToolResult:
         """获取页面的所有文本内容。
