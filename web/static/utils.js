@@ -223,12 +223,42 @@ function getFileIcon(filename) {
 }
 
 // ── 聊天区贴底滚动（SSE 与子代理卡片共用）──
-function scrollChatIfNearBottom() {
+// 贴底状态由用户滚动位置决定：离底部超过阈值即视为「正在翻看历史」，
+// 之后的追加/流式更新一律不再把视图拽回底部（此前各调用点都是无条件
+// 滚到底，工具气泡延迟创建、流式帧刷新都会打断用户阅读）。
+// 用户自己滚回底部附近即自动恢复贴底；显式动作（打开会话、发送消息）传
+// force=true 强制回底。
+const CHAT_BOTTOM_THRESHOLD = 100;
+let _chatPinnedToBottom = true;
+let _chatPinBound = false;
+
+function _bindChatPinTracking() {
+    if (_chatPinBound) return;
     const el = document.getElementById('chat-messages');
     if (!el) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
-        el.scrollTop = el.scrollHeight;
-    }
+    _chatPinBound = true;
+    el.addEventListener('scroll', () => {
+        _chatPinnedToBottom =
+            el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_BOTTOM_THRESHOLD;
+    }, { passive: true });
+}
+
+function isChatPinnedToBottom() {
+    _bindChatPinTracking();
+    return _chatPinnedToBottom;
+}
+
+function setChatPinnedToBottom(pinned) {
+    _chatPinnedToBottom = !!pinned;
+}
+
+function scrollChatIfNearBottom(force = false) {
+    const el = document.getElementById('chat-messages');
+    if (!el) return;
+    _bindChatPinTracking();
+    if (force) _chatPinnedToBottom = true;
+    if (!_chatPinnedToBottom) return;
+    el.scrollTop = el.scrollHeight;
 }
 
 // ── 访问令牌 (access_token) ──

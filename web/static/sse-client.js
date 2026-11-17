@@ -224,12 +224,12 @@ function ensureMasterToolBubble(toolUseId, toolName) {
     div.appendChild(contentDiv);
     const container = _activeTurnContainers.get(entry.sessionId) || chatMessages;
     container.appendChild(div);
-    if (chatMessages.contains(div)) {
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
 
     entry.div = div;
     entry.pre = pre;
+    // 延迟 5 秒建气泡时也只在用户贴底时跟随：否则长时间无输出的工具会在
+    // 用户翻看历史时把视图拽到底部
+    if (chatMessages.contains(div)) scrollChatIfNearBottom();
 }
 
 // ── master 自动恢复流式渲染 ──

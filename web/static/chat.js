@@ -251,7 +251,20 @@ function _renderUserAttachmentChips(container, attachments) {
     container.insertBefore(row, container.firstChild);
 }
 
+// 最近一次渲染的会话（workspace:session）：与本次相同说明是同一会话的重建
+// （回合落盘/撤销后刷新），应保留用户阅读位置；不同则是切换会话，回到最新。
+let _renderedChatSessionKey = null;
+
 function renderMessages(messages) {
+    const sessionKey = currentSession
+        ? `${currentWorkspace ? currentWorkspace.uuid : ''}:${currentSession.session_id}`
+        : null;
+    const sameSession = sessionKey !== null && sessionKey === _renderedChatSessionKey;
+    // 重建会清空 DOM，先把阅读位置与贴底状态记下来
+    const prevScrollTop = chatMessages.scrollTop;
+    const wasPinned = isChatPinnedToBottom();
+    _renderedChatSessionKey = sessionKey;
+
     chatMessages.innerHTML = '';
     // 全局事件流那条路的渲染器持有 DOM 引用，清空后必须重置
     if (typeof resetMasterStreamBlocks === 'function') {
@@ -457,7 +470,15 @@ function renderMessages(messages) {
     // 不必等下一帧（也覆盖「切回后本回合已不再产生新输出」的情况）
     _reattachTurnContainer();
 
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    if (sameSession) {
+        // 同一会话的重建（回合落盘后刷新、撤销后重载）：用户翻历史时不打断，
+        // 回到原位置；本来就贴底则继续贴底。
+        chatMessages.scrollTop = wasPinned ? chatMessages.scrollHeight : prevScrollTop;
+        setChatPinnedToBottom(wasPinned);
+    } else {
+        // 打开/切回会话属于显式动作：强制回底并恢复贴底
+        scrollChatIfNearBottom(true);
+    }
 
     // Render math formulas with MathJax
     if (window.MathJax && window.MathJax.typesetPromise) {
@@ -747,6 +768,14 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
     let assistantRenderQueued = false;
     let thinkRenderQueued = false;
 
+    // 本流是否属于「用户正在查看的会话」。
+    // 回合流在用户切走后仍在消费（服务端要继续跑完并落盘），此时只能写
+    // 自己的 turnContainer（已脱离文档，切回时挂回），任何全局 UI ——
+    // 任务清单、子代理卡片、队列条、滚动位置 —— 都不能被这条流改动，
+    // 否则旧会话的内容会显示到新会话里。
+    const isCurrentSession = () =>
+        !!currentSession && currentSession.session_id === sessionId;
+
     function scheduleAssistantRender() {
         if (assistantRenderQueued) return;
         assistantRenderQueued = true;
@@ -845,7 +874,8 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         } else if (event.type === 'tool_result') {
             stopToolStreaming(event.tool_use_id);
             if (event.tool === 'ask_user') {
-                const askCard = document.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
+                // 限定在本回合容器内查找：全局查找会命中别的会话里的同名卡片
+                const askCard = turnContainer.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);
                 if (askCard) {
                     const btn = askCard.querySelector('.ask-submit');
                     if (btn && !btn.classList.contains('ask-submitted')) {
@@ -879,11 +909,14 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             contentDiv.appendChild(pre);
             finalizeAssistantBlock();
         } else if (event.type === 'session_start') {
-            renderSessionStart(event.exec_id, event.task_summary);
+            // 卡片挂在全局消息区：仅在仍查看本会话时创建。
+            // 切走期间跑完/在跑的子代理，切回时由 history 渲染与 mountRunning 补齐。
+            if (isCurrentSession()) renderSessionStart(event.exec_id, event.task_summary);
         } else if (event.type === 'session_complete') {
-            renderSessionComplete(event.exec_id, event.stats, event.status);
+            if (isCurrentSession()) renderSessionComplete(event.exec_id, event.stats, event.status);
         } else if (event.type === 'todo_update') {
-            renderTodoList(event.todos);
+            // 任务清单渲染在全局消息区顶部：旧会话的帧不得写进新会话
+            if (isCurrentSession()) renderTodoList(event.todos);
         } else if (event.type === 'file') {
             const fileNote = event.note ? ` —— ${escapeHtml(event.note)}` : '';
             addTurnMessage('assistant', `📎 [${escapeHtml(event.name)}](${event.path})${fileNote}`);
@@ -895,9 +928,10 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             assistantContent = '';
             finalizeThinkBlock();
         } else if (event.type === 'user_message') {
-            if (onUserMessage) onUserMessage(event);
+            // 回调会改全局队列条状态：切走后不得作用到新会话
+            if (onUserMessage && isCurrentSession()) onUserMessage(event);
         } else if (event.type === 'queued') {
-            if (onQueued) onQueued(event);
+            if (onQueued && isCurrentSession()) onQueued(event);
         } else if (event.type === 'error') {
             addTurnMessage('assistant', `错误: ${escapeHtml(event.content)}`);
         }
@@ -1132,7 +1166,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
                 addMessage(role, content, undefined, undefined, turnContainer);
             const scrollIfViewing = () => {
                 if (currentSession && currentSession.session_id === sessionId) {
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    scrollChatIfNearBottom();
                 }
             };
 
@@ -1201,7 +1235,9 @@ function renderAskUserQuestions(container, input, toolUseId) {
 
     card.appendChild(submitBtn);
     container.appendChild(card);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    // 提问卡是阻塞交互：强制回底，别让用户错过要回答的问题。
+    // 卡片若挂在已脱离文档的旧会话容器里（用户已切走），不能动当前视图。
+    if (chatMessages.contains(container)) scrollChatIfNearBottom(true);
     // 新卡片出现即刷新推荐按钮门控（历史加载/实时推送共用本函数）
     if (typeof updateComposerButtons === 'function') updateComposerButtons();
 }
@@ -1291,7 +1327,9 @@ function renderApprovalCard(container, input, toolUseId) {
     card.appendChild(actions);
 
     container.appendChild(card);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    // 审批卡是阻塞交互：强制回底，别让用户错过待批操作。
+    // 卡片若挂在已脱离文档的旧会话容器里（用户已切走），不能动当前视图。
+    if (chatMessages.contains(container)) scrollChatIfNearBottom(true);
     if (typeof updateComposerButtons === 'function') updateComposerButtons();
 }
 
@@ -1336,7 +1374,7 @@ async function submitApprovalDecision(toolUseId, decision, card) {
             addMessage(role, content, undefined, undefined, turnContainer);
         const scrollIfViewing = () => {
             if (currentSession && currentSession.session_id === sessionId) {
-                chatMessages.scrollTop = chatMessages.scrollHeight;
+                scrollChatIfNearBottom();
             }
         };
         const renderer = createTurnStreamRenderer({
@@ -1479,24 +1517,30 @@ function _handleDeliveredBatch(event) {
 
 async function removeQueuedItem(itemId) {
     if (!currentWorkspace || !currentSession) return;
+    const sessionId = currentSession.session_id;
     try {
         await fetch(
-            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/${itemId}`,
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/queue/${itemId}`,
             { method: 'DELETE' }
         );
     } catch (e) { /* 失败时等下一次 queue_update 校正 */ }
+    // 请求期间已切走：旧的队列快照不得改到新会话的队列条
+    if (!currentSession || currentSession.session_id !== sessionId) return;
     queuedItems = queuedItems.filter(it => it.item_id !== itemId);
     renderQueueBar();
 }
 
 async function clearQueue() {
     if (!currentWorkspace || !currentSession) return;
+    const sessionId = currentSession.session_id;
     try {
         const resp = await fetch(
-            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/clear`,
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/queue/clear`,
             { method: 'POST' }
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // 请求期间已切走：旧的队列快照不得改到新会话的队列条
+        if (!currentSession || currentSession.session_id !== sessionId) return;
         queuedItems = [];
         queuePaused = false;
         queueReason = '';
@@ -1508,12 +1552,14 @@ async function clearQueue() {
 
 async function resumeQueue() {
     if (!currentWorkspace || !currentSession) return;
+    const sessionId = currentSession.session_id;
     try {
         const resp = await fetch(
-            `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/queue/resume`,
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/queue/resume`,
             { method: 'POST' }
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!currentSession || currentSession.session_id !== sessionId) return;
         queuePaused = false;
         queueReason = '';
         renderQueueBar();
@@ -1528,6 +1574,8 @@ async function refreshSessionStatus(sessionId) {
         const resp = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/status`);
         if (!resp.ok) return;
         const status = await resp.json();
+        // 请求期间用户可能已切走：旧会话的队列/运行快照不得写进新会话
+        if (!currentSession || currentSession.session_id !== sessionId) return;
         sessionRunning = !!status.running;
         sessionBackground = status.background || { agents: 0, shells: 0, active: 0, items: [] };
         queuedItems = status.queue_items || queuedItems;
@@ -1673,6 +1721,8 @@ async function sendMessage() {
                 showToast(data.detail || '排队失败，请稍后重试');
                 return;
             }
+            // 请求期间已切走：消息已入旧会话的队，清输入框 / 队列条都不能动新会话
+            if (!currentSession || currentSession.session_id !== sessionId) return;
             chatInput.value = '';
             pendingAttachments = [];
             renderComposerAttachments();
@@ -1710,7 +1760,7 @@ async function sendMessage() {
         addMessage(role, content, undefined, undefined, turnContainer);
     const scrollIfViewing = () => {
         if (currentSession && currentSession.session_id === sessionId) {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scrollChatIfNearBottom();
         }
     };
 
@@ -1727,6 +1777,9 @@ async function sendMessage() {
     // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
     chatMessages.appendChild(turnContainer);
     _activeTurnContainers.set(sessionId, turnContainer);
+
+    // 主动发送是显式动作：无论此前是否在翻历史，都回底并恢复贴底
+    scrollChatIfNearBottom(true);
 
     // 服务端确认投递（user_message 帧）时用它校正合并后的气泡内容
     const optimisticUserDiv = userDiv;
@@ -1838,7 +1891,8 @@ async function sendMessage() {
             await refreshSessionStatus(sessionId);
             updateComposerButtons();
             renderQueueBar();
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            // 回合结束不打断阅读：仅当用户还贴着底部时跟随
+            scrollChatIfNearBottom();
         }
         // 刷新侧边栏，更新会话标题（preview = 最后一条用户消息）
         await loadSessions();
@@ -1984,7 +2038,8 @@ function scheduleScrollToBottom() {
     if (scrollToBottomFrame !== null) return;
     scrollToBottomFrame = requestAnimationFrame(() => {
         scrollToBottomFrame = null;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        // 用户翻看历史时不再跟随追加（贴底与否由 scrollChatIfNearBottom 判断）
+        scrollChatIfNearBottom();
     });
 }
 

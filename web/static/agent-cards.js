@@ -612,6 +612,9 @@ const AgentCardStore = (() => {
             const resp = await fetch(`/api/workspaces/${ws}/sessions/${sid}/executions`);
             if (!resp.ok) return;
             const data = await resp.json();
+            // 拉取期间用户可能已切走：旧会话的执行记录不得挂到当前会话界面上
+            if (!currentWorkspace || currentWorkspace.uuid !== ws) return;
+            if (!currentSession || currentSession.session_id !== sid) return;
             (data.executions || []).forEach(log => {
                 const meta = log.metadata || {};
                 // 归一化旧数据：status 里可能残留 check/handoff 阶段值
