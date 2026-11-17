@@ -318,6 +318,49 @@ class TestSessionNotificationInjection:
         runner.loop._drain_session_notifications()
         assert len(self._injected(runner)) == 1
 
+    def test_autonomous_loop_drains_notifications(self):
+        """自主循环（worker/lite）也在迭代顶部排空邮箱。
+
+        回归：此前只有 interactive 分支排空——master 发给运行中子代理的
+        消息永远无人消费，子代理终态后随注册一起消失（表现为「消息没反应」）。
+        """
+        from core.agent_mailbox import get_agent_mailbox
+
+        worker = _make_agent(role="lite", task="跑任务", exec_id="exec_drain")
+        mbus = get_agent_mailbox()
+        mbus.register_agent("exec_drain", "exec_drain")
+        assert mbus.send_to_agent("master-x", "exec_drain", "方向变更：改用方案 B")
+
+        with patch.object(worker, "_check_and_compress"), \
+             patch.object(worker, "_call_llm", return_value=_make_text_response("done")):
+            worker.run()
+
+        # 消息被消费且进入子代理上下文（LLM 可见）
+        assert not mbus.has_unread("exec_drain")
+        assert any("方向变更" in str(m.get("content")) for m in worker.messages)
+        mbus.unregister_session("exec_drain")
+
+    def test_autonomous_drain_marks_background_notification(self):
+        """自主循环注入的消息同样带 background_notification 标记（前端跳过渲染）。"""
+        from core.agent_mailbox import get_agent_mailbox
+
+        worker = _make_agent(role="lite", task="跑任务", exec_id="exec_drain2")
+        mbus = get_agent_mailbox()
+        mbus.register_agent("exec_drain2", "exec_drain2")
+        mbus.send_to_agent("master-x", "exec_drain2", "补充要求")
+
+        with patch.object(worker, "_check_and_compress"), \
+             patch.object(worker, "_call_llm", return_value=_make_text_response("done")):
+            worker.run()
+
+        injected = [
+            m for m in worker.messages
+            if m.get("_meta", {}).get("background_notification")
+        ]
+        assert len(injected) == 1
+        assert "补充要求" in str(injected[0]["content"])
+        mbus.unregister_session("exec_drain2")
+
 
 class TestTurnCompleteSignal:
     """interactive 回合结束（run / resume）必须发出 on_turn_complete。

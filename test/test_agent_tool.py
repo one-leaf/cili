@@ -507,6 +507,54 @@ class TestSessionRunnerLifecycleBroadcast:
 
 
 
+class TestBackgroundMailboxLifecycle:
+    """后台子代理的邮箱生命周期：Task ID 别名可寻址，终态关闭队列。"""
+
+    def test_task_id_alias_registered_and_queue_closed(self, agent_tool, monkeypatch):
+        import threading
+        import time
+
+        from core.agent_mailbox import get_agent_mailbox
+        from core.tools import background as base_mod
+
+        monkeypatch.setattr(base_mod, "_active_background_runners", [])
+
+        release = threading.Event()
+        mock_agent = MagicMock()
+
+        def _run():
+            release.wait(timeout=5)
+            return {"status": "completed", "summary": "ok", "stats": {}}
+
+        mock_agent.run.side_effect = _run
+        mock_agent.close.return_value = None
+        mock_agent.messages = []
+        mock_agent.task = "bg task"
+        mock_agent.max_iterations = 10
+
+        result = agent_tool._start_background_runner(
+            runner=mock_agent,
+            session=agent_tool.session,
+            exec_id="exec_bg1",
+            task_summary="bg task",
+        )
+        task_id = result.meta["task_id"]
+        mbus = get_agent_mailbox()
+
+        # spawn 结果暴露的是 Task ID（agent-N）：必须可直接寻址
+        assert mbus._agent_registry.get(task_id) == "exec_bg1"
+        assert mbus.send_to_agent("root", task_id, "hi") is True
+
+        release.set()
+        deadline = time.time() + 5
+        while mbus._agent_registry.get(task_id) and time.time() < deadline:
+            time.sleep(0.01)
+
+        # 终态：名字注销 + 队列关闭，按 exec_id 的 send 不再假成功
+        assert mbus._agent_registry.get(task_id) is None
+        assert mbus.send("root", "exec_bg1", "late") is False
+
+
 def test_invalid_action_rejected():
     """旧 action 别名与未知 action 都应直接报错，不能落入 spawn 分支。"""
     tool = AgentTool()

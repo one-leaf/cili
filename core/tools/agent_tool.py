@@ -416,6 +416,10 @@ class AgentTool(Tool):
                     mbus = get_agent_mailbox()
                     for agent_name in mbus.get_session_agents(exec_id):
                         mbus.unregister_agent(agent_name)
+                    # 终态后关闭消息队列：否则按 exec_id 的 send 会假成功，
+                    # 消息投进无人消费的队列（send_to_agent 已会报未注册，
+                    # 但 send 只检查队列存在）。
+                    mbus.unregister_session(exec_id)
                 except Exception as e:
                     logger.warning(f"Failed to unregister sub-runner from AgentMailbox: {e}")
                 # Persist main session after sub-runner writes.
@@ -700,6 +704,13 @@ class AgentTool(Tool):
                         self.session.save()
                     except Exception:
                         pass
+                # 续任链全部结束：关闭子代理邮箱队列（epoch 之间的消息由
+                # 下一 epoch 循环顶部排空；终态后不再有消费者）。
+                try:
+                    from core.agent_mailbox import get_agent_mailbox
+                    get_agent_mailbox().unregister_session(exec_id)
+                except Exception:
+                    pass
                 return
 
         threading.Thread(

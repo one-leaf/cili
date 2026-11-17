@@ -283,12 +283,16 @@ class Loop:
                 runner.sink.on_text("\n\n[已停止]")
                 return None
 
-            # ── 后台子代理完成通知排空（interactive 模式）──
-            # 后台 session 线程完成时通过 message_bus 发送通知给 master session；
-            # 此处每轮迭代前排空通知队列，注入为 user 消息并标记
-            # _meta.background_notification=True（LLM 可见但前端跳过渲染）。
+            # ── message_bus 待读消息排空（两种模式）──
+            # interactive：后台子代理完成通知（子 Runner → master）；
+            # autonomous：master/兄弟代理发来的定向消息——子代理只在这里能
+            # 看到消息（此前只有 interactive 排空，发给运行中子代理的消息
+            # 无人消费，终态后随注册一起消失）。
+            # 注入为 user 消息并标记 _meta.background_notification=True
+            # （LLM 可见但前端跳过渲染）。仍在迭代顶部投递，绝不在工具批
+            # 中间插入（保住 tool_use → tool_result 配对）。
+            self._drain_session_notifications()
             if not autonomous:
-                self._drain_session_notifications()
                 # ── 排队用户消息投递（安全边界①：迭代顶部）──
                 # stop 检查与后台通知之后、压缩与 LLM 调用之前：把运行中
                 # 用户追加的消息合并成一条 user 消息插入，本轮 LLM 即可见。
@@ -794,10 +798,12 @@ class Loop:
         )
 
     def _drain_session_notifications(self) -> None:
-        """排空后台子代理完成通知（通过 message_bus）。
+        """排空 message_bus 待读消息（interactive 与 autonomous 共用）。
 
-        后台 session 线程完成时通过 message_bus 发送通知给 master session；
-        本方法在每次 LLM 调用前（loop 迭代顶部 + run_interactive 入口）排空。
+        来源：后台子 Runner 完成通知（发给 master）；master/兄弟代理发给
+        运行中子代理的定向消息。本方法在每次 LLM 调用前（loop 迭代顶部 +
+        run_interactive 入口）排空——autonomous 循环没有其它注入点，
+        不在此排空则消息永远无人消费。
 
         通知注入为 user 消息并标记 _meta.background_notification=True：
         - LLM 可见：作为继续对话的上下文（避免 LLM 凭空编造"用户说继续"）

@@ -212,6 +212,34 @@ class TestMessageBusModule:
         assert bus._agent_registry.get("worker-1") is None
         assert bus.list_agents() == []
 
+    def test_task_id_alias_addresses_same_queue(self):
+        """后台任务 ID（agent-N）与 exec_id/label 一样可寻址到同一队列。"""
+        bus = AgentMailbox()
+        bus.register_agent("exec_abc", "exec_abc")
+        bus.register_agent("bg-label", "exec_abc")
+        bus.register_agent("agent-7", "exec_abc")  # 后台 Task ID 别名
+        ok = bus.send_to_agent("master", "agent-7", "hi")
+        assert ok is True
+        assert len(bus.receive("exec_abc")) == 1
+
+    def test_finished_agent_rejects_session_send(self):
+        """子代理终态清理（注销名字 + 关闭队列）后，按 session_id 发送必须失败。
+
+        回归：unregister_agent 不清队列时，send 只检查队列存在 → 假成功，
+        消息投进无人消费的队列（send_to_agent 已会报未注册，send 不会）。
+        """
+        bus = AgentMailbox()
+        bus.register_agent("exec_done", "exec_done")
+        assert bus.send_to_agent("master", "exec_done", "hello") is True
+
+        # 子代理结束：agent_tool / background 收尾的同款动作
+        for name in bus.get_session_agents("exec_done"):
+            bus.unregister_agent(name)
+        bus.unregister_session("exec_done")
+
+        assert bus.send("master", "exec_done", "late") is False
+        assert bus.send_to_agent("master", "exec_done", "late") is False
+
 
 class TestMessageBusTool:
     """MessageBusTool actions."""

@@ -22,8 +22,12 @@ class MessageBusTool(Tool):
         "## Use cases:\n"
         "- Background Worker/Lite sub-agent reports results to main session\n"
         "- Cross-session coordination (one session needs data from another)\n"
-        "- Agent-to-agent messaging (master sends instructions to worker by label/exec_id)\n"
+        "- Agent-to-agent messaging (master sends instructions to a running sub-agent by label/exec_id/task id)\n"
         "- Status notifications between sessions\n\n"
+        "## Delivery:\n"
+        "- A running sub-agent receives pending messages automatically at its next iteration — no polling needed.\n"
+        "- Chat sessions (master) receive pending messages when idle-exit resumes or at the next turn.\n"
+        "- Messaging a sub-agent that has already finished fails with an error: messages are not persisted.\n\n"
         "## Note:\n"
         "- Messages are ephemeral (in-memory only, not persisted)\n"
         "- Messages survive within the same server session\n"
@@ -49,7 +53,8 @@ class MessageBusTool(Tool):
                     "type": "string",
                     "description": (
                         "Target agent name (required for 'send_to_agent' action). "
-                        "Can be an exec_id (e.g. 'agent-1') or a label (e.g. 'translate-doc')."
+                        "Can be a background Task ID (e.g. 'agent-1'), an exec_id "
+                        "(e.g. 'exec_1a2b3c4d'), or a label (e.g. 'translate-doc')."
                     ),
                 },
                 "message": {

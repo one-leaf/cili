@@ -613,6 +613,9 @@ class BackgroundMixin:
                     mbus = get_agent_mailbox()
                     for agent_name in mbus.get_session_agents(exec_id):
                         mbus.unregister_agent(agent_name)
+                    # 终态后关闭消息队列：只注销名字不清队列时，按 session_id
+                    # （exec_id）send 仍会「成功」并把消息投进无人消费的队列。
+                    mbus.unregister_session(exec_id)
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(
@@ -718,6 +721,18 @@ class BackgroundMixin:
         )
 
         BackgroundTaskManager.register(task)
+
+        # 后台任务 ID（agent-N）也注册为邮箱别名：spawn 结果向模型暴露的是
+        # Task ID，与邮箱里的 exec_id 是两套 ID，不注册别名则
+        # send_to_agent("agent-N") 必然失败（见 message_bus 工具描述）。
+        try:
+            from core.agent_mailbox import get_agent_mailbox
+            get_agent_mailbox().register_agent(task_id, exec_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to register mailbox alias {task_id} -> {exec_id}: {e}"
+            )
 
         # Start Runner in background thread
         thread = threading.Thread(target=run_runner, daemon=True)

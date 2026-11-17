@@ -598,13 +598,16 @@ agent(action="list")
   - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
   - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
   - 后台子代理：`background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
-- **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑
-- **Pull 模型不变**：消息不自动注入 agent 循环，agent 需主动 `receive` 读取
+  - 后台任务 ID（`agent-N`）在 `_start_background_runner` 中注册为 exec_id 的别名（spawn 结果向模型暴露的是 Task ID）
+  - 终态清理：注销名字后 `unregister_session(exec_id)` 关闭队列，避免 `send` 对已结束子代理假成功
+- **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑；支持 Task ID / exec_id / label
+- **自动投递**：运行中的子代理与 interactive 会话在每轮 LLM 调用前排空邮箱（`_drain_session_notifications`），
+  注入为 `_meta.background_notification` 的 user 消息；`receive` 仅作手动补充
 
 **设计要点**：
 - **轻量级**：纯内存实现，无持久化，服务器重启后消息丢失
 - **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
-- **按需读取**：消息不自动注入 agent 循环，agent 需主动调用 `message_bus(action="receive")` 检查
+- **投递边界**：只有「运行中」的 agent 能收到消息——发送方在目标终态后会收到错误；不存在离线投递
 - **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 AgentMailbox
 - **子代理注册**：`agent_tool.py` / `background.py` 在子代理生命周期自动注册/注销
 - **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
