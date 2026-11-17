@@ -743,6 +743,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         # 先推送"已应答"事件，让前端把问题卡片标记为已提交（立即关闭），再恢复循环
         close_event = json.dumps({
             "type": "tool_result",
+            "session_id": session_id,
             "tool": "ask_user",
             "content": answer,
             "is_error": False,
@@ -751,7 +752,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         event_queue.put(f"data: {close_event}\n\n")
 
     def _on_error(msg: str) -> None:
-        err_event = json.dumps({"type": "error", "content": msg}, ensure_ascii=False)
+        err_event = json.dumps({"type": "error", "session_id": session_id, "content": msg}, ensure_ascii=False)
         event_queue.put(f"data: {err_event}\n\n")
 
     def run_runner():

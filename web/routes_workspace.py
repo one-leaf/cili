@@ -509,10 +509,16 @@ async def get_session(
         # 同步读多文件，放线程池避免阻塞事件循环（审查 P2）
         await asyncio.to_thread(_resolve_tool_results_for_session, messages, session_dir)
 
+        # 任务清单存放在独立的 todo 文件里（不随会话 metadata 落盘）：
+        # 切换会话/刷新页面后前端要从这里恢复，不能只靠 metadata.todos（旧格式）
+        from core.tools.todo import read_todos
+        todos = read_todos(session_id, workspace_uuid)
+
         return {
             "session_id": meta.get("session_id", session_id),
             "name": meta.get("name", "New Session"),
             "metadata": meta.get("metadata", {}),
+            "todos": todos,
             "messages": messages,
             "total_count": total_count,
             "has_more": has_more,

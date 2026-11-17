@@ -2117,8 +2117,9 @@ async function loadSession(sessionId) {
         }
         _renderedSessionKey = sessionKey;
 
-        // Render initial todos if any
-        const todos = session.metadata?.todos;
+        // Render initial todos if any（服务端返回的独立 todo 文件优先；
+        // metadata.todos 仅旧格式兜底）
+        const todos = session.todos ?? session.metadata?.todos;
         if (todos && Array.isArray(todos) && todos.length > 0) {
             renderTodoList(todos);
         } else {

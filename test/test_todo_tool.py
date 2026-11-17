@@ -11,6 +11,7 @@ from core.tools.todo import (
     get_todo_file_path,
     get_todos_from_session,
     read_todos,
+    todo_update_event,
     write_todos,
 )
 
@@ -166,3 +167,19 @@ class TestGetTodosFromSession:
 
     def test_no_session_returns_none(self):
         assert get_todos_from_session(None) is None
+
+
+class TestUpdateEvent:
+    """todo_update 推流帧必须带 session_id：前端据此判断是否属于当前会话。"""
+
+    def test_event_carries_session_id(self, todo_dir):
+        todos = [{"content": "跑测试", "status": "in_progress"}]
+        write_todos("sess-ev", todos)
+        ev = todo_update_event("todo_write", False, _FakeSession("sess-ev"))
+        assert ev == {"type": "todo_update", "session_id": "sess-ev", "todos": todos}
+
+    def test_other_tool_returns_none(self, todo_dir):
+        assert todo_update_event("bash", False, _FakeSession("sess-ev")) is None
+
+    def test_error_returns_none(self, todo_dir):
+        assert todo_update_event("todo_write", True, _FakeSession("sess-ev")) is None

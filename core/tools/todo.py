@@ -291,7 +291,14 @@ def todo_update_event(tool_name: str, is_error: bool, session: SessionStore | No
     if tool_name != "todo_write" or is_error:
         return None
     todos = get_todos_from_session(session, workspace_uuid)
-    return {"type": "todo_update", "todos": todos} if todos else None
+    if not todos:
+        return None
+    # 带 session_id：推流可能持续到前端切走之后，接收端据此判断是否属于当前会话
+    return {
+        "type": "todo_update",
+        "session_id": getattr(session, "session_id", "") or "",
+        "todos": todos,
+    }
 
 
 def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "") -> list[dict] | None:

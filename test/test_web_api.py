@@ -1604,3 +1604,51 @@ class TestAnswerAskUserQuestionRoute:
 
         assert len(runner.resume_calls) == 1
         assert self._placeholder(sm, tool_use_id)["content"] == answer
+
+
+class TestGetSessionTodos:
+    """会话详情接口要返回独立 todo 文件的内容（切换会话后任务清单可恢复）。"""
+
+    def test_get_session_includes_todos_from_file(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from core.tools import todo as todo_mod
+        from web import routes_workspace
+
+        (tmp_path / "sessions" / "abc12345").mkdir(parents=True)
+        (tmp_path / "sessions" / "abc12345" / "index.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(
+            routes_workspace, "load_history_meta",
+            lambda d: {"session_id": "abc12345", "name": "n", "metadata": {}},
+        )
+        monkeypatch.setattr(routes_workspace, "load_history_messages", lambda d: [])
+        monkeypatch.setattr(todo_mod, "_get_todo_dir", lambda ws="": tmp_path / "todo")
+        todos = [{"content": "写代码", "status": "in_progress"}]
+        todo_mod.write_todos("abc12345", todos, "ws-uuid")
+
+        result = asyncio.run(
+            routes_workspace.get_session("ws-uuid", "abc12345", None, 0, ws_dir=tmp_path)
+        )
+        assert result["todos"] == todos
+
+    def test_get_session_without_todos_returns_empty_list(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from core.tools import todo as todo_mod
+        from web import routes_workspace
+
+        (tmp_path / "sessions" / "abc12345").mkdir(parents=True)
+        (tmp_path / "sessions" / "abc12345" / "index.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(
+            routes_workspace, "load_history_meta",
+            lambda d: {"session_id": "abc12345", "name": "n", "metadata": {}},
+        )
+        monkeypatch.setattr(routes_workspace, "load_history_messages", lambda d: [])
+        monkeypatch.setattr(todo_mod, "_get_todo_dir", lambda ws="": tmp_path / "todo")
+
+        result = asyncio.run(
+            routes_workspace.get_session("ws-uuid", "abc12345", None, 0, ws_dir=tmp_path)
+        )
+        assert result["todos"] == []

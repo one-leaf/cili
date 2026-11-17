@@ -99,6 +99,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         # 前端据 tool_result(ask_user) 关闭卡片（提问卡与审批卡共用）
         close_event = json.dumps({
             "type": "tool_result",
+            "session_id": session_id,
             "tool": "ask_user",
             "content": answer,
             "is_error": False,
@@ -107,7 +108,7 @@ async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerA
         event_queue.put(f"data: {close_event}\n\n")
 
     def _on_error(msg: str) -> None:
-        err_event = json.dumps({"type": "error", "content": msg}, ensure_ascii=False)
+        err_event = json.dumps({"type": "error", "session_id": session_id, "content": msg}, ensure_ascii=False)
         event_queue.put(f"data: {err_event}\n\n")
 
     # 复用 core 的回合执行（resume / aborted 分流 + 异常落盘），按历史行为不跑收尾钩子
