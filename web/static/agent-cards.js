@@ -234,7 +234,11 @@ const AgentCardStore = (() => {
     function _appendBlock(model, block) {
         if (!model.bodyEl) return;
         const el = _renderBlock(model, block);
-        if (el) model.bodyEl.appendChild(el);
+        if (el) {
+            model.bodyEl.appendChild(el);
+            // 展开中的卡片逐块增高：贴底时继续跟随
+            if (chatMessages.contains(model.bodyEl)) scrollChatIfNearBottom();
+        }
     }
 
     function _renderDetail(model) {
@@ -289,6 +293,8 @@ const AgentCardStore = (() => {
                 } else {
                     model.openBlock.el.innerHTML = renderMarkdown(model.openBlock.text);
                 }
+                // 展开中的文字块逐段增高：贴底时继续跟随
+                if (chatMessages.contains(model.openBlock.el)) scrollChatIfNearBottom();
             }
             return;
         }
@@ -432,6 +438,11 @@ const AgentCardStore = (() => {
         if (model.expanded) {
             if (model.loaded && !model.needsFullReload) _renderDetail(model);
             else _loadExecution(model);
+        }
+        // 卡片插入会改变消息区高度：贴底时立即跟随，否则视图掉队后
+        // 用户随便一滚就会被判成「在翻历史」，自动跟随从此关掉
+        if (model.cardEl.parentNode && chatMessages.contains(model.cardEl)) {
+            scrollChatIfNearBottom();
         }
         return model.cardEl;
     }

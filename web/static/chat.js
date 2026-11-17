@@ -755,6 +755,8 @@ function renderTodoList(todos) {
 
     html += '</ul>';
     container.innerHTML = html;
+    // 清单在消息区顶部，插入/增高会把内容整体下推：贴底时跟随到底
+    scrollChatIfNearBottom();
 }
 
 // ── 单回合流式渲染器（sendMessage 与 answer-ask-user 共用） ──
