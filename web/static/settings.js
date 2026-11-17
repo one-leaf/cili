@@ -1473,6 +1473,38 @@ function setSiwcResult(card, text, cls) {
     el.textContent = text;
 }
 
+function applySiwcAuthorized(card, data) {
+    const credential = data.credential || '';
+    const email = data.email || '';
+    // 就地更新当前卡片；不能整页重载，否则未保存的 provider 会被服务端配置覆盖而“消失”
+    card.dataset.credential = credential;
+    const status = card.querySelector('.provider-status');
+    if (status) {
+        status.dataset.masked = '0';
+        status.innerHTML = '<span class="status-dot ok"></span>已连接';
+    }
+    const stateEl = card.querySelector('.siwc-account-state');
+    if (stateEl) {
+        stateEl.className = 'siwc-account-state ok';
+        stateEl.textContent = '已连接：' + email;
+    }
+    const loginBtn = card.querySelector('.p-siwc-login');
+    if (loginBtn) loginBtn.textContent = '重新登录';
+    const account = card.querySelector('.siwc-account');
+    if (account && !card.querySelector('.p-siwc-logout')) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-ghost danger p-siwc-logout';
+        btn.textContent = '断开连接';
+        account.appendChild(btn);
+    }
+    if (data.saved) {
+        setSiwcResult(card, '✓ 登录成功，配置已保存', 'ok');
+    } else {
+        setSiwcResult(card, '✓ 登录成功，但配置保存失败，请点击「保存配置」重试', 'err');
+    }
+}
+
 function stopSiwcPolling(card) {
     const id = card.dataset.siwcTimer;
     if (id) {
@@ -1481,10 +1513,44 @@ function stopSiwcPolling(card) {
     }
 }
 
+function collectSiwcProviderConfig(card) {
+    let headers = {};
+    const headersJson = card.querySelector('.p-headers').value.trim();
+    if (headersJson) {
+        try { headers = JSON.parse(headersJson); }
+        catch (e) { return { error: 'Headers JSON 语法错误: ' + e.message }; }
+    }
+    const models = {};
+    card.querySelectorAll('.p-model-row').forEach(function (row) {
+        const mkey = row.querySelector('.p-model-key').value.trim();
+        if (!mkey || models[mkey]) return;
+        const spec = {};
+        const name = row.querySelector('.p-model-name').value.trim();
+        if (name) spec.name = name;
+        spec.max_output_tokens = parseInt(row.querySelector('.p-model-max-output').value) || 32768;
+        spec.max_context_tokens = parseInt(row.querySelector('.p-model-max-context').value) || 200000;
+        spec.model_type = row.querySelector('.p-model-type').value;
+        spec.reasoning = row.querySelector('.p-model-reasoning').value;
+        spec.input = Array.prototype.map.call(row.querySelectorAll('.p-model-input:checked'), function (el) { return el.value; });
+        if (spec.input.indexOf('text') === -1) spec.input.unshift('text');
+        models[mkey] = spec;
+    });
+    return {
+        backend: card.querySelector('.p-server').value || 'chatgpt-siwc',
+        headers: headers,
+        models: models,
+    };
+}
+
 async function startSiwcLogin(card, btn) {
     const provider = card.querySelector('.p-key').value.trim();
     if (!provider) {
         setSiwcResult(card, '请先填写 Provider 名称', 'err');
+        return;
+    }
+    const providerConfig = collectSiwcProviderConfig(card);
+    if (providerConfig.error) {
+        setSiwcResult(card, '✗ ' + providerConfig.error, 'err');
         return;
     }
     btn.disabled = true;
@@ -1493,7 +1559,11 @@ async function startSiwcLogin(card, btn) {
         const resp = await fetch('/api/config/siwc/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: provider, credential: card.dataset.credential || '' }),
+            body: JSON.stringify({
+                provider: provider,
+                credential: card.dataset.credential || '',
+                provider_config: providerConfig,
+            }),
         });
         const data = await resp.json();
         if (!data.success) throw new Error(data.error || '启动登录失败');
@@ -1536,8 +1606,7 @@ function pollSiwcLogin(card, attemptId) {
             const data = await resp.json();
             if (data.status === 'authorized') {
                 stopSiwcPolling(card);
-                setSiwcResult(card, '✓ 登录成功', 'ok');
-                await openSettings();
+                applySiwcAuthorized(card, data);
             } else if (data.status === 'failed') {
                 stopSiwcPolling(card);
                 setSiwcResult(card, '✗ ' + (data.error || '登录失败'), 'err');
@@ -1573,8 +1642,7 @@ async function completeSiwcManual(card) {
         const data = await resp.json();
         if (data.status === 'authorized') {
             stopSiwcPolling(card);
-            setSiwcResult(card, '✓ 登录成功', 'ok');
-            await openSettings();
+            applySiwcAuthorized(card, data);
         } else {
             setSiwcResult(card, '✗ ' + (data.error || '回调校验失败'), 'err');
         }

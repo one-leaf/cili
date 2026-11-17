@@ -18,12 +18,13 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 _ATTEMPTS: dict[str, "LoginAttempt"] = {}
-# 登录成功后的回调（provider_key, credential）：供接入端立即写回配置，
-# 不依赖前端轮询（用户授权后直接关页面时仍能落盘）。
-_ON_AUTHORIZED: Callable[[str, str], None] | None = None
+# 登录成功后的回调（provider_key, credential, provider_config）：供接入端
+# 立即创建/更新 provider，不依赖前端轮询（用户授权后直接关页面也能落盘）。
+# 返回值写回 attempt.save_status（written / unchanged / failed / missing）。
+_ON_AUTHORIZED: Callable[[str, str, "dict | None"], Any] | None = None
 
 
-def set_authorized_hook(callback: Callable[[str, str], None] | None) -> None:
+def set_authorized_hook(callback: Callable[[str, str, "dict | None"], Any] | None) -> None:
     global _ON_AUTHORIZED
     _ON_AUTHORIZED = callback
 
@@ -36,10 +37,12 @@ class LoginAttempt:
     auth_url: str
     redirect_uri: str
     request: AuthorizationRequest
+    provider_config: dict | None = None
     status: str = "pending"  # pending / processing / authorized / failed / expired / cancelled
     error: str = ""
     credential_result: str = ""
     email: str = ""
+    save_status: str = ""
     created_at: float = field(default_factory=time.time)
     expires_at: float = 0.0
     server: Any = None
@@ -89,7 +92,11 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             pass
 
 
-def start_login(provider_key: str, credential: str = "") -> LoginAttempt:
+def start_login(
+    provider_key: str,
+    credential: str = "",
+    provider_config: dict | None = None,
+) -> LoginAttempt:
     with _LOCK:
         _cleanup_locked()
         for attempt in _ATTEMPTS.values():
@@ -123,6 +130,7 @@ def start_login(provider_key: str, credential: str = "") -> LoginAttempt:
         auth_url=request.url,
         redirect_uri=redirect_uri,
         request=request,
+        provider_config=provider_config,
         expires_at=time.time() + const.LOGIN_TIMEOUT_SECONDS,
         server=server,
     )
@@ -149,6 +157,7 @@ def poll(attempt_id: str) -> dict:
             "credential": attempt.credential_result,
             "email": attempt.email,
             "provider": attempt.provider_key,
+            "saved": attempt.save_status in ("written", "unchanged"),
         }
 
 
@@ -220,13 +229,26 @@ def _complete(attempt_id: str, callback_url: str, *, from_callback: bool) -> dic
     _close_server(attempt)
 
     hook = _ON_AUTHORIZED
+    save_status = ""
     if hook is not None:
         try:
-            hook(attempt.provider_key, credential)
+            hook_result = hook(attempt.provider_key, credential, attempt.provider_config)
+            if isinstance(hook_result, str):
+                save_status = hook_result
         except Exception as e:  # noqa: BLE001 —— 写回失败不应影响登录结果
             logger.warning(f"[SIWC] authorized 回调失败: {e}")
+            save_status = "failed"
 
-    return {"status": "authorized", "credential": credential, "email": creds.email}
+    with _LOCK:
+        attempt.save_status = save_status
+
+    return {
+        "status": "authorized",
+        "credential": credential,
+        "email": creds.email,
+        "provider": attempt.provider_key,
+        "saved": save_status in ("written", "unchanged"),
+    }
 
 
 def _close_server(attempt: LoginAttempt) -> None:

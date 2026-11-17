@@ -30,6 +30,7 @@ _GUARDS = [Depends(teen_guard("config_update")), Depends(_csrf_protect)]
 class LoginRequest(BaseModel):
     provider: str = ""
     credential: str | None = None
+    provider_config: dict | None = None  # 当前卡片的表单快照（登录成功即保存用）
 
 
 class CompleteRequest(BaseModel):
@@ -51,16 +52,46 @@ def _provider_credential(provider_key: str) -> str:
     return str(_provider_entry(provider_key).get("credential") or "")
 
 
-def _write_credential(provider_key: str, credential: str) -> bool:
-    """登录成功后把 credential 写回 provider（配置保存仍是显式动作，但凭证由服务端创建）。"""
+def _upsert_oauth_provider(
+    provider_key: str, credential: str, provider_config: dict | None = None
+) -> str:
+    """登录成功后直接创建/更新 provider（含 credential），返回写回状态。
+
+    前端把当前卡片配置随登录请求带上；provider 尚未保存时也能一次落盘，
+    避免“登录成功后卡片消失、还要再点一次保存”。
+    """
     raw = migrate_legacy_config(load_global_config())
-    entry = (raw.get("providers") or {}).get(provider_key)
-    if not isinstance(entry, dict) or entry.get("auth_type") != "oauth":
-        return False
-    if str(entry.get("credential") or "") == credential:
-        return False
+    providers = raw.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+        raw["providers"] = providers
+
+    entry = providers.get(provider_key)
+    if not isinstance(entry, dict):
+        entry = {}
+        providers[provider_key] = entry
+
+    if isinstance(provider_config, dict):
+        backend = provider_config.get("backend")
+        if isinstance(backend, str) and backend:
+            entry["backend"] = backend
+        headers = provider_config.get("headers")
+        if isinstance(headers, dict):
+            entry["headers"] = {str(k): str(v) for k, v in headers.items()}
+        models = provider_config.get("models")
+        if isinstance(models, dict) and models:
+            entry["models"] = models
+    if not entry.get("models"):
+        entry["models"] = {"default": {}}
+
+    entry["auth_type"] = "oauth"
+    entry["interface_type"] = "openai-responses"
+    entry["base_url"] = "https://api.openai.com/v1"
+    entry["api_path"] = ""
     entry["credential"] = credential
-    return save_global_config(raw)
+    entry.pop("api_key", None)
+
+    return "written" if save_global_config(raw) else "failed"
 
 
 def _clear_credential(provider_key: str) -> None:
@@ -86,17 +117,16 @@ def _reload_runners_sync() -> None:
                 logger.warning(f"[SIWC] 重载 runner 失败: {e}")
 
 
-async def _reload_runners() -> None:
-    await asyncio.to_thread(_reload_runners_sync)
-
-
-def _on_authorized(provider_key: str, credential: str) -> None:
-    """换码成功后立即写回 provider 并后台重载 runner（不依赖前端轮询）。"""
-    if not _write_credential(provider_key, credential):
-        return
-    threading.Thread(
-        target=_reload_runners_sync, daemon=True, name="cili-siwc-reload"
-    ).start()
+def _on_authorized(
+    provider_key: str, credential: str, provider_config: dict | None = None
+) -> str:
+    """换码成功后直接保存 provider，并后台重载 runner（不依赖前端轮询）。"""
+    status = _upsert_oauth_provider(provider_key, credential, provider_config)
+    if status == "written":
+        threading.Thread(
+            target=_reload_runners_sync, daemon=True, name="cili-siwc-reload"
+        ).start()
+    return status
 
 
 set_authorized_hook(_on_authorized)
@@ -108,7 +138,9 @@ async def login_start(request: LoginRequest):
     if not provider_key:
         return {"success": False, "error": "缺少 provider"}
     credential = request.credential or _provider_credential(provider_key)
-    attempt = await asyncio.to_thread(start_login, provider_key, credential)
+    attempt = await asyncio.to_thread(
+        start_login, provider_key, credential, request.provider_config
+    )
     return {
         "success": True,
         "attempt_id": attempt.attempt_id,
@@ -120,14 +152,7 @@ async def login_start(request: LoginRequest):
 
 @router.get("/api/config/siwc/login/{attempt_id}")
 async def login_poll(attempt_id: str):
-    result = poll(attempt_id)
-    if result.get("status") == "authorized":
-        credential = str(result.get("credential") or "")
-        provider_key = str(result.get("provider") or "")
-        if credential and provider_key:
-            if await asyncio.to_thread(_write_credential, provider_key, credential):
-                await _reload_runners()
-    return result
+    return poll(attempt_id)
 
 
 @router.post("/api/config/siwc/login/{attempt_id}/complete", dependencies=_GUARDS)
