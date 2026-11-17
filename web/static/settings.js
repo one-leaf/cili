@@ -1044,6 +1044,7 @@ async function testProviderModel(btn) {
         // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
         provider: card.querySelector('.p-key').value.trim(),
     };
+    if (payload.auth_type === 'oauth') payload.credential = card.dataset.credential || '';
     const apiKey = card.querySelector('.p-api-key').value.trim();
     if (apiKey) payload.api_key = apiKey;
     const headersJson = card.querySelector('.p-headers').value.trim();
@@ -1089,6 +1090,7 @@ async function detectProviderModels(btn) {
         // provider 名：api_key 输入框为空（重开设置后只剩掩码）时，服务端据此取已保存的 key
         provider: card.querySelector('.p-key').value.trim(),
     };
+    if (payload.auth_type === 'oauth') payload.credential = card.dataset.credential || '';
     const apiKey = card.querySelector('.p-api-key').value.trim();
     if (apiKey) payload.api_key = apiKey;
     const headersJson = card.querySelector('.p-headers').value.trim();
@@ -1342,10 +1344,18 @@ function renderProviderCard(key, p) {
     const pathCustom = p.api_path && !isKnownPresetApiPath(p.api_path) ? '1' : '';
     const defaultUrl = serverPresetUrl(preset, iface);
     const defaultPath = serverPresetApiPath(preset, iface);
-    const configured = Boolean(p.api_key_masked || p.api_key);
+    const isOAuth = p.auth_type === 'oauth' || serverKey === 'chatgpt-siwc';
+    const siwc = p.siwc_status || null;
+    const siwcConnected = Boolean(siwc && siwc.connected);
+    const configured = isOAuth
+        ? Boolean(p.credential && siwcConnected)
+        : Boolean(p.api_key_masked || p.api_key);
+    const statusText = isOAuth
+        ? (siwcConnected ? '已连接' : '未登录')
+        : (configured ? '已配置' : '未配置');
     const status = '<span class="provider-status" data-masked="' + (p.api_key_masked ? 1 : 0) + '">'
         + '<span class="status-dot ' + (configured ? 'ok' : 'pending') + '"></span>'
-        + (configured ? '已配置' : '未配置') + '</span>';
+        + statusText + '</span>';
     const masked = p.api_key_masked
         ? '<div class="apikey-hint" title="留空保持不变">已保存：' + p.api_key_masked + '，留空则保持不变</div>'
         : '';
@@ -1355,8 +1365,31 @@ function renderProviderCard(key, p) {
         return renderModelRow(mk, models[mk], iface);
     }).join('');
     const esc = escAttr;
+    const apiKeyField = '<div class="field w-key p-api-key-field"' + (isOAuth ? ' hidden' : '') + '>'
+        + '<label class="field-label">API Key</label>'
+        + '<div class="key-wrap">'
+        + '<input type="password" class="p-api-key" placeholder="sk-...（留空保持不变）">'
+        + '<button type="button" class="icon-btn toggle-password" onclick="toggleProviderKeyVisibility(this)" title="显示">' + MS_ICONS.eye + '</button>'
+        + '</div>'
+        + masked
+        + '</div>';
+    const oauthPanel = '<div class="field w-key p-siwc-panel"' + (isOAuth ? '' : ' hidden') + '>'
+        + '<label class="field-label">ChatGPT 账号</label>'
+        + '<div class="siwc-account">'
+        + '<span class="siwc-account-state ' + (siwcConnected ? 'ok' : 'pending') + '">'
+        + (siwcConnected ? ('已连接：' + esc(siwc.email || '')) : '未登录') + '</span>'
+        + '<button type="button" class="btn-ghost p-siwc-login">' + (siwcConnected ? '重新登录' : '使用 ChatGPT 登录') + '</button>'
+        + (siwcConnected ? '<button type="button" class="btn-ghost danger p-siwc-logout">断开连接</button>' : '')
+        + '</div>'
+        + '<div class="siwc-hint">需要 ChatGPT Plus/Pro，且账号需开通套餐额度共享。请求会使用你的套餐额度。</div>'
+        + '<div class="siwc-manual" hidden>'
+        + '<input type="text" class="p-siwc-callback" placeholder="粘贴地址栏中的回调 URL">'
+        + '<button type="button" class="btn-ghost p-siwc-complete">提交</button>'
+        + '</div>'
+        + '<div class="siwc-result" hidden></div>'
+        + '</div>';
     const initial = (String(key || '?').trim().charAt(0) || '?').toUpperCase();
-    return '<div class="provider-card">'
+    return '<div class="provider-card" data-credential="' + esc(p.credential || '') + '" data-auth-type="' + esc(isOAuth ? 'oauth' : (p.auth_type || 'auto')) + '">'
         + '<div class="provider-header">'
         + '<span class="provider-avatar">' + esc(initial) + '</span>'
         + '<input type="text" class="provider-key-input p-key" value="' + esc(key) + '" placeholder="模型提供商名称">'
@@ -1370,7 +1403,7 @@ function renderProviderCard(key, p) {
         + '<div class="field w-server"><label class="field-label">接入服务商</label><select class="p-server">'
         + renderServerOptions(serverKey)
         + '</select></div>'
-        + '<div class="field w-protocol"><label class="field-label">协议</label><select class="p-interface-type">'
+        + '<div class="field w-protocol"><label class="field-label">协议</label><select class="p-interface-type"' + (isOAuth ? ' disabled' : '') + '>'
         + '<option value="anthropic"' + (iface === 'anthropic' ? ' selected' : '') + '>Anthropic Messages</option>'
         + '<option value="openai"' + (iface === 'openai' ? ' selected' : '') + '>OpenAI Chat Completions</option>'
         + '<option value="openai-responses"' + (iface === 'openai-responses' ? ' selected' : '') + '>OpenAI Responses</option>'
@@ -1380,16 +1413,11 @@ function renderProviderCard(key, p) {
         + '<option value="bearer"' + (p.auth_type === 'bearer' ? ' selected' : '') + '>Bearer</option>'
         + '<option value="x-api-key"' + (p.auth_type === 'x-api-key' ? ' selected' : '') + '>X-API-Key</option>'
         + '<option value="none"' + (p.auth_type === 'none' ? ' selected' : '') + '>无</option>'
+        + '<option value="oauth"' + (p.auth_type === 'oauth' || serverKey === 'chatgpt-siwc' ? ' selected' : '') + '>OAuth（ChatGPT 登录）</option>'
         + '</select></div>'
-        + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" data-url-custom="' + urlCustom + '" placeholder="' + esc(defaultUrl || 'https://api.anthropic.com') + '"></div>'
-        + '<div class="field w-key">'
-        + '<label class="field-label">API Key</label>'
-        + '<div class="key-wrap">'
-        + '<input type="password" class="p-api-key" placeholder="sk-...（留空保持不变）">'
-        + '<button type="button" class="icon-btn toggle-password" onclick="toggleProviderKeyVisibility(this)" title="显示">' + MS_ICONS.eye + '</button>'
-        + '</div>'
-        + masked
-        + '</div>'
+        + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" data-url-custom="' + urlCustom + '" placeholder="' + esc(defaultUrl || 'https://api.anthropic.com') + '"' + (isOAuth ? ' readonly' : '') + '></div>'
+        + apiKeyField
+        + oauthPanel
         + '</div>'
         + '<details class="p-headers-panel">'
         + '<summary>高级：API 路径 / 请求参数 / Headers</summary>'
@@ -1411,6 +1439,171 @@ function renderProviderCard(key, p) {
         + '</div>'
         + '</div>'
         + '</div>';
+}
+
+// OAuth（ChatGPT 套餐额度）面板联动：锁定协议/端点，切换 API Key 与登录面板
+function syncAuthPanel(card) {
+    const authSel = card.querySelector('.p-auth-type');
+    const serverSel = card.querySelector('.p-server');
+    const isOAuth = (authSel && authSel.value === 'oauth') || (serverSel && serverSel.value === 'chatgpt-siwc');
+    card.dataset.authType = isOAuth ? 'oauth' : ((authSel && authSel.value) || 'auto');
+    const keyField = card.querySelector('.p-api-key-field');
+    const panel = card.querySelector('.p-siwc-panel');
+    if (keyField) keyField.hidden = isOAuth;
+    if (panel) panel.hidden = !isOAuth;
+    const ifaceSel = card.querySelector('.p-interface-type');
+    const urlInput = card.querySelector('.p-base-url');
+    const pathInput = card.querySelector('.p-api-path');
+    if (isOAuth) {
+        if (ifaceSel) { ifaceSel.value = 'openai-responses'; ifaceSel.disabled = true; }
+        if (urlInput) { urlInput.value = 'https://api.openai.com/v1'; urlInput.readOnly = true; }
+        if (pathInput) { pathInput.value = ''; pathInput.readOnly = true; }
+    } else {
+        if (ifaceSel) ifaceSel.disabled = false;
+        if (urlInput) urlInput.readOnly = false;
+        if (pathInput) pathInput.readOnly = false;
+    }
+}
+
+function setSiwcResult(card, text, cls) {
+    const el = card.querySelector('.siwc-result');
+    if (!el) return;
+    el.hidden = false;
+    el.className = 'siwc-result' + (cls ? ' ' + cls : '');
+    el.textContent = text;
+}
+
+function stopSiwcPolling(card) {
+    const id = card.dataset.siwcTimer;
+    if (id) {
+        clearInterval(parseInt(id, 10));
+        delete card.dataset.siwcTimer;
+    }
+}
+
+async function startSiwcLogin(card, btn) {
+    const provider = card.querySelector('.p-key').value.trim();
+    if (!provider) {
+        setSiwcResult(card, '请先填写 Provider 名称', 'err');
+        return;
+    }
+    btn.disabled = true;
+    setSiwcResult(card, '正在启动登录…', '');
+    try {
+        const resp = await fetch('/api/config/siwc/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: provider, credential: card.dataset.credential || '' }),
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || '启动登录失败');
+        card.dataset.siwcAttempt = data.attempt_id;
+        const manual = card.querySelector('.siwc-manual');
+        if (manual) manual.hidden = false;
+        const win = window.open(data.auth_url, '_blank', 'noopener');
+        if (win) {
+            setSiwcResult(card, '已打开 ChatGPT 授权页，完成后会自动连接。', '');
+        } else {
+            setSiwcResult(card, '浏览器拦截了新窗口，请使用下方手动方式。', '');
+            const el = card.querySelector('.siwc-result');
+            const link = document.createElement('a');
+            link.href = data.auth_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = '打开授权页面';
+            el.appendChild(document.createElement('br'));
+            el.appendChild(link);
+        }
+        pollSiwcLogin(card, data.attempt_id);
+    } catch (e) {
+        setSiwcResult(card, '✗ ' + e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function pollSiwcLogin(card, attemptId) {
+    stopSiwcPolling(card);
+    const started = Date.now();
+    const timer = setInterval(async function () {
+        if (Date.now() - started > 10 * 60 * 1000) {
+            stopSiwcPolling(card);
+            setSiwcResult(card, '登录超时，请重新开始。', 'err');
+            return;
+        }
+        try {
+            const resp = await fetch('/api/config/siwc/login/' + encodeURIComponent(attemptId));
+            const data = await resp.json();
+            if (data.status === 'authorized') {
+                stopSiwcPolling(card);
+                setSiwcResult(card, '✓ 登录成功', 'ok');
+                await openSettings();
+            } else if (data.status === 'failed') {
+                stopSiwcPolling(card);
+                setSiwcResult(card, '✗ ' + (data.error || '登录失败'), 'err');
+            } else if (data.status === 'expired' || data.status === 'cancelled') {
+                stopSiwcPolling(card);
+                setSiwcResult(card, '登录已过期，请重新开始。', 'err');
+            }
+        } catch (e) {
+            // 轮询失败保持重试
+        }
+    }, 1000);
+    card.dataset.siwcTimer = String(timer);
+}
+
+async function completeSiwcManual(card) {
+    const input = card.querySelector('.p-siwc-callback');
+    const url = input ? input.value.trim() : '';
+    if (!url) {
+        setSiwcResult(card, '请粘贴回调地址', 'err');
+        return;
+    }
+    const attemptId = card.dataset.siwcAttempt || '';
+    if (!attemptId) {
+        setSiwcResult(card, '请先点击「使用 ChatGPT 登录」', 'err');
+        return;
+    }
+    try {
+        const resp = await fetch('/api/config/siwc/login/' + encodeURIComponent(attemptId) + '/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_url: url }),
+        });
+        const data = await resp.json();
+        if (data.status === 'authorized') {
+            stopSiwcPolling(card);
+            setSiwcResult(card, '✓ 登录成功', 'ok');
+            await openSettings();
+        } else {
+            setSiwcResult(card, '✗ ' + (data.error || '回调校验失败'), 'err');
+        }
+    } catch (e) {
+        setSiwcResult(card, '✗ ' + e.message, 'err');
+    }
+}
+
+async function siwcLogoutProvider(card) {
+    const provider = card.querySelector('.p-key').value.trim();
+    if (!provider) return;
+    if (!confirm('断开后需要重新登录才能使用套餐额度，继续？')) return;
+    stopSiwcPolling(card);
+    let revoked = true;
+    try {
+        const resp = await fetch('/api/config/siwc/logout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: provider }),
+        });
+        const data = await resp.json();
+        revoked = Boolean(data.revoked);
+    } catch (e) {
+        revoked = false;
+    }
+    if (!revoked) {
+        alert('本地凭证已断开，但远程撤销未确认。\n请在 ChatGPT 设置 → Security → Linked apps 中手动移除该应用。');
+    }
+    await openSettings();
 }
 
 function updateModelCount(card) {
@@ -1523,17 +1716,26 @@ function collectProviders() {
             if (spec.input.indexOf('text') === -1) spec.input.unshift('text');
             models[mkey] = spec;
         });
+        const authType = card.querySelector('.p-auth-type').value;
+        const isOAuth = authType === 'oauth' || card.dataset.authType === 'oauth';
         const provider = {
             interface_type: card.querySelector('.p-interface-type').value,
-            auth_type: card.querySelector('.p-auth-type').value,
+            auth_type: isOAuth ? 'oauth' : authType,
             backend: card.querySelector('.p-server').value,
             base_url: card.querySelector('.p-base-url').value.trim(),
             api_path: card.querySelector('.p-api-path').value.trim(),
             headers: headers,
             models: models,
         };
-        const apiKey = card.querySelector('.p-api-key').value.trim();
-        if (apiKey) provider.api_key = apiKey;  // 留空 = 后端继承已保存值
+        if (isOAuth) {
+            provider.credential = card.dataset.credential || '';
+            provider.interface_type = 'openai-responses';
+            provider.base_url = 'https://api.openai.com/v1';
+            provider.api_path = '';
+        } else {
+            const apiKey = card.querySelector('.p-api-key').value.trim();
+            if (apiKey) provider.api_key = apiKey;  // 留空 = 后端继承已保存值
+        }
         providers[key] = provider;
     });
     return ok ? providers : null;
@@ -1587,6 +1789,21 @@ function collectProviders() {
             testProviderModel(testBtn);
             return;
         }
+        const siwcLogin = e.target.closest('.p-siwc-login');
+        if (siwcLogin) {
+            startSiwcLogin(card, siwcLogin);
+            return;
+        }
+        const siwcLogout = e.target.closest('.p-siwc-logout');
+        if (siwcLogout) {
+            siwcLogoutProvider(card);
+            return;
+        }
+        const siwcComplete = e.target.closest('.p-siwc-complete');
+        if (siwcComplete) {
+            completeSiwcManual(card);
+            return;
+        }
         const detectBtn = e.target.closest('.p-detect');
         if (detectBtn) detectProviderModels(detectBtn);
     });
@@ -1625,6 +1842,13 @@ function collectProviders() {
             refreshReasoningOptions(card);
         }
         applyServerSelection(card);
+        syncAuthPanel(card);
+    });
+
+    // 认证方式变化 → OAuth 面板与协议/端点锁定
+    list.addEventListener('change', function (e) {
+        if (!e.target.classList.contains('p-auth-type')) return;
+        syncAuthPanel(e.target.closest('.provider-card'));
     });
 
     // interface_type 变化 → 重渲染思考下拉 + 跟随预设换地址/路径

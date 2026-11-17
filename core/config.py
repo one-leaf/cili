@@ -99,8 +99,9 @@ class ModelConfig:
     api_key: str = ""
     base_url: str = "https://api.anthropic.com"
     api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
-    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
+    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none" | "oauth"
     backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
+    credential: str = ""  # OAuth 凭证标识（"siwc:<account_id>"）；非秘密
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
     max_output_tokens: int = 32768  # 单次响应最大输出 token
     max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
@@ -120,6 +121,7 @@ class ModelConfig:
             api_path=_normalize_api_path(data.get("api_path")),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
+            credential=str(data.get("credential", "") or ""),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
             max_output_tokens=int(data.get("max_output_tokens", data.get("max_tokens", 32768))),
             max_context_tokens=int(data.get("max_context_tokens", 200000)),
@@ -139,6 +141,7 @@ class ModelConfig:
             "api_path": self.api_path,
             "auth_type": self.auth_type,
             "backend": self.backend,
+            "credential": self.credential,
             "headers": dict(self.headers),
             "max_output_tokens": self.max_output_tokens,
             "max_context_tokens": self.max_context_tokens,
@@ -189,8 +192,9 @@ class ProviderConfig:
     """接入层配置：管 api_key / base_url / 协议与多个模型条目。"""
     interface_type: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
     api_key: str = ""  # 支持 ${ENV_VAR} 整值插值
-    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none"
+    auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none" | "oauth"
     backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
+    credential: str = ""  # OAuth 凭证标识（"siwc:<account_id>"）；非秘密
     base_url: str = "https://api.anthropic.com"
     api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
@@ -209,6 +213,7 @@ class ProviderConfig:
             api_key=_expand_env_value(str(data.get("api_key", ""))),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
+            credential=str(data.get("credential", "") or ""),
             base_url=(data.get("base_url") or default_base_url(data.get("interface_type", "anthropic"))).rstrip("/"),
             api_path=_normalize_api_path(data.get("api_path")),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
@@ -221,6 +226,7 @@ class ProviderConfig:
             "api_key": self.api_key,
             "auth_type": self.auth_type,
             "backend": self.backend,
+            "credential": self.credential,
             "base_url": self.base_url,
             "api_path": self.api_path,
             "headers": dict(self.headers),
@@ -626,6 +632,7 @@ class Config:
             api_path=provider.api_path,
             auth_type=provider.auth_type,
             backend=provider.backend,
+            credential=provider.credential,
             headers=dict(provider.headers),
             max_output_tokens=spec.max_output_tokens,
             max_context_tokens=spec.max_context_tokens,
@@ -699,23 +706,32 @@ class Config:
         if "master" not in agents:
             agents["master"] = AgentConfig.from_dict({})
 
+        # OAuth provider：端点/协议由代码锁定，避免 token 被发往用户改写的主机。
+        for p in providers.values():
+            if p.auth_type == "oauth":
+                p.interface_type = "openai-responses"
+                p.base_url = "https://api.openai.com/v1"
+                p.api_path = ""
+
         config = cls(providers=providers, agents=agents)
 
         # ── env/CLI 覆盖：只作用于 master 的接入层/模型 ID，不改变模型归属 ──
         master_ref = config.master_ref()
         provider_key, _, model_key = master_ref.partition("/")
         provider = config.providers[provider_key]
+        is_oauth = provider.auth_type == "oauth"
         env_api_key = os.environ.get("ANTHROPIC_API_KEY")
         env_base_url = os.environ.get("ANTHROPIC_BASE_URL")
         env_model = model_override or os.environ.get("ANTHROPIC_MODEL")
-        if env_api_key:
-            provider.api_key = env_api_key
-        if env_base_url:
-            provider.base_url = env_base_url.rstrip("/")
-        if env_model:
-            provider.models[model_key].name = env_model
+        if not is_oauth:
+            if env_api_key:
+                provider.api_key = env_api_key
+            if env_base_url:
+                provider.base_url = env_base_url.rstrip("/")
+            if env_model:
+                provider.models[model_key].name = env_model
 
-        if not provider.api_key:
+        if not provider.api_key and not is_oauth:
             raise RuntimeError(
                 f"No API key found. Please configure one of:\n"
                 f"  1. Environment variable: ANTHROPIC_API_KEY\n"

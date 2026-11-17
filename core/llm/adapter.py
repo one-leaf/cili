@@ -202,6 +202,11 @@ class Adapter(ABC):
         """
         return {}
 
+    @property
+    def requires_streaming(self) -> bool:
+        """协议是否只接受流式请求（SIWC 的 Responses 端点）；子类覆盖。"""
+        return False
+
     def protocol_headers(self) -> dict[str, str]:
         """协议必备头（content-type / anthropic-version 等，子类覆盖）。"""
         return {}

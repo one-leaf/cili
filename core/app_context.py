@@ -119,6 +119,7 @@ class AppContext:
             ("MCP provider", self._stop_mcp),
             ("cron 调度器", self._stop_cron),
             ("审批看门狗", self._stop_approval_watchdog),
+            ("SIWC 登录", self._stop_siwc),
         ):
             try:
                 stop()
@@ -173,6 +174,12 @@ class AppContext:
     def _stop_approval_watchdog() -> None:
         from core.approval_watchdog import stop_approval_watchdog
         stop_approval_watchdog()
+
+    @staticmethod
+    def _stop_siwc() -> None:
+        from core.llm.siwc import shutdown_login, shutdown_tokens
+        shutdown_login()
+        shutdown_tokens()
 
 
 # 模块级单例（各接入端共享）

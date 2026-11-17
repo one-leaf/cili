@@ -21,6 +21,7 @@ import logging
 from typing import Any, Iterable
 
 from core.llm.adapter import Adapter, merge_consecutive_same_role
+from core.llm.errors import LLMStreamFailedError
 from core.llm.types import (
     ContentBlock,
     Message,
@@ -41,6 +42,25 @@ _MIN_OUTPUT_TOKENS = 16
 _REASONING_INCLUDE = ["reasoning.encrypted_content"]
 
 
+def _failed_error_fields(detail: Any) -> tuple[str, str, int | None]:
+    """从 response.failed / error 事件提取 (code, message, status)。"""
+    code = ""
+    message = ""
+    status = None
+    node = detail
+    if isinstance(node, dict) and isinstance(node.get("error"), dict):
+        node = node["error"]
+    if isinstance(node, dict):
+        code = str(node.get("code") or node.get("type") or "")
+        message = str(node.get("message") or "")
+        raw_status = node.get("status")
+        if isinstance(raw_status, int):
+            status = raw_status
+    if not message:
+        message = str(detail)[:300]
+    return code, message, status
+
+
 class OpenAIResponsesAdapter(Adapter):
     """Adapter for OpenAI Responses API."""
 
@@ -54,6 +74,15 @@ class OpenAIResponsesAdapter(Adapter):
 
     def protocol_headers(self) -> dict[str, str]:
         return {"content-type": "application/json"}
+
+    @property
+    def is_siwc(self) -> bool:
+        """OAuth（Sign in with ChatGPT）链路：走预览期请求整形。"""
+        return getattr(self.config, "auth_type", "") == "oauth"
+
+    @property
+    def requires_streaming(self) -> bool:
+        return self.is_siwc
 
     # ========== 请求序列化 ==========
 
@@ -318,6 +347,10 @@ class OpenAIResponsesAdapter(Adapter):
         # prompt_cache_key 改善网关缓存路由；cache_control="false" 时显式关闭
         if session_id and self.config.cache_control != "false":
             body["prompt_cache_key"] = session_id[:64]
+
+        if self.is_siwc:
+            from core.llm.siwc.profile import shape_request
+            body = shape_request(body)
 
         return body
 
@@ -659,11 +692,23 @@ class OpenAIResponsesAdapter(Adapter):
                 response = event.get("response") or {}
                 error = response.get("error") if isinstance(response, dict) else None
                 detail = error or response or event
-                raise RuntimeError(f"OpenAI Responses 请求失败: {str(detail)[:500]}")
+                code, message, status = _failed_error_fields(detail)
+                suffix = f" ({code})" if code else ""
+                raise LLMStreamFailedError(
+                    code=code,
+                    message=f"OpenAI Responses 请求失败: {message}{suffix}",
+                    status=status,
+                )
 
             elif evt_type == "error":
                 detail = event.get("error") or event.get("message") or event
-                raise RuntimeError(f"OpenAI Responses 错误: {str(detail)[:500]}")
+                code, message, status = _failed_error_fields(detail)
+                suffix = f" ({code})" if code else ""
+                raise LLMStreamFailedError(
+                    code=code,
+                    message=f"OpenAI Responses 错误: {message}{suffix}",
+                    status=status,
+                )
 
         if not terminal:
             # 与其它 adapter 一致：流结束关闭仍未关闭的块

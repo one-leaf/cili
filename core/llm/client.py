@@ -182,8 +182,33 @@ class LLMClient:
         self.model_name = config.name
         self.max_tokens = config.max_output_tokens
 
+        # OAuth（SIWC）：token 在请求时解析（不在构造期联网）
+        self._oauth_credential = (
+            getattr(config, "credential", "")
+            if getattr(config, "auth_type", "") == "oauth"
+            else ""
+        )
+        self._oauth_force_refresh = False
+
         # Expose base_url for error formatting (backward compat)
         self.base_url = config.base_url
+
+    def _request_headers(self, session_id: str) -> dict[str, str]:
+        """构造请求头；OAuth 链路在此注入 Bearer token（执行线程内解析）。"""
+        headers = self.adapter.build_request_headers(session_id=session_id)
+        if getattr(self, "_oauth_credential", ""):
+            headers["Authorization"] = f"Bearer {self._oauth_access_token()}"
+        return headers
+
+    def _oauth_access_token(self) -> str:
+        from core.llm.siwc import get_access_token
+
+        token = get_access_token(
+            self._oauth_credential,
+            force_refresh=getattr(self, "_oauth_force_refresh", False),
+        )
+        self._oauth_force_refresh = False
+        return token
 
     def chat(
         self,
@@ -211,6 +236,17 @@ class LLMClient:
             httpx.HTTPStatusError: On API error
             httpx.TransportError: On network error
         """
+        if getattr(self.adapter, "requires_streaming", False) is True:
+            return self.chat_stream(
+                messages=messages,
+                system=system,
+                tools=tools,
+                max_tokens=max_tokens,
+                session_id=session_id,
+                timeout=timeout,
+                max_retries=2,
+            )
+
         max_tokens = max_tokens or self.max_tokens
         body = self.adapter.serialize(
             messages=messages,
@@ -221,10 +257,10 @@ class LLMClient:
             stream=False,
             session_id=session_id,
         )
-        headers = self.adapter.build_request_headers(session_id=session_id)
         url = self.adapter.api_url
 
         def do_request():
+            headers = self._request_headers(session_id)
             status, resp_headers, data = self.transport.post(url, headers, body, timeout=timeout)
             if status >= 400:
                 # Raise for retry logic。用公开的 content= 构造，不直接写私有
@@ -240,7 +276,15 @@ class LLMClient:
                 )
             return data
 
-        data = self.transport.with_retry(do_request, total_timeout=_TOTAL_RETRY_TIMEOUT_S or None)
+        try:
+            data = self.transport.with_retry(do_request, total_timeout=_TOTAL_RETRY_TIMEOUT_S or None)
+        except httpx.HTTPStatusError as e:
+            # OAuth: 401 强制刷新一次并重试（headers 在闭包内重建，拿到新 token）
+            if getattr(self, "_oauth_credential", "") and e.response.status_code == 401:
+                self._oauth_force_refresh = True
+                data = self.transport.with_retry(do_request, total_timeout=_TOTAL_RETRY_TIMEOUT_S or None)
+            else:
+                raise
         content_blocks, stop_reason, usage = self.adapter.parse_response(data)
 
         return LLMResponse(
@@ -263,6 +307,7 @@ class LLMClient:
         stop_check: Callable[[], bool] | None = None,
         session_id: str = "",
         timeout: httpx.Timeout | None = None,
+        max_retries: int = 0,
     ) -> LLMResponse:
         """Streaming LLM call with callbacks.
 
@@ -298,12 +343,12 @@ class LLMClient:
             stream=True,
             session_id=session_id,
         )
-        headers = self.adapter.build_request_headers(session_id=session_id)
         url = self.adapter.api_url
         assembler = BlockAssembler()
 
         def do_stream():
             """Execute streaming request and process chunks."""
+            headers = self._request_headers(session_id)
             assembler.reset()  # Reset on retry to avoid duplicate data
             events = self.transport.stream(url, headers, body, stop_check=stop_check, timeout=timeout)
             # Pass entire event iterator to translate_stream so it maintains
@@ -324,12 +369,23 @@ class LLMClient:
 
             return assembler
 
-        # 流式重试由 base_agent 统一管理（max_retries=0），避免双层重试
-        self.transport.with_retry(
-            do_stream,
-            stop_check=stop_check,
-            max_retries=0,
-        )
+        def run_once(retries: int) -> None:
+            # 交互式流式由上层管理重试（max_retries=0）；chat() 转流式时传 2
+            self.transport.with_retry(
+                do_stream,
+                stop_check=stop_check,
+                max_retries=retries,
+            )
+
+        try:
+            run_once(max_retries)
+        except httpx.HTTPStatusError as e:
+            # OAuth: 401 强制刷新一次并重试（401 发生在流开始前，无已发数据）
+            if getattr(self, "_oauth_credential", "") and e.response.status_code == 401:
+                self._oauth_force_refresh = True
+                run_once(0)
+            else:
+                raise
 
         # 流结束未收到 finish chunk 且无任何内容 = 连接被静默截断，视为失败供上层重试。
         # （有内容但缺 finish chunk 的兼容服务器不误判。）
@@ -471,6 +527,10 @@ def create_llm_client(config: ModelConfig) -> LLMClient:
     from core.llm.anthropic import AnthropicAdapter
     from core.llm.openai import OpenAIAdapter
     from core.llm.openai_responses import OpenAIResponsesAdapter
+
+    if getattr(config, "auth_type", "") == "oauth":
+        from core.llm.siwc import _assert_oauth_endpoint
+        _assert_oauth_endpoint(config)
 
     interface_type = config.interface_type.lower()
 

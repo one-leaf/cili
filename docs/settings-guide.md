@@ -98,18 +98,26 @@ Cili Agent/
 | `bearer` | 强制 `Authorization: Bearer <key>`（LiteLLM 等 OpenAI 兼容网关） |
 | `x-api-key` | 强制 `x-api-key: <key>` |
 | `none` | 不自动加认证头，用 `headers` 手动给 |
+| `oauth` | ChatGPT 套餐额度：请求时注入 OAuth access token（见下） |
+
+`auth_type: "oauth"` 的 provider 额外使用 `credential` 字段（形如 `siwc:<账号 id>`，**不是密钥**）指向本地凭证；凭证在设置页登录后写入 `data/cili/tools/chatgpt/accounts/`，不会出现在本文件。OAuth 模式下：
+
+- 协议固定 `openai-responses`、Base URL 固定 `https://api.openai.com/v1`，手改无效；
+- 模型条目的 `max_output_tokens` 与角色 `max_tokens` 不生效（接口限制）；
+- 首次使用前需在设置页完成登录，未登录时发消息会提示重新登录。
 
 ### backend — 接入服务商预设
 
 设置页「接入服务商」下拉对应 `backend` 值。预设把「默认协议 / 各协议 Base URL / 路径覆盖 / 认证方式 / 静态请求头 / 会话标识头」收敛成一份表（`core/llm/server_presets.py`）：
 
-- **订阅套餐**：`opencode-go`（OpenCode Go）、`qwen-token-plan`（阿里云 Token Plan）、`qianfan-coding`（百度千帆）、`volcengine-coding`（火山方舟）、`glm-coding`（智谱 GLM）、`kimi-coding`、`minimax-plan`、`tencent-token-plan`、`xfyun-coding`（讯飞星辰）、`stepfun-step-plan`（阶跃）、`xiaomi-token-plan`（小米 MiMo）。默认协议均为 `anthropic`，认证默认 `bearer`。
+- **订阅套餐**：`chatgpt-siwc`（ChatGPT 套餐额度，OAuth 登录）、`opencode-go`（OpenCode Go）、`qwen-token-plan`（阿里云 Token Plan）、`qianfan-coding`（百度千帆）、`volcengine-coding`（火山方舟）、`glm-coding`（智谱 GLM）、`kimi-coding`、`minimax-plan`、`tencent-token-plan`、`xfyun-coding`（讯飞星辰）、`stepfun-step-plan`（阶跃）、`xiaomi-token-plan`（小米 MiMo）。除 `chatgpt-siwc` 外默认协议均为 `anthropic`，认证默认 `bearer`。
 - **直连 / 网关**：`custom`（默认，全部手填）、`deepseek`、`anthropic`、`openai`、`openrouter`、`litellm`。
 
 会话标识头（值为当前会话 ID，无会话时省略）：
 
 | 值 | 自动填充的头 |
 |----|-------------|
+| `chatgpt-siwc` | `session-id` |
 | `opencode-go` | `x-opencode-session` |
 | `openrouter` | `x-session-id` |
 | `litellm` | `x-litellm-session-id` |

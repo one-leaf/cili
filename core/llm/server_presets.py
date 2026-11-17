@@ -84,6 +84,17 @@ PRESETS: dict[str, ServerPreset] = {
         api_paths={"openai-responses": "/responses"},
         hint="官方无套餐，按量计费；Responses 端点 /responses。",
     ),
+    "chatgpt-siwc": ServerPreset(
+        key="chatgpt-siwc",
+        label="ChatGPT 套餐额度",
+        group="plan",
+        default_protocol="openai-responses",
+        base_urls={"openai-responses": "https://api.openai.com/v1"},
+        auth_type="oauth",
+        session_headers={"session-id": "{session_id}"},
+        models_url="https://api.openai.com/v1/models",
+        hint="使用 ChatGPT Plus/Pro 套餐额度；需在设置页登录，仅限本地/自托管用法。",
+    ),
     "opencode-go": ServerPreset(
         key="opencode-go",
         label="OpenCode Go",

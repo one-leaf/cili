@@ -49,6 +49,7 @@ class ProviderRequest(BaseModel):
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
+    credential: str | None = None
     base_url: str | None = None
     api_path: str | None = None
     headers: dict[str, str] | None = None
@@ -76,6 +77,7 @@ class TestConfigRequest(BaseModel):
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
+    credential: str | None = None
     base_url: str | None = None
     api_path: str | None = None
     headers: dict[str, str] | None = None
@@ -89,6 +91,7 @@ class DetectModelsRequest(BaseModel):
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
+    credential: str | None = None
     base_url: str | None = None
     headers: dict[str, str] | None = None
     models_url: str | None = None  # 独立模型清单端点（如 OpenCode Go）；空 = 按 base 推导
@@ -207,6 +210,26 @@ def _mask_api_key(config: dict) -> dict:
     return result
 
 
+def _attach_siwc_status(config: dict) -> None:
+    """OAuth provider 附加本地只读状态（不含 token）。"""
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        return
+    from core.llm.siwc import status as siwc_status
+
+    for provider in providers.values():
+        if not isinstance(provider, dict) or provider.get("auth_type") != "oauth":
+            continue
+        credential = str(provider.get("credential") or "")
+        provider["siwc_status"] = siwc_status(credential) if credential else {
+            "connected": False,
+            "email": "",
+            "expires_at": "",
+            "scopes": [],
+            "reauth_required": False,
+        }
+
+
 def _apply_account_enabled_changes(
     interface: str, before: dict[str, bool], after: dict[str, bool]
 ) -> None:
@@ -253,6 +276,7 @@ async def get_config():
     # 规范化模型键 + 掩码
     config = _normalize_model_keys(config)
     masked_config = _mask_api_key(config)
+    _attach_siwc_status(masked_config)
     return {
         "config": masked_config,
         "config_path": str(GLOBAL_CONFIG_PATH),
@@ -292,6 +316,11 @@ async def update_config(request: UpdateConfigRequest):
             api_path = provider.get("api_path") or ""
             if api_path and not api_path.startswith("/"):
                 raise HTTPException(status_code=400, detail=f"{name}: api_path 必须以 / 开头")
+            if provider.get("auth_type") == "oauth":
+                # OAuth 端点/协议由代码锁定，防止 token 被发往用户改写的主机
+                provider["interface_type"] = "openai-responses"
+                provider["base_url"] = "https://api.openai.com/v1"
+                provider["api_path"] = ""
             new_providers[name] = provider
         config["providers"] = new_providers
 
@@ -536,13 +565,20 @@ async def test_config(request: TestConfigRequest | None = None):
     if request is None:
         request = TestConfigRequest()
     try:
-        interface_type, api_key, base_url, extra_headers = _resolve_test_provider(request)
-        if not api_key:
-            return {
-                "success": False,
-                "message": "API Key 不能为空",
-                "interface_type": interface_type,
-            }
+        is_oauth = (request.auth_type or "") == "oauth"
+        if is_oauth:
+            interface_type = "openai-responses"
+            api_key = ""
+            base_url = "https://api.openai.com/v1"
+            extra_headers = {}
+        else:
+            interface_type, api_key, base_url, extra_headers = _resolve_test_provider(request)
+            if not api_key:
+                return {
+                    "success": False,
+                    "message": "API Key 不能为空",
+                    "interface_type": interface_type,
+                }
 
         from core.config import ModelConfig
         model_cfg = ModelConfig(
@@ -553,6 +589,7 @@ async def test_config(request: TestConfigRequest | None = None):
             api_path=request.api_path or "",
             auth_type=request.auth_type or "auto",
             backend=request.backend or "custom",
+            credential=request.credential or "",
             headers=extra_headers,
         )
 
@@ -599,6 +636,37 @@ def _session_headers_for(interface_type: str, auth_type: str, api_key: str, head
     return out
 
 
+async def _detect_siwc_models(request: DetectModelsRequest) -> dict:
+    """SIWC：用 OAuth token 拉 /v1/models（401 刷新一次）。"""
+    from core.llm.siwc import get_access_token, parse_models_payload
+
+    credential = request.credential or ""
+    if not credential:
+        return {"success": False, "models": [], "error": "请先在设置页登录 ChatGPT"}
+
+    loop = asyncio.get_running_loop()
+    executor = get_stream_executor()
+    try:
+        token = await loop.run_in_executor(executor, get_access_token, credential)
+        url = (request.models_url or "").strip() or "https://api.openai.com/v1/models"
+        headers = {"Authorization": f"Bearer {token}", "content-type": "application/json"}
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 401:
+                token = await loop.run_in_executor(
+                    executor, lambda: get_access_token(credential, force_refresh=True)
+                )
+                headers["Authorization"] = f"Bearer {token}"
+                resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:  # noqa: BLE001 —— 目录不可用时前端提示手动添加
+        return {"success": False, "models": [], "error": str(e)[:300]}
+
+    models = parse_models_payload(data if isinstance(data, dict) else {})
+    return {"success": True, "models": [m["id"] for m in models]}
+
+
 @router.post("/api/config/detect-models")
 async def detect_models(request: DetectModelsRequest | None = None):
     """模型列表自动检测（一次性导入助手）：拉取网关模型 ID 列表，前端勾选后合入 models 表。
@@ -607,6 +675,8 @@ async def detect_models(request: DetectModelsRequest | None = None):
     """
     if request is None:
         request = DetectModelsRequest()
+    if (request.auth_type or "") == "oauth":
+        return await _detect_siwc_models(request)
     interface_type = (request.interface_type or "anthropic").lower()
     api_key = _resolve_api_key(request.api_key, request.provider)
     base_url = (request.base_url or "").rstrip("/")

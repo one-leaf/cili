@@ -37,7 +37,53 @@ _NON_RETRYABLE_429_TOKENS = frozenset({
     "insufficient_quota", "quota_exceeded", "quota_exhausted",
     "billing_hard_limit_reached", "insufficient_balance", "credit_balance_too_low",
     "billing_not_active", "payment_required",
+    "subscription_sharing_usage_limit_exceeded",
+    "subscription_sharing_workplace_individual_usage_limit_exceeded",
 })
+
+# SIWC（ChatGPT 套餐额度）错误码 → (kind, 可重试, 文案)
+_SIWC_ERROR_MAP: dict[str, tuple[str, bool, str]] = {
+    "subscription_sharing_user_not_eligible": (
+        KIND_QUOTA, False, "当前 ChatGPT 账号或套餐不支持套餐额度调用",
+    ),
+    "subscription_sharing_usage_limit_exceeded": (
+        KIND_QUOTA, False,
+        "ChatGPT 套餐用量已达上限，可查看 https://chatgpt.com/settings/usage",
+    ),
+    "subscription_sharing_workplace_individual_usage_limit_exceeded": (
+        KIND_QUOTA, False, "工作区管理员设置了个人用量上限，请联系管理员",
+    ),
+    "subscription_sharing_usage_unavailable": (
+        KIND_SERVER, True, "ChatGPT 套餐额度暂时不可用，请稍后重试",
+    ),
+    "subscription_sharing_user_unavailable": (
+        KIND_SERVER, True, "ChatGPT 账号数据暂时不可用，请稍后重试",
+    ),
+    "subscription_sharing_invalid_user": (
+        KIND_AUTH, False, "ChatGPT 登录已失效，请重新登录",
+    ),
+    "subscription_sharing_route_not_supported": (
+        KIND_BAD_REQUEST, False, "该请求不被套餐额度路由支持",
+    ),
+    "subscription_sharing_unsupported_capability": (
+        KIND_BAD_REQUEST, False, "请求使用了套餐额度不支持的能力",
+    ),
+    "unsupported_country_region_territory": (
+        KIND_AUTH, False, "当前区域不支持该能力，请检查网络/代理设置",
+    ),
+}
+
+
+def _siwc_error_entry(code: str | None) -> tuple[str, bool, str] | None:
+    normalized = (code or "").strip().lower()
+    if not normalized:
+        return None
+    entry = _SIWC_ERROR_MAP.get(normalized)
+    if entry is not None:
+        return entry
+    if normalized.startswith("chatpass_v2"):
+        return KIND_AUTH, False, "客户端/授权配置不匹配，请重新登录"
+    return None
 
 # 429 细分：不可重试——响应体文本标记
 _NON_RETRYABLE_429_TEXT = (
@@ -71,6 +117,16 @@ class StreamErrorEvent(Exception):
     transient failure so the caller can retry.
     """
     pass
+
+
+class LLMStreamFailedError(RuntimeError):
+    """流内失败事件（response.failed / error），携带 provider 错误码供分类。"""
+
+    def __init__(self, code: str = "", message: str = "LLM 流失败", status: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
 
 
 @dataclass
@@ -216,6 +272,27 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
     kind 决定是否瞬态：timeout/connection/server/rate_limit 可重试；
     auth/quota/context_length/bad_request 不可重试。
     """
+    # SIWC 流内失败：按 provider 错误码分类，未知码按服务端瞬态处理
+    if isinstance(e, LLMStreamFailedError):
+        entry = _siwc_error_entry(e.code)
+        if entry is not None:
+            kind, should_retry, message = entry
+            return LLMErrorInfo(
+                kind=kind, status_code=e.status, error_code=e.code or None,
+                message=message, should_retry=should_retry,
+            )
+        return LLMErrorInfo(
+            kind=KIND_SERVER, status_code=e.status, error_code=e.code or None,
+            message=e.message, should_retry=True,
+        )
+
+    # SIWC 管理器异常（登录失效 / 刷新瞬态）
+    siwc_kind = getattr(e, "siwc_kind", "")
+    if siwc_kind == "auth":
+        return LLMErrorInfo(kind=KIND_AUTH, message=str(e))
+    if siwc_kind == "transient":
+        return LLMErrorInfo(kind=KIND_CONNECTION, message=str(e), should_retry=True)
+
     # 流内 error 事件：瞬态
     if isinstance(e, StreamErrorEvent):
         return LLMErrorInfo(
@@ -264,6 +341,17 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
         body_text = _safe_response_text(e.response)
         error_type, error_code = _extract_type_code(body_text)
         retry_after = _extract_retry_after(body_text, e.response.headers)
+        siwc_entry = _siwc_error_entry(error_code or error_type)
+        if siwc_entry is not None:
+            kind, should_retry, message = siwc_entry
+            info = LLMErrorInfo(
+                kind=kind, status_code=status, message=message,
+                error_type=error_type, error_code=error_code,
+                should_retry=should_retry,
+            )
+            if retry_after is not None:
+                info.retry_after_s = retry_after
+            return info
         if status in (401, 403):
             info = LLMErrorInfo(
                 kind=KIND_AUTH, status_code=status,
