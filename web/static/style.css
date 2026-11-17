@@ -12,33 +12,69 @@ ul, ol {
     --primary-color: #4a90e2;
     --primary-hover: #357abd;
     --bg-color: #f5f5f5;
-    --sidebar-bg: #ffffff;
-    --border-color: #e0e0e0;
-    --text-color: #333;
-    --text-light: #666;
-    --assistant-message-bg: #fff;
-    --tool-use-bg: #fef5e7;
-    --tool-error-bg: #fde8e8;
-    --code-bg: #f4f4f4;
+    --sidebar-bg: #fbfbfc;
+    --border-color: #e5e6e9;
+    --text-color: #33373f;
+    --text-light: #647084;
+    --assistant-message-bg: #ffffff;
+    --tool-use-bg: #fbf6ea;
+    --tool-error-bg: #fbf2f1;
+    --code-bg: #f4f5f7;
     /* 提问/审批卡统一底色：卡片与内部控件同色，且与所在气泡区分 */
-    --ask-card-bg: #f6f8fa;
-    --hover-bg: #f0f0f0;
-    --text-secondary: #666;
-    --error-color: #e74c3c;
+    --ask-card-bg: #ffffff;
+    --hover-bg: #f1f2f4;
+    --text-secondary: #555c66;
+    --error-color: #a94f48;
     /* 输入区语义色：正常发送 / 排队发送 / 停止；禁用灰是中性态，不计入三色 */
-    --composer-send-bg: #4a90e2;
+    --composer-send-bg: #5f748c;
     --composer-send-fg: #ffffff;
-    --composer-send-hover: #357abd;
-    --composer-stop-bg: #dc3545;
+    --composer-send-hover: #54687e;
+    --composer-stop-bg: #a8564f;
     --composer-stop-fg: #ffffff;
-    --composer-stop-hover: #c82333;
-    --composer-bg-bg: #d97706;
-    --composer-bg-fg: #ffffff;
-    --composer-bg-hover: #b45309;
-    --composer-disabled-bg: #e5e7eb;
-    --composer-disabled-fg: #9ca3af;
+    --composer-stop-hover: #9a4d47;
+    --composer-bg-bg: #bfa273;
+    --composer-bg-fg: #1f2937;
+    --composer-bg-hover: #af9160;
+    --composer-disabled-bg: #f7f8f9;
+    --composer-disabled-fg: #647084;
     /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
-    --context-warn: #d97706;
+    --context-warn: #8a5a1e;
+
+    /* ── 扁平化设计令牌 ──
+       表面只差明度，零投影；语义色统一降饱和（钢蓝 / 砖红 / 沙色） */
+    --surface-chrome: #fbfbfc;
+    --surface-modal: #ffffff;
+    --surface-raised: #ffffff;
+    --surface-inset: #f6f7f9;
+    --surface-card: #f7f7f9;
+    --surface-card-quiet: #f6f6f8;
+    --surface-ask: #ffffff;
+    --surface-option: #f7f8f9;
+    --surface-user: #e8e9ec;
+    --surface-error: #fbf2f1;
+    --border-card: #e5e6e9;
+    --border-user: #dfe0e5;
+    --border-card-dashed: #dcdee3;
+    --border-error: #eedcda;
+    --text-strong: #33373f;
+    --text-body: #33373f;
+    --text-muted-2: #555c66;
+    --text-meta: #647084;
+    --text-secondary-card: #647084;
+    --accent-call: #7b8da3;
+    --accent-error: #a94f48;
+    --accent-warn: #bfa273;
+    --accent-ink: #4f657c;
+    --accent-tint: #edeff2;
+    --btn-soft-bg: #5f748c;
+    --btn-soft-hover: #54687e;
+    --btn-soft-fg: #ffffff;
+    --btn-danger-bg: #a8564f;
+    --btn-danger-hover: #9a4d47;
+    --code-chip-bg: rgba(15, 23, 42, 0.05);
+    --code-block-bg: #f4f5f7;
+    --code-block-border: #e8e9ec;
+    --backdrop: rgba(20, 22, 26, 0.32);
 }
 
 /* ── 暗色主题 ── */
@@ -46,32 +82,67 @@ ul, ol {
     --primary-color: #f97316;
     --primary-hover: #fb923c;
     --bg-color: #0f0f11;
-    --sidebar-bg: #18181b;
-    --border-color: #3f3f46;
-    --text-color: #f4f4f5;
-    --text-light: #a1a1aa;
-    --assistant-message-bg: #27272a;
-    --tool-use-bg: #292524;
-    --tool-error-bg: #2c1a1c;
-    --code-bg: #18181b;
-    --ask-card-bg: #1c1c1e;
-    --hover-bg: #27272a;
-    --text-secondary: #a1a1aa;
-    --error-color: #ef4444;
-    /* 夜间主色本身是橙色，排队态改用青绿，保证与发送/停止都可区分 */
-    --composer-send-bg: #f97316;
-    --composer-send-fg: #ffffff;
-    --composer-send-hover: #fb923c;
-    --composer-stop-bg: #dc2626;
-    --composer-stop-fg: #ffffff;
-    --composer-stop-hover: #b91c1c;
-    --composer-bg-bg: #f59e0b;
+    --sidebar-bg: #1b1b1f;
+    --border-color: #2e2e34;
+    --text-color: #e6e7ea;
+    --text-light: #9a9ea7;
+    --assistant-message-bg: #202024;
+    --tool-use-bg: #2b2419;
+    --tool-error-bg: #261c1d;
+    --code-bg: #1c1c20;
+    --ask-card-bg: #222226;
+    --hover-bg: #26262b;
+    --text-secondary: #b4b8c0;
+    --error-color: #c47b76;
+    /* 输入区语义色：发送用灰蓝实底，停止用砖红，排队态用低饱和沙色 */
+    --composer-send-bg: #50647a;
+    --composer-send-fg: #e3ebf3;
+    --composer-send-hover: #455870;
+    --composer-stop-bg: #8f4a45;
+    --composer-stop-fg: #f4f4f5;
+    --composer-stop-hover: #82423e;
+    --composer-bg-bg: #b59a6b;
     --composer-bg-fg: #1f2937;
-    --composer-bg-hover: #d97706;
-    --composer-disabled-bg: #3f3f46;
-    --composer-disabled-fg: #71717a;
+    --composer-bg-hover: #a78a5c;
+    --composer-disabled-bg: #27272c;
+    --composer-disabled-fg: #9a9ea7;
     /* 上下文占用指示器：注意态（≥60%）；危险态复用 --error-color（≥80% 自动压缩阈值） */
-    --context-warn: #fbbf24;
+    --context-warn: #d9b77f;
+
+    /* ── 扁平化设计令牌（暗色） ── */
+    --surface-chrome: #1b1b1f;
+    --surface-modal: #222226;
+    --surface-raised: #26262b;
+    --surface-inset: #1c1c20;
+    --surface-card: #1d1d21;
+    --surface-card-quiet: #1b1b1f;
+    --surface-ask: #222226;
+    --surface-option: #27272c;
+    --surface-user: #33343a;
+    --surface-error: #261c1d;
+    --border-card: #2e2e34;
+    --border-user: #3c3d44;
+    --border-card-dashed: #33333a;
+    --border-error: #3d2a2c;
+    --text-strong: #e6e7ea;
+    --text-body: #e6e7ea;
+    --text-muted-2: #b4b8c0;
+    --text-meta: #9a9ea7;
+    --text-secondary-card: #a4a8b0;
+    --accent-call: #8ca3bb;
+    --accent-error: #c47b76;
+    --accent-warn: #b59a6b;
+    --accent-ink: #b9c9da;
+    --accent-tint: #32363d;
+    --btn-soft-bg: #50647a;
+    --btn-soft-hover: #455870;
+    --btn-soft-fg: #e3ebf3;
+    --btn-danger-bg: #8f4a45;
+    --btn-danger-hover: #82423e;
+    --code-chip-bg: rgba(255, 255, 255, 0.07);
+    --code-block-bg: #1c1c20;
+    --code-block-border: #2c2c32;
+    --backdrop: rgba(0, 0, 0, 0.58);
 }
 
 [data-theme="dark"] body {
@@ -5886,3 +5957,883 @@ details.p-headers-panel .p-headers {
 }
 #settings-modal .p-siwc-panel .siwc-result.ok { color: var(--ms-ok-fg); }
 #settings-modal .p-siwc-panel .siwc-result.err { color: var(--ms-danger); }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   扁平化主题（2026-11-17）
+   覆盖上方历史规则中的硬编码配色：零投影、统一圆角、低饱和强调色。
+   新组件请直接使用顶部变量区的 --surface-* / --accent-* / --border-*。
+   ══════════════════════════════════════════════════════════════════ */
+/* ---- 基础形制：统一圆角，不用阴影 ---- */
+:root .message { border-radius: 6px; }
+
+/* ---- 元信息 ---- */
+:root .msg-action-btn { color: var(--text-meta); }
+:root .msg-action-btn:hover {
+    color: var(--text-color);
+    background-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="dark"] .msg-action-btn:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+:root .message-time { color: var(--text-meta); }
+
+/* ---- 用户气泡：中性冷灰，发丝边 ---- */
+:root .message.user {
+    background-color: var(--surface-user);
+    border: 1px solid var(--border-user);
+    color: var(--text-strong);
+}
+[data-theme="dark"] .message.user {
+    background-color: var(--surface-user);
+    border-color: var(--border-user);
+}
+
+/* ---- 助手卡：白/深灰 + 1px 边，无投影 ---- */
+:root .message.assistant {
+    background-color: var(--assistant-message-bg);
+    border: 1px solid var(--border-card);
+}
+[data-theme="dark"] .message.assistant .message-content {
+    background: transparent;
+}
+
+/* ---- 思考卡：安静表面 + 虚线边 ---- */
+:root .message.thinking {
+    background-color: var(--surface-card-quiet);
+    border: 1px dashed var(--border-card-dashed);
+}
+:root .think-title { color: var(--text-meta); }
+:root .think-content { color: #4f5560; }
+[data-theme="dark"] .think-content { color: #a4a8b0; }
+[data-theme="dark"] .message.thinking .message-content {
+    background: transparent;
+}
+
+/* ---- 工具卡：中性表面 + 2px 状态条 ---- */
+:root .message.tool {
+    background-color: var(--surface-card);
+    border: 1px solid var(--border-card);
+    border-left: 2px solid var(--accent-call);
+    padding-left: 14px; /* 左边框 1px→2px，补偿内容位置 */
+}
+[data-theme="dark"] .message.tool {
+    background-color: var(--surface-card);
+    border-color: var(--border-card);
+    border-left-color: var(--accent-call);
+}
+:root .message.tool.tool-result {
+    border-left: 1px solid var(--border-card);
+    padding-left: 15px;
+}
+[data-theme="dark"] .message.tool.tool-result {
+    background-color: var(--surface-card);
+    border-color: var(--border-card);
+}
+:root .message.tool.tool-error {
+    background-color: var(--surface-error);
+    border-color: var(--border-error);
+    border-left-color: var(--accent-error);
+}
+[data-theme="dark"] .message.tool.tool-error {
+    background-color: var(--surface-error);
+    border-color: var(--border-error);
+    border-left-color: var(--accent-error);
+}
+:root .message.tool.tool-error .tool-title { color: #a94f48; }
+[data-theme="dark"] .message.tool.tool-error .tool-title { color: #c47b76; }
+
+:root .tool-title { color: var(--text-secondary-card); }
+
+/* ---- 流式输出 ---- */
+:root .tool-streaming-bubble {
+    background-color: var(--surface-card);
+    border: 1px solid var(--border-card);
+    border-left: 2px solid var(--accent-call);
+}
+:root .streaming-title { color: var(--text-secondary-card); }
+:root .tool-streaming-output { color: var(--text-color); }
+[data-theme="dark"] .tool-streaming-bubble {
+    background-color: var(--surface-card);
+    border-color: var(--border-card);
+    border-left-color: var(--accent-call);
+}
+
+/* ---- 行内代码 / 代码块 ---- */
+:root .message .message-content code {
+    background: var(--code-chip-bg);
+    color: inherit;
+}
+[data-theme="dark"] .message .message-content code {
+    color: #e4e4e7;
+}
+:root .message:not(.tool) .message-content pre {
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.55;
+    margin: 10px 0;
+}
+:root .message:not(.tool) .message-content pre code {
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+}
+[data-theme="dark"] .message:not(.tool) .message-content pre {
+    background: var(--code-block-bg);
+    border-color: var(--code-block-border);
+}
+[data-theme="dark"] .message:not(.tool) .message-content pre code {
+    background: none;
+    color: #e4e4e7;
+}
+
+/* ---- 表格 / 引用 ---- */
+:root .message .message-content th {
+    background: var(--surface-card-quiet);
+}
+[data-theme="dark"] .message .message-content th {
+    background: var(--surface-card);
+}
+:root .message .message-content blockquote {
+    border-left-color: var(--border-card-dashed);
+    color: var(--text-secondary-card);
+}
+
+/* ---- 提问 / 审批卡：卡内卡片浮起，强调色统一为低饱和钢蓝 ---- */
+:root .message.tool:has(.ask-user-card) {
+    border-left: 1px solid var(--border-card);
+    padding-left: 15px;
+}
+[data-theme="dark"] .message.tool:has(.ask-user-card) {
+    border-left-color: var(--border-card);
+}
+:root .ask-user-card {
+    background: var(--surface-ask);
+    border: 1px solid var(--border-card);
+    border-radius: 6px;
+}
+:root .ask-title,
+:root .ask-question-text { color: var(--text-strong); }
+:root .ask-question { border-bottom-color: var(--border-card); }
+:root .ask-header {
+    background: var(--accent-tint);
+    color: var(--accent-ink);
+}
+:root .ask-option {
+    background: var(--surface-option);
+    border-color: var(--border-card);
+    border-radius: 4px;
+}
+:root .ask-option:hover {
+    background: color-mix(in srgb, var(--accent-call) 6%, var(--surface-ask));
+    border-color: var(--accent-call);
+}
+:root .ask-option.selected {
+    background: var(--accent-tint);
+    border-color: var(--accent-call);
+    box-shadow: none;
+}
+:root .ask-option.ask-other {
+    background: transparent;
+    border: 1px dashed var(--border-card-dashed);
+}
+:root .ask-option-label { color: var(--text-strong); }
+:root .ask-option-desc { color: var(--text-meta); }
+:root .ask-other-input {
+    background: var(--surface-option);
+    border-color: var(--border-card);
+    color: var(--text-color);
+    border-radius: 4px;
+}
+:root .ask-submit {
+    background: var(--btn-soft-bg);
+    border-color: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+    border-radius: 4px;
+}
+:root .ask-submit:hover { background: var(--btn-soft-hover); }
+
+/* ---- 审批卡 ---- */
+:root .approval-card {
+    border-left: 2px solid var(--accent-warn);
+}
+:root .approval-body { color: var(--text-strong); }
+:root .approval-body pre {
+    background: var(--surface-card-quiet);
+    border: 1px solid var(--border-card);
+}
+:root .approval-countdown,
+:root .approval-settled { color: var(--text-meta); }
+:root .approval-btn {
+    background: var(--surface-option);
+    border: 1px solid var(--border-card);
+    color: var(--text-strong);
+    border-radius: 4px;
+}
+:root .approval-btn.btn-secondary {
+    background: var(--surface-card);
+    border-color: var(--border-card-dashed);
+}
+:root .approval-btn:hover {
+    background: color-mix(in srgb, var(--accent-call) 6%, var(--surface-ask));
+    border-color: var(--accent-call);
+}
+:root .approval-btn.btn-primary {
+    background: var(--btn-soft-bg);
+    border-color: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+}
+:root .approval-btn.btn-primary:hover {
+    background: var(--btn-soft-hover);
+    border-color: var(--btn-soft-hover);
+}
+:root .approval-btn.btn-danger {
+    background: var(--btn-danger-bg);
+    border-color: var(--btn-danger-bg);
+    color: #ffffff;
+}
+:root .approval-btn.btn-danger:hover {
+    background: var(--btn-danger-hover);
+    border-color: var(--btn-danger-hover);
+}
+
+/* ---- mermaid 错误 ---- */
+:root .mermaid-error {
+    background: var(--surface-error);
+    border-color: var(--border-error);
+    color: #a94f48;
+}
+[data-theme="dark"] .mermaid-error {
+    background: var(--surface-error);
+    border-color: var(--border-error);
+    color: #c47b76;
+}
+
+/* ============================================================
+   侧栏
+   ============================================================ */
+:root .sidebar {
+    background-color: var(--surface-chrome);
+    border-right-color: var(--border-card);
+}
+:root .sidebar-footer {
+    background: transparent;
+    border-top-color: var(--border-card);
+}
+:root .footer-content { color: var(--text-meta); }
+:root .footer-dev,
+:root .footer-company { color: var(--text-muted-2); }
+
+:root .workspace-path { color: var(--text-meta); }
+:root .workspace-controls select,
+:root .workspace-controls .btn-small {
+    background: var(--surface-card);
+    border-color: var(--border-card);
+    color: var(--text-meta);
+}
+:root .workspace-controls select:focus { background: var(--surface-card); border-color: var(--accent-call); }
+:root .workspace-controls .btn-small:hover,
+:root .section-header .btn-small:hover {
+    background: var(--surface-option);
+    color: var(--text-strong);
+    border-color: var(--border-card-dashed);
+}
+:root .section-header .btn-small {
+    background: var(--surface-card);
+    border-color: var(--border-card);
+    color: var(--text-meta);
+}
+:root .section-toggle { color: var(--text-meta); }
+:root .section-toggle:hover { color: var(--text-strong); }
+:root .section-title { color: var(--text-meta); }
+:root .section-header { border-bottom-color: var(--border-card); }
+:root .sidebar-section { border-top-color: var(--border-card); }
+
+:root .sessions-list::-webkit-scrollbar-thumb { background: var(--border-card-dashed); }
+
+:root .session-item {
+    border-left-width: 2px;
+    padding-left: 11px;
+    border-radius: 4px;
+}
+:root .session-item:hover { background-color: var(--surface-card); }
+:root .session-item.active {
+    background-color: var(--accent-tint);
+    border-left-color: var(--accent-call);
+}
+:root .session-item.selected {
+    background-color: var(--accent-tint);
+}
+:root .session-item.selected .session-preview { color: var(--accent-ink); }
+:root .session-preview { color: var(--text-muted-2); }
+:root .session-item.active .session-preview { color: var(--text-strong); }
+:root .session-channel-badge {
+    background: var(--accent-tint);
+    color: var(--accent-ink);
+}
+:root .session-menu-btn { color: var(--text-meta); }
+:root .session-menu-btn:hover {
+    background-color: rgba(123, 141, 163, 0.14);
+    color: var(--text-strong);
+}
+:root .session-dropdown {
+    background: var(--surface-raised);
+    border-color: var(--border-card);
+    border-radius: 6px;
+    box-shadow: none;
+}
+:root .session-dropdown-item {
+    color: var(--text-body);
+    border-bottom-color: var(--border-card);
+}
+:root .session-dropdown-item:hover { background-color: var(--surface-card); }
+
+:root .empty-state { color: var(--text-meta); }
+
+/* ============================================================
+   文件树
+   ============================================================ */
+:root .file-tree { color: var(--text-body); }
+:root .ft-row { border-radius: 4px; }
+:root .ft-row:hover { background: var(--surface-card); }
+:root .ft-row.selected {
+    background: var(--accent-tint);
+    color: var(--text-strong);
+}
+:root .ft-row.focused { box-shadow: inset 0 0 0 1px var(--accent-call); }
+:root .ft-chevron { color: var(--text-meta); }
+:root .ft-guide { background: var(--border-card); }
+:root .ft-context-menu {
+    background: var(--surface-raised);
+    border-color: var(--border-card);
+    border-radius: 6px;
+    box-shadow: none;
+}
+:root .ft-context-item { color: var(--text-body); }
+:root .ft-context-item:hover { background: var(--surface-card); }
+:root .ft-context-item.danger { color: var(--accent-error); }
+:root .file-tree-status { color: var(--text-meta); }
+:root .file-tree-empty { color: var(--text-meta); }
+
+/* ============================================================
+   文件预览
+   ============================================================ */
+:root .preview-pane {
+    background: var(--surface-chrome);
+    border-left-color: var(--border-card);
+    border-right-color: var(--border-card);
+}
+[data-theme="dark"] .preview-pane { background: var(--surface-chrome); }
+:root .preview-header { border-bottom-color: var(--border-card); }
+:root .preview-name { color: var(--text-strong); }
+:root .preview-path,
+:root .preview-status { color: var(--text-meta); }
+:root .preview-actions .btn-icon-flat { color: var(--text-meta); }
+:root .preview-actions .btn-icon-flat:hover {
+    background: var(--surface-card);
+    color: var(--text-strong);
+}
+:root .preview-status { border-top-color: var(--border-card); }
+:root .preview-code {
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    border-radius: 6px;
+    color: var(--text-body);
+}
+[data-theme="dark"] .preview-code { background: var(--code-block-bg); }
+:root .preview-md pre {
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+:root .preview-md code {
+    background: var(--code-chip-bg);
+    color: inherit;
+}
+:root .preview-md pre code { background: none; color: inherit; }
+[data-theme="dark"] .preview-md pre code { background: none; color: #e4e4e7; }
+:root .preview-md th { background: var(--surface-card-quiet); }
+:root .preview-md blockquote {
+    border-left-color: var(--border-card-dashed);
+    color: var(--text-muted-2);
+}
+:root .preview-md a { color: var(--accent-ink); }
+:root .preview-notice {
+    background: #fbf6ea;
+    border-color: #ecd9b0;
+    color: #8a5a1e;
+}
+[data-theme="dark"] .preview-notice {
+    background: #2b2419;
+    border-color: #4a3d28;
+    color: #d9b77f;
+}
+:root .preview-empty,
+:root .preview-error { color: var(--text-meta); }
+
+/* ============================================================
+   模态框骨架
+   ============================================================ */
+:root .modal-backdrop { background: var(--backdrop); }
+:root .modal-content {
+    background: var(--surface-modal);
+    border: 1px solid var(--border-card);
+    border-radius: 8px;
+    box-shadow: none;
+}
+:root .modal-header { border-bottom-color: var(--border-card); }
+:root .modal-header h2 { color: var(--text-strong); font-size: 17px; }
+:root .modal-close { color: var(--text-meta); }
+:root .modal-close:hover { color: var(--text-strong); }
+:root .modal-footer { border-top-color: var(--border-card); }
+:root .settings-status { color: var(--text-meta); }
+
+/* ============================================================
+   按钮 / 表单控件
+   ============================================================ */
+:root .btn { border-radius: 5px; }
+:root .btn-primary {
+    background-color: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+}
+:root .btn-primary:hover { background-color: var(--btn-soft-hover); }
+:root .btn-primary:disabled {
+    background-color: var(--surface-option);
+    color: var(--text-meta);
+}
+:root .btn-danger {
+    background-color: var(--btn-danger-bg);
+    color: #ffffff;
+}
+:root .btn-danger:hover { background-color: var(--btn-danger-hover); }
+:root .btn-secondary {
+    background: var(--surface-option);
+    border: 1px solid var(--border-card);
+    color: var(--text-strong);
+    border-radius: 5px;
+    padding: 8px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+:root .btn-secondary:hover {
+    background: var(--surface-card);
+    border-color: var(--border-card-dashed);
+}
+:root .btn-small {
+    background: var(--surface-card);
+    color: var(--text-meta);
+}
+:root .btn-small:hover {
+    background: var(--surface-option);
+    color: var(--text-strong);
+}
+:root .btn-outline {
+    background: transparent;
+    border: 1px solid var(--border-card);
+    color: var(--text-meta);
+    border-radius: 5px;
+}
+:root .btn-outline:hover {
+    background: var(--surface-card);
+    color: var(--text-strong);
+    border-color: var(--border-card-dashed);
+}
+:root .btn-outline-danger {
+    color: var(--accent-error);
+    border: 1px solid var(--border-error);
+    background: transparent;
+    border-radius: 5px;
+}
+:root .btn-outline-danger:hover { background: var(--surface-error); }
+
+:root input[type="text"],
+:root input[type="password"],
+:root input[type="number"],
+:root input[type="search"],
+:root textarea,
+:root select {
+    background: var(--surface-option);
+    border-color: var(--border-card);
+    color: var(--text-strong);
+    border-radius: 5px;
+}
+:root input[type="text"]:focus,
+:root input[type="password"]:focus,
+:root input[type="number"]:focus,
+:root input[type="search"]:focus,
+:root textarea:focus,
+:root select:focus {
+    outline: none;
+    border-color: var(--accent-call);
+    box-shadow: none;
+}
+:root input[type="checkbox"] { accent-color: var(--accent-call); }
+:root .form-group label { color: var(--text-muted-2); }
+:root .form-hint { color: var(--text-meta); }
+
+/* ============================================================
+   设置 / 工作区设置 / 记忆（ms-scope 设计系统）
+   ============================================================ */
+:root .ms-scope {
+    --ms-card-bg: #ffffff;
+    --ms-inset-bg: #f6f7f9;
+    --ms-control-bg: #f8f9fa;
+    --ms-hover: #f1f2f4;
+    --ms-border: #e5e6e9;
+    --ms-border-strong: #d8dadd;
+    --ms-muted: #647084;
+    --ms-ok-bg: #edf5ef;
+    --ms-ok-fg: #3f7d58;
+    --ms-danger: #a94f48;
+    --ms-chip-bg: #f1f2f4;
+    --ms-focus-ring: rgba(123, 141, 163, 0.16);
+    --ms-soft: rgba(123, 141, 163, 0.12);
+}
+[data-theme="dark"] .ms-scope {
+    --ms-card-bg: #26262b;
+    --ms-inset-bg: #1c1c20;
+    --ms-control-bg: #1d1d21;
+    --ms-hover: #2e2e34;
+    --ms-border: #33333a;
+    --ms-border-strong: #40404a;
+    --ms-muted: #9a9ea7;
+    --ms-ok-bg: rgba(90, 150, 110, 0.16);
+    --ms-ok-fg: #8fbf9f;
+    --ms-danger: #c47b76;
+    --ms-chip-bg: #2e2e34;
+    --ms-focus-ring: rgba(140, 163, 187, 0.16);
+    --ms-soft: rgba(140, 163, 187, 0.14);
+}
+
+:root .settings-tabs {
+    background: var(--surface-card);
+    border-bottom-color: var(--border-card);
+}
+:root .settings-tab { color: var(--text-meta); }
+:root .settings-tab:hover { color: var(--text-strong); }
+:root .settings-tab.active {
+    color: var(--text-strong);
+    border-bottom-color: var(--accent-call);
+}
+:root .pane-desc { color: var(--text-muted-2); }
+:root .settings-card {
+    border-color: var(--border-card);
+    border-radius: 8px;
+}
+:root .provider-card {
+    border-color: var(--border-card);
+    border-radius: 8px;
+    background: var(--surface-ask);
+}
+:root .provider-body {
+    background: transparent;
+    border: none;
+}
+:root .agent-card {
+    border-color: var(--border-card);
+    background: var(--surface-card);
+    border-radius: 8px;
+}
+:root .provider-status { color: var(--text-meta); }
+:root .provider-status .status-dot.ok { background: #6f9c7d; }
+:root .provider-status .status-dot.pending { background: var(--text-meta); }
+
+:root .settings-card .title,
+:root .models-section-title { color: var(--text-strong); }
+
+/* 记忆管理 */
+:root .memory-toolbar {
+    background: var(--surface-card);
+    border-bottom-color: var(--border-card);
+}
+:root .memory-stats {
+    color: var(--text-meta);
+    border-bottom-color: var(--border-card);
+}
+:root .memory-stat-stale { color: #8a5a1e; }
+[data-theme="dark"] .memory-stat-stale { color: #d9b77f; }
+:root .memory-list {
+    background: var(--surface-inset);
+    border-right-color: var(--border-card);
+}
+:root .memory-list-item {
+    background: var(--surface-ask);
+    border-color: var(--border-card);
+    border-radius: 6px;
+}
+:root .memory-list-item:hover { border-color: var(--border-card-dashed); }
+:root .memory-list-item.active {
+    background: var(--accent-tint);
+    border-color: var(--accent-call);
+}
+:root .memory-type-tag {
+    background: var(--accent-tint);
+    color: var(--accent-ink);
+    border: none;
+}
+:root .memory-type-tag[data-type="preference"] {
+    background: rgba(140, 105, 145, 0.13);
+    color: #7c5b81;
+}
+:root .memory-type-tag[data-type="skill"] {
+    background: rgba(85, 130, 100, 0.13);
+    color: #4f7d5f;
+}
+:root .memory-type-tag[data-type="reference"] {
+    background: rgba(150, 120, 75, 0.14);
+    color: #8a6a3f;
+}
+[data-theme="dark"] .memory-type-tag[data-type="preference"] { color: #bba3c0; }
+[data-theme="dark"] .memory-type-tag[data-type="skill"] { color: #93b89f; }
+[data-theme="dark"] .memory-type-tag[data-type="reference"] { color: #c4a97a; }
+:root .memory-item-desc { color: var(--text-muted-2); }
+:root .memory-item-meta { color: var(--text-meta); }
+:root .memory-status-tag { border-color: var(--border-card); color: var(--text-meta); }
+:root .memory-name { color: var(--text-strong); }
+:root .memory-meta { color: var(--text-muted-2); }
+:root .memory-footer {
+    background: var(--surface-card);
+    border-top-color: var(--border-card);
+    color: var(--text-meta);
+}
+
+/* ============================================================
+   新建工作区向导
+   ============================================================ */
+:root .wizard-progress { border-bottom-color: var(--border-card); }
+:root .wizard-step-indicator { color: var(--text-meta); }
+:root .wizard-step-indicator span {
+    background: var(--surface-option);
+    color: var(--text-meta);
+}
+:root .wizard-step-indicator.active {
+    color: var(--text-strong);
+    background: var(--surface-card);
+}
+:root .wizard-step-indicator.active span {
+    background: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+}
+:root .wizard-category-card {
+    background: var(--surface-card);
+    border-color: var(--border-card);
+    border-radius: 6px;
+}
+:root .wizard-category-card:hover { border-color: var(--accent-call); }
+:root .wizard-category-card.selected {
+    border-color: var(--accent-call);
+    background: var(--accent-tint);
+    box-shadow: none;
+}
+:root .wizard-category-card strong { color: var(--text-strong); }
+:root .wizard-category-card span { color: var(--text-meta); }
+:root .wizard-preview-card,
+:root .wizard-result-card {
+    background: var(--surface-card);
+    border-color: var(--border-card);
+    border-left-width: 2px;
+    border-left-color: var(--accent-call);
+    border-radius: 6px;
+}
+:root .wizard-result-card.success { border-left-color: #5f8f70; }
+:root .wizard-result-card.error { border-left-color: var(--accent-error); }
+:root .wizard-result-card.info { border-left-color: var(--accent-call); }
+:root .wizard-warning {
+    color: #8a5a1e;
+    background: #fbf6ea;
+    border-color: #ecd9b0;
+}
+[data-theme="dark"] .wizard-warning {
+    color: #d9b77f;
+    background: #2b2419;
+    border-color: #4a3d28;
+}
+:root .wizard-step h3 { color: var(--text-strong); }
+
+/* ============================================================
+   帮助 / 关于会话 / 连接引导
+   ============================================================ */
+:root .help-section h3 { color: var(--text-meta); }
+:root .help-table td { border-bottom-color: var(--border-card); }
+:root .help-cmd code {
+    background: var(--surface-card);
+    color: var(--accent-ink);
+}
+:root .help-table td code {
+    background: var(--code-chip-bg);
+    color: var(--text-body);
+}
+
+:root .about-head { border-bottom-color: var(--border-card); }
+:root .about-name { color: var(--text-strong); }
+:root .about-badge {
+    border-color: var(--border-card);
+    color: var(--text-meta);
+}
+:root .about-title-row code {
+    background: var(--code-chip-bg);
+    color: var(--accent-ink);
+}
+:root .about-meta { color: var(--text-meta); }
+:root .about-filter {
+    border-color: var(--border-card);
+    color: var(--text-meta);
+}
+:root .about-filter:hover { color: var(--text-strong); }
+:root .about-filter.active {
+    color: var(--accent-ink);
+    border-color: var(--accent-call);
+    background: var(--accent-tint);
+}
+:root .about-date { color: var(--text-meta); }
+:root .about-date::after { background: var(--border-card); }
+:root .about-rail::before { background: var(--border-card); }
+:root .about-time { color: var(--text-meta); }
+:root .about-snippet { color: var(--text-meta); }
+:root .about-detail { color: var(--text-meta); }
+:root .about-event.type-user .about-dot { background: var(--accent-call); }
+:root .about-event.type-assistant .about-dot { background: #5f8f70; }
+:root .about-event.type-tool .about-dot { background: #b9925f; }
+:root .about-event.type-compaction .about-dot { background: #8f7fa8; }
+:root .about-event.type-compaction .about-type { color: #8f7fa8; }
+
+/* ============================================================
+   输入区 / 浮动控件 / toast
+   ============================================================ */
+:root .chat-input-area {
+    background: var(--surface-chrome);
+    border-top-color: var(--border-card);
+}
+:root .chat-input-area textarea {
+    background: var(--surface-ask);
+    border-color: var(--border-card);
+}
+:root .chat-input-area textarea:focus { border-color: var(--accent-call); }
+:root .chat-messages { border-bottom-color: var(--border-card); }
+:root .input-actions .model-select { color: var(--text-meta); }
+:root .input-actions .model-select:hover:not(:disabled) {
+    background: var(--surface-card);
+    color: var(--text-strong);
+}
+:root .btn-icon-floating { color: var(--text-meta); }
+:root .btn-icon-floating:hover {
+    background: var(--surface-card);
+    color: var(--text-strong);
+}
+:root .context-gauge { color: var(--text-meta); }
+:root .context-gauge:hover { background: var(--surface-card); }
+
+:root .composer-action[data-state="send"] {
+    background: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+}
+:root .composer-action[data-state="send"]:hover { background: var(--btn-soft-hover); }
+:root .composer-action[data-state="stop"] {
+    background: var(--btn-danger-bg);
+    color: #ffffff;
+}
+:root .composer-action[data-state="stop"]:hover { background: var(--btn-danger-hover); }
+:root .composer-action[data-state="stop-bg"] {
+    background: var(--accent-warn);
+    color: #1f2937;
+}
+:root .composer-action[data-state="disabled"] {
+    background: var(--surface-option);
+    color: var(--text-meta);
+}
+
+:root .toast {
+    background: rgba(51, 55, 63, 0.94);
+    color: #f4f4f5;
+    border-radius: 6px;
+    box-shadow: none;
+}
+:root .theme-toggle { color: var(--text-meta); }
+
+/* 滚动条 */
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #35353c; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #44444d; }
+:root ::-webkit-scrollbar-track { background: transparent; }
+
+
+/* 暗色对话画布保持比侧栏/预览深一档 */
+[data-theme="dark"] .chat-area { background-color: #18181b; }
+
+/* 焦点：扁平化只换边框色，不要光晕（覆盖 ms-scope 的 3px ring） */
+.modal input:focus,
+.modal select:focus,
+.modal textarea:focus {
+    border-color: var(--accent-call) !important;
+    box-shadow: none !important;
+}
+
+/* 复选框统一钢蓝（覆盖各处的 primary accent-color） */
+:root input[type="checkbox"] { accent-color: var(--accent-call) !important; }
+
+/* 侧栏图标与主操作按钮：扁平灰蓝，不用品牌主色铺底 */
+:root .btn-icon-flat { color: var(--text-meta); }
+:root .btn-icon-flat:hover,
+[data-theme="dark"] .btn-icon-flat:hover {
+    background: var(--surface-card);
+    color: var(--text-strong);
+}
+#new-session-btn {
+    background: var(--btn-soft-bg);
+    color: var(--btn-soft-fg);
+    border-color: var(--btn-soft-bg);
+}
+#new-session-btn:hover {
+    background: var(--btn-soft-hover);
+    color: var(--btn-soft-fg);
+    border-color: var(--btn-soft-hover);
+}
+[data-theme="dark"] #new-session-btn,
+[data-theme="dark"] #new-session-btn:hover {
+    color: var(--btn-soft-fg);
+}
+
+/* 次要状态文字与进度条 */
+:root .memory-pending { color: var(--accent-ink); }
+:root .ctx-bar-fill { background: var(--accent-call); }
+
+/* ── ID 作用域组件补充（原规则用 ID 选择器，权重高于通用覆盖） ── */
+#memory-modal .memory-list-item.active {
+    border-color: var(--accent-call);
+    background: var(--accent-tint);
+}
+#memory-modal .memory-pending { color: var(--accent-ink); }
+#memory-modal .memory-type-tag[data-type="preference"] {
+    background: rgba(140, 105, 145, 0.13);
+    color: #7c5b81;
+}
+#memory-modal .memory-type-tag[data-type="skill"] {
+    background: rgba(85, 130, 100, 0.13);
+    color: #4f7d5f;
+}
+#memory-modal .memory-type-tag[data-type="reference"] {
+    background: rgba(150, 120, 75, 0.14);
+    color: #8a6a3f;
+}
+[data-theme="dark"] #memory-modal .memory-type-tag[data-type="preference"] { color: #bba3c0; }
+[data-theme="dark"] #memory-modal .memory-type-tag[data-type="skill"] { color: #93b89f; }
+[data-theme="dark"] #memory-modal .memory-type-tag[data-type="reference"] { color: #c4a97a; }
+#settings-modal .agent-card { border-radius: 8px; }
+#settings-modal .provider-add-row .btn { border-radius: 8px; }
+#settings-modal .provider-avatar { color: var(--accent-ink); }
+:root .preview-actions .btn-icon-flat.active { color: var(--accent-ink); }
+
+/* 其余高饱和语义色统一降饱和 */
+:root .welcome-message h2 { color: var(--accent-ink); }
+#memory-modal .memory-stat-stale { color: var(--context-warn); }
+:root .todo-progress-fill { background-color: #5f8f70; }
+[data-theme="dark"] .todo-progress-fill { background-color: #8fbf9f; }
+:root .settings-status.success { color: #4f7d5f; }
+:root .settings-status.error { color: var(--accent-error); }
+[data-theme="dark"] .settings-status.success { color: #93b89f; }
+:root #git-settings-status.success { color: #4f7d5f; }
+:root #git-settings-status.error { color: var(--accent-error); }

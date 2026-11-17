@@ -789,3 +789,91 @@
     color: var(--primary-color);
     background: rgba(128, 128, 128, 0.14);
 }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   扁平化主题（2026-11-17）：文件树与文件预览
+   覆盖本文件历史规则中的硬编码配色：零投影、统一圆角、低饱和强调色。
+   ══════════════════════════════════════════════════════════════════ */
+/* ============================================================
+   文件树
+   ============================================================ */
+:root .file-tree { color: var(--text-body); }
+:root .ft-row { border-radius: 4px; }
+:root .ft-row:hover { background: var(--surface-card); }
+:root .ft-row.selected {
+    background: var(--accent-tint);
+    color: var(--text-strong);
+}
+:root .ft-row.focused { box-shadow: inset 0 0 0 1px var(--accent-call); }
+:root .ft-chevron { color: var(--text-meta); }
+:root .ft-guide { background: var(--border-card); }
+:root .ft-context-menu {
+    background: var(--surface-raised);
+    border-color: var(--border-card);
+    border-radius: 6px;
+    box-shadow: none;
+}
+:root .ft-context-item { color: var(--text-body); }
+:root .ft-context-item:hover { background: var(--surface-card); }
+:root .ft-context-item.danger { color: var(--accent-error); }
+:root .file-tree-status { color: var(--text-meta); }
+:root .file-tree-empty { color: var(--text-meta); }
+
+/* ============================================================
+   文件预览
+   ============================================================ */
+:root .preview-pane {
+    background: var(--surface-chrome);
+    border-left-color: var(--border-card);
+    border-right-color: var(--border-card);
+}
+[data-theme="dark"] .preview-pane { background: var(--surface-chrome); }
+:root .preview-header { border-bottom-color: var(--border-card); }
+:root .preview-name { color: var(--text-strong); }
+:root .preview-path,
+:root .preview-status { color: var(--text-meta); }
+:root .preview-actions .btn-icon-flat { color: var(--text-meta); }
+:root .preview-actions .btn-icon-flat:hover {
+    background: var(--surface-card);
+    color: var(--text-strong);
+}
+:root .preview-status { border-top-color: var(--border-card); }
+:root .preview-code {
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    border-radius: 6px;
+    color: var(--text-body);
+}
+[data-theme="dark"] .preview-code { background: var(--code-block-bg); }
+:root .preview-md pre {
+    background: var(--code-block-bg);
+    border: 1px solid var(--code-block-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+:root .preview-md code {
+    background: var(--code-chip-bg);
+    color: inherit;
+}
+:root .preview-md pre code { background: none; color: inherit; }
+[data-theme="dark"] .preview-md pre code { background: none; color: #e4e4e7; }
+:root .preview-md th { background: var(--surface-card-quiet); }
+:root .preview-md blockquote {
+    border-left-color: var(--border-card-dashed);
+    color: var(--text-muted-2);
+}
+:root .preview-md a { color: var(--accent-ink); }
+:root .preview-notice {
+    background: #fbf6ea;
+    border-color: #ecd9b0;
+    color: #8a5a1e;
+}
+[data-theme="dark"] .preview-notice {
+    background: #2b2419;
+    border-color: #4a3d28;
+    color: #d9b77f;
+}
+:root .preview-empty,
+:root .preview-error { color: var(--text-meta); }
+
