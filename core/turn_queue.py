@@ -134,7 +134,7 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
             ui = it.user_input
             content_added = False
             if isinstance(ui, list):
-                # 保持单条输入内部的块顺序（附件/提及/图片/正文的相对顺序不变）；
+                # 保持单条输入内部的块顺序（正文/附件/提及/图片的相对顺序不变）；
                 # 只合并不属于当前条目的其他块的类别。
                 for block in ui:
                     if not isinstance(block, dict):

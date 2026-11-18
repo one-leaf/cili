@@ -272,6 +272,9 @@ def _build_user_input(content: str, images: list[dict] | None,
     if not images and not attachment_blocks and not mention_blocks:
         return content
     blocks: list[dict] = []
+    # 正文块在前（与 core/multimodal.py 同序）：会话列表预览取第一个文本块，
+    # 正文在前才不会被附件块抢走
+    blocks.append({"type": "text", "text": content, "_valid": True})
     blocks.extend(attachment_blocks)
     blocks.extend(mention_blocks)
     for img in (images or []):
@@ -312,7 +315,6 @@ def _build_user_input(content: str, images: list[dict] | None,
             jpeg_quality=jpeg_quality,
         )
         blocks.append(block)
-    blocks.append({"type": "text", "text": content, "_valid": True})
     return blocks
 
 

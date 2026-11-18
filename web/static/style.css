@@ -2478,7 +2478,7 @@ html:not([data-theme="dark"]) .message.thinking {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-bottom: 6px;
+    margin-top: 6px;
 }
 
 .user-attachment {
@@ -2498,7 +2498,7 @@ html:not([data-theme="dark"]) .message.thinking {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 8px;
+    margin-top: 8px;
 }
 
 .user-images img {

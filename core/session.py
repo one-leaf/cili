@@ -100,10 +100,15 @@ def preview_from_messages(messages: list[dict]) -> str:
     for msg in reversed(messages):
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
-        if (msg.get("_meta") or {}).get("summary"):
+        meta = msg.get("_meta") or {}
+        if meta.get("summary"):
             continue
-        if (msg.get("_meta") or {}).get("error_notice"):
+        if meta.get("error_notice"):
             continue
+        if meta.get("background_notification"):
+            continue  # 后台子 Runner 完成通知：非用户输入，继续往前找
+        if meta.get("loop_warning"):
+            continue  # 循环重复检测警告（交互/自主共用）：合成消息，不算输入
         content = msg.get("content")
         text = ""
         if isinstance(content, str):

@@ -261,3 +261,62 @@ class TestSessionDisplayName:
         a = [s["session_id"] for s in SessionStore.list_sessions(sessions_dir)]
         b = [s["session_id"] for s in SessionStore.list_sessions(sessions_dir)]
         assert a == b
+
+
+class TestPreviewFromMessages:
+    """会话列表预览（core/session.py::preview_from_messages）——合成消息不算用户输入。"""
+
+    def test_takes_last_user_text(self):
+        from core.session import preview_from_messages
+        msgs = [
+            {"role": "user", "content": "第一句"},
+            {"role": "assistant", "content": "回复"},
+            {"role": "user", "content": "最新一句"},
+        ]
+        assert preview_from_messages(msgs) == "最新一句"
+
+    def test_skips_background_notification(self):
+        """[子 Runner 完成通知] 等合成 user 消息不算输入，继续往前找。"""
+        from core.session import preview_from_messages
+        msgs = [
+            {"role": "user", "content": "真正的输入"},
+            {"role": "user", "content": "[子 Runner 完成通知] exec_id=x, status=completed",
+             "_meta": {"background_notification": True}},
+        ]
+        assert preview_from_messages(msgs) == "真正的输入"
+
+    def test_skips_loop_warning(self):
+        """循环重复检测警告（交互/自主共用注入）是合成消息，不进预览。"""
+        from core.session import preview_from_messages
+        msgs = [
+            {"role": "user", "content": "查看日志"},
+            {"role": "user", "content": "## ⚠️ 操作重复警告 ...",
+             "_meta": {"loop_warning": True}},
+        ]
+        assert preview_from_messages(msgs) == "查看日志"
+
+    def test_notification_only_falls_back_empty(self):
+        """只有通知消息时没有可用预览，返回空串（展示名回退会话名）。"""
+        from core.session import preview_from_messages
+        msgs = [{"role": "user", "content": "[子 Runner 完成通知] x",
+                 "_meta": {"background_notification": True}}]
+        assert preview_from_messages(msgs) == ""
+
+    def test_block_content_takes_first_text(self):
+        """content 为块列表时取第一个文本块（新消息正文块在最前）。"""
+        from core.session import preview_from_messages
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "帮我看下", "_valid": True},
+            {"type": "text", "text": "[Attachment] `uploads/a.png` (image)",
+             "_meta": {"attachment": {"path": "uploads/a.png"}}},
+        ]}]
+        assert preview_from_messages(msgs) == "帮我看下"
+
+    def test_skips_summary_and_error_notice(self):
+        from core.session import preview_from_messages
+        msgs = [
+            {"role": "user", "content": "早先输入"},
+            {"role": "user", "content": "摘要文本", "_meta": {"summary": True}},
+            {"role": "user", "content": "错误提示", "_meta": {"error_notice": True}},
+        ]
+        assert preview_from_messages(msgs) == "早先输入"

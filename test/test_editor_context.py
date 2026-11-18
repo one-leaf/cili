@@ -65,8 +65,8 @@ class TestBuildUserInput:
             attachments=[{"path": "a.py", "selection": {"startLine": 1, "endLine": 1, "text": "x"}}],
         )
         assert isinstance(out, list)
-        assert out[0]["_meta"]["attachment"]["path"] == "a.py"
-        assert out[-1] == {"type": "text", "text": "hi", "_valid": True}
+        assert out[0] == {"type": "text", "text": "hi", "_valid": True}
+        assert out[1]["_meta"]["attachment"]["path"] == "a.py"
 
     def test_multiple_attachments(self):
         from web.routes_chat import _build_user_input
@@ -79,7 +79,7 @@ class TestBuildUserInput:
         )
         assert isinstance(out, list)
         assert len([b for b in out if b.get("_meta", {}).get("attachment")]) == 2
-        assert out[-1]["text"] == "hi"
+        assert out[0]["text"] == "hi"
 
     def test_attachments_with_images(self):
         from web.routes_chat import _build_user_input
@@ -90,7 +90,7 @@ class TestBuildUserInput:
         )
         assert any(b.get("_meta", {}).get("attachment") for b in out)
         assert any(b.get("type") == "image" for b in out)
-        assert out[-1]["text"] == "hi"
+        assert out[0]["text"] == "hi"
 
 
 class TestMergeQueuedTurns:
@@ -107,12 +107,12 @@ class TestMergeQueuedTurns:
         item = QueuedTurn(
             item_id="q",
             content="hi",
-            user_input=[att, {"type": "text", "text": "hi"}],
+            user_input=[{"type": "text", "text": "hi"}, att],
         )
         ui, _ = merge_queued_turns([item])
         assert isinstance(ui, list)
         assert any(b.get("_meta", {}).get("attachment") for b in ui)
-        assert ui[-1].get("text") == "hi"
+        assert ui[0].get("text") == "hi"
 
     def test_images_preserved(self):
         img = {"type": "image", "source": {"type": "base64", "data": "abc"}}

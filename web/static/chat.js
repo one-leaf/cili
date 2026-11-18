@@ -243,12 +243,19 @@ function _renderUserAttachmentChips(container, attachments) {
         chip.className = 'user-attachment';
         const path = att.path || '';
         const sel = att.selection;
-        chip.textContent = sel && sel.startLine
-            ? `@${path}:${sel.startLine}-${sel.endLine}`
-            : `@${path}`;
+        let label = `@${path}`;
+        if (sel && sel.startLine) {
+            label = `@${path}:${sel.startLine}-${sel.endLine}`;
+        } else if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('/')) {
+            // 工作区外绝对路径：chip 只显示文件名，完整路径放 title
+            label = `@${path.split(/[\\/]/).filter(Boolean).pop() || path}`;
+        }
+        chip.textContent = label;
+        chip.title = path;
         row.appendChild(chip);
     });
-    container.insertBefore(row, container.firstChild);
+    // 附件 chip 在正文下方（与消息块顺序一致：正文在前、附件在后）
+    container.appendChild(row);
 }
 
 // 最近一次渲染的会话（workspace:session）：与本次相同说明是同一会话的重建
@@ -335,7 +342,7 @@ function renderMessages(messages) {
                         imgEl.alt = '用户图片';
                         imgContainer.appendChild(imgEl);
                     });
-                    contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                    contentDiv.appendChild(imgContainer);
                 }
                 if (attachmentParts.length > 0) {
                     _renderUserAttachmentChips(contentDiv, attachmentParts);
@@ -552,7 +559,7 @@ function prependMessages(messages) {
                         imgEl.alt = '用户图片';
                         imgContainer.appendChild(imgEl);
                     });
-                    contentDiv.insertBefore(imgContainer, contentDiv.firstChild);
+                    contentDiv.appendChild(imgContainer);
                 }
                 if (attachmentParts.length > 0) {
                     _renderUserAttachmentChips(contentDiv, attachmentParts);
