@@ -659,13 +659,22 @@ class Config:
             f"请在 setting.json 的 agents.master.model 配置模型引用"
         )
 
+    def explicit_role_model(self, role: str) -> str | None:
+        """角色在 setting.json 中显式配置的模型引用；未配置返回 None。
+
+        与 ``role_refs`` 的「worker/lite 未配置时继承 master」判定同源——
+        需要区分「角色有独立模型」与「跟随父级」的调用方（如 agent 工具的
+        会话级模型继承）都用这里，避免两处各自判定漂移。
+        """
+        return (self.agents.get(role) or AgentConfig()).model or None
+
     def role_refs(self) -> dict[str, str]:
         """角色名 → 模型引用；worker/lite 未配置时继承 master。"""
         master_ref = self.master_ref()
         return {
             "master": master_ref,
-            "worker": (self.agents.get("worker") or AgentConfig()).model or master_ref,
-            "lite": (self.agents.get("lite") or AgentConfig()).model or master_ref,
+            "worker": self.explicit_role_model("worker") or master_ref,
+            "lite": self.explicit_role_model("lite") or master_ref,
         }
 
     @property

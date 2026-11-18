@@ -56,6 +56,7 @@ class AgentTool(Tool):
         )
         self.config = config  # 全局配置，构造子 SessionRunner 用（角色模型继承）
         self.delegation_depth = delegation_depth  # 当前 runner 的委派深度（master=0；depth1 仅可委派 lite；depth≥2 禁止）
+        self.parent_model_ref = None  # Callable[[], str|None]：父 runner 注入，spawn 时取实时模型引用
         self.stop_check = None  # Set by master SessionRunner after tool creation
         self.on_session_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_session_complete = None  # Callback(exec_id) fired when sub-agent finishes
@@ -177,6 +178,19 @@ class AgentTool(Tool):
             },
             "required": [],  # All parameters are optional; execute() validates
         }
+
+    def _inherit_parent_model_ref(self, subagent_type: str) -> str | None:
+        """子代理应继承的父模型引用；None = 用角色默认模型。
+
+        跟随语义与 ``Config.role_refs`` 一致：角色未在 setting.json 显式配置
+        模型时才继承父 runner 的当前引用（含输入框切换的会话级覆盖）；
+        显式配置的角色模型优先，不被会话级切换覆盖。
+        """
+        provider = getattr(self, "parent_model_ref", None)
+        parent_ref = provider() if callable(provider) else None
+        if not parent_ref or self.config.explicit_role_model(subagent_type):
+            return None
+        return str(parent_ref)
 
     def _make_sink(self, exec_id: str) -> OutputSink:
         return OutputSink(
@@ -341,6 +355,7 @@ class AgentTool(Tool):
             master_session_id=root_sid,
             epoch=1,
             max_epochs=max_epochs,
+            parent_model_ref=self._inherit_parent_model_ref(subagent_type),
         )
 
         # 全局事件流：worker 逐 token 消息与工具增量 → 事件总线（实时推送，去前端轮询）。
@@ -612,6 +627,8 @@ class AgentTool(Tool):
                     max_epochs=max_epochs,
                     stats_base=stats_base,
                     usage_base=cum_usage,
+                    # 每个 epoch 重取父模型引用：中途切模型后续任跟随新值
+                    parent_model_ref=self._inherit_parent_model_ref(subagent_type),
                 )
                 sink = self._make_sink(exec_id)
                 runner.sink = sink

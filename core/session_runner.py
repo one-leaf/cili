@@ -136,6 +136,7 @@ class SessionRunner(BaseSessionRunner):
         max_epochs: int = 1,
         stats_base: AgentStats | None = None,
         usage_base: dict | None = None,
+        parent_model_ref: str | None = None,
     ):
         """Initialize SessionRunner.
 
@@ -157,6 +158,8 @@ class SessionRunner(BaseSessionRunner):
             initial_session: interactive 模式直接使用的会话（fork 分支用；跳过加载最新）
             stats_base: 续任前已归档 epoch 的累计统计；首轮为 None
             usage_base: 续任前已归档 epoch 的累计用量（含 per-model 分桶）；首轮为 None
+            parent_model_ref: 父 runner 传下的当前模型引用（agent 工具委派时注入），
+                与会话元数据覆盖同通道应用；仅在角色未显式配置模型时由调用方传入
         """
         self.role = role
         self.role_cfg = load_role(role, config)
@@ -213,8 +216,10 @@ class SessionRunner(BaseSessionRunner):
             # 使 exec 日志里的 usage 始终是整个 AgentRun 的累计值
             self.context.merge_usage(self._usage_base)
 
-        # 会话级模型覆盖优先（用户从输入框切换的模型）；未覆盖时用角色默认模型
-        saved_ref = self._session_model_ref()
+        # 会话级模型覆盖优先（用户从输入框切换的模型）；未覆盖时用角色默认模型。
+        # parent_model_ref：父 runner 的当前模型引用（agent 工具委派），与
+        # 会话元数据覆盖同通道应用；解析失败时同样回退角色默认模型
+        saved_ref = self._session_model_ref() or parent_model_ref
         self.model_ref = self._role_model_ref(config)
         if saved_ref:
             try:
@@ -506,6 +511,10 @@ class SessionRunner(BaseSessionRunner):
         agent_tool = get_tool_by_name(self.tools, "agent")
         if agent_tool:
             agent_tool.delegation_depth = self.delegation_depth
+            # 子代理继承父 runner 当前模型引用（含输入框切换的会话级覆盖）。
+            # provider 形式在 spawn 时取实时值：中途切模型，之后新委派的
+            # 子代理跟随新模型
+            agent_tool.parent_model_ref = lambda: getattr(self, "model_ref", None)
 
         if self._mode == "interactive":
             # Wire agent callbacks
@@ -832,6 +841,12 @@ class SessionRunner(BaseSessionRunner):
         name = default_branch_name(self.session.name, label, existing)
         store = SessionStore.create_new_session(self.sessions_dir, name)
         store.image_history_mode = self._image_history_mode()
+        # fork 继承父会话的模型覆盖（输入框切换的会话级模型随上下文一起带走）。
+        # 只复制真实覆盖，不复制解析后的自当前模型：否则无覆盖的会话 fork 后
+        # 会被钉死在当时的默认模型，之后全局改默认模型也跟随不到
+        parent_ref = self._session_model_ref()
+        if parent_ref:
+            store.set_model_ref(parent_ref)
         # 工具图片 sidecar 在 session 目录；fork 必须复制，否则引用失效。
         src_attachments = self.session_dir / "attachments"
         if src_attachments.is_dir():
