@@ -244,20 +244,17 @@ function filePathToInsert(absPath) {
 }
 
 // 从文件浏览器选择文件 → 加入输入区附件 chip（与 Ctrl+V/预览选择同一套逻辑）
+// 工作区内用相对路径，工作区外保留绝对路径；读取权限由后端 outside.read 裁决
 function attachFilePath(filePath) {
     const rel = filePathToInsert(filePath);
-    // 只接受工作区内的文件（相对路径）；工作区外返回绝对路径，拒绝
-    if (!rel || rel === '.' || rel.startsWith('/') || /^[A-Za-z]:/.test(rel)) {
-        showToast('只能添加工作区内的文件');
-        return;
-    }
+    if (!rel || rel === '.') return;
     if (pendingAttachments.some(a => a.path === rel)) {
         closeFileBrowser();
         return;
     }
     pendingAttachments.push({
         path: rel,
-        name: rel.split('/').pop(),
+        name: rel.split(/[\\/]/).pop(),
         media_type: '',
     });
     renderComposerAttachments();
