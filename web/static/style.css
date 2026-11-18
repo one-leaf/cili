@@ -2010,6 +2010,17 @@ html:not([data-theme="dark"]) .message.thinking {
     height: 24px;
 }
 
+/* 语音输入：录音中红色脉动 */
+.input-actions .btn-icon-floating.recording {
+    color: var(--error-color);
+    animation: mic-recording-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-recording-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 .input-actions .model-select {
     max-width: 120px;
     height: 24px;

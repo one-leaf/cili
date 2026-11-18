@@ -224,6 +224,13 @@
                             </svg>
                             <span class="context-gauge-pct">—</span>
                         </button>
+                        <button id="mic-btn" class="btn-icon-floating" title="语音输入" aria-label="语音输入" hidden>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                                <line x1="12" y1="19" x2="12" y2="22"></line>
+                            </svg>
+                        </button>
                         <button id="composer-action-btn" class="btn-icon-floating composer-action" data-state="disabled" title="发送" aria-label="发送">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M22 2L11 13"></path>
@@ -1423,6 +1430,7 @@
 
     <script src="/static/libs/codemirror6.bundle.min.js"></script>
     <script src="/static/utils.js"></script>
+    <script src="/static/voice-input.js"></script>
     <script src="/static/file-tree.js"></script>
     <script src="/static/settings.js"></script>
     <script src="/static/file-manager.js"></script>

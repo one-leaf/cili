@@ -1309,6 +1309,30 @@ def _should_open_browser(args: argparse.Namespace) -> bool:
                 or os.environ.get("CILI_LAUNCH_RESTART"))
 
 
+def _open_url_in_browser(url: str) -> None:
+    """打开界面地址：优先手工配置的 browser_path；未配置或路径失效时现场探测
+    （Edge→Chrome，见 ``_detect_browser_path``），都没找到才回退系统默认浏览器。"""
+    try:
+        system = _load_settings_cached().get("system") or {}
+        browser_path = system.get("browser_path", "") if isinstance(system, dict) else ""
+    except Exception:
+        browser_path = ""
+    if not (browser_path and os.path.isfile(browser_path)):
+        from core.config import _detect_browser_path
+        browser_path = _detect_browser_path()
+    if browser_path and os.path.isfile(browser_path):
+        try:
+            subprocess.Popen(
+                [browser_path, url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except OSError:
+            pass
+    webbrowser.open(url)
+
+
 def _start_web_interface(args: argparse.Namespace) -> None:
     """启动 Web 接入端：自动开浏览器 + uvicorn（鉴权与端口解析已在 _resolve_web_port 完成）。"""
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
@@ -1328,7 +1352,7 @@ def _start_web_interface(args: argparse.Namespace) -> None:
         if not _should_open_browser(args):
             return
         time.sleep(2)
-        webbrowser.open(f"http://localhost:{args.port}")
+        _open_url_in_browser(f"http://localhost:{args.port}")
 
     threading.Thread(target=_open_browser, daemon=True).start()
 

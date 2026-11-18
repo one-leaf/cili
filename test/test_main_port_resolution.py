@@ -33,6 +33,70 @@ class TestAutoOpenBrowser:
         assert main_mod._should_open_browser(SimpleNamespace(no_browser=False)) is True
 
 
+class TestOpenUrlInBrowser:
+    """打开界面时优先手工配置的浏览器；没配就现场探测（Edge→Chrome），最后回退默认。"""
+
+    @staticmethod
+    def _patch_detection(monkeypatch, path):
+        import core.config as config_mod
+        monkeypatch.setattr(config_mod, "_detect_browser_path", lambda: path)
+
+    def test_prefers_configured_browser(self, monkeypatch):
+        launched = []
+        monkeypatch.setattr(
+            main_mod, "_load_settings_cached",
+            lambda: {"system": {"browser_path": __file__}},
+        )
+        self._patch_detection(monkeypatch, "")
+        monkeypatch.setattr(
+            main_mod.subprocess, "Popen",
+            lambda args, **kwargs: launched.append(args),
+        )
+        main_mod._open_url_in_browser("http://localhost:1618")
+        assert launched == [[__file__, "http://localhost:1618"]]
+
+    def test_detects_browser_when_unconfigured(self, monkeypatch):
+        launched = []
+        monkeypatch.setattr(
+            main_mod, "_load_settings_cached",
+            lambda: {"system": {"browser_path": ""}},
+        )
+        self._patch_detection(monkeypatch, __file__)
+        monkeypatch.setattr(
+            main_mod.subprocess, "Popen",
+            lambda args, **kwargs: launched.append(args),
+        )
+        main_mod._open_url_in_browser("http://localhost:1618")
+        assert launched == [[__file__, "http://localhost:1618"]]
+
+    def test_falls_back_to_default_browser(self, monkeypatch):
+        opened = []
+        monkeypatch.setattr(
+            main_mod, "_load_settings_cached",
+            lambda: {"system": {"browser_path": ""}},
+        )
+        self._patch_detection(monkeypatch, "")
+        monkeypatch.setattr(main_mod.webbrowser, "open", lambda url: opened.append(url))
+        main_mod._open_url_in_browser("http://localhost:1618")
+        assert opened == ["http://localhost:1618"]
+
+    def test_falls_back_when_launch_fails(self, monkeypatch):
+        opened = []
+
+        def _boom(args, **kwargs):
+            raise OSError("launch failed")
+
+        monkeypatch.setattr(
+            main_mod, "_load_settings_cached",
+            lambda: {"system": {"browser_path": __file__}},
+        )
+        self._patch_detection(monkeypatch, "")
+        monkeypatch.setattr(main_mod.subprocess, "Popen", _boom)
+        monkeypatch.setattr(main_mod.webbrowser, "open", lambda url: opened.append(url))
+        main_mod._open_url_in_browser("http://localhost:1618")
+        assert opened == ["http://localhost:1618"]
+
+
 class TestStartWebInterfacePortResolution:
     def test_resolved_port_reaches_args_server_info_and_uvicorn(
         self, tmp_path, monkeypatch

@@ -1683,6 +1683,8 @@ async function stopBackground() {
 
 // Send message
 async function sendMessage() {
+    // 先收尾语音转写，再读取输入框内容（未定稿的临时转写会并入正文）
+    if (window.CiliVoice) window.CiliVoice.stop();
     const message = chatInput.value.trim();
     const editorContext = getActiveEditorContext();
     const attachments = [];
