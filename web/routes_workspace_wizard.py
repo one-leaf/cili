@@ -20,6 +20,8 @@ from core.textbooks import (
 from core.textbooks.markdown_store import copy_textbook_markdown
 from core.workspace_wizard import (
     CATEGORIES,
+    CODE_LANGUAGES,
+    CODE_PROJECT_TYPES,
     LOCATIONS,
     WorkspaceWizardError,
     create_workspaces,
@@ -125,6 +127,8 @@ async def workspace_wizard_options():
     return {
         "categories": list(CATEGORIES.values()),
         "locations": _locations(),
+        "code_languages": CODE_LANGUAGES,
+        "code_project_types": CODE_PROJECT_TYPES,
         "stages": stages,
         "grades": grades,
         "textbook_editions": editions,

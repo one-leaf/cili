@@ -27,6 +27,7 @@ from core.fs_utils import atomic_write_text
 WORKSPACE_PARENT = PROJECT_ROOT / "workspace"
 DATA_ROOT = PROJECT_ROOT / "data"
 SUBJECT_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "subjects"
+CODE_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "code"
 SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
 
 CATEGORIES: dict[str, dict[str, Any]] = {
@@ -45,6 +46,11 @@ CATEGORIES: dict[str, dict[str, Any]] = {
         "name": "科研项目",
         "description": "文献、实验、写作与引用管理；生成科研工作目录。",
     },
+    "code": {
+        "id": "code",
+        "name": "编程项目",
+        "description": "先选开发语言与项目类型；生成编码准则和语言/工程约束。",
+    },
     "blank": {
         "id": "blank",
         "name": "空白项目",
@@ -58,6 +64,61 @@ LOCATIONS: list[dict[str, str]] = [
     {"id": "documents", "label": "文档目录"},
     {"id": "custom", "label": "自定义目录"},
 ]
+
+# 编程项目：语言与项目类型各选其一；id 与 templates/code 下的模板文件同名。
+CODE_LANGUAGES: list[dict[str, str]] = [
+    {"id": "python", "name": "Python"},
+    {"id": "ts", "name": "TypeScript / JavaScript"},
+    {"id": "java", "name": "Java"},
+    {"id": "csharp", "name": "C# / .NET"},
+    {"id": "go", "name": "Go"},
+    {"id": "rust", "name": "Rust"},
+    {"id": "cpp", "name": "C / C++"},
+    {"id": "php", "name": "PHP"},
+    {"id": "kotlin", "name": "Kotlin"},
+    {"id": "swift", "name": "Swift"},
+    {"id": "other", "name": "其他"},
+]
+
+CODE_PROJECT_TYPES: list[dict[str, str]] = [
+    {"id": "web-api", "name": "Web 后端（HTTP API）"},
+    {"id": "web-frontend", "name": "Web 前端"},
+    {"id": "fullstack", "name": "全栈 Web 应用"},
+    {"id": "cli", "name": "命令行工具"},
+    {"id": "desktop", "name": "桌面应用"},
+    {"id": "mobile", "name": "移动应用"},
+    {"id": "data", "name": "数据处理 / 脚本"},
+    {"id": "library", "name": "库 / SDK"},
+    {"id": "game", "name": "游戏"},
+    {"id": "other", "name": "其他 / 自定义"},
+]
+
+CODE_SCAFFOLD_DIRS: dict[str, list[str]] = {
+    "web-api": ["src", "tests", "docs"],
+    "web-frontend": ["src", "public", "tests"],
+    "fullstack": ["backend", "frontend", "docs"],
+    "cli": ["src", "tests"],
+    "desktop": ["src", "tests"],
+    "mobile": ["src", "assets"],
+    "data": ["data", "notebooks", "outputs"],
+    "library": ["src", "tests", "examples"],
+    "game": ["src", "assets"],
+}
+
+CODE_GITIGNORE: dict[str, list[str]] = {
+    "python": ["__pycache__/", "*.py[cod]", ".venv/", "venv/", ".pytest_cache/", ".ruff_cache/"],
+    "ts": ["node_modules/", "dist/", "build/", "*.log"],
+    "java": ["target/", "build/", ".gradle/", "*.class"],
+    "csharp": ["bin/", "obj/"],
+    "go": ["/bin/", "*.exe", "*.test"],
+    "rust": ["/target/"],
+    "cpp": ["build/", "*.o", "*.obj", "*.exe"],
+    "php": ["vendor/"],
+    "kotlin": ["build/", ".gradle/", "local.properties"],
+    "swift": [".build/", "DerivedData/", "*.xcuserstate"],
+}
+
+CODE_GITIGNORE_COMMON = [".env", ".DS_Store", "Thumbs.db", "desktop.ini"]
 
 def _official_catalog():
     """教材目录以数据包索引为准（内置 dataset_index.json 兜底，不访问官方缓存）。"""
@@ -301,6 +362,59 @@ def _render_study_template(profile: dict[str, Any], subject: str) -> str:
     return text
 
 
+def _code_selector(
+    options: list[dict[str, str]], value: Any
+) -> tuple[str, str]:
+    """归一化语言/类型选择，返回（模板 id，显示名）。
+
+    不在表中视为自定义名称（「其他」），用 ``other`` 通用模板。
+    """
+    text = _clean_line(value, "", 40)
+    for item in options:
+        if item["id"] == text:
+            return item["id"], item["name"]
+    return "other", text
+
+
+def _read_code_template(rel: str, fallback: str) -> str:
+    try:
+        return (CODE_TEMPLATE_DIR / rel).read_text(encoding="utf-8").strip()
+    except OSError:
+        return fallback
+
+
+def _render_code_template(profile: dict[str, Any]) -> str:
+    """编程项目 AGENTS.md 主体：概况 + 四条准则 + 语言约束 + 项目类型约束。"""
+    language_id, language_name = _code_selector(CODE_LANGUAGES, profile.get("language"))
+    type_id, type_name = _code_selector(CODE_PROJECT_TYPES, profile.get("project_type"))
+    sections = [
+        f"## 项目概况\n\n- 开发语言：{language_name}\n- 项目类型：{type_name}\n"
+        "- 工具链命令（构建、测试、格式）如与本文件不一致，以实际项目为准并同步更新本文件。",
+        _read_code_template(
+            "coding-guidelines.md",
+            "## 编码前先思考\n\n不确定时先问，摆明取舍与假设。\n\n"
+            "## 简单优先\n\n用解决问题的最少代码。\n\n"
+            "## 外科手术式修改\n\n只动必须动的。\n\n"
+            "## 目标驱动执行\n\n先定义可验证的成功标准。",
+        ),
+        _read_code_template(f"languages/{language_id}.md", ""),
+        _read_code_template(f"project-types/{type_id}.md", ""),
+    ]
+    text = "\n\n".join(part for part in sections if part)
+    return (
+        text.replace("{{language}}", language_name)
+        .replace("{{project_type}}", type_name)
+    )
+
+
+def _gitignore_text(language_id: str) -> str:
+    lines = list(CODE_GITIGNORE.get(language_id, []))
+    for item in CODE_GITIGNORE_COMMON:
+        if item not in lines:
+            lines.append(item)
+    return "\n".join(lines) + "\n"
+
+
 def _render_agents_md(
     *,
     category: str,
@@ -351,6 +465,11 @@ def _render_agents_md(
             "- 不编造文献、数据、页码；不确定的引用标注「待核实」。",
             "- 文献记录到 `文献库.md`；数据、代码、结果保持可复现分离。",
         ])
+    elif category == "code":
+        lines.extend([
+            "",
+            _render_code_template(profile),
+        ])
     else:
         lines.extend([
             "",
@@ -361,7 +480,10 @@ def _render_agents_md(
     return "\n".join(lines) + "\n"
 
 
-def _scaffold(category: str, subject: str = "") -> tuple[list[str], dict[str, str]]:
+def _scaffold(
+    category: str, subject: str = "", profile: dict[str, Any] | None = None
+) -> tuple[list[str], dict[str, str]]:
+    profile = profile or {}
     if category == "study":
         subject_dir = subject or "综合"
         dirs = [
@@ -383,6 +505,14 @@ def _scaffold(category: str, subject: str = "") -> tuple[list[str], dict[str, st
         files = {
             "文献库.md": "# 文献库\n\n| 题录 | DOI/URL | 摘要 | 标签 | 状态 |\n|---|---|---|---|---|\n",
             "研究计划.md": "# 研究计划\n\n## 问题\n\n## 方法\n\n## 里程碑\n",
+        }
+    elif category == "code":
+        type_id, _ = _code_selector(CODE_PROJECT_TYPES, profile.get("project_type"))
+        language_id, _ = _code_selector(CODE_LANGUAGES, profile.get("language"))
+        dirs = list(CODE_SCAFFOLD_DIRS.get(type_id, ["src", "tests"]))
+        files = {
+            "README.md": "# 项目说明\n\n## 运行\n\n## 测试\n",
+            ".gitignore": _gitignore_text(language_id),
         }
     else:
         dirs = []
@@ -479,6 +609,11 @@ def preview_workspaces(
     if category == "study":
         specs = _study_specs(profile, subjects)
     else:
+        if category == "code":
+            if not _clean_line(profile.get("language"), "", 40):
+                raise WorkspaceWizardError("请选择开发语言")
+            if not _clean_line(profile.get("project_type"), "", 40):
+                raise WorkspaceWizardError("请选择项目类型")
         specs = [{"subject": "", "profile": profile}]
 
     group: dict[str, str] | None = None
@@ -536,7 +671,7 @@ def preview_workspaces(
         if exists and not is_empty and not allow_existing:
             raise WorkspaceWizardError(f"目标目录已存在且非空: {directory}；请勾选「允许写入已有目录」")
 
-        scaffold_dirs, scaffold_files = _scaffold(category, subject)
+        scaffold_dirs, scaffold_files = _scaffold(category, subject, item_profile)
         workspaces.append({
             "category": category,
             "subject": subject,
@@ -570,7 +705,9 @@ def _write_initial_files(workspace_dir: Path, item: dict[str, Any], *, overwrite
         atomic_write_text(agents_path, item["agents_md"])
     for rel_dir in item["scaffold"]["dirs"]:
         (workspace_dir / rel_dir).mkdir(parents=True, exist_ok=True)
-    _, files = _scaffold(item.get("category", ""), item.get("subject", ""))
+    _, files = _scaffold(
+        item.get("category", ""), item.get("subject", ""), item.get("profile") or {},
+    )
     for rel_file, content in files.items():
         path = workspace_dir / rel_file
         if not path.exists():

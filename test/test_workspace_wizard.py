@@ -284,6 +284,65 @@ def test_create_does_not_overwrite_existing_agents(tmp_path, monkeypatch):
     assert agents.read_text(encoding="utf-8") == "# 用户已有说明\n"
 
 
+def test_preview_code_requires_language_and_type(tmp_path):
+    with pytest.raises(WorkspaceWizardError, match="开发语言"):
+        preview_workspaces(
+            category="code", base_name="小工具", location="custom",
+            custom_directory=str(tmp_path / "code"), profile={"project_type": "cli"},
+        )
+    with pytest.raises(WorkspaceWizardError, match="项目类型"):
+        preview_workspaces(
+            category="code", base_name="小工具", location="custom",
+            custom_directory=str(tmp_path / "code"), profile={"language": "python"},
+        )
+
+
+def test_preview_code_agents_md(tmp_path):
+    preview = preview_workspaces(
+        category="code", base_name="翻译工具", location="custom",
+        custom_directory=str(tmp_path / "code"),
+        profile={"language": "python", "project_type": "cli"},
+    )
+    item = preview["workspaces"][0]
+    agents = item["agents_md"]
+    # 四条编码准则 + 语言约束 + 项目类型约束均已写入，占位符已替换
+    for heading in ("编码前先思考", "简单优先", "外科手术式修改", "目标驱动执行",
+                    "语言约束（Python）", "项目类型约束（命令行工具）"):
+        assert heading in agents
+    assert "pytest" in agents
+    assert "{{" not in agents
+    assert ".gitignore" in item["scaffold"]["files"]
+    assert "src" in item["scaffold"]["dirs"]
+
+
+def test_preview_code_custom_language_falls_back(tmp_path):
+    preview = preview_workspaces(
+        category="code", base_name="小游戏", location="custom",
+        custom_directory=str(tmp_path / "game"),
+        profile={"language": "Lua", "project_type": "game"},
+    )
+    agents = preview["workspaces"][0]["agents_md"]
+    assert "语言约束（Lua）" in agents
+    # 未知语言走 other.md 通用约束
+    assert "可复现" in agents
+
+
+def test_create_code_workspace_scaffold(tmp_path, monkeypatch):
+    _use_index(tmp_path, monkeypatch)
+    result = create_workspaces(
+        category="code", base_name="小工具", location="custom",
+        custom_directory=str(tmp_path / "tools"),
+        profile={"language": "python", "project_type": "cli"},
+        git_enabled=False, new_uuid=lambda: "abcd1234",
+    )
+    workspace = Path(result["created"][0]["directory"])
+    assert (workspace / "AGENTS.md").is_file()
+    assert (workspace / "README.md").is_file()
+    assert (workspace / "src").is_dir()
+    assert (workspace / "tests").is_dir()
+    assert "__pycache__/" in (workspace / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_create_fails_without_creating_when_preview_invalid(tmp_path, monkeypatch):
     _use_index(tmp_path, monkeypatch)
     with pytest.raises(WorkspaceWizardError, match="科目"):

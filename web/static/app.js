@@ -1147,6 +1147,7 @@ function renderWizardCategories() {
         { id: 'study', name: '学习项目', description: '按科目拆分工作区。' },
         { id: 'office', name: '日常办公', description: '文档、表格、演示与归档。' },
         { id: 'research', name: '科研项目', description: '文献、实验与论文写作。' },
+        { id: 'code', name: '编程项目', description: '选语言与项目类型；生成编码准则和工程约束。' },
         { id: 'blank', name: '空白项目', description: '只创建基础工作区。' },
     ];
     const grid = document.getElementById('wizard-categories');
@@ -1236,6 +1237,11 @@ function renderWizardConfig() {
         container.innerHTML = getResearchConfigHtml();
         return;
     }
+    if (category === 'code') {
+        container.innerHTML = getCodeConfigHtml();
+        bindCodeConfigEvents();
+        return;
+    }
     container.innerHTML = '<p>空白项目无需额外配置。</p>';
 }
 
@@ -1272,6 +1278,63 @@ function getResearchConfigHtml() {
             <div class="form-group"><label>引用格式</label><select id="wizard-research-citation"><option>GB/T 7714</option><option>APA</option><option>MLA</option><option>Chicago</option><option>IEEE</option></select></div>
         </div>
     `;
+}
+
+const CODE_LANGUAGE_FALLBACK = [
+    { id: 'python', name: 'Python' }, { id: 'ts', name: 'TypeScript / JavaScript' },
+    { id: 'java', name: 'Java' }, { id: 'csharp', name: 'C# / .NET' },
+    { id: 'go', name: 'Go' }, { id: 'rust', name: 'Rust' },
+    { id: 'cpp', name: 'C / C++' }, { id: 'php', name: 'PHP' },
+    { id: 'kotlin', name: 'Kotlin' }, { id: 'swift', name: 'Swift' },
+    { id: 'other', name: '其他' },
+];
+
+const CODE_PROJECT_TYPE_FALLBACK = [
+    { id: 'web-api', name: 'Web 后端（HTTP API）' }, { id: 'web-frontend', name: 'Web 前端' },
+    { id: 'fullstack', name: '全栈 Web 应用' }, { id: 'cli', name: '命令行工具' },
+    { id: 'desktop', name: '桌面应用' }, { id: 'mobile', name: '移动应用' },
+    { id: 'data', name: '数据处理 / 脚本' }, { id: 'library', name: '库 / SDK' },
+    { id: 'game', name: '游戏' }, { id: 'other', name: '其他 / 自定义' },
+];
+
+function getCodeConfigHtml() {
+    return `
+        <div class="wizard-grid">
+            <div class="form-group"><label>开发语言</label><select id="wizard-code-language"></select></div>
+            <div class="form-group"><label>项目类型</label><select id="wizard-code-project-type"></select></div>
+        </div>
+        <div class="form-group" id="wizard-code-language-custom-group" style="display:none;">
+            <label>自定义语言名称</label><input type="text" id="wizard-code-language-custom" placeholder="例如：Dart">
+        </div>
+        <div class="form-group" id="wizard-code-type-custom-group" style="display:none;">
+            <label>自定义项目类型</label><input type="text" id="wizard-code-type-custom" placeholder="例如：浏览器插件">
+        </div>
+    `;
+}
+
+function bindCodeConfigEvents() {
+    const languageSelect = document.getElementById('wizard-code-language');
+    const typeSelect = document.getElementById('wizard-code-project-type');
+    const fill = (select, options, fallback) => {
+        select.innerHTML = '';
+        ((options && options.length) ? options : fallback).forEach(item => {
+            const option = document.createElement('option');
+            option.value = item.id;
+            option.textContent = item.name;
+            select.appendChild(option);
+        });
+    };
+    fill(languageSelect, wizardState.options?.code_languages, CODE_LANGUAGE_FALLBACK);
+    fill(typeSelect, wizardState.options?.code_project_types, CODE_PROJECT_TYPE_FALLBACK);
+    const refreshCustom = () => {
+        document.getElementById('wizard-code-language-custom-group').style.display =
+            languageSelect.value === 'other' ? '' : 'none';
+        document.getElementById('wizard-code-type-custom-group').style.display =
+            typeSelect.value === 'other' ? '' : 'none';
+    };
+    languageSelect.addEventListener('change', refreshCustom);
+    typeSelect.addEventListener('change', refreshCustom);
+    refreshCustom();
 }
 
 function editionCoversGrade(item, grade) {
@@ -1378,6 +1441,19 @@ function collectWizardProfile(strict = false) {
             direction: document.getElementById('wizard-research-direction')?.value.trim() || '',
             citation_style: document.getElementById('wizard-research-citation')?.value || 'GB/T 7714',
         };
+    }
+    if (category === 'code') {
+        const languageValue = document.getElementById('wizard-code-language')?.value || '';
+        const typeValue = document.getElementById('wizard-code-project-type')?.value || '';
+        const language = languageValue === 'other'
+            ? (document.getElementById('wizard-code-language-custom')?.value.trim() || 'other')
+            : languageValue;
+        const project_type = typeValue === 'other'
+            ? (document.getElementById('wizard-code-type-custom')?.value.trim() || 'other')
+            : typeValue;
+        if (strict && !language) throw new Error('请选择开发语言');
+        if (strict && !project_type) throw new Error('请选择项目类型');
+        return { language, project_type };
     }
     return {};
 }
