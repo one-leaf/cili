@@ -12,14 +12,13 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
 
 from core.browser_service import get_service
 from core.textbooks.smartedu import (
     SmartEduCredentials,
-    load_credentials,
     save_credentials,
 )
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +67,7 @@ def login_status() -> dict:
         return dict(_state)
 
 
-def credentials_ready() -> bool:
-    return load_credentials().complete
-
-
-def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+_now = now_str
 
 
 def _capture_from_output(output: str) -> dict | None:

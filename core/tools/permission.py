@@ -42,8 +42,6 @@ def _risk_label(risk: str) -> str:
 def _target_label(kind: str) -> str:
     if kind == "browser:navigate":
         return "地址"
-    if kind == "path:read":
-        return "路径"
     if kind.startswith("path:"):
         return "路径"
     return "操作"

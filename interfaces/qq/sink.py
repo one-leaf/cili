@@ -32,6 +32,7 @@ from typing import Any
 
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
+from interfaces.common.ask_user import render_questions
 from interfaces.qq import rawapi
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.sanitize import sanitize_qq_text
@@ -174,8 +175,6 @@ class QQSink:
         self._buffer = ""              # 累积 transcript（唯一真相）
         self._last_tool_line: str | None = None
         self._lock = threading.Lock()
-        self._pending_text = ""        # 收尾降级用
-        self._turned_complete = False
 
     # ── OutputSink 回调 ─────────────────────────────────────────────
 
@@ -209,7 +208,7 @@ class QQSink:
 
         if tool_name == "ask_user":
             # 交互提示折进流尾部（省 1 次被动回复配额），而不是另发一条消息
-            block = self._render_questions(tool_input)
+            block = render_questions(tool_input)
             if block:
                 with self._lock:
                     self._buffer += block
@@ -239,7 +238,6 @@ class QQSink:
     def on_turn_complete(self) -> None:
         """回合收尾：关流 + 降级兜底 + 通知全局流。"""
         with self._lock:
-            self._turned_complete = True
             pending = self._buffer
         self._controller.finish()
         self._target.close()
@@ -265,31 +263,6 @@ class QQSink:
         )
 
     # ── 内部 ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _render_questions(tool_input: dict) -> str:
-        """把 ask_user 的 questions 渲染成编号 markdown（用户回 "1"/"2" 即可）。"""
-        questions = (tool_input or {}).get("questions") or []
-        if not questions:
-            return ""
-        single = len(questions) == 1
-        lines = ["", "---", ""]
-        for qi, q in enumerate(questions, start=1):
-            text = q.get("question") or ""
-            lines.append(f"**{text}**" if single else f"**{qi}. {text}**")
-            options = q.get("options") or []
-            for oi, opt in enumerate(options, start=1):
-                label = opt.get("label") or ""
-                desc = opt.get("description") or ""
-                lines.append(f"{oi}. {label} — {desc}" if desc else f"{oi}. {label}")
-            lines.append("")
-        if single:
-            lines.append("_回复序号即可（如 `1`），也可直接输入其他内容。_")
-        else:
-            # 多问题时编号在每个问题内重新开始，单个数字有歧义——让用户按
-            # 「问题序号: 选项」回答，inbound 侧只在单问题时才自动映射。
-            lines.append("_请按 `问题序号: 选项序号` 回复（如 `1: 2`），也可直接输入其他内容。_")
-        return "\n".join(lines) + "\n"
 
     def _fallback_static(self, text: str) -> None:
         """流式不可用时的兜底：用 SDK 的 send_text 发普通消息。

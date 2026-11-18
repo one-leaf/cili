@@ -83,7 +83,6 @@ class QQGateway:
         self._app_id = app_id
         self._parser = EventParser() if SDK_AVAILABLE else None
         self._session_store = None
-        self._heartbeat_interval = 0.0
 
     # ── 生命周期（都在宿主 loop 上跑）────────────────────────────────
 
@@ -157,7 +156,8 @@ class QQGateway:
             store.save(app_id, session_id or "", seq)
 
         def set_heartbeat_interval(interval: float) -> None:
-            self._heartbeat_interval = float(interval or 0.0)
+            # SDK 要求提供回调；心跳间隔由 SDK 内部管理，无需保存
+            pass
 
         def fail_pending(reason: str) -> None:
             # 我们不做按钮交互，没有待决 future；仅记录（签名要求必填）

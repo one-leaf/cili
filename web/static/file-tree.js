@@ -1,5 +1,5 @@
 // ── file-tree.js ── 工作区文件树（VS Code 风格）+ 右侧只读预览面板
-// 依赖 utils.js：getFileIcon / formatFileSize / renderMarkdown / showToast
+// 依赖 utils.js：getFileIcon / renderMarkdown / showToast / escapeHtml（文件大小格式化在本文件内）
 // 由 app.js 在切换工作区后调用 FileTree.setWorkspace(currentWorkspace | null)
 
 const FileTree = (() => {

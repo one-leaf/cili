@@ -20,6 +20,7 @@ from core.multimodal import build_user_input
 from core.outbox import drain_files, record_delivery_notice
 from core.session_registry import registry, session_key
 from core.turn_dispatch import execute_turn, prepare_turn
+from interfaces.common.ask_user import resolve_answer
 from interfaces.qq import commands, media
 from interfaces.qq.access import OwnerTracker
 from interfaces.qq.attachment import InboundMedia, process_attachments
@@ -203,38 +204,13 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(runner, openid, msg_id, key)
-
-    # ── 入参构造 ────────────────────────────────────────────────────
+        await self._send_outbox_files(runner, openid, msg_id, key, workspace_dir)
 
     # ── 入参构造 ────────────────────────────────────────────────────
 
     @staticmethod
     def _resolve_answer(runner, content: str) -> str:
-        """ask_user 用编号文本渲染；用户回 "1" 时映射回选项 label。
-
-        审批卡的三档中文 label 也走这条路——``inject_ask_user_answer`` 靠
-        ``endswith(APPROVE_LABEL/REMEMBER_LABEL)`` 判定，所以必须先还原成 label。
-
-        **只在「恰好一个问题」时做映射**：多问题时编号在每个问题内重新开始，
-        单个数字是歧义的——与其猜错，不如原样透传（模型会看到用户就回了 "1"，
-        可以据此再问一次）。
-        """
-        if not content or not content.strip().isdigit():
-            return content
-        from core.tools.ask_user import find_pending_ask_user
-
-        pending = find_pending_ask_user(runner.session)
-        if not pending:
-            return content
-        questions = _questions_of(runner.session, pending)
-        if len(questions) != 1:
-            return content
-        idx = int(content.strip()) - 1
-        options = questions[0].get("options") or []
-        if 0 <= idx < len(options):
-            return str(options[idx].get("label") or content)
-        return content
+        return resolve_answer(runner, content)
 
     # ── 出站辅助 ────────────────────────────────────────────────────
 
@@ -253,7 +229,9 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[qq/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(self, runner, openid: str, msg_id: str, key: str) -> None:
+    async def _send_outbox_files(
+        self, runner, openid: str, msg_id: str, key: str, workspace_root: str = ""
+    ) -> None:
         """回合末取走 ``send_user_file`` 登记的文件并发送。
 
         受 ``max_outbound_files`` 与被动回复剩余配额双重限制——一条用户消息只有
@@ -295,7 +273,7 @@ class InboundHandler:
             try:
                 await media.send_user_file(
                     self._rt.api, self._rt.uploader, openid, f.path,
-                    msg_id=msg_id, note=f.note,
+                    msg_id=msg_id, note=f.note, workspace_root=workspace_root or None,
                 )
                 self._rt.limiter.record(msg_id)
                 sent.append(f.path)
@@ -322,17 +300,3 @@ def _bind_default_sink(runner, workspace_uuid: str, session_id: str) -> None:
     from core.default_sink import bind_default_sink
 
     bind_default_sink(runner, workspace_uuid, session_id)
-
-
-def _questions_of(session, tool_use_id: str) -> list[dict]:
-    """从会话里取某个 ask_user 工具调用的 questions。"""
-    for msg in session.messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == tool_use_id:
-                return list((block.get("input") or {}).get("questions") or [])
-    return []

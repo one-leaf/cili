@@ -92,10 +92,10 @@ class TestDecisionId:
 
     def test_dynamic_stable(self, tmp_path):
         p = self._policy(tmp_path)
-        a = p.decision_id(PathTarget(OP_DELETE, "$DIR/x", dynamic=True))
-        b = p.decision_id(PathTarget(OP_DELETE, "$DIR/x", dynamic=True))
+        a = p.decision_id(PathTarget(OP_DELETE, "$DIR/x"))
+        b = p.decision_id(PathTarget(OP_DELETE, "$DIR/x"))
         assert a == b
-        assert a != p.decision_id(PathTarget(OP_DELETE, "$DIR/y", dynamic=True))
+        assert a != p.decision_id(PathTarget(OP_DELETE, "$DIR/y"))
 
 
 class TestStatus:
@@ -126,12 +126,12 @@ class TestStatus:
 
     def test_dynamic_needs_approval(self, tmp_path):
         p = self._policy(tmp_path, PermissionStore())
-        t = PathTarget(OP_DELETE, "rm build/*", op_name="rm", dynamic=True)
+        t = PathTarget(OP_DELETE, "rm build/*", op_name="rm")
         assert p.status(t) == "needs_approval"
 
     def test_dynamic_deny_without_store(self, tmp_path):
         p = self._policy(tmp_path)
-        t = PathTarget(OP_DELETE, "rm $DIR/x", op_name="rm", dynamic=True)
+        t = PathTarget(OP_DELETE, "rm $DIR/x", op_name="rm")
         assert p.status(t) == "deny"
 
 
@@ -209,7 +209,7 @@ class TestApprovalMeta:
 
     def test_dynamic_reason_notes_unresolvable(self, tmp_path):
         p = self._policy(tmp_path)
-        t = PathTarget(OP_DELETE, "$DIR/x", op_name="rm", dynamic=True)
+        t = PathTarget(OP_DELETE, "$DIR/x", op_name="rm")
         meta = p.permission_meta(t)
         assert meta["kind"] == "path:delete"
         assert meta["command"] == "$DIR/x"

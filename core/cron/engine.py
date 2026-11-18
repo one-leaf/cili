@@ -420,32 +420,6 @@ class CronEngine:
         self._submit(dispatch)
         return True
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        with self._lock:
-            items = list(self._jobs.values())
-        result: list[dict[str, Any]] = []
-        for loaded in items:
-            item = loaded.job.to_dict()
-            item["state"] = {
-                "next_run": loaded.state.next_run,
-                "last_run": loaded.state.last_run,
-                "last_status": loaded.state.last_status,
-                "last_error": loaded.state.last_error,
-                "run_count": loaded.state.run_count,
-                "remaining": loaded.state.remaining,
-                "running": loaded.state.running,
-                "missed_count": loaded.state.missed_count,
-                "last_delivery": loaded.state.last_delivery,
-            }
-            item["schedule_summary"] = rules.schedule_summary(loaded.job)
-            result.append(item)
-        result.sort(key=lambda item: (item.get("workspace_uuid") or "", item["id"]))
-        return result
-
-    def get_task(self, workspace_uuid: str, job_id: str) -> LoadedJob | None:
-        with self._lock:
-            return self._jobs.get((workspace_uuid, job_id))
-
     def history(self, workspace_uuid: str, job_id: str, limit: int = 20) -> list[dict[str, Any]]:
         state = store.load_state(workspace_uuid, job_id)
         return state.history[: max(1, min(int(limit), 100))]
@@ -453,9 +427,6 @@ class CronEngine:
     def any_running(self) -> bool:
         with self._lock:
             return any(item.state.running for item in self._jobs.values()) or executor.any_running()
-
-    def wake(self) -> None:
-        self._wake.set()
 
 
 _engine: CronEngine | None = None

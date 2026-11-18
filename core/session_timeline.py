@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.session import MESSAGES_FILE, _message_from_line, read_jsonl, read_meta
+from core.text_extract import message_text
 from core.untrusted import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 _SNIPPET_MAX = 200
@@ -41,19 +42,7 @@ def _clip(text: str, limit: int = _SNIPPET_MAX) -> str:
 
 
 def _text_from_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "text":
-            parts.append(str(block.get("text") or ""))
-        elif block.get("type") == "image":
-            parts.append("[图片]")
-    return "\n".join(part for part in parts if part)
+    return message_text(content, image_placeholder="[图片]", strip=False)
 
 
 def _blocks(content: Any) -> list[dict[str, Any]]:

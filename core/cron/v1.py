@@ -104,8 +104,3 @@ def convert_state(workspace_uuid: str, job: Job) -> State:
     )
 
 
-def load_legacy_state_file(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    data = load_json_or_backup(path, None)
-    return data if isinstance(data, dict) else None

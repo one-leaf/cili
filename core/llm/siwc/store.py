@@ -59,10 +59,6 @@ def account_id(client_id: str, sub: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def credential_for(client_id: str, sub: str) -> str:
-    return const.CREDENTIAL_PREFIX + account_id(client_id, sub)
-
-
 def _strip(credential: str) -> str:
     value = (credential or "").strip()
     if value.startswith(const.CREDENTIAL_PREFIX):

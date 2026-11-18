@@ -76,7 +76,7 @@ def _is_transient(exc: BaseException) -> bool:
 
 # ── MCP inputSchema 归一化（JSON Schema → 模型 API 兼容）──────────────────
 
-def _extract_nullable_branch(options: Any) -> tuple[dict[str, Any], bool] | None:
+def _extract_nullable_branch(options: Any) -> dict[str, Any] | None:
     """返回 nullable union 的唯一非 null 分支。"""
     if not isinstance(options, list):
         return None
@@ -90,7 +90,7 @@ def _extract_nullable_branch(options: Any) -> tuple[dict[str, Any], bool] | None
             continue
         non_null.append(option)
     if saw_null and len(non_null) == 1:
-        return non_null[0], True
+        return non_null[0]
     return None
 
 
@@ -177,9 +177,8 @@ def _normalize_nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
             normalized["nullable"] = True
 
     for key in ("oneOf", "anyOf"):
-        nullable_branch = _extract_nullable_branch(normalized.get(key))
-        if nullable_branch is not None:
-            branch, _ = nullable_branch
+        branch = _extract_nullable_branch(normalized.get(key))
+        if branch is not None:
             merged = {k: v for k, v in normalized.items() if k != key}
             merged.update(branch)
             normalized = merged

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from core.text_extract import message_text
+
 HANDOFF_TEMPLATE = """请把上面的对话压缩成一份交接文档，供一个新的 Agent 接手继续执行。
 只输出结构化内容，不要附上原始对话或额外解释。用中文输出。
 每节用简短条目；没有内容的写「无」。
@@ -57,22 +59,11 @@ def build_handoff_document(next_steps: str, reason: str = "") -> str:
     return doc.replace("{reason}", (reason or "无").strip())
 
 
-build_handoff_instruction = build_handoff_document
-
-
 def user_input_text(user_input: Any) -> str:
     """Extract plain text from a string or multimodal block list."""
-    if isinstance(user_input, str):
-        return user_input.strip()
-    if isinstance(user_input, list):
-        parts: list[str] = []
-        for block in user_input:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                if text:
-                    parts.append(str(text))
-        return "\n".join(parts).strip()
-    return ""
+    if not isinstance(user_input, (str, list)):
+        return ""
+    return message_text(user_input)
 
 
 def default_branch_name(

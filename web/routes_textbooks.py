@@ -1,8 +1,8 @@
 """官方教材目录查询与下载路由域。
 
 目录来自国家中小学智慧教育平台（``core.textbooks.smartedu``，内存 + 磁盘缓存
-24 小时）。下载需要平台登录凭据：缺失时会自动打开浏览器引导手机号登录
-（``smartedu_login``），抓取凭据后写入缓存目录长期生效。
+24 小时），下载任务由 ``core.textbooks.downloader`` 执行。浏览器登录捕获模块
+（``core.textbooks.smartedu_login``）暂未接入路由，凭据需预先写入缓存目录。
 """
 
 from __future__ import annotations

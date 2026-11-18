@@ -286,6 +286,19 @@ def start_agent_mailbox() -> AgentMailbox:
     return get_agent_mailbox()
 
 
+def register_agent_alias(name: str, session_id: str) -> None:
+    """把一个显示名/任务 ID 注册为会话邮箱的别名。"""
+    get_agent_mailbox().register_agent(name, session_id)
+
+
+def unregister_session_agents(session_id: str) -> None:
+    """注销会话下的所有别名并移除邮箱（幂等：会话不存在也不报错）。"""
+    bus = get_agent_mailbox()
+    for name in bus.get_session_agents(session_id):
+        bus.unregister_agent(name)
+    bus.unregister_session(session_id)
+
+
 def stop_agent_mailbox() -> None:
     """Clean up the global AgentMailbox."""
     global _agent_mailbox

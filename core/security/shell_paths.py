@@ -84,7 +84,6 @@ _PWSH_ALIASES = {
 
 _CD_CMDS = {"cd", "pushd", "set-location", "sl", "push-location"}
 _CD_RESTORE = {"popd", "pop-location"}
-_CD_CMDS |= _CD_CMDS  # noqa: PLW0127 保持显式
 
 _DEV_NULLISH = ("/dev/null", "/dev/tty", "/dev/stdout", "/dev/stderr", "nul", "con", "com1", "lpt1")
 _GIT_BASH_DRIVE = re.compile(r"^/([a-zA-Z])/(.*)$")
@@ -287,7 +286,7 @@ def _make_target(op: str, tok: _Tok, op_name: str, cur: str, cwd_unknown: bool,
         if env_resolved is not None:
             return PathTarget(op, tok.text, op_name=op_name, resolved=env_resolved)
     if tok.dynamic or (cwd_unknown and not os.path.isabs(tok.text)):
-        return PathTarget(op, tok.text, op_name=op_name, dynamic=True)
+        return PathTarget(op, tok.text, op_name=op_name)
     return PathTarget(op, tok.text, op_name=op_name,
                       resolved=normalize_shell_path(tok.text, cur, mode))
 
@@ -429,7 +428,7 @@ def _redirect_targets(tokens: list[_Tok], cmd: str, cur: str, cwd_unknown: bool,
     return targets
 
 
-def _cd_target(tokens: list[_Tok], mode: str) -> _Tok | None:
+def _cd_target(tokens: list[_Tok]) -> _Tok | None:
     for tok in tokens:
         if tok.kind != "word":
             continue
@@ -459,7 +458,7 @@ def extract_shell_targets(command: str, mode: str, cwd: str, initial_dir: str) -
             continue
         cmd = tokens[0].text.lower()
         if cmd in _CD_CMDS:
-            target = _cd_target(tokens[1:], mode)
+            target = _cd_target(tokens[1:])
             if target is None:
                 continue
             if target.dynamic:

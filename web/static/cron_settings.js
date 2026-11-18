@@ -9,21 +9,8 @@
     bound: false,
   };
 
-  function $(id) {
-    return document.getElementById(id);
-  }
-
-  function esc(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
   function setStatus(text, type) {
-    const el = $('cron-status');
+    const el = byId('cron-status');
     if (!el) return;
     el.textContent = text || '';
     el.className = 'settings-status' + (type ? ' ' + type : '');
@@ -60,14 +47,14 @@
       const data = await api('/api/workspaces/' + encodeURIComponent(state.workspaceUuid) + '/cron/jobs');
       state.jobs = data.jobs || [];
       render();
-      if ($('cron-status').textContent === loadingText) setStatus('');
+      if (byId('cron-status').textContent === loadingText) setStatus('');
     } catch (error) {
       setStatus('✗ 加载失败: ' + error.message, 'error');
     }
   }
 
   function render() {
-    const list = $('cron-task-list');
+    const list = byId('cron-task-list');
     if (!list) return;
     if (!state.jobs.length) {
       list.innerHTML = '<div class="cron-empty">暂无定时任务</div>';
@@ -78,7 +65,7 @@
 
   function renderCard(item) {
     const s = item.state || {};
-    const key = esc(jobKey(item));
+    const key = escapeHtml(jobKey(item));
     const managed = !!item.managed;
     const badges = [];
     if (managed) {
@@ -113,17 +100,17 @@
     return '' +
       '<div class="cron-card" data-key="' + key + '">' +
         '<div class="cron-card-head">' +
-          '<span class="cron-name">' + esc(item.name || item.id) + '</span>' +
+          '<span class="cron-name">' + escapeHtml(item.name || item.id) + '</span>' +
           badges.join('') +
         '</div>' +
-        (item.description ? '<div class="cron-desc">' + esc(item.description) + '</div>' : '') +
-        '<div class="cron-meta">' + esc(item.schedule_summary || '') + '</div>' +
-        '<div class="cron-meta">下次：' + esc(s.next_run || '-') +
-          ' · 上次：' + esc(s.last_status || '-') +
-          (s.last_run ? ' (' + esc(s.last_run) + ')' : '') +
-          ' · 投递：' + esc((item.delivery || {}).mode || 'none') +
+        (item.description ? '<div class="cron-desc">' + escapeHtml(item.description) + '</div>' : '') +
+        '<div class="cron-meta">' + escapeHtml(item.schedule_summary || '') + '</div>' +
+        '<div class="cron-meta">下次：' + escapeHtml(s.next_run || '-') +
+          ' · 上次：' + escapeHtml(s.last_status || '-') +
+          (s.last_run ? ' (' + escapeHtml(s.last_run) + ')' : '') +
+          ' · 投递：' + escapeHtml((item.delivery || {}).mode || 'none') +
         '</div>' +
-        (taskText ? '<div class="cron-task-text">' + esc(taskText) + '</div>' : '') +
+        (taskText ? '<div class="cron-task-text">' + escapeHtml(taskText) + '</div>' : '') +
         '<div class="cron-actions">' + actions.join('') + '</div>' +
         '<div class="cron-history" style="display:none;"></div>' +
       '</div>';
@@ -183,11 +170,11 @@
       } else {
         panel.innerHTML = records.map(function (r) {
           return '<div class="cron-history-row">' +
-            '<span>' + esc(r.slot || '-') + '</span>' +
-            '<span>' + esc(r.status || '-') + '</span>' +
-            '<span>' + esc(r.duration_ms == null ? '-' : r.duration_ms + 'ms') + '</span>' +
-            '<span>' + esc(r.delivery || '-') + '</span>' +
-            (r.error ? '<span class="cron-history-error">' + esc(r.error) + '</span>' : '') +
+            '<span>' + escapeHtml(r.slot || '-') + '</span>' +
+            '<span>' + escapeHtml(r.status || '-') + '</span>' +
+            '<span>' + escapeHtml(r.duration_ms == null ? '-' : r.duration_ms + 'ms') + '</span>' +
+            '<span>' + escapeHtml(r.delivery || '-') + '</span>' +
+            (r.error ? '<span class="cron-history-error">' + escapeHtml(r.error) + '</span>' : '') +
             '</div>';
         }).join('');
       }
@@ -199,65 +186,65 @@
   }
 
   function currentType() {
-    return $('cron-schedule-type').value;
+    return byId('cron-schedule-type').value;
   }
 
   function syncScheduleFields() {
     const type = currentType();
-    $('cron-fields-interval').style.display = type === 'interval' ? '' : 'none';
-    $('cron-fields-cron').style.display = type === 'cron' ? '' : 'none';
-    $('cron-fields-at').style.display = type === 'at' ? '' : 'none';
+    byId('cron-fields-interval').style.display = type === 'interval' ? '' : 'none';
+    byId('cron-fields-cron').style.display = type === 'cron' ? '' : 'none';
+    byId('cron-fields-at').style.display = type === 'at' ? '' : 'none';
   }
 
   function syncDeliveryFields() {
-    const mode = $('cron-delivery-mode').value;
-    $('cron-delivery-session-fields').style.display = mode === 'session' ? '' : 'none';
+    const mode = byId('cron-delivery-mode').value;
+    byId('cron-delivery-session-fields').style.display = mode === 'session' ? '' : 'none';
   }
 
   function openForm(item) {
     state.editingKey = item ? jobKey(item) : '';
-    $('cron-form-title').textContent = item ? '编辑定时任务' : '新建定时任务';
-    $('cron-form-key').value = state.editingKey;
-    $('cron-name').value = item ? (item.name || '') : '';
-    $('cron-name').disabled = !!item;
-    $('cron-description').value = item ? (item.description || '') : '';
+    byId('cron-form-title').textContent = item ? '编辑定时任务' : '新建定时任务';
+    byId('cron-form-key').value = state.editingKey;
+    byId('cron-name').value = item ? (item.name || '') : '';
+    byId('cron-name').disabled = !!item;
+    byId('cron-description').value = item ? (item.description || '') : '';
 
     const schedule = (item && item.schedule) || { type: 'interval', minutes: 60 };
-    $('cron-schedule-type').value = schedule.type || 'interval';
-    $('cron-interval-minutes').value = schedule.minutes || 60;
-    $('cron-initial-delay').value = schedule.initial_delay_minutes || '';
-    $('cron-expr').value = schedule.expr || '';
-    $('cron-timezone').value = schedule.timezone || '';
-    $('cron-at-time').value = schedule.time || '';
+    byId('cron-schedule-type').value = schedule.type || 'interval';
+    byId('cron-interval-minutes').value = schedule.minutes || 60;
+    byId('cron-initial-delay').value = schedule.initial_delay_minutes || '';
+    byId('cron-expr').value = schedule.expr || '';
+    byId('cron-timezone').value = schedule.timezone || '';
+    byId('cron-at-time').value = schedule.time || '';
 
     const content = (item && item.content) || {};
-    $('cron-task').value = content.task || '';
-    $('cron-plan').value = (content.plan || []).join('\n');
+    byId('cron-task').value = content.task || '';
+    byId('cron-plan').value = (content.plan || []).join('\n');
 
     const delivery = (item && item.delivery) || { mode: 'none' };
-    $('cron-delivery-mode').value = delivery.mode || 'none';
-    $('cron-delivery-ws').value = delivery.workspace_uuid || '';
-    $('cron-delivery-session').value = delivery.session_id || '';
+    byId('cron-delivery-mode').value = delivery.mode || 'none';
+    byId('cron-delivery-ws').value = delivery.workspace_uuid || '';
+    byId('cron-delivery-session').value = delivery.session_id || '';
 
-    $('cron-one-time').checked = item ? !!item.one_time : true;
-    $('cron-max-executions').value = (item && item.execution && item.execution.max_executions) || 9999;
-    $('cron-timeout').value = (item && item.execution && item.execution.timeout_seconds != null)
+    byId('cron-one-time').checked = item ? !!item.one_time : true;
+    byId('cron-max-executions').value = (item && item.execution && item.execution.max_executions) || 9999;
+    byId('cron-timeout').value = (item && item.execution && item.execution.timeout_seconds != null)
       ? item.execution.timeout_seconds : 900;
 
     syncScheduleFields();
     syncDeliveryFields();
-    const listCard = $('cron-list-card');
+    const listCard = byId('cron-list-card');
     if (listCard) listCard.style.display = 'none';
-    $('cron-form').style.display = 'block';
-    $('cron-form').scrollTop = 0;
+    byId('cron-form').style.display = 'block';
+    byId('cron-form').scrollTop = 0;
   }
 
   function closeForm() {
     state.editingKey = '';
-    $('cron-form').style.display = 'none';
-    const listCard = $('cron-list-card');
+    byId('cron-form').style.display = 'none';
+    const listCard = byId('cron-list-card');
     if (listCard) listCard.style.display = '';
-    $('cron-task-list').style.display = '';
+    byId('cron-task-list').style.display = '';
   }
 
   function buildSchedule() {
@@ -265,40 +252,40 @@
     if (type === 'interval') {
       const schedule = {
         type: 'interval',
-        minutes: parseInt($('cron-interval-minutes').value, 10) || 60,
+        minutes: parseInt(byId('cron-interval-minutes').value, 10) || 60,
       };
-      const delay = parseInt($('cron-initial-delay').value, 10);
+      const delay = parseInt(byId('cron-initial-delay').value, 10);
       if (delay > 0) schedule.initial_delay_minutes = delay;
       return schedule;
     }
     if (type === 'cron') {
-      const schedule = { type: 'cron', expr: $('cron-expr').value.trim() };
-      const tz = $('cron-timezone').value.trim();
+      const schedule = { type: 'cron', expr: byId('cron-expr').value.trim() };
+      const tz = byId('cron-timezone').value.trim();
       if (tz) schedule.timezone = tz;
       return schedule;
     }
-    const schedule = { type: 'at', time: $('cron-at-time').value.trim() };
-    const tz = $('cron-timezone').value.trim();
+    const schedule = { type: 'at', time: byId('cron-at-time').value.trim() };
+    const tz = byId('cron-timezone').value.trim();
     if (tz) schedule.timezone = tz;
     return schedule;
   }
 
   async function save() {
-    const name = $('cron-name').value.trim();
+    const name = byId('cron-name').value.trim();
     if (!name) {
       setStatus('名称不能为空', 'error');
       return;
     }
-    const task = $('cron-task').value.trim();
+    const task = byId('cron-task').value.trim();
     if (!task) {
       setStatus('任务描述不能为空', 'error');
       return;
     }
-    const mode = $('cron-delivery-mode').value;
+    const mode = byId('cron-delivery-mode').value;
     const delivery = { mode: mode };
     if (mode === 'session') {
-      delivery.workspace_uuid = $('cron-delivery-ws').value.trim() || state.workspaceUuid;
-      delivery.session_id = $('cron-delivery-session').value.trim();
+      delivery.workspace_uuid = byId('cron-delivery-ws').value.trim() || state.workspaceUuid;
+      delivery.session_id = byId('cron-delivery-session').value.trim();
       if (!delivery.session_id) {
         setStatus('指定会话时必须填写会话 ID', 'error');
         return;
@@ -307,17 +294,17 @@
 
     const payload = {
       name: name,
-      description: $('cron-description').value.trim(),
+      description: byId('cron-description').value.trim(),
       schedule: buildSchedule(),
       content: {
         task: task,
-        plan: $('cron-plan').value.split('\n').map((line) => line.trim()).filter(Boolean),
+        plan: byId('cron-plan').value.split('\n').map((line) => line.trim()).filter(Boolean),
       },
       delivery: delivery,
-      one_time: $('cron-one-time').checked,
+      one_time: byId('cron-one-time').checked,
       execution: {
-        max_executions: parseInt($('cron-max-executions').value, 10) || 9999,
-        timeout_seconds: parseInt($('cron-timeout').value, 10),
+        max_executions: parseInt(byId('cron-max-executions').value, 10) || 9999,
+        timeout_seconds: parseInt(byId('cron-timeout').value, 10),
       },
     };
     if (isNaN(payload.execution.timeout_seconds) || payload.execution.timeout_seconds < 0) {
@@ -364,28 +351,28 @@
   function bind() {
     if (state.bound) return;
     state.bound = true;
-    $('cron-new-btn').addEventListener('click', function () {
+    byId('cron-new-btn').addEventListener('click', function () {
       openForm(null);
     });
-    $('cron-refresh-btn').addEventListener('click', load);
-    $('cron-task-list').addEventListener('click', onAction);
-    $('cron-task-list').addEventListener('change', function (event) {
+    byId('cron-refresh-btn').addEventListener('click', load);
+    byId('cron-task-list').addEventListener('click', onAction);
+    byId('cron-task-list').addEventListener('change', function (event) {
       if (event.target && event.target.getAttribute('data-action') === 'toggle') {
         onAction(event);
       }
     });
-    $('cron-schedule-type').addEventListener('change', syncScheduleFields);
-    $('cron-delivery-mode').addEventListener('change', syncDeliveryFields);
-    $('cron-save-btn').addEventListener('click', save);
-    $('cron-cancel-btn').addEventListener('click', closeForm);
+    byId('cron-schedule-type').addEventListener('change', syncScheduleFields);
+    byId('cron-delivery-mode').addEventListener('change', syncDeliveryFields);
+    byId('cron-save-btn').addEventListener('click', save);
+    byId('cron-cancel-btn').addEventListener('click', closeForm);
   }
 
   window.CronSettings = {
     init: function (workspaceUuid) {
       bind();
-      $('cron-form').style.display = 'none';
-      $('cron-task-list').style.display = '';
-      const listCard = $('cron-list-card');
+      byId('cron-form').style.display = 'none';
+      byId('cron-task-list').style.display = '';
+      const listCard = byId('cron-list-card');
       if (listCard) listCard.style.display = '';
       state.workspaceUuid = workspaceUuid || '';
       load();

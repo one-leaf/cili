@@ -85,10 +85,6 @@ class StreamSession:
     def stream_msg_id(self) -> str | None:
         return self._stream_msg_id
 
-    @property
-    def is_open(self) -> bool:
-        return self._stream_msg_id is not None
-
     async def send(self, text: str, *, final: bool = False) -> None:
         """推一片。``text`` 必须是**累积全文**，且以已下发内容为前缀。"""
         from qqbot_agent_sdk.api_client import Route  # 未从包 __init__ 导出

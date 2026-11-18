@@ -1058,11 +1058,6 @@ def get_workspace_tools_dir(workspace_uuid: str) -> Path:
     return get_workspace_data_dir(workspace_uuid) / "tools"
 
 
-def get_workspace_cron_dir(workspace_uuid: str) -> Path:
-    """Get the cron data directory for a workspace: {workspace}/.cili/cron.d/."""
-    return get_workspace_data_dir(workspace_uuid) / "cron.d"
-
-
 def get_all_workspace_uuids() -> list[str]:
     """Get all workspace UUIDs including 'system'."""
     uuids = ["system"]

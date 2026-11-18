@@ -15,11 +15,13 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from core.fs_utils import atomic_write_text
+from core.time_utils import TS_FORMAT, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,6 @@ ARCHIVE_AFTER_DAYS = 90
 INDEX_MAX_LINES = 200
 INDEX_MAX_BYTES = 25 * 1024
 
-TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 _EPOCH = datetime(1970, 1, 1, 0, 0, 0)
 
 _FM_ORDER = ("type", "name", "title", "description", "tags", "source", "refs",
@@ -62,10 +63,6 @@ def _dir_lock(memory_dir: str) -> threading.Lock:
 
 
 # ── 时间与格式化 ──────────────────────────────────────
-
-def now_str() -> str:
-    return datetime.now().strftime(TS_FORMAT)
-
 
 def parse_ts(value: Any) -> datetime:
     """解析 frontmatter 时间戳；解析失败返回 epoch。"""
@@ -263,15 +260,12 @@ class MemoryStore:
         return fm, body
 
     def _save_file(self, path: Path, fm: dict, body: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
         content = "\n".join(serialize_frontmatter(fm))
         if body:
             content += "\n\n" + body
         if not content.endswith("\n"):
             content += "\n"
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_write_text(path, content)
 
     def _locate(self, name: str) -> tuple[Path, dict, str] | None:
         """按 name 在 entries/ 与 archive/ 全类型下定位条目，返回 (path, fm, body)。"""
@@ -675,16 +669,7 @@ class MemoryStore:
             lines = lines[:INDEX_MAX_LINES]
         while len("\n".join(lines).encode("utf-8")) > INDEX_MAX_BYTES and len(lines) > 5:
             lines.pop()
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        # 原子写入：先写同目录临时文件再 os.replace，避免崩溃留下半写索引。
-        # 与 Journal._write_cursor 的 tmp + replace 模式一致。
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8",
-            dir=self.index_path.parent, delete=False, suffix=".tmp"
-        ) as tmp:
-            tmp.write("\n".join(lines) + "\n")
-            tmp_path = tmp.name
-        os.replace(tmp_path, self.index_path)
+        atomic_write_text(self.index_path, "\n".join(lines) + "\n")
 
 
 # ── Journal（摄入日志 + 游标）─────────────────────────
@@ -715,10 +700,7 @@ class Journal:
             return 0
 
     def _write_cursor(self, value: int) -> None:
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.cursor_path.with_name(".cursor.tmp")
-        tmp.write_text(str(value), encoding="utf-8")
-        os.replace(tmp, self.cursor_path)
+        atomic_write_text(self.cursor_path, str(value))
 
     def advance(self, to_cursor: int) -> int:
         """单调推进游标（不后退）。返回新游标。"""
@@ -820,11 +802,10 @@ class Journal:
             keep_records = sorted(pending + processed[-keep:], key=lambda r: int(r.get("cursor", 0)))
             if len(keep_records) == len(records):
                 return 0
-            tmp = self.journal_path.with_name("journal.jsonl.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                for record in keep_records:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            os.replace(tmp, self.journal_path)
+            atomic_write_text(
+                self.journal_path,
+                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep_records),
+            )
             # 文件已重写，缓存的 key 索引失效
             self._key_index = None
             return len(records) - len(keep_records)

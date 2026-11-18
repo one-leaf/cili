@@ -1,4 +1,4 @@
-# Ruff 配置：与 CI（.github/workflows/ci.yml 的 `ruff check core/ main.py`）一致
+# Ruff 配置：与 CI（.github/workflows/ci.yml 的 `ruff check core/ web/ interfaces/ main.py`）一致
 target-version = "py311"
 
 [lint]

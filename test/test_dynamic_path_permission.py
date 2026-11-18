@@ -65,6 +65,37 @@ def test_dynamic_session_approval(tmp_path):
     ).action == "allow"
 
 
+def test_command_verdict_honors_dynamic_target_approval(tmp_path):
+    """命令级判定必须用与 PathPolicy 相同的 decision_id 命中已批准目标。
+
+    回归：``PermissionPolicy._target_verdict`` 曾丢 static_prefix/code_hash/
+    target_index，动态目标批过仍反复弹卡。
+    """
+    from core.config import PermissionConfig
+    from core.security.permission_policy import PermissionPolicy
+
+    store = PermissionStore()
+    code = 'for path, url in targets:\n    open(path, "w")'
+    target = collect_python_targets(code, str(tmp_path))[0]
+    policy = PermissionPolicy(
+        PermissionConfig(), None, store,
+        workspace_root=str(tmp_path), cwd=str(tmp_path),
+    )
+    did = policy.path_decision_id(
+        target.op, target.resolved, target.raw,
+        static_prefix=target.static_prefix,
+        code_hash=target.code_hash,
+        target_index=target.target_index,
+    )
+    store.approve(did, target.raw, kind="path:write")
+
+    verdict = policy.command_verdict(
+        "python", code, [target],
+        [{"id": "python-dynamic-exec", "evidence": "exec"}],
+    )
+    assert verdict.action == "allow"
+
+
 def test_opaque_rule_cannot_be_persisted():
     result = build_granted_rule(kind="path:write", tool="python", action="path")
     assert result.rule is None

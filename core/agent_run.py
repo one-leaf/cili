@@ -11,21 +11,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.agent_stats import AgentStats
 from core.fs_utils import atomic_write_json
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
 RUN_FILE = "run.json"
 EPOCHS_DIR = "epochs"
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def root_session_dir(workspace_uuid: str, session: Any) -> Path | None:

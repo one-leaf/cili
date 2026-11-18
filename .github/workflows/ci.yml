@@ -84,4 +84,4 @@ jobs:
         run: pip install ruff
 
       - name: Lint with ruff
-        run: ruff check core/ main.py
+        run: ruff check core/ web/ interfaces/ main.py

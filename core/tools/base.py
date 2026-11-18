@@ -73,7 +73,7 @@ class Tool(ShellMixin, BackgroundMixin):
 
     # Directories to skip during file search operations
     IGNORE_DIRS: set[str] = {
-        ".git", "node_modules", "__pycache__", ".venv", "venv",
+        ".git", ".cili", "node_modules", "__pycache__", ".venv", "venv",
         ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
         ".next", ".nuxt", "target",
     }
@@ -174,12 +174,11 @@ class Tool(ShellMixin, BackgroundMixin):
         # 防止 output_file/on_output 两个实例属性互相覆盖产生竞态。
         self._exec_lock = threading.Lock()
 
-    def _resolve_path(self, path: str, *, read_only: bool = False) -> str:
+    def _resolve_path(self, path: str) -> str:
         """Resolve a file path to absolute, relative to cwd (纯解析器).
 
         Uses realpath（解析 `..`、符号链接与 junction）。写/删是否越界由
-        各工具的 _path_gate 统一判定（PathPolicy），这里不再抛边界错误；
-        read_only 参数保留为读工具的语义提示，无行为分支。
+        各工具的 _path_gate 统一判定（PathPolicy），这里不再抛边界错误。
 
         自动处理 bash 风格路径（/c/... -> C:/...），LLM 从 shell 输出复制路径时
         常遇到这种格式。

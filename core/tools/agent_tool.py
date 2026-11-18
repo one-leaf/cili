@@ -61,10 +61,7 @@ class AgentTool(Tool):
         self.on_session_start = None  # Callback(exec_id, task_summary) fired before sub-agent starts
         self.on_session_complete = None  # Callback(exec_id) fired when sub-agent finishes
         self.on_background_complete = None  # Callback(exec_id, status) fired when background session completes (for auto-resume)
-        # Pending synchronous sessions: exec_id -> {thread, event, result, exec_id, runner, task}
         self.current_tool_use_id = ""
-        self._pending_sessions: dict[str, dict] = {}
-        self._pending_lock = threading.Lock()
 
 
     def _publish(self, ev_type: str, **extra) -> None:
@@ -159,7 +156,9 @@ class AgentTool(Tool):
                     "enum": ["worker", "lite"],
                     "description": (
                         "Sub-agent role (action='spawn' only): 'worker' (default, full tool set + check phase) "
-                        "or 'lite' (minimal read/write/edit/bash, no check phase). "
+                        "or 'lite' (minimal read/write/edit/bash/python/message_bus/clock; "
+                        "NO MCP tools, tool_search, skill or memory; no check phase). "
+                        "Use 'worker' when the task needs MCP or deferred tools. "
                         "If you are already a sub-agent (delegation depth 1), only 'lite' is allowed."
                     ),
                 },
@@ -370,11 +369,10 @@ class AgentTool(Tool):
         # exec_id 作为主地址，label 作为可选别名
         sub_runner_session_id = exec_id  # autonomous 模式 session_id = exec_id
         try:
-            from core.agent_mailbox import get_agent_mailbox
-            mbus = get_agent_mailbox()
-            mbus.register_agent(exec_id, sub_runner_session_id)
+            from core.agent_mailbox import register_agent_alias
+            register_agent_alias(exec_id, sub_runner_session_id)
             if label and label != exec_id:
-                mbus.register_agent(label, sub_runner_session_id)
+                register_agent_alias(label, sub_runner_session_id)
         except Exception as e:
             logger.warning(f"Failed to register sub-runner with AgentMailbox: {e}")
 
@@ -427,14 +425,11 @@ class AgentTool(Tool):
                 runner.close()
                 # 注销子代理的 AgentMailbox 注册（exec_id + 所有别名如 label）
                 try:
-                    from core.agent_mailbox import get_agent_mailbox
-                    mbus = get_agent_mailbox()
-                    for agent_name in mbus.get_session_agents(exec_id):
-                        mbus.unregister_agent(agent_name)
                     # 终态后关闭消息队列：否则按 exec_id 的 send 会假成功，
                     # 消息投进无人消费的队列（send_to_agent 已会报未注册，
                     # 但 send 只检查队列存在）。
-                    mbus.unregister_session(exec_id)
+                    from core.agent_mailbox import unregister_session_agents
+                    unregister_session_agents(exec_id)
                 except Exception as e:
                     logger.warning(f"Failed to unregister sub-runner from AgentMailbox: {e}")
                 # Persist main session after sub-runner writes.
@@ -468,11 +463,6 @@ class AgentTool(Tool):
                     )
 
         thread = threading.Thread(target=run_session, daemon=True)
-        entry["thread"] = thread
-
-        with self._pending_lock:
-            self._pending_sessions[exec_id] = entry
-
         thread.start()
 
         # Wait for Agent to complete (synchronous mode)
@@ -487,10 +477,6 @@ class AgentTool(Tool):
             "summary": "Agent 执行超时",
             "stats": runner.stats(getattr(runner, "_turn_iterations", 0)).to_dict(),
         }
-
-        # Clean up pending entry
-        with self._pending_lock:
-            self._pending_sessions.pop(exec_id, None)
 
         result_json = json.dumps(result, ensure_ascii=False, indent=2)
         meta = {"exec_id": exec_id, "completed": True,
@@ -636,9 +622,12 @@ class AgentTool(Tool):
                 runner._event_publisher = lambda ev_type, **kw: self._publish(ev_type, exec_id=exec_id, **kw)
                 mbus = None
                 try:
-                    from core.agent_mailbox import get_agent_mailbox
+                    from core.agent_mailbox import (
+                        get_agent_mailbox,
+                        register_agent_alias,
+                    )
                     mbus = get_agent_mailbox()
-                    mbus.register_agent(exec_id, exec_id)
+                    register_agent_alias(exec_id, exec_id)
                 except Exception as e:
                     logger.warning(f"continuation mailbox register failed: {e}")
                 result: dict = {"status": "error", "summary": "continuation failed", "stats": {}}
@@ -724,8 +713,8 @@ class AgentTool(Tool):
                 # 续任链全部结束：关闭子代理邮箱队列（epoch 之间的消息由
                 # 下一 epoch 循环顶部排空；终态后不再有消费者）。
                 try:
-                    from core.agent_mailbox import get_agent_mailbox
-                    get_agent_mailbox().unregister_session(exec_id)
+                    from core.agent_mailbox import unregister_session_agents
+                    unregister_session_agents(exec_id)
                 except Exception:
                     pass
                 return
@@ -733,8 +722,3 @@ class AgentTool(Tool):
         threading.Thread(
             target=run_chain, daemon=True, name=f"continuation-{exec_id}"
         ).start()
-
-    def get_pending_session(self, exec_id: str) -> dict | None:
-        """Get pending session info by exec_id."""
-        with self._pending_lock:
-            return self._pending_sessions.get(exec_id)

@@ -56,10 +56,6 @@ class TestAgentToolExecute:
         assert result_data["status"] == "completed"
         assert result_data["summary"] == "Task completed successfully"
 
-        # Pending entry should be cleaned up
-        entry = agent_tool.get_pending_session("exec_123")
-        assert entry is None
-
     def test_agent_failure_returned_in_result(self, agent_tool):
         """SessionRunner error is returned in the ToolResult."""
         mock_agent = MagicMock()
@@ -75,10 +71,6 @@ class TestAgentToolExecute:
         result_data = json.loads(result.output)
         assert result_data["status"] == "error"
         assert "crashed" in result_data["summary"].lower() or "SessionRunner crashed" in result_data["summary"]
-
-        # Pending entry should be cleaned up
-        entry = agent_tool.get_pending_session("exec_123")
-        assert entry is None
 
     def test_closes_agent_after_run(self, agent_tool):
         """SessionRunner.close() is called after run."""

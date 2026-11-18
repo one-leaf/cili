@@ -11,19 +11,6 @@
         requestSeq: 0,
     };
 
-    function $(id) {
-        return document.getElementById(id);
-    }
-
-    function esc(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
     function formatNumber(value) {
         const number = Number(value || 0);
         return Number.isFinite(number) ? number.toLocaleString('zh-CN') : '0';
@@ -61,7 +48,7 @@
     }
 
     function render() {
-        const list = $('about-timeline');
+        const list = byId('about-timeline');
         if (!list) return;
         const wanted = state.filter === 'all' ? null : new Set(state.filter.split(','));
         const events = state.events.filter((event) => !wanted || wanted.has(event.type));
@@ -76,28 +63,28 @@
             const date = dateLabel(event.ts);
             if (date !== lastDate) {
                 lastDate = date;
-                parts.push('<div class="about-date"><span>' + esc(date) + '</span></div>');
+                parts.push('<div class="about-date"><span>' + escapeHtml(date) + '</span></div>');
             }
             let detail = eventDetail(event);
             if (event.type === 'tool' && event.meta && event.meta.tool_status === 'error') {
                 detail = detail ? detail + ' · 执行失败' : '执行失败';
             }
             const toolResult = event.meta && event.meta.tool_result
-                ? '<div class="about-snippet about-tool-result">↳ ' + esc(event.meta.tool_result) + '</div>'
+                ? '<div class="about-snippet about-tool-result">↳ ' + escapeHtml(event.meta.tool_result) + '</div>'
                 : '';
             const errorClass = event.type === 'tool' && event.meta && event.meta.tool_status === 'error'
                 ? ' about-event-error' : '';
             parts.push(
-                '<div class="about-event type-' + esc(event.type) + errorClass + '">' +
+                '<div class="about-event type-' + escapeHtml(event.type) + errorClass + '">' +
                     '<div class="about-rail"><span class="about-dot"></span></div>' +
                     '<div class="about-event-body">' +
                         '<div class="about-event-head">' +
-                            '<span class="about-time">' + esc(timeLabel(event.ts)) + '</span>' +
-                            '<span class="about-type">' + esc(event.title) + '</span>' +
+                            '<span class="about-time">' + escapeHtml(timeLabel(event.ts)) + '</span>' +
+                            '<span class="about-type">' + escapeHtml(event.title) + '</span>' +
                         '</div>' +
-                        (event.snippet ? '<div class="about-snippet">' + esc(event.snippet) + '</div>' : '') +
+                        (event.snippet ? '<div class="about-snippet">' + escapeHtml(event.snippet) + '</div>' : '') +
                         toolResult +
-                        (detail ? '<div class="about-detail">' + esc(detail) + '</div>' : '') +
+                        (detail ? '<div class="about-detail">' + escapeHtml(detail) + '</div>' : '') +
                     '</div>' +
                 '</div>'
             );
@@ -108,12 +95,12 @@
     }
 
     function renderInfo(session) {
-        $('about-name').textContent = session.name || '(未命名会话)';
-        $('about-hidden').hidden = !session.hidden;
-        $('about-id').textContent = session.session_id || '';
+        byId('about-name').textContent = session.name || '(未命名会话)';
+        byId('about-hidden').hidden = !session.hidden;
+        byId('about-id').textContent = session.session_id || '';
         const ws = (typeof currentWorkspace !== 'undefined' && currentWorkspace) || null;
         const workspaceName = (ws && ws.name) || session.workspace_uuid || '';
-        $('about-meta').textContent = [
+        byId('about-meta').textContent = [
             workspaceName ? '工作区：' + workspaceName : '',
             session.created_at ? '创建：' + session.created_at : '',
             session.updated_at ? '更新：' + session.updated_at : '',
@@ -126,12 +113,12 @@
             'tokens ' + formatNumber(usage.input_tokens) + ' 输入 / ' + formatNumber(usage.output_tokens) + ' 输出',
             'API 调用 ' + formatNumber(usage.api_calls) + ' 次',
         ].filter(Boolean);
-        $('about-usage').textContent = usageParts.join(' · ');
+        byId('about-usage').textContent = usageParts.join(' · ');
     }
 
     async function load() {
         const seq = ++state.requestSeq;
-        const list = $('about-timeline');
+        const list = byId('about-timeline');
         list.innerHTML = '<div class="about-loading">加载中…</div>';
         try {
             const response = await fetch(
@@ -146,15 +133,15 @@
             render();
         } catch (error) {
             if (seq !== state.requestSeq) return;
-            list.innerHTML = '<div class="about-empty">加载失败：' + esc(error.message) + '</div>';
+            list.innerHTML = '<div class="about-empty">加载失败：' + escapeHtml(error.message) + '</div>';
         }
     }
 
     function copySessionId() {
-        const text = $('about-id').textContent || '';
+        const text = byId('about-id').textContent || '';
         if (!text) return;
         const done = () => {
-            const btn = $('about-copy-id');
+            const btn = byId('about-copy-id');
             const old = btn.textContent;
             btn.textContent = '已复制';
             setTimeout(() => { btn.textContent = old; }, 1200);
@@ -177,12 +164,12 @@
     function bind() {
         if (state.bound) return;
         state.bound = true;
-        $('about-copy-id').addEventListener('click', copySessionId);
-        $('about-filters').addEventListener('click', (event) => {
+        byId('about-copy-id').addEventListener('click', copySessionId);
+        byId('about-filters').addEventListener('click', (event) => {
             const btn = event.target.closest('[data-about-filter]');
             if (!btn) return;
             state.filter = btn.getAttribute('data-about-filter');
-            $('about-filters').querySelectorAll('.about-filter').forEach((item) => {
+            byId('about-filters').querySelectorAll('.about-filter').forEach((item) => {
                 item.classList.toggle('active', item === btn);
             });
             render();
@@ -197,16 +184,16 @@
             state.workspaceUuid = currentWorkspace.uuid;
             state.events = [];
             state.filter = 'all';
-            $('about-filters').querySelectorAll('.about-filter').forEach((item) => {
+            byId('about-filters').querySelectorAll('.about-filter').forEach((item) => {
                 item.classList.toggle('active', item.getAttribute('data-about-filter') === 'all');
             });
-            $('about-timeline').innerHTML = '<div class="about-loading">加载中…</div>';
-            $('about-name').textContent = session.name || '(未命名会话)';
-            $('about-id').textContent = session.session_id || '';
-            $('about-hidden').hidden = !session.hidden;
-            $('about-meta').textContent = '';
-            $('about-usage').textContent = '';
-            $('session-about-modal').style.display = 'flex';
+            byId('about-timeline').innerHTML = '<div class="about-loading">加载中…</div>';
+            byId('about-name').textContent = session.name || '(未命名会话)';
+            byId('about-id').textContent = session.session_id || '';
+            byId('about-hidden').hidden = !session.hidden;
+            byId('about-meta').textContent = '';
+            byId('about-usage').textContent = '';
+            byId('session-about-modal').style.display = 'flex';
             load();
         },
     };

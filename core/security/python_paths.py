@@ -259,7 +259,6 @@ class _Collector:
                 "value": parent,
                 "display": f"以 {parent} 开头",
             }
-            dynamic = False
         elif static_prefix:
             display = f"{verb} {static_prefix} 下的文件（文件名运行时确定）"
             suggested = {
@@ -267,17 +266,14 @@ class _Collector:
                 "value": static_prefix,
                 "display": f"以 {static_prefix} 开头",
             }
-            dynamic = True
         else:
             short = raw if len(raw) <= 80 else raw[:77] + "..."
             display = f"{verb}运行时确定的路径（{short}；无法静态解析）"
             suggested = None
-            dynamic = True
         return PathTarget(
             op=op,
             raw=raw,
             op_name=op_name,
-            dynamic=dynamic,
             resolved=resolved,
             static_prefix=static_prefix,
             display=display,

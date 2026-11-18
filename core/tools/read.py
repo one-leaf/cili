@@ -149,7 +149,7 @@ class ReadTool(Tool):
         limit: int | None = None,
         pages: str | None = None,
     ) -> ToolResult:
-        file_path = self._resolve_path(file_path, read_only=True)
+        file_path = self._resolve_path(file_path)
         gate = self._read_gate([file_path])
         if gate is not None:
             return gate

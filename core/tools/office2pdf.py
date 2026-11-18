@@ -543,7 +543,7 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         if not file_path:
             return ToolResult("Error: file_path is required", error=True)
 
-        abs_path = self._resolve_path(file_path, read_only=True)
+        abs_path = self._resolve_path(file_path)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
 

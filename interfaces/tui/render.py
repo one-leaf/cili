@@ -26,8 +26,6 @@ def summarize_tool_input(tool_input: dict | list | None) -> str:
     if tool_input is None or tool_input == {}:
         return ""
     if not isinstance(tool_input, dict):
-        if tool_input is None:
-            return ""
         text = str(tool_input)
         return text[:_SUMMARY_MAX]
     for key in _SUMMARY_KEYS:

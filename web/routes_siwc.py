@@ -13,13 +13,17 @@ from core.config import load_global_config, migrate_legacy_config, save_global_c
 from core.llm.siwc import (
     cancel,
     complete_manual,
-    logout as siwc_logout,
     poll,
     set_authorized_hook,
     start_login,
+)
+from core.llm.siwc import (
+    logout as siwc_logout,
+)
+from core.llm.siwc import (
     status as siwc_status,
 )
-from web.deps import _csrf_protect, _sessions_lock, registry, teen_guard
+from web.deps import _csrf_protect, reload_all_runners, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -103,20 +107,6 @@ def _clear_credential(provider_key: str) -> None:
     save_global_config(raw)
 
 
-_reload_lock = threading.Lock()
-
-
-def _reload_runners_sync() -> None:
-    with _reload_lock:
-        with _sessions_lock:
-            cached = list(registry.items())
-        for _key, runner in cached:
-            try:
-                runner.reload_config()
-            except Exception as e:  # noqa: BLE001 —— 单个 runner 失败不影响其余
-                logger.warning(f"[SIWC] 重载 runner 失败: {e}")
-
-
 def _on_authorized(
     provider_key: str, credential: str, provider_config: dict | None = None
 ) -> str:
@@ -124,7 +114,7 @@ def _on_authorized(
     status = _upsert_oauth_provider(provider_key, credential, provider_config)
     if status == "written":
         threading.Thread(
-            target=_reload_runners_sync, daemon=True, name="cili-siwc-reload"
+            target=reload_all_runners, daemon=True, name="cili-siwc-reload"
         ).start()
     return status
 
@@ -173,7 +163,7 @@ async def logout(request: LogoutRequest):
     result = await asyncio.to_thread(siwc_logout, credential)
     if provider_key:
         await asyncio.to_thread(_clear_credential, provider_key)
-        await _reload_runners()
+        await asyncio.to_thread(reload_all_runners)
     return {"success": True, **result}
 
 

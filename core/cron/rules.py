@@ -86,10 +86,6 @@ def parse_iso(value: str, tz: ZoneInfo | None = None) -> datetime:
     return dt
 
 
-def dt_to_ts(dt: datetime) -> float:
-    return dt.timestamp()
-
-
 def ts_to_now_for(job: Job) -> datetime:
     tz = timezone_for(job)
     now = datetime.now(timezone.utc) if tz is not None else datetime.now()
@@ -204,10 +200,6 @@ def validate_schedule(job: Job) -> None:
     if schedule_type == "at":
         parse_iso(str(job.schedule.get("time", "")), timezone_for(job))
     timezone_for(job)
-
-
-def next_run_iso(job: Job, base: datetime | None, *, now: datetime | None = None) -> str:
-    return compute_next_run(job, base, now=now).isoformat()
 
 
 def schedule_summary(job: Job) -> str:

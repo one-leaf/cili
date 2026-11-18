@@ -1378,6 +1378,9 @@ class SessionRunner(BaseSessionRunner):
         if not self.session_dir or not exec_id:
             return
 
+        # 供 agent 工具的 status/list 读取（此前该属性从未赋值，状态永远显示 none）
+        self._current_tool = current_tool
+
         # 累加工具调用计数
         if tool_calls is not None and tool_calls > 0:
             self._tool_call_count += tool_calls

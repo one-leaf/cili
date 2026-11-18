@@ -32,6 +32,7 @@ import httpx
 
 from core.config import PROJECT_ROOT
 from core.textbooks.pack_store import PACK_DIR, build_catalog_db
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -341,8 +342,7 @@ def _install(manifest: dict[str, Any]) -> bool:
     return True
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+_now = now_str
 
 
 def _local_version() -> str:

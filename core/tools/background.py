@@ -264,9 +264,7 @@ class BackgroundMixin:
             "PYTHONUTF8": "1",
             "PYTHONUNBUFFERED": "1",
         })
-        paths = [p for p in (_VENV_DIR, _VENV_SCRIPTS) if p]
-        if paths:
-            env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join([_VENV_DIR, _VENV_SCRIPTS, env.get("PATH", "")])
         return env
 
     def _start_background_task(
@@ -589,14 +587,12 @@ class BackgroundMixin:
                     try:
                         session.save()
                     except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
+                        logger.warning(
                             f"Failed to save session after Runner {task_id}: {e}"
                         )
 
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Background Runner {task_id} error: {e}")
+                logger.error(f"Background Runner {task_id} error: {e}")
                 task.status = "error"
                 task.result = {"status": "error", "message": str(e)}
             finally:
@@ -609,16 +605,12 @@ class BackgroundMixin:
                     _background_runners_cond.notify_all()
                 # 注销子 runner 的 AgentMailbox 注册（exec_id + 所有别名如 label）
                 try:
-                    from core.agent_mailbox import get_agent_mailbox
-                    mbus = get_agent_mailbox()
-                    for agent_name in mbus.get_session_agents(exec_id):
-                        mbus.unregister_agent(agent_name)
                     # 终态后关闭消息队列：只注销名字不清队列时，按 session_id
                     # （exec_id）send 仍会「成功」并把消息投进无人消费的队列。
-                    mbus.unregister_session(exec_id)
+                    from core.agent_mailbox import unregister_session_agents
+                    unregister_session_agents(exec_id)
                 except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         f"Failed to unregister background Runner from AgentMailbox {task_id}: {e}"
                     )
                 # T18: 资源/统计对称 —— 后台子 runner 结束也 close LLM client 并转发 usage，
@@ -638,8 +630,7 @@ class BackgroundMixin:
                     try:
                         defer_completion = bool(on_complete(task.result or {}))
                     except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
+                        logger.warning(
                             f'on_complete callback error {task_id}: {e}'
                         )
                 if not defer_completion:
@@ -684,15 +675,13 @@ class BackgroundMixin:
                                     except Exception:
                                         pass  # 事件发布失败不影响主流程
                             except Exception as e:
-                                import logging
-                                logging.getLogger(__name__).debug(
+                                logger.debug(
                                     f"Failed to send notification via message_bus: {e}"
                                 )
                         if getattr(self, "on_session_complete", None):
                             self.on_session_complete(exec_id, status)
                     except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
+                        logger.warning(
                             f"Failed to notify background Runner complete {task_id}: {e}"
                         )
                     # 后端直接触发 master 恢复循环（通知已在 message_bus 中，可以安全拾取）。
@@ -701,8 +690,7 @@ class BackgroundMixin:
                         try:
                             self.on_background_complete(exec_id, status)
                         except Exception as e:
-                            import logging
-                            logging.getLogger(__name__).warning(
+                            logger.warning(
                                 f"on_background_complete callback error {task_id}: {e}"
                             )
 
@@ -726,11 +714,10 @@ class BackgroundMixin:
         # Task ID，与邮箱里的 exec_id 是两套 ID，不注册别名则
         # send_to_agent("agent-N") 必然失败（见 message_bus 工具描述）。
         try:
-            from core.agent_mailbox import get_agent_mailbox
-            get_agent_mailbox().register_agent(task_id, exec_id)
+            from core.agent_mailbox import register_agent_alias
+            register_agent_alias(task_id, exec_id)
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 f"Failed to register mailbox alias {task_id} -> {exec_id}: {e}"
             )
 

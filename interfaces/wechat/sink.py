@@ -27,6 +27,7 @@ from typing import Any
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
 from core.text_chunk import chunk_markdown
+from interfaces.common.ask_user import render_questions
 from interfaces.wechat.protocol import WechatApiError, WechatAuthError
 from interfaces.wechat.runtime import WechatRuntime
 from interfaces.wechat.sanitize import sanitize_wechat_text
@@ -36,35 +37,6 @@ logger = logging.getLogger(__name__)
 # 进度节拍：第 k 条进度消息在累计 PROGRESS_CHECKPOINTS[k-1] 次工具调用后发出。
 # 指数间隔 = 短回合最多 1-2 条、长回合也有界（7 条封顶，给正文留第 8 条）。
 PROGRESS_CHECKPOINTS = (1, 2, 4, 8, 16, 32, 64)
-
-
-def render_questions(tool_input: dict) -> str:
-    """把 ask_user 的 questions 渲染成编号 markdown（用户回 "1"/"2" 即可）。
-
-    与 ``inbound.resolve_answer`` 是**一对**：这里的编号必须和那边的回映射一致，
-    改一个就得改另一个。
-    """
-    questions = (tool_input or {}).get("questions") or []
-    if not questions:
-        return ""
-    single = len(questions) == 1
-    lines = ["", "---", ""]
-    for qi, q in enumerate(questions, start=1):
-        text = q.get("question") or ""
-        lines.append(f"**{text}**" if single else f"**{qi}. {text}**")
-        options = q.get("options") or []
-        for oi, opt in enumerate(options, start=1):
-            label = opt.get("label") or ""
-            desc = opt.get("description") or ""
-            lines.append(f"{oi}. {label} — {desc}" if desc else f"{oi}. {label}")
-        lines.append("")
-    if single:
-        lines.append("_回复序号即可（如 `1`），也可直接输入其他内容。_")
-    else:
-        # 多问题时编号在每个问题内重新开始，单个数字有歧义——让用户按
-        # 「问题序号: 选项」回答，inbound 侧只在单问题时才自动映射。
-        lines.append("_请按 `问题序号: 选项序号` 回复（如 `1: 2`），也可直接输入其他内容。_")
-    return "\n".join(lines) + "\n"
 
 
 class WechatSink:

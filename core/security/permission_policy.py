@@ -49,7 +49,6 @@ class PermissionVerdict:
     reason: str = ""
     rule: dict | None = None
     approved: bool = False
-    force_ask: bool = False
 
 
 class PermissionPolicy:
@@ -105,7 +104,7 @@ class PermissionPolicy:
     def _mode_verdict(mode: str, reason: str = "") -> PermissionVerdict:
         if mode not in _RANK:
             mode = "ask"
-        return PermissionVerdict(action=mode, reason=reason, force_ask=(mode == "ask"))
+        return PermissionVerdict(action=mode, reason=reason)
 
     def _mode_or_judge(self, mode: str, reason: str = "") -> PermissionVerdict:
         """分项策略的 ai：判定器关闭时退化为 ask。"""
@@ -151,7 +150,7 @@ class PermissionPolicy:
             if decision == "deny":
                 return PermissionVerdict("deny", (rule or {}).get("note", "命中黑名单"), rule)
             if decision == "ask":
-                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule, force_ask=True)
+                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule)
             if decision == "allow":
                 verdict = PermissionVerdict("allow", (rule or {}).get("display", "命中白名单"), rule, approved=True)
 
@@ -201,8 +200,17 @@ class PermissionPolicy:
         resolved = getattr(target, "resolved", None)
         raw = getattr(target, "raw", "")
         kind = "path:delete" if op == "delete" else ("path:read" if op == "read" else "path:write")
-        decision_id = self.path_decision_id(op, resolved, raw)
-        return self.path_verdict(kind, resolved, decision_id=decision_id, tool=tool, raw=raw)
+        static_prefix = getattr(target, "static_prefix", None)
+        decision_id = self.path_decision_id(
+            op, resolved, raw,
+            static_prefix=static_prefix,
+            code_hash=getattr(target, "code_hash", "") or "",
+            target_index=getattr(target, "target_index", 0) or 0,
+        )
+        return self.path_verdict(
+            kind, resolved, decision_id=decision_id, tool=tool, raw=raw,
+            static_prefix=static_prefix,
+        )
 
     def _readonly_external_ok(self, tool: str, command: str) -> bool:
         """只读白名单的外部读取启发式。
@@ -255,7 +263,7 @@ class PermissionPolicy:
             if decision == "deny":
                 return PermissionVerdict("deny", (rule or {}).get("note", "命中黑名单"), rule)
             if decision == "ask":
-                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule, force_ask=True)
+                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule)
             if decision == "allow":
                 return PermissionVerdict("allow", (rule or {}).get("display", "命中白名单"), rule, approved=True)
 
@@ -294,7 +302,7 @@ class PermissionPolicy:
             if decision == "deny":
                 return PermissionVerdict("deny", (rule or {}).get("note", "命中黑名单"), rule)
             if decision == "ask":
-                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule, force_ask=True)
+                return PermissionVerdict("ask", (rule or {}).get("note", "命中灰名单"), rule)
             if decision == "allow":
                 return PermissionVerdict("allow", (rule or {}).get("display", "命中白名单"), rule, approved=True)
         if decision_id and self.store is not None and self.store.is_approved(decision_id):

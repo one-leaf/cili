@@ -75,6 +75,9 @@ ul, ol {
     --code-block-bg: #f4f5f7;
     --code-block-border: #e8e9ec;
     --backdrop: rgba(20, 22, 26, 0.32);
+    /* 兼容别名：早期组件引用了这两个短名 */
+    --bg-secondary: var(--surface-inset);
+    --primary: var(--primary-color);
 }
 
 /* ── 暗色主题 ── */
@@ -143,6 +146,8 @@ ul, ol {
     --code-block-bg: #1c1c20;
     --code-block-border: #2c2c32;
     --backdrop: rgba(0, 0, 0, 0.58);
+    --bg-secondary: var(--surface-inset);
+    --primary: var(--primary-color);
 }
 
 [data-theme="dark"] body {

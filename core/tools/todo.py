@@ -266,7 +266,10 @@ class TodoWriteTool(Tool):
             return False
 
         # Check if any task mentions verification
-        verification_keywords = ["verify", "test", "check", "validate", "confirm"]
+        verification_keywords = [
+            "verify", "test", "check", "validate", "confirm",
+            "验证", "测试", "检查", "校验", "确认", "核对", "回归",
+        ]
         has_verification = any(
             any(kw in t["content"].lower() for kw in verification_keywords)
             for t in new_todos

@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
+
+from interfaces.common.media import MediaError, validate_media_path
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,6 @@ SOFT_LIMIT_BYTES = {
 }
 
 
-class MediaError(Exception):
-    """出站媒体处理失败（文案可直接给用户看）。"""
-
-
 def infer_file_type(path: str | Path) -> int:
     """扩展名 → QQ ``file_type``（保守映射，见模块 docstring）。"""
     ext = Path(path).suffix.lower()
@@ -57,39 +54,14 @@ def infer_file_type(path: str | Path) -> int:
     return MEDIA_TYPE_FILE
 
 
-def validate_media_path(path: str | Path, workspace_root: str | Path) -> Path:
-    """路径白名单校验（realpath 双侧比对，防符号链接绕过）。
-
-    ``send_user_file`` 工具已校验过一遍，这里再校验一次是纵深防御——本模块才是真正
-    把路径交给 SDK 的地方。
-    """
-    target = Path(os.path.realpath(str(path)))
-    root = Path(os.path.realpath(str(workspace_root)))
-    try:
-        inside = os.path.commonpath([str(target), str(root)]) == str(root)
-    except ValueError:
-        inside = False
-    if not inside:
-        raise MediaError(f"文件不在工作区内：{path}")
-    if not target.is_file():
-        raise MediaError(f"文件不存在：{path}")
-    return target
-
-
 def _describe_size(size: int) -> str:
     return f"{size / 1024 / 1024:.1f}MB"
 
 
-async def upload_file(
-    uploader,
-    openid: str,
-    path: str | Path,
-    *,
-    file_type: int | None = None,
-) -> str:
+async def upload_file(uploader, openid: str, path: str | Path) -> str:
     """上传本地文件，返回 ``file_info``。异常统一转成 ``MediaError``。"""
     target = Path(path)
-    kind = file_type if file_type is not None else infer_file_type(target)
+    kind = infer_file_type(target)
 
     size = target.stat().st_size
     if size > HARD_LIMIT_BYTES:
@@ -141,12 +113,15 @@ async def send_user_file(
     *,
     msg_id: str,
     note: str = "",
+    workspace_root: str | Path | None = None,
 ) -> None:
     """上传并发送一个文件（``msg_type=7`` 富媒体消息）。
 
     ``srv_send_msg`` 一律 **False**：上传即发会占用**主动消息**频次，而主动消息
     配额稀缺（未认证 30/qpm）；走「上传拿 file_info → 单独发消息」只用被动回复配额。
     """
+    if workspace_root is not None:
+        path = validate_media_path(path, workspace_root)
     file_info = await upload_file(uploader, openid, path)
 
     from qqbot_agent_sdk import MediaInfo, MessageToCreate, QQMessageType

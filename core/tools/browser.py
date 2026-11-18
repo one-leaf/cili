@@ -12,6 +12,7 @@ tab_index 指定目标 tab。Inactive tab 在 10 分钟后自动关闭。
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 from core.config import PROJECT_ROOT
 from core.security.path_policy import OP_WRITE, PathTarget
@@ -477,7 +478,17 @@ Use web_search for simple lookups; use browser when search results are insuffici
             gate = self._path_gate([target])
             if gate:
                 return gate
-            return service.screenshot(path, tab_index=tab_index)
+            # 前端按 workspace 相对路径取图；只拼 basename 会在子目录截图时 404。
+            # 路径在工作区外时退回 service 的 basename 行为。
+            rel = os.path.relpath(path, self.cwd).replace(os.sep, "/")
+            image_url = None
+            if not rel.startswith("../"):
+                rel_q = quote(rel, safe="/")
+                image_url = (
+                    f"/api/workspaces/{self.workspace_uuid}/files/{rel_q}"
+                    if self.workspace_uuid else f"/api/files/{rel_q}"
+                )
+            return service.screenshot(path, tab_index=tab_index, image_url=image_url)
 
         elif action == "save_pdf":
             path = pdf_path or os.path.join(self.cwd, "page.pdf")

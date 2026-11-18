@@ -101,3 +101,63 @@ class TestReadToolResult:
 
         assert result.is_error
         assert "not available" in result.output.lower()
+
+    def test_offset_limit_pagination(self, test_workspace):
+        """offset/limit 应返回指定字符区间并给出下一段 offset。"""
+        from core.tools.read_tool_result import ReadToolResultTool
+
+        test_workspace = Path(test_workspace)
+        session_dir = test_workspace / "sessions" / "abc123"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        content = "0123456789" * 10  # 100 chars
+        tool_use_id = "toolu_page"
+        (session_dir / f"{tool_use_id}.txt").write_text(content, encoding="utf-8")
+
+        mock_sm = MagicMock()
+        mock_sm.session_dir = session_dir
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
+
+        result = tool.execute(tool_use_id=tool_use_id, offset=10, limit=20)
+        assert not result.is_error
+        assert "chars 10-30 of 100" in result.output
+        assert content[10:30] in result.output
+        assert "offset=30" in result.output
+
+    def test_byte_budget_keeps_output_inline(self, test_workspace):
+        """中文大结果按字节预算切片，整段输出不超过 9000 字节。"""
+        from core.tools.read_tool_result import ReadToolResultTool
+
+        test_workspace = Path(test_workspace)
+        session_dir = test_workspace / "sessions" / "abc123"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        tool_use_id = "toolu_cjk"
+        (session_dir / f"{tool_use_id}.txt").write_text("中" * 4000, encoding="utf-8")
+
+        mock_sm = MagicMock()
+        mock_sm.session_dir = session_dir
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
+
+        result = tool.execute(tool_use_id=tool_use_id, offset=0, limit=4000)
+        assert not result.is_error
+        assert "byte-trimmed" in result.output
+        assert len(result.output.encode("utf-8")) <= 9000
+        # 必须保留分页指引，否则模型无法继续读
+        assert "继续读取请调用" in result.output
+
+    def test_offset_beyond_end(self, test_workspace):
+        """offset 越过末尾时返回错误并给出总长度。"""
+        from core.tools.read_tool_result import ReadToolResultTool
+
+        test_workspace = Path(test_workspace)
+        session_dir = test_workspace / "sessions" / "abc123"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        tool_use_id = "toolu_short"
+        (session_dir / f"{tool_use_id}.txt").write_text("abc", encoding="utf-8")
+
+        mock_sm = MagicMock()
+        mock_sm.session_dir = session_dir
+        tool = ReadToolResultTool(cwd=str(test_workspace), session=mock_sm)
+
+        result = tool.execute(tool_use_id=tool_use_id, offset=10)
+        assert result.is_error
+        assert "3 characters" in result.output

@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from core.handoff import build_handoff_instruction
+from core.handoff import build_handoff_document
 from core.image_pipeline import (
     DEFAULT_MAX_BYTES,
     apply_image_budget,
@@ -327,11 +327,11 @@ class Runner:
 
         if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
             return self._execute_tool_impl(
-                name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
+                name, tool, input_data, tool_use_id
             )
         with getattr(tool, "_exec_lock", _FALLBACK_EXEC_LOCK):
             return self._execute_tool_impl(
-                name, tool, input_data, tool_use_id, _STREAMING_TOOLS, _PLACEHOLDER_TOOLS
+                name, tool, input_data, tool_use_id
             )
 
     def _execute_tool_impl(
@@ -340,8 +340,6 @@ class Runner:
         tool: Tool,
         input_data: dict,
         tool_use_id: str,
-        _STREAMING_TOOLS: set[str],
-        _PLACEHOLDER_TOOLS: set[str],
     ) -> dict:
         """工具执行主体（并发安全与否共用同一实现）。
 
@@ -703,8 +701,9 @@ class Runner:
                             guide = (
                                 f"\n\n---\n"
                                 f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
-                                f"完整输出保存在文件: {file_path}。"
-                                f"如需查看完整内容，请使用 read 工具分批读取该文件。"
+                                f'如需查看完整内容，请调用 read_tool_result('
+                                f'tool_use_id="{block.get("tool_use_id", "")}", offset=8000) '
+                                f"继续分段读取；完整输出也保存在文件: {file_path}。"
                             )
                             block["content"] = truncated_content + guide
                         else:
@@ -900,7 +899,7 @@ class Runner:
 
         # Cache-aware 摘要：复用主对话 prefix 共享缓存
         instruction = (
-            build_handoff_instruction(next_steps, reason)
+            build_handoff_document(next_steps, reason)
             if next_steps
             else None
         )
@@ -1127,7 +1126,7 @@ class Runner:
         pending_tool_use_id: str = "",
     ) -> str:
         """Build a handoff document with cache-aware prefix sharing."""
-        instruction = build_handoff_instruction(next_steps, reason)
+        instruction = build_handoff_document(next_steps, reason)
         system_prompt = None
         if getattr(self.runner, "_mode", "interactive") == "autonomous":
             system_prompt = getattr(self.runner, "_system_prompt", None)

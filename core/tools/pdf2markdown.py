@@ -378,7 +378,7 @@ class PDF2MarkdownTool(Tool):
             return ToolResult("Error: file_path is required", error=True)
 
         # Resolve file path
-        abs_path = self._resolve_path(file_path, read_only=True)
+        abs_path = self._resolve_path(file_path)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
         gate = self._read_gate([abs_path])
@@ -632,13 +632,12 @@ class PDF2MarkdownTool(Tool):
 
         return self._download_markdown(markdown_url)
 
-    def _agent_poll(self, task_id: str, timeout: int) -> dict:
-        """轮询 Agent 结果，直到 done/failed。
+    def _poll_until_done(self, label: str, url: str, timeout: int, parse,
+                         headers: dict | None = None) -> dict:
+        """通用轮询：``parse(result) -> (done_payload | None, state)``。
 
-        pending/running 等非终态表示任务仍在执行，不设总超时持续等待；
-        只有连续网络错误达到阈值才放弃。timeout 参数仅为兼容保留。
+        非终态持续等待，但受总超时与连续网络错误双重约束。
         """
-        url = f"https://mineru.net/api/v1/agent/parse/{task_id}"
         start_time = time.monotonic()
         deadline = start_time + timeout
         consecutive_errors = 0
@@ -647,10 +646,10 @@ class PDF2MarkdownTool(Tool):
         while True:
             if time.monotonic() > deadline:
                 raise TimeoutError(
-                    f"Agent API 轮询超时（{timeout}s），任务可能已丢失")
+                    f"{label} API 轮询超时（{timeout}s），任务可能已丢失")
             polls += 1
             try:
-                resp = requests.get(url, timeout=30)
+                resp = requests.get(url, headers=headers, timeout=30)
                 resp.raise_for_status()
                 result = resp.json()
                 consecutive_errors = 0
@@ -658,33 +657,45 @@ class PDF2MarkdownTool(Tool):
                 consecutive_errors += 1
                 if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
                     raise TimeoutError(
-                        f"Agent API 连续 {consecutive_errors} 次网络错误: {e}")
+                        f"{label} API 连续 {consecutive_errors} 次网络错误: {e}")
                 logger.warning(
-                    f"[pdf2markdown] Agent 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
+                    f"[pdf2markdown] {label} 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
                     f"({consecutive_errors}/{_POLL_MAX_CONSECUTIVE_ERRORS}): {e}")
                 time.sleep(_POLL_INTERVAL_S)
                 continue
 
-            if result.get("code") != 0:
-                raise Exception(f"Agent poll error (code={result.get('code')}): {result.get('msg')}")
-
-            data = result.get("data", {})
-            state = data.get("state")
-
-            if state == "done":
-                return data
-            elif state == "failed":
-                err_code = data.get("err_code")
-                err_msg = data.get("err_msg", "unknown")
-                if err_code in (-30001, -30002, -30003):
-                    raise _AgentLimitError(f"code={err_code}: {err_msg}")
-                raise Exception(f"Agent parse failed: {err_msg}")
-            # 其他状态: waiting-file, uploading, pending, running - 继续轮询
+            done_payload, state = parse(result)
+            if done_payload is not None:
+                return done_payload
 
             if polls % _POLL_HEARTBEAT_EVERY == 0:
                 self._progress(f"解析中 state={state}，"
                                f"已等待 {time.monotonic() - start_time:.0f}s")
             time.sleep(_POLL_INTERVAL_S)
+
+    def _agent_poll(self, task_id: str, timeout: int) -> dict:
+        """轮询 Agent 结果，直到 done/failed。"""
+        url = f"https://mineru.net/api/v1/agent/parse/{task_id}"
+
+        def parse(result: dict) -> tuple[dict | None, str | None]:
+            if result.get("code") != 0:
+                raise Exception(
+                    f"Agent poll error (code={result.get('code')}): {result.get('msg')}"
+                )
+            data = result.get("data", {})
+            state = data.get("state")
+            if state == "done":
+                return data, state
+            if state == "failed":
+                err_code = data.get("err_code")
+                err_msg = data.get("err_msg", "unknown")
+                if err_code in (-30001, -30002, -30003):
+                    raise _AgentLimitError(f"code={err_code}: {err_msg}")
+                raise Exception(f"Agent parse failed: {err_msg}")
+            # waiting-file / uploading / pending / running：继续轮询
+            return None, state
+
+        return self._poll_until_done("Agent", url, timeout, parse)
 
     # ── Precision Parse API v4 ─────────────────────────────────────────────────
 
@@ -823,43 +834,15 @@ class PDF2MarkdownTool(Tool):
                     raise Exception(f"Upload failed after {max_retries} attempts: {e}")
 
     def _precision_poll(self, batch_id: str, api_key: str, timeout: int) -> dict:
-        """轮询 Precision 结果，直到 done/failed。
-
-        pending/running 表示任务仍在排队/执行，这里不设总超时，持续等待；
-        只有连续网络错误达到阈值才放弃。timeout 参数仅为兼容保留。
-        """
+        """轮询 Precision 结果，直到 done/failed。"""
         url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
         headers = {"Authorization": f"Bearer {api_key}"}
-        start_time = time.monotonic()
-        deadline = start_time + timeout
-        consecutive_errors = 0
-        polls = 0
 
-        while True:
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"Precision API 轮询超时（{timeout}s），任务可能已丢失")
-            polls += 1
-            try:
-                resp = requests.get(url, headers=headers, timeout=30)
-                resp.raise_for_status()
-                result = resp.json()
-                consecutive_errors = 0
-            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                consecutive_errors += 1
-                if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
-                    raise TimeoutError(
-                        f"Precision API 连续 {consecutive_errors} 次网络错误: {e}")
-                logger.warning(
-                    f"[pdf2markdown] 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
-                    f"({consecutive_errors}/{_POLL_MAX_CONSECUTIVE_ERRORS}): {e}")
-                time.sleep(_POLL_INTERVAL_S)
-                continue
-
+        def parse(result: dict) -> tuple[dict | None, str | None]:
             if result.get("code") != 0:
-                code = result.get("code")
-                msg = result.get("msg", "unknown")
-                self._handle_precision_error(code, msg)
+                self._handle_precision_error(
+                    result.get("code"), result.get("msg", "unknown")
+                )
 
             extract_results = result["data"]["extract_result"]
             all_done = bool(extract_results)
@@ -874,14 +857,9 @@ class PDF2MarkdownTool(Tool):
                     raise Exception(f"Precision parse failed (code={err_code}): {err_msg}")
                 elif state != "done":
                     all_done = False
+            return (result["data"] if all_done else None), state
 
-            if all_done:
-                return result["data"]
-
-            if polls % _POLL_HEARTBEAT_EVERY == 0:
-                self._progress(f"解析中 state={state}，"
-                               f"已等待 {time.monotonic() - start_time:.0f}s")
-            time.sleep(_POLL_INTERVAL_S)
+        return self._poll_until_done("Precision", url, timeout, parse, headers)
 
     def _extract_markdown_from_zip(self, zip_url: str) -> str:
         """Download ZIP and extract full.md content.

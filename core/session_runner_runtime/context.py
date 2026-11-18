@@ -17,7 +17,7 @@ from typing import Any
 
 from core.fs_utils import atomic_write_json
 from core.session import INTERNAL_META_FIELDS as INTERNAL_META
-from core.session import generate_short_id
+from core.session import generate_short_id, is_message_in_context
 from core.usage import add_usage
 
 logger = logging.getLogger(__name__)
@@ -80,33 +80,14 @@ class ConversationStore:
 
     @staticmethod
     def is_message_in_context(msg: dict) -> bool:
-        """该消息是否进入 LLM 上下文（``get_valid_messages`` 的过滤规则，单一定义）。
-
-        游标对齐（``Runner._perform_full_compact`` 按 valid_messages 索引在
-        all_messages 中定位待压缩消息）依赖同一谓词：两处规则一旦漂移，
-        会误标 pinned 消息失效、或漏标本应压缩的旧消息。
-        """
-        meta = msg.get("_meta", {})
-        if meta.get("valid") is False:
-            return False
-        if meta.get("error_notice"):
-            return False  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
-        if meta.get("file_card"):
-            return False  # send_user_file 的出站文件卡片（下载链接），仅 UI 展示
-        if meta.get("delivery_notice"):
-            return False  # 交付回执（哪些文件没发出去），仅 UI 展示
-        if meta.get("compaction_event"):
-            return False  # 压缩事件行仅 UI 展示，不进入 LLM 上下文
-        content = msg.get("content", "")
-        if isinstance(content, list) and not content:
-            return False
-        return True
+        """保留为静态入口；规则定义在 ``core.session.is_message_in_context``。"""
+        return is_message_in_context(msg)
 
     def get_valid_messages(self, strip_meta: bool = True) -> list[dict]:
         """过滤无效消息；strip_meta=True 时剥除内部 _meta 字段。
 
         Thinking 块保留（Anthropic 多轮上下文要求）。strip_meta=False 供
-        _load_external_tool_results 等中间处理。
+        _resolve_tool_results 等中间处理。
         """
         result = []
 

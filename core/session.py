@@ -36,9 +36,29 @@ from core.agent_stats import AgentStats
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
 from core.image_pipeline import sanitize_images_for_persistence
 from core.teen_mode import guard_or_raise
+from core.text_extract import message_text
 
 # exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
 _EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def is_message_in_context(msg: dict) -> bool:
+    """该消息是否进入 LLM 上下文（SessionStore 与 ConversationStore 共用的唯一谓词）。
+
+    游标对齐（全压缩按 valid_messages 索引定位）依赖同一规则：两处一旦漂移，
+    会误标 pinned 消息失效、或漏标本应压缩的旧消息。
+    """
+    meta = msg.get("_meta", {})
+    if meta.get("valid") is False:
+        return False
+    if meta.get("error_notice") or meta.get("file_card") or meta.get("delivery_notice"):
+        return False
+    if meta.get("compaction_event"):
+        return False
+    content = msg.get("content", "")
+    if isinstance(content, list) and not content:
+        return False
+    return True
 
 # 执行日志列表里任务描述/摘要的截断长度
 _TASK_BRIEF_MAX = 100
@@ -109,15 +129,7 @@ def preview_from_messages(messages: list[dict]) -> str:
             continue  # 后台子 Runner 完成通知：非用户输入，继续往前找
         if meta.get("loop_warning"):
             continue  # 循环重复检测警告（交互/自主共用）：合成消息，不算输入
-        content = msg.get("content")
-        text = ""
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = str(block.get("text", ""))
-                    break
+        text = message_text(msg.get("content"), first=True, strip=False)
         if text:
             return text[:200]
     return ""
@@ -351,7 +363,7 @@ def _message_from_summary_commit(commit: dict) -> dict:
 
 def _apply_model_content_rules(msg: dict) -> None:
     """模型视图重建：已回答的 tool_result 清空内联内容，交给
-    _load_external_tool_results 从外部文件读取（否则 jsonl 原始内容会跳过文件读取）。"""
+    _resolve_tool_results 从外部文件读取（否则 jsonl 原始内容会跳过文件读取）。"""
     content = msg.get("content")
     if not isinstance(content, list):
         return
@@ -857,18 +869,9 @@ class SessionStore:
 
         result = []
         for msg in self.messages:
-            # 检查消息级别的 validity
-            meta = msg.get("_meta", {})
-            if meta.get("valid") is False:
+            if not is_message_in_context(msg):
                 continue
-            if meta.get("error_notice"):
-                continue  # 仅 UI 展示的系统错误通知，不进入 LLM 上下文
-            if meta.get("file_card"):
-                continue  # send_user_file 的出站文件卡片（下载链接），仅 UI 展示
-            if meta.get("delivery_notice"):
-                continue  # 交付回执（哪些文件没发出去），仅 UI 展示
-            if meta.get("compaction_event"):
-                continue  # 压缩事件行仅 UI 展示，不进入 LLM 上下文
+            meta = msg.get("_meta", {})
 
             role = msg.get("role")
             content = msg.get("content", "")

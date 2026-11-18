@@ -1663,12 +1663,14 @@ class BrowserService:
         except Exception as e:
             return ToolResult(f"Browser navigate failed with worker error: {e}", error=True)
 
-    def screenshot(self, path: str, tab_index: int | None = None) -> ToolResult:
+    def screenshot(self, path: str, tab_index: int | None = None,
+                   image_url: str | None = None) -> ToolResult:
         """截取当前页面的截图。
 
         Args:
             path: 截图保存路径
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
+            image_url: 前端可访问的图片 URL；缺省按文件名拼 ``/api/files/``
         """
         def _do_screenshot(page):
             if not os.path.isabs(path):
@@ -1676,8 +1678,8 @@ class BrowserService:
             else:
                 abs_path = path
             page.screenshot(path=abs_path, full_page=True)
-            filename = os.path.basename(abs_path)
-            markdown_link = f"![Screenshot](/api/files/{filename})"
+            url = image_url or f"/api/files/{os.path.basename(abs_path)}"
+            markdown_link = f"![Screenshot]({url})"
             return ToolResult(f"Screenshot saved to {abs_path}\n\n{markdown_link}")
 
         return self._execute_operation(f"screenshot({path})", _do_screenshot, tab_index=tab_index)

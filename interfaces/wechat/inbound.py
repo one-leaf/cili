@@ -21,6 +21,7 @@ from core.multimodal import build_user_input
 from core.outbox import drain_files, record_delivery_notice
 from core.session_registry import registry, session_key
 from core.turn_dispatch import execute_turn, prepare_turn
+from interfaces.common.ask_user import resolve_answer
 from interfaces.wechat import commands, media
 from interfaces.wechat.access import OwnerTracker
 from interfaces.wechat.protocol import InboundMessage
@@ -280,43 +281,5 @@ def _bind_default_sink(runner, workspace_uuid: str, session_id: str) -> None:
     bind_default_sink(runner, workspace_uuid, session_id)
 
 
-def _resolve_answer(runner, content: str) -> str:
-    """ask_user 用编号文本渲染；用户回 "1" 时映射回选项 label。
-
-    审批卡的三档中文 label 也走这条路——``inject_ask_user_answer`` 靠
-    ``endswith(APPROVE_LABEL/REMEMBER_LABEL)`` 判定，所以必须先还原成 label。
-
-    **只在「恰好一个问题」时做映射**：多问题时编号在每个问题内重新开始，单个数字是
-    歧义的——与其猜错，不如原样透传（模型看到用户就回了 "1"，可以据此再问一次）。
-
-    与 ``sink.render_questions`` 是**一对**：那边的编号必须和这里一致。
-    """
-    if not content or not content.strip().isdigit():
-        return content
-    from core.tools.ask_user import find_pending_ask_user
-
-    pending = find_pending_ask_user(runner.session)
-    if not pending:
-        return content
-    questions = _questions_of(runner.session, pending)
-    if len(questions) != 1:
-        return content
-    idx = int(content.strip()) - 1
-    options = questions[0].get("options") or []
-    if 0 <= idx < len(options):
-        return str(options[idx].get("label") or content)
-    return content
-
-
-def _questions_of(session, tool_use_id: str) -> list[dict]:
-    """从会话里取某个 ask_user 工具调用的 questions。"""
-    for msg in session.messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if block.get("type") in ("tool_use", "tool_call") and block.get("id") == tool_use_id:
-                return list((block.get("input") or {}).get("questions") or [])
-    return []
+# 测试按旧名导入；渲染与回映射的定义已合并到 interfaces/common/ask_user.py
+_resolve_answer = resolve_answer

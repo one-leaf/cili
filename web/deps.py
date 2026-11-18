@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,6 +39,24 @@ logger = logging.getLogger(__name__)
 
 # master runner 池下沉至 core（接口无关），Web/QQ 等接入端共享同一份
 _sessions_lock = registry.lock  # 多步操作（workspace 删除/重置、配置重载）持锁
+
+_reload_lock = threading.Lock()
+
+
+def reload_all_runners() -> None:
+    """逐个重载缓存 runner 的配置（同步；调用方放线程池）。
+
+    单个 runner 失败不阻塞其余；``reload_config`` 会重建工具/发起网络探测，
+    属阻塞操作，只在锁内取快照。
+    """
+    with _reload_lock:
+        with _sessions_lock:
+            cached = list(registry.items())
+        for key, runner in cached:
+            try:
+                runner.reload_config()
+            except Exception as e:  # noqa: BLE001 —— 单个 runner 失败不影响其余
+                logger.warning(f"[web] runner {key} 重载配置失败: {e}")
 
 # Base directories
 WEB_DIR = Path(__file__).parent.resolve()

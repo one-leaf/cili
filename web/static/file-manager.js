@@ -1,6 +1,6 @@
 // ── file-manager.js ── 文件管理相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace
-// 依赖 utils.js 函数: getFileIcon, formatFileSize, showToast
+// 依赖 utils.js 函数: getFileIcon, showToast, escapeHtml
 
 // ── 文件管理器状态 ──
 let directoryBrowserCallback = null;  // 目录浏览器回调

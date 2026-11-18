@@ -18,7 +18,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.config import load_workspace_config, load_workspaces_index
+from core.config import load_workspaces_index
 from core.fs_utils import safe_upload_filename
 from core.teen_mode import deny_message, get_teen_mode
 from core.tools.office2pdf import (
@@ -41,6 +41,26 @@ router = APIRouter()
 def _teen_ws_guard(workspace_uuid: str) -> None:
     """文件域路由的受限工作区判定（本域不用 _require_workspace，逐处显式挂）。"""
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
+
+
+def _workspace_info_or_404(workspace_uuid: str) -> dict:
+    """校验 UUID、取工作区信息并过青少年守卫；不存在时 404。"""
+    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
+    info = _get_workspace_info(workspace_uuid)
+    if not info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _teen_ws_guard(workspace_uuid)
+    return info
+
+
+def _workspace_dir_or_404(workspace_uuid: str) -> Path:
+    """取工作区目录；目录缺失或不存在时 404。"""
+    info = _workspace_info_or_404(workspace_uuid)
+    directory = info.get("directory", "")
+    path = Path(directory)
+    if not directory or not path.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    return path
 
 # 单次上传文件大小上限
 _MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -153,11 +173,7 @@ async def get_workspace_file_short(file_path: str, workspace_uuid: str = ""):
     Otherwise, scan all workspaces to find the file.
     """
     if workspace_uuid:
-        _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-        info = _get_workspace_info(workspace_uuid)
-        if not info:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        _teen_ws_guard(workspace_uuid)
+        info = _workspace_info_or_404(workspace_uuid)
         workspace_dir = info.get("directory", "")
         if not workspace_dir:
             raise HTTPException(status_code=404, detail="Workspace directory not configured")
@@ -181,11 +197,7 @@ async def get_workspace_file_compat(file_path: str, workspace_uuid: str = ""):
 @router.get("/api/workspaces/{workspace_uuid}/files/{file_path:path}")
 async def get_workspace_file(workspace_uuid: str, file_path: str):
     """Serve a file from the workspace directory (for images, etc.)."""
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    info = _get_workspace_info(workspace_uuid)
-    if not info:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
+    info = _workspace_info_or_404(workspace_uuid)
 
     workspace_dir = info.get("directory", "")
     if not workspace_dir:
@@ -351,16 +363,7 @@ def list_files(workspace_uuid: str, path: str = ""):
     Returns:
         List of files and directories with relative paths.
     """
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    # Get workspace directory
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
 
     # Build target path
     if path and path.strip():
@@ -427,15 +430,7 @@ _SEARCH_SKIP_DIRS = {
 @router.get("/api/files/search")
 def search_files(workspace_uuid: str, q: str = "", limit: int = 200):
     """按文件名递归搜索工作区（名称包含，大小写不敏感）。"""
-    _validate_workspace_uuid(workspace_uuid)
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
     root = workspace_dir.resolve()
 
     query = q.strip().casefold()
@@ -484,15 +479,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
     独立路径（而非 /api/files/preview）避开 /api/files/{file_path:path} 的
     注册顺序陷阱；只读、限长、二进制不解码。
     """
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
 
     if not path or not path.strip():
         raise HTTPException(status_code=400, detail="path is required")
@@ -553,15 +540,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
 
 def _office_preview_source(workspace_uuid: str, path: str) -> tuple[Path, Path]:
     """Resolve and validate an Office source file inside a workspace."""
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
 
     if not path or not path.strip():
         raise HTTPException(status_code=400, detail="path is required")
@@ -649,15 +628,7 @@ def read_file(file_path: str, workspace_uuid: str):
     Returns:
         File content as text or binary
     """
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
 
     # Security: ensure path is within workspace
     file_full_path = (workspace_dir / file_path).resolve()
@@ -684,15 +655,7 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
         Created file/folder info
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(request.workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(request.workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
 
     # Build target path
     if request.path:
@@ -737,11 +700,7 @@ def delete_files(request: FileDeleteRequest, request_raw: Request = None):
         Deletion result
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(request.workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(request.workspace_uuid)
+    _workspace_info_or_404(request.workspace_uuid)
 
     # 青少年模式：文件删除可由家长锁定（默认放开——正常写代码需要删文件）
     tm = get_teen_mode()
@@ -750,9 +709,7 @@ def delete_files(request: FileDeleteRequest, request_raw: Request = None):
         tm.record_denied("file_delete")
         raise HTTPException(status_code=403, detail=deny_message("file_delete"))
 
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
 
     deleted = []
     errors = []
@@ -794,15 +751,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
         Update result
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(request.workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(request.workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
 
     file_full_path = (workspace_dir / request.path).resolve()
 
@@ -910,16 +859,11 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
     青少年模式开启且未全局解锁时拒绝——资源管理器可越出工作区浏览整盘。
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    _validate_workspace_uuid(request.workspace_uuid)  # W9: 防路径穿越
+    _workspace_info_or_404(request.workspace_uuid)
 
     client_ip = request_raw.client.host if request_raw and request_raw.client else ""
     if client_ip not in _LOCALHOST_IPS:
         raise HTTPException(status_code=403, detail="Access denied: open_in_explorer is localhost-only")
-
-    ws_config = load_workspace_config(request.workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(request.workspace_uuid)
 
     tm = get_teen_mode()
     if tm.is_enabled() and not tm.is_unlocked():
@@ -927,9 +871,7 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
         tm.record_denied("open_in_explorer")
         raise HTTPException(status_code=403, detail="青少年模式已开启：不允许打开系统资源管理器")
 
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
     workspace_root = workspace_dir.resolve()
 
     target = (workspace_dir / request.path).resolve() if request.path else workspace_root
@@ -983,15 +925,7 @@ def upload_files(
         Upload result
     """
     _csrf_protect(request)  # W6: CSRF 防护（multipart 属简单请求，须单独校验）
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
-    ws_config = load_workspace_config(workspace_uuid)
-    if not ws_config:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    _teen_ws_guard(workspace_uuid)
-
-    workspace_dir = Path(ws_config.get("directory", ""))
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=404, detail="Workspace directory not found")
+    workspace_dir = _workspace_dir_or_404(workspace_uuid)
 
     # Build target directory
     if path:

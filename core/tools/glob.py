@@ -65,7 +65,7 @@ class GlobTool(Tool):
             return ToolResult("Error: either 'pattern' or 'file_type' must be provided.", error=True)
 
         # Resolve to absolute path
-        search_dir = Path(self._resolve_path(path, read_only=True)) if path else Path(self.cwd)
+        search_dir = Path(self._resolve_path(path)) if path else Path(self.cwd)
         if not search_dir.is_dir():
             return ToolResult(f"Error: path is not a directory: {search_dir}", error=True)
         gate = self._read_gate([str(search_dir)])

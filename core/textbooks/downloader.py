@@ -38,6 +38,7 @@ from core.textbooks.smartedu import (
     credentials,
     fetch_book_source,
 )
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,7 @@ class TextbookDownloadTask:
         self.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+_now = now_str
 
 
 def _validate_book_key(book: OfficialBook) -> None:

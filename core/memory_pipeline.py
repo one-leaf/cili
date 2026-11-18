@@ -29,6 +29,7 @@ from core.config import (
     load_workspace_config,
     load_workspaces_index,
 )
+from core.fs_utils import atomic_write_json, atomic_write_text
 from core.llm import Message, create_llm_client
 from core.memory_store import (
     MAX_DESCRIPTION_LEN,
@@ -37,6 +38,7 @@ from core.memory_store import (
     MemoryStore,
     now_str,
 )
+from core.text_extract import message_text
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +182,9 @@ class _ExtractPointer:
             return {"last_msg_id": "", "last_extract_ts": ""}
 
     def save(self, last_msg_id: str, ts: str) -> None:
-        dirname = os.path.dirname(self.path)
-        os.makedirs(dirname, exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"last_msg_id": last_msg_id, "last_extract_ts": ts}, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        atomic_write_json(
+            self.path, {"last_msg_id": last_msg_id, "last_extract_ts": ts}
+        )
 
 
 _pointer_locks: dict[str, threading.Lock] = {}
@@ -210,18 +209,7 @@ def _msg_id(msg: dict) -> str:
 
 
 def _message_text(msg: dict, limit: int = 4000) -> str:
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = "\n".join(
-            str(block.get("text", ""))
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    else:
-        text = str(content)
-    text = text.strip()
+    text = message_text(msg.get("content", ""))
     if len(text) > limit:
         text = text[:limit] + f"\n…(truncated, {len(text)} chars total)"
     return text
@@ -638,11 +626,7 @@ def _write_summary(memory_dir: str, summary: str) -> None:
             kept.append(line)
             size += line_size
         text = "\n".join(kept)
-    path = os.path.join(memory_dir, "summary.md")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    atomic_write_text(os.path.join(memory_dir, "summary.md"), text)
 
 
 def _consolidate_pending(

@@ -432,7 +432,6 @@ def _audit_decision(session, permission: dict, decision: str, *, persisted: bool
 
 
 def _apply_permission_side_effects(
-    session,
     permission: dict,
     decision: str,
     permission_store=None,
@@ -568,7 +567,7 @@ def apply_answer(
             return "expired"
 
         persisted, rule_id, reason = _apply_permission_side_effects(
-            session, permission, decision, permission_store, permission_rules)
+            permission, decision, permission_store, permission_rules)
         _audit_decision(session, permission, decision, persisted=persisted,
                         rule_id=rule_id, reason=reason)
         _clear_pending_if_match(permission_store, permission.get("decision_id", ""))

@@ -8,8 +8,9 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Literal
+
+from core.time_utils import now_str
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SCHEDULE_TYPES = {"at", "interval", "cron"}
@@ -20,10 +21,6 @@ SCOPES = {"workspace", "global"}
 
 class CronValidationError(ValueError):
     """任务定义非法。"""
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _int_field(value: Any, default: int, name: str, minimum: int | None = None) -> int:

@@ -13,6 +13,7 @@ from core.cron.flags import cron_run_active
 from core.cron.model import Job, RunResult, State
 from core.cron.sessions import ensure_cron_session
 from core.session_runner import SessionRunner
+from core.text_extract import message_text
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +40,6 @@ def any_running() -> bool:
         except Exception:  # noqa: BLE001
             continue
     return False
-
-
-def clear_poison(workspace_uuid: str | None = None) -> None:
-    with _runner_lock:
-        if workspace_uuid is None:
-            _poisoned.clear()
-        else:
-            _poisoned.discard(workspace_uuid)
 
 
 def _workspace_cwd(workspace_uuid: str) -> str:
@@ -145,18 +138,7 @@ def _build_prompt(
 
 
 def _message_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text") or ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(part for part in parts if part)
-    return ""
+    return message_text(message.get("content"), strip=False)
 
 
 def _extract_final_text(runner: SessionRunner, start_index: int) -> str:

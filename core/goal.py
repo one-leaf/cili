@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
 
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class GoalManager:
         self.state = self._load()
 
     def _now(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return now_str()
 
     def _load(self) -> GoalState:
         """读盘；无论盘中 armed 为何值都 disarm（进程重启 → 不自动续跑）。"""
@@ -81,18 +81,6 @@ class GoalManager:
     def is_active(self) -> bool:
         """目标存在、armed 且状态 active 才继续循环。"""
         return self.exists() and self.state.armed and self.state.status == STATUS_ACTIVE
-
-    def status_text(self) -> str:
-        label = {
-            STATUS_ACTIVE: "执行中",
-            STATUS_PAUSED: "已暂停",
-            STATUS_COMPLETE: "已完成",
-            STATUS_BLOCKED: "受阻",
-            STATUS_STOPPED: "已清除",
-        }.get(self.state.status, self.state.status)
-        if self.state.status == STATUS_BLOCKED and self.state.blocked_reason:
-            label += f"（{self.state.blocked_reason}）"
-        return label
 
     # ── 变更 ─────────────────────────────────────────────
 

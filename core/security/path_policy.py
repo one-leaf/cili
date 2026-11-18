@@ -35,7 +35,6 @@ class PathTarget:
     op: str  # OP_READ / OP_WRITE / OP_DELETE
     raw: str
     op_name: str = ""
-    dynamic: bool = False
     resolved: str | None = None
     static_prefix: str | None = None
     display: str = ""
@@ -43,6 +42,11 @@ class PathTarget:
     code_hash: str = ""
     target_index: int = 0
     suggested_rule: dict | None = None
+
+    @property
+    def dynamic(self) -> bool:
+        """路径不可静态解析（prefixed / opaque）——由 resolved 推导，不单独存字段。"""
+        return self.resolved is None
 
     @property
     def dynamic_kind(self) -> str:

@@ -29,7 +29,11 @@ function clearPosition() {
     try { localStorage.removeItem(POSITION_KEY); } catch (e) {}
 }
 
-// ── 辅助函数：HTML转义 ──
+// ── 辅助函数：DOM 取值 / HTML转义 ──
+function byId(id) {
+    return document.getElementById(id);
+}
+
 function escapeHtml(text) {
     return String(text == null ? '' : text).replace(/[&<>"']/g,
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

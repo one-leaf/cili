@@ -72,6 +72,12 @@ registry = SessionRegistry()      # 模块级单例
 
 ## 三、API 端点
 
+### 3.0 响应与错误约定
+
+- **新端点**：失败用 HTTP 状态码（4xx/5xx）+ `detail` 文案；成功用 `{"success": true, ...}`。
+- **既有端点**：部分老接口用 HTTP 200 + `{"success": false, "error"|"message": ...}`（如升级、配置测试），前端按 `detail || error || message` 兜底读取，保持不变；新增端点不再采用这种形态。
+- SSE 流内的失败不走 HTTP 状态码，统一发 `{"type": "error", "content": ...}` 帧。
+
 ### 3.1 健康检查
 
 ```

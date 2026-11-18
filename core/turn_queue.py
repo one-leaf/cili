@@ -109,14 +109,6 @@ def merge_queued_turns(items: list[QueuedTurn]) -> tuple[Any, dict]:
             if isinstance(b, dict) and (b.get("_meta") or {}).get("file_mention")
         ]
 
-    def _image_blocks(user_input: Any) -> list[dict]:
-        if not isinstance(user_input, list):
-            return []
-        return [
-            b for b in user_input
-            if isinstance(b, dict) and b.get("type") == "image"
-        ]
-
     def _attachment_blocks(user_input: Any) -> list[dict]:
         if not isinstance(user_input, list):
             return []

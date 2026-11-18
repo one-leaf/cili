@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from core.media_fetch import InboundMedia, download_to_uploads
+from interfaces.common.media import MediaError, validate_media_path
 from interfaces.wechat.config import WechatConfig
 from interfaces.wechat.protocol import (
     ITEM_FILE,
@@ -60,10 +61,6 @@ _IMAGE_MIME_EXTS = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
-
-
-class MediaError(Exception):
-    """出站媒体处理失败（文案可直接给用户看）。"""
 
 
 # ─── 入站：下载 + 解密 ────────────────────────────────────────────────
@@ -199,25 +196,6 @@ def infer_upload_type(path: str | Path) -> tuple[int, int, str]:
     if Path(path).suffix.lower() in _IMAGE_EXTS:
         return UPLOAD_MEDIA_IMAGE, ITEM_IMAGE, "image_item"
     return UPLOAD_MEDIA_FILE, ITEM_FILE, "file_item"
-
-
-def validate_media_path(path: str | Path, workspace_root: str | Path) -> Path:
-    """路径白名单校验（realpath 双侧比对，防符号链接绕过）。
-
-    ``send_user_file`` 工具已经校验过一遍，这里再校验一次是纵深防御——本模块才是真正把
-    文件内容交给网络的地方。
-    """
-    target = Path(os.path.realpath(str(path)))
-    root = Path(os.path.realpath(str(workspace_root)))
-    try:
-        inside = os.path.commonpath([str(target), str(root)]) == str(root)
-    except ValueError:
-        inside = False
-    if not inside:
-        raise MediaError(f"文件不在工作区内：{path}")
-    if not target.is_file():
-        raise MediaError(f"文件不存在：{path}")
-    return target
 
 
 async def upload_media(

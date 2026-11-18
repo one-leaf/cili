@@ -251,7 +251,7 @@ class PythonTool(Tool):
     def _execute_file(self, script_file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
         """Execute a Python script file."""
         python_exe = _resolve_python_exe()
-        path = self._resolve_path(script_file, read_only=True)
+        path = self._resolve_path(script_file)
         if not os.path.isfile(path):
             return ToolResult(f"Error: script file not found: {script_file}", error=True)
 

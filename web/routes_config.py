@@ -24,7 +24,7 @@ from core.llm.server_presets import preset_headers, preset_payloads
 from core.stream_executor import get_stream_executor
 from core.teen_mode import deny_message, get_teen_mode
 from core.tools.mcp import get_provider
-from web.deps import _sessions_lock, registry, teen_guard
+from web.deps import reload_all_runners, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -450,13 +450,7 @@ async def update_config(request: UpdateConfigRequest):
         logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
 
     # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）。
-    # reload_config 会重建工具/发起网络探测，属阻塞操作：只在锁内取快照，
-    # 调用放到锁外，避免卡住事件循环
-    with _sessions_lock:
-        cached = list(registry.items())
-    for key, runner in cached:
-        await asyncio.to_thread(runner.reload_config)
-        logger.info(f"[Config] 已通知 master runner {key} 重新加载配置")
+    await asyncio.to_thread(reload_all_runners)
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
 
@@ -490,10 +484,7 @@ async def reload_mcp():
     cfg = await asyncio.to_thread(load_config)
     provider = get_provider()
     await asyncio.to_thread(provider.reload, cfg.mcp_servers, force=True)
-    with _sessions_lock:
-        cached = list(registry.items())
-    for key, runner in cached:
-        await asyncio.to_thread(runner.reload_config)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True, "servers": provider.status()}
 
 

@@ -310,18 +310,6 @@ def get_preset(key: str | None) -> ServerPreset:
     return PRESETS.get((key or "").strip()) or PRESETS["custom"]
 
 
-def preset_base_url(key: str | None, protocol: str) -> str:
-    """预设在该协议下的默认 Base URL；无固定地址返回空字符串。"""
-    preset = get_preset(key)
-    return preset.base_urls.get(normalize_protocol(protocol), "")
-
-
-def preset_api_path(key: str | None, protocol: str) -> str:
-    """预设在该协议下的路径覆盖；无覆盖返回空字符串（用协议默认）。"""
-    preset = get_preset(key)
-    return preset.api_paths.get(normalize_protocol(protocol), "")
-
-
 def protocol_default_api_path(protocol: str) -> str:
     return PROTOCOL_DEFAULT_API_PATHS[normalize_protocol(protocol)]
 

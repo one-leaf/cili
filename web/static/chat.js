@@ -1,7 +1,8 @@
 // ── chat.js ── 聊天相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingAttachments,
 //   chatMessages, chatInput, composerBtn
-// 依赖 app.js 函数: renderMarkdown, escapeHtml, showToast, loadSession, loadSessions, savePosition
+// 依赖 utils.js 函数: renderMarkdown, escapeHtml, showToast, savePosition
+// 依赖 app.js 函数: loadSession, loadSessions
 
 // 在飞回合的输出容器：sessionId → 该回合所有输出的专属容器。
 // 本回合的气泡全部渲染进容器，而容器只在「正在查看该会话」时挂在消息区。
@@ -1817,7 +1818,7 @@ async function sendMessage() {
     });
 
     try {
-        const requestBody = { content: message };
+        const requestBody = { content: message, client_id: clientId };
         if (attachmentsToSend) {
             requestBody.attachments = attachmentsToSend;
         }

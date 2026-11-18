@@ -23,7 +23,7 @@ from core.config import (
     save_global_config,
 )
 from core.security.permission_rules import PermissionRules, new_rule_id
-from web.deps import _csrf_protect, _require_workspace, registry, teen_guard
+from web.deps import _csrf_protect, _require_workspace, reload_all_runners, teen_guard
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -70,16 +70,6 @@ def _rules_store(scope: str) -> PermissionRules:
     return PermissionRules(path, global_path=global_path, hot_reload=False)
 
 
-def _reload_all_runners() -> None:
-    with registry.lock:
-        cached = list(registry.items())
-    for key, runner in cached:
-        try:
-            runner.reload_config()
-        except Exception as e:  # noqa: BLE001 —— 单个 runner 失败不影响其他
-            logger.warning(f"[permissions] runner {key} 重载失败: {e}")
-
-
 @router.get("/api/permissions")
 async def get_permissions():
     raw = load_global_config()
@@ -107,7 +97,7 @@ async def update_permissions(request: Request, body: PermissionUpdateRequest):
     raw["permissions"] = cfg.to_dict()
     if not save_global_config(raw):
         raise HTTPException(status_code=500, detail="保存权限配置失败")
-    await asyncio.to_thread(_reload_all_runners)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True, "permissions": cfg.to_dict()}
 
 
@@ -148,7 +138,7 @@ async def create_permission_rule(request: Request, scope: str = "global",
     saved = store.add_rule(rule, scope)
     if saved is None:
         raise HTTPException(status_code=400, detail="规则不合法（检查 decision/kind/match）")
-    await asyncio.to_thread(_reload_all_runners)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True, "rule": saved}
 
 
@@ -165,7 +155,7 @@ async def update_permission_rule(rule_id: str, request: Request,
     saved = store.update_rule(rule_id, updates, scope)
     if saved is None:
         raise HTTPException(status_code=404, detail="规则不存在或不可修改")
-    await asyncio.to_thread(_reload_all_runners)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True, "rule": saved}
 
 
@@ -176,7 +166,7 @@ async def delete_permission_rule(rule_id: str, request: Request, scope: str = "g
     store = _rules_store(scope)
     if not store.delete_rule(rule_id, scope):
         raise HTTPException(status_code=404, detail="规则不存在或不可删除")
-    await asyncio.to_thread(_reload_all_runners)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True}
 
 
@@ -186,5 +176,5 @@ async def revoke_ai_rules(request: Request, scope: str = "global"):
     _csrf_protect(request)
     store = _rules_store(scope)
     removed = store.revoke_judge_rules(scope)
-    await asyncio.to_thread(_reload_all_runners)
+    await asyncio.to_thread(reload_all_runners)
     return {"success": True, "removed": removed}

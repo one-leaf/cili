@@ -110,6 +110,13 @@ class GrepTool(Tool):
                 "type": "integer",
                 "description": "Maximum number of matches to return (default: 250).",
             },
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    "Search timeout in seconds (default: 60). Searching a whole repo "
+                    "with runtime data can exceed the default — narrow the path or raise this."
+                ),
+            },
         },
         "required": ["pattern"],
     }
@@ -130,6 +137,7 @@ class GrepTool(Tool):
         output_mode: str = "content",
         context: int = 0,
         max_results: int = 250,
+        timeout: int = 60,
     ) -> ToolResult:
         # ReDoS 防护：检测嵌套量词模式（固定字符串跳过）
         if not fixed_strings and _REDOS_PATTERN.search(pattern):
@@ -143,7 +151,7 @@ class GrepTool(Tool):
             pattern = _sanitize_regex(pattern)
 
         # Resolve to absolute path
-        path = self._resolve_path(path, read_only=True) if path else self.cwd
+        path = self._resolve_path(path) if path else self.cwd
         gate = self._read_gate([path])
         if gate is not None:
             return gate
@@ -162,6 +170,7 @@ class GrepTool(Tool):
                 file_type=file_type,
                 case_insensitive=case_insensitive,
                 fixed_strings=fixed_strings,
+                timeout=timeout,
             )
         except ValueError as e:
             return ToolResult(f"错误: {e}", error=True)
@@ -192,10 +201,15 @@ class GrepTool(Tool):
             return ToolResult(output)
 
         elif output_mode == "count":
-            return self._count_mode(sorted_files, pattern, case_insensitive, fixed_strings, max_results)
+            return self._count_mode(
+                sorted_files, pattern, case_insensitive, fixed_strings, max_results, timeout
+            )
 
         else:  # content mode
-            return self._content_mode(sorted_files, pattern, case_insensitive, fixed_strings, context, max_results)
+            return self._content_mode(
+                sorted_files, pattern, case_insensitive, fixed_strings, context,
+                max_results, timeout,
+            )
 
     def _find_matching_files(
         self,
@@ -205,6 +219,7 @@ class GrepTool(Tool):
         file_type: str | None,
         case_insensitive: bool,
         fixed_strings: bool,
+        timeout: int,
     ) -> list[str]:
         """Find all files matching the pattern using grep -l."""
         cmd_parts = ["grep", "-r", "-l"]
@@ -241,7 +256,9 @@ class GrepTool(Tool):
         cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
         cmd += " || true"
 
-        result = self._run_bash(cmd, max_chars=self.MAX_LIST_OUTPUT_CHARS)
+        result = self._run_bash(
+            cmd, timeout=timeout, max_chars=self.MAX_LIST_OUTPUT_CHARS
+        )
         # _run_bash 无输出时返回占位符 "(no output)"（而非空串）；命令带 `|| true`
         # 使退出码恒为 0，grep 无匹配（退出码 1）也走这里，按"无匹配文件"处理。
         # 但 result.error 表示超时/启动失败，不能伪装成"无匹配"。
@@ -293,6 +310,7 @@ class GrepTool(Tool):
         case_insensitive: bool,
         fixed_strings: bool,
         max_results: int,
+        timeout: int,
     ) -> ToolResult:
         """Generate count output for sorted files (batched grep -c)."""
         selected = sorted_files[:max_results]
@@ -309,7 +327,9 @@ class GrepTool(Tool):
             cmd_parts.extend(chunk)
             cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
             cmd += " || true"
-            result = self._run_bash(cmd, max_chars=self.MAX_COUNT_OUTPUT_CHARS)
+            result = self._run_bash(
+                cmd, timeout=timeout, max_chars=self.MAX_COUNT_OUTPUT_CHARS
+            )
             # 多文件时 grep -c 输出 "path:count"；单文件块只输出 count，需补文件名。
             # 同时丢弃 "grep: ..." 诊断（与 _find_matching_files 一致）
             lines = [
@@ -334,6 +354,7 @@ class GrepTool(Tool):
         fixed_strings: bool,
         context: int,
         max_results: int,
+        timeout: int,
     ) -> ToolResult:
         """Generate content output for sorted files (batched grep -n -H)."""
         output_lines = []
@@ -357,7 +378,9 @@ class GrepTool(Tool):
             # 无需再手动拼接
             cmd += f" | cut -c1-{self.MAX_COLUMNS} | head -n {remaining} || true"
 
-            result = self._run_bash(cmd, max_chars=self.MAX_LIST_OUTPUT_CHARS)
+            result = self._run_bash(
+                cmd, timeout=timeout, max_chars=self.MAX_LIST_OUTPUT_CHARS
+            )
             if result.output:
                 for line in result.output.strip().split('\n'):
                     if total_lines >= max_results:

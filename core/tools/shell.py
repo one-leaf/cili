@@ -373,16 +373,9 @@ class ShellMixin:
                     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                     "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                 )
-                paths = []
-                if _VENV_DIR:
-                    paths.append(_VENV_DIR)
-                if _VENV_SCRIPTS:
-                    paths.append(_VENV_SCRIPTS)
                 cili_tmp = self._workspace_tmp(self.workspace_uuid)
-                env_setup = ""
-                if paths:
-                    path_str = ";".join(paths)
-                    env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
+                path_str = ";".join([_VENV_DIR, _VENV_SCRIPTS])
+                env_setup = f'$env:PATH = "{path_str};$env:PATH"; '
                 env_setup += (
                     f'$env:TEMP = "{cili_tmp}"; '
                     f'$env:TMP = "{cili_tmp}"; '
@@ -396,32 +389,21 @@ class ShellMixin:
                 argv = [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command]
             else:
                 # Git Bash: export 前缀（POSIX 路径，: 分隔；PYTHONUNBUFFERED 仅 bash 侧设置）
-                paths = []
-                if _VENV_DIR:
-                    paths.append(_to_bash_path(_VENV_DIR))
-                if _VENV_SCRIPTS:
-                    paths.append(_to_bash_path(_VENV_SCRIPTS))
+                path_str = ":".join(
+                    [_to_bash_path(_VENV_DIR), _to_bash_path(_VENV_SCRIPTS)]
+                )
 
                 # 统一临时目录（bash 格式）；TEMP/TMP/TMPDIR 与 CILI_TMP 一致指向工作区 .cili/tmp
                 tmp_bash = _to_bash_path(self._workspace_tmp(self.workspace_uuid))
                 cili_tmp_bash = tmp_bash
 
-                if paths:
-                    path_str = ":".join(paths)
-                    full_command = (
-                        f'export PATH="{path_str}:$PATH" '
-                        f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                        f'CILI_TMP="{cili_tmp_bash}" '
-                        f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
-                        f'&& {command}'
-                    )
-                else:
-                    full_command = (
-                        f'export TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
-                        f'CILI_TMP="{cili_tmp_bash}" '
-                        f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
-                        f'&& {command}'
-                    )
+                full_command = (
+                    f'export PATH="{path_str}:$PATH" '
+                    f'TEMP="{tmp_bash}" TMP="{tmp_bash}" TMPDIR="{tmp_bash}" '
+                    f'CILI_TMP="{cili_tmp_bash}" '
+                    f'LANG=C.UTF-8 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1 '
+                    f'&& {command}'
+                )
                 argv = [_GIT_BASH_PATH, "-c", full_command]
 
             proc = subprocess.Popen(
