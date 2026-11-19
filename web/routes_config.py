@@ -64,11 +64,17 @@ class UpdateConfigRequest(BaseModel):
     mcp_servers: dict | None = None                      # MCP 服务器配置 {name: {...}}
     qq: dict | None = None                               # QQ 接入端配置
     wechat: dict | None = None                           # 微信接入端配置（凭证走扫码，不在这里）
+    email: dict | None = None                            # 邮件接入端配置（含 password，掩码回传保留）
 
 
 class McpTestRequest(BaseModel):
     name: str = ""
     config: dict | None = None
+
+
+class EmailTestRequest(BaseModel):
+    """邮箱连接测试：整段账号配置（表单当前态，含明文密码时可留空复用已存值）。"""
+    account: dict | None = None
 
 
 class TestConfigRequest(BaseModel):
@@ -110,7 +116,7 @@ def _is_masked(v: str | None) -> bool:
     return bool(v) and "..." in v
 
 
-_ACCOUNT_ID_RE = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.@-]{1,128}")
+_ACCOUNT_ID_RE = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.@+-]{1,128}")
 
 
 def _validate_account_id(acct_id: str) -> str:
@@ -118,6 +124,15 @@ def _validate_account_id(acct_id: str) -> str:
     if not _ACCOUNT_ID_RE.fullmatch(acct_id or ""):
         raise HTTPException(status_code=400, detail=f"Invalid account id: {acct_id!r}")
     return acct_id
+
+
+def _valid_email_address(value: str) -> bool:
+    """白名单地址校验（宽松：有一个 @、两侧非空、无空白）。"""
+    text = str(value or "").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return False
+    local, sep, domain = text.partition("@")
+    return bool(sep and local and domain and "." in domain)
 
 
 def _mask_mcp_server(cfg: dict) -> dict:
@@ -207,6 +222,24 @@ def _mask_api_key(config: dict) -> dict:
                 qq_copy["secret_masked"] = _mask_secret(flat_secret)
             qq_copy.pop("secret", None)
         result["qq"] = qq_copy
+    # Mask 邮件 password（按账号）
+    if "email" in result and isinstance(result["email"], dict):
+        email_copy = result["email"].copy()
+        accounts = email_copy.get("accounts")
+        if isinstance(accounts, list):
+            masked_accounts = []
+            for acct in accounts:
+                if isinstance(acct, dict):
+                    a = acct.copy()
+                    pwd = a.get("password", "")
+                    if pwd:
+                        a["password_masked"] = _mask_secret(pwd)
+                    a.pop("password", None)
+                    masked_accounts.append(a)
+                else:
+                    masked_accounts.append(acct)
+            email_copy["accounts"] = masked_accounts
+        result["email"] = email_copy
     return result
 
 
@@ -243,6 +276,10 @@ def _apply_account_enabled_changes(
             from interfaces.qq import start_qq_interface, stop_qq_interface
 
             start_fn, stop_fn = start_qq_interface, stop_qq_interface
+        elif interface == "email":
+            from interfaces.email import start_email_interface, stop_email_interface
+
+            start_fn, stop_fn = start_email_interface, stop_email_interface
         else:
             from interfaces.wechat import start_wechat_interface, stop_wechat_interface
 
@@ -295,7 +332,8 @@ async def update_config(request: UpdateConfigRequest):
     tm = get_teen_mode()
     if tm.is_enabled() and not tm.is_unlocked():
         if any(v is not None for v in (request.providers, request.agents,
-                                       request.mcp_servers, request.qq, request.wechat)):
+                                       request.mcp_servers, request.qq, request.wechat,
+                                       request.email)):
             tm.audit("deny", action="config_update", source="web")
             tm.record_denied("config_update")
             raise HTTPException(status_code=403, detail=deny_message("config_update"))
@@ -427,6 +465,56 @@ async def update_config(request: UpdateConfigRequest):
             str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
         }
 
+    # Update 邮件接入端配置（账号列表，全量替换；password 留空/掩码 = 保留原值）
+    email_enable_before: dict[str, bool] = {}
+    email_enable_after: dict[str, bool] = {}
+    if request.email is not None:
+        incoming = dict(request.email)
+        accounts_in = incoming.get("accounts")
+        if not isinstance(accounts_in, list):
+            accounts_in = []
+        existing_email = config.get("email") if isinstance(config.get("email"), dict) else {}
+        old_accounts = existing_email.get("accounts") \
+            if isinstance(existing_email.get("accounts"), list) else []
+        old_by_id = {
+            str(a.get("id") or ""): a for a in old_accounts if isinstance(a, dict)
+        }
+        new_accounts: list[dict] = []
+        seen_ids: set[str] = set()
+        for item in accounts_in:
+            if not isinstance(item, dict):
+                continue
+            from interfaces.email.config import EmailConfig
+
+            cfg_obj = EmailConfig.from_dict(item)
+            # 账号 id 恒等于邮箱地址（稳定、唯一、用户可读）
+            cfg_obj.id = (cfg_obj.email_address or cfg_obj.id).strip().lower()
+            if not cfg_obj.id:
+                continue          # 没有邮箱地址的账号无法寻址，直接丢弃
+            _validate_account_id(cfg_obj.id)
+            if cfg_obj.id in seen_ids:
+                raise HTTPException(status_code=400, detail=f"邮箱重复：{cfg_obj.id}")
+            seen_ids.add(cfg_obj.id)
+            saved = old_by_id.get(cfg_obj.id) or {}
+            if not cfg_obj.email_address:
+                cfg_obj.email_address = str(saved.get("email_address") or cfg_obj.id)
+            if not cfg_obj.password or _is_masked(cfg_obj.password):
+                cfg_obj.password = str(saved.get("password") or "")
+            for sender in cfg_obj.allowed_senders:
+                if not _valid_email_address(sender):
+                    raise HTTPException(
+                        status_code=400, detail=f"白名单地址不合法：{sender!r}"
+                    )
+            new_accounts.append(cfg_obj.to_dict())
+        config["email"] = {"accounts": new_accounts}
+        email_enable_before = {
+            str(a.get("id") or ""): bool(a.get("enabled"))
+            for a in old_accounts if isinstance(a, dict)
+        }
+        email_enable_after = {
+            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
+        }
+
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
@@ -439,6 +527,10 @@ async def update_config(request: UpdateConfigRequest):
     if wechat_enable_before != wechat_enable_after:
         await asyncio.to_thread(
             _apply_account_enabled_changes, "wechat", wechat_enable_before, wechat_enable_after
+        )
+    if email_enable_before != email_enable_after:
+        await asyncio.to_thread(
+            _apply_account_enabled_changes, "email", email_enable_before, email_enable_after
         )
 
     # 重连 MCP 服务器（签名变化才真正重连）
@@ -453,6 +545,34 @@ async def update_config(request: UpdateConfigRequest):
     await asyncio.to_thread(reload_all_runners)
 
     return {"success": True, "config_path": str(GLOBAL_CONFIG_PATH)}
+
+
+@router.post("/api/config/test-email")
+async def test_email(request: EmailTestRequest | None = None):
+    """测试邮箱账号的 IMAP/SMTP 连通性（不保存配置、不发测试邮件）。
+
+    密码留空或为掩码时按 ``id`` 复用已保存的密码——与 PUT 的保留语义一致。
+    """
+    if request is None or not request.account:
+        return {"ok": False, "imap": "", "smtp": "", "error": "缺少账号配置"}
+    from interfaces.email.config import EmailConfig, email_account_by_id
+
+    cfg = EmailConfig.from_dict(request.account)
+    if not cfg.password or _is_masked(cfg.password):
+        saved = email_account_by_id((cfg.id or cfg.email_address).strip().lower())
+        if saved is not None:
+            cfg.password = saved.password
+    if not cfg.is_ready():
+        return {
+            "ok": False, "imap": "", "smtp": "",
+            "error": "请先填写邮箱地址、IMAP/SMTP 服务器、用户名与密码",
+        }
+    from interfaces.email.client import EmailClient
+
+    try:
+        return await asyncio.to_thread(EmailClient(cfg).test)
+    except Exception as e:  # noqa: BLE001 — 测试失败按结果返回，不抛 500
+        return {"ok": False, "imap": "", "smtp": "", "error": str(e)}
 
 
 @router.get("/api/mcp/servers")

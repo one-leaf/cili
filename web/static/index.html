@@ -333,6 +333,7 @@
                 <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
+                <button class="settings-tab" data-tab="email">邮件接入端</button>
                 <button class="settings-tab" data-tab="teen">青少年模式</button>
                 <button class="settings-tab" data-tab="about">关于</button>
             </div>
@@ -782,6 +783,15 @@
                         <div id="wechat-accounts-list"></div>
                         <button id="wechat-add-account-btn" class="add-entry-btn" type="button">＋ 添加新账号</button>
                         <div class="settings-note">凭证来自扫码，按账号存放，不写进设置文件；保存后即刻生效（无需重启）。不同账号可绑定不同默认工作空间来隔离记忆。</div>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-email">
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>邮件接入端</strong> — 用邮箱（IMAP 收 + SMTP 回）与 Cili 对话，与网页端<strong>共享同一会话</strong>。只处理<strong>白名单发件人</strong>的来信，其余一律静默丢弃（不回信）。</div>
+                        <div id="email-accounts-list"></div>
+                        <button id="email-add-account-btn" class="add-entry-btn" type="button">＋ 添加邮箱</button>
+                        <div class="settings-note">密码填邮箱服务商的「授权码 / 应用专用密码」，不是登录密码。白名单为空时该账号不处理任何来信；保存后即刻生效（无需重启）。</div>
                     </div>
                 </div>
 

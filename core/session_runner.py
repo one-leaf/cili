@@ -84,6 +84,7 @@ INTERFACE_TOOLS: dict[str, frozenset[str]] = {
     "web": frozenset({"send_user_file"}),   # Web 交付形态是下载卡片（web/sse.drain_outbox_events）
     "qq": frozenset({"send_user_file"}),
     "wechat": frozenset({"send_user_file"}),
+    "email": frozenset({"send_user_file"}),  # 附件随回信发出
 }
 
 

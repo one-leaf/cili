@@ -91,6 +91,14 @@ class AppContext:
         except Exception as e:
             logger.warning(f"[AppContext] 启动微信接入端失败: {e}")
 
+        # 邮件接入端（未启用 / 配置不完整时静默跳过）
+        try:
+            from interfaces.email import start_email_interface
+            if start_email_interface():
+                logger.info("[AppContext] 邮件接入端已启动")
+        except Exception as e:
+            logger.warning(f"[AppContext] 启动邮件接入端失败: {e}")
+
     @staticmethod
     def _connect_mcp_servers() -> None:
         try:
@@ -114,6 +122,7 @@ class AppContext:
             ("流式线程池", self._stop_stream_executor),
             ("QQ 接入端", self._stop_qq),
             ("微信接入端", self._stop_wechat),
+            ("邮件接入端", self._stop_email),
             ("AgentMailbox", self._stop_mailbox),
             ("浏览器服务", self._stop_browser),
             ("MCP provider", self._stop_mcp),
@@ -154,6 +163,11 @@ class AppContext:
     def _stop_wechat() -> None:
         from interfaces.wechat import stop_wechat_interface
         stop_wechat_interface()
+
+    @staticmethod
+    def _stop_email() -> None:
+        from interfaces.email import stop_email_interface
+        stop_email_interface()
 
     @staticmethod
     def _stop_browser() -> None:

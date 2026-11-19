@@ -26,6 +26,7 @@ from web.routes_chat import router as chat_router
 from web.routes_config import router as config_router
 from web.routes_courseware import router as courseware_router
 from web.routes_cron import router as cron_router
+from web.routes_email import router as email_router
 from web.routes_files import router as files_router
 from web.routes_memory import router as memory_router
 from web.routes_permissions import router as permissions_router
@@ -276,6 +277,7 @@ app.include_router(courseware_router)
 app.include_router(memory_router)
 app.include_router(qq_router)
 app.include_router(wechat_router)
+app.include_router(email_router)
 
 
 if __name__ == "__main__":

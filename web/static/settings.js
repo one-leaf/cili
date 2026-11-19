@@ -654,6 +654,170 @@ async function refreshWechatStatus() {
     }
 }
 
+// ─── 邮件接入端设置 ──────────────────────────────────────────────────
+
+function buildEmailCard(acc) {
+    const card = document.createElement('div');
+    card.className = 'account-card settings-card';
+    card.dataset.accountId = acc.id || '';
+    const configured = !!(acc.email_address && acc.imap_host && acc.smtp_host);
+    const pwdPlaceholder = acc.password_masked
+        ? `当前: ${acc.password_masked}（留空保持不变）`
+        : '授权码 / 应用专用密码';
+    const senders = Array.isArray(acc.allowed_senders) ? acc.allowed_senders.join('\n') : '';
+    const smtpSel = acc.smtp_security === 'starttls' ? ' selected' : '';
+    card.innerHTML = `
+        ${accountHeaderHtml(acc, configured, configured ? '已配置' : '未配置')}
+        <div class="setting-row">
+            <label>邮箱</label>
+            <div class="control">
+                <div class="inline">
+                    <input class="acc-email" placeholder="agent@example.com" value="${escapeHtml(acc.email_address || '')}">
+                    <button type="button" class="acc-test-btn btn-secondary">测试连接</button>
+                    <span class="hint acc-test-result"></span>
+                </div>
+            </div>
+        </div>
+        <div class="setting-row">
+            <label>IMAP</label>
+            <div class="control">
+                <div class="inline">
+                    <input class="acc-imap-host" placeholder="imap.example.com" value="${escapeHtml(acc.imap_host || '')}">
+                    <input class="acc-imap-port" type="number" style="width:80px" placeholder="993" value="${acc.imap_port || 993}">
+                    <label class="switch"><input type="checkbox" class="acc-imap-ssl" ${acc.imap_ssl !== false ? 'checked' : ''}>SSL</label>
+                </div>
+            </div>
+        </div>
+        <div class="setting-row">
+            <label>SMTP</label>
+            <div class="control">
+                <div class="inline">
+                    <input class="acc-smtp-host" placeholder="smtp.example.com" value="${escapeHtml(acc.smtp_host || '')}">
+                    <input class="acc-smtp-port" type="number" style="width:80px" placeholder="465" value="${acc.smtp_port || 465}">
+                    <select class="acc-smtp-security">
+                        <option value="ssl"${smtpSel ? '' : ' selected'}>SSL (465)</option>
+                        <option value="starttls"${smtpSel}>STARTTLS (587)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="setting-row">
+            <label>登录</label>
+            <div class="control">
+                <div class="inline">
+                    <input class="acc-username" placeholder="用户名（通常是邮箱地址）" value="${escapeHtml(acc.username || '')}">
+                    <input class="acc-password" type="password" placeholder="${escapeHtml(pwdPlaceholder)}">
+                </div>
+                <div class="hint">密码填授权码/应用专用密码，不是登录密码</div>
+            </div>
+        </div>
+        <div class="setting-row">
+            <label>白名单</label>
+            <div class="control">
+                <textarea class="acc-senders" rows="2" placeholder="每行一个发件邮箱，如：me@example.com">${escapeHtml(senders)}</textarea>
+                <div class="hint">只有这些地址的来信会触发回复；其余静默丢弃、不回信。<strong>留空 = 该账号不处理任何来信</strong></div>
+            </div>
+        </div>
+        <div class="acc-email-status hint"></div>
+        ${workspaceFieldsHtml(acc)}`;
+    bindAccountCommon(card, '删除该邮箱？保存后其配置与会话绑定将被移除。');
+    card.querySelector('.acc-test-btn').addEventListener('click', () => testEmailConnection(card));
+    return card;
+}
+
+function renderEmailAccounts(accounts) {
+    const list = document.getElementById('email-accounts-list');
+    list.innerHTML = '';
+    (Array.isArray(accounts) ? accounts : []).forEach(acc => list.appendChild(buildEmailCard(acc)));
+}
+
+function collectEmailCard(card) {
+    const email = card.querySelector('.acc-email').value.trim().toLowerCase();
+    const senders = card.querySelector('.acc-senders').value
+        .split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
+    return {
+        id: email,
+        label: card.querySelector('.acc-label').value.trim(),
+        enabled: card.querySelector('.acc-enabled').checked,
+        email_address: email,
+        imap_host: card.querySelector('.acc-imap-host').value.trim(),
+        imap_port: parseInt(card.querySelector('.acc-imap-port').value, 10) || 993,
+        imap_ssl: card.querySelector('.acc-imap-ssl').checked,
+        smtp_host: card.querySelector('.acc-smtp-host').value.trim(),
+        smtp_port: parseInt(card.querySelector('.acc-smtp-port').value, 10) || 465,
+        smtp_security: card.querySelector('.acc-smtp-security').value,
+        username: card.querySelector('.acc-username').value.trim(),
+        password: card.querySelector('.acc-password').value,
+        allowed_senders: senders,
+        default_workspace_uuid: card.querySelector('.acc-workspace').value,
+        workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
+        session_mode: card.querySelector('.acc-session-mode').value,
+        session_locked: card.querySelector('.acc-session-locked').checked,
+    };
+}
+
+function collectEmailAccounts() {
+    return Array.from(document.querySelectorAll('#email-accounts-list .account-card'))
+        .map(collectEmailCard);
+}
+
+async function testEmailConnection(card) {
+    const resultEl = card.querySelector('.acc-test-result');
+    resultEl.textContent = '测试中…';
+    try {
+        const resp = await fetch('/api/config/test-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account: collectEmailCard(card) }),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            resultEl.textContent = '✓ IMAP 与 SMTP 均可用';
+            resultEl.style.color = 'var(--ms-ok, #2e7d32)';
+        } else {
+            resultEl.textContent = `✗ ${data.error || '连接失败'}`;
+            resultEl.style.color = 'var(--ms-danger, #c62828)';
+            card.querySelector('.acc-email-status').textContent =
+                `IMAP: ${data.imap || '-'}　SMTP: ${data.smtp || '-'}`;
+        }
+    } catch (e) {
+        resultEl.textContent = '✗ ' + e.message;
+    }
+}
+
+async function refreshEmailStatus() {
+    try {
+        const resp = await fetch('/api/email/status');
+        const data = await resp.json();
+        const byId = {};
+        (data.accounts || []).forEach(a => { byId[a.id] = a; });
+        document.querySelectorAll('#email-accounts-list .account-card').forEach(card => {
+            const acc = byId[card.dataset.accountId];
+            if (!acc) return;
+            const parts = [acc.configured ? '已配置' : '未配置'];
+            if (acc.running) parts.push('运行中');
+            const chip = card.querySelector('.acc-login-status');
+            if (chip) {
+                chip.textContent = parts.join(' · ');
+                chip.className = 'acc-login-status chip ' + (acc.configured ? 'chip-ok' : 'chip-ask');
+            }
+            const statusEl = card.querySelector('.acc-email-status');
+            if (!statusEl) return;
+            const lines = [];
+            if (acc.last_poll_at) lines.push(`最近轮询：${acc.last_poll_at}`);
+            if (acc.last_error) lines.push(`⚠️ ${acc.last_error}`);
+            const ignored = acc.ignored_24h || {};
+            lines.push(`24h 拦截：${ignored.total || 0} 封`);
+            (acc.recent_ignored || []).slice(-3).forEach(r => {
+                lines.push(`· ${r.from || '(未知)'}（${r.reason}，${r.at}）`);
+            });
+            statusEl.textContent = lines.join('　');
+        });
+    } catch (e) {
+        // 状态刷新失败不打扰用户
+    }
+}
+
 function hideWechatQr() {
     document.getElementById('wechat-qr-wrap').style.display = 'none';
     document.getElementById('wechat-verify-wrap').style.display = 'none';
@@ -803,6 +967,10 @@ async function wechatLogout(card) {
         if (wechatAdd) wechatAdd.addEventListener('click', () => {
             document.getElementById('wechat-accounts-list').appendChild(buildWechatCard({ id: newAccountId() }));
         });
+        const emailAdd = document.getElementById('email-add-account-btn');
+        if (emailAdd) emailAdd.addEventListener('click', () => {
+            document.getElementById('email-accounts-list').appendChild(buildEmailCard({ enabled: true }));
+        });
         const verifyBtn = document.getElementById('wechat-verify-btn');
         if (verifyBtn) {
             verifyBtn.addEventListener('click', () => {
@@ -886,6 +1054,10 @@ async function openSettings() {
         // ── 微信接入端 ──
         renderWechatAccounts(cfg.wechat && cfg.wechat.accounts);
         refreshWechatStatus();  // 配置里没有登录态，从 /api/wechat/status 补齐
+
+        // ── 邮件接入端 ──
+        renderEmailAccounts(cfg.email && cfg.email.accounts);
+        refreshEmailStatus();   // 运行态与拦截统计从 /api/email/status 补齐
 
         // ── 关于（版本与升级） ──
         loadAboutStatus();
@@ -979,6 +1151,11 @@ async function saveSettings() {
 
     // ── 微信接入端（账号列表） ──
     payload.wechat = { accounts: collectWechatAccounts() };
+
+    // ── 邮件接入端（账号列表；未填邮箱地址的卡片不提交） ──
+    payload.email = {
+        accounts: collectEmailAccounts().filter(a => a.email_address)
+    };
 
     try {
         const response = await fetch('/api/config', {
