@@ -142,6 +142,14 @@ function _editorContextKey(ctx) {
     return sel ? `${ctx.path}:${sel.startLine}-${sel.endLine}` : ctx.path;
 }
 
+// 发送后引用即被消费：抑制当前编辑器上下文 chip，直到选区/文件再次变化
+// （与点 × 移除同一机制；若用户在编辑器里改选区，会作为新引用重新出现）
+function suppressEditorContextChip() {
+    if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) return;
+    const ctx = window.FileTree.getEditorContext();
+    if (ctx) _editorContextChip.suppressedKey = _editorContextKey(ctx);
+}
+
 function getActiveEditorContext() {
     if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) return null;
     const ctx = window.FileTree.getEditorContext();
@@ -1737,6 +1745,7 @@ async function sendMessage() {
             if (!currentSession || currentSession.session_id !== sessionId) return;
             chatInput.value = '';
             pendingAttachments = [];
+            suppressEditorContextChip();
             renderComposerAttachments();
             upsertQueuedItem(data.item);
             updateComposerButtons();
@@ -1753,6 +1762,7 @@ async function sendMessage() {
     // Clear input（按钮配色由 updateComposerButtons 统一决定）
     chatInput.value = '';
     pendingAttachments = [];
+    suppressEditorContextChip();
     renderComposerAttachments();
     isSending = true;
     foregroundStreamSessionId = sessionId;
