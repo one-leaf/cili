@@ -2138,6 +2138,7 @@ function shareSession(session) {
 async function loadSession(sessionId) {
     if (!currentWorkspace) return;
 
+    if (window.CiliTTS) CiliTTS.stop();  // 切换会话：停止正在进行的朗读
     hideSuggestBar({ invalidate: true });  // 切换会话：收起推荐、作废在途请求
     if (window.ContextGauge) ContextGauge.close();  // 上下文面板随会话切换关闭
     const epoch = ++sessionLoadEpoch;

@@ -466,6 +466,18 @@
                                     <div class="hint">同时运行的后台任务上限（默认 2，范围 1–10）</div>
                                 </div>
                             </div>
+                            <div class="setting-row">
+                                <label for="system-tts-rate">朗读语速</label>
+                                <div class="control">
+                                    <select id="system-tts-rate" style="width:160px">
+                                        <option value="0.8">0.8x</option>
+                                        <option value="1">1.0x</option>
+                                        <option value="1.2">1.2x</option>
+                                        <option value="1.5">1.5x</option>
+                                    </select>
+                                    <div class="hint">消息卡片「朗读」按钮的语速；仅本浏览器生效</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1441,6 +1453,7 @@
     <script src="/static/libs/codemirror6.bundle.min.js"></script>
     <script src="/static/utils.js"></script>
     <script src="/static/voice-input.js"></script>
+    <script src="/static/tts.js"></script>
     <script src="/static/file-tree.js"></script>
     <script src="/static/settings.js"></script>
     <script src="/static/file-manager.js"></script>

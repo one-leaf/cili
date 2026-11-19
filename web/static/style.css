@@ -1746,6 +1746,11 @@ mjx-container {
     background-color: rgba(0, 0, 0, 0.06);
 }
 
+/* 朗读中的操作按钮：点亮主色 */
+.msg-action-btn.speaking {
+    color: var(--primary-color);
+}
+
 /* 时间标签（跟在操作按钮右侧） */
 .message-time {
     font-size: 11px;

@@ -2011,9 +2011,10 @@ async function doRevert(msgId) {
     }
 }
 
-// 消息气泡操作图标：复制 / 引用 / 分享 / 撤销（Material Design 图标，Apache 2.0）
+// 消息气泡操作图标：复制 / 朗读 / 引用 / 分享 / 撤销（Material Design 图标，Apache 2.0）
 const ACTION_ICONS = {
     copy: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>',
+    speak: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>',
     quote: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z"/></svg>',
     share: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>',
     revert: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>',
@@ -2100,6 +2101,12 @@ function addMessage(role, content, msgId, createdAt, container = chatMessages) {
         // 复制（仅 用户/助手 且有内容）
         if ((role === 'user' || role === 'assistant') && content) {
             actionsDiv.appendChild(makeMessageAction('复制', 'copy', () => doCopy(messageDiv)));
+        }
+        // 朗读（仅助手消息；浏览器不支持 speechSynthesis 时不渲染）
+        if (role === 'assistant' && content && window.CiliTTS) {
+            let speakBtn = null;
+            speakBtn = makeMessageAction('朗读', 'speak', () => window.CiliTTS.toggle(messageDiv, speakBtn));
+            actionsDiv.appendChild(speakBtn);
         }
         // 引用（仅 用户/助手）
         if (role === 'user' || role === 'assistant') {
