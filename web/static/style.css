@@ -1700,14 +1700,20 @@ mjx-container {
     font-weight: 600;
 }
 
-/* Message action bar: 气泡外左下角小图标按钮（复制/引用/分享/撤销）+ 时间 */
+/* Message action bar: 卡片内左下角小图标按钮（复制/朗读/引用/分享/撤销）+ 时间。
+   放在内容下方、参与布局：气泡宽度自动容纳操作条（窄气泡不会被撑破或溢出），
+   操作条也不再占用气泡之间的间距、贴住下一条消息。 */
 .message-actions {
-    position: absolute;
-    left: 2px;
-    bottom: -20px;
     display: flex;
+    align-items: center;
     gap: 2px;
-    z-index: 1;
+    margin-top: 8px;
+}
+
+/* 操作条已进卡片内，底部不再预留悬浮操作条所需的 28px */
+.message.user,
+.message.assistant:not(.tool):not(.thinking) {
+    padding-bottom: 15px;
 }
 
 /* tool 气泡在滚动容器内，底部操作条会被裁切，隐藏 */
