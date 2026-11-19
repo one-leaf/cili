@@ -15,8 +15,9 @@ import logging
 import threading
 from contextlib import suppress
 
+from interfaces.common.access import OwnerTracker
 from interfaces.common.host import HostBase
-from interfaces.email.access import OwnerTracker
+from interfaces.common.service import accounts_running, start_accounts, stop_accounts
 from interfaces.email.config import EmailConfig, load_email_accounts
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ class EmailHost(HostBase):
             loop=asyncio.get_running_loop(),
             client=client,
         )
-        owner = OwnerTracker(runtime.state)
+        owner = OwnerTracker(runtime.state, log_tag="email")
         handler = InboundHandler(runtime, owner)
         poller = Poller(runtime, handler)
 
@@ -106,59 +107,25 @@ def start_email_interface(account_id: str | None = None) -> bool:
 
     返回是否至少启动了一个账号。未启用 / 配置不完整 / 已在跑的账号静默跳过。
     """
-    started: list[str] = []
-    with _lock:
-        for cfg in load_email_accounts():
-            if account_id is not None and cfg.id != account_id:
-                continue
-            if not cfg.enabled:
-                continue
-            if not cfg.is_ready():
-                logger.warning(
-                    f"[email/service] 账号 {cfg.label or cfg.id} 已启用但配置不完整，跳过"
-                )
-                continue
-            existing = _hosts.get(cfg.id)
-            if existing is not None and existing.is_alive():
-                continue          # 已在跑（幂等）
-            _hosts.pop(cfg.id, None)
-            host = EmailHost(cfg)
-            if not host.start():
-                logger.warning(f"[email/service] 账号 {cfg.label or cfg.id} 启动失败，未登记")
-                host.stop()
-                continue
-            _hosts[cfg.id] = host
-            started.append(cfg.id)
-    if started:
-        logger.info(f"[email/service] 已启动 {len(started)} 个账号：{started}")
-    return bool(started)
+    return start_accounts(
+        account_id=account_id,
+        hosts=_hosts,
+        lock=_lock,
+        load_accounts=load_email_accounts,
+        host_cls=EmailHost,
+        not_ready=lambda cfg: None if cfg.is_ready() else "已启用但配置不完整",
+        log_tag="email",
+    )
 
 
 def stop_email_interface(account_id: str | None = None) -> None:
     """停止邮件接入端（幂等）。account_id 为 None 时停止全部。"""
-    with _lock:
-        if account_id is None:
-            hosts = dict(_hosts)
-            _hosts.clear()
-        else:
-            host = _hosts.pop(account_id, None)
-            hosts = {account_id: host} if host is not None else {}
-    for hid, host in hosts.items():
-        try:
-            host.stop()
-        except Exception:  # noqa: BLE001
-            logger.exception(f"[email/service] 停止账号 {hid} 失败")
+    stop_accounts(account_id=account_id, hosts=_hosts, lock=_lock, log_tag="email")
 
 
 def email_interface_running(account_id: str | None = None) -> bool:
     """是否有账号在跑。account_id 为 None 时指「任一账号」。"""
-    with _lock:
-        for hid, host in list(_hosts.items()):
-            if not host.is_alive():
-                _hosts.pop(hid, None)
-        if account_id is not None:
-            return account_id in _hosts
-        return bool(_hosts)
+    return accounts_running(account_id=account_id, hosts=_hosts, lock=_lock)
 
 
 def email_status_snapshot(account_id: str) -> dict:

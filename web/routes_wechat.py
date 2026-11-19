@@ -22,7 +22,7 @@ from interfaces.wechat.account import clear_account, load_account
 from interfaces.wechat.config import load_wechat_accounts
 from interfaces.wechat.login import WechatLoginStore
 from interfaces.wechat.protocol import WechatApiError
-from web.deps import teen_guard
+from web.deps import restart_interface, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -74,12 +74,11 @@ async def _restart_interface(account_id: str) -> None:
     没在跑也会尝试拉起：start 内部会检查 enabled 与凭证，不满足就静默跳过
     ——所以「登录成功」本身就能把一个 enabled 但此前没登录的账号带起来。
     """
-    await _stop_interface(account_id)
     try:
-        from interfaces.wechat import start_wechat_interface
+        from interfaces.wechat import start_wechat_interface, stop_wechat_interface
     except Exception:  # noqa: BLE001
         return
-    await asyncio.to_thread(start_wechat_interface, account_id)
+    await restart_interface(account_id, stop_wechat_interface, start_wechat_interface)
 
 
 # ─── 扫码登录（按账号） ───────────────────────────────────────────────

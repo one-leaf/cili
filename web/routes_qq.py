@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from interfaces.qq.config import load_qq_accounts
-from web.deps import teen_guard
+from web.deps import restart_interface, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -49,8 +49,7 @@ async def _restart_interface(account_id: str) -> None:
         from interfaces.qq import start_qq_interface, stop_qq_interface
     except Exception:  # noqa: BLE001
         return
-    await asyncio.to_thread(stop_qq_interface, account_id)
-    await asyncio.to_thread(start_qq_interface, account_id)
+    await restart_interface(account_id, stop_qq_interface, start_qq_interface)
 
 
 # ─── 状态与断开连接 ───────────────────────────────────────────────────

@@ -19,22 +19,19 @@ from pathlib import Path
 
 from core.multimodal import build_user_input
 from core.outbox import drain_files, record_delivery_notice
-from core.session_registry import registry, session_key
+from core.session_registry import registry
 from core.turn_dispatch import execute_turn, prepare_turn
 from interfaces.common.ask_user import resolve_answer
+from interfaces.common.turn import prepare_and_claim
 from interfaces.email import commands, media
 from interfaces.email.access import OwnerTracker
 from interfaces.email.client import MailItem
 from interfaces.email.outbound import reply_context_from, send_reply
 from interfaces.email.runtime import EmailRuntime
 from interfaces.email.sink import EmailSink
-from interfaces.email.state import resolve_current
+from interfaces.email.state import ensure_session, resolve_current
 
 logger = logging.getLogger(__name__)
-
-# 会话被占用时的重试：总等待 ≈ 6s，之后放弃并回信说明
-BUSY_RETRIES = 12
-BUSY_RETRY_INTERVAL = 0.5
 
 
 class InboundHandler:
@@ -107,54 +104,23 @@ class InboundHandler:
     async def _run_turn(
         self, item: MailItem, ctx, text: str, media_items: list,
     ) -> None:
-        from interfaces.email.state import ensure_session
-
         # 真要跑回合了：工作区没有会话时自动建一个（指令路径不建）
-        chat = ensure_session(
-            self._rt.state, item.sender, self._rt.cfg,
+
+        async def _notify(t: str) -> None:
+            await send_reply(self._rt, ctx, t)
+
+        prepared = await prepare_and_claim(
+            state=self._rt.state,
+            cfg=self._rt.cfg,
             account_id=self._rt.account_id,
+            chat_id=item.sender,
+            ensure_session=ensure_session,
+            notify=_notify,
+            log_tag="email",
         )
-        workspace_uuid, session_id = chat.workspace_uuid, chat.session_id
-        if not workspace_uuid or not session_id:
-            await send_reply(self._rt, ctx, "尚未确定工作区/会话，请先执行 `/w`。")
+        if prepared is None:
             return
-
-        from core.config import find_workspace_entry
-        from core.teen_mode import TeenModeDenied, get_teen_mode
-
-        entry = find_workspace_entry(workspace_uuid) or {}
-        workspace_dir = str(entry.get("directory") or "")
-        if not workspace_dir or not Path(workspace_dir).exists():
-            await send_reply(self._rt, ctx, f"工作区目录不存在：{workspace_dir}")
-            return
-
-        try:
-            get_teen_mode().check_send_allowed()
-        except TeenModeDenied as e:
-            await send_reply(self._rt, ctx, str(e))
-            return
-
-        key = session_key(workspace_uuid, session_id)
-        try:
-            runner = await registry.get_or_create(
-                workspace_uuid, session_id, workspace_dir,
-                on_create=lambda r: _bind_default_sink(r, workspace_uuid, session_id),
-            )
-        except TeenModeDenied as e:
-            await send_reply(self._rt, ctx, f"🔒 {e}")
-            return
-
-        claimed = False
-        for attempt in range(BUSY_RETRIES):
-            if registry.claim(key):
-                claimed = True
-                break
-            if attempt == 0:
-                logger.info("[email/inbound] 会话被占用，排队等待")
-            await asyncio.sleep(BUSY_RETRY_INTERVAL)
-        if not claimed:
-            await send_reply(self._rt, ctx, "当前会话仍在执行中，请稍后再发。")
-            return
+        key, runner, chat, _workspace_dir = prepared
 
         sink = EmailSink(base=getattr(runner, "default_sink", None) or None)
         cb = sink.build()
@@ -166,14 +132,14 @@ class InboundHandler:
                 await send_reply(self._rt, ctx, "暂不支持该消息类型。")
                 return
 
-            prepared = prepare_turn(runner, content=content, user_input=user_input)
+            prepared_turn = prepare_turn(runner, content=content, user_input=user_input)
             # 按回合门控：只有邮件驱动时 send_user_file 才可见
             runner.set_turn_interface("email")
 
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                lambda: execute_turn(prepared, cb, on_error=errors.append),
+                lambda: execute_turn(prepared_turn, cb, on_error=errors.append),
             )
         finally:
             runner.set_turn_interface(None)
@@ -220,10 +186,3 @@ class InboundHandler:
             total += size
             selected.append(f.path)
         return selected, skipped
-
-
-def _bind_default_sink(runner, workspace_uuid: str, session_id: str) -> None:
-    """与 Web 绑同一个 default_sink（发布到全局事件总线），实现跨接口可见。"""
-    from core.default_sink import bind_default_sink
-
-    bind_default_sink(runner, workspace_uuid, session_id)

@@ -19,8 +19,9 @@ import logging
 import threading
 from contextlib import suppress
 
+from interfaces.common.access import OwnerTracker
 from interfaces.common.host import HostBase
-from interfaces.wechat.access import OwnerTracker
+from interfaces.common.service import accounts_running, start_accounts, stop_accounts
 from interfaces.wechat.account import ContextTokenStore, load_account
 from interfaces.wechat.config import WechatConfig, load_wechat_accounts
 from interfaces.wechat.protocol import WechatAuthError
@@ -80,7 +81,7 @@ class WechatHost(HostBase):
         runtime.typing = TypingManager(self.cfg, client)
         runtime.outbound = OutboundSender(self.cfg, client, tokens)
 
-        owner = OwnerTracker(runtime.state)
+        owner = OwnerTracker(runtime.state, log_tag="wechat")
         handler = InboundHandler(runtime, owner)
         poller = Poller(runtime, handler)
 
@@ -149,62 +150,37 @@ def start_wechat_interface(account_id: str | None = None) -> bool:
 
     返回是否至少启动了一个账号。未启用 / 未登录 / 已在跑的账号静默跳过。
     """
-    started: list[str] = []
-    with _lock:
-        for cfg in load_wechat_accounts():
-            if account_id is not None and cfg.id != account_id:
-                continue
-            if not cfg.enabled:
-                continue
-            if not load_account(cfg.id).has_token():
-                logger.warning(
-                    f"[wechat/service] 账号 {cfg.label or cfg.id} 已启用但尚未扫码登录，跳过"
-                )
-                continue
-            existing = _hosts.get(cfg.id)
-            if existing is not None and existing.is_alive():
-                continue          # 已在跑（幂等）
-            _hosts.pop(cfg.id, None)
-            host = WechatHost(cfg)
-            if not host.start():
-                logger.warning(f"[wechat/service] 账号 {cfg.label or cfg.id} 启动失败，未登记")
-                host.stop()
-                continue
-            _hosts[cfg.id] = host
-            started.append(cfg.id)
-    if started:
-        logger.info(f"[wechat/service] 已启动 {len(started)} 个账号：{started}")
-    elif account_id is None:
+
+    def _not_ready(cfg) -> str | None:
+        if load_account(cfg.id).has_token():
+            return None
+        return "已启用但尚未扫码登录"
+
+    def _idle_hint() -> str:
         accounts = load_wechat_accounts()
         if not accounts:
-            logger.debug("[wechat/service] wechat 段无账号，跳过启动")
-        elif not any(a.enabled for a in accounts):
-            logger.debug("[wechat/service] 无 enabled 账号，跳过启动")
-    return bool(started)
+            return "wechat 段无账号，跳过启动"
+        if not any(a.enabled for a in accounts):
+            return "无 enabled 账号，跳过启动"
+        return ""
+
+    return start_accounts(
+        account_id=account_id,
+        hosts=_hosts,
+        lock=_lock,
+        load_accounts=load_wechat_accounts,
+        host_cls=WechatHost,
+        not_ready=_not_ready,
+        log_tag="wechat",
+        idle_hint=_idle_hint,
+    )
 
 
 def stop_wechat_interface(account_id: str | None = None) -> None:
     """停止微信接入端（幂等）。account_id 为 None 时停止全部。"""
-    with _lock:
-        if account_id is None:
-            hosts = dict(_hosts)
-            _hosts.clear()
-        else:
-            host = _hosts.pop(account_id, None)
-            hosts = {account_id: host} if host is not None else {}
-    for hid, host in hosts.items():
-        try:
-            host.stop()
-        except Exception:  # noqa: BLE001
-            logger.exception(f"[wechat/service] 停止账号 {hid} 失败")
+    stop_accounts(account_id=account_id, hosts=_hosts, lock=_lock, log_tag="wechat")
 
 
 def wechat_interface_running(account_id: str | None = None) -> bool:
     """是否有账号在跑。account_id 为 None 时指「任一账号」。"""
-    with _lock:
-        for hid, host in list(_hosts.items()):
-            if not host.is_alive():
-                _hosts.pop(hid, None)
-        if account_id is not None:
-            return account_id in _hosts
-        return bool(_hosts)
+    return accounts_running(account_id=account_id, hosts=_hosts, lock=_lock)

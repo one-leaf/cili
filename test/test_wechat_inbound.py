@@ -164,7 +164,7 @@ class TestOwnerTracker:
         account = WechatAccountState()
         assert self._tracker(account).track("u1") is True
         assert account.owner == "u1"
-        assert self._tracker(account).owner_user_id == "u1"
+        assert self._tracker(account).owner == "u1"
 
     def test_refreshes_when_sender_changes(self):
         from interfaces.wechat.state import WechatAccountState

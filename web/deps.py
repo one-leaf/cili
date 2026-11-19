@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import secrets
 import threading
 from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
@@ -252,6 +254,21 @@ def _bind_default_sink(runner: SessionRunner, workspace_uuid: str, session_id: s
     的 /api/events 全局流里同样可见。此处保留同名薄封装，兼容既有调用方。
     """
     bind_default_sink(runner, workspace_uuid, session_id)
+
+
+async def restart_interface(
+    account_id: str,
+    stop: Callable[[str], Any],
+    start: Callable[[str], Any],
+) -> None:
+    """凭据/登录态落库后重启一个接入端账号的宿主（先停后启）。
+
+    两侧都是阻塞操作（宿主线程就绪/退出需数秒）→ 丢线程池。未启用 /
+    凭据不齐时 start 内部静默跳过——「扫码/登录成功」本身就能把一个
+    enabled 但此前没就绪的账号带起来。
+    """
+    await asyncio.to_thread(stop, account_id)
+    await asyncio.to_thread(start, account_id)
 
 
 async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:

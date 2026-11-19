@@ -22,7 +22,7 @@ from core.session import SessionStore
 from core.session_runner import SessionRunner
 from core.teen_mode import get_teen_mode
 
-# Attachment 定义已迁至 core/interface.py（与 Interface ABC 同处，二者配套使用）；
+# Attachment 定义在 core/interface.py（接口层唯一的共享抽象）；
 # 此处再导出，避免打断既有 ``from core.session_registry import Attachment`` 调用方。
 __all__ = ["Attachment", "HostedSession", "SessionRegistry", "registry", "session_key"]
 

@@ -21,8 +21,9 @@ import asyncio
 import logging
 import threading
 
+from interfaces.common.access import OwnerTracker
 from interfaces.common.host import HostBase
-from interfaces.qq.access import OwnerTracker
+from interfaces.common.service import accounts_running, start_accounts, stop_accounts
 from interfaces.qq.config import QQConfig, load_qq_accounts
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.state import load_account_state
@@ -61,7 +62,7 @@ class QQHost(HostBase):
             state=state,
             loop=asyncio.get_running_loop(),
         )
-        owner = OwnerTracker(state)
+        owner = OwnerTracker(state, log_tag="qq")
 
         from interfaces.qq.inbound import InboundHandler
 
@@ -88,67 +89,38 @@ def start_qq_interface(account_id: str | None = None) -> bool:
 
     返回是否至少启动了一个账号。未启用 / 未配置凭据 / 已在跑的账号静默跳过。
     """
-    started: list[str] = []
-    with _lock:
-        for cfg in load_qq_accounts():
-            if account_id is not None and cfg.id != account_id:
-                continue
-            if not cfg.enabled:
-                continue
-            if not cfg.is_ready():
-                logger.warning(
-                    f"[qq/service] 账号 {cfg.label or cfg.id} 已启用但 app_id/secret 未配置，跳过"
-                )
-                continue
-            existing = _hosts.get(cfg.id)
-            if existing is not None and existing.is_alive():
-                continue          # 已在跑（幂等）
-            _hosts.pop(cfg.id, None)
-            host = QQHost(cfg)
-            if not host.start():
-                logger.warning(f"[qq/service] 账号 {cfg.label or cfg.id} 启动失败，未登记")
-                host.stop()
-                continue
-            _hosts[cfg.id] = host
-            started.append(cfg.id)
-    if started:
+
+    def _started_suffix() -> str:
         from interfaces.qq.gateway import effective_api_base
 
-        logger.info(
-            f"[qq/service] 已启动 {len(started)} 个账号：{started}；"
-            f"API 域名：{effective_api_base()}"
-        )
-    elif account_id is None:
+        return f"；API 域名：{effective_api_base()}"
+
+    def _idle_hint() -> str:
         accounts = load_qq_accounts()
         if not accounts:
-            logger.debug("[qq/service] qq 段无账号，跳过启动")
-        elif not any(a.enabled for a in accounts):
-            logger.debug("[qq/service] 无 enabled 账号，跳过启动")
-    return bool(started)
+            return "qq 段无账号，跳过启动"
+        if not any(a.enabled for a in accounts):
+            return "无 enabled 账号，跳过启动"
+        return ""
+
+    return start_accounts(
+        account_id=account_id,
+        hosts=_hosts,
+        lock=_lock,
+        load_accounts=load_qq_accounts,
+        host_cls=QQHost,
+        not_ready=lambda cfg: None if cfg.is_ready() else "已启用但 app_id/secret 未配置",
+        log_tag="qq",
+        started_suffix=_started_suffix,
+        idle_hint=_idle_hint,
+    )
 
 
 def stop_qq_interface(account_id: str | None = None) -> None:
     """停止 QQ 接入端（幂等）。account_id 为 None 时停止全部。"""
-    with _lock:
-        if account_id is None:
-            hosts = dict(_hosts)
-            _hosts.clear()
-        else:
-            host = _hosts.pop(account_id, None)
-            hosts = {account_id: host} if host is not None else {}
-    for hid, host in hosts.items():
-        try:
-            host.stop()
-        except Exception:  # noqa: BLE001
-            logger.exception(f"[qq/service] 停止账号 {hid} 失败")
+    stop_accounts(account_id=account_id, hosts=_hosts, lock=_lock, log_tag="qq")
 
 
 def qq_interface_running(account_id: str | None = None) -> bool:
     """是否有账号在跑。account_id 为 None 时指「任一账号」。"""
-    with _lock:
-        for hid, host in list(_hosts.items()):
-            if not host.is_alive():
-                _hosts.pop(hid, None)
-        if account_id is not None:
-            return account_id in _hosts
-        return bool(_hosts)
+    return accounts_running(account_id=account_id, hosts=_hosts, lock=_lock)

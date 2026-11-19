@@ -118,7 +118,11 @@ class TestQQStatePersistence:
         import interfaces.qq.state as st
         monkeypatch.setattr(st, "DATA_DIR", tmp_path)
         from core.fs_utils import atomic_write_json
-        from interfaces.qq.state import load_account_state, save_account_state, state_path
+        from interfaces.qq.state import (
+            load_account_state,
+            save_account_state,
+            state_path,
+        )
 
         atomic_write_json(
             state_path(), {"owner_openid": "o1", "workspace_uuid": "w1", "session_id": "s1"}
@@ -168,7 +172,7 @@ class TestOwnerTracker:
         account = QQAccountState()
         tr = self._tracker(account)
         tr.track("who")
-        assert tr.owner_openid == "who"
+        assert tr.owner == "who"
 
     def test_track_does_not_touch_disk(self, tmp_path, monkeypatch):
         """owner 不再独立落盘——绑定由命令（/w /s /new）或默认解析决定（设计 §3.3）。"""
@@ -574,7 +578,6 @@ class TestCommandsWithWorkspaces:
 
     def test_w_and_s_persist_to_state_file(self, isolated):
         """/w 的切换要落盘（按账号键），重启后兼容读能拿回来（设计 §3.3）。"""
-        import interfaces.qq.state as st
         from interfaces.qq.commands import dispatch
         from interfaces.qq.state import load_account_state
 

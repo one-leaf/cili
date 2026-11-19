@@ -22,7 +22,8 @@
 ## 一、定位与分层
 
 Cili 的会话层是接口无关的（`core/session_registry.py` 持有 runner 池与运行权认领）。
-本模块补上「接入端」这一层：Web 与 QQ 各是一个 `Interface` 实现，共享同一份会话。
+本模块补上「接入端」这一层：Web 与 QQ 是同一会话的两种接入端——各自落地为
+「inbound 模块 + Sink 实现 + 能力档案」，回合驱动统一走 `core/turn_dispatch.py`。
 
 ```
 interfaces/qq/             QQ 接入端（SDK 单例，宿主线程 + 宿主 loop）
@@ -47,32 +48,26 @@ interfaces/qq/             QQ 接入端（SDK 单例，宿主线程 + 宿主 loo
   commands.py              斜杠指令（/h /w /s /new /status /stop；/help /workspace /session 为别名）
   service.py               宿主线程 + 宿主 loop；延迟 import SDK
 
-core/interface.py          Interface ABC + Attachment
+core/interface.py          Attachment（接入端对会话的附着记录）
 core/turn_dispatch.py      接口无关的回合驱动（认领后的「跑什么 / 怎么收尾」）
 core/default_sink.py       default_sink 绑定（发布到全局事件总线）
 core/outbox.py             出站文件队列（send_user_file 工具入队 → 接入端回合末出队）
 core/tools/send_user_file.py  send_user_file 工具（接口专属，按回合门控）
 ```
 
-### 1.1 `Interface` ABC 只有一个方法
+### 1.1 渲染 seam 是 `OutputSink`，不再有 `Interface` ABC
 
-```python
-class Interface(ABC):
-    name: str = "base"
-
-    @abstractmethod
-    def make_sink(self, attachment: Attachment, runner: SessionRunner) -> OutputSink: ...
-```
-
+曾经设想的 `Interface` ABC（只有 `make_sink` 一个方法）已于 2026-11-19 删除：
 `OutputSink` 已经**就是**渲染 seam，且已被 Web 验证过——Web 的
 `make_sse_callbacks(queue, runner)` 与 QQ 的 `QQSink(...)` 是同一角色的两个实现。
+四个落地接入端（web/qq/wechat/email）没有一个继承过该 ABC，抽象没有消费者。
 
 设计草案里的 `ask_user(attachment, questions) -> str` / `request_approval(...) -> str`
-被刻意放弃：两个实现都**无法在回调里同步返回答案**（Web 的答案经 HTTP POST 异步回来，
+被刻意放弃：各实现都**无法在回调里同步返回答案**（Web 的答案经 HTTP POST 异步回来，
 QQ 的答案是下一条消息）。把它们做成「返回答案」的方法是在说谎。交互提示的渲染本来
 就在各自 sink 内部。
 
-入站侧也不进 ABC：Web 走 HTTP 路由、QQ 走 SDK 回调，形态差太远；两者收敛到同一个
+入站侧也不进抽象：Web 走 HTTP 路由、QQ 走 SDK 回调，形态差太远；两者收敛到同一个
 `core/turn_dispatch.py` 即可。
 
 ---
