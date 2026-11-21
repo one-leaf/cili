@@ -24,6 +24,7 @@ import time
 import webbrowser
 import zipfile
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,12 @@ def _get_deps_python() -> str:
     return os.path.join(_DEPS_PYTHON_DIR, "python.exe")
 
 _SETTING_FILE = os.path.join(_CILI_DIR, "setting.json")
+_LOG_DIR = os.path.join(_CILI_DIR, "logs")
+_LOG_FILE = os.path.join(_LOG_DIR, "cili.log")
+_ERROR_LOG_FILE = os.path.join(_LOG_DIR, "error.log")
+_ACCESS_LOG_FILE = os.path.join(_LOG_DIR, "access.log")
+_LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_BACKUP_COUNT = 5
 
 # 依赖安装后自动重启上限：防止包持续被判为缺失时无限 execv 重启循环（W16）。
 # 重启计数通过环境变量跨 os.execv 传递（execv 保留进程环境）。
@@ -109,7 +116,10 @@ _DEFAULT_MODEL = {
 
 
 def _setup_logging() -> None:
-    """配置日志系统，仅输出到终端（stdout）。"""
+    """配置日志系统：输出到终端（stdout）+ 轮转文件。
+
+    data/cili/logs/cili.log 为全量日志；error.log 单独收 ERROR 及以上。
+    """
     # 创建根日志记录器
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
@@ -128,6 +138,29 @@ def _setup_logging() -> None:
     console_handler.setFormatter(formatter)
     console_handler.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
+
+    # 文件处理器（10MB 轮转保留 5 份；UTF-8 保证中文可读）
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        _LOG_FILE,
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+
+    # 错误日志单独落盘（只收 ERROR 及以上）
+    error_handler = RotatingFileHandler(
+        _ERROR_LOG_FILE,
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    error_handler.setFormatter(formatter)
+    error_handler.setLevel(logging.ERROR)
+    root_logger.addHandler(error_handler)
 
     # 降低第三方库的日志级别
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -1365,6 +1398,40 @@ def _start_web_interface(args: argparse.Namespace) -> None:
         '%(levelprefix)s %(asctime)s %(client_addr)s - "%(request_line)s" %(status_code)s'
     )
     log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
+    # 服务日志（启动/错误/访问）同样落盘到轮转文件，与 _setup_logging 共用
+    log_config["formatters"]["file"] = {
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S",
+    }
+    log_config["handlers"]["file"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "filename": _LOG_FILE,
+        "maxBytes": _LOG_MAX_BYTES,
+        "backupCount": _LOG_BACKUP_COUNT,
+        "encoding": "utf-8",
+        "formatter": "file",
+    }
+    log_config["handlers"]["error_file"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "filename": _ERROR_LOG_FILE,
+        "maxBytes": _LOG_MAX_BYTES,
+        "backupCount": _LOG_BACKUP_COUNT,
+        "encoding": "utf-8",
+        "formatter": "file",
+        "level": "ERROR",
+    }
+    # 访问日志单独落盘（带访问时间/客户端地址/状态码，复用 access 格式）
+    log_config["handlers"]["access_file"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "filename": _ACCESS_LOG_FILE,
+        "maxBytes": _LOG_MAX_BYTES,
+        "backupCount": _LOG_BACKUP_COUNT,
+        "encoding": "utf-8",
+        "formatter": "access",
+    }
+    log_config["loggers"]["uvicorn"]["handlers"].extend(["file", "error_file"])
+    log_config["loggers"]["uvicorn.access"]["handlers"].extend(["access_file", "error_file"])
 
     # 服务端发现锚点：TUI 客户端（cli.cmd）据此连接，兼容自定义 --port。
     # uvicorn.run 返回（含 Ctrl+C）后删除，避免留下过期端口信息。
