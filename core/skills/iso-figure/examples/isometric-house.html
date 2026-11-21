@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>等轴测结构图 · 剖切房屋</title>
+<style>
+  :root {
+    --iso-bg: #e9e5db;
+    --iso-paper: #fbf9f3;
+    --iso-line: #c9c2b2;
+    --iso-text: #2b2a27;
+    --iso-meta: #7c766a;
+  }
+  [data-theme="dark"] {
+    --iso-bg: #101214;
+    --iso-paper: #1a1d21;
+    --iso-line: #2c3138;
+    --iso-text: #d9dee4;
+    --iso-meta: #8b939c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: var(--iso-bg); color: var(--iso-text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 24px;
+    transition: background 0.25s;
+  }
+  .iso-card {
+    width: min(920px, 100%);
+    background: var(--iso-paper);
+    border: 1px solid var(--iso-line);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.12);
+    transition: background 0.25s, border-color 0.25s;
+  }
+  .iso-card-head, .iso-card-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 16px; gap: 12px;
+    font-size: 13px;
+  }
+  .iso-card-head { border-bottom: 1px solid var(--iso-line); }
+  .iso-card-foot { border-top: 1px solid var(--iso-line); }
+  .iso-fig { color: var(--iso-meta); letter-spacing: 0.08em; }
+  .iso-title { font-weight: 600; }
+  .iso-hint, .iso-readout { color: var(--iso-meta); font-size: 12px; }
+  #iso-canvas { display: block; width: 100%; aspect-ratio: 4 / 3; }
+  .iso-theme-btn {
+    position: fixed; top: 14px; right: 16px;
+    border: 1px solid var(--iso-line); background: var(--iso-paper);
+    color: var(--iso-meta); border-radius: 999px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+  @media (max-width: 480px) {
+    body { padding: 0; }
+    .iso-card { border-radius: 0; border-left: none; border-right: none; }
+    #iso-canvas { aspect-ratio: 1 / 1; }
+  }
+</style>
+</head>
+<body>
+<button class="iso-theme-btn" id="iso-theme-btn" type="button">明暗</button>
+
+<div class="iso-card">
+  <div class="iso-card-head">
+    <span class="iso-fig">Fig 1</span>
+    <span class="iso-title" id="iso-title">剖切小屋</span>
+  </div>
+  <canvas id="iso-canvas"></canvas>
+  <div class="iso-card-foot">
+    <span class="iso-hint" id="iso-hint">拖动旋转 · 点击掀开屋顶</span>
+    <span class="iso-readout" id="iso-readout">—</span>
+  </div>
+</div>
+
+<script src="../assets/three.min.js"></script>
+<script src="../assets/iso-kit.js"></script>
+<script>
+'use strict';
+
+const fig = IsoKit.figure({ canvas: document.getElementById('iso-canvas'), elevation: 36 });
+const S = fig.scene;
+
+// ── 尺寸基准 ─────────────────────────────────────────────
+const FLOOR_TOP = 12;          // 地面高度
+const WALL_H = 72;             // 后墙高度（FLOOR_TOP 之上）
+const WALL_TOP = FLOOR_TOP + WALL_H;
+const RIDGE_Y = WALL_TOP + 40; // 屋脊高度
+const HALF_RUN = 88;           // 半跨（含出檐）
+const SLOPE = Math.atan2(RIDGE_Y - WALL_TOP, HALF_RUN);
+const SLOPE_LEN = Math.hypot(RIDGE_Y - WALL_TOP, HALF_RUN);
+
+// ── 地基与地面 ───────────────────────────────────────────
+S.add(IsoKit.box(240, 8, 180, { color: 'lo', pos: [0, 4, 0] }));
+S.add(IsoKit.box(210, 4, 150, { color: 'mid', pos: [0, 10, 0] }));
+S.add(IsoKit.box(70, 1, 46, { color: 'lo', pos: [-12, 12.5, 22] }));   // 地毯
+
+// ── 墙体：后左两面完整，前右做成矮护墙（剖切）────────────────
+S.add(IsoKit.box(8, WALL_H, 150, { color: 'mid', pos: [-101, WALL_TOP - WALL_H / 2, 0] }));
+S.add(IsoKit.box(202, WALL_H, 8, { color: 'mid', pos: [0, WALL_TOP - WALL_H / 2, -71] }));
+S.add(IsoKit.box(8, 14, 150, { color: 'lo', pos: [101, FLOOR_TOP + 7, 0] }));
+S.add(IsoKit.box(202, 14, 8, { color: 'lo', pos: [0, FLOOR_TOP + 7, 71] }));
+
+// 窗：后墙内嵌
+S.add(IsoKit.box(42, 34, 2, { color: 'hi', pos: [30, 48, -67] }));
+S.add(IsoKit.box(34, 26, 2, { color: '#262d34', pos: [30, 48, -65.8] }));
+
+// 门：后墙左侧
+S.add(IsoKit.box(26, 50, 2, { color: 'hi', pos: [-46, FLOOR_TOP + 25, -66.9] }));
+S.add(IsoKit.sphere(1.6, { color: 'hi', pos: [-38, 38, -65.6], segments: 12 }));
+
+// ── 家具 ─────────────────────────────────────────────────
+// 桌子
+S.add(IsoKit.box(44, 3, 26, { color: 'hi', pos: [-42, 32, 8] }));
+for (const [x, z] of [[-60, -2], [-24, -2], [-60, 18], [-24, 18]]) {
+  S.add(IsoKit.box(3, 20, 3, { color: 'mid', pos: [x, 21, z] }));
+}
+// 椅子
+S.add(IsoKit.box(16, 3, 16, { color: 'hi', pos: [-42, 20, 44] }));
+S.add(IsoKit.box(16, 16, 3, { color: 'hi', pos: [-42, 30, 51] }));
+for (const [x, z] of [[-49, 37], [-35, 37], [-49, 51], [-35, 51]]) {
+  S.add(IsoKit.box(2.5, 8, 2.5, { color: 'mid', pos: [x, 16, z] }));
+}
+// 床
+S.add(IsoKit.box(56, 6, 32, { color: 'mid', pos: [58, 15, 22] }));
+S.add(IsoKit.box(52, 5, 28, { color: 'hi', pos: [58, 20.5, 22] }));
+S.add(IsoKit.box(14, 5, 22, { color: 'hi', pos: [36, 23, 22] }));
+// 书架
+S.add(IsoKit.box(34, 44, 10, { color: 'mid', pos: [62, 34, -58] }));
+for (const y of [20, 32, 44]) {
+  S.add(IsoKit.box(29, 2, 8, { color: 'hi', pos: [62, y, -56] }));
+}
+// 落地灯（唯一强调件：灯罩）
+S.add(IsoKit.cylinder(1.2, 1.6, 28, { color: 'mid', pos: [-72, 26, -34], segments: 16 }));
+S.add(IsoKit.cylinder(6, 9, 8, { color: 'lit', pos: [-72, 44, -34], segments: 20 }));
+S.add(IsoKit.sphere(3.5, { color: 'hi', pos: [-72, 37, -34], segments: 16 }));
+
+// ── 屋顶组（可整体掀开）──────────────────────────────────
+const roof = new THREE.Group();
+S.add(roof);
+
+// 剖切：只保留远侧（-z）屋面，近侧敞开，室内可见
+const slopeZ = HALF_RUN / 2;
+const slopeY = (RIDGE_Y + WALL_TOP) / 2;
+roof.add(IsoKit.box(222, 5, SLOPE_LEN, {
+  color: 'hi', pos: [0, slopeY, -slopeZ], rot: [-SLOPE, 0, 0],
+}));
+roof.add(IsoKit.box(226, 6, 8, { color: 'hi', pos: [0, RIDGE_Y, 0] }));
+roof.add(IsoKit.box(12, 50, 12, { color: 'mid', pos: [55, RIDGE_Y - 14, -42] }));
+roof.add(IsoKit.box(16, 4, 16, { color: 'mid', pos: [55, RIDGE_Y + 13, -42] }));
+
+// ── 装框与读数 ───────────────────────────────────────────
+const parts = [];
+S.traverse((o) => { if (o.userData.baseKey) parts.push(o); });
+
+fig.fit();
+fig.setHint('拖动旋转 · 点击掀开屋顶');
+
+let open = false;
+function setReadout() {
+  fig.setReadout(`零件 ${parts.length} · 屋顶：${open ? '掀开' : '合上'}`);
+}
+setReadout();
+
+// ── 交互 ─────────────────────────────────────────────────
+const roofOffsets = new Map([
+  [roof.children[0], [0, 46, -30]],   // 屋面
+  [roof.children[1], [0, 60, 0]],     // 屋脊
+  [roof.children[2], [0, 60, -12]],   // 烟囱
+  [roof.children[3], [0, 60, -12]],   // 烟囱帽
+]);
+
+fig.enableOrbit(() => {
+  open = !open;
+  for (const [child, offset] of roofOffsets) {
+    const v = open ? offset : [-offset[0], -offset[1], -offset[2]];
+    fig.moveBy(child, v, 0.22);
+  }
+  setReadout();
+});
+
+let dark = false;
+document.getElementById('iso-theme-btn').addEventListener('click', () => {
+  dark = !dark;
+  fig.setTheme(dark ? 'dark' : 'light');
+});
+</script>
+</body>
+</html>

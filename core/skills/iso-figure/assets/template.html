@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>等轴测结构图 · 模板</title>
+<style>
+  :root {
+    --iso-bg: #e9e5db;
+    --iso-paper: #fbf9f3;
+    --iso-line: #c9c2b2;
+    --iso-text: #2b2a27;
+    --iso-meta: #7c766a;
+  }
+  [data-theme="dark"] {
+    --iso-bg: #101214;
+    --iso-paper: #1a1d21;
+    --iso-line: #2c3138;
+    --iso-text: #d9dee4;
+    --iso-meta: #8b939c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: var(--iso-bg); color: var(--iso-text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 24px;
+    transition: background 0.25s;
+  }
+  .iso-card {
+    width: min(920px, 100%);
+    background: var(--iso-paper);
+    border: 1px solid var(--iso-line);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.12);
+    transition: background 0.25s, border-color 0.25s;
+  }
+  .iso-card-head, .iso-card-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 16px; gap: 12px;
+    font-size: 13px;
+  }
+  .iso-card-head { border-bottom: 1px solid var(--iso-line); }
+  .iso-card-foot { border-top: 1px solid var(--iso-line); }
+  .iso-fig { color: var(--iso-meta); letter-spacing: 0.08em; }
+  .iso-title { font-weight: 600; }
+  .iso-hint, .iso-readout { color: var(--iso-meta); font-size: 12px; }
+  #iso-canvas { display: block; width: 100%; aspect-ratio: 4 / 3; }
+  .iso-theme-btn {
+    position: fixed; top: 14px; right: 16px;
+    border: 1px solid var(--iso-line); background: var(--iso-paper);
+    color: var(--iso-meta); border-radius: 999px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+  @media (max-width: 480px) {
+    body { padding: 0; }
+    .iso-card { border-radius: 0; border-left: none; border-right: none; }
+    #iso-canvas { aspect-ratio: 1 / 1; }
+  }
+</style>
+</head>
+<body>
+<button class="iso-theme-btn" id="iso-theme-btn" type="button">明暗</button>
+
+<div class="iso-card">
+  <div class="iso-card-head">
+    <span class="iso-fig">Fig 1</span>
+    <span class="iso-title" id="iso-title">示例：横梁滑台</span>
+  </div>
+  <canvas id="iso-canvas"></canvas>
+  <div class="iso-card-foot">
+    <span class="iso-hint" id="iso-hint">拖动旋转 · 点击滑块</span>
+    <span class="iso-readout" id="iso-readout">—</span>
+  </div>
+</div>
+
+<script src="three.min.js"></script>
+<script src="iso-kit.js"></script>
+<script>
+'use strict';
+
+// 1) 建场景
+const fig = IsoKit.figure({ canvas: document.getElementById('iso-canvas'), elevation: 34 });
+const S = fig.scene;
+
+// 2) 零件：底座 → 立柱 → 横梁 → 滑块 → 强调件
+const base = IsoKit.box(120, 8, 88, { color: 'lo', pos: [0, 4, 0] });
+S.add(base);
+
+// 台面角部的螺柱（小细节，不是零件主体）
+for (const [x, z] of [[-50, -34], [50, -34], [-50, 34], [50, 34]]) {
+  S.add(IsoKit.cylinder(1.8, 1.8, 1.2, { color: 'mid', pos: [x, 8.6, z], segments: 12 }));
+}
+// 立柱坐在台面上（台面顶 y=8，柱顶 y=62）
+for (const x of [-44, 44]) {
+  S.add(IsoKit.box(6, 54, 6, { color: 'mid', pos: [x, 35, 0] }));
+}
+// 横梁（y 62–68）
+S.add(IsoKit.box(100, 6, 8, { color: 'mid', pos: [0, 65, 0] }));
+
+// 滑块挂在横梁下方；旋钮作为子对象，跟着滑块一起动
+const carriage = IsoKit.box(22, 14, 16, { color: 'hi', pos: [0, 55, 0] });
+const knob = IsoKit.cylinder(6, 6, 4, {
+  color: 'hi', pos: [0, 0, 10], rot: [Math.PI / 2, 0, 0], segments: 20,
+});
+carriage.add(knob);
+S.add(carriage);
+
+// 唯一强调件：横梁顶上的指示灯
+const lamp = IsoKit.sphere(3, { color: 'lit', pos: [0, 71, 0], segments: 16 });
+S.add(lamp);
+
+// 3) 装框
+fig.fit();
+fig.setReadout('拖动可旋转视角');
+
+// 4) 交互：拖动旋转；点滑块平缓左右移动
+fig.enableOrbit((e) => {
+  const hit = fig.pick(e);
+  if (hit === carriage) {
+    const side = carriage.position.x < 1 ? 26 : -26;
+    fig.moveBy(carriage, [side, 0, 0], 0.25);
+    fig.setReadout(side > 0 ? '滑块 → 右' : '滑块 ← 左');
+  }
+});
+
+// 5) 明暗切换
+let dark = false;
+document.getElementById('iso-theme-btn').addEventListener('click', () => {
+  dark = !dark;
+  fig.setTheme(dark ? 'dark' : 'light');
+});
+</script>
+</body>
+</html>
