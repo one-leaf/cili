@@ -528,6 +528,49 @@ async def get_session(
         raise HTTPException(status_code=500, detail="Failed to read session")
 
 
+def _is_workflow_step_prompt(content) -> bool:
+    """工作流步骤的 user 提示词（由 WorkflowRunner 生成）；兼容旧版前缀。"""
+    from core.text_extract import message_text
+    text = message_text(content, strip=False).strip()
+    return (text.startswith("# 工作流「") or text.startswith("# 工作流\"")
+            or text.startswith("# 任务「") or text.startswith("# 任务\""))
+
+
+def _step_session_execution(exec_id: str, sessions_dir: Path) -> dict | None:
+    """回落：exec_id 即工作流步骤会话 id，取该会话中本步骤的轨迹。"""
+    step_session = SessionStore.load_session(exec_id, sessions_dir)
+    if step_session is None:
+        return None
+    meta = step_session.metadata or {}
+    step_meta = meta.get("workflow") or meta.get("task")
+    if not isinstance(step_meta, dict):
+        return None
+    messages = step_session.get_valid_messages()
+    start = -1
+    for index, message in enumerate(messages):
+        if message.get("role") == "user" and _is_workflow_step_prompt(message.get("content")):
+            start = index
+    if start < 0:
+        return None
+    return {
+        "exec_id": exec_id,
+        "task": "工作流步骤",
+        "summary": "",
+        "status": "completed",
+        "stats": {},
+        "epochs": [],
+        "messages": messages[start:],
+        "metadata": {
+            "step_session_id": exec_id,
+            "workflow_step": True,
+            "session_id": exec_id,
+            "status": "completed",
+            "phase": "done",
+            "stats": {},
+        },
+    }
+
+
 def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -> None:
     """从外部文件按需读取工具结果内容，注入到消息中。
 
@@ -823,11 +866,21 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
 
     payload = sm.agent_logs.load_execution(exec_id)
     if not payload:
+        # 工作流旧运行：没有写 exec 日志，但 exec_id 就是步骤会话 id
+        payload = _step_session_execution(exec_id, sessions_dir)
+    if not payload:
         raise HTTPException(status_code=404, detail="Execution not found")
 
     # 从外部文件按需注入工具结果内容（前端渲染需要）；
     # 同步读多文件，放线程池避免阻塞事件循环（审查 P2）
     exec_dir = sessions_dir / session_id / exec_id
+    # 工作流步骤：消息与工具输出文件都在步骤自己的会话目录，exec_id 即步骤会话 id
+    meta = payload.get("metadata") or {}
+    step_session_id = str(meta.get("step_session_id") or "")
+    if step_session_id:
+        step_dir = sessions_dir / step_session_id
+        if step_dir.is_dir():
+            exec_dir = step_dir
     await asyncio.to_thread(
         _resolve_tool_results_for_session, payload["messages"], exec_dir
     )

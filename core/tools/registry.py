@@ -35,6 +35,7 @@ from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
 from core.tools.skill import SkillTool
+from core.tools.workflow_tool import WorkflowTool
 from core.tools.temp import TempTool
 from core.tools.textbook_find import TextbookFindTool
 from core.tools.textbook_original import TextbookOriginalTool
@@ -104,6 +105,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "skill": _make_skill,
     "agent": _factory(AgentTool, needs_config=True, needs_permission=True),
     "ask_user": _factory(AskUserTool),
+    "workflow": _factory(WorkflowTool),
     "tool_search": _factory(ToolSearchTool),
     "textbook_find": _factory(TextbookFindTool),
     "textbook_outline": _factory(TextbookOutlineTool),
@@ -113,6 +115,18 @@ TOOL_REGISTRY: dict[str, Factory] = {
     # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户
     "send_user_file": _factory(SendUserFileTool),
 }
+
+
+def _workflow_tool_allowed(session) -> bool:
+    """工作流工具：维护会话与普通 master 可用；结果会话/步骤会话不可用。"""
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+    if isinstance(metadata.get("run_results"), dict):
+        return False
+    if isinstance(metadata.get("workflow"), dict):
+        return False
+    return True
 
 
 def create_tools(
@@ -135,6 +149,8 @@ def create_tools(
         factory = TOOL_REGISTRY.get(name)
         if factory is None:
             logger.warning(f"[registry] 角色 {role_cfg.name!r} 白名单中的工具 {name!r} 未注册，已跳过")
+            continue
+        if name == "workflow" and not _workflow_tool_allowed(session):
             continue
         try:
             tools.append(factory(

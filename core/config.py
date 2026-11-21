@@ -669,12 +669,14 @@ class Config:
         return (self.agents.get(role) or AgentConfig()).model or None
 
     def role_refs(self) -> dict[str, str]:
-        """角色名 → 模型引用；worker/lite 未配置时继承 master。"""
+        """角色名 → 模型引用；worker/lite/workflow 未配置时继承 master。"""
         master_ref = self.master_ref()
+        worker_ref = self.explicit_role_model("worker") or master_ref
         return {
             "master": master_ref,
-            "worker": self.explicit_role_model("worker") or master_ref,
+            "worker": worker_ref,
             "lite": self.explicit_role_model("lite") or master_ref,
+            "workflow": self.explicit_role_model("workflow") or master_ref,
         }
 
     @property

@@ -1,0 +1,521 @@
+/* ── workflow_pane.css ── 侧栏工作流分区 + 中间栏工作流面板 + 聊天双标签 */
+
+/* 侧栏工作流分区 */
+.workflows-section {
+    flex: 0 0 200px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* 与文件/会话分区一致：折叠后只保留标题行，不占最小高度 */
+.workflows-section.collapsed {
+    flex: 0 0 auto !important;
+    min-height: 0;
+}
+
+.workflows-section.collapsed .wf-sidebar-list {
+    display: none;
+}
+
+.section-count {
+    margin-left: 6px;
+    padding: 0 6px;
+    height: 18px;
+    border-radius: 9px;
+    font-size: 11px;
+    line-height: 18px;
+    background: var(--ms-soft, rgba(0, 0, 0, .06));
+    color: var(--text-secondary, #666);
+}
+
+.wf-sidebar-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    /* 与会话列表一致：左右 8px，保证选中行的左侧色块和会话同一位置 */
+    padding: 4px 8px 6px;
+}
+
+.wf-sidebar-empty {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+}
+
+.wf-sidebar-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 36px 7px 11px;
+    margin-bottom: 1px;
+    border-radius: 4px;
+    cursor: pointer;
+    height: 30px;
+    font-size: 12px;
+    color: var(--text-muted-2, #555);
+    border-left: 2px solid transparent;
+    transition: all 0.12s;
+    position: relative;
+}
+
+/* 背景/悬停/选中直接复用 .session-item，避免工作流行多出一层底色；
+   左侧色块继续用工作流原有的 primary 色。 */
+.wf-sidebar-row.session-item.active {
+    border-left-color: var(--primary-color, #007bff);
+}
+
+.wf-sidebar-row .wf-row-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    line-height: 1.3;
+}
+
+.wf-sidebar-row .wf-row-progress {
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+    flex-shrink: 0;
+}
+
+/* 状态色 */
+.wf-status-running { color: var(--primary-color, #007bff); animation: wf-pulse 1.5s infinite; }
+.wf-status-done { color: var(--ms-ok-fg, #15803d); }
+.wf-status-failed { color: var(--ms-danger, #dc2626); }
+.wf-status-stopped, .wf-status-pending { color: var(--text-secondary, #9ca3af); }
+.wf-status-interrupted { color: #d97706; }
+
+@keyframes wf-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+}
+
+/* 中间栏工作流面板 */
+.workflow-pane {
+    width: 380px;
+    flex-shrink: 0;
+    min-width: 260px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border-color);
+    background: var(--sidebar-bg, var(--bg-color));
+    overflow: hidden;
+}
+
+.workflow-pane[hidden] {
+    display: none;
+}
+
+.wf-workflow-header {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wf-workflow-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.wf-workflow-title-row #wf-workflow-title {
+    font-weight: 600;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wf-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--ms-soft, rgba(0, 0, 0, .06));
+    color: var(--text-secondary, #666);
+}
+
+.wf-badge.ok { background: var(--ms-ok-bg, rgba(21, 128, 61, .1)); color: var(--ms-ok-fg, #15803d); }
+.wf-badge.running { background: rgba(0, 123, 255, .12); color: var(--primary-color, #007bff); }
+.wf-badge.failed { background: rgba(220, 38, 38, .1); color: var(--ms-danger, #dc2626); }
+.wf-badge.interrupted { background: rgba(217, 119, 6, .12); color: #d97706; }
+
+.wf-progress-text {
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+}
+
+.wf-workflow-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.wf-cards {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wf-card {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--surface-card, var(--bg-color));
+    cursor: default;
+}
+
+.wf-card.running {
+    border-color: var(--primary-color, #007bff);
+}
+
+.wf-card.failed {
+    border-color: var(--ms-danger, #dc2626);
+}
+
+.wf-card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wf-card-idx {
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+    min-width: 16px;
+}
+
+.wf-card-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wf-card-status {
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.wf-card-tool {
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+    margin-top: 2px;
+}
+
+.wf-card-req {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary, #555);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.wf-card.expanded .wf-card-req {
+    -webkit-line-clamp: unset;
+    display: block;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.wf-card-foot {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+}
+
+.wf-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--ms-soft, rgba(0, 0, 0, .05));
+    font-size: 11px;
+}
+
+.wf-card-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+}
+
+.wf-card-actions button {
+    border: none;
+    background: transparent;
+    color: var(--primary-color, #007bff);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+}
+
+.wf-source-note {
+    padding: 6px 12px;
+    border-top: 1px dashed var(--border-color);
+    font-size: 11px;
+    color: var(--text-secondary, #999);
+    line-height: 1.5;
+}
+
+/* 聊天区工作流标签栏 */
+.wf-chat-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 16px 0;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.wf-chat-tabs[hidden] {
+    display: none;
+}
+
+.wf-chat-tab {
+    border: none;
+    background: transparent;
+    padding: 6px 14px;
+    font-size: 13px;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+}
+
+.wf-chat-tab.active {
+    color: var(--primary-color, #007bff);
+    border-bottom-color: var(--primary-color, #007bff);
+}
+
+.wf-tab-progress {
+    margin-left: 4px;
+    font-size: 11px;
+    color: inherit;
+}
+
+@media (max-width: 1100px) {
+    .workflow-pane {
+        width: 300px;
+        min-width: 240px;
+    }
+}
+
+@media (max-width: 860px) {
+    .workflow-pane {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 20;
+        width: min(86vw, 360px);
+        box-shadow: 0 0 18px rgba(0, 0, 0, .18);
+    }
+}
+
+/* 手工修改步骤弹框 */
+.wf-edit-field {
+    display: block;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: var(--text-secondary, #666);
+}
+
+.wf-edit-field input[type="text"],
+.wf-edit-field textarea {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-color);
+    color: var(--text-color);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    box-sizing: border-box;
+}
+
+.wf-edit-field textarea { resize: vertical; min-height: 120px; }
+
+.wf-edit-sources {
+    margin-top: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.wf-edit-source-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 13px;
+    color: var(--text-color);
+}
+
+.wf-edit-hint { font-size: 12px; color: var(--text-secondary, #888); }
+
+.wf-edit-status {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+}
+
+.wf-edit-footer-actions { display: flex; gap: 8px; }
+
+/* 步骤卡片拖动排序 */
+.wf-card-drag {
+    cursor: grab;
+    user-select: none;
+    color: var(--text-secondary, #999);
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 1px;
+}
+.wf-card-drag:active { cursor: grabbing; }
+.wf-card.dragging { opacity: 0.45; }
+.wf-card.drag-over-top { box-shadow: inset 0 2px 0 var(--primary-color, #007bff); }
+.wf-card.drag-over-bottom { box-shadow: inset 0 -2px 0 var(--primary-color, #007bff); }
+
+/* 工作流步骤卡：复用子代理卡结构，展示步骤语义（宽度/内边距已统一） */
+
+/* 步骤手工修改弹框：比通用 modal 更宽，便于编辑长要求/前置选择 */
+.wf-edit-modal {
+    width: 760px;
+    max-width: 94vw;
+    max-height: 90vh;
+}
+.wf-edit-modal .wf-edit-field textarea {
+    min-height: 200px;
+}
+.wf-edit-modal .wf-edit-sources {
+    max-height: 260px;
+}
+
+/* 工作流编辑：运行参数定义编辑器 */
+.wf-wf-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0;
+}
+.wf-wf-input-item {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.wf-wf-input-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.wf-wf-input-item input,
+.wf-wf-input-item select {
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--bg-color);
+    color: var(--text-color);
+    font: inherit;
+    font-size: 12px;
+}
+.wf-wf-in-key { width: 120px; }
+.wf-wf-in-label { width: 160px; }
+.wf-wf-in-default,
+.wf-wf-in-desc { width: 100%; box-sizing: border-box; }
+.wf-wf-in-required {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary, #666);
+}
+.wf-wf-in-remove { margin-left: auto; }
+
+/* 运行历史弹框 */
+.wf-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+}
+.wf-history-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-color);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.wf-history-row:hover { background: var(--surface-card, #f5f5f5); }
+.wf-history-row.active { border-color: var(--border-color); background: var(--accent-tint, #eef3ff); }
+.wf-history-time { flex: 1; color: var(--text-secondary, #666); }
+.wf-history-status { min-width: 60px; }
+.wf-history-count { color: var(--text-secondary, #666); }
+.wf-history-detail {
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
+}
+.wf-history-detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+.wf-history-run-id { color: var(--text-secondary, #888); }
+.wf-history-section-title {
+    margin: 10px 0 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary, #666);
+}
+.wf-history-key { font-family: monospace; }
+.wf-history-error { color: var(--ms-danger, #dc2626); font-size: 12px; margin: 4px 0; }
+.wf-history-artifact { color: var(--text-secondary, #666); font-size: 11px; }
+.wf-history-step {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--border-color);
+    font-size: 12px;
+}
+.wf-history-step-idx { color: var(--text-secondary, #888); min-width: 16px; }
+.wf-history-step-name { font-weight: 500; }
+.wf-history-step-status { margin-left: auto; }

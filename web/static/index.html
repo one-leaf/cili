@@ -22,6 +22,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/file-tree.css">
+    <link rel="stylesheet" href="/static/workflow_pane.css">
     <script src="/static/libs/marked.min.js"></script>
     <script src="/static/libs/purify.min.js"></script>
     <script src="/static/libs/mermaid.min.js"></script>
@@ -71,6 +72,7 @@
                     <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开会话" aria-expanded="true">
                         <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                         <span class="section-title">会话</span>
+                        <span class="section-count" id="sessions-count" hidden>0</span>
                     </button>
                     <div class="section-actions">
                         <button id="new-session-btn" class="btn btn-small">新建</button>
@@ -84,7 +86,27 @@
                 </div>
             </div>
 
-            <div class="sidebar-h-split" id="sidebar-h-split" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整会话/文件区域高度（双击重置）"></div>
+            <div class="sidebar-h-split" id="sidebar-h-split-a" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整会话/工作流区域高度（双击重置）"></div>
+
+            <div class="sidebar-section workflows-section" id="workflows-section">
+                <div class="section-header">
+                    <button class="section-toggle" id="workflows-toggle-btn" title="折叠/展开工作流" aria-expanded="true">
+                        <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        <span class="section-title">工作流</span>
+                        <span class="section-count" id="workflows-count" hidden>0</span>
+                    </button>
+                    <div class="section-actions">
+                        <button id="workflow-new-btn" class="btn btn-small" title="新建工作流">＋</button>
+                        <button id="workflow-menu-btn" class="btn-icon-flat" title="工作流菜单"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg></button>
+                    </div>
+                </div>
+                <input id="workflow-import-input" type="file" accept="application/json,.json" hidden>
+                <div id="workflows-list" class="wf-sidebar-list">
+                    <div class="wf-sidebar-empty">暂无工作流</div>
+                </div>
+            </div>
+
+            <div class="sidebar-h-split" id="sidebar-h-split" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整工作流/文件区域高度（双击重置）"></div>
 
             <div class="sidebar-section files-section" id="files-section">
                 <div class="section-header files-header">
@@ -166,8 +188,29 @@
         </aside>
         <div class="preview-resize-handle" id="preview-resize-handle" title="拖拽调整预览宽度（双击重置）" hidden></div>
 
+        <!-- 工作流面板：与 preview-pane 同一中间栏位置，显示时互斥 -->
+        <aside class="workflow-pane" id="workflow-pane" aria-label="工作流面板" hidden>
+            <div class="wf-workflow-header">
+                <div class="wf-workflow-title-row">
+                    <span id="wf-workflow-title">工作流</span>
+                    <span id="wf-workflow-badge" class="wf-badge" hidden></span>
+                    <span id="wf-progress-text" class="wf-progress-text" hidden></span>
+                </div>
+                <div id="wf-workflow-actions" class="wf-workflow-actions"></div>
+            </div>
+            <div id="wf-cards" class="wf-cards"></div>
+            <div class="wf-source-note">数据来源决定本步骤读取哪些上游步骤的产物；无来源时只依据本步要求。</div>
+        </aside>
+        <div class="preview-resize-handle" id="workflow-resize-handle" title="拖拽调整工作流面板宽度（双击重置）" hidden></div>
+
         <!-- Main Chat Area -->
         <main class="chat-area">
+            <div id="chat-workflow-tabs" class="wf-chat-tabs" hidden>
+                <button class="wf-chat-tab" data-tab="edit">编辑工作流</button>
+                <button class="wf-chat-tab" data-tab="results">运行结果
+                    <span id="wf-tab-progress" class="wf-tab-progress" hidden></span>
+                </button>
+            </div>
             <div id="teen-badge" class="teen-badge" style="display:none;" title="青少年模式已开启：记录不可删除，开关需家长密码"></div>
             <div id="chat-messages" class="chat-messages">
                 <div class="welcome-message">
@@ -352,7 +395,7 @@
                 <!-- Agents Tab: role → model reference -->
                 <div class="tab-content" id="tab-agents">
                     <div class="settings-pane">
-                        <div class="pane-desc"><strong>角色模型分配</strong> — Master 必选；Worker / Lite 默认与 Master 一致（改 Master 自动跟随），也可显式指定其他模型。</div>
+                        <div class="pane-desc"><strong>角色模型分配</strong> — Master 必选；Workflow / Worker / Lite 默认与 Master 一致（改 Master 自动跟随），也可显式指定其他模型。</div>
                         <div class="agent-grid">
                             <div class="agent-card">
                                 <div class="head">
@@ -362,6 +405,15 @@
                                 <div class="desc">日常对话与任务执行的主模型</div>
                                 <select id="agent-master-model"></select>
                                 <div class="effective">生效：<code id="agent-master-effective">-</code></div>
+                            </div>
+                            <div class="agent-card">
+                                <div class="head">
+                                    <span class="name">Workflow</span>
+                                    <span class="role">工作流监督者</span>
+                                </div>
+                                <div class="desc">工作流运行的调度与一致性检查（不参与业务）；留空跟随 Master</div>
+                                <select id="agent-workflow-model"></select>
+                                <div class="effective">生效：<code id="agent-workflow-effective">-</code></div>
                             </div>
                             <div class="agent-card">
                                 <div class="head">
@@ -1460,6 +1512,7 @@
     <script src="/static/memory.js"></script>
     <script src="/static/cron_settings.js"></script>
     <script src="/static/session_about.js"></script>
+    <script src="/static/workflow_pane.js"></script>
     <script src="/static/app.js"></script>
     <script src="/static/context-gauge.js"></script>
     <script src="/static/chat.js"></script>

@@ -45,9 +45,11 @@
             line-height: 1.6;
         }
         .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 30px 20px;
+            width: 100%;
+            max-width: none;
+            min-height: 100vh;
+            margin: 0;
+            padding: 24px clamp(16px, 3vw, 48px) 48px;
         }
         .header {
             background: white;

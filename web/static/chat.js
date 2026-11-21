@@ -30,6 +30,17 @@ function _reattachTurnContainer() {
 // （有实时输出事件时 sse-client 会跳过延迟立即建气泡）
 
 const _toolStreamTimers = {};  // { tool_use_id: { delayTimer, pre, offset, div } }
+const _pendingAgentSpawnCalls = new Set();
+
+// 旧版工作流占位 tool_use（id = task-{8位hex}，用于生成 worker 卡）不渲染成
+// 「[调用工具: agent]」气泡。新格式的步骤调用 id 是 task-{run_id}-{index}，
+// 必须正常显示，因此只匹配旧占位的精确形态。
+function _isHiddenLegacyPlaceholder(block) {
+    if (!block || block.kind !== 'tool_call') return false;
+    if (block._meta && block._meta.hidden === true) return true;
+    return block.name === 'agent' && typeof block.id === 'string'
+        && /^task-[0-9a-f]{8}$/.test(block.id);
+}
 const TOOL_STREAMING_DELAY = 5000; // 5秒后才显示实时输出
 
 function startToolStreaming(toolUseId, toolName, sessionId) {
@@ -68,10 +79,12 @@ function clearAllToolStreaming() {
     for (const id of Object.keys(_toolStreamTimers)) {
         stopToolStreaming(id);
     }
+    _pendingAgentSpawnCalls.clear();
 }
 
 // 输入框底部左侧：附件 chip（预览选区 + Ctrl+V 上传文件）
 function renderComposerAttachments() {
+    _syncEditorChipWorkspace();
     const area = document.getElementById('input-attachments');
     if (!area) return;
     area.innerHTML = '';
@@ -116,7 +129,7 @@ function renderComposerAttachments() {
         remove.textContent = '×';
         if (item.kind === 'editor') {
             remove.addEventListener('click', () => {
-                _editorContextChip.suppressedKey = _editorContextKey(_editorContextChip.ctx);
+                _suppressEditorContext(_editorContextKey(_editorContextChip.ctx));
                 renderComposerAttachments();
                 updateComposerButtons();
             });
@@ -134,7 +147,35 @@ function renderComposerAttachments() {
 }
 
 // ── 编辑器上下文引用 chip（预览选区/打开文件 → 随消息发送）──
-let _editorContextChip = { ctx: null, suppressedKey: null };
+let _editorContextChip = { ctx: null, suppressedKey: null, workspaceUuid: null };
+
+const _EDITOR_CTX_SUPPRESS_PREFIX = 'cili_editor_ctx_suppressed:';
+
+function _editorChipWorkspaceUuid() {
+    return (typeof currentWorkspace !== 'undefined' && currentWorkspace && currentWorkspace.uuid) || '';
+}
+
+function _syncEditorChipWorkspace() {
+    const uuid = _editorChipWorkspaceUuid();
+    if (_editorContextChip.workspaceUuid === uuid) return;
+    _editorContextChip.workspaceUuid = uuid;
+    try {
+        _editorContextChip.suppressedKey = localStorage.getItem(
+            _EDITOR_CTX_SUPPRESS_PREFIX + uuid);
+    } catch (e) {
+        _editorContextChip.suppressedKey = null;
+    }
+}
+
+function _suppressEditorContext(key) {
+    _syncEditorChipWorkspace();
+    _editorContextChip.suppressedKey = key || null;
+    try {
+        const storageKey = _EDITOR_CTX_SUPPRESS_PREFIX + _editorChipWorkspaceUuid();
+        if (key) localStorage.setItem(storageKey, key);
+        else localStorage.removeItem(storageKey);
+    } catch (e) { /* ignore */ }
+}
 
 function _editorContextKey(ctx) {
     if (!ctx || !ctx.path) return null;
@@ -147,11 +188,12 @@ function _editorContextKey(ctx) {
 function suppressEditorContextChip() {
     if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) return;
     const ctx = window.FileTree.getEditorContext();
-    if (ctx) _editorContextChip.suppressedKey = _editorContextKey(ctx);
+    if (ctx) _suppressEditorContext(_editorContextKey(ctx));
 }
 
 function getActiveEditorContext() {
     if (!(window.FileTree && typeof window.FileTree.getEditorContext === 'function')) return null;
+    _syncEditorChipWorkspace();
     const ctx = window.FileTree.getEditorContext();
     if (!ctx) return null;
     if (_editorContextChip.suppressedKey && _editorContextChip.suppressedKey === _editorContextKey(ctx)) {
@@ -297,6 +339,18 @@ function renderMessages(messages) {
     // 出站文件卡片连续 ≥3 条时折叠（映射：消息下标 → 组）
     const fileGroups = _fileCardGroups(messages);
 
+    // 子代理卡依附于 tool_use：预扫 tool_result 的 _meta，按 tool_use_id 关联。
+    const callMeta = new Map();
+    messages.forEach((msg) => {
+        const bs = normalizeContent(msg.content);
+        bs.forEach((b) => {
+            if (b.kind === 'tool_result' && b.tool_use_id && b._meta && b._meta.exec_id) {
+                callMeta.set(b.tool_use_id, b._meta);
+            }
+        });
+    });
+    const anchoredCalls = new Set();
+
     messages.forEach((msg, idx) => {
         const role = msg.role;
         if (role === 'system') return;
@@ -362,6 +416,8 @@ function renderMessages(messages) {
             toolResultBlocks.forEach(block => {
                 // 子代理结果：渲染为可折叠的卡片
                 if (block._meta && block._meta.exec_id) {
+                    // 已依附在 tool_use 位置的卡片：不再在 tool_result 位置重复
+                    if (anchoredCalls.has(block.tool_use_id)) return;
                     const execId = block._meta.exec_id;
                     const isCompleted = block._meta.completed === true;
                     const saMsg = {
@@ -371,6 +427,11 @@ function renderMessages(messages) {
                         phase: block._meta.phase || '',
                         stats: block._meta.stats || null,
                         background: block._meta.background || false,
+                        workflow_step: block._meta.workflow_step,
+                        step_index: block._meta.step_index,
+                        step_name: block._meta.step_name,
+                        executor: block._meta.executor,
+                        duration_ms: block._meta.duration_ms,
                     };
                     // 尝试从 tool_use 块获取任务摘要（在前面的消息中）
                     // 简单处理：用 exec_id 加载详情
@@ -426,6 +487,47 @@ function renderMessages(messages) {
                 thinkDiv.innerHTML = renderMarkdown(block.text);
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
+                if (_isHiddenLegacyPlaceholder(block)) return;
+                const input = block.input || {};
+                const agentSpawn = block.name === 'agent'
+                    && (input.action || 'spawn') === 'spawn';
+                const workflowCall = block.name === 'workflow_agent';
+                if (agentSpawn || workflowCall) {
+                    // 卡片直接依附在 tool_use 上：完成态用 tool_result meta，
+                    // 运行态由 mountRunning 补挂；这里不再生成调用工具气泡。
+                    const meta = callMeta.get(block.id);
+                    const stepNo = Number(input.step) + 1;
+                    const seed = (meta && meta.exec_id)
+                        ? {
+                            ...meta,
+                            exec_id: meta.exec_id,
+                            task_summary: meta.task_summary
+                                || (workflowCall ? `第 ${stepNo} 步` : (input.task || '')),
+                            status: meta.status || (meta.completed ? 'completed' : 'running'),
+                            workflow_step: workflowCall ? true : !!meta.workflow_step,
+                            step_index: meta.step_index || (workflowCall ? stepNo : 0),
+                            step_name: meta.step_name || '',
+                            executor: meta.executor || '',
+                            duration_ms: meta.duration_ms || 0,
+                            background: !!meta.background,
+                        }
+                        : {
+                            // 没有 tool_result（失败/中断/仍在启动）：也先挂一张折叠卡，
+                            // 运行中的卡随后由 mountRunning/SSE 绑定 exec_id。
+                            exec_id: block.id,
+                            pending: true,
+                            task_summary: workflowCall ? '（等待执行）' : (input.task || '子代理任务'),
+                            status: 'running',
+                            workflow_step: workflowCall,
+                            step_index: workflowCall ? stepNo : 0,
+                            step_name: workflowCall ? '（等待执行）' : '',
+                            executor: '',
+                            background: false,
+                        };
+                    renderAgentRef(seed, idx, msgId);
+                    anchoredCalls.add(block.id);
+                    return;
+                }
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
@@ -578,6 +680,8 @@ function prependMessages(messages) {
 
             toolResultBlocks.forEach(block => {
                 if (block._meta && block._meta.exec_id) {
+                    // 已依附在 tool_use 位置的卡片：不再在 tool_result 位置重复
+                    if (anchoredCalls.has(block.tool_use_id)) return;
                     const execId = block._meta.exec_id;
                     const isCompleted = block._meta.completed === true;
                     const saMsg = {
@@ -587,6 +691,11 @@ function prependMessages(messages) {
                         phase: block._meta.phase || '',
                         stats: block._meta.stats || null,
                         background: block._meta.background || false,
+                        workflow_step: block._meta.workflow_step,
+                        step_index: block._meta.step_index,
+                        step_name: block._meta.step_name,
+                        executor: block._meta.executor,
+                        duration_ms: block._meta.duration_ms,
                     };
                     AgentCardStore.mountFromHistory(saMsg, fragment);
                     return;
@@ -632,6 +741,7 @@ function prependMessages(messages) {
                 contentDiv.appendChild(thinkDiv);
                 fragment.appendChild(div);
             } else if (block.kind === 'tool_call') {
+                if (_isHiddenLegacyPlaceholder(block)) return;
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
                 div.classList.add('tool');
                 const contentDiv = div.querySelector('.message-content');
@@ -867,6 +977,20 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             }
         } else if (event.type === 'tool_use') {
             finalizeThinkBlock();
+            // workflow_agent / agent spawn 由子代理卡展示，不显示调用工具气泡
+            if (event.tool === 'workflow_agent') {
+                finalizeAssistantBlock();
+                return;
+            }
+            if (event.tool === 'agent') {
+                const input = event.input || {};
+                const action = input.action || 'spawn';
+                if (action === 'spawn') {
+                    _pendingAgentSpawnCalls.add(event.tool_use_id);
+                    finalizeAssistantBlock();
+                    return;
+                }
+            }
             const div = addTurnMessage('assistant', '');
             div.classList.add('tool');
             const contentDiv = div.querySelector('.message-content');
@@ -891,6 +1015,10 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             finalizeAssistantBlock();
         } else if (event.type === 'tool_result') {
             stopToolStreaming(event.tool_use_id);
+            if (event.tool === 'agent' && _pendingAgentSpawnCalls.has(event.tool_use_id)) {
+                _pendingAgentSpawnCalls.delete(event.tool_use_id);
+                return;
+            }
             if (event.tool === 'ask_user') {
                 // 限定在本回合容器内查找：全局查找会命中别的会话里的同名卡片
                 const askCard = turnContainer.querySelector(`.ask-user-card[data-tool-use-id="${event.tool_use_id}"]`);

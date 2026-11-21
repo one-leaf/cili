@@ -294,6 +294,9 @@ function applySessionsCollapsed(collapsed) {
     if (window.FileTree && typeof window.FileTree.relayout === 'function') {
         window.FileTree.relayout();
     }
+    if (window.WorkflowPane && typeof window.WorkflowPane.onSessionsToggled === 'function') {
+        window.WorkflowPane.onSessionsToggled();
+    }
 }
 
 function toggleSessionsSection() {
@@ -957,6 +960,7 @@ async function handleWorkspaceChange() {
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
         updateWorkspacePath();
         if (window.FileTree) FileTree.setWorkspace(null);
+        if (window.WorkflowPane) WorkflowPane.reset();
         return;
     }
 
@@ -1022,9 +1026,14 @@ async function handleWorkspaceChange() {
     setFooterAboveFiles(false);
     savePosition({ workspace_uuid: selectedUuid });
 
+    if (window.WorkflowPane) {
+        try { WorkflowPane.init(selectedUuid); } catch (e) { console.warn('WorkflowPane init failed', e); }
+    }
+
     if (!currentWorkspace) {
         updateWorkspacePath();
         if (window.FileTree) FileTree.setWorkspace(null);
+        if (window.WorkflowPane) WorkflowPane.reset();
         sessionsList.innerHTML = '<div class="empty-state">工作区未找到</div>';
         return;
     }
@@ -1680,6 +1689,12 @@ function renderSessions() {
     // 根据 showHiddenSessions 过滤
     const filtered = sessions.filter(s => !!s.hidden === showHiddenSessions);
 
+    const countEl = document.getElementById('sessions-count');
+    if (countEl) {
+        countEl.textContent = String(filtered.length);
+        countEl.hidden = filtered.length === 0;
+    }
+
     if (filtered.length === 0) {
         sessionsList.innerHTML = `<div class="empty-state">${showHiddenSessions ? '没有隐藏的会话' : '暂无会话'}</div>`;
         return;
@@ -1820,12 +1835,20 @@ function exitMultiSelect() {
 
 // 切换单个会话项的右键菜单
 function toggleSessionItemMenu(session, btn) {
-    // 关闭所有已打开的菜单
+    // 同一个会话的菜单已打开时，再按一次关闭
+    const existing = document.querySelector(
+        `.session-dropdown[data-session-menu="${session.session_id}"]`);
+    if (existing) {
+        existing.remove();
+        return;
+    }
+    // 关闭其它会话已打开的菜单
     document.querySelectorAll('.session-dropdown').forEach(menu => menu.remove());
 
     // 创建新的下拉菜单
     const dropdown = document.createElement('div');
     dropdown.className = 'session-dropdown show';
+    dropdown.dataset.sessionMenu = session.session_id;
 
     // 青少年模式：删除（硬禁）与分享/隐藏（策略禁）不渲染，避免点了才报错
     const teenOn = window.teenStatus && window.teenStatus.enabled;
@@ -2150,6 +2173,9 @@ async function loadSession(sessionId) {
         const session = await response.json();
         if (epoch !== sessionLoadEpoch) return;
         currentSession = session;
+        if (window.WorkflowPane && typeof WorkflowPane.openForSession === 'function') {
+            try { WorkflowPane.openForSession(session); } catch (e) { console.warn('WorkflowPane open failed', e); }
+        }
         // 记录已加载的消息偏移量（从末尾算起）
         currentSessionLoadedOffset = session.messages.length;
         currentSessionHasMore = session.has_more;

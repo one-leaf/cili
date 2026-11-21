@@ -227,9 +227,71 @@ def _gen_claude_md(runner) -> dict | None:
     return build_instructions_message(runner.cwd)
 
 
+def _gen_workflow_panel(runner) -> dict | None:
+    """workflow_panel 层：工作流维护会话每轮注入当前工作流定义（不落盘）。"""
+    session = getattr(runner, "session", None)
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    panel = metadata.get("workflow_panel")
+    if not isinstance(panel, dict):
+        return None
+    workflow_id = str(panel.get("workflow_id") or "")
+    if not workflow_id:
+        return {
+            "role": "user",
+            "content": "## 当前工作流（工作流面板）\n尚未创建工作流。请根据用户描述，"
+                       "用 `workflow.create` 创建工作流（名称/描述/步骤）。",
+        }
+    try:
+        from core.workflows import store
+        workflow = store.load_workflow(runner.workspace_uuid, workflow_id)
+        state = store.load_state(runner.workspace_uuid, workflow_id)
+    except Exception:
+        return None
+    if workflow is None:
+        return {
+            "role": "user",
+            "content": "## 当前工作流（工作流面板）\n工作流已不存在；如需新建请用 `workflow.create`。",
+        }
+
+    lines = [
+        "## 当前工作流（工作流面板）",
+        f"工作流 id：{workflow.id}",
+        f"名称：{workflow.name}",
+        f"描述：{workflow.description or '（无）'}",
+        "运行输入项（运行前需用户填写）：",
+    ]
+    if workflow.inputs:
+        for spec in workflow.inputs:
+            suffix = "，必填" if spec.required else "，可选"
+            hint = f"：{spec.description}" if spec.description else ""
+            lines.append(f"- {spec.label}（{spec.key}{suffix}）{hint}")
+    else:
+        lines.append("- （无）")
+    lines.append("步骤（序号 / 名称 / 来源 / 要求摘要）：")
+    by_id = {step.id: i + 1 for i, step in enumerate(workflow.steps)}
+    for index, step in enumerate(workflow.steps, 1):
+        sources = "、".join(f"{by_id.get(s, '?')}" for s in step.sources) or "无"
+        requirement = step.requirement.replace("\n", " ")[:120]
+        lines.append(f"{index}. {step.name} ｜ 来源：{sources} ｜ {requirement}")
+    status = state.status
+    if status == "running":
+        total = len(workflow.steps)
+        lines.append(f"运行状态：运行中 {state.current_index}/{total}")
+    else:
+        lines.append(f"运行状态：{status}")
+    lines.append("")
+    lines.append("修改要求：只改用户指定的部分，其余保持原样；修改后简述变更。")
+    lines.append("修改输入项：调用 `workflow.update_inputs`，input_defs 传完整数组"
+                 "（key/label/type/required/default/description）。")
+    return {"role": "user", "content": "\n".join(lines)}
+
+
 # context 层已迁移至 system prompt 的 context 块（动态区），不再作为 user 层注入
 USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
     "claude_md": _gen_claude_md,
+    "workflow_panel": _gen_workflow_panel,
 }
 
 
