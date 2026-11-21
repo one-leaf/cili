@@ -2,12 +2,12 @@
 
 Provides shared infrastructure for runner execution:
 - Message management (self.messages, delegated to ConversationStore)
-- Tool execution / LLM calling / compression (delegated to Runner)
+- Tool execution / LLM calling / compression (delegated to TurnExecutor)
 
 `core.session_runner.SessionRunner` subclasses this and customizes behavior via role JSON
 (tools, system prompt blocks, user layers) instead of per-class overrides.
 
-执行逻辑（LLM 调用/工具执行/压缩）已抽至 core.session_runner_runtime.Runner；
+执行逻辑（LLM 调用/工具执行/压缩）已抽至 core.session_runner_runtime.TurnExecutor；
 本类保留同名薄转发方法，web 层与测试对 runner 方法的调用接口不变。
 """
 
@@ -22,14 +22,15 @@ from core.config import Config
 from core.image_pipeline import DEFAULT_MAX_BYTES, ensure_user_image_meta
 from core.llm import LLMClient, LLMResponse, Message
 from core.output_sink import OutputSink
-from core.session import generate_short_id
-from core.session_runner_runtime.context import ConversationStore
-from core.session_runner_runtime.runner import (
+from core.session import generate_short_id, session_key
+from core.session_runner_runtime.conversation import ConversationStore
+from core.session_runner_runtime.executor import (
     RETRY_CLEAR_SENTINEL as RETRY_CLEAR_SENTINEL,
 )
-from core.session_runner_runtime.runner import (
-    Runner,
+from core.session_runner_runtime.executor import (
+    TurnExecutor,
 )
+from core.time_utils import now_str
 from core.tools.base import Tool
 
 # 迭代上限默认值（Loop 层在 Step 4 接管计数）
@@ -87,7 +88,7 @@ class BaseSessionRunner:
         )
 
         # 执行层：持本 agent 引用，压缩/LLM 调用/工具执行在回合运行时访问共享状态
-        self.runner = Runner(self)
+        self.runner = TurnExecutor(self)
 
         # Prompt cache 状态追踪（压缩事件 + 缓存命中统计）
         self.cache_state = CacheState()
@@ -181,20 +182,18 @@ class BaseSessionRunner:
         if getattr(self, "session", None) is not None:
             self.session.insert_message(index, role, content, meta=meta)
             return
-        from datetime import datetime
-
         from core.session import generate_short_id
 
         index = max(0, min(int(index), len(self.context.messages)))
         msg_meta = dict(meta or {})
         msg_meta.setdefault("id", generate_short_id())
-        msg_meta.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        msg_meta.setdefault("created_at", now_str())
         self.context.messages.insert(index, {
             "role": role, "content": content, "_meta": msg_meta,
         })
 
     def build_projected_messages(self, *, force_reference: bool = False) -> list[dict]:
-        """构建与实际请求一致的投影消息（委托 Runner）。"""
+        """构建与实际请求一致的投影消息（委托 TurnExecutor）。"""
         return self.runner.build_projected_messages(force_reference=force_reference)
 
     def save_messages(self, metadata: dict | None = None) -> None:
@@ -213,10 +212,10 @@ class BaseSessionRunner:
         session_id = getattr(self, "current_session_id", "") or getattr(self, "_session_id", "")
         if not session_id:
             return 0
-        key = f"{self.workspace_uuid}:{session_id}"
-        from core.turn_queue import merge_queued_turns, queue
+        key = session_key(self.workspace_uuid, session_id)
+        from core.turn_queue import merge_queued_turns, turn_queue
 
-        items = queue.drain_batch(key)
+        items = turn_queue.drain_batch(key)
         if not items:
             return 0
         user_input, meta = merge_queued_turns(items)
@@ -252,15 +251,15 @@ class BaseSessionRunner:
 
     @staticmethod
     def _safe_output_filename(tool_use_id: str) -> str:
-        """Generate a safe output filename for a tool_use_id (delegated to Runner)."""
-        return Runner._safe_output_filename(tool_use_id)
+        """Generate a safe output filename for a tool_use_id (delegated to TurnExecutor)."""
+        return TurnExecutor._safe_output_filename(tool_use_id)
 
     def _execute_tool(self, name: str, input_data: dict, tool_use_id: str) -> dict:
-        """Execute a tool and return result metadata (delegated to Runner)."""
+        """Execute a tool and return result metadata (delegated to TurnExecutor)."""
         return self.runner.execute_tool(name, input_data, tool_use_id)
 
     def _resolve_tool_results(self, messages: list[dict]) -> list[dict]:
-        """Read tool output from external files before sending to LLM (delegated to Runner)."""
+        """Read tool output from external files before sending to LLM (delegated to TurnExecutor)."""
         return self.runner._resolve_tool_results(messages)
 
     # ========== Compression ==========
@@ -270,7 +269,7 @@ class BaseSessionRunner:
         self.context.invalidate_message_cache()
 
     def _check_and_compress(self) -> None:
-        """3-layer compression before LLM call (delegated to Runner)."""
+        """3-layer compression before LLM call (delegated to TurnExecutor)."""
         self.runner._check_and_compress()
 
     def _perform_full_compact(self, keep_user_messages: int, *,
@@ -279,7 +278,7 @@ class BaseSessionRunner:
                               split_idx: int | None = None,
                               insert_before: int | None = None,
                               keep_tokens: int | None = None) -> tuple[int, int]:
-        """Full auto compact: summarize old messages (delegated to Runner)."""
+        """Full auto compact: summarize old messages (delegated to TurnExecutor)."""
         return self.runner._perform_full_compact(
             keep_user_messages,
             next_steps=next_steps,
@@ -302,7 +301,7 @@ class BaseSessionRunner:
                             instruction: str | None = None,
                             pending_tool_use_id: str = "",
                             system_prompt: str | list[str] | None = None) -> str:
-        """Use LLM to summarize messages with cache-aware prefix sharing (delegated to Runner)."""
+        """Use LLM to summarize messages with cache-aware prefix sharing (delegated to TurnExecutor)."""
         return self.runner._summarize_messages(
             split_idx=split_idx,
             instruction=instruction,
@@ -312,34 +311,34 @@ class BaseSessionRunner:
 
     def summarize_for_handoff(self, next_steps: str, reason: str = "",
                               pending_tool_use_id: str = "") -> str:
-        """Build a handoff document (delegated to Runner)."""
+        """Build a handoff document (delegated to TurnExecutor)."""
         return self.runner.summarize_for_handoff(next_steps, reason, pending_tool_use_id)
 
     def maybe_full_compact_for_user_input(self, user_text: str) -> None:
-        """Full compact before a new user turn (delegated to Runner)."""
+        """Full compact before a new user turn (delegated to TurnExecutor)."""
         return self.runner.maybe_full_compact_for_user_input(user_text)
 
     def _mark_old_images_invalid(self, max_body_size: int = 3_000_000) -> int:
-        """Replace old tool_result images until body < max_body_size (delegated to Runner)."""
+        """Replace old tool_result images until body < max_body_size (delegated to TurnExecutor)."""
         return self.runner._mark_old_images_invalid(max_body_size)
 
     def _mark_all_images_invalid(self) -> None:
-        """Replace all tool_result images with text placeholders for 413 retry (delegated to Runner)."""
+        """Replace all tool_result images with text placeholders for 413 retry (delegated to TurnExecutor)."""
         self.runner._mark_all_images_invalid()
 
     # ========== Token Counting & Body Size ==========
 
     @staticmethod
     def iter_content_blocks(messages: list[dict]):
-        """Yield (block_type, data) for each content element (delegated to Runner)."""
-        return Runner.iter_content_blocks(messages)
+        """Yield (block_type, data) for each content element (delegated to TurnExecutor)."""
+        return TurnExecutor.iter_content_blocks(messages)
 
     def _count_messages_tokens(self, messages: list[dict]) -> int:
         """Count total tokens in messages (delegated to ConversationStore)."""
         return self.context.count_messages_tokens(messages)
 
     def _estimate_request_body_size(self, messages: list[dict]) -> int:
-        """Estimate JSON request body size in bytes (delegated to Runner)."""
+        """Estimate JSON request body size in bytes (delegated to TurnExecutor)."""
         return self.runner._estimate_request_body_size(messages)
 
     def _get_messages_with_header(self) -> list[dict]:
@@ -359,7 +358,7 @@ class BaseSessionRunner:
     def _call_llm(self, streaming: bool = False, system_prompt: str | list[str] = "") -> LLMResponse:
         """Call LLM with optional streaming.
 
-        转发到 Runner.run_round：每轮先压缩再调用 LLM（压缩入口收敛在此，
+        转发到 TurnExecutor.run_round：每轮先压缩再调用 LLM（压缩入口收敛在此，
         loop 不再显式调用 _check_and_compress）。测试 patch 本方法时整体替换
         回合入口，压缩与真实调用均被跳过。
 
@@ -378,7 +377,7 @@ class BaseSessionRunner:
         resolve_results: bool = True,
         force_reference: bool = False,
     ) -> list[Message]:
-        """Build Message objects for the LLM API from self.messages (delegated to Runner)."""
+        """Build Message objects for the LLM API from self.messages (delegated to TurnExecutor)."""
         kwargs: dict[str, Any] = {
             "pad_dangling": pad_dangling,
             "resolve_results": resolve_results,
@@ -388,13 +387,13 @@ class BaseSessionRunner:
         return self.runner._prepare_messages_for_llm(**kwargs)
 
     def _call_llm_streaming(self, system_prompt: str | list[str]) -> LLMResponse:
-        """Streaming LLM call. Think content passes through as-is (delegated to Runner)."""
+        """Streaming LLM call. Think content passes through as-is (delegated to TurnExecutor)."""
         return self.runner._call_llm_streaming(system_prompt)
 
     @staticmethod
     def _is_413_error(e: Exception) -> bool:
-        """Check if exception is a 413 Entity Too Large error (delegated to Runner)."""
-        return Runner._is_413_error(e)
+        """Check if exception is a 413 Entity Too Large error (delegated to TurnExecutor)."""
+        return TurnExecutor._is_413_error(e)
 
     # ========== Usage Tracking ==========
 

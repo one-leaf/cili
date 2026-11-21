@@ -46,7 +46,7 @@ class OutputSink:
     on_user_message: Callable[[dict], None] = _noop
 
 
-def merge_sink(base: OutputSink, **overrides) -> OutputSink:
+def _overlay_sink(base: OutputSink, **overrides) -> OutputSink:
     """以 base 为底，用「已显式设置」的 overrides 覆盖，返回新 OutputSink。
 
     未设置 = None（如 on_tool_output）或默认 no-op（如未绑定的 on_text），
@@ -60,4 +60,4 @@ def layer_sink(base: OutputSink, override: OutputSink | None) -> OutputSink:
     """以 base 为底、override 中已显式设置的字段覆盖。override 为 None 时返回 base。"""
     if override is None:
         return base
-    return merge_sink(base, **{f.name: getattr(override, f.name) for f in fields(override)})
+    return _overlay_sink(base, **{f.name: getattr(override, f.name) for f in fields(override)})

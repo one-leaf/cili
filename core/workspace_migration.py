@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from core import config as config_mod
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _acquire_file_lock(lock_path: Path) -> bool:
             lock_path.unlink()
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f)
+            json.dump({"pid": os.getpid(), "ts": now_str()}, f)
         return True
     except FileExistsError:
         return False
@@ -273,7 +274,7 @@ def _is_moved_but_index_stale(ws_root: Path, default_dir: Path) -> bool:
 def _repoint_index(legacy: dict[str, Any], default_dir: Path) -> str | None:
     legacy = dict(legacy)
     legacy["directory"] = str(default_dir)
-    legacy["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    legacy["updated_at"] = now_str()
     if not config_mod.save_workspace_config(legacy.get("uuid", ""), legacy):
         # 文件已在 default/ 下；下次启动按「索引待修复」兜底逻辑修复
         logger.error("[migration] 索引更新失败；文件已在 default/ 下，下次启动自动修复索引")

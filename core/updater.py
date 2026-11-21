@@ -734,13 +734,13 @@ def all_sessions_idle() -> bool:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from core.turn_queue import queue as turn_queue
+        from core.turn_queue import turn_queue
         if turn_queue.any_pending():
             return False
     except Exception:  # noqa: BLE001
         pass
     try:
-        from core.tools.background import any_background_runner_running
+        from core.tools.agent_background import any_background_runner_running
         if any_background_runner_running():
             return False
     except Exception:  # noqa: BLE001

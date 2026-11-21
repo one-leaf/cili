@@ -17,10 +17,11 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from core.event_bus import get_event_bus
+from core.session import split_session_key
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,7 @@ def _image_bytes(user_input: Any) -> int:
 
 
 def _split_key(key: str) -> tuple[str, str]:
-    ws, _, sid = key.partition(":")
-    return ws, sid
+    return split_session_key(key)
 
 
 def new_item_id() -> str:
@@ -182,7 +182,7 @@ class TurnQueue:
             if not item.item_id:
                 item.item_id = new_item_id()
             if not item.created_at:
-                item.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                item.created_at = now_str()
             q.items.append(item)
             if q.paused:
                 q.paused = False
@@ -308,4 +308,4 @@ class TurnQueue:
 
 
 # 模块级单例（各接入端共享同一份队列，与 SessionRegistry 同一生命周期策略）
-queue = TurnQueue()
+turn_queue = TurnQueue()

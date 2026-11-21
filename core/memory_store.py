@@ -20,8 +20,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core import time_utils
 from core.fs_utils import atomic_write_text
-from core.time_utils import TS_FORMAT, now_str
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +67,7 @@ def _dir_lock(memory_dir: str) -> threading.Lock:
 
 def parse_ts(value: Any) -> datetime:
     """解析 frontmatter 时间戳；解析失败返回 epoch。"""
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.strptime(str(value), TS_FORMAT)
-    except (TypeError, ValueError):
-        try:
-            return datetime.fromisoformat(str(value))
-        except (TypeError, ValueError):
-            return _EPOCH
+    return time_utils.parse_ts(value, _EPOCH) or _EPOCH
 
 
 def _fm_scalar(value: Any) -> str:

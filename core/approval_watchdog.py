@@ -109,7 +109,7 @@ class ApprovalWatchdog:
         try:
             from core.session_registry import registry as default_registry
             registry = registry_obj or default_registry
-            from core.tools.ask_user import (
+            from core.approval_cards import (
                 find_pending_approval,
                 is_expired,
                 settle_expired_approvals,

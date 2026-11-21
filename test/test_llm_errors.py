@@ -256,7 +256,7 @@ class TestRunnerStreamingRetry:
         return impl
 
     def _make_runner(self, chat_stream_impl, monkeypatch):
-        from core.session_runner_runtime.runner import Runner
+        from core.session_runner_runtime.executor import TurnExecutor
         agent = MagicMock()
         agent.client = MagicMock()
         agent.client.base_url = "http://fake"
@@ -265,10 +265,10 @@ class TestRunnerStreamingRetry:
         agent._stopped = False
         agent._session_id = "sess"
         agent.tool_schemas = []
-        runner = Runner(agent)
+        runner = TurnExecutor(agent)
         runner._prepare_messages_for_llm = MagicMock(return_value=[])
         # 重试退避 sleep 置空，避免真实等待
-        monkeypatch.setattr("core.session_runner_runtime.runner.time.sleep", lambda *a, **k: None)
+        monkeypatch.setattr("core.session_runner_runtime.executor.time.sleep", lambda *a, **k: None)
         return runner, agent
 
     def test_quota_429_gives_up_immediately(self, monkeypatch):

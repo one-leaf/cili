@@ -16,11 +16,16 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from core.config import get_workspace_data_dir
 from core.fs_utils import atomic_write_json, load_json_or_backup
-from core.workflows.model import Workflow, WorkflowState, WorkflowValidationError, new_short_id
+from core.workflows.model import (
+    Workflow,
+    WorkflowState,
+    WorkflowValidationError,
+    new_short_id,
+)
 
 logger = logging.getLogger(__name__)
 

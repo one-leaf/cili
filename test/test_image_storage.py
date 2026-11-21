@@ -15,7 +15,7 @@ from core.config import Config, ImageConfig
 from core.image_pipeline import normalize_image_block, write_tool_image_sidecar
 from core.llm.types import ImageBlock, TextBlock
 from core.session import SessionStore
-from core.session_runner_runtime.runner import Runner
+from core.session_runner_runtime.executor import TurnExecutor
 from core.tools.read import ReadTool
 
 
@@ -100,7 +100,7 @@ def test_resolve_tool_results_filters_historical_images(tmp_path):
     fake._get_messages_with_header = lambda: messages
     fake._invalidate_message_cache = lambda: None
 
-    resolved = Runner(fake)._resolved_messages()
+    resolved = TurnExecutor(fake)._resolved_messages()
     current_subs = resolved[0]["content"][0]["content"]
     old_subs = resolved[1]["content"][0]["content"]
     assert [b["type"] for b in current_subs] == ["text", "image"]
@@ -146,7 +146,7 @@ def test_tool_image_limit_replaces_excess_without_crashing(tmp_path):
         _retired_image_carriers=set(),
     )
 
-    out = Runner(fake).execute_tool("dummy_img", {}, "t1")
+    out = TurnExecutor(fake).execute_tool("dummy_img", {}, "t1")
 
     refs = (out.get("_meta") or {}).get("image_refs") or []
     assert len(refs) == 1  # 只内联 1 张，其余转引用

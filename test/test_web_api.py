@@ -412,24 +412,24 @@ class TestAskUserDirectInput:
         return sm, tool_use_id
 
     def test_find_pending_ask_user(self, tmp_path):
-        from core.tools.ask_user import find_pending_ask_user
+        from core.approval_cards import find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         assert find_pending_ask_user(sm) == tool_use_id
 
     def test_find_pending_ask_user_none_when_answered(self, tmp_path):
-        from core.tools.ask_user import find_pending_ask_user
+        from core.approval_cards import find_pending_ask_user
         sm, tool_use_id = self._placeholder_session(tmp_path)
         sm.messages[-1]["content"][0]["_meta"]["completed"] = True
         assert find_pending_ask_user(sm) is None
 
     def test_build_other_answer_formats_questions(self, tmp_path):
-        from core.tools.ask_user import build_other_answer
+        from core.approval_cards import build_other_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
         answer = build_other_answer(sm, tool_use_id, "我选 Python")
         assert answer == "你喜欢哪种语言？ 我选 Python\n多久反馈一次？ 我选 Python"
 
     def test_inject_ask_user_answer(self, tmp_path):
-        from core.tools.ask_user import inject_ask_user_answer
+        from core.approval_cards import inject_ask_user_answer
         sm, tool_use_id = self._placeholder_session(tmp_path)
         ok = inject_ask_user_answer(sm, tool_use_id, "你喜欢哪种语言？ Python", None)
         assert ok is True
@@ -444,7 +444,7 @@ class TestAskUserDirectInput:
         assert sm.saved
 
     def test_inject_ask_user_answer_unknown_id_returns_false(self, tmp_path):
-        from core.tools.ask_user import inject_ask_user_answer
+        from core.approval_cards import inject_ask_user_answer
         sm, _ = self._placeholder_session(tmp_path)
         assert inject_ask_user_answer(sm, "call_missing", "x", None) is False
 
@@ -483,9 +483,9 @@ class TestAskUserDirectInput:
         return agent, tool_use_id, store, rules
 
     def test_inject_answer_remember_persists_rule(self, tmp_path):
+        from core.approval_cards import inject_ask_user_answer
         from core.security.permission_rules import PermissionRules
         from core.tools.permission import REMEMBER_LABEL, permission_decision_id
-        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
         did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
@@ -500,8 +500,8 @@ class TestAskUserDirectInput:
         assert reloaded.evaluate_command("bash", "rm -rf /tmp/x")[0] == "allow"
 
     def test_inject_answer_approve_session_only(self, tmp_path):
+        from core.approval_cards import inject_ask_user_answer
         from core.tools.permission import APPROVE_LABEL, permission_decision_id
-        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
         did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
@@ -513,9 +513,9 @@ class TestAskUserDirectInput:
 
     def test_inject_answer_remember_persists_path_kind(self, tmp_path):
         """路径审批（kind=path:write）经「一直允许」后，kind 落盘并回灌为路径规则。"""
+        from core.approval_cards import inject_ask_user_answer
         from core.security.permission_rules import PermissionRules
         from core.tools.permission import REMEMBER_LABEL, PermissionStore
-        from core.tools.ask_user import inject_ask_user_answer
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
         store = PermissionStore()
         store.set_pending({
@@ -540,8 +540,8 @@ class TestAskUserDirectInput:
         assert reloaded.evaluate_path("path:delete", "C:\\outside\\x.txt")[0] is None  # kind 隔离
 
     def test_inject_answer_reject_does_not_approve(self, tmp_path):
+        from core.approval_cards import inject_ask_user_answer
         from core.tools.permission import REJECT_LABEL, permission_decision_id
-        from core.tools.ask_user import inject_ask_user_answer
         agent, tool_use_id, store, rules = self._approval_agent(tmp_path)
         did = permission_decision_id("rm -rf /tmp/x")
         assert inject_ask_user_answer(agent.session, tool_use_id,
@@ -1546,6 +1546,7 @@ class TestAnswerAskUserApprovalRoute:
 
     def test_decision_on_question_card_rejected(self, tmp_path, monkeypatch):
         from fastapi import HTTPException
+
         from web import routes_ask_user as routes
 
         sm, tool_use_id = TestAskUserDirectInput._placeholder_session(tmp_path)
@@ -1561,6 +1562,7 @@ class TestAnswerAskUserApprovalRoute:
         import time
 
         from fastapi import HTTPException
+
         from web import routes_ask_user as routes
 
         sm, tool_use_id, permission = self._session(tmp_path, deadline_ts=time.time() + 3600)

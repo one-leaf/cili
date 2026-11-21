@@ -22,10 +22,17 @@ from typing import Callable
 
 from core.agent_run import ContinuationRequest
 from core.agent_stats import AgentStats
+from core.approval_cards import ABORT_LABEL, APPROVE_LABEL, REJECT_LABEL, REMEMBER_LABEL
 from core.base_session_runner import BaseSessionRunner
-from core.config import DATA_DIR, Config, get_permission_config
+from core.config import (
+    DATA_DIR,
+    Config,
+    get_permission_config,
+    get_workspace_data_dir,
+    get_workspace_sessions_dir,
+)
 from core.fs_utils import atomic_write_json
-from core.handoff import default_branch_name, user_input_text
+from core.handoff import user_input_text
 from core.interface_profile import resolve_profile
 from core.llm import capabilities, create_llm_client
 from core.output_sink import OutputSink, layer_sink
@@ -38,7 +45,13 @@ from core.role_config import load_role
 from core.security.permission_judge import PermissionJudge
 from core.security.permission_policy import PermissionPolicy
 from core.security.permission_rules import PermissionRules
-from core.session import SessionStore, build_exec_log_data, generate_short_id
+from core.security.permission_state import PermissionStore, append_permission_audit
+from core.session import (
+    SessionStore,
+    build_exec_log_data,
+    default_branch_name,
+    generate_short_id,
+)
 from core.session_runner_runtime.loop import (
     BUDGET_FINAL_PROMPT,
     BUDGET_FINAL_RATIO,
@@ -48,16 +61,11 @@ from core.session_runner_runtime.loop import (
     Loop,
     LoopPolicy,
 )
+from core.time_utils import now_str
 from core.tools import create_tools, get_tool_by_name
 from core.tools.deepseek_web import SERVER_TOOL_NAMES
 from core.tools.permission import (
-    ABORT_LABEL,
-    APPROVE_LABEL,
     META_KEY,
-    REJECT_LABEL,
-    REMEMBER_LABEL,
-    PermissionStore,
-    append_permission_audit,
     build_approved_actions_section,
     build_permission_question,
 )
@@ -288,7 +296,6 @@ class SessionRunner(BaseSessionRunner):
             # 根/子代理共享 store 与 rules 实例（子代理经 agent_tool 透传）。
             from pathlib import Path
 
-            from core.config import get_workspace_data_dir
 
             permission_cfg = get_permission_config(config)
             global_path = (
@@ -353,8 +360,7 @@ class SessionRunner(BaseSessionRunner):
     def _init_interactive(self, workspace_uuid: str,
                           initial_session: SessionStore | None = None) -> None:
         """interactive（master）：会话持久化 + SessionStore。"""
-        from core.config import get_workspace_data_dir
-        self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
+        self.sessions_dir = get_workspace_sessions_dir(workspace_uuid)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
         if initial_session is not None:
@@ -1121,7 +1127,7 @@ class SessionRunner(BaseSessionRunner):
             if approval_cfg.timeout_seconds > 0 else 0,
             "auto_resume": approval_cfg.auto_resume,
             "interface": self._turn_interface or "",
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": now_str(),
         })
         self.permission_store.set_pending(pending_payload)
         # 审计：卡片询问（asked）——用户决定（decided）在 apply_answer 落
@@ -1169,7 +1175,7 @@ class SessionRunner(BaseSessionRunner):
         result = self._execute_tool("ask_user", ask_input, ask_id)
         # 审批载荷挂在占位 tool_result 上（_meta 发给 LLM 前会被剥除）：
         # 视觉上仍是 ask_user 卡，语义上可被前端/看门狗识别为审批。
-        from core.tools.ask_user import APPROVAL_META_KEY
+        from core.approval_cards import APPROVAL_META_KEY
         result.setdefault("_meta", {}).update({
             "kind": "approval",
             APPROVAL_META_KEY: pending_payload,
@@ -1188,7 +1194,7 @@ class SessionRunner(BaseSessionRunner):
         if self._mode != "interactive":
             return 0
         try:
-            from core.tools.ask_user import settle_expired_approvals
+            from core.approval_cards import settle_expired_approvals
             settled = settle_expired_approvals(
                 self.session, permission_store=self.permission_store)
         except Exception as e:  # noqa: BLE001 —— 结算失败不能阻断回合启动
@@ -1240,7 +1246,7 @@ class SessionRunner(BaseSessionRunner):
         有未答复的 ask_user/审批占位时拒绝恢复：先让用户处理卡片。
         """
         try:
-            from core.tools.ask_user import find_pending_ask_user
+            from core.approval_cards import find_pending_ask_user
             if find_pending_ask_user(self.session):
                 logger.info("[SessionRunner] 有待答复卡片，忽略通知恢复")
                 return
@@ -1263,7 +1269,7 @@ class SessionRunner(BaseSessionRunner):
         # 有未答复的 ask_user/审批占位：回合处于「等待外部输入」，通知不能
         # 抢先恢复循环（否则模型会在卡片未答时继续执行）。
         try:
-            from core.tools.ask_user import find_pending_ask_user
+            from core.approval_cards import find_pending_ask_user
             if find_pending_ask_user(self.session):
                 return
         except Exception:  # noqa: BLE001 —— 检查失败按可恢复处理（与旧行为一致）
@@ -1476,7 +1482,7 @@ class SessionRunner(BaseSessionRunner):
             "parent_session_id": "",
             "session_id": self._session_id,
             "started_at": self._started_at.strftime("%Y-%m-%d %H:%M:%S") if self._started_at else "",
-            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if final else None,
+            "ended_at": now_str() if final else None,
             "duration_seconds": self._elapsed_seconds(),
             "status": status,
             "phase": phase,

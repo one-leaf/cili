@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from core.config import get_workspace_sessions_dir
 from core.cron import sessions
 from core.cron.model import Job, RunResult, State
 from core.event_bus import get_event_bus
@@ -53,7 +54,7 @@ def deliver(job: Job, state: State, result: RunResult) -> dict[str, Any]:
     if workspace_uuid == (job.workspace_uuid or "system") and session_id == state.cron_session_id:
         return {"status": "local", "mode": mode}
 
-    sessions_dir = sessions.workspace_sessions_dir(workspace_uuid)
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     target_session = SessionStore.load_session(session_id, sessions_dir)
     if target_session is None:
         logger.warning(

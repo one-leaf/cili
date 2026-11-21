@@ -7,12 +7,16 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.config import get_workspace_cwd
 from core.event_bus import get_event_bus
 from core.workflows import runner as runner_mod
 from core.workflows import store
-from core.workflows.model import (Workflow, WorkflowState, WorkflowValidationError,
-                                  validate_run_inputs)
-from core.workflows.sessions import workspace_cwd
+from core.workflows.model import (
+    Workflow,
+    WorkflowState,
+    WorkflowValidationError,
+    validate_run_inputs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,7 @@ def collect_result_files(workspace_uuid: str, workflow_id: str,
     items = data.get("items")
     if not isinstance(items, dict):
         items = {sid: st.to_dict() for sid, st in state.items.items()}
-    cwd = Path(workspace_cwd(workspace_uuid))
+    cwd = Path(get_workspace_cwd(workspace_uuid))
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for index, step in enumerate(workflow.steps, 1):

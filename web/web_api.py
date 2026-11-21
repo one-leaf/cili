@@ -34,11 +34,11 @@ from web.routes_qq import router as qq_router
 from web.routes_session_about import router as session_about_router
 from web.routes_siwc import router as siwc_router
 from web.routes_suggest import router as suggest_router
-from web.routes_workflows import router as workflows_router
 from web.routes_teen import router as teen_router
 from web.routes_textbooks import router as textbooks_router
 from web.routes_update import router as update_router
 from web.routes_wechat import router as wechat_router
+from web.routes_workflows import router as workflows_router
 from web.routes_workspace import router as workspace_router
 from web.routes_workspace_wizard import router as workspace_wizard_router
 

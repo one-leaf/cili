@@ -20,11 +20,11 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +484,7 @@ def build_granted_rule(
         "note": (summary or "")[:200],
         "display": str(display)[:200],
         "granted_from": {"decision_id": decision_id, "summary": (summary or "")[:200]},
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": now_str(),
         "hits": 0,
         "last_used_at": "",
     }
@@ -789,7 +789,7 @@ class PermissionRules:
 
     def _bump(self, rule: dict) -> None:
         rule["hits"] = int(rule.get("hits") or 0) + 1
-        rule["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rule["last_used_at"] = now_str()
         now = time.monotonic()
         if now - self._last_hit_flush >= 5.0:
             self._last_hit_flush = now

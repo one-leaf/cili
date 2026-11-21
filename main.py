@@ -669,7 +669,12 @@ def _init_mplfonts() -> None:
     2. Bundle HarmonyOS Sans SC fonts into matplotlib's font dir (子进程可见)
     3. Clear font cache so matplotlib picks up new fonts
     """
-    import matplotlib
+    try:
+        import matplotlib
+    except ImportError as e:
+        # 字体初始化是可选能力：matplotlib 或其传递依赖缺失时不应阻塞服务启动
+        print(f"[setup] Warning: matplotlib unavailable ({e}); skipping CJK font init")
+        return
     mpl_config_dir = os.path.join(_DEPS_PYTHON_DIR, "matplotlib")
     rc_file = os.path.join(mpl_config_dir, "matplotlibrc")
 

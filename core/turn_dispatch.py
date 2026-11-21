@@ -27,9 +27,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from core.output_sink import OutputSink
-from core.session_runner import SessionRunner
-from core.tools.ask_user import (
+from core.approval_cards import (
     apply_answer,
     build_other_answer,
     classify_pending,
@@ -37,6 +35,8 @@ from core.tools.ask_user import (
     find_pending_approval,
     is_expired,
 )
+from core.output_sink import OutputSink
+from core.session_runner import SessionRunner
 
 logger = logging.getLogger(__name__)
 

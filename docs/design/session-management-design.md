@@ -185,7 +185,7 @@ Agent 执行日志独立存储在子目录中：
 2. `_run_bash()` 逐字符读取子进程输出，同时 append 写入 output_file（每块 flush）
 3. 前端通过 stream API 轮询文件新增内容，实现实时显示
 4. **Session 只保存元信息**（`_meta.file_size`、`_meta.truncated`、`_meta.output_path` 等），内容按需内联或外部存储
-5. 发送 LLM 前，`_resolve_tool_results()`（`core/session_runner_runtime/runner.py`）从外部文件按需读取内容注入消息中
+5. 发送 LLM 前，`_resolve_tool_results()`（`core/session_runner_runtime/executor.py`）从外部文件按需读取内容注入消息中
 6. 处理两种情况：
    - 正常输出：直接读取文件内容
    - 截断输出（>10K 字符）：读取后截断 + 引导语

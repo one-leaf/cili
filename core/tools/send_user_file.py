@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.outbox import enqueue_files, pending_count
+from core.session import session_key
 from core.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:  # 仅类型标注；运行时档案由 set_interface_profile 注入
@@ -226,4 +227,4 @@ class SendUserFileTool(Tool):
         session_id = getattr(self.session, "session_id", "") or ""
         if not session_id:
             return ""
-        return f"{self.workspace_uuid}:{session_id}"
+        return session_key(self.workspace_uuid, session_id)

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
-from core.config import get_workspace_data_dir, load_workspace_config
+from core.config import get_workspace_sessions_dir
 from core.event_bus import get_event_bus
 from core.session import SessionStore
 from core.workflows import store
@@ -20,17 +19,6 @@ def _publish_session_changed(workspace_uuid: str, session_id: str) -> None:
         "workspace_uuid": workspace_uuid,
         "session_id": session_id,
     })
-
-
-def workspace_sessions_dir(workspace_uuid: str = "") -> Path:
-    return get_workspace_data_dir(workspace_uuid) / "sessions"
-
-
-def workspace_cwd(workspace_uuid: str = "") -> str:
-    ws_config = load_workspace_config(workspace_uuid)
-    if ws_config and ws_config.get("directory"):
-        return str(ws_config["directory"])
-    return str(Path(get_workspace_data_dir(workspace_uuid)).parent)
 
 
 def workflow_metadata(workflow_id: str, *, run_id: str = "", step_id: str = "",
@@ -48,7 +36,7 @@ def workflow_metadata(workflow_id: str, *, run_id: str = "", step_id: str = "",
 
 def ensure_panel_session(workspace_uuid: str, workflow, state) -> SessionStore:
     """工作流的维护会话（编辑标签）：绑定 metadata.workflow_panel。"""
-    sessions_dir = workspace_sessions_dir(workspace_uuid)
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     if state.panel_session_id:
         loaded = SessionStore.load_session(state.panel_session_id, sessions_dir)
@@ -66,7 +54,7 @@ def ensure_panel_session(workspace_uuid: str, workflow, state) -> SessionStore:
 
 def ensure_new_workflow_panel_session(workspace_uuid: str) -> SessionStore:
     """未绑定的新建工作流会話：工作区复用一个，避免堆积。"""
-    sessions_dir = workspace_sessions_dir(workspace_uuid)
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     for item in SessionStore.list_sessions(sessions_dir):
         panel = item.get("workflow_panel")
@@ -89,7 +77,7 @@ def ensure_results_session(workspace_uuid: str, workflow, state,
     ``fresh=True`` 时每次运行新建一个结果会话，标签只展示最近一次运行；
     旧结果会话留在磁盘上（hidden），不做清理。
     """
-    sessions_dir = workspace_sessions_dir(workspace_uuid)
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     if state.results_session_id:
         loaded = SessionStore.load_session(state.results_session_id, sessions_dir)

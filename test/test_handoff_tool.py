@@ -7,9 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from core.handoff import build_handoff_document, default_branch_name, user_input_text
+from core.handoff import build_handoff_document, user_input_text
 from core.llm import Message, ToolCallBlock, ToolResultBlock
-from core.session_runner_runtime.runner import Runner
+from core.session import default_branch_name
+from core.session_runner_runtime.executor import TurnExecutor
 
 
 class TestHandoffDocument:
@@ -61,7 +62,7 @@ class TestPadDanglingInMessages:
                 ToolCallBlock(id="excluded", name="y", arguments="{}"),
             ])
         ]
-        Runner.pad_dangling_in_messages(messages, exclude_ids={"excluded"})
+        TurnExecutor.pad_dangling_in_messages(messages, exclude_ids={"excluded"})
         assert len(messages) == 2
         result = messages[1]
         assert result.role == "user"
@@ -89,7 +90,7 @@ class TestSummarizeForHandoff:
         )
         outer.client.chat.return_value = response
 
-        runner = Runner(outer)
+        runner = TurnExecutor(outer)
         runner._prepare_messages_for_llm = lambda **_: []
         out = runner.summarize_for_handoff("下一阶段", "原因")
 
@@ -112,7 +113,7 @@ class TestMaybeFullCompactForUserInput:
         outer._count_messages_tokens.return_value = total
         outer.model.max_context_tokens = max_context
         outer.cache_state = MagicMock()
-        runner = Runner(outer)
+        runner = TurnExecutor(outer)
         runner._perform_full_compact = MagicMock()
         return runner, outer
 

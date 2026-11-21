@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from core.config import get_workspace_data_dir
+from core.config import get_workspace_sessions_dir
 from core.session import MESSAGES_FILE, read_jsonl, read_meta
 from core.tools.base import Tool, ToolResult
 
@@ -55,7 +55,7 @@ class SessionSearchTool(Tool):
         if per_session < 1:
             per_session = 1
 
-        sessions_root = get_workspace_data_dir(self.workspace_uuid) / "sessions"
+        sessions_root = get_workspace_sessions_dir(self.workspace_uuid)
         if not sessions_root.is_dir():
             return ToolResult(f"No sessions directory found at {sessions_root}")
 

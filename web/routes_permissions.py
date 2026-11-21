@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -23,6 +22,7 @@ from core.config import (
     save_global_config,
 )
 from core.security.permission_rules import PermissionRules, new_rule_id
+from core.time_utils import now_str
 from web.deps import _csrf_protect, _require_workspace, reload_all_runners, teen_guard
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ async def create_permission_rule(request: Request, scope: str = "global",
         "kind": body.kind,
         "match": body.match,
         "note": body.note,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": now_str(),
         "hits": 0,
         "last_used_at": "",
     }

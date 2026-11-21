@@ -33,7 +33,7 @@ def ws(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "get_workspace_data_dir", lambda u: Path(tmp_path) / u)
     monkeypatch.setattr(config_mod, "find_workspace_entry", _entry)
     monkeypatch.setattr(config_mod, "ensure_default_workspace", lambda: uuid)
-    monkeypatch.setattr(common_commands, "get_workspace_data_dir", lambda u: Path(tmp_path) / u)
+    monkeypatch.setattr(common_commands, "get_workspace_sessions_dir", lambda u: Path(tmp_path) / u / "sessions")
     monkeypatch.setattr(common_commands, "find_workspace_entry", _entry)
     return uuid
 

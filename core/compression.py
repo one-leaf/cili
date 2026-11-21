@@ -1,6 +1,6 @@
-"""Message compression utilities shared by the unified Agent class.
+"""消息压缩工具：microcompact 与 token 估算，供 SessionRunner 使用。
 
-Provides functions to compress message histories to stay within context limits.
+LLM 摘要（full compact / handoff）在 ``core/session_runner_runtime/executor.py``。
 """
 
 from __future__ import annotations
@@ -16,6 +16,48 @@ _IMAGE_BASE_TOKENS = 750  # 单张图片的基准 token 估算
 _IMAGE_DATA_BYTES_PER_TOKEN = 100  # 图片 base64 数据每 100 字节折合 1 token
 _CHINESE_CHARS_PER_TOKEN = 2.5  # 中文约 2.5 字符/token
 _OTHER_CHARS_PER_TOKEN = 4  # 英文等其他约 4 字符/token
+
+# Token 预算常量（4 字节 ≈ 1 token）
+BYTES_PER_TOKEN = 4
+
+
+def approx_token_count(text: str) -> int:
+    """估算文本的 token 数（4 字节 ≈ 1 token）。"""
+    byte_len = len(text.encode("utf-8", errors="replace"))
+    return (byte_len + BYTES_PER_TOKEN - 1) // BYTES_PER_TOKEN
+
+
+def truncate_middle(text: str, max_tokens: int) -> str:
+    """Token 预算截断：保留开头和结尾，删除中间内容。
+
+    - 若文本在预算内，直接返回
+    - 否则保留前 40% + 后 40%，中间用标记替代
+    """
+    tokens = approx_token_count(text)
+    if tokens <= max_tokens:
+        return text
+
+    max_bytes = max_tokens * BYTES_PER_TOKEN
+    head_bytes = int(max_bytes * 0.4)
+    tail_bytes = int(max_bytes * 0.4)
+
+    head = text.encode("utf-8", errors="replace")[:head_bytes].decode("utf-8", errors="ignore")
+    tail = text.encode("utf-8", errors="replace")[-tail_bytes:].decode("utf-8", errors="ignore")
+
+    removed_tokens = tokens - max_tokens
+    marker = f"\n\n…{removed_tokens:,} tokens truncated…\n\n"
+    return head + marker + tail
+
+
+def truncate_result(text: str, max_chars: int) -> str:
+    """按字符数截断工具结果（保留开头，末尾加提示）。"""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_newline = truncated.rfind('\n')
+    if last_newline > max_chars * 0.9:
+        truncated = truncated[:last_newline]
+    return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
 
 
 def _image_block_tokens(block: dict) -> int:

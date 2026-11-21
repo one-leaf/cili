@@ -27,7 +27,6 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
 
@@ -35,6 +34,7 @@ import requests
 
 from core.config import PROJECT_ROOT
 from core.fs_utils import atomic_write_json
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ def save_credentials(creds: SmartEduCredentials) -> None:
             "access_token": creds.access_token,
             "mac_key": creds.mac_key,
             "diff": creds.diff,
-            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "saved_at": now_str(),
         }, ensure_ascii=False), encoding="utf-8")
         try:
             AUTH_CACHE_PATH.chmod(0o600)
@@ -594,7 +594,7 @@ def fetch_catalog() -> dict[str, Any]:
 
     return {
         "schema_version": 1,
-        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "fetched_at": now_str(),
         "source": {
             "platform": "https://basic.smartedu.cn/tchMaterial",
             "tags_api": TAGS_URL,

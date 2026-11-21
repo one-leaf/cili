@@ -148,7 +148,7 @@ def test_timeline_strips_untrusted_data_markers(tmp_path):
 
 
 def test_token_budget_split_keeps_recent_messages():
-    from core.session_runner_runtime.context import ConversationStore
+    from core.session_runner_runtime.conversation import ConversationStore
 
     store = ConversationStore(messages=[])
     messages = [

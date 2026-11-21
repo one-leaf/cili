@@ -23,6 +23,7 @@ from core.config import (
     validate_workspace_name,
 )
 from core.fs_utils import atomic_write_text
+from core.time_utils import now_str
 
 WORKSPACE_PARENT = PROJECT_ROOT / "workspace"
 DATA_ROOT = PROJECT_ROOT / "data"
@@ -743,7 +744,7 @@ def create_workspaces(
         allow_existing=allow_existing,
     )
     new_id = new_uuid or (lambda: secrets.token_hex(4))
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_str()
     created: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
 

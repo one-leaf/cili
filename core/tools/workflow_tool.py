@@ -14,8 +14,9 @@ import logging
 import os
 from typing import Any
 
-from core.workflows.model import WorkflowInputRequiredError, WorkflowValidationError
+from core.session import session_key
 from core.tools.base import Tool, ToolResult
+from core.workflows.model import WorkflowInputRequiredError, WorkflowValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +429,7 @@ class WorkflowTool(Tool):
             return ToolResult("Error: 无法确定当前会话，文件未登记", error=True)
         from core.outbox import enqueue_files
         result = enqueue_files(
-            f"{self.workspace_uuid}:{session_id}",
+            session_key(self.workspace_uuid, session_id),
             [(f["path"], f["note"]) for f in files],
         )
         if result.overflow:

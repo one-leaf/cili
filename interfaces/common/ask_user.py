@@ -33,7 +33,7 @@ def resolve_answer(runner, content: str) -> str:
     """
     if not content or not content.strip().isdigit():
         return content
-    from core.tools.ask_user import find_pending_ask_user
+    from core.approval_cards import find_pending_ask_user
 
     pending = find_pending_ask_user(runner.session)
     if not pending:

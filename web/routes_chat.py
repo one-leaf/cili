@@ -13,7 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-import core.session_activity as session_activity
+import core.session_control as session_control
+from core.approval_cards import find_pending_ask_user
 from core.compression import count_messages_tokens
 from core.config import get_workspace_data_dir, load_config
 from core.editor_context import expand_file_mentions, format_attachment
@@ -26,18 +27,16 @@ from core.image_pipeline import (
     project_images_for_request,
     save_image_payload,
 )
-from core.session import SessionStore, usage_total_for_session_dir
-from core.session_runner_runtime.context import ConversationStore
-from core.session_runner_runtime.runner import (
+from core.session import SessionStore, session_key, usage_total_for_session_dir
+from core.session_runner_runtime.conversation import ConversationStore
+from core.session_runner_runtime.executor import (
     FULL_COMPACT_TOKEN_RATIO,
     estimate_request_body_size,
 )
 from core.stream_executor import get_stream_executor
 from core.teen_mode import TeenModeDenied, get_teen_mode
-from core.tools.ask_user import find_pending_ask_user
 from core.turn_dispatch import PreparedTurn, execute_turn, prepare_turn
-from core.turn_queue import QueuedTurn, QueueError, merge_queued_turns
-from core.turn_queue import queue as turn_queue
+from core.turn_queue import QueuedTurn, QueueError, merge_queued_turns, turn_queue
 from web.deps import (
     _SAFE_ID_RE,
     _claim_session_run,
@@ -135,10 +134,6 @@ def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
     return SessionStore.load_session(session_id, sessions_dir)
 
 
-def _session_key(workspace_uuid: str, session_id: str) -> str:
-    return f"{workspace_uuid}:{session_id}"
-
-
 def _model_payload(config, sm: SessionStore | None) -> dict:
     """当前会话模型 + 全部可选模型（供输入框下拉框）。"""
     refs = config.available_refs()
@@ -223,7 +218,7 @@ async def set_session_model(
     if ref and ref not in refs:
         raise HTTPException(400, f"未知模型引用: {ref}")
 
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
     if runner is not None:
         checker = getattr(runner, "is_running", None)
@@ -543,7 +538,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 """
         # Save to session via SessionStore
         sm = _get_session(workspace_uuid, session_id)
-        _persist_command_exchange(sm, f"{workspace_uuid}:{session_id}", content, help_text)
+        _persist_command_exchange(sm, session_key(workspace_uuid, session_id), content, help_text)
         return StreamingResponse(sse_stream({"type": "text", "content": help_text, "session_id": session_id}), media_type="text/event-stream")
 
     # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
@@ -552,14 +547,14 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         manager = get_goal_manager(runner.session.session_dir)
         goal_text = format_goal_status(manager)
         _persist_command_exchange(
-            runner.session, f"{workspace_uuid}:{session_id}", content, goal_text
+            runner.session, session_key(workspace_uuid, session_id), content, goal_text
         )
         return StreamingResponse(sse_stream({"type": "text", "content": goal_text, "session_id": session_id}), media_type="text/event-stream")
 
     if content == "/goal clear":
         runner = await _get_or_create_runner(workspace_uuid, session_id)
         manager = get_goal_manager(runner.session.session_dir)
-        stop_goal_runner(f"{workspace_uuid}:{session_id}")  # 请求轮间停止（不中断进行中的单轮）
+        stop_goal_runner(session_key(workspace_uuid, session_id))  # 请求轮间停止（不中断进行中的单轮）
         manager.clear()
         result_text = "🗑️ 目标已清除，目标循环已停止。"
         runner.session.add_message("user", content, flush=False)
@@ -573,7 +568,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         if not manager.exists():
             result_text = "当前没有目标，无需暂停。"
         else:
-            stop_goal_runner(f"{workspace_uuid}:{session_id}")
+            stop_goal_runner(session_key(workspace_uuid, session_id))
             manager.pause()
             result_text = "⏸️ 目标循环已暂停，可用 `/goal resume` 恢复。"
         runner.session.add_message("user", content, flush=False)
@@ -649,7 +644,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             media_type="text/event-stream",
         )
     runner = await _get_or_create_runner(workspace_uuid, session_id)
-    session_key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
 
     # 本轮是「普通消息」还是「ask_user 的答案」——判定与注入逻辑在 core.turn_dispatch
     # （接口无关，Web 与 QQ 共用）。多模态入参在这里构造好一并传入。
@@ -675,8 +670,8 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
 
     delivered: dict | None = None
     if pending_ask:
-        if not _claim_session_run(session_key):
-            goal_runner = get_runner(session_key)
+        if not _claim_session_run(key):
+            goal_runner = get_runner(key)
             if goal_runner is not None and goal_runner.is_running():
                 error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
             else:
@@ -686,12 +681,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
             prepared = prepare_turn(runner, content=content, user_input=user_input)
         except Exception:
             # 认领后到 SSE 建立前的任何异常都必须释放，否则会话永久“执行中”
-            _release_session_run(session_key)
+            _release_session_run(key)
             raise
     else:
         # 普通消息：先入队再尝试启动——运行中不再报错，「接收」与「执行」解耦
         try:
-            item = turn_queue.enqueue(session_key, QueuedTurn(
+            item = turn_queue.enqueue(key, QueuedTurn(
                 item_id="",
                 content=content,
                 user_input=user_input,
@@ -702,21 +697,21 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         except QueueError as e:
             return StreamingResponse(sse_stream({"type": "error", "content": str(e), "session_id": session_id}), media_type="text/event-stream")
 
-        if not _claim_session_run(session_key):
+        if not _claim_session_run(key):
             # 其他客户端 / 目标循环持有执行权：消息留在队列，由持权回合在
             # 安全边界投递，或回合结束后由后台泵启动
             return StreamingResponse(sse_stream({
                 "type": "queued",
                 "session_id": session_id,
                 "item": item.preview(),
-                "queue_paused": turn_queue.is_paused(session_key),
+                "queue_paused": turn_queue.is_paused(key),
             }), media_type="text/event-stream")
 
         try:
-            items = turn_queue.drain_batch(session_key)
+            items = turn_queue.drain_batch(key)
             if not items:
                 # 暂停态（并发的 /stop）：不启动，释放认领，消息留在队列
-                _release_session_run(session_key)
+                _release_session_run(key)
                 return StreamingResponse(sse_stream({
                     "type": "queued",
                     "session_id": session_id,
@@ -729,7 +724,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
                                     user_input=merged_input, meta=merged_meta)
             delivered = _delivery_payload(items)
         except Exception:
-            _release_session_run(session_key)
+            _release_session_run(key)
             raise
 
     # Use a queue to bridge sync runner callbacks → async SSE generator
@@ -779,12 +774,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         finally:
             if set_iface is not None:
                 set_iface(None)
-            _release_session_run(session_key)
+            _release_session_run(key)
             drain_outbox_events(runner, event_queue)
             event_queue.put(None)  # sentinel: done
             # 本回合结束：仍有排队项（最后一个边界之后才到达的）→ 启动后台泵。
             # 若用户又发起了新的前台回合并抢先认领，泵会自动退出。
-            _pump_queue(session_key)
+            _pump_queue(key)
 
     # 客户端断开时 runner 继续后台执行，仅 /stop 能中断
     return sse_run_response(run_runner, event_queue)
@@ -798,12 +793,12 @@ async def stop_runner(workspace_uuid: str, session_id: str,
     队列不暂停：排队项由泵继续。``background`` 不要求 master runner 已加载，
     因此刷新后/其他标签页也能停后台。
     """
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     scope = request.scope if request is not None else "turn"
 
     if scope == "background":
         stopped = await asyncio.to_thread(
-            session_activity.stop_background, workspace_uuid, session_id
+            session_control.stop_background, workspace_uuid, session_id
         )
         return {
             "success": stopped > 0,
@@ -813,7 +808,7 @@ async def stop_runner(workspace_uuid: str, session_id: str,
 
     if scope == "session":
         result = await asyncio.to_thread(
-            session_activity.stop_session, workspace_uuid, session_id
+            session_control.stop_session, workspace_uuid, session_id
         )
         total = int(result["turn"]) + int(result["background"])
         return {
@@ -853,7 +848,7 @@ async def resume_runner(workspace_uuid: str, session_id: str):
     Called by frontend when a background sub-agent completes and master is idle.
     Drains notifications from message_bus and continues the runner loop.
     """
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
 
     # Check if session is idle
     if not _is_session_idle(key):
@@ -921,7 +916,7 @@ async def fork_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     runner = await _get_or_create_runner(workspace_uuid, session_id)
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
     if not _claim_session_run(key):
         raise HTTPException(status_code=409, detail="会话正在运行")
 
@@ -951,7 +946,7 @@ async def fork_session(
              dependencies=[Depends(teen_guard("message_revert", hard=True))])
 async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
 
     # 如果 runner 存在且正在运行，拒绝操作
@@ -987,14 +982,14 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/status")
 async def get_runner_status(workspace_uuid: str, session_id: str):
     """会话运行状态 + 队列摘要（刷新/切会话的界面据此恢复队列条）。"""
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     snap = turn_queue.snapshot(key)
     running = False
     runner = registry.get(key)
     if runner is not None:
         checker = getattr(runner, "is_running", None)
         running = bool(checker()) if callable(checker) else False
-    activity = session_activity.snapshot(workspace_uuid, session_id, running=running)
+    activity = session_control.snapshot(workspace_uuid, session_id, running=running)
     return {
         **activity,
         "queue_length": len(snap["items"]),
@@ -1018,7 +1013,7 @@ async def get_session_context(
     """
     _validate_session_id(session_id)
     config = load_config()
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
 
     if runner is not None:
@@ -1124,7 +1119,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
     if not content and not request.images:
         raise HTTPException(status_code=400, detail="消息不能为空")
 
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     try:
         item = turn_queue.enqueue(key, QueuedTurn(
             item_id="",
@@ -1150,7 +1145,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
 async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """返回队列快照（items / paused / reason）。"""
     _validate_session_id(session_id)
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     snap = turn_queue.snapshot(key)
     return {"success": True, **snap}
 
@@ -1162,7 +1157,7 @@ async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
     _validate_session_id(session_id)
     if not _SAFE_ID_RE.match(item_id):
         raise HTTPException(status_code=400, detail="Invalid item_id format")
-    removed = turn_queue.remove(_session_key(workspace_uuid, session_id), item_id)
+    removed = turn_queue.remove(session_key(workspace_uuid, session_id), item_id)
     return {"success": removed}
 
 
@@ -1170,7 +1165,7 @@ async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
 async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """清空队列（会话运行中也可调用）。"""
     _validate_session_id(session_id)
-    cleared = turn_queue.clear(_session_key(workspace_uuid, session_id))
+    cleared = turn_queue.clear(session_key(workspace_uuid, session_id))
     return {"success": True, "cleared": cleared}
 
 
@@ -1178,7 +1173,7 @@ async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
 async def resume_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """解除暂停并尝试启动下一批（会话空闲时）。"""
     _validate_session_id(session_id)
-    key = _session_key(workspace_uuid, session_id)
+    key = session_key(workspace_uuid, session_id)
     turn_queue.resume(key)
     _start_pump(key)
     return {"success": True}

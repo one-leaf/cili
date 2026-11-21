@@ -735,7 +735,7 @@ TWO_QUESTIONS = [
 
 class TestStructuredAnswers:
     def test_multi_question_by_index(self, tmp_path):
-        from core.tools.ask_user import format_structured_answers
+        from core.approval_cards import format_structured_answers
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         text = format_structured_answers(sm, tu, [
@@ -745,7 +745,7 @@ class TestStructuredAnswers:
         assert text == "你喜欢的颜色？ 红色\n接受的方案？ A, B, 并把 C 记下来"
 
     def test_by_question_id(self, tmp_path):
-        from core.tools.ask_user import format_structured_answers
+        from core.approval_cards import format_structured_answers
 
         questions = [dict(TWO_QUESTIONS[0], id="q-color"),
                      dict(TWO_QUESTIONS[1], id="q-plan")]
@@ -757,7 +757,7 @@ class TestStructuredAnswers:
         assert text == "你喜欢的颜色？ 紫色\n接受的方案？ C"
 
     def test_missing_answer_keeps_question_line(self, tmp_path):
-        from core.tools.ask_user import format_structured_answers
+        from core.approval_cards import format_structured_answers
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         text = format_structured_answers(sm, tu, [{"id": "0", "selected": ["蓝色"], "custom": ""}])
@@ -766,7 +766,7 @@ class TestStructuredAnswers:
         assert lines[1].startswith("接受的方案？")
 
     def test_no_questions_falls_back_to_join(self, tmp_path):
-        from core.tools.ask_user import format_structured_answers
+        from core.approval_cards import format_structured_answers
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         sm.messages[0]["content"] = []  # tool_use 丢失（旧数据/裁剪）
@@ -776,7 +776,7 @@ class TestStructuredAnswers:
         assert text == "A, B, X"
 
     def test_apply_answer_settles_and_writes_file(self, tmp_path):
-        from core.tools.ask_user import apply_answer, format_structured_answers
+        from core.approval_cards import apply_answer, format_structured_answers
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         answers = [{"id": "0", "selected": ["红色"], "custom": ""},
@@ -793,7 +793,7 @@ class TestStructuredAnswers:
         assert path.read_text(encoding="utf-8") == expected
 
     def test_apply_answer_single_turn_idempotent(self, tmp_path):
-        from core.tools.ask_user import apply_answer
+        from core.approval_cards import apply_answer
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         assert apply_answer(sm, tu, text="红色") == "answered"
@@ -806,13 +806,13 @@ class TestStructuredAnswers:
 
 class TestClassifyPending:
     def test_question_card(self, tmp_path):
-        from core.tools.ask_user import classify_pending
+        from core.approval_cards import classify_pending
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         assert classify_pending(sm) == ("question", tu)
 
     def test_settled_card_is_none(self, tmp_path):
-        from core.tools.ask_user import apply_answer, classify_pending
+        from core.approval_cards import apply_answer, classify_pending
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
         apply_answer(sm, tu, text="红色")
@@ -820,7 +820,7 @@ class TestClassifyPending:
 
     def test_legacy_approval_by_header(self, tmp_path):
         """升级前的审批卡没有 kind/payload，靠 header「权限确认」识别。"""
-        from core.tools.ask_user import classify_pending
+        from core.approval_cards import classify_pending
 
         questions = [{"question": "批准该命令？", "header": "权限确认",
                       "options": [{"label": "允许本次会话", "description": ""}]}]
@@ -828,7 +828,7 @@ class TestClassifyPending:
         assert classify_pending(sm) == ("approval", tu)
 
     def test_approval_payload_wins(self, tmp_path):
-        from core.tools.ask_user import APPROVAL_META_KEY, classify_pending
+        from core.approval_cards import APPROVAL_META_KEY, classify_pending
 
         questions = [{"question": "批准该命令？", "header": "命令",
                       "options": [{"label": "允许本次会话", "description": ""}]}]
@@ -839,7 +839,7 @@ class TestClassifyPending:
 
     def test_question_card_with_approval_header_not_hijacked(self, tmp_path):
         """header 恰好叫「权限确认」的普通提问卡，不能只因 header 被当成审批。"""
-        from core.tools.ask_user import apply_answer, classify_pending
+        from core.approval_cards import apply_answer, classify_pending
         from core.tools.permission import PermissionStore
 
         questions = [{"question": "继续吗？", "header": "权限确认",
@@ -860,7 +860,7 @@ class TestClassifyPending:
         曾经的顺序是「header → store.pending → tool_name」，残留 pending 会让
         提问卡走审批分支，用户答案被按「未知文本＝拒绝」处理掉。
         """
-        from core.tools.ask_user import classify_pending
+        from core.approval_cards import classify_pending
         from core.tools.permission import PermissionStore
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
@@ -870,7 +870,7 @@ class TestClassifyPending:
 
     def test_apply_answer_treats_question_card_as_question(self, tmp_path):
         """结算路径与分类路径一致：残留 pending 不该把提问卡结算成「拒绝」。"""
-        from core.tools.ask_user import apply_answer
+        from core.approval_cards import apply_answer
         from core.tools.permission import PermissionStore
 
         sm, tu = _question_session(tmp_path, TWO_QUESTIONS)
@@ -910,8 +910,8 @@ class TestAnswerReachesModel:
     def test_text_answer_is_visible_to_model(self, runner, monkeypatch):
         import asyncio  # noqa: F401 —— 仅为与既有测试同风格保留
 
+        from core.approval_cards import find_pending_ask_user
         from core.output_sink import OutputSink
-        from core.tools.ask_user import find_pending_ask_user
         from core.turn_dispatch import execute_turn, prepare_turn
 
         tool_use_id = self._ask(runner, make_test_questions())
@@ -944,7 +944,7 @@ class TestAnswerReachesModel:
 
     def test_multi_question_other_text_repeats_each_question(self, runner):
         """自由文本回答多个问题时，按卡片约定给每个问题都带上原文。"""
-        from core.tools.ask_user import build_other_answer
+        from core.approval_cards import build_other_answer
 
         tool_use_id = self._ask(runner, TWO_QUESTIONS)
         answer = build_other_answer(runner.session, tool_use_id, "都听你的")

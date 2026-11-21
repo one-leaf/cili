@@ -302,7 +302,7 @@ class PermissionJudge:
         )
 
     def _audit(self, event: str, permission: dict, extra: dict) -> None:
-        from core.tools.permission import append_permission_audit
+        from core.security.permission_state import append_permission_audit
         append_permission_audit(self.session_dir, event, {
             "decision_id": (permission or {}).get("decision_id", ""),
             "tool": (permission or {}).get("tool", ""),

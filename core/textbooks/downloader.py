@@ -20,7 +20,6 @@ import re
 import secrets
 import shutil
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -107,8 +106,8 @@ class TextbookDownloadTask:
     catalog_books: dict[str, OfficialBook]
     status: str = "running"
     error: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    created_at: str = field(default_factory=lambda: now_str())
+    updated_at: str = field(default_factory=lambda: now_str())
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     async_task: asyncio.Task | None = None
 
@@ -128,10 +127,9 @@ class TextbookDownloadTask:
         }
 
     def touch(self) -> None:
-        self.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.updated_at = now_str()
 
 
-_now = now_str
 
 
 def _validate_book_key(book: OfficialBook) -> None:
@@ -195,7 +193,7 @@ def _load_manifest(workspace_dir: Path) -> dict[str, Any]:
 
 def _save_manifest(workspace_dir: Path, data: dict[str, Any]) -> None:
     data["schema_version"] = MANIFEST_SCHEMA_VERSION
-    data["updated_at"] = _now()
+    data["updated_at"] = now_str()
     atomic_write_json(_manifest_path(workspace_dir), data)
 
 
@@ -211,7 +209,7 @@ def _record_book(workspace_dir: Path, source_commit: str, progress: BookProgress
         "chunk_count": 1,
         "split": False,
         "error": progress.error,
-        "updated_at": _now(),
+        "updated_at": now_str(),
     }
     _save_manifest(workspace_dir, manifest)
 
@@ -655,7 +653,7 @@ def _save_task_manifest(task: TextbookDownloadTask) -> None:
                 "chunk_count": 1,
                 "split": False,
                 "error": progress.error,
-                "updated_at": _now(),
+                "updated_at": now_str(),
             }
         _save_manifest(task.workspace_dir, manifest)
     except Exception as e:  # noqa: BLE001 —— manifest 失败不影响主流程

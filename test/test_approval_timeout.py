@@ -14,13 +14,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.approval_watchdog import (
-    _PROCESS_STARTED_AT,
-    ApprovalWatchdog,
-    _can_auto_resume,
-)
-from core.config import ApprovalConfig
-from core.tools.ask_user import (
+from core.approval_cards import (
     ABORT_TEXT,
     APPROVAL_META_KEY,
     APPROVE_TEXT,
@@ -35,6 +29,12 @@ from core.tools.ask_user import (
     is_expired,
     settle_expired_approvals,
 )
+from core.approval_watchdog import (
+    _PROCESS_STARTED_AT,
+    ApprovalWatchdog,
+    _can_auto_resume,
+)
+from core.config import ApprovalConfig
 from core.tools.permission import (
     ABORT_LABEL,
     APPROVE_LABEL,
@@ -453,7 +453,7 @@ class TestDeadlineEdges:
 
     def test_legacy_card_without_payload_fails_closed(self, tmp_path):
         """升级前发出、重启后丢载荷的旧卡片：不做批准副作用，按提问卡处理。"""
-        from core.tools.ask_user import APPROVAL_META_KEY
+        from core.approval_cards import APPROVAL_META_KEY
 
         messages, permission = _approval_messages(deadline_ts=time.time() + 3600)
         meta = messages[1]["content"][0]["_meta"]
@@ -517,7 +517,6 @@ class TestRunnerEndToEnd:
     @staticmethod
     def _card(runner, monkeypatch, *, timeout_seconds: int = 120) -> dict:
         """用真实 runner 合成审批卡，返回载荷。"""
-        import time as _time
 
         from core.config import PermissionConfig
         from core.tools.permission import permission_decision_id
@@ -595,7 +594,6 @@ class TestRunnerEndToEnd:
 
         from core.output_sink import OutputSink
         from core.turn_dispatch import execute_turn, prepare_turn
-
         from test.test_session_runner_exec import _FakeLLMResponse
 
         permission = self._card(runner, monkeypatch)
@@ -637,7 +635,7 @@ class TestRestartRoundTrip:
         return store
 
     def test_payload_survives_restart(self, runner, monkeypatch):
-        from core.tools.ask_user import _find_tool_result_block
+        from core.approval_cards import _find_tool_result_block
 
         permission = TestRunnerEndToEnd._card(runner, monkeypatch)
         reloaded = self._reload(runner.session)
@@ -678,7 +676,7 @@ class TestRestartRoundTrip:
         settled = settle_expired_approvals(reloaded, permission_store=PermissionStore())
         assert settled == [pending["tool_use_id"]]
         again = self._reload(runner.session)
-        from core.tools.ask_user import _find_tool_result_block
+        from core.approval_cards import _find_tool_result_block
         assert _find_tool_result_block(again, pending["tool_use_id"])["_meta"]["outcome"] == "expired"
         assert not PermissionStore().is_approved(permission["decision_id"])
 

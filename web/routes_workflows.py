@@ -10,6 +10,10 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from core.config import get_workspace_cwd, get_workspace_sessions_dir
+from core.event_bus import get_event_bus
+from core.outbox import OutboxFile, build_web_file_card
+from core.session import SessionStore
 from core.workflows import service, store
 from core.workflows.model import WorkflowValidationError
 from core.workflows.sessions import (
@@ -17,12 +21,7 @@ from core.workflows.sessions import (
     ensure_panel_session,
     ensure_results_session,
     find_workflow_by_panel_session,
-    workspace_sessions_dir,
-    workspace_cwd,
 )
-from core.outbox import OutboxFile, build_web_file_card
-from core.event_bus import get_event_bus
-from core.session import SessionStore
 from web.deps import _require_workspace, _validate_session_id
 
 router = APIRouter()
@@ -175,7 +174,7 @@ async def panel_session(workspace_uuid: str,
 async def panel_session_binding(workspace_uuid: str, session_id: str,
                                 ws_dir: Path = Depends(_require_workspace)):
     _validate_session_id(session_id)
-    session = SessionStore.load_session(session_id, workspace_sessions_dir(workspace_uuid))
+    session = SessionStore.load_session(session_id, get_workspace_sessions_dir(workspace_uuid))
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"workflow_id": find_workflow_by_panel_session(workspace_uuid, session)}
@@ -217,7 +216,7 @@ async def send_results(workspace_uuid: str, workflow_id: str,
     if session is None:
         raise HTTPException(status_code=404, detail="目标会话不存在")
     fake_runner = SimpleNamespace(
-        cwd=str(workspace_cwd(workspace_uuid)),
+        cwd=str(get_workspace_cwd(workspace_uuid)),
         workspace_uuid=workspace_uuid,
         current_session_id=session_id,
     )

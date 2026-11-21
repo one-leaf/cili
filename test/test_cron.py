@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.config import get_workspace_sessions_dir
 from core.cron import delivery, migration, rules, seeds, service, store
 from core.cron import engine as engine_mod
-from core.cron import sessions as cron_sessions
 from core.cron.flags import cron_run_active
 from core.cron.model import CronValidationError, Job, RunResult
 from core.cron.sessions import ensure_cron_session
@@ -400,7 +400,7 @@ class TestSessionsAndDelivery:
         assert receipt["status"] == "fallback"
         assert state.cron_session_id
         cron_session = SessionStore.load_session(
-            state.cron_session_id, cron_sessions.workspace_sessions_dir(ws)
+            state.cron_session_id, get_workspace_sessions_dir(ws)
         )
         assert cron_session is not None
 

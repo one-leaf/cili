@@ -309,7 +309,7 @@ class TestBackgroundSessionRunnerConcurrency:
     @pytest.fixture(autouse=True)
     def _clean_active(self, monkeypatch):
         """每个用例隔离全局活跃列表。"""
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
         monkeypatch.setattr(base_mod, "_active_background_runners", [])
         yield
         with base_mod._background_runners_cond:
@@ -318,7 +318,7 @@ class TestBackgroundSessionRunnerConcurrency:
 
     def test_acquire_below_limit(self, agent_tool):
         """低于上限立即获得槽位并加入活跃列表。"""
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
         agent = MagicMock()
         err = agent_tool._acquire_background_runner_slot(agent)
         assert err is None
@@ -326,7 +326,7 @@ class TestBackgroundSessionRunnerConcurrency:
 
     def test_blocks_until_slot_freed(self, agent_tool):
         """达到上限时阻塞，释放后获得槽位。"""
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
         holder = MagicMock()
         base_mod._active_background_runners.append(holder)
         config = MagicMock()
@@ -355,7 +355,7 @@ class TestBackgroundSessionRunnerConcurrency:
 
     def test_stop_check_returns_error(self, agent_tool):
         """任务停止时立即返回错误，不阻塞。"""
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
         base_mod._active_background_runners.append(MagicMock())
         config = MagicMock()
         config.system.max_concurrent_agents = 1
@@ -369,7 +369,7 @@ class TestBackgroundSessionRunnerConcurrency:
 
     def test_timeout_returns_error(self, agent_tool, monkeypatch):
         """等待超时返回错误。"""
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
         base_mod._active_background_runners.append(MagicMock())
         config = MagicMock()
         config.system.max_concurrent_agents = 1
@@ -447,7 +447,7 @@ class TestSessionRunnerLifecycleBroadcast:
         """后台模式：线程结束后补发 agent_complete（修复原先缺失的缺陷）"""
         import time
 
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
 
         agent_tool.session.session_id = "sess-bg"
         monkeypatch.setattr(base_mod, "_active_background_runners", [])
@@ -507,7 +507,7 @@ class TestBackgroundMailboxLifecycle:
         import time
 
         from core.agent_mailbox import get_agent_mailbox
-        from core.tools import background as base_mod
+        from core.tools import agent_background as base_mod
 
         monkeypatch.setattr(base_mod, "_active_background_runners", [])
 

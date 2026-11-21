@@ -17,7 +17,7 @@ import pytest
 import interfaces.qq.profile  # noqa: F401
 import web.profile  # noqa: F401
 from core import outbox
-from core.interface import Attachment
+from core.attachment import Attachment
 from core.session_runner import INTERFACE_TOOLS, SessionRunner
 from core.turn_dispatch import PreparedTurn, prepare_turn
 
@@ -349,7 +349,7 @@ class TestPrepareTurn:
 
     def test_answer_to_pending_ask_user_is_resume_mode(self, runner):
         """有占位 ask_user 时，用户输入被当作「其他」回复注入，走 resume。"""
-        from core.tools.ask_user import find_pending_ask_user
+        from core.approval_cards import find_pending_ask_user
 
         ask_id = "tu_ask_1"
         runner.session.add_message(

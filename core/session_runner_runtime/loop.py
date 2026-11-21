@@ -22,10 +22,10 @@ from typing import Any
 from core.config import PermissionConfig, get_permission_config
 from core.security.permission_judge import PermissionDecision
 from core.security.permission_rules import build_granted_rule, implied_path_rules
+from core.security.permission_state import append_permission_audit
 from core.session_runner_runtime.tool_batch import execute_tool_calls
 from core.tools.permission import (
     META_KEY,
-    append_permission_audit,
     denied_rule_text,
     judge_deny_text,
     judge_unavailable_text,

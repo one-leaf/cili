@@ -7,8 +7,7 @@ autonomous 不消费、sink.on_user_message 载荷。
 from types import SimpleNamespace
 
 from core.output_sink import OutputSink
-from core.turn_queue import QueuedTurn
-from core.turn_queue import queue as turn_queue
+from core.turn_queue import QueuedTurn, turn_queue
 
 
 class _Resp:

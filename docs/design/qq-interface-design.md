@@ -48,7 +48,7 @@ interfaces/qq/             QQ 接入端（SDK 单例，宿主线程 + 宿主 loo
   commands.py              斜杠指令（/h /w /s /new /status /stop；/help /workspace /session 为别名）
   service.py               宿主线程 + 宿主 loop；延迟 import SDK
 
-core/interface.py          Attachment（接入端对会话的附着记录）
+core/attachment.py          Attachment（接入端对会话的附着记录）
 core/turn_dispatch.py      接口无关的回合驱动（认领后的「跑什么 / 怎么收尾」）
 core/default_sink.py       default_sink 绑定（发布到全局事件总线）
 core/outbox.py             出站文件队列（send_user_file 工具入队 → 接入端回合末出队）

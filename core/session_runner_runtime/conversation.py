@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.fs_utils import atomic_write_json
 from core.session import INTERNAL_META_FIELDS as INTERNAL_META
 from core.session import generate_short_id, is_message_in_context
+from core.time_utils import now_str
 from core.usage import add_usage
 
 logger = logging.getLogger(__name__)
@@ -419,6 +419,6 @@ class ConversationStore:
         """同步 metadata/usage 到 session（无 sm 时为空操作）。"""
         if self.session is None:
             return
-        self.session.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.session.metadata["updated_at"] = now_str()
         self.session.metadata["usage"] = self.get_usage()
         self.session.mark_dirty()

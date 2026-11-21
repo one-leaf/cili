@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from core.compression import (
+    BYTES_PER_TOKEN as _BYTES_PER_TOKEN,
+)
+from core.compression import (
+    truncate_middle as _truncate_middle,
+)
+from core.compression import (
+    truncate_result as _truncate_result,
+)
 from core.fs_utils import normalize_bash_path
 from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
-from core.tools.background import (
-    BackgroundMixin,
-)
-from core.tools.background import (
-    BackgroundTaskManager as BackgroundTaskManager,
-)
+from core.tools.background import BackgroundMixin
 from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.result import ToolResult
 from core.tools.shell import (
@@ -90,52 +93,17 @@ class Tool(ShellMixin, BackgroundMixin):
     _BASH_MAX_OUTPUT_LINES: int = 2000
 
     # Token 预算常量（4 字节 ≈ 1 token）
-    BYTES_PER_TOKEN: int = 4
-
-    @staticmethod
-    def approx_token_count(text: str) -> int:
-        """估算文本的 token 数（4 字节 ≈ 1 token）。"""
-        byte_len = len(text.encode("utf-8", errors="replace"))
-        return (byte_len + Tool.BYTES_PER_TOKEN - 1) // Tool.BYTES_PER_TOKEN
+    BYTES_PER_TOKEN: int = _BYTES_PER_TOKEN
 
     @staticmethod
     def truncate_middle(text: str, max_tokens: int) -> str:
-        """Token 预算截断：保留开头和结尾，删除中间内容。
-
-        - 若文本在预算内，直接返回
-        - 否则保留前 40% + 后 40%，中间用标记替代
-        """
-        tokens = Tool.approx_token_count(text)
-        if tokens <= max_tokens:
-            return text
-
-        max_bytes = max_tokens * Tool.BYTES_PER_TOKEN
-        # 保留前 40% 和后 40%，中间 20% 用标记替代
-        head_bytes = int(max_bytes * 0.4)
-        tail_bytes = int(max_bytes * 0.4)
-
-        # 按 UTF-8 安全截断：errors="ignore" 已丢弃切片起始处的半个字符，
-        # 无需再手动补偿（此前那段比较会在字符边界恰好对齐时误删一个有效首字符）
-        head = text.encode("utf-8", errors="replace")[:head_bytes].decode("utf-8", errors="ignore")
-        tail = text.encode("utf-8", errors="replace")[-tail_bytes:].decode("utf-8", errors="ignore")
-
-        removed_tokens = tokens - max_tokens
-        marker = f"\n\n…{removed_tokens:,} tokens truncated…\n\n"
-        return head + marker + tail
+        """Token 预算截断（委托 core.compression）。"""
+        return _truncate_middle(text, max_tokens)
 
     @staticmethod
     def truncate_result(text: str, max_chars: int) -> str:
-        """按字符数截断工具结果（保留开头，末尾加提示）。
-
-        用于 Edit/Write 等工具的结果输出限制。
-        """
-        if len(text) <= max_chars:
-            return text
-        truncated = text[:max_chars]
-        last_newline = truncated.rfind('\n')
-        if last_newline > max_chars * 0.9:
-            truncated = truncated[:last_newline]
-        return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
+        """按字符数截断工具结果（委托 core.compression）。"""
+        return _truncate_result(text, max_chars)
 
     # ── 接口能力档案钩子 ────────────────────────────────────────────────
 
@@ -381,71 +349,14 @@ class Tool(ShellMixin, BackgroundMixin):
             pass
 
     def save_output_to_file(self, result: ToolResult, output_file: str | None = None) -> str | None:
-        """统一保存工具输出到外部文件，返回实际保存路径（未保存返回 None）。
+        """统一保存工具输出到外部文件（实现在 session_runner_runtime/tool_output.py）。"""
+        from core.session_runner_runtime.tool_output import save_tool_output
 
-        由 agent 的 _execute_tool() 在工具执行后统一调用。
-        如果文件已存在且有内容（_run_bash 实时写入过），则跳过避免覆盖。
-
-        支持两种格式：
-        - 纯文本：保存为 .txt（现有格式）
-        - 多模态：保存为 .json（包含图片和文本块，返回 .json 路径）
-
-        output_file 显式指定路径时用之（并行批中避免实例属性互覆）；
-        否则回退到 self.output_file（流式工具既有调用路径）。
-        """
-        path = output_file or self.output_file
-        if not path:
-            return None
-
-        # 检查文件是否已有内容（_run_bash 实时写入）
-        if os.path.exists(path):
-            try:
-                if os.path.getsize(path) > 0:
-                    return None  # _run_bash 已实时写入，不覆盖
-            except Exception:
-                pass
-
-        try:
-            from core.llm.types import ImageBlock
-
-            # 检查是否有图片块
-            has_images = any(isinstance(block, ImageBlock) for block in result.blocks)
-
-            if has_images:
-                # 多模态内容：保存为 json（替换 .txt 后缀为 .json）
-                if path.endswith(".txt"):
-                    json_path = path[:-4] + ".json"
-                else:
-                    json_path = path + ".json"
-                data = {
-                    "type": "multimodal",
-                    "blocks": []
-                }
-                for block in result.blocks:
-                    if hasattr(block, 'to_dict'):
-                        data["blocks"].append(block.to_dict())
-                    elif hasattr(block, '__dict__'):
-                        # 简单转换
-                        block_dict = {}
-                        for k, v in block.__dict__.items():
-                            if not k.startswith('_'):
-                                block_dict[k] = v
-                        data["blocks"].append({"type": block.__class__.__name__.lower().replace('block', ''), **block_dict})
-
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-
-                if not output_file:
-                    # 既有调用路径（流式）：更新实例属性，供调用方读取实际文件路径
-                    self.output_file = json_path
-                return json_path
-            else:
-                # 纯文本：保持 txt
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(result.output)
-                return path
-        except Exception:
-            return None  # 写入失败不影响工具执行
+        explicit = output_file
+        saved = save_tool_output(result, explicit or self.output_file)
+        if saved and not explicit:
+            self.output_file = saved
+        return saved
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the tool with given parameters. Override in subclass."""

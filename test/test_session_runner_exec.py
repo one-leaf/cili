@@ -1,14 +1,14 @@
-"""Step 3 契约测试：Runner 执行层抽取后的转发与语义。
+"""Step 3 契约测试：TurnExecutor 执行层抽取后的转发与语义。
 
 覆盖：_call_llm 转发 → run_round（压缩先于 LLM 调用）、
-静态转发与 Runner 同源、_prepare_messages_for_llm 参数透传、
+静态转发与 TurnExecutor 同源、_prepare_messages_for_llm 参数透传、
 resolve/strip 经 agent 与经 runner 产物一致、_execute_tool 经转发正常。
 """
 
 from unittest.mock import patch
 
 from core.base_session_runner import BaseSessionRunner
-from core.session_runner_runtime.runner import Runner
+from core.session_runner_runtime.executor import TurnExecutor
 from core.tools.base import ToolResult
 
 
@@ -76,10 +76,10 @@ class TestStaticForwardsEquivalent:
             {"role": "assistant", "content": [{"type": "tool_use", "name": "bash", "input": {}}]},
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "out"}]},
         ]
-        assert list(BaseSessionRunner.iter_content_blocks(messages)) == list(Runner.iter_content_blocks(messages))
+        assert list(BaseSessionRunner.iter_content_blocks(messages)) == list(TurnExecutor.iter_content_blocks(messages))
 
     def test_safe_output_filename(self):
-        assert BaseSessionRunner._safe_output_filename("toolu_01ab") == Runner._safe_output_filename("toolu_01ab")
+        assert BaseSessionRunner._safe_output_filename("toolu_01ab") == TurnExecutor._safe_output_filename("toolu_01ab")
         assert BaseSessionRunner._safe_output_filename("") == ""
         assert BaseSessionRunner._safe_output_filename("../evil") != "../evil"
 

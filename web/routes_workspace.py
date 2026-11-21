@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -19,6 +18,7 @@ from core.channels import (
     MARKER_CHANNEL,
     marker_metadata,
 )
+from core.compression import truncate_middle, truncate_result
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
@@ -40,11 +40,12 @@ from core.session import (
     read_jsonl,
     read_meta,
     session_display_name,
+    session_key,
 )
 from core.teen_mode import deny_message, get_teen_mode
 from core.textbooks import textbook_tasks
-from core.tools.base import Tool
-from core.turn_queue import queue as turn_queue
+from core.time_utils import now_str
+from core.turn_queue import turn_queue
 from web.deps import (
     _SAFE_ID_RE,
     _get_workspace_info,
@@ -170,7 +171,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
     os.makedirs(workspace_dir, exist_ok=True)
 
     # Save workspace config (only metadata, no model config)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_str()
     ws_config = {
         "workspace_name": request.name,
         "directory": workspace_dir,
@@ -247,7 +248,7 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
             await textbook_tasks.cancel_for_workspace(workspace_uuid)
         config["directory"] = new_dir
 
-    config["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    config["updated_at"] = now_str()
 
     if not save_workspace_config(workspace_uuid, config):
         raise HTTPException(status_code=500, detail="Failed to save config")
@@ -736,7 +737,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 
                 # 截断显示（前端不需要完整内容）
                 if truncated:
-                    truncated_content = Tool.truncate_middle(file_content, 8000)
+                    truncated_content = truncate_middle(file_content, 8000)
                     if not file_size:
                         file_size = len(file_content)
                     guide = (
@@ -747,7 +748,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
                     block["content"] = truncated_content + guide
                 else:
                     # 正常输出：限制到 100K 字符
-                    block["content"] = Tool.truncate_result(file_content, 100_000)
+                    block["content"] = truncate_result(file_content, 100_000)
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions")
@@ -773,7 +774,7 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
     from core.agent_mailbox import get_agent_mailbox
     from core.goal import release_goal_manager
 
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
     session_dir = sessions_dir / session_id
     stop_goal_runner(key)
     with _sessions_lock:
@@ -808,8 +809,8 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    key = f"{workspace_uuid}:{session_id}"
+    now = now_str()
+    key = session_key(workspace_uuid, session_id)
 
     try:
         runner = registry.get(key)
@@ -844,8 +845,8 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    key = f"{workspace_uuid}:{session_id}"
+    now = now_str()
+    key = session_key(workspace_uuid, session_id)
 
     try:
         runner = registry.get(key)

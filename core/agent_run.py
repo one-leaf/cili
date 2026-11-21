@@ -41,8 +41,8 @@ def root_session_dir(workspace_uuid: str, session: Any) -> Path | None:
     )
     if not master_sid:
         return None
-    from core.config import get_workspace_data_dir
-    return get_workspace_data_dir(workspace_uuid) / "sessions" / master_sid
+    from core.config import get_workspace_sessions_dir
+    return get_workspace_sessions_dir(workspace_uuid) / master_sid
 
 
 @dataclass

@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from core.config import Config, ImageConfig
-from core.session_runner_runtime.runner import Runner
+from core.session_runner_runtime.executor import TurnExecutor
 
 
 def _image(turn_id: str, path: str) -> dict:
@@ -15,7 +15,7 @@ def _image(turn_id: str, path: str) -> dict:
     }
 
 
-def _make_handler(messages: list[dict], mode: str = "current_turn") -> Runner:
+def _make_handler(messages: list[dict], mode: str = "current_turn") -> TurnExecutor:
     cfg = Config(images=ImageConfig(history_mode=mode))
     fake = SimpleNamespace(
         config=cfg,
@@ -28,7 +28,7 @@ def _make_handler(messages: list[dict], mode: str = "current_turn") -> Runner:
     )
     fake._get_messages_with_header = lambda: messages
     fake._invalidate_message_cache = lambda: None
-    return Runner(fake)
+    return TurnExecutor(fake)
 
 
 def test_current_turn_image_stays_embedded_history_becomes_ref():

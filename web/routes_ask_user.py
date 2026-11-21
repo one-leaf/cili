@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.approval_cards import apply_answer, classify_pending
+from core.session import session_key
 from core.teen_mode import get_teen_mode
-from core.tools.ask_user import apply_answer, classify_pending
 from core.turn_dispatch import PreparedTurn, execute_turn
 from web.deps import (
     _claim_session_run,
@@ -40,7 +41,7 @@ class AnswerAskUserRequest(BaseModel):
 async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
     """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 runner 循环"""
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
     if not runner:
         raise HTTPException(404, "Session runner not found")

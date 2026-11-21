@@ -20,6 +20,7 @@ import threading
 
 from core.event_bus import get_event_bus
 from core.goal import GoalManager
+from core.session import session_key
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class GoalRunner:
 
     @property
     def key(self) -> str:
-        return f"{self.workspace_uuid}:{self.session_id}"
+        return session_key(self.workspace_uuid, self.session_id)
 
     def is_running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
@@ -326,7 +327,7 @@ def start_goal_runner(
     旧 runner 60s 内未收尾则放弃并返回 None（本轮仍在执行）。
     阻塞调用，web 层应经 asyncio.to_thread 调用。
     """
-    key = f"{workspace_uuid}:{session_id}"
+    key = session_key(workspace_uuid, session_id)
     lock = _get_start_lock(key)
     with lock:
         old = get_runner(key)

@@ -18,6 +18,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.approval_cards import apply_answer, classify_pending
+from core.config import (
+    get_workspace_cwd as workspace_cwd,
+)
+from core.config import (
+    get_workspace_sessions_dir as workspace_sessions_dir,
+)
 from core.config import load_config
 from core.event_bus import get_event_bus
 from core.output_sink import OutputSink
@@ -26,7 +33,6 @@ from core.session_registry import registry, session_key
 from core.session_runner import SessionRunner
 from core.text_extract import message_text
 from core.time_utils import now_str
-from core.tools.ask_user import apply_answer, classify_pending
 from core.tools.base import ToolResult
 from core.tools.workflow_agent_tool import WorkflowAgentTool
 from core.workflows import store
@@ -34,8 +40,6 @@ from core.workflows.model import StepState, Workflow, WorkflowState, WorkflowSte
 from core.workflows.sessions import (
     ensure_results_session,
     workflow_metadata,
-    workspace_cwd,
-    workspace_sessions_dir,
 )
 
 logger = logging.getLogger(__name__)

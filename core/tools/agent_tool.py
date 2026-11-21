@@ -11,12 +11,13 @@ from datetime import datetime
 from core.agent_run import AgentRunManager, root_session_dir
 from core.agent_stats import AgentStats
 from core.output_sink import OutputSink
+from core.tools.agent_background import AgentBackgroundMixin
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
 
-class AgentTool(Tool):
+class AgentTool(AgentBackgroundMixin, Tool):
     name = "agent"
     description = (
         "**Delegate a self-contained task to an autonomous sub-agent (Worker/Lite).**\n"
@@ -241,7 +242,7 @@ class AgentTool(Tool):
                     "Error: action='status' requires 'agent_id' (e.g. 'agent-1')",
                     error=True,
                 )
-            from core.tools.base import BackgroundTaskManager
+            from core.tools.background import BackgroundTaskManager
             bg_task = BackgroundTaskManager.get(agent_id)
             if bg_task and bg_task.task_type == "session":
                 return self._read_background_runner(agent_id)
@@ -253,7 +254,7 @@ class AgentTool(Tool):
                     "Error: action='stop' requires 'agent_id' (e.g. 'agent-1')",
                     error=True,
                 )
-            from core.tools.base import BackgroundTaskManager
+            from core.tools.background import BackgroundTaskManager
             bg_task = BackgroundTaskManager.get(agent_id)
             if bg_task and bg_task.task_type == "session":
                 return self._kill_background_runner(agent_id)

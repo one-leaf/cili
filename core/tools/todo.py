@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.config import get_workspace_tools_dir
 from core.fs_utils import atomic_write_text
+from core.time_utils import now_str
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") ->
     todo_file = get_todo_file_path(session_id, workspace_uuid)
     data = {
         "session_id": session_id,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": now_str(),
         "todos": todos,
     }
     atomic_write_text(todo_file, json.dumps(data, ensure_ascii=False, indent=2))

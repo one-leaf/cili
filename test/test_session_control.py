@@ -16,7 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import core.session_activity as session_activity
+import core.session_control as session_control
+from core.tools.agent_background import AgentBackgroundMixin
 from core.tools.background import (
     BackgroundTask,
     BackgroundTaskManager,
@@ -95,7 +96,7 @@ def test_snapshot_excludes_finished_tasks():
 def test_stop_background_stops_agent_and_shell(monkeypatch):
     stopped = []
     monkeypatch.setattr(
-        "core.session_activity.ShellMixin._kill_process_tree",
+        "core.session_control.ShellMixin._kill_process_tree",
         staticmethod(lambda proc: stopped.append(proc)),
     )
 
@@ -105,7 +106,7 @@ def test_stop_background_stops_agent_and_shell(monkeypatch):
     process.poll.return_value = None
     shell = _task("bg-1", kind="shell", process=process)
 
-    count = session_activity.stop_background("ws-1", "sess-1")
+    count = session_control.stop_background("ws-1", "sess-1")
 
     assert count == 2
     runner.stop.assert_called_once()
@@ -127,7 +128,7 @@ def test_stop_session_includes_turn_and_background(monkeypatch):
     monkeypatch.setattr("core.session_registry.registry", registry)
     _task("agent-1", kind="agent", runner=MagicMock())
 
-    result = session_activity.stop_session("ws-1", "sess-1")
+    result = session_control.stop_session("ws-1", "sess-1")
 
     assert result == {"turn": True, "background": 1}
     runner.stop.assert_called_once()
@@ -172,14 +173,12 @@ def test_background_status_is_not_placeholder():
     completed=False 是 ask_user/审批占位协议；后台仍在跑时带它会让主循环
     误判为等待外部输入，直接结束回合、不产生回复正文。
     """
-    from core.tools.background import BackgroundMixin
-
     runner = MagicMock()
     runner.messages = []
     runner._current_tool = "none"
     _task("agent-1", kind="agent", runner=runner)
 
-    result = BackgroundMixin._read_background_runner(
+    result = AgentBackgroundMixin._read_background_runner(
         SimpleNamespace(), "agent-1"
     )
 
@@ -188,12 +187,10 @@ def test_background_status_is_not_placeholder():
 
 
 def test_kill_runner_is_not_placeholder():
-    from core.tools.background import BackgroundMixin
-
     runner = MagicMock()
     task = _task("agent-1", kind="agent", runner=runner)
 
-    result = BackgroundMixin._kill_background_runner(
+    result = AgentBackgroundMixin._kill_background_runner(
         SimpleNamespace(_publish=None), "agent-1"
     )
 
@@ -242,7 +239,7 @@ def test_common_stop_bg(monkeypatch):
     from interfaces.common import commands
 
     monkeypatch.setattr(
-        commands.session_activity, "stop_background", lambda ws, sid: 2
+        commands.session_control, "stop_background", lambda ws, sid: 2
     )
     ctx = SimpleNamespace(
         chat=SimpleNamespace(workspace_uuid="ws-1", session_id="sess-1"),

@@ -8,8 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 import web.routes_chat as routes_chat
-from core.turn_queue import QueuedTurn
-from core.turn_queue import queue as turn_queue
+from core.turn_queue import QueuedTurn, turn_queue
 
 
 def _key():

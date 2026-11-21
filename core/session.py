@@ -28,7 +28,6 @@ import re
 import secrets
 import shutil
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +36,7 @@ from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_bac
 from core.image_pipeline import sanitize_images_for_persistence
 from core.teen_mode import guard_or_raise
 from core.text_extract import message_text
+from core.time_utils import now_str
 
 # exec_id 白名单：只允许字母、数字、下划线、短横线，防止路径穿越
 _EXEC_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
@@ -142,6 +142,36 @@ MESSAGES_FILE = "messages.jsonl"
 INDEX_FILE = "index.json"   # 现在是模型提交视图（commits），不再存消息正文
 META_FILE = "meta.json"
 SCHEMA_VERSION = 2
+
+
+def session_key(workspace_uuid: str, session_id: str) -> str:
+    """会话键的单一构造入口：``{workspace_uuid}:{session_id}``。"""
+    return f"{workspace_uuid}:{session_id}"
+
+
+def split_session_key(key: str) -> tuple[str, str]:
+    """拆分会话键；无分隔符时返回 ``("", key)``。"""
+    workspace_uuid, _, session_id = key.partition(":")
+    return workspace_uuid, session_id
+
+
+def default_branch_name(
+    parent_name: str,
+    label: str | None,
+    existing_names: list[str] | None = None,
+) -> str:
+    """Pick a UI-safe branch name, deduplicated against existing session names."""
+    base = (label or "").strip() or f"{(parent_name or '会话').strip()}·分支"
+    base = re.sub(r"\s+", " ", base).strip()[:40] or "分支"
+    existing = set(existing_names or [])
+    if base not in existing:
+        return base
+    for i in range(2, 100):
+        candidate = f"{base}-{i}"[:48]
+        if candidate not in existing:
+            return candidate
+    return base
+
 
 # 每个 session 目录一把写锁：串行化 jsonl 追加与 index.json/meta.json 原子重写
 _SESSION_LOCKS: dict[Path, threading.Lock] = {}
@@ -301,7 +331,7 @@ def _jsonl_line(msg: dict, seq: int, image_mode: str = "full") -> dict:
     created_at = meta.get("created_at")
     if not created_at:
         # 兜底注入（agent.add_message 等未走 session.add_message 的路径）
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        created_at = now_str()
         if "_meta" not in msg:
             msg["_meta"] = {}
         msg["_meta"]["created_at"] = created_at
@@ -749,7 +779,7 @@ class SessionStore:
         # 首个可能缺少 seq 的消息下标：稳态 flush 只从这里往后扫描，
         # 避免长会话每个工具批都 O(n) 全量遍历。
         self._pending_seq_start: int = 0
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_str()
         self.metadata: dict = {
             "created_at": now,
             "updated_at": now,
@@ -797,13 +827,13 @@ class SessionStore:
         if "id" not in msg_meta:
             msg_meta["id"] = generate_short_id()
         if "created_at" not in msg_meta:
-            msg_meta["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            msg_meta["created_at"] = now_str()
         message["_meta"] = msg_meta
 
         self.messages.append(message)
         self._messages_dirty = True
         self._bump_index_version()
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata["updated_at"] = now_str()
         if flush:
             lock = _get_session_lock(self.session_dir)
             with lock:
@@ -822,13 +852,13 @@ class SessionStore:
             message["_meta"] = dict(meta)
         msg_meta = message.get("_meta") or {}
         msg_meta.setdefault("id", generate_short_id())
-        msg_meta.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        msg_meta.setdefault("created_at", now_str())
         message["_meta"] = msg_meta
 
         self.messages.insert(index, message)
         self._messages_dirty = True
         self._bump_index_version()
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata["updated_at"] = now_str()
         # 新消息无 seq，且位于已有序号的消息之间：从插入点开始扫描分配
         self._pending_seq_start = min(self._pending_seq_start, index)
         if flush:
@@ -923,7 +953,7 @@ class SessionStore:
         with lock:
             self.messages.clear()
             self._messages_dirty = True
-            self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.metadata["updated_at"] = now_str()
             jsonl_path = self.session_dir / MESSAGES_FILE
             if jsonl_path.exists():
                 write_jsonl(jsonl_path, [])
@@ -1280,13 +1310,13 @@ class SessionStore:
     def rename(self, new_name: str) -> None:
         """重命名会话。"""
         self.name = new_name
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata["updated_at"] = now_str()
         self._bump_index_version()
 
     def set_hidden(self, hidden: bool) -> None:
         """设置会话隐藏状态。"""
         self.metadata["hidden"] = hidden
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata["updated_at"] = now_str()
         self._bump_index_version()
 
     def set_model_ref(self, ref: str | None) -> None:
@@ -1295,7 +1325,7 @@ class SessionStore:
             self.metadata["model_ref"] = ref
         else:
             self.metadata.pop("model_ref", None)
-        self.metadata["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.metadata["updated_at"] = now_str()
         self._bump_index_version()
 
     # ========== 使用量追踪 ==========

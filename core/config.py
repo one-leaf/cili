@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.fs_utils import atomic_write_json
+from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -1060,6 +1061,19 @@ def get_workspace_tools_dir(workspace_uuid: str) -> Path:
     return get_workspace_data_dir(workspace_uuid) / "tools"
 
 
+def get_workspace_sessions_dir(workspace_uuid: str = "") -> Path:
+    """Get the sessions directory for a workspace: {workspace}/.cili/sessions/."""
+    return get_workspace_data_dir(workspace_uuid) / "sessions"
+
+
+def get_workspace_cwd(workspace_uuid: str = "") -> str:
+    """Get a workspace's user-visible directory (workspaces.json entry, else data parent)."""
+    ws_config = load_workspace_config(workspace_uuid)
+    if ws_config and ws_config.get("directory"):
+        return str(ws_config["directory"])
+    return str(get_workspace_data_dir(workspace_uuid).parent)
+
+
 def get_all_workspace_uuids() -> list[str]:
     """Get all workspace UUIDs including 'system'."""
     uuids = ["system"]
@@ -1212,8 +1226,7 @@ def ensure_default_workspace() -> str | None:
         ws_data_dir.mkdir(parents=True, exist_ok=True)
         (ws_data_dir / "sessions").mkdir(exist_ok=True)
 
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_str()
         save_workspace_config(workspace_uuid, {
             "workspace_name": "Default",
             "directory": str(PROJECT_ROOT / "workspace" / "default"),

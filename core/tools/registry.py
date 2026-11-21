@@ -36,7 +36,6 @@ from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
 from core.tools.skill import SkillTool
-from core.tools.workflow_tool import WorkflowTool
 from core.tools.temp import TempTool
 from core.tools.textbook_find import TextbookFindTool
 from core.tools.textbook_original import TextbookOriginalTool
@@ -46,6 +45,7 @@ from core.tools.textbook_search import TextbookSearchTool
 from core.tools.todo import TodoWriteTool
 from core.tools.tool_search import ToolSearchTool
 from core.tools.web_search import WebSearchTool
+from core.tools.workflow_tool import WorkflowTool
 from core.tools.write import WriteTool
 
 logger = logging.getLogger(__name__)

@@ -824,7 +824,7 @@ class TestResolveAnswerAbortOption:
         return SimpleNamespace(session=SimpleNamespace(messages=messages))
 
     def test_fourth_option_maps_to_abort(self):
-        from core.tools.ask_user import decision_from_text
+        from core.approval_cards import decision_from_text
         from core.tools.permission import (
             ABORT_LABEL,
             APPROVE_LABEL,

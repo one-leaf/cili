@@ -183,7 +183,7 @@ class Adapter(ABC):
 
 HttpTransport 负责 HTTP 请求、SSE 解析和重试原语：
 
-- **重试**: Transport 层 `_MAX_RETRIES = 2`，非流式调用（chat/压缩/兜底）由 `with_retry` 重试；流式调用显式传 `max_retries=0`，由 `session_runner_runtime/runner.py::_call_llm_streaming()` 管理——流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
+- **重试**: Transport 层 `_MAX_RETRIES = 2`，非流式调用（chat/压缩/兜底）由 `with_retry` 重试；流式调用显式传 `max_retries=0`，由 `session_runner_runtime/executor.py::_call_llm_streaming()` 管理——流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
 - **重试原语**: `should_retry()` 判定 429/5xx 可重试，`retry_delay()` 指数退避 + 抖动
 - **Retry-After**: 重试时尊重服务器返回的重试间隔
 - **SSE 解析**: 逐行解析 `data:` 行，yield JSON events
@@ -213,7 +213,7 @@ for chunk in adapter.translate_stream(event_iterator):
 ### 1. 流式请求
 
 ```
-session_runner_runtime/runner.py::_call_llm_streaming()
+session_runner_runtime/executor.py::_call_llm_streaming()
   → LLMClient.chat_stream(messages=[Message], ...)
     → adapter.serialize(messages) → request body
     → transport.stream(url, headers, body) → event iterator
@@ -222,7 +222,7 @@ session_runner_runtime/runner.py::_call_llm_streaming()
   → LLMResponse(content=blocks, stop_reason, usage)
 ```
 
-> `BaseSessionRunner._call_llm_streaming()` 为同名薄转发方法（委托给 `session_runner_runtime/runner.py`）。
+> `BaseSessionRunner._call_llm_streaming()` 为同名薄转发方法（委托给 `session_runner_runtime/executor.py`）。
 
 ### 2. 工具调用处理
 

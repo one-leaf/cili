@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.config import get_workspace_data_dir, load_config, load_workspace_config
+from core.config import get_workspace_cwd, load_config
 from core.cron.flags import cron_run_active
 from core.cron.model import Job, RunResult, State
 from core.cron.sessions import ensure_cron_session
@@ -42,13 +42,6 @@ def any_running() -> bool:
     return False
 
 
-def _workspace_cwd(workspace_uuid: str) -> str:
-    ws_config = load_workspace_config(workspace_uuid)
-    if ws_config and ws_config.get("directory"):
-        return str(ws_config["directory"])
-    return str(Path(get_workspace_data_dir(workspace_uuid)).parent)
-
-
 def _get_runner(workspace_uuid: str) -> SessionRunner | None:
     with _runner_lock:
         if workspace_uuid in _poisoned:
@@ -60,7 +53,7 @@ def _get_runner(workspace_uuid: str) -> SessionRunner | None:
             runner = SessionRunner(
                 load_config(),
                 role="master",
-                cwd=_workspace_cwd(workspace_uuid),
+                cwd=get_workspace_cwd(workspace_uuid),
                 workspace_uuid=workspace_uuid,
             )
         except Exception as exc:  # noqa: BLE001

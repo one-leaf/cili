@@ -24,6 +24,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from core.session import session_key
+
 logger = logging.getLogger(__name__)
 
 # 兜底容量：档案未声明 max_files_per_turn（如 Web）时生效。队列只增不减会吃内存
@@ -206,8 +208,8 @@ def drain_web_files(runner, *, publish_global: bool = False) -> list[OutboxFile]
     - 后台/自动恢复回合（``core/default_sink``）：落卡片并发全局 file 事件，
       再由 ``turn_complete`` 让前端重拉会话。
     """
-    session_key = f"{runner.workspace_uuid}:{runner.current_session_id}"
-    files = drain_files(session_key)
+    key = session_key(runner.workspace_uuid, runner.current_session_id)
+    files = drain_files(key)
     if not files:
         return []
 

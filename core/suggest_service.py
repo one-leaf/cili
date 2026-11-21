@@ -483,7 +483,7 @@ def _guard_dangling_tool_use(messages: list[Message]) -> None:
 def _is_empty_session(runner) -> bool:
     """会话是否为空（没有任何进入 LLM 上下文的消息）。"""
     try:
-        from core.session_runner_runtime.context import ConversationStore
+        from core.session_runner_runtime.conversation import ConversationStore
 
         messages = getattr(getattr(runner, "session", None), "messages", None) or []
         return not any(ConversationStore.is_message_in_context(m) for m in messages)

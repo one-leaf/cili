@@ -160,7 +160,7 @@ class PermissionPolicy:
 
         # 命令放行也要检查写/删目标：越界目标可能把结论提升为 ask/ai/deny
         for target in targets:
-            verdict = self._combine(verdict, self._target_verdict(target, tool))
+            verdict = self._combine(verdict, self._path_target_verdict(target, tool))
             if verdict.action == "deny":
                 return verdict
 
@@ -195,7 +195,7 @@ class PermissionPolicy:
             reason = "静态证据需判定"
         return self._mode_or_judge(mode, reason)
 
-    def _target_verdict(self, target, tool: str) -> PermissionVerdict:
+    def _path_target_verdict(self, target, tool: str) -> PermissionVerdict:
         op = getattr(target, "op", "write")
         resolved = getattr(target, "resolved", None)
         raw = getattr(target, "raw", "")

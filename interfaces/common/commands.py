@@ -9,11 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-import core.session_activity as session_activity
+import core.session_control as session_control
 from core.channels import SESSION_MODE_DEDICATED, SESSION_MODE_LATEST, SESSION_MODES
 from core.config import (
     find_workspace_entry,
-    get_workspace_data_dir,
+    get_workspace_sessions_dir,
     load_workspaces_index,
 )
 from core.session import SessionStore
@@ -94,7 +94,7 @@ def _workspaces() -> list[dict]:
 
 
 def _sessions(workspace_uuid: str) -> list[dict]:
-    sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     return SessionStore.list_sessions(sessions_dir)
 
 
@@ -319,7 +319,7 @@ def _cmd_status(
         except Exception as e:  # noqa: BLE001 — 状态展示不该因统计失败而中断
             lines.append(f"- 用量统计不可用：{e}")
 
-    activity = session_activity.snapshot(
+    activity = session_control.snapshot(
         ctx.chat.workspace_uuid, ctx.chat.session_id, running=runner_running
     )
     bg = activity["background"]
@@ -334,7 +334,7 @@ def _cmd_status(
 
 def _cmd_stop(ctx: CommandContext) -> str:
     if ctx.args.strip().lower() in ("bg", "background"):
-        stopped = session_activity.stop_background(
+        stopped = session_control.stop_background(
             ctx.chat.workspace_uuid, ctx.chat.session_id
         )
         if stopped:

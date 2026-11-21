@@ -303,7 +303,7 @@ class TestDrainOutboxEvents:
     def test_delivery_notice_recorded_and_filtered(self):
         """交付回执：立即落盘（flush）+ 不进 LLM 上下文（与 file_card 同机制）。"""
         from core.outbox import build_delivery_notice, record_delivery_notice
-        from core.session_runner_runtime.context import ConversationStore
+        from core.session_runner_runtime.conversation import ConversationStore
 
         content, meta = build_delivery_notice(["/w/a.png"], ["/w/b.png"], "本轮配额不足")
         assert "a.png" in content and "b.png" in content

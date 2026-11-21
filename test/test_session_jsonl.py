@@ -276,7 +276,7 @@ class TestSaveFrequency:
                 return cls.t
 
         # 假时钟：updated_at 秒级精度，快进时间保证排序可判定，不依赖墙钟（墙钟下跨秒不可靠）
-        monkeypatch.setattr("core.session.datetime", _FakeClock)
+        monkeypatch.setattr("core.time_utils.datetime", _FakeClock)
 
         sessions_dir = Path(test_workspace) / ".sess_list"
         a = SessionStore.create_new_session(sessions_dir, "A")

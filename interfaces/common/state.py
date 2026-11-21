@@ -198,9 +198,9 @@ def save_account_state(
 
 
 def _sessions_dir(workspace_uuid: str) -> Path:
-    from core.config import get_workspace_data_dir
+    from core.config import get_workspace_sessions_dir
 
-    return get_workspace_data_dir(workspace_uuid) / "sessions"
+    return get_workspace_sessions_dir(workspace_uuid)
 
 
 def _list_sessions(workspace_uuid: str) -> list[dict]:

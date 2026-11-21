@@ -16,24 +16,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from core.attachment import Attachment
 from core.config import load_config
-from core.interface import Attachment
-from core.session import SessionStore
+from core.session import SessionStore, session_key
 from core.session_runner import SessionRunner
 from core.teen_mode import get_teen_mode
 
-# Attachment 定义在 core/interface.py（接口层唯一的共享抽象）；
+# Attachment 定义在 core/attachment.py（接口层唯一的共享抽象）；
 # 此处再导出，避免打断既有 ``from core.session_registry import Attachment`` 调用方。
 __all__ = ["Attachment", "HostedSession", "SessionRegistry", "registry", "session_key"]
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RUNNERS = 20
-
-
-def session_key(workspace_uuid: str, session_id: str) -> str:
-    """会话键的单一构造入口（原散落在 web 各处各自拼装 ``f"{ws}:{sid}"``）。"""
-    return f"{workspace_uuid}:{session_id}"
 
 
 @dataclass

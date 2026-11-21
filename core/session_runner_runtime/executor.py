@@ -1,4 +1,4 @@
-"""Runner - runner 单回合执行层（Step 3 抽取）。
+"""TurnExecutor - runner 单回合执行层（Step 3 抽取）。
 
 从 BaseSessionRunner 抽出的执行逻辑：LLM 调用（streaming/non-streaming + 413 去图重试）、
 工具执行与外部文件存储、三层压缩。持 runner 引用访问共享状态（messages/client/
@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from core.compression import approx_token_count, truncate_middle, truncate_result
 from core.handoff import build_handoff_document
 from core.image_pipeline import (
     DEFAULT_MAX_BYTES,
@@ -42,8 +43,8 @@ from core.llm import (
     classify_llm_error,
     format_llm_error,
 )
+from core.session import INTERNAL_META_FIELDS as INTERNAL_META
 from core.session import generate_short_id
-from core.session_runner_runtime.context import INTERNAL_META
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -79,10 +80,10 @@ def estimate_request_body_size(messages: list[dict]) -> int:
     """估算 JSON 请求体大小（字节）。
 
     模块级函数：无 runner 的只读路径（如上下文占用接口）也要同一口径；
-    ``Runner._estimate_request_body_size`` 委托到这里，避免两份实现漂移。
+    ``TurnExecutor._estimate_request_body_size`` 委托到这里，避免两份实现漂移。
     """
     size = 0
-    for btype, data in Runner.iter_content_blocks(messages):
+    for btype, data in TurnExecutor.iter_content_blocks(messages):
         if btype == "text":
             size += len(data) * 2
         elif btype == "tool_use":
@@ -97,7 +98,7 @@ def estimate_request_body_size(messages: list[dict]) -> int:
     return size
 
 
-class Runner:
+class TurnExecutor:
     """单回合执行层：压缩 → LLM 调用 → 工具执行。"""
 
     def __init__(self, runner: Any) -> None:
@@ -697,7 +698,7 @@ class Runner:
 
                         # Truncate + guide
                         if truncated:
-                            truncated_content = Tool.truncate_middle(file_content, 8000)
+                            truncated_content = truncate_middle(file_content, 8000)
                             guide = (
                                 f"\n\n---\n"
                                 f"[提示] 工具输出过长（{file_size:,} 字符），已截断显示。"
@@ -707,7 +708,7 @@ class Runner:
                             )
                             block["content"] = truncated_content + guide
                         else:
-                            block["content"] = Tool.truncate_result(file_content, Tool.MAX_TOOL_RESULT_SIZE_CHARS)
+                            block["content"] = truncate_result(file_content, Tool.MAX_TOOL_RESULT_SIZE_CHARS)
 
                 except Exception as e:
                     block["content"] = f"[读取工具输出失败: {e}]"
@@ -1155,7 +1156,7 @@ class Runner:
 
         messages = self.build_projected_messages(force_reference=True)
         total = self.runner._count_messages_tokens(messages)
-        projected = total + Tool.approx_token_count(user_text)
+        projected = total + approx_token_count(user_text)
         threshold = int(
             self.runner.model.max_context_tokens * FULL_COMPACT_TOKEN_RATIO
         )

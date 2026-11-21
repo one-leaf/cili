@@ -14,7 +14,7 @@
    比较前先**归一化空白**（模型重发时空白常有差异）。
 
 2. **runner 的 413 去图重试**会发 ``RETRY_CLEAR_SENTINEL`` 要求清空已流式输出的
-   文本（``core/session_runner_runtime/runner.py``）。QQ 侧**无法清空**，只能走
+   文本（``core/session_runner_runtime/executor.py``）。QQ 侧**无法清空**，只能走
    上面「新回复」那条路——否则旧文本会永远留在消息开头。
 
 节流参数对齐官方插件的 ``DeliverDebouncer``：窗口 1500ms、最长等待 8000ms。

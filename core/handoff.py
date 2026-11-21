@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from core.text_extract import message_text
@@ -66,21 +65,5 @@ def user_input_text(user_input: Any) -> str:
     return message_text(user_input)
 
 
-def default_branch_name(
-    parent_name: str,
-    label: str | None,
-    existing_names: list[str] | None = None,
-) -> str:
-    """Pick a UI-safe branch name, deduplicated against existing session names."""
-    base = (label or "").strip() or f"{(parent_name or '会话').strip()}·分支"
-    base = re.sub(r"\s+", " ", base).strip()[:40] or "分支"
-    existing = set(existing_names or [])
-    if base not in existing:
-        return base
-    for i in range(2, 100):
-        candidate = f"{base}-{i}"[:48]
-        if candidate not in existing:
-            return candidate
-    return base
 
 

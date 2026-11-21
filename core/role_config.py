@@ -83,7 +83,7 @@ def load_role(role: str, config: Config | None = None) -> RoleConfig:
     merged = {**_DEFAULTS, **data}
     # name 不在 _DEFAULTS 中：角色 JSON 未写 name 时用请求的 role 兜底，避免 KeyError
     if merged.get("name", role) != role:
-        logger.warning(f"[session_runner_config] role file {path} name={merged['name']!r} != requested {role!r}")
+        logger.warning(f"[role_config] role file {path} name={merged['name']!r} != requested {role!r}")
     if merged["mode"] not in VALID_MODES:
         raise ValueError(f"Role {role!r} has invalid mode {merged['mode']!r} (valid: {VALID_MODES})")
 
