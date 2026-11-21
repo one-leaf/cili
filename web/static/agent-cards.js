@@ -266,6 +266,14 @@ const AgentCardStore = (() => {
         scrollChatIfNearBottom();
     }
 
+    // 展开详情：先把折叠期间累积的实时块渲染出来，再补拉完整历史。
+    // 工作流步骤的执行日志要等步骤会话落盘后才有，首次展开可能 404，
+    // 不能因此把已经收到的实时内容丢掉（否则展开一片空白，只能刷新重来）。
+    function _expandDetail(model) {
+        if (model.blocks.length) _renderDetail(model);
+        if (!model.loaded || model.needsFullReload) _loadExecution(model);
+    }
+
     function _trimBlocks(model) {
         if (model.blocks.length <= MAX_BLOCKS && model.blockChars <= MAX_BLOCK_CHARS) {
             return false;
@@ -282,6 +290,10 @@ const AgentCardStore = (() => {
         model.blockChars += (block.text ? block.text.length : 0)
             + (block.output ? block.output.length : 0);
         model.blocks.push(block);
+        // 折叠期间也登记 tool_use，保证工具实时输出能持续累积到展开时展示
+        if (block.kind === 'tool_use' && block.toolUseId) {
+            model.toolBlocks.set(block.toolUseId, block);
+        }
         if (_trimBlocks(model)) return;
         if (model.expanded) {
             const prev = model.blocks.length > 1 ? model.blocks[model.blocks.length - 2] : null;
@@ -447,10 +459,7 @@ const AgentCardStore = (() => {
         model.cardEl.classList.toggle('workflow-step', !!model.workflowStep);
         model.detailEl.style.display = model.expanded ? 'block' : 'none';
         _renderHeader(model);
-        if (model.expanded) {
-            if (model.loaded && !model.needsFullReload) _renderDetail(model);
-            else _loadExecution(model);
-        }
+        if (model.expanded) _expandDetail(model);
         // 卡片插入会改变消息区高度：贴底时立即跟随，否则视图掉队后
         // 用户随便一滚就会被判成「在翻历史」，自动跟随从此关掉
         if (model.cardEl.parentNode && chatMessages.contains(model.cardEl)) {
@@ -467,10 +476,7 @@ const AgentCardStore = (() => {
             model.detailEl.style.display = model.expanded ? 'block' : 'none';
         }
         _renderHeader(model);
-        if (model.expanded) {
-            if (model.loaded && !model.needsFullReload) _renderDetail(model);
-            else _loadExecution(model);
-        }
+        if (model.expanded) _expandDetail(model);
     }
 
     function mountFromHistory(seed, container = null) {
