@@ -31,8 +31,8 @@ const AgentCardStore = (() => {
     };
     // 卡片在内存里保留的实时块上限：超限后丢弃内存块并标记 needsFullReload，
     // 展开时再从执行日志重新加载（日志侧已有截断）
-    const MAX_BLOCKS = 500;
-    const MAX_BLOCK_CHARS = 2_000_000;
+    const MAX_BLOCKS = 2000;
+    const MAX_BLOCK_CHARS = 2 * 1024 * 1024;
 
     function isTerminalStatus(status) {
         return TERMINAL_STATUSES.has(status);
@@ -108,6 +108,8 @@ const AgentCardStore = (() => {
             background: !!seed.background,
             // 刷新/切换会话一律折叠；展开只在本次页面内生效
             expanded: false,
+            // 详情区（.sa-messages）是独立滚动容器：是否跟随新内容
+            detailPinned: true,
             stats: _statsFrom(seed.stats),
             epoch: seed.epoch || 0,
             maxEpochs: seed.max_epochs || 0,
@@ -245,12 +247,29 @@ const AgentCardStore = (() => {
         model.bodyEl.appendChild(div);
     }
 
+    // 最后一个块是否还有任意部分露在容器可视区（部分显示也算）
+    function _lastBlockVisibleIn(box) {
+        const last = box.lastElementChild;
+        if (!last) return true;
+        const boxRect = box.getBoundingClientRect();
+        const rect = last.getBoundingClientRect();
+        return rect.bottom > boxRect.top && rect.top < boxRect.bottom;
+    }
+
+    // 详情区内部跟随：用户停在底部（最后一个块可见）时，新内容自动滚到底
+    function _scrollDetailIfFollowing(model) {
+        const box = model.bodyEl;
+        if (!box || !model.expanded || !model.detailPinned) return;
+        box.scrollTop = box.scrollHeight;
+    }
+
     function _appendBlock(model, block) {
         if (!model.bodyEl) return;
         const el = _renderBlock(model, block);
         if (el) {
             model.bodyEl.appendChild(el);
-            // 展开中的卡片逐块增高：贴底时继续跟随
+            // 展开中的卡片逐块增高：内部滚动区和聊天区各自跟随
+            _scrollDetailIfFollowing(model);
             if (chatMessages.contains(model.bodyEl)) scrollChatIfNearBottom();
         }
     }
@@ -267,6 +286,7 @@ const AgentCardStore = (() => {
             }
             _appendBlock(model, block);
         });
+        _scrollDetailIfFollowing(model);
         scrollChatIfNearBottom();
     }
 
@@ -319,7 +339,8 @@ const AgentCardStore = (() => {
                 } else {
                     model.openBlock.el.innerHTML = renderMarkdown(model.openBlock.text);
                 }
-                // 展开中的文字块逐段增高：贴底时继续跟随
+                // 展开中的文字块逐段增高：内部滚动区和聊天区各自跟随
+                _scrollDetailIfFollowing(model);
                 if (chatMessages.contains(model.openBlock.el)) scrollChatIfNearBottom();
             }
             return;
@@ -369,6 +390,7 @@ const AgentCardStore = (() => {
                 block.preEl = pre;
             }
             if (block.preEl) block.preEl.textContent = block.output;
+            _scrollDetailIfFollowing(model);
             scrollChatIfNearBottom();
         }
     }
@@ -448,6 +470,10 @@ const AgentCardStore = (() => {
             const body = document.createElement('div');
             body.className = 'sa-messages';
             detail.appendChild(body);
+            // 详情区有 max-height 且自己滚动：跟随状态按「最后一个块是否露在区内」判断
+            body.addEventListener('scroll', () => {
+                model.detailPinned = _lastBlockVisibleIn(body);
+            }, { passive: true });
 
             card.appendChild(header);
             card.appendChild(detail);

@@ -232,9 +232,33 @@ function getFileIcon(filename) {
 // 滚到底，工具气泡延迟创建、流式帧刷新都会打断用户阅读）。
 // 用户自己滚回底部附近即自动恢复贴底；显式动作（打开会话、发送消息）传
 // force=true 强制回底。
-const CHAT_BOTTOM_THRESHOLD = 100;
 let _chatPinnedToBottom = true;
 let _chatPinBound = false;
+
+// 取消息区最后一个可视「块」：直接子元素，回合流容器下钻一层
+function _lastChatBlock(el) {
+    let node = el.lastElementChild;
+    while (node) {
+        if (node.classList && node.classList.contains('turn-stream')) {
+            const inner = node.lastElementChild;
+            if (inner) {
+                node = inner;
+                continue;
+            }
+        }
+        return node;
+    }
+    return null;
+}
+
+// 跟随判定：最后一个块只要还有任意部分落在可视范围内（部分显示也算）
+function _chatLastBlockVisible(el) {
+    const last = _lastChatBlock(el);
+    if (!last) return true;
+    const box = el.getBoundingClientRect();
+    const rect = last.getBoundingClientRect();
+    return rect.bottom > box.top && rect.top < box.bottom;
+}
 
 function _bindChatPinTracking() {
     if (_chatPinBound) return;
@@ -242,8 +266,7 @@ function _bindChatPinTracking() {
     if (!el) return;
     _chatPinBound = true;
     el.addEventListener('scroll', () => {
-        _chatPinnedToBottom =
-            el.scrollHeight - el.scrollTop - el.clientHeight < CHAT_BOTTOM_THRESHOLD;
+        _chatPinnedToBottom = _chatLastBlockVisible(el);
     }, { passive: true });
 }
 
