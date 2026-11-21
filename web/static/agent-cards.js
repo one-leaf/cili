@@ -29,6 +29,10 @@ const AgentCardStore = (() => {
         finalizing: '任务收尾中',
         stopping: '任务停止中',
     };
+    // 卡片在内存里保留的实时块上限：超限后丢弃内存块并标记 needsFullReload，
+    // 展开时再从执行日志重新加载（日志侧已有截断）
+    const MAX_BLOCKS = 500;
+    const MAX_BLOCK_CHARS = 2_000_000;
 
     function isTerminalStatus(status) {
         return TERMINAL_STATUSES.has(status);
