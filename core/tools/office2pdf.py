@@ -522,7 +522,10 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Conversion timeout in seconds ({_MIN_TIMEOUT}-{_MAX_TIMEOUT}, default {_DEFAULT_TIMEOUT}).",
+                "description": (
+                    f"Per-document conversion timeout in seconds "
+                    f"({_MIN_TIMEOUT}-{_MAX_TIMEOUT}, default {_DEFAULT_TIMEOUT}). "
+                    "Applies to convert and sync."),
                 "minimum": _MIN_TIMEOUT,
                 "maximum": _MAX_TIMEOUT,
                 "default": _DEFAULT_TIMEOUT,
@@ -620,6 +623,11 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         except (TypeError, ValueError):
             limit = 100
         limit = max(1, min(limit, 1000))
+        try:
+            timeout = int(kwargs.get("timeout", _DEFAULT_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = _DEFAULT_TIMEOUT
+        timeout = max(_MIN_TIMEOUT, min(timeout, _MAX_TIMEOUT))
 
         ws_arg = str(kwargs.get("workspace_uuid") or "").strip()
         if ws_arg:
@@ -636,7 +644,7 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         totals = {"converted": 0, "skipped": 0, "failed": 0, "removed_stale": 0}
         for uuid in targets:
             try:
-                r = sync_workspace_pdf_cache(uuid, limit=limit)
+                r = sync_workspace_pdf_cache(uuid, limit=limit, timeout=timeout)
             except Exception as e:
                 logger.warning(f"[office2pdf] sync {uuid} failed: {e}")
                 results.append({"workspace_uuid": uuid, "error": str(e)})

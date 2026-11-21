@@ -529,3 +529,35 @@ class TestWorkspaceCacheAndSync:
 
         assert not result.is_error
         assert "工作区数: 0" in result.output
+
+
+class TestSyncTimeout:
+    def test_tool_sync_honors_timeout(self, tmp_path, monkeypatch):
+        """sync 的 timeout 参数必须透传到单文件转换（超大文件可用 600 秒重试）。"""
+        import core.config as config_mod
+
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        (ws_dir / "big.pptx").write_bytes(b"doc")
+        config_mod.upsert_workspace_entry({
+            "uuid": "wstimeout",
+            "workspace_name": "Timeout WS",
+            "directory": str(ws_dir),
+        })
+
+        seen = []
+
+        def worker(source, output, kind, pid_file, timeout):
+            seen.append(timeout)
+            Path(output).write_bytes(b"%PDF-1.7\nfake pdf")
+            return "Test Office"
+
+        monkeypatch.setattr(mod, "_run_worker", worker)
+
+        tool = Office2PDFTool(cwd=str(tmp_path))
+        result = tool.execute(action="sync", workspace_uuid="wstimeout", timeout=600)
+
+        assert not result.is_error
+        assert seen == [600]
+        assert "新转换: 1" in result.output
