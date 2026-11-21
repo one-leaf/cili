@@ -228,6 +228,10 @@ class SessionRegistry:
 
     def remove(self, key: str) -> SessionRunner | None:
         """移除并清理单个会话（供删除会话使用）。"""
+        # 移除会话必须同时释放执行权；否则后台 runner（如工作流监督者）
+        # 结束时移除自己后，_claims 永久残留，用户后续消息只能排队而无人消费。
+        with self._claims_lock:
+            self._claims.discard(key)
         with self._data_lock:
             hosted = self._hosted.pop(key, None)
             self._access.pop(key, None)

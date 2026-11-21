@@ -9,11 +9,7 @@ const AgentCardStore = (() => {
     let _sessionKey = null;
     let _seen = new Set();
 
-    const EXPANDED_PREFIX = 'cili:agent-expanded:';
-    const MAX_BLOCKS = 2000;
-    const MAX_BLOCK_CHARS = 2 * 1024 * 1024;
-    // 状态只表达生命周期：终态之外一律视为进行中（阶段由 phase 表达）
-    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'timeout', 'stopped']);
+    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'timeout', 'stopped', 'interrupted']);
     const STATUS_ICONS = {
         completed: '✅',
         error: '❌',
@@ -21,12 +17,12 @@ const AgentCardStore = (() => {
         timeout: '⏱️',
         running: '🔄',
         stopped: '⏹️',
+        interrupted: '⚠️',
         check: '🔍',
         handoff: '🔄',
         continuation: '🔄',
         queued: '⏳',
     };
-    // 进行中状态的标题：按 phase 细化；未知 phase 回落「任务执行中」
     const PHASE_TITLES = {
         check: '任务检查中',
         handoff: '任务续跑中',
@@ -38,7 +34,6 @@ const AgentCardStore = (() => {
         return TERMINAL_STATUSES.has(status);
     }
 
-    // 旧数据归一化：历史版本把阶段写进 status（check/handoff/continuation）
     function _normalizeStatus(seed) {
         let status = seed && seed.status ? seed.status : 'running';
         let phase = (seed && seed.phase) || '';
@@ -50,32 +45,6 @@ const AgentCardStore = (() => {
             phase = phase || 'handoff';
         }
         return { status, phase };
-    }
-
-    function _expandedKey() {
-        return EXPANDED_PREFIX + (_sessionKey || '');
-    }
-
-    function _loadExpanded() {
-        try {
-            const raw = JSON.parse(sessionStorage.getItem(_expandedKey()) || '[]');
-            return new Set(Array.isArray(raw) ? raw : []);
-        } catch (e) {
-            return new Set();
-        }
-    }
-
-    function _saveExpanded(set) {
-        try {
-            sessionStorage.setItem(_expandedKey(), JSON.stringify([...set]));
-        } catch (e) { /* sessionStorage 不可用时只保留内存状态 */ }
-    }
-
-    function _setExpanded(execId, expanded) {
-        const set = _loadExpanded();
-        if (expanded) set.add(execId);
-        else set.delete(execId);
-        _saveExpanded(set);
     }
 
     function _statsFrom(value) {
@@ -124,10 +93,17 @@ const AgentCardStore = (() => {
         const model = {
             execId,
             taskSummary: seed.task_summary || seed.task || '',
+            workflowStep: !!seed.workflow_step,
+            stepIndex: Number(seed.step_index) || 0,
+            stepName: seed.step_name || '',
+            executor: seed.executor || '',
+            durationMs: Number(seed.duration_ms) || 0,
+            pending: !!seed.pending,
             status: norm.status,
             phase: norm.phase,
             background: !!seed.background,
-            expanded: _loadExpanded().has(execId),
+            // 刷新/切换会话一律折叠；展开只在本次页面内生效
+            expanded: false,
             stats: _statsFrom(seed.stats),
             epoch: seed.epoch || 0,
             maxEpochs: seed.max_epochs || 0,
@@ -150,27 +126,61 @@ const AgentCardStore = (() => {
 
     function _renderHeader(model) {
         if (!model.headerEl) return;
-        const stats = model.stats;
-        let meta = stats
-            ? `${stats.iterations} 轮 · ${stats.message_count} 条消息 · ${stats.tool_call_count} 次工具`
-            : '统计中…';
-        const active = !isTerminalStatus(model.status);
-        if (active && model.currentTool) {
-            meta += ` · 正在: ${model.currentTool}`;
+        if (model.workflowStep) {
+            _renderWorkflowHeader(model);
+            return;
         }
+        const stats = model.stats;
+        const active = !isTerminalStatus(model.status);
+        const statusText = active
+            ? (model.currentTool ? `正在: ${model.currentTool}`
+                : (PHASE_TITLES[model.phase] || '运行中'))
+            : (model.status === 'failed' ? '失败'
+                : model.status === 'stopped' ? '已停止'
+                : model.status === 'interrupted' ? '已中断' : '完成');
+        let meta = stats
+            ? `${stats.iterations} 轮 · ${stats.tool_call_count} 次工具`
+            : '统计中…';
+        meta += ` · ${statusText}`;
         const task = model.taskSummary || '';
-        const title = active
-            ? (PHASE_TITLES[model.phase] || '任务执行中')
-            : '任务已结束';
+        const title = task || (active ? '任务执行中' : '任务已结束');
         const mode = model.background
             ? '<span class="sa-mode-badge">异步</span>'
             : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
         model.headerEl.innerHTML = `
             <span class="sa-icon">${STATUS_ICONS[active ? (model.phase || model.status) : model.status] || (active ? '🔄' : '📋')}</span>
-            <span class="sa-title">${title}</span>
             ${mode}
-            <span class="sa-task" title="${escapeHtml(task)}">${escapeHtml(task.substring(0, 60))}${task.length > 60 ? '...' : ''}</span>
+            <span class="sa-title" title="${escapeHtml(task)}">${escapeHtml(title.length > 60 ? title.substring(0, 60) + '...' : title)}</span>
             <span class="sa-meta">${escapeHtml(meta)}</span>
+            <span class="sa-toggle">${model.expanded ? '▼' : '▶'}</span>
+        `;
+    }
+
+    function _renderWorkflowHeader(model) {
+        const active = !isTerminalStatus(model.status);
+        const statusText = active ? '运行中'
+            : model.status === 'failed' ? '失败'
+            : model.status === 'stopped' ? '已停止' : '完成';
+        const icon = active ? '🔄' : (model.status === 'failed' ? '❌'
+            : model.status === 'stopped' ? '⏹️'
+            : model.status === 'interrupted' ? '⚠️' : '✅');
+        const name = model.stepName || model.taskSummary || '步骤';
+        const prefix = model.stepIndex ? `${model.stepIndex}. ` : '';
+        const mode = model.background
+            ? '<span class="sa-mode-badge">异步</span>'
+            : '<span class="sa-mode-badge sa-mode-sync">同步</span>';
+        const parts = [];
+        if (model.executor) parts.push(model.executor);
+        if (model.durationMs) parts.push(`${Math.round(model.durationMs / 1000)}s`);
+        if (model.stats) {
+            parts.push(`${model.stats.tool_call_count} 次工具`);
+        }
+        parts.push(statusText);
+        model.headerEl.innerHTML = `
+            <span class="sa-icon">${icon}</span>
+            ${mode}
+            <span class="sa-title">${escapeHtml(prefix + name)}</span>
+            <span class="sa-meta">${escapeHtml(parts.join(' · '))}</span>
             <span class="sa-toggle">${model.expanded ? '▼' : '▶'}</span>
         `;
     }
@@ -422,6 +432,7 @@ const AgentCardStore = (() => {
             card.appendChild(detail);
             header.addEventListener('click', () => toggle(model.execId));
 
+            if (model.workflowStep) card.classList.add('workflow-step');
             model.cardEl = card;
             model.headerEl = header;
             model.detailEl = detail;
@@ -433,6 +444,7 @@ const AgentCardStore = (() => {
         if (target && (forceMove || !model.cardEl.parentNode)) {
             if (model.cardEl.parentNode !== target) target.appendChild(model.cardEl);
         }
+        model.cardEl.classList.toggle('workflow-step', !!model.workflowStep);
         model.detailEl.style.display = model.expanded ? 'block' : 'none';
         _renderHeader(model);
         if (model.expanded) {
@@ -451,7 +463,6 @@ const AgentCardStore = (() => {
         const model = MODELS.get(execId);
         if (!model) return;
         model.expanded = !model.expanded;
-        _setExpanded(execId, model.expanded);
         if (model.detailEl) {
             model.detailEl.style.display = model.expanded ? 'block' : 'none';
         }
@@ -469,6 +480,12 @@ const AgentCardStore = (() => {
             model = _createModel(seed.exec_id, seed);
         } else {
             if (seed.task_summary) model.taskSummary = seed.task_summary;
+            if (seed.workflow_step !== undefined) model.workflowStep = !!seed.workflow_step;
+            if (seed.step_index !== undefined) model.stepIndex = Number(seed.step_index) || 0;
+            if (seed.step_name !== undefined) model.stepName = seed.step_name || '';
+            if (seed.executor !== undefined) model.executor = seed.executor || '';
+            if (seed.duration_ms !== undefined) model.durationMs = Number(seed.duration_ms) || 0;
+            if (seed.pending !== undefined) model.pending = !!seed.pending;
             const norm = _normalizeStatus(seed);
             if ((seed.status || seed.phase)
                 && (isTerminalStatus(norm.status) || !isTerminalStatus(model.status))) {
@@ -489,14 +506,23 @@ const AgentCardStore = (() => {
         let model = MODELS.get(e.exec_id);
         if (model) {
             if (e.task_summary) model.taskSummary = e.task_summary;
+            if (e.workflow_step !== undefined) model.workflowStep = !!e.workflow_step;
+            if (e.step_index !== undefined) model.stepIndex = Number(e.step_index) || 0;
+            if (e.step_name !== undefined) model.stepName = e.step_name || '';
+            if (e.executor !== undefined) model.executor = e.executor || '';
             if (e.background !== undefined) model.background = !!e.background;
             model.status = 'running';
             model.phase = 'running';
+            if (model.workflowStep && model.cardEl) model.cardEl.classList.add('workflow-step');
         } else {
             model = _createModel(e.exec_id, {
                 task_summary: e.task_summary || '',
                 status: 'running',
                 background: !!e.background,
+                workflow_step: e.workflow_step,
+                step_index: e.step_index,
+                step_name: e.step_name,
+                executor: e.executor,
             });
         }
         _ensureCard(model, _liveContainer());
@@ -542,6 +568,11 @@ const AgentCardStore = (() => {
 
     function onComplete(e) {
         const model = MODELS.get(e.exec_id) || _createModel(e.exec_id, {});
+        if (e.duration_ms !== undefined) model.durationMs = Number(e.duration_ms) || 0;
+        if (e.workflow_step !== undefined) model.workflowStep = !!e.workflow_step;
+        if (e.step_index !== undefined) model.stepIndex = Number(e.step_index) || 0;
+        if (e.step_name) model.stepName = e.step_name;
+        if (e.executor) model.executor = e.executor;
         // 只有终态才能写 finished：非终态（如 running/handoff）一律忽略
         if (isTerminalStatus(e.status)) {
             const rank = { completed: 0, stopped: 1, error: 2, failed: 2, timeout: 2 };
@@ -649,6 +680,74 @@ const AgentCardStore = (() => {
                 }
                 _ensureCard(model, _liveContainer());
             });
+            // 工作流结果会话：步骤不在 agent exec 日志里；刷新时按工作流 state
+            // 恢复正在运行步骤的卡片，避免「刷新几次卡一会有一会没有」。
+            const wfId = currentSession
+                && currentSession.metadata
+                && currentSession.metadata.run_results
+                && currentSession.metadata.run_results.workflow_id;
+            if (wfId) {
+                try {
+                    const wfResp = await fetch(`/api/workspaces/${ws}/workflows/${wfId}`);
+                    if (!currentSession || currentSession.session_id !== sid) return;
+                    if (wfResp.ok) {
+                        const detail = await wfResp.json();
+                        const wf = detail.workflow || {};
+                        const st = detail.state || {};
+                        // 只给「本次运行」的结果会话补挂；旧结果会话不能拿当前 state 卡片
+                        if (st.results_session_id && st.results_session_id !== sid) return;
+                        (wf.steps || []).forEach((step, index) => {
+                            const item = (st.items || {})[step.id];
+                            if (!item || item.status === 'pending') return;
+                            const status = item.status === 'done' ? 'completed' : item.status;
+                            // 历史已经渲染过同一会话的步骤卡：不要再补一张
+                            if (item.session_id && _seen.has(item.session_id)) return;
+                            let model = item.session_id ? MODELS.get(item.session_id) : null;
+                            if (!model) {
+                                // 先前的 tool_use 占位卡（无 tool_result）直接接管，避免重复
+                                for (const [key, candidate] of [...MODELS.entries()]) {
+                                    if (candidate.workflowStep && candidate.pending
+                                            && candidate.stepIndex === index + 1) {
+                                        MODELS.delete(key);
+                                        if (item.session_id) {
+                                            candidate.execId = item.session_id;
+                                            if (candidate.cardEl) candidate.cardEl.dataset.execId = item.session_id;
+                                            MODELS.set(item.session_id, candidate);
+                                        } else {
+                                            MODELS.set(key, candidate);
+                                        }
+                                        model = candidate;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!model) {
+                                const key = item.session_id || `workflow_step_${step.id}`;
+                                model = _createModel(key, {
+                                    task_summary: `第 ${index + 1} 步：${step.name}`,
+                                    status,
+                                    workflow_step: true,
+                                    step_index: index + 1,
+                                    step_name: step.name,
+                                    executor: step.executor,
+                                    stats: item.stats,
+                                });
+                            }
+                            model.pending = false;
+                            model.workflowStep = true;
+                            model.stepIndex = index + 1;
+                            model.stepName = step.name;
+                            model.executor = step.executor;
+                            model.status = status;
+                            model.durationMs = Number(item.duration_ms) || model.durationMs || 0;
+                            if (item.artifact) model.artifact = item.artifact;
+                            const stats = _statsFrom(item.stats);
+                            if (stats) model.stats = stats;
+                            _ensureCard(model, _liveContainer());
+                        });
+                    }
+                } catch (e) { /* ignore */ }
+            }
         } catch (e) { /* 事件流 agent_start 会兜底建卡 */ }
     }
 

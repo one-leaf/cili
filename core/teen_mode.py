@@ -60,6 +60,7 @@ DEFAULT_POLICY: dict = {
     "mcp_tools": "deny",          # 外部 MCP 工具
     "browser_upload": "deny",     # 浏览器上传
     "cron": "deny",               # 定时任务增删改
+    "workflows": "deny",           # 工作流增删改与运行
     "prompt_block": True,         # 注入 teen_mode system block
 }
 
@@ -81,6 +82,7 @@ _DENY_MESSAGES: dict[str, str] = {
     "config_update": "青少年模式已开启：该设置项已被锁定，需家长解锁后修改。",
     "mcp_call": "青少年模式已开启：外部 MCP 工具需要家长授权。",
     "cron_modify": "青少年模式已开启：定时任务的增删改需要家长授权。",
+    "workflows_modify": "青少年模式已开启：工作流的增删改与运行需要家长授权。",
     "browser_upload": "青少年模式已开启：浏览器上传需要家长授权。",
     "file_delete": "青少年模式已开启：文件删除已被家长锁定。",
     "workspace_locked": "该工作区已锁定，需家长解锁后才能使用。",

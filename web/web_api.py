@@ -34,6 +34,7 @@ from web.routes_qq import router as qq_router
 from web.routes_session_about import router as session_about_router
 from web.routes_siwc import router as siwc_router
 from web.routes_suggest import router as suggest_router
+from web.routes_workflows import router as workflows_router
 from web.routes_teen import router as teen_router
 from web.routes_textbooks import router as textbooks_router
 from web.routes_update import router as update_router
@@ -265,6 +266,7 @@ app.include_router(chat_router)
 app.include_router(session_about_router)
 app.include_router(ask_user_router)
 app.include_router(suggest_router)
+app.include_router(workflows_router)
 app.include_router(config_router)
 app.include_router(siwc_router)
 app.include_router(permissions_router)

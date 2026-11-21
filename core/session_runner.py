@@ -828,13 +828,21 @@ class SessionRunner(BaseSessionRunner):
 
     # ─── master session fork ─────────────────────────────────────
 
-    def fork_session(self, next_steps: str = "", label: str | None = None) -> dict:
+    def fork_session(self, next_steps: str = "", label: str | None = None, *,
+                     metadata: dict | None = None,
+                     run_sync: bool = False,
+                     on_clone=None,
+                     timeout_seconds: int = 0) -> dict:
         """Clone the completed-turn context of this master session into a sibling.
 
         Fork is a session-level operation, not a worker handoff. With an empty
         next_steps it only copies the current session snapshot. With a next-stage
         task it copies the snapshot (or falls back to a handoff document when
         the snapshot is too large) and starts that task.
+
+        ``run_sync`` 供工作流编排器使用：在调用方线程同步执行并返回结果状态；
+        ``on_clone`` 交出 clone 引用（用于停止）；``timeout_seconds`` 为同步模式
+        的步骤超时；``metadata`` 合并进新会话的 metadata（工作流标记/hidden 等）。
         """
         if self.role != "master":
             return {"status": "error", "message": "fork is only available for master sessions"}
@@ -887,11 +895,13 @@ class SessionRunner(BaseSessionRunner):
                     msg.get("content", ""),
                     meta={k: v for k, v in (msg.get("_meta") or {}).items() if k != "seq"},
                 )
+        if metadata:
+            store.metadata.update(metadata)
         store.save(force=True)
 
         clone = SessionRunner(
             self.config,
-            role="master",
+            role=self.role,
             cwd=self.cwd,
             workspace_uuid=self.workspace_uuid,
             initial_session=store,
@@ -906,6 +916,13 @@ class SessionRunner(BaseSessionRunner):
         )
         from core.default_sink import bind_default_sink
         bind_default_sink(clone, self.workspace_uuid, store.session_id)
+        # on_clone 必须在默认 sink 绑定之后回调：工作流会在回调里替换 sink，
+        # 把步骤的实时事件转发到结果会话（先回调会被 bind_default_sink 覆盖）。
+        if on_clone is not None:
+            try:
+                on_clone(clone)
+            except Exception as e:  # noqa: BLE001 —— 回调失败不阻断 fork
+                logger.warning(f"[fork] on_clone callback failed: {e}")
         try:
             from core.agent_mailbox import get_agent_mailbox
             mbus = get_agent_mailbox()
@@ -925,6 +942,9 @@ class SessionRunner(BaseSessionRunner):
         if not auto_run:
             return result
 
+        if run_sync:
+            return self._run_fork_sync(clone, next_steps, key, timeout_seconds, result)
+
         def _run() -> None:
             try:
                 clone.run(user_input=next_steps, meta={"fork": True})
@@ -936,6 +956,53 @@ class SessionRunner(BaseSessionRunner):
         threading.Thread(
             target=_run, daemon=True, name=f"fork-{store.session_id}"
         ).start()
+        return result
+
+    def _run_fork_sync(self, clone: "SessionRunner", prompt: str, key: str,
+                       timeout_seconds: int, result: dict) -> dict:
+        """同步执行 fork 出来的 clone（工作流步骤）：返回 completed/error/timeout。"""
+        holder: dict = {"error": None}
+
+        def _run() -> None:
+            try:
+                clone.run(user_input=prompt, meta={"fork": True})
+            except Exception as e:  # noqa: BLE001 —— 记录后由主线程判定
+                holder["error"] = e
+                self._persist_clone_error(clone, e)
+
+        thread = threading.Thread(
+            target=_run, daemon=True, name=f"fork-sync-{clone.current_session_id}")
+        thread.start()
+        if timeout_seconds and timeout_seconds > 0:
+            thread.join(timeout_seconds)
+        else:
+            thread.join()
+
+        timed_out = thread.is_alive()
+        if timed_out:
+            logger.warning("[fork] 步骤执行超时，停止 clone %s", clone.current_session_id)
+            try:
+                clone.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            thread.join(10)
+
+        error = holder.get("error")
+        try:
+            from core.session_registry import registry
+            registry.release(key)
+        except Exception:  # noqa: BLE001
+            pass
+
+        result = dict(result)
+        if timed_out:
+            result["status"] = "timeout"
+            result["error"] = "步骤超时"
+        elif error is not None:
+            result["status"] = "error"
+            result["error"] = str(error)
+        else:
+            result["status"] = "completed"
         return result
 
     def _publish_fork_session_created(self, new_session_id: str,
@@ -1374,6 +1441,10 @@ class SessionRunner(BaseSessionRunner):
             tool_calls: 本批新增的工具调用数（累加到 _tool_call_count）
             force: 绕过 0.5s 事件节流（检查阶段进出等需要立即反馈的切换）
         """
+        # 累加工具调用计数：interactive 模式没有 exec_id 也要计数（fork 步骤统计要用）
+        if tool_calls is not None and tool_calls > 0:
+            self._tool_call_count += tool_calls
+
         # interactive 模式可能没有 _exec_id（只有 autonomous/worker 才有）
         exec_id = getattr(self, '_exec_id', None)
         if not self.session_dir or not exec_id:
@@ -1381,10 +1452,6 @@ class SessionRunner(BaseSessionRunner):
 
         # 供 agent 工具的 status/list 读取（此前该属性从未赋值，状态永远显示 none）
         self._current_tool = current_tool
-
-        # 累加工具调用计数
-        if tool_calls is not None and tool_calls > 0:
-            self._tool_call_count += tool_calls
 
         log_data = self._snapshot(
             iterations, "running", phase=phase, current_tool=current_tool

@@ -1113,8 +1113,11 @@ async function saveSettings() {
     payload.agents = { master: { model: masterRef } };
     const workerRef = document.getElementById('agent-worker-model').value;
     const liteRef = document.getElementById('agent-lite-model').value;
+    const workflowEl = document.getElementById('agent-workflow-model');
+    const workflowRef = workflowEl ? workflowEl.value : '';
     if (workerRef) payload.agents.worker = { model: workerRef };
     if (liteRef) payload.agents.lite = { model: liteRef };
+    if (workflowRef) payload.agents.workflow = { model: workflowRef };
 
     // ── System parameters ──
     const pipMirror = document.getElementById('system-pip-mirror').value.trim();
@@ -1893,10 +1896,16 @@ function fillAgentSelects(refs) {
     const master = document.getElementById('agent-master-model');
     const worker = document.getElementById('agent-worker-model');
     const lite = document.getElementById('agent-lite-model');
+    const workflow = document.getElementById('agent-workflow-model');
     const options = refs.map(function (r) { return '<option value="' + r + '">' + r + '</option>'; }).join('');
-    [master, worker, lite].forEach(function (sel) {
+    [master, worker, lite, workflow].forEach(function (sel) {
+        if (!sel) return;
         const current = sel.value;
-        sel.innerHTML = (sel !== master ? '<option value="">（与 Master 一致）</option>' : '') + options;
+        let fallback = '';
+        if (sel !== master) {
+            fallback = '（与 Master 一致）';
+        }
+        sel.innerHTML = (fallback ? '<option value="">' + fallback + '</option>' : '') + options;
         if (current && refs.includes(current)) sel.value = current;
     });
     updateAgentEffective();
@@ -1907,6 +1916,8 @@ function restoreAgentSelection(agents) {
     if (a.master && a.master.model) document.getElementById('agent-master-model').value = a.master.model;
     if (a.worker && a.worker.model) document.getElementById('agent-worker-model').value = a.worker.model;
     if (a.lite && a.lite.model) document.getElementById('agent-lite-model').value = a.lite.model;
+    const workflowSel = document.getElementById('agent-workflow-model');
+    if (workflowSel) workflowSel.value = (a.workflow && a.workflow.model) || '';
     updateAgentEffective();
 }
 
@@ -1922,11 +1933,14 @@ function updateAgentEffective() {
     set('agent-master-effective', masterRef);
     const worker = document.getElementById('agent-worker-model');
     const lite = document.getElementById('agent-lite-model');
-    set('agent-worker-effective', (worker && worker.value) || masterRef);
+    const workerRef = (worker && worker.value) || masterRef;
+    set('agent-worker-effective', workerRef);
     set('agent-lite-effective', (lite && lite.value) || masterRef);
+    const workflow = document.getElementById('agent-workflow-model');
+    set('agent-workflow-effective', (workflow && workflow.value) || masterRef);
 }
 
-['agent-master-model', 'agent-worker-model', 'agent-lite-model'].forEach(function (id) {
+['agent-master-model', 'agent-worker-model', 'agent-lite-model', 'agent-workflow-model'].forEach(function (id) {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', updateAgentEffective);
 });

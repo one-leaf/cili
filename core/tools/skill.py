@@ -70,7 +70,7 @@ def _visible_for(meta: dict, role: str, interface: str | None = None) -> bool:
     接口未声明（None：cron 回合 / 未设置接口的交互回合 / 子代理）时一律
     不可见——宁缺勿猜，与 ``interface_caps`` 的未声明语义一致。
 
-    roles 维度语义与原 ``_visible_for_role`` 相同。
+    roles 维度语义与原 ``_visible_for_role`` 相同（内置技能只声明 master/worker/lite）。
     """
     roles = meta.get("roles")
     if roles and role not in _as_frontmatter_list(roles):

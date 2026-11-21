@@ -254,7 +254,6 @@ ul, ol {
 /* 代理卡片悬停 */
 [data-theme="dark"] .session-header:hover { background-color: #3f3f46; }
 [data-theme="dark"] .sa-title { color: #e4e4e7; }
-[data-theme="dark"] .sa-task { color: #a1a1aa; }
 [data-theme="dark"] .sa-meta { color: #71717a; }
 
 /* Todo 进度条 */
@@ -2624,14 +2623,20 @@ html:not([data-theme="dark"]) .message.thinking {
     border-radius: 6px;
     padding: 0;
     margin: 8px 0;
-    width: 80% !important;
-    max-width: 80% !important;
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+/* 子代理卡是纯折叠容器：抵消 .message.assistant 的底部 15px 内边距，
+   否则收起后头部文字下方会多一截空白。 */
+.message.assistant.session-card:not(.tool):not(.thinking) {
+    padding: 0;
 }
 
 .session-header {
     display: flex;
     align-items: center;
-    padding: 10px 12px;
+    padding: 8px 12px;
     cursor: pointer;
     gap: 8px;
 }
@@ -2645,15 +2650,11 @@ html:not([data-theme="dark"]) .message.thinking {
 }
 
 .sa-title {
+    flex: 1;
+    min-width: 0;
     font-weight: 600;
     color: #2c3e50;
     font-size: 13px;
-}
-
-.sa-task {
-    flex: 1;
-    color: #5a6c7d;
-    font-size: 12px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -4654,7 +4655,8 @@ details.p-headers-panel .p-headers {
     display: none;
 }
 .sessions-section.collapsed .section-chevron,
-.files-section.collapsed .section-chevron {
+.files-section.collapsed .section-chevron,
+.workflows-section.collapsed .section-chevron {
     transform: rotate(-90deg);
 }
 [data-theme="dark"] .section-toggle { color: var(--text-light); }

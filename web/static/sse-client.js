@@ -12,7 +12,8 @@ let _esWasDisconnected = false;   // 曾断线（onopen 时用于对齐）
 let _lastHidden = document.hidden;  // 上次可见性：重复派发/加载期事件据此短路
 
 // master 自动恢复流式渲染（后台 agent 完成后 master 继续执行，text 逐 token 推送）
-let _masterResumeOpenBlock = null; // {kind:'text'|'thinking', text, el}
+let _masterResumeOpenBlock = null;
+const _resumeAgentSpawnCalls = new Set(); // {kind:'text'|'thinking', text, el}
 
 // ── 事件流生命周期 ──
 
@@ -97,6 +98,8 @@ function scheduleActivityRefresh() {
 }
 
 function handleBusEvent(e) {
+    // workflow_agent 的工具结果由子代理信息条表示（历史同样如此），不再渲染普通工具结果气泡
+    if (e.type === 'tool_result' && e.tool === 'workflow_agent') return;
     if (!e || typeof e !== 'object') return;
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
@@ -236,6 +239,7 @@ function ensureMasterToolBubble(toolUseId, toolName) {
 
 function resetMasterStreamBlocks() {
     _masterResumeOpenBlock = null;
+    _resumeAgentSpawnCalls.clear();
 }
 
 function _handleMasterResumeText(content) {
@@ -281,6 +285,13 @@ function _handleMasterResumeThinking(content) {
 
 function _handleMasterResumeToolUse(e) {
     _finalizeMasterResumeBlock();
+    // 子代理（工作流步骤 / agent spawn）由卡片展示，不渲染调用工具气泡
+    const input = e.input && typeof e.input === 'object' ? e.input : {};
+    if (e.tool === 'workflow_agent'
+            || (e.tool === 'agent' && (input.action || 'spawn') === 'spawn')) {
+        if (e.tool === 'agent') _resumeAgentSpawnCalls.add(e.tool_use_id);
+        return;
+    }
     const div = addMessage('assistant', '');
     div.classList.add('tool');
     const contentDiv = div.querySelector('.message-content');
@@ -295,6 +306,12 @@ function _handleMasterResumeToolUse(e) {
 
 function _handleMasterResumeToolResult(e) {
     _finalizeMasterResumeBlock();
+    // 子代理结果已由卡片表示
+    if (e.tool === 'workflow_agent') return;
+    if (e.tool === 'agent' && _resumeAgentSpawnCalls.has(e.tool_use_id)) {
+        _resumeAgentSpawnCalls.delete(e.tool_use_id);
+        return;
+    }
     const text = typeof e.content === 'string' ? e.content : JSON.stringify(e.content, null, 2);
     const div = addMessage('assistant', '');
     div.classList.add('tool');

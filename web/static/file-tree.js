@@ -963,7 +963,6 @@ const FileTree = (() => {
 
         const entries = item.is_file
             ? [
-                ['预览', () => openPreview(item.path)],
                 ['下载', () => window.open(fileUrl(item.path), '_blank', 'noopener')],
                 ['-', null],
                 ['在文件资源管理器中显示', () => openInExplorer(item.path)],
@@ -1034,7 +1033,20 @@ const FileTree = (() => {
     }
 
     function openPane() {
-        if (state.preview.open) return;
+        // 中间栏工作流面板与文件预览互斥：点文件时收起工作流面板。
+        // 注意：工作流面板打开时只是把预览 hidden，state.preview.open 仍为 true，
+        // 所以必须先处理工作流面板，不能在这里提前 return。
+        const workflowPane = document.getElementById('workflow-pane');
+        if (workflowPane && !workflowPane.hidden
+                && window.WorkflowPane && typeof window.WorkflowPane.close === 'function') {
+            try { window.WorkflowPane.close(false); } catch (e) { /* ignore */ }
+        }
+        if (state.preview.open) {
+            el.pane.hidden = false;
+            el.previewHandle.hidden = false;
+            applyPreviewWidth();
+            return;
+        }
         state.preview.open = true;
         el.pane.hidden = false;
         el.previewHandle.hidden = false;
@@ -1842,14 +1854,28 @@ const FileTree = (() => {
         if (!el) return;
         const collapsed = localStorage.getItem(KEYS.filesCollapsed) === '1';
         el.filesSection.classList.toggle('collapsed', collapsed);
-        el.hSplit.classList.toggle('hidden', collapsed || sessionsCollapsed());
+        // 分隔条 B 现在是「工作流/文件」：会话折叠不应隐藏它；仅文件区折叠时隐藏
+        el.hSplit.classList.toggle('hidden', collapsed);
         if (collapsed) {
             el.filesSection.style.flex = '';
             return;
         }
         if (sessionsCollapsed()) {
-            el.filesSection.style.flex = '1 1 0';
-            el.filesSection.style.minHeight = '0';
+            const workflows = document.getElementById('workflows-section');
+            const workflowsExpanded = workflows && !workflows.classList.contains('collapsed');
+            if (!workflowsExpanded) {
+                el.filesSection.style.flex = '1 1 0';
+                el.filesSection.style.minHeight = '0';
+                return;
+            }
+            // 工作流分区会以 flex:1 吸收高度变化；文件区使用自己的固定高度，
+            // 拖动分隔条 B 时移动的是工作流/文件的边界。
+            el.filesSection.style.minHeight = '';
+            const bodyHeight = sidebarBodyHeight();
+            let height = readNum(KEYS.filesHeight, 0);
+            if (!height) height = Math.round(bodyHeight * 0.55);
+            height = clamp(height, 140, Math.max(160, bodyHeight - 140));
+            el.filesSection.style.flex = `0 0 ${height}px`;
             return;
         }
         el.filesSection.style.minHeight = '';
