@@ -329,7 +329,7 @@ function renderMessages(messages) {
         resetMasterStreamBlocks();
     }
     if (!messages || messages.length === 0) {
-        chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
+        chatMessages.innerHTML = newSessionWelcomeHtml();
         // 空会话也要挂回在飞容器（否则新会话第一条消息切回后看不到输出）。
         // 注意 innerHTML 赋值会清掉已挂的子节点，必须在之后调用。
         _reattachTurnContainer();

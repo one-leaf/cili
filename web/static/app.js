@@ -3,6 +3,22 @@ const SESSION_CHANNEL_LABELS = {
     web: '网页', qq: 'QQ', wechat: '微信', cli: '终端', email: '邮件', cron: '定时',
 };
 
+// 新会话空状态的示例输入（app.js 与 chat.js 共用；点击写入输入框）
+const NEW_SESSION_EXAMPLES = [
+    '今日有哪些新闻',
+    '给电脑做一次体检',
+    '小学一年级语文第一课是什么',
+    '用treejs画一张单网页的房屋透视图',
+];
+
+// 新会话空状态提示
+function newSessionWelcomeHtml() {
+    const btns = NEW_SESSION_EXAMPLES
+        .map(t => `<button type="button" class="welcome-example">${t}</button>`)
+        .join('');
+    return `<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用，或点击示例：</p><div class="welcome-examples">${btns}</div></div>`;
+}
+
 // State
 let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
@@ -712,6 +728,14 @@ function setupEventListeners() {
     });
     modelSelect.addEventListener('change', onModelSelectChange);
     if (suggestBtn) suggestBtn.addEventListener('click', handleSuggest);
+    // 新会话空状态的示例：点击写入输入框（不发送）
+    chatMessages.addEventListener('click', (e) => {
+        const btn = e.target.closest('.welcome-example');
+        if (!btn) return;
+        chatInput.value = btn.textContent;
+        chatInput.focus();
+        updateComposerButtons();
+    });
     updateComposerButtons();
     if (queueResumeBtn) queueResumeBtn.addEventListener('click', () => resumeQueue());
     if (queueClearBtn) queueClearBtn.addEventListener('click', () => clearQueue());
@@ -957,7 +981,7 @@ async function handleWorkspaceChange() {
         workspaceSettingsBtn.disabled = true;
         document.getElementById('memory-btn').disabled = true;
         sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
-        chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
+        chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>请先选择工作区，再新建会话开始</p></div>';
         updateWorkspacePath();
         if (window.FileTree) FileTree.setWorkspace(null);
         if (window.WorkflowPane) WorkflowPane.reset();
@@ -1060,7 +1084,7 @@ async function handleWorkspaceChange() {
         queueReason = '';
         updateComposerButtons();
         renderQueueBar();
-        chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>点击 + 创建新会话</p></div>';
+        chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>点击 + 新建会话开始</p></div>';
     }
 }
 
@@ -2130,7 +2154,7 @@ async function deleteSession(session) {
                 currentSession = null;
                 hideSuggestBar({ invalidate: true });
                 savePosition({ session_id: '' });
-                chatMessages.innerHTML = '<div class="empty-state">请选择或创建会话</div>';
+                chatMessages.innerHTML = '<div class="empty-state">点击 + 新建会话开始</div>';
                 sessionRunning = false;
                 sessionBackground = { agents: 0, shells: 0, active: 0, items: [] };
                 queuedItems = [];
@@ -2258,7 +2282,7 @@ async function createNewSession() {
         savePosition({ session_id: session.session_id });
 
         await loadSessions();
-        chatMessages.innerHTML = '<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用</p></div>';
+        chatMessages.innerHTML = newSessionWelcomeHtml();
 
         // 完整重置发送/停止状态（可能在旧会话运行中创建新会话）
         clearAllToolStreaming();
@@ -2424,7 +2448,7 @@ async function deleteWorkspaceConfig() {
             clearPosition();
             workspaceSelect.value = '';
             sessionsList.innerHTML = '<div class="empty-state">选择一个工作区</div>';
-            chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>选择工作区并创建会话开始使用</p></div>';
+            chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>请先选择工作区，再新建会话开始</p></div>';
             loadWorkspaces();
         }, 800);
     } catch (error) {

@@ -1390,6 +1390,34 @@ body {
     color: var(--primary-color);
 }
 
+/* 新会话示例输入：点击写入输入框（不发送） */
+.welcome-examples {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    max-width: 640px;
+    margin: 14px auto 0;
+}
+
+.welcome-example {
+    padding: 5px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-color);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.welcome-example:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: var(--bg-color);
+}
+
 .message {
     margin-bottom: 20px;
     padding: 15px 15px 28px 15px;
