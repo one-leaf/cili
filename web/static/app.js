@@ -1954,10 +1954,6 @@ function buildWorkflowRow(entry) {
 
     const preview = document.createElement('div');
     preview.className = 'session-preview';
-    const badge = document.createElement('span');
-    badge.className = 'session-channel-badge';
-    badge.textContent = '工作流';
-    preview.appendChild(badge);
     preview.appendChild(document.createTextNode(entry.name));
     div.appendChild(preview);
 
