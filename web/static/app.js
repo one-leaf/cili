@@ -46,8 +46,8 @@ let isStopping = false;          // 已发 /stop，等待回合真正收尾
 let isMultiSelectMode = false;
 let showHiddenSessions = false;
 let selectedSessions = new Set();
-// 合并列表的类型筛选（all / session / workflow），持久化到 localStorage
-let sidebarFilter = 'all';
+// 侧栏列表类型（session / workflow），持久化到 localStorage
+let sidebarFilter = 'session';
 let selectedWorkflows = new Set();
 // 消息分页加载状态
 let currentSessionLoadedOffset = 0;  // 已加载的消息数（从末尾算起）
@@ -337,7 +337,7 @@ function initSessionsSection() {
     applySessionsCollapsed(collapsed);
 }
 
-// 合并列表的类型筛选（全部 / 会话 / 工作流）+ 导入入口
+// 侧栏列表类型切换（会话 / 工作流）；新建与导入跟随当前类型
 const SIDEBAR_FILTER_KEY = 'cili_sidebar_filter';
 
 function initSidebarFilter() {
@@ -345,7 +345,7 @@ function initSidebarFilter() {
     if (!buttons.length) return;
     try {
         const saved = localStorage.getItem(SIDEBAR_FILTER_KEY);
-        if (saved === 'all' || saved === 'session' || saved === 'workflow') sidebarFilter = saved;
+        if (saved === 'session' || saved === 'workflow') sidebarFilter = saved;
     } catch (e) { /* ignore */ }
     const applyActive = () => {
         buttons.forEach(btn => {
@@ -353,11 +353,19 @@ function initSidebarFilter() {
             btn.classList.toggle('active', active);
             btn.setAttribute('aria-selected', String(active));
         });
+        if (newSessionBtn) {
+            newSessionBtn.title = sidebarFilter === 'workflow' ? '新建工作流' : '新建会话';
+        }
     };
     buttons.forEach(btn => btn.addEventListener('click', () => {
-        sidebarFilter = btn.dataset.filter || 'all';
+        if (!btn.dataset.filter || btn.dataset.filter === sidebarFilter) return;
+        sidebarFilter = btn.dataset.filter;
+        // 切换后不可见条目的选中状态要丢掉，避免批量操作误伤
+        selectedSessions.clear();
+        selectedWorkflows.clear();
         try { localStorage.setItem(SIDEBAR_FILTER_KEY, sidebarFilter); } catch (e) { /* ignore */ }
         applyActive();
+        updateFooterToolbar();
         renderSidebarList();
     }));
     applyActive();
@@ -747,7 +755,7 @@ function setupEventListeners() {
     workspaceSelect.addEventListener('change', handleWorkspaceChange);
     workspaceSettingsBtn.addEventListener('click', openWorkspaceSettings);
     newWorkspaceBtn.addEventListener('click', handleNewWorkspace);
-    newSessionBtn.addEventListener('click', createNewSession);
+    newSessionBtn.addEventListener('click', handleNewButton);
     sessionMenuBtn.addEventListener('click', toggleSessionPanelMenu);
     document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
     document.getElementById('sidebar-open-btn').addEventListener('click', toggleSidebar);
@@ -1770,25 +1778,24 @@ function workflowSidebarEntry(item) {
     };
 }
 
-// 合并列表：会话与工作流按 updated_at 混排（工作流数据由 WorkflowPane 提供）
+// 当前类型下的侧栏条目，按 updated_at 倒序（工作流数据由 WorkflowPane 提供）
 function collectSidebarEntries() {
-    const entries = [];
-    if (sidebarFilter !== 'workflow') {
-        for (const session of sessions) {
-            if (!!session.hidden !== showHiddenSessions) continue;
-            entries.push(sessionSidebarEntry(session));
+    let entries;
+    if (sidebarFilter === 'workflow') {
+        entries = [];
+        if (window.WorkflowPane && typeof WorkflowPane.getSidebarEntries === 'function') {
+            for (const item of WorkflowPane.getSidebarEntries()) {
+                if (!!item.hidden !== showHiddenSessions) continue;
+                entries.push(workflowSidebarEntry(item));
+            }
         }
-    }
-    if (sidebarFilter !== 'session' && window.WorkflowPane
-            && typeof WorkflowPane.getSidebarEntries === 'function') {
-        for (const item of WorkflowPane.getSidebarEntries()) {
-            if (!!item.hidden !== showHiddenSessions) continue;
-            entries.push(workflowSidebarEntry(item));
-        }
+    } else {
+        entries = sessions
+            .filter(session => !!session.hidden === showHiddenSessions)
+            .map(sessionSidebarEntry);
     }
     entries.sort((a, b) => {
         if (a.updated_at !== b.updated_at) return a.updated_at < b.updated_at ? 1 : -1;
-        if (a.type !== b.type) return a.type < b.type ? -1 : 1;
         return a.id < b.id ? 1 : -1;
     });
     return entries;
@@ -1796,8 +1803,7 @@ function collectSidebarEntries() {
 
 function emptySidebarText() {
     if (showHiddenSessions) return '没有隐藏项';
-    if (sidebarFilter === 'workflow') return '暂无工作流';
-    return '暂无会话';
+    return sidebarFilter === 'workflow' ? '暂无工作流' : '暂无会话';
 }
 
 let _sidebarRenderSig = '';
@@ -2171,9 +2177,22 @@ function downloadJsonFile(data, filename) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// 统一导入入口：按 JSON 内容识别会话 / 工作流
+// 新建：跟随侧栏当前类型（会话 / 工作流）
+function handleNewButton() {
+    if (sidebarFilter === 'workflow') {
+        if (window.WorkflowPane) WorkflowPane.newWorkflow();
+        return;
+    }
+    createNewSession();
+}
+
+// 导入：跟随侧栏当前类型，不再按文件内容识别
 async function handleImportFile(file) {
     if (!currentWorkspace) return;
+    if (sidebarFilter === 'workflow') {
+        if (window.WorkflowPane) await WorkflowPane.importFile(file);
+        return;
+    }
     let data;
     try {
         data = JSON.parse(await file.text());
@@ -2181,14 +2200,11 @@ async function handleImportFile(file) {
         showToast('不是有效的 JSON 文件');
         return;
     }
-    const payload = data && data.workflow ? data.workflow : data;
-    if (data && data.format === 'cili-session' && Array.isArray(data.messages)) {
-        await importSessionData(data);
-    } else if (payload && Array.isArray(payload.steps) && payload.name) {
-        if (window.WorkflowPane) await WorkflowPane.importFile(file);
-    } else {
-        showToast('无法识别的文件：既不是工作流也不是会话');
+    if (!data || !Array.isArray(data.messages)) {
+        showToast('不是有效的会话文件');
+        return;
     }
+    await importSessionData(data);
 }
 
 async function importSessionData(data) {
@@ -2250,8 +2266,7 @@ function toggleSessionPanelMenu(e) {
     const multiLabel = isMultiSelectMode ? '退出多选' : '多选';
 
     dropdown.innerHTML = `
-        <div class="session-dropdown-item" data-panel-action="new-workflow">新建工作流</div>
-        <div class="session-dropdown-item" data-panel-action="import">导入（会话 / 工作流）</div>
+        <div class="session-dropdown-item" data-panel-action="import">导入</div>
         <div class="session-dropdown-item" data-panel-action="toggle-view">${viewLabel}</div>
         <div class="session-dropdown-item" data-panel-action="toggle-multi">${multiLabel}</div>
     `;
@@ -2261,9 +2276,7 @@ function toggleSessionPanelMenu(e) {
             ev.stopPropagation();
             const action = item.dataset.panelAction;
             dropdown.remove();
-            if (action === 'new-workflow') {
-                if (window.WorkflowPane) WorkflowPane.newWorkflow();
-            } else if (action === 'import') {
+            if (action === 'import') {
                 document.getElementById('session-import-input')?.click();
             } else if (action === 'toggle-view') {
                 showHiddenSessions = !showHiddenSessions;
