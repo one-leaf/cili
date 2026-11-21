@@ -26,6 +26,59 @@ function workflowWelcomeActive() {
         && WorkflowPane.getCurrentWorkflowId());
 }
 
+// 当前会话是否是「未绑定的新建工作流」会话（metadata.workflow_panel.workflow_id 为空）
+function onBlankWorkflowSession() {
+    const panel = currentSession && currentSession.metadata && currentSession.metadata.workflow_panel;
+    return !!(panel && !panel.workflow_id);
+}
+
+// 当前会话是否属于工作流（面板会话 / 运行结果会话）
+function onWorkflowRelatedSession() {
+    const metadata = (currentSession && currentSession.metadata) || {};
+    return !!(metadata.workflow_panel || metadata.run_results);
+}
+
+// 切换类型后让右侧聊天跟过来：
+// - 工作流模式且没打开工作流 → 打开/复用「新建工作流」会话，展示工作流示例
+// - 会话模式且停在会话工作流会话上 → 回到最近的普通会话
+async function syncChatToMode() {
+    if (!currentWorkspace) return;
+    if (sidebarFilter === 'workflow') {
+        if (!window.WorkflowPane || typeof WorkflowPane.getCurrentWorkflowId !== 'function') return;
+        if (WorkflowPane.getCurrentWorkflowId()) return;
+        // 青少年模式禁止工作流时不自动创建面板会话，避免切页就报错
+        const teenOn = window.teenStatus && window.teenStatus.enabled;
+        const teenUnlocked = window.teenStatus && window.teenStatus.unlocked;
+        if (teenOn && !teenUnlocked
+                && ((window.teenStatus.policy || {}).workflows || 'deny') === 'deny') {
+            return;
+        }
+        // 回到上次打开的工作流（还在的话），否则打开/复用「新建工作流」会话
+        const entries = typeof WorkflowPane.getSidebarEntries === 'function'
+            ? WorkflowPane.getSidebarEntries() : [];
+        if (_lastWorkflowModeId && entries.some(item => item.id === _lastWorkflowModeId)) {
+            await WorkflowPane.openWorkflowById(_lastWorkflowModeId);
+            return;
+        }
+        if (onBlankWorkflowSession()) {
+            if (chatMessages.querySelector('.welcome-message')) {
+                chatMessages.innerHTML = newSessionWelcomeHtml();
+            }
+            return;
+        }
+        await WorkflowPane.newWorkflow();
+        return;
+    }
+    if (window.WorkflowPane && typeof WorkflowPane.getCurrentWorkflowId === 'function') {
+        const workflowId = WorkflowPane.getCurrentWorkflowId();
+        if (workflowId) _lastWorkflowModeId = workflowId;
+    }
+    if (currentSession && onWorkflowRelatedSession() && _lastSessionModeSessionId
+            && _lastSessionModeSessionId !== currentSession.session_id) {
+        await loadSession(_lastSessionModeSessionId);
+    }
+}
+
 // 空状态提示：工作流模式（未打开工作流）用工作流示例，其余用会话示例
 function newSessionWelcomeHtml() {
     if (workflowWelcomeActive()) {
@@ -45,6 +98,10 @@ let currentWorkspace = null;  // {uuid, name, directory}
 let currentSession = null;
 let _renderedSessionKey = null;
 let sessionLoadEpoch = 0;  // 会话加载代次：旧响应到达时丢弃
+// 最近一次普通会话（非工作流面板/结果会话）：切回「会话」模式时恢复它
+let _lastSessionModeSessionId = '';
+// 最近打开的工作流：切回「工作流」模式时恢复它
+let _lastWorkflowModeId = '';
 let sessions = [];
 let isSending = false;
 // 本页持有的前台请求级 SSE 流属于哪个 session（null = 本页未持有）。
@@ -378,7 +435,7 @@ function initSidebarFilter() {
             newSessionBtn.title = sidebarFilter === 'workflow' ? '新建工作流' : '新建会话';
         }
     };
-    buttons.forEach(btn => btn.addEventListener('click', () => {
+    buttons.forEach(btn => btn.addEventListener('click', async () => {
         if (!btn.dataset.filter || btn.dataset.filter === sidebarFilter) return;
         sidebarFilter = btn.dataset.filter;
         // 切换后不可见条目的选中状态要丢掉，避免批量操作误伤
@@ -388,10 +445,11 @@ function initSidebarFilter() {
         applyActive();
         updateFooterToolbar();
         renderSidebarList();
-        // 当前显示的是空状态欢迎块时，示例跟随模式切换
+        // 当前显示的是空状态欢迎块时，示例先跟随模式切换
         if (chatMessages.querySelector('.welcome-message')) {
             chatMessages.innerHTML = newSessionWelcomeHtml();
         }
+        await syncChatToMode();
     }));
     applyActive();
 
@@ -1112,6 +1170,8 @@ async function handleWorkspaceChange() {
     showHiddenSessions = false;
     selectedSessions.clear();
     selectedWorkflows.clear();
+    _lastSessionModeSessionId = '';
+    _lastWorkflowModeId = '';
     newSessionBtn.style.display = '';
     if (_footerOriginalHTML !== null) {
         document.getElementById('footer-content').innerHTML = _footerOriginalHTML;
@@ -1156,6 +1216,9 @@ async function handleWorkspaceChange() {
         renderQueueBar();
         chatMessages.innerHTML = '<div class="welcome-message"><h2>欢迎使用草履虫</h2><p>点击 + 新建会话开始</p></div>';
     }
+
+    // 工作区已就绪：让右侧聊天跟住当前类型（工作流模式直接展示工作流示例）
+    await syncChatToMode();
 }
 
 function joinPreviewPath(parent, child) {
@@ -2556,6 +2619,13 @@ async function loadSession(sessionId) {
         const session = await response.json();
         if (epoch !== sessionLoadEpoch) return;
         currentSession = session;
+        // 记录普通会话，切回「会话」模式时用于恢复
+        {
+            const metadata = session.metadata || {};
+            if (!metadata.workflow_panel && !metadata.run_results) {
+                _lastSessionModeSessionId = session.session_id;
+            }
+        }
         if (window.WorkflowPane && typeof WorkflowPane.openForSession === 'function') {
             try { WorkflowPane.openForSession(session); } catch (e) { console.warn('WorkflowPane open failed', e); }
         }
@@ -2638,6 +2708,7 @@ async function createNewSession() {
 
         const session = await response.json();
         currentSession = session;
+        _lastSessionModeSessionId = session.session_id;
         savePosition({ session_id: session.session_id });
 
         await loadSessions();
