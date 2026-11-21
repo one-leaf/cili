@@ -378,6 +378,8 @@ const AgentCardStore = (() => {
         const ws = currentWorkspace && currentWorkspace.uuid;
         const sid = currentSession && currentSession.session_id;
         if (!ws || !sid) return;
+        // 异步补拉完成后内容可能大幅变高：先记住是否贴底，回来时再决定跟不跟
+        const wasPinned = isChatPinnedToBottom();
         model.loading = true;
         try {
             const resp = await fetch(`/api/workspaces/${ws}/sessions/${sid}/executions/${model.execId}`);
@@ -401,7 +403,10 @@ const AgentCardStore = (() => {
             model.loaded = true;
             model.needsFullReload = false;
             _renderHeader(model);
-            if (model.expanded) _renderDetail(model);
+            if (model.expanded) {
+                _renderDetail(model);
+                if (wasPinned) scrollChatIfNearBottom(true);
+            }
         } catch (err) {
             console.error('加载执行详情失败:', err);
         } finally {
@@ -475,12 +480,18 @@ const AgentCardStore = (() => {
     function toggle(execId) {
         const model = MODELS.get(execId);
         if (!model) return;
+        // 展开会让内容瞬间变高，事后按距离判断已经失效：先记住是否贴底
+        const wasPinned = isChatPinnedToBottom();
         model.expanded = !model.expanded;
         if (model.detailEl) {
             model.detailEl.style.display = model.expanded ? 'block' : 'none';
         }
         _renderHeader(model);
-        if (model.expanded) _expandDetail(model);
+        if (model.expanded) {
+            _expandDetail(model);
+            // 原本停在底部：展开后强制跟随（正在翻历史则保持原地）
+            if (wasPinned) scrollChatIfNearBottom(true);
+        }
     }
 
     function mountFromHistory(seed, container = null) {
