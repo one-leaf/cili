@@ -6,10 +6,20 @@ import logging
 from pathlib import Path
 
 from core.config import get_workspace_data_dir, load_workspace_config
+from core.event_bus import get_event_bus
 from core.session import SessionStore
 from core.workflows import store
 
 logger = logging.getLogger(__name__)
+
+
+def _publish_session_changed(workspace_uuid: str, session_id: str) -> None:
+    """新建会话后广播，前端会话列表据此重拉（面板/结果会话不走用户请求）。"""
+    get_event_bus().publish({
+        "type": "session_changed",
+        "workspace_uuid": workspace_uuid,
+        "session_id": session_id,
+    })
 
 
 def workspace_sessions_dir(workspace_uuid: str = "") -> Path:
@@ -50,6 +60,7 @@ def ensure_panel_session(workspace_uuid: str, workflow, state) -> SessionStore:
     )
     state.panel_session_id = session.session_id
     store.save_state(workspace_uuid, workflow.id, state)
+    _publish_session_changed(workspace_uuid, session.session_id)
     return session
 
 
@@ -63,10 +74,12 @@ def ensure_new_workflow_panel_session(workspace_uuid: str) -> SessionStore:
             loaded = SessionStore.load_session(item["session_id"], sessions_dir)
             if loaded is not None:
                 return loaded
-    return SessionStore.create_new_session(
+    session = SessionStore.create_new_session(
         sessions_dir, "[工作流面板] 新建工作流",
         metadata={"hidden": True, "workflow_panel": {"workflow_id": ""}},
     )
+    _publish_session_changed(workspace_uuid, session.session_id)
+    return session
 
 
 def ensure_results_session(workspace_uuid: str, workflow, state,
@@ -95,6 +108,7 @@ def ensure_results_session(workspace_uuid: str, workflow, state,
     )
     state.results_session_id = session.session_id
     store.save_state(workspace_uuid, workflow.id, state)
+    _publish_session_changed(workspace_uuid, session.session_id)
     return session
 
 

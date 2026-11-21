@@ -238,3 +238,52 @@ def test_send_to_user_enqueues_step_files(monkeypatch):
     assert not result.is_error
     assert captured["key"] == f"{WS}:chat1"
     assert captured["entries"][0][0].endswith("result.md")
+
+
+def test_results_session_binds_workflow_and_blocks_create():
+    """结果会话可读/运行绑定的工作流，但不能 create/update"""
+    workflow = store.create_workflow(WS, {
+        "name": "结果会话工作流",
+        "steps": [{"name": "一", "requirement": "做事", "sources": []}],
+    })
+    session = FakeSession({"run_results": {"workflow_id": workflow.id}}, session_id="res1")
+    tool = make_tool(session)
+
+    got = tool.execute(action="get")
+    assert not got.is_error
+    assert json.loads(got.output)["workflow"]["id"] == workflow.id
+
+    created = tool.execute(action="create", name="x",
+                           steps=[{"name": "a", "requirement": "b", "sources": []}])
+    assert created.is_error
+
+
+def test_run_step_dispatches_with_bound_workflow(monkeypatch):
+    from core.workflows import service
+
+    workflow = store.create_workflow(WS, {
+        "name": "按步重跑",
+        "steps": [{"name": "一", "requirement": "做事", "sources": []}],
+    })
+    session = FakeSession({"run_results": {"workflow_id": workflow.id}}, session_id="res1")
+    tool = make_tool(session)
+
+    calls = []
+    monkeypatch.setattr(
+        service, "run_workflow_step",
+        lambda ws, wid, step: calls.append((ws, wid, step)) or SimpleNamespace(
+            status="running", run_id="abcd1234", results_session_id="res2"))
+
+    result = tool.execute(action="run_step", step="一")
+    assert not result.is_error
+    assert calls == [(WS, workflow.id, "一")]
+
+
+def test_results_session_gets_workflow_tool():
+    """结果会话挂 workflow 工具（运行类动作），步骤会话仍然不可用"""
+    from core.tools.registry import _workflow_tool_allowed
+
+    assert _workflow_tool_allowed(
+        SimpleNamespace(metadata={"run_results": {"workflow_id": "wf1"}}))
+    assert not _workflow_tool_allowed(
+        SimpleNamespace(metadata={"workflow": {"workflow_id": "wf1"}}))

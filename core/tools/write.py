@@ -43,6 +43,10 @@ class WriteTool(Tool):
             return gate
         file_path = resolved
 
+        workflow_guard = self._workflow_definition_guard(file_path)
+        if workflow_guard:
+            return workflow_guard
+
         # Remove surrogate characters that are invalid in UTF-8
         clean_content = self._clean_surrogates(content)
 

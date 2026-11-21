@@ -72,6 +72,23 @@ class WorkflowRunner:
     def key(self) -> str:
         return f"{self.workspace_uuid}:{self.workflow.id}"
 
+    def _publish_workflow_changed(self, action: str) -> None:
+        """运行状态/产物落盘后广播变更，前端据此刷新（不依赖回合结束推断）。"""
+        get_event_bus().publish({
+            "type": "workflow_changed",
+            "workspace_uuid": self.workspace_uuid,
+            "workflow_id": self.workflow.id,
+            "action": action,
+        })
+
+    def _publish_files_changed(self, session_id: str = "") -> None:
+        get_event_bus().publish({
+            "type": "files_changed",
+            "workspace_uuid": self.workspace_uuid,
+            "session_id": session_id,
+            "tool": "workflow",
+        })
+
     def is_running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 
@@ -94,6 +111,95 @@ class WorkflowRunner:
 
     # ── 主流程 ─────────────────────────────────────────────
 
+    def start_step(self, index: int) -> bool:
+        """只重跑第 index 步：复用上次运行的目录、参数与上游产物。"""
+        if self.is_running():
+            return False
+        self._stop.clear()
+        # 同步置为 running（线程启动前落盘），前端刷新列表能立刻看到运行中
+        prev_status = self.state.status
+        self.state.status = "running"
+        self.state.finished_at = ""
+        self._save_state()
+        self.thread = threading.Thread(target=self._run_single_step, args=(index, prev_status),
+                                       name=f"workflow-step-{self.key}", daemon=True)
+        self.thread.start()
+        return True
+
+    def _run_single_step(self, index: int, prev_status: str) -> None:
+        try:
+            self._run_step_impl(index, prev_status)
+        except Exception as exc:  # noqa: BLE001 —— 重跑异常统一落成步骤失败
+            logger.exception("[workflow] 步骤重跑异常: %s", exc)
+            step_def = self.workflow.steps[index]
+            step_state = self.state.items.get(step_def.id) or StepState()
+            self.state.items[step_def.id] = step_state
+            step_state.status = "failed"
+            step_state.error = f"重跑异常：{exc}"
+            step_state.finished_at = now_str()
+            self.state.status = "failed"
+            self.state.finished_at = now_str()
+        finally:
+            self._save_state()
+            self._cleanup()
+            _unregister_runner(self.key, self)
+            self._publish_workflow_changed("step_finished")
+            self._publish_files_changed(self.state.results_session_id)
+
+    def _run_step_impl(self, index: int, prev_status: str) -> None:
+        workflow, state, ws = self.workflow, self.state, self.workspace_uuid
+        step_def = workflow.steps[index]
+        self._run_id = state.run_id
+        state.status = "running"
+        state.current_index = index
+        self._expected_index = index
+        state.items.pop(step_def.id, None)  # 允许重跑：清掉旧状态
+        self._save_state()
+        self._append_event({"type": "step_rerun_started", "step_id": step_def.id,
+                            "index": index}, fsync=True)
+
+        # 新建结果会话：与进行中的 master 回合隔离，避免同一会话被两个 runner 写
+        results = ensure_results_session(ws, workflow, state, fresh=True)
+        state.results_session_id = results.session_id
+        self._save_state()
+        self._conductor = self._make_conductor(results)
+        if self._conductor is None:
+            raise RuntimeError("结果会话 runner 创建失败")
+
+        self._conductor.run(user_input=self._build_conductor_prompt(index, step_def))
+        state_step = state.items.get(step_def.id)
+        if state_step is None or state_step.status in ("pending", "running"):
+            state_step = state_step or StepState()
+            state.items[step_def.id] = state_step
+            state_step.status = "failed"
+            state_step.error = "监督者未调用 workflow_agent 执行该步骤"
+            state_step.finished_at = now_str()
+
+        self._settle_status(prev_status)
+        state.finished_at = now_str()
+        self._append_event({"type": "step_rerun_finished", "step_id": step_def.id,
+                            "status": state_step.status}, fsync=True)
+        self._save_state()
+        self._write_run_json()
+
+    def _settle_status(self, prev_status: str) -> None:
+        """单步重跑后的整体状态：该步失败→failed；全部完成→completed；否则沿用旧状态。"""
+        state = self.state
+        statuses = []
+        for step_def in self.workflow.steps:
+            item = state.items.get(step_def.id)
+            statuses.append(item.status if item is not None else "pending")
+        if "failed" in statuses:
+            state.status = "failed"
+        elif all(s == "done" for s in statuses):
+            state.status = "completed"
+        elif self._stop.is_set():
+            state.status = "stopped"
+        elif prev_status and prev_status != "running":
+            state.status = prev_status
+        else:
+            state.status = "interrupted"
+
     def _run(self) -> None:
         try:
             self._loop()
@@ -108,6 +214,8 @@ class WorkflowRunner:
             self._save_state()
             self._cleanup()
             _unregister_runner(self.key, self)
+            self._publish_workflow_changed("run_finished")
+            self._publish_files_changed()
 
     def _loop(self) -> None:
         workflow, state, ws = self.workflow, self.state, self.workspace_uuid
@@ -483,6 +591,8 @@ class WorkflowRunner:
             "artifact": state_step.artifact,
             "error": assess_error,
         }, fsync=True)
+        self._publish_workflow_changed("step_finished")
+        self._publish_files_changed(session.session_id)
 
         terminal = {"done": "completed", "failed": "failed",
                     "stopped": "stopped"}.get(outcome, outcome or "completed")
@@ -945,6 +1055,23 @@ def start_workflow_runner(workspace_uuid: str, workflow: Workflow,
                                 origin_session_id=origin_session_id)
         _register_runner(key, runner)
         runner.start()
+        return runner
+
+
+def start_workflow_step_runner(workspace_uuid: str, workflow: Workflow,
+                               state: WorkflowState,
+                               step_index: int) -> WorkflowRunner | None:
+    """只重跑第 step_index 步（沿用 state.run_id 的运行目录与上游产物）。"""
+    key = f"{workspace_uuid}:{workflow.id}"
+    with _start_lock(key):
+        old = get_runner(workspace_uuid, workflow.id)
+        if old is not None and old.is_running():
+            return None
+        runner = WorkflowRunner(workspace_uuid, workflow, state,
+                                run_inputs=dict(state.run_inputs),
+                                origin_session_id=state.origin_session_id)
+        _register_runner(key, runner)
+        runner.start_step(step_index)
         return runner
 
 

@@ -118,12 +118,14 @@ TOOL_REGISTRY: dict[str, Factory] = {
 
 
 def _workflow_tool_allowed(session) -> bool:
-    """工作流工具：维护会话与普通 master 可用；结果会话/步骤会话不可用。"""
+    """工作流工具：维护会话、结果会话、普通 master 可用；步骤会话不可用。
+
+    结果会话只开放运行类动作（run/run_step/stop/status/send_to_user 等），
+    create/update/delete 由工具自身按面板会话门控。
+    """
     metadata = getattr(session, "metadata", None)
     if not isinstance(metadata, dict):
         return True
-    if isinstance(metadata.get("run_results"), dict):
-        return False
     if isinstance(metadata.get("workflow"), dict):
         return False
     return True

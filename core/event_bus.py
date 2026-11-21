@@ -15,18 +15,23 @@ from typing import Any
 class EventBus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # queue.Queue -> (workspace_uuid 过滤, session_id 过滤)；以 queue 为 key
-        # 便于 unsubscribe 精确移除；None 表示不过滤该维度
-        self._subscribers: dict[queue.Queue, tuple[str | None, str | None]] = {}
+        # queue.Queue -> (workspace 过滤, session 过滤, 放行类型)；以 queue 为 key
+        # 便于 unsubscribe 精确移除；None 表示不过滤该维度。
+        # allow_types 内的事件类型不受 session 过滤（如 workflow_changed 等
+        # 跨会话变更），过滤在投递侧完成，避免无关高频事件挤占订阅队列。
+        self._subscribers: dict[
+            queue.Queue, tuple[str | None, str | None, frozenset[str]]] = {}
 
     def subscribe(
         self,
         q: queue.Queue,
         workspace_uuid: str | None = None,
         session_id: str | None = None,
+        allow_types: set[str] | frozenset[str] | None = None,
     ) -> queue.Queue:
         with self._lock:
-            self._subscribers[q] = (workspace_uuid, session_id)
+            self._subscribers[q] = (workspace_uuid, session_id,
+                                    frozenset(allow_types or ()))
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
@@ -36,14 +41,15 @@ class EventBus:
     def publish(self, event: dict[str, Any]) -> None:
         ws = event.get("workspace_uuid")
         sid = event.get("session_id")
+        etype = event.get("type")
         with self._lock:
             items = list(self._subscribers.items())
         if not items:
             return
-        for q, (sub_ws, sub_sid) in items:
+        for q, (sub_ws, sub_sid, sub_types) in items:
             if sub_ws is not None and sub_ws != ws:
                 continue
-            if sub_sid is not None and sub_sid != sid:
+            if sub_sid is not None and sub_sid != sid and etype not in sub_types:
                 continue
             try:
                 q.put_nowait(event)

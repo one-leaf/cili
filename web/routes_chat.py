@@ -467,7 +467,8 @@ async def stream_tool_output(
 # ----- Global Event Stream -----
 
 @router.get("/api/events")
-async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
+async def stream_global_events(workspace_uuid: str = "", session_id: str = "",
+                               types: str = ""):
     """全局 SSE 事件流：实时推送 worker 子代理消息与工具输出增量。
 
     与现有 POST SSE（request-scoped，只能推 master 同步事件）互补——事件总线
@@ -476,6 +477,8 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
     （check_access_control 中间件支持）。
 
     可选 workspace_uuid/session_id 过滤；不传则接收所有事件。
+    ``types``（逗号分隔）里的事件类型不受 session_id 过滤（工作流/会话/文件
+    等跨会话变更需要广播到当前页面）。
     """
     if session_id:
         _validate_session_id(session_id)
@@ -492,7 +495,9 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = ""):
 
     event_queue: queue.Queue[dict] = queue.Queue(maxsize=512)
     bus = get_event_bus()
-    bus.subscribe(event_queue, workspace_uuid or None, session_id or None)
+    extra_types = {t.strip() for t in types.split(",") if t.strip()}
+    bus.subscribe(event_queue, workspace_uuid or None, session_id or None,
+                  allow_types=extra_types)
 
     async def generate():
         try:

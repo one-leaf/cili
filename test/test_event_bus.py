@@ -44,6 +44,23 @@ class TestEventBus:
         assert q_ws2.get(timeout=1)["content"] == "c"
         assert q_ws2.empty()
 
+    def test_allow_types_bypass_session_filter(self):
+        """allow_types 内的事件类型不受 session 过滤（跨会话工作区级变更）"""
+        bus = EventBus()
+        q = queue.Queue()
+        bus.subscribe(q, "ws1", "s1", allow_types={"workflow_changed"})
+
+        bus.publish({"type": "workflow_changed", "workspace_uuid": "ws1",
+                     "workflow_id": "wf"})
+        bus.publish({"type": "text", "workspace_uuid": "ws1",
+                     "session_id": "s2", "content": "other"})
+        bus.publish({"type": "text", "workspace_uuid": "ws1",
+                     "session_id": "s1", "content": "mine"})
+
+        assert q.get(timeout=1)["type"] == "workflow_changed"
+        assert q.get(timeout=1)["content"] == "mine"
+        assert q.empty()
+
     def test_publish_no_subscriber(self):
         """无订阅者时 publish 无副作用"""
         bus = EventBus()

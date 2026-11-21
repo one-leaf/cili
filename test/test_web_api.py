@@ -254,6 +254,36 @@ class TestGlobalEvents:
 
         assert asyncio.run(run())
 
+    def test_types_bypass_session_filter(self):
+        """types 里的事件类型不受 session_id 过滤（跨会话的工作区级变更）"""
+        import asyncio
+
+        from core.event_bus import get_event_bus
+        from web.routes_chat import stream_global_events
+
+        async def run():
+            resp = await stream_global_events(
+                session_id="sess-a", types="workflow_changed,files_changed")
+            agen = resp.body_iterator
+
+            get_event_bus().publish({
+                "type": "text", "workspace_uuid": "ws-x", "session_id": "sess-other",
+                "content": "should-not-arrive",
+            })
+            get_event_bus().publish({
+                "type": "workflow_changed", "workspace_uuid": "ws-x",
+                "workflow_id": "wf1", "action": "created",
+            })
+
+            chunk = await agen.__anext__()
+            text = chunk if isinstance(chunk, str) else chunk.decode()
+            assert "workflow_changed" in text
+            assert "should-not-arrive" not in text
+            await agen.aclose()
+            return True
+
+        assert asyncio.run(run())
+
     def test_unsubscribe_on_close(self):
         """流关闭后退订（finally unsubscribe），新订阅不受影响"""
         import asyncio
@@ -1263,7 +1293,7 @@ class TestSuggestRoute:
             calls["runner"] = (workspace_uuid, session_id)
             return "runner-stub"
 
-        def fake_generate(runner, refresh, exclude):
+        def fake_generate(runner, refresh, exclude, user_input=""):
             calls["generate"] = (runner, refresh, exclude)
             return {"suggestions": ["aa", "bb"], "source": "context", "route": "prefixed"}
 
@@ -1309,7 +1339,7 @@ class TestSuggestRoute:
         async def fake_get_runner(workspace_uuid, session_id):
             return "runner-stub"
 
-        def fake_generate(runner, refresh, exclude):
+        def fake_generate(runner, refresh, exclude, user_input=""):
             raise SuggestError("生成建议失败")
 
         monkeypatch.setattr(routes_suggest, "_get_or_create_runner", fake_get_runner)

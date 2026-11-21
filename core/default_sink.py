@@ -19,6 +19,13 @@ from core.output_sink import OutputSink
 
 logger = logging.getLogger(__name__)
 
+# 可能产生工作区文件变更的工具：回合结束后广播 files_changed，前端据此刷新文件树。
+# 会话不一定在当前页面前台，所以不能只靠 turn_complete 推断。
+_FILE_MUTATING_TOOLS = frozenset({
+    "write", "edit", "bash", "pwsh", "python", "latex",
+    "office2pdf", "pdf2markdown",
+})
+
 if TYPE_CHECKING:  # 避免运行时循环导入
     from core.session_runner import SessionRunner
 
@@ -79,6 +86,13 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
             "is_error": is_error,
             "tool_use_id": tool_use_id,
         })
+        if tool_name in _FILE_MUTATING_TOOLS:
+            bus.publish({
+                "type": "files_changed",
+                "workspace_uuid": workspace_uuid,
+                "session_id": session_id,
+                "tool": tool_name,
+            })
 
     def _default_on_turn_complete() -> None:
         # 后台泵 / 看门狗自动恢复等回合没有请求级 sink，接口层不会调用

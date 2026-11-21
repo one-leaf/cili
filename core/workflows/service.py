@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.event_bus import get_event_bus
 from core.workflows import runner as runner_mod
 from core.workflows import store
 from core.workflows.model import (Workflow, WorkflowState, WorkflowValidationError,
@@ -22,6 +23,16 @@ class WorkflowBusyError(RuntimeError):
 
 class WorkflowNotFoundError(LookupError):
     """工作流不存在。"""
+
+
+def _publish_changed(workspace_uuid: str, workflow_id: str, action: str) -> None:
+    """广播工作流变更。只在写盘成功后调用，前端据此刷新而不是推断 LLM 是否成功。"""
+    get_event_bus().publish({
+        "type": "workflow_changed",
+        "workspace_uuid": workspace_uuid,
+        "workflow_id": workflow_id,
+        "action": action,
+    })
 
 
 def list_workflows(workspace_uuid: str = "") -> list[dict[str, Any]]:
@@ -120,11 +131,14 @@ def _mark_interrupted(workspace_uuid: str, workflow_id: str, state: WorkflowStat
             store.write_run_json(workspace_uuid, workflow_id, state.run_id, run)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[workflow] 标记中断失败: %s", exc)
+    _publish_changed(workspace_uuid, workflow_id, "interrupted")
 
 
 def create_workflow(workspace_uuid: str, payload: dict[str, Any]) -> Workflow:
     with store.store_lock():
-        return store.create_workflow(workspace_uuid, payload)
+        workflow = store.create_workflow(workspace_uuid, payload)
+    _publish_changed(workspace_uuid, workflow.id, "created")
+    return workflow
 
 
 def update_workflow(workspace_uuid: str, workflow_id: str, payload: dict[str, Any]) -> Workflow:
@@ -141,13 +155,16 @@ def update_workflow(workspace_uuid: str, workflow_id: str, payload: dict[str, An
         state.run_inputs = {}
         state.items = {}
         store.save_state(workspace_uuid, workflow_id, state)
-        return workflow
+    _publish_changed(workspace_uuid, workflow_id, "updated")
+    return workflow
 
 
 def set_hidden(workspace_uuid: str, workflow_id: str, hidden: bool) -> Workflow:
     """设置侧栏隐藏状态（允许运行中操作，不影响执行）。"""
     with store.store_lock():
-        return store.set_hidden(workspace_uuid, workflow_id, hidden)
+        workflow = store.set_hidden(workspace_uuid, workflow_id, hidden)
+    _publish_changed(workspace_uuid, workflow_id, "updated")
+    return workflow
 
 
 def delete_workflow(workspace_uuid: str, workflow_id: str) -> None:
@@ -156,6 +173,7 @@ def delete_workflow(workspace_uuid: str, workflow_id: str) -> None:
     with store.store_lock():
         if not store.delete_workflow(workspace_uuid, workflow_id):
             raise WorkflowNotFoundError("工作流不存在")
+    _publish_changed(workspace_uuid, workflow_id, "deleted")
 
 
 def run_workflow(workspace_uuid: str, workflow_id: str,
@@ -172,9 +190,53 @@ def run_workflow(workspace_uuid: str, workflow_id: str,
         origin_session_id=state.origin_session_id)
     if started is None:
         raise WorkflowBusyError("工作流正在运行或启动失败")
+    _publish_changed(workspace_uuid, workflow_id, "run_started")
+    return store.load_state(workspace_uuid, workflow_id)
+
+
+def resolve_step_index(workflow: Workflow, step: Any) -> int:
+    """步骤定位：0 基序号 / 步骤名 / 步骤 id。"""
+    if isinstance(step, bool):
+        raise WorkflowValidationError("step 必须是步骤序号或名称")
+    if isinstance(step, int):
+        index = step
+    elif isinstance(step, str):
+        text = step.strip()
+        if text.isdigit():
+            index = int(text)
+        else:
+            for i, item in enumerate(workflow.steps):
+                if text in (item.name, item.id):
+                    return i
+            raise WorkflowValidationError(f"未找到步骤 {step!r}")
+    else:
+        raise WorkflowValidationError("step 必须是步骤序号或名称")
+    if not (0 <= index < len(workflow.steps)):
+        raise WorkflowValidationError(f"step 序号越界：{index}")
+    return index
+
+
+def run_workflow_step(workspace_uuid: str, workflow_id: str,
+                      step: Any) -> WorkflowState:
+    """只重跑某一步：复用上次运行的目录与上游产物，下游步骤不重跑。"""
+    workflow = get_workflow(workspace_uuid, workflow_id)
+    state = store.load_state(workspace_uuid, workflow_id)
+    if runner_mod.is_workflow_running(workspace_uuid, workflow_id):
+        raise WorkflowBusyError("工作流正在运行")
+    if not state.run_id:
+        raise WorkflowValidationError("还没有运行记录：请先完整运行一次工作流，再按步重跑")
+    index = resolve_step_index(workflow, step)
+    started = runner_mod.start_workflow_step_runner(
+        workspace_uuid, workflow, state, index)
+    if started is None:
+        raise WorkflowBusyError("工作流正在运行或启动失败")
+    _publish_changed(workspace_uuid, workflow_id, "step_started")
     return store.load_state(workspace_uuid, workflow_id)
 
 
 def stop_workflow(workspace_uuid: str, workflow_id: str) -> bool:
     get_workflow(workspace_uuid, workflow_id)
-    return runner_mod.stop_workflow_runner(workspace_uuid, workflow_id)
+    stopped = runner_mod.stop_workflow_runner(workspace_uuid, workflow_id)
+    if stopped:
+        _publish_changed(workspace_uuid, workflow_id, "stopped")
+    return stopped

@@ -368,6 +368,18 @@
             renderPanel();
             renderTabs();
             renderSidebar();
+            // 空会话欢迎块：工作流数据到位后示例可带上具体步骤名
+            try {
+                const meta = (typeof currentSession !== 'undefined'
+                    && currentSession && currentSession.metadata) || {};
+                const boundId = (meta.run_results && meta.run_results.workflow_id)
+                    || (meta.workflow_panel && meta.workflow_panel.workflow_id) || '';
+                if (boundId === workflowId && typeof newSessionWelcomeHtml === 'function'
+                        && typeof chatMessages !== 'undefined'
+                        && chatMessages.querySelector('.welcome-message')) {
+                    chatMessages.innerHTML = newSessionWelcomeHtml();
+                }
+            } catch (e) { /* ignore */ }
             if (state.currentState?.status === 'running') {
                 startPolling();
                 maybeAutoSwitchResults();

@@ -79,18 +79,71 @@ async function syncChatToMode() {
     }
 }
 
-// 空状态提示：工作流模式（未打开工作流）用工作流示例，其余用会话示例
-function newSessionWelcomeHtml() {
-    if (workflowWelcomeActive()) {
-        const btns = NEW_WORKFLOW_EXAMPLES
-            .map(t => `<button type="button" class="welcome-example">${t}</button>`)
-            .join('');
-        return `<div class="welcome-message"><h2>描述你的工作目标</h2><p>描述目标后 AI 会生成步骤，或点击示例：</p><div class="welcome-examples">${btns}</div></div>`;
+// 步骤名在示例里只取主标题（「认书：核实书目…」→「认书」），避免示例过长
+function shortStepName(name) {
+    const base = String(name || '').split(/[：:]/)[0].trim();
+    return base.length > 12 ? base.slice(0, 12) : base;
+}
+
+// 工作流会话（编辑/运行结果）的示例：围绕当前工作流可执行的操作
+function workflowSessionExamples(metadata) {
+    const results = metadata.run_results;
+    const panel = metadata.workflow_panel;
+    const pane = window.WorkflowPane && WorkflowPane._state;
+    const workflow = pane && pane.currentWorkflow;
+    const state = (pane && pane.currentState) || {};
+    const boundId = (results && results.workflow_id) || (panel && panel.workflow_id) || '';
+    const sameWorkflow = workflow && (!boundId || workflow.id === boundId);
+    const steps = sameWorkflow && Array.isArray(workflow.steps) ? workflow.steps : [];
+
+    if (results) {
+        // 失败步骤优先作为「只重跑第 N 步」示例
+        let target = -1;
+        steps.forEach((step, index) => {
+            const item = state.items && state.items[step.id];
+            if (target < 0 && item && item.status === 'failed') target = index;
+        });
+        if (target < 0) target = 0;
+        const targetName = steps[target] ? shortStepName(steps[target].name) : '';
+        return [
+            '执行当前工作流',
+            targetName ? `只重跑第 ${target + 1} 步：${targetName}` : '只重跑某一步',
+            '把执行结果推送给我',
+            '总结这次运行的问题',
+        ];
     }
-    const btns = NEW_SESSION_EXAMPLES
+    const firstName = steps[0] ? shortStepName(steps[0].name) : '';
+    return [
+        '运行当前工作流',
+        firstName ? `修改第 1 步：${firstName}` : '修改某一步的要求',
+        '给工作流增加一个汇总步骤',
+        '修改运行输入项',
+    ];
+}
+
+function examplesHtml(examples) {
+    return examples
         .map(t => `<button type="button" class="welcome-example">${t}</button>`)
         .join('');
-    return `<div class="welcome-message"><h2>开始新对话</h2><p>输入消息开始使用，或点击示例：</p><div class="welcome-examples">${btns}</div></div>`;
+}
+
+// 空状态提示：工作流会话用运行/修改示例，工作流模式（未打开工作流）用创建示例，其余用会话示例
+function newSessionWelcomeHtml() {
+    const metadata = (currentSession && currentSession.metadata) || {};
+    if (metadata.run_results || (metadata.workflow_panel && metadata.workflow_panel.workflow_id)) {
+        const isResults = !!metadata.run_results;
+        return `<div class="welcome-message"><h2>${isResults ? '这次运行的结果' : '编辑工作流'}</h2>`
+            + `<p>可以直接提问，或点击示例：</p>`
+            + `<div class="welcome-examples">${examplesHtml(workflowSessionExamples(metadata))}</div></div>`;
+    }
+    if (metadata.workflow_panel || workflowWelcomeActive()) {
+        return `<div class="welcome-message"><h2>描述你的工作目标</h2>`
+            + `<p>描述目标后 AI 会生成步骤，或点击示例：</p>`
+            + `<div class="welcome-examples">${examplesHtml(NEW_WORKFLOW_EXAMPLES)}</div></div>`;
+    }
+    return `<div class="welcome-message"><h2>开始新对话</h2>`
+        + `<p>输入消息开始使用，或点击示例：</p>`
+        + `<div class="welcome-examples">${examplesHtml(NEW_SESSION_EXAMPLES)}</div></div>`;
 }
 
 // State

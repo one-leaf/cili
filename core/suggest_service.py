@@ -50,6 +50,56 @@ class SuggestError(Exception):
     """建议生成失败（路由层转 503）。"""
 
 
+# ─── 工作流上下文（面板 / 运行结果会话）─────────────────────────────
+
+
+def _workflow_context(runner) -> dict | None:
+    """读取当前会话绑定的工作流定义与运行状态；非工作流会话返回 None。"""
+    meta = getattr(getattr(runner, "session", None), "metadata", None)
+    if not isinstance(meta, dict):
+        return None
+    panel = meta.get("workflow_panel")
+    results = meta.get("run_results")
+    if isinstance(panel, dict) and panel.get("workflow_id"):
+        kind, workflow_id = "panel", str(panel["workflow_id"])
+    elif isinstance(results, dict) and results.get("workflow_id"):
+        kind, workflow_id = "results", str(results["workflow_id"])
+    else:
+        return None
+    try:
+        from core.workflows import store
+        workspace_uuid = getattr(runner, "workspace_uuid", "") or ""
+        workflow = store.load_workflow(workspace_uuid, workflow_id)
+        if workflow is None:
+            return None
+        state = store.load_state(workspace_uuid, workflow_id)
+    except Exception:  # noqa: BLE001 —— 建议生成不因上下文读取失败而中断
+        logger.debug("[suggest] 读取工作流上下文失败", exc_info=True)
+        return None
+    return {"kind": kind, "workflow": workflow, "state": state}
+
+
+def _workflow_fallback(ctx: dict) -> list[str]:
+    """工作流会话的确定性兜底建议（LLM 生成失败时使用）。"""
+    workflow, state, kind = ctx["workflow"], ctx["state"], ctx["kind"]
+    items: list[str] = []
+    if kind == "results":
+        items.append("重新运行整个工作流")
+        for index, step in enumerate(workflow.steps, 1):
+            item = state.items.get(step.id)
+            if item is not None and item.status == "failed":
+                items.append(f"只重跑第 {index} 步：{step.name}"[:_MAX_ITEM_CHARS])
+                break
+        items += ["把这次运行的结果文件发给我", "总结这次运行的问题"]
+    else:
+        items.append("运行当前工作流")
+        if workflow.steps:
+            first = workflow.steps[0].name
+            items.append(f"修改第 1 步：{first}"[:_MAX_ITEM_CHARS])
+        items.append("增加一个汇总步骤")
+    return items[:_MAX_ITEMS]
+
+
 # ─── 入口 ────────────────────────────────────────────────────────────
 
 
@@ -74,23 +124,31 @@ def generate_suggestions(runner, refresh: bool = False,
 
     draft = str(user_input or "").strip()[:_MAX_DRAFT_INPUT_CHARS]
     empty = _is_empty_session(runner)
+    workflow_ctx = _workflow_context(runner)
     route = "fresh"
     try:
         system, tools, session_id, route = _select_prefix(runner)
         items = _request_suggestions(
             runner, system, tools, session_id,
             is_empty=empty, exclude=exclude, route=route, draft=draft,
+            workflow_ctx=workflow_ctx,
         )
     except SuggestError:
         if empty:
             logger.warning("[suggest] 空会话生成失败，使用静态兜底")
             return {"suggestions": list(_STATIC_FALLBACK),
                     "source": "fallback", "route": route}
+        if workflow_ctx is not None:
+            return {"suggestions": _workflow_fallback(workflow_ctx),
+                    "source": "fallback", "route": route}
         raise
     except Exception as e:  # noqa: BLE001 —— 统一转成可读失败语义
         logger.warning("[suggest] 生成失败: %s", e)
         if empty:
             return {"suggestions": list(_STATIC_FALLBACK),
+                    "source": "fallback", "route": route}
+        if workflow_ctx is not None:
+            return {"suggestions": _workflow_fallback(workflow_ctx),
                     "source": "fallback", "route": route}
         raise SuggestError("生成建议失败，请稍后再试") from e
 
@@ -155,13 +213,13 @@ def _render_fresh_prefix(runner) -> tuple:
 
 def _request_suggestions(runner, system, tools, session_id, *, is_empty: bool,
                          exclude: list[str] | None, route: str,
-                         draft: str = "") -> list[str]:
+                         draft: str = "", workflow_ctx: dict | None = None) -> list[str]:
     messages = list(runner._prepare_messages_for_llm(pad_dangling=False))
     if route == "fresh":
         _guard_context_size(runner, messages)
         _guard_dangling_tool_use(messages)
     max_chars = _MAX_DRAFT_ITEM_CHARS if draft else _MAX_ITEM_CHARS
-    _append_instruction(messages, _instruction(is_empty, exclude, draft))
+    _append_instruction(messages, _instruction(is_empty, exclude, draft, workflow_ctx))
 
     client = runner.client
     response = client.chat(
@@ -275,7 +333,7 @@ def _log_usage(route: str, response) -> None:
 
 
 def _instruction(is_empty: bool, exclude: list[str] | None = None,
-                 draft: str = "") -> str:
+                 draft: str = "", workflow_ctx: dict | None = None) -> str:
     if draft:
         lines = [
             "[SUGGESTION MODE]",
@@ -295,6 +353,29 @@ def _instruction(is_empty: bool, exclude: list[str] | None = None,
             "（继续推进 / 追问细节 / 换个方向）；不要复述已完成的内容；"
             "不要提问；不要评价；不要调用任何工具。",
         ]
+    if workflow_ctx is not None:
+        wf = workflow_ctx["workflow"]
+        st = workflow_ctx["state"]
+        steps = []
+        for index, step in enumerate(wf.steps, 1):
+            item = st.items.get(step.id)
+            steps.append(f"{index}.{step.name}（{item.status if item else 'pending'}）")
+        where = "运行结果" if workflow_ctx["kind"] == "results" else "编辑"
+        lines.append(
+            f"当前是工作流「{wf.name}」的{where}标签（运行状态：{st.status}）。"
+            + ("步骤：" + "；".join(steps) if steps else "")
+        )
+        if workflow_ctx["kind"] == "results":
+            lines.append(
+                "建议围绕这次运行的可执行操作：重新运行整个工作流；只重跑某个步骤"
+                "（调用 workflow 的 run_step，结合步骤名，如「只重跑第 3 步：编排行程」）；"
+                "把结果文件发给我；总结失败原因或各步耗时。"
+            )
+        else:
+            lines.append(
+                "建议围绕维护当前工作流：调整某步要求或执行器、增删步骤、"
+                "修改运行输入项、运行工作流。"
+            )
     if exclude:
         previous = "；".join(f"“{x}”" for x in exclude[:4])
         lines.append(

@@ -241,7 +241,9 @@ def _gen_workflow_panel(runner) -> dict | None:
         return {
             "role": "user",
             "content": "## 当前工作流（工作流面板）\n尚未创建工作流。请根据用户描述，"
-                       "用 `workflow.create` 创建工作流（名称/描述/步骤）。",
+                       "用 `workflow.create` 创建工作流（名称/描述/步骤）。"
+                       "禁止用 write/edit/bash 直接写 `.cili/workflows/` 下的文件："
+                       "绕过工具不会绑定面板，界面也不会刷新。",
         }
     try:
         from core.workflows import store
@@ -283,6 +285,8 @@ def _gen_workflow_panel(runner) -> dict | None:
         lines.append(f"运行状态：{status}")
     lines.append("")
     lines.append("修改要求：只改用户指定的部分，其余保持原样；修改后简述变更。")
+    lines.append("修改一律用 `workflow` 工具；禁止直接编辑 `.cili/workflows/` 下的文件"
+                 "（不会同步面板与界面）。")
     lines.append("修改输入项：调用 `workflow.update_inputs`，input_defs 传完整数组"
                  "（key/label/type/required/default/description）。")
     return {"role": "user", "content": "\n".join(lines)}

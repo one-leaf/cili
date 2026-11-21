@@ -23,6 +23,8 @@ function connectEventSource() {
     const params = new URLSearchParams({
         workspace_uuid: currentWorkspace.uuid,
         session_id: currentSession.session_id,
+        // 跨会话的工作区级变更不受 session 过滤：服务端据此放行
+        types: 'workflow_changed,session_changed,files_changed',
     });
     const token = getAccessToken();
     if (token) params.set('token', token);
@@ -86,6 +88,35 @@ function scheduleLoadSessions() {
     }, 300);
 }
 
+let _workflowRefreshTimer = null;
+function scheduleWorkflowRefresh() {
+    clearTimeout(_workflowRefreshTimer);
+    _workflowRefreshTimer = setTimeout(() => {
+        if (window.WorkflowPane && typeof WorkflowPane.refresh === 'function') {
+            WorkflowPane.refresh();
+        }
+    }, 300);
+}
+
+// 文件变更节流：工具循环里 files_changed 可能连续到达，纯防抖会被饿死。
+let _filesChangedTimer = null;
+let _filesChangedLast = 0;
+const FILES_CHANGED_MIN_MS = 1000;
+function scheduleFilesChanged() {
+    const wait = Math.max(0, FILES_CHANGED_MIN_MS - (Date.now() - _filesChangedLast));
+    if (wait === 0) {
+        _filesChangedLast = Date.now();
+        window.dispatchEvent(new CustomEvent('cili:files-changed'));
+        return;
+    }
+    if (_filesChangedTimer) return;
+    _filesChangedTimer = setTimeout(() => {
+        _filesChangedTimer = null;
+        _filesChangedLast = Date.now();
+        window.dispatchEvent(new CustomEvent('cili:files-changed'));
+    }, wait);
+}
+
 // 子代理开始/结束、回合收尾后，后台计数可能变化；以 /status 快照为准刷新黄态。
 let _activityRefreshTimer = null;
 function scheduleActivityRefresh() {
@@ -101,6 +132,24 @@ function handleBusEvent(e) {
     // workflow_agent 的工具结果由子代理信息条表示（历史同样如此），不再渲染普通工具结果气泡
     if (e.type === 'tool_result' && e.tool === 'workflow_agent') return;
     if (!e || typeof e !== 'object') return;
+
+    // 工作区级变更：与当前会话无关（后台子代理/工作流/其他接入端），
+    // 必须在会话过滤之前处理，否则永远收不到。
+    if (e.type === 'workflow_changed') {
+        scheduleWorkflowRefresh();
+        // 面板会话可能被重命名/新建，侧栏会话列表一并刷新
+        scheduleLoadSessions();
+        return;
+    }
+    if (e.type === 'session_changed') {
+        scheduleLoadSessions();
+        return;
+    }
+    if (e.type === 'files_changed') {
+        scheduleFilesChanged();
+        return;
+    }
+
     if (!currentSession || e.session_id !== currentSession.session_id) return;
 
     // 队列事件必须在任何去重早退之前处理：队列条是服务端权威状态。

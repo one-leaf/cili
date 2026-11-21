@@ -209,6 +209,7 @@
           "- Before running, collect all required inputs from the user. If `run` returns `missing_inputs`, ask for those fields once and retry with `inputs`; never invent values.",
           "- Only run a workflow when the user explicitly asks to run it.",
           "- Do not create or update workflow definitions from normal chat; that is available in the workflow panel only.",
+          "- Never create or update workflow definitions by writing files under `.cili/workflows/`: that bypasses validation and panel binding and leaves the UI stale. In the workflow panel, always use the `workflow` tool.",
           "- Workflow execution is unattended after it starts; if the user needs to change parameters, they must start a new run."
         ]
       },

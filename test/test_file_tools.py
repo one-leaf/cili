@@ -30,6 +30,33 @@ class TestFileTools:
         assert not result.error
         assert os.path.exists(os.path.join(test_workspace, "nested/dir/test.txt"))
 
+    def test_write_blocks_workflow_definition(self, tools, test_workspace):
+        """工作流定义必须走 workflow 工具：直接写 .cili/workflows 被拒绝"""
+        from core.tools import get_tool_by_name
+
+        write_tool = get_tool_by_name(tools, "write")
+        result = write_tool.execute(
+            file_path=".cili/workflows/abcd1234/workflow.json",
+            content="{}",
+        )
+        assert result.error
+        assert "workflow" in result.output
+        assert not os.path.exists(
+            os.path.join(test_workspace, ".cili/workflows/abcd1234/workflow.json"))
+
+    def test_edit_blocks_workflow_definition(self, tools):
+        """edit 同样不允许改工作流定义文件"""
+        from core.tools import get_tool_by_name
+
+        edit_tool = get_tool_by_name(tools, "edit")
+        result = edit_tool.execute(
+            file_path=".cili/workflows/abcd1234/workflow.json",
+            old_text="a",
+            new_text="b",
+        )
+        assert result.error
+        assert "workflow" in result.output
+
     def test_read_tool_basic(self, tools, test_workspace):
         """测试 read 工具 - 基本读取"""
         from core.tools import get_tool_by_name

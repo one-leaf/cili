@@ -29,15 +29,20 @@ def _svc():
 class WorkflowTool(Tool):
     name = "workflow"
     description = (
-        "Manage or run workflows in this workspace. In a workflow panel session the "
-        "workflow is bound; in a normal chat session pass workflow_id explicitly and "
-        "use list/get/run/stop/status/runs/get_run (create/update/update_inputs/delete are panel-only).\n\n"
+        "Manage or run workflows in this workspace. In a workflow panel session or a "
+        "workflow results session the workflow is bound; in a normal chat session pass "
+        "workflow_id explicitly and use list/get/run/stop/status/runs/get_run "
+        "(create/update/update_inputs/delete are panel-only).\n\n"
         "Actions (action is REQUIRED):\n"
         "- list: list workflows in this workspace (id/name/status/inputs).\n"
         "- get: read one workflow definition and run state. Params: workflow_id (normal chat).\n"
         "- run: start a workflow; returns immediately. Params: workflow_id (normal chat), "
         "inputs: {key: value}. If required inputs are missing, returns "
         "{\"error\":\"missing_inputs\",\"missing\":[...]}; ask the user and retry.\n"
+        "- run_step: re-run ONE step only (the rest of the last run is kept; downstream "
+        "steps and summary are NOT re-run). Params: step (0-based index or step name), "
+        "workflow_id (normal chat). Requires a previous full run. Use after the user asks "
+        "to redo one step or after fixing a failed step.\n"
         "- stop: request the current run to stop. Params: workflow_id.\n"
         "- status: summarize the current/last run. Params: workflow_id.\n"
         "- runs: list recent run history. Params: workflow_id.\n"
@@ -66,6 +71,9 @@ class WorkflowTool(Tool):
         "when omitted, runs/{run_id}/steps/{n}/result.md is required.\n"
         "- ids are 8-hex short ids; omit to generate new ones; include to preserve existing steps.\n\n"
         "## Rules\n"
+        "- Workflow definitions live in `.cili/workflows/`; NEVER create or edit those files "
+        "with write/edit/bash. Only this tool validates the definition, binds the panel "
+        "session, and notifies the UI.\n"
         "- Changes apply immediately (no draft/confirm). Only change what the user asked for; "
         "keep everything else unchanged; reply with a concise diff.\n"
         "- Run rejects while the workflow is running; update rejects while running.\n"
@@ -83,10 +91,14 @@ class WorkflowTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "get", "run", "stop", "status",
+                    "enum": ["list", "get", "run", "run_step", "stop", "status",
                              "create", "update", "update_inputs",
                              "delete", "runs", "get_run", "send_to_user"],
                     "description": "Action to perform. REQUIRED.",
+                },
+                "step": {
+                    "type": ["integer", "string"],
+                    "description": "run_step: 0-based step index or the step name.",
                 },
                 "workflow_id": {
                     "type": "string",
@@ -160,14 +172,17 @@ class WorkflowTool(Tool):
                 inputs: Any = None,
                 input_defs: list[dict[str, Any]] | None = None,
                 run_id: str | None = None,
+                step: Any = None,
                 **kwargs) -> ToolResult:
         action = str(action or "").strip()
         if not action:
             return ToolResult("Error: action is required", error=True)
         panel = self._panel_meta()
+        results = self._results_meta()
         service, _store = _svc()
         panel_id = str((panel or {}).get("workflow_id") or "")
-        workflow_id = str(workflow_id or panel_id or "")
+        results_id = str((results or {}).get("workflow_id") or "")
+        workflow_id = str(workflow_id or panel_id or results_id or "")
         try:
             if action == "list":
                 return self._list()
@@ -194,6 +209,8 @@ class WorkflowTool(Tool):
                 return self._update(workflow_id, None, None, None, defs)
             if action == "run":
                 return self._run(workflow_id, inputs)
+            if action == "run_step":
+                return self._run_step(workflow_id, step)
             if action == "stop":
                 return self._stop(workflow_id)
             if action == "status":
@@ -339,6 +356,18 @@ class WorkflowTool(Tool):
             "results_session_id": state.results_session_id,
         }, ensure_ascii=False), completed=True)
 
+    def _run_step(self, workflow_id: str, step: Any) -> ToolResult:
+        service, _store = _svc()
+        if step is None or step == "":
+            return ToolResult("Error: run_step 需要 step（步骤序号或名称）", error=True)
+        self._teen_guard()
+        state = service.run_workflow_step(self.workspace_uuid, workflow_id, step)
+        return ToolResult(json.dumps({
+            "ok": True, "status": state.status, "run_id": state.run_id,
+            "results_session_id": state.results_session_id,
+            "note": "只重跑了该步骤，下游步骤与汇总未重跑",
+        }, ensure_ascii=False), completed=True)
+
     def _stop(self, workflow_id: str) -> ToolResult:
         service, _store = _svc()
         self._teen_guard()
@@ -443,6 +472,15 @@ class WorkflowTool(Tool):
             return None
         panel = metadata.get("workflow_panel")
         return panel if isinstance(panel, dict) else None
+
+    def _results_meta(self) -> dict | None:
+        """结果会话绑定：只开放运行类动作（create/update 仍限面板）。"""
+        session = self.session
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+        results = metadata.get("run_results")
+        return results if isinstance(results, dict) else None
 
     @staticmethod
     def _teen_guard() -> None:

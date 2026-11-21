@@ -188,6 +188,27 @@ class Tool(ShellMixin, BackgroundMixin):
             path = os.path.join(self.cwd, path)
         return os.path.realpath(path)
 
+    def _workflow_definition_guard(self, resolved: str) -> ToolResult | None:
+        """禁止直接用 write/edit 改工作流定义。
+
+        工作流必须走 ``workflow`` 工具（create/update/update_inputs）：只有这条
+        路径会做校验、绑定面板会话并广播界面刷新事件。直接改文件在磁盘上"成功"
+        但界面上不出现、不选中，用户看到的就是"创建失败"。
+        """
+        try:
+            root = os.path.join(self.cwd, ".cili", "workflows")
+            inside = os.path.commonpath(
+                [os.path.normcase(root), os.path.normcase(os.path.abspath(resolved))]
+            ) == os.path.normcase(root)
+        except ValueError:
+            inside = False
+        if not inside:
+            return None
+        return ToolResult(
+            "Error: 工作流定义不能直接写文件。请改用 workflow 工具"
+            "（create / update / update_inputs / delete）；直接编辑 .cili/workflows "
+            "会绕过校验与面板绑定，界面不会刷新。", error=True)
+
     def _permission_policy(self):
         """取本次注入的裁决器；独立工具场景构造默认策略。"""
         if self.permission_policy is None:

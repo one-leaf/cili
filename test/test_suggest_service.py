@@ -495,3 +495,62 @@ class TestDraftInput:
                              session_messages=_USER_MSG)
         with pytest.raises(SuggestError):
             generate_suggestions(runner)
+
+
+class TestWorkflowSuggestions:
+    """工作流会话（运行结果/面板）的建议应围绕工作流操作，而不是普通对话。"""
+
+    def _runner_with_workflow(self, metadata):
+        from core.workflows import store
+
+        workflow = store.create_workflow("test", {
+            "name": "推荐工作流",
+            "steps": [
+                {"name": "调研", "requirement": "做事", "sources": []},
+                {"name": "汇总", "requirement": "接着做", "sources": [0]},
+            ],
+        })
+        runner = _StubRunner(responses=[], session_messages=_USER_MSG)
+        runner.session = SimpleNamespace(messages=_USER_MSG, metadata=metadata(workflow.id))
+        runner.workspace_uuid = "test"
+        return runner, workflow
+
+    def test_results_session_context_and_fallback(self):
+        from core.suggest_service import _workflow_context, _workflow_fallback
+
+        runner, workflow = self._runner_with_workflow(
+            lambda wid: {"run_results": {"workflow_id": wid}})
+        ctx = _workflow_context(runner)
+        assert ctx is not None and ctx["kind"] == "results"
+        assert ctx["workflow"].id == workflow.id
+
+        items = _workflow_fallback(ctx)
+        assert "重新运行整个工作流" in items
+        assert "把这次运行的结果文件发给我" in items
+
+    def test_panel_session_context_is_panel(self):
+        from core.suggest_service import _workflow_context
+
+        runner, _workflow = self._runner_with_workflow(
+            lambda wid: {"workflow_panel": {"workflow_id": wid}})
+        ctx = _workflow_context(runner)
+        assert ctx is not None and ctx["kind"] == "panel"
+
+    def test_instruction_mentions_workflow_actions(self):
+        from core.suggest_service import _instruction, _workflow_context
+
+        runner, _workflow = self._runner_with_workflow(
+            lambda wid: {"run_results": {"workflow_id": wid}})
+        text = _instruction(False, None, "", _workflow_context(runner))
+        assert "运行结果" in text
+        assert "run_step" in text
+
+    def test_generate_falls_back_for_workflow_sessions(self):
+        from core.suggest_service import generate_suggestions
+
+        workflow_runner, _workflow = self._runner_with_workflow(
+            lambda wid: {"run_results": {"workflow_id": wid}})
+        workflow_runner.client = _StubClient([])  # 任何 chat 调用都会 AssertionError
+        result = generate_suggestions(workflow_runner)
+        assert result["source"] == "fallback"
+        assert "重新运行整个工作流" in result["suggestions"]

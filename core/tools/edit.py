@@ -66,6 +66,10 @@ class EditTool(Tool):
             return gate
         file_path = resolved
 
+        workflow_guard = self._workflow_definition_guard(file_path)
+        if workflow_guard:
+            return workflow_guard
+
         if not old_text:
             return ToolResult("Error: old_text must not be empty", error=True)
 
