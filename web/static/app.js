@@ -11,8 +11,29 @@ const NEW_SESSION_EXAMPLES = [
     '画一张剖切的中式凉亭透视结构图，掀开屋顶能看到房梁的榫卯结构',
 ];
 
-// 新会话空状态提示
+// 工作流模式的示例输入：侧栏切到工作流且没打开任何工作流时展示
+const NEW_WORKFLOW_EXAMPLES = [
+    '创建一个系统安全检查的工作流',
+    '创建一个代码质量巡检工作流：扫描问题、归类、给修复建议',
+    '创建一个把长文档变成摘要和要点卡片的学习工作流',
+    '创建一个旅行计划工作流：查资料、排行程、出行程单',
+];
+
+function workflowWelcomeActive() {
+    if (sidebarFilter !== 'workflow') return false;
+    return !(window.WorkflowPane
+        && typeof WorkflowPane.getCurrentWorkflowId === 'function'
+        && WorkflowPane.getCurrentWorkflowId());
+}
+
+// 空状态提示：工作流模式（未打开工作流）用工作流示例，其余用会话示例
 function newSessionWelcomeHtml() {
+    if (workflowWelcomeActive()) {
+        const btns = NEW_WORKFLOW_EXAMPLES
+            .map(t => `<button type="button" class="welcome-example">${t}</button>`)
+            .join('');
+        return `<div class="welcome-message"><h2>描述你的工作目标</h2><p>描述目标后 AI 会生成步骤，或点击示例：</p><div class="welcome-examples">${btns}</div></div>`;
+    }
     const btns = NEW_SESSION_EXAMPLES
         .map(t => `<button type="button" class="welcome-example">${t}</button>`)
         .join('');
@@ -367,6 +388,10 @@ function initSidebarFilter() {
         applyActive();
         updateFooterToolbar();
         renderSidebarList();
+        // 当前显示的是空状态欢迎块时，示例跟随模式切换
+        if (chatMessages.querySelector('.welcome-message')) {
+            chatMessages.innerHTML = newSessionWelcomeHtml();
+        }
     }));
     applyActive();
 
