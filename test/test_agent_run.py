@@ -243,3 +243,61 @@ def test_agent_tool_inherit_parent_model_ref(tmp_path):
     config.agents["worker"] = AgentConfig(model="dgx/dgx")
     tool.parent_model_ref = lambda: "dgx/dgx"
     assert tool._inherit_parent_model_ref("worker") is None
+
+
+def test_fork_copies_external_tool_outputs(tmp_path):
+    """fork 复制 tool_result._meta.output_path 引用的外部工具输出文件。
+
+    不复制时 fork 侧会把图片/大文本工具结果读成「工具正在执行中...」占位，
+    既丢内容也破坏与父会话一致的 prompt 前缀。
+    """
+    from core.session import SessionStore
+
+    config = make_dgx_config("anthropic")
+    store = SessionStore.create_new_session(tmp_path, "source")
+    with patch("core.session_runner.create_llm_client", return_value=MagicMock()), \
+         patch("core.session_runner.create_tools", return_value=[]):
+        runner = SessionRunner(
+            config, role="master", cwd=str(tmp_path),
+            workspace_uuid="test-workspace", initial_session=store,
+        )
+    payload = {"type": "multimodal",
+               "blocks": [{"type": "text", "text": "[Image: x]"}]}
+    (store.session_dir / "call_img1.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    runner.add_message("user", "看图")
+    runner.add_message("assistant", [
+        {"type": "tool_use", "id": "call_img1", "name": "read_image", "input": {}},
+    ])
+    runner.add_message("user", [{
+        "type": "tool_result", "tool_use_id": "call_img1",
+        "content": None, "is_error": False,
+        "_meta": {"output_path": "call_img1.json"},
+    }])
+    runner.session.save(force=True)
+
+    result = runner.fork_session(label="branch")
+    fork_dir = runner.sessions_dir / result["session_id"]
+    copied = fork_dir / "call_img1.json"
+    assert copied.is_file()
+    assert json.loads(copied.read_text(encoding="utf-8")) == payload
+
+
+def test_fork_skips_tool_output_outside_session(tmp_path):
+    """output_path 指向会话目录外时不复制（防路径穿越）。"""
+    from core.session_runner import _copy_referenced_tool_outputs
+
+    parent = tmp_path / "sessions" / "p"
+    fork = tmp_path / "sessions" / "f"
+    parent.mkdir(parents=True)
+    fork.mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
+    messages = [{
+        "role": "user",
+        "content": [{
+            "type": "tool_result", "tool_use_id": "t", "content": None,
+            "_meta": {"output_path": "../secret.txt"},
+        }],
+    }]
+    assert _copy_referenced_tool_outputs(parent, fork, messages) == 0
+    assert list(fork.iterdir()) == []

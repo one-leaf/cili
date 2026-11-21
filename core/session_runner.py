@@ -96,6 +96,40 @@ def _all_interface_scoped_tools() -> frozenset[str]:
     return frozenset(out)
 
 
+def _copy_referenced_tool_outputs(parent_dir: Path, fork_dir: Path,
+                                  messages: list[dict]) -> int:
+    """把快照消息引用到的外部工具输出文件复制到 fork 会话目录。
+
+    ``tool_result._meta.output_path`` 指向会话根目录的 ``*.json/*.txt``（多模态
+    结果与大文本输出）。不复制时 fork 侧会读成「工具正在执行中...」占位：既丢
+    内容，也让请求前缀与父会话不同、破坏 prompt cache。只复制父会话目录内的文件。
+    """
+    root = parent_dir.resolve()
+    seen: set[str] = set()
+    copied = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            output_path = str((block.get("_meta") or {}).get("output_path") or "").strip()
+            if not output_path or output_path in seen:
+                continue
+            seen.add(output_path)
+            src = (parent_dir / output_path).resolve()
+            if not src.is_relative_to(root) or not src.is_file():
+                continue
+            dst = fork_dir / output_path
+            if dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+    return copied
+
+
 class SessionIdentity:
     """最小会话身份：autonomous（worker/lite）下工具可见的全部会话信息。
 
@@ -895,6 +929,12 @@ class SessionRunner(BaseSessionRunner):
                     msg.get("content", ""),
                     meta={k: v for k, v in (msg.get("_meta") or {}).items() if k != "seq"},
                 )
+        if mode == "snapshot":
+            # 外部工具输出（多模态 json / 大文本）随快照复制，避免 fork 读成占位
+            copied_outputs = _copy_referenced_tool_outputs(
+                self.session_dir, store.session_dir, snapshot)
+            if copied_outputs:
+                logger.info("[fork] 复制工具输出文件 %d 个", copied_outputs)
         if metadata:
             store.metadata.update(metadata)
         store.save(force=True)
