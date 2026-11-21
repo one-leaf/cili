@@ -29,6 +29,7 @@ _SUGGEST_TIMEOUT_S = 60.0
 class SuggestRequest(BaseModel):
     refresh: bool = False
     exclude: list[str] = Field(default_factory=list)  # 上一批建议（换一批去重）
+    input: str = ""  # 输入框草稿：非空时生成「改写/美化草稿」的建议
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/suggest")
@@ -45,6 +46,7 @@ async def suggest(workspace_uuid: str, session_id: str, request: SuggestRequest,
         result = await asyncio.wait_for(
             asyncio.to_thread(
                 generate_suggestions, runner, request.refresh, request.exclude,
+                request.input,
             ),
             timeout=_SUGGEST_TIMEOUT_S,
         )

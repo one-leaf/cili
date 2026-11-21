@@ -455,3 +455,43 @@ class TestContextGuard:
         with pytest.raises(SuggestError):
             generate_suggestions(runner)
         assert runner.client.calls == []
+
+
+class TestDraftInput:
+    """输入框草稿：带草稿时生成改写建议，允许更长的条目。"""
+
+    def test_draft_rewrite_instruction_and_longer_items(self):
+        from core.suggest_service import generate_suggestions
+
+        long_item = ("帮我把北京未来三天的天气、穿衣建议、周末景点人流和交通拥堵情况"
+                     "都查清楚并汇总成一份出行清单")
+        runner = _StubRunner(responses=[_json_response(
+            long_item, "查北京周末天气和穿衣建议", "整理北京三天行程和交通方案",
+        )], session_messages=_USER_MSG)
+        result = generate_suggestions(runner, user_input="帮我查下北京天气")
+        assert long_item in result["suggestions"]
+        instruction = runner.client.calls[0]["messages"][-1].content[-1].text
+        assert "用户草稿：帮我查下北京天气" in instruction
+        assert "改写" in instruction
+
+    def test_draft_too_long_is_truncated(self):
+        from core.suggest_service import _MAX_DRAFT_INPUT_CHARS, generate_suggestions
+
+        draft = "啊" * (_MAX_DRAFT_INPUT_CHARS + 50)
+        runner = _StubRunner(responses=[_json_response(
+            "继续修复测试", "总结一下改动",
+        )], session_messages=_USER_MSG)
+        generate_suggestions(runner, user_input=draft)
+        instruction = runner.client.calls[0]["messages"][-1].content[-1].text
+        assert "啊" * _MAX_DRAFT_INPUT_CHARS in instruction
+        assert "啊" * (_MAX_DRAFT_INPUT_CHARS + 1) not in instruction
+
+    def test_long_item_rejected_without_draft(self):
+        from core.suggest_service import SuggestError, generate_suggestions
+
+        long_item = ("帮我把北京未来三天的天气、穿衣建议、周末景点人流和交通拥堵情况"
+                     "都查清楚并汇总成一份出行清单")
+        runner = _StubRunner(responses=[_json_response(long_item, "继续修复测试")],
+                             session_messages=_USER_MSG)
+        with pytest.raises(SuggestError):
+            generate_suggestions(runner)

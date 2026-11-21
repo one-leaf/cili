@@ -137,6 +137,10 @@ let modelSelectBusy = false;         // 模型列表加载/切换请求进行中
 let suggestItems = [];
 let suggestLoading = false;
 let suggestRequestSeq = 0;
+// 最近一批建议的文本：草稿命中说明是误触（如重复点击），不再请求
+let suggestHistory = new Set();
+// 最近一批是否是「改写草稿」模式：点击建议时替换而不是追加
+let suggestDraftMode = false;
 
 
 // DOM elements
@@ -618,7 +622,11 @@ function updateComposerButtons() {
 // 仅在回合结束、无待答 ask_user、未生成中可用；点击气泡只填充不发送。
 
 function hideSuggestBar({ invalidate = false } = {}) {
-    if (invalidate) suggestRequestSeq++;  // 丢弃在途/过期响应
+    if (invalidate) {
+        suggestRequestSeq++;  // 丢弃在途/过期响应
+        suggestHistory.clear();
+        suggestDraftMode = false;
+    }
     suggestItems = [];
     suggestLoading = false;
     if (suggestBtn) suggestBtn.classList.remove('suggest-loading');
@@ -640,6 +648,9 @@ async function handleSuggest() {
 
 async function requestSuggestions(refresh) {
     if (!currentWorkspace || !currentSession) return;
+    // 输入框有草稿：带上它生成「改写/美化」建议；草稿已在最近一批里则视为误触，不执行
+    const draft = (chatInput && chatInput.value ? chatInput.value : '').trim();
+    if (draft && suggestHistory.has(draft)) return;
     const workspaceUuid = currentWorkspace.uuid;
     const sessionId = currentSession.session_id;
     const seq = ++suggestRequestSeq;
@@ -656,6 +667,7 @@ async function requestSuggestions(refresh) {
                 body: JSON.stringify({
                     refresh: !!refresh,
                     exclude: refresh ? suggestItems.slice() : [],
+                    input: draft,
                 }),
             }
         );
@@ -679,7 +691,7 @@ async function requestSuggestions(refresh) {
             showToast('暂时拿不到建议，请稍后再试');
             return;
         }
-        renderSuggestBar(items);
+        renderSuggestBar(items, { fromDraft: !!draft });
     } catch (error) {
         if (seq === suggestRequestSeq) {
             console.error('获取推荐输入失败:', error);
@@ -694,9 +706,12 @@ async function requestSuggestions(refresh) {
     }
 }
 
-function renderSuggestBar(items) {
+function renderSuggestBar(items, { fromDraft = false } = {}) {
     if (!suggestBar) return;
     suggestItems = items.slice();
+    // 记住整批（收起气泡后仍生效）：再次以同一条草稿请求视为误触
+    suggestHistory = new Set(items);
+    suggestDraftMode = !!fromDraft;
     suggestBar.innerHTML = '';
     items.forEach((text) => {
         const pill = document.createElement('button');
@@ -720,8 +735,13 @@ function renderSuggestBar(items) {
 }
 
 function fillSuggestion(text) {
-    const existing = chatInput.value.trim();
-    chatInput.value = existing ? existing + ' ' + text : text;
+    if (suggestDraftMode) {
+        // 改写草稿：直接替换输入框内容
+        chatInput.value = text;
+    } else {
+        const existing = chatInput.value.trim();
+        chatInput.value = existing ? existing + ' ' + text : text;
+    }
     chatInput.focus();
     hideSuggestBar();
 }

@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 _MAX_ITEMS = 4
 _MIN_ITEMS = 2
 _MAX_ITEM_CHARS = 30
+# 草稿改写建议允许更长（用户想美化一整句输入）
+_MAX_DRAFT_ITEM_CHARS = 80
+_MAX_DRAFT_INPUT_CHARS = 500
 _MIN_ITEM_CHARS = 4
 
 # 模型若仍调用工具时的拒绝文案（轻量版 deny 回调）
@@ -51,7 +54,8 @@ class SuggestError(Exception):
 
 
 def generate_suggestions(runner, refresh: bool = False,
-                         exclude: list[str] | None = None) -> dict:
+                         exclude: list[str] | None = None,
+                         user_input: str = "") -> dict:
     """生成 3–4 条推荐输入。
 
     Args:
@@ -59,6 +63,7 @@ def generate_suggestions(runner, refresh: bool = False,
             下一轮对话复用同一个）
         refresh: 换一批标记（本方案无结果缓存，仅透传记录）
         exclude: 上一批建议，用于换一批时去重
+        user_input: 输入框里已有的草稿；非空时生成「改写/美化草稿」的建议
 
     Returns:
         {"suggestions": [...], "source": "context"|"cold_start"|"fallback",
@@ -67,13 +72,14 @@ def generate_suggestions(runner, refresh: bool = False,
     if runner is None or getattr(runner, "client", None) is None:
         raise SuggestError("会话尚未就绪，请稍后再试")
 
+    draft = str(user_input or "").strip()[:_MAX_DRAFT_INPUT_CHARS]
     empty = _is_empty_session(runner)
     route = "fresh"
     try:
         system, tools, session_id, route = _select_prefix(runner)
         items = _request_suggestions(
             runner, system, tools, session_id,
-            is_empty=empty, exclude=exclude, route=route,
+            is_empty=empty, exclude=exclude, route=route, draft=draft,
         )
     except SuggestError:
         if empty:
@@ -148,12 +154,14 @@ def _render_fresh_prefix(runner) -> tuple:
 
 
 def _request_suggestions(runner, system, tools, session_id, *, is_empty: bool,
-                         exclude: list[str] | None, route: str) -> list[str]:
+                         exclude: list[str] | None, route: str,
+                         draft: str = "") -> list[str]:
     messages = list(runner._prepare_messages_for_llm(pad_dangling=False))
     if route == "fresh":
         _guard_context_size(runner, messages)
         _guard_dangling_tool_use(messages)
-    _append_instruction(messages, _instruction(is_empty, exclude))
+    max_chars = _MAX_DRAFT_ITEM_CHARS if draft else _MAX_ITEM_CHARS
+    _append_instruction(messages, _instruction(is_empty, exclude, draft))
 
     client = runner.client
     response = client.chat(
@@ -168,12 +176,13 @@ def _request_suggestions(runner, system, tools, session_id, *, is_empty: bool,
         client, messages, response, system, tools, session_id, route,
     )
 
-    filtered = _filter_items(items, exclude)
+    filtered = _filter_items(items, exclude, max_chars)
     if len(filtered) < _MIN_ITEMS and exclude:
         # 换一批时模型常给出与上一批几乎相同的建议，被 exclude 全数滤掉；
         # 带着明确的负例再要一次（硬上限一轮）
         filtered = _refresh_retry(
-            client, messages, response, system, tools, session_id, route, exclude,
+            client, messages, response, system, tools, session_id, route,
+            exclude, max_chars,
         )
     if len(filtered) < _MIN_ITEMS:
         logger.info("[suggest] 条数不足：raw=%r exclude=%r", items, exclude)
@@ -213,7 +222,7 @@ def _parse_or_retry(client, messages, response, system, tools, session_id, route
 
 
 def _refresh_retry(client, messages, response, system, tools, session_id,
-                   route, exclude):
+                   route, exclude, max_chars=_MAX_ITEM_CHARS):
     """换一批时若新建议全被去重，带负例再要一轮；返回过滤后的结果（可能仍不足）。"""
     previous = "；".join(f"“{x}”" for x in exclude[:4])
     reminder = (
@@ -231,7 +240,7 @@ def _refresh_retry(client, messages, response, system, tools, session_id,
     )
     _log_usage(route + "+refresh", response)
     items = _parse_items(response)
-    return _filter_items(items or [], exclude)
+    return _filter_items(items or [], exclude, max_chars)
 
 
 def _append_instruction(messages: list[Message], text: str) -> None:
@@ -265,22 +274,34 @@ def _log_usage(route: str, response) -> None:
     )
 
 
-def _instruction(is_empty: bool, exclude: list[str] | None = None) -> str:
-    lines = [
-        "[SUGGESTION MODE]",
-        "你是这个编码会话的助手本身。请推测用户接下来最可能输入什么，"
-        "给出 3–4 条可直接发送的候选消息。",
-        "要求：中文；口语化、具体；每条 4–30 字；覆盖不同意图"
-        "（继续推进 / 追问细节 / 换个方向）；不要复述已完成的内容；"
-        "不要提问；不要评价；不要调用任何工具。",
-    ]
+def _instruction(is_empty: bool, exclude: list[str] | None = None,
+                 draft: str = "") -> str:
+    if draft:
+        lines = [
+            "[SUGGESTION MODE]",
+            "你是这个编码会话的助手本身。用户在输入框里已经有草稿，"
+            "请把这条草稿改写成 3–4 条更好、可直接发送的版本："
+            "更具体、更明确、保留原意。",
+            f"用户草稿：{draft}",
+            "要求：中文；每条 4–80 字；覆盖不同侧重；不要复述已完成的内容；"
+            "不要提问；不要评价；不要调用任何工具。",
+        ]
+    else:
+        lines = [
+            "[SUGGESTION MODE]",
+            "你是这个编码会话的助手本身。请推测用户接下来最可能输入什么，"
+            "给出 3–4 条可直接发送的候选消息。",
+            "要求：中文；口语化、具体；每条 4–30 字；覆盖不同意图"
+            "（继续推进 / 追问细节 / 换个方向）；不要复述已完成的内容；"
+            "不要提问；不要评价；不要调用任何工具。",
+        ]
     if exclude:
         previous = "；".join(f"“{x}”" for x in exclude[:4])
         lines.append(
             f"上一批建议：{previous}。请务必换不同的角度和说法，"
             "不要与它们相同或近义。"
         )
-    if is_empty:
+    if is_empty and not draft:
         lines.append("这是新会话，还没有任何对话，请给出冷启动建议。")
     lines.append('只输出 JSON：{"suggestions": ["..."]}，不要输出任何其他文字。')
     return "\n".join(lines)
@@ -304,14 +325,15 @@ def _parse_items(response) -> list[str] | None:
     return items or None
 
 
-def _filter_items(items: list[str], exclude: list[str] | None) -> list[str]:
+def _filter_items(items: list[str], exclude: list[str] | None,
+                  max_chars: int = _MAX_ITEM_CHARS) -> list[str]:
     """输出后置过滤（代码层，不只靠 prompt）。"""
     excluded = {_norm_key(x) for x in (exclude or []) if isinstance(x, str)}
     result: list[str] = []
     seen: set[str] = set()
     for raw in items:
         text = " ".join(str(raw).split())
-        if not (_MIN_ITEM_CHARS <= len(text) <= _MAX_ITEM_CHARS):
+        if not (_MIN_ITEM_CHARS <= len(text) <= max_chars):
             continue
         if "？" in text or "?" in text:
             continue
