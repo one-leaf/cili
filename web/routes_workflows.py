@@ -91,6 +91,19 @@ async def update_workflow(workspace_uuid: str, workflow_id: str,
     return {"workflow": workflow.to_dict()}
 
 
+@router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/hidden")
+async def set_workflow_hidden(workspace_uuid: str, workflow_id: str,
+                              payload: dict[str, Any] = Body(default={}),
+                              ws_dir: Path = Depends(_require_workspace)):
+    _teen_guard()
+    try:
+        workflow = service.set_hidden(
+            workspace_uuid, workflow_id, bool((payload or {}).get("hidden")))
+    except Exception as exc:  # noqa: BLE001
+        raise _handle_error(exc) from exc
+    return {"ok": True, "hidden": workflow.hidden}
+
+
 @router.delete("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}")
 async def delete_workflow(workspace_uuid: str, workflow_id: str,
                       ws_dir: Path = Depends(_require_workspace)):

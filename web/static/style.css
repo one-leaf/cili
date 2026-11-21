@@ -4679,12 +4679,12 @@ details.p-headers-panel .p-headers {
     flex: 0 0 auto !important;
     min-height: 0;
 }
-.sessions-section.collapsed #sessions-list {
+.sessions-section.collapsed #sessions-list,
+.sessions-section.collapsed #sidebar-filter-row {
     display: none;
 }
 .sessions-section.collapsed .section-chevron,
-.files-section.collapsed .section-chevron,
-.workflows-section.collapsed .section-chevron {
+.files-section.collapsed .section-chevron {
     transform: rotate(-90deg);
 }
 [data-theme="dark"] .section-toggle { color: var(--text-light); }

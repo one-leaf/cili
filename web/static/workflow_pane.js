@@ -1,10 +1,8 @@
-/* workflow_pane.js — 侧栏工作流分区 + 中间栏工作流面板 + 聊天双标签 */
+/* workflow_pane.js — 侧栏工作流条目（与会话合并渲染）+ 中间栏工作流面板 + 聊天双标签 */
 (function () {
     'use strict';
 
     const KEYS = {
-        collapsed: 'cili_workflows_collapsed',
-        height: 'cili_workflows_height',
         paneWidth: 'cili_workflows_pane_width',
     };
     const PANE_DEFAULT_WIDTH = 380;
@@ -81,8 +79,6 @@
         reset(true);
         state.workspaceUuid = workspaceUuid || '';
         bindOnce();
-        applyCollapsed(readCollapsed());
-        applyHeight();
         loadWorkflows();
     }
 
@@ -96,50 +92,11 @@
         state.drafts = {};
         if (!keepWorkspace) state.workspaceUuid = '';
         close();
-        const list = $('workflows-list');
-        if (list) list.innerHTML = '<div class="wf-sidebar-empty">暂无工作流</div>';
-        const count = $('workflows-count');
-        if (count) { count.hidden = true; count.textContent = '0'; }
     }
 
     function bindOnce() {
         if (state.bound) return;
         state.bound = true;
-
-        $('workflows-toggle-btn')?.addEventListener('click', () => {
-            const section = $('workflows-section');
-            if (!section) return;
-            const collapsed = !section.classList.contains('collapsed');
-            applyCollapsed(collapsed);
-            try { localStorage.setItem(KEYS.collapsed, collapsed ? '1' : '0'); } catch (e) { /* ignore */ }
-        });
-
-        $('workflow-new-btn')?.addEventListener('click', () => { newWorkflow(); });
-        $('workflow-menu-btn')?.addEventListener('click', (event) => {
-            event.stopPropagation();
-            showWorkflowSectionMenu(event.currentTarget);
-        });
-        $('workflow-import-input')?.addEventListener('change', async (event) => {
-            const file = event.target.files && event.target.files[0];
-            event.target.value = '';
-            if (file) await importWorkflowFile(file);
-        });
-
-        $('workflows-list')?.addEventListener('click', (event) => {
-            const actionEl = event.target.closest('[data-act]');
-            const row = event.target.closest('.wf-sidebar-row');
-            const workflowId = row?.dataset.workflowId || '';
-            if (!workflowId) return;
-            if (actionEl) {
-                event.stopPropagation();
-                const act = actionEl.dataset.act;
-                if (act === 'run') startRunFor(workflowId);
-                else if (act === 'stop') stopRunFor(workflowId);
-                else if (act === 'menu') showRowMenu(workflowId, actionEl);
-                return;
-            }
-            openWorkflowById(workflowId);
-        });
 
         $('chat-workflow-tabs')?.addEventListener('click', (event) => {
             const tab = event.target.closest('.wf-chat-tab');
@@ -151,122 +108,7 @@
             onTurnComplete(sid);
         });
 
-        initHandleA();
         initPaneResize();
-    }
-
-    // ── 侧栏高度 / 折叠 ────────────────────────────────────
-
-    function readCollapsed() {
-        try { return localStorage.getItem(KEYS.collapsed) === '1'; } catch (e) { return false; }
-    }
-
-    function applyCollapsed(collapsed) {
-        const section = $('workflows-section');
-        if (!section) return;
-        section.classList.toggle('collapsed', collapsed);
-        const toggle = $('workflows-toggle-btn');
-        if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
-        updateHandleA();
-        if (window.FileTree && typeof window.FileTree.relayout === 'function') {
-            window.FileTree.relayout();
-        }
-        if (!collapsed) applyHeight();
-    }
-
-    function sessionsCollapsed() {
-        return !!document.querySelector('.sessions-section.collapsed');
-    }
-
-    function updateHandleA() {
-        const handle = $('sidebar-h-split-a');
-        const section = $('workflows-section');
-        if (!handle || !section) return;
-        handle.classList.toggle('hidden', section.classList.contains('collapsed') || sessionsCollapsed());
-    }
-
-    function onSessionsToggled() { applyHeight(); }
-
-    function sidebarBodyHeight() {
-        const sidebar = document.querySelector('.sidebar');
-        if (!sidebar) return 400;
-        const header = sidebar.querySelector('.sidebar-header');
-        const footer = sidebar.querySelector('.sidebar-footer');
-        return Math.max(120, sidebar.clientHeight -
-            (header ? header.offsetHeight : 0) - (footer ? footer.offsetHeight : 0) - 6);
-    }
-
-    function readHeight() {
-        try {
-            const value = parseInt(localStorage.getItem(KEYS.height) || '', 10);
-            if (value > 0) return value;
-        } catch (e) { /* ignore */ }
-        return 200;
-    }
-
-    function clampHeight(height) {
-        // 不设最小高度（与文件/会话分区一致），只限制上限，避免把其它分区挤没
-        return Math.max(0, Math.min(height, Math.max(160, sidebarBodyHeight() - 260)));
-    }
-
-    function applyHeight() {
-        const section = $('workflows-section');
-        if (!section) return;
-        if (section.classList.contains('collapsed')) {
-            section.style.flex = '';
-            section.style.minHeight = '';
-            updateHandleA();
-            return;
-        }
-        if (sessionsCollapsed()) {
-            // 会话折叠后没有可伸缩分区：让工作流吸收文件区高度变化，
-            // 这样拖 B（工作流/文件）时分隔条会跟着移动。
-            section.style.flex = '1 1 0';
-            section.style.minHeight = '0';
-            updateHandleA();
-            return;
-        }
-        section.style.minHeight = '';
-        section.style.flex = `0 0 ${clampHeight(readHeight())}px`;
-        updateHandleA();
-    }
-
-    function initHandleA() {
-        const handle = $('sidebar-h-split-a');
-        const section = $('workflows-section');
-        if (!handle || !section) return;
-        let dragging = false;
-        let startY = 0;
-        let startHeight = 0;
-
-        handle.addEventListener('mousedown', (event) => {
-            if (section.classList.contains('collapsed')) return;
-            event.preventDefault();
-            dragging = true;
-            startY = event.clientY;
-            startHeight = section.getBoundingClientRect().height;
-            handle.classList.add('dragging');
-            document.body.style.cursor = 'ns-resize';
-            document.body.style.userSelect = 'none';
-        });
-        document.addEventListener('mousemove', (event) => {
-            if (!dragging) return;
-            const height = clampHeight(startHeight - (event.clientY - startY));
-            section.style.flex = `0 0 ${height}px`;
-        });
-        document.addEventListener('mouseup', () => {
-            if (!dragging) return;
-            dragging = false;
-            handle.classList.remove('dragging');
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-            const height = Math.round(section.getBoundingClientRect().height);
-            try { localStorage.setItem(KEYS.height, String(height)); } catch (e) { /* ignore */ }
-        });
-        handle.addEventListener('dblclick', () => {
-            try { localStorage.removeItem(KEYS.height); } catch (e) { /* ignore */ }
-            applyHeight();
-        });
     }
 
     // ── 工作流面板宽度（竖向分隔条） ─────────────────────────
@@ -366,28 +208,32 @@
         return '';
     }
 
+    // 会话与工作流共用一个列表容器：渲染交给 app.js 的合并渲染器
     function renderSidebar() {
-        const list = $('workflows-list');
-        if (!list) return;
-        const count = $('workflows-count');
-        if (count) {
-            count.hidden = state.workflows.length === 0;
-            count.textContent = String(state.workflows.length);
-        }
-        if (!state.workflows.length) {
-            list.innerHTML = '<div class="wf-sidebar-empty">暂无工作流</div>';
-            return;
-        }
-        list.innerHTML = state.workflows.map((item) => {
-            const status = workflowStatus(item);
-            const active = item.workflow.id === state.currentWorkflowId ? ' active' : '';
-            const progress = progressText(item);
-            return `<div class="wf-sidebar-row session-item${active}" data-workflow-id="${esc(item.workflow.id)}">
-                <span class="wf-row-name" title="${esc(workflowName(item))}">${esc(workflowName(item))}</span>
-                <span class="wf-row-progress">${esc(progress)}</span>
-                <button class="session-menu-btn" data-act="menu" title="更多"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg></button>
-            </div>`;
-        }).join('');
+        if (typeof window.renderSidebarList === 'function') window.renderSidebarList();
+    }
+
+    // 供合并渲染器读取的侧栏条目（会话/工作流按 updated_at 混排）
+    function getSidebarEntries() {
+        return state.workflows.map((item) => ({
+            id: item.workflow.id,
+            name: workflowName(item),
+            hidden: !!item.workflow.hidden,
+            status: workflowStatus(item),
+            progress: progressText(item),
+            updated_at: item.workflow.updated_at || '',
+        }));
+    }
+
+    async function setHidden(workflowId, hidden) {
+        try {
+            await api(`/api/workspaces/${ws()}/workflows/${workflowId}/hidden`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hidden }),
+            });
+            await loadWorkflows();
+        } catch (error) { toast('操作失败：' + error.message); }
     }
 
     async function exportWorkflow(workflowId) {
@@ -460,63 +306,6 @@
         } catch (error) {
             toast('删除失败：' + error.message);
         }
-    }
-
-    function showWorkflowSectionMenu(anchor) {
-        const existing = document.querySelector(
-            '.session-dropdown[data-workflow-section-menu]');
-        if (existing) { existing.remove(); return; }
-        document.querySelectorAll('.session-dropdown').forEach((menu) => menu.remove());
-        const menu = document.createElement('div');
-        menu.className = 'session-dropdown show';
-        menu.dataset.workflowSectionMenu = '1';
-        menu.innerHTML = '<div class="session-dropdown-item" data-act="import">导入工作流</div>';
-        document.body.appendChild(menu);
-        if (typeof openAnchoredMenu === 'function') openAnchoredMenu(menu, anchor, true);
-        setTimeout(() => {
-            document.addEventListener('click', () => menu.remove(), { once: true });
-        }, 0);
-        menu.querySelector('[data-act="import"]').addEventListener('click', () => {
-            menu.remove();
-            $('workflow-import-input')?.click();
-        });
-    }
-
-    function showRowMenu(workflowId, anchor) {
-        const item = state.workflows.find((entry) => entry.workflow.id === workflowId);
-        if (!item) return;
-        // 同一工作流的菜单已打开时，再按一次关闭
-        const existing = document.querySelector(
-            `.session-dropdown[data-workflow-menu="${workflowId}"]`);
-        if (existing) {
-            existing.remove();
-            return;
-        }
-        document.querySelectorAll('.session-dropdown').forEach((menu) => menu.remove());
-        const menu = document.createElement('div');
-        menu.className = 'session-dropdown show';
-        menu.dataset.workflowMenu = workflowId;
-        const running = workflowStatus(item) === 'running';
-        menu.innerHTML = `
-            <div class="session-dropdown-item" data-act="${running ? 'stop' : 'run'}">${running ? '停止' : '运行'}</div>
-            <div class="session-dropdown-item" data-act="export">导出</div>
-            <div class="session-dropdown-item" data-act="delete">删除工作流</div>`;
-        document.body.appendChild(menu);
-        if (typeof openAnchoredMenu === 'function') openAnchoredMenu(menu, anchor, true);
-        // 点击菜单外任意位置自动关闭（延迟注册，避免被本次点击立即关掉）
-        setTimeout(() => {
-            document.addEventListener('click', () => menu.remove(), { once: true });
-        }, 0);
-        menu.querySelectorAll('.session-dropdown-item').forEach((el) => {
-            el.addEventListener('click', async () => {
-                menu.remove();
-                const act = el.dataset.act;
-                if (act === 'run') { startRunFor(workflowId); return; }
-                if (act === 'stop') { stopRunFor(workflowId); return; }
-                if (act === 'export') { await exportWorkflow(workflowId); return; }
-                if (act === 'delete') { await deleteWorkflow(workflowId); }
-            });
-        });
     }
 
     // ── 打开工作流 / 会话 ────────────────────────────────────
@@ -1526,7 +1315,12 @@
         startRun: () => startRunFor(state.currentWorkflowId),
         close,
         refresh: () => loadWorkflows(),
-        onSessionsToggled,
+        getSidebarEntries,
+        getCurrentWorkflowId: () => state.currentWorkflowId,
+        setHidden,
+        importFile: importWorkflowFile,
+        exportWorkflow,
+        removeWorkflow: deleteWorkflow,
         onTurnComplete,
         _state: state,
     };

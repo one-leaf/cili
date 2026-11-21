@@ -167,3 +167,35 @@ def test_service_run_validates_and_passes_inputs(monkeypatch):
                                  origin_session_id="chat1")
     assert captured == {"inputs": {"document_no": "PO-9"}, "origin": "chat1"}
     assert state.origin_session_id == "chat1"
+
+
+def test_hidden_flag_roundtrip_and_update_preserves():
+    created = call(routes_workflows.create_workflow(WS, {
+        "name": "隐藏工作流",
+        "steps": [{"name": "一", "requirement": "做事", "sources": []}],
+    }, ws_dir=ws_dir()))
+    workflow_id = created["workflow"]["id"]
+    assert created["workflow"]["hidden"] is False
+
+    hidden = call(routes_workflows.set_workflow_hidden(
+        WS, workflow_id, {"hidden": True}, ws_dir=ws_dir()))
+    assert hidden == {"ok": True, "hidden": True}
+
+    listed = call(routes_workflows.list_workflows(WS, ws_dir=ws_dir()))
+    item = next(i for i in listed["workflows"] if i["workflow"]["id"] == workflow_id)
+    assert item["workflow"]["hidden"] is True
+
+    # 面板编辑（只提交定义字段，不带 hidden）不应重置隐藏状态
+    call(routes_workflows.update_workflow(WS, workflow_id, {
+        "name": "隐藏工作流改",
+        "steps": [{"name": "一", "requirement": "做事", "sources": []}],
+    }, ws_dir=ws_dir()))
+    detail = call(routes_workflows.get_workflow(WS, workflow_id, ws_dir=ws_dir()))
+    assert detail["workflow"]["hidden"] is True
+    assert detail["workflow"]["name"] == "隐藏工作流改"
+
+    # 取消隐藏
+    call(routes_workflows.set_workflow_hidden(
+        WS, workflow_id, {"hidden": False}, ws_dir=ws_dir()))
+    detail = call(routes_workflows.get_workflow(WS, workflow_id, ws_dir=ws_dir()))
+    assert detail["workflow"]["hidden"] is False

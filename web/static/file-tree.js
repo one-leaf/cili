@@ -1861,21 +1861,9 @@ const FileTree = (() => {
             return;
         }
         if (sessionsCollapsed()) {
-            const workflows = document.getElementById('workflows-section');
-            const workflowsExpanded = workflows && !workflows.classList.contains('collapsed');
-            if (!workflowsExpanded) {
-                el.filesSection.style.flex = '1 1 0';
-                el.filesSection.style.minHeight = '0';
-                return;
-            }
-            // 工作流分区会以 flex:1 吸收高度变化；文件区使用自己的固定高度，
-            // 拖动分隔条 B 时移动的是工作流/文件的边界。
-            el.filesSection.style.minHeight = '';
-            const bodyHeight = sidebarBodyHeight();
-            let height = readNum(KEYS.filesHeight, 0);
-            if (!height) height = Math.round(bodyHeight * 0.55);
-            height = clamp(height, 140, Math.max(160, bodyHeight - 140));
-            el.filesSection.style.flex = `0 0 ${height}px`;
+            // 会话与工作流分区折叠后由文件区吸收剩余高度
+            el.filesSection.style.flex = '1 1 0';
+            el.filesSection.style.minHeight = '0';
             return;
         }
         el.filesSection.style.minHeight = '';

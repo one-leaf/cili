@@ -10,7 +10,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.channels import (
@@ -526,6 +526,84 @@ async def get_session(
     except Exception as e:
         logger.error(f"Failed to read session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to read session")
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/export")
+async def export_session(workspace_uuid: str, session_id: str,
+                         ws_dir: Path = Depends(_require_workspace)):
+    """导出会话为可再次导入的 JSON（完整历史，工具结果内容内联）。"""
+    _validate_session_id(session_id)
+    session_dir = ws_dir / "sessions" / session_id
+    if not (session_dir / "index.json").exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        meta = await asyncio.to_thread(load_history_meta, session_dir)
+        messages = await asyncio.to_thread(load_history_messages, session_dir)
+        await asyncio.to_thread(_resolve_tool_results_for_session, messages, session_dir)
+    except Exception as e:
+        logger.error(f"Failed to export session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="导出会话失败")
+    # 工具结果已内联；去掉外部文件引用，避免导入后指向新会话目录里不存在的文件
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("_meta"), dict):
+                block["_meta"].pop("output_path", None)
+    return {
+        "format": "cili-session",
+        "version": 1,
+        "name": meta.get("name", "会话"),
+        "created_at": (meta.get("metadata") or {}).get("created_at", ""),
+        "messages": messages,
+    }
+
+
+@router.post("/api/workspaces/{workspace_uuid}/sessions/import")
+async def import_session(workspace_uuid: str, payload: dict = Body(...),
+                         ws_dir: Path = Depends(_require_workspace)):
+    """从导出文件导入会话：新建会话并写回历史消息。"""
+    raw_messages = payload.get("messages") if isinstance(payload, dict) else None
+    if not isinstance(raw_messages, list):
+        raise HTTPException(status_code=400, detail="导入文件缺少 messages")
+    if len(raw_messages) > 5000:
+        raise HTTPException(status_code=400, detail="消息过多（最多 5000 条）")
+    cleaned: list[tuple[str, object, dict | None]] = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="消息格式非法")
+        role = str(item.get("role") or "")
+        content = item.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, (str, list)):
+            raise HTTPException(status_code=400, detail="消息格式非法（role/content）")
+        if isinstance(content, list):
+            # 外部工具结果文件不随导入复制；内容已内联在 block 里
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("_meta"), dict):
+                    block["_meta"].pop("output_path", None)
+        meta = item.get("_meta") if isinstance(item.get("_meta"), dict) else None
+        if meta is not None:
+            # jsonl 序号属于原会话文件，导入后要重新分配，否则新消息不会落盘
+            meta = {k: v for k, v in meta.items() if k != "seq"}
+        cleaned.append((role, content, meta))
+    name = str(payload.get("name") or "").strip()[:100] or "导入的会话"
+    sessions_dir = ws_dir / "sessions"
+
+    def _do_import() -> SessionStore:
+        session = SessionStore.create_new_session(
+            sessions_dir, name, metadata=marker_metadata("web"))
+        for role, content, meta in cleaned:
+            session.add_message(role, content, meta=meta)
+        session.save(force=True)
+        return session
+
+    try:
+        session = await asyncio.to_thread(_do_import)
+    except Exception as e:
+        logger.error(f"Failed to import session: {e}")
+        raise HTTPException(status_code=500, detail="导入会话失败")
+    return session.to_dict()
 
 
 def _is_workflow_step_prompt(content) -> bool:

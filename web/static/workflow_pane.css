@@ -1,24 +1,4 @@
-/* ── workflow_pane.css ── 侧栏工作流分区 + 中间栏工作流面板 + 聊天双标签 */
-
-/* 侧栏工作流分区 */
-.workflows-section {
-    flex: 0 0 200px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border-top: 1px solid var(--border-color);
-    border-bottom: 1px solid var(--border-color);
-}
-
-/* 与文件/会话分区一致：折叠后只保留标题行，不占最小高度 */
-.workflows-section.collapsed {
-    flex: 0 0 auto !important;
-    min-height: 0;
-}
-
-.workflows-section.collapsed .wf-sidebar-list {
-    display: none;
-}
+/* ── workflow_pane.css ── 中间栏工作流面板 + 聊天双标签（侧栏条目与会话共用列表） */
 
 .section-count {
     margin-left: 6px;
@@ -31,12 +11,35 @@
     color: var(--text-secondary, #666);
 }
 
-.wf-sidebar-list {
+/* 会话与工作流合并列表的类型筛选 */
+.sidebar-filter-row {
+    display: flex;
+    gap: 2px;
+    padding: 0 8px 4px;
+}
+
+.sidebar-filter-btn {
     flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    /* 与会话列表一致：左右 8px，保证选中行的左侧色块和会话同一位置 */
-    padding: 4px 8px 6px;
+    padding: 3px 0;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--text-secondary, #888);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.sidebar-filter-btn:hover {
+    background: rgba(128, 128, 128, 0.12);
+    color: var(--text-color);
+}
+
+.sidebar-filter-btn.active {
+    background: var(--ms-soft, rgba(0, 0, 0, .06));
+    color: var(--text-color);
+    font-weight: 600;
 }
 
 .wf-sidebar-empty {
@@ -45,45 +48,23 @@
     color: var(--text-secondary, #888);
 }
 
-.wf-sidebar-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 36px 7px 11px;
-    margin-bottom: 1px;
-    border-radius: 4px;
-    cursor: pointer;
-    height: 30px;
-    font-size: 12px;
-    color: var(--text-muted-2, #555);
-    border-left: 2px solid transparent;
-    transition: all 0.12s;
-    position: relative;
+/* 合并列表中的工作流条目（行布局复用 .session-item） */
+.session-item .wf-row-dot {
+    flex-shrink: 0;
+    font-size: 9px;
+    line-height: 1;
+    margin-right: 1px;
 }
 
-/* 背景/悬停/选中直接复用 .session-item，避免工作流行多出一层底色；
-   左侧色块继续用工作流原有的 primary 色。 */
-.wf-sidebar-row.session-item.active {
-    border-left-color: var(--primary-color, #007bff);
-}
-
-.wf-sidebar-row .wf-row-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-    line-height: 1.3;
-}
-
-.wf-sidebar-row .wf-row-progress {
+.session-item .wf-row-progress {
+    flex-shrink: 0;
+    margin-left: 4px;
     font-size: 11px;
     color: var(--text-secondary, #888);
-    flex-shrink: 0;
 }
 
 /* 状态色 */
+.wf-status-idle { color: var(--text-secondary, #9ca3af); }
 .wf-status-running { color: var(--primary-color, #007bff); animation: wf-pulse 1.5s infinite; }
 .wf-status-done { color: var(--ms-ok-fg, #15803d); }
 .wf-status-failed { color: var(--ms-danger, #dc2626); }

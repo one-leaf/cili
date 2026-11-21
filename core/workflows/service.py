@@ -144,6 +144,12 @@ def update_workflow(workspace_uuid: str, workflow_id: str, payload: dict[str, An
         return workflow
 
 
+def set_hidden(workspace_uuid: str, workflow_id: str, hidden: bool) -> Workflow:
+    """设置侧栏隐藏状态（允许运行中操作，不影响执行）。"""
+    with store.store_lock():
+        return store.set_hidden(workspace_uuid, workflow_id, hidden)
+
+
 def delete_workflow(workspace_uuid: str, workflow_id: str) -> None:
     if runner_mod.is_workflow_running(workspace_uuid, workflow_id):
         raise WorkflowBusyError("工作流正在运行，无法删除")

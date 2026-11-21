@@ -69,44 +69,30 @@
 
             <div class="sidebar-section sessions-section">
                 <div class="section-header">
-                    <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开会话" aria-expanded="true">
+                    <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开会话与工作流" aria-expanded="true">
                         <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                        <span class="section-title">会话</span>
+                        <span class="section-title">会话与工作流</span>
                         <span class="section-count" id="sessions-count" hidden>0</span>
                     </button>
                     <div class="section-actions">
                         <button id="new-session-btn" class="btn btn-small">新建</button>
-                        <button id="session-menu-btn" class="btn-icon-flat" title="会话菜单">
+                        <button id="session-menu-btn" class="btn-icon-flat" title="列表菜单">
                             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
                         </button>
                     </div>
                 </div>
+                <div class="sidebar-filter-row" id="sidebar-filter-row" role="tablist" aria-label="类型筛选">
+                    <button class="sidebar-filter-btn active" data-filter="all" role="tab" aria-selected="true">全部</button>
+                    <button class="sidebar-filter-btn" data-filter="session" role="tab" aria-selected="false">会话</button>
+                    <button class="sidebar-filter-btn" data-filter="workflow" role="tab" aria-selected="false">工作流</button>
+                </div>
+                <input id="session-import-input" type="file" accept="application/json,.json" hidden>
                 <div id="sessions-list" class="sessions-list">
                     <div class="empty-state">选择一个工作区</div>
                 </div>
             </div>
 
-            <div class="sidebar-h-split" id="sidebar-h-split-a" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整会话/工作流区域高度（双击重置）"></div>
-
-            <div class="sidebar-section workflows-section" id="workflows-section">
-                <div class="section-header">
-                    <button class="section-toggle" id="workflows-toggle-btn" title="折叠/展开工作流" aria-expanded="true">
-                        <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                        <span class="section-title">工作流</span>
-                        <span class="section-count" id="workflows-count" hidden>0</span>
-                    </button>
-                    <div class="section-actions">
-                        <button id="workflow-new-btn" class="btn btn-small" title="新建工作流">＋</button>
-                        <button id="workflow-menu-btn" class="btn-icon-flat" title="工作流菜单"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg></button>
-                    </div>
-                </div>
-                <input id="workflow-import-input" type="file" accept="application/json,.json" hidden>
-                <div id="workflows-list" class="wf-sidebar-list">
-                    <div class="wf-sidebar-empty">暂无工作流</div>
-                </div>
-            </div>
-
-            <div class="sidebar-h-split" id="sidebar-h-split" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整工作流/文件区域高度（双击重置）"></div>
+            <div class="sidebar-h-split" id="sidebar-h-split" role="separator" aria-orientation="horizontal" tabindex="0" title="拖拽调整列表/文件区域高度（双击重置）"></div>
 
             <div class="sidebar-section files-section" id="files-section">
                 <div class="section-header files-header">

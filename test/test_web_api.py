@@ -1652,3 +1652,49 @@ class TestGetSessionTodos:
             routes_workspace.get_session("ws-uuid", "abc12345", None, 0, ws_dir=tmp_path)
         )
         assert result["todos"] == []
+
+
+class TestSessionExportImport:
+    """会话导出 / 导入：JSON 往返，导入生成新会话且保留消息顺序。"""
+
+    def test_export_import_roundtrip(self, test_workspace):
+        import asyncio
+
+        from core.config import get_workspace_data_dir
+        from core.session import SessionStore
+        from web.routes_workspace import export_session, import_session
+
+        ws_dir = get_workspace_data_dir("test-workspace")
+        sessions_dir = ws_dir / "sessions"
+        store = SessionStore.create_new_session(sessions_dir, "导出会话")
+        store.add_message("user", "你好", flush=True)
+        store.add_message("assistant", "你也好", flush=True)
+        store.save()
+
+        exported = asyncio.run(export_session("test-workspace", store.session_id, ws_dir=ws_dir))
+        assert exported["format"] == "cili-session"
+        assert exported["name"] == "导出会话"
+        assert [m["role"] for m in exported["messages"]] == ["user", "assistant"]
+
+        imported = asyncio.run(import_session("test-workspace", exported, ws_dir=ws_dir))
+        assert imported["session_id"] != store.session_id
+        assert imported["name"] == "导出会话"
+        loaded = SessionStore.load_session(imported["session_id"], sessions_dir)
+        assert loaded is not None
+        assert [m["role"] for m in loaded.messages] == ["user", "assistant"]
+
+    def test_import_rejects_bad_payload(self, test_workspace):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from core.config import get_workspace_data_dir
+        from web.routes_workspace import import_session
+
+        ws_dir = get_workspace_data_dir("test-workspace")
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(import_session(
+                "test-workspace",
+                {"messages": [{"role": "system", "content": "x"}]},
+                ws_dir=ws_dir))
+        assert exc_info.value.status_code == 400

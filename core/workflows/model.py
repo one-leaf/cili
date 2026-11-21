@@ -199,6 +199,8 @@ class Workflow:
     created_at: str = ""
     updated_at: str = ""
     version: int = 1
+    # 侧栏隐藏（与会话 hidden 同一语义）；更新工作流时未携带该字段则沿用原值
+    hidden: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, workflow_id: str | None = None) -> "Workflow":
@@ -293,6 +295,7 @@ class Workflow:
             created_at=str(data.get("created_at") or now),
             updated_at=str(data.get("updated_at") or now),
             version=int(data.get("version") or 1),
+            hidden=bool(data.get("hidden", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -305,6 +308,7 @@ class Workflow:
             "steps": [s.to_dict() for s in self.steps],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "hidden": self.hidden,
         }
 
     def index_of(self, step_id: str) -> int:

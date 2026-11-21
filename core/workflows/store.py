@@ -210,10 +210,23 @@ def update_workflow(workspace_uuid: str, workflow_id: str, payload: dict[str, An
     if existing is None:
         raise WorkflowValidationError("工作流不存在")
     workflow = Workflow.from_dict(payload, workflow_id=workflow_id)
+    # 面板编辑只提交定义字段；未携带 hidden 时保留侧栏隐藏状态
+    if "hidden" not in payload:
+        workflow.hidden = existing.hidden
     workflow.created_at = existing.created_at
     workflow.updated_at = existing.updated_at  # from_dict 已设为 now? 这里保持原值再刷新
     from core.time_utils import now_str
     workflow.updated_at = now_str()
+    save_workflow(workspace_uuid, workflow)
+    return workflow
+
+
+def set_hidden(workspace_uuid: str, workflow_id: str, hidden: bool) -> Workflow:
+    """设置侧栏隐藏状态；不刷新 updated_at，避免隐藏/取消隐藏打乱列表顺序。"""
+    workflow = load_workflow(workspace_uuid, workflow_id)
+    if workflow is None:
+        raise WorkflowValidationError("工作流不存在")
+    workflow.hidden = bool(hidden)
     save_workflow(workspace_uuid, workflow)
     return workflow
 
