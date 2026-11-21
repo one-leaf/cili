@@ -18,6 +18,7 @@ from core.tools.bash import BashTool
 from core.tools.browser import BrowserTool
 from core.tools.clock import ClockTool
 from core.tools.cron_tool import CronTool
+from core.tools.deepseek_web import DeepSeekReadUrlTool, DeepSeekWebSearchTool
 from core.tools.edit import EditTool
 from core.tools.glob import GlobTool
 from core.tools.grep import GrepTool
@@ -87,6 +88,9 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "glob": _factory(GlobTool, needs_permission=True),
     "browser": _factory(BrowserTool, needs_permission=True),
     "web_search": _factory(WebSearchTool),
+    # DeepSeek 服务端联网工具（客户端包装；按模型门控，见 core/llm/capabilities.py）
+    "deepseek_web_search": _factory(DeepSeekWebSearchTool),
+    "deepseek_read_url": _factory(DeepSeekReadUrlTool),
     "memory": _factory(MemoryTool),
     "python": _factory(PythonTool, needs_config=True, needs_permission=True),
     # 注意：注册键 "todo" 与工具类 name="todo_write" 不同（T26）。这是有意的——

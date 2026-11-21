@@ -27,6 +27,7 @@ from core.llm.openai import OpenAIAdapter
 from core.llm.openai_responses import OpenAIResponsesAdapter
 from core.llm.transport import _RETRY_STATUS_CODES
 from core.llm.types import (
+    SERVER_BLOCK_TYPES,
     ContentBlock,
     ImageBlock,
     # Response
@@ -37,6 +38,7 @@ from core.llm.types import (
     # Streaming
     StreamChunk,
     # Content block types
+    ServerBlock,
     TextBlock,
     ToolCallBlock,
     ToolResultBlock,
@@ -72,6 +74,8 @@ __all__ = [
     "ImageBlock",
     "ToolCallBlock",
     "ToolResultBlock",
+    "ServerBlock",
+    "SERVER_BLOCK_TYPES",
     "ContentBlock",
     # Content block helpers
     "block_to_dict",

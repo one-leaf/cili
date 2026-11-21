@@ -239,11 +239,38 @@ class ToolResultBlock:
         )
 
 
+@dataclass
+class ServerBlock:
+    """服务端工具块（server_tool_use / *_tool_result）。
+
+    DeepSeek 服务端工具在模型回合内执行，结果以这些块随响应返回。Cili 不把它们
+    写进会话历史，只由包装工具内部消费；这里原样保存 wire dict，保证 kind /
+    signature / encrypted_content 等字段不丢失。
+    """
+
+    raw: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.raw)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ServerBlock:
+        return cls(raw=dict(data))
+
+
+# DeepSeek / Anthropic 服务端工具块类型
+SERVER_BLOCK_TYPES = frozenset({
+    "server_tool_use",
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+})
+
+
 # ========== Content Block Union ==========
 
 
 # Type alias for any content block
-ContentBlock = TextBlock | ReasoningBlock | ImageBlock | ToolCallBlock | ToolResultBlock
+ContentBlock = TextBlock | ReasoningBlock | ImageBlock | ToolCallBlock | ToolResultBlock | ServerBlock
 
 
 def block_to_dict(block: ContentBlock) -> dict[str, Any]:
@@ -268,6 +295,8 @@ def block_from_dict(data: dict[str, Any]) -> ContentBlock:
         return ToolCallBlock.from_dict(data)
     elif block_type == "tool_result":
         return ToolResultBlock.from_dict(data)
+    elif block_type in SERVER_BLOCK_TYPES:
+        return ServerBlock.from_dict(data)
     else:
         # Unknown type - wrap as TextBlock
         return TextBlock(text=f"[unknown block type: {block_type}]")

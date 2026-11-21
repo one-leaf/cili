@@ -27,7 +27,7 @@ from core.config import DATA_DIR, Config, get_permission_config
 from core.fs_utils import atomic_write_json
 from core.handoff import default_branch_name, user_input_text
 from core.interface_profile import resolve_profile
-from core.llm import create_llm_client
+from core.llm import capabilities, create_llm_client
 from core.output_sink import OutputSink, layer_sink
 from core.prompt_builder import (
     USER_LAYER_GENERATORS,
@@ -49,6 +49,7 @@ from core.session_runner_runtime.loop import (
     LoopPolicy,
 )
 from core.tools import create_tools, get_tool_by_name
+from core.tools.deepseek_web import SERVER_TOOL_NAMES
 from core.tools.permission import (
     ABORT_LABEL,
     APPROVE_LABEL,
@@ -460,6 +461,10 @@ class SessionRunner(BaseSessionRunner):
                 old_client.close()
             except Exception:
                 pass
+        # 模型相关工具（DeepSeek 服务端联网）随模型切换重算可见性；
+        # 工具重建前（_active_tools 尚未生成）跳过。
+        if hasattr(self, "_active_tools"):
+            self._apply_tool_visibility()
 
     def set_model(self, ref: str) -> None:
         """切换当前 runner 使用的模型（会话级运行时覆盖）。"""
@@ -518,6 +523,16 @@ class SessionRunner(BaseSessionRunner):
             provider.ensure_connected(self.config.mcp_servers)
             self.tools.extend(provider.get_wrappers())
 
+        # DeepSeek 服务端联网工具：注入实时模型（切模型后立即生效）与
+        # 能力缺失回调（上游拒绝后重算可见性，后续轮次不再下发）。
+        for tool in self.tools:
+            set_model_provider = getattr(tool, "set_model_provider", None)
+            if callable(set_model_provider):
+                set_model_provider(lambda: self.model)
+            set_missing = getattr(tool, "set_capability_missing_handler", None)
+            if callable(set_missing):
+                set_missing(self._apply_tool_visibility)
+
         # 基础 deferred 集合：角色声明的 + MCP 动态工具（后者默认 deferred，
         # 由 tool_search 按需激活）。接口专属工具的过滤在 _apply_tool_visibility 里做。
         self._base_deferred_names: set[str] = set(self.role_cfg.deferred_tools) | {
@@ -565,12 +580,16 @@ class SessionRunner(BaseSessionRunner):
                 agent_tool.on_background_complete = self._handle_background_session_complete
 
     def _eligible_tools(self) -> list:
-        """本回合可用的工具：接口专属工具只在自己的接口下出现。"""
+        """本回合可用的工具：接口专属工具只在自己的接口下出现；
+        DeepSeek 服务端联网工具只在 DeepSeek 模型 + Anthropic 协议下出现。"""
         scoped = _all_interface_scoped_tools()
-        if not scoped:
-            return list(self.tools)
         allowed = INTERFACE_TOOLS.get(self._turn_interface or "", frozenset())
-        return [t for t in self.tools if t.name not in scoped or t.name in allowed]
+        deepseek_ok = capabilities.tools_visible(getattr(self, "model", None))
+        return [
+            t for t in self.tools
+            if (t.name not in scoped or t.name in allowed)
+            and (deepseek_ok or t.name not in SERVER_TOOL_NAMES)
+        ]
 
     def _apply_tool_visibility(self) -> None:
         """按当前驱动接口重算 eligible → active/deferred → tool_schemas。
@@ -639,6 +658,19 @@ class SessionRunner(BaseSessionRunner):
         纵深防御：模型若硬调（例如历史消息里带过这个 tool_use），也直接拒绝，
         而不是让它在一个没有对应接入端的回合里执行。
         """
+        if name in SERVER_TOOL_NAMES and not capabilities.tools_visible(
+            getattr(self, "model", None)
+        ):
+            logger.warning(
+                f"[SessionRunner:{self.role}] 当前模型不支持 DeepSeek 联网工具 {name!r}，已拒绝"
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": f"Error: tool '{name}' is not available for the current model",
+                "is_error": True,
+                "_meta": {"tool_name": name},
+            }
         scoped = _all_interface_scoped_tools()
         if name in scoped and name not in INTERFACE_TOOLS.get(
             self._turn_interface or "", frozenset()

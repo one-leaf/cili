@@ -13,9 +13,11 @@ from typing import Any, Iterable
 
 from core.llm.adapter import Adapter, merge_consecutive_same_role
 from core.llm.types import (
+    SERVER_BLOCK_TYPES,
     ContentBlock,
     Message,
     ReasoningBlock,
+    ServerBlock,
     StreamChunk,
     TextBlock,
     ToolCallBlock,
@@ -296,10 +298,16 @@ class AnthropicAdapter(Adapter):
         if system_list:
             body["system"] = system_list
 
-        # ── tools 断点：最后一个 tool schema 加 cache_control ──────────────
+        # ── tools 断点：最后一个普通 tool schema 加 cache_control ──────────
+        # 服务端工具声明（type+name，无 input_schema）不贴：部分端点会静默
+        # 忽略带 cache_control 的服务端工具（工具看起来已下发，模型却看不到）。
         tools = body.get("tools")
         if tools and isinstance(tools, list):
-            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+            for i in range(len(tools) - 1, -1, -1):
+                # 普通工具无 type；服务端工具声明是 {type, name}，不贴缓存
+                if "input_schema" in tools[i] or "type" not in tools[i]:
+                    tools[i] = {**tools[i], "cache_control": {"type": "ephemeral"}}
+                    break
 
         # ── 消息断点：messages[-3]（稳定区尾部）+ messages[-1]（最新尾部）──
         n = len(anthropic_messages)
@@ -342,6 +350,9 @@ class AnthropicAdapter(Adapter):
                     name=block.get("name", ""),
                     arguments=arguments,
                 ))
+            elif block_type in SERVER_BLOCK_TYPES:
+                # 服务端工具块：原样保留，供包装工具解析（不进入会话历史）
+                content_blocks.append(ServerBlock(raw=block))
 
         usage = UsageData.from_anthropic(data.get("usage", {}))
         stop_reason = data.get("stop_reason", "")

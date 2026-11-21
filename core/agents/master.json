@@ -270,6 +270,8 @@
     "glob",
     "browser",
     "web_search",
+    "deepseek_web_search",
+    "deepseek_read_url",
     "memory",
     "python",
     "todo",
