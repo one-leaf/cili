@@ -14,13 +14,17 @@ import base64
 import hashlib
 import io
 import logging
+import mimetypes
 import re
 import secrets
 import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from core.media_fetch import InboundMedia
 
 logger = logging.getLogger(__name__)
 
@@ -898,3 +902,27 @@ def ensure_user_image_meta(
     meta.update(saved)
     meta["normalized"] = True
     return block
+
+
+def read_image_base64(
+    item: "InboundMedia",
+    *,
+    max_dimension: int = DEFAULT_MAX_DIMENSION,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+) -> tuple[str, str, bool]:
+    """读图片为 base64；返回 (data, mime, 是否完成归一化)。"""
+    try:
+        raw = Path(item.path).read_bytes()
+    except OSError as e:
+        logger.warning(f"[multimodal] 读取图片失败 {item.path}: {e}")
+        return "", "", False
+    mime = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
+    normalized = normalize_image_bytes(
+        raw, mime,
+        max_dimension=max_dimension, max_bytes=max_bytes, jpeg_quality=jpeg_quality,
+    )
+    if normalized is not None:
+        payload, mime, _, _ = normalized
+        return base64.b64encode(payload).decode("ascii"), mime, True
+    return base64.b64encode(raw).decode("ascii"), mime, False

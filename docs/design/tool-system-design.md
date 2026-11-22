@@ -35,7 +35,7 @@ core/tools/
 ├── file_types.py            # 文件类型 → 扩展名映射（glob / grep 共享）
 ├── approval.py              # 会话级审批（ApprovalStore、ask/deny 常量、decision_id、文案）
 ├── read.py                  # 读取文件
-├── read_image.py            # 独立图片查看（复用 ReadTool.read_image，缩放/格式转换一致）
+├── read_image.py            # 独立图片查看（复用 read_image_file，缩放/格式转换一致）
 ├── write.py                 # 写入文件
 ├── edit.py                  # 精确替换
 ├── bash.py                  # Shell 命令（Git Bash，会话级审批）
@@ -345,7 +345,7 @@ content = [
 | 工具 | 文件 | 说明 | 可用角色 |
 |------|------|------|---------|
 | read | read.py | 读取文件内容（文本 + 图片 base64 + PDF 按页读取） | master/worker/lite |
-| read_image | read_image.py | 独立查看图片（复用 ReadTool.read_image，缩放/格式转换一致） | master/worker |
+| read_image | read_image.py | 独立查看图片（复用 read_image_file，缩放/格式转换一致） | master/worker |
 | write | write.py | 创建/覆盖文件（自动创建父目录） | master/worker/lite |
 | edit | edit.py | 精确文本替换（old_text 必须唯一） | master/worker/lite |
 | bash | bash.py | Shell 命令（通过 Git Bash），支持后台执行和交互式 stdin，高风险命令会话级审批 | master/worker/lite |

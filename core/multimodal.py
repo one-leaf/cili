@@ -13,16 +13,13 @@
 
 from __future__ import annotations
 
-import base64
 import logging
-import mimetypes
-from pathlib import Path
 from typing import Any
 
 from core.image_pipeline import (
     DEFAULT_MAX_BYTES,
     ensure_user_image_meta,
-    normalize_image_bytes,
+    read_image_base64,
 )
 from core.media_fetch import InboundMedia
 
@@ -55,7 +52,7 @@ def build_user_input(
     model_input = list(getattr(getattr(runner, "model", None), "input", []) or [])
     for item in media_items:
         if item.kind == "image" and "image" in model_input:
-            data, mime = read_image_base64(
+            data, mime, normalized = read_image_base64(
                 item,
                 max_dimension=max_dimension,
                 max_bytes=raw_target,
@@ -66,7 +63,7 @@ def build_user_input(
                     "type": "image",
                     "source": {"type": "base64", "media_type": mime, "data": data},
                     "_valid": True,
-                    "_meta": {"path": item.rel_path, "media_type": mime, "normalized": True},
+                    "_meta": {"path": item.rel_path, "media_type": mime, "normalized": normalized},
                 }
                 ensure_user_image_meta(
                     block, cwd=getattr(runner, "cwd", None),
@@ -93,27 +90,3 @@ def build_user_input(
             # 纯图片/语音混合消息没有文本块：插到首位，不能覆盖已有图片块
             blocks.insert(0, {"type": "text", "text": body, "_valid": True})
     return blocks
-
-
-def read_image_base64(
-    item: InboundMedia,
-    *,
-    max_dimension: int = 2000,
-    max_bytes: int = DEFAULT_MAX_BYTES,
-    jpeg_quality: int = 85,
-) -> tuple[str, str]:
-    """读图片为 base64；优先应用 EXIF 方向、缩放和重编码。"""
-    try:
-        raw = Path(item.path).read_bytes()
-    except OSError as e:
-        logger.warning(f"[multimodal] 读取图片失败 {item.path}: {e}")
-        return "", ""
-    mime = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
-    normalized = normalize_image_bytes(
-        raw, mime,
-        max_dimension=max_dimension, max_bytes=max_bytes, jpeg_quality=jpeg_quality,
-    )
-    if normalized is not None:
-        payload, mime, _, _ = normalized
-        return base64.b64encode(payload).decode("ascii"), mime
-    return base64.b64encode(raw).decode("ascii"), mime

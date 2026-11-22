@@ -13,10 +13,10 @@ from PIL import Image
 
 from core.config import Config, ImageConfig
 from core.image_pipeline import normalize_image_block, write_tool_image_sidecar
+from core.image_read import read_image_file
 from core.llm.types import ImageBlock, TextBlock
 from core.session import SessionStore
 from core.session_runner_runtime.executor import TurnExecutor
-from core.tools.read import ReadTool
 
 
 def _oriented_jpeg(path, orientation: int) -> None:
@@ -37,7 +37,7 @@ def _png_bytes() -> str:
 def test_read_image_applies_exif_orientation(tmp_path):
     path = tmp_path / "oriented.jpg"
     _oriented_jpeg(path, 6)
-    result = ReadTool.read_image(str(path))
+    result = read_image_file(str(path))
     images = [b for b in result.blocks if isinstance(b, ImageBlock)]
     assert len(images) == 1
     out = Image.open(io.BytesIO(base64.b64decode(images[0].data)))

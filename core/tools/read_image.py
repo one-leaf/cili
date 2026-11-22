@@ -1,15 +1,14 @@
 """ReadImageTool — 专用图片查看工具。
 
-read 工具已内置图片读取，此工具提供语义更明确的独立入口，
-实现复用 ReadTool.read_image()（缩放、格式转换、体积限制逻辑一致）。
+实现共用 ``core/image_read.py``；read 工具与 read_image 工具走同一份代码。
 """
 
 from __future__ import annotations
 
 import os
 
+from core.image_read import IMAGE_EXTENSIONS, read_image_file
 from core.tools.base import Tool, ToolResult
-from core.tools.read import ReadTool
 
 
 class ReadImageTool(Tool):
@@ -39,12 +38,12 @@ class ReadImageTool(Tool):
         if gate is not None:
             return gate
         ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ReadTool.IMAGE_EXTENSIONS:
+        if ext not in IMAGE_EXTENSIONS:
             return ToolResult(
                 f"Error: '{file_path}' is not a supported image type "
-                f"(supported: {', '.join(sorted(ReadTool.IMAGE_EXTENSIONS))}).",
+                f"(supported: {', '.join(sorted(IMAGE_EXTENSIONS))}).",
                 error=True,
             )
         if not os.path.isfile(file_path):
             return ToolResult(f"Error: file not found: {file_path}", error=True)
-        return ReadTool.read_image(file_path)
+        return read_image_file(file_path)
