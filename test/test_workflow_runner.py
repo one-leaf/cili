@@ -1,16 +1,15 @@
 """工作流编排器：业务无关监督者 + worker/lite 执行器 + 产物契约。"""
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import core.workflows.runner as runner_mod
-from core.workflows import store
-from core.workflows.model import StepState, Workflow, WorkflowState
-from core.workflows.runner import WorkflowRunner
 from core.output_sink import OutputSink
 from core.tools.base import ToolResult
+from core.workflows import store
+from core.workflows.model import Workflow, WorkflowState
+from core.workflows.runner import WorkflowRunner
 
 WS = "test"
 
@@ -94,10 +93,10 @@ def test_resolve_step_by_index_name_and_range():
         runner._resolve_step(9)
 
 
-def test_conductor_prompt_is_business_agnostic():
+def test_supervisor_prompt_is_business_agnostic():
     workflow = make_workflow()
     runner = WorkflowRunner(WS, workflow, WorkflowState())
-    prompt = runner._build_conductor_prompt(1, workflow.steps[1])
+    prompt = runner._build_supervisor_prompt(1, workflow.steps[1])
     assert "第二步" in prompt
     assert "lite" in prompt
     assert "workflow_agent" in prompt
@@ -215,7 +214,7 @@ class FakeResultsStore:
         pass
 
 
-class FakeConductor:
+class FakeSupervisor:
     def __init__(self, runner):
         self.runner = runner
         self.session = FakeResultsStore()
@@ -237,14 +236,14 @@ def test_loop_runs_steps_in_order_and_summarizes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner_mod, "ensure_results_session",
                         lambda ws, wf, st, fresh=False: FakeResultsStore())
-    conductor = FakeConductor(None)
+    supervisor = FakeSupervisor(None)
 
-    def fake_make_conductor(self, results):
-        conductor.runner = self
-        self._conductor = conductor
-        return conductor
+    def fake_make_supervisor(self, results):
+        supervisor.runner = self
+        self._supervisor = supervisor
+        return supervisor
 
-    monkeypatch.setattr(WorkflowRunner, "_make_conductor", fake_make_conductor)
+    monkeypatch.setattr(WorkflowRunner, "_make_supervisor", fake_make_supervisor)
     monkeypatch.setattr(WorkflowRunner, "_default_result_rel",
                         lambda self, index: str(tmp_path / f"step-{index + 1}.md"))
     monkeypatch.setattr(WorkflowRunner, "_notify_maintenance", lambda self, text: None)
@@ -256,7 +255,7 @@ def test_loop_runs_steps_in_order_and_summarizes(monkeypatch, tmp_path):
 
     assert state.status == "completed"
     assert [s.status for s in state.items.values()] == ["done", "done"]
-    assert conductor.runs == 3          # 两步 + 最终总结
+    assert supervisor.runs == 3          # 两步 + 最终总结
     assert FakeRunner.roles == ["worker", "lite"]
     run_json = store.read_run_json(WS, workflow.id, state.run_id)
     assert run_json["status"] == "completed"
@@ -273,15 +272,15 @@ def test_loop_fails_when_supervisor_does_not_call_tool(monkeypatch):
     monkeypatch.setattr(runner_mod, "ensure_results_session",
                         lambda ws, wf, st, fresh=False: FakeResultsStore())
 
-    class NoCallConductor:
+    class NoCallSupervisor:
         def __init__(self):
             self.session = FakeResultsStore()
 
         def run(self, user_input=None, sink=None):
             pass
 
-    monkeypatch.setattr(WorkflowRunner, "_make_conductor",
-                        lambda self, results: NoCallConductor())
+    monkeypatch.setattr(WorkflowRunner, "_make_supervisor",
+                        lambda self, results: NoCallSupervisor())
     monkeypatch.setattr(WorkflowRunner, "_notify_maintenance", lambda self, text: None)
     monkeypatch.setattr(WorkflowRunner, "_write_visible_summary", lambda self: None)
 
@@ -291,7 +290,7 @@ def test_loop_fails_when_supervisor_does_not_call_tool(monkeypatch):
     assert state.status == "failed"
     step_state = state.items[workflow.steps[0].id]
     assert "未调用 workflow_agent" in step_state.error
-    notice = runner._conductor.session.messages[-1]["content"]
+    notice = runner._supervisor.session.messages[-1]["content"]
     assert "工作流终止" in notice and "第一步" in notice
 
 

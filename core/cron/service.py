@@ -8,7 +8,7 @@ from typing import Any
 
 from core.config import get_all_workspace_uuids
 from core.cron import rules, store
-from core.cron.model import CronValidationError, Job, State, now_str
+from core.cron.model import CronValidationError, Job, JobState, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def _ensure_not_managed(job: Job) -> None:
         raise CronError("受管任务只读：只能查看列表与历史")
 
 
-def _enrich(workspace_uuid: str, job: Job, state: State) -> dict[str, Any]:
+def _enrich(workspace_uuid: str, job: Job, state: JobState) -> dict[str, Any]:
     item = job.to_dict()
     item["workspace_uuid"] = workspace_uuid
     item["schedule_summary"] = rules.schedule_summary(job)
@@ -126,7 +126,7 @@ def create_job(
     with store.config_lock():
         if store.job_path(workspace_uuid, job.id).exists():
             raise CronError(f"task '{job.id}' already exists")
-        state = State(remaining=int(job.execution.get("max_executions", 9999)))
+        state = JobState(remaining=int(job.execution.get("max_executions", 9999)))
         next_dt = rules.compute_next_run(job, None)
         state.next_run = next_dt.isoformat()
         store.save_job(job)

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import restart as restart_mod
 import core.session_control as session_control_mod
+from core import restart as restart_mod
 from core import updater
 
 

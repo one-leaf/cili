@@ -64,7 +64,7 @@ class WorkflowRunner:
         self._origin_session_id = origin_session_id
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
-        self._conductor: SessionRunner | None = None
+        self._supervisor: SessionRunner | None = None
         self._current_step_runner: SessionRunner | None = None
         self._step_timed_out = False
         self._run_id = ""
@@ -98,7 +98,7 @@ class WorkflowRunner:
 
     def request_stop(self) -> None:
         self._stop.set()
-        for runner in (self._current_step_runner, self._conductor):
+        for runner in (self._current_step_runner, self._supervisor):
             if runner is not None:
                 try:
                     runner.stop()
@@ -166,11 +166,11 @@ class WorkflowRunner:
         results = ensure_results_session(ws, workflow, state, fresh=True)
         state.results_session_id = results.session_id
         self._save_state()
-        self._conductor = self._make_conductor(results)
-        if self._conductor is None:
+        self._supervisor = self._make_supervisor(results)
+        if self._supervisor is None:
             raise RuntimeError("结果会话 runner 创建失败")
 
-        self._conductor.run(user_input=self._build_conductor_prompt(index, step_def))
+        self._supervisor.run(user_input=self._build_supervisor_prompt(index, step_def))
         state_step = state.items.get(step_def.id)
         if state_step is None or state_step.status in ("pending", "running"):
             state_step = state_step or StepState()
@@ -247,11 +247,11 @@ class WorkflowRunner:
         state.results_session_id = results.session_id
         self._save_state()
 
-        self._conductor = self._make_conductor(results)
-        if self._conductor is None:
+        self._supervisor = self._make_supervisor(results)
+        if self._supervisor is None:
             self._append_event({"type": "run_finished", "status": "failed",
                                 "error": "结果会话 runner 创建失败"})
-            self._finalize_run_json(reason="conductor failed")
+            self._finalize_run_json(reason="supervisor failed")
             state.status = "failed"
             state.finished_at = now_str()
             return
@@ -263,9 +263,9 @@ class WorkflowRunner:
             state.current_index = index
             self._expected_index = index
             self._save_state()
-            prompt = self._build_conductor_prompt(index, step_def)
+            prompt = self._build_supervisor_prompt(index, step_def)
             try:
-                self._conductor.run(user_input=prompt)
+                self._supervisor.run(user_input=prompt)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[workflow] 监督者回合异常: %s", exc)
                 state_step = state.items.get(step_def.id) or StepState()
@@ -318,7 +318,7 @@ class WorkflowRunner:
 
     def _append_terminal_notice(self) -> None:
         """失败/停止时在结果会话补一条可见说明，避免界面「直接结束」。"""
-        if self.state.status == "completed" or self._conductor is None:
+        if self.state.status == "completed" or self._supervisor is None:
             return
         reason = self._summary_text()
         for index, step_def in enumerate(self.workflow.steps):
@@ -328,23 +328,23 @@ class WorkflowRunner:
                           f"{state_step.error or '未知错误'}")
                 break
         try:
-            messages = self._conductor.session.messages
+            messages = self._supervisor.session.messages
             if messages and messages[-1].get("role") == "assistant":
                 return
-            self._conductor.session.add_message(
+            self._supervisor.session.add_message(
                 "assistant", f"[工作流终止] {reason}",
                 meta={"workflow_terminal": True})
-            self._conductor.session.save()
+            self._supervisor.session.save()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[workflow] 写终止说明失败: %s", exc)
 
     def _run_final_summary(self) -> None:
         """让监督者只根据运行清单做结构化总结。"""
-        conductor = self._conductor
-        if conductor is None:
+        supervisor = self._supervisor
+        if supervisor is None:
             return
         self._expected_index = -1
-        start = len(conductor.session.messages)
+        start = len(supervisor.session.messages)
         prompt = (
             f"全部 {len(self.workflow.steps)} 个步骤已结束。\n\n"
             "## 运行清单\n"
@@ -353,8 +353,8 @@ class WorkflowRunner:
             "各步骤产物路径。不要读取业务产物正文，不要调用 workflow_agent。"
         )
         try:
-            conductor.run(user_input=prompt)
-            text = self._extract_final_text(conductor, start).strip()
+            supervisor.run(user_input=prompt)
+            text = self._extract_final_text(supervisor, start).strip()
             if text:
                 self._final_summary_text = text[:_SUMMARY_MAX]
         except Exception as exc:  # noqa: BLE001
@@ -378,7 +378,7 @@ class WorkflowRunner:
         except Exception:  # noqa: BLE001
             logger.debug("[workflow] 发布步骤事件失败: %s", ev_type, exc_info=True)
 
-    def _make_conductor(self, results) -> SessionRunner | None:
+    def _make_supervisor(self, results) -> SessionRunner | None:
         try:
             config = load_config()
             runner = SessionRunner(
@@ -736,7 +736,7 @@ class WorkflowRunner:
 
     # ── 提示词 / 产物路径 ───────────────────────────────────
 
-    def _build_conductor_prompt(self, index: int, step_def: WorkflowStep) -> str:
+    def _build_supervisor_prompt(self, index: int, step_def: WorkflowStep) -> str:
         return "\n".join([
             f"现在执行工作流的第 {index + 1}/{len(self.workflow.steps)} 步："
             f"「{step_def.name}」（执行器：{step_def.executor}）。",
@@ -981,7 +981,7 @@ class WorkflowRunner:
                 registry.remove(session_key(self.workspace_uuid, sid))
             except Exception:  # noqa: BLE001
                 pass
-        for runner in (self._conductor, self._current_step_runner):
+        for runner in (self._supervisor, self._current_step_runner):
             if runner is None:
                 continue
             try:

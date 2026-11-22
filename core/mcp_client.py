@@ -381,6 +381,10 @@ class MCPProvider:
             self._server_sigs[name] = cfg.to_dict()
             self._status[name] = "connected"
             logger.info(f"[MCP] 服务器 {name} 已连接，{len(wrappers)} 个工具")
+        except asyncio.CancelledError:
+            await stack.aclose()
+            self._tasks.pop(name, None)
+            raise
         except Exception as exc:
             await stack.aclose()
             self._status[name] = "failed"

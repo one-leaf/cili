@@ -5,12 +5,12 @@ from __future__ import annotations
 from core.channels import marker_metadata
 from core.config import get_workspace_sessions_dir
 from core.cron import store
-from core.cron.model import Job, State
+from core.cron.model import Job, JobState
 from core.session import SessionStore
 
 
 def ensure_cron_session(
-    workspace_uuid: str, job: Job, state: State
+    workspace_uuid: str, job: Job, state: JobState
 ) -> SessionStore:
     """获取/创建该任务自己的 `[Cron] {name}` 会话（幂等）。"""
     sessions_dir = get_workspace_sessions_dir(workspace_uuid)

@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 
 from core.config import get_workspace_data_dir
-from core.cron.model import Job, State
+from core.cron.model import Job, JobState
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -111,18 +111,18 @@ def delete_job(workspace_uuid: str, job_id: str) -> None:
         shutil.rmtree(path)
 
 
-def load_state(workspace_uuid: str, job_id: str) -> State:
+def load_state(workspace_uuid: str, job_id: str) -> JobState:
     path = state_path(workspace_uuid, job_id)
     if not path.exists():
-        return State()
+        return JobState()
     try:
-        return State.from_dict(load_json_or_backup(path, {}))
+        return JobState.from_dict(load_json_or_backup(path, {}))
     except Exception as exc:  # noqa: BLE001
         logger.error("[cron] invalid state %s/%s: %s", workspace_uuid, job_id, exc)
-        return State()
+        return JobState()
 
 
-def save_state(workspace_uuid: str, job_id: str, state: State) -> Path:
+def save_state(workspace_uuid: str, job_id: str, state: JobState) -> Path:
     path = state_path(workspace_uuid, job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, state.to_dict())

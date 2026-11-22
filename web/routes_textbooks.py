@@ -21,7 +21,7 @@ from core.textbooks import (
     TextbookDownloadError,
     textbook_tasks,
 )
-from core.textbooks.markdown_store import copy_textbook_markdown
+from core.textbooks.markdown_copy import copy_textbook_markdown
 from web.deps import _SAFE_ID_RE, _csrf_protect, teen_guard
 
 router = APIRouter()

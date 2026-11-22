@@ -8,7 +8,7 @@ from typing import Any
 
 from core.config import get_workspace_data_dir
 from core.cron import rules
-from core.cron.model import Job, State, now_str
+from core.cron.model import Job, JobState, now_str
 from core.fs_utils import load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ def convert_job(config: dict[str, Any], default_workspace: str = "") -> Job:
     return job
 
 
-def convert_state(workspace_uuid: str, job: Job) -> State:
+def convert_state(workspace_uuid: str, job: Job) -> JobState:
     path = legacy_dir(workspace_uuid) / "state" / f"{job.id}.json"
     if not path.exists():
         path = legacy_dir(workspace_uuid) / "state" / f"{job.name}.json"
@@ -89,7 +89,7 @@ def convert_state(workspace_uuid: str, job: Job) -> State:
         remaining = int(remaining) if remaining is not None else max_executions
     except (TypeError, ValueError):
         remaining = max_executions
-    return State(
+    return JobState(
         next_run=None,
         last_run=data.get("last_run"),
         last_status=data.get("last_status"),

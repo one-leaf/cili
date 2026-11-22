@@ -17,7 +17,7 @@ from core.textbooks import (
     get_official_catalog,
     textbook_tasks,
 )
-from core.textbooks.markdown_store import copy_textbook_markdown
+from core.textbooks.markdown_copy import copy_textbook_markdown
 from core.workspace_wizard import (
     CATEGORIES,
     CODE_LANGUAGES,

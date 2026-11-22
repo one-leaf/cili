@@ -26,12 +26,12 @@ def _get_todo_dir(workspace_uuid: str = "") -> Path:
 
 
 def get_todo_file_path(session_id: str, workspace_uuid: str = "") -> Path:
-    """Get the path to the todo file for a given session."""
+    """会话 todo 文件路径。"""
     return _get_todo_dir(workspace_uuid) / f"{session_id}.json"
 
 
 def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
-    """Read todos from the session's todo file."""
+    """读取会话 todo 文件。"""
     todo_file = get_todo_file_path(session_id, workspace_uuid)
     if not todo_file.exists():
         return []
@@ -44,7 +44,7 @@ def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
 
 
 def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") -> None:
-    """Write todos to the session's todo file."""
+    """写入会话 todo 文件。"""
     todo_dir = _get_todo_dir(workspace_uuid)
     todo_dir.mkdir(parents=True, exist_ok=True)
     todo_file = get_todo_file_path(session_id, workspace_uuid)
@@ -77,14 +77,11 @@ def todo_update_event(tool_name: str, is_error: bool, session: SessionStore | No
 
 
 def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "") -> list[dict] | None:
-    """Helper to get current todos from session's todo file.
-
-    Supports new format (independent file) and old format (session metadata).
-    """
+    """读取会话当前 todos：优先独立文件，其次旧 metadata 格式。"""
     if session is None:
         return None
 
-    # Try new format: independent todo file
+    # 优先独立文件
     session_id = getattr(session, 'session_id', None)
     has_file = False
     if session_id:
@@ -95,8 +92,8 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
             if todos:
                 return todos
 
-    # Fall back to old format: session metadata (for backward compatibility)
-    if hasattr(session, 'metadata'):
+    # 仅当没有独立文件时才回退旧格式（避免把已清空的 todo 又复活）
+    if not has_file and hasattr(session, 'metadata'):
         old_todos = session.metadata.get("todos")
         if old_todos:
             if session_id:

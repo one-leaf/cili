@@ -11,7 +11,7 @@ from typing import Any
 
 from core.config import SYSTEM_WORKSPACE_UUID, get_all_workspace_uuids
 from core.cron import delivery, executor, rules, store
-from core.cron.model import Job, RunResult, State, now_str
+from core.cron.model import Job, JobState, RunResult, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,14 @@ _MAX_GLOBAL_CONCURRENCY = 4
 @dataclass
 class LoadedJob:
     job: Job
-    state: State
+    state: JobState
     next_ts: float | None = None
 
 
 @dataclass
 class _Dispatch:
     job: Job = field(repr=False)
-    state: State = field(repr=False)
+    state: JobState = field(repr=False)
     slot: str = ""
     scheduled_iso: str = ""
     extra: bool = False
@@ -108,7 +108,7 @@ class CronEngine:
             self._jobs = loaded
 
     def _recover_and_init(
-        self, workspace_uuid: str, job: Job, state: State, *, recover_running: bool = False
+        self, workspace_uuid: str, job: Job, state: JobState, *, recover_running: bool = False
     ) -> bool:
         changed = False
         if state.remaining is None:
@@ -157,7 +157,7 @@ class CronEngine:
             changed = True
         return changed
 
-    def _state_next_ts(self, job: Job, state: State) -> float | None:
+    def _state_next_ts(self, job: Job, state: JobState) -> float | None:
         if not state.next_run:
             return None
         try:

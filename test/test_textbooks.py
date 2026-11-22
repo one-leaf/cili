@@ -369,34 +369,34 @@ class TestOfficialDownloader:
         assert files and files[0].read_bytes() == body
 
 
-class TestMarkdownStore:
+class TestMarkdownCopy:
     """教材 Markdown 复制：可读文件名、缺失源跳过。"""
 
     def test_copies_markdown_with_readable_name(self, tmp_path, monkeypatch):
-        from core.textbooks import markdown_store
+        from core.textbooks import markdown_copy
 
         md_dir = tmp_path / "md"
         md_dir.mkdir()
-        monkeypatch.setattr(markdown_store, "MD_DIR", md_dir)
+        monkeypatch.setattr(markdown_copy, "MD_DIR", md_dir)
         content_id = "00000001-0000-0000-0000-000000000001"
         (md_dir / f"{content_id}.md").write_text("# 数学", encoding="utf-8")
         catalog = _catalog(_book(content_id=content_id))
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        copied = markdown_store.copy_textbook_markdown(workspace, catalog, catalog.books)
+        copied = markdown_copy.copy_textbook_markdown(workspace, catalog, catalog.books)
         target = workspace / "教材" / "义务教育教科书·数学一年级上册.md"
         assert copied == [str(target)]
         assert target.read_text(encoding="utf-8") == "# 数学"
 
     def test_skips_when_source_missing(self, tmp_path, monkeypatch):
-        from core.textbooks import markdown_store
+        from core.textbooks import markdown_copy
 
-        monkeypatch.setattr(markdown_store, "MD_DIR", tmp_path / "empty")
+        monkeypatch.setattr(markdown_copy, "MD_DIR", tmp_path / "empty")
         catalog = _catalog(_book())
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        assert markdown_store.copy_textbook_markdown(workspace, catalog, catalog.books) == []
+        assert markdown_copy.copy_textbook_markdown(workspace, catalog, catalog.books) == []
 
 
 class TestWizardTextbookLaunch:

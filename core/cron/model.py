@@ -1,4 +1,4 @@
-"""Cron v2 领域模型：Job / State / RunResult。
+"""Cron v2 领域模型：Job / JobState / RunResult。
 
 设计见 workspace/default/cron-redesign-plan-2026-11-14.md。
 """
@@ -205,7 +205,7 @@ class Job:
 
 
 @dataclass
-class State:
+class JobState:
     version: int = 2
     next_run: str | None = None
     last_run: str | None = None
@@ -222,7 +222,7 @@ class State:
     history: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "State":
+    def from_dict(cls, data: dict[str, Any] | None) -> "JobState":
         data = data or {}
         if not isinstance(data, dict):
             raise CronValidationError("state must be an object")

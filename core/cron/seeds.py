@@ -15,7 +15,7 @@ from typing import Any
 
 from core.config import PROJECT_ROOT, SYSTEM_WORKSPACE_UUID
 from core.cron import rules, store
-from core.cron.model import Job, State, now_str
+from core.cron.model import Job, JobState, now_str
 from core.fs_utils import load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,8 @@ def _load_seed(path: Path) -> Job:
     return job
 
 
-def _default_state(job: Job) -> State:
-    return State(
+def _default_state(job: Job) -> JobState:
+    return JobState(
         remaining=int(job.execution.get("max_executions", 9999)),
     )
 

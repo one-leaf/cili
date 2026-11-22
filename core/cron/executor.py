@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import SYSTEM_WORKSPACE_UUID, get_workspace_cwd, load_config
-from core.cron.model import Job, RunResult, State
+from core.cron.model import Job, JobState, RunResult
 from core.cron.runtime import cron_run_active
 from core.cron.sessions import ensure_cron_session
 from core.session_runner import SessionRunner
@@ -101,7 +101,7 @@ def _content_items(content: Any, job: Job | None = None) -> list[dict[str, Any]]
 
 
 def _build_prompt(
-    job: Job, state: State, item: dict[str, Any], scheduled_iso: str
+    job: Job, state: JobState, item: dict[str, Any], scheduled_iso: str
 ) -> str:
     lines = [
         "[定时任务触发]",
@@ -194,7 +194,7 @@ def _run_with_timeout(
 
 def execute(
     job: Job,
-    state: State,
+    state: JobState,
     slot: str,
     scheduled_iso: str,
     *,

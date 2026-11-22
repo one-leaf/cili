@@ -7,7 +7,7 @@ from typing import Any
 
 from core.config import SYSTEM_WORKSPACE_UUID, get_workspace_sessions_dir
 from core.cron import sessions
-from core.cron.model import Job, RunResult, State
+from core.cron.model import Job, JobState, RunResult
 from core.event_bus import get_event_bus
 from core.session import SessionStore
 
@@ -33,7 +33,7 @@ def _target(job: Job) -> tuple[str, str, str] | None:
     return None
 
 
-def deliver(job: Job, state: State, result: RunResult) -> dict[str, Any]:
+def deliver(job: Job, state: JobState, result: RunResult) -> dict[str, Any]:
     """执行一次投递，返回回执字段（写入 state.last_delivery）。"""
     mode = str(job.delivery.get("mode") or "none")
 
@@ -116,7 +116,7 @@ def deliver(job: Job, state: State, result: RunResult) -> dict[str, Any]:
     }
 
 
-def _fallback(job: Job, state: State, mode: str) -> dict[str, Any]:
+def _fallback(job: Job, state: JobState, mode: str) -> dict[str, Any]:
     """目标缺失：确保该任务自己的 cron 会话存在（结果已在其中）。"""
     try:
         session = sessions.ensure_cron_session(
