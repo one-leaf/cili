@@ -25,8 +25,8 @@ class TestParseAriaSnapshot:
   - paragraph: Some welcome text"""
 
     def _parse(self, yaml_text, **kwargs):
-        from core.browser_service import _parse_aria_snapshot
-        return _parse_aria_snapshot(yaml_text, **kwargs)
+        from core.browser_snapshot import parse_aria_snapshot
+        return parse_aria_snapshot(yaml_text, **kwargs)
 
     def test_refs_assigned_in_dfs_order(self):
         lines, ref_map = self._parse(self.SAMPLE)
@@ -277,8 +277,8 @@ class TestEnhancedDispatch:
         svc.navigate.assert_called_once_with("https://example.com", tab_index=None)
 
     def test_navigate_private_url_placeholder(self):
-        from core.tools.permission import META_KEY, PermissionStore
         from core.tools.browser import BrowserTool
+        from core.tools.permission import META_KEY, PermissionStore
         svc = self._service()
         with patch("core.browser_service.get_service", return_value=svc):
             result = BrowserTool(permission_store=PermissionStore()).execute(
@@ -291,8 +291,8 @@ class TestEnhancedDispatch:
         svc.navigate.assert_not_called()
 
     def test_navigate_private_url_approved_bypasses(self):
-        from core.tools.permission import PermissionStore, permission_decision_id
         from core.tools.browser import BrowserTool
+        from core.tools.permission import PermissionStore, permission_decision_id
         url = "http://127.0.0.1:8885/tcmp-war/"
         store = PermissionStore()
         store.approve(permission_decision_id(url), url, kind="browser:navigate")
@@ -314,8 +314,12 @@ class TestEnhancedDispatch:
         此前工具层对任何被拦截的 URL 都弹批准卡，批准后 skip_ssrf=True
         跳过整段校验 —— 批准 file:/// 或元数据端点即可绕过防护。
         """
-        from core.tools.permission import META_KEY, PermissionStore, permission_decision_id
         from core.tools.browser import BrowserTool
+        from core.tools.permission import (
+            META_KEY,
+            PermissionStore,
+            permission_decision_id,
+        )
 
         svc = self._service()
         store = PermissionStore()

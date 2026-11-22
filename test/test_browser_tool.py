@@ -114,7 +114,7 @@ class TestBrowserToolSchemaAndParsing:
         回归：JS 注入的 <div role="button"> 常无文本标签，快照里看得见却寻址不了
         （drag/click 报 Unknown ref）。结构性无名节点仍不应占用 ref 预算。
         """
-        from core.browser_service import _parse_aria_snapshot
+        from core.browser_snapshot import parse_aria_snapshot
 
         yaml_text = "\n".join([
             "- banner:",
@@ -123,7 +123,7 @@ class TestBrowserToolSchemaAndParsing:
             "  - generic:",
             "    - paragraph: hello",
         ])
-        _lines, ref_map = _parse_aria_snapshot(yaml_text)
+        _lines, ref_map = parse_aria_snapshot(yaml_text)
 
         assert len([r for r, e in ref_map.items() if e["name"] == "Sign in"]) == 1
         assert len([r for r, e in ref_map.items()

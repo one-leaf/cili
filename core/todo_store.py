@@ -86,10 +86,14 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
 
     # Try new format: independent todo file
     session_id = getattr(session, 'session_id', None)
+    has_file = False
     if session_id:
         todo_file = get_todo_file_path(session_id, workspace_uuid)
-        if todo_file.exists():
-            return read_todos(session_id, workspace_uuid)
+        has_file = todo_file.exists()
+        if has_file:
+            todos = read_todos(session_id, workspace_uuid)
+            if todos:
+                return todos
 
     # Fall back to old format: session metadata (for backward compatibility)
     if hasattr(session, 'metadata'):
@@ -103,4 +107,5 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
                 del session.metadata["todos"]
             return old_todos
 
-    return None
+    # 文件存在但为空/损坏：显式返回 []（供“清空 todo”推送事件）；无文件则 None
+    return [] if has_file else None

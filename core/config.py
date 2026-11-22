@@ -1065,12 +1065,12 @@ def get_workspace_tools_dir(workspace_uuid: str) -> Path:
 
 
 def sessions_dir_for_data_dir(data_dir: Path | str) -> Path:
-    """Sessions directory under an already-resolved workspace data dir."""
+    """返回已解析的工作区数据目录下的 sessions 目录。"""
     return Path(data_dir) / "sessions"
 
 
 def get_workspace_sessions_dir(workspace_uuid: str = "") -> Path:
-    """Get the sessions directory for a workspace: {workspace}/.cili/sessions/."""
+    """工作区的 sessions 目录：{workspace}/.cili/sessions/。"""
     return sessions_dir_for_data_dir(get_workspace_data_dir(workspace_uuid))
 
 
@@ -1090,7 +1090,7 @@ def workspace_uuid_for_sessions_dir(sessions_dir: Path | str) -> str:
 
 
 def get_workspace_cwd(workspace_uuid: str = "") -> str:
-    """Get a workspace's user-visible directory (workspaces.json entry, else data parent)."""
+    """工作区的用户可见目录（workspaces.json 条目；缺失时回退到数据目录父级）。"""
     ws_config = load_workspace_config(workspace_uuid)
     if ws_config and ws_config.get("directory"):
         return str(ws_config["directory"])

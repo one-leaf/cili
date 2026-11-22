@@ -232,11 +232,11 @@ class TestClosePageInternal:
 
 
 class TestValidateNavigateUrl:
-    """_validate_navigate_url() scheme/SSRF 过滤（A30/SEC-17）。"""
+    """check_navigate_url() scheme/SSRF 过滤（A30/SEC-17）。"""
 
     def _validate(self, url):
-        from core.browser_service import _validate_navigate_url
-        return _validate_navigate_url(url)
+        from core.browser_url_policy import check_navigate_url
+        return check_navigate_url(url)
 
     def test_public_http_https_allowed(self):
         assert self._validate("https://example.com/page") is None
@@ -285,24 +285,24 @@ class TestValidateNavigateUrl:
     # ─── 批准（allow_non_public）只解锁私网判定 ───────────────────
 
     def test_private_allowed_when_approved(self):
-        from core.browser_service import _validate_navigate_url
+        from core.browser_url_policy import check_navigate_url
         for url in ("http://127.0.0.1:8080/", "http://192.168.1.5/", "http://localhost:9000/"):
-            assert _validate_navigate_url(url, allow_non_public=True) is None
+            assert check_navigate_url(url, allow_non_public=True) is None
 
     def test_scheme_still_rejected_when_approved(self):
-        from core.browser_service import _validate_navigate_url
+        from core.browser_url_policy import check_navigate_url
         for url in ("file:///etc/passwd", "data:text/html,x", "javascript:alert(1)"):
-            reason = _validate_navigate_url(url, allow_non_public=True)
+            reason = check_navigate_url(url, allow_non_public=True)
             assert reason and "scheme" in reason
 
     def test_metadata_endpoints_rejected_even_when_approved(self):
-        from core.browser_service import _validate_navigate_url
+        from core.browser_url_policy import check_navigate_url
         for url in (
             "http://169.254.169.254/latest/meta-data/",
             "http://metadata.google.internal/",
             "http://100.100.100.200/latest/meta-data/",
         ):
-            reason = _validate_navigate_url(url, allow_non_public=True)
+            reason = check_navigate_url(url, allow_non_public=True)
             assert reason and "硬拒绝" in reason
 
 

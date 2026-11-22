@@ -119,34 +119,24 @@ def _prune_cache(cache_dir: Path | None = None) -> None:
     with _prune_guard:
         cache_dir = cache_dir if cache_dir is not None else _get_cache_dir()
         now = time.time()
-        entries: list[tuple[float, Path]] = []
+        entries: list[tuple[float, int, Path]] = []
         for pdf in cache_dir.glob("*.pdf"):
             try:
-                age = now - pdf.stat().st_mtime
+                st = pdf.stat()
             except OSError:
                 continue
-            meta = pdf.with_suffix(".json")
+            age = now - st.st_mtime
             if age > _CACHE_TTL_SECONDS:
                 pdf.unlink(missing_ok=True)
-                meta.unlink(missing_ok=True)
+                pdf.with_suffix(".json").unlink(missing_ok=True)
                 continue
-            entries.append((now - age, pdf))
-        total = 0
-        for _, pdf in entries:
-            try:
-                total += pdf.stat().st_size
-            except OSError:
-                continue
-        for _, pdf in sorted(entries):
+            entries.append((st.st_mtime, st.st_size, pdf))
+        total = sum(size for _, size, _ in entries)
+        for mtime, size, pdf in sorted(entries, key=lambda e: e[0]):
             if total <= _CACHE_MAX_BYTES:
                 break
-            try:
-                stat = pdf.stat()
-            except OSError:
-                continue
-            if now - stat.st_mtime < _PRUNE_MIN_AGE_S:
+            if now - mtime < _PRUNE_MIN_AGE_S:
                 continue  # 刚生成的产物可能正被 copy_pdf 使用
-            size = stat.st_size
             pdf.unlink(missing_ok=True)
             pdf.with_suffix(".json").unlink(missing_ok=True)
             total -= size

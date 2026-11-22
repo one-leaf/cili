@@ -232,11 +232,8 @@ Use web_search for simple lookups; use browser when search results are insuffici
     ) -> ToolResult:
         """执行浏览器操作，委托给 BrowserService。"""
         # 懒导入避免 core.browser_service → core.tools.base 触发 registry 的循环依赖
-        from core.browser_service import (
-            _navigate_hard_deny,
-            _validate_navigate_url,
-            get_service,
-        )
+        from core.browser_service import get_service
+        from core.browser_url_policy import check_navigate_url, hard_deny_reason
 
         service = get_service()
         if not service.is_running():
@@ -257,13 +254,13 @@ Use web_search for simple lookups; use browser when search results are insuffici
             # 硬拒绝项（scheme 白名单、云元数据端点）不提供批准通道：
             # 批准卡只用于「访问非公网地址」，不能连带解锁 file:// 读取本地文件
             # 或云元数据端点。
-            hard_deny = _navigate_hard_deny(url)
+            hard_deny = hard_deny_reason(url)
             if hard_deny:
                 return ToolResult(f"Error: 导航被拒绝 — {hard_deny}", error=True)
 
             # SSRF 防护：非公网地址导航走审批门（设计 §3.1）——规则/会话批准命中直接放行，
             # 否则返回判定占位，由 Loop 做 lite 判定分派（ask → 卡片 / deny → 拒绝）。
-            block_reason = _validate_navigate_url(url)
+            block_reason = check_navigate_url(url)
             if block_reason:
                 did = permission_decision_id(url)
                 verdict = self._permission_policy().url_verdict(

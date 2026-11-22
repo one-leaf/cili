@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import os
@@ -23,13 +22,19 @@ import threading
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from playwright.sync_api import Page
 
+from core.browser_snapshot import (
+    parse_aria_snapshot,
+)
+from core.browser_url_policy import check_navigate_url
 from core.config import PROJECT_ROOT
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, ToolResult
+
+# 每 tab 的 console/request 缓冲上限
+BUFFER_MAXLEN = 200
 
 logger = logging.getLogger(__name__)
 
@@ -86,164 +91,6 @@ try:
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
-
-# navigate 仅允许 http/https scheme（拒绝 file://、data:、javascript: 等）
-_NAVIGATE_SAFE_SCHEMES = frozenset({"http", "https"})
-
-# 云元数据端点：即使用户批准了非公网导航也硬拒绝 —— 批准的语义是「访问内网
-# 服务」，不应连带解锁云凭证获取端点（169.254.169.254 等可换取实例凭证）
-_NAVIGATE_METADATA_HOSTS = frozenset({
-    "169.254.169.254",           # AWS / GCP / Azure / OpenStack
-    "fd00:ec2::254",             # AWS IMDSv2（IPv6）
-    "metadata.google.internal",  # GCP
-    "metadata.goog",
-    "100.100.100.200",           # 阿里云
-})
-
-
-def _navigate_hard_deny(url: str) -> str | None:
-    """任何情况下都不放行的拒绝项（含用户已批准）：scheme 白名单 + 云元数据端点。
-
-    与 _validate_navigate_url 的私网判定分开，是为了让「用户批准非公网导航」
-    只解锁私网/环回地址，而不会连带绕过 scheme 白名单（否则批准一个
-    file:/// 就能读本地文件）。
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in _NAVIGATE_SAFE_SCHEMES:
-        scheme = parsed.scheme or "(空)"
-        return f"URL scheme '{scheme}' 不允许，仅支持 http/https"
-    host = parsed.hostname
-    if not host:
-        return "URL 缺少主机名"
-    if host.lower() in _NAVIGATE_METADATA_HOSTS:
-        return f"{host} 是云元数据端点，不允许导航（SSRF 硬拒绝，用户批准亦不放行）"
-    return None
-
-
-def _validate_navigate_url(url: str, *, allow_non_public: bool = False) -> str | None:
-    """校验浏览器导航 URL（A30/SEC-17）。
-
-    Args:
-        allow_non_public: 用户已批准该非公网导航时为 True —— 只跳过
-            「私网/环回/链路本地」判定；scheme 白名单与云元数据端点属硬拒绝，
-            不受此参数影响。
-
-    Returns:
-        None 表示可导航；否则返回拒绝原因（供 ToolResult error 展示）。
-
-    策略：
-    - scheme 白名单：仅 http/https，硬拒绝 file://、data:、javascript: 等
-    - 云元数据端点硬拒绝（见 _navigate_hard_deny）
-    - 私网/环回/链路本地/保留地址拦截（SSRF 防护）：字面 IP 判定 + localhost 特判。
-      配合网页内容提示注入，防止恶意网页诱导浏览器读取本地文件或探测内网。
-    """
-    reason = _navigate_hard_deny(url)
-    if reason:
-        return reason
-    if allow_non_public:
-        return None
-    host = urlparse(url).hostname
-    if host.lower() == "localhost":
-        return "localhost（环回地址）不允许导航（SSRF 防护）"
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return None  # 域名，交由浏览器 DNS 解析（无法静态预判，不拦截）
-    if not addr.is_global:
-        return (
-            f"{host} 不是公网地址（环回/私网/链路本地等），不允许导航（SSRF 防护）"
-        )
-    return None
-
-
-# aria_snapshot YAML 行解析（ref 定位模型）
-# 行形态：
-#   - banner:                 容器（无 name）
-#   - button "Sign in"        带名元素（可带内联属性如 [level=1] 或子节点冒号）
-#   - paragraph: some text    文本形式（role: content）
-#   - /url: /home             属性行（保留显示，不分配 ref）
-_SNAP_EL_RE = re.compile(
-    r'^(\s*)-\s+(\w+)(?:\s+"((?:[^"\\]|\\.)*)")?(?:\s+\[([^\]]*)\])?:?\s*$'
-)
-_SNAP_TEXT_RE = re.compile(r"^(\s*)-\s+(\w+):\s+(.+?)\s*$")
-
-# 无「可访问名」时仍分配 ref 的角色。快照里无名元素照样会显示，若不给 ref，模型就
-# 看得见却寻址不了（典型：JS 注入的 <div role="button"> 没有文本标签）。只对交互类
-# 角色放宽，避免把 ref 预算耗在 - generic: 这类结构性节点上（SNAPSHOT_MAX_REFS 有限）。
-_INTERACTIVE_ROLES = frozenset({
-    "button", "link", "textbox", "searchbox", "checkbox", "radio", "switch",
-    "combobox", "listbox", "option", "slider", "spinbutton", "menuitem",
-    "menuitemcheckbox", "menuitemradio", "tab", "treeitem", "gridcell",
-})
-
-# 单次 snapshot 最多分配的 ref 数（超出的元素保留显示但不给 ref）
-SNAPSHOT_MAX_REFS = 400
-
-# 每 tab 的 console/request 缓冲上限
-BUFFER_MAXLEN = 200
-
-
-def _unescape_quoted(s: str) -> str:
-    """反转义 aria_snapshot 引号 name 中的 \" 和 \\。"""
-    return s.replace('\\"', '"').replace("\\\\", "\\")
-
-
-def _parse_aria_snapshot(yaml_text: str, max_refs: int = SNAPSHOT_MAX_REFS):
-    """解析 aria_snapshot YAML，为可交互元素分配 ref。
-
-    Returns:
-        lines: list[tuple[str, str]] — (indent, 带 ref 标注的重建行)
-        ref_map: dict[str, dict] — ref → {"role", "name", "index", "mode"}
-            index: 同 (role, name) 元素出现次序（0 起），用于 get_by_role().nth()
-            mode: "role" 用 get_by_role 定位，"text" 用 get_by_text 定位
-    """
-    ref_map: dict[str, dict] = {}
-    lines_out: list[tuple[str, str]] = []
-    seen: dict[tuple, int] = {}
-    ref_counter = 0
-    for line in yaml_text.splitlines():
-        if not line.strip():
-            continue
-        m = _SNAP_EL_RE.match(line)
-        if m:
-            indent, role, name, _attrs = m.groups()
-            if name or role in _INTERACTIVE_ROLES:
-                key = (role, name or "")
-                idx = seen.get(key, 0)
-                seen[key] = idx + 1
-                if ref_counter < max_refs:
-                    ref_counter += 1
-                    ref = f"r{ref_counter}"
-                    ref_map[ref] = {
-                        "role": role,
-                        "name": _unescape_quoted(name) if name else "",
-                        "index": idx,
-                        "mode": "role",
-                    }
-                    line = line.rstrip() + f" [ref={ref}]"
-            lines_out.append((indent, line))
-            continue
-        m = _SNAP_TEXT_RE.match(line)
-        if m:
-            indent, role, text = m.groups()
-            key = (role, text)
-            idx = seen.get(key, 0)
-            seen[key] = idx + 1
-            if ref_counter < max_refs:
-                ref_counter += 1
-                ref = f"r{ref_counter}"
-                ref_map[ref] = {
-                    "role": role,
-                    "name": text,
-                    "index": idx,
-                    "mode": "text",
-                }
-                line = line.rstrip() + f" [ref={ref}]"
-            lines_out.append((indent, line))
-            continue
-        # 属性行（/url 等）原样保留，不分配 ref
-        lines_out.append(("", line))
-    return lines_out, ref_map
 
 
 class _ChromeProcessRef:
@@ -1437,7 +1284,7 @@ class BrowserService:
         if entry["mode"] == "text":
             return base.get_by_text(entry["name"], exact=True).nth(entry["index"])
         if not entry["name"]:
-            # 无名元素（role in _INTERACTIVE_ROLES）：按 role 定位。
+            # 无名元素（role in INTERACTIVE_ROLES）：按 role 定位。
             # 不能传 name=""——那会去匹配「可访问名为空」这一条件，语义不同。
             return base.get_by_role(entry["role"]).nth(entry["index"])
         return base.get_by_role(
@@ -1452,7 +1299,7 @@ class BrowserService:
         """
         base = self._resolve_frame(page, frame)
         yaml_text = base.locator("body").aria_snapshot()
-        lines, ref_map = _parse_aria_snapshot(yaml_text)
+        lines, ref_map = parse_aria_snapshot(yaml_text)
         self._snapshot_refs[self._ref_key(tab_index, frame)] = ref_map
         return lines, ref_map
 
@@ -1605,7 +1452,7 @@ class BrowserService:
             ToolResult，data 包含 tab_index 字段
         """
         # A30: SSRF 防护，先于任何浏览器操作快速失败
-        block_reason = _validate_navigate_url(url, allow_non_public=approved_non_public)
+        block_reason = check_navigate_url(url, allow_non_public=approved_non_public)
         if block_reason:
             return ToolResult(
                 f"Error: 导航被拒绝 — {block_reason}", error=True
