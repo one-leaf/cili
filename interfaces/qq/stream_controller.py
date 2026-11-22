@@ -147,7 +147,7 @@ class StreamingController:
             if len(text) < len(self._accepted):
                 # 长度回退 → 新回复：收尾当前流，另开一条
                 logger.info(
-                    f"[qq/stream] 前缀发散且更短（{len(self._accepted)}→{len(text)}），"
+                    f"[qq/stream_controller] 前缀发散且更短（{len(self._accepted)}→{len(text)}），"
                     f"作为新回复另开一条流"
                 )
                 self._target.restart()
@@ -158,7 +158,7 @@ class StreamingController:
                 extra = text[common:]
                 merged = self._accepted + extra
                 logger.warning(
-                    f"[qq/stream] 前缀发散（{len(self._accepted)}→{len(text)}，"
+                    f"[qq/stream_controller] 前缀发散（{len(self._accepted)}→{len(text)}，"
                     f"公共前缀 {common}），改为追加尾巴 {len(extra)} 字符"
                 )
                 text = merged

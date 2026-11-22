@@ -216,9 +216,9 @@ def _format_window(seconds: int) -> str:
     return f"{int(seconds or 0)} 秒"
 
 
-_NEGATION_PHRASES = (
-    "不允许", "不准", "不可以", "不能", "不行", "不同意", "不想", "不愿意",
-    "不需要", "没有必要", "不必", "不用", "不要", "禁止", "取消", "拒绝", "无需",
+_NEGATION_SUFFIXES = (
+    "不", "别", "勿", "未", "不要", "不想", "不愿意", "不需要", "没有必要",
+    "不必", "不用", "禁止", "取消", "拒绝", "无需", "不允许",
 )
 
 
@@ -229,9 +229,7 @@ def _ends_with_affirmed(text: str, label: str) -> bool:
     if not text.endswith(label):
         return False
     prefix = text[:-len(label)].rstrip(" ，,。.!！、;；")
-    if any(phrase in prefix for phrase in _NEGATION_PHRASES):
-        return False
-    return not prefix.endswith(("别", "勿", "未"))
+    return not prefix.endswith(_NEGATION_SUFFIXES)
 
 
 def decision_from_text(text: str | None) -> str:

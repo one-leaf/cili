@@ -21,20 +21,13 @@ from pathlib import Path
 
 from core.media_fetch import (
     InboundMedia,
-    check_download_url,
     classify,
     download_to_uploads,
 )
 
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "InboundMedia",
-    "check_download_url",
-    "classify",
-    "download_to_uploads",
-    "process_attachments",
-]
+__all__ = ["InboundMedia", "process_attachments"]
 
 
 def _attachment_url(att) -> str:
@@ -109,5 +102,5 @@ async def process_attachments(
         if isinstance(r, InboundMedia):
             out.append(r)
         elif isinstance(r, BaseException):
-            logger.warning(f"[qq/attachment] 附件处理异常：{r}")
+            logger.warning(f"[qq/inbound_media] 附件处理异常：{r}")
     return out

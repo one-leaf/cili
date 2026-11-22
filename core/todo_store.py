@@ -110,5 +110,5 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
                 del session.metadata["todos"]
             return old_todos
 
-    # 文件存在但为空/损坏：显式返回 []（供“清空 todo”推送事件）；无文件则 None
-    return [] if has_file else None
+    # 合法空列表已在上面返回；到这里是“无文件”或“文件损坏”
+    return None

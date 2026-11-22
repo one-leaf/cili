@@ -33,10 +33,10 @@ from typing import Any
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
 from interfaces.common.ask_user import render_questions
-from interfaces.qq import rawapi
+from interfaces.qq import stream_api
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.sanitize import sanitize_qq_text
-from interfaces.qq.stream import StreamingController
+from interfaces.qq.stream_controller import StreamingController
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class _QQStreamTarget:
         async with self._lock:
             try:
                 if self._session is None:
-                    self._session = rawapi.StreamSession(
+                    self._session = stream_api.StreamSession(
                         self._rt.api,
                         self._openid,
                         self._msg_id,
@@ -96,12 +96,12 @@ class _QQStreamTarget:
                 self.sent_ok += 1
                 if final:
                     self._session = None
-            except rawapi.PrefixNotExtendableError:
+            except stream_api.PrefixNotExtendableError:
                 # 40007：新内容不是已下发前缀的扩展。收尾旧流、另开一条重推。
                 logger.warning("[qq/sink] 前缀不可扩展（40007），收尾后另开一条流")
                 await self._complete_locked()
                 try:
-                    self._session = rawapi.StreamSession(
+                    self._session = stream_api.StreamSession(
                         self._rt.api,
                         self._openid,
                         self._msg_id,

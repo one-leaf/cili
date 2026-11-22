@@ -24,7 +24,7 @@ from interfaces.common.ask_user import resolve_answer
 from interfaces.common.owner import OwnerTracker
 from interfaces.common.session_claim import prepare_and_claim
 from interfaces.qq import commands, media
-from interfaces.qq.attachment import InboundMedia, process_attachments
+from interfaces.qq.inbound_media import InboundMedia, process_attachments
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.sink import QQSink
 from interfaces.qq.state import ensure_session, resolve_current

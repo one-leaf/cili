@@ -32,13 +32,13 @@ interfaces/qq/             QQ 接入端（SDK 单例，宿主线程 + 宿主 loo
   state.py                 owner + 当前工作区/会话（单用户，全局一份）
   runtime.py               QQRuntime：SDK 对象与共享状态的容器（避免循环导入）
 
-  rawapi.py                适配层：stream_messages 裸调用（SDK 唯一缺口）
+  stream_api.py            适配层：stream_messages 裸调用（SDK 唯一缺口）
   gateway.py               SDK 接线：WSCallbacks 11 个回调 + 事件分发
   access.py                owner 记录（自动绑定 + 每次对话刷新）
-  attachment.py            入站附件：下载 / 分类 / SSRF 校验
+  inbound_media.py         入站附件：下载 / 分类 / SSRF 校验
   inbound.py               消息 → 会话回合
 
-  stream.py                流式状态机：前缀不可变 + 发散两分支 + 节流
+  stream_controller.py     流式状态机：前缀不可变 + 发散两分支 + 节流
   limiter.py               被动回复配额 + 主动消息降级
   sanitize.py              文本消毒（剥离 thinking / 脚手架）
   chunk.py                 markdown 感知切分（4000 上限、围栏闭合、表格整块）
@@ -95,11 +95,11 @@ QQ 的答案是下一条消息）。把它们做成「返回答案」的方法�
 
 1. `sanitize.py` —— 文本消毒（SDK 完全没有）
 2. `media.py` 的路径白名单校验（SDK 只 `(Path.cwd()/p).resolve()`）
-3. `attachment.py` 的下载大小上限 + HTTPS 强制 + **SSRF 校验**（SDK 只验 scheme）
+3. `inbound_media.py` 的下载大小上限 + HTTPS 强制 + **SSRF 校验**（SDK 只验 scheme）
 4. `chunk.py` —— markdown 感知切分
-5. `stream.py` —— 流式状态机
+5. `stream_controller.py` —— 流式状态机
 6. `limiter.py` —— 被动回复配额 + 主动消息降级
-7. `rawapi.py` —— `stream_messages` 裸调用
+7. `stream_api.py` —— `stream_messages` 裸调用
 
 ### 2.2 SDK 的两个坑
 

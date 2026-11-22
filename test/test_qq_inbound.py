@@ -190,15 +190,15 @@ class TestOwnerTracker:
 
 class TestDownloadUrlCheck:
     def test_https_public_literal_ip_ok(self):
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
         assert check_download_url("https://8.8.8.8/a.png") is None
 
     def test_rejects_http(self):
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
         assert check_download_url("http://example.com/a.png") is not None
 
     def test_rejects_private_and_loopback_literal_ips(self):
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
         for url in (
             "https://127.0.0.1/a",
             "https://10.0.0.1/a",
@@ -209,11 +209,11 @@ class TestDownloadUrlCheck:
             assert check_download_url(url) is not None, url
 
     def test_rejects_metadata_hostname(self):
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
         assert check_download_url("https://metadata.tencentyun.com/a") is not None
 
     def test_rejects_empty_and_missing_host(self):
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
         assert check_download_url("") is not None
         assert check_download_url("https:///nohost") is not None
 
@@ -226,7 +226,7 @@ class TestDownloadUrlCheck:
         import socket
 
         import core.media_fetch as mf
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
 
         def fake_getaddrinfo(host, port, *a, **kw):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0))]
@@ -238,7 +238,7 @@ class TestDownloadUrlCheck:
         import socket
 
         import core.media_fetch as mf
-        from interfaces.qq.attachment import check_download_url
+        from core.media_fetch import check_download_url
 
         def fake_getaddrinfo(host, port, *a, **kw):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
@@ -247,7 +247,7 @@ class TestDownloadUrlCheck:
         assert check_download_url("https://example.com/a") is None
 
     def test_classify(self):
-        from interfaces.qq.attachment import classify
+        from core.media_fetch import classify
         assert classify("image/png") == "image"
         assert classify("image/jpeg") == "image"
         assert classify("voice") == "voice"
@@ -632,7 +632,7 @@ class TestQQSinkTranscript:
                 pass
 
         sink._target = _T()
-        from interfaces.qq.stream import StreamingController
+        from interfaces.qq.stream_controller import StreamingController
         sink._controller = StreamingController(
             sink._target, flush_interval=0.0, max_wait=0.0
         )

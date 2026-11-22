@@ -31,7 +31,7 @@ def _ensure_block_meta(block: dict) -> dict:
     return block["_meta"]
 
 
-def migrate_session_file(session_file: Path, workspace_uuid: str = "") -> bool:
+def migrate_session_file(session_file: Path, workspace_uuid: str | None = None) -> bool:
     """Migrate a single session file from old format to new format.
 
     Returns True if migration was performed, False otherwise.
@@ -43,7 +43,7 @@ def migrate_session_file(session_file: Path, workspace_uuid: str = "") -> bool:
         logger.warning(f"Failed to load session file {session_file}: {e}")
         return False
 
-    if not workspace_uuid:
+    if workspace_uuid is None:
         from core.config import workspace_uuid_for_sessions_dir
         workspace_uuid = workspace_uuid_for_sessions_dir(session_file.parent.parent)
 
@@ -59,7 +59,10 @@ def migrate_session_file(session_file: Path, workspace_uuid: str = "") -> bool:
     metadata = data.get("metadata", {})
     if "todos" in metadata:
         session_id = data.get("session_id") or session_file.parent.name
-        if migrate_todos_from_metadata(metadata, session_id, workspace_uuid):
+        if workspace_uuid is None:
+            logger.warning(
+                f"无法确定会话 {session_id} 所属工作区，保留 metadata.todos 待后续迁移")
+        elif migrate_todos_from_metadata(metadata, session_id, workspace_uuid):
             modified = True
 
     # Save if modified
@@ -222,7 +225,7 @@ def migrate_todos_from_metadata(metadata: dict, session_id: str, workspace_uuid:
         return False
 
 
-def migrate_session_to_new_layout(session_dir: Path, workspace_uuid: str = "") -> bool:
+def migrate_session_to_new_layout(session_dir: Path, workspace_uuid: str | None = None) -> bool:
     """Migrate a session dir from old single-file format to the 3-file JSONL layout.
 
     Old: {session_dir}/index.json 含完整 "messages"。
@@ -316,7 +319,7 @@ def migrate_session_to_new_layout(session_dir: Path, workspace_uuid: str = "") -
     return True
 
 
-def migrate_sessions_dir(sessions_dir: Path, workspace_uuid: str = "") -> int:
+def migrate_sessions_dir(sessions_dir: Path, workspace_uuid: str | None = None) -> int:
     """Migrate all session files in a single sessions directory.
 
     Returns the number of sessions migrated.

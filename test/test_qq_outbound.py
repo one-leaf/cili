@@ -205,7 +205,7 @@ class _FakeClock:
 
 class TestStreamingController:
     def _make(self, **kw):
-        from interfaces.qq.stream import StreamingController
+        from interfaces.qq.stream_controller import StreamingController
         target = _FakeTarget()
         clock = _FakeClock()
         return StreamingController(target, clock=clock, **kw), target, clock

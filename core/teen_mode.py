@@ -27,7 +27,6 @@ from pathlib import Path
 
 from core.config import DATA_DIR
 from core.fs_utils import atomic_write_json, load_json_or_backup
-from core.time_utils import parse_ts
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +126,11 @@ def _ts(dt: datetime) -> str:
 
 
 def _parse_ts(text: str) -> datetime | None:
-    return parse_ts(text)
+    """严格解析统一时间戳；不接受 ISO 等宽松格式。"""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> dict:
