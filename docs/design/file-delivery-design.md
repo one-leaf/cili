@@ -150,7 +150,7 @@ Web 档案的 guidance 删掉「Files: call `send_user_file`…」那半句，�
 | 工具 | `core/tools/send_user_file.py`（`paths[]` + `note`；逐件校验 → 整批拒绝 → 去重登记） |
 | 队列 | `core/outbox.py`：`enqueue_files` 批量 + 去重 + 整批容量判定；`build_delivery_notice` / `record_delivery_notice` |
 | 档案 | web 不限；qq/wechat 各 3（注释写明配额依据）；web guidance 去掉重复的 Files 指令 |
-| 交付回执 | QQ/微信交付层发不完时落 `_meta.delivery_notice`；上下文过滤（`core/session.py`、`runtime/context.py`）已同步 |
+| 交付回执 | QQ/微信交付层发不完时落 `_meta.delivery_notice`；上下文过滤（`core/session.py`、`core/session_runner_runtime/conversation.py`）已同步 |
 | 前端 | `chat.js` 的 `renderMessages` 把连续 ≥3 条 `file_card` 折叠成一个附件块 |
 | 测试 | 批量签名、整批拒绝、去重、条数上限、回执落盘与过滤、Web 能力段单一 Files 行 |
 | 文档 | 三篇接入端设计文档的出站文件章节同步；CLAUDE.md 设计文档表补本行 |

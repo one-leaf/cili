@@ -16,7 +16,11 @@ from pydantic import BaseModel
 import core.session_control as session_control
 from core.approval_cards import find_pending_ask_user
 from core.compression import count_messages_tokens
-from core.config import get_workspace_data_dir, load_config
+from core.config import (
+    get_workspace_sessions_dir,
+    load_config,
+    sessions_dir_for_data_dir,
+)
 from core.editor_context import expand_file_mentions, format_attachment
 from core.event_bus import get_event_bus
 from core.goal import get_goal_manager
@@ -128,7 +132,7 @@ class SetModelRequest(BaseModel):
 
 def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
     """Load a SessionStore for the given session (lightweight, no master runner)."""
-    sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
+    sessions_dir = get_workspace_sessions_dir(workspace_uuid)
     if not sessions_dir.exists():
         return None
     return SessionStore.load_session(session_id, sessions_dir)
@@ -445,7 +449,7 @@ async def stream_tool_output(
         raise HTTPException(status_code=400, detail="Invalid tool_use_id")
     _validate_session_id(session_id)
 
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     session_dir = sessions_dir / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -911,7 +915,7 @@ async def fork_session(
 ):
     """Fork the current master session into a sibling session (UI「分支会话」)."""
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -966,7 +970,7 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
             raise HTTPException(404, str(e))
     # 如果 runner 不在内存中，直接从磁盘读取并迁移/重建
     else:
-        sm = SessionStore(session_id, ws_dir / "sessions")
+        sm = SessionStore(session_id, sessions_dir_for_data_dir(ws_dir))
         if not sm.load():
             raise HTTPException(404, "Session not found")
         try:
@@ -1108,7 +1112,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
                           ws_dir: Path = Depends(_require_workspace)):
     """仅入队（运行中/空闲都可调用）；队列变更经全局事件流广播。"""
     _validate_session_id(session_id)
-    if not (ws_dir / "sessions" / session_id).exists():
+    if not (sessions_dir_for_data_dir(ws_dir) / session_id).exists():
         raise HTTPException(status_code=404, detail="Session not found")
     try:
         get_teen_mode().check_send_allowed()

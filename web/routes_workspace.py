@@ -26,6 +26,7 @@ from core.config import (
     load_workspace_config,
     remove_workspace_entry,
     save_workspace_config,
+    sessions_dir_for_data_dir,
     validate_workspace_name,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
@@ -189,7 +190,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
     ws_data_dir.mkdir(parents=True, exist_ok=True)
 
     # Create sessions directory
-    sessions_dir = ws_data_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_data_dir)
     sessions_dir.mkdir(exist_ok=True)
 
     # 默认开启版本管理：立即初始化 Git 仓库（子进程阻塞，放线程执行；
@@ -389,7 +390,7 @@ def _scan_session_brief(session_dir: Path) -> tuple[str, int]:
 @router.get("/api/workspaces/{workspace_uuid}/sessions")
 async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
     """List all sessions in a workspace (纯 meta 读，不读消息正文、不触发迁移)。"""
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not sessions_dir.exists():
         return {"sessions": []}
 
@@ -484,7 +485,7 @@ async def get_session(
     分页加载：limit=50, offset=0 返回最近 50 条消息
     """
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     index_file = session_dir / "index.json"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -534,7 +535,7 @@ async def export_session(workspace_uuid: str, session_id: str,
                          ws_dir: Path = Depends(_require_workspace)):
     """导出会话为可再次导入的 JSON（完整历史，工具结果内容内联）。"""
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
     try:
@@ -589,7 +590,7 @@ async def import_session(workspace_uuid: str, payload: dict = Body(...),
             meta = {k: v for k, v in meta.items() if k != "seq"}
         cleaned.append((role, content, meta))
     name = str(payload.get("name") or "").strip()[:100] or "导入的会话"
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
 
     def _do_import() -> SessionStore:
         session = SessionStore.create_new_session(
@@ -754,7 +755,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 @router.post("/api/workspaces/{workspace_uuid}/sessions")
 async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Create a new session."""
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     channel = (request.channel or "web").strip().lower()
     if channel not in API_CREATE_CHANNEL_IDS:
         raise HTTPException(status_code=400, detail=f"不支持的会话通道：{channel}")
@@ -791,13 +792,13 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
 async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """Delete a session."""
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
     # cleanup 会 save，必须在目录还在时摘除 runner；GoalRunner 也先停掉。
     # 磁盘 cleanup/save 属阻塞操作，丢线程池执行。
-    await asyncio.to_thread(_purge_session, workspace_uuid, session_id, ws_dir / "sessions")
+    await asyncio.to_thread(_purge_session, workspace_uuid, session_id, sessions_dir_for_data_dir(ws_dir))
     return {"success": True}
 
 
@@ -805,7 +806,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
 async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(_require_workspace)):
     """Rename a session (atomic write)."""
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -841,7 +842,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
         tm.record_denied("session_hide")
         raise HTTPException(status_code=403, detail=deny_message("session_hide"))
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -878,7 +879,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
         tm.record_denied("session_hide")
         raise HTTPException(status_code=403, detail=deny_message("session_hide"))
 
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     results = []
 
     for session_id in request.session_ids:
@@ -918,7 +919,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
     """List all sub-agent executions for a session."""
     _validate_session_id(session_id)
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not (sessions_dir / session_id / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
     sm = await asyncio.to_thread(SessionStore.load_session, session_id, sessions_dir)
@@ -936,7 +937,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     """Get a specific sub-agent execution log with full messages."""
     _validate_session_id(session_id)
     _validate_exec_id(exec_id)
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not (sessions_dir / session_id / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
     sm = await asyncio.to_thread(SessionStore.load_session, session_id, sessions_dir)

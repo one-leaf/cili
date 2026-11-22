@@ -10,7 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from core.config import get_workspace_cwd, get_workspace_sessions_dir
+from core.config import (
+    get_workspace_cwd,
+    get_workspace_sessions_dir,
+    sessions_dir_for_data_dir,
+)
 from core.event_bus import get_event_bus
 from core.outbox import OutboxFile, build_web_file_card
 from core.session import SessionStore
@@ -211,7 +215,7 @@ async def send_results(workspace_uuid: str, workflow_id: str,
     files = service.collect_result_files(workspace_uuid, workflow_id, run_id)
     if not files:
         raise HTTPException(status_code=400, detail="这次运行没有可发送的结果文件")
-    sessions_dir = ws_dir / "sessions"
+    sessions_dir = sessions_dir_for_data_dir(ws_dir)
     session = await asyncio.to_thread(SessionStore.load_session, session_id, sessions_dir)
     if session is None:
         raise HTTPException(status_code=404, detail="目标会话不存在")

@@ -41,10 +41,6 @@ EXPIRED_TEXT = (
 )
 
 
-# ─── ask_user / 审批卡占位符流程（接口无关：Web / QQ / 微信共用） ─────────
-# 占位符由 AskUserTool.execute 返回 completed=False 的 ToolResult 生成；接入端渲染
-# 问题卡，用户提交后经 apply_answer 注入答案并恢复 runner 循环。
-
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 

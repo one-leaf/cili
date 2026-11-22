@@ -12,6 +12,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.config import sessions_dir_for_data_dir
 from core.suggest_service import SuggestError, generate_suggestions
 from web.deps import (
     _get_or_create_runner,
@@ -36,7 +37,7 @@ class SuggestRequest(BaseModel):
 async def suggest(workspace_uuid: str, session_id: str, request: SuggestRequest,
                   ws_dir=Depends(_require_workspace)):
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not session_dir.is_dir():
         raise HTTPException(status_code=404, detail="会话不存在")
 

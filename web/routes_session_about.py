@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.config import sessions_dir_for_data_dir
 from core.session import INDEX_FILE
 from core.session_timeline import build_timeline
 from web.deps import _require_workspace, _validate_session_id
@@ -21,7 +22,7 @@ async def get_session_timeline(
     ws_dir: Path = Depends(_require_workspace),
 ):
     _validate_session_id(session_id)
-    session_dir = ws_dir / "sessions" / session_id
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / INDEX_FILE).exists():
         raise HTTPException(status_code=404, detail="Session not found")
 

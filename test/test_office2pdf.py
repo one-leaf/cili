@@ -1,5 +1,6 @@
 """office2pdf 工具测试（COM 转换被 mock，不依赖本机 Office）。"""
 
+import json
 import os
 import sys
 import types
@@ -8,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.tools import office2pdf as mod
+from core.office_pdf import cache as cache_mod
+from core.office_pdf import convert as convert_mod
+from core.office_pdf import sync as sync_mod
 from core.tools.office2pdf import Office2PDFTool
 
 
@@ -63,7 +66,7 @@ def _install_fake_win32(monkeypatch, app):
 @pytest.fixture
 def cache_dir(tmp_path, monkeypatch):
     d = tmp_path / "cache"
-    monkeypatch.setattr(mod, "CACHE_DIR", d)
+    monkeypatch.setattr(cache_mod, "CACHE_DIR", d)
     return d
 
 
@@ -76,7 +79,7 @@ def fake_worker(monkeypatch):
         Path(output).write_bytes(b"%PDF-1.7\nfake pdf")
         return "Test Office"
 
-    monkeypatch.setattr(mod, "_run_worker", worker)
+    monkeypatch.setattr(cache_mod, "_run_worker", worker)
     return calls
 
 
@@ -107,10 +110,10 @@ class TestOffice2PDFToolSchema:
         assert "KWPS.Application" in result.output
 
     def test_supported_extensions(self):
-        assert ".docx" in mod.SUPPORTED_EXTENSIONS
-        assert ".xlsx" in mod.SUPPORTED_EXTENSIONS
-        assert ".pptx" in mod.SUPPORTED_EXTENSIONS
-        assert ".txt" not in mod.SUPPORTED_EXTENSIONS
+        assert ".docx" in cache_mod.SUPPORTED_EXTENSIONS
+        assert ".xlsx" in cache_mod.SUPPORTED_EXTENSIONS
+        assert ".pptx" in cache_mod.SUPPORTED_EXTENSIONS
+        assert ".txt" not in cache_mod.SUPPORTED_EXTENSIONS
 
     def test_registered(self):
         from core.tools.registry import TOOL_REGISTRY
@@ -192,7 +195,7 @@ class TestOffice2PDFConversion:
         def fail(*args, **kwargs):
             raise RuntimeError("Office not available")
 
-        monkeypatch.setattr(mod, "_run_worker", fail)
+        monkeypatch.setattr(cache_mod, "_run_worker", fail)
         tool = Office2PDFTool(cwd=str(tmp_path))
         result = tool.execute(file_path="a.docx")
         assert result.is_error
@@ -204,7 +207,7 @@ class TestOffice2PDFConversion:
         def timeout(*args, **kwargs):
             raise TimeoutError("timed out")
 
-        monkeypatch.setattr(mod, "_run_worker", timeout)
+        monkeypatch.setattr(cache_mod, "_run_worker", timeout)
         tool = Office2PDFTool(cwd=str(tmp_path))
         result = tool.execute(file_path="a.docx", timeout=10)
         assert result.is_error
@@ -213,9 +216,9 @@ class TestOffice2PDFConversion:
     def test_cache_key_changes_with_stat(self, tmp_path):
         src = tmp_path / "a.docx"
         src.write_bytes(b"one")
-        key1, stat1 = mod._cache_key(str(src))
+        key1, stat1 = cache_mod._cache_key(str(src))
         src.write_bytes(b"two-two")
-        key2, stat2 = mod._cache_key(str(src))
+        key2, stat2 = cache_mod._cache_key(str(src))
         assert key1 != key2
 
 
@@ -232,7 +235,7 @@ class TestComConversion:
         _install_fake_win32(monkeypatch, app)
         out = tmp_path / "slides.pdf"
 
-        engine = mod._convert_with_com(
+        engine = convert_mod._convert_with_com(
             str(tmp_path / "a.pptx"), str(out), "slides", str(tmp_path / "p.pid")
         )
 
@@ -248,7 +251,7 @@ class TestComConversion:
         _install_fake_win32(monkeypatch, app)
         out = tmp_path / "slides.pdf"
 
-        engine = mod._convert_with_com(
+        engine = convert_mod._convert_with_com(
             str(tmp_path / "a.pptx"), str(out), "slides", str(tmp_path / "p.pid")
         )
 
@@ -265,7 +268,7 @@ class TestComConversion:
         out = tmp_path / "slides.pdf"
         forward_out = str(out).replace("\\", "/")
 
-        mod._convert_with_com(
+        convert_mod._convert_with_com(
             str(tmp_path / "a.pptx").replace("\\", "/"),
             forward_out,
             "slides",
@@ -282,7 +285,7 @@ class TestComConversion:
         _install_fake_win32(monkeypatch, app)
 
         with pytest.raises(RuntimeError) as exc:
-            mod._convert_with_com(
+            convert_mod._convert_with_com(
                 str(tmp_path / "a.pptx"), str(tmp_path / "s.pdf"),
                 "slides", str(tmp_path / "p.pid"),
             )
@@ -299,22 +302,22 @@ class TestEngineDiscovery:
 
     def test_engine_candidates_include_wps_aliases(self):
         """WPS 各发行版命名不一致：带 K 前缀与别名 ProgID 都要尝试。"""
-        assert [p for _l, p in mod._engine_candidates("word")] == [
+        assert [p for _l, p in convert_mod._engine_candidates("word")] == [
             "Word.Application", "KWPS.Application", "WPS.Application",
         ]
-        assert [p for _l, p in mod._engine_candidates("excel")] == [
+        assert [p for _l, p in convert_mod._engine_candidates("excel")] == [
             "Excel.Application", "KET.Application", "ET.Application",
         ]
-        assert [p for _l, p in mod._engine_candidates("slides")] == [
+        assert [p for _l, p in convert_mod._engine_candidates("slides")] == [
             "PowerPoint.Application", "KWPP.Application", "WPP.Application",
         ]
 
     def test_server_exe_name_parses_commands(self):
-        assert mod._server_exe_name(
+        assert convert_mod._server_exe_name(
             r'"C:\Program Files\WPS\wps.exe" /automation') == "wps.exe"
-        assert mod._server_exe_name(
+        assert convert_mod._server_exe_name(
             r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE /automation") == "excel.exe"
-        assert mod._server_exe_name("") == ""
+        assert convert_mod._server_exe_name("") == ""
 
     def test_discovered_candidates_uses_exe_label(self, monkeypatch):
         view = "64" if sys.maxsize > 2 ** 32 else "32"
@@ -325,10 +328,10 @@ class TestEngineDiscovery:
                    "server": r"C:\WPS\wps.exe"},
         }
         monkeypatch.setattr(
-            mod, "_discover_office_engines",
+            convert_mod, "_discover_office_engines",
             lambda: [("word", "WPS.Office.Application", status)],
         )
-        assert mod._discovered_candidates("word") == [("WPS Writer", "WPS.Office.Application")]
+        assert convert_mod._discovered_candidates("word") == [("WPS Writer", "WPS.Office.Application")]
 
     def test_discovered_candidates_skips_other_view_only(self, monkeypatch):
         """CLSID 只在另一注册表视图：本进程无法激活，不能当作候选。"""
@@ -340,10 +343,10 @@ class TestEngineDiscovery:
                    "server": r"C:\WPS\wps.exe"},
         }
         monkeypatch.setattr(
-            mod, "_discover_office_engines",
+            convert_mod, "_discover_office_engines",
             lambda: [("word", "WPS.Office.Application", status)],
         )
-        assert mod._discovered_candidates("word") == []
+        assert convert_mod._discovered_candidates("word") == []
 
     def test_convert_falls_back_to_discovered_progid(self, tmp_path, monkeypatch):
         """静态 ProgID 全部无效时，用注册表扫描到的 ProgID 完成转换。"""
@@ -363,10 +366,10 @@ class TestEngineDiscovery:
         monkeypatch.setitem(sys.modules, "win32com", pkg)
         monkeypatch.setitem(sys.modules, "win32com.client", client)
 
-        monkeypatch.setattr(mod, "_ENGINE_PROGIDS", {
+        monkeypatch.setattr(convert_mod, "_ENGINE_PROGIDS", {
             "slides": [("Microsoft Office PowerPoint", ("Missing.Application",))],
         })
-        monkeypatch.setattr(mod, "_discover_office_engines", lambda: [
+        monkeypatch.setattr(convert_mod, "_discover_office_engines", lambda: [
             ("slides", "Found.Application", {
                 "64": {"progid": True, "clsid": "{x}", "clsid_visible": True,
                        "server": r"C:\WPS\wpp.exe"},
@@ -375,7 +378,7 @@ class TestEngineDiscovery:
             }),
         ])
 
-        engine = mod._convert_with_com(
+        engine = convert_mod._convert_with_com(
             str(tmp_path / "a.pptx"), str(tmp_path / "a.pdf"),
             "slides", str(tmp_path / "p.pid"),
         )
@@ -406,14 +409,14 @@ class TestWorkspaceCacheAndSync:
         src.write_bytes(b"fake docx")
         cdir = tmp_path / "cachepdf"
 
-        pdf, engine, cached = mod.ensure_pdf(str(src), cache_dir=cdir)
+        pdf, engine, cached = cache_mod.ensure_pdf(str(src), cache_dir=cdir)
 
         assert pdf.parent == cdir
         assert cached is False
         assert len(list(cdir.glob("*.pdf"))) == 1
 
         # 复用：不再调用 worker
-        pdf2, _e, cached2 = mod.ensure_pdf(str(src), cache_dir=cdir)
+        pdf2, _e, cached2 = cache_mod.ensure_pdf(str(src), cache_dir=cdir)
         assert cached2 is True and pdf2 == pdf
         assert len(fake_worker) == 1
 
@@ -422,12 +425,12 @@ class TestWorkspaceCacheAndSync:
         src.write_bytes(b"v1")
         cdir = tmp_path / "cachepdf"
 
-        mod.ensure_pdf(str(src), cache_dir=cdir)
+        cache_mod.ensure_pdf(str(src), cache_dir=cdir)
         assert len(list(cdir.glob("*.pdf"))) == 1
 
         src.write_bytes(b"v2 with different content")
         os.utime(src, (src.stat().st_atime, src.stat().st_mtime + 5))
-        mod.ensure_pdf(str(src), cache_dir=cdir)
+        cache_mod.ensure_pdf(str(src), cache_dir=cdir)
 
         # 同源旧版本被清理：目录里只有最新一份 pdf+meta
         pdfs = list(cdir.glob("*.pdf"))
@@ -436,7 +439,6 @@ class TestWorkspaceCacheAndSync:
         assert pdfs[0].stem == metas[0].stem
 
     def test_sync_converts_and_cleans_stale(self, tmp_path, monkeypatch, fake_worker):
-        import json as json_mod
 
         import core.config as config_mod
 
@@ -457,12 +459,12 @@ class TestWorkspaceCacheAndSync:
         cdir = workspace_cache_dir("wssync")
         # 预置一个源已删除的过期缓存 + 一个损坏的 meta
         stale_meta = cdir / "deadbeef.json"
-        stale_meta.write_text(json_mod.dumps({"source": str(tmp_path / "gone.docx")}), encoding="utf-8")
+        stale_meta.write_text(json.dumps({"source": str(tmp_path / "gone.docx")}), encoding="utf-8")
         (cdir / "deadbeef.pdf").write_bytes(b"%PDF-1.7\nstale")
         broken_meta = cdir / "broken.json"
         broken_meta.write_text("not json", encoding="utf-8")
 
-        result = mod.sync_workspace_pdf_cache("wssync")
+        result = sync_mod.sync_workspace_pdf_cache("wssync")
 
         assert result["docs"] == 2
         assert result["converted"] == 2
@@ -472,7 +474,7 @@ class TestWorkspaceCacheAndSync:
         assert not broken_meta.exists()
 
         # 第二轮全部命中缓存
-        result2 = mod.sync_workspace_pdf_cache("wssync")
+        result2 = sync_mod.sync_workspace_pdf_cache("wssync")
         assert result2["converted"] == 0 and result2["skipped"] == 2
 
     def test_sync_limit_defers_conversion(self, tmp_path, monkeypatch, fake_worker):
@@ -489,7 +491,7 @@ class TestWorkspaceCacheAndSync:
             "directory": str(ws_dir),
         })
 
-        result = mod.sync_workspace_pdf_cache("wslimit", limit=1)
+        result = sync_mod.sync_workspace_pdf_cache("wslimit", limit=1)
         assert result["converted"] == 1
         assert result["failed"] == 0
 
@@ -553,7 +555,7 @@ class TestSyncTimeout:
             Path(output).write_bytes(b"%PDF-1.7\nfake pdf")
             return "Test Office"
 
-        monkeypatch.setattr(mod, "_run_worker", worker)
+        monkeypatch.setattr(cache_mod, "_run_worker", worker)
 
         tool = Office2PDFTool(cwd=str(tmp_path))
         result = tool.execute(action="sync", workspace_uuid="wstimeout", timeout=600)

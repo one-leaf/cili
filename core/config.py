@@ -1061,9 +1061,14 @@ def get_workspace_tools_dir(workspace_uuid: str) -> Path:
     return get_workspace_data_dir(workspace_uuid) / "tools"
 
 
+def sessions_dir_for_data_dir(data_dir: Path | str) -> Path:
+    """Sessions directory under an already-resolved workspace data dir."""
+    return Path(data_dir) / "sessions"
+
+
 def get_workspace_sessions_dir(workspace_uuid: str = "") -> Path:
     """Get the sessions directory for a workspace: {workspace}/.cili/sessions/."""
-    return get_workspace_data_dir(workspace_uuid) / "sessions"
+    return sessions_dir_for_data_dir(get_workspace_data_dir(workspace_uuid))
 
 
 def get_workspace_cwd(workspace_uuid: str = "") -> str:

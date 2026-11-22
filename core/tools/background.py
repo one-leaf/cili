@@ -211,11 +211,11 @@ class BackgroundTaskManager:
 
 
 class BackgroundMixin:
-    """后台命令/Runner 方法族，经 Tool(ShellMixin, BackgroundMixin) MRO 挂到 Tool 实例。
+    """后台 shell 命令方法族，经 Tool(ShellMixin, BackgroundMixin) MRO 挂到 Tool 实例。
 
     依赖宿主 Tool 提供的 self.cwd / self.output_file / self.on_output /
-    self._emit_output / self._kill_process_tree（来自 ShellMixin）/ self.config /
-    self.stop_check / self._publish / self.on_session_complete。
+    self._emit_output / self._kill_process_tree（来自 ShellMixin）。
+    后台子代理 Runner 方法在 ``core.tools.agent_background.AgentBackgroundMixin``。
     """
 
     def _background_env(self) -> dict[str, str]:
