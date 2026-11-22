@@ -30,7 +30,8 @@ core/tools/
 ├── base.py                  # Tool 基类（Tool(ShellMixin, BackgroundMixin)）+ 不可信数据标记
 ├── result.py                # ToolResult（工具结果，含新旧接口兼容层）
 ├── shell.py                 # Shell 基础设施：venv 路径、shell 探测、命令字符串处理、ShellMixin
-├── background.py            # BackgroundTask + BackgroundTaskManager + BackgroundMixin（后台任务域）
+├── background.py            # shell 后台：BackgroundTask + BackgroundTaskManager + BackgroundMixin
+├── agent_background.py      # 后台子代理 Runner：AgentBackgroundMixin（仅 AgentTool）
 ├── file_types.py            # 文件类型 → 扩展名映射（glob / grep 共享）
 ├── approval.py              # 会话级审批（ApprovalStore、ask/deny 常量、decision_id、文案）
 ├── read.py                  # 读取文件
@@ -223,9 +224,7 @@ class Tool:
     def save_output_to_file(self, result: ToolResult) -> None:
         """统一保存工具输出到外部文件（由 agent 的 _execute_tool() 在工具执行后统一调用）。"""
 
-    # 静态工具方法
-    @staticmethod
-    def approx_token_count(text: str) -> int: ...
+    # 文本预算（实现委托 core.compression）
     @staticmethod
     def truncate_middle(text: str, max_tokens: int) -> str: ...
     @staticmethod
@@ -302,7 +301,7 @@ content = [
 
 | 方法 | 说明 |
 |------|------|
-| `approx_token_count(text)` | 估算文本 token 数（4 字节 ≈ 1 token） |
+| `core.compression.approx_token_count(text)` | 估算文本 token 数（4 字节 ≈ 1 token；已移出 Tool） |
 | `truncate_middle(text, max_tokens)` | Token 预算截断：保留前 40% + 后 40%，中间用标记替代 |
 | `truncate_result(text, max_chars)` | 按字符数截断（保留开头，末尾加提示） |
 
@@ -597,7 +596,7 @@ agent(action="list")
 - **生命周期**：
   - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
   - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
-  - 后台子代理：`background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
+  - 后台子代理：`agent_background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
   - 后台任务 ID（`agent-N`）在 `_start_background_runner` 中注册为 exec_id 的别名（spawn 结果向模型暴露的是 Task ID）
   - 终态清理：注销名字后 `unregister_session(exec_id)` 关闭队列，避免 `send` 对已结束子代理假成功
 - **寻址方式**：`send_to_agent` 内部解析 agent 名字 → session_id，复用现有 send 逻辑；支持 Task ID / exec_id / label
@@ -609,7 +608,7 @@ agent(action="list")
 - **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
 - **投递边界**：只有「运行中」的 agent 能收到消息——发送方在目标终态后会收到错误；不存在离线投递
 - **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 AgentMailbox
-- **子代理注册**：`agent_tool.py` / `background.py` 在子代理生命周期自动注册/注销
+- **子代理注册**：`agent_tool.py` / `agent_background.py` 在子代理生命周期自动注册/注销
 - **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
 
 ### 7.6 read_tool_result — 检索压缩的工具结果
@@ -1069,7 +1068,8 @@ deny 扫描只针对代码部分，不扫描字符串字面量，避免字符串
 | `core/tools/base.py` | Tool 基类（Tool(ShellMixin, BackgroundMixin)）+ 不可信数据标记 |
 | `core/tools/result.py` | ToolResult（工具结果，含新旧接口兼容层） |
 | `core/tools/shell.py` | Shell 基础设施（venv 路径、shell 探测、命令字符串处理、ShellMixin） |
-| `core/tools/background.py` | BackgroundTask + BackgroundTaskManager + BackgroundMixin（后台任务域） |
+| `core/tools/background.py` | shell 后台：BackgroundTask + BackgroundTaskManager + BackgroundMixin |
+| `core/tools/agent_background.py` | 后台子代理 Runner：AgentBackgroundMixin（仅 AgentTool） |
 | `core/tools/approval.py` | 会话级审批（ApprovalStore、ask/deny 常量、文案与 decision_id） |
 | `core/tools/*.py` | 全部工具实现（平铺） |
 | `core/agents/*.json` | 角色定义：工具白名单（tools）、行为开关、system prompt 块 |

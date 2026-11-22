@@ -513,7 +513,7 @@ async def get_session(
 
         # 任务清单存放在独立的 todo 文件里（不随会话 metadata 落盘）：
         # 切换会话/刷新页面后前端要从这里恢复，不能只靠 metadata.todos（旧格式）
-        from core.tools.todo import read_todos
+        from core.todo_store import read_todos
         todos = read_todos(session_id, workspace_uuid)
 
         return {

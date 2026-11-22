@@ -348,7 +348,7 @@ class TestSkillInterfaceFilter:
         return tmp_path
 
     def test_visible_for_matrix(self):
-        from core.tools.skill import _visible_for
+        from core.skills_catalog import _visible_for
 
         meta = {"roles": "master", "interfaces": "web"}
         assert _visible_for(meta, "master", "web")
@@ -361,26 +361,29 @@ class TestSkillInterfaceFilter:
         assert _visible_for(free, "master", "qq")
 
     def test_list_skills_filters_by_interface(self, tmp_path, monkeypatch):
-        import core.tools.skill as skill_mod
+        import core.skills_catalog as catalog_mod
 
-        monkeypatch.setattr(skill_mod, "_SKILLS_DIR", str(self._make_skills_dir(tmp_path)))
-        assert [s["id"] for s in skill_mod.list_skills("master", "web")] == ["universal", "web-only"]
-        assert [s["id"] for s in skill_mod.list_skills("master", "qq")] == ["universal"]
-        assert [s["id"] for s in skill_mod.list_skills("master", None)] == ["universal"]
+        d = str(self._make_skills_dir(tmp_path))
+        monkeypatch.setattr(catalog_mod, "SKILLS_DIR", d)
+        assert [s["id"] for s in catalog_mod.list_skills("master", "web")] == ["universal", "web-only"]
+        assert [s["id"] for s in catalog_mod.list_skills("master", "qq")] == ["universal"]
+        assert [s["id"] for s in catalog_mod.list_skills("master", None)] == ["universal"]
 
     def test_read_skill_respects_interface(self, tmp_path, monkeypatch):
-        import core.tools.skill as skill_mod
+        import core.skills_catalog as catalog_mod
 
-        monkeypatch.setattr(skill_mod, "_SKILLS_DIR", str(self._make_skills_dir(tmp_path)))
-        assert skill_mod.read_skill("master", "web-only", "web") is not None
-        assert skill_mod.read_skill("master", "web-only", "qq") is None
-        assert skill_mod.read_skill("master", "web-only", None) is None
+        d = str(self._make_skills_dir(tmp_path))
+        monkeypatch.setattr(catalog_mod, "SKILLS_DIR", d)
+        assert catalog_mod.read_skill("master", "web-only", "web") is not None
+        assert catalog_mod.read_skill("master", "web-only", "qq") is None
+        assert catalog_mod.read_skill("master", "web-only", None) is None
 
     def test_skill_tool_consumes_profile(self, tmp_path, monkeypatch):
-        import core.tools.skill as skill_mod
+        import core.skills_catalog as catalog_mod
         from core.tools.skill import SkillTool
 
-        monkeypatch.setattr(skill_mod, "_SKILLS_DIR", str(self._make_skills_dir(tmp_path)))
+        d = str(self._make_skills_dir(tmp_path))
+        monkeypatch.setattr(catalog_mod, "SKILLS_DIR", d)
         tool = SkillTool(role="master", cwd=".", workspace_uuid="ws", session=None)
 
         tool.set_interface_profile(get_profile("web"))

@@ -65,7 +65,7 @@ def _build_skills_section(role: str, interface: str | None = None) -> str:
     ``_SKILLS_SECTION_BUDGET_CHARS`` 时降级为仅名称+id 清单，
     保证所有技能仍可被发现。
     """
-    from core.tools.skill import list_skills
+    from core.skills_catalog import list_skills
 
     skills = list_skills(role, interface)
     if not skills:

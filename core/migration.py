@@ -208,7 +208,7 @@ def migrate_todos_from_metadata(metadata: dict, session_id: str) -> bool:
         return False
 
     try:
-        from core.tools.todo import write_todos
+        from core.todo_store import write_todos
         write_todos(session_id, todos)
         del metadata["todos"]
         logger.info(f"Migrated {len(todos)} todos from session {session_id} to independent file")

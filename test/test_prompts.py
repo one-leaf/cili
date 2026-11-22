@@ -4,6 +4,8 @@ import os
 import re
 from datetime import datetime
 
+from core.skills_catalog import SKILLS_DIR
+
 # ─── prompts.py tests ────────────────────────────────────────────────────────
 
 
@@ -234,7 +236,7 @@ class TestSkillTool:
 
     def test_list_skills_master(self):
         """master 可见全部 master-only skills 与 file-processing（三角色可见）。"""
-        from core.tools.skill import list_skills
+        from core.skills_catalog import list_skills
         ids = {s["id"] for s in list_skills("master")}
         assert "grilling" in ids
         assert "code-review" in ids
@@ -249,11 +251,10 @@ class TestSkillTool:
         技能不出现在列表里，也不报任何错，极难排查。Windows 大小写不敏感所以看不出来，
         这个断言就是替代那条看不见的失败。
         """
-        from core.tools.skill import _SKILLS_DIR
 
         offenders = []
-        for entry in os.listdir(_SKILLS_DIR):
-            d = os.path.join(_SKILLS_DIR, entry)
+        for entry in os.listdir(SKILLS_DIR):
+            d = os.path.join(SKILLS_DIR, entry)
             if not os.path.isdir(d):
                 continue
             for f in os.listdir(d):
@@ -271,7 +272,7 @@ class TestSkillTool:
 
         分工：mermaid = 通用流程图/架构图（默认路径）；tikz = 出版级/科学绘图。
         """
-        from core.tools.skill import list_skills
+        from core.skills_catalog import list_skills
 
         skills = {s["id"]: s["description"] for s in list_skills("master")}
         assert "mermaid-diagram" in skills and "tikz-diagram" in skills
@@ -292,7 +293,7 @@ class TestSkillTool:
 
     def test_list_skills_worker(self):
         """worker 可见 worker-only 与 file-processing，看不到 master-only。"""
-        from core.tools.skill import list_skills
+        from core.skills_catalog import list_skills
         ids = {s["id"] for s in list_skills("worker")}
         assert "context-bounded-processing" in ids
         assert "file-processing" in ids
@@ -300,7 +301,7 @@ class TestSkillTool:
 
     def test_list_skills_lite(self):
         """lite 只见 file-processing（roles 含 lite），其余均不可见。"""
-        from core.tools.skill import list_skills
+        from core.skills_catalog import list_skills
         ids = {s["id"] for s in list_skills("lite")}
         assert "file-processing" in ids
         assert "grilling" not in ids
@@ -308,7 +309,7 @@ class TestSkillTool:
 
     def test_winops_skill_visibility(self):
         """win-ops 对 master/worker 可见，对 lite 不可见（roles: [master, worker]）。"""
-        from core.tools.skill import list_skills
+        from core.skills_catalog import list_skills
 
         master_ids = {s["id"] for s in list_skills("master")}
         worker_ids = {s["id"] for s in list_skills("worker")}
@@ -351,7 +352,6 @@ class TestSkillTool:
 
     def test_skill_base_dir_and_when_to_use(self, monkeypatch, tmp_path):
         """read 前置 base directory、替换 $SKILL_DIR；when_to_use 并入清单；超预算降级。"""
-        import core.tools.skill as skill_mod
         from core.tools.skill import SkillTool
 
         d = tmp_path / "demo"
@@ -363,7 +363,8 @@ class TestSkillTool:
             encoding="utf-8",
         )
         (d / "references" / "sub.md").write_text("sub-content", encoding="utf-8")
-        monkeypatch.setattr(skill_mod, "_SKILLS_DIR", str(tmp_path))
+        import core.skills_catalog as catalog_mod
+        monkeypatch.setattr(catalog_mod, "SKILLS_DIR", str(tmp_path))
 
         tool = SkillTool(role="master")
         # base directory 前置 + $SKILL_DIR 替换为实际目录
@@ -395,7 +396,8 @@ class TestSkillTool:
                      "description": "d" * 2000, "when_to_use": ""}
                     for i in range(30)]
 
-        monkeypatch.setattr(skill_mod, "list_skills", _many)
+        import core.skills_catalog as catalog_mod
+        monkeypatch.setattr(catalog_mod, "list_skills", _many)
         section = _build_skills_section("master")
         assert len(section) < _SKILLS_SECTION_BUDGET_CHARS * 2
         assert "Descriptions omitted" in section
@@ -404,13 +406,13 @@ class TestSkillTool:
 
     def test_read_skill_master_skill(self):
         """read_skill(role, id) 返回 skill.md 全文。"""
-        from core.tools.skill import read_skill
+        from core.skills_catalog import read_skill
         content = read_skill("master", "grilling")
         assert content is not None
         assert "---" in content
 
     def test_read_skill_nonexistent(self):
-        from core.tools.skill import read_skill
+        from core.skills_catalog import read_skill
         assert read_skill("master", "nonexistent-skill-xyz") is None
 
     def test_skill_tool_list_action(self):
@@ -468,14 +470,14 @@ class TestParseSkillFrontmatter:
     """Tests for _parse_skill_frontmatter (shared parser)."""
 
     def test_basic_frontmatter(self):
-        from core.tools.skill import _parse_skill_frontmatter
+        from core.skills_catalog import _parse_skill_frontmatter
         content = '---\nname: Test Skill\ndescription: A test\n---\nBody'
         result = _parse_skill_frontmatter(content)
         assert result["name"] == "Test Skill"
         assert result["description"] == "A test"
 
     def test_quoted_values(self):
-        from core.tools.skill import _parse_skill_frontmatter
+        from core.skills_catalog import _parse_skill_frontmatter
         content = '---\nname: "Quoted Name"\ntitle: \'Single Quoted\'\n---\n'
         result = _parse_skill_frontmatter(content)
         assert result["name"] == "Quoted Name"
@@ -483,17 +485,17 @@ class TestParseSkillFrontmatter:
 
     def test_array_values(self):
         """tags: [a, b, c] should be parsed as a list."""
-        from core.tools.skill import _parse_skill_frontmatter
+        from core.skills_catalog import _parse_skill_frontmatter
         content = '---\ntags: [python, async, networking]\n---\n'
         result = _parse_skill_frontmatter(content)
         assert result["tags"] == ["python", "async", "networking"]
 
     def test_no_frontmatter(self):
-        from core.tools.skill import _parse_skill_frontmatter
+        from core.skills_catalog import _parse_skill_frontmatter
         assert _parse_skill_frontmatter("no frontmatter here") == {}
 
     def test_unclosed_frontmatter(self):
-        from core.tools.skill import _parse_skill_frontmatter
+        from core.skills_catalog import _parse_skill_frontmatter
         assert _parse_skill_frontmatter("---\nname: broken") == {}
 
 

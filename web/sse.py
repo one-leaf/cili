@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
 from core.stream_executor import get_stream_executor
-from core.tools.todo import todo_update_event
+from core.todo_store import todo_update_event
 
 logger = logging.getLogger(__name__)
 

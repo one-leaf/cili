@@ -220,7 +220,7 @@ class TestMigrateSessionFile:
 
     def test_todos_migrate_uses_session_id(self, tmp_path, monkeypatch):
         """todos 迁移用 data.session_id 而非目录名。"""
-        import core.tools.todo as todo_mod
+        import core.todo_store as todo_mod
         calls = {}
 
         def fake_write_todos(session_id, todos):

@@ -22,8 +22,6 @@ from core.config import DATA_DIR, PROJECT_ROOT
 from core.fs_utils import atomic_write_json
 
 _DEFAULT_TIMEOUT = 120
-_MAX_TIMEOUT = 600
-_MIN_TIMEOUT = 10
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
 _CACHE_MAX_BYTES = 500 * 1024 * 1024
 

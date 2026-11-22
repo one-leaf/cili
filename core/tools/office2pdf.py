@@ -20,9 +20,6 @@ from core.office_pdf.cache import (
     ensure_pdf,
     workspace_cache_dir,
 )
-from core.office_pdf.convert import (
-    _worker_main,
-)
 from core.office_pdf.sync import sync_workspace_pdf_cache
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
@@ -270,8 +267,3 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
 
 
 # ----- worker entry point (COM runs here, never in the agent process) -----
-
-if __name__ == "__main__":
-    if len(sys.argv) >= 2 and sys.argv[1] == "--worker":
-        raise SystemExit(_worker_main(sys.argv[2:]))
-    raise SystemExit("Use the office2pdf tool from the agent, or --worker for internal use.")

@@ -1644,7 +1644,7 @@ class TestGetSessionTodos:
     def test_get_session_includes_todos_from_file(self, tmp_path, monkeypatch):
         import asyncio
 
-        from core.tools import todo as todo_mod
+        from core import todo_store as todo_mod
         from web import routes_workspace
 
         (tmp_path / "sessions" / "abc12345").mkdir(parents=True)
@@ -1667,7 +1667,7 @@ class TestGetSessionTodos:
     def test_get_session_without_todos_returns_empty_list(self, tmp_path, monkeypatch):
         import asyncio
 
-        from core.tools import todo as todo_mod
+        from core import todo_store as todo_mod
         from web import routes_workspace
 
         (tmp_path / "sessions" / "abc12345").mkdir(parents=True)

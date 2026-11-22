@@ -43,8 +43,9 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
     from core.config import load_workspace_config
 
     cfg = load_workspace_config(workspace_uuid)
-    root = Path((cfg or {}).get("directory", ""))
-    if not cfg or not root.exists():
+    directory = (cfg or {}).get("directory")
+    root = Path(directory) if directory else None
+    if not cfg or root is None or not root.exists():
         return {"workspace_uuid": workspace_uuid, "error": "workspace directory not found"}
 
     cache_dir = workspace_cache_dir(workspace_uuid)

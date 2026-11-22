@@ -6,14 +6,14 @@
 
 import pytest
 
-from core.tools.todo import (
-    TodoWriteTool,
+from core.todo_store import (
     get_todo_file_path,
     get_todos_from_session,
     read_todos,
     todo_update_event,
     write_todos,
 )
+from core.tools.todo import TodoWriteTool
 
 
 class _FakeSession:
@@ -27,7 +27,7 @@ class _FakeSession:
 @pytest.fixture
 def todo_dir(tmp_path, monkeypatch):
     """把 todo 目录指到临时目录，避免污染项目 data。"""
-    import core.tools.todo as todo_mod
+    import core.todo_store as todo_mod
     monkeypatch.setattr(todo_mod, "_get_todo_dir", lambda ws="": tmp_path)
     return tmp_path
 
