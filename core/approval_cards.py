@@ -216,7 +216,10 @@ def _format_window(seconds: int) -> str:
     return f"{int(seconds or 0)} 秒"
 
 
-_NEGATION_WORDS = ("不", "不要", "别", "勿", "禁止", "取消", "无需", "不用", "不必", "未")
+_NEGATION_PHRASES = (
+    "不允许", "不准", "不可以", "不能", "不行", "不同意", "不想", "不愿意",
+    "不需要", "没有必要", "不必", "不用", "不要", "禁止", "取消", "拒绝", "无需",
+)
 
 
 def _ends_with_affirmed(text: str, label: str) -> bool:
@@ -226,7 +229,9 @@ def _ends_with_affirmed(text: str, label: str) -> bool:
     if not text.endswith(label):
         return False
     prefix = text[:-len(label)].rstrip(" ，,。.!！、;；")
-    return not any(prefix.endswith(word) for word in _NEGATION_WORDS)
+    if any(phrase in prefix for phrase in _NEGATION_PHRASES):
+        return False
+    return not prefix.endswith(("别", "勿", "未"))
 
 
 def decision_from_text(text: str | None) -> str:
@@ -552,7 +557,7 @@ def settle_expired_approvals(
 ) -> list[str]:
     """结算会话内所有已过期的审批占位（只结算，不恢复）。返回 tool_use_id 列表。"""
     settled: list[str] = []
-    for _msg, block in _iter_tool_result_blocks(session, max_messages=200):
+    for _msg, block in _iter_tool_result_blocks(session):
         meta = block.get("_meta") or {}
         if meta.get("completed") is not False:
             continue

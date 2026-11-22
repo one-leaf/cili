@@ -147,6 +147,7 @@ def test_run_requires_declared_inputs():
 
 def test_service_run_validates_and_passes_inputs(monkeypatch):
     from types import SimpleNamespace
+
     from core.workflows import runner as runner_mod
 
     workflow = service.create_workflow(WS, {

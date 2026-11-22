@@ -22,9 +22,9 @@ from core.outbox import drain_files, record_delivery_notice
 from core.session_registry import registry
 from core.turn_dispatch import execute_turn, prepare_turn
 from interfaces.common.ask_user import resolve_answer
-from interfaces.common.turn import prepare_and_claim
+from interfaces.common.owner import OwnerTracker
+from interfaces.common.session_claim import prepare_and_claim
 from interfaces.wechat import commands, media
-from interfaces.wechat.access import OwnerTracker
 from interfaces.wechat.protocol import InboundMessage
 from interfaces.wechat.runtime import WechatRuntime
 from interfaces.wechat.sink import WechatSink

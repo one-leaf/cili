@@ -3,8 +3,8 @@
 import json
 from types import SimpleNamespace
 
-from core.workflows import store
 from core.tools.workflow_tool import WorkflowTool
+from core.workflows import store
 
 WS = "test"
 
@@ -159,6 +159,7 @@ def test_panel_create_and_update_inputs_definition():
 
 def test_normal_chat_run_passes_inputs_and_origin(monkeypatch):
     from types import SimpleNamespace
+
     from core.workflows import service
 
     captured = {}
@@ -217,9 +218,10 @@ def test_runs_get_run_and_delete_actions():
 
 
 def test_send_to_user_enqueues_step_files(monkeypatch):
-    from core.workflows import service
-    import core.outbox as outbox
     from types import SimpleNamespace
+
+    import core.outbox as outbox
+    from core.workflows import service
 
     monkeypatch.setattr(service, "collect_result_files",
                         lambda ws, wid, rid=None: [

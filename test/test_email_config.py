@@ -1,7 +1,11 @@
 """邮件账号配置：白名单解析、类型兜底、读写往返。"""
 
 from interfaces.email import config as config_mod
-from interfaces.email.config import EmailConfig, load_email_accounts, save_email_accounts
+from interfaces.email.config import (
+    EmailConfig,
+    load_email_accounts,
+    save_email_accounts,
+)
 
 
 class TestFromDict:

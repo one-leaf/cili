@@ -156,7 +156,7 @@ class TestWechatState:
 
 class TestOwnerTracker:
     def _tracker(self, account):
-        from interfaces.wechat.access import OwnerTracker
+        from interfaces.common.owner import OwnerTracker
         return OwnerTracker(account)
 
     def test_binds_first_sender(self):

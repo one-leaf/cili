@@ -18,6 +18,7 @@ from core.compression import (
 )
 from core.fs_utils import normalize_bash_path
 from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
+from core.tool_output import save_tool_output
 from core.tools.background import BackgroundMixin
 from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.result import ToolResult
@@ -332,9 +333,7 @@ class Tool(ShellMixin, BackgroundMixin):
             pass
 
     def save_output_to_file(self, result: ToolResult, output_file: str | None = None) -> str | None:
-        """统一保存工具输出到外部文件（实现在 session_runner_runtime/tool_output.py）。"""
-        from core.session_runner_runtime.tool_output import save_tool_output
-
+        """统一保存工具输出到外部文件（实现在 core/tool_output.py）。"""
         explicit = output_file
         saved = save_tool_output(result, explicit or self.output_file)
         if saved and not explicit:

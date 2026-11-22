@@ -21,8 +21,8 @@ import asyncio
 import logging
 import threading
 
-from interfaces.common.access import OwnerTracker
 from interfaces.common.host import HostBase
+from interfaces.common.owner import OwnerTracker
 from interfaces.common.service import accounts_running, start_accounts, stop_accounts
 from interfaces.qq.config import QQConfig, load_qq_accounts
 from interfaces.qq.runtime import QQRuntime

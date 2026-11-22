@@ -30,17 +30,22 @@ def get_todo_file_path(session_id: str, workspace_uuid: str = "") -> Path:
     return _get_todo_dir(workspace_uuid) / f"{session_id}.json"
 
 
-def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
-    """读取会话 todo 文件。"""
-    todo_file = get_todo_file_path(session_id, workspace_uuid)
-    if not todo_file.exists():
-        return []
+def _load_todos_file(todo_file: Path) -> list[dict] | None:
+    """读取 todo 文件；损坏/不可解析返回 None（区别于合法的空列表）。"""
     try:
         data = json.loads(todo_file.read_text(encoding="utf-8"))
         return data.get("todos", [])
     except Exception as e:
         logger.warning(f"[todo] 读取 {todo_file} 失败: {e}")
+        return None
+
+
+def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
+    """读取会话 todo 文件。"""
+    todo_file = get_todo_file_path(session_id, workspace_uuid)
+    if not todo_file.exists():
         return []
+    return _load_todos_file(todo_file) or []
 
 
 def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") -> None:
@@ -88,12 +93,13 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
         todo_file = get_todo_file_path(session_id, workspace_uuid)
         has_file = todo_file.exists()
         if has_file:
-            todos = read_todos(session_id, workspace_uuid)
-            if todos:
+            todos = _load_todos_file(todo_file)
+            if todos is not None:
                 return todos
+            # 文件损坏：继续回退旧 metadata（合法的空列表已在上面返回）
 
-    # 仅当没有独立文件时才回退旧格式（避免把已清空的 todo 又复活）
-    if not has_file and hasattr(session, 'metadata'):
+    # 没有独立文件或文件损坏时才回退旧格式（避免把已清空的 todo 又复活）
+    if hasattr(session, 'metadata'):
         old_todos = session.metadata.get("todos")
         if old_todos:
             if session_id:

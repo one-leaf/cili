@@ -150,7 +150,7 @@ def session_key(workspace_uuid: str, session_id: str) -> str:
 
 
 def split_session_key(key: str) -> tuple[str, str]:
-    """拆分会话键；无分隔符时返回 ``("", key)``。"""
+    """拆分会话键；无分隔符时返回 ``(key, "")``。"""
     workspace_uuid, _, session_id = key.partition(":")
     return workspace_uuid, session_id
 

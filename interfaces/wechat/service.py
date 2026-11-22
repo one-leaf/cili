@@ -19,8 +19,8 @@ import logging
 import threading
 from contextlib import suppress
 
-from interfaces.common.access import OwnerTracker
 from interfaces.common.host import HostBase
+from interfaces.common.owner import OwnerTracker
 from interfaces.common.service import accounts_running, start_accounts, stop_accounts
 from interfaces.wechat.account import ContextTokenStore, load_account
 from interfaces.wechat.config import WechatConfig, load_wechat_accounts

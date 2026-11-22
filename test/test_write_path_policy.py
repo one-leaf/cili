@@ -9,8 +9,8 @@ delete；edit 与 write 同策略。
 import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-from core.tools.permission import META_KEY, PermissionStore
 from core.tools.edit import EditTool
+from core.tools.permission import META_KEY, PermissionStore
 from core.tools.write import WriteTool
 
 

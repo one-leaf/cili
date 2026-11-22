@@ -37,7 +37,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from interfaces.qr import qr_png_data_url  # noqa: F401 —— 共享渲染器，测试仍从这里导入
+from interfaces.common.qr import qr_png_data_url  # noqa: F401 —— 共享渲染器，测试仍从这里导入
 from interfaces.wechat.account import (
     WechatAccount,
     list_account_ids,

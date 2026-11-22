@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from interfaces.qr import qr_png_data_url
+from interfaces.common.qr import qr_png_data_url
 
 logger = logging.getLogger(__name__)
 

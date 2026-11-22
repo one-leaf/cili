@@ -140,7 +140,7 @@ class TestQQStatePersistence:
 
 class TestOwnerTracker:
     def _tracker(self, account):
-        from interfaces.qq.access import OwnerTracker
+        from interfaces.common.owner import OwnerTracker
 
         return OwnerTracker(account)
 

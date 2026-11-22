@@ -10,11 +10,8 @@
   b) main.py 服务进程内兜底（直接 python main.py 启动等场景）：启动早期检测
      到升级包，包版本不低于本地才解压覆盖（版本一致也应用，用于修复本地文件
      损坏；备份 + 残余清理 + 失败回滚）。应用成功且由 start.ps1 托管时以退出
-     码 RESTART_EXIT_CODE 退出，交回启动循环以全新进程重新加载代码。
-- 运行中重启（运行期间下载完升级包后）：schedule_idle_restart 等待会话空闲
-  （registry / 排队回合 / 后台子代理 / cron 均无运行），request_restart 通知
-  uvicorn 优雅停机，main.py 在 uvicorn.run 返回后以 RESTART_EXIT_CODE 退出
-  交回启动循环——重启后走路径 a 应用升级包并加载新代码。
+     码 ``core.restart.RESTART_EXIT_CODE`` 退出，交回启动循环以全新进程重新加载代码。
+- 运行中重启：协议与空闲调度见 ``core/restart.py``（本模块只负责升级包下载与应用）。
 
 重启协议只在 start.ps1 托管下生效（启动前设 CILI_LAUNCHER=ps1，重启迭代前设
 CILI_LAUNCH_RESTART=1 抑制浏览器自动打开）。直接 python main.py 启动时无循环
@@ -644,11 +641,6 @@ def apply_pending_upgrade() -> dict | None:
         logger.warning(f"[updater] 应用升级包失败: {result.get('error')}（保留升级包，下次启动重试）")
     return result
 
-
-# ── 运行中重启（升级包下载完成后的自动重启 / Web UI 手动重启） ─────────────
-# 协议：request_restart 记录原因并通知 uvicorn 优雅停机 → uvicorn.run 返回后
-# main.py 调 shutdown_and_restart_if_requested，以 RESTART_EXIT_CODE 退出 →
-# start.ps1 检测退出码重新走「应用升级包 → 启动」循环，新进程加载全新代码。
 
 def _auto_upgrade_worker(delay: float) -> None:
     try:

@@ -22,8 +22,8 @@ from dataclasses import dataclass, fields
 
 from core.channels import normalize_session_mode
 from core.config import load_global_config, save_global_config
-from interfaces.common.config import INVALID as _INVALID
-from interfaces.common.config import coerce_value as _coerce
+from interfaces.common.coerce import INVALID as _INVALID
+from interfaces.common.coerce import coerce_value as _coerce
 
 logger = logging.getLogger(__name__)
 

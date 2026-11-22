@@ -115,6 +115,7 @@ def test_file_tool_publishes_files_changed():
 
 def test_run_step_requires_previous_run():
     import pytest
+
     from core.workflows.model import WorkflowValidationError
 
     wf = service.create_workflow(WS, _payload())
@@ -146,6 +147,7 @@ def test_run_step_publishes_and_resolves_by_name(monkeypatch):
 
 def test_resolve_step_index_rejects_unknown():
     import pytest
+
     from core.workflows.model import WorkflowValidationError
 
     wf = service.create_workflow(WS, _payload())
