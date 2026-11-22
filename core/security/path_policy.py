@@ -11,8 +11,8 @@ import logging
 import os
 from dataclasses import dataclass
 
-from core.config import PermissionConfig
 from core.fs_utils import is_path_within, normalize_bash_path, os_temp_root
+from core.permission_settings import PermissionConfig
 from core.security.permission_policy import PermissionPolicy
 from core.security.protected_paths import teen_path_verdict
 

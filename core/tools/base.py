@@ -164,7 +164,7 @@ class Tool(ShellMixin, BackgroundMixin):
     def _permission_policy(self):
         """取本次注入的裁决器；独立工具场景构造默认策略。"""
         if self.permission_policy is None:
-            from core.config import PermissionConfig
+            from core.permission_settings import PermissionConfig
             from core.security.permission_policy import PermissionPolicy
 
             self.permission_policy = PermissionPolicy(

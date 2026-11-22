@@ -34,7 +34,7 @@ from core.approval_watchdog import (
     ApprovalWatchdog,
     _can_auto_resume,
 )
-from core.config import ApprovalConfig
+from core.permission_settings import ApprovalConfig
 from core.tools.permission import (
     ABORT_LABEL,
     APPROVE_LABEL,
@@ -396,7 +396,7 @@ class TestApprovalConfig:
 
 class TestPermissionCard:
     def test_card_carries_pending_payload(self, runner, monkeypatch):
-        from core.config import PermissionConfig
+        from core.permission_settings import PermissionConfig
 
         monkeypatch.setattr(
             "core.session_runner.get_permission_config",
@@ -518,7 +518,7 @@ class TestRunnerEndToEnd:
     def _card(runner, monkeypatch, *, timeout_seconds: int = 120) -> dict:
         """用真实 runner 合成审批卡，返回载荷。"""
 
-        from core.config import PermissionConfig
+        from core.permission_settings import PermissionConfig
         from core.tools.permission import permission_decision_id
 
         monkeypatch.setattr(

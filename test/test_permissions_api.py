@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from core.config import PermissionConfig
+from core.permission_settings import PermissionConfig
 from web import routes_permissions as rp
 
 
@@ -135,3 +135,22 @@ class TestApprovalConfigApi:
         result = asyncio.run(rp.update_permissions(_request(), body))
         assert result["permissions"]["approval"] == {
             "timeout_seconds": 600, "auto_resume": "web"}
+
+
+def test_permission_config_robust_values():
+    """宽松解析：字符串布尔、非法整数、null 路径都回退到安全默认。"""
+    from core.permission_settings import PermissionConfig
+
+    cfg = PermissionConfig.from_dict({
+        "enabled": "false",
+        "readonly_bypass": "false",
+        "rules_hot_reload": "0",
+        "judge": {"timeout_seconds": "abc", "persist_allow": "false"},
+        "global_rules_path": None,
+    })
+    assert cfg.enabled is False
+    assert cfg.readonly_bypass is False
+    assert cfg.rules_hot_reload is False
+    assert cfg.judge.timeout_seconds == 60
+    assert cfg.judge.persist_allow is False
+    assert cfg.global_rules_path == ""

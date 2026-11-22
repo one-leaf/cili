@@ -27,7 +27,6 @@ from core.base_session_runner import BaseSessionRunner
 from core.config import (
     DATA_DIR,
     Config,
-    get_permission_config,
     get_workspace_data_dir,
     get_workspace_sessions_dir,
 )
@@ -36,6 +35,7 @@ from core.handoff import user_input_text
 from core.interface_profile import resolve_profile
 from core.llm import capabilities, create_llm_client
 from core.output_sink import OutputSink, layer_sink
+from core.permission_settings import get_permission_config
 from core.prompt_builder import (
     USER_LAYER_GENERATORS,
     assemble_context,

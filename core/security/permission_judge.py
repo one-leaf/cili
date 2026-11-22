@@ -16,8 +16,8 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 
-from core.config import get_permission_config
 from core.llm import Message, create_llm_client
+from core.permission_settings import get_permission_config
 
 logger = logging.getLogger(__name__)
 

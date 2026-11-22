@@ -19,8 +19,8 @@ import os
 import re
 from dataclasses import dataclass
 
-from core.config import PermissionConfig
 from core.fs_utils import is_path_within, os_temp_root
+from core.permission_settings import PermissionConfig
 from core.security.permission_rules import (
     PermissionRules,
     is_readonly_command,

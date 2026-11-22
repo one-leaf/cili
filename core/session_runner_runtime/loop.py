@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from core.config import PermissionConfig, get_permission_config
+from core.permission_settings import PermissionConfig, get_permission_config
 from core.security.permission_judge import PermissionDecision
 from core.security.permission_rules import build_granted_rule, implied_path_rules
 from core.security.permission_state import append_permission_audit

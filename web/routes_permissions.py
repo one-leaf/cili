@@ -15,12 +15,12 @@ from pydantic import BaseModel
 
 from core.config import (
     DATA_DIR,
-    PermissionConfig,
     get_workspace_data_dir,
     load_global_config,
     load_workspaces_index,
     save_global_config,
 )
+from core.permission_settings import PermissionConfig
 from core.security.permission_rules import PermissionRules, new_rule_id
 from core.time_utils import now_str
 from web.deps import _csrf_protect, _require_workspace, reload_all_runners, teen_guard

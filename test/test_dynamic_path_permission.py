@@ -71,8 +71,8 @@ def test_command_verdict_honors_dynamic_target_approval(tmp_path):
     回归：``PermissionPolicy._target_verdict`` 曾丢 static_prefix/code_hash/
     target_index，动态目标批过仍反复弹卡。
     """
-    from core.config import PermissionConfig
     from core.security.permission_policy import PermissionPolicy
+    from core.permission_settings import PermissionConfig
 
     store = PermissionStore()
     code = 'for path, url in targets:\n    open(path, "w")'
