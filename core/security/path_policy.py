@@ -143,15 +143,10 @@ class PathPolicy:
 
     def read_status(self, resolved: str | None, tool: str = "*", raw: str = "") -> str:
         """读取状态：allow / approved / needs_approval / deny。"""
-        from core.teen_mode import get_teen_mode
+        from core.teen_mode import teen_read_allowed
 
-        tm = get_teen_mode()
-        if (
-            tm.is_enabled()
-            and tm.policy().get("deny_read_outside")
-            and not tm.is_unlocked()
-            and resolved is not None
-            and not self.is_inside(resolved)
+        if resolved is not None and not teen_read_allowed(
+            resolved, is_inside=self.is_inside
         ):
             return "deny"
 

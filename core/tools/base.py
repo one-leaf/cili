@@ -141,25 +141,11 @@ class Tool(ShellMixin, BackgroundMixin):
         return os.path.realpath(path)
 
     def _workflow_definition_guard(self, resolved: str) -> ToolResult | None:
-        """禁止直接用 write/edit 改工作流定义。
+        """禁止直接用 write/edit 改工作流定义（实现在 core.workflows.guards）。"""
+        from core.workflows.guards import workflow_definition_violation
 
-        工作流必须走 ``workflow`` 工具（create/update/update_inputs）：只有这条
-        路径会做校验、绑定面板会话并广播界面刷新事件。直接改文件在磁盘上"成功"
-        但界面上不出现、不选中，用户看到的就是"创建失败"。
-        """
-        try:
-            root = os.path.join(self.cwd, ".cili", "workflows")
-            inside = os.path.commonpath(
-                [os.path.normcase(root), os.path.normcase(os.path.abspath(resolved))]
-            ) == os.path.normcase(root)
-        except ValueError:
-            inside = False
-        if not inside:
-            return None
-        return ToolResult(
-            "Error: 工作流定义不能直接写文件。请改用 workflow 工具"
-            "（create / update / update_inputs / delete）；直接编辑 .cili/workflows "
-            "会绕过校验与面板绑定，界面不会刷新。", error=True)
+        message = workflow_definition_violation(self.cwd, resolved)
+        return ToolResult(message, error=True) if message else None
 
     def _permission_policy(self):
         """取本次注入的裁决器；独立工具场景构造默认策略。"""
@@ -275,52 +261,18 @@ class Tool(ShellMixin, BackgroundMixin):
         }
 
     def _teen_command_guard(self, command: str) -> ToolResult | None:
-        """青少年模式：回退类命令硬拒（开启且未解锁时）。返回 None 表示放行。
+        """青少年模式：回退类命令硬拒（实现在 core.teen_mode）。"""
+        from core.teen_mode import guard_tool_command
 
-        git reset/clean/restore、checkout --、stash drop/clear、reflog expire、
-        rm -rf 等可把已发生的改动「撤销」掉，绕过记录不可抹除的语义。
-        解锁窗口内放行（走正常审批管道）。
-        """
-        from core.security.permission_rules import is_revert_command
-        from core.teen_mode import get_teen_mode
-
-        tm = get_teen_mode()
-        if not tm.is_enabled() or tm.is_unlocked():
-            return None
-        if not is_revert_command(self.name, command or ""):
-            return None
-        tm.audit("deny", action="revert_command", target=(command or "")[:200], source="tool")
-        tm.record_denied("revert_command")
-        return ToolResult(
-            "Error: 青少年模式已开启：回退类命令（git reset/clean/restore、rm -rf 等）已被禁用。"
-            "如确需执行，请家长开启解锁窗口后重试。",
-            error=True,
-        )
+        message = guard_tool_command(self.name, command)
+        return ToolResult(message, error=True) if message else None
 
     def _teen_read_guard(self, resolved: str) -> ToolResult | None:
-        """青少年模式读侧门（§3.13）：deny_read_outside 开启时，读工具目标在
-        工作区外（含其他受限工作区目录）→ 拒绝。解锁窗口内放行。
+        """青少年模式读侧门（实现在 core.teen_mode）。"""
+        from core.teen_mode import guard_tool_read
 
-        这是启发式兜底（shell 命令的读目标不做提取），真正彻底的隔离靠
-        工作区白名单 + 沙箱（设计 §3.12）。
-        """
-        from core.teen_mode import get_teen_mode
-
-        tm = get_teen_mode()
-        if not tm.is_enabled() or not resolved:
-            return None
-        policy_cfg = tm.policy()
-        if not policy_cfg.get("deny_read_outside") or tm.is_unlocked():
-            return None
-        policy = self._path_policy()
-        if policy.is_inside(resolved):
-            return None
-        tm.audit("deny", action="read_outside", target=resolved[:200], source="tool")
-        tm.record_denied("read_outside")
-        return ToolResult(
-            "Error: 青少年模式已开启：读取工作区外文件需要家长授权。",
-            error=True,
-        )
+        message = guard_tool_read(resolved, is_inside=self._path_policy().is_inside)
+        return ToolResult(message, error=True) if message else None
 
     def _emit_output(self, chunk: str, written_bytes: int) -> None:
         """调用 on_output 钩子，异常不影响工具执行（钩子失败静默忽略）。"""

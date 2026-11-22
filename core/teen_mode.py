@@ -709,3 +709,45 @@ def guard_or_raise(action: str, *, hard: bool = False, target: str = "",
                    source: str = "core") -> None:
     """数据层断言入口：物理删除/截断真正发生的位置调用。"""
     get_teen_mode().ensure_allowed(action, hard=hard, target=target, source=source)
+
+
+def guard_tool_command(tool_name: str, command: str) -> str | None:
+    """青少年模式：回退类命令硬拒（开启且未解锁时）；返回拒绝文案或 None。"""
+    from core.security.permission_rules import is_revert_command
+
+    tm = get_teen_mode()
+    if not tm.is_enabled() or tm.is_unlocked():
+        return None
+    if not is_revert_command(tool_name, command or ""):
+        return None
+    tm.audit("deny", action="revert_command", target=(command or "")[:200], source="tool")
+    tm.record_denied("revert_command")
+    return (
+        "Error: 青少年模式已开启：回退类命令（git reset/clean/restore、rm -rf 等）已被禁用。"
+        "如确需执行，请家长开启解锁窗口后重试。"
+    )
+
+
+def teen_read_allowed(resolved: str, *, is_inside) -> bool:
+    """青少年模式读侧判定（PathPolicy 与工具守卫共用同一规则）。"""
+    tm = get_teen_mode()
+    if not tm.is_enabled() or not resolved:
+        return True
+    policy_cfg = tm.policy()
+    if not policy_cfg.get("deny_read_outside") or tm.is_unlocked():
+        return True
+    return bool(is_inside(resolved))
+
+
+def guard_tool_read(resolved: str, *, is_inside) -> str | None:
+    """青少年模式读侧门：工作区外读取需家长授权；返回拒绝文案或 None。
+
+    注意：这是启发式兜底——shell 命令的读目标不做提取，真正彻底的隔离靠
+    工作区白名单 + 沙箱（设计 §3.12）。
+    """
+    if teen_read_allowed(resolved, is_inside=is_inside):
+        return None
+    tm = get_teen_mode()
+    tm.audit("deny", action="read_outside", target=resolved[:200], source="tool")
+    tm.record_denied("read_outside")
+    return "Error: 青少年模式已开启：读取工作区外文件需要家长授权。"

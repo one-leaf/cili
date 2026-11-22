@@ -28,6 +28,7 @@ from core.tools.office2pdf import (
     ensure_pdf,
     workspace_cache_dir,
 )
+from core.workflows.guards import workflow_definition_violation
 from web.deps import (
     _LOCALHOST_IPS,
     _csrf_protect,
@@ -680,6 +681,9 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
             target_path.mkdir(parents=True, exist_ok=True)
             return {"type": "folder", "path": target_path.relative_to(workspace_dir).as_posix(), "name": request.name}
         else:
+            violation = workflow_definition_violation(str(workspace_dir), str(target_path))
+            if violation:
+                raise HTTPException(status_code=403, detail=violation)
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(request.content, encoding="utf-8")
             return {"type": "file", "path": target_path.relative_to(workspace_dir).as_posix(), "name": request.name}
@@ -831,6 +835,9 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
                 },
             )
 
+        violation = workflow_definition_violation(str(workspace_dir), str(file_full_path))
+        if violation:
+            raise HTTPException(status_code=403, detail=violation)
         try:
             file_full_path.write_text(request.content, encoding="utf-8")
             st_new = file_full_path.stat()
