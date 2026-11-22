@@ -7,6 +7,7 @@ import re
 
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
+from core.tools.shell import shell_escape
 
 # 嵌套量词检测（ReDoS 风险模式）
 _REDOS_PATTERN = re.compile(
@@ -253,7 +254,7 @@ class GrepTool(Tool):
             cmd_parts.extend(["--exclude-dir", f"*{suffix}"])
 
         cmd_parts.extend(["-e", pattern, path])
-        cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+        cmd = " ".join(shell_escape(p) for p in cmd_parts)
         cmd += " || true"
 
         result = self._run_bash(
@@ -325,7 +326,7 @@ class GrepTool(Tool):
                 cmd_parts.append("-i")
             cmd_parts.extend(["-e", pattern])
             cmd_parts.extend(chunk)
-            cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+            cmd = " ".join(shell_escape(p) for p in cmd_parts)
             cmd += " || true"
             result = self._run_bash(
                 cmd, timeout=timeout, max_chars=self.MAX_COUNT_OUTPUT_CHARS
@@ -373,7 +374,7 @@ class GrepTool(Tool):
                 cmd_parts.extend(["-C", str(context)])
             cmd_parts.extend(["-e", pattern])
             cmd_parts.extend(chunk)
-            cmd = " ".join(self._shell_escape(p) for p in cmd_parts)
+            cmd = " ".join(shell_escape(p) for p in cmd_parts)
             # -H 强制输出文件名前缀（grep -n 多文件输出格式为 path:linenum:content），
             # 无需再手动拼接
             cmd += f" | cut -c1-{self.MAX_COLUMNS} | head -n {remaining} || true"

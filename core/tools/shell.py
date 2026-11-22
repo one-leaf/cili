@@ -615,3 +615,8 @@ class ShellMixin:
         """
         return self._run_shell(command, timeout=timeout, stdin=stdin,
                                max_chars=max_chars, output_file=output_file, shell="pwsh")
+
+
+def shell_escape(s: str) -> str:
+    """把字符串安全地包进 shell 单引号。"""
+    return "'" + s.replace("'", "'\"'\"'") + "'"

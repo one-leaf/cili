@@ -31,6 +31,11 @@ _INTERNAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+def clean_surrogates(text: str) -> str:
+    """移除 UTF-8 无法编码的代理项字符。"""
+    return ''.join(c for c in text if not (0xD800 <= ord(c) <= 0xDFFF))
+
+
 def strip_scaffolding(text: str) -> str:
     """剥离内部脚手架块与模型推理内容，返回去首尾空白的文本。"""
     if not text:

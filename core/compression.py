@@ -37,6 +37,9 @@ def truncate_middle(text: str, max_tokens: int) -> str:
     if tokens <= max_tokens:
         return text
 
+    if max_tokens <= 0:
+        return f"\n\n…{tokens:,} tokens truncated…\n\n"
+
     max_bytes = max_tokens * BYTES_PER_TOKEN
     head_bytes = int(max_bytes * 0.4)
     tail_bytes = int(max_bytes * 0.4)

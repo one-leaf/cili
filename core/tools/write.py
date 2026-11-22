@@ -6,6 +6,7 @@ import os
 
 from core.fs_utils import atomic_write_text
 from core.security.path_policy import OP_WRITE, PathTarget
+from core.text_sanitize import clean_surrogates
 from core.tools.base import Tool, ToolResult
 
 
@@ -48,7 +49,7 @@ class WriteTool(Tool):
             return workflow_guard
 
         # Remove surrogate characters that are invalid in UTF-8
-        clean_content = self._clean_surrogates(content)
+        clean_content = clean_surrogates(content)
 
         try:
             # Atomic write（newline="" 禁用换行翻译，内容按原样写入，

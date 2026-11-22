@@ -347,6 +347,11 @@ class MCPProvider:
                 await self._close_server(name)
             if name in self._connections:
                 continue
+            # 上一次连接超时后可能仍有残留任务：先取消，避免它覆盖新任务的簿记
+            old_task = self._tasks.get(name)
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
+                await asyncio.gather(old_task, return_exceptions=True)
             self._status[name] = "connecting"
             self._stop_events[name] = asyncio.Event()
             self._conn_events[name] = asyncio.Event()

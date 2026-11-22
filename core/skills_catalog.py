@@ -11,7 +11,7 @@ from core.config import PROJECT_ROOT
 SKILLS_DIR = str(PROJECT_ROOT / "core" / "skills")
 
 def _parse_skill_frontmatter(content: str) -> dict:
-    """Parse YAML frontmatter from skill.md content.
+    """解析 skill.md 的 YAML frontmatter。
 
     Returns dict with name, description, tags, etc.
     Returns empty dict if no valid frontmatter found.
@@ -75,7 +75,7 @@ def _visible_for(meta: dict, role: str, interface: str | None = None) -> bool:
 
 
 def list_skills(role: str, interface: str | None = None) -> list[dict]:
-    """Scan core/skills/ for skill directories visible to *role* + *interface*.
+    """扫描 core/skills/，返回对 role/interface 可见的技能。
 
     Returns list of dicts with: id, name, description.
     """
@@ -108,7 +108,7 @@ def list_skills(role: str, interface: str | None = None) -> list[dict]:
 
 
 def read_skill(role: str, skill_id: str, interface: str | None = None) -> str | None:
-    """Read the full content of a skill by its directory name.
+    """按目录名读取技能完整内容。
 
     Returns the full skill.md content, or None if not found or the skill is
     not visible to *role*/*interface* (frontmatter roles + interfaces filter).

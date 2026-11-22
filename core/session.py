@@ -160,7 +160,7 @@ def default_branch_name(
     label: str | None,
     existing_names: list[str] | None = None,
 ) -> str:
-    """Pick a UI-safe branch name, deduplicated against existing session names."""
+    """生成 UI 安全的会话分支名，并对已有名称去重。"""
     base = (label or "").strip() or f"{(parent_name or '会话').strip()}·分支"
     base = re.sub(r"\s+", " ", base).strip()[:40] or "分支"
     existing = set(existing_names or [])

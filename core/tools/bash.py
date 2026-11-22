@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 from core.security.shell_paths import normalize_shell_path
-from core.tools.base import ToolResult, _to_bash_path
+from core.tools.base import ToolResult
+from core.tools.shell import _to_bash_path, shell_escape
 from core.tools.shell_command import COMMON_DESTRUCTIVE_PATTERNS, ShellCommandTool
 
 # 静态证据模式（原 ask/deny 黑名单转为判定证据，设计 §3.2.4 / §3.3.2）：
@@ -67,7 +68,7 @@ class BashTool(ShellCommandTool):
 
     def _apply_cwd_prefix(self, command: str, initial_dir: str) -> str:
         bash_dir = _to_bash_path(initial_dir)
-        return f"cd {self._shell_escape(bash_dir)} && " + command
+        return f"cd {shell_escape(bash_dir)} && " + command
 
     def _run_foreground(self, command: str, timeout: int) -> ToolResult:
         return self._run_bash(command, timeout=timeout)

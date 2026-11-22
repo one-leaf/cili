@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.fs_utils import atomic_write_text
 from core.security.path_policy import OP_WRITE, PathTarget
+from core.text_sanitize import clean_surrogates
 from core.tools.base import Tool, ToolResult
 
 
@@ -81,8 +82,8 @@ class EditTool(Tool):
                 error=True,
             )
 
-        clean_old = self._clean_surrogates(old_text)
-        clean_new = self._clean_surrogates(new_text)
+        clean_old = clean_surrogates(old_text)
+        clean_new = clean_surrogates(new_text)
 
         try:
             # 一次性读原始字节：同时用于编码探测与行尾风格判定

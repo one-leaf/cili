@@ -163,7 +163,7 @@ def _kill_office_pid(pid_file: Path) -> None:
 
 
 def _run_worker(source: str, output: str, kind: str, pid_file: Path, timeout: int) -> str:
-    """Run the COM conversion in an isolated subprocess with a hard timeout."""
+    """在隔离子进程中执行 COM 转换，并施加硬超时。"""
     # 用 -c 而不是 -m：core.tools.__init__ 会先导入本模块，runpy 再执行 -m
     # 会触发 "found in sys.modules" RuntimeWarning，并混进失败时的错误详情。
     cmd = [

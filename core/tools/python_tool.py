@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from core.security.python_paths import collect_python_targets
-from core.tools.base import _VENV_DIR, Tool, ToolResult
+from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
     denied_rule_text,
@@ -23,6 +23,7 @@ from core.tools.permission import (
     permission_decision_id,
     permission_placeholder_text,
 )
+from core.tools.shell import _VENV_DIR
 
 
 def _resolve_python_exe() -> str:

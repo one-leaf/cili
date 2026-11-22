@@ -13,7 +13,7 @@ from typing import Any
 
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.security.shell_paths import extract_shell_targets
-from core.tools.base import Tool, ToolResult, _strip_shell_strings
+from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
     denied_rule_text,
@@ -21,6 +21,7 @@ from core.tools.permission import (
     permission_decision_id,
     permission_placeholder_text,
 )
+from core.tools.shell import _strip_shell_strings
 
 # bash / pwsh 共用的静态证据模式（避免两份表逐渐漂移）
 COMMON_DESTRUCTIVE_PATTERNS = [

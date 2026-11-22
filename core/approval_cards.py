@@ -216,18 +216,31 @@ def _format_window(seconds: int) -> str:
     return f"{int(seconds or 0)} 秒"
 
 
+_NEGATION_WORDS = ("不", "别", "勿", "禁止", "取消", "无需", "不用", "未")
+
+
+def _ends_with_affirmed(text: str, label: str) -> bool:
+    """label 精确命中，或作为后缀命中且前缀不含否定词。"""
+    if text == label:
+        return True
+    if not text.endswith(label):
+        return False
+    prefix = text[:-len(label)]
+    return not any(word in prefix for word in _NEGATION_WORDS)
+
+
 def decision_from_text(text: str | None) -> str:
-    """旧客户端/IM 文本 → 决策。精确 label 优先，保留 endswith 兼容。"""
+    """旧客户端/IM 文本 → 决策；带否定的回复一律视为拒绝。"""
     stripped = (text or "").strip()
     if not stripped:
         return DECISION_DENY
-    if stripped == ABORT_LABEL or stripped.endswith(ABORT_LABEL):
+    if _ends_with_affirmed(stripped, ABORT_LABEL):
         return DECISION_ABORT
-    if stripped == REMEMBER_LABEL or stripped.endswith(REMEMBER_LABEL):
+    if _ends_with_affirmed(stripped, REMEMBER_LABEL):
         return DECISION_REMEMBER
-    if stripped == APPROVE_LABEL or stripped.endswith(APPROVE_LABEL):
+    if _ends_with_affirmed(stripped, APPROVE_LABEL):
         return DECISION_APPROVE
-    if stripped == REJECT_LABEL or stripped.endswith(REJECT_LABEL):
+    if _ends_with_affirmed(stripped, REJECT_LABEL):
         return DECISION_DENY
     return DECISION_DENY
 
@@ -269,6 +282,7 @@ def _write_answer_file(session, tool_use_id: str, text: str) -> dict[str, Any]:
         logger.info(f"[ask-user] 已写入答案文件: {output_path}")
     except Exception as e:  # noqa: BLE001 —— 写文件失败不阻断内存答复
         logger.warning(f"[ask-user] 写入答案文件失败: {e}")
+        return {}
     return {
         "output_path": output_path,
         "file_size": len(text.encode("utf-8")),

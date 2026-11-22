@@ -384,7 +384,7 @@ class MinerUClient:
         """轮询 Precision 结果，直到 done/failed。"""
         url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
         headers = {"Authorization": f"Bearer {api_key}"}
-        empty_polls = {"n": 0}
+        empty_since = {"t": None}
 
         def parse(result: dict) -> tuple[dict | None, str | None]:
             if result.get("code") != 0:
@@ -395,11 +395,13 @@ class MinerUClient:
             data = result.get("data") or {}
             extract_results = data.get("extract_result") or []
             if not extract_results:
-                empty_polls["n"] += 1
-                if empty_polls["n"] >= _POLL_MAX_CONSECUTIVE_ERRORS:
-                    raise TimeoutError("Precision API 连续返回空结果，任务可能已丢失")
+                now = time.monotonic()
+                if empty_since["t"] is None:
+                    empty_since["t"] = now
+                elif now - empty_since["t"] >= 300:
+                    raise TimeoutError("Precision API 连续 5 分钟返回空结果，任务可能已丢失")
                 return None, None
-            empty_polls["n"] = 0
+            empty_since["t"] = None
             all_done = True
             state = None
             for item in extract_results:

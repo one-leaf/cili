@@ -21,24 +21,7 @@ from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
 from core.tools.background import BackgroundMixin
 from core.tools.permission import META_KEY, permission_placeholder_text
 from core.tools.result import ToolResult
-from core.tools.shell import (
-    _GIT_BASH_PATH as _GIT_BASH_PATH,
-)
-from core.tools.shell import (
-    _VENV_DIR as _VENV_DIR,
-)
-from core.tools.shell import (
-    _VENV_SCRIPTS as _VENV_SCRIPTS,
-)
-from core.tools.shell import (
-    ShellMixin,
-)
-from core.tools.shell import (
-    _strip_shell_strings as _strip_shell_strings,
-)
-from core.tools.shell import (
-    _to_bash_path as _to_bash_path,
-)
+from core.tools.shell import ShellMixin
 
 # 提示注入防护（SEC-18）：UNTRUSTED_DATA_BEGIN/END 定义在 core/untrusted.py，
 # 这里 import 后继续作为兼容出口（工具与测试从 core.tools.base 引用）。
@@ -504,12 +487,3 @@ class Tool(ShellMixin, BackgroundMixin):
 
         return coerced
 
-    @staticmethod
-    def _shell_escape(s: str) -> str:
-        """Escape string for shell single-quoting."""
-        return "'" + s.replace("'", "'\"'\"'") + "'"
-
-    @staticmethod
-    def _clean_surrogates(s: str) -> str:
-        """Remove surrogate characters invalid in UTF-8."""
-        return ''.join(c for c in s if not ('\ud800' <= c <= '\udfff'))
