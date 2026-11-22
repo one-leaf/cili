@@ -25,7 +25,7 @@ from interfaces.common.commands import (
 from interfaces.wechat.runtime import WechatRuntime
 from interfaces.wechat.state import (
     WechatAccountState,
-    resolve_current,
+    bind_workspace,
     save_account_state,
 )
 
@@ -82,5 +82,5 @@ async def dispatch(
     return await _dispatch(
         runtime, state, chat_id, text,
         channel="wechat",
-        build=build_commands, resolve_current=resolve_current,
+        build=build_commands, resolve_current=bind_workspace,
     )

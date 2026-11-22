@@ -13,8 +13,8 @@ from interfaces.common.commands import unique_commands as _unique_commands
 from interfaces.email.runtime import EmailRuntime
 from interfaces.email.state import (
     EmailAccountState,
+    bind_workspace,
     ignored_summary,
-    resolve_current,
     save_account_state,
 )
 
@@ -72,5 +72,5 @@ async def dispatch(
     return await _dispatch(
         runtime, state, chat_id, text,
         channel="email",
-        build=build_commands, resolve_current=resolve_current,
+        build=build_commands, resolve_current=bind_workspace,
     )

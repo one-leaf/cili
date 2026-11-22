@@ -17,6 +17,9 @@ from interfaces.common.state import (
     ChatState as _ChatState,
 )
 from interfaces.common.state import (
+    bind_workspace as _bind_workspace,
+)
+from interfaces.common.state import (
     ensure_session as _ensure_session,
 )
 from interfaces.common.state import (
@@ -26,13 +29,10 @@ from interfaces.common.state import (
     load_account_state as _load_account_state,
 )
 from interfaces.common.state import (
-    resolve_current as _resolve_current,
-)
-from interfaces.common.state import (
     save_account_state as _save_account_state,
 )
 
-resolve_current = _resolve_current
+bind_workspace = _bind_workspace
 
 _LEGACY_OWNER_KEY = "owner_user_id"
 _LOG_TAG = "wechat"

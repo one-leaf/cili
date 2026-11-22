@@ -23,7 +23,7 @@ from interfaces.common.commands import (
     unique_commands as _unique_commands,
 )
 from interfaces.qq.runtime import QQRuntime
-from interfaces.qq.state import QQAccountState, resolve_current, save_account_state
+from interfaces.qq.state import QQAccountState, bind_workspace, save_account_state
 
 __all__ = [
     "Command",
@@ -64,5 +64,5 @@ async def dispatch(
     return await _dispatch(
         runtime, state, chat_id, text,
         channel="qq",
-        build=build_commands, resolve_current=resolve_current,
+        build=build_commands, resolve_current=bind_workspace,
     )

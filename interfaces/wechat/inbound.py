@@ -28,7 +28,7 @@ from interfaces.wechat import commands, media
 from interfaces.wechat.protocol import InboundMessage
 from interfaces.wechat.runtime import WechatRuntime
 from interfaces.wechat.sink import WechatSink
-from interfaces.wechat.state import ensure_session, resolve_current
+from interfaces.wechat.state import bind_workspace, ensure_session
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class InboundHandler:
             return
 
         account = self._rt.state
-        chat = resolve_current(account, user_id, self._rt.cfg)
+        chat = bind_workspace(account, user_id, self._rt.cfg)
 
         # 用户又说话了 → 这就是新的 context_token；先把之前被推迟的回复补上。
         # 必须在命令分流之前：命令回复也要用这个 token 才发得出去。
@@ -162,7 +162,7 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(runner, user_id, key, chat)
+        await self._deliver_outbox(runner, user_id, key, chat)
 
     # ── 出站辅助 ────────────────────────────────────────────────────
 
@@ -175,7 +175,7 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[wechat/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(self, runner, user_id: str, key: str, chat) -> None:
+    async def _deliver_outbox(self, runner, user_id: str, key: str, chat) -> None:
         """回合末取走 ``send_user_file`` 登记的文件并加密上传发送。
 
         受 ``max_outbound_files`` 与剩余发送预算双重限制——文本分片与出站文件共享

@@ -29,7 +29,7 @@ from interfaces.email.client import MailItem
 from interfaces.email.outbound import reply_context_from, send_reply
 from interfaces.email.runtime import EmailRuntime
 from interfaces.email.sink import EmailSink
-from interfaces.email.state import ensure_session, resolve_current
+from interfaces.email.state import bind_workspace, ensure_session
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class InboundHandler:
 
         cfg = self._rt.cfg
         account = self._rt.state
-        chat = resolve_current(account, item.sender, cfg)
+        chat = bind_workspace(account, item.sender, cfg)
 
         text = media.truncate_body(media.extract_text(item.message), cfg.max_body_chars)
         attachments = await self._save_attachments(item, chat)
@@ -148,11 +148,11 @@ class InboundHandler:
         body = sink.final_text().strip()
         if not body and errors:
             body = f"回合执行出错：{errors[0]}"
-        await self._deliver(runner, key, ctx, body, chat)
+        await self._deliver_letter(runner, key, ctx, body, chat)
 
     # ── 出站：正文 + 附件装进同一封信 ───────────────────────────────
 
-    async def _deliver(self, runner, key: str, ctx, body: str, chat) -> None:
+    async def _deliver_letter(self, runner, key: str, ctx, body: str, chat) -> None:
         files = drain_files(key)
         selected, skipped = self._fit_files(files)
         if skipped:

@@ -27,7 +27,7 @@ from interfaces.qq import commands, media
 from interfaces.qq.inbound_media import InboundMedia, process_attachments
 from interfaces.qq.runtime import QQRuntime
 from interfaces.qq.sink import QQSink
-from interfaces.qq.state import ensure_session, resolve_current
+from interfaces.qq.state import bind_workspace, ensure_session
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class InboundHandler:
             return
 
         account = self._rt.state
-        chat = resolve_current(account, openid, self._rt.cfg)
+        chat = bind_workspace(account, openid, self._rt.cfg)
 
         text = self._extract_text(event)
         attachments = list(getattr(event, "attachments", None) or [])
@@ -170,7 +170,7 @@ class InboundHandler:
             runner.set_turn_interface(None)
             registry.release(key)
 
-        await self._send_outbox_files(runner, openid, msg_id, key, workspace_dir)
+        await self._deliver_outbox(runner, openid, msg_id, key, workspace_dir)
 
     # ── 入参构造 ────────────────────────────────────────────────────
 
@@ -195,7 +195,7 @@ class InboundHandler:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[qq/inbound] 发送文本失败：{e}")
 
-    async def _send_outbox_files(
+    async def _deliver_outbox(
         self, runner, openid: str, msg_id: str, key: str, workspace_root: str = ""
     ) -> None:
         """回合末取走 ``send_user_file`` 登记的文件并发送。

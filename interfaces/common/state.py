@@ -336,7 +336,7 @@ def effective_session_mode(chat: ChatState, cfg) -> str:
     return _effective_mode(chat, cfg)
 
 
-def resolve_current(account: AccountState, chat_id: str, cfg) -> ChatState:
+def bind_workspace(account: AccountState, chat_id: str, cfg) -> ChatState:
     """解析某个聊天的当前**工作区**（会话由 :func:`resolve_turn_session` 决定）。
 
     锁定 → 强制默认工作空间；否则「聊天已绑定 → 账号默认 → Default」。
@@ -384,7 +384,7 @@ def resolve_turn_session(
 
     顺序：pin → 旧绑定收养（仅独立模式）→ 模式匹配 → 新建并盖标记。
     """
-    chat = resolve_current(account, chat_id, cfg)
+    chat = bind_workspace(account, chat_id, cfg)
     if not chat.workspace_uuid:
         return chat
 
