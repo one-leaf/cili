@@ -33,7 +33,7 @@ COMMON_DESTRUCTIVE_PATTERNS = [
 ]
 
 
-class ShellCommandTool(Tool):
+class ShellToolBase(Tool):
     """Common implementation for bash/pwsh command tools."""
 
     shell_kind = "bash"

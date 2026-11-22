@@ -7,7 +7,7 @@ import re
 from core.security.shell_paths import normalize_shell_path
 from core.tools.base import ToolResult
 from core.tools.shell import _to_bash_path, shell_escape
-from core.tools.shell_command import COMMON_DESTRUCTIVE_PATTERNS, ShellCommandTool
+from core.tools.shell_tool_base import COMMON_DESTRUCTIVE_PATTERNS, ShellToolBase
 
 # 静态证据模式（原 ask/deny 黑名单转为判定证据，设计 §3.2.4 / §3.3.2）：
 # 命中不再拒绝，而是作为 static_findings 交给 lite 判定器，由判定器结合上下文
@@ -32,7 +32,7 @@ _PATTERNS = [
 ] + COMMON_DESTRUCTIVE_PATTERNS
 
 
-class BashTool(ShellCommandTool):
+class BashTool(ShellToolBase):
     name = "bash"
     shell_kind = "bash"
     _FINDING_PATTERNS = _PATTERNS
