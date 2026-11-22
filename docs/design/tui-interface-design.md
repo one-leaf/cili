@@ -23,10 +23,10 @@ interfaces/tui/            终端客户端（瘦：不 import 任何 core/* 模�
   __main__.py              python -m interfaces.tui → cli.main()
   cli.py                   main()：argparse（-c/--session/--server/--no-color）
                            + 非 TTY 检测 + 装配
-  config.py                服务端发现与鉴权解析链
+  discovery.py             服务端发现与鉴权解析链
   client.py                httpx API 客户端 + SSE 帧解析
   render.py                渲染原语（纯函数为主：工具行摘要、ask_user 卡、答案映射）
-  sink.py                  SseFrameRouter：SSE 帧 → 渲染回调（缓冲 + 提交点）
+  frames.py                SseFrameRouter：SSE 帧 → 渲染回调（缓冲 + 提交点）
   commands.py              /h /s /new /stop /quit
   app.py                   TuiApp：输入循环 + 回合驱动 + Ctrl+C 语义
   profile.py               能力档案（服务端 import 注册，客户端自身不用）
@@ -56,7 +56,7 @@ web/routes_chat.py         POST messages 的 interface 字段（唯一的路由�
    `interfaces.tui.profile`——否则 `set_turn_interface("tui")` 的回合告警
    「未知接口」并按未声明处理（提示词缺 Response Surface 段）
 
-## 三、服务端发现与鉴权（interfaces/tui/config.py）
+## 三、服务端发现与鉴权（interfaces/tui/discovery.py）
 
 解析链（优先级从高到低）：
 
@@ -65,7 +65,7 @@ web/routes_chat.py         POST messages 的 interface 字段（唯一的路由�
 | 服务端地址 | `--server` 参数 | 环境变量 `CILI_SERVER` | `~/.cili/config.json` | `data/cili/server.json` | 默认 `http://127.0.0.1:1618` |
 | token | 环境变量 `CILI_TOKEN` | `~/.cili/config.json` | 服务端 setting.json 的 `system.access_token` | | |
 
-项目根由 `config.py.__file__` 自定位（客户端不依赖 cwd）——同机场景直接读服务端
+项目根由 `discovery.py.__file__` 自定位（客户端不依赖 cwd）——同机场景直接读服务端
 的 server.json / setting.json；`~/.cili` 与环境变量覆盖远程/脚本场景。未配置
 access_token 时服务端走 IP 白名单，客户端无需 token。连接失败提示先启动服务端，
 退出码 2；不做自动拉起（spawn daemon 的孤儿进程管理复杂度高，明确排除）。
@@ -110,7 +110,7 @@ runner continues running in background`）。与 web 前端 EventSource 同语�
 
 帧解析（`_iter_sse_frames`）：收集 `data:` 行、空行定帧边界、非法 JSON 跳过不中断。
 
-## 七、SSE 帧 → 渲染（sink.py `SseFrameRouter`）
+## 七、SSE 帧 → 渲染（frames.py `SseFrameRouter`）
 
 | SSE 帧 | 渲染行为 |
 |---|---|

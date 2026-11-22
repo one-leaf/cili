@@ -10,10 +10,10 @@ from __future__ import annotations
 import os
 import time
 
-from interfaces.tui.client import CiliClient, CiliServerError
+from interfaces.tui.client import CiliHttpClient, CiliServerError
 from interfaces.tui.commands import build_commands
+from interfaces.tui.frames import SseFrameRouter
 from interfaces.tui.render import Renderer, resolve_answer
-from interfaces.tui.sink import SseFrameRouter
 
 _STOP_FORCE_WINDOW = 3.0  # 秒：两次 Ctrl+C 视为强制断开
 
@@ -21,7 +21,7 @@ _STOP_FORCE_WINDOW = 3.0  # 秒：两次 Ctrl+C 视为强制断开
 class TuiApp:
     def __init__(
         self,
-        client: CiliClient,
+        client: CiliHttpClient,
         renderer: Renderer,
         *,
         mode: str = "dedicated",

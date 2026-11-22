@@ -30,7 +30,7 @@ def _dir_name(path: str) -> str:
     return os.path.basename(os.path.abspath(path)) or path
 
 
-class CiliClient:
+class CiliHttpClient:
     def __init__(
         self,
         base_url: str,

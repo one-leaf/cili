@@ -7,15 +7,15 @@ import json
 import httpx
 import pytest
 
-from interfaces.tui.client import CiliClient, CiliServerError, _iter_sse_frames
+from interfaces.tui.client import CiliHttpClient, CiliServerError, _iter_sse_frames
 
 
 def sse_body(frames: list[dict]) -> str:
     return "".join(f"data: {json.dumps(f, ensure_ascii=False)}\n\n" for f in frames)
 
 
-def make_client(handler) -> CiliClient:
-    return CiliClient(
+def make_client(handler) -> CiliHttpClient:
+    return CiliHttpClient(
         "http://test", token="tok", transport=httpx.MockTransport(handler)
     )
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from interfaces.tui.frames import SseFrameRouter
 from interfaces.tui.render import (
     build_option_labels,
     format_ask_user_card,
     resolve_answer,
     summarize_tool_input,
 )
-from interfaces.tui.sink import SseFrameRouter
 
 
 class FakeRenderer:

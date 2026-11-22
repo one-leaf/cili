@@ -14,8 +14,8 @@ import argparse
 import sys
 
 from interfaces.tui.app import TuiApp
-from interfaces.tui.client import CiliClient
-from interfaces.tui.config import discover_config
+from interfaces.tui.client import CiliHttpClient
+from interfaces.tui.discovery import discover_config
 from interfaces.tui.render import Renderer
 
 
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     config = discover_config(args.server)
-    client = CiliClient(config.base_url, config.token)
+    client = CiliHttpClient(config.base_url, config.token)
     renderer = Renderer(no_color=args.no_color)
     app = TuiApp(
         client,
