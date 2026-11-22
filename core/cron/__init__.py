@@ -3,7 +3,7 @@
 对外入口（保持旧调用点可用）：
     start_scheduler() / stop_scheduler() / get_scheduler()
     any_cron_runner_running()
-    cron_config_lock()
+    store_lock()
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def any_cron_runner_running() -> bool:
         return False
 
 
-def cron_config_lock():
+def store_lock():
     from core.cron import store
 
-    return store.config_lock()
+    return store.store_lock()

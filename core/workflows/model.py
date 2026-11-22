@@ -466,3 +466,25 @@ class WorkflowState:
         self.current_index = 0
         self.run_inputs = {}
         self.items = {}
+
+
+def resolve_step_index(workflow: "Workflow", step: Any) -> int:
+    """步骤定位：0 基序号 / 步骤名 / 步骤 id。"""
+    if isinstance(step, bool):
+        raise WorkflowValidationError("step 必须是步骤序号或名称")
+    if isinstance(step, int):
+        index = step
+    elif isinstance(step, str):
+        text = step.strip()
+        if text.isdigit():
+            index = int(text)
+        else:
+            for i, item in enumerate(workflow.steps):
+                if text in (item.name, item.id):
+                    return i
+            raise WorkflowValidationError(f"未找到步骤 {step!r}")
+    else:
+        raise WorkflowValidationError("step 必须是步骤序号或名称")
+    if not (0 <= index < len(workflow.steps)):
+        raise WorkflowValidationError(f"step 序号越界：{index}")
+    return index

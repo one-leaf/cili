@@ -114,7 +114,7 @@ def create_job(
     job.created_at = job.created_at or now_str()
     job.updated_at = now_str()
 
-    with store.config_lock():
+    with store.store_lock():
         if store.job_path(workspace_uuid, job.id).exists():
             raise CronError(f"task '{job.id}' already exists")
         state = JobState(remaining=int(job.execution.get("max_executions", 9999)))
@@ -127,7 +127,7 @@ def create_job(
 
 
 def update_job(workspace_uuid: str, job_id: str, updates: dict[str, Any]) -> Job:
-    with store.config_lock(), store.job_lock(workspace_uuid, job_id):
+    with store.store_lock(), store.job_lock(workspace_uuid, job_id):
         job = get_job(workspace_uuid, job_id)
         _ensure_not_managed(job)
         allowed = {
@@ -171,7 +171,7 @@ def update_job(workspace_uuid: str, job_id: str, updates: dict[str, Any]) -> Job
 
 
 def delete_job(workspace_uuid: str, job_id: str) -> None:
-    with store.config_lock(), store.job_lock(workspace_uuid, job_id):
+    with store.store_lock(), store.job_lock(workspace_uuid, job_id):
         job = get_job(workspace_uuid, job_id)
         _ensure_not_managed(job)
         store.delete_job(workspace_uuid, job_id)
@@ -179,7 +179,7 @@ def delete_job(workspace_uuid: str, job_id: str) -> None:
 
 
 def set_enabled(workspace_uuid: str, job_id: str, enabled: bool) -> Job:
-    with store.config_lock(), store.job_lock(workspace_uuid, job_id):
+    with store.store_lock(), store.job_lock(workspace_uuid, job_id):
         job = get_job(workspace_uuid, job_id)
         _ensure_not_managed(job)
         job.enabled = bool(enabled)

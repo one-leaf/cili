@@ -20,14 +20,14 @@ from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
-_config_lock = threading.RLock()
+_store_lock = threading.RLock()
 _job_locks: dict[tuple[str, str], threading.RLock] = {}
 _job_locks_guard = threading.Lock()
 
 
-def config_lock() -> threading.RLock:
+def store_lock() -> threading.RLock:
     """cron 配置/状态的进程级可重入锁（scheduler、工具、REST 共用）。"""
-    return _config_lock
+    return _store_lock
 
 
 def job_lock(workspace_uuid: str, job_id: str) -> threading.RLock:

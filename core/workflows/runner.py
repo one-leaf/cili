@@ -431,24 +431,9 @@ class WorkflowRunner:
         return self._execute_step(index)
 
     def _resolve_step(self, value: Any) -> int:
-        if isinstance(value, bool):
-            raise ValueError("step 必须是步骤序号或名称")
-        if isinstance(value, int):
-            index = value
-        elif isinstance(value, str):
-            text = value.strip()
-            if text.isdigit():
-                index = int(text)
-            else:
-                for i, step_def in enumerate(self.workflow.steps):
-                    if text == step_def.name or text == step_def.id:
-                        return i
-                raise ValueError(f"未找到步骤 {value!r}")
-        else:
-            raise ValueError("step 必须是步骤序号或名称")
-        if not (0 <= index < len(self.workflow.steps)):
-            raise ValueError(f"step 序号越界：{index}")
-        return index
+        from core.workflows.model import resolve_step_index
+
+        return resolve_step_index(self.workflow, value)
 
     def _execute_step(self, index: int) -> ToolResult:
         self._executing = True
