@@ -50,6 +50,7 @@ from core.mineru_client import (
     _QuotaExceededError,
 )
 from core.security.path_policy import OP_WRITE, PathTarget
+from core.tool_limits import PDF2MD_RESULT_MAX_CHARS
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -261,7 +262,7 @@ class PDF2MarkdownTool(Tool):
         "required": ["file_path"],
     }
 
-    MAX_TOOL_RESULT_SIZE_CHARS = 50_000
+    MAX_TOOL_RESULT_SIZE_CHARS = PDF2MD_RESULT_MAX_CHARS
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",
                  session=None, config: Config | None = None,

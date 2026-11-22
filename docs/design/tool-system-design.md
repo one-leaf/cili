@@ -192,9 +192,9 @@ class Tool:
     IGNORE_DIRS: set[str] = {".git", "node_modules", "__pycache__", ...}
 
     # 工具输出限制常量
-    MAX_TOOL_RESULT_SIZE_CHARS: int = 50_000      # 默认单工具结果上限
-    _BASH_MAX_RESULT_SIZE_CHARS: int = 30_000     # Bash 硬上限
-    _BASH_MAX_OUTPUT_LINES: int = 2000            # Bash 行数上限
+    MAX_TOOL_RESULT_SIZE_CHARS: int = TOOL_RESULT_MAX_CHARS  # core/tool_limits.py      # 默认单工具结果上限
+    _BASH_MAX_RESULT_SIZE_CHARS: int = BASH_RESULT_MAX_CHARS     # Bash 硬上限
+    _BASH_MAX_OUTPUT_LINES: int = BASH_MAX_OUTPUT_LINES            # Bash 行数上限
     BYTES_PER_TOKEN: int = 4                      # Token 估算系数
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "",

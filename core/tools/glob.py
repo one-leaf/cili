@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.tool_limits import GLOB_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
 
@@ -49,7 +50,7 @@ class GlobTool(Tool):
         "required": [],  # pattern or file_type must be provided; execute() validates
     }
 
-    MAX_RESULT_SIZE_CHARS = 100_000
+    MAX_RESULT_SIZE_CHARS = GLOB_RESULT_MAX_CHARS
     DEFAULT_LIMIT = 100
 
     def execute(

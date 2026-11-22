@@ -18,6 +18,11 @@ from core.compression import (
 )
 from core.fs_utils import normalize_bash_path
 from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
+from core.tool_limits import (
+    BASH_MAX_OUTPUT_LINES,
+    BASH_RESULT_MAX_CHARS,
+    TOOL_RESULT_MAX_CHARS,
+)
 from core.tool_output import save_tool_output
 from core.tools.background import BackgroundMixin
 from core.tools.permission import META_KEY, permission_placeholder_text
@@ -70,11 +75,11 @@ class Tool(ShellMixin, BackgroundMixin):
 
     # ── 工具输出限制 ──────────────────────────────────────────────────────
     # 默认单工具结果上限（字符数），各工具可按需覆盖
-    MAX_TOOL_RESULT_SIZE_CHARS: int = 50_000
+    MAX_TOOL_RESULT_SIZE_CHARS: int = TOOL_RESULT_MAX_CHARS
 
     # Bash 工具专用限制（更严格，防止命令输出撑爆上下文）
-    _BASH_MAX_RESULT_SIZE_CHARS: int = 30_000
-    _BASH_MAX_OUTPUT_LINES: int = 2000
+    _BASH_MAX_RESULT_SIZE_CHARS: int = BASH_RESULT_MAX_CHARS
+    _BASH_MAX_OUTPUT_LINES: int = BASH_MAX_OUTPUT_LINES
 
     # Token 预算常量（4 字节 ≈ 1 token）
     BYTES_PER_TOKEN: int = _BYTES_PER_TOKEN

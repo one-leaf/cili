@@ -6,6 +6,7 @@ import itertools
 import os
 
 from core.image_read import IMAGE_EXTENSIONS, read_image_file
+from core.tool_limits import READ_MAX_CHARS_PER_LINE, READ_MAX_OUTPUT_TOKENS
 from core.tools.base import Tool, ToolResult
 
 
@@ -43,9 +44,9 @@ class ReadTool(Tool):
 
     # Token 预算上限
     # 可通过环境变量 CILI_FILE_READ_MAX_OUTPUT_TOKENS 覆盖
-    MAX_OUTPUT_TOKENS = 10_000
+    MAX_OUTPUT_TOKENS = READ_MAX_OUTPUT_TOKENS
     MAX_LINES_PER_READ = 2000   # 单次读取行数硬上限（不可配置，只能 offset+limit 分片）
-    MAX_CHARS_PER_LINE = 2000   # 单行字符上限，超限截断该行
+    MAX_CHARS_PER_LINE = READ_MAX_CHARS_PER_LINE   # 单行字符上限，超限截断该行
 
     MAX_PAGES_PER_READ = 20   # PDF 单次读取页数上限
     PDF_READ_TIMEOUT = 60  # PDF 解析/取文本超时（秒），防损坏/超大 PDF 挂起；可用 CILI_PDF_READ_TIMEOUT 覆盖

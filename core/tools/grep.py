@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 
+from core.tool_limits import BASH_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
 from core.tools.shell import shell_escape
@@ -124,8 +125,8 @@ class GrepTool(Tool):
 
     MAX_FILES = 100                  # 最多检索 100 个文件
     MAX_COLUMNS = 500                # 每行最大字符数（防止长行撑爆上下文）
-    MAX_LIST_OUTPUT_CHARS = 30_000   # 与 shell 硬上限一致，避免「常量看似更大但被截断」
-    MAX_COUNT_OUTPUT_CHARS = 30_000  # 与 shell 硬上限一致
+    MAX_LIST_OUTPUT_CHARS = BASH_RESULT_MAX_CHARS   # 与 shell 硬上限一致，避免「常量看似更大但被截断」
+    MAX_COUNT_OUTPUT_CHARS = BASH_RESULT_MAX_CHARS  # 与 shell 硬上限一致
 
     def execute(
         self,

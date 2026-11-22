@@ -2,6 +2,7 @@
 
 import re
 
+from core.tool_limits import READ_TOOL_RESULT_MAX_BYTES, READ_TOOL_RESULT_MAX_LIMIT
 from core.tools.base import Tool, ToolResult
 
 
@@ -44,9 +45,9 @@ class ReadToolResultTool(Tool):
 
     # 单次输出字节预算：低于 runner 的 10,000 字节外置阈值，避免取回的内容
     # 再次被截断落盘（否则 offset/limit 分页就失去意义）
-    MAX_OUTPUT_BYTES = 9_000
+    MAX_OUTPUT_BYTES = READ_TOOL_RESULT_MAX_BYTES
     DEFAULT_LIMIT = 4_000
-    MAX_LIMIT = 20_000
+    MAX_LIMIT = READ_TOOL_RESULT_MAX_LIMIT
 
     @staticmethod
     def _trim_to_bytes(text: str, budget: int) -> tuple[str, bool]:

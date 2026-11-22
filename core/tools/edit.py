@@ -5,6 +5,7 @@ from __future__ import annotations
 from core.fs_utils import atomic_write_text
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.text_sanitize import clean_surrogates
+from core.tool_limits import EDIT_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 
 
@@ -12,7 +13,7 @@ class EditTool(Tool):
     name = "edit"
 
     # 结果文本上限（与 WriteTool.MAX_RESULT_SIZE_CHARS 一致）
-    MAX_RESULT_SIZE_CHARS = 100_000
+    MAX_RESULT_SIZE_CHARS = EDIT_RESULT_MAX_CHARS
     description = (
         "Make precise edits to a file by replacing exact text matches. "
         "Each edit specifies old_text (to find) and new_text (to replace with). "

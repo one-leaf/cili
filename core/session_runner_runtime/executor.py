@@ -45,6 +45,7 @@ from core.llm import (
 )
 from core.session import INTERNAL_META_FIELDS as INTERNAL_META
 from core.session import generate_short_id
+from core.tool_limits import LARGE_OUTPUT_EXTERNALIZE_BYTES
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ FULL_COMPACT_TOKEN_RATIO = 0.80
 COMPACT_KEEP_TOKEN_RATIO = 0.25
 COMPACT_KEEP_MIN_TOKENS = 4000
 COMPACT_KEEP_MAX_TOKENS = 32000
-_LARGE_OUTPUT_THRESHOLD = 10_000
+_LARGE_OUTPUT_THRESHOLD = LARGE_OUTPUT_EXTERNALIZE_BYTES
 
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
 _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")

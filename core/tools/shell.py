@@ -17,6 +17,7 @@ import threading
 import time
 
 from core.config import PROJECT_ROOT
+from core.tool_limits import BASH_MAX_OUTPUT_TOKENS, BASH_RESULT_MAX_CHARS
 from core.tools.result import ToolResult
 
 # Python venv path: data/deps/python (relative to project root)
@@ -355,7 +356,7 @@ class ShellMixin:
         reader 线程、实时流式、截断、超时与 token 预算逻辑共用一份，修复只需改一处。
         """
         # Bash 默认输出上限，可通过环境变量调整，但不超过硬上限
-        default_chars = int(os.environ.get("BASH_MAX_OUTPUT_LENGTH", "30000"))
+        default_chars = int(os.environ.get("BASH_MAX_OUTPUT_LENGTH", str(BASH_RESULT_MAX_CHARS)))
         if max_chars is None:
             max_chars = min(default_chars, self._BASH_MAX_RESULT_SIZE_CHARS)
         else:
@@ -576,7 +577,7 @@ class ShellMixin:
                     output += f"\n\n... ({truncated_count} lines truncated, {len(lines)} total)"
 
             # Token budget check: 确保输出不超 token 预算（Bash 默认 10K tokens）
-            bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", "10000"))
+            bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", str(BASH_MAX_OUTPUT_TOKENS)))
             output = self.truncate_middle(output, bash_token_budget)
 
             if timed_out:

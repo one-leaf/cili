@@ -7,6 +7,7 @@ import os
 from core.fs_utils import atomic_write_text
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.text_sanitize import clean_surrogates
+from core.tool_limits import WRITE_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 
 
@@ -34,7 +35,7 @@ class WriteTool(Tool):
         "required": ["file_path", "content"],
     }
 
-    MAX_RESULT_SIZE_CHARS = 100_000  # 工具结果上限
+    MAX_RESULT_SIZE_CHARS = WRITE_RESULT_MAX_CHARS  # 工具结果上限
 
     def execute(self, file_path: str, content: str) -> ToolResult:
         policy = self._path_policy()
