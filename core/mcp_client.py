@@ -292,6 +292,7 @@ class MCPProvider:
         self._stacks.clear()
         self._wrappers.clear()
         self._server_sigs.clear()
+        self._configured_sig = None
         self._status.clear()
 
     def run_in_loop(self, coro, timeout: float = 60) -> Any:

@@ -584,10 +584,8 @@ def _log_changes(changes: dict | None) -> None:
             logger.info(f"[updater] {label}: {rel}")
 
 
-# 本次服务进程启动时是否出现过升级包应用失败（apply_pending_upgrade 记录）。
-# 失败时升级包保留、升级不会发生，若仍安排空闲重启会变成「重启 → 失败 → 再
-# 重启」的循环，最终耗尽 start.ps1 的重启上限导致服务停掉；因此本次启动内
-# 出现失败后不再自动安排重启（升级包保留，用户可手动重试或下次启动再应用）。
+# 应用失败标记与「失败时不自动重启」的保护在 core/restart.py
+# （apply_pending_upgrade 通过 restart.note_apply_failed 上报）。
 
 
 def apply_pending_upgrade() -> dict | None:

@@ -12,6 +12,7 @@ from core.agent_run import AgentRunManager, root_session_dir
 from core.agent_stats import AgentStats
 from core.output_sink import OutputSink
 from core.tools.agent_background import AgentBackgroundMixin
+from core.tools.background import owner_session_id
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -309,10 +310,7 @@ class AgentTool(AgentBackgroundMixin, Tool):
         root_dir = root_session_dir(self.workspace_uuid, self.session)
         if root_dir is None:
             return ToolResult("Error: no root session directory for agent run", error=True)
-        root_sid = (
-            getattr(self.session, "master_session_id", "")
-            or getattr(self.session, "session_id", "")
-        )
+        root_sid = owner_session_id(self.session)
         parent_exec_id = None if self.delegation_depth == 0 else getattr(self.session, "session_id", "")
         owner_task_id = getattr(self, "current_tool_use_id", "") or None
         from core.role_config import load_role

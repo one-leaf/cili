@@ -30,6 +30,7 @@ from core.config import (
     validate_workspace_name,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.prompt_sections import PROJECT_INSTRUCTION_FILES
 from core.session import (
     MESSAGES_FILE,
     META_FILE,
@@ -970,10 +971,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
 
 # ----- Project Instructions (AGENTS.md / CLAUDE.md) -----
 
-# 支持的项目指令文件（按优先级排序，与 core/prompts.py 保持一致）
-_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "runner.md", "CLAUDE.md", "claude.md"]
-
-# 模板目录
+# 模板目录（项目指令文件清单见 core.prompt_sections.PROJECT_INSTRUCTION_FILES）
 _TEMPLATES_DIR = PROJECT_ROOT / "core" / "templates" / "prompts"
 
 
@@ -995,7 +993,7 @@ async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_
     if not workspace_dir:
         raise HTTPException(status_code=400, detail="Workspace directory not set")
 
-    for filename in _PROJECT_INSTRUCTION_FILES:
+    for filename in PROJECT_INSTRUCTION_FILES:
         filepath = os.path.join(workspace_dir, filename)
         if os.path.isfile(filepath):
             try:
@@ -1035,7 +1033,7 @@ async def save_instructions(workspace_uuid: str, request: SaveInstructionsReques
         or "\\" in filename
     ):
         raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
-    if filename not in _PROJECT_INSTRUCTION_FILES and not filename.endswith(".md"):
+    if filename not in PROJECT_INSTRUCTION_FILES and not filename.endswith(".md"):
         raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
 
     filepath = os.path.join(workspace_dir, filename)

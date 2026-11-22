@@ -96,7 +96,7 @@ class JudgeConfig:
             on_error=on_error,
             persist_allow=_as_bool(data.get("persist_allow"), True),
             cache=cache,
-            max_consecutive_failures=max(1, int(data.get("max_consecutive_failures", 3))),
+            max_consecutive_failures=max(1, _as_int(data.get("max_consecutive_failures"), 3)),
         )
 
     def to_dict(self) -> dict:

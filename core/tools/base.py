@@ -271,7 +271,9 @@ class Tool(ShellMixin, BackgroundMixin):
         """青少年模式读侧门（实现在 core.teen_mode）。"""
         from core.teen_mode import guard_tool_read
 
-        message = guard_tool_read(resolved, is_inside=self._path_policy().is_inside)
+        message = guard_tool_read(
+            resolved, is_inside=lambda p: self._path_policy().is_inside(p)
+        )
         return ToolResult(message, error=True) if message else None
 
     def _emit_output(self, chunk: str, written_bytes: int) -> None:

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from core.config import get_all_workspace_uuids
+from core.config import get_all_workspace_uuids, get_default_workspace_uuid
 from core.cron import rules, store
 from core.cron.model import CronValidationError, Job, JobState, now_str
 
@@ -27,15 +27,6 @@ def _engine():
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-").lower()
     return slug[:64] or "task"
-
-
-def _default_workspace_uuid() -> str:
-    from core.config import load_workspaces_index
-
-    for entry in load_workspaces_index():
-        if entry.get("workspace_name") in ("Default", "default") and entry.get("uuid"):
-            return str(entry["uuid"])
-    return ""
 
 
 def _unique_id(workspace_uuid: str, base_id: str) -> str:
@@ -97,7 +88,7 @@ def create_job(
         data.get("workspace_uuid") or (origin or {}).get("workspace_uuid") or ""
     )
     if not workspace_uuid:
-        workspace_uuid = _default_workspace_uuid()
+        workspace_uuid = get_default_workspace_uuid()
     name = str(data.get("name") or "").strip()
     if not name:
         raise CronValidationError("'name' is required")

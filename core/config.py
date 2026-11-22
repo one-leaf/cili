@@ -858,6 +858,14 @@ def remove_workspace_entry(workspace_uuid: str) -> bool:
         return save_workspaces_index(filtered)
 
 
+def get_default_workspace_uuid() -> str:
+    """默认工作区的 uuid（仅查询，不存在时返回空串；不触发创建）。"""
+    for entry in load_workspaces_index():
+        if entry.get("workspace_name") in ("Default", "default") and entry.get("uuid"):
+            return str(entry["uuid"])
+    return ""
+
+
 def get_workspace_data_dir(workspace_uuid: str) -> Path:
     """Get the .cili data directory for a workspace: {directory}/.cili/.
 

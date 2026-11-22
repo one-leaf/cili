@@ -687,6 +687,8 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(request.content, encoding="utf-8")
             return {"type": "file", "path": target_path.relative_to(workspace_dir).as_posix(), "name": request.name}
+    except HTTPException:
+        raise
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
     except Exception as e:
@@ -773,6 +775,9 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
         # Security check for destination
         if not new_full_path.is_relative_to(workspace_dir.resolve()):
             raise HTTPException(status_code=403, detail="Access denied: destination outside workspace")
+        violation = workflow_definition_violation(str(workspace_dir), str(new_full_path))
+        if violation:
+            raise HTTPException(status_code=403, detail=violation)
 
         try:
             new_full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -967,6 +972,10 @@ def upload_files(
             # Security check for filename
             if not file_path.is_relative_to(workspace_dir.resolve()):
                 errors.append({"name": file.filename, "error": "Invalid filename"})
+                continue
+            violation = workflow_definition_violation(str(workspace_dir), str(file_path))
+            if violation:
+                errors.append({"name": file.filename, "error": violation})
                 continue
 
             # 同名不覆盖：自动追加 -1/-2…（Ctrl+V/拖放重复上传同名文件时不丢旧文件）

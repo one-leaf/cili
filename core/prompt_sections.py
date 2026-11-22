@@ -266,7 +266,7 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
 # ─── 工作区指令文件加载（claude_md 层）────────────────────────────────
 
 # 支持的项目指令文件（按优先级排序）
-_PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]
+PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]
 
 
 def find_project_instructions(cwd: str) -> str | None:
@@ -284,7 +284,7 @@ def find_project_instructions(cwd: str) -> str | None:
     if not cwd or not os.path.isdir(cwd):
         return None
 
-    for filename in _PROJECT_INSTRUCTION_FILES:
+    for filename in PROJECT_INSTRUCTION_FILES:
         filepath = os.path.join(cwd, filename)
         if os.path.isfile(filepath):
             try:
