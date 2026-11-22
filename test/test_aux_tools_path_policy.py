@@ -6,9 +6,9 @@
 
 from pathlib import Path
 
-from core.tools.permission import META_KEY, PermissionStore
 from core.tools.latex import LatexTool
 from core.tools.pdf2markdown import PDF2MarkdownTool
+from core.tools.permission import META_KEY, PermissionStore
 
 _TEX = "\\documentclass{article}\n\\begin{document}hi\\end{document}\n"
 
@@ -58,7 +58,7 @@ class TestPDF2MarkdownGate:
     def test_inside_output_passes_gate(self, test_workspace, monkeypatch):
         (Path(test_workspace) / "doc.pdf").write_bytes(b"%PDF-1.4 fake")
         tool = self._tool(test_workspace, PermissionStore())
-        monkeypatch.setattr(tool, "_agent_parse", lambda file_path, timeout: "# md")
+        monkeypatch.setattr(tool._client, "_agent_parse", lambda file_path, timeout: "# md")
         monkeypatch.setattr(tool, "_save_markdown", lambda content, output_path: None)
         result = tool.execute(file_path="doc.pdf", output_path="out.md")
         assert not result.error

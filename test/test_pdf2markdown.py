@@ -7,18 +7,19 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from core.tools.pdf2markdown import (
-    PDF2MarkdownTool,
+from core.mineru_client import (
+    MinerUClient,
     _AgentLimitError,
     _AuthError,
     _QuotaExceededError,
 )
+from core.tools.pdf2markdown import PDF2MarkdownTool
 
 
 @pytest.fixture(autouse=True)
 def _disable_submit_throttle(monkeypatch):
     """测试中关闭提交限流等待"""
-    from core.tools import pdf2markdown as mod
+    from core import mineru_client as mod
 
     monkeypatch.setattr(mod._submit_limiter, "_interval", 0.0)
     monkeypatch.setattr(mod._submit_limiter, "_next_at", 0.0)
@@ -129,41 +130,41 @@ class TestPDF2MarkdownToolPrecisionErrors:
         """A0202 错误码"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(_AuthError) as exc_info:
-            tool._handle_precision_error("A0202", "Token 错误")
+            tool._client._handle_precision_error("A0202", "Token 错误")
         assert "A0202" in str(exc_info.value)
 
     def test_handle_auth_error_a0211(self):
         """A0211 错误码"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(_AuthError) as exc_info:
-            tool._handle_precision_error("A0211", "Token 过期")
+            tool._client._handle_precision_error("A0211", "Token 过期")
         assert "A0211" in str(exc_info.value)
 
     def test_handle_quota_error(self):
         """-60018 每日限额错误"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(_QuotaExceededError):
-            tool._handle_precision_error(-60018, "每日解析任务数量已达上限")
+            tool._client._handle_precision_error(-60018, "每日解析任务数量已达上限")
 
     def test_handle_file_size_error(self):
         """-60005 文件大小超限"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(Exception) as exc_info:
-            tool._handle_precision_error(-60005, "文件太大")
+            tool._client._handle_precision_error(-60005, "文件太大")
         assert "200MB" in str(exc_info.value)
 
     def test_handle_page_limit_error(self):
         """-60006 页数超限"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(Exception) as exc_info:
-            tool._handle_precision_error(-60006, "页数太多")
+            tool._client._handle_precision_error(-60006, "页数太多")
         assert "200页" in str(exc_info.value)
 
     def test_handle_html_quota_error(self):
         """-60019 HTML 解析额度不足"""
         tool = PDF2MarkdownTool(cwd=".")
         with pytest.raises(Exception) as exc_info:
-            tool._handle_precision_error(-60019, "HTML 额度不足")
+            tool._client._handle_precision_error(-60019, "HTML 额度不足")
         # 应该包含错误码和提示
         assert "-60019" in str(exc_info.value)
 
@@ -440,7 +441,7 @@ class TestPdfSplitting:
             seen.append(os.path.basename(file_path))
             return f"# part {len(seen)}"
 
-        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse", fake_parse)
+        monkeypatch.setattr(MinerUClient, "_precision_parse", fake_parse)
         md = tool.convert_file(str(src), model_version="vlm", timeout=60)
         assert len(seen) == 3   # 5 页 → 2+2+1
         assert md == "# part 1\n\n# part 2\n\n# part 3"
@@ -458,7 +459,7 @@ class TestPdfSplitting:
             calls["n"] += 1
             return "# single"
 
-        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse", fake_parse)
+        monkeypatch.setattr(MinerUClient, "_precision_parse", fake_parse)
         assert tool.convert_file(str(src), timeout=60) == "# single"
         assert calls["n"] == 1
 
@@ -477,7 +478,7 @@ class TestPdfSplitting:
             seen.append(os.path.basename(file_path))
             return f"# agent part {len(seen)}"
 
-        monkeypatch.setattr(PDF2MarkdownTool, "_agent_parse", fake_agent)
+        monkeypatch.setattr(MinerUClient, "_agent_parse", fake_agent)
         md = tool.convert_file(str(src), timeout=60)
         assert len(seen) == 3          # 45 页 → 20+20+5
         assert md == "# agent part 1\n\n# agent part 2\n\n# agent part 3"
@@ -501,7 +502,7 @@ class TestPolling:
     @patch("requests.post")
     def test_pending_then_done_without_deadline(self, mock_post, mock_put, mock_get,
                                                 tmp_path, monkeypatch):
-        from core.tools import pdf2markdown as mod
+        from core import mineru_client as mod
 
         # 轮询里的 3s 间隔在测试中跳过
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
@@ -541,7 +542,7 @@ class TestPolling:
     def test_pending_forever_times_out(self, mock_post, mock_put, mock_get,
                                        tmp_path, monkeypatch):
         """任务一直 pending：到达总超时后抛出 TimeoutError"""
-        from core.tools import pdf2markdown as mod
+        from core import mineru_client as mod
 
         clock = {"t": 0.0}
 
@@ -579,7 +580,7 @@ class TestProgressStreaming:
         chunks = []
         tool.on_output = lambda chunk, offset: chunks.append((chunk, offset))
 
-        monkeypatch.setattr(PDF2MarkdownTool, "_precision_parse",
+        monkeypatch.setattr(MinerUClient, "_precision_parse",
                             lambda self, *a, **kw: "# md")
 
         src = tmp_path / "doc.pdf"

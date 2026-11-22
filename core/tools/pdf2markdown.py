@@ -29,18 +29,13 @@ Official docs: https://mineru.net/apiManage/docs
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 import tempfile
 import threading
-import time
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
-
-import requests
 
 try:
     from pypdf import PdfReader, PdfWriter, apply_configuration, get_configuration
@@ -48,6 +43,12 @@ except ImportError:   # 未安装 pypdf 时无法拆分超限 PDF
     PdfReader = PdfWriter = None   # type: ignore[assignment]
 
 from core.config import Config
+from core.mineru_client import (
+    MinerUClient,
+    _AgentLimitError,
+    _AuthError,
+    _QuotaExceededError,
+)
 from core.security.path_policy import OP_WRITE, PathTarget
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 
@@ -77,18 +78,8 @@ _PRECISION_SUPPORTED_EXT = {
 _MODEL_VERSION_DEFAULT = "vlm"
 _MODEL_VERSION_HTML = "MinerU-HTML"
 
-# 轮询策略：pending/running 表示任务仍在排队/执行，持续等待；
-# 但设总超时（默认 1 小时），防止服务端丢任务后无限挂起；连续网络错误也会放弃
-# 官方结果查询频控 1000 次/分钟，5 秒间隔远低于上限
-_POLL_INTERVAL_S = 5
-_POLL_MAX_CONSECUTIVE_ERRORS = 12
-_POLL_HEARTBEAT_EVERY = 12     # 每 12 次轮询（约 1 分钟）打一条心跳日志
-
 _DEFAULT_TIMEOUT_S = 7200      # 单次解析默认总超时（2 小时）
 _MAX_TIMEOUT_S = 7200          # 参数上限
-
-# 提交限流：官方所有创建解析任务接口共用 50 文件/分钟频控，按 40 留余量
-_SUBMIT_RATE_PER_MIN = 40
 
 # Token 有效期提示 (官方文档: 90 天)
 _TOKEN_VALIDITY_HINT = "API Key 有效期 90 天，请在 https://mineru.net/apiManage 续期"
@@ -228,48 +219,6 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
             raise
 
 
-def _request_with_retry(method: str, url: str, *, attempts: int = 3,
-                        backoff: float = 5.0, **kwargs):
-    """连接类错误（超时/DNS/连接重置）自动重试；HTTP 状态错误不重试"""
-    func = requests.post if method.upper() == "POST" else requests.get
-    last = None
-    for i in range(attempts):
-        try:
-            return func(url, **kwargs)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            last = e
-            if i < attempts - 1:
-                logger.warning(
-                    f"[pdf2markdown] {method} {url} 网络错误，{backoff:.0f}s 后重试 "
-                    f"({i + 1}/{attempts}): {e}")
-                time.sleep(backoff)
-    raise last
-
-
-class _RateLimiter:
-    """线程安全的等间隔限流器：每分钟最多 rate_per_min 次"""
-
-    def __init__(self, rate_per_min: int) -> None:
-        self._lock = threading.Lock()
-        self._interval = 60.0 / max(rate_per_min, 1)
-        self._next_at = 0.0
-
-    def acquire(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            wait = self._next_at - now
-            if wait > 0:
-                logger.info(f"[pdf2markdown] 提交限流等待 {wait:.1f}s"
-                            f"（上限 {_SUBMIT_RATE_PER_MIN} 文件/分钟）")
-                time.sleep(wait)
-                now = time.monotonic()
-                self._next_at = max(now, self._next_at) + self._interval
-            else:
-                self._next_at = now + self._interval
-
-
-_submit_limiter = _RateLimiter(_SUBMIT_RATE_PER_MIN)
-
 
 class PDF2MarkdownTool(Tool):
     """Convert PDF/image files to Markdown via MinerU API."""
@@ -329,6 +278,7 @@ class PDF2MarkdownTool(Tool):
         # 实时进度（仅推前端/输出文件，不进 ToolResult/上下文）
         self._progress_offset = 0
         self._progress_lock = threading.Lock()
+        self._client = MinerUClient(self._progress)
 
     def _progress(self, text: str) -> None:
         """推送一条实时进度：追加到 output_file（runner 注入）并触发 on_output。
@@ -491,6 +441,40 @@ class PDF2MarkdownTool(Tool):
         self._progress(f"转换完成：{len(md):,} 字符")
         return md
 
+    def _agent_parse_with_split(self, file_path: str, timeout: int) -> str:
+        """免费 Agent API：超限（10MB/20页）自动分片后合并"""
+        return self._parse_with_split(
+            file_path,
+            lambda p: self._client._agent_parse(p, timeout),
+            max_size_mb=_AGENT_MAX_SIZE_MB,
+            max_pages=_AGENT_MAX_PAGES,
+        )
+
+    def _build_result(self, markdown: str, output_path: str, api_mode: str) -> ToolResult:
+        """Build successful result with metadata."""
+        char_count = len(markdown)
+        line_count = markdown.count('\n') + 1
+        preview = markdown[:2000]
+        if char_count > 2000:
+            preview += f"\n\n... (共 {char_count:,} 字符，{line_count:,} 行)"
+
+        output = (
+            f"[{api_mode} API] 解析完成\n"
+            f"文件: {Path(output_path).name}\n"
+            f"输出: {output_path}\n"
+            f"字符数: {char_count:,}\n"
+            f"行数: {line_count:,}\n\n"
+            f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
+        )
+        meta = {"output_path": output_path, "api_mode": api_mode}
+        return ToolResult(output, meta=meta)
+
+    def _save_markdown(self, content: str, output_path: str) -> None:
+        """Save markdown content to file."""
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
     def _parse_with_split(self, file_path: str, parse_fn: Callable[[str], str], *,
                           max_size_mb: int, max_pages: int) -> str:
         """按限额解析：超限 PDF 先分片（pypdf），逐片解析后按页序合并"""
@@ -529,395 +513,11 @@ class PDF2MarkdownTool(Tool):
         """Precision API：超限（200MB/200页）自动分片后合并"""
         return self._parse_with_split(
             file_path,
-            lambda p: self._precision_parse(p, api_key, timeout, model_version),
+            lambda p: self._client._precision_parse(p, api_key, timeout, model_version),
             max_size_mb=_PRECISION_MAX_SIZE_MB,
             max_pages=_PRECISION_MAX_PAGES,
         )
 
-    def _agent_parse_with_split(self, file_path: str, timeout: int) -> str:
-        """免费 Agent API：超限（10MB/20页）自动分片后合并"""
-        return self._parse_with_split(
-            file_path,
-            lambda p: self._agent_parse(p, timeout),
-            max_size_mb=_AGENT_MAX_SIZE_MB,
-            max_pages=_AGENT_MAX_PAGES,
-        )
-
-    def _build_result(self, markdown: str, output_path: str, api_mode: str) -> ToolResult:
-        """Build successful result with metadata."""
-        char_count = len(markdown)
-        line_count = markdown.count('\n') + 1
-        preview = markdown[:2000]
-        if char_count > 2000:
-            preview += f"\n\n... (共 {char_count:,} 字符，{line_count:,} 行)"
-
-        output = (
-            f"[{api_mode} API] 解析完成\n"
-            f"文件: {Path(output_path).name}\n"
-            f"输出: {output_path}\n"
-            f"字符数: {char_count:,}\n"
-            f"行数: {line_count:,}\n\n"
-            f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
-        )
-        meta = {"output_path": output_path, "api_mode": api_mode}
-        return ToolResult(output, meta=meta)
-
-    def _save_markdown(self, content: str, output_path: str) -> None:
-        """Save markdown content to file."""
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    # ── Agent 轻量解析 API ─────────────────────────────────────────────────────
-
-    def _agent_parse(self, file_path: str, timeout: int) -> str:
-        """Parse file using Agent lightweight API (no key required).
-
-        Agent API: POST /api/v1/agent/parse/file (获取上传URL)
-                   POST /api/v1/agent/parse/url (URL解析)
-                   GET /api/v1/agent/parse/{task_id} (查询结果)
-
-        无需 Token，IP 限频（HTTP 429）。
-        限制: ≤10MB, ≤20页, 支持 PDF/图片/Docx/PPTx/Xlsx
-        """
-        file_name = Path(file_path).name
-        logger.info(f"[Agent API] Parsing: {file_name}")
-        self._progress(f"申请上传 URL（Agent）：{file_name}")
-
-        # Step 1: Get upload URL
-        resp = requests.post(
-            "https://mineru.net/api/v1/agent/parse/file",
-            json={"file_name": file_name},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-
-        if result.get("code") != 0:
-            code = result.get("code")
-            msg = result.get("msg", "unknown")
-            # Agent 专属错误码 (官方文档)
-            if code == -30001:
-                raise _AgentLimitError(f"文件大小超出轻量接口限制 (10MB): {msg}")
-            elif code == -30002:
-                raise _AgentLimitError(f"轻量接口不支持该文件类型: {msg}")
-            elif code == -30003:
-                raise _AgentLimitError(f"文件页数超出轻量接口限制 (20页): {msg}")
-            elif code == -30004:
-                raise Exception(f"请求参数错误: {msg}")
-            elif code == 429:
-                raise _AgentLimitError(f"IP 限频，请稍后再试: {msg}")
-            raise Exception(f"Agent API error (code={code}): {msg}")
-
-        data = result["data"]
-        task_id = data["task_id"]
-        file_url = data["file_url"]
-
-        # Step 2: Upload file (官方文档说 URL 有效期 24 小时)
-        size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        self._progress(f"上传中（{size_mb:.1f} MB）...")
-        with open(file_path, "rb") as f:
-            resp = requests.put(file_url, data=f, timeout=(10, 120))
-            if resp.status_code not in (200, 201, 204):
-                raise Exception(f"文件上传失败: HTTP {resp.status_code}")
-        self._progress("上传完成，开始轮询解析结果")
-
-        # Step 3: Poll for result
-        result_data = self._agent_poll(task_id, timeout)
-
-        # Step 4: Download markdown
-        markdown_url = result_data.get("markdown_url")
-        if not markdown_url:
-            raise Exception("Agent API 返回结果中无 markdown_url")
-
-        return self._download_markdown(markdown_url)
-
-    def _poll_until_done(self, label: str, url: str, timeout: int, parse,
-                         headers: dict | None = None) -> dict:
-        """通用轮询：``parse(result) -> (done_payload | None, state)``。
-
-        非终态持续等待，但受总超时与连续网络错误双重约束。
-        """
-        start_time = time.monotonic()
-        deadline = start_time + timeout
-        consecutive_errors = 0
-        polls = 0
-
-        while True:
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"{label} API 轮询超时（{timeout}s），任务可能已丢失")
-            polls += 1
-            try:
-                resp = requests.get(url, headers=headers, timeout=30)
-                resp.raise_for_status()
-                result = resp.json()
-                consecutive_errors = 0
-            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                consecutive_errors += 1
-                if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
-                    raise TimeoutError(
-                        f"{label} API 连续 {consecutive_errors} 次网络错误: {e}")
-                logger.warning(
-                    f"[pdf2markdown] {label} 轮询网络错误，{_POLL_INTERVAL_S}s 后重试 "
-                    f"({consecutive_errors}/{_POLL_MAX_CONSECUTIVE_ERRORS}): {e}")
-                time.sleep(_POLL_INTERVAL_S)
-                continue
-
-            done_payload, state = parse(result)
-            if done_payload is not None:
-                return done_payload
-
-            if polls % _POLL_HEARTBEAT_EVERY == 0:
-                self._progress(f"解析中 state={state}，"
-                               f"已等待 {time.monotonic() - start_time:.0f}s")
-            time.sleep(_POLL_INTERVAL_S)
-
-    def _agent_poll(self, task_id: str, timeout: int) -> dict:
-        """轮询 Agent 结果，直到 done/failed。"""
-        url = f"https://mineru.net/api/v1/agent/parse/{task_id}"
-
-        def parse(result: dict) -> tuple[dict | None, str | None]:
-            if result.get("code") != 0:
-                raise Exception(
-                    f"Agent poll error (code={result.get('code')}): {result.get('msg')}"
-                )
-            data = result.get("data", {})
-            state = data.get("state")
-            if state == "done":
-                return data, state
-            if state == "failed":
-                err_code = data.get("err_code")
-                err_msg = data.get("err_msg", "unknown")
-                if err_code in (-30001, -30002, -30003):
-                    raise _AgentLimitError(f"code={err_code}: {err_msg}")
-                raise Exception(f"Agent parse failed: {err_msg}")
-            # waiting-file / uploading / pending / running：继续轮询
-            return None, state
-
-        return self._poll_until_done("Agent", url, timeout, parse)
-
-    # ── Precision Parse API v4 ─────────────────────────────────────────────────
-
-    def _precision_parse(
-        self, file_path: str, api_key: str, timeout: int, model_version: str
-    ) -> str:
-        """Parse file using Precision Parse API (needs API key).
-
-        Precision API: POST /api/v4/file-urls/batch (批量申请上传URL)
-                       GET /api/v4/extract-results/batch/{batch_id} (获取结果)
-
-        需要 Bearer Token (有效期 90 天)
-        限制: ≤200MB, ≤200页, 支持 PDF/图片/Doc/Docx/PPT/PPTx/XLS/XLSX/HTML
-        """
-        file_name = Path(file_path).name
-        logger.info(f"[Precision API] Parsing: {file_name}, model={model_version}")
-
-        # 构建请求体 (官方文档参数)
-        request_body = {
-            "files": [{"name": file_name, "data_id": Path(file_path).stem}],
-            "model_version": model_version,
-            # 官方文档默认值
-            "enable_formula": True,   # 公式识别 (pipeline/vlm 有效)
-            "enable_table": True,     # 表格识别 (pipeline/vlm 有效)
-            "is_ocr": False,          # OCR (pipeline/vlm 有效)
-        }
-
-        # Step 1: 申请上传 URL（先过提交限流：40 文件/分钟；连接类错误自动重试）
-        self._progress(f"申请上传 URL：{file_name}")
-        _submit_limiter.acquire()
-        resp = _request_with_retry(
-            "POST",
-            "https://mineru.net/api/v4/file-urls/batch",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            json=request_body,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-
-        if result.get("code") != 0:
-            code = result.get("code")
-            msg = result.get("msg", "unknown")
-            self._handle_precision_error(code, msg)
-
-        data = result["data"]
-        batch_id = data["batch_id"]
-        file_urls = data["file_urls"]
-
-        # Step 2: Upload file to OSS (with retries)
-        size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        self._progress(f"上传中（{size_mb:.1f} MB）...")
-        self._upload_to_oss(file_urls[0], file_path)
-        self._progress("上传完成，已提交异步解析，开始轮询（每 5s）")
-
-        # Step 3: Poll for result
-        result_data = self._precision_poll(batch_id, api_key, timeout)
-        self._progress("云端解析完成，下载结果包")
-
-        # Step 4: Extract markdown from ZIP
-        extract_result = result_data.get("extract_result", [])
-        if not extract_result:
-            raise Exception("Precision API 返回结果中无 extract_result")
-
-        zip_url = extract_result[0].get("full_zip_url")
-        if not zip_url:
-            err_msg = extract_result[0].get("err_msg", "")
-            if err_msg:
-                raise Exception(f"解析结果无 full_zip_url: {err_msg}")
-            raise Exception("解析结果无 full_zip_url")
-
-        return self._extract_markdown_from_zip(zip_url)
-
-    def _handle_precision_error(self, code: Any, msg: str) -> None:
-        """Handle Precision API error codes (官方文档)."""
-        # Token 认证错误
-        if str(code) in ("A0202", "A0211") or "authenticate failed" in msg.lower():
-            raise _AuthError(f"code={code}: {msg}")
-
-        # 每日限额
-        if code == -60018:
-            raise _QuotaExceededError(msg)
-
-        # 文件相关错误
-        error_map = {
-            -500: "传参错误",
-            -10001: "服务异常",
-            -10002: "请求参数错误",
-            -60001: "生成上传 URL 失败",
-            -60002: "获取匹配的文件格式失败",
-            -60003: "文件读取失败",
-            -60004: "空文件",
-            -60005: "文件大小超出限制 (200MB)",
-            -60006: "文件页数超过限制 (200页)",
-            -60007: "模型服务暂时不可用",
-            -60008: "文件读取超时",
-            -60009: "任务提交队列已满",
-            -60010: "解析失败",
-            -60011: "获取有效文件失败",
-            -60012: "找不到任务",
-            -60013: "没有权限访问该任务",
-            -60014: "运行中的任务暂不支持删除",
-            -60015: "文件转换失败",
-            -60016: "文件转换失败",
-            -60017: "重试次数达到上限",
-            -60018: "每日解析任务数量已达上限",
-            -60019: "HTML文件解析额度不足",
-            -60020: "文件拆分失败",
-            -60021: "读取文件页数失败",
-            -60022: "网页读取失败",
-        }
-
-        hint = error_map.get(code, "")
-        raise Exception(f"Precision API error (code={code}): {hint} - {msg}")
-
-    def _upload_to_oss(self, oss_url: str, file_path: str) -> None:
-        """Upload file to OSS with retries.
-
-        官方文档: URL 有效期 24 小时
-        """
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                with open(file_path, "rb") as f:
-                    resp = requests.put(oss_url, data=f, timeout=(10, 120))
-                    if resp.status_code not in (200, 201, 204):
-                        raise Exception(f"HTTP {resp.status_code}")
-                return
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(3 * (attempt + 1))
-                else:
-                    raise Exception(f"Upload failed after {max_retries} attempts: {e}")
-
-    def _precision_poll(self, batch_id: str, api_key: str, timeout: int) -> dict:
-        """轮询 Precision 结果，直到 done/failed。"""
-        url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
-        headers = {"Authorization": f"Bearer {api_key}"}
-
-        def parse(result: dict) -> tuple[dict | None, str | None]:
-            if result.get("code") != 0:
-                self._handle_precision_error(
-                    result.get("code"), result.get("msg", "unknown")
-                )
-
-            extract_results = result["data"]["extract_result"]
-            all_done = bool(extract_results)
-            state = None
-            for item in extract_results:
-                state = item.get("state")
-                if state == "failed":
-                    err_code = item.get("err_code")
-                    err_msg = item.get("err_msg", "unknown")
-                    if err_code == -60018:
-                        raise _QuotaExceededError(err_msg)
-                    raise Exception(f"Precision parse failed (code={err_code}): {err_msg}")
-                elif state != "done":
-                    all_done = False
-            return (result["data"] if all_done else None), state
-
-        return self._poll_until_done("Precision", url, timeout, parse, headers)
-
-    def _extract_markdown_from_zip(self, zip_url: str) -> str:
-        """Download ZIP and extract full.md content.
-
-        官方文档: full_zip_url 有效期 24 小时
-        ZIP 包内包含 full.md, 以及 _model.json (模型推理结果) 等文件
-        """
-        # Download ZIP (bypass proxy for SSL issues)
-        # 用 per-request 代理设置而非改 os.environ["no_proxy"]：全局环境变量
-        # 在并发场景下会让其他线程的请求（包括 LLM 调用）也绕过代理
-        no_proxy = {"http": None, "https": None}
-        try:
-            resp = requests.get(zip_url, timeout=(15, 120), proxies=no_proxy)
-            resp.raise_for_status()
-        except requests.exceptions.SSLError as e:
-            # 不回退到 verify=False：关闭证书校验会让下载的 markdown 可被中间人篡改
-            raise RuntimeError(f"SSL 校验失败，请检查系统证书或代理配置: {e}") from e
-
-        # Extract full.md from ZIP
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            # Look for full.md in the archive
-            md_files = [n for n in zf.namelist() if n.endswith(".md")]
-            full_md = next((n for n in md_files if "full.md" in n), None)
-
-            if full_md:
-                return zf.read(full_md).decode("utf-8")
-            elif md_files:
-                # Fallback: use first .md file
-                return zf.read(md_files[0]).decode("utf-8")
-            else:
-                raise Exception(f"ZIP 中无 .md 文件，文件列表: {zf.namelist()}")
-
-    def _download_markdown(self, url: str) -> str:
-        """Download markdown content from URL.
-
-        Agent API 返回的 CDN 链接可能因 SSL 代理问题失败；失败时直接报错，
-        不做 verify=False 回退（否则下载内容可被中间人篡改）。
-        """
-        no_proxy = {"http": None, "https": None}
-        try:
-            resp = requests.get(url, timeout=(15, 60), proxies=no_proxy)
-            resp.raise_for_status()
-        except requests.exceptions.SSLError as e:
-            raise RuntimeError(f"SSL 校验失败，请检查系统证书或代理配置: {e}") from e
-        # T11: 显式 UTF-8 解码，避免 requests 按 ISO-8859-1 回退导致中文乱码
-        return resp.content.decode("utf-8")
 
 
-class _AgentLimitError(Exception):
-    """Raised when Agent API limits are exceeded, triggering fallback."""
-    pass
 
-
-class _AuthError(Exception):
-    """Raised when API key authentication fails."""
-    pass
-
-
-class _QuotaExceededError(Exception):
-    """Raised when daily quota is exceeded."""
-    pass
