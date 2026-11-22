@@ -6,6 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import core.session_control as session_control_mod
+from core import restart as restart_mod
+
 
 class TestMaskProviders:
     """_mask_api_key() providers 接入层 API key 掩码。"""
@@ -1157,7 +1160,7 @@ class TestUpdateRoutes:
         from web import routes_update
 
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(restart_mod, "is_launcher_managed", lambda: True)
 
         result = asyncio.run(routes_update.update_status())
         assert result["zip_present"] is False
@@ -1167,10 +1170,9 @@ class TestUpdateRoutes:
         """直接启动（python main.py）时手动重启不可用"""
         import asyncio
 
-        from core import updater
         from web import routes_update
 
-        monkeypatch.setattr(updater, "is_launcher_managed", lambda: False)
+        monkeypatch.setattr(restart_mod, "is_launcher_managed", lambda: False)
         result = asyncio.run(routes_update.restart_service())
         assert result["success"] is False
         assert "直接启动" in result["error"]
@@ -1182,7 +1184,7 @@ class TestUpdateRoutes:
         from core import updater
         from web import routes_update
 
-        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(restart_mod, "is_launcher_managed", lambda: True)
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
         result = asyncio.run(routes_update.restart_service())
         assert result["success"] is False
@@ -1200,8 +1202,8 @@ class TestUpdateRoutes:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("cili-main/web/static/version.json", '{"version": "v20261018"}')
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
-        monkeypatch.setattr(updater, "all_sessions_idle", lambda: False)
+        monkeypatch.setattr(restart_mod, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(session_control_mod, "all_sessions_idle", lambda: False)
 
         result = asyncio.run(routes_update.restart_service())
         assert result["success"] is False
@@ -1219,11 +1221,11 @@ class TestUpdateRoutes:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("cili-main/web/static/version.json", '{"version": "v20261018"}')
         monkeypatch.setattr(updater, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(updater, "is_launcher_managed", lambda: True)
-        monkeypatch.setattr(updater, "all_sessions_idle", lambda: True)
+        monkeypatch.setattr(restart_mod, "is_launcher_managed", lambda: True)
+        monkeypatch.setattr(session_control_mod, "all_sessions_idle", lambda: True)
         requested = []
         monkeypatch.setattr(
-            updater, "request_restart", lambda reason: requested.append(reason) or True)
+            restart_mod, "request_restart", lambda reason: requested.append(reason) or True)
 
         result = asyncio.run(routes_update.restart_service())
         assert result["success"] is True

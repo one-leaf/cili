@@ -123,3 +123,36 @@ def stop_session(workspace_uuid: str, session_id: str) -> dict[str, Any]:
     turn = stop_turn(workspace_uuid, session_id)
     background = stop_background(workspace_uuid, session_id)
     return {"turn": turn, "background": background}
+
+
+def all_sessions_idle() -> bool:
+    """升级自动重启的空闲判定：无运行中会话、无排队回合、无后台子代理与 cron 任务。
+
+    各子系统逐一探测，任一探测器不可用（导入失败等）按该子系统空闲处理——
+    判定目标是「别打断正在跑的工作」，失败只意味着没探测到活动。
+    """
+    try:
+        from core.session_registry import registry
+        if registry.any_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.turn_queue import turn_queue
+        if turn_queue.any_pending():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.tools.agent_background import any_background_runner_running
+        if any_background_runner_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.cron import any_cron_runner_running
+        if any_cron_runner_running():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True

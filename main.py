@@ -1291,12 +1291,12 @@ def _start_core_services() -> None:
         upgrade_result = None
         logger.warning(f"应用升级包失败（按原版本继续启动）: {e}")
     if upgrade_result and upgrade_result.get("restart"):
-        from core import updater
-        if updater.is_launcher_managed():
+        from core import restart
+        if restart.is_launcher_managed():
             logger.info(
-                f"升级包已应用，以退出码 {updater.RESTART_EXIT_CODE} 交回启动循环加载新代码"
+                f"升级包已应用，以退出码 {restart.RESTART_EXIT_CODE} 交回启动循环加载新代码"
             )
-            sys.exit(updater.RESTART_EXIT_CODE)
+            sys.exit(restart.RESTART_EXIT_CODE)
         logger.warning(
             "升级包已应用，但当前为直接启动（python main.py），已加载的模块仍是旧实现，"
             "建议改用 start.cmd 启动或稍后手动重启服务"
@@ -1466,8 +1466,8 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     )
     server = uvicorn.Server(config)
     try:
-        from core import updater
-        updater.set_uvicorn_server(server)
+        from core import restart
+        restart.set_uvicorn_server(server)
     except Exception as e:
         logger.warning(f"注册 uvicorn server 句柄失败（升级自动重启不可用）: {e}")
 
@@ -1487,8 +1487,8 @@ def _start_web_interface(args: argparse.Namespace) -> None:
     if interrupted:
         return
     try:
-        from core import updater
-        updater.shutdown_and_restart_if_requested()
+        from core import restart
+        restart.shutdown_and_restart_if_requested()
     except Exception as e:
         logger.warning(f"处理升级重启请求失败: {e}")
 

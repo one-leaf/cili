@@ -9,7 +9,7 @@ import threading
 
 from fastapi import APIRouter
 
-from core import updater
+from core import restart, session_control, updater
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def _download_worker() -> None:
             "[update] 升级包下载结束: %s", result.get("message") or result.get("error")
         )
         # 下载成功后安排「等空闲自动重启」（仅 start.ps1 托管且未关闭时生效）
-        if result.get("success") and updater.schedule_idle_restart("升级包下载完成"):
+        if result.get("success") and restart.schedule_idle_restart("升级包下载完成"):
             logger.info("[update] 已安排：等待会话空闲后自动重启应用升级包")
     except Exception as e:  # noqa: BLE001 —— 线程异常只记日志，状态接口仍会结束
         logger.exception("[update] 升级包下载线程异常: %s", e)
@@ -65,7 +65,7 @@ async def update_status():
         "zip_present": zip_exists,
         "zip_version": zip_version,
         # 前端据此展示「自动重启」提示与立即重启按钮
-        "launcher_managed": updater.is_launcher_managed(),
+        "launcher_managed": restart.is_launcher_managed(),
     }
 
 
@@ -94,15 +94,16 @@ async def restart_service():
     仅 start.ps1 托管下可用：request_restart 触发优雅停机，进程以退出码 42
     交回启动循环，由循环重新应用升级包并拉起新实例。
     """
-    if not updater.is_launcher_managed():
+    if not restart.is_launcher_managed():
         return {"success": False,
                 "error": "当前为直接启动（python main.py），自动重启不可用；请手动重启服务"}
     if not updater.get_upgrade_zip_path().exists():
         return {"success": False, "error": "没有待应用的升级包"}
     if updater.is_downloading() or _starting:
         return {"success": False, "busy": True, "error": "升级包正在下载，请稍后再试"}
-    if not updater.all_sessions_idle():
+    if not session_control.all_sessions_idle():
         return {"success": False, "busy": True, "error": "有会话正在运行，请等待结束后重试"}
-    if not updater.request_restart("Web UI 手动触发重启"):
+    if not restart.request_restart("Web UI 手动触发重启"):
         return {"success": False, "error": "发起重启失败"}
     return {"success": True, "message": "服务重启中，新实例将自动应用升级包"}
+

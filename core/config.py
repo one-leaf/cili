@@ -1074,6 +1074,21 @@ def get_workspace_sessions_dir(workspace_uuid: str = "") -> Path:
     return sessions_dir_for_data_dir(get_workspace_data_dir(workspace_uuid))
 
 
+def workspace_uuid_for_sessions_dir(sessions_dir: Path | str) -> str:
+    """反查一个 sessions 目录所属的工作区 uuid；找不到返回空串。"""
+    try:
+        target = Path(sessions_dir).resolve()
+    except OSError:
+        return ""
+    for uuid in get_all_workspace_uuids():
+        try:
+            if get_workspace_sessions_dir(uuid).resolve() == target:
+                return uuid
+        except OSError:
+            continue
+    return ""
+
+
 def get_workspace_cwd(workspace_uuid: str = "") -> str:
     """Get a workspace's user-visible directory (workspaces.json entry, else data parent)."""
     ws_config = load_workspace_config(workspace_uuid)

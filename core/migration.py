@@ -43,6 +43,10 @@ def migrate_session_file(session_file: Path, workspace_uuid: str = "") -> bool:
         logger.warning(f"Failed to load session file {session_file}: {e}")
         return False
 
+    if not workspace_uuid:
+        from core.config import workspace_uuid_for_sessions_dir
+        workspace_uuid = workspace_uuid_for_sessions_dir(session_file.parent.parent)
+
     modified = False
 
     # Migrate messages

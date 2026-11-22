@@ -493,7 +493,10 @@ def apply_answer(
                                extra_meta={"permission_outcome": "approved"})
             return "answered"
         if decision == DECISION_REMEMBER:
-            settle_placeholder(session, tool_use_id, REMEMBER_TEXT, outcome="remembered",
+            remember_text = REMEMBER_TEXT if persisted else (
+                APPROVE_TEXT + "\n\n（系统提示：该操作无法生成持久规则，仅本次会话放行。）"
+            )
+            settle_placeholder(session, tool_use_id, remember_text, outcome="remembered",
                                extra_meta={"permission_outcome": "remembered"})
             return "answered"
         if decision == DECISION_ABORT:
@@ -535,7 +538,7 @@ def settle_expired_approvals(
 ) -> list[str]:
     """结算会话内所有已过期的审批占位（只结算，不恢复）。返回 tool_use_id 列表。"""
     settled: list[str] = []
-    for _msg, block in list(_iter_tool_result_blocks(session)):
+    for _msg, block in _iter_tool_result_blocks(session, max_messages=200):
         meta = block.get("_meta") or {}
         if meta.get("completed") is not False:
             continue

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from core.fs_utils import atomic_write_json
 _DEFAULT_TIMEOUT = 120
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
 _CACHE_MAX_BYTES = 500 * 1024 * 1024
+_PRUNE_MIN_AGE_S = 300  # 新转换产物在宽限期内不参与容量淘汰，避免与 copy_pdf 竞态
 
 CACHE_DIR = DATA_DIR / "cache" / "office2pdf"
 
@@ -34,7 +36,7 @@ _SLIDE_EXTS = {".ppt", ".pptx", ".pptm", ".ppsx", ".ppsm", ".potx"}
 SUPPORTED_EXTENSIONS = _WORD_EXTS | _EXCEL_EXTS | _SLIDE_EXTS
 
 _cache_guard = threading.Lock()
-_cache_locks: dict[str, threading.Lock] = {}
+_cache_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _prune_guard = threading.Lock()
 
 
@@ -61,11 +63,6 @@ def _key_lock(key: str) -> threading.Lock:
         if lock is None:
             lock = threading.Lock()
             _cache_locks[key] = lock
-            # 有界清理：只移除未被持有的旧锁，防止长期运行字典无界增长
-            if len(_cache_locks) > 256:
-                for old_key, old_lock in list(_cache_locks.items()):
-                    if old_key != key and not old_lock.locked():
-                        _cache_locks.pop(old_key, None)
         return lock
 
 
@@ -133,15 +130,23 @@ def _prune_cache(cache_dir: Path | None = None) -> None:
                 pdf.unlink(missing_ok=True)
                 meta.unlink(missing_ok=True)
                 continue
-            entries.append((pdf.stat().st_mtime, pdf))
-        total = sum(pdf.stat().st_size for _, pdf in entries if pdf.exists())
+            entries.append((now - age, pdf))
+        total = 0
+        for _, pdf in entries:
+            try:
+                total += pdf.stat().st_size
+            except OSError:
+                continue
         for _, pdf in sorted(entries):
             if total <= _CACHE_MAX_BYTES:
                 break
             try:
-                size = pdf.stat().st_size
+                stat = pdf.stat()
             except OSError:
                 continue
+            if now - stat.st_mtime < _PRUNE_MIN_AGE_S:
+                continue  # 刚生成的产物可能正被 copy_pdf 使用
+            size = stat.st_size
             pdf.unlink(missing_ok=True)
             pdf.with_suffix(".json").unlink(missing_ok=True)
             total -= size
