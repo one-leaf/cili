@@ -13,14 +13,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.config import PROJECT_ROOT
+from core.config import PROJECT_ROOT, SYSTEM_WORKSPACE_UUID
 from core.cron import rules, store
 from core.cron.model import Job, State, now_str
 from core.fs_utils import load_json_or_backup
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_WORKSPACE = "system"
 SEED_DIR = Path(PROJECT_ROOT) / "core" / "cron_seeds"
 
 
@@ -56,10 +55,10 @@ def _load_seed(path: Path) -> Job:
     data = load_json_or_backup(path, None)
     if not isinstance(data, dict):
         raise ValueError(f"invalid seed file: {path}")
-    job = Job.from_dict(data, workspace_uuid=SYSTEM_WORKSPACE)
+    job = Job.from_dict(data, workspace_uuid=SYSTEM_WORKSPACE_UUID)
     job.managed = True
     job.scope = "global"
-    job.workspace_uuid = SYSTEM_WORKSPACE
+    job.workspace_uuid = SYSTEM_WORKSPACE_UUID
     job.seed_revision = int(data.get("seed_revision", 1) or 1)
     job.seed_checksum = managed_checksum(job)
     job.version = 2
@@ -88,7 +87,7 @@ def install_seeds() -> list[dict[str, Any]]:
         logger.warning("[cron-seed] seed directory not found: %s", SEED_DIR)
         return results
 
-    store.ensure_root(SYSTEM_WORKSPACE)
+    store.ensure_root(SYSTEM_WORKSPACE_UUID)
     for path in seed_files():
         try:
             seed = _load_seed(path)
@@ -97,7 +96,7 @@ def install_seeds() -> list[dict[str, Any]]:
             results.append({"id": path.stem, "status": "invalid", "error": str(exc)})
             continue
 
-        job_file = store.job_path(SYSTEM_WORKSPACE, seed.id)
+        job_file = store.job_path(SYSTEM_WORKSPACE_UUID, seed.id)
         if not job_file.exists():
             _install(seed, "missing")
             results.append({"id": seed.id, "status": "installed"})
@@ -105,7 +104,7 @@ def install_seeds() -> list[dict[str, Any]]:
 
         try:
             existing = Job.from_dict(
-                load_json_or_backup(job_file, {}), workspace_uuid=SYSTEM_WORKSPACE
+                load_json_or_backup(job_file, {}), workspace_uuid=SYSTEM_WORKSPACE_UUID
             )
         except Exception as exc:  # noqa: BLE001 —— 损坏：备份后重装
             backup = job_file.with_name(

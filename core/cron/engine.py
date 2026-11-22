@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.config import get_all_workspace_uuids
+from core.config import SYSTEM_WORKSPACE_UUID, get_all_workspace_uuids
 from core.cron import delivery, executor, rules, store
 from core.cron.model import Job, RunResult, State, now_str
 
@@ -248,7 +248,7 @@ class CronEngine:
             )
             return
 
-        if self._queue_depth.get((job.workspace_uuid or "system"), 0) >= _MAX_QUEUE_PER_WORKSPACE:
+        if self._queue_depth.get((job.workspace_uuid or SYSTEM_WORKSPACE_UUID), 0) >= _MAX_QUEUE_PER_WORKSPACE:
             with self._lock:
                 state.push_history(
                     {
@@ -304,7 +304,7 @@ class CronEngine:
             )
 
     def _submit(self, dispatch: _Dispatch, now: float | None = None) -> None:
-        workspace_uuid = dispatch.job.workspace_uuid or "system"
+        workspace_uuid = dispatch.job.workspace_uuid or SYSTEM_WORKSPACE_UUID
         pool = self._executor_for(workspace_uuid)
         self._queue_depth[workspace_uuid] = self._queue_depth.get(workspace_uuid, 0) + 1
 
@@ -343,7 +343,7 @@ class CronEngine:
 
     def _finish(self, dispatch: _Dispatch, result: RunResult) -> None:
         job = dispatch.job
-        workspace_uuid = job.workspace_uuid or "system"
+        workspace_uuid = job.workspace_uuid or SYSTEM_WORKSPACE_UUID
         key = (workspace_uuid, job.id)
         with self._lock:
             loaded = self._jobs.get(key)

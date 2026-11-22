@@ -205,11 +205,11 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         if ws_arg:
             targets = [ws_arg]
         else:
-            from core.config import load_workspaces_index
+            from core.config import SYSTEM_WORKSPACE_UUID, load_workspaces_index
 
             targets = [
                 str(e.get("uuid", "")) for e in load_workspaces_index()
-                if e.get("uuid") and not e.get("system") and str(e.get("uuid")) != "system"
+                if e.get("uuid") and not e.get("system") and str(e.get("uuid")) != SYSTEM_WORKSPACE_UUID
             ]
 
         results: list[dict] = []
@@ -266,4 +266,3 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         return "\n".join(lines)
 
 
-# ----- worker entry point (COM runs here, never in the agent process) -----

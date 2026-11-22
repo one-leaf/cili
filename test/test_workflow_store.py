@@ -3,7 +3,7 @@
 import time
 
 from core.workflows import store
-from core.workflows.model import StepState, WorkflowState
+from core.workflows.model import StepState
 
 WS = "test"
 
@@ -21,7 +21,8 @@ def sample_payload():
 
 def test_create_load_list_and_delete():
     workflow = store.create_workflow(WS, sample_payload())
-    assert store.is_valid_id(workflow.id)
+    from core.workflows.model import is_short_id
+    assert is_short_id(workflow.id)
     loaded = store.load_workflow(WS, workflow.id)
     assert loaded is not None and loaded.name == "测试工作流"
     assert loaded.steps[1].sources == [loaded.steps[0].id]

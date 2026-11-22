@@ -691,7 +691,7 @@ loop(action="status", source_file="data/files.txt")
 
 `skill` 工具（`SkillTool`）用于列出和读取全局内置技能。技能平铺在 `core/skills/{name}/skill.md`，每个技能的 frontmatter 通过 `roles` 字段声明适用角色；**缺省 `roles` 视为对所有角色可见**。
 
-**核心模块**：`core/tools/skill.py`（扫描目录 `core/skills/`）
+**核心模块**：`core/skills_catalog.py`（扫描目录 `core/skills/`；`SkillTool` 保留在 `core/tools/skill.py`）
 
 **子文件渐进式读取**：大型技能可把各阶段的过程性内容拆到技能目录内的子文件（如 `win-ops/references/repair.md`），`skill.md` 本体只保留触发描述、不可协商规则和阶段索引。`read` 动作带 `file` 参数时读取子文件（相对路径、仅 `.md`、禁 `..`/绝对路径/反斜杠，越界 fail-closed），可见性沿用主技能 frontmatter 过滤——主技能对角色不可见时子文件同样不可读。不带 `file` 仍返回 `skill.md` 全文（向后兼容）。
 
@@ -866,7 +866,7 @@ web/deps.py 注入 on_session_start / on_session_complete 回调
 
 `AskUserTool.execute()` 返回 `completed=False` 的 `ToolResult`，Agent 循环退出等待用户输入。
 
-**占位符流程**（接口无关，Web / QQ 等接入端共用，位于 `core/tools/ask_user.py`）：
+**占位符流程**（接口无关，Web / QQ 等接入端共用，位于 `core/approval_cards.py`）：
 
 | 函数 | 职责 |
 |------|------|
@@ -879,7 +879,7 @@ web/deps.py 注入 on_session_start / on_session_complete 回调
 > 这些函数原先住在 `web/routes_ask_user.py`（Web 专属），第二个接入端只能复制一份；
 > 现已下沉 core，Web 与 QQ 共用。
 
-**相关**：`todo_update_event()`（`core/tools/todo.py`）同理——把「哪个工具触发、数据从哪取」
+**相关**：`todo_update_event()`（`core/todo_store.py`）同理——把「哪个工具触发、数据从哪取」
 的判断收进 core，传输层只负责序列化。
 
 ### 8.5 AgentRun 续任与 master fork

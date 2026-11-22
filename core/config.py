@@ -908,6 +908,9 @@ def migrate_legacy_config(global_config: dict) -> dict:
 
 # Base directories (config.py is in core/, project root is one level up)
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
+
+# System 工作区（全局 cron 等系统数据）的保留 uuid
+SYSTEM_WORKSPACE_UUID = "system"
 DATA_ROOT = PROJECT_ROOT / "data"
 DATA_DIR = PROJECT_ROOT / "data" / "cili"
 
@@ -1036,7 +1039,7 @@ def get_workspace_data_dir(workspace_uuid: str) -> Path:
     entry = find_workspace_entry(workspace_uuid)
     if entry and entry.get("directory"):
         return Path(entry["directory"]) / ".cili"
-    if workspace_uuid == "system":
+    if workspace_uuid == SYSTEM_WORKSPACE_UUID:
         return SYSTEM_DATA_DIR
     # 未知 uuid 兜底到「Default 工作区」：优先取索引里 Default 的目录，没有才退回
     # 硬编码路径。必须查索引而不是直接用 PROJECT_ROOT/workspace——session_search、
@@ -1081,10 +1084,10 @@ def get_workspace_cwd(workspace_uuid: str = "") -> str:
 
 def get_all_workspace_uuids() -> list[str]:
     """Get all workspace UUIDs including 'system'."""
-    uuids = ["system"]
+    uuids = [SYSTEM_WORKSPACE_UUID]
     for entry in load_workspaces_index():
         uuid = entry.get("uuid")
-        if uuid and uuid != "system":
+        if uuid and uuid != SYSTEM_WORKSPACE_UUID:
             uuids.append(uuid)
     return uuids
 

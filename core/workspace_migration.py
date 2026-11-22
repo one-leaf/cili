@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from core import config as config_mod
+from core.config import SYSTEM_WORKSPACE_UUID
 from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,7 @@ def _do_migrate(
     protected = {
         _canonical(e["directory"])
         for e in entries
-        if e.get("uuid") not in (None, "system", legacy_uuid) and e.get("directory")
+        if e.get("uuid") not in (None, SYSTEM_WORKSPACE_UUID, legacy_uuid) and e.get("directory")
     }
     default_canon = _canonical(default_dir)
     if default_canon in protected or any(

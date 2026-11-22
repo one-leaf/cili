@@ -1172,7 +1172,7 @@ def _prepare_environment(args: argparse.Namespace) -> None:
         migrated = 0
         for entry in load_workspaces_index():
             uuid = entry.get("uuid", "")
-            migrated += migrate_sessions_dir(get_workspace_data_dir(uuid) / "sessions")
+            migrated += migrate_sessions_dir(get_workspace_data_dir(uuid) / "sessions", workspace_uuid=uuid)
         if migrated > 0:
             print(f"[migration] Migrated {migrated} session(s) to new format")
     except ImportError:

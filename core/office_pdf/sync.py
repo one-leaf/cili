@@ -40,12 +40,13 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
     写操作只落在 ``{workspace}/.cili/cache/pdf/``（工具内部缓存，不触碰
     用户文件），因此不需要路径策略门禁。
     """
-    from core.config import load_workspace_config
+    from core.config import get_workspace_cwd, load_workspace_config
 
     cfg = load_workspace_config(workspace_uuid)
-    directory = (cfg or {}).get("directory")
-    root = Path(directory) if directory else None
-    if not cfg or root is None or not root.exists():
+    if not cfg or not (cfg.get("directory")):
+        return {"workspace_uuid": workspace_uuid, "error": "workspace directory not found"}
+    root = Path(get_workspace_cwd(workspace_uuid))
+    if not root.exists():
         return {"workspace_uuid": workspace_uuid, "error": "workspace directory not found"}
 
     cache_dir = workspace_cache_dir(workspace_uuid)
@@ -57,7 +58,9 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
     for meta_path in cache_dir.glob("*.json"):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            source_ok = str(meta.get("source", "")) in valid_sources
+            source = str(meta.get("source", ""))
+            # 源在遍历范围内，或源仍是工作区外/跳过目录中的有效文件 → 保留
+            source_ok = source in valid_sources or (bool(source) and os.path.exists(source))
         except Exception:
             source_ok = False
         if not source_ok:

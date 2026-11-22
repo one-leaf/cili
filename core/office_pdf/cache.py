@@ -61,6 +61,11 @@ def _key_lock(key: str) -> threading.Lock:
         if lock is None:
             lock = threading.Lock()
             _cache_locks[key] = lock
+            # 有界清理：只移除未被持有的旧锁，防止长期运行字典无界增长
+            if len(_cache_locks) > 256:
+                for old_key, old_lock in list(_cache_locks.items()):
+                    if old_key != key and not old_lock.locked():
+                        _cache_locks.pop(old_key, None)
         return lock
 
 

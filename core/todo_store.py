@@ -66,7 +66,7 @@ def todo_update_event(tool_name: str, is_error: bool, session: SessionStore | No
     if tool_name != "todo_write" or is_error:
         return None
     todos = get_todos_from_session(session, workspace_uuid)
-    if not todos:
+    if todos is None:
         return None
     # 带 session_id：推流可能持续到前端切走之后，接收端据此判断是否属于当前会话
     return {
@@ -87,9 +87,9 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
     # Try new format: independent todo file
     session_id = getattr(session, 'session_id', None)
     if session_id:
-        todos = read_todos(session_id, workspace_uuid)
-        if todos:
-            return todos
+        todo_file = get_todo_file_path(session_id, workspace_uuid)
+        if todo_file.exists():
+            return read_todos(session_id, workspace_uuid)
 
     # Fall back to old format: session metadata (for backward compatibility)
     if hasattr(session, 'metadata'):

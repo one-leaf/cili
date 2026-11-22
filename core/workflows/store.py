@@ -24,6 +24,7 @@ from core.workflows.model import (
     Workflow,
     WorkflowState,
     WorkflowValidationError,
+    is_short_id,
     new_short_id,
 )
 
@@ -61,10 +62,6 @@ def _run_lock(workspace_uuid: str, workflow_id: str, run_id: str) -> threading.R
             lock = threading.RLock()
             _run_locks[key] = lock
         return lock
-
-
-def is_valid_id(value: str) -> bool:
-    return bool(_ID_RE.match(str(value or "")))
 
 
 _migrated_workspaces: set[str] = set()
@@ -177,7 +174,7 @@ def new_run_id(workspace_uuid: str, workflow_id: str) -> str:
 
 
 def load_workflow(workspace_uuid: str, workflow_id: str) -> Workflow | None:
-    if not is_valid_id(workflow_id):
+    if not is_short_id(workflow_id):
         return None
     path = workflow_path(workspace_uuid, workflow_id)
     if not path.exists():

@@ -31,7 +31,7 @@ def _ensure_block_meta(block: dict) -> dict:
     return block["_meta"]
 
 
-def migrate_session_file(session_file: Path) -> bool:
+def migrate_session_file(session_file: Path, workspace_uuid: str = "") -> bool:
     """Migrate a single session file from old format to new format.
 
     Returns True if migration was performed, False otherwise.
@@ -55,7 +55,7 @@ def migrate_session_file(session_file: Path) -> bool:
     metadata = data.get("metadata", {})
     if "todos" in metadata:
         session_id = data.get("session_id") or session_file.parent.name
-        if migrate_todos_from_metadata(metadata, session_id):
+        if migrate_todos_from_metadata(metadata, session_id, workspace_uuid):
             modified = True
 
     # Save if modified
@@ -198,7 +198,7 @@ def migrate_message(msg: dict) -> bool:
     return False
 
 
-def migrate_todos_from_metadata(metadata: dict, session_id: str) -> bool:
+def migrate_todos_from_metadata(metadata: dict, session_id: str, workspace_uuid: str = "") -> bool:
     """Migrate todos from session metadata to independent file.
 
     Returns True if migration was performed.
@@ -209,7 +209,7 @@ def migrate_todos_from_metadata(metadata: dict, session_id: str) -> bool:
 
     try:
         from core.todo_store import write_todos
-        write_todos(session_id, todos)
+        write_todos(session_id, todos, workspace_uuid)
         del metadata["todos"]
         logger.info(f"Migrated {len(todos)} todos from session {session_id} to independent file")
         return True
@@ -218,7 +218,7 @@ def migrate_todos_from_metadata(metadata: dict, session_id: str) -> bool:
         return False
 
 
-def migrate_session_to_new_layout(session_dir: Path) -> bool:
+def migrate_session_to_new_layout(session_dir: Path, workspace_uuid: str = "") -> bool:
     """Migrate a session dir from old single-file format to the 3-file JSONL layout.
 
     Old: {session_dir}/index.json 含完整 "messages"。
@@ -249,7 +249,7 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
         return False
 
     # 先做 block 级 → 消息级 _meta 迁移，保证拆文件时字段已就位（幂等）
-    migrate_session_file(index_file)
+    migrate_session_file(index_file, workspace_uuid)
 
     try:
         with open(index_file, "r", encoding="utf-8") as f:
@@ -312,7 +312,7 @@ def migrate_session_to_new_layout(session_dir: Path) -> bool:
     return True
 
 
-def migrate_sessions_dir(sessions_dir: Path) -> int:
+def migrate_sessions_dir(sessions_dir: Path, workspace_uuid: str = "") -> int:
     """Migrate all session files in a single sessions directory.
 
     Returns the number of sessions migrated.
@@ -330,9 +330,9 @@ def migrate_sessions_dir(sessions_dir: Path) -> int:
             continue
 
         try:
-            if migrate_session_file(session_file):
+            if migrate_session_file(session_file, workspace_uuid):
                 migrated += 1
-            if migrate_session_to_new_layout(session_dir):
+            if migrate_session_to_new_layout(session_dir, workspace_uuid):
                 migrated += 1
         except Exception as e:
             logger.warning(f"Failed to migrate session {session_file}: {e}")

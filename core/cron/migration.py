@@ -14,8 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.config import get_all_workspace_uuids, get_workspace_data_dir
-from core.cron import store, v1
+from core.config import (
+    SYSTEM_WORKSPACE_UUID,
+    get_all_workspace_uuids,
+    get_workspace_data_dir,
+)
+from core.cron import legacy, store
 from core.cron.model import now_str
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
@@ -30,20 +34,20 @@ def _rmdir_if_empty(path: Path) -> None:
 
 
 def _cleanup_legacy(workspace_uuid: str) -> None:
-    legacy = v1.legacy_dir(workspace_uuid)
-    tasks_file = legacy / "user_tasks.json"
+    legacy_dir = legacy.legacy_dir(workspace_uuid)
+    tasks_file = legacy_dir / "user_tasks.json"
     try:
         if tasks_file.exists():
             tasks_file.unlink()
     except OSError as exc:
         logger.warning("[cron-migrate] failed to delete %s: %s", tasks_file, exc)
-    state_dir = legacy / "state"
+    state_dir = legacy_dir / "state"
     if state_dir.exists():
         try:
             shutil.rmtree(state_dir)
         except OSError as exc:
             logger.warning("[cron-migrate] failed to delete %s: %s", state_dir, exc)
-    _rmdir_if_empty(legacy)
+    _rmdir_if_empty(legacy_dir)
 
 
 def migrate_workspace(workspace_uuid: str = "") -> dict[str, Any]:
@@ -53,7 +57,7 @@ def migrate_workspace(workspace_uuid: str = "") -> dict[str, Any]:
         _cleanup_legacy(workspace_uuid)
         return {"workspace_uuid": workspace_uuid, "status": "already"}
 
-    tasks = v1.load_v1_tasks(workspace_uuid)
+    tasks = legacy.load_v1_tasks(workspace_uuid)
     if not tasks:
         root = store.ensure_root(workspace_uuid)
         atomic_write_json(
@@ -73,8 +77,8 @@ def migrate_workspace(workspace_uuid: str = "") -> dict[str, Any]:
     for config in tasks:
         name = config.get("name") or config.get("task_id") or "<unnamed>"
         try:
-            job = v1.convert_job(config, workspace_uuid)
-            state = v1.convert_state(workspace_uuid, job)
+            job = legacy.convert_job(config, workspace_uuid)
+            state = legacy.convert_state(workspace_uuid, job)
         except Exception as exc:  # noqa: BLE001 —— 全有或全无
             logger.error(
                 "[cron-migrate] %s: task %r conversion failed, aborting: %s",
@@ -82,7 +86,7 @@ def migrate_workspace(workspace_uuid: str = "") -> dict[str, Any]:
                 name,
                 exc,
             )
-            raise v1.MigrationError(f"task {name!r}: {exc}") from exc
+            raise legacy.MigrationError(f"task {name!r}: {exc}") from exc
         converted.append((job, state))
 
     data_dir = get_workspace_data_dir(workspace_uuid)
@@ -94,7 +98,7 @@ def migrate_workspace(workspace_uuid: str = "") -> dict[str, Any]:
             job_dir = staging / job.id
             job_dir.mkdir(parents=True, exist_ok=True)
             if isinstance(job.content, str) and job.content.strip().endswith(".py"):
-                source = v1.legacy_dir(workspace_uuid) / job.content.strip()
+                source = legacy.legacy_dir(workspace_uuid) / job.content.strip()
                 if source.exists():
                     target_name = source.name
                     shutil.copy2(source, job_dir / target_name)
@@ -170,10 +174,10 @@ def migrate_system_states(seed_ids: list[str]) -> None:
     if not seed_ids:
         return
     candidates = [
-        get_workspace_data_dir("system") / "cron.d" / "state",
+        get_workspace_data_dir(SYSTEM_WORKSPACE_UUID) / "cron.d" / "state",
         get_workspace_data_dir("") / "cron.d" / "state",
     ]
-    target_root = store.cron_root("system")
+    target_root = store.cron_root(SYSTEM_WORKSPACE_UUID)
 
     for job_id in seed_ids:
         best: tuple[str, Path, dict[str, Any]] | None = None

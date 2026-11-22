@@ -8,9 +8,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.config import get_workspace_cwd, load_config
-from core.cron.flags import cron_run_active
+from core.config import SYSTEM_WORKSPACE_UUID, get_workspace_cwd, load_config
 from core.cron.model import Job, RunResult, State
+from core.cron.runtime import cron_run_active
 from core.cron.sessions import ensure_cron_session
 from core.session_runner import SessionRunner
 from core.text_extract import message_text
@@ -74,7 +74,7 @@ def _content_items(content: Any, job: Job | None = None) -> list[dict[str, Any]]
         if job is not None and text.endswith(".py"):
             from core.cron import store
 
-            path = store.job_dir(job.workspace_uuid or "system", job.id) / Path(text).name
+            path = store.job_dir(job.workspace_uuid or SYSTEM_WORKSPACE_UUID, job.id) / Path(text).name
             if path.exists():
                 try:
                     import importlib.util
@@ -201,7 +201,7 @@ def execute(
     timeout_seconds: int,
 ) -> RunResult:
     started = time.monotonic()
-    workspace_uuid = job.workspace_uuid or "system"
+    workspace_uuid = job.workspace_uuid or SYSTEM_WORKSPACE_UUID
 
     runner = _get_runner(workspace_uuid)
     if runner is None:

@@ -256,7 +256,8 @@ Agent：直接执行，不需要任务列表
 
 | 文件 | 描述 |
 |------|------|
-| `core/tools/todo.py` | TodoWrite 工具实现 |
+| `core/tools/todo.py` | TodoWrite 工具实现（校验、整表替换、验证提示） |
+| `core/todo_store.py` | Todo 持久化、旧 metadata 迁移、`todo_update_event` |
 | `core/tools/registry.py` | 统一工具注册表（`"todo"` 条目） |
 | `web/deps.py` | SSE 事件推送（`todo_update`） |
 | `web/routes_chat.py` | SSE 流式响应 |
@@ -296,7 +297,7 @@ def on_tool_result(tool_name: str, output: str, is_error: bool, tool_use_id: str
             event_queue.put(f"data: {todo_event}\n\n")
 ```
 
-`get_todos_from_session` 是 `core/tools/todo.py` 提供的辅助函数：通过 session 的 session_id 读取独立文件 `{workspace}/.cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
+`get_todos_from_session` 是 `core/todo_store.py` 提供的辅助函数：通过 session 的 session_id 读取独立文件 `{workspace}/.cili/tools/todo/{session_id}.json` 中的 todos（兼容旧 metadata 格式并自动迁移）。
 
 ### 7.4 前端渲染
 

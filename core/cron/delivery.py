@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.config import get_workspace_sessions_dir
+from core.config import SYSTEM_WORKSPACE_UUID, get_workspace_sessions_dir
 from core.cron import sessions
 from core.cron.model import Job, RunResult, State
 from core.event_bus import get_event_bus
@@ -51,7 +51,7 @@ def deliver(job: Job, state: State, result: RunResult) -> dict[str, Any]:
         return _fallback(job, state, mode)
 
     workspace_uuid, session_id, kind = target
-    if workspace_uuid == (job.workspace_uuid or "system") and session_id == state.cron_session_id:
+    if workspace_uuid == (job.workspace_uuid or SYSTEM_WORKSPACE_UUID) and session_id == state.cron_session_id:
         return {"status": "local", "mode": mode}
 
     sessions_dir = get_workspace_sessions_dir(workspace_uuid)
@@ -120,7 +120,7 @@ def _fallback(job: Job, state: State, mode: str) -> dict[str, Any]:
     """目标缺失：确保该任务自己的 cron 会话存在（结果已在其中）。"""
     try:
         session = sessions.ensure_cron_session(
-            job.workspace_uuid or "system", job, state
+            job.workspace_uuid or SYSTEM_WORKSPACE_UUID, job, state
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[cron-delivery] failed to ensure cron session: %s", exc)
@@ -128,6 +128,6 @@ def _fallback(job: Job, state: State, mode: str) -> dict[str, Any]:
     return {
         "status": "fallback",
         "mode": mode,
-        "workspace_uuid": job.workspace_uuid or "system",
+        "workspace_uuid": job.workspace_uuid or SYSTEM_WORKSPACE_UUID,
         "session_id": session.session_id,
     }

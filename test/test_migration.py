@@ -223,9 +223,10 @@ class TestMigrateSessionFile:
         import core.todo_store as todo_mod
         calls = {}
 
-        def fake_write_todos(session_id, todos):
+        def fake_write_todos(session_id, todos, workspace_uuid=""):
             calls["session_id"] = session_id
             calls["todos"] = todos
+            calls["workspace_uuid"] = workspace_uuid
 
         monkeypatch.setattr(todo_mod, "write_todos", fake_write_todos)
         session_file = tmp_path / "sessxyz" / "index.json"
@@ -237,6 +238,7 @@ class TestMigrateSessionFile:
             "messages": [],
         }), encoding="utf-8")
 
-        assert migrate_session_file(session_file) is True
+        assert migrate_session_file(session_file, workspace_uuid="ws-test") is True
         assert calls["session_id"] == "sessxyz"
+        assert calls["workspace_uuid"] == "ws-test"
         assert calls["todos"][0]["task"] == "写代码"

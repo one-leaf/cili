@@ -24,6 +24,7 @@ import threading
 from typing import Callable
 
 from core.config import (
+    SYSTEM_WORKSPACE_UUID,
     get_workspace_data_dir,
     load_config,
     load_workspace_config,
@@ -774,7 +775,7 @@ def _iter_workspace_uuids() -> list[str]:
     try:
         for entry in load_workspaces_index():
             uuid = entry.get("uuid", "")
-            if uuid == "system":
+            if uuid == SYSTEM_WORKSPACE_UUID:
                 continue
             if (get_workspace_data_dir(uuid) / "memory").is_dir():
                 uuids.append(uuid)

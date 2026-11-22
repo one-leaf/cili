@@ -48,7 +48,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from core.config import PROJECT_ROOT
+from core.config import PROJECT_ROOT, SYSTEM_WORKSPACE_UUID
 from core.memory_store import cleanup_memory_git
 
 logger = logging.getLogger(__name__)
@@ -497,7 +497,7 @@ def _cleanup_memory_git_dirs() -> int:
         # 所有注册用户工作区
         for entry in load_workspaces_index():
             uuid = entry.get("uuid", "")
-            if uuid == "system":
+            if uuid == SYSTEM_WORKSPACE_UUID:
                 continue
             try:
                 mem_dir = get_workspace_data_dir(uuid) / "memory"

@@ -14,8 +14,8 @@ import pytest
 from core.config import get_workspace_sessions_dir
 from core.cron import delivery, migration, rules, seeds, service, store
 from core.cron import engine as engine_mod
-from core.cron.flags import cron_run_active
 from core.cron.model import CronValidationError, Job, RunResult
+from core.cron.runtime import cron_run_active
 from core.cron.sessions import ensure_cron_session
 from core.session import SessionStore
 
@@ -150,7 +150,7 @@ class TestMigration:
             "name": "bad", "schedule": {"type": "interval", "minutes": 0},
             "content": {"task": "x"},
         }])
-        with pytest.raises(migration.v1.MigrationError):
+        with pytest.raises(migration.legacy.MigrationError):
             migration.migrate_workspace(ws)
         assert legacy.exists()
         assert not store.cron_root(ws).exists()

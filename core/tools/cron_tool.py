@@ -6,8 +6,8 @@ import logging
 
 from core.config import get_all_workspace_uuids
 from core.cron import service, store
-from core.cron.flags import cron_run_active
 from core.cron.model import CronValidationError
+from core.cron.runtime import cron_run_active
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
