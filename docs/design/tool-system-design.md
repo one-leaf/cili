@@ -60,7 +60,7 @@ core/tools/
 ├── agent_tool.py           # 子代理委派（AgentTool）
 ├── ask_user.py              # 用户交互（AskUserTool）
 ├── tool_search.py           # 延迟工具搜索与激活（ToolSearchTool）
-└── mcp.py                   # MCP 服务器桥接（MCPProvider，非注册工具）
+└── mcp.py                   # MCP 工具包装（MCPToolWrapper；provider 在 core/mcp_client.py）
 ```
 
 ### 2.2 统一注册表 TOOL_REGISTRY

@@ -105,7 +105,7 @@ class AppContext:
             from core.config import load_config
             cfg = load_config()
             if cfg.mcp_servers:
-                from core.tools.mcp import get_provider
+                from core.mcp_client import get_provider
                 get_provider().ensure_connected(cfg.mcp_servers)
         except Exception as e:
             logger.warning(f"[AppContext] 连接 MCP 服务器失败: {e}")
@@ -176,7 +176,7 @@ class AppContext:
 
     @staticmethod
     def _stop_mcp() -> None:
-        from core.tools.mcp import stop_mcp_provider
+        from core.mcp_client import stop_mcp_provider
         stop_mcp_provider()
 
     @staticmethod

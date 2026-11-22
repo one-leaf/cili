@@ -21,12 +21,12 @@ project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
 from core.config import MCPConfig
-from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
-from core.tools.mcp import (
+from core.mcp_client import (
     MCPProvider,
     _sanitize_mcp_tool_name,
     stop_mcp_provider,
 )
+from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 from test.conftest import make_dgx_config
 
 FIXTURE_SERVER = os.path.join(project_dir, "test", "fixtures", "mcp_echo_server.py")

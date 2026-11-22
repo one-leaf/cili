@@ -21,9 +21,9 @@ from core.config import (
     save_global_config,
 )
 from core.llm.server_presets import preset_headers, preset_payloads
+from core.mcp_client import get_provider
 from core.stream_executor import get_stream_executor
 from core.teen_mode import deny_message, get_teen_mode
-from core.tools.mcp import get_provider
 from web.deps import reload_all_runners, teen_guard
 
 router = APIRouter()

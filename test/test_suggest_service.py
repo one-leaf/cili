@@ -411,7 +411,7 @@ class TestMcpSorting:
 
     def test_build_wrappers_sorted_by_name(self):
         from core.config import MCPConfig
-        from core.tools.mcp import MCPProvider
+        from core.mcp_client import MCPProvider
 
         defs = [
             SimpleNamespace(name="zeta", inputSchema={"type": "object", "properties": {}},

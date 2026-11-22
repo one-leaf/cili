@@ -524,7 +524,7 @@ class SessionRunner(BaseSessionRunner):
                            and (teen.policy().get("mcp_tools") or "deny") == "deny"
                            and not teen.is_unlocked())
         if getattr(self.role_cfg, "mcp", False) and self.config.mcp_servers and not teen_mcp_denied:
-            from core.tools.mcp import get_provider
+            from core.mcp_client import get_provider
             provider = get_provider()
             provider.ensure_connected(self.config.mcp_servers)
             self.tools.extend(provider.get_wrappers())
