@@ -451,10 +451,10 @@ class TestModelContextDefaults:
     """max_context_tokens 兜底默认值 200k（128k 及以下模型需显式配置）。"""
 
     def test_model_config_default(self):
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
 
-        assert ModelConfig(name="m").max_context_tokens == 200000
-        assert ModelConfig.from_dict({}).max_context_tokens == 200000
+        assert ResolvedModel(name="m").max_context_tokens == 200000
+        assert ResolvedModel.from_dict({}).max_context_tokens == 200000
 
     def test_model_spec_default(self):
         from core.config import ModelSpec
@@ -488,23 +488,23 @@ class TestProtocolDefaults:
         assert ProviderConfig.from_dict({"interface_type": "anthropic"}).base_url == "https://api.anthropic.com"
 
     def test_api_path_roundtrip(self):
-        from core.config import ModelConfig, ProviderConfig
+        from core.config import ProviderConfig, ResolvedModel
 
         provider = ProviderConfig.from_dict({"base_url": "https://x.test", "api_path": "/responses"})
         assert provider.api_path == "/responses"
         assert provider.to_dict()["api_path"] == "/responses"
 
-        model = ModelConfig.from_dict({"name": "m", "api_path": "/responses"})
+        model = ResolvedModel.from_dict({"name": "m", "api_path": "/responses"})
         assert model.api_path == "/responses"
         assert model.to_dict()["api_path"] == "/responses"
 
         assert ProviderConfig.from_dict({}).api_path == ""
-        assert ModelConfig.from_dict({"name": "m"}).api_path == ""
+        assert ResolvedModel.from_dict({"name": "m"}).api_path == ""
 
     def test_api_path_must_start_with_slash(self):
-        from core.config import ModelConfig, ProviderConfig
+        from core.config import ProviderConfig, ResolvedModel
 
         with pytest.raises(ValueError, match="api_path"):
             ProviderConfig.from_dict({"api_path": "responses"})
         with pytest.raises(ValueError, match="api_path"):
-            ModelConfig.from_dict({"name": "m", "api_path": "responses"})
+            ResolvedModel.from_dict({"name": "m", "api_path": "responses"})

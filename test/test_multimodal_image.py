@@ -317,10 +317,10 @@ class TestAdapterImageSerialization:
         )
 
     def test_anthropic_adapter_serializes_image(self):
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
         from core.llm.anthropic import AnthropicAdapter
 
-        config = ModelConfig(name="claude-sonnet-4-6", api_key="test", interface_type="anthropic")
+        config = ResolvedModel(name="claude-sonnet-4-6", api_key="test", interface_type="anthropic")
         adapter = AnthropicAdapter(config)
 
         msg = self._make_message_with_image()
@@ -340,10 +340,10 @@ class TestAdapterImageSerialization:
         assert has_image, f"Anthropic adapter 未传递图片: {tool_result['content']}"
 
     def test_openai_adapter_handles_image_in_tool_result(self):
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
         from core.llm.openai import OpenAIAdapter
 
-        config = ModelConfig(name="gpt-4o", api_key="test", interface_type="openai")
+        config = ResolvedModel(name="gpt-4o", api_key="test", interface_type="openai")
         adapter = OpenAIAdapter(config)
 
         msg = self._make_message_with_image()

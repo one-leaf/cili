@@ -3,12 +3,12 @@
 import httpx
 import pytest
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm.client import create_llm_client
 from core.llm.errors import LLMStreamFailedError, classify_llm_error
 
 
-def _oauth_config(**overrides) -> ModelConfig:
+def _oauth_config(**overrides) -> ResolvedModel:
     values = dict(
         name="gpt-test",
         interface_type="openai-responses",
@@ -17,7 +17,7 @@ def _oauth_config(**overrides) -> ModelConfig:
         base_url="https://api.openai.com/v1",
     )
     values.update(overrides)
-    return ModelConfig(**values)
+    return ResolvedModel(**values)
 
 
 def test_requires_streaming_only_for_oauth():

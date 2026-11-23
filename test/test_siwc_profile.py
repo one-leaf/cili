@@ -82,11 +82,11 @@ def test_parse_models_invalid_returns_empty():
 
 def test_oauth_serialize_keeps_images():
     """SIWC 整形不得误删图片输入（真机验证前的本地保证）。"""
-    from core.config import ModelConfig
+    from core.config import ResolvedModel
     from core.llm.openai_responses import OpenAIResponsesAdapter
     from core.llm.types import ImageBlock, Message, TextBlock
 
-    cfg = ModelConfig(
+    cfg = ResolvedModel(
         name="m",
         interface_type="openai-responses",
         auth_type="oauth",

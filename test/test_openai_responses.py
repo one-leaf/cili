@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm import BlockAssembler, create_llm_client
 from core.llm.openai_responses import OpenAIResponsesAdapter
 from core.llm.types import (
@@ -24,7 +24,7 @@ from core.llm.types import (
 )
 
 
-def make_config(**overrides) -> ModelConfig:
+def make_config(**overrides) -> ResolvedModel:
     data = {
         "name": "gpt-5.1",
         "interface_type": "openai-responses",
@@ -32,7 +32,7 @@ def make_config(**overrides) -> ModelConfig:
         "base_url": "https://api.openai.com/v1",
     }
     data.update(overrides)
-    return ModelConfig(**data)
+    return ResolvedModel(**data)
 
 
 # ========== 工厂与端点 ==========

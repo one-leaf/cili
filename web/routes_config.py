@@ -691,8 +691,8 @@ async def test_config(request: TestConfigRequest | None = None):
                     "interface_type": interface_type,
                 }
 
-        from core.config import ModelConfig
-        model_cfg = ModelConfig(
+        from core.config import ResolvedModel
+        model_cfg = ResolvedModel(
             name=request.model_name or "claude-sonnet-4-6",
             interface_type=interface_type,
             api_key=api_key,

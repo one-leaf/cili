@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm import (
     AnthropicAdapter,
     LLMClient,
@@ -271,19 +271,19 @@ class TestTransportSSEError:
 
 class TestFactory:
     def test_create_anthropic_client(self):
-        config = ModelConfig(name="test", api_key="key", interface_type="anthropic")
+        config = ResolvedModel(name="test", api_key="key", interface_type="anthropic")
         client = create_llm_client(config)
         assert isinstance(client.adapter, AnthropicAdapter)
         client.close()
 
     def test_create_openai_client(self):
-        config = ModelConfig(name="gpt-4o", api_key="key", interface_type="openai")
+        config = ResolvedModel(name="gpt-4o", api_key="key", interface_type="openai")
         client = create_llm_client(config)
         assert isinstance(client.adapter, OpenAIAdapter)
         client.close()
 
     def test_unknown_type_raises_error(self):
-        config = ModelConfig(name="test", api_key="key", interface_type="unknown")
+        config = ResolvedModel(name="test", api_key="key", interface_type="unknown")
         with pytest.raises(ValueError, match="Unsupported interface_type"):
             create_llm_client(config)
 
@@ -293,7 +293,7 @@ class TestFactory:
 class TestAnthropicAdapter:
     @pytest.fixture
     def adapter(self):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="claude-sonnet-4-6",
             api_key="test-key-123",
             base_url="https://api.anthropic.com",
@@ -306,7 +306,7 @@ class TestAnthropicAdapter:
         assert adapter.api_url == "https://api.anthropic.com/v1/messages"
 
     def _body_with_reasoning(self, reasoning: str) -> dict:
-        config = ModelConfig(
+        config = ResolvedModel(
             name="claude-sonnet-4-6",
             api_key="key",
             base_url="https://api.anthropic.com",
@@ -337,7 +337,7 @@ class TestAnthropicAdapter:
 
     def test_thinking_skipped_for_chat_model(self):
         """model_type='chat' 不发送 thinking，即使配置了 medium 档位。"""
-        config = ModelConfig(
+        config = ResolvedModel(
             name="chat-model",
             api_key="key",
             base_url="https://api.anthropic.com",
@@ -407,9 +407,9 @@ class TestAnthropicAdapter:
 
     def test_backend_session_headers(self):
         """backend 预设 → 请求头按 {session_id} 展开；无会话整条省略"""
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
 
-        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", backend="litellm")
+        cfg = ResolvedModel(name="m", api_key="k", base_url="https://x.example.com", backend="litellm")
         adapter = AnthropicAdapter(cfg)
         headers = adapter.build_request_headers(session_id="session-123")
         assert headers["x-litellm-session-id"] == "session-123"
@@ -417,9 +417,9 @@ class TestAnthropicAdapter:
 
     def test_configured_headers_session_placeholder(self):
         """headers 值支持 {session_id} 插值；显式值覆盖预设"""
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
 
-        cfg = ModelConfig(
+        cfg = ResolvedModel(
             name="m", api_key="k", base_url="https://x.example.com",
             backend="litellm", headers={"X-Session-ID": "{session_id}", "X-Extra": "static"},
         )
@@ -432,18 +432,18 @@ class TestAnthropicAdapter:
 
     def test_auth_type_bearer_overrides_default(self):
         """auth_type=bearer 强制 Authorization，替换 anthropic 默认 x-api-key"""
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
 
-        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", auth_type="bearer")
+        cfg = ResolvedModel(name="m", api_key="k", base_url="https://x.example.com", auth_type="bearer")
         headers = AnthropicAdapter(cfg).build_request_headers()
         assert headers["Authorization"] == "Bearer k"
         assert "x-api-key" not in headers
         assert headers["anthropic-version"] == "2023-06-01"  # 协议头保留
 
     def test_auth_type_none_drops_auth(self):
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
 
-        cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", auth_type="none")
+        cfg = ResolvedModel(name="m", api_key="k", base_url="https://x.example.com", auth_type="none")
         headers = AnthropicAdapter(cfg).build_request_headers()
         assert "x-api-key" not in headers and "Authorization" not in headers
 
@@ -506,7 +506,7 @@ class TestAnthropicAdapter:
 class TestOpenAIAdapter:
     @pytest.fixture
     def adapter(self):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o",
             api_key="sk-test-key",
             base_url="https://api.openai.com",
@@ -519,7 +519,7 @@ class TestOpenAIAdapter:
         assert adapter.api_url == "https://api.openai.com/v1/chat/completions"
 
     def _body(self, reasoning: str, model_type: str = "reasoning") -> dict:
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o",
             api_key="sk-test-key",
             base_url="https://api.openai.com",
@@ -844,7 +844,7 @@ class TestOpenAIAdapter:
         assert body["stream"] is True
 
     def test_base_url_trailing_slash_stripped(self):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o",
             api_key="key",
             base_url="https://api.openai.com/",
@@ -858,7 +858,7 @@ class TestOpenAIAdapter:
         """base_url 自带 /v1（ModelScope 等厂商文档惯例）时不再重复拼版本段。"""
         for base in ("https://api-inference.modelscope.cn/v1",
                      "https://api-inference.modelscope.cn/v1/"):
-            config = ModelConfig(
+            config = ResolvedModel(
                 name="deepseek-ai/DeepSeek-V4.1-Flash",
                 api_key="key",
                 base_url=base,
@@ -1126,7 +1126,7 @@ class TestChatStreamIncomplete:
     """流结束未收 finish chunk 且无内容 → 视为失败可重试（A24）。"""
 
     def test_empty_stream_raises(self):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o", api_key="key", interface_type="openai",
             base_url="https://api.openai.com",
         )
@@ -1148,18 +1148,18 @@ class TestAdapterBaseUrl:
     """base_url 校验。"""
 
     def test_empty_base_url_raises(self):
-        config = ModelConfig(name="m", api_key="k", base_url="", interface_type="anthropic")
+        config = ResolvedModel(name="m", api_key="k", base_url="", interface_type="anthropic")
         with pytest.raises(ValueError, match="不能为空"):
             AnthropicAdapter(config)
 
     def test_invalid_base_url_raises(self):
-        config = ModelConfig(name="m", api_key="k", base_url="not a url", interface_type="anthropic")
+        config = ResolvedModel(name="m", api_key="k", base_url="not a url", interface_type="anthropic")
         with pytest.raises(ValueError, match="无效的 base_url"):
             AnthropicAdapter(config)
 
     def test_backend_headers_all_presets(self):
         """当前预设的会话头名单；codex / claude-code / opencode 已彻底移除。"""
-        from core.config import ModelConfig
+        from core.config import ResolvedModel
         from core.llm.adapter import BACKEND_SESSION_HEADERS
 
         assert "custom" not in BACKEND_SESSION_HEADERS
@@ -1170,14 +1170,14 @@ class TestAdapterBaseUrl:
             assert removed not in BACKEND_SESSION_HEADERS
 
         for backend, expected in BACKEND_SESSION_HEADERS.items():
-            cfg = ModelConfig(name="m", api_key="k", base_url="https://x.example.com", backend=backend)
+            cfg = ResolvedModel(name="m", api_key="k", base_url="https://x.example.com", backend=backend)
             headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
             for header_name, template in expected.items():
                 assert headers[header_name] == "s"
 
     def test_api_path_override(self):
         """provider.api_path 覆盖协议默认路径。"""
-        cfg = ModelConfig(
+        cfg = ResolvedModel(
             name="m", api_key="k", base_url="https://api.deepseek.com",
             interface_type="openai-responses", api_path="/responses",
         )
@@ -1185,7 +1185,7 @@ class TestAdapterBaseUrl:
 
     def test_preset_static_headers(self):
         """Kimi 预设的 UA 头自动携带，显式 headers 同名覆盖。"""
-        cfg = ModelConfig(
+        cfg = ResolvedModel(
             name="m", api_key="k", base_url="https://api.kimi.com/coding",
             interface_type="anthropic", auth_type="bearer", backend="kimi-coding",
         )
@@ -1201,7 +1201,7 @@ class TestChatTimeoutParam:
     """chat() 暴露 timeout 入参并透传（A23）。"""
 
     def test_chat_passes_timeout_to_post(self):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o", api_key="key", interface_type="openai",
             base_url="https://api.openai.com",
         )
@@ -1233,7 +1233,7 @@ class TestChatStructuredRetry:
 
     @staticmethod
     def _client(calls, arguments_first, arguments_second):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o", api_key="key", interface_type="openai",
             base_url="https://api.openai.com",
         )
@@ -1298,7 +1298,7 @@ class TestChatStructuredTruncationRepair:
 
     @staticmethod
     def _client(calls, arguments):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o", api_key="key", interface_type="openai",
             base_url="https://api.openai.com",
         )
@@ -1376,7 +1376,7 @@ class TestChatStructuredTextFallback:
 
     @staticmethod
     def _client(calls, *responses):
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4o", api_key="key", interface_type="openai",
             base_url="https://api.openai.com",
         )

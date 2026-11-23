@@ -18,7 +18,7 @@ Usage:
 
 from __future__ import annotations
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm.anthropic import AnthropicAdapter
 from core.llm.assembler import BlockAssembler
 from core.llm.client import LLMClient
@@ -54,8 +54,8 @@ from core.llm.types import (
 
 
 # Lazy factory function
-def create_llm_client(config: ModelConfig) -> LLMClient:
-    """Create an LLMClient from ModelConfig (factory function).
+def create_llm_client(config: ResolvedModel) -> LLMClient:
+    """Create an LLMClient from ResolvedModel (factory function).
 
     Auto-detects the provider based on config.interface_type:
     - "anthropic"        → AnthropicAdapter

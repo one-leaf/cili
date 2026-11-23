@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm import LLMResponse, ServerBlock, TextBlock
 from core.llm.anthropic import AnthropicAdapter
 from core.llm.deepseek_capabilities import (
@@ -25,8 +25,8 @@ def _model(
     interface_type: str = "anthropic",
     backend: str = "litellm",
     base_url: str = "http://localhost:4000",
-) -> ModelConfig:
-    return ModelConfig(
+) -> ResolvedModel:
+    return ResolvedModel(
         name=name,
         interface_type=interface_type,
         api_key="test-key",
@@ -42,7 +42,7 @@ class _FakeClient:
         self.response = response
         self.exc = exc
         self.calls: list[dict] = []
-        self.model_config: ModelConfig | None = None
+        self.model_config: ResolvedModel | None = None
         self.closed = False
 
     def chat(self, **kwargs) -> LLMResponse:

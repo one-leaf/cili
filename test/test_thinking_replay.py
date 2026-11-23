@@ -10,7 +10,7 @@
    delta.signature 上的签名。
 """
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm import AnthropicAdapter, Message, OpenAIAdapter, TextBlock, ToolCallBlock
 from core.llm.adapter import merge_consecutive_same_role
 from core.llm.assembler import BlockAssembler
@@ -18,7 +18,7 @@ from core.llm.types import ReasoningBlock
 
 
 def _anthropic_adapter(reasoning: str = "default") -> AnthropicAdapter:
-    config = ModelConfig(
+    config = ResolvedModel(
         name="claude-sonnet-4-6",
         api_key="k",
         base_url="https://api.anthropic.com",
@@ -29,7 +29,7 @@ def _anthropic_adapter(reasoning: str = "default") -> AnthropicAdapter:
 
 
 def _openai_adapter() -> OpenAIAdapter:
-    config = ModelConfig(
+    config = ResolvedModel(
         name="claude-sonnet-4-6",
         api_key="k",
         base_url="https://gateway.example.com",
@@ -92,7 +92,7 @@ class TestAnthropicThinkingReplay:
 
 
     def _deepseek_adapter(self, reasoning: str = "default") -> AnthropicAdapter:
-        config = ModelConfig(
+        config = ResolvedModel(
             name="deepseek-v4-pro",
             api_key="k",
             base_url="https://api.deepseek.com/anthropic",
@@ -121,7 +121,7 @@ class TestAnthropicThinkingReplay:
 
     def test_fills_for_third_party_gateway_alias(self):
         """第三方网关用不透明别名映射 DeepSeek 时也必须补块。"""
-        config = ModelConfig(
+        config = ResolvedModel(
             name="ac/dgx",
             api_key="k",
             base_url="http://gateway.example.com/llm",

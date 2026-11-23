@@ -10,9 +10,9 @@ BlockAssembler (stream accumulation). Provides the public API:
 
 Usage:
     from core.llm import LLMClient, create_llm_client
-    from core.config import ModelConfig
+    from core.config import ResolvedModel
 
-    config = ModelConfig(name="claude-sonnet-4-6", api_key="...", ...)
+    config = ResolvedModel(name="claude-sonnet-4-6", api_key="...", ...)
     client = create_llm_client(config)
     response = client.chat(messages, system="You are helpful")
 """
@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import httpx
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm.adapter import Adapter
 from core.llm.assembler import BlockAssembler
 from core.llm.transport import HttpTransport
@@ -167,7 +167,7 @@ class LLMClient:
         self,
         adapter: Adapter,
         transport: HttpTransport,
-        config: ModelConfig,
+        config: ResolvedModel,
     ):
         """Initialize client.
 
@@ -506,8 +506,8 @@ class LLMClient:
         self.transport.close()
 
 
-def create_llm_client(config: ModelConfig) -> LLMClient:
-    """Factory function to create an LLMClient from ModelConfig.
+def create_llm_client(config: ResolvedModel) -> LLMClient:
+    """Factory function to create an LLMClient from ResolvedModel.
 
     Auto-detects the provider based on interface_type:
     - "anthropic"       → AnthropicAdapter

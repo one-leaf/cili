@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm.server_presets import BACKEND_SESSION_HEADERS, preset_headers
 from core.llm.types import (
     ContentBlock,
@@ -154,7 +154,7 @@ class Adapter(ABC):
     to handle its specific wire format and streaming protocol.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ResolvedModel):
         """Initialize adapter with model configuration.
 
         Args:

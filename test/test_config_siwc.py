@@ -1,6 +1,6 @@
 """OAuth provider 的配置模型、启动豁免与端点锁定测试。"""
 
-from core.config import Config, ModelConfig, ProviderConfig
+from core.config import Config, ProviderConfig, ResolvedModel
 
 
 def test_credential_roundtrip():
@@ -8,8 +8,8 @@ def test_credential_roundtrip():
     assert provider.credential == "siwc:abc"
     assert ProviderConfig.from_dict(provider.to_dict()).credential == "siwc:abc"
 
-    model = ModelConfig(name="m", credential="siwc:def")
-    assert ModelConfig.from_dict(model.to_dict()).credential == "siwc:def"
+    model = ResolvedModel(name="m", credential="siwc:def")
+    assert ResolvedModel.from_dict(model.to_dict()).credential == "siwc:def"
 
 
 def _oauth_raw(**provider_overrides) -> dict:

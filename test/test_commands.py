@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from core.config import ModelConfig
+from core.config import ResolvedModel
 from core.llm import AnthropicAdapter, LLMClient, OpenAIAdapter, create_llm_client
 
 
@@ -49,7 +49,7 @@ class TestCommands:
 
     def test_factory_anthropic(self):
         """测试工厂函数创建 AnthropicAdapter"""
-        config = ModelConfig(
+        config = ResolvedModel(
             name="test-model",
             interface_type="anthropic",
             api_key="sk-test",
@@ -63,7 +63,7 @@ class TestCommands:
 
     def test_factory_openai(self):
         """测试工厂函数创建 OpenAIAdapter"""
-        config = ModelConfig(
+        config = ResolvedModel(
             name="gpt-4",
             interface_type="openai",
             api_key="sk-test",
@@ -77,7 +77,7 @@ class TestCommands:
 
     def test_factory_unknown_raises_error(self):
         """测试未知 interface_type 抛出错误"""
-        config = ModelConfig(
+        config = ResolvedModel(
             name="unknown-model",
             interface_type="unknown",
             api_key="sk-test",

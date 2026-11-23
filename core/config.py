@@ -48,7 +48,7 @@ def _detect_browser_path() -> str:
 
 
 @dataclass
-class ModelConfig:
+class ResolvedModel:
     """运行时模型配置：provider 接入层与 model 条目的合成结果（resolve_model 产出）。
 
     旧版各角色独立配置的完整对象保留为运行时形态，下游（LLMClient/Adapter/runner）不感知配置格式。
@@ -71,8 +71,8 @@ class ModelConfig:
     cache_control: str = "auto"  # Prompt cache: "auto" (protocol default) | "true" (force) | "false" (disable)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ModelConfig":
-        """Parse ModelConfig from a dict."""
+    def from_dict(cls, data: dict) -> "ResolvedModel":
+        """Parse ResolvedModel from a dict."""
         return cls(
             name=data.get("name", ""),
             interface_type=data.get("interface_type", "anthropic"),
@@ -396,8 +396,8 @@ class Config:
 
     # ── 引用解析 ──
 
-    def resolve_model(self, ref: str) -> ModelConfig:
-        """解析 ``"provider键/模型键"`` 为运行时 ModelConfig。
+    def resolve_model(self, ref: str) -> ResolvedModel:
+        """解析 ``"provider键/模型键"`` 为运行时 ResolvedModel。
 
         按第一个 ``/`` 拆分（模型键内可再含 ``/``）；引用无效时 RuntimeError 并列出可用引用。
         """
@@ -414,7 +414,7 @@ class Config:
             raise RuntimeError(
                 f"模型引用 {ref!r} 的模型键 {model_key!r} 不存在；可用: {self.available_refs()}"
             )
-        return ModelConfig(
+        return ResolvedModel(
             name=spec.name or model_key,
             interface_type=provider.interface_type,
             api_key=provider.api_key,
@@ -470,11 +470,11 @@ class Config:
         }
 
     @property
-    def role_models(self) -> dict[str, ModelConfig]:
+    def role_models(self) -> dict[str, ResolvedModel]:
         """角色名 → 模型配置的显式映射（未单独配置的角色回退 master 模型）。"""
         return {role: self.resolve_model(ref) for role, ref in self.role_refs().items()}
 
-    def model_for_role(self, role: str) -> ModelConfig:
+    def model_for_role(self, role: str) -> ResolvedModel:
         """取角色模型；未知角色回退 master 模型并告警。"""
         models = self.role_models
         if role in models:
