@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_workspace_data_dir
+from core.cron import schedule
 from core.cron.model import Job, JobState, now_str
 from core.fs_utils import load_json_or_backup
 
@@ -36,9 +37,9 @@ def convert_job(config: dict[str, Any], default_workspace: str = "") -> Job:
     if not name:
         raise MigrationError("task has no name")
     job_id = str(config.get("task_id") or name).strip()
-    schedule = dict(config.get("schedule") or {})
-    if schedule.get("type") == "cron":
-        schedule.setdefault("timezone", None)
+    schedule_data = dict(config.get("schedule") or {})
+    if schedule_data.get("type") == "cron":
+        schedule_data.setdefault("timezone", None)
     content = config.get("content")
     if content in (None, "", {}, []):
         content = {
@@ -54,7 +55,7 @@ def convert_job(config: dict[str, Any], default_workspace: str = "") -> Job:
         enabled=bool(config.get("enabled", True)),
         scope="workspace",
         workspace_uuid=str(config.get("workspace_uuid") or default_workspace or ""),
-        schedule=schedule,
+        schedule=schedule_data,
         misfire={"policy": "once", "grace_minutes": 120},
         content=content,
         execution={

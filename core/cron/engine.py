@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.config import SYSTEM_WORKSPACE_UUID, get_all_workspace_uuids
-from core.cron import delivery, executor, rules, store
+from core.cron import delivery, executor, schedule, store
 from core.cron.model import Job, JobState, RunResult, now_str
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ class CronEngine:
             changed = True
         if state.next_run:
             try:
-                rules.parse_iso(state.next_run, rules.timezone_for(job))
+                schedule.parse_iso(state.next_run, schedule.timezone_for(job))
             except Exception:  # noqa: BLE001 —— 损坏的 next_run 重新计算
                 logger.warning(
                     "[cron] %s/%s: invalid next_run %r, recomputing",
@@ -146,13 +146,13 @@ class CronEngine:
         if state.next_run is None:
             try:
                 base = (
-                    rules.parse_iso(state.last_run, rules.timezone_for(job))
+                    schedule.parse_iso(state.last_run, schedule.timezone_for(job))
                     if state.last_run
                     else None
                 )
             except Exception:  # noqa: BLE001
                 base = None
-            next_dt = rules.compute_next_run(job, base)
+            next_dt = schedule.compute_next_run(job, base)
             state.next_run = next_dt.isoformat()
             changed = True
         return changed
@@ -161,7 +161,7 @@ class CronEngine:
         if not state.next_run:
             return None
         try:
-            return rules.parse_iso(state.next_run, rules.timezone_for(job)).timestamp()
+            return schedule.parse_iso(state.next_run, schedule.timezone_for(job)).timestamp()
         except Exception:  # noqa: BLE001
             logger.warning("[cron] invalid next_run %r for %s", state.next_run, job.id)
             return None
@@ -239,7 +239,7 @@ class CronEngine:
         if overdue > grace or policy == "skip":
             with self._lock:
                 state.missed_count += 1
-                next_dt = rules.compute_next_run(job, rules.ts_to_now_for(job))
+                next_dt = schedule.compute_next_run(job, schedule.ts_to_now_for(job))
                 state.next_run = next_dt.isoformat()
                 loaded.next_ts = next_dt.timestamp()
                 store.save_state(job.workspace_uuid, job.id, state)
@@ -261,7 +261,7 @@ class CronEngine:
                     },
                     int(job.execution.get("max_runs_kept", 20)),
                 )
-                next_dt = rules.compute_next_run(job, rules.ts_to_now_for(job))
+                next_dt = schedule.compute_next_run(job, schedule.ts_to_now_for(job))
                 state.next_run = next_dt.isoformat()
                 loaded.next_ts = next_dt.timestamp()
                 store.save_state(job.workspace_uuid, job.id, state)
@@ -280,11 +280,11 @@ class CronEngine:
                 return None
             scheduled_iso = str(state.next_run or now_str())
             try:
-                scheduled_dt = rules.parse_iso(
-                    scheduled_iso, rules.timezone_for(job)
+                scheduled_dt = schedule.parse_iso(
+                    scheduled_iso, schedule.timezone_for(job)
                 )
             except Exception:  # noqa: BLE001
-                scheduled_dt = rules.ts_to_now_for(job)
+                scheduled_dt = schedule.ts_to_now_for(job)
             slot = f"{job.id}@{scheduled_iso}"
             state.running = {"slot": slot, "started_at": now_str()}
             state.last_slot = slot
@@ -292,7 +292,7 @@ class CronEngine:
                 state.next_run = None
                 loaded.next_ts = None
             else:
-                next_dt = rules.compute_next_run(job, scheduled_dt)
+                next_dt = schedule.compute_next_run(job, scheduled_dt)
                 state.next_run = next_dt.isoformat()
                 loaded.next_ts = next_dt.timestamp()
             store.save_state(job.workspace_uuid, job.id, state)
