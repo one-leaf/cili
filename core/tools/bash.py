@@ -33,6 +33,8 @@ _PATTERNS = [
 
 
 class BashTool(ShellToolBase):
+    streams_output = True
+    mutates_workspace = True
     name = "bash"
     shell_kind = "bash"
     _FINDING_PATTERNS = _PATTERNS

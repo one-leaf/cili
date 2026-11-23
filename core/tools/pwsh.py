@@ -50,6 +50,7 @@ _PATTERNS = [
 
 
 class PwshTool(ShellToolBase):
+    mutates_workspace = True
     name = "pwsh"
     shell_kind = "pwsh"
     _FINDING_PATTERNS = _PATTERNS

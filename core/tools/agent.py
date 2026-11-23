@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentTool(AgentBackgroundMixin, Tool):
+    placeholder_output = True
     name = "agent"
     description = (
         "**Delegate a self-contained task to an autonomous sub-agent (Worker/Lite).**\n"

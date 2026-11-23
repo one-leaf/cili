@@ -65,10 +65,11 @@ _LARGE_OUTPUT_THRESHOLD = LARGE_OUTPUT_EXTERNALIZE_BYTES
 # tool_use_id 白名单：只允许字母、数字、下划线、短横线，防止恶意 ID 路径穿越
 _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
-# 需要外部文件做流式读取的工具（前端轮询用）
-_STREAMING_TOOLS = frozenset({"bash", "python", "pdf2markdown"})
-# 占位符工具：输出直接内联在 content，不落外部文件
-_PLACEHOLDER_TOOLS = frozenset({"ask_user", "agent"})
+# 工具能力来自 ``Tool.streams_output`` / ``Tool.placeholder_output`` 类属性
+def _tool_flag(tool, attr: str) -> bool:
+    """读工具类属性（测试替身 MagicMock 实例不会伪装出真值）。"""
+    return bool(getattr(type(tool), attr, False))
+
 
 # on_text 回调哨兵：413 去图/延迟重试时发出，通知前端清空已流式输出的文本
 RETRY_CLEAR_SENTINEL = "\x00RETRY_CLEAR\x00"
@@ -327,7 +328,7 @@ class TurnExecutor:
 
         logger.debug(f"[工具调用] {name}")
 
-        if getattr(tool, "concurrency_safe", False) and name not in _STREAMING_TOOLS:
+        if _tool_flag(tool, "concurrency_safe") and not _tool_flag(tool, "streams_output"):
             return self._execute_tool_impl(
                 name, tool, input_data, tool_use_id
             )
@@ -353,11 +354,11 @@ class TurnExecutor:
         # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
         output_filename = self._safe_output_filename(tool_use_id)
         output_file_path = ""
-        if self.runner.session_dir and output_filename and name not in _PLACEHOLDER_TOOLS:
+        if self.runner.session_dir and output_filename and not _tool_flag(tool, "placeholder_output"):
             output_file_path = str(self.runner.session_dir / output_filename)
             # 仅流式工具（bash/python）需要实例属性实时写 + 前端轮询文件；
             # 并发安全工具（纯读）execute 不读 output_file，不设实例属性防互覆。
-            if name in _STREAMING_TOOLS:
+            if _tool_flag(tool, "streams_output"):
                 tool.output_file = output_file_path
 
                 # Create empty file only for streaming tools (signals tool is running)
@@ -399,7 +400,7 @@ class TurnExecutor:
         finally:
             # Only save external file for streaming tools
             # Non-streaming tools save lazily based on output size (see below)
-            if name in _STREAMING_TOOLS:
+            if _tool_flag(tool, "streams_output"):
                 tool.save_output_to_file(result)
                 # 更新 _output_path 为实际保存的文件路径（可能是 .json）
                 output_filename = os.path.basename(tool.output_file) if tool.output_file else output_filename
@@ -547,7 +548,9 @@ class TurnExecutor:
 
         # Only save external file when needed (streaming already saved, skip)
         needs_external_file = truncated or is_multimodal
-        if needs_external_file and name not in _STREAMING_TOOLS and name not in _PLACEHOLDER_TOOLS:
+        if (needs_external_file
+                and not _tool_flag(tool, "streams_output")
+                and not _tool_flag(tool, "placeholder_output")):
             # 显式路径调用 save_output_to_file，避免并行时实例属性互覆
             save_path = str(self.runner.session_dir / output_filename) if self.runner.session_dir else None
             if save_path:

@@ -81,6 +81,8 @@ _SHELL_TOKENS = ("bash", "pwsh", "powershell")
 
 
 class PythonTool(Tool):
+    streams_output = True
+    mutates_workspace = True
     name = "python"
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,

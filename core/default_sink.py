@@ -21,10 +21,17 @@ logger = logging.getLogger(__name__)
 
 # 可能产生工作区文件变更的工具：回合结束后广播 files_changed，前端据此刷新文件树。
 # 会话不一定在当前页面前台，所以不能只靠 turn_complete 推断。
-_FILE_MUTATING_TOOLS = frozenset({
-    "write", "edit", "bash", "pwsh", "python", "latex",
-    "office2pdf", "pdf2markdown",
-})
+_FILE_MUTATING_TOOLS: frozenset[str] | None = None
+
+
+def _file_mutating_tools() -> frozenset[str]:
+    """可能改动工作区文件的工具名（由 ``Tool.mutates_workspace`` 汇总）。"""
+    global _FILE_MUTATING_TOOLS
+    if _FILE_MUTATING_TOOLS is None:
+        from core.tools.registry import capability_tool_names
+
+        _FILE_MUTATING_TOOLS = capability_tool_names("mutates_workspace")
+    return _FILE_MUTATING_TOOLS
 
 if TYPE_CHECKING:  # 避免运行时循环导入
     from core.session_runner import SessionRunner
@@ -86,7 +93,7 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
             "is_error": is_error,
             "tool_use_id": tool_use_id,
         })
-        if tool_name in _FILE_MUTATING_TOOLS:
+        if tool_name in _file_mutating_tools():
             bus.publish({
                 "type": "files_changed",
                 "workspace_uuid": workspace_uuid,

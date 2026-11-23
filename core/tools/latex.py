@@ -23,6 +23,7 @@ _TECTONIC_DIR = str(PROJECT_ROOT / "data" / "deps" / "tectonic")
 
 
 class LatexTool(Tool):
+    mutates_workspace = True
     """Compile LaTeX files to PDF.
 
     Priority order for LaTeX compilers:

@@ -12,6 +12,7 @@ from core.tools.base import Tool, ToolResult
 
 
 class WriteTool(Tool):
+    mutates_workspace = True
     name = "write"
     description = (
         "Create a new file or overwrite an existing file with the given content. "

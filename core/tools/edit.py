@@ -10,6 +10,7 @@ from core.tools.base import Tool, ToolResult
 
 
 class EditTool(Tool):
+    mutates_workspace = True
     name = "edit"
 
     # 结果文本上限（与 WriteTool.MAX_RESULT_SIZE_CHARS 一致）

@@ -89,20 +89,13 @@ logger = logging.getLogger(__name__)
 # 为什么非本接口的专属工具要「既不在 active 也不在 deferred」：``tool_search``
 # 的 ``deferred_tools`` 就是 ``_deferred_tools``，一旦落进去，模型在 Web 上也能
 # 自己把它激活。所以要从可见集合里彻底摘掉。
-INTERFACE_TOOLS: dict[str, frozenset[str]] = {
-    "web": frozenset({"send_user_file"}),   # Web 交付形态是下载卡片（web/sse.drain_outbox_events）
-    "qq": frozenset({"send_user_file"}),
-    "wechat": frozenset({"send_user_file"}),
-    "email": frozenset({"send_user_file"}),  # 附件随回信发出
-}
-
-
-def _all_interface_scoped_tools() -> frozenset[str]:
-    """全部受接口门控的工具名（任一接口的并集）。"""
-    out: set[str] = set()
-    for names in INTERFACE_TOOLS.values():
-        out |= names
-    return frozenset(out)
+def _interface_allows(tool, interface: str | None) -> bool:
+    """接口专属工具只在声明它的接口回合可见（``Tool.interface_scoped``）。"""
+    # 读类属性：测试替身（MagicMock 实例）不会把任意属性伪装成集合
+    scoped = getattr(type(tool), "interface_scoped", frozenset())
+    if not scoped:
+        return True
+    return (interface or "") in scoped
 
 
 def _copy_referenced_tool_outputs(parent_dir: Path, fork_dir: Path,
@@ -219,7 +212,7 @@ class SessionRunner(BaseSessionRunner):
         self.epoch = int(epoch)
         self.max_epochs = max(1, int(max_epochs))
         # 本次 run/resume 的驱动接口（"web"/"qq"/None）。None 等价于「无接口专属工具」，
-        # 由接口层在 run() 前设置；决定 INTERFACE_TOOLS 的可见性。
+        # 由接口层在 run() 前设置；决定接口专属工具（``Tool.interface_scoped``）的可见性。
         self._turn_interface: str | None = None
         # 本次回合是否有接口专属 sink（请求级 SSE / IM 输出）。
         # 无专属 sink 的后台/自动恢复回合，出站文件由 default_sink 兜底交付。
@@ -588,12 +581,10 @@ class SessionRunner(BaseSessionRunner):
     def _eligible_tools(self) -> list:
         """本回合可用的工具：接口专属工具只在自己的接口下出现；
         DeepSeek 服务端联网工具只在 DeepSeek 模型 + Anthropic 协议下出现。"""
-        scoped = _all_interface_scoped_tools()
-        allowed = INTERFACE_TOOLS.get(self._turn_interface or "", frozenset())
         deepseek_ok = capabilities.tools_visible(getattr(self, "model", None))
         return [
             t for t in self.tools
-            if (t.name not in scoped or t.name in allowed)
+            if _interface_allows(t, self._turn_interface)
             and (deepseek_ok or t.name not in SERVER_TOOL_NAMES)
         ]
 
@@ -677,10 +668,8 @@ class SessionRunner(BaseSessionRunner):
                 "is_error": True,
                 "_meta": {"tool_name": name},
             }
-        scoped = _all_interface_scoped_tools()
-        if name in scoped and name not in INTERFACE_TOOLS.get(
-            self._turn_interface or "", frozenset()
-        ):
+        tool_obj = get_tool_by_name(self.tools, name) if self.tools else None
+        if tool_obj is not None and not _interface_allows(tool_obj, self._turn_interface):
             logger.warning(
                 f"[SessionRunner:{self.role}] 拒绝调用接口专属工具 {name!r}"
                 f"（当前驱动接口 {self._turn_interface!r}）"

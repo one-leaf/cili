@@ -13,6 +13,7 @@ from core.tools.base import Tool, ToolResult
 
 
 class AskUserTool(Tool):
+    placeholder_output = True
     """主动向用户提问，支持多选和自由输入。"""
 
     name = "ask_user"

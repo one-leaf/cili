@@ -77,6 +77,26 @@ def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = 
     return factory
 
 
+# 全部工具类（能力集合与注册表共用同一清单）
+TOOL_CLASSES: tuple[type[Tool], ...] = (
+    AgentTool, AskUserTool, BashTool, BrowserTool, ClockTool, CronTool,
+    DeepSeekReadUrlTool, DeepSeekWebSearchTool, EditTool, GlobTool, GrepTool,
+    LatexTool, LoopTool, MemoryTool, MessageBusTool, Office2PDFTool,
+    PDF2MarkdownTool, PwshTool, PythonTool, ReadTool, ReadImageTool,
+    ReadToolResultTool, SendUserFileTool, SessionSearchTool, SkillTool, TempTool,
+    TextbookFindTool, TextbookOriginalTool, TextbookOutlineTool, TextbookReadTool,
+    TextbookSearchTool, TodoWriteTool, ToolSearchTool, WebSearchTool, WorkflowTool,
+    WriteTool,
+)
+
+
+def capability_tool_names(attr: str) -> frozenset[str]:
+    """按类属性汇总工具名（如 ``mutates_workspace`` / ``streams_output``）。"""
+    return frozenset(
+        cls.name for cls in TOOL_CLASSES if getattr(cls, attr, False)
+    )
+
+
 TOOL_REGISTRY: dict[str, Factory] = {
     "read": _factory(ReadTool, needs_permission=True),
     "read_image": _factory(ReadImageTool, needs_permission=True),

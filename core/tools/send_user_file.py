@@ -53,6 +53,7 @@ _BASE_DESCRIPTION = (
 
 
 class SendUserFileTool(Tool):
+    interface_scoped = frozenset({"web", "qq", "wechat", "email"})
     """把工作区内的文件发送给用户（接口专属，见 INTERFACE_TOOLS）。"""
 
     name = "send_user_file"

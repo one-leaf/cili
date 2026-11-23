@@ -40,6 +40,7 @@ _MIN_TIMEOUT = 10
 _MAX_TIMEOUT = 600
 
 class Office2PDFTool(Tool):
+    mutates_workspace = True
     """Convert Word/Excel/PowerPoint documents to PDF via Office/WPS COM."""
 
     name = "office2pdf"

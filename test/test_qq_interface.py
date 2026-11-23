@@ -18,7 +18,8 @@ import interfaces.qq.profile  # noqa: F401
 import web.profile  # noqa: F401
 from core import outbox
 from core.attachment import Attachment
-from core.session_runner import INTERFACE_TOOLS, SessionRunner
+from core.session_runner import SessionRunner
+from core.tools.send_user_file import SendUserFileTool
 from core.turn_dispatch import PreparedTurn, prepare_turn
 
 # ─── 接口门控（共享会话下的核心回归点） ───────────────────────────────
@@ -77,10 +78,9 @@ class TestInterfaceToolGating:
         assert "not available" in result["content"]
 
     def test_interface_tools_mapping_shape(self):
-        assert "web" in INTERFACE_TOOLS
-        assert "qq" in INTERFACE_TOOLS
-        assert "send_user_file" in INTERFACE_TOOLS["qq"]
-        assert "send_user_file" in INTERFACE_TOOLS["web"]  # Web 交付形态：下载卡片
+        """接口专属声明在工具类上（Tool.interface_scoped）。"""
+        scoped = SendUserFileTool.interface_scoped
+        assert {"web", "qq", "wechat", "email"} <= set(scoped)
 
 
 class TestInterfaceCapsPromptBlock:

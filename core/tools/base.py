@@ -62,6 +62,14 @@ class Tool(ShellMixin, BackgroundMixin):
     # 并发安全标志：纯读、无副作用、非流式的工具标记为 True，允许同一批内并行执行。
     # 未标记（默认 False）的工具在批内始终单线程执行（各自成单批）。
     concurrency_safe: bool = False
+    # 输出流式写入外部文件，前端轮询读取（runner 不重复落盘）
+    streams_output: bool = False
+    # 输出内联在 content，不落外部文件（ask_user / agent 占位）
+    placeholder_output: bool = False
+    # 可能修改工作区文件：回合结束后广播 files_changed
+    mutates_workspace: bool = False
+    # 接口专属工具：只在声明该接口的回合可见（见 INTERFACE_TOOLS）
+    interface_scoped: frozenset[str] = frozenset()
 
     # Directories to skip during file search operations
     IGNORE_DIRS: set[str] = {
