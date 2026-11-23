@@ -363,7 +363,7 @@ class TestModelResolution:
 
     def test_input_must_contain_text(self):
         """旧配置 multimodal=false → input=['text']"""
-        from core.config import _convert_legacy_model_spec
+        from core.config_migrations import _convert_legacy_model_spec
         spec = _convert_legacy_model_spec({"name": "x", "multimodal": False})
         assert spec["input"] == ["text"]
 
@@ -463,7 +463,7 @@ class TestModelContextDefaults:
         assert ModelSpec.from_dict({}).max_context_tokens == 200000
 
     def test_legacy_migration_default(self):
-        from core.config import _convert_legacy_model_spec
+        from core.config_migrations import _convert_legacy_model_spec
 
         assert _convert_legacy_model_spec({})["max_context_tokens"] == 200000
 
