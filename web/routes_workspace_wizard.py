@@ -14,7 +14,7 @@ from core.config import PROJECT_ROOT, get_workspace_data_dir
 from core.textbooks import (
     OfficialCatalog,
     TextbookDownloadError,
-    get_official_catalog,
+    get_platform_catalog,
     textbook_tasks,
 )
 from core.textbooks.markdown_copy import copy_textbook_markdown
@@ -75,7 +75,7 @@ def _textbook_editions() -> dict[str, dict[str, list[dict[str, Any]]]]:
     官方把五•四学制作为独立学段，因此不再区分「学制」维度。
     """
     try:
-        catalog = get_official_catalog()
+        catalog = get_platform_catalog()
     except Exception:  # noqa: BLE001 —— 平台目录不可用时返回空映射
         return {}
     result: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -170,7 +170,7 @@ def _prepare_textbook_tasks(
     ``textbook_tasks.start`` 内部 ``asyncio.create_task`` 需要运行中的事件循环，
     不能在工作线程调用，启动单独放到 ``_launch_textbook_task``。
     """
-    catalog = get_official_catalog()
+    catalog = get_platform_catalog()
     stage = str(profile.get("stage") or "")
     grade = str(profile.get("grade") or "")
     specs: list[dict[str, Any]] = []

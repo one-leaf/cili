@@ -96,7 +96,7 @@ def dataset_catalog() -> OfficialCatalog:
     })
 
 
-def find_books(stage: str = "", subject: str = "", grade: str = "",
+def find_index_books(stage: str = "", subject: str = "", grade: str = "",
                edition: str = "", volume: str = "", keyword: str = "",
                limit: int = 10) -> list[dict[str, Any]]:
     books = load_index()["books"]

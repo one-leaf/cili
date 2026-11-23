@@ -411,7 +411,7 @@ class TestWizardTextbookLaunch:
         from web import routes_workspace_wizard as wizard_mod
 
         catalog = _catalog(_book())
-        monkeypatch.setattr(wizard_mod, "get_official_catalog", lambda: catalog)
+        monkeypatch.setattr(wizard_mod, "get_platform_catalog", lambda: catalog)
         monkeypatch.setattr(wizard_mod, "copy_textbook_markdown",
                             lambda *a, **k: ["x.pdf"])
         monkeypatch.setattr(wizard_mod, "get_workspace_data_dir",
@@ -460,7 +460,7 @@ class TestWizardTextbookLaunch:
         from web import routes_workspace_wizard as wizard_mod
 
         catalog = _catalog(_book())  # 只有数学一年级，匹配不到英语
-        monkeypatch.setattr(wizard_mod, "get_official_catalog", lambda: catalog)
+        monkeypatch.setattr(wizard_mod, "get_platform_catalog", lambda: catalog)
 
         created = [{
             "uuid": "ws-2",

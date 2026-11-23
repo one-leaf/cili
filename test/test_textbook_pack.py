@@ -40,11 +40,11 @@ def mini_pack(tmp_path, monkeypatch):
 
 
 def test_find_books(mini_pack):
-    books = pack_store.find_books(subject="数学")
+    books = pack_store.find_index_books(subject="数学")
     assert len(books) == 1
     assert books[0]["cid"].startswith("aaaa")
-    assert pack_store.find_books(keyword="语文")[0]["subject"] == "语文"
-    assert pack_store.find_books(subject="物理") == []
+    assert pack_store.find_index_books(keyword="语文")[0]["subject"] == "语文"
+    assert pack_store.find_index_books(subject="物理") == []
 
 
 def test_resolve_book(mini_pack):

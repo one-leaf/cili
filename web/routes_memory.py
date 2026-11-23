@@ -14,7 +14,8 @@ from core.config import (
     load_workspace_config,
     save_workspace_config,
 )
-from core.memory_pipeline import memory_enabled, run_consolidation
+from core.memory_pipeline import run_consolidation
+from core.memory_service import memory_enabled
 from core.memory_store import Journal, MemoryStore
 from core.teen_mode import deny_message, get_teen_mode
 from web.deps import _SAFE_ID_RE, _csrf_protect, _validate_workspace_uuid

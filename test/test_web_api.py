@@ -579,7 +579,7 @@ class TestAskUserDirectInput:
             return agent
 
         monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
-        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+        monkeypatch.setattr("core.memory_service.memory_enabled", lambda *a: False)
 
         request = SimpleNamespace(content="我选 Python", images=None)
 
@@ -637,7 +637,7 @@ class TestSendMessageInterface:
             return agent
 
         monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
-        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+        monkeypatch.setattr("core.memory_service.memory_enabled", lambda *a: False)
 
         request = SimpleNamespace(content="hi", images=None, interface="tui")
 
@@ -682,7 +682,7 @@ class TestSendMessageInterface:
             return agent
 
         monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
-        monkeypatch.setattr("core.memory_pipeline.memory_enabled", lambda *a: False)
+        monkeypatch.setattr("core.memory_service.memory_enabled", lambda *a: False)
 
         request = SimpleNamespace(content="hi", images=None)  # 无 interface 属性 → 缺省 web（getattr 约定）
 

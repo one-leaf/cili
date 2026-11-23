@@ -47,7 +47,7 @@ class TextbookFindTool(Tool):
                 lines.append("")
                 lines.append("用 stage/subject/grade 等条件进一步筛选。")
                 return ToolResult("\n".join(lines))
-            books = pack_store.find_books(
+            books = pack_store.find_index_books(
                 stage=stage, subject=subject, grade=grade, edition=edition,
                 volume=volume, keyword=keyword, limit=limit)
             if not books:

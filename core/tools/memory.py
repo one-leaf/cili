@@ -276,7 +276,7 @@ class MemoryTool(Tool):
     # ─── consolidate（cron / 手动触发整合）────────────────
 
     def _consolidate(self) -> ToolResult:
-        from core.memory_pipeline import consolidate_all
+        from core.memory_service import consolidate_all
 
         results = consolidate_all()
         if not results:

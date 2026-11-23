@@ -210,7 +210,7 @@ def _schedule_memory_extraction(runner: SessionRunner) -> None:
         sm = getattr(runner, "session", None)
         if sm is None:
             return
-        from core.memory_pipeline import memory_enabled, schedule_extraction
+        from core.memory_service import memory_enabled, schedule_extraction
         if memory_enabled(runner.workspace_uuid or ""):
             schedule_extraction(
                 runner.workspace_uuid or "",
