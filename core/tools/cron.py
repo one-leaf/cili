@@ -144,10 +144,6 @@ class CronTool(Tool):
             "required": ["action"],
         }
 
-    def set_interface_profile(self, profile) -> None:
-        self._interface_name = getattr(profile, "name", "") or ""
-        return None
-
     def execute(
         self,
         action: str | None = None,
@@ -259,7 +255,7 @@ class CronTool(Tool):
         return {
             "workspace_uuid": self.workspace_uuid,
             "session_id": session_id,
-            "interface": getattr(self, "_interface_name", "") or None,
+            "interface": getattr(self.interface_profile, "name", "") or None,
         }
 
     def _resolve(self, name: str, workspace_uuid: str | None = None):

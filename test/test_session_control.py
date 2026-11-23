@@ -51,7 +51,6 @@ class _Registry:
 def _task(task_id: str, *, ws="ws-1", sid="sess-1", kind="agent", **kwargs):
     task = BackgroundTask(
         task_id=task_id,
-        task_type="session" if kind == "agent" else "shell",
         workspace_uuid=ws,
         session_id=sid,
         kind=kind,

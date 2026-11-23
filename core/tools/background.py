@@ -46,7 +46,6 @@ class BackgroundTask:
     - "session": SessionRunner instance (autonomous runner loop)
     """
     task_id: str
-    task_type: str = "shell"  # "shell" or "session"
     command: str = ""  # For shell tasks
     process: subprocess.Popen | None = None  # For shell tasks
     output_queue: queue.Queue[str | None] = field(default_factory=queue.Queue)
@@ -101,9 +100,9 @@ class BackgroundTaskManager:
         """任务是否已结束（不依赖 list_tasks 的轮询刷新）。"""
         if task.status in ("completed", "killed", "stopped", "error"):
             return True
-        if task.task_type == "shell" and task.process is not None:
+        if task.kind == "shell" and task.process is not None:
             return task.process.poll() is not None
-        if task.task_type == "session":
+        if task.kind == "agent":
             return task.result is not None
         return False
 
@@ -115,9 +114,9 @@ class BackgroundTaskManager:
         """
         if task.status in ("completed", "killed", "stopped", "error"):
             return False
-        if task.task_type == "shell" and task.process is not None:
+        if task.kind == "shell" and task.process is not None:
             return task.process.poll() is None
-        if task.task_type == "session":
+        if task.kind == "agent":
             return task.result is None
         return task.status in ("running", "stopping")
 
@@ -143,14 +142,14 @@ class BackgroundTaskManager:
             {
                 "task_id": task.task_id,
                 "exec_id": task.exec_id,
-                "kind": task.kind or ("agent" if task.task_type == "session" else "shell"),
+                "kind": task.kind or ("agent" if task.kind == "agent" else "shell"),
                 "label": task.label or task.command,
                 "status": task.status,
                 "created_at": task.created_at,
             }
             for task in sorted(tasks, key=lambda t: t.created_at)
         ]
-        agents = sum(1 for task in tasks if (task.kind or task.task_type) in ("agent", "session"))
+        agents = sum(1 for task in tasks if task.kind == "agent")
         shells = len(tasks) - agents
         return {
             "agents": agents,
@@ -190,18 +189,18 @@ class BackgroundTaskManager:
             result = []
             for task_id, task in cls._tasks.items():
                 # Check status
-                if task.task_type == "shell" and task.process:
+                if task.kind == "shell" and task.process:
                     if task.process.poll() is not None and task.status not in ("killed", "stopped"):
                         task.status = "completed"
                         task.exit_code = task.process.returncode
-                elif task.task_type == "session" and task.result is not None:
+                elif task.kind == "agent" and task.result is not None:
                     # 终态以 run() 的结果为准：stopped 不能被误写成 completed
                     result_status = task.result.get("status") or "completed"
                     task.status = "timeout" if result_status == "handoff" else result_status
 
                 result.append({
                     "task_id": task_id,
-                    "task_type": task.task_type,
+                    "kind": task.kind,
                     "command": task.command or (task.runner.task[:100] if task.runner else ""),
                     "status": task.status,
                     "exit_code": task.exit_code,
@@ -465,7 +464,7 @@ class BackgroundMixin:
 
         lines = ["Background tasks:"]
         for t in tasks:
-            task_type = t.get("task_type", "shell")
+            task_type = t.get("kind", "shell")
             status = t["status"]
             if status == "completed" and t.get("exit_code") is not None:
                 status += f" (exit {t['exit_code']})"

@@ -45,11 +45,11 @@ core/tools/
 ├── browser.py               # 浏览器自动化
 ├── web_search.py            # 网络搜索
 ├── memory.py                # 长期记忆
-├── python_tool.py           # Python 执行
+├── python.py           # Python 执行
 ├── todo.py                  # 任务规划（TodoWriteTool）
 ├── latex.py                 # LaTeX 编译（tectonic/pdflatex/xelatex/lualatex）
-├── message_bus_tool.py      # 跨会话消息传递
-├── cron_tool.py             # 用户级定时任务管理
+├── message_bus.py      # 跨会话消息传递
+├── cron.py             # 用户级定时任务管理
 ├── clock.py                 # 当前日期/时间查询（含时区）与短时等待（ClockTool）
 ├── read_tool_result.py      # 检索压缩的工具结果
 ├── session_search.py        # 跨会话历史消息检索
@@ -57,7 +57,7 @@ core/tools/
 ├── loop.py                  # 循环任务进度追踪（配合 cron 使用）
 ├── pdf2markdown.py          # PDF 转 Markdown（MinerU API）
 ├── skill.py                 # 技能工具（SkillTool，按角色 frontmatter roles 过滤）
-├── agent_tool.py           # 子代理委派（AgentTool）
+├── agent.py           # 子代理委派（AgentTool）
 ├── ask_user.py              # 用户交互（AskUserTool）
 ├── tool_search.py           # 延迟工具搜索与激活（ToolSearchTool）
 └── mcp.py                   # MCP 工具包装（MCPToolWrapper；provider 在 core/mcp_client.py）
@@ -355,11 +355,11 @@ content = [
 | browser | browser.py | Chrome 自动化（Playwright + CDP） | master/worker |
 | web_search | web_search.py | 网络搜索（支持 Bing / Google，委托给 BrowserService） | master/worker |
 | memory | memory.py | 长期记忆（knowledge + skill，支持 find 关键词检索） | master/worker |
-| python | python_tool.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker/lite |
+| python | python.py | Python 代码执行 + 脚本运行，支持后台执行 | master/worker/lite |
 | todo | todo.py | 任务规划（整表替换，三态状态） | master/worker |
 | latex | latex.py | LaTeX 编译（支持 tectonic/pdflatex/xelatex/lualatex） | master/worker |
-| message_bus | message_bus_tool.py | 跨会话/跨 agent 消息传递（send/send_to_agent/receive/check/list_sessions/list_agents/clear） | master/worker/lite |
-| cron | cron_tool.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master |
+| message_bus | message_bus.py | 跨会话/跨 agent 消息传递（send/send_to_agent/receive/check/list_sessions/list_agents/clear） | master/worker/lite |
+| cron | cron.py | 用户级定时任务管理（创建/列出/更新/删除/执行/启用/禁用任务） | master |
 | clock | clock.py | 当前日期/时间查询（含指定时区）与短时等待（sleep） | master/worker/lite |
 | read_tool_result | read_tool_result.py | 检索已压缩的工具结果（通过 tool_use_id） | master/worker |
 | session_search | session_search.py | 跨会话搜索历史消息（当前工作区按关键词检索 messages.jsonl） | master/worker |
@@ -367,7 +367,7 @@ content = [
 | loop | loop.py | 循环任务进度追踪（配合 cron 实现自循环任务） | master/worker |
 | pdf2markdown | pdf2markdown.py | PDF/文档转 Markdown（MinerU API，Agent + Precision 双模式） | master/worker |
 | skill | skill.py | 技能工具（按角色 frontmatter roles 过滤，见 8.1） | master/worker |
-| agent | agent_tool.py | 委派自包含任务给子代理（AgentTool，见 8.2） | master/worker |
+| agent | agent.py | 委派自包含任务给子代理（AgentTool，见 8.2） | master/worker |
 | ask_user | ask_user.py | 向用户提问，收集决策（交互式专属） | master |
 | tool_search | tool_search.py | 搜索并激活延迟工具（返回完整 schema，见 2.4） | master/worker |
 
@@ -376,7 +376,7 @@ content = [
 **注意**：
 - 注册表键与白名单名一致（如 `todo`）；个别工具类的 `Tool.name` 属性可能不同（如 TodoWriteTool 的 name 为 `todo_write`，deferred 名单按类属性 name 匹配，LLM schema 亦使用类属性 name）
 - `skill` 工具由注册表工厂传入 `role=role_cfg.name`，每个角色实例化独立 SkillTool，可见技能集合不同
-- `agent` 工具注册键与白名单名均为 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`，`Tool.name = "agent"`）
+- `agent` 工具注册键与白名单名均为 `agent`，类名为 `AgentTool`（`core/tools/agent.py`，`Tool.name = "agent"`）
 
 ---
 
@@ -579,7 +579,7 @@ agent(action="list")
 `AgentMailbox` 是一个轻量级的跨会话消息传递机制，模块级别单例（与 BrowserService/CronScheduler 同模式）。
 
 **核心模块**：`core/agent_mailbox.py`
-**工具**：`core/tools/message_bus_tool.py`（master/worker/lite 均可用）
+**工具**：`core/tools/message_bus.py`（master/worker/lite 均可用）
 
 **功能**：
 - `send(to_session, message)` — 发送消息到指定会话（按 session_id 寻址）
@@ -595,7 +595,7 @@ agent(action="list")
 - **反向映射**：`_session_to_agents: dict[session_id, set[agent_name]]`，用于清理和反查
 - **生命周期**：
   - Master agent：`web/deps.py` 在创建 agent 时注册 `session_id → session_id`
-  - 子代理（worker/lite）：`agent_tool.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
+  - 子代理（worker/lite）：`agent.py` 在创建后注册 `exec_id → session_id`，可选 `label → session_id`；完成后注销
   - 后台子代理：`agent_background.py` 在 finally 块中通过 `get_session_agents()` 批量注销所有别名
   - 后台任务 ID（`agent-N`）在 `_start_background_runner` 中注册为 exec_id 的别名（spawn 结果向模型暴露的是 Task ID）
   - 终态清理：注销名字后 `unregister_session(exec_id)` 关闭队列，避免 `send` 对已结束子代理假成功
@@ -608,7 +608,7 @@ agent(action="list")
 - **线程安全**：使用 `threading.Lock` 保护消息队列和注册表
 - **投递边界**：只有「运行中」的 agent 能收到消息——发送方在目标终态后会收到错误；不存在离线投递
 - **会话注册**：`web/deps.py` 在创建 master agent 时自动注册到 AgentMailbox
-- **子代理注册**：`agent_tool.py` / `agent_background.py` 在子代理生命周期自动注册/注销
+- **子代理注册**：`agent.py` / `agent_background.py` 在子代理生命周期自动注册/注销
 - **容量防护**：每 session 最多 100 条消息，超出丢弃最旧
 
 ### 7.6 read_tool_result — 检索压缩的工具结果
@@ -732,7 +732,7 @@ skill(action="read", skill_id="win-ops", file="references/repair.md")
 
 ### 8.2 agent 工具 — 任务委派（AgentTool）
 
-`agent` 工具在独立的子代理（Worker/Lite）中执行自包含任务。注册键、白名单名与 `Tool.name` 均为 `agent`，类名为 `AgentTool`（`core/tools/agent_tool.py`），master 与 worker 白名单均包含（委派深度最多 2 层，见下）。
+`agent` 工具在独立的子代理（Worker/Lite）中执行自包含任务。注册键、白名单名与 `Tool.name` 均为 `agent`，类名为 `AgentTool`（`core/tools/agent.py`），master 与 worker 白名单均包含（委派深度最多 2 层，见下）。
 
 **调用方式**：
 ```python
@@ -832,7 +832,7 @@ web/deps.py 注入 on_session_start / on_session_complete 回调
         → 前端渲染卡片 / 更新状态
 ```
 
-**实现**：`core/tools/agent_tool.py`（AgentTool），子代理由 `core/session_runner.py` 的统一 `SessionRunner`（autonomous 模式）驱动。
+**实现**：`core/tools/agent.py`（AgentTool），子代理由 `core/session_runner.py` 的统一 `SessionRunner`（autonomous 模式）驱动。
 
 ### 8.3 temp — 临时文件/目录管理
 

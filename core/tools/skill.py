@@ -47,7 +47,6 @@ class SkillTool(Tool):
         """role: agent 角色名（master/worker/lite），决定可见技能集合。"""
         super().__init__(**kwargs)
         self._role = role
-        self._interface: str | None = None  # 当前驱动接口，由 set_interface_profile 推送
         self.description = (
             f"Access built-in skills for the {role} role.\n\n"
             "**IMPORTANT: Always check available skills FIRST when user requests match these patterns:**\n"
@@ -75,9 +74,10 @@ class SkillTool(Tool):
         else:
             return ToolResult(f"Error: unknown action '{action}'", error=True)
 
-    def set_interface_profile(self, profile) -> None:
-        """接收当前回合的能力档案：技能按档案的接口名过滤。"""
-        self._interface = profile.name if profile is not None else None
+    @property
+    def _interface(self) -> str | None:
+        """当前驱动接口名（来自统一的能力档案）。"""
+        return getattr(self.interface_profile, "name", None)
 
     def _list_skills(self) -> ToolResult:
         skills = skills_catalog.list_skills(self._role, self._interface)

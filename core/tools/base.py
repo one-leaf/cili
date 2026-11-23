@@ -100,10 +100,10 @@ class Tool(ShellMixin, BackgroundMixin):
         """接收当前回合的接口能力档案（InterfaceProfile | None）。
 
         ``SessionRunner.set_turn_interface`` 在接口切换时对**全部**工具调用；
-        接口感知的工具（如 send_user_file）覆写本方法按档案调整描述/行为，其余工具
-        用这个空实现。``profile`` 为 None 表示驱动接口未声明。
+        接口感知的工具（如 send_user_file）读取 ``interface_profile`` 按档案
+        调整描述/行为；其余工具无需覆写。``profile`` 为 None 表示驱动接口未声明。
         """
-        return None
+        self.interface_profile = profile
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session: SessionHandle | None = None,
                  permission_store=None, permission_rules=None, permission_policy=None,
@@ -130,6 +130,8 @@ class Tool(ShellMixin, BackgroundMixin):
         # 同实例执行锁：并行批中同一工具实例的多次调用也串行化，
         # 防止 output_file/on_output 两个实例属性互相覆盖产生竞态。
         self._exec_lock = threading.Lock()
+        # 当前回合的能力档案（由 SessionRunner.set_turn_interface 推送）
+        self.interface_profile = None
 
     def _resolve_path(self, path: str) -> str:
         """Resolve a file path to absolute, relative to cwd (纯解析器).

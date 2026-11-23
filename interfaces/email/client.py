@@ -3,7 +3,7 @@
 **所有方法都是阻塞的**——调用方（``poller`` / ``outbound``）负责放进宿主 loop 的
 executor 里跑。
 
-拉取分两步：先取头部与 ``RFC822.SIZE``，过滤闸（``filter.check_message``）只靠
+拉取分两步：先取头部与 ``RFC822.SIZE``，过滤闸（``filter.check_headers``）只靠
 头部就能拦掉绝大多数垃圾；只有放行的邮件才下载全文（``BODY.PEEK[]``）。
 ``BODY.PEEK`` 保证**不置 \\Seen**——cili 对用户邮箱的副作用为零，它只是「在旁边看」。
 """
@@ -75,11 +75,11 @@ class EmailClient:
         last_uid: int | None,
         uidvalidity: int,
         max_messages: int,
-        decide: Callable[[Message, int], str | None],
+        classify: Callable[[Message, int], str | None],
     ) -> PollResult:
         """扫描 INBOX 中 UID > last_uid 的邮件（最多 ``max_messages`` 封）。
 
-        ``decide(headers_msg, size)`` 返回拦截原因或 None；只有放行的邮件才下载
+        ``classify(headers_msg, size)`` 返回拦截原因或 None；只有放行的邮件才下载
         全文。``last_uid is None`` 或 ``uidvalidity`` 与服务端不一致时**跳过历史**：
         游标重置到当前 UIDNEXT - 1，不重放旧邮件。
         """
@@ -112,7 +112,7 @@ class EmailClient:
                     continue
                 size, head_msg = header
                 item = _item_from_headers(uid, size, head_msg)
-                reason = decide(head_msg, size)
+                reason = classify(head_msg, size)
                 if reason:
                     item.reason = reason
                     items.append(item)

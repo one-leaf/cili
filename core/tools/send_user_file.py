@@ -33,7 +33,7 @@ from core.session import session_key
 from core.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:  # 仅类型标注；运行时档案由 set_interface_profile 注入
-    from core.interface_profile import InterfaceProfile
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,6 @@ class SendUserFileTool(Tool):
 
     name = "send_user_file"
     # 当前回合的接口能力档案；未声明（None）时 description 只含基础部分
-    _profile: "InterfaceProfile | None" = None
     parameters = {
         "type": "object",
         "properties": {
@@ -77,10 +76,6 @@ class SendUserFileTool(Tool):
         "required": ["paths"],
     }
 
-    def set_interface_profile(self, profile: "InterfaceProfile | None") -> None:
-        """接收当前回合的接口能力档案（见 Tool.set_interface_profile）。"""
-        self._profile = profile
-
     @property
     def description(self) -> str:
         """按当前接口档案生成描述：基础部分 + 接口相关约束。
@@ -89,7 +84,7 @@ class SendUserFileTool(Tool):
         在档案推送之后重建 ``tool_schemas``，所以描述变更立即生效。
         """
         parts = [_BASE_DESCRIPTION]
-        profile = self._profile
+        profile = self.interface_profile
         if profile is not None:
             if profile.max_files_per_turn:
                 parts.append(
@@ -124,7 +119,7 @@ class SendUserFileTool(Tool):
             return ToolResult("Error: paths is required (a non-empty list)", error=True)
 
         workspace_real = os.path.realpath(self.cwd)
-        profile = self._profile
+        profile = self.interface_profile
 
         # ── 逐件校验：工作区边界 → 存在性 → 普通文件 → 体积 ──
         # 边界**先于存在性**判定：否则工作区外文件「是否存在」会通过错误文案泄露

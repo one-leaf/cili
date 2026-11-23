@@ -245,7 +245,7 @@ class AgentTool(AgentBackgroundMixin, Tool):
                 )
             from core.tools.background import BackgroundTaskManager
             bg_task = BackgroundTaskManager.get(agent_id)
-            if bg_task and bg_task.task_type == "session":
+            if bg_task and bg_task.kind == "agent":
                 return self._read_background_runner(agent_id)
             else:
                 return self._read_background_task(agent_id)
@@ -257,7 +257,7 @@ class AgentTool(AgentBackgroundMixin, Tool):
                 )
             from core.tools.background import BackgroundTaskManager
             bg_task = BackgroundTaskManager.get(agent_id)
-            if bg_task and bg_task.task_type == "session":
+            if bg_task and bg_task.kind == "agent":
                 return self._kill_background_runner(agent_id)
             else:
                 return self._kill_background_task(agent_id)

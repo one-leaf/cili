@@ -22,7 +22,7 @@ from interfaces.email.filter import (
     REASON_LABELS,
     RateLimiter,
     SeenIds,
-    check_message,
+    check_headers,
     sender_address,
 )
 from interfaces.email.runtime import EmailRuntime
@@ -86,7 +86,7 @@ class Poller:
                 last_uid=last_uid,
                 uidvalidity=uidvalidity,
                 max_messages=cfg.max_messages_per_poll,
-                decide=self._decide,
+                classify=self._classify,
             ),
         )
 
@@ -118,10 +118,10 @@ class Poller:
 
         self._set_ok(cursor)
 
-    def _decide(self, msg, size: int) -> str | None:
+    def _classify(self, msg, size: int) -> str | None:
         """头部闸 → 去重 → 额度（在 executor 线程里执行）。"""
         cfg = self._rt.cfg
-        reason = check_message(
+        reason = check_headers(
             msg,
             size=size,
             allowed_senders=cfg.allowed_senders,

@@ -102,14 +102,14 @@ def _stop_agent(task: BackgroundTask) -> None:
 
 
 def stop_background(workspace_uuid: str, session_id: str) -> int:
-    """停本会话全部活跃后台执行（agent + shell + 其他 task_type）。
+    """停本会话全部活跃后台执行（agent + shell）。
 
     返回请求停止的任务数。shell 立即杀进程树；agent 置停止标志后由线程
     自然收尾并写终态。
     """
     tasks = BackgroundTaskManager.session_tasks(workspace_uuid, session_id, active_only=True)
     for task in tasks:
-        if task.task_type == "session":
+        if task.kind == "agent":
             _stop_agent(task)
         else:
             _stop_shell(task)

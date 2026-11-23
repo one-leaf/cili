@@ -110,18 +110,18 @@ class TestDecide:
     def test_whitelist_gate(self, tmp_path, monkeypatch):
         runtime = _runtime(tmp_path, monkeypatch, FakeClient(PollResult()))
         poller = Poller(runtime, FakeHandler())
-        assert poller._decide(self._msg(sender="me@example.com"), 10) is None
-        assert poller._decide(self._msg(sender="x@evil.com"), 10) == "not_whitelisted"
+        assert poller._classify(self._msg(sender="me@example.com"), 10) is None
+        assert poller._classify(self._msg(sender="x@evil.com"), 10) == "not_whitelisted"
 
     def test_duplicate_gate(self, tmp_path, monkeypatch):
         runtime = _runtime(tmp_path, monkeypatch, FakeClient(PollResult()))
         poller = Poller(runtime, FakeHandler())
-        assert poller._decide(self._msg(message_id="<dup@x>"), 10) is None
-        assert poller._decide(self._msg(message_id="<dup@x>"), 10) == "duplicate"
+        assert poller._classify(self._msg(message_id="<dup@x>"), 10) is None
+        assert poller._classify(self._msg(message_id="<dup@x>"), 10) == "duplicate"
 
     def test_rate_limit_gate(self, tmp_path, monkeypatch):
         runtime = _runtime(tmp_path, monkeypatch, FakeClient(PollResult()))
         runtime.cfg.turns_per_sender_per_hour = 1
         poller = Poller(runtime, FakeHandler())
-        assert poller._decide(self._msg(message_id="<a@x>"), 10) is None
-        assert poller._decide(self._msg(message_id="<b@x>"), 10) == "rate_limited"
+        assert poller._classify(self._msg(message_id="<a@x>"), 10) is None
+        assert poller._classify(self._msg(message_id="<b@x>"), 10) == "rate_limited"

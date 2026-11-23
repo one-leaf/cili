@@ -246,7 +246,6 @@ class AgentBackgroundMixin:
         # Create background task entry
         task = BackgroundTask(
             task_id=task_id,
-            task_type="session",
             command=task_summary,
             runner=runner,
             status="running",
@@ -293,7 +292,7 @@ class AgentBackgroundMixin:
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
-        if task.task_type != "session":
+        if task.kind != "agent":
             return ToolResult(f"Error: task '{task_id}' is not a Runner", error=True)
 
         runner = task.runner
@@ -345,7 +344,7 @@ class AgentBackgroundMixin:
         if not task:
             return ToolResult(f"Error: task '{task_id}' not found", error=True)
 
-        if task.task_type != "session":
+        if task.kind != "agent":
             return ToolResult(f"Error: task '{task_id}' is not a Runner", error=True)
 
         runner = task.runner

@@ -6,7 +6,7 @@ from email.message import EmailMessage
 from interfaces.email.filter import (
     RateLimiter,
     SeenIds,
-    check_message,
+    check_headers,
     is_allowed,
     sender_address,
 )
@@ -33,7 +33,7 @@ def _msg(*, headers: dict | None = None, body: str = "hello", from_addr="me@exam
 
 
 def _check(msg, *, size=1000, allowed=ALLOWED):
-    return check_message(
+    return check_headers(
         msg, size=size, allowed_senders=allowed, max_inbound_bytes=MAX_SIZE,
     )
 

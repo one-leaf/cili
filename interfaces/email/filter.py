@@ -6,7 +6,7 @@
 
     白名单之外的一切入站内容，不进回合、不回信、不建状态。
 
-**:func:`check_message` 是纯函数**（只读头部与大小），便于用样本单测；额度与
+**:func:`check_headers` 是纯函数**（只读头部与大小），便于用样本单测；额度与
 去重是进程内的有状态闸门（安全阀，不是计费系统，重启清零）。
 """
 
@@ -109,7 +109,7 @@ def _fails_auth(msg: Message) -> bool:
     return spf_fail and dkim_fail
 
 
-def check_message(
+def check_headers(
     msg: Message,
     *,
     size: int,
