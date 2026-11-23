@@ -84,7 +84,7 @@ class _FakeClient:
 
 
 def _tokens(*, budget: int = 8, max_age: float = 60.0):
-    from interfaces.wechat.account import ContextTokenStore
+    from interfaces.wechat.context_token import ContextTokenStore
     store = ContextTokenStore(max_age_seconds=max_age, budget=budget)
     store.update("u1", "ctx-1")
     return store

@@ -16,9 +16,9 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from interfaces.wechat.account import ContextTokenStore
 from interfaces.wechat.client import WechatClient
 from interfaces.wechat.config import WechatConfig
+from interfaces.wechat.context_token import ContextTokenStore
 from interfaces.wechat.protocol import ITEM_TEXT, WechatQuotaError, build_message
 
 logger = logging.getLogger(__name__)

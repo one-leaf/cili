@@ -22,8 +22,9 @@ from contextlib import suppress
 from interfaces.common.host import HostBase
 from interfaces.common.owner import OwnerTracker
 from interfaces.common.service import accounts_running, start_accounts, stop_accounts
-from interfaces.wechat.account import ContextTokenStore, load_account
+from interfaces.wechat.account import load_account
 from interfaces.wechat.config import WechatConfig, load_wechat_accounts
+from interfaces.wechat.context_token import ContextTokenStore
 from interfaces.wechat.protocol import WechatAuthError
 from interfaces.wechat.state import load_account_state
 

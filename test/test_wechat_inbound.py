@@ -32,8 +32,9 @@ def _isolated_data_dirs(tmp_path, monkeypatch):
 
 
 def _runtime(*, cursor: str = "", cfg: dict | None = None):
-    from interfaces.wechat.account import ContextTokenStore, WechatAccount
+    from interfaces.wechat.account import WechatAccount
     from interfaces.wechat.config import WechatConfig
+    from interfaces.wechat.context_token import ContextTokenStore
     from interfaces.wechat.runtime import WechatRuntime
     from interfaces.wechat.state import WechatAccountState
 

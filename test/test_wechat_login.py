@@ -154,7 +154,7 @@ class TestAccount:
 
 class TestContextTokenStore:
     def _store(self, **kw):
-        from interfaces.wechat.account import ContextTokenStore
+        from interfaces.wechat.context_token import ContextTokenStore
         return ContextTokenStore(
             max_age_seconds=kw.pop("max_age_seconds", 60.0),
             budget=kw.pop("budget", 8),

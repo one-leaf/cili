@@ -17,8 +17,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from interfaces.wechat.account import ContextTokenStore, WechatAccount
+from interfaces.wechat.account import WechatAccount
 from interfaces.wechat.config import WechatConfig
+from interfaces.wechat.context_token import ContextTokenStore
 from interfaces.wechat.state import WechatAccountState
 
 if TYPE_CHECKING:
