@@ -317,7 +317,7 @@ class ToolResult:
 
 - `providers`: 凭据/接入层（api_key/base_url/协议/auth_type/backend/headers）+ models 表
 - `agents`: 角色 → 模型引用（"provider键/模型键"）；worker/lite 未配置时继承 master
-- `resolve_model()` 产出运行时 `ModelConfig`（含接入层字段 auth_type/backend/headers）
+- `resolve_model()` 产出运行时 `ResolvedModel`（含接入层字段 auth_type/backend/headers）
 
 工厂函数：`create_llm_client(config) → LLMClient`
 

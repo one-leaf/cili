@@ -272,7 +272,7 @@ runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（
 ### 3.4 模型选择
 
 - 角色 JSON **不含 model 字段**。`SessionRunner` 构造时取 `config.model_for_role(role)`。
-- `Config` 模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）：角色字段是模型引用字符串，worker/lite 未配置时继承 master；`resolve_model()` 合成运行时 ModelConfig。
+- `Config` 模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）：角色字段是模型引用字符串，worker/lite 未配置时继承 master；`resolve_model()` 合成运行时 ResolvedModel。
 - `reload_config()` 从磁盘重载配置、重建 LLM 客户端与工具集（先创建新客户端，成功后再关闭旧客户端，避免失败后 `self.client` 指向已关闭的实例）。
 
 ### 3.5 配置化 prompt（core/prompt_builder.py）
