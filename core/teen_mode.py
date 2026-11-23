@@ -25,7 +25,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from core.config import DATA_DIR
+from core.config import DATA_DIR, find_workspace_entry, load_workspaces_index
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
 logger = logging.getLogger(__name__)
@@ -686,6 +686,52 @@ class TeenModeManager:
 
 _manager: TeenModeManager | None = None
 _manager_lock = threading.Lock()
+
+
+
+
+def normalize_allowed_workspaces(uuids) -> list[str]:
+    """白名单校验：uuid 必须存在、排除 system、目录不得互相嵌套（§3.13）。
+
+    非法输入抛 ValueError（文案可直接展示给用户）。
+    """
+    import os as _os
+
+    if not isinstance(uuids, list):
+        raise ValueError("allowed_workspaces 必须为列表")
+    cleaned: list[str] = []
+    for uuid in uuids:
+        if not isinstance(uuid, str) or not uuid:
+            raise ValueError("allowed_workspaces 含非法条目")
+        if uuid == "system":
+            raise ValueError("system 工作区永远受限，不能加入白名单")
+        if not find_workspace_entry(uuid):
+            raise ValueError(f"工作区不存在: {uuid}")
+        if uuid not in cleaned:
+            cleaned.append(uuid)
+
+    def _dir(u: str) -> str:
+        entry = find_workspace_entry(u) or {}
+        return str(entry.get("directory") or "").rstrip("\\/")
+
+    for a in cleaned:
+        dir_a = _os.path.normcase(_os.path.abspath(_dir(a)))
+        for b in load_workspaces_index():
+            uuid_b = b.get("uuid", "")
+            if uuid_b == a or not b.get("directory"):
+                continue
+            dir_b = _os.path.normcase(_os.path.abspath(str(b["directory"]).rstrip("\\/")))
+            if dir_a and dir_b and dir_a != dir_b:
+                try:
+                    common = _os.path.commonpath([dir_a, dir_b])
+                except ValueError:
+                    continue
+                if _os.path.normcase(common) == dir_a:
+                    raise ValueError(
+                        f"白名单工作区目录互相嵌套：{_dir(a)} 包含 "
+                        f"{b['directory']}，前者内可用相对路径进入后者，拒绝保存"
+                    )
+    return cleaned
 
 
 def get_teen_mode() -> TeenModeManager:

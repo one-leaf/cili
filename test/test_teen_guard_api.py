@@ -572,11 +572,12 @@ class TestAllowedWorkspacesValidation:
     """白名单嵌套校验：跨盘符不误伤（D: vs E: 的 commonpath 会抛 ValueError）。"""
 
     def _patch_index(self, monkeypatch, entries):
+        import core.teen_mode as teen_mode_mod
         from web import routes_teen
 
-        monkeypatch.setattr(routes_teen, "load_workspaces_index", lambda: entries)
+        monkeypatch.setattr(teen_mode_mod, "load_workspaces_index", lambda: entries)
         monkeypatch.setattr(
-            routes_teen, "find_workspace_entry",
+            teen_mode_mod, "find_workspace_entry",
             lambda u: next((e for e in entries if e["uuid"] == u), None))
         return routes_teen
 

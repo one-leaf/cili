@@ -16,7 +16,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from core.config import find_workspace_entry, load_workspaces_index
 from core.teen_mode import (
     SCOPE_GLOBAL,
     TeenLockedOut,
@@ -63,47 +62,13 @@ class TeenPasswordRequest(BaseModel):
 
 
 def _validate_allowed_workspaces(uuids: list) -> list[str]:
-    """白名单校验：uuid 必须存在、排除 system、目录不得互相嵌套（§3.13）。"""
-    if not isinstance(uuids, list):
-        raise HTTPException(status_code=400, detail="allowed_workspaces 必须为列表")
-    cleaned: list[str] = []
-    for uuid in uuids:
-        if not isinstance(uuid, str) or not uuid:
-            raise HTTPException(status_code=400, detail="allowed_workspaces 含非法条目")
-        if uuid == "system":
-            raise HTTPException(status_code=400, detail="system 工作区永远受限，不能加入白名单")
-        if not find_workspace_entry(uuid):
-            raise HTTPException(status_code=400, detail=f"工作区不存在: {uuid}")
-        if uuid not in cleaned:
-            cleaned.append(uuid)
+    """白名单校验（实现在 core.teen_mode；非法输入转 400）。"""
+    from core.teen_mode import normalize_allowed_workspaces
 
-    def _dir(u: str) -> str:
-        entry = find_workspace_entry(u) or {}
-        return str(entry.get("directory") or "").rstrip("\\/")
-
-    import os
-
-    for a in cleaned:
-        dir_a = os.path.normcase(os.path.abspath(_dir(a)))
-        for b in load_workspaces_index():
-            uuid_b = b.get("uuid", "")
-            if uuid_b == a or not b.get("directory"):
-                continue
-            dir_b = os.path.normcase(os.path.abspath(str(b["directory"]).rstrip("\\/")))
-            if dir_a and dir_b and dir_a != dir_b:
-                # 允许 A 的目录包含 B（无论 B 是否在白名单）→ A 内可用相对路径进入 B。
-                # 跨盘符（D: vs E:）不存在嵌套关系，commonpath 会抛 ValueError，跳过即可
-                try:
-                    common = os.path.commonpath([dir_a, dir_b])
-                except ValueError:
-                    continue
-                if os.path.normcase(common) == dir_a:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(f"白名单工作区目录互相嵌套：{_dir(a)} 包含 "
-                                f"{b['directory']}，前者内可用相对路径进入后者，拒绝保存"),
-                    )
-    return cleaned
+    try:
+        return normalize_allowed_workspaces(uuids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/api/teen/status")
