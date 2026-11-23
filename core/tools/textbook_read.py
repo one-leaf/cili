@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from core.textbooks import pack_store
-from core.tools.base import Tool, ToolResult
+from core.tools.base import ToolResult
+from core.tools.textbook_base import TextbookToolBase
 
 
-class TextbookReadTool(Tool):
+class TextbookReadTool(TextbookToolBase):
     name = "textbook_read"
     concurrency_safe = True
     description = (
@@ -33,13 +34,10 @@ class TextbookReadTool(Tool):
     def execute(self, book: str = "", chapter: str = "",
                 max_chars: int = 8000, **_kwargs) -> ToolResult:
         try:
-            store = pack_store.PackStore()
-            found, candidates = store.resolve_book(book)
-            if found is None:
-                if candidates:
-                    return ToolResult(pack_store.format_book_candidates(candidates))
-                return ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
-                                  error=True)
+            store = self._store()
+            found, error = self._resolve_book(book)
+            if error:
+                return error
             max_chars = max(1000, min(int(max_chars or 8000), 60000))
             title, body = store.read_chapter(found["cid"], chapter, max_chars)
             meta = "·".join(x for x in (found.get("stage"), found.get("subject"),

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from core.textbooks import pack_store
-from core.tools.base import Tool, ToolResult
+from core.tools.base import ToolResult
+from core.tools.textbook_base import TextbookToolBase
 
 
-class TextbookOriginalTool(Tool):
+class TextbookOriginalTool(TextbookToolBase):
     name = "textbook_original"
     concurrency_safe = True
     description = (
@@ -30,13 +31,10 @@ class TextbookOriginalTool(Tool):
     def execute(self, book: str = "", offset: int = 0,
                 limit: int = 8000, **_kwargs) -> ToolResult:
         try:
-            store = pack_store.PackStore()
-            found, candidates = store.resolve_book(book)
-            if found is None:
-                if candidates:
-                    return ToolResult(pack_store.format_book_candidates(candidates))
-                return ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
-                                  error=True)
+            store = self._store()
+            found, error = self._resolve_book(book)
+            if error:
+                return error
             text = store.original(found["cid"], offset=offset, limit=limit)
             return ToolResult(f"【{found['title']}】({found['cid'][:8]})\n\n{text}")
         except pack_store.PackUnavailable as e:

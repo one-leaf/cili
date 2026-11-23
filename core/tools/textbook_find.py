@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from core.textbooks import pack_store
-from core.tools.base import Tool, ToolResult
+from core.tools.base import ToolResult
+from core.tools.textbook_base import TextbookToolBase
 
 
-class TextbookFindTool(Tool):
+class TextbookFindTool(TextbookToolBase):
     name = "textbook_find"
-    concurrency_safe = True
     description = (
         "Search the built-in Chinese K-12 textbook dataset (refined chapter texts). "
         "Filter by stage/subject/grade/edition/volume or match keywords in the book "

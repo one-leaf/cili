@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 
 from core.textbooks import pack_store
-from core.tools.base import Tool, ToolResult
+from core.tools.base import ToolResult
+from core.tools.textbook_base import TextbookToolBase
 
 _INDEX_LINE = re.compile(r"^- \[chapters/(\d+)\.md\].*? (.*)（(\d+) 字）")
 
 
-class TextbookOutlineTool(Tool):
+class TextbookOutlineTool(TextbookToolBase):
     name = "textbook_outline"
     concurrency_safe = True
     description = (
@@ -39,16 +40,7 @@ class TextbookOutlineTool(Tool):
     }
 
     def _resolve(self, book: str) -> tuple[dict | None, ToolResult | None]:
-        store = pack_store.PackStore()
-        found, candidates = store.resolve_book(book)
-        if found is not None:
-            return found, None
-        if candidates:
-            return None, ToolResult(
-                pack_store.format_book_candidates(candidates, "请用更精确的关键词或 id：")
-            )
-        return None, ToolResult(f"找不到教材「{book}」。可先用 textbook_find 检索。",
-                                error=True)
+        return self._resolve_book(book, "请用更精确的关键词或 id：")
 
     def execute(self, book: str = "", chapter: str = "", compact: bool = True,
                 **_kwargs) -> ToolResult:

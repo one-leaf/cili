@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from core.textbooks import pack_store
-from core.tools.base import Tool, ToolResult
+from core.tools.base import ToolResult
+from core.tools.textbook_base import TextbookToolBase
 
 
-class TextbookSearchTool(Tool):
+class TextbookSearchTool(TextbookToolBase):
     name = "textbook_search"
-    concurrency_safe = True
     description = (
         "Full-text search across all refined textbook chapters (about 8,800 "
         "chapters), for knowledge-point lookup across books and editions, e.g. "
