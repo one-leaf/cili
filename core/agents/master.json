@@ -250,7 +250,7 @@
   "user_layers": [
     {
       "id": "project_instructions",
-      "type": "claude_md",
+      "type": "project_instructions",
       "enabled": true
     },
     {

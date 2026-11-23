@@ -804,24 +804,10 @@ async def detect_models(request: DetectModelsRequest | None = None):
     # 预设静态头（如 Kimi/StepFun 的 UA）：显式 headers 已写入，setdefault 不覆盖
     for name, value in preset_headers(request.backend).items():
         headers.setdefault(name, value)
-    model_ids: list[str] = []
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            if interface_type == "anthropic":
-                params: dict[str, str] = {"limit": "100"}
-                while True:
-                    resp = await client.get(url, headers=headers, params=params)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    model_ids.extend(item.get("id", "") for item in data.get("data", []) if item.get("id"))
-                    if not data.get("has_more") or not data.get("last_id"):
-                        break
-                    params = {"limit": "100", "after_id": data["last_id"]}
-            else:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                model_ids.extend(item.get("id", "") for item in data.get("data", []) if item.get("id"))
+        from core.llm.discovery import fetch_model_ids
+
+        model_ids = await fetch_model_ids(url, headers, interface_type)
     except Exception as e:  # noqa: BLE001 — 网关不支持时前端提示改手动添加
         return {"success": False, "models": [], "error": str(e)[:300]}
 
