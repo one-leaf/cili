@@ -66,3 +66,35 @@ def save_tool_output(result: Any, output_file: str | None) -> str | None:
             return path
     except Exception:
         return None  # 写入失败不影响工具执行
+
+
+def read_tool_output_chunk(session_dir, tool_use_id: str, offset: int,
+                           max_chunk: int = 256 * 1024) -> dict:
+    """读取工具输出文件的新增内容（前端轮询实时显示）。
+
+    文件命名 ``{tool_use_id}.txt`` / ``{tool_use_id}_{tool_name}.txt``，
+    兼容 exec_* 子目录。返回 ``{content, offset, exists}``。
+    """
+    matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
+    for exec_dir in session_dir.glob("exec_*"):
+        if exec_dir.is_dir():
+            matches.extend(exec_dir.glob(f"{tool_use_id}.txt"))
+            matches.extend(exec_dir.glob(f"{tool_use_id}_*.txt"))
+
+    if not matches:
+        return {"content": "", "offset": 0, "exists": False}
+
+    output_file = matches[0]
+    file_size = output_file.stat().st_size
+    if offset >= file_size:
+        return {"content": "", "offset": file_size, "exists": True}
+
+    with open(output_file, "rb") as f:
+        f.seek(offset)
+        chunk = f.read(max_chunk)
+
+    return {
+        "content": chunk.decode("utf-8", "replace"),
+        "offset": offset + len(chunk),
+        "exists": True,
+    }

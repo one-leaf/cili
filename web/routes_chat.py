@@ -399,30 +399,10 @@ _MAX_STREAM_CHUNK = 256 * 1024
 
 
 def _read_tool_output_chunk(session_dir: Path, tool_use_id: str, offset: int) -> dict:
-    """在线程池里做 glob/stat/read（轮询接口，不能阻塞事件循环）。"""
-    matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
-    for exec_dir in session_dir.glob("exec_*"):
-        if exec_dir.is_dir():
-            matches.extend(exec_dir.glob(f"{tool_use_id}.txt"))
-            matches.extend(exec_dir.glob(f"{tool_use_id}_*.txt"))
+    """读取工具输出增量（实现见 core.tool_output）。"""
+    from core.tool_output import read_tool_output_chunk
 
-    if not matches:
-        return {"content": "", "offset": 0, "exists": False}
-
-    output_file = matches[0]
-    file_size = output_file.stat().st_size
-    if offset >= file_size:
-        return {"content": "", "offset": file_size, "exists": True}
-
-    with open(output_file, "rb") as f:
-        f.seek(offset)
-        chunk = f.read(_MAX_STREAM_CHUNK)
-
-    return {
-        "content": chunk.decode("utf-8", "replace"),
-        "offset": offset + len(chunk),
-        "exists": True,
-    }
+    return read_tool_output_chunk(session_dir, tool_use_id, offset, _MAX_STREAM_CHUNK)
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stream/{tool_use_id}")
