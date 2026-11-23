@@ -37,6 +37,7 @@ from core.browser_chrome import (
 from core.browser_snapshot import (
     parse_aria_snapshot,
 )
+from core.browser_tabs import TabPool
 from core.browser_url_policy import check_navigate_url
 from core.browser_worker import WorkerExecutor
 from core.config import PROJECT_ROOT
@@ -119,14 +120,8 @@ class BrowserService:
         self._browser = None
         self._context = None
 
-        # Tab 池：tab_index → (page, 最后活动时间戳)
-        self._page_pool: dict[int, tuple] = {}
-        self._next_tab_index = 1
-        # 已关闭 tab 释放出的 index，新 tab 优先复用（否则编号只增不减，
-        # 长时间运行后不便排查）。关闭时已清理该 index 的全部附属状态，
-        # 见 _close_page_internal。
-        self._free_tab_indices: list[int] = []
-        self._active_tab_index: int | None = None
+        # Tab 池：页码分配/回收、活跃页与空闲过期（见 core.browser_tabs）
+        self._tabs = TabPool()
 
         # Chrome 进程（全局唯一）
         self._chrome_process: subprocess.Popen | None = None
@@ -174,6 +169,47 @@ class BrowserService:
         self._recovering = False
         self._last_recovery_ts = 0.0
         self._stopping = False
+
+    # 标签页池状态（测试与工具只读/整体替换）
+    @property
+    def _page_pool(self) -> dict[int, tuple]:
+        return self._tabs.pages
+
+    @_page_pool.setter
+    def _page_pool(self, value: dict[int, tuple]) -> None:
+        if getattr(self, "_tabs", None) is None:
+            self._tabs = TabPool()
+        self._tabs.pages = value
+
+    @property
+    def _next_tab_index(self) -> int:
+        return self._tabs.next_index
+
+    @_next_tab_index.setter
+    def _next_tab_index(self, value: int) -> None:
+        if getattr(self, "_tabs", None) is None:
+            self._tabs = TabPool()
+        self._tabs.next_index = value
+
+    @property
+    def _free_tab_indices(self) -> list[int]:
+        return self._tabs.free
+
+    @_free_tab_indices.setter
+    def _free_tab_indices(self, value: list[int]) -> None:
+        if getattr(self, "_tabs", None) is None:
+            self._tabs = TabPool()
+        self._tabs.free = value
+
+    @property
+    def _active_tab_index(self) -> int | None:
+        return self._tabs.active
+
+    @_active_tab_index.setter
+    def _active_tab_index(self, value: int | None) -> None:
+        if getattr(self, "_tabs", None) is None:
+            self._tabs = TabPool()
+        self._tabs.active = value
 
     # ==================== 生命周期方法 ====================
 
@@ -263,9 +299,7 @@ class BrowserService:
             self._playwright = None
             self._browser = None
             self._context = None
-            self._page_pool.clear()
-            self._active_tab_index = None
-            self._free_tab_indices.clear()
+            self._tabs.clear()
             self._listener_pages.clear()
             self._snapshot_refs.clear()
             self._console_buffers.clear()
@@ -369,9 +403,7 @@ class BrowserService:
             self._playwright = None
             self._browser = None
             self._context = None
-            self._page_pool.clear()
-            self._active_tab_index = None
-            self._free_tab_indices.clear()
+            self._tabs.clear()
             self._listener_pages.clear()
             self._running = False
 
@@ -392,11 +424,8 @@ class BrowserService:
                 page.close()
             except Exception:
                 pass
-        self._page_pool.clear()
-        self._active_tab_index = None
         # 池已清空，编号可从 1 重新开始
-        self._free_tab_indices.clear()
-        self._next_tab_index = 1
+        self._tabs.clear(reset_indices=True)
 
         try:
             if self._browser:
@@ -832,11 +861,7 @@ class BrowserService:
                 self._context = self._browser.new_context()
 
         new_page = self._context.new_page()
-        if self._free_tab_indices:
-            tab_index = self._free_tab_indices.pop()
-        else:
-            tab_index = self._next_tab_index
-            self._next_tab_index += 1
+        tab_index = self._tabs.allocate()
 
         self._touch_page(tab_index, new_page)
         return tab_index
@@ -980,8 +1005,7 @@ class BrowserService:
 
     def _touch_page(self, tab_index: int, page) -> None:
         """更新 page 的最后活动时间，设为活跃 tab。"""
-        self._page_pool[tab_index] = (page, time.time())
-        self._active_tab_index = tab_index
+        self._tabs.touch(tab_index, page, time.time())
         self._ensure_listeners(page, tab_index)
 
     def _cleanup_expired_tabs(self) -> None:
@@ -989,11 +1013,7 @@ class BrowserService:
 
         保留活跃 tab，只回收非活跃的旧 tab。
         """
-        now = time.time()
-        tabs_to_close = [
-            (idx, page) for idx, (page, ts) in self._page_pool.items()
-            if now - ts > TAB_IDLE_TIMEOUT and idx != self._active_tab_index
-        ]
+        tabs_to_close = self._tabs.expired(time.time(), TAB_IDLE_TIMEOUT)
 
         for tab_index, page in tabs_to_close:
             self._close_page_internal(tab_index, page)
@@ -1003,12 +1023,8 @@ class BrowserService:
                         f"{len(self._page_pool)} remaining")
 
     def _close_page_internal(self, tab_index: int, page) -> None:
-        """关闭单个 page 并从池中移除（index 归还给 _free_tab_indices 复用）。"""
-        self._page_pool.pop(tab_index, None)
-        if tab_index not in self._free_tab_indices:
-            self._free_tab_indices.append(tab_index)
-        if self._active_tab_index == tab_index:
-            self._active_tab_index = None
+        """关闭单个 page 并从池中移除（index 归还给空闲列表复用）。"""
+        self._tabs.release(tab_index)
         self._listener_pages.discard(id(page))
         self._snapshot_refs = {k: v for k, v in self._snapshot_refs.items() if k[0] != tab_index}
         self._console_buffers.pop(tab_index, None)
