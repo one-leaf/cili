@@ -18,14 +18,12 @@ Usage:
 
 from __future__ import annotations
 
-from core.config import ResolvedModel
 from core.llm.anthropic import AnthropicAdapter
 from core.llm.assembler import BlockAssembler
-from core.llm.client import LLMClient
+from core.llm.client import LLMClient, create_llm_client
 from core.llm.errors import LLMErrorInfo, classify_llm_error
 from core.llm.openai import OpenAIAdapter
 from core.llm.openai_responses import OpenAIResponsesAdapter
-from core.llm.transport import _RETRY_STATUS_CODES
 from core.llm.types import (
     SERVER_BLOCK_TYPES,
     ContentBlock,
@@ -52,23 +50,8 @@ from core.llm.types import (
     format_llm_error,
 )
 
-
-# Lazy factory function
-def create_llm_client(config: ResolvedModel) -> LLMClient:
-    """Create an LLMClient from ResolvedModel (factory function).
-
-    Auto-detects the provider based on config.interface_type:
-    - "anthropic"        → AnthropicAdapter
-    - "openai"           → OpenAIAdapter (Chat Completions)
-    - "openai-compatible" → OpenAIAdapter（别名）
-    - "openai-responses" → OpenAIResponsesAdapter
-    """
-    from core.llm.client import create_llm_client as _create
-    return _create(config)
-
 __all__ = [
     # Content block types
-    "_RETRY_STATUS_CODES",
     "TextBlock",
     "ReasoningBlock",
     "ImageBlock",
