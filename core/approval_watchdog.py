@@ -25,8 +25,8 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 # 避免服务重启后隔夜无人值守地跑模型。
 _PROCESS_STARTED_AT = time.time()
 
-# auto_resume 策略 → 允许自动恢复的接口集合
-_RESUME_INTERFACES = {
+# auto_resume 策略 → 有服务端推送通道、可自动恢复的接口集合
+_PUSH_CAPABLE_INTERFACES = {
     "web": frozenset({"web"}),
     "all": frozenset({"web", "tui"}),
 }
@@ -37,7 +37,7 @@ def _can_auto_resume(permission: dict) -> bool:
     if policy == "none":
         return False
     interface = str(permission.get("interface") or "")
-    return interface in _RESUME_INTERFACES.get(policy, frozenset())
+    return interface in _PUSH_CAPABLE_INTERFACES.get(policy, frozenset())
 
 
 def _is_stale(permission: dict) -> bool:

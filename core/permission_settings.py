@@ -115,9 +115,9 @@ class ApprovalConfig:
     """审批卡生命周期参数（权限配置的 approval 子块）。
 
     - ``timeout_seconds``：卡片存活时长；0 = 不自动过期（兼容/调试）。
-    - ``auto_resume``：超时后是否自动恢复循环。``web`` 只对有服务端推送
-      通道的 Web 接口恢复（IM 无入站消息时送不出去，只结算）；``all`` 尝试
-      全部接口；``none`` 一律只结算。
+    - ``auto_resume``：超时后是否自动恢复循环。``web`` 只对 Web 恢复；
+      ``all`` 对有服务端推送通道的接口（Web/TUI）恢复；``none`` 一律只结算。
+      IM 无入站消息时送不出去，因此不参与自动恢复。
     """
 
     timeout_seconds: int = 300

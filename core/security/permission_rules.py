@@ -861,20 +861,21 @@ class PermissionRules:
                 self._bump(rule)
             return "allow", covered[0]
 
-    def evaluate_path(self, kind: str, resolved: str, tool: str = "*") -> tuple[str | None, dict | None]:
-        if kind not in ("path:read", "path:write", "path:delete") or not resolved:
+    def evaluate_path(self, kind: str, subject: str, tool: str = "*") -> tuple[str | None, dict | None]:
+        """按路径规则匹配；``subject`` 可为完整路径或静态前缀。"""
+        if kind not in ("path:read", "path:write", "path:delete") or not subject:
             return None, None
         self._ensure_loaded()
         with self._lock:
             for decision in ("deny", "ask", "allow"):
                 for rule in self._candidates(kind, tool, decision):
                     match = rule["match"]
-                    if match["type"] == "prefix" and _path_prefix_covers(match["value"], resolved):
+                    if match["type"] == "prefix" and _path_prefix_covers(match["value"], subject):
                         self._bump(rule)
                         return decision, rule
                     if match["type"] == "exact" and os.path.normcase(
                         os.path.abspath(match["value"])
-                    ) == os.path.normcase(os.path.abspath(resolved)):
+                    ) == os.path.normcase(os.path.abspath(subject)):
                         self._bump(rule)
                         return decision, rule
         return None, None
