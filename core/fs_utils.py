@@ -186,3 +186,35 @@ def safe_upload_filename(raw: str) -> str | None:
     if (stem.startswith("COM") and stem[3:].isdigit()) or        (stem.startswith("LPT") and stem[3:].isdigit()):
         return None
     return name
+
+
+def ensure_gitignore_entries(
+    workspace_dir: Path | str,
+    *,
+    base_text: str = "",
+    add: tuple[str, ...] = (),
+    remove: tuple[str, ...] = (),
+) -> None:
+    """统一维护工作区 .gitignore：可移除指定条目、追加缺失条目。"""
+    path = Path(workspace_dir) / ".gitignore"
+    try:
+        if path.exists():
+            lines = path.read_text(encoding="utf-8").splitlines()
+        else:
+            lines = base_text.splitlines()
+    except OSError:
+        return
+    changed = not path.exists()
+    kept = []
+    for line in lines:
+        if line.strip() in remove:
+            changed = True
+            continue
+        kept.append(line)
+    normalized = {line.strip() for line in kept}
+    for item in add:
+        if item not in normalized:
+            kept.append(item)
+            changed = True
+    if changed:
+        atomic_write_text(path, "\n".join(kept) + "\n")

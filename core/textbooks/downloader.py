@@ -197,10 +197,9 @@ def _save_manifest(workspace_dir: Path, data: dict[str, Any]) -> None:
     atomic_write_json(_manifest_path(workspace_dir), data)
 
 
-def _record_book(workspace_dir: Path, source_commit: str, progress: BookProgress) -> None:
-    manifest = _load_manifest(workspace_dir)
-    manifest["source_commit"] = source_commit
-    manifest["books"][progress.book_key] = {
+def _book_manifest_entry(progress: BookProgress) -> dict:
+    """单本书在 manifest 中的序列化定义（写入口唯一）。"""
+    return {
         "title": progress.title,
         "target_path": progress.target_path,
         "status": progress.status,
@@ -211,6 +210,12 @@ def _record_book(workspace_dir: Path, source_commit: str, progress: BookProgress
         "error": progress.error,
         "updated_at": now_str(),
     }
+
+
+def _record_book(workspace_dir: Path, source_commit: str, progress: BookProgress) -> None:
+    manifest = _load_manifest(workspace_dir)
+    manifest["source_commit"] = source_commit
+    manifest["books"][progress.book_key] = _book_manifest_entry(progress)
     _save_manifest(workspace_dir, manifest)
 
 
@@ -230,21 +235,12 @@ def _ensure_disk_space(workspace_dir: Path, total_size: int) -> None:
 
 def _ensure_textbook_gitignore(workspace_dir: Path) -> None:
     """教材原件不进入 Git 自动提交；只保留 README 和 manifest。"""
-    path = workspace_dir / ".gitignore"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        normalized = [line.strip() for line in lines]
-        changed = False
-        for item in ("教材/**", "!教材/.manifest.json", "!教材/README.md"):
-            if item not in normalized:
-                lines.append(item)
-                changed = True
-        if changed:
-            from core.fs_utils import atomic_write_text
-            atomic_write_text(path, "\n".join(lines) + "\n")
-    except OSError as e:
-        logger.warning(f"[textbooks] 更新工作区 .gitignore 失败: {e}")
+    from core.fs_utils import ensure_gitignore_entries
 
+    ensure_gitignore_entries(
+        workspace_dir,
+        add=("教材/**", "!教材/.manifest.json", "!教材/README.md"),
+    )
 
 class TextbookTaskManager:
     """教材下载任务的内存管理器。"""
@@ -644,17 +640,7 @@ def _save_task_manifest(task: TextbookDownloadTask) -> None:
         manifest["task_error"] = task.error
         manifest["task_updated_at"] = task.updated_at
         for progress in task.books.values():
-            manifest["books"][progress.book_key] = {
-                "title": progress.title,
-                "target_path": progress.target_path,
-                "status": progress.status,
-                "bytes": progress.total_size,
-                "sha256": progress.sha256,
-                "chunk_count": 1,
-                "split": False,
-                "error": progress.error,
-                "updated_at": now_str(),
-            }
+            manifest["books"][progress.book_key] = _book_manifest_entry(progress)
         _save_manifest(task.workspace_dir, manifest)
     except Exception as e:  # noqa: BLE001 —— manifest 失败不影响主流程
         logger.warning("[textbooks] 更新教材 manifest 失败: %s", e)

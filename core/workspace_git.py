@@ -21,6 +21,7 @@ from core.config import (
     load_config,
     load_workspace_config,
 )
+from core.fs_utils import ensure_gitignore_entries
 from core.llm import create_llm_client
 from core.llm.types import Message, TextBlock
 
@@ -125,38 +126,10 @@ def _get_workspace_dir(workspace_uuid: str) -> Path | None:
 
 
 def _sanitize_gitignore(workspace_dir: Path) -> None:
-    """清理 .gitignore：
-    1. 移除 .cili/ 条目（整个目录要纳入追踪）
-    2. 确保 .cili/tmp/ 条目存在（临时数据要忽略）
-    """
-    gitignore_path = workspace_dir / ".gitignore"
-    if not gitignore_path.exists():
-        return
-    try:
-        lines = gitignore_path.read_text(encoding="utf-8").splitlines()
-        # 移除 .cili 或 .cili/ 条目（但保留 .cili/tmp 相关条目）
-        cleaned = []
-        for line in lines:
-            stripped = line.strip()
-            # 精确匹配 .cili 或 .cili/（排除 .cili/tmp 等）
-            if stripped in (".cili", ".cili/"):
-                continue
-            cleaned.append(line)
-
-        # 检查是否已有 .cili/tmp 相关条目
-        has_cili_tmp = any(
-            ".cili/tmp" in line.strip()
-            for line in cleaned
-        )
-        if not has_cili_tmp:
-            cleaned.append(".cili/tmp/")
-
-        if len(cleaned) != len(lines) or not has_cili_tmp:
-            gitignore_path.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
-            logger.info("[workspace-git] 已更新 .gitignore")
-    except Exception as e:
-        logger.warning(f"[workspace-git] 清理 .gitignore 失败: {e}")
-
+    """确保 .cili 纳入追踪、.cili/tmp 被忽略。"""
+    ensure_gitignore_entries(
+        workspace_dir, remove=(".cili", ".cili/"), add=(".cili/tmp/",)
+    )
 
 def is_git_initialized(workspace_uuid: str) -> bool:
     """检查工作区是否已初始化 Git 仓库。"""
@@ -200,13 +173,13 @@ def init_workspace_git(workspace_uuid: str) -> tuple[bool, str]:
         _git_cmd(workspace_dir, ["config", "user.email", "cili@localhost"])
         _git_cmd(workspace_dir, ["config", "user.name", "cili"])
 
-        # 创建 .gitignore
-        gitignore_path = workspace_dir / ".gitignore"
-        if not gitignore_path.exists():
-            gitignore_path.write_text(_GITIGNORE_CONTENT, encoding="utf-8")
-
-        # 确保已有 .gitignore 中不包含 .cili/
-        _sanitize_gitignore(workspace_dir)
+        # 创建/校正 .gitignore（.cili 纳入追踪，.cili/tmp 忽略）
+        ensure_gitignore_entries(
+            workspace_dir,
+            base_text=_GITIGNORE_CONTENT,
+            remove=(".cili", ".cili/"),
+            add=(".cili/tmp/",),
+        )
 
         # 初始提交（添加 .gitignore）
         _git_cmd(workspace_dir, ["add", ".gitignore"])
