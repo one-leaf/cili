@@ -1143,7 +1143,7 @@ def _auto_detect_browser() -> None:
         print("[setup] No browser (Edge/Chrome) found on system")
 
 
-def _prepare_environment(args: argparse.Namespace) -> None:
+def _prepare_environment() -> None:
     """阶段一：编码、日志、目录、配置、会话迁移、安全校验。"""
     # Ensure UTF-8 encoding on Windows
     if sys.platform == "win32":
@@ -1251,7 +1251,7 @@ def _ensure_runtime() -> None:
     _auto_detect_browser()
 
 
-def _apply_upgrade_and_exit() -> None:
+def _run_upgrade_apply_mode() -> None:
     """--apply-upgrade-only：在独立短进程中应用升级包后立即退出。
 
     start.ps1 启动循环在每次拉起服务前调用本模式：升级包在没有业务模块
@@ -1323,7 +1323,7 @@ def _start_core_services() -> None:
         logger.info("自动升级已关闭（system.auto_update=false）")
 
 
-def _resolve_web_port(args: argparse.Namespace) -> None:
+def _prepare_web_binding(args: argparse.Namespace) -> None:
     """Web 鉴权 + 端口探测。必须在核心服务启动前执行，避免旧实例未终止时双实例并行。"""
     # 安全校验：绑定非 localhost 时必须有 access_token，防止裸奔公网（Web 专属）
     _check_web_auth(args.host)
@@ -1372,7 +1372,7 @@ def _open_url_in_browser(url: str) -> None:
 
 
 def _start_web_interface(args: argparse.Namespace) -> None:
-    """启动 Web 接入端：自动开浏览器 + uvicorn（鉴权与端口解析已在 _resolve_web_port 完成）。"""
+    """启动 Web 接入端：自动开浏览器 + uvicorn（鉴权与端口解析已在 _prepare_web_binding 完成）。"""
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
     # 隐式执行，改为在此显式调用；web_api 的 lifespan 也会调一次（幂等）。
     from web.deps import init_web_deps
@@ -1495,7 +1495,7 @@ def _start_web_interface(args: argparse.Namespace) -> None:
 
 def _start_services(args: argparse.Namespace) -> None:
     """阶段三：核心服务 + Web 接入端。"""
-    _resolve_web_port(args)
+    _prepare_web_binding(args)
     _start_core_services()
     _start_web_interface(args)
 
@@ -1504,9 +1504,9 @@ def main() -> None:
     _isolate_user_site()
     args = parse_args()
     if args.apply_upgrade_only:
-        _apply_upgrade_and_exit()
+        _run_upgrade_apply_mode()
         return
-    _prepare_environment(args)
+    _prepare_environment()
     _ensure_runtime()
     _start_services(args)
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import PROJECT_ROOT, SYSTEM_WORKSPACE_UUID
-from core.cron import rules, store
+from core.cron import schedule, store
 from core.cron.model import Job, JobState, now_str
 from core.fs_utils import load_json_or_backup
 
@@ -62,7 +62,7 @@ def _load_seed(path: Path) -> Job:
     job.seed_revision = int(data.get("seed_revision", 1) or 1)
     job.seed_checksum = managed_checksum(job)
     job.version = 2
-    rules.validate_schedule(job)
+    schedule.validate_schedule(job)
     return job
 
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_workspace_data_dir
-from core.cron import rules
 from core.cron.model import Job, JobState, now_str
 from core.fs_utils import load_json_or_backup
 
@@ -72,7 +71,7 @@ def convert_job(config: dict[str, Any], default_workspace: str = "") -> Job:
         updated_at=now_str(),
     )
     job.validate()
-    rules.validate_schedule(job)
+    schedule.validate_schedule(job)
     return job
 
 

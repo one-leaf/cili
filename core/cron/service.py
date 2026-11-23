@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from core.config import get_all_workspace_uuids, get_default_workspace_uuid
-from core.cron import rules, store
+from core.cron import schedule, store
 from core.cron.model import CronValidationError, Job, JobState, now_str
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def _ensure_not_managed(job: Job) -> None:
 def _enrich(workspace_uuid: str, job: Job, state: JobState) -> dict[str, Any]:
     item = job.to_dict()
     item["workspace_uuid"] = workspace_uuid
-    item["schedule_summary"] = rules.schedule_summary(job)
+    item["schedule_summary"] = schedule.schedule_summary(job)
     item["state"] = {
         "next_run": state.next_run,
         "last_run": state.last_run,
@@ -110,7 +110,7 @@ def create_job(
         job.one_time = True
     if job.delivery.get("mode") == "origin" and origin:
         job.origin = dict(origin)
-    rules.validate_schedule(job)
+    schedule.validate_schedule(job)
     job.created_at = job.created_at or now_str()
     job.updated_at = now_str()
 
@@ -118,7 +118,7 @@ def create_job(
         if store.job_path(workspace_uuid, job.id).exists():
             raise CronError(f"task '{job.id}' already exists")
         state = JobState(remaining=int(job.execution.get("max_executions", 9999)))
-        next_dt = rules.compute_next_run(job, None)
+        next_dt = schedule.compute_next_run(job, None)
         state.next_run = next_dt.isoformat()
         store.save_job(job)
         store.save_state(workspace_uuid, job.id, state)
@@ -160,11 +160,11 @@ def update_job(workspace_uuid: str, job_id: str, updates: dict[str, Any]) -> Job
             job.one_time = True
         job.updated_at = now_str()
         job.validate()
-        rules.validate_schedule(job)
+        schedule.validate_schedule(job)
         store.save_job(job)
         if schedule_changed:
             state = store.load_state(workspace_uuid, job_id)
-            state.next_run = rules.compute_next_run(job, None).isoformat()
+            state.next_run = schedule.compute_next_run(job, None).isoformat()
             store.save_state(workspace_uuid, job_id, state)
     _engine().reload()
     return job
@@ -188,7 +188,7 @@ def set_enabled(workspace_uuid: str, job_id: str, enabled: bool) -> Job:
         state = store.load_state(workspace_uuid, job_id)
         if enabled:
             state.remaining = int(job.execution.get("max_executions", 9999))
-            state.next_run = rules.compute_next_run(job, None).isoformat()
+            state.next_run = schedule.compute_next_run(job, None).isoformat()
         store.save_state(workspace_uuid, job_id, state)
     _engine().reload()
     return job

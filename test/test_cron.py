@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.config import get_workspace_sessions_dir
-from core.cron import delivery, migration, rules, seeds, service, store
+from core.cron import delivery, migration, schedule, seeds, service, store
 from core.cron import engine as engine_mod
 from core.cron.model import CronValidationError, Job, RunResult
 from core.cron.runtime import cron_run_active
@@ -36,7 +36,7 @@ class TestRules:
             "content": {"task": "x"},
         })
         now = datetime(2026, 11, 14, 10, 0, 0)
-        assert rules.compute_next_run(job, None, now=now) == datetime(2026, 11, 14, 10, 5, 0)
+        assert schedule.compute_next_run(job, None, now=now) == datetime(2026, 11, 14, 10, 5, 0)
 
     def test_interval_after_base(self):
         job = Job.from_dict({
@@ -45,7 +45,7 @@ class TestRules:
             "content": {"task": "x"},
         })
         base = datetime(2026, 11, 14, 10, 0, 0)
-        assert rules.compute_next_run(job, base) == datetime(2026, 11, 14, 10, 30, 0)
+        assert schedule.compute_next_run(job, base) == datetime(2026, 11, 14, 10, 30, 0)
 
     def test_cron_next_occurrence(self):
         job = Job.from_dict({
@@ -53,8 +53,8 @@ class TestRules:
             "schedule": {"type": "cron", "expr": "0 9 * * *"},
             "content": {"task": "x"},
         })
-        base = rules.parse_iso("2026-11-14T08:30:00")
-        assert rules.compute_next_run(job, base) == datetime(2026, 11, 14, 9, 0, 0)
+        base = schedule.parse_iso("2026-11-14T08:30:00")
+        assert schedule.compute_next_run(job, base) == datetime(2026, 11, 14, 9, 0, 0)
 
     def test_cron_timezone_offset(self):
         job = Job.from_dict({
@@ -62,8 +62,8 @@ class TestRules:
             "schedule": {"type": "cron", "expr": "0 9 * * *", "timezone": "Asia/Shanghai"},
             "content": {"task": "x"},
         })
-        base = rules.parse_iso("2026-11-14T08:30:00+08:00")
-        assert rules.compute_next_run(job, base).isoformat() == "2026-11-14T09:00:00+08:00"
+        base = schedule.parse_iso("2026-11-14T08:30:00+08:00")
+        assert schedule.compute_next_run(job, base).isoformat() == "2026-11-14T09:00:00+08:00"
 
     def test_dst_gap_is_skipped(self):
         job = Job.from_dict({
@@ -76,8 +76,8 @@ class TestRules:
             "content": {"task": "x"},
         })
         # 2026-03-08 02:30  America/New_York 不存在（春季跳变）
-        base = rules.parse_iso("2026-03-08T00:00:00-05:00")
-        nxt = rules.compute_next_run(job, base)
+        base = schedule.parse_iso("2026-03-08T00:00:00-05:00")
+        nxt = schedule.compute_next_run(job, base)
         assert nxt.isoformat() == "2026-03-09T02:30:00-04:00"
 
     def test_invalid_cron_rejected(self):
@@ -466,7 +466,7 @@ class TestEngine:
         assert calls == []
         state = store.load_state(ws, job.id)
         assert state.missed_count == 1
-        assert rules.parse_iso(state.next_run).timestamp() > time.time()
+        assert schedule.parse_iso(state.next_run).timestamp() > time.time()
         engine.stop()
 
     def test_at_task_fires_once_and_is_deleted(self, cron_env, monkeypatch):
