@@ -7,7 +7,7 @@ import threading
 from datetime import timedelta
 
 from core.llm.siwc import auth, const, store
-from core.llm.siwc.auth import Credentials
+from core.llm.siwc.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 

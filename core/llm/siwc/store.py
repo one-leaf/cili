@@ -15,7 +15,7 @@ from pathlib import Path
 from core.config import DATA_DIR
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
 from core.llm.siwc import const
-from core.llm.siwc.auth import Credentials
+from core.llm.siwc.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
