@@ -11,13 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import queue
 import re
 import subprocess
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from playwright.sync_api import Page
@@ -39,6 +38,7 @@ from core.browser_snapshot import (
     parse_aria_snapshot,
 )
 from core.browser_url_policy import check_navigate_url
+from core.browser_worker import WorkerExecutor
 from core.config import PROJECT_ROOT
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, ToolResult
 
@@ -150,14 +150,12 @@ class BrowserService:
         self._env = os.environ.copy()
 
         # 专用工作线程（所有 Playwright 操作在此线程执行）
-        self._worker_thread: threading.Thread | None = None
-        self._task_queue: queue.Queue = queue.Queue()
-        # 每次 _run_in_worker 分配独立结果槽位（task_id → Event / 结果），
-        # 多线程并发调用互不串扰（禁止共享单槽，否则结果会串）。
-        self._task_lock = threading.Lock()
-        self._task_events: dict[int, threading.Event] = {}
-        self._task_results: dict[int, tuple[bool, Any]] = {}
-        self._next_task_id_counter = 0
+        self._worker = WorkerExecutor(
+            name="BrowserService",
+            task_timeout=_WORKER_TASK_TIMEOUT,
+            on_timeout=self._schedule_recovery,
+            before_task=self._cleanup_expired_tabs,
+        )
 
         # ref 定位：(tab_index, frame_index) → {ref: {role, name, index, mode}}；
         # frame_index None/0 均归一为主 frame（None 为默认主 frame 上下文）
@@ -172,9 +170,6 @@ class BrowserService:
 
         # 自愈状态：工作线程卡死（被原生弹窗/渲染器阻塞的 sync 调用占住）时，
         # 杀 Chrome 让卡住的调用失败；仍未退出则换代重建 worker
-        self._worker_generation = 0
-        # RLock：_run_in_worker 持锁提交任务，_start_worker_thread 内部再次加锁
-        self._worker_start_lock = threading.RLock()
         self._recovery_lock = threading.Lock()
         self._recovering = False
         self._last_recovery_ts = 0.0
@@ -182,116 +177,23 @@ class BrowserService:
 
     # ==================== 生命周期方法 ====================
 
+    @property
+    def _worker_thread(self) -> threading.Thread | None:
+        """当前工作线程（测试与自愈流程只读）。"""
+        return self._worker.thread
+
+    @property
+    def _worker_generation(self) -> int:
+        """工作线程代号（每次换代 +1；测试与自愈流程只读）。"""
+        return self._worker.generation
+
     def _start_worker_thread(self) -> None:
         """启动专用工作线程；每次启动分配新队列与代号（换代）。"""
-        with self._worker_start_lock:
-            if self._worker_thread and self._worker_thread.is_alive():
-                return
-
-            self._worker_generation += 1
-            generation = self._worker_generation
-            task_queue: queue.Queue = queue.Queue()
-            self._task_queue = task_queue
-            self._worker_thread = threading.Thread(
-                target=self._worker_loop,
-                args=(task_queue, generation),
-                name=f"BrowserService-Worker-{generation}",
-                daemon=True,
-            )
-            self._worker_thread.start()
-        logger.debug(
-            f"[BrowserService] Worker thread started (generation {generation})"
-        )
-
-    def _worker_loop(self, task_queue: queue.Queue, generation: int) -> None:
-        """工作线程主循环，处理任务队列中的任务。
-
-        每次执行任务前，自动清理超时的 tab（> TAB_IDLE_TIMEOUT 无活动）。
-        队列与代号在启动时绑定：换代后旧线程从卡住调用返回时按 sentinel 退出，
-        不会误消费新队列的任务。
-        """
-        while True:
-            try:
-                item = task_queue.get()
-                if item is None or (isinstance(item, tuple) and item and item[0] is None):
-                    break  # 退出信号
-                if generation != self._worker_generation:
-                    break  # 旧代线程：让位给新一代
-
-                task_id, task_func, task_args, task_kwargs = item
-
-                # Lazy cleanup: close tabs idle for > TAB_IDLE_TIMEOUT
-                try:
-                    self._cleanup_expired_tabs()
-                except Exception as e:
-                    logger.debug(f"[BrowserService] Cleanup error (non-fatal): {e}")
-
-                try:
-                    result = task_func(*task_args, **task_kwargs)
-                    task_result = (True, result)
-                except Exception as e:
-                    logger.warning(f"[BrowserService] Worker task error: {e}")
-                    task_result = (False, e)
-
-                # 存储结果并通知对应调用方；若调用方已超时放弃则不存（避免泄漏）
-                with self._task_lock:
-                    event = self._task_events.pop(task_id, None)
-                    if event is not None:
-                        self._task_results[task_id] = task_result
-                if event is not None:
-                    event.set()
-            except Exception as e:
-                logger.error(f"[BrowserService] Worker loop error: {e}", exc_info=True)
-
-    def _next_task_id(self) -> int:
-        """分配递增任务 ID（线程安全）。"""
-        with self._task_lock:
-            self._next_task_id_counter += 1
-            return self._next_task_id_counter
+        self._worker.ensure_started()
 
     def _run_in_worker(self, func, *args, timeout: float | None = None, **kwargs):
-        """在专用工作线程中执行函数。
-
-        每次调用分配独立的结果槽位（Event + 结果），多线程并发调用互不串扰。
-        注意：此方法不能在工作线程内部调用，否则会死锁！
-        """
-        # 检查是否在工作线程内部调用
-        if threading.current_thread() == self._worker_thread:
-            # 直接执行，不通过队列
-            return func(*args, **kwargs)
-
-        # 启动线程与提交任务在同一把锁内：换代重建期间不会把任务投进
-        # 已被废弃的旧队列（否则新 worker 看不到，调用方只能等超时）
-        with self._worker_start_lock:
-            self._start_worker_thread()
-
-            # 为本次调用分配独立结果槽位
-            task_id = self._next_task_id()
-            event = threading.Event()
-            with self._task_lock:
-                self._task_events[task_id] = event
-
-            # 提交任务到队列
-            self._task_queue.put((task_id, func, args, kwargs))
-
-        # 等待结果（按操作类型分级；未指定时用全局默认）
-        effective_timeout = timeout if timeout is not None else _WORKER_TASK_TIMEOUT
-        if not event.wait(timeout=effective_timeout):
-            with self._task_lock:
-                self._task_events.pop(task_id, None)
-            # 同步 Playwright 调用无法取消：任务仍在 worker 里跑，且 worker 是全局
-            # 单线程——不恢复的话后续所有浏览器操作都会排队超时。异步自愈：
-            # 杀 Chrome 让卡住的 CDP 调用立即失败；worker 仍不退出则换代重建。
-            self._schedule_recovery(
-                f"worker task timeout ({effective_timeout:.0f}s)"
-            )
-            raise TimeoutError(f"Task execution timeout ({effective_timeout:.0f}s)")
-
-        with self._task_lock:
-            success, result = self._task_results.pop(task_id)
-        if not success:
-            raise result
-        return result
+        """在专用工作线程中执行函数（实现见 ``WorkerExecutor.submit``）。"""
+        return self._worker.submit(func, *args, timeout=timeout, **kwargs)
 
     # ─── 超时自愈（原生弹窗/渲染器阻塞导致工作线程卡死）────────────────
 
@@ -356,9 +258,8 @@ class BrowserService:
         新 worker 在首次操作时懒启动新的 Playwright 实例；旧线程从卡住调用
         返回后按 sentinel 退出（daemon，不阻塞进程退出）。
         """
-        # 与 _run_in_worker 的提交串行化：交换期间不会有任务落进旧队列
-        with self._worker_start_lock:
-            old_queue = self._task_queue
+        # 与 submit 的提交串行化：交换期间不会有任务落进旧队列
+        with self._worker.start_lock:
             self._playwright = None
             self._browser = None
             self._context = None
@@ -370,12 +271,7 @@ class BrowserService:
             self._console_buffers.clear()
             self._request_buffers.clear()
             self._dialog_buffers.clear()
-            self._worker_thread = None
-            try:
-                old_queue.put(None)
-            except Exception:  # noqa: BLE001
-                pass
-            self._start_worker_thread()
+            self._worker.replace_locked()
 
     def _reset_state_in_worker(self) -> None:
         """作废连接与 page 池（必须在 worker 线程内执行）。"""
@@ -460,22 +356,14 @@ class BrowserService:
 
             # 停止工作线程；卡死的 sync 调用无法从外部中断，杀 Chrome 令其失败后
             # 放弃旧线程（daemon），进程退出时由 OS 回收
-            worker = self._worker_thread
-            if worker is not None:
+            if self._worker.stop(join_timeout=5):
+                logger.warning(
+                    "[BrowserService] Worker thread did not exit; abandoning it"
+                )
                 try:
-                    self._task_queue.put(None)  # 退出信号
+                    self._kill_chrome_internal()
                 except Exception:  # noqa: BLE001
                     pass
-                worker.join(timeout=5)
-                if worker.is_alive():
-                    logger.warning(
-                        "[BrowserService] Worker thread did not exit; abandoning it"
-                    )
-                    try:
-                        self._kill_chrome_internal()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._worker_thread = None
 
             # 旧线程可能仍持有 Playwright 实例：引用置空，避免下次使用误判为可用
             self._playwright = None
