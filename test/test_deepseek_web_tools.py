@@ -9,7 +9,7 @@ import pytest
 from core.config import ModelConfig
 from core.llm import LLMResponse, ServerBlock, TextBlock
 from core.llm.anthropic import AnthropicAdapter
-from core.llm.capabilities import (
+from core.llm.deepseek_capabilities import (
     is_deepseek_model,
     is_unsupported,
     mark_unsupported,

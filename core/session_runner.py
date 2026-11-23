@@ -33,7 +33,8 @@ from core.config import (
 from core.fs_utils import atomic_write_json
 from core.handoff import user_input_text
 from core.interface_profile import resolve_profile
-from core.llm import capabilities, create_llm_client
+from core.llm import create_llm_client
+from core.llm import deepseek_capabilities as capabilities
 from core.output_sink import OutputSink, layer_sink
 from core.permission_settings import get_permission_config
 from core.prompt_builder import (

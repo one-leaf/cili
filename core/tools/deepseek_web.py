@@ -9,7 +9,7 @@ Messages 请求（只声明服务端工具，不声明任何客户端工具）�
 这样主对话历史里不会出现服务端块，不需要改持久化 / 回放 / 压缩 / 跨模型清洗；
 代价是每次工具调用多一次模型往返（与 Claude Code 的 WebSearch 同模式）。
 
-工具可见性由 ``core.llm.capabilities.tools_visible`` 按当前模型判定，runner 在
+工具可见性由 ``core.llm.deepseek_capabilities.tools_visible`` 按当前模型判定，runner 在
 ``_eligible_tools`` 中过滤；模型注入与能力缺失回调由 runner 在工具重建时接线。
 """
 
@@ -21,7 +21,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from core.llm import Message, TextBlock, create_llm_client
-from core.llm.capabilities import mark_unsupported, tools_visible
+from core.llm.deepseek_capabilities import mark_unsupported, tools_visible
 from core.llm.types import ServerBlock
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 

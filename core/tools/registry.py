@@ -121,7 +121,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "glob": _factory(GlobTool, needs_permission=True),
     "browser": _factory(BrowserTool, needs_permission=True),
     "web_search": _factory(WebSearchTool),
-    # DeepSeek 服务端联网工具（客户端包装；按模型门控，见 core/llm/capabilities.py）
+    # DeepSeek 服务端联网工具（客户端包装；按模型门控，见 core/llm/deepseek_capabilities.py）
     "deepseek_web_search": _factory(DeepSeekWebSearchTool),
     "deepseek_read_url": _factory(DeepSeekReadUrlTool),
     "memory": _factory(MemoryTool),
