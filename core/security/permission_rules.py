@@ -180,7 +180,7 @@ def _norm_head(value: str | list[str]) -> str:
 
 def _split_command(command: str, mode: str) -> list[str]:
     """延迟导入 shell_paths，避免 permission_rules ↔ path_policy 循环依赖。"""
-    from core.security.shell_paths import _split_segments
+    from core.security.command_lexer import _split_segments
     return _split_segments(command, mode)
 
 
