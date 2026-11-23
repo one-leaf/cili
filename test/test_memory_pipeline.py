@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from core.config import upsert_workspace_entry
+from core.memory_journal import Journal
 from core.memory_pipeline import (
     consolidate_all,
     memory_enabled,
@@ -16,7 +17,7 @@ from core.memory_pipeline import (
     run_consolidation,
     run_extraction,
 )
-from core.memory_store import Journal, MemoryStore
+from core.memory_store import MemoryStore
 
 
 @pytest.fixture

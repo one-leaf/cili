@@ -10,10 +10,10 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import get_workspace_data_dir
+from core.memory_journal import Journal
 from core.memory_store import (
     MEMORY_TYPES,
     SOURCES,
-    Journal,
     MemoryStore,
 )
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult

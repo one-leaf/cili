@@ -32,10 +32,10 @@ from core.config import (
 )
 from core.fs_utils import atomic_write_json, atomic_write_text
 from core.llm import Message, create_llm_client
+from core.memory_journal import Journal
 from core.memory_store import (
     MAX_DESCRIPTION_LEN,
     MEMORY_TYPES,
-    Journal,
     MemoryStore,
     now_str,
 )
