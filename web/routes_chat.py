@@ -47,10 +47,10 @@ from web.deps import (
     _get_or_create_runner,
     _is_session_idle,
     _release_session_run,
-    _require_workspace,
     _validate_session_id,
     _validate_workspace_uuid,
     registry,
+    require_workspace_data_dir,
     teen_guard,
 )
 from web.goal_runner import (
@@ -197,7 +197,7 @@ def _count_user_turns(messages: list[dict]) -> int:
 async def get_session_model(
     workspace_uuid: str,
     session_id: str,
-    _ws_dir: Path = Depends(_require_workspace),
+    _ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """读取会话当前模型与全部可选模型。"""
     _validate_session_id(session_id)
@@ -212,7 +212,7 @@ async def set_session_model(
     workspace_uuid: str,
     session_id: str,
     request: SetModelRequest,
-    _ws_dir: Path = Depends(_require_workspace),
+    _ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """切换会话模型（会话级覆盖，不修改全局配置）。"""
     _validate_session_id(session_id)
@@ -411,7 +411,7 @@ async def stream_tool_output(
     session_id: str,
     tool_use_id: str,
     offset: int = 0,
-    ws_dir: Path = Depends(_require_workspace),
+    ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """读取工具输出文件的新增内容，供前端轮询实时显示。
 
@@ -891,7 +891,7 @@ async def fork_session(
     workspace_uuid: str,
     session_id: str,
     request: ForkSessionRequest,
-    ws_dir: Path = Depends(_require_workspace),
+    ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """Fork the current master session into a sibling session (UI「分支会话」)."""
     _validate_session_id(session_id)
@@ -928,7 +928,7 @@ async def fork_session(
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/revert",
              dependencies=[Depends(teen_guard("message_revert", hard=True))])
-async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(_require_workspace)):
+async def revert_to_message(workspace_uuid: str, session_id: str, request: RevertRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
@@ -987,7 +987,7 @@ async def get_runner_status(workspace_uuid: str, session_id: str):
 async def get_session_context(
     workspace_uuid: str,
     session_id: str,
-    _ws_dir: Path = Depends(_require_workspace),
+    _ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """上下文占用报告：消息体投影 token、窗口上限、压缩阈值与会话用量。
 
@@ -1089,7 +1089,7 @@ async def get_session_context(
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue")
 async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRequest,
-                          ws_dir: Path = Depends(_require_workspace)):
+                          ws_dir: Path = Depends(require_workspace_data_dir)):
     """仅入队（运行中/空闲都可调用）；队列变更经全局事件流广播。"""
     _validate_session_id(session_id)
     if not (sessions_dir_for_data_dir(ws_dir) / session_id).exists():
@@ -1126,7 +1126,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue")
-async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """返回队列快照（items / paused / reason）。"""
     _validate_session_id(session_id)
     key = session_key(workspace_uuid, session_id)
@@ -1136,7 +1136,7 @@ async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends
 
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/{item_id}")
 async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
-                            ws_dir: Path = Depends(_require_workspace)):
+                            ws_dir: Path = Depends(require_workspace_data_dir)):
     """移除一条排队项。"""
     _validate_session_id(session_id)
     if not _SAFE_ID_RE.match(item_id):
@@ -1146,7 +1146,7 @@ async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/clear")
-async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """清空队列（会话运行中也可调用）。"""
     _validate_session_id(session_id)
     cleared = turn_queue.clear(session_key(workspace_uuid, session_id))
@@ -1154,7 +1154,7 @@ async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/resume")
-async def resume_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def resume_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """解除暂停并尝试启动下一批（会话空闲时）。"""
     _validate_session_id(session_id)
     key = session_key(workspace_uuid, session_id)

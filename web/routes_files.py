@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 def _teen_ws_guard(workspace_uuid: str) -> None:
-    """文件域路由的受限工作区判定（本域不用 _require_workspace，逐处显式挂）。"""
+    """文件域路由的受限工作区判定（本域不用 require_workspace_data_dir，逐处显式挂）。"""
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
 
 
@@ -54,7 +54,7 @@ def _workspace_info_or_404(workspace_uuid: str) -> dict:
     return info
 
 
-def _workspace_dir_or_404(workspace_uuid: str) -> Path:
+def require_workspace_root(workspace_uuid: str) -> Path:
     """取工作区目录；目录缺失或不存在时 404。"""
     info = _workspace_info_or_404(workspace_uuid)
     directory = info.get("directory", "")
@@ -364,7 +364,7 @@ def list_files(workspace_uuid: str, path: str = ""):
     Returns:
         List of files and directories with relative paths.
     """
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
 
     # Build target path
     if path and path.strip():
@@ -431,7 +431,7 @@ _SEARCH_SKIP_DIRS = {
 @router.get("/api/files/search")
 def search_files(workspace_uuid: str, q: str = "", limit: int = 200):
     """按文件名递归搜索工作区（名称包含，大小写不敏感）。"""
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
     root = workspace_dir.resolve()
 
     query = q.strip().casefold()
@@ -480,7 +480,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
     独立路径（而非 /api/files/preview）避开 /api/files/{file_path:path} 的
     注册顺序陷阱；只读、限长、二进制不解码。
     """
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
 
     if not path or not path.strip():
         raise HTTPException(status_code=400, detail="path is required")
@@ -541,7 +541,7 @@ def preview_file(workspace_uuid: str, response: Response, path: str = "") -> dic
 
 def _office_preview_source(workspace_uuid: str, path: str) -> tuple[Path, Path]:
     """Resolve and validate an Office source file inside a workspace."""
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
 
     if not path or not path.strip():
         raise HTTPException(status_code=400, detail="path is required")
@@ -629,7 +629,7 @@ def read_file(file_path: str, workspace_uuid: str):
     Returns:
         File content as text or binary
     """
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
 
     # Security: ensure path is within workspace
     file_full_path = (workspace_dir / file_path).resolve()
@@ -656,7 +656,7 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
         Created file/folder info
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
+    workspace_dir = require_workspace_root(request.workspace_uuid)
 
     # Build target path
     if request.path:
@@ -715,7 +715,7 @@ def delete_files(request: FileDeleteRequest, request_raw: Request = None):
         tm.record_denied("file_delete")
         raise HTTPException(status_code=403, detail=deny_message("file_delete"))
 
-    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
+    workspace_dir = require_workspace_root(request.workspace_uuid)
 
     deleted = []
     errors = []
@@ -757,7 +757,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
         Update result
     """
     _csrf_protect(request_raw)  # W6: CSRF 防护
-    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
+    workspace_dir = require_workspace_root(request.workspace_uuid)
 
     file_full_path = (workspace_dir / request.path).resolve()
 
@@ -883,7 +883,7 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
         tm.record_denied("open_in_explorer")
         raise HTTPException(status_code=403, detail="青少年模式已开启：不允许打开系统资源管理器")
 
-    workspace_dir = _workspace_dir_or_404(request.workspace_uuid)
+    workspace_dir = require_workspace_root(request.workspace_uuid)
     workspace_root = workspace_dir.resolve()
 
     target = (workspace_dir / request.path).resolve() if request.path else workspace_root
@@ -937,7 +937,7 @@ def upload_files(
         Upload result
     """
     _csrf_protect(request)  # W6: CSRF 防护（multipart 属简单请求，须单独校验）
-    workspace_dir = _workspace_dir_or_404(workspace_uuid)
+    workspace_dir = require_workspace_root(workspace_uuid)
 
     # Build target directory
     if path:

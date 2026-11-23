@@ -53,12 +53,12 @@ from web.deps import (
     _get_workspace_info,
     _list_all_workspaces,
     _new_short_id,
-    _require_workspace,
     _sessions_lock,
     _validate_exec_id,
     _validate_session_id,
     _validate_workspace_uuid,
     registry,
+    require_workspace_data_dir,
     teen_guard,
 )
 from web.goal_runner import stop_goal_runner
@@ -389,7 +389,7 @@ def _scan_session_brief(session_dir: Path) -> tuple[str, int]:
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions")
-async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """List all sessions in a workspace (纯 meta 读，不读消息正文、不触发迁移)。"""
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not sessions_dir.exists():
@@ -474,7 +474,7 @@ async def get_session(
     session_id: str,
     limit: int | None = None,
     offset: int = 0,
-    ws_dir: Path = Depends(_require_workspace)
+    ws_dir: Path = Depends(require_workspace_data_dir)
 ):
     """Get a specific session with messages.
 
@@ -533,7 +533,7 @@ async def get_session(
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/export")
 async def export_session(workspace_uuid: str, session_id: str,
-                         ws_dir: Path = Depends(_require_workspace)):
+                         ws_dir: Path = Depends(require_workspace_data_dir)):
     """导出会话为可再次导入的 JSON（完整历史，工具结果内容内联）。"""
     _validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
@@ -565,7 +565,7 @@ async def export_session(workspace_uuid: str, session_id: str,
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/import")
 async def import_session(workspace_uuid: str, payload: dict = Body(...),
-                         ws_dir: Path = Depends(_require_workspace)):
+                         ws_dir: Path = Depends(require_workspace_data_dir)):
     """从导出文件导入会话：新建会话并写回历史消息。"""
     raw_messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(raw_messages, list):
@@ -754,7 +754,7 @@ def _resolve_tool_results_for_session(messages: list[dict], session_dir: Path) -
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions")
-async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_dir: Path = Depends(_require_workspace)):
+async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Create a new session."""
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     channel = (request.channel or "web").strip().lower()
@@ -790,7 +790,7 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
 
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}",
                dependencies=[Depends(teen_guard("session_delete", hard=True))])
-async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Delete a session."""
     _validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
@@ -804,7 +804,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/rename")
-async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(_require_workspace)):
+async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Rename a session (atomic write)."""
     _validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
@@ -832,7 +832,7 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/hidden")
-async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetHiddenRequest, ws_dir: Path = Depends(_require_workspace)):
+async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetHiddenRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Set session hidden status.
 
     青少年模式 deny_hide：隐藏会让会话在列表中消失（家长看不到），默认禁止。
@@ -867,7 +867,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
 
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/batch")
-async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequest, ws_dir: Path = Depends(_require_workspace)):
+async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Batch operations on sessions: hide, unhide, or delete.
 
     青少年模式：delete 为硬禁（解锁也不放行）；hide 受 deny_hide 策略约束。
@@ -917,7 +917,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 # ----- 子代理执行日志 -----
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions")
-async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """List all sub-agent executions for a session."""
     _validate_session_id(session_id)
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
@@ -934,7 +934,7 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
-async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Get a specific sub-agent execution log with full messages."""
     _validate_session_id(session_id)
     _validate_exec_id(exec_id)
@@ -981,7 +981,7 @@ class SaveInstructionsRequest(BaseModel):
 
 
 @router.get("/api/workspaces/{workspace_uuid}/instructions")
-async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """读取工作区的项目指令文件（AGENTS.md / CLAUDE.md）。
 
     按优先级查找，返回第一个找到的文件内容和文件名。
@@ -1010,7 +1010,7 @@ async def get_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_
 
 @router.put("/api/workspaces/{workspace_uuid}/instructions",
             dependencies=[Depends(teen_guard("config_update"))])
-async def save_instructions(workspace_uuid: str, request: SaveInstructionsRequest, ws_dir: Path = Depends(_require_workspace)):
+async def save_instructions(workspace_uuid: str, request: SaveInstructionsRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """保存项目指令文件到工作区。
 
     保持原文件名，若指定新文件名则写入对应文件。
@@ -1051,7 +1051,7 @@ async def save_instructions(workspace_uuid: str, request: SaveInstructionsReques
 
 @router.post("/api/workspaces/{workspace_uuid}/instructions/generate",
              dependencies=[Depends(teen_guard("config_update"))])
-async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """创建 worker agent 后台扫描代码并生成 AGENTS.md。
 
     返回任务 ID 供前端轮询状态。
@@ -1124,7 +1124,7 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(_req
 
 
 @router.get("/api/workspaces/{workspace_uuid}/instructions/generate/{task_id}")
-async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = Depends(_require_workspace)):
+async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """查询 AGENTS.md 生成任务状态。"""
     with _generate_tasks_lock:
         task = _generate_tasks.get(task_id)
@@ -1140,7 +1140,7 @@ async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = 
 
 
 @router.get("/api/workspaces/{workspace_uuid}/instructions/templates")
-async def list_instruction_templates(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+async def list_instruction_templates(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """列出可用的项目指令模板。
 
     模板存放在 core/templates/prompts/ 目录，为 .md 文件。
@@ -1157,7 +1157,7 @@ async def list_instruction_templates(workspace_uuid: str, ws_dir: Path = Depends
 
 
 @router.get("/api/workspaces/{workspace_uuid}/instructions/templates/{template_name}")
-async def load_instruction_template(workspace_uuid: str, template_name: str, ws_dir: Path = Depends(_require_workspace)):
+async def load_instruction_template(workspace_uuid: str, template_name: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """加载指定模板的内容。"""
     # 安全检查：防止路径穿越，支持中文文件名
     # 只允许字母、数字、中文、下划线、连字符

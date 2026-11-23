@@ -23,7 +23,12 @@ from core.config import (
 from core.permission_settings import PermissionConfig
 from core.security.permission_rules import PermissionRules, new_rule_id
 from core.time_utils import now_str
-from web.deps import _csrf_protect, _require_workspace, reload_all_runners, teen_guard
+from web.deps import (
+    _csrf_protect,
+    reload_all_runners,
+    require_workspace_data_dir,
+    teen_guard,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,7 +70,7 @@ def _rules_store(scope: str) -> PermissionRules:
         return PermissionRules(None, global_path=global_path, hot_reload=False)
     if scope == "system":
         raise HTTPException(status_code=400, detail="system 工作区不开放权限规则管理")
-    _require_workspace(scope)  # 存在性 + 青少年工作区守卫
+    require_workspace_data_dir(scope)  # 存在性 + 青少年工作区守卫
     path = get_workspace_data_dir(scope) / "approval_rules.json"
     return PermissionRules(path, global_path=global_path, hot_reload=False)
 

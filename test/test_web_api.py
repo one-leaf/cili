@@ -51,16 +51,16 @@ class TestLocalhostIPs:
 
 
 class TestRequireWorkspace:
-    """_require_workspace() dependency validation."""
+    """require_workspace_data_dir() dependency validation."""
 
     def test_nonexistent_workspace_raises_404(self):
         from fastapi import HTTPException
 
-        from web.deps import _require_workspace
+        from web.deps import require_workspace_data_dir
         with pytest.raises(HTTPException) as exc_info:
-            # _require_workspace is an async dependency
+            # require_workspace_data_dir is an async dependency
             import asyncio
-            asyncio.run(_require_workspace("nonexistent-uuid"))
+            asyncio.run(require_workspace_data_dir("nonexistent-uuid"))
         assert exc_info.value.status_code == 404
 
 

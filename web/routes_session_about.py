@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.config import sessions_dir_for_data_dir
 from core.session import INDEX_FILE
 from core.session_timeline import build_timeline
-from web.deps import _require_workspace, _validate_session_id
+from web.deps import _validate_session_id, require_workspace_data_dir
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ async def get_session_timeline(
     workspace_uuid: str,
     session_id: str,
     types: str = "",
-    ws_dir: Path = Depends(_require_workspace),
+    ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     _validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id

@@ -141,10 +141,10 @@ def teen_guard(action: str, *, hard: bool = False):
     return _dep
 
 
-def _require_workspace(workspace_uuid: str) -> Path:
+def require_workspace_data_dir(workspace_uuid: str) -> Path:
     """FastAPI dependency: validate workspace exists, return its .cili data dir.
 
-    Usage: ws_dir: Path = Depends(_require_workspace)
+    Usage: ws_dir: Path = Depends(require_workspace_data_dir)
 
     青少年模式：受限工作区（白名单外且未解锁）在此统一拦截——
     routes_workspace / routes_chat 各处复用本依赖，一次覆盖。

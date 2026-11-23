@@ -16,8 +16,8 @@ from core.config import sessions_dir_for_data_dir
 from core.suggest_service import SuggestError, generate_suggestions
 from web.deps import (
     _get_or_create_runner,
-    _require_workspace,
     _validate_session_id,
+    require_workspace_data_dir,
 )
 
 router = APIRouter()
@@ -35,7 +35,7 @@ class SuggestRequest(BaseModel):
 
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/suggest")
 async def suggest(workspace_uuid: str, session_id: str, request: SuggestRequest,
-                  ws_dir=Depends(_require_workspace)):
+                  ws_dir=Depends(require_workspace_data_dir)):
     _validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not session_dir.is_dir():

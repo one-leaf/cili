@@ -41,7 +41,7 @@ class MemorySettingsRequest(BaseModel):
 
 def _memory_dir(workspace_uuid: str) -> Path:
     _validate_workspace_uuid(workspace_uuid)
-    # 受限工作区守卫（本域不经过 _require_workspace，这里是全部写端点的咽喉）
+    # 受限工作区守卫（本域不经过 require_workspace_data_dir，这里是全部写端点的咽喉）
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():

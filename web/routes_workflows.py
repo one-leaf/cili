@@ -26,7 +26,7 @@ from core.workflows.sessions import (
     ensure_results_session,
     find_workflow_by_panel_session,
 )
-from web.deps import _require_workspace, _validate_session_id
+from web.deps import _validate_session_id, require_workspace_data_dir
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -55,14 +55,14 @@ def _teen_guard() -> None:
 
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows")
-async def list_workflows(workspace_uuid: str, ws_dir: Path = Depends(_require_workspace)):
+async def list_workflows(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     return {"workflows": service.list_workflows(workspace_uuid)}
 
 
 @router.post("/api/workspaces/{workspace_uuid}/workflows")
 async def create_workflow(workspace_uuid: str,
                       payload: dict[str, Any] = Body(...),
-                      ws_dir: Path = Depends(_require_workspace)):
+                      ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         workflow = service.create_workflow(workspace_uuid, payload)
@@ -73,7 +73,7 @@ async def create_workflow(workspace_uuid: str,
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}")
 async def get_workflow(workspace_uuid: str, workflow_id: str,
-                   ws_dir: Path = Depends(_require_workspace)):
+                   ws_dir: Path = Depends(require_workspace_data_dir)):
     try:
         workflow = service.get_workflow(workspace_uuid, workflow_id)
         state = service.get_state(workspace_uuid, workflow_id)
@@ -85,7 +85,7 @@ async def get_workflow(workspace_uuid: str, workflow_id: str,
 @router.put("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}")
 async def update_workflow(workspace_uuid: str, workflow_id: str,
                       payload: dict[str, Any] = Body(...),
-                      ws_dir: Path = Depends(_require_workspace)):
+                      ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         workflow = service.update_workflow(workspace_uuid, workflow_id, payload)
@@ -97,7 +97,7 @@ async def update_workflow(workspace_uuid: str, workflow_id: str,
 @router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/hidden")
 async def set_workflow_hidden(workspace_uuid: str, workflow_id: str,
                               payload: dict[str, Any] = Body(default={}),
-                              ws_dir: Path = Depends(_require_workspace)):
+                              ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         workflow = service.set_hidden(
@@ -109,7 +109,7 @@ async def set_workflow_hidden(workspace_uuid: str, workflow_id: str,
 
 @router.delete("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}")
 async def delete_workflow(workspace_uuid: str, workflow_id: str,
-                      ws_dir: Path = Depends(_require_workspace)):
+                      ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         service.delete_workflow(workspace_uuid, workflow_id)
@@ -121,7 +121,7 @@ async def delete_workflow(workspace_uuid: str, workflow_id: str,
 @router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/run")
 async def run_workflow(workspace_uuid: str, workflow_id: str,
                    payload: dict | None = None,
-                   ws_dir: Path = Depends(_require_workspace)):
+                   ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     body = payload if isinstance(payload, dict) else {}
     try:
@@ -137,7 +137,7 @@ async def run_workflow(workspace_uuid: str, workflow_id: str,
 
 @router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/stop")
 async def stop_workflow(workspace_uuid: str, workflow_id: str,
-                    ws_dir: Path = Depends(_require_workspace)):
+                    ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         stopped = service.stop_workflow(workspace_uuid, workflow_id)
@@ -148,7 +148,7 @@ async def stop_workflow(workspace_uuid: str, workflow_id: str,
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/state")
 async def get_state(workspace_uuid: str, workflow_id: str,
-                    ws_dir: Path = Depends(_require_workspace)):
+                    ws_dir: Path = Depends(require_workspace_data_dir)):
     try:
         state = service.get_state(workspace_uuid, workflow_id)
     except Exception as exc:  # noqa: BLE001
@@ -159,7 +159,7 @@ async def get_state(workspace_uuid: str, workflow_id: str,
 @router.post("/api/workspaces/{workspace_uuid}/workflows/panel-sessions")
 async def panel_session(workspace_uuid: str,
                         payload: dict[str, Any] = Body(default={}),
-                        ws_dir: Path = Depends(_require_workspace)):
+                        ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     workflow_id = str((payload or {}).get("workflow_id") or "")
     try:
@@ -176,7 +176,7 @@ async def panel_session(workspace_uuid: str,
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows/panel-sessions/by-session/{session_id}")
 async def panel_session_binding(workspace_uuid: str, session_id: str,
-                                ws_dir: Path = Depends(_require_workspace)):
+                                ws_dir: Path = Depends(require_workspace_data_dir)):
     _validate_session_id(session_id)
     session = SessionStore.load_session(session_id, get_workspace_sessions_dir(workspace_uuid))
     if session is None:
@@ -186,7 +186,7 @@ async def panel_session_binding(workspace_uuid: str, session_id: str,
 
 @router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/results-session")
 async def results_session(workspace_uuid: str, workflow_id: str,
-                          ws_dir: Path = Depends(_require_workspace)):
+                          ws_dir: Path = Depends(require_workspace_data_dir)):
     _teen_guard()
     try:
         workflow = service.get_workflow(workspace_uuid, workflow_id)
@@ -200,7 +200,7 @@ async def results_session(workspace_uuid: str, workflow_id: str,
 @router.post("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/send-results")
 async def send_results(workspace_uuid: str, workflow_id: str,
                        payload: dict | None = Body(default=None),
-                       ws_dir: Path = Depends(_require_workspace)):
+                       ws_dir: Path = Depends(require_workspace_data_dir)):
     """把一次运行的步骤结果文件直接发到指定会话（Web file card）。"""
     body = payload if isinstance(payload, dict) else {}
     try:
@@ -236,7 +236,7 @@ async def send_results(workspace_uuid: str, workflow_id: str,
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/runs")
 async def list_runs(workspace_uuid: str, workflow_id: str,
-                    ws_dir: Path = Depends(_require_workspace)):
+                    ws_dir: Path = Depends(require_workspace_data_dir)):
     try:
         service.get_workflow(workspace_uuid, workflow_id)
     except Exception as exc:  # noqa: BLE001
@@ -246,7 +246,7 @@ async def list_runs(workspace_uuid: str, workflow_id: str,
 
 @router.get("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/runs/{run_id}")
 async def get_run(workspace_uuid: str, workflow_id: str, run_id: str,
-                  ws_dir: Path = Depends(_require_workspace)):
+                  ws_dir: Path = Depends(require_workspace_data_dir)):
     data = store.read_run_json(workspace_uuid, workflow_id, run_id)
     if data is None:
         raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -256,5 +256,5 @@ async def get_run(workspace_uuid: str, workflow_id: str, run_id: str,
 @router.get("/api/workspaces/{workspace_uuid}/workflows/{workflow_id}/runs/{run_id}/events")
 async def get_run_events(workspace_uuid: str, workflow_id: str, run_id: str,
                          offset: int = 0,
-                         ws_dir: Path = Depends(_require_workspace)):
+                         ws_dir: Path = Depends(require_workspace_data_dir)):
     return {"events": store.read_events(workspace_uuid, workflow_id, run_id, offset=offset)}
