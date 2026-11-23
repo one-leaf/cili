@@ -82,7 +82,7 @@ INTERNAL_META_FIELDS = frozenset({
 _INTERNAL_META_FIELDS = INTERNAL_META_FIELDS
 
 # 只属于 messages.jsonl 行、不写入 index.json commits 的压缩元数据。
-# 重载时由 _message_from_line 从 jsonl 行恢复，避免两处存储漂移。
+# 重载时由 message_from_line 从 jsonl 行恢复，避免两处存储漂移。
 _HISTORY_ONLY_META = frozenset({
     "summary", "persist_history", "compaction", "compaction_event",
 })
@@ -339,7 +339,7 @@ def _jsonl_line(msg: dict, seq: int, image_mode: str = "full") -> dict:
     return line
 
 
-def _message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
+def message_from_line(line: dict, msg_meta: dict | None, seq: int) -> dict:
     """从 jsonl 行 + 消息级 _meta 重建内存消息。"""
     meta = dict(msg_meta or {})
     line_meta = line.get("meta")
@@ -511,7 +511,7 @@ def build_model_messages(session_dir: Path | str, lines: list[dict] | None = Non
         line = by_seq.get(commit.get("seq"))
         if line is None:
             continue  # 防御：jsonl 缺失/损坏的行跳过
-        msg = _message_from_line(line, commit.get("msg_meta"), commit.get("seq"))
+        msg = message_from_line(line, commit.get("msg_meta"), commit.get("seq"))
         _merge_block_meta(msg.get("content"), commit.get("blocks"))
         _apply_model_content_rules(msg)
         messages.append(msg)
@@ -546,7 +546,7 @@ def load_history_messages(session_dir: Path | str) -> list[dict]:
     for line in read_jsonl(session_dir / MESSAGES_FILE):
         seq = line.get("seq")
         commit = by_seq.get(seq)
-        msg = _message_from_line(line, commit.get("msg_meta") if commit else None, seq)
+        msg = message_from_line(line, commit.get("msg_meta") if commit else None, seq)
         meta = msg.get("_meta") or {}
         if meta.get("summary") or meta.get("compaction_event"):
             continue
@@ -1186,7 +1186,7 @@ class SessionStore:
                 line_meta = line.get("meta")
                 if isinstance(line_meta, dict) and line_meta.get("compaction_event"):
                     continue  # 仅 UI 事件，不进入模型视图
-                msg = _message_from_line(line, None, seq)
+                msg = message_from_line(line, None, seq)
                 _apply_model_content_rules(msg)
                 self.messages.append(msg)
                 appended = True

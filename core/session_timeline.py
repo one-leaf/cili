@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from core.session import MESSAGES_FILE, _message_from_line, read_jsonl, read_meta
+from core.session import MESSAGES_FILE, message_from_line, read_jsonl, read_meta
 from core.text_extract import message_text
 from core.untrusted import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
@@ -127,7 +127,7 @@ def build_timeline(session_dir: Path | str) -> dict[str, Any]:
         seq = line.get("seq")
         if not isinstance(seq, int):
             seq = -1
-        msg = _message_from_line(line, None, seq)
+        msg = message_from_line(line, None, seq)
         msg_meta = msg.get("_meta") or {}
         content = msg.get("content")
         ts = str(msg_meta.get("created_at") or line.get("created_at") or "")
