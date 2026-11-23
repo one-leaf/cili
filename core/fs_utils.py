@@ -33,6 +33,16 @@ def os_temp_root() -> str:
     return temp_root()
 
 
+def path_key(path: str, *, resolve: bool = False) -> str:
+    """路径比较键：normcase(abspath)；``resolve=True`` 时先 realpath 解析链接。
+
+    仅用于相等/前缀比较，不改变文件系统。
+    """
+    value = os.path.expanduser(str(path))
+    value = os.path.realpath(value) if resolve else os.path.abspath(value)
+    return os.path.normcase(value)
+
+
 def is_path_within(resolved: str, root: str) -> bool:
     """resolved 是否在 root 内（Windows 大小写不敏感，跨盘符视为越界）。"""
     try:

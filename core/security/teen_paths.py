@@ -18,13 +18,13 @@ import os
 from pathlib import Path
 
 from core.config import DATA_DIR, PROJECT_ROOT, SYSTEM_DATA_DIR, load_workspaces_index
-from core.fs_utils import is_path_within
+from core.fs_utils import is_path_within, path_key
 
 logger = logging.getLogger(__name__)
 
 
 def _norm(path: str | Path) -> str:
-    return os.path.normcase(os.path.abspath(str(path)))
+    return path_key(str(path))
 
 
 def protected_roots() -> list[str]:

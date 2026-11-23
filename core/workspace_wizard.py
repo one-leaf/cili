@@ -22,7 +22,7 @@ from core.config import (
     save_workspace_config,
     validate_workspace_name,
 )
-from core.fs_utils import atomic_write_text
+from core.fs_utils import atomic_write_text, path_key
 from core.time_utils import now_str
 
 WORKSPACE_PARENT = PROJECT_ROOT / "workspace"
@@ -213,7 +213,7 @@ def slugify(value: str, *, fallback: str = "workspace") -> str:
 
 
 def _canonical(path: Path | str) -> Path:
-    return Path(os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))))
+    return Path(path_key(path, resolve=True))
 
 
 def _is_within(child: Path, parent: Path) -> bool:

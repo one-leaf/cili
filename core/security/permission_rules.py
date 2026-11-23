@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.fs_utils import atomic_write_json, load_json_or_backup, path_key
 from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
@@ -163,8 +163,8 @@ def _glob_match(pattern: list[str], tokens: list[str]) -> bool:
 
 def _path_prefix_covers(value: str, resolved: str) -> bool:
     """路径前缀匹配：normcase 后整等或目录边界前缀（防 /a/b 误配 /a/bc）。"""
-    nval = os.path.normcase(os.path.abspath(value))
-    nres = os.path.normcase(os.path.abspath(resolved))
+    nval = path_key(value)
+    nres = path_key(resolved)
     if nres == nval:
         return True
     if not nval.endswith(os.sep):
@@ -540,7 +540,7 @@ _PATH_LOCKS_GUARD = threading.Lock()
 
 
 def _path_lock(path: Path | None) -> threading.RLock:
-    key = os.path.normcase(os.path.abspath(str(path))) if path else ""
+    key = path_key(str(path)) if path else ""
     with _PATH_LOCKS_GUARD:
         lock = _PATH_LOCKS.get(key)
         if lock is None:

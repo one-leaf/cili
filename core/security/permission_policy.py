@@ -19,7 +19,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from core.fs_utils import is_path_within, os_temp_root
+from core.fs_utils import is_path_within, os_temp_root, path_key
 from core.permission_settings import PermissionConfig
 from core.security.permission_rules import (
     PermissionRules,
@@ -87,9 +87,9 @@ class PermissionResolver:
         - 无代码哈希时退回 raw + 序号（非 Python 工具的兜底）。
         """
         if resolved:
-            key = f"{op}:{os.path.normcase(os.path.abspath(resolved))}"
+            key = f"{op}:{path_key(resolved)}"
         elif static_prefix:
-            prefix = os.path.normcase(os.path.abspath(static_prefix))
+            prefix = path_key(static_prefix)
             if code_hash:
                 key = f"dyn:{op}:{code_hash}:{target_index}:{prefix}"
             else:
