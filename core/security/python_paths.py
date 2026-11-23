@@ -21,7 +21,7 @@ import ast
 import hashlib
 import os
 
-from core.security.path_policy import OP_DELETE, OP_WRITE, PathTarget
+from core.security.path_target import OP_DELETE, OP_WRITE, PathTarget
 
 _DYN = object()   # 动态/不可静态解析
 _READ = object()  # 缺省读模式

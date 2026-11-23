@@ -15,7 +15,7 @@ import os
 from urllib.parse import quote
 
 from core.config import PROJECT_ROOT
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,

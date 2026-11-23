@@ -49,7 +49,7 @@ from core.mineru_client import (
     _AuthError,
     _QuotaExceededError,
 )
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.tool_limits import PDF2MD_RESULT_MAX_CHARS
 from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, ToolResult
 

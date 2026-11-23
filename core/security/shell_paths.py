@@ -21,7 +21,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 
-from core.security.path_policy import OP_DELETE, OP_WRITE, PathTarget
+from core.security.path_target import OP_DELETE, OP_WRITE, PathTarget
 
 
 @dataclass

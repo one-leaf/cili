@@ -17,7 +17,8 @@ from core.compression import (
     truncate_result as _truncate_result,
 )
 from core.fs_utils import normalize_bash_path
-from core.security.path_policy import OP_DELETE, OP_READ, PathPolicy, PathTarget
+from core.security.path_policy import PathPolicy
+from core.security.path_target import OP_DELETE, OP_READ, PathTarget
 from core.tool_limits import (
     BASH_MAX_OUTPUT_LINES,
     BASH_RESULT_MAX_CHARS,

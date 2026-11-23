@@ -21,7 +21,7 @@ from core.office_pdf.cache import (
     workspace_cache_dir,
 )
 from core.office_pdf.sync import sync_workspace_pdf_cache
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 
 __all__ = [

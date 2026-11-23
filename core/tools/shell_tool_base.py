@@ -11,7 +11,7 @@ import os
 import re
 from typing import Any
 
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.security.shell_paths import extract_shell_targets
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (

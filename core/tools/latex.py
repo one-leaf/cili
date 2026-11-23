@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 from core.config import PROJECT_ROOT
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 
 # Tectonic directory under data/deps/

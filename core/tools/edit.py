@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.fs_utils import atomic_write_text
-from core.security.path_policy import OP_WRITE, PathTarget
+from core.security.path_target import OP_WRITE, PathTarget
 from core.text_sanitize import clean_surrogates
 from core.tool_limits import EDIT_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
