@@ -139,7 +139,7 @@ class TestSmartEduAuth:
         creds = SmartEduCredentials(access_token="tok", mac_key="key", diff=0)
         url = "https://r1-ndr-private.ykt.cbern.com.cn/book.pdf"
         nonce = "1700000000000:ABCDEFGH"
-        monkeypatch.setattr(smartedu_mod, "generate_nonce", lambda diff=0: nonce)
+        monkeypatch.setattr("core.textbooks.smartedu_auth.generate_nonce", lambda diff=0: nonce)
         mac = base64.b64encode(hmac.new(
             b"key", signature_string(url, "GET", nonce).encode("utf-8"), hashlib.sha256
         ).digest()).decode("ascii")
