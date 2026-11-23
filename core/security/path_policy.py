@@ -14,7 +14,7 @@ from core.fs_utils import is_path_within, normalize_bash_path, os_temp_root
 from core.permission_settings import PermissionConfig
 from core.security.path_target import OP_DELETE, OP_READ, OP_WRITE, PathTarget  # noqa: F401 —— 兼容旧导入
 from core.security.permission_policy import PermissionResolver
-from core.security.protected_paths import teen_path_verdict
+from core.security.teen_paths import teen_path_verdict
 
 logger = logging.getLogger(__name__)
 

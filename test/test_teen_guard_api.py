@@ -121,14 +121,14 @@ class TestPathPolicyTeen:
 
     def test_nested_workspace_under_tmp_denied(self, teen, test_workspace, monkeypatch):
         """宽根的 tmp 例外不得放行嵌在其 tmp/ 内的更具体工作区数据目录。"""
-        from core.security.protected_paths import teen_path_verdict
+        from core.security.teen_paths import teen_path_verdict
 
         teen.enable("parent123")
         broad = os.path.join(test_workspace, ".cili")
         nested = os.path.join(broad, "tmp", "proj", ".cili")
         # 模拟 protected_roots 的实际顺序：宽根在前，嵌套工作区根在后
         monkeypatch.setattr(
-            "core.security.protected_paths.protected_roots",
+            "core.security.teen_paths.protected_roots",
             lambda: [broad, nested],
         )
         assert teen_path_verdict(os.path.join(nested, "sessions", "s1"), "write") == "deny"
