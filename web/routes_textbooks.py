@@ -22,7 +22,7 @@ from core.textbooks import (
     textbook_tasks,
 )
 from core.textbooks.markdown_copy import copy_textbook_markdown
-from web.deps import _SAFE_ID_RE, _csrf_protect, teen_guard
+from web.deps import _SAFE_ID_RE, csrf_protect, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ async def textbook_options(
              dependencies=[Depends(teen_guard("config_update"))])
 async def download_textbooks(request: Request, body: TextbookDownloadRequest):
     """创建后台教材下载任务（匿名可下载；登录凭据仅用于个别严格资源）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     info = _workspace_or_404(body.workspace_uuid)
     workspace_dir = info.get("directory") or ""
     if not workspace_dir:
@@ -178,7 +178,7 @@ async def retry_textbook_download(
     body: TextbookRetryRequest | None = None,
 ):
     """重试任务中失败的教材；可传入要重试的 book_keys。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     _task_or_404(task_id)
     try:
         task = await textbook_tasks.retry(
@@ -199,7 +199,7 @@ async def retry_textbook_download(
              dependencies=[Depends(teen_guard("config_update"))])
 async def cancel_textbook_download(task_id: str, request: Request):
     """取消教材下载任务；已完成的教材保留。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     _task_or_404(task_id)
     try:
         return await textbook_tasks.cancel(task_id)

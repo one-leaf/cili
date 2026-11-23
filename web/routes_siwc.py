@@ -23,12 +23,12 @@ from core.llm.siwc import (
 from core.llm.siwc import (
     status as siwc_status,
 )
-from web.deps import _csrf_protect, reload_all_runners, teen_guard
+from web.deps import csrf_protect, reload_all_runners, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_GUARDS = [Depends(teen_guard("config_update")), Depends(_csrf_protect)]
+_GUARDS = [Depends(teen_guard("config_update")), Depends(csrf_protect)]
 
 
 class LoginRequest(BaseModel):

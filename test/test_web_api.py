@@ -65,19 +65,19 @@ class TestRequireWorkspace:
 
 
 class TestValidateWorkspaceUuid:
-    """_validate_workspace_uuid() 路径穿越校验。"""
+    """validate_workspace_uuid() 路径穿越校验。"""
 
     def test_valid_uuid_passes(self):
-        from web.deps import _validate_workspace_uuid
-        _validate_workspace_uuid("abc123")  # 不应抛异常
+        from web.deps import validate_workspace_uuid
+        validate_workspace_uuid("abc123")  # 不应抛异常
 
     def test_path_traversal_rejected(self):
         from fastapi import HTTPException
 
-        from web.deps import _validate_workspace_uuid
+        from web.deps import validate_workspace_uuid
         for evil in ("..", "../..", "a/b", "C:\\evil", "a%2Fb"):
             with pytest.raises(HTTPException) as exc_info:
-                _validate_workspace_uuid(evil)
+                validate_workspace_uuid(evil)
             assert exc_info.value.status_code == 400
 
 
@@ -851,7 +851,7 @@ class TestSaveInstructionsFilenameGuard:
 class TestUploadEndpointRequest:
     """P0-1 回归：upload_files 必须声明 request: Request 形参。
 
-    此前函数体调用 _csrf_protect(request) 但签名无此参数，上传端点必抛
+    此前函数体调用 csrf_protect(request) 但签名无此参数，上传端点必抛
     NameError → 500，上传功能完全不可用。
     """
 

@@ -54,12 +54,12 @@ from web.deps import (
     _list_all_workspaces,
     _new_short_id,
     _sessions_lock,
-    _validate_exec_id,
-    _validate_session_id,
-    _validate_workspace_uuid,
     registry,
     require_workspace_data_dir,
     teen_guard,
+    validate_exec_id,
+    validate_session_id,
+    validate_workspace_uuid,
 )
 from web.goal_runner import stop_goal_runner
 
@@ -224,7 +224,7 @@ def _cleanup_runners_for_workspace(workspace_uuid: str) -> None:
             dependencies=[Depends(teen_guard("config_update"))])
 async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest):
     """Update workspace name and/or directory."""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
@@ -262,7 +262,7 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
              dependencies=[Depends(teen_guard("workspace_reset", hard=True))])
 async def reset_workspace(workspace_uuid: str):
     """删除工作区配置（从索引移除），保留 .cili 数据目录和工作区文件。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
@@ -279,7 +279,7 @@ async def reset_workspace(workspace_uuid: str):
 @router.put("/api/workspaces/{workspace_uuid}/git/settings")
 async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
     """更新工作区 Git 版本管理设置（开关 + 远程仓库）。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
@@ -326,7 +326,7 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
 @router.get("/api/workspaces/{workspace_uuid}/git/status")
 async def get_git_status(workspace_uuid: str):
     """获取工作区 Git 状态（含远程仓库信息）。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -339,7 +339,7 @@ async def get_git_status(workspace_uuid: str):
 @router.post("/api/workspaces/{workspace_uuid}/git/pull")
 async def git_pull(workspace_uuid: str):
     """从远程拉取变更。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -353,7 +353,7 @@ async def git_pull(workspace_uuid: str):
 @router.post("/api/workspaces/{workspace_uuid}/git/push")
 async def git_push(workspace_uuid: str):
     """推送到远程仓库。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -485,7 +485,7 @@ async def get_session(
     默认行为：limit=None 返回所有消息（向后兼容）
     分页加载：limit=50, offset=0 返回最近 50 条消息
     """
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     index_file = session_dir / "index.json"
     if not index_file.exists():
@@ -535,7 +535,7 @@ async def get_session(
 async def export_session(workspace_uuid: str, session_id: str,
                          ws_dir: Path = Depends(require_workspace_data_dir)):
     """导出会话为可再次导入的 JSON（完整历史，工具结果内容内联）。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -792,7 +792,7 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
                dependencies=[Depends(teen_guard("session_delete", hard=True))])
 async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Delete a session."""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -806,7 +806,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/rename")
 async def rename_session(workspace_uuid: str, session_id: str, request: RenameSessionRequest, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Rename a session (atomic write)."""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -842,7 +842,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
         tm.audit("deny", action="session_hide", target=session_id, source="web")
         tm.record_denied("session_hide")
         raise HTTPException(status_code=403, detail=deny_message("session_hide"))
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -919,7 +919,7 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions")
 async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """List all sub-agent executions for a session."""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not (sessions_dir / session_id / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -936,8 +936,8 @@ async def list_executions(workspace_uuid: str, session_id: str, ws_dir: Path = D
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/executions/{exec_id}")
 async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """Get a specific sub-agent execution log with full messages."""
-    _validate_session_id(session_id)
-    _validate_exec_id(exec_id)
+    validate_session_id(session_id)
+    validate_exec_id(exec_id)
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not (sessions_dir / session_id / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")

@@ -80,25 +80,25 @@ _SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 _LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
 
 
-def _validate_session_id(session_id: str) -> None:
+def validate_session_id(session_id: str) -> None:
     """Validate session_id format to prevent path traversal."""
     if not _SAFE_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session_id format")
 
 
-def _validate_workspace_uuid(workspace_uuid: str) -> None:
+def validate_workspace_uuid(workspace_uuid: str) -> None:
     """Validate workspace_uuid format to prevent path traversal."""
     if not _SAFE_ID_RE.match(workspace_uuid):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
 
 
-def _validate_exec_id(exec_id: str) -> None:
+def validate_exec_id(exec_id: str) -> None:
     """Validate exec_id format to prevent path traversal."""
     if not _SAFE_ID_RE.match(exec_id):
         raise HTTPException(status_code=400, detail="Invalid exec_id format")
 
 
-def _csrf_protect(request: Request) -> None:
+def csrf_protect(request: Request) -> None:
     """CSRF 防护（W6）：跨站浏览器请求带 Origin/Referer，非本机来源则拒绝。
 
     multipart/form-data 与简单 POST 不触发 CORS 预检，恶意网页可向

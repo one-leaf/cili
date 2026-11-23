@@ -31,7 +31,7 @@ from core.workspace_wizard import (
     stage_options,
     study_subjects_by_stage,
 )
-from web.deps import _csrf_protect, _list_all_workspaces, teen_guard
+from web.deps import _list_all_workspaces, csrf_protect, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -224,7 +224,7 @@ def _launch_textbook_task(catalog: OfficialCatalog,
              dependencies=[Depends(teen_guard("config_update"))])
 async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateRequest):
     """创建一个或多个工作区；学习项目可自动启动教材下载。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     try:
         result = await asyncio.to_thread(
             create_workspaces,

@@ -9,7 +9,7 @@ import core.config as config_mod
 
 
 def _request():
-    """_csrf_protect 只读 headers；空头 → 无 Origin/Referer → 放行。"""
+    """csrf_protect 只读 headers；空头 → 无 Origin/Referer → 放行。"""
     from starlette.requests import Request as StarletteRequest
 
     return StarletteRequest({

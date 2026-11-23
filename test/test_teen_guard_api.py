@@ -446,7 +446,7 @@ class TestAuditTrail:
 
 
 def _fake_request():
-    """_csrf_protect 只读 headers.get；client.host 供审计。"""
+    """csrf_protect 只读 headers.get；client.host 供审计。"""
     from types import SimpleNamespace
 
     return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"),

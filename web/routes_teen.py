@@ -23,7 +23,7 @@ from core.teen_mode import (
     TeenModeDenied,
     get_teen_mode,
 )
-from web.deps import _csrf_protect, teen_guard
+from web.deps import csrf_protect, teen_guard
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ async def teen_status():
 @router.post("/api/teen/enable")
 async def teen_enable(request: Request, body: TeenEnableRequest):
     """开启青少年模式并设置家长密码（仅未开启时）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     if tm.is_enabled():
         raise HTTPException(status_code=409, detail="青少年模式已开启")
@@ -136,7 +136,7 @@ async def teen_enable(request: Request, body: TeenEnableRequest):
 @router.post("/api/teen/unlock")
 async def teen_unlock(request: Request, body: TeenUnlockRequest):
     """验证家长密码，开启解锁窗口（scope: `*` 或 `ws:<uuid>`）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     if not tm.is_enabled():
         raise HTTPException(status_code=409, detail="青少年模式未开启")
@@ -156,7 +156,7 @@ async def teen_unlock(request: Request, body: TeenUnlockRequest):
 @router.post("/api/teen/lock")
 async def teen_lock(request: Request, body: TeenLockRequest):
     """立即结束解锁窗口（scope=None 清空全部作用域）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     tm.lock(scope=body.scope, ip=request.client.host if request.client else "")
     return {"success": True}
@@ -166,7 +166,7 @@ async def teen_lock(request: Request, body: TeenLockRequest):
              dependencies=[Depends(teen_guard("teen_admin"))])
 async def teen_disable(request: Request, body: TeenDisableRequest):
     """关闭青少年模式（需全局解锁 + 密码双确认）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     try:
         tm.disable(body.password, source="web")
@@ -181,7 +181,7 @@ async def teen_disable(request: Request, body: TeenDisableRequest):
             dependencies=[Depends(teen_guard("teen_admin"))])
 async def teen_update_policy(request: Request, body: TeenPolicyRequest):
     """更新策略 / 时长限制（需全局解锁）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     if not tm.is_enabled():
         raise HTTPException(status_code=409, detail="青少年模式未开启")
@@ -202,7 +202,7 @@ async def teen_update_policy(request: Request, body: TeenPolicyRequest):
              dependencies=[Depends(teen_guard("teen_admin"))])
 async def teen_change_password(request: Request, body: TeenPasswordRequest):
     """修改家长密码（需全局解锁 + 原密码）。"""
-    _csrf_protect(request)
+    csrf_protect(request)
     tm = get_teen_mode()
     try:
         tm.change_password(body.old_password, body.new_password)

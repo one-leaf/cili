@@ -26,7 +26,7 @@ from core.workflows.sessions import (
     ensure_results_session,
     find_workflow_by_panel_session,
 )
-from web.deps import _validate_session_id, require_workspace_data_dir
+from web.deps import require_workspace_data_dir, validate_session_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ async def panel_session(workspace_uuid: str,
 @router.get("/api/workspaces/{workspace_uuid}/workflows/panel-sessions/by-session/{session_id}")
 async def panel_session_binding(workspace_uuid: str, session_id: str,
                                 ws_dir: Path = Depends(require_workspace_data_dir)):
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session = SessionStore.load_session(session_id, get_workspace_sessions_dir(workspace_uuid))
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")

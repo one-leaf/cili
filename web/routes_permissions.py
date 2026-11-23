@@ -24,7 +24,7 @@ from core.permission_settings import PermissionConfig
 from core.security.permission_rules import PermissionRules, new_rule_id
 from core.time_utils import now_str
 from web.deps import (
-    _csrf_protect,
+    csrf_protect,
     reload_all_runners,
     require_workspace_data_dir,
     teen_guard,
@@ -96,7 +96,7 @@ async def get_permissions():
 @router.put("/api/permissions",
             dependencies=[Depends(teen_guard("config_update"))])
 async def update_permissions(request: Request, body: PermissionUpdateRequest):
-    _csrf_protect(request)
+    csrf_protect(request)
     cfg = PermissionConfig.from_dict(body.permissions or {})
     raw = load_global_config()
     raw["permissions"] = cfg.to_dict()
@@ -123,7 +123,7 @@ async def list_permission_rules(scope: str = "global", decision: str = "all"):
              dependencies=[Depends(teen_guard("config_update"))])
 async def create_permission_rule(request: Request, scope: str = "global",
                                  body: RuleCreateRequest | None = None):
-    _csrf_protect(request)
+    csrf_protect(request)
     if body is None:
         raise HTTPException(status_code=400, detail="缺少规则内容")
     store = _rules_store(scope)
@@ -152,7 +152,7 @@ async def create_permission_rule(request: Request, scope: str = "global",
 async def update_permission_rule(rule_id: str, request: Request,
                                  scope: str = "global",
                                  body: RuleUpdateRequest | None = None):
-    _csrf_protect(request)
+    csrf_protect(request)
     if body is None:
         raise HTTPException(status_code=400, detail="缺少规则内容")
     updates = body.model_dump(exclude_none=True)
@@ -167,7 +167,7 @@ async def update_permission_rule(rule_id: str, request: Request,
 @router.delete("/api/permissions/rules/{rule_id}",
                dependencies=[Depends(teen_guard("config_update"))])
 async def delete_permission_rule(rule_id: str, request: Request, scope: str = "global"):
-    _csrf_protect(request)
+    csrf_protect(request)
     store = _rules_store(scope)
     if not store.delete_rule(rule_id, scope):
         raise HTTPException(status_code=404, detail="规则不存在或不可删除")
@@ -178,7 +178,7 @@ async def delete_permission_rule(rule_id: str, request: Request, scope: str = "g
 @router.post("/api/permissions/rules/revoke-ai",
              dependencies=[Depends(teen_guard("config_update"))])
 async def revoke_ai_rules(request: Request, scope: str = "global"):
-    _csrf_protect(request)
+    csrf_protect(request)
     store = _rules_store(scope)
     removed = store.revoke_judge_rules(scope)
     await asyncio.to_thread(reload_all_runners)

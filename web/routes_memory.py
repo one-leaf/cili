@@ -18,7 +18,7 @@ from core.memory_pipeline import run_consolidation
 from core.memory_service import memory_enabled
 from core.memory_store import Journal, MemoryStore
 from core.teen_mode import deny_message, get_teen_mode
-from web.deps import _SAFE_ID_RE, _csrf_protect, _validate_workspace_uuid
+from web.deps import _SAFE_ID_RE, csrf_protect, validate_workspace_uuid
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class MemorySettingsRequest(BaseModel):
 
 
 def _memory_dir(workspace_uuid: str) -> Path:
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     # 受限工作区守卫（本域不经过 require_workspace_data_dir，这里是全部写端点的咽喉）
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
     md = get_workspace_data_dir(workspace_uuid) / "memory"
@@ -57,7 +57,7 @@ def _validate_memory_name(name: str) -> None:
 @router.get("/api/workspaces/{workspace_uuid}/memory")
 async def list_memory(workspace_uuid: str, memory_type: str = "", status: str = "", q: str = ""):
     """记忆总览：统计 + 条目列表（可按 memory_type/status/关键词过滤）+ 待整合数 + 开关。"""
-    _validate_workspace_uuid(workspace_uuid)
+    validate_workspace_uuid(workspace_uuid)
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
     md = get_workspace_data_dir(workspace_uuid) / "memory"
     if not md.is_dir():
@@ -104,7 +104,7 @@ async def get_memory_entry(workspace_uuid: str, name: str):
 @router.put("/api/workspaces/{workspace_uuid}/memory/entries/{name}")
 async def update_memory_entry(workspace_uuid: str, name: str, request: UpdateMemoryEntryRequest, request_raw: Request = None):
     """编辑条目字段。"""
-    _csrf_protect(request_raw)
+    csrf_protect(request_raw)
     _validate_memory_name(name)
     md = _memory_dir(workspace_uuid)
     store = MemoryStore(md)
@@ -128,7 +128,7 @@ async def archive_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
     青少年模式 deny_memory_delete：归档移出索引等同隐藏记录，与
     「记录不可抹除」一致，需解锁窗口（§2.4）。
     """
-    _csrf_protect(request_raw)
+    csrf_protect(request_raw)
     _validate_memory_name(name)
     tm = get_teen_mode()
     if tm.policy().get("deny_memory_delete") and not tm.is_unlocked():
@@ -146,7 +146,7 @@ async def archive_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/restore")
 async def restore_memory_entry(workspace_uuid: str, name: str, request_raw: Request = None):
     """从归档恢复条目。"""
-    _csrf_protect(request_raw)
+    csrf_protect(request_raw)
     _validate_memory_name(name)
     md = _memory_dir(workspace_uuid)
     try:
@@ -159,7 +159,7 @@ async def restore_memory_entry(workspace_uuid: str, name: str, request_raw: Requ
 @router.post("/api/workspaces/{workspace_uuid}/memory/entries/{name}/delete")
 async def delete_memory_entry(workspace_uuid: str, name: str, request_raw: Request = None):
     """永久删除条目（不可恢复）。青少年模式 deny_memory_delete 下需解锁。"""
-    _csrf_protect(request_raw)
+    csrf_protect(request_raw)
     _validate_memory_name(name)
     tm = get_teen_mode()
     if tm.policy().get("deny_memory_delete") and not tm.is_unlocked():
@@ -177,7 +177,7 @@ async def delete_memory_entry(workspace_uuid: str, name: str, request_raw: Reque
 @router.post("/api/workspaces/{workspace_uuid}/memory/consolidate")
 async def consolidate_memory(workspace_uuid: str, request_raw: Request = None):
     """手动触发记忆整合（journal → 条目）。"""
-    _csrf_protect(request_raw)
+    csrf_protect(request_raw)
     _memory_dir(workspace_uuid)
     # 手动整合一次清空待整合队列（每批 limit=20，最多 4 批）
     result = await asyncio.to_thread(run_consolidation, workspace_uuid, max_batches=4)
@@ -187,8 +187,8 @@ async def consolidate_memory(workspace_uuid: str, request_raw: Request = None):
 @router.put("/api/workspaces/{workspace_uuid}/memory/settings")
 async def update_memory_settings(workspace_uuid: str, request: MemorySettingsRequest, request_raw: Request = None):
     """开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制）。"""
-    _csrf_protect(request_raw)
-    _validate_workspace_uuid(workspace_uuid)
+    csrf_protect(request_raw)
+    validate_workspace_uuid(workspace_uuid)
     cfg = load_workspace_config(workspace_uuid)
     if not cfg:
         raise HTTPException(status_code=404, detail="Workspace not found")

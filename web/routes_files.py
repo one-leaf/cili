@@ -31,9 +31,9 @@ from core.tools.office2pdf import (
 from core.workflows.guards import workflow_definition_violation
 from web.deps import (
     _LOCALHOST_IPS,
-    _csrf_protect,
     _get_workspace_info,
-    _validate_workspace_uuid,
+    csrf_protect,
+    validate_workspace_uuid,
 )
 
 router = APIRouter()
@@ -46,7 +46,7 @@ def _teen_ws_guard(workspace_uuid: str) -> None:
 
 def _workspace_info_or_404(workspace_uuid: str) -> dict:
     """校验 UUID、取工作区信息并过青少年守卫；不存在时 404。"""
-    _validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
+    validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
     info = _get_workspace_info(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -655,7 +655,7 @@ def create_file(request: FileCreateRequest, request_raw: Request = None):
     Returns:
         Created file/folder info
     """
-    _csrf_protect(request_raw)  # W6: CSRF 防护
+    csrf_protect(request_raw)  # W6: CSRF 防护
     workspace_dir = require_workspace_root(request.workspace_uuid)
 
     # Build target path
@@ -705,7 +705,7 @@ def delete_files(request: FileDeleteRequest, request_raw: Request = None):
     Returns:
         Deletion result
     """
-    _csrf_protect(request_raw)  # W6: CSRF 防护
+    csrf_protect(request_raw)  # W6: CSRF 防护
     _workspace_info_or_404(request.workspace_uuid)
 
     # 青少年模式：文件删除可由家长锁定（默认放开——正常写代码需要删文件）
@@ -756,7 +756,7 @@ def update_file(request: FileUpdateRequest, request_raw: Request = None):
     Returns:
         Update result
     """
-    _csrf_protect(request_raw)  # W6: CSRF 防护
+    csrf_protect(request_raw)  # W6: CSRF 防护
     workspace_dir = require_workspace_root(request.workspace_uuid)
 
     file_full_path = (workspace_dir / request.path).resolve()
@@ -870,7 +870,7 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
     目录直接打开；文件用 /select 定位。仅限本机调用（与 /api/browse 同）；
     青少年模式开启且未全局解锁时拒绝——资源管理器可越出工作区浏览整盘。
     """
-    _csrf_protect(request_raw)  # W6: CSRF 防护
+    csrf_protect(request_raw)  # W6: CSRF 防护
     _workspace_info_or_404(request.workspace_uuid)
 
     client_ip = request_raw.client.host if request_raw and request_raw.client else ""
@@ -936,7 +936,7 @@ def upload_files(
     Returns:
         Upload result
     """
-    _csrf_protect(request)  # W6: CSRF 防护（multipart 属简单请求，须单独校验）
+    csrf_protect(request)  # W6: CSRF 防护（multipart 属简单请求，须单独校验）
     workspace_dir = require_workspace_root(workspace_uuid)
 
     # Build target directory

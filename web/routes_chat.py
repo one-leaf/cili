@@ -47,11 +47,11 @@ from web.deps import (
     _get_or_create_runner,
     _is_session_idle,
     _release_session_run,
-    _validate_session_id,
-    _validate_workspace_uuid,
     registry,
     require_workspace_data_dir,
     teen_guard,
+    validate_session_id,
+    validate_workspace_uuid,
 )
 from web.goal_runner import (
     format_goal_status,
@@ -200,7 +200,7 @@ async def get_session_model(
     _ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """读取会话当前模型与全部可选模型。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     sm = await asyncio.to_thread(_get_session, workspace_uuid, session_id)
     if sm is None:
         raise HTTPException(404, "Session not found")
@@ -215,7 +215,7 @@ async def set_session_model(
     _ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """切换会话模型（会话级覆盖，不修改全局配置）。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     config = load_config()
     ref = request.model_ref.strip()
     refs = config.available_refs()
@@ -427,7 +427,7 @@ async def stream_tool_output(
     # 安全检查：tool_use_id 只允许字母、数字、下划线、短横线
     if not _SAFE_ID_RE.match(tool_use_id):
         raise HTTPException(status_code=400, detail="Invalid tool_use_id")
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
 
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     session_dir = sessions_dir / session_id
@@ -460,9 +460,9 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = "",
     等跨会话变更需要广播到当前页面）。
     """
     if session_id:
-        _validate_session_id(session_id)
+        validate_session_id(session_id)
     if workspace_uuid:
-        _validate_workspace_uuid(workspace_uuid)
+        validate_workspace_uuid(workspace_uuid)
 
     # 青少年模式：不指定工作区时强制按白名单过滤（受限工作区事件不下发）
     teen = get_teen_mode()
@@ -894,7 +894,7 @@ async def fork_session(
     ws_dir: Path = Depends(require_workspace_data_dir),
 ):
     """Fork the current master session into a sibling session (UI「分支会话」)."""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -995,7 +995,7 @@ async def get_session_context(
     图片按真实请求投影处理。只读：有 runner 时复用其请求投影；无 runner 时从存盘
     消息估算 —— 不创建 runner、不触发压缩、不落盘。
     """
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     config = load_config()
     key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
@@ -1091,7 +1091,7 @@ async def get_session_context(
 async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRequest,
                           ws_dir: Path = Depends(require_workspace_data_dir)):
     """仅入队（运行中/空闲都可调用）；队列变更经全局事件流广播。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     if not (sessions_dir_for_data_dir(ws_dir) / session_id).exists():
         raise HTTPException(status_code=404, detail="Session not found")
     try:
@@ -1128,7 +1128,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue")
 async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """返回队列快照（items / paused / reason）。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     key = session_key(workspace_uuid, session_id)
     snap = turn_queue.snapshot(key)
     return {"success": True, **snap}
@@ -1138,7 +1138,7 @@ async def get_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends
 async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
                             ws_dir: Path = Depends(require_workspace_data_dir)):
     """移除一条排队项。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     if not _SAFE_ID_RE.match(item_id):
         raise HTTPException(status_code=400, detail="Invalid item_id format")
     removed = turn_queue.remove(session_key(workspace_uuid, session_id), item_id)
@@ -1148,7 +1148,7 @@ async def delete_queue_item(workspace_uuid: str, session_id: str, item_id: str,
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/clear")
 async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """清空队列（会话运行中也可调用）。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     cleared = turn_queue.clear(session_key(workspace_uuid, session_id))
     return {"success": True, "cleared": cleared}
 
@@ -1156,7 +1156,7 @@ async def clear_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depen
 @router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/queue/resume")
 async def resume_queue(workspace_uuid: str, session_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """解除暂停并尝试启动下一批（会话空闲时）。"""
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     key = session_key(workspace_uuid, session_id)
     turn_queue.resume(key)
     _start_pump(key)
