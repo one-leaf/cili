@@ -206,3 +206,42 @@ def pick_free_port(is_listening) -> int:
             return port
     logger.warning("[BrowserService] 未找到空闲 CDP 端口，回退到默认端口+1")
     return DEFAULT_CDP_PORT + 1
+
+
+def kill_process_tree(process) -> None:
+    """终止浏览器进程（Windows 用 taskkill /T 杀进程树），失败升级到 terminate/kill。"""
+    pid = process.pid
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True, text=True, timeout=10,
+            )
+            return
+        except Exception as e:
+            logger.warning(f"[BrowserService] taskkill failed: {e}, trying terminate()")
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            logger.warning("[BrowserService] terminate() timeout, using kill()")
+            process.kill()
+    else:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning("[BrowserService] terminate() timeout, using kill()")
+            process.kill()
+
+
+def probe_cdp(playwright, port: int) -> bool:
+    """探测 CDP 端口是否可连接（连接后立即关闭）。"""
+    if playwright is None:
+        return False
+    try:
+        browser = playwright.chromium.connect_over_cdp(f"http://localhost:{port}")
+        browser.close()
+        return True
+    except Exception:
+        return False

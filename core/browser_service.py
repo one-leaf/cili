@@ -28,8 +28,10 @@ from core.browser_chrome import (
     find_chrome_process_by_profile,
     find_pid_by_port,
     is_port_listening,
+    kill_process_tree,
     pick_free_port,
     pid_uses_profile,
+    probe_cdp,
     remove_chrome_locks,
 )
 from core.browser_snapshot import (
@@ -549,17 +551,7 @@ class BrowserService:
 
     def _try_cdp_connect(self) -> bool:
         """尝试通过 CDP 连接到 Chrome。返回 True 表示成功。"""
-        if self._playwright is None:
-            return False
-
-        try:
-            browser = self._playwright.chromium.connect_over_cdp(
-                f"http://localhost:{self._cdp_port}"
-            )
-            browser.close()
-            return True
-        except Exception:
-            return False
+        return probe_cdp(self._playwright, self._cdp_port)
 
     def _find_chrome_process_by_profile(self):
         """查找使用指定 profile 的浏览器进程（Chrome 或 Edge）。"""
@@ -752,29 +744,7 @@ class BrowserService:
         try:
             logger.debug(f"[BrowserService] Terminating Chrome PID {pid}")
 
-            # Windows: 使用 taskkill /T 杀死进程树（包括子进程）
-            if sys.platform == "win32":
-                try:
-                    result = subprocess.run(
-                        ["taskkill", "/T", "/F", "/PID", str(pid)],
-                        capture_output=True, text=True, timeout=10
-                    )
-                    logger.debug(f"[BrowserService] taskkill result: {result.returncode}")
-                except Exception as e:
-                    logger.warning(f"[BrowserService] taskkill failed: {e}, trying terminate()")
-                    self._chrome_process.terminate()
-                    try:
-                        self._chrome_process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        logger.warning("[BrowserService] terminate() timeout, using kill()")
-                        self._chrome_process.kill()
-            else:
-                self._chrome_process.terminate()
-                try:
-                    self._chrome_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning("[BrowserService] terminate() timeout, using kill()")
-                    self._chrome_process.kill()
+            kill_process_tree(self._chrome_process)
 
             logger.debug(f"[BrowserService] Chrome PID {pid} killed")
         except Exception as e:
