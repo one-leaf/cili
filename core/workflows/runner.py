@@ -34,7 +34,7 @@ from core.session_runner import SessionRunner
 from core.text_extract import message_text
 from core.time_utils import now_str
 from core.tools.base import ToolResult
-from core.tools.workflow_agent_tool import WorkflowAgentTool
+from core.tools.workflow_agent import WorkflowAgentTool
 from core.workflows import store
 from core.workflows.model import StepState, Workflow, WorkflowState, WorkflowStep
 from core.workflows.sessions import (

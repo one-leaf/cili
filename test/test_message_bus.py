@@ -257,7 +257,7 @@ class TestMessageBusTool:
         from pathlib import Path
 
         from core.session import SessionStore
-        from core.tools.message_bus_tool import MessageBusTool
+        from core.tools.message_bus import MessageBusTool
         tmp = Path(tempfile.mkdtemp())
         sm = SessionStore(session_id, tmp)
         return MessageBusTool(session=sm)

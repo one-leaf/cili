@@ -67,7 +67,7 @@ class TestPythonDeny:
 
     @staticmethod
     def _check(code):
-        from core.tools.python_tool import PythonTool
+        from core.tools.python import PythonTool
         return PythonTool._analyze_python_code(code)
 
     def test_eval_blocked(self):
@@ -170,7 +170,7 @@ class TestPipNoticeFilter:
     """
 
     def _filter(self, text):
-        from core.tools.python_tool import PythonTool
+        from core.tools.python import PythonTool
         from core.tools.result import ToolResult
 
         return PythonTool._filter_notices(ToolResult(output=text))

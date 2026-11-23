@@ -9,7 +9,7 @@ from core.tools.bash import BashTool
 from core.tools.edit import EditTool
 from core.tools.glob import GlobTool
 from core.tools.grep import GrepTool
-from core.tools.python_tool import PythonTool
+from core.tools.python import PythonTool
 from core.tools.read import ReadTool
 from core.tools.write import WriteTool
 

@@ -551,7 +551,7 @@ class TestEngine:
 
 class TestTool:
     def _tool(self, ws):
-        from core.tools.cron_tool import CronTool
+        from core.tools.cron import CronTool
 
         tool = CronTool(
             cwd=str(Path(ws) / "x"),

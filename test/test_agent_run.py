@@ -226,7 +226,7 @@ def test_worker_invalid_parent_model_ref_falls_back_to_role_default(tmp_path):
 def test_agent_tool_inherit_parent_model_ref(tmp_path):
     """角色未显式配置模型 → 继承父引用；显式配置 → 不被会话级切换覆盖。"""
     from core.config import AgentConfig
-    from core.tools.agent_tool import AgentTool
+    from core.tools.agent import AgentTool
 
     config = make_dgx_config("anthropic")
     tool = AgentTool(cwd=str(tmp_path), config=config)

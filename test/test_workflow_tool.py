@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from core.tools.workflow_tool import WorkflowTool
+from core.tools.workflow import WorkflowTool
 from core.workflows import store
 
 WS = "test"

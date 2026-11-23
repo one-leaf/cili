@@ -11,13 +11,13 @@ from typing import Any, Callable
 
 from core.config import Config
 from core.role_config import RoleConfig, load_role
-from core.tools.agent_tool import AgentTool
+from core.tools.agent import AgentTool
 from core.tools.ask_user import AskUserTool
 from core.tools.base import Tool
 from core.tools.bash import BashTool
 from core.tools.browser import BrowserTool
 from core.tools.clock import ClockTool
-from core.tools.cron_tool import CronTool
+from core.tools.cron import CronTool
 from core.tools.deepseek_web import DeepSeekReadUrlTool, DeepSeekWebSearchTool
 from core.tools.edit import EditTool
 from core.tools.glob import GlobTool
@@ -25,11 +25,11 @@ from core.tools.grep import GrepTool
 from core.tools.latex import LatexTool
 from core.tools.loop import LoopTool
 from core.tools.memory import MemoryTool
-from core.tools.message_bus_tool import MessageBusTool
+from core.tools.message_bus import MessageBusTool
 from core.tools.office2pdf import Office2PDFTool
 from core.tools.pdf2markdown import PDF2MarkdownTool
 from core.tools.pwsh import PwshTool
-from core.tools.python_tool import PythonTool
+from core.tools.python import PythonTool
 from core.tools.read import ReadTool
 from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
@@ -45,7 +45,7 @@ from core.tools.textbook_search import TextbookSearchTool
 from core.tools.todo import TodoWriteTool
 from core.tools.tool_search import ToolSearchTool
 from core.tools.web_search import WebSearchTool
-from core.tools.workflow_tool import WorkflowTool
+from core.tools.workflow import WorkflowTool
 from core.tools.write import WriteTool
 
 logger = logging.getLogger(__name__)

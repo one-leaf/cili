@@ -13,7 +13,7 @@ from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
 from core.security.python_paths import collect_python_targets
 from core.tools.base import ToolResult
 from core.tools.permission import META_KEY, PermissionStore
-from core.tools.python_tool import PythonTool
+from core.tools.python import PythonTool
 
 # ─── 单元：AST 收集 ──────────────────────────────────────────────
 

@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.tools.edit import EditTool
-from core.tools.python_tool import PythonTool
+from core.tools.python import PythonTool
 from core.tools.read import ReadTool
 from core.tools.write import WriteTool
 

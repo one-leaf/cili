@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.tools.agent_tool import AgentTool
+from core.tools.agent import AgentTool
 
 
 @pytest.fixture

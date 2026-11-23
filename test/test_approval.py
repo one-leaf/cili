@@ -10,6 +10,7 @@
 
 import json
 
+from core.permission_settings import PermissionConfig
 from core.security.permission_policy import PermissionPolicy
 from core.security.permission_rules import (
     PermissionRules,
@@ -18,7 +19,6 @@ from core.security.permission_rules import (
     is_readonly_command,
     is_safe_create_command,
 )
-from core.permission_settings import PermissionConfig
 from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.browser import BrowserTool
