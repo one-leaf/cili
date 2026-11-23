@@ -25,7 +25,9 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 # 避免服务重启后隔夜无人值守地跑模型。
 _PROCESS_STARTED_AT = time.time()
 
-# auto_resume 策略 → 有服务端推送通道、可自动恢复的接口集合
+# auto_resume 策略 → 有服务端推送通道、可自动恢复的接口集合。
+# 注意：`all` 表示「全部可推送接口」，目前只有 web/tui；IM（QQ/微信/邮件）
+# 没有可靠的服务端推送恢复通道，不在此集合内。
 _PUSH_CAPABLE_INTERFACES = {
     "web": frozenset({"web"}),
     "all": frozenset({"web", "tui"}),
