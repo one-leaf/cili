@@ -172,10 +172,6 @@ class InboundHandler:
 
         await self._deliver_outbox(runner, openid, msg_id, key, workspace_dir)
 
-    # ── 入参构造 ────────────────────────────────────────────────────
-
-    @staticmethod
-
     # ── 出站辅助 ────────────────────────────────────────────────────
 
     async def _send_text(self, openid: str, msg_id: str, text: str) -> None:

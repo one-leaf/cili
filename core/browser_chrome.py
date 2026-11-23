@@ -245,3 +245,36 @@ def probe_cdp(playwright, port: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def build_chrome_command(chrome_path: str, port: int, user_data_dir: str) -> list[str]:
+    """Chrome 启动命令（远程调试端口 + 共享 profile + 无干扰参数）。"""
+    return [
+        chrome_path,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-gpu",  # 禁用 GPU 加速，减少问题
+        "--disable-dev-shm-usage",  # 避免 /dev/shm 空间不足
+    ]
+
+
+def spawn_chrome(cmd: list[str], env=None):
+    """启动 Chrome 子进程（Windows 隐藏控制台窗口）。"""
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return subprocess.Popen(
+            cmd,
+            startupinfo=startupinfo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )

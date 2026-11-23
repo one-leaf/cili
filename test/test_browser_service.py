@@ -329,8 +329,8 @@ class TestCdpPortFallback:
             "  TCP    127.0.0.1:9222    0.0.0.0:0    LISTENING    4321\n"
             "  TCP    127.0.0.1:8080    0.0.0.0:0    LISTENING    1234\n"
         )
-        with patch("core.browser_service.sys.platform", "win32"), \
-             patch("core.browser_service.subprocess.run") as mock_run:
+        with patch("core.browser_chrome.sys.platform", "win32"), \
+             patch("core.browser_chrome.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=fake_output, text=True)
             assert service._find_pid_by_port(9222) == 4321
             assert service._find_pid_by_port(9999) is None
@@ -341,8 +341,8 @@ class TestCdpPortFallback:
         service = BrowserService()
         profile = service._chrome_profile_dir.replace("/", "\\").lower()
         cmdline = f'"C:\\fake\\chrome.exe" --user-data-dir={profile}'
-        with patch("core.browser_service.sys.platform", "win32"), \
-             patch("core.browser_service.subprocess.run") as mock_run:
+        with patch("core.browser_chrome.sys.platform", "win32"), \
+             patch("core.browser_chrome.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=cmdline, text=True)
             assert service._pid_uses_our_profile(4321) is True
 
@@ -354,8 +354,8 @@ class TestCdpPortFallback:
             '"C:\\Users\\me\\chrome.exe" '
             '--user-data-dir=C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data'
         )
-        with patch("core.browser_service.sys.platform", "win32"), \
-             patch("core.browser_service.subprocess.run") as mock_run:
+        with patch("core.browser_chrome.sys.platform", "win32"), \
+             patch("core.browser_chrome.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=cmdline, text=True)
             assert service._pid_uses_our_profile(4321) is False
 
@@ -1079,7 +1079,7 @@ class TestKillChromeSafety:
         service = self._service_with_process()
         with patch.object(service, "_pid_uses_our_profile", return_value=False), \
              patch.object(service, "_remove_chrome_locks") as locks, \
-             patch("core.browser_service.subprocess.run") as run:
+             patch("core.browser_chrome.subprocess.run") as run:
             service._kill_chrome_internal()
 
         run.assert_not_called()  # 没有 taskkill / os.kill
@@ -1090,7 +1090,7 @@ class TestKillChromeSafety:
         service = self._service_with_process(alive=False)
         with patch.object(service, "_pid_uses_our_profile") as profile, \
              patch.object(service, "_remove_chrome_locks"), \
-             patch("core.browser_service.subprocess.run") as run:
+             patch("core.browser_chrome.subprocess.run") as run:
             service._kill_chrome_internal()
 
         profile.assert_not_called()  # 已退出：不再按旧 PID 探测/杀
@@ -1103,7 +1103,7 @@ class TestKillChromeSafety:
         with patch.object(service, "_pid_uses_our_profile", return_value=True), \
              patch.object(service, "_is_port_listening", return_value=False), \
              patch.object(service, "_remove_chrome_locks"), \
-             patch("core.browser_service.subprocess.run") as run:
+             patch("core.browser_chrome.subprocess.run") as run:
             run.return_value = MagicMock(returncode=0)
             service._kill_chrome_internal()
 

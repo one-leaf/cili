@@ -142,7 +142,7 @@ class BackgroundTaskManager:
             {
                 "task_id": task.task_id,
                 "exec_id": task.exec_id,
-                "kind": task.kind or ("agent" if task.kind == "agent" else "shell"),
+                "kind": task.kind or "shell",
                 "label": task.label or task.command,
                 "status": task.status,
                 "created_at": task.created_at,

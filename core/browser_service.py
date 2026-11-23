@@ -14,7 +14,6 @@ import os
 import queue
 import re
 import subprocess
-import sys
 import threading
 import time
 from collections import deque
@@ -25,6 +24,7 @@ if TYPE_CHECKING:
 
 from core.browser_chrome import ChromeProcessRef as _ChromeProcessRef
 from core.browser_chrome import (
+    build_chrome_command,
     find_chrome_process_by_profile,
     find_pid_by_port,
     is_port_listening,
@@ -33,6 +33,7 @@ from core.browser_chrome import (
     pid_uses_profile,
     probe_cdp,
     remove_chrome_locks,
+    spawn_chrome,
 )
 from core.browser_snapshot import (
     parse_aria_snapshot,
@@ -634,38 +635,13 @@ class BrowserService:
             self._remove_chrome_locks(user_data_dir)
 
             # 启动 Chrome，带远程调试端口
-            cmd = [
-                chrome_path,
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={user_data_dir}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-gpu",  # 禁用 GPU 加速，减少问题
-                "--disable-dev-shm-usage",  # 避免 /dev/shm 空间不足
-            ]
+            cmd = build_chrome_command(chrome_path, port, user_data_dir)
 
             logger.debug(f"[BrowserService] Starting Chrome: {chrome_path}")
             logger.debug(f"[BrowserService] Profile: {user_data_dir}, Port: {port}")
             logger.debug(f"[BrowserService] Command: {' '.join(cmd)}")
 
-            if sys.platform == "win32":
-                # Windows: 使用 STARTUPINFO 隐藏控制台窗口
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                self._chrome_process = subprocess.Popen(
-                    cmd,
-                    startupinfo=startupinfo,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=self._env,
-                )
-            else:
-                self._chrome_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=self._env,
-                )
+            self._chrome_process = spawn_chrome(cmd, self._env)
 
             logger.debug(f"[BrowserService] Chrome started, PID: {self._chrome_process.pid}")
 
