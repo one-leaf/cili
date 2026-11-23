@@ -1,7 +1,7 @@
 """Session management - independent of LLM client.
 
 Directory structure:
-  data/workspace/{uuid}/sessions/
+  {workspace_dir}/.cili/sessions/
     {short_id}/               # 每个 session 一个目录（8 位十六进制）
       messages.jsonl          # 完整消息历史（追加式，UI 直接读取，保留压缩前会话）
       index.json              # 模型提交视图：{schema_version, next_seq, commits[]}
