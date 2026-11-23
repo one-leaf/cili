@@ -11,29 +11,29 @@ from __future__ import annotations
 
 class TestSanitize:
     def test_strips_system_reminder(self):
-        from interfaces.qq.sanitize import sanitize_qq_text
+        from core.text_sanitize import strip_scaffolding as sanitize_qq_text
         s = "hello\n<system-reminder>internal stuff</system-reminder>\nworld"
         out = sanitize_qq_text(s)
         assert "internal stuff" not in out
         assert "hello" in out and "world" in out
 
     def test_strips_thinking_variants(self):
-        from interfaces.qq.sanitize import sanitize_qq_text
+        from core.text_sanitize import strip_scaffolding as sanitize_qq_text
         assert "secret" not in sanitize_qq_text("a<thinking>secret</thinking>b")
         assert "secret" not in sanitize_qq_text("a<think>secret</think>b")
         assert "secret" not in sanitize_qq_text("a`think`secret`/think`b")
 
     def test_strips_previous_response(self):
-        from interfaces.qq.sanitize import sanitize_qq_text
+        from core.text_sanitize import strip_scaffolding as sanitize_qq_text
         assert "old" not in sanitize_qq_text("<previous_response>old</previous_response>新")
 
     def test_preserves_markdown(self):
-        from interfaces.qq.sanitize import sanitize_qq_text
+        from core.text_sanitize import strip_scaffolding as sanitize_qq_text
         md = "# 标题\n\n- **粗体**\n\n```py\nx=1\n```"
         assert sanitize_qq_text(md) == md
 
     def test_empty_input(self):
-        from interfaces.qq.sanitize import sanitize_qq_text
+        from core.text_sanitize import strip_scaffolding as sanitize_qq_text
         assert sanitize_qq_text("") == ""
 
 
@@ -42,20 +42,20 @@ class TestSanitize:
 
 class TestChunk:
     def test_short_text_single_chunk(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         assert chunk_markdown("短文本") == ["短文本"]
 
     def test_empty_text(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         assert chunk_markdown("") == []
 
     def test_default_limit_matches_sdk(self):
         """上限必须等于 SDK 的 MAX_MESSAGE_LENGTH(4000)，否则会被二次截断丢内容。"""
-        from interfaces.qq.chunk import MAX_CHUNK_CHARS
+        from core.text_chunk import MAX_CHUNK_CHARS
         assert MAX_CHUNK_CHARS == 4000
 
     def test_respects_limit(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         text = "\n".join(f"line {i} " + "x" * 50 for i in range(200))
         chunks = chunk_markdown(text, limit=400)
         assert len(chunks) > 1
@@ -64,7 +64,7 @@ class TestChunk:
 
     def test_fitting_table_stays_whole(self):
         """能放下的表格必须整块落在同一片里，不能被正文挤断。"""
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         table = "\n".join(
             ["| a | b |", "|---|---|"] + [f"| {i} | {i} |" for i in range(3)]
         )
@@ -74,7 +74,7 @@ class TestChunk:
 
     def test_oversized_table_splits_at_row_boundaries(self):
         """超限表格切不开整块，但必须按**行**切——不能把某行劈成两半。"""
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         rows = [f"| row{i} | value{i} |" for i in range(40)]
         table = "\n".join(["| a | b |", "|---|---|"] + rows)
         chunks = chunk_markdown(table, limit=200)
@@ -87,7 +87,7 @@ class TestChunk:
                 assert line.strip() == "" or line.strip().endswith("|"), repr(line)
 
     def test_code_fence_closed_in_every_non_final_chunk(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         body = "\n".join(f"line{i} = {i}" for i in range(80))
         text = "```python\n" + body + "\n```\n尾注"
         chunks = chunk_markdown(text, limit=200)
@@ -97,14 +97,14 @@ class TestChunk:
             assert fences % 2 == 0, f"围栏未闭合: {c[:60]!r}"
 
     def test_reassembly_preserves_all_lines(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         text = "\n".join(f"行 {i} 内容" for i in range(150))
         joined = "\n".join(chunk_markdown(text, limit=300))
         for i in range(150):
             assert f"行 {i} 内容" in joined
 
     def test_single_overlong_line_hard_split(self):
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         text = "x" * 1000
         chunks = chunk_markdown(text, limit=100)
         assert all(len(c) <= 100 for c in chunks)
@@ -112,7 +112,7 @@ class TestChunk:
 
     def test_no_content_lost(self):
         """回归：不能因为切分丢字符（SDK 二次截断曾会丢）。"""
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
         text = "\n".join(f"第{i}行" for i in range(300))
         chunks = chunk_markdown(text, limit=137)
         stripped = "".join(c.replace("\n", "") for c in chunks)

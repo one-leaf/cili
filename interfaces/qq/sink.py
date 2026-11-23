@@ -32,10 +32,10 @@ from typing import Any
 
 from core.base_session_runner import RETRY_CLEAR_SENTINEL
 from core.output_sink import OutputSink
+from core.text_sanitize import strip_scaffolding
 from interfaces.common.ask_user import render_questions
 from interfaces.qq import stream_api
 from interfaces.qq.runtime import QQRuntime
-from interfaces.qq.sanitize import sanitize_qq_text
 from interfaces.qq.stream_controller import StreamingController
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class QQSink:
             return
 
         self._base.on_text(text)
-        clean = sanitize_qq_text(text)
+        clean = strip_scaffolding(text)
         if not clean and text:
             # 整段都是 thinking/脚手架 → 不推给 QQ
             return
@@ -274,7 +274,7 @@ class QQSink:
         if rt.api is None or rt.loop is None or rt.loop.is_closed():
             return
 
-        from interfaces.qq.chunk import chunk_markdown
+        from core.text_chunk import chunk_markdown
 
         chunks = chunk_markdown(text)
         check = rt.limiter.check(self._msg_id)

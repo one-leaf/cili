@@ -23,9 +23,6 @@ from interfaces.common.state import (
     ensure_session as _ensure_session,
 )
 from interfaces.common.state import (
-    latest_session_id,  # noqa: F401 —— 兼容旧导入
-)
-from interfaces.common.state import (
     load_account_state as _load_account_state,
 )
 from interfaces.common.state import (

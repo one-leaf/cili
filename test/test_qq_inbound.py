@@ -10,6 +10,8 @@ import asyncio
 
 import pytest
 
+from interfaces.common.ask_user import resolve_answer
+
 # ─── 状态：账号 → 聊天 两级（设计 §3.3） ─────────────────────────────
 
 
@@ -763,8 +765,7 @@ class TestResolveAnswer:
             self.session = TestResolveAnswer._Session(questions)
 
     def _resolve(self, questions, content):
-        from interfaces.qq.inbound import InboundHandler
-        return InboundHandler._resolve_answer(self._Runner(questions), content)
+        return resolve_answer(self._Runner(questions), content)
 
     def test_single_question_maps_number_to_label(self):
         qs = [{"question": "选?", "options": [{"label": "允许", "description": ""},
@@ -792,8 +793,7 @@ class TestResolveAnswer:
         class _Empty:
             class session:  # noqa: N801
                 messages = []
-        from interfaces.qq.inbound import InboundHandler
-        assert InboundHandler._resolve_answer(_Empty(), "1") == "1"
+        assert resolve_answer(_Empty(), "1") == "1"
 
 
 class TestResolveAnswerAbortOption:
@@ -831,10 +831,9 @@ class TestResolveAnswerAbortOption:
             REJECT_LABEL,
             REMEMBER_LABEL,
         )
-        from interfaces.qq.inbound import InboundHandler
 
         options = [{"label": label, "description": ""} for label in
                    (APPROVE_LABEL, REMEMBER_LABEL, REJECT_LABEL, ABORT_LABEL)]
-        reply = InboundHandler._resolve_answer(self._runner(options), "4")
+        reply = resolve_answer(self._runner(options), "4")
         assert reply == ABORT_LABEL
         assert decision_from_text(reply) == "abort"

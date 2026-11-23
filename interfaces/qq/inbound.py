@@ -148,7 +148,7 @@ class InboundHandler:
         key, runner, chat, workspace_dir = prepared
 
         try:
-            content = self._resolve_answer(runner, text) if text else ""
+            content = resolve_answer(runner, text) if text else ""
             user_input = build_user_input(content, media_items, runner)
             if user_input is None:
                 await self._send_text(openid, msg_id, "暂不支持该消息类型。")
@@ -175,8 +175,6 @@ class InboundHandler:
     # ── 入参构造 ────────────────────────────────────────────────────
 
     @staticmethod
-    def _resolve_answer(runner, content: str) -> str:
-        return resolve_answer(runner, content)
 
     # ── 出站辅助 ────────────────────────────────────────────────────
 

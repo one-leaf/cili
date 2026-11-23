@@ -453,8 +453,8 @@ class TestResolveAnswer:
             self.session = TestResolveAnswer._Session(questions)
 
     def _resolve(self, questions, content):
-        from interfaces.wechat.inbound import _resolve_answer
-        return _resolve_answer(self._Runner(questions), content)
+        from interfaces.common.ask_user import resolve_answer
+        return resolve_answer(self._Runner(questions), content)
 
     def test_single_question_maps_number_to_label(self):
         qs = [{"question": "选?", "options": [
@@ -483,5 +483,5 @@ class TestResolveAnswer:
         class _Empty:
             class session:  # noqa: N801
                 messages = []
-        from interfaces.wechat.inbound import _resolve_answer
-        assert _resolve_answer(_Empty(), "1") == "1"
+        from interfaces.common.ask_user import resolve_answer
+        assert resolve_answer(_Empty(), "1") == "1"

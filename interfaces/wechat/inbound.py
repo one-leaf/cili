@@ -136,7 +136,7 @@ class InboundHandler:
         key, runner, chat, _workspace_dir = prepared
 
         try:
-            content = _resolve_answer(runner, text) if text else ""
+            content = resolve_answer(runner, text) if text else ""
             user_input = build_user_input(content, media_items, runner)
             if user_input is None:
                 await self._send_text(user_id, "暂不支持该消息类型。")
@@ -239,4 +239,3 @@ class InboundHandler:
 
 
 # 测试按旧名导入；渲染与回映射的定义已合并到 interfaces/common/ask_user.py
-_resolve_answer = resolve_answer
