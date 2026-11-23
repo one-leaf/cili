@@ -302,3 +302,96 @@ def record_quiz_result(workspace_root: Path, payload: dict[str, Any]) -> dict[st
         "entry_id": event["entry_id"],
         "scores_path": str(score_path),
     }
+
+FIELD_MAP = {
+    "题目": "question",
+    "选项": "options_text",
+    "我的答案": "my_answer",
+    "正确答案": "correct_answer",
+    "解析": "analysis",
+    "正确思路": "analysis",
+    "错因": "error_type",
+    "同类变式": "variant",
+    "来源": "source",
+    "复习日期": "review_date",
+}
+
+def _parse_fields(body: str) -> dict[str, str]:
+    """把 `- 标签：值` 行解析为字段字典。"""
+    fields: dict[str, str] = {}
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line.startswith("- "):
+            continue
+        rest = line[2:]
+        sep = "：" if "：" in rest else (":" if ":" in rest else "")
+        if not sep:
+            continue
+        label, value = rest.split(sep, 1)
+        key = FIELD_MAP.get(label.strip())
+        if key:
+            fields[key] = value.strip()
+    return fields
+
+
+def parse_mistake_book(path: Path) -> list[dict[str, Any]]:
+    """解析 错题本.md 中的 cw-q 条目。"""
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    entries: list[dict[str, Any]] = []
+    for match in ENTRY_RE.finditer(text):
+        try:
+            meta = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        body = match.group(2)
+        fields = _parse_fields(body)
+        entries.append({
+            "id": str(meta.get("id") or ""),
+            "date": str(meta.get("date") or ""),
+            "courseware": str(meta.get("courseware") or ""),
+            "question_id": str(meta.get("qid") or ""),
+            "error_type": str(meta.get("error_type") or fields.get("error_type") or ""),
+            "question": fields.get("question", ""),
+            "options_text": fields.get("options_text", ""),
+            "my_answer": fields.get("my_answer", ""),
+            "correct_answer": fields.get("correct_answer", ""),
+            "analysis": fields.get("analysis", ""),
+            "variant": fields.get("variant", ""),
+            "source": fields.get("source", ""),
+            "review_date": fields.get("review_date", ""),
+            "inferred": False,
+        })
+    return entries
+
+
+def merge_quiz_events(entries: list[dict[str, Any]], events_path: Path) -> int:
+    """把 quiz-results.jsonl 中答错的记录合并进错题条目。"""
+    if not events_path.is_file():
+        return 0
+    by_key: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        by_key[f"{entry['courseware']}#{entry['question_id']}"] = entry
+    merged = 0
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict) or ev.get("is_correct"):
+            continue
+        key = f"{ev.get('courseware', '')}#{ev.get('question_id', '')}"
+        entry = by_key.get(key)
+        if entry is None:
+            continue
+        if not entry.get("question") and ev.get("question"):
+            entry["question"] = ev.get("question")
+        if not entry.get("my_answer") and ev.get("selected") is not None:
+            selected = ev.get("selected")
+            entry["my_answer"] = "、".join(selected) if isinstance(selected, list) else str(selected)
+        if not entry.get("correct_answer") and ev.get("answer") is not None:
+            answer = ev.get("answer")
+            entry["correct_answer"] = "、".join(answer) if isinstance(answer, list) else str(answer)
+        merged += 1
+    return merged

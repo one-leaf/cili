@@ -7,6 +7,7 @@ tools 白名单顺序实例化。取代旧的 shared/root/sub 分层硬编码工
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from core.config import Config
@@ -50,29 +51,41 @@ from core.tools.write import WriteTool
 
 logger = logging.getLogger(__name__)
 
-Factory = Callable[[RoleConfig, str, str, Any, Config | None, Any, Any, Any], Tool]
+@dataclass(frozen=True)
+class ToolBuildContext:
+    """工具实例化的统一入参（新增依赖只改这里）。"""
+
+    role_cfg: RoleConfig
+    cwd: str = "."
+    workspace_uuid: str = ""
+    session: Any = None
+    config: Config | None = None
+    permission_store: Any = None
+    permission_rules: Any = None
+    permission_policy: Any = None
 
 
-def _make_skill(role_cfg, cwd, workspace_uuid, session, config,
-                permission_store, permission_rules, permission_policy=None) -> Tool:
+Factory = Callable[[ToolBuildContext], Tool]
+
+
+def _make_skill(ctx: ToolBuildContext) -> Tool:
     return SkillTool(
-        role=role_cfg.name,
-        cwd=cwd, workspace_uuid=workspace_uuid, session=session,
+        role=ctx.role_cfg.name,
+        cwd=ctx.cwd, workspace_uuid=ctx.workspace_uuid, session=ctx.session,
     )
 
 
 def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = False) -> Factory:
-    def factory(role_cfg, cwd, workspace_uuid, session, config,
-                permission_store, permission_rules, permission_policy=None) -> Tool:
+    def factory(ctx: ToolBuildContext) -> Tool:
         kwargs: dict[str, Any] = dict(
-            cwd=cwd, workspace_uuid=workspace_uuid, session=session,
-            permission_rules=permission_rules,
+            cwd=ctx.cwd, workspace_uuid=ctx.workspace_uuid, session=ctx.session,
+            permission_rules=ctx.permission_rules,
         )
         if needs_config:
-            kwargs["config"] = config
+            kwargs["config"] = ctx.config
         if needs_permission:
-            kwargs["permission_store"] = permission_store
-            kwargs["permission_policy"] = permission_policy
+            kwargs["permission_store"] = ctx.permission_store
+            kwargs["permission_policy"] = ctx.permission_policy
         return cls(**kwargs)
     return factory
 
@@ -170,6 +183,11 @@ def create_tools(
     if role_cfg is None:
         role_cfg = load_role(role or "master", config)
 
+    ctx = ToolBuildContext(
+        role_cfg=role_cfg, cwd=cwd, workspace_uuid=workspace_uuid, session=session,
+        config=config, permission_store=permission_store,
+        permission_rules=permission_rules, permission_policy=permission_policy,
+    )
     tools: list[Tool] = []
     for name in role_cfg.tools:
         factory = TOOL_REGISTRY.get(name)
@@ -179,12 +197,17 @@ def create_tools(
         if name == "workflow" and not _workflow_tool_allowed(session):
             continue
         try:
-            tools.append(factory(
-                role_cfg, cwd, workspace_uuid, session, config,
-                permission_store, permission_rules, permission_policy,
-            ))
+            tools.append(factory(ctx))
         except Exception:
             # 用 exception 保留堆栈：工具构造失败（如子类 __init__ 未透传 **kwargs）
             # 会让该工具静默缺席，只有堆栈能定位根因。
             logger.exception(f"[registry] 实例化工具 {name!r} 失败，已跳过")
     return tools
+
+
+def get_tool_by_name(tools: list[Tool], name: str) -> Tool | None:
+    """在角色工具列表中按 name 查找（工具数少，线性扫描即可）。"""
+    for tool in tools:
+        if tool.name == name:
+            return tool
+    return None
