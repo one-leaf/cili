@@ -220,7 +220,7 @@ class PermissionPolicy:
         """
         if self.config.outside.read == "allow":
             return True
-        from core.security.shell_paths import normalize_shell_path
+        from core.security.shell_targets import normalize_shell_path
 
         mode = "pwsh" if tool == "pwsh" else "bash"
         for match in _ABS_PATH_RE.finditer(command or ""):

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """bash/pwsh 写/删目标提取与路径权限门测试。
 
-单元层：extract_shell_targets 的字面量/动态/重定向/cd 链/引号提取。
+单元层：collect_shell_targets 的字面量/动态/重定向/cd 链/引号提取。
 集成层：BashTool/PwshTool.execute 的区内放行、区外审批占位、已批放行、
 无 store 拒绝、keyword 批准跳过路径门、working_dir 门。
 """
@@ -9,7 +9,7 @@
 import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-from core.security.shell_paths import extract_shell_targets
+from core.security.shell_targets import collect_shell_targets
 from core.tools.base import ToolResult
 from core.tools.bash import BashTool
 from core.tools.permission import META_KEY, PermissionStore, permission_decision_id
@@ -20,7 +20,7 @@ from core.tools.pwsh import PwshTool
 
 class TestExtractBash:
     def _t(self, command, cwd, initial_dir=None):
-        return extract_shell_targets(command, "bash", cwd=cwd, initial_dir=initial_dir or cwd)
+        return collect_shell_targets(command, "bash", cwd=cwd, initial_dir=initial_dir or cwd)
 
     def test_rm_literal(self, tmp_path):
         ws = str(tmp_path)
@@ -122,7 +122,7 @@ class TestExtractBash:
 
 class TestExtractPwsh:
     def _t(self, command, cwd, initial_dir=None):
-        return extract_shell_targets(command, "pwsh", cwd=cwd, initial_dir=initial_dir or cwd)
+        return collect_shell_targets(command, "pwsh", cwd=cwd, initial_dir=initial_dir or cwd)
 
     def test_remove_item_path(self, tmp_path):
         ws = str(tmp_path)
@@ -275,7 +275,7 @@ class TestPwshExecuteGate:
 
 class TestTempZoneBash:
     def _t(self, command, cwd):
-        return extract_shell_targets(command, "bash", cwd=cwd, initial_dir=cwd)
+        return collect_shell_targets(command, "bash", cwd=cwd, initial_dir=cwd)
 
     def test_redirect_tmp_maps_to_temp(self, tmp_path):
         targets = self._t("echo hi > /tmp/out.txt", str(tmp_path))
@@ -320,7 +320,7 @@ class TestTempZoneBash:
 
 class TestTempZonePwsh:
     def _t(self, command, cwd):
-        return extract_shell_targets(command, "pwsh", cwd=cwd, initial_dir=cwd)
+        return collect_shell_targets(command, "pwsh", cwd=cwd, initial_dir=cwd)
 
     def test_env_temp_static(self, tmp_path):
         targets = self._t("Set-Content -Path $env:TEMP\\foo.txt -Value x", str(tmp_path))

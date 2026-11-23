@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Any
 
-from core.security.python_paths import collect_python_targets
+from core.security.python_targets import collect_python_targets
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,

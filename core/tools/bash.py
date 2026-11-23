@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from core.security.shell_paths import normalize_shell_path
+from core.security.shell_targets import normalize_shell_path
 from core.tools.base import ToolResult
 from core.tools.shell import _to_bash_path, shell_escape
 from core.tools.shell_tool_base import COMMON_DESTRUCTIVE_PATTERNS, ShellToolBase

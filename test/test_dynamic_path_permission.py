@@ -5,7 +5,7 @@ import os
 
 from core.security.path_policy import PathPolicy
 from core.security.permission_rules import PermissionRules, build_granted_rule
-from core.security.python_paths import collect_python_targets
+from core.security.python_targets import collect_python_targets
 from core.tools.permission import PermissionStore
 
 

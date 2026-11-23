@@ -10,7 +10,7 @@
 import os
 
 from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-from core.security.python_paths import collect_python_targets
+from core.security.python_targets import collect_python_targets
 from core.tools.base import ToolResult
 from core.tools.permission import META_KEY, PermissionStore
 from core.tools.python import PythonTool

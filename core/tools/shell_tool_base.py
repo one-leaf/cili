@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from core.security.path_target import OP_WRITE, PathTarget
-from core.security.shell_paths import extract_shell_targets
+from core.security.shell_targets import collect_shell_targets
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
@@ -188,7 +188,7 @@ class ShellToolBase(Tool):
             initial_dir = resolved
             working_targets = [PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)]
 
-        targets = extract_shell_targets(
+        targets = collect_shell_targets(
             command, self.shell_kind, cwd=self.cwd, initial_dir=initial_dir,
         ) + working_targets
         findings = self.collect_command_findings(command)

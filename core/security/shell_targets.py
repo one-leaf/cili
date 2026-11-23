@@ -326,7 +326,7 @@ def _cd_target(tokens: list[_Tok]) -> _Tok | None:
     return None
 
 
-def extract_shell_targets(command: str, mode: str, cwd: str, initial_dir: str) -> list[PathTarget]:
+def collect_shell_targets(command: str, mode: str, cwd: str, initial_dir: str) -> list[PathTarget]:
     """提取命令中的写/删目标。
 
     mode ∈ {"bash", "pwsh"}。cwd 为工作区根（相对路径解析基准）；
