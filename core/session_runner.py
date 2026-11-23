@@ -5,7 +5,7 @@
 - ``mode=autonomous``（worker/lite）→ pinned 任务消息、自主执行、检查阶段/预算预警/进度持久化
 
 系统提示词由 ``core/prompt_builder.build_system_prompt()`` 按角色 JSON 的
-blocks 拼装；注入型 user 层（claude_md/context）在 ``_get_messages_with_header``
+blocks 拼装；注入型 user 层（project_instructions/context）在 ``_get_messages_with_header``
 中合并并做防连续 user 合并。模型取 ``config.{role}_model or config.model``。
 """
 
@@ -696,9 +696,9 @@ class SessionRunner(BaseSessionRunner):
         return build_system_prompt(self)
 
     def _get_messages_with_header(self) -> list[dict]:
-        """BaseSessionRunner 版 + 注入型 user 层（claude_md）+ 防连续合并。
+        """BaseSessionRunner 版 + 注入型 user 层（project_instructions）+ 防连续合并。
 
-        注入层每次从磁盘动态生成（claude_md），不持久化到 self.messages（会话文件保持干净）。
+        注入层每次从磁盘动态生成（project_instructions），不持久化到 self.messages（会话文件保持干净）。
         context 已迁移至 system prompt 的动态区（session 内缓存），不再在此注入。
         合并后连续 user 消息自动合成一条，保证角色交替（OpenAI/Bedrock 约束）。
         """

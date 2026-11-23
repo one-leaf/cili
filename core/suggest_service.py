@@ -305,7 +305,7 @@ def _append_instruction(messages: list[Message], text: str) -> None:
     """在消息副本末尾放合成指令，保证角色交替。
 
     正常回合收尾最后一条是 assistant → 直接追加（保持与下一回合主请求的断点对齐）。
-    空会话的 prepared 消息只有一条注入的 user（claude_md）→ 合并进该条，避免连续
+    空会话的 prepared 消息只有一条注入的 user（project_instructions）→ 合并进该条，避免连续
     同角色消息（OpenAI/Bedrock 约束，主循环 ``assemble_context`` 同款处理）。
     """
     blocks = [TextBlock(text=text)]

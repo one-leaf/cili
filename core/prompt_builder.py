@@ -14,7 +14,7 @@
 - 分界之后的内容 session 特定，不 global 缓存
 
 ``user_layers`` 声明需要注入的 user 消息层：
-- ``claude_md``：每次从磁盘重读项目指令（agent.md/CLAUDE.md），不持久化
+- ``project_instructions``：每次从磁盘重读项目指令（agent.md/CLAUDE.md），不持久化
 - ``task`` / ``runtime``：autonomous 运行时写入历史（pinned 任务消息、预算/检查/
   超时提示），由 Agent 按 role_cfg 布尔开关处理，不在生成器表内
 
@@ -221,8 +221,8 @@ def build_system_prompt(runner) -> list[str]:
 # ─── user 层注入生成器（返回 "user" 消息 dict 或 None）───────────────
 
 
-def _gen_claude_md(runner) -> dict | None:
-    """claude_md 层：从磁盘重读项目指令文件。"""
+def _gen_project_instructions(runner) -> dict | None:
+    """项目指令层：从磁盘重读项目指令文件。"""
     from core.prompt_sections import build_instructions_message
     return build_instructions_message(runner.cwd)
 
@@ -294,7 +294,7 @@ def _gen_workflow_panel(runner) -> dict | None:
 
 # context 层已迁移至 system prompt 的 context 块（动态区），不再作为 user 层注入
 USER_LAYER_GENERATORS: dict[str, Callable[[Any], dict | None]] = {
-    "claude_md": _gen_claude_md,
+    "project_instructions": _gen_project_instructions,
     "workflow_panel": _gen_workflow_panel,
 }
 

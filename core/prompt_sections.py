@@ -6,7 +6,7 @@ JSON 的 text block（core/agents/{role}.json）；本模块仅保留动态生�
 
 - _build_tools_section() — 从工具实例生成工具列表段（tools 块）
 - _build_skills_section() — 从角色可见技能生成技能列表段（skills 块）
-- build_instructions_message() — 项目指令文件注入消息（claude_md 层）
+- build_instructions_message() — 项目指令文件注入消息（项目指令层）
 - build_environment_context() — 动态环境上下文（context 层）
 """
 
@@ -263,7 +263,7 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
     return lines
 
 
-# ─── 工作区指令文件加载（claude_md 层）────────────────────────────────
+# ─── 工作区指令文件加载（项目指令层）────────────────────────────────
 
 # 支持的项目指令文件（按优先级排序）
 PROJECT_INSTRUCTION_FILES = ["AGENTS.md", "agent.md", "CLAUDE.md", "claude.md"]

@@ -57,7 +57,7 @@ class TestPrompts:
         assert "pwsh" not in ctx
         assert "`temp` tool" not in ctx
 
-    # -- find_project_instructions / build_instructions_message (claude_md 层) --
+    # -- find_project_instructions / build_instructions_message (项目指令层) --
 
     def test_find_instructions_none(self, tmp_path):
         """无指令文件时返回 None。"""
