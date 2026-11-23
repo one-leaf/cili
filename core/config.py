@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -716,106 +715,45 @@ SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
 
 
 def validate_workspace_name(name: str) -> str | None:
-    """Validate workspace display name. Returns error message if invalid, None if valid.
+    """校验工作区显示名（实现见 core.workspaces）。"""
+    from core.workspaces import validate_workspace_name as _validate
 
-    Rules:
-    - 1-50 characters
-    - No path separators or control characters
-    """
-    if not name:
-        return "Workspace name is required"
-    if len(name) > 50:
-        return "Workspace name must be at most 50 characters"
-    if any(c in name for c in ('/', '\\', '\x00', '\n', '\r')):
-        return "Workspace name contains invalid characters"
-    return None
-
-
-_WORKSPACES_CACHE: list[dict] = []
-_WORKSPACES_SIG: tuple | None = None
-_WORKSPACES_LOCK = threading.RLock()
+    return _validate(name)
 
 
 def load_workspaces_index() -> list[dict]:
-    """Load workspace index from data/cili/workspaces.json. Returns [] if missing.
+    """读取 data/cili/workspaces.json（实现与缓存见 core.workspaces）。"""
+    from core.workspaces import load_index
 
-    mtime+size 缓存：QQ/微信每条消息会重复解析索引（单条 4-8 次）；返回深拷贝，
-    调用方就地修改不会污染缓存。
-    """
-    global _WORKSPACES_CACHE, _WORKSPACES_SIG
-    path_key = str(WORKSPACES_JSON)
-    try:
-        st = WORKSPACES_JSON.stat()
-        sig = (path_key, st.st_mtime_ns, st.st_size)
-    except OSError:
-        sig = None
-    with _WORKSPACES_LOCK:
-        if sig is not None and sig == _WORKSPACES_SIG:
-            return copy.deepcopy(_WORKSPACES_CACHE)
-        data: list[dict] = []
-        if sig is not None:
-            try:
-                with open(WORKSPACES_JSON, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, list):
-                    data = loaded
-                else:
-                    logger.warning(f"Invalid workspaces.json format (expected list): {WORKSPACES_JSON}")
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"Failed to read {WORKSPACES_JSON}: {e}")
-        _WORKSPACES_CACHE = data
-        _WORKSPACES_SIG = sig
-        return copy.deepcopy(data)
+    return load_index(WORKSPACES_JSON)
 
 
 def save_workspaces_index(workspaces: list[dict]) -> bool:
-    """Save workspace index to data/cili/workspaces.json (atomic write)."""
-    global _WORKSPACES_CACHE, _WORKSPACES_SIG
-    with _WORKSPACES_LOCK:
-        try:
-            atomic_write_json(WORKSPACES_JSON, workspaces)
-            _WORKSPACES_CACHE = copy.deepcopy(workspaces)
-            try:
-                st = WORKSPACES_JSON.stat()
-                _WORKSPACES_SIG = (str(WORKSPACES_JSON), st.st_mtime_ns, st.st_size)
-            except OSError:
-                _WORKSPACES_SIG = None
-            return True
-        except OSError as e:
-            logger.warning(f"Failed to save {WORKSPACES_JSON}: {e}")
-            return False
+    """写入索引（实现在 core.workspaces）。"""
+    from core.workspaces import save_index
+
+    return save_index(WORKSPACES_JSON, workspaces)
 
 
 def find_workspace_entry(workspace_uuid: str) -> dict | None:
-    """Find a workspace entry by uuid in workspaces.json."""
-    for entry in load_workspaces_index():
-        if entry.get("uuid") == workspace_uuid:
-            return entry
-    return None
+    """按 uuid 查找工作区条目。"""
+    from core.workspaces import find_entry
+
+    return find_entry(WORKSPACES_JSON, workspace_uuid)
 
 
 def upsert_workspace_entry(entry: dict) -> bool:
-    """Add or update a workspace entry in workspaces.json (keyed by uuid)."""
-    with _WORKSPACES_LOCK:
-        workspaces = load_workspaces_index()
-        uuid = entry.get("uuid")
-        for i, e in enumerate(workspaces):
-            if e.get("uuid") == uuid:
-                workspaces[i] = entry
-                break
-        else:
-            workspaces.append(entry)
-        return save_workspaces_index(workspaces)
+    """新增或更新工作区条目（按 uuid）。"""
+    from core.workspaces import upsert_entry
+
+    return upsert_entry(WORKSPACES_JSON, entry)
 
 
 def remove_workspace_entry(workspace_uuid: str) -> bool:
-    """Remove a workspace entry from workspaces.json. Idempotent."""
-    with _WORKSPACES_LOCK:
-        workspaces = load_workspaces_index()
-        filtered = [e for e in workspaces if e.get("uuid") != workspace_uuid]
-        if len(filtered) == len(workspaces):
-            return True  # not found
-        return save_workspaces_index(filtered)
+    """删除工作区条目（幂等）。"""
+    from core.workspaces import remove_entry
+
+    return remove_entry(WORKSPACES_JSON, workspace_uuid)
 
 
 def get_default_workspace_uuid() -> str:
