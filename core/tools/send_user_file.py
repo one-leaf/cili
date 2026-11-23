@@ -26,14 +26,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from core.outbox import enqueue_files, pending_count
 from core.session import session_key
 from core.tools.base import Tool, ToolResult
-
-if TYPE_CHECKING:  # 仅类型标注；运行时档案由 set_interface_profile 注入
-    pass
 
 logger = logging.getLogger(__name__)
 
