@@ -222,9 +222,10 @@ def _split_pdf_for_api(file_path: str, *, max_size_bytes: int,
 
 
 class PDF2MarkdownTool(Tool):
+    """Convert PDF/image files to Markdown via MinerU API."""
+
     streams_output = True
     mutates_workspace = True
-    """Convert PDF/image files to Markdown via MinerU API."""
 
     name = "pdf2markdown"
     description = (

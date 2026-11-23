@@ -50,11 +50,10 @@ _BASE_DESCRIPTION = (
 
 
 class SendUserFileTool(Tool):
-    interface_scoped = frozenset({"web", "qq", "wechat", "email"})
-    """把工作区内的文件发送给用户（接口专属，见 INTERFACE_TOOLS）。"""
+    """把工作区内的文件发送给用户（接口专属，见 Tool.interface_scoped）。"""
 
+    interface_scoped = frozenset({"web", "qq", "wechat", "email"})
     name = "send_user_file"
-    # 当前回合的接口能力档案；未声明（None）时 description 只含基础部分
     parameters = {
         "type": "object",
         "properties": {

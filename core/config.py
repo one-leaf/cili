@@ -488,12 +488,8 @@ class Config:
     # ── 构建 ──
 
     @classmethod
-    def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
-        """Build Config from raw global config dict with CLI/env overrides.
-
-        旧格式（model/worker_model/lite_model 为对象）由 ``migrate_legacy_config``
-        在此之前转换，此处只处理新格式。
-        """
+    def from_dict(cls, global_config: dict) -> "Config":
+        """解析新格式配置 dict（结构/凭据/OAuth 端点锁定），不做环境变量覆盖。"""
         providers = {
             name: ProviderConfig.from_dict(cfg)
             for name, cfg in (global_config.get("providers") or {}).items()
@@ -516,10 +512,30 @@ class Config:
 
         config = cls(providers=providers, agents=agents)
 
+        # ── System ──
+        config.system = SystemConfig.from_dict(global_config.get("system", {}))
+
+        # ── Permissions（顶层 permissions 字段，不放进 system） ──
+        config.permissions = PermissionConfig.from_dict(global_config.get("permissions") or {})
+
+        # ── Images（顶层 images 字段） ──
+        config.images = ImageConfig.from_dict(global_config.get("images") or {})
+
+        # ── MCP servers ──
+        config.mcp_servers = {
+            name: MCPConfig.from_dict(cfg)
+            for name, cfg in (global_config.get("mcp_servers") or {}).items()
+            if isinstance(cfg, dict)
+        }
+
+        return config
+
+    def apply_env_overrides(self, model_override: str | None = None) -> "Config":
+        """env/CLI 覆盖：只作用于 master 的接入层/模型 ID，不改变模型归属。"""
         # ── env/CLI 覆盖：只作用于 master 的接入层/模型 ID，不改变模型归属 ──
-        master_ref = config.master_ref()
+        master_ref = self.master_ref()
         provider_key, _, model_key = master_ref.partition("/")
-        provider = config.providers[provider_key]
+        provider = self.providers[provider_key]
         is_oauth = provider.auth_type == "oauth"
         env_api_key = os.environ.get("ANTHROPIC_API_KEY")
         env_base_url = os.environ.get("ANTHROPIC_BASE_URL")
@@ -539,24 +555,16 @@ class Config:
                 f"  2. Global config file: {GLOBAL_CONFIG_PATH}\n"
                 f"\nYou can also configure via web UI or edit {GLOBAL_CONFIG_PATH} directly."
             )
+        return self
 
-        # ── System ──
-        config.system = SystemConfig.from_dict(global_config.get("system", {}))
+    @classmethod
+    def from_global_config(cls, global_config: dict, model_override: str | None = None) -> "Config":
+        """新格式 dict → Config，并应用 env/CLI 覆盖。
 
-        # ── Permissions（顶层 permissions 字段，不放进 system） ──
-        config.permissions = PermissionConfig.from_dict(global_config.get("permissions") or {})
-
-        # ── Images（顶层 images 字段） ──
-        config.images = ImageConfig.from_dict(global_config.get("images") or {})
-
-        # ── MCP servers ──
-        config.mcp_servers = {
-            name: MCPConfig.from_dict(cfg)
-            for name, cfg in (global_config.get("mcp_servers") or {}).items()
-            if isinstance(cfg, dict)
-        }
-
-        return config
+        旧格式（model/worker_model/lite_model 为对象）由 ``migrate_legacy_config``
+        在此之前转换，此处只处理新格式。
+        """
+        return cls.from_dict(global_config).apply_env_overrides(model_override)
 
     def to_dict(self) -> dict:
         """Convert to a serializable dict (for API response)。api_key 脱敏在路由层做。"""
