@@ -12,11 +12,11 @@ import os
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
 from core.config import PROJECT_ROOT
+from core.temp_dirs import temp_root
 from core.tool_limits import BASH_MAX_OUTPUT_TOKENS, BASH_RESULT_MAX_CHARS
 from core.tools.result import ToolResult
 
@@ -25,7 +25,7 @@ _PROJECT_ROOT = str(PROJECT_ROOT)
 _VENV_DIR = os.path.join(_PROJECT_ROOT, "data", "deps", "python")
 _VENV_SCRIPTS = os.path.join(_VENV_DIR, "Scripts")
 # 系统级临时目录（子进程 TEMP）：data/tmp 已废弃，回落系统标准 temp
-_TMP_DIR = tempfile.gettempdir()
+_TMP_DIR = temp_root()
 
 # stdout 读取块大小（字节）。read1 只要有数据就返回，故块大小不影响实时性
 _READ_CHUNK_BYTES = 8192
