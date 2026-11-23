@@ -1,6 +1,6 @@
 """路径权限判定：工作区/临时目录内放行，外部按权限策略裁决。
 
-- ``PathPolicy`` 委托 ``PermissionPolicy`` 做规则/会话批准/分项策略裁决；
+- ``PathPolicy`` 委托 ``PermissionResolver`` 做规则/会话批准/分项策略裁决；
 - 青少年模式受保护路径硬 deny，strict 未解锁时挂起普通放行通道；
 - 读取通过 ``read_status`` 使用 ``outside.read``（含 ``ai`` 路径元数据）。
 """
@@ -13,7 +13,7 @@ import os
 from core.fs_utils import is_path_within, normalize_bash_path, os_temp_root
 from core.permission_settings import PermissionConfig
 from core.security.path_target import OP_DELETE, OP_READ, OP_WRITE, PathTarget  # noqa: F401 —— 兼容旧导入
-from core.security.permission_policy import PermissionPolicy
+from core.security.permission_policy import PermissionResolver
 from core.security.protected_paths import teen_path_verdict
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class PathPolicy:
         workspace_root: str,
         cwd: str | None = None,
         *,
-        permission_policy: PermissionPolicy | None = None,
+        permission_policy: PermissionResolver | None = None,
         permission_store=None,
         permission_rules=None,
     ):
@@ -38,7 +38,7 @@ class PathPolicy:
         rules = permission_rules
         if rules is not None and not hasattr(rules, "evaluate_path"):
             rules = None
-        self.permission_policy = permission_policy or PermissionPolicy(
+        self.permission_policy = permission_policy or PermissionResolver(
             PermissionConfig(), rules, store,
             workspace_root=self.workspace_root, cwd=self.cwd,
         )

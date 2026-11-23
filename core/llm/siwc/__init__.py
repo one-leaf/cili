@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from core.llm.siwc.catalog import parse_models_payload
 from core.llm.siwc.login import (
     cancel,
     complete_manual,
@@ -44,13 +43,12 @@ __all__ = [
     "cancel",
     "set_authorized_hook",
     "shutdown_login",
-    "parse_models_payload",
     "shape_request",
-    "_assert_oauth_endpoint",
+    "assert_oauth_endpoint",
 ]
 
 
-def _assert_oauth_endpoint(config) -> None:
+def assert_oauth_endpoint(config) -> None:
     """OAuth provider 的端点与协议由代码锁定，防止 token 发往任意主机。"""
     from core.llm.siwc import const
 

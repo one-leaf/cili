@@ -749,7 +749,8 @@ def _session_headers_for(interface_type: str, auth_type: str, api_key: str, head
 
 async def _detect_siwc_models(request: DetectModelsRequest) -> dict:
     """SIWC：用 OAuth token 拉 /v1/models（401 刷新一次）。"""
-    from core.llm.siwc import get_access_token, parse_models_payload
+    from core.llm.model_catalog import parse_models_payload
+    from core.llm.siwc import get_access_token
 
     credential = request.credential or ""
     if not credential:

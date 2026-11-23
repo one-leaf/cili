@@ -51,7 +51,7 @@ class PermissionVerdict:
     approved: bool = False
 
 
-class PermissionPolicy:
+class PermissionResolver:
     """配置 + 规则 + 会话批准 → 统一裁决。"""
 
     def __init__(

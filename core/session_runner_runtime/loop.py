@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from core.permission_settings import PermissionConfig, get_permission_config
-from core.security.permission_judge import PermissionDecision
+from core.security.permission_judge import JudgeDecision
 from core.security.permission_rules import build_granted_rule, implied_path_rules
 from core.security.permission_state import append_permission_audit
 from core.session_runner_runtime.tool_batch import execute_tool_calls
@@ -604,7 +604,7 @@ class Loop:
 
             # verdict == "ai"（或旧占位未带 verdict）
             if judge is None:
-                decision = PermissionDecision(decision="deny", summary="", reason="判定器缺失",
+                decision = JudgeDecision(decision="deny", summary="", reason="判定器缺失",
                                               source="failure", error="no judge")
             else:
                 decision = judge.decide(permission)

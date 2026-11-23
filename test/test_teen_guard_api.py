@@ -266,9 +266,9 @@ class _FakeJudge:
 
     def decide(self, permission):
         self.called += 1
-        from core.security.permission_judge import PermissionDecision
+        from core.security.permission_judge import JudgeDecision
 
-        return PermissionDecision(decision=self._decision, summary="s", reason="r",
+        return JudgeDecision(decision=self._decision, summary="s", reason="r",
                                   risk=self._risk, source="judge")
 
 

@@ -167,9 +167,9 @@ class Tool(ShellMixin, BackgroundMixin):
         """取本次注入的裁决器；独立工具场景构造默认策略。"""
         if self.permission_policy is None:
             from core.permission_settings import PermissionConfig
-            from core.security.permission_policy import PermissionPolicy
+            from core.security.permission_policy import PermissionResolver
 
-            self.permission_policy = PermissionPolicy(
+            self.permission_policy = PermissionResolver(
                 PermissionConfig(), self.permission_rules, self.permission_store,
                 workspace_root=self.cwd, cwd=self.cwd,
             )

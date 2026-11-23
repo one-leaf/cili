@@ -78,7 +78,7 @@ _SYSTEM_PROMPT = """你是 Cili Agent 的权限判定器。对给定的「待判
 
 
 @dataclass
-class PermissionDecision:
+class JudgeDecision:
     """一次判定的结论（judge 结论 / 失败策略兜底 / 缓存命中）。"""
 
     decision: str  # allow | ask | deny
@@ -121,7 +121,7 @@ class PermissionJudge:
 
     # ── 主入口 ────────────────────────────────────────────────────
 
-    def decide(self, permission: dict) -> PermissionDecision:
+    def decide(self, permission: dict) -> JudgeDecision:
         cfg = self._cfg()
         did = str((permission or {}).get("decision_id") or "")
         if not cfg.enabled or not cfg.judge.enabled:
@@ -129,7 +129,7 @@ class PermissionJudge:
         if did and did in self._cache:
             cached = dict(self._cache[did])
             cached["source"] = "cache"
-            return PermissionDecision(**cached)
+            return JudgeDecision(**cached)
 
         self._audit("asked", permission, {"source": "judge"})
         if self._consecutive_failures >= max(1, cfg.judge.max_consecutive_failures):
@@ -257,7 +257,7 @@ class PermissionJudge:
         return resp, usage
 
     @staticmethod
-    def _validate(raw: dict) -> PermissionDecision:
+    def _validate(raw: dict) -> JudgeDecision:
         if not isinstance(raw, dict):
             raise ValueError("判定输出不是对象")
         decision = raw.get("decision")
@@ -280,7 +280,7 @@ class PermissionJudge:
                 suggested = None
         else:
             suggested = None
-        return PermissionDecision(
+        return JudgeDecision(
             decision=decision, risk=risk,
             summary=str(raw.get("summary") or "").strip(),
             reason=str(raw.get("reason") or "").strip(),
@@ -290,11 +290,11 @@ class PermissionJudge:
 
     # ── 失败策略 / 审计 ───────────────────────────────────────────
 
-    def _failure_decision(self, permission: dict, cfg, error: str) -> PermissionDecision:
+    def _failure_decision(self, permission: dict, cfg, error: str) -> JudgeDecision:
         outcome = cfg.judge.on_error if cfg.judge.on_error in ("ask", "deny", "allow") else "ask"
         if outcome == "ask" and not self.has_user_channel:
             outcome = "deny"
-        return PermissionDecision(
+        return JudgeDecision(
             decision=outcome, risk="high" if outcome != "allow" else "medium",
             summary=f"自动判定不可用：{(permission or {}).get('command', '')[:80]}",
             reason=f"自动判定失败（{error}），按 {outcome} 策略处理",

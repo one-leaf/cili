@@ -1,4 +1,4 @@
-"""SIWC 模型目录解析：兼容标准 /v1/models 与 ChatGPT 目录形状。"""
+"""模型目录解析：兼容标准 /v1/models 与 ChatGPT 目录形状（供应商无关）。"""
 
 from __future__ import annotations
 

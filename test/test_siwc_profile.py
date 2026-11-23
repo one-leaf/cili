@@ -1,7 +1,7 @@
 """SIWC 请求整形测试。"""
 
+from core.llm.model_catalog import parse_models_payload
 from core.llm.siwc import const
-from core.llm.siwc.catalog import parse_models_payload
 from core.llm.siwc.profile import shape_request
 
 

@@ -43,7 +43,7 @@ from core.prompt_builder import (
 )
 from core.role_config import load_role
 from core.security.permission_judge import PermissionJudge
-from core.security.permission_policy import PermissionPolicy
+from core.security.permission_policy import PermissionResolver
 from core.security.permission_rules import PermissionRules
 from core.security.permission_state import PermissionStore, append_permission_audit
 from core.session import (
@@ -329,7 +329,7 @@ class SessionRunner(BaseSessionRunner):
 
         # 统一裁决器与 lite 判定器：interactive 与 autonomous 都具备判定能力；
         # 有无「询问用户」通道由 role_cfg.approval 决定（master=True，worker/lite=False）。
-        self.permission_policy = PermissionPolicy(
+        self.permission_policy = PermissionResolver(
             get_permission_config(config), self.permission_rules, self.permission_store,
             workspace_root=self._cwd_init, cwd=self._cwd_init,
         )
@@ -758,7 +758,7 @@ class SessionRunner(BaseSessionRunner):
             self.model = new_model
             self.model_ref = new_ref
             self.config = new_config
-            self.permission_policy = PermissionPolicy(
+            self.permission_policy = PermissionResolver(
                 get_permission_config(new_config), self.permission_rules, self.permission_store,
                 workspace_root=self._cwd_init, cwd=self._cwd_init,
             )

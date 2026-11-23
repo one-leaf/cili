@@ -529,8 +529,8 @@ def create_llm_client(config: ModelConfig) -> LLMClient:
     from core.llm.openai_responses import OpenAIResponsesAdapter
 
     if getattr(config, "auth_type", "") == "oauth":
-        from core.llm.siwc import _assert_oauth_endpoint
-        _assert_oauth_endpoint(config)
+        from core.llm.siwc import assert_oauth_endpoint
+        assert_oauth_endpoint(config)
 
     interface_type = config.interface_type.lower()
 

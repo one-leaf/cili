@@ -11,7 +11,7 @@
 import json
 
 from core.permission_settings import PermissionConfig
-from core.security.permission_policy import PermissionPolicy
+from core.security.permission_policy import PermissionResolver
 from core.security.permission_rules import (
     PermissionRules,
     build_granted_rule,
@@ -62,7 +62,7 @@ def _rules(tmp_path, rules):
 
 
 def _policy(tmp_path, cfg=None, rules=None, store=None):
-    return PermissionPolicy(
+    return PermissionResolver(
         PermissionConfig.from_dict(cfg or {}), rules, store,
         workspace_root=str(tmp_path), cwd=str(tmp_path),
     )

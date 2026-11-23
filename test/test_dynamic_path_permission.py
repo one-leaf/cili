@@ -68,16 +68,16 @@ def test_dynamic_session_approval(tmp_path):
 def test_command_verdict_honors_dynamic_target_approval(tmp_path):
     """命令级判定必须用与 PathPolicy 相同的 decision_id 命中已批准目标。
 
-    回归：``PermissionPolicy._target_verdict`` 曾丢 static_prefix/code_hash/
+    回归：``PermissionResolver._target_verdict`` 曾丢 static_prefix/code_hash/
     target_index，动态目标批过仍反复弹卡。
     """
     from core.permission_settings import PermissionConfig
-    from core.security.permission_policy import PermissionPolicy
+    from core.security.permission_policy import PermissionResolver
 
     store = PermissionStore()
     code = 'for path, url in targets:\n    open(path, "w")'
     target = collect_python_targets(code, str(tmp_path))[0]
-    policy = PermissionPolicy(
+    policy = PermissionResolver(
         PermissionConfig(), None, store,
         workspace_root=str(tmp_path), cwd=str(tmp_path),
     )

@@ -347,7 +347,7 @@ def builtin_deny_rules() -> list[dict]:
 
 
 def match_builtin_deny(tool: str, command: str) -> dict | None:
-    """内置 deny 规则匹配（供 PermissionPolicy 调用）。"""
+    """内置 deny 规则匹配（供 PermissionResolver 调用）。"""
     return _match_builtin(builtin_deny_rules(), tool, command)
 
 
