@@ -113,9 +113,9 @@ async def qq_disconnect(account_id: str) -> dict[str, Any]:
 async def qq_onboard_start(account_id: str) -> dict[str, Any]:
     """建绑定任务、生成二维码。AppSecret 经服务端加密回传后只落配置文件。"""
     try:
-        from interfaces.qq.onboard import get_onboard_store
+        from interfaces.qq.login import get_login_store
 
-        return await get_onboard_store().start(account_id)
+        return await get_login_store().start(account_id)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -129,9 +129,9 @@ async def qq_onboard_status(
     if not session_id:
         raise HTTPException(status_code=400, detail="缺少 session_id")
     try:
-        from interfaces.qq.onboard import get_onboard_store
+        from interfaces.qq.login import get_login_store
 
-        result = await get_onboard_store().poll(session_id)
+        result = await get_login_store().poll(session_id)
     except Exception as e:  # noqa: BLE001 — 平台侧失败回给前端在弹框里展示
         logger.warning(f"[qq] 扫码绑定轮询失败: {e}")
         return {"status": "failed", "message": str(e)[:200]}
@@ -152,6 +152,6 @@ async def qq_onboard_cancel(
     """取消扫码绑定（丢弃会话）。"""
     if not session_id:
         raise HTTPException(status_code=400, detail="缺少 session_id")
-    from interfaces.qq.onboard import get_onboard_store
+    from interfaces.qq.login import get_login_store
 
-    return await get_onboard_store().cancel(session_id)
+    return await get_login_store().cancel(session_id)

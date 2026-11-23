@@ -30,8 +30,8 @@ def isolated_config(tmp_path, monkeypatch):
 @pytest.fixture
 def fresh_store():
     """全新 store 实例（不与其它用例共享内存会话）。"""
-    from interfaces.qq.onboard import QQOnboardStore
-    return QQOnboardStore()
+    from interfaces.qq.login import QQLoginStore
+    return QQLoginStore()
 
 
 @pytest.fixture

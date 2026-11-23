@@ -35,7 +35,7 @@ POLL_INTERVAL_MS = 2000         # 建议前端轮询间隔
 
 
 @dataclass
-class OnboardSession:
+class LoginSession:
     """一次扫码绑定的内存状态。"""
 
     session_id: str
@@ -56,11 +56,11 @@ def _sdk_onboard():
     return sdk_onboard
 
 
-class QQOnboardStore:
+class QQLoginStore:
     """扫码绑定会话表（内存，``SESSION_TTL_S`` 过期自动清理）。"""
 
     def __init__(self) -> None:
-        self._sessions: dict[str, OnboardSession] = {}
+        self._sessions: dict[str, LoginSession] = {}
 
     # ── 对外三个动作（与微信登录 store 同形） ────────────────────────
 
@@ -70,7 +70,7 @@ class QQOnboardStore:
         sdk = _sdk_onboard()
         task = await sdk._create_bind_task()
         qr_url = sdk.build_connect_url(task.task_id)
-        session = OnboardSession(
+        session = LoginSession(
             session_id=secrets.token_hex(8),
             account_id=account_id,
             task_id=task.task_id,
@@ -146,12 +146,12 @@ class QQOnboardStore:
         save_qq_accounts(accounts)
 
 
-_STORE: QQOnboardStore | None = None
+_STORE: QQLoginStore | None = None
 
 
-def get_onboard_store() -> QQOnboardStore:
+def get_login_store() -> QQLoginStore:
     """进程级单例（路由层入口）。"""
     global _STORE
     if _STORE is None:
-        _STORE = QQOnboardStore()
+        _STORE = QQLoginStore()
     return _STORE
