@@ -216,10 +216,25 @@ def _format_window(seconds: int) -> str:
     return f"{int(seconds or 0)} 秒"
 
 
-_NEGATION_SUFFIXES = (
-    "不", "别", "勿", "未", "不要", "不想", "不愿意", "不需要", "没有必要",
-    "不必", "不用", "禁止", "取消", "拒绝", "无需", "不允许",
+_NEGATION_PHRASES = (
+    "不同意", "不允许", "不可以", "不批准", "不确认", "不要", "不想",
+    "不愿意", "不需要", "没有必要", "不必", "不用", "禁止", "取消",
+    "拒绝", "无需",
 )
+_SINGLE_NEGATION_RE = re.compile(
+    r"(?:^|[，,。.!！、;；\s])(?:不|别|勿|未)(?:$|[，,。.!！、;；\s])"
+)
+
+
+def _has_negation(prefix: str) -> bool:
+    """前缀里是否有拒绝语义（避免把「特别」里的「别」当成否定）。"""
+    if any(phrase in prefix for phrase in _NEGATION_PHRASES):
+        return True
+    if _SINGLE_NEGATION_RE.search(prefix):
+        return True
+    if prefix.endswith(("不", "勿", "未")):
+        return True
+    return prefix.endswith("别") and not prefix.endswith("特别")
 
 
 def _ends_with_affirmed(text: str, label: str) -> bool:
@@ -229,7 +244,7 @@ def _ends_with_affirmed(text: str, label: str) -> bool:
     if not text.endswith(label):
         return False
     prefix = text[:-len(label)].rstrip(" ，,。.!！、;；")
-    return not prefix.endswith(_NEGATION_SUFFIXES)
+    return not _has_negation(prefix)
 
 
 def decision_from_text(text: str | None) -> str:

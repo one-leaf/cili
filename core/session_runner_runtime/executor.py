@@ -114,8 +114,8 @@ class TurnExecutor:
         return self._call_llm(streaming=streaming, system_prompt=system_prompt)
 
     def _image_mode(self) -> str:
-        """图片历史策略：full | current_turn。"""
-        return getattr(getattr(self.runner.config, "images", None), "history_mode", "current_turn")
+        """图片历史策略：full | current_turn（与 runner 共用同一读取口径）。"""
+        return self.runner._image_history_mode()
 
     def _effective_turn_id(self) -> str:
         """当前回合 id；恢复路径从最近 user 消息的 meta.turn_id 推导。"""
