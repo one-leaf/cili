@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from core.media_fetch import InboundMedia, download_to_uploads
-from interfaces.common.media import MediaError, validate_media_path
+from interfaces.common.delivery_path import MediaError, validate_media_path
 from interfaces.wechat.config import WechatConfig
 from interfaces.wechat.protocol import (
     ITEM_FILE,

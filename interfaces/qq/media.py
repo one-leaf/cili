@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from interfaces.common.media import MediaError, validate_media_path
+from interfaces.common.delivery_path import MediaError, validate_media_path
 
 logger = logging.getLogger(__name__)
 
