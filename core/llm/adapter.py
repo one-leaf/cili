@@ -154,6 +154,17 @@ class Adapter(ABC):
     to handle its specific wire format and streaming protocol.
     """
 
+    # ── Prompt cache 钩子（子类按协议覆盖；默认关闭/不处理）──────────────
+
+    @property
+    def cache_enabled(self) -> bool:
+        return False
+
+    def apply_prompt_cache(self, body: dict, system, messages, tools=None) -> None:
+        """在请求体上打缓存断点；不支持该协议的适配器什么都不做。"""
+        return None
+
+
     def __init__(self, config: ResolvedModel):
         """Initialize adapter with model configuration.
 

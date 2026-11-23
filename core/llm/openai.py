@@ -339,7 +339,8 @@ class OpenAIAdapter(Adapter):
             signature=block.get("signature") or None,
         )
 
-    def _prompt_cache_enabled(self) -> bool:
+    @property
+    def cache_enabled(self) -> bool:
         """根据 cache_control 配置决定是否启用 prompt cache。
 
         OpenAI 标准 API 不支持显式 cache_control，但部分兼容网关（如 OpenRouter 上的 Anthropic 模型）支持。
@@ -355,7 +356,7 @@ class OpenAIAdapter(Adapter):
         # auto 和 false 都不启用
         return False
 
-    def _apply_prompt_cache(
+    def apply_prompt_cache(
         self,
         body: dict[str, Any],
         system: str | list[str],
@@ -369,7 +370,7 @@ class OpenAIAdapter(Adapter):
 
         注意：标准 OpenAI API 不支持此字段，只有部分兼容网关（如 OpenRouter 上的 Anthropic 模型）支持。
         """
-        if not self._prompt_cache_enabled():
+        if not self.cache_enabled:
             return
 
         # system 最后一段加 cache_control
@@ -409,7 +410,7 @@ class OpenAIAdapter(Adapter):
         messages = merge_consecutive_same_role(messages)
 
         # 处理 system 消息：如果启用 cache_control，转为 list 格式
-        if self._prompt_cache_enabled():
+        if self.cache_enabled:
             from core.prompt_builder import DYNAMIC_BOUNDARY
             if isinstance(system, list):
                 sys_list = [{"type": "text", "text": s} for s in system if s != DYNAMIC_BOUNDARY and s]
@@ -448,7 +449,7 @@ class OpenAIAdapter(Adapter):
             body["stream_options"] = {"include_usage": True}
 
         # 应用 prompt cache（如果启用）
-        self._apply_prompt_cache(body, system, body["messages"], body.get("tools"))
+        self.apply_prompt_cache(body, system, body["messages"], body.get("tools"))
 
         return body
 

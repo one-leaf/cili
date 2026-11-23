@@ -39,7 +39,7 @@ class AnthropicAdapter(Adapter):
         return "/v1/messages"
 
     @property
-    def _prompt_cache_enabled(self) -> bool:
+    def cache_enabled(self) -> bool:
         """根据 cache_control 配置决定是否启用 prompt cache。
 
         cache_control 值：
@@ -98,8 +98,8 @@ class AnthropicAdapter(Adapter):
             body["tools"] = tools
 
         # prompt cache 需在 tools 放入 body 后调用（它要给 tools[-1] 加 cache_control）
-        # system 由 _apply_prompt_cache 内部处理（支持 str / list[str]）
-        self._apply_prompt_cache(body, system, anthropic_messages)
+        # system 由 apply_prompt_cache 内部处理（支持 str / list[str]）
+        self.apply_prompt_cache(body, system, anthropic_messages)
 
         if stream:
             body["stream"] = True
@@ -241,22 +241,23 @@ class AnthropicAdapter(Adapter):
             body["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
         # default / 其他值：不发送 thinking 参数，也不发送 temperature（已移除）
 
-    def _apply_prompt_cache(
+    def apply_prompt_cache(
         self,
         body: dict[str, Any],
         system: str | list[str],
         anthropic_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> None:
         """Prompt cache：4 断点布局——system 静态区 + tools + messages[-3] + messages[-1]。
 
         system 支持 list[str]（含 DYNAMIC_BOUNDARY）或 str（向后兼容）。
         静态区用 scope='global' 跨用户共享，动态区不缓存。
         非官方端点（中转/网关）不识别 cache_control 会直接 400，由
-        _prompt_cache_enabled 统一关闭。
+        cache_enabled 统一关闭。
         """
         from core.prompt_builder import DYNAMIC_BOUNDARY
 
-        if not self._prompt_cache_enabled:
+        if not self.cache_enabled:
             # 非官方端点：system 直接 join 为字符串（或透传 str）
             if isinstance(system, list):
                 body["system"] = "\n\n".join(s for s in system
