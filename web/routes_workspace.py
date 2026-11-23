@@ -23,9 +23,9 @@ from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
     get_workspace_data_dir,
-    load_workspace_config,
+    get_workspace_meta,
     remove_workspace_entry,
-    save_workspace_config,
+    save_workspace_meta,
     sessions_dir_for_data_dir,
     validate_workspace_name,
 )
@@ -184,7 +184,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
         "memory_enabled": True,
     }
 
-    save_workspace_config(workspace_uuid, ws_config)
+    save_workspace_meta(workspace_uuid, ws_config)
 
     # Create .cili data directory (workspace-local, mirrors directory in index)
     ws_data_dir = get_workspace_data_dir(workspace_uuid)
@@ -231,7 +231,7 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     # Load existing config
-    config = load_workspace_config(workspace_uuid)
+    config = get_workspace_meta(workspace_uuid)
     if not config:
         raise HTTPException(status_code=404, detail="Workspace config not found")
 
@@ -252,7 +252,7 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
 
     config["updated_at"] = now_str()
 
-    if not save_workspace_config(workspace_uuid, config):
+    if not save_workspace_meta(workspace_uuid, config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
     return {"success": True, "workspace": config}
@@ -285,9 +285,9 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    config = load_workspace_config(workspace_uuid)
+    config = get_workspace_meta(workspace_uuid)
     config["git_enabled"] = request.git_enabled
-    if not save_workspace_config(workspace_uuid, config):
+    if not save_workspace_meta(workspace_uuid, config):
         raise HTTPException(status_code=500, detail="Failed to save config")
 
     # 如果启用且未初始化，自动初始化 Git 仓库

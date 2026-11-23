@@ -19,7 +19,7 @@ from typing import Any
 from core.config import (
     PROJECT_ROOT,
     remove_workspace_entry,
-    save_workspace_config,
+    save_workspace_meta,
     validate_workspace_name,
 )
 from core.fs_utils import atomic_write_text, path_key
@@ -771,7 +771,7 @@ def create_workspaces(
             if preview.get("group"):
                 config["study_group_id"] = preview["group"]["id"]
                 config["study_group_name"] = preview["group"]["name"]
-            if not save_workspace_config(uuid, config):
+            if not save_workspace_meta(uuid, config):
                 raise WorkspaceWizardError("工作区索引写入失败")
             saved_uuid = uuid
 

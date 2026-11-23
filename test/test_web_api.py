@@ -1256,7 +1256,7 @@ class TestCreateWorkspaceDefaults:
         result = asyncio.run(create_workspace(
             CreateWorkspaceRequest(name="测试工作区", directory=str(tmp_path / "ws"))
         ))
-        entry = config_mod.load_workspace_config(result["uuid"])
+        entry = config_mod.get_workspace_meta(result["uuid"])
         assert entry["git_enabled"] is True
         assert entry["memory_enabled"] is True
         assert inited == [result["uuid"]]
@@ -1275,7 +1275,7 @@ class TestCreateWorkspaceDefaults:
         result = asyncio.run(create_workspace(
             CreateWorkspaceRequest(name="测试工作区", directory=str(tmp_path / "ws"))
         ))
-        entry = config_mod.load_workspace_config(result["uuid"])
+        entry = config_mod.get_workspace_meta(result["uuid"])
         assert entry["git_enabled"] is True
         assert entry["memory_enabled"] is True
 

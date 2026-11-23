@@ -276,7 +276,7 @@ def _repoint_index(legacy: dict[str, Any], default_dir: Path) -> str | None:
     legacy = dict(legacy)
     legacy["directory"] = str(default_dir)
     legacy["updated_at"] = now_str()
-    if not config_mod.save_workspace_config(legacy.get("uuid", ""), legacy):
+    if not config_mod.save_workspace_meta(legacy.get("uuid", ""), legacy):
         # 文件已在 default/ 下；下次启动按「索引待修复」兜底逻辑修复
         logger.error("[migration] 索引更新失败；文件已在 default/ 下，下次启动自动修复索引")
         return legacy.get("uuid")

@@ -23,8 +23,8 @@ from core.config import (
     ensure_default_workspace,
     find_workspace_entry,
     get_workspace_data_dir,
+    get_workspace_meta,
     load_config,
-    load_workspace_config,
     load_workspaces_index,
 )
 from core.default_sink import bind_default_sink
@@ -227,7 +227,7 @@ def init_web_deps() -> None:
 
 def _get_workspace_info(workspace_uuid: str) -> dict | None:
     """Read workspace info from setting.json. Returns None if not found."""
-    config = load_workspace_config(workspace_uuid)
+    config = get_workspace_meta(workspace_uuid)
     return config or None
 
 

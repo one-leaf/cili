@@ -37,8 +37,8 @@ def _schedule_memory_extraction(runner: SessionRunner) -> None:
 def _schedule_git_commit(runner: SessionRunner) -> None:
     """Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞）。"""
     try:
-        from core.config import load_workspace_config
-        workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
+        from core.config import get_workspace_meta
+        workspace_cfg = get_workspace_meta(runner.workspace_uuid or "")
         if not workspace_cfg.get("git_enabled", False):
             return
         import threading

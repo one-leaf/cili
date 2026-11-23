@@ -11,8 +11,8 @@ from pydantic import BaseModel
 
 from core.config import (
     get_workspace_data_dir,
-    load_workspace_config,
-    save_workspace_config,
+    get_workspace_meta,
+    save_workspace_meta,
 )
 from core.memory_pipeline import run_consolidation
 from core.memory_service import memory_enabled
@@ -189,9 +189,9 @@ async def update_memory_settings(workspace_uuid: str, request: MemorySettingsReq
     """开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制）。"""
     csrf_protect(request_raw)
     validate_workspace_uuid(workspace_uuid)
-    cfg = load_workspace_config(workspace_uuid)
+    cfg = get_workspace_meta(workspace_uuid)
     if not cfg:
         raise HTTPException(status_code=404, detail="Workspace not found")
     cfg["memory_enabled"] = request.memory_enabled
-    save_workspace_config(workspace_uuid, cfg)
+    save_workspace_meta(workspace_uuid, cfg)
     return {"ok": True, "memory_enabled": request.memory_enabled}

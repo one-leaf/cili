@@ -9,7 +9,7 @@ from typing import Callable
 from core.config import (
     SYSTEM_WORKSPACE_UUID,
     get_workspace_data_dir,
-    load_workspace_config,
+    get_workspace_meta,
     load_workspaces_index,
 )
 from core.memory_pipeline import run_consolidation, run_extraction
@@ -49,7 +49,7 @@ def memory_enabled(workspace_uuid: str) -> bool:
 
     缺省为 False——纯工作区隔离，除非用户在记忆管理页显式开启。
     """
-    cfg = load_workspace_config(workspace_uuid)
+    cfg = get_workspace_meta(workspace_uuid)
     return bool(cfg.get("memory_enabled", False))
 
 

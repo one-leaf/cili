@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from core.config import get_workspace_data_dir, load_workspace_config
+from core.config import get_workspace_data_dir, get_workspace_meta
 from core.teen_mode import get_teen_mode
 from core.textbooks import (
     OfficialBook,
@@ -50,7 +50,7 @@ def _catalog_or_503():
 def _workspace_or_404(workspace_uuid: str) -> dict[str, Any]:
     if not _SAFE_ID_RE.fullmatch(workspace_uuid or ""):
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
-    info = load_workspace_config(workspace_uuid)
+    info = get_workspace_meta(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")
     if info.get("system") or workspace_uuid == "system":

@@ -714,7 +714,7 @@ def workspace_uuid_for_sessions_dir(sessions_dir: Path | str) -> str | None:
 
 def get_workspace_cwd(workspace_uuid: str = "") -> str:
     """工作区的用户可见目录（workspaces.json 条目；缺失时回退到数据目录父级）。"""
-    ws_config = load_workspace_config(workspace_uuid)
+    ws_config = get_workspace_meta(workspace_uuid)
     if ws_config and ws_config.get("directory"):
         return str(ws_config["directory"])
     return str(get_workspace_data_dir(workspace_uuid).parent)
@@ -790,7 +790,7 @@ def load_config(model_override: str | None = None) -> Config:
     return Config.from_global_config(global_config, model_override)
 
 
-def get_workspace_config(workspace_uuid: str) -> dict:
+def get_workspace_meta(workspace_uuid: str) -> dict:
     """Load workspace metadata from workspaces.json index.
 
     Returns dict with workspace_name, directory, created_at, updated_at, or {} if not found.
@@ -799,19 +799,10 @@ def get_workspace_config(workspace_uuid: str) -> dict:
     return entry or {}
 
 
-def save_workspace_config(workspace_uuid: str, config: dict) -> bool:
+def save_workspace_meta(workspace_uuid: str, config: dict) -> bool:
     """Save workspace metadata into workspaces.json (keyed by uuid)."""
     config["uuid"] = workspace_uuid
     return upsert_workspace_entry(config)
-
-
-def load_workspace_config(workspace_uuid: str) -> dict:
-    """Load workspace metadata from workspaces.json index.
-
-    Backward-compatible alias for get_workspace_config(): returns the
-    workspaces.json entry dict, or {} if not found.
-    """
-    return get_workspace_config(workspace_uuid)
 
 
 def _init_workspace_git_quietly(workspace_uuid: str) -> None:
@@ -859,7 +850,7 @@ def ensure_default_workspace() -> str | None:
                     entry.setdefault("memory_enabled", True)
                     changed = True
                 if changed:
-                    save_workspace_config(uuid, entry)
+                    save_workspace_meta(uuid, entry)
                     if entry.get("git_enabled"):
                         _init_workspace_git_quietly(uuid)
                 # 数据目录被手动删除时按需重建（原 main._ensure_default_workspace 行为）
@@ -873,7 +864,7 @@ def ensure_default_workspace() -> str | None:
         (ws_data_dir / "sessions").mkdir(exist_ok=True)
 
         now = now_str()
-        save_workspace_config(workspace_uuid, {
+        save_workspace_meta(workspace_uuid, {
             "workspace_name": "Default",
             "directory": str(PROJECT_ROOT / "workspace" / "default"),
             "created_at": now,

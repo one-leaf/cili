@@ -40,9 +40,9 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
     写操作只落在 ``{workspace}/.cili/cache/pdf/``（工具内部缓存，不触碰
     用户文件），因此不需要路径策略门禁。
     """
-    from core.config import load_workspace_config
+    from core.config import get_workspace_meta
 
-    cfg = load_workspace_config(workspace_uuid)
+    cfg = get_workspace_meta(workspace_uuid)
     if not cfg or not (cfg.get("directory")):
         return {"workspace_uuid": workspace_uuid, "error": "workspace directory not found"}
     root = Path(cfg["directory"])

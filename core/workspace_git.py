@@ -18,8 +18,8 @@ from urllib.parse import quote, urlparse, urlunparse
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
+    get_workspace_meta,
     load_config,
-    load_workspace_config,
 )
 from core.fs_utils import ensure_gitignore_entries
 from core.llm import create_llm_client
@@ -293,8 +293,8 @@ def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote
 
         # 如果配置了远程仓库且需要同步
         if sync_remote:
-            from core.config import load_workspace_config
-            ws_config = load_workspace_config(workspace_uuid) or {}
+            from core.config import get_workspace_meta
+            ws_config = get_workspace_meta(workspace_uuid) or {}
             if ws_config.get("git_remote_url"):
                 sync_ok, sync_msg = _sync_with_remote(workspace_uuid, workspace_dir)
                 if sync_ok:
@@ -318,8 +318,8 @@ def _sync_with_remote(workspace_uuid: str, workspace_dir: Path) -> tuple[bool, s
     Returns:
         (success, message)
     """
-    from core.config import load_workspace_config
-    ws_config = load_workspace_config(workspace_uuid) or {}
+    from core.config import get_workspace_meta
+    ws_config = get_workspace_meta(workspace_uuid) or {}
     if not ws_config.get("git_remote_url"):
         return False, "未配置远程仓库"
 
@@ -480,14 +480,14 @@ def set_git_remote(workspace_uuid: str, remote_url: str, username: str = "", tok
 
     try:
         # 更新工作区配置
-        from core.config import load_workspace_config, save_workspace_config
-        ws_config = load_workspace_config(workspace_uuid)
+        from core.config import get_workspace_meta, save_workspace_meta
+        ws_config = get_workspace_meta(workspace_uuid)
         if not ws_config:
             return False, "工作区配置不存在"
         ws_config["git_remote_url"] = remote_url
         ws_config["git_username"] = username
         ws_config["git_token"] = token
-        if not save_workspace_config(workspace_uuid, ws_config):
+        if not save_workspace_meta(workspace_uuid, ws_config):
             return False, "保存配置失败"
 
         if not remote_url:
@@ -533,8 +533,8 @@ def get_git_remote_info(workspace_uuid: str) -> dict:
             "token_preview": str,   # Token 前 4 后 4 位
         }
     """
-    from core.config import load_workspace_config
-    ws_config = load_workspace_config(workspace_uuid) or {}
+    from core.config import get_workspace_meta
+    ws_config = get_workspace_meta(workspace_uuid) or {}
     remote_url = ws_config.get("git_remote_url", "")
     username = ws_config.get("git_username", "")
     token = ws_config.get("git_token", "")
@@ -617,8 +617,8 @@ def _sync_remote_to_git(workspace_uuid: str) -> None:
     if not workspace_dir or not (workspace_dir / ".git").is_dir():
         return
 
-    from core.config import load_workspace_config
-    ws_config = load_workspace_config(workspace_uuid) or {}
+    from core.config import get_workspace_meta
+    ws_config = get_workspace_meta(workspace_uuid) or {}
     remote_url = ws_config.get("git_remote_url", "")
     if not remote_url:
         return
@@ -650,7 +650,7 @@ def get_workspace_git_status(workspace_uuid: str) -> dict:
             "commits": [...],  # 最近提交记录
         }
     """
-    workspace_cfg = load_workspace_config(workspace_uuid)
+    workspace_cfg = get_workspace_meta(workspace_uuid)
     enabled = bool(workspace_cfg.get("git_enabled", False))
     initialized = is_git_initialized(workspace_uuid)
 

@@ -381,7 +381,7 @@ class TestEnsureDefaultWorkspace:
 
         uuid = config.ensure_default_workspace()
         assert uuid
-        entry = config.load_workspace_config(uuid)
+        entry = config.get_workspace_meta(uuid)
         assert entry["git_enabled"] is True
         assert entry["memory_enabled"] is True
         assert inited == [uuid]
@@ -401,7 +401,7 @@ class TestEnsureDefaultWorkspace:
 
         uuid = config.ensure_default_workspace()
         assert uuid == "old-ws"
-        entry = config.load_workspace_config("old-ws")
+        entry = config.get_workspace_meta("old-ws")
         assert entry["workspace_name"] == "Default"
         assert entry["git_enabled"] is True
         assert entry["memory_enabled"] is True
@@ -424,7 +424,7 @@ class TestEnsureDefaultWorkspace:
 
         uuid = config.ensure_default_workspace()
         assert uuid == "off-ws"
-        entry = config.load_workspace_config("off-ws")
+        entry = config.get_workspace_meta("off-ws")
         assert entry["git_enabled"] is False
         assert entry["memory_enabled"] is False
         assert inited == []
