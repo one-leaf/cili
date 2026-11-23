@@ -8,8 +8,10 @@ from __future__ import annotations
 import base64
 import io
 import os
+from typing import TYPE_CHECKING
 
-from core.tools.base import ToolResult
+if TYPE_CHECKING:  # 仅类型标注：tools.base 会反向导入本模块，避免运行期循环
+    from core.tools.base import ToolResult
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 MEDIA_TYPES = {
@@ -20,6 +22,14 @@ MEDIA_TYPES = {
     ".webp": "image/webp",
     ".bmp": "image/bmp",
 }
+
+
+def _result(*args, **kwargs):
+    """惰性构造 ToolResult，避开 tools.base ↔ image_read 的循环导入。"""
+    from core.tools.base import ToolResult
+
+    return ToolResult(*args, **kwargs)
+
 
 def image_bytes_to_result(file_path: str, raw: bytes, media_type: str) -> ToolResult:
     """原始图片字节 → multimodal ToolResult。
@@ -43,14 +53,14 @@ def image_bytes_to_result(file_path: str, raw: bytes, media_type: str) -> ToolRe
         except ImportError:
             pass
         except Exception as e:  # noqa: BLE001 —— 损坏图片给出可读错误
-            return ToolResult(
+            return _result(
                 f"Error: Failed to process image '{file_path}': {e}", error=True
             )
         payload, mime = raw, media_type or "image/png"
 
     base64_data = base64.b64encode(payload).decode("utf-8")
     if len(base64_data) > MAX_INLINE_BASE64_BYTES:
-        return ToolResult(
+        return _result(
             output=(
                 f"Error: Image '{file_path}' base64 size "
                 f"{len(base64_data) / 1024 / 1024:.1f}MB exceeds the "
@@ -60,7 +70,7 @@ def image_bytes_to_result(file_path: str, raw: bytes, media_type: str) -> ToolRe
             error=True,
         )
 
-    return ToolResult(
+    return _result(
         output=f"[Image: {file_path} ({mime})]",
         content=[{
             "type": "image",
@@ -81,7 +91,7 @@ def read_svg(file_path: str) -> ToolResult:
     try:
         import pymupdf
     except ImportError:
-        return ToolResult(
+        return _result(
             "Error: reading SVG requires PyMuPDF (pip install pymupdf).",
             error=True,
         )
@@ -94,7 +104,7 @@ def read_svg(file_path: str) -> ToolResult:
         finally:
             doc.close()
     except Exception as e:
-        return ToolResult(
+        return _result(
             f"Error: failed to render SVG '{file_path}': {e}",
             error=True,
         )
@@ -115,5 +125,5 @@ def read_image_file(file_path: str) -> ToolResult:
         with open(file_path, "rb") as f:
             raw = f.read()
     except OSError as e:
-        return ToolResult(f"Error: Failed to read image '{file_path}': {e}", error=True)
+        return _result(f"Error: Failed to read image '{file_path}': {e}", error=True)
     return image_bytes_to_result(file_path, raw, media_type)

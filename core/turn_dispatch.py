@@ -37,6 +37,7 @@ from core.approval_cards import (
 )
 from core.output_sink import OutputSink
 from core.session_runner import SessionRunner
+from core.turn_hooks import schedule_after_turn_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -196,49 +197,6 @@ def execute_turn(
         persist_turn_error(runner, e)
         if on_error is not None:
             on_error(str(e))
-
-
-def schedule_after_turn_hooks(runner: SessionRunner) -> None:
-    """回合后的收尾钩子：记忆提取 + git 自动提交（均后台线程，不阻塞）。"""
-    _schedule_memory_extraction(runner)
-    _schedule_git_commit(runner)
-
-
-def _schedule_memory_extraction(runner: SessionRunner) -> None:
-    """v3 记忆：回合结束后后台提取（不阻塞；失败只记日志）。"""
-    try:
-        sm = getattr(runner, "session", None)
-        if sm is None:
-            return
-        from core.memory_service import memory_enabled, schedule_extraction
-        if memory_enabled(runner.workspace_uuid or ""):
-            schedule_extraction(
-                runner.workspace_uuid or "",
-                runner.current_session_id or "",
-                list(sm.messages),
-            )
-    except Exception:
-        logger.exception("Failed to schedule memory extraction")
-
-
-def _schedule_git_commit(runner: SessionRunner) -> None:
-    """Git 版本管理：回合结束后自动提交并同步远程（后台线程，不阻塞）。"""
-    try:
-        from core.config import load_workspace_config
-        workspace_cfg = load_workspace_config(runner.workspace_uuid or "")
-        if not workspace_cfg.get("git_enabled", False):
-            return
-        import threading
-
-        from core.workspace_git import auto_commit_workspace
-        threading.Thread(
-            target=auto_commit_workspace,
-            args=(runner.workspace_uuid, runner.current_session_id or ""),
-            kwargs={"sync_remote": True},
-            daemon=True,
-        ).start()
-    except Exception:
-        logger.exception("Failed to schedule git auto-commit")
 
 
 def persist_turn_error(runner: SessionRunner, exc: BaseException) -> None:
