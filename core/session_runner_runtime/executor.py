@@ -115,7 +115,14 @@ class TurnExecutor:
 
     def _image_mode(self) -> str:
         """图片历史策略：full | current_turn（与 runner 共用同一读取口径）。"""
-        return self.runner._image_history_mode()
+        getter = getattr(self.runner, "_image_history_mode", None)
+        if callable(getter):
+            return getter()
+        # BaseSessionRunner（测试/极简运行器）没有该方法：直接读配置
+        return getattr(
+            getattr(getattr(self.runner, "config", None), "images", None),
+            "history_mode", "current_turn",
+        )
 
     def _effective_turn_id(self) -> str:
         """当前回合 id；恢复路径从最近 user 消息的 meta.turn_id 推导。"""
