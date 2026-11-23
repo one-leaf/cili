@@ -12,10 +12,7 @@ import json
 import logging
 import os
 import queue
-import random
 import re
-import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -26,6 +23,15 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from playwright.sync_api import Page
 
+from core.browser_chrome import ChromeProcessRef as _ChromeProcessRef
+from core.browser_chrome import (
+    find_chrome_process_by_profile,
+    find_pid_by_port,
+    is_port_listening,
+    pick_free_port,
+    pid_uses_profile,
+    remove_chrome_locks,
+)
 from core.browser_snapshot import (
     parse_aria_snapshot,
 )
@@ -91,69 +97,6 @@ try:
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
-
-
-class _ChromeProcessRef:
-    """轻量级 Chrome 进程引用，模拟 Popen 接口。
-
-    用于记录已存在但我们没有直接启动的 Chrome 进程。
-    只实现必要的方法：pid（属性）和 poll()。
-    """
-
-    def __init__(self, pid: int):
-        self.pid = pid
-        self._killed = False
-
-    def poll(self) -> int | None:
-        """检查进程是否还在运行。返回 None 表示运行中，退出码表示已退出。"""
-        if self._killed:
-            return 0
-        try:
-            if sys.platform == "win32":
-                result = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {self.pid}"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                # 如果进程不存在，tasklist 输出会包含 "没有运行的任务" 或英文 "INFO:"
-                if "没有" in result.stdout or "INFO:" in result.stdout or str(self.pid) not in result.stdout:
-                    return 0
-                return None
-            else:
-                # Linux/Mac: 检查 /proc/{pid} 是否存在
-                return None if os.path.exists(f"/proc/{self.pid}") else 0
-        except Exception:
-            # 如果出错，假设进程还在运行（保守策略）
-            return None
-
-    def terminate(self) -> None:
-        """终止进程。"""
-        try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/PID", str(self.pid)],
-                               capture_output=True, timeout=5)
-            else:
-                os.kill(self.pid, signal.SIGTERM)
-            self._killed = True
-        except Exception:
-            pass
-
-    def kill(self) -> None:
-        """强制杀死进程。"""
-        self.terminate()
-
-    def wait(self, timeout: float | None = None) -> int:
-        """等待进程退出。"""
-        # 简单实现：轮询检查
-        start = time.time()
-        while True:
-            result = self.poll()
-            if result is not None:
-                return result
-            if timeout and (time.time() - start) > timeout:
-                raise subprocess.TimeoutExpired(cmd="chrome", timeout=timeout)
-            time.sleep(0.1)
-
-
 
 
 class BrowserService:
@@ -590,75 +533,19 @@ class BrowserService:
 
     def _is_port_listening(self, port: int) -> bool:
         """检查端口是否在监听（Chrome 是否在运行）。"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('localhost', port))
-            sock.close()
-            return result == 0
-        except Exception:
-            return False
+        return is_port_listening(port)
 
     def _pick_free_port(self) -> int:
         """在 [9300, 9900] 内找一个当前未监听的端口，作为 CDP 端口替代。"""
-        for _ in range(_RANDOM_CDP_PORT_TRIES):
-            port = random.randint(*_RANDOM_CDP_PORT_RANGE)
-            if not self._is_port_listening(port):
-                return port
-        # 随机取样全部撞车（或探测本身失败）时退化为顺序扫描：直接返回
-        # DEFAULT_CDP_PORT + 1 很可能同样被占用，等于没有回退
-        for port in range(DEFAULT_CDP_PORT + 1, DEFAULT_CDP_PORT + 101):
-            if not self._is_port_listening(port):
-                return port
-        logger.warning("[BrowserService] 未找到空闲 CDP 端口，回退到默认端口+1")
-        return DEFAULT_CDP_PORT + 1
+        return pick_free_port(self._is_port_listening)
 
     def _find_pid_by_port(self, port: int) -> int | None:
         """找到监听指定端口（LISTENING）的进程 PID。"""
-        try:
-            if sys.platform == "win32":
-                result = subprocess.run(
-                    ["netstat", "-ano", "-p", "tcp"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                needle = f":{port}"
-                for line in result.stdout.splitlines():
-                    if needle in line and "LISTENING" in line:
-                        parts = line.split()
-                        if parts and parts[-1].isdigit():
-                            return int(parts[-1])
-            else:
-                result = subprocess.run(
-                    ["lsof", "-ti", f"tcp:{port}", "-s", "tcp:LISTEN"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                for pid in result.stdout.splitlines():
-                    if pid.isdigit():
-                        return int(pid)
-        except Exception as e:
-            logger.debug(f"[BrowserService] _find_pid_by_port({port}) failed: {e}")
-        return None
+        return find_pid_by_port(port)
 
     def _pid_uses_our_profile(self, pid: int) -> bool:
         """判断指定 PID 的进程命令行是否使用本项目 Chrome profile。"""
-        try:
-            profile_abs = os.path.abspath(self._chrome_profile_dir)
-            if sys.platform == "win32":
-                profile_normalized = profile_abs.replace("/", "\\").lower()
-                result = subprocess.run(
-                    ["powershell", "-Command",
-                     f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                return profile_normalized in result.stdout.lower()
-            else:
-                result = subprocess.run(
-                    ["ps", "-p", str(pid), "-o", "command="],
-                    capture_output=True, text=True, timeout=5,
-                )
-                return profile_abs in result.stdout
-        except Exception:
-            return False
+        return pid_uses_profile(pid, self._chrome_profile_dir)
 
     def _try_cdp_connect(self) -> bool:
         """尝试通过 CDP 连接到 Chrome。返回 True 表示成功。"""
@@ -674,47 +561,9 @@ class BrowserService:
         except Exception:
             return False
 
-    def _find_chrome_process_by_profile(self) -> subprocess.Popen | None:
-        """查找使用指定 profile 的浏览器进程（Chrome 或 Edge）。
-
-        Returns:
-            一个模拟 Popen 接口的对象（至少有 pid 和 poll() 方法），如果找不到则返回 None。
-        """
-        profile_abs = os.path.abspath(self._chrome_profile_dir)
-        try:
-            if sys.platform == "win32":
-                # Windows: 通过 PowerShell 查找使用指定 profile 的浏览器进程
-                profile_normalized = profile_abs.replace("/", "\\").lower()
-                # 同时查找 chrome.exe 和 msedge.exe
-                ps_result = subprocess.run(
-                    ["powershell", "-Command",
-                     "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='msedge.exe'\" | "
-                     "Select-Object ProcessId,Name,CommandLine | Format-Table -AutoSize"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                for line in ps_result.stdout.splitlines():
-                    line_lower = line.lower()
-                    if profile_normalized in line_lower:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            pid = int(parts[0])
-                            logger.debug(f"[BrowserService] Found existing browser PID {pid}")
-                            return _ChromeProcessRef(pid)
-            else:
-                # Linux/Mac: 使用 ps 命令
-                result = subprocess.run(
-                    ["ps", "aux"], capture_output=True, text=True, timeout=10,
-                )
-                for line in result.stdout.splitlines():
-                    if profile_abs in line and ("chrome" in line.lower() or "edge" in line.lower()):
-                        parts = line.split()
-                        if len(parts) > 1 and parts[1].isdigit():
-                            pid = int(parts[1])
-                            logger.debug(f"[BrowserService] Found existing browser PID {pid}")
-                            return _ChromeProcessRef(pid)
-        except Exception as e:
-            logger.warning(f"[BrowserService] _find_chrome_process_by_profile failed: {e}")
-        return None
+    def _find_chrome_process_by_profile(self):
+        """查找使用指定 profile 的浏览器进程（Chrome 或 Edge）。"""
+        return find_chrome_process_by_profile(self._chrome_profile_dir)
 
     def _start_chrome(self, port: int) -> tuple[bool, str]:
         """启动 Chrome 进程（带远程调试端口）。
@@ -947,15 +796,7 @@ class BrowserService:
 
     def _remove_chrome_locks(self, profile_dir: str) -> None:
         """删除 Chrome 的 singleton 锁定文件，防止 profile 被锁定。"""
-        lock_files = ["SingletonLock", "SingletonSocket", "SingletonCookie"]
-        for filename in lock_files:
-            filepath = os.path.join(profile_dir, filename)
-            try:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-                    logger.debug(f"[BrowserService] Removed lock file: {filename}")
-            except Exception as e:
-                logger.debug(f"[BrowserService] Failed to remove {filename}: {e}")
+        remove_chrome_locks(profile_dir)
 
     def _connect_browser(self) -> bool:
         """尝试通过 CDP 连接到 Chrome。返回 True 表示成功。"""
