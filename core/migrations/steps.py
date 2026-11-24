@@ -106,3 +106,60 @@ def migrate_provider_interface_type(global_config_path: Path) -> bool:
             json.dumps(raw, ensure_ascii=False, indent=2),
         )
     return changed
+
+
+def migrate_chatgpt_oauth_naming(global_config_path: Path) -> bool:
+    """`chatgpt-siwc` provider 键与 `siwc:` 凭证前缀 → `chatgpt-oauth`（§4）。"""
+    path = Path(global_config_path)
+    if not path.is_file():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"无法读取 {path}: {e}") from e
+    if not isinstance(raw, dict):
+        return False
+
+    changed = False
+    providers = raw.get("providers")
+    if isinstance(providers, dict):
+        if "chatgpt-siwc" in providers:
+            # 目标键已存在时不能覆盖用户新配置：只迁移、丢弃旧键前先合并模型
+            old = providers["chatgpt-siwc"]
+            if "chatgpt-oauth" in providers:
+                target = providers["chatgpt-oauth"]
+                if isinstance(target, dict) and isinstance(old, dict):
+                    old_models = old.get("models") or {}
+                    target.setdefault("models", {})
+                    for k, v in old_models.items():
+                        target["models"].setdefault(k, v)
+                    providers.pop("chatgpt-siwc")
+                changed = True
+            else:
+                providers["chatgpt-oauth"] = providers.pop("chatgpt-siwc")
+                changed = True
+        for entry in providers.values():
+            if not isinstance(entry, dict):
+                continue
+            cred = str(entry.get("credential") or "")
+            if cred.startswith("siwc:"):
+                entry["credential"] = "chatgpt-oauth:" + cred[len("siwc:"):]
+                changed = True
+            backend = entry.get("backend")
+            if backend == "chatgpt-siwc":
+                entry["backend"] = "chatgpt-oauth"
+                changed = True
+
+    agents = raw.get("agents")
+    if isinstance(agents, dict):
+        for name, agent in agents.items():
+            if not isinstance(agent, dict):
+                continue
+            model = str(agent.get("model") or "")
+            if model.startswith("chatgpt-siwc/"):
+                agent["model"] = "chatgpt-oauth/" + model[len("chatgpt-siwc/"):]
+                changed = True
+
+    if changed:
+        atomic_write_text(path, json.dumps(raw, ensure_ascii=False, indent=2))
+    return changed

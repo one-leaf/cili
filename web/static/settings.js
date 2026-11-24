@@ -1524,7 +1524,7 @@ function renderProviderCard(key, p) {
     const pathCustom = p.api_path && !isKnownPresetApiPath(p.api_path) ? '1' : '';
     const defaultUrl = serverPresetUrl(preset, iface);
     const defaultPath = serverPresetApiPath(preset, iface);
-    const isOAuth = p.auth_type === 'oauth' || serverKey === 'chatgpt-siwc';
+    const isOAuth = p.auth_type === 'oauth' || serverKey === 'chatgpt-oauth';
     const siwc = p.siwc_status || null;
     const siwcConnected = Boolean(siwc && siwc.connected);
     const configured = isOAuth
@@ -1593,7 +1593,7 @@ function renderProviderCard(key, p) {
         + '<option value="bearer"' + (p.auth_type === 'bearer' ? ' selected' : '') + '>Bearer</option>'
         + '<option value="x-api-key"' + (p.auth_type === 'x-api-key' ? ' selected' : '') + '>X-API-Key</option>'
         + '<option value="none"' + (p.auth_type === 'none' ? ' selected' : '') + '>无</option>'
-        + '<option value="oauth"' + (p.auth_type === 'oauth' || serverKey === 'chatgpt-siwc' ? ' selected' : '') + '>OAuth（ChatGPT 登录）</option>'
+        + '<option value="oauth"' + (p.auth_type === 'oauth' || serverKey === 'chatgpt-oauth' ? ' selected' : '') + '>OAuth（ChatGPT 登录）</option>'
         + '</select></div>'
         + '<div class="field w-url"><label class="field-label">Base URL</label><input type="text" class="p-base-url" value="' + esc(p.base_url || '') + '" data-url-custom="' + urlCustom + '" placeholder="' + esc(defaultUrl || 'https://api.anthropic.com') + '"' + (isOAuth ? ' readonly' : '') + '></div>'
         + apiKeyField
@@ -1625,7 +1625,7 @@ function renderProviderCard(key, p) {
 function syncAuthPanel(card) {
     const authSel = card.querySelector('.p-auth-type');
     const serverSel = card.querySelector('.p-server');
-    const isOAuth = (authSel && authSel.value === 'oauth') || (serverSel && serverSel.value === 'chatgpt-siwc');
+    const isOAuth = (authSel && authSel.value === 'oauth') || (serverSel && serverSel.value === 'chatgpt-oauth');
     card.dataset.authType = isOAuth ? 'oauth' : ((authSel && authSel.value) || 'auto');
     const keyField = card.querySelector('.p-api-key-field');
     const panel = card.querySelector('.p-siwc-panel');
@@ -1716,7 +1716,7 @@ function collectSiwcProviderConfig(card) {
         models[mkey] = spec;
     });
     return {
-        backend: card.querySelector('.p-server').value || 'chatgpt-siwc',
+        backend: card.querySelector('.p-server').value || 'chatgpt-oauth',
         headers: headers,
         models: models,
     };
@@ -1736,7 +1736,7 @@ async function startSiwcLogin(card, btn) {
     btn.disabled = true;
     setSiwcResult(card, '正在启动登录…', '');
     try {
-        const resp = await fetch('/api/config/siwc/login', {
+        const resp = await fetch('/api/config/chatgpt-oauth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1782,7 +1782,7 @@ function pollSiwcLogin(card, attemptId) {
             return;
         }
         try {
-            const resp = await fetch('/api/config/siwc/login/' + encodeURIComponent(attemptId));
+            const resp = await fetch('/api/config/chatgpt-oauth/login/' + encodeURIComponent(attemptId));
             const data = await resp.json();
             if (data.status === 'authorized') {
                 stopSiwcPolling(card);
@@ -1814,7 +1814,7 @@ async function completeSiwcManual(card) {
         return;
     }
     try {
-        const resp = await fetch('/api/config/siwc/login/' + encodeURIComponent(attemptId) + '/complete', {
+        const resp = await fetch('/api/config/chatgpt-oauth/login/' + encodeURIComponent(attemptId) + '/complete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ callback_url: url }),
@@ -1838,7 +1838,7 @@ async function siwcLogoutProvider(card) {
     stopSiwcPolling(card);
     let revoked = true;
     try {
-        const resp = await fetch('/api/config/siwc/logout', {
+        const resp = await fetch('/api/config/chatgpt-oauth/logout', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: provider }),

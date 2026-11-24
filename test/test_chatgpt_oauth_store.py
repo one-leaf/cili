@@ -2,12 +2,12 @@
 
 import pytest
 
-from core.llm.siwc import auth, store
+from core.llm.chatgpt_oauth import auth, store
 
 
 @pytest.fixture
 def isolated_store(tmp_path, monkeypatch):
-    monkeypatch.setattr(store, "SIWC_ROOT", tmp_path / "chatgpt")
+    monkeypatch.setattr(store, "CHATGPT_OAUTH_ROOT", tmp_path / "chatgpt")
     return tmp_path / "chatgpt"
 
 
@@ -31,7 +31,7 @@ def test_host_id_stable(isolated_store):
 
 def test_save_load_delete(isolated_store):
     credential = store.save(_creds())
-    assert credential.startswith("siwc:")
+    assert credential.startswith("chatgpt-oauth:")
     loaded = store.load(credential)
     assert loaded is not None
     assert loaded.refresh_token == "refresh"
@@ -68,5 +68,5 @@ def test_mark_reauth_clears_tokens(isolated_store):
 
 
 def test_invalid_credential_rejected(isolated_store):
-    assert store.load("siwc:../etc/passwd") is None
+    assert store.load("chatgpt-oauth:../etc/passwd") is None
     assert store.load("") is None

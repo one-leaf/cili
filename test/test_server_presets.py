@@ -76,7 +76,7 @@ def test_removed_session_headers_are_gone():
 
 def test_session_headers_expected():
     assert BACKEND_SESSION_HEADERS == {
-        "chatgpt-siwc": {"session-id": "{session_id}"},
+        "chatgpt-oauth": {"session-id": "{session_id}"},
         "opencode-go": {"x-opencode-session": "{session_id}"},
         "openrouter": {"x-session-id": "{session_id}"},
         "litellm": {"x-litellm-session-id": "{session_id}"},

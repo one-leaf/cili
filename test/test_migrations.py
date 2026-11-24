@@ -85,3 +85,48 @@ def test_migrate_provider_interface_type(tmp_path):
     assert raw["providers"]["p2"]["protocol"] == "anthropic"
     # 幂等
     assert migrate_provider_interface_type(path) is False
+
+
+def test_migrate_chatgpt_oauth_naming(tmp_path):
+    from core.migrations.steps import migrate_chatgpt_oauth_naming
+
+    path = tmp_path / "setting.json"
+    path.write_text(json.dumps({
+        "providers": {
+            "chatgpt-siwc": {
+                "backend": "chatgpt-siwc",
+                "credential": "siwc:abc123",
+                "models": {},
+            },
+        },
+        "agents": {"master": {"model": "chatgpt-siwc/default"}},
+    }), encoding="utf-8")
+
+    assert migrate_chatgpt_oauth_naming(path) is True
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert "chatgpt-siwc" not in raw["providers"]
+    entry = raw["providers"]["chatgpt-oauth"]
+    assert entry["backend"] == "chatgpt-oauth"
+    assert entry["credential"] == "chatgpt-oauth:abc123"
+    assert raw["agents"]["master"]["model"] == "chatgpt-oauth/default"
+    assert migrate_chatgpt_oauth_naming(path) is False
+
+
+def test_migrate_chatgpt_oauth_merges_models_when_target_exists(tmp_path):
+    from core.migrations.steps import migrate_chatgpt_oauth_naming
+
+    path = tmp_path / "setting.json"
+    path.write_text(json.dumps({
+        "providers": {
+            "chatgpt-siwc": {"credential": "siwc:a", "models": {"old": {}}},
+            "chatgpt-oauth": {"credential": "chatgpt-oauth:b", "models": {"new": {}}},
+        },
+    }), encoding="utf-8")
+
+    assert migrate_chatgpt_oauth_naming(path) is True
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert "chatgpt-siwc" not in raw["providers"]
+    target = raw["providers"]["chatgpt-oauth"]
+    # 已有的新配置优先；旧模型并入而不是静默丢失
+    assert target["credential"] == "chatgpt-oauth:b"
+    assert set(target["models"]) == {"old", "new"}

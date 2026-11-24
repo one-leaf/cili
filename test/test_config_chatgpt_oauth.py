@@ -4,19 +4,19 @@ from core.config import Config, ProviderConfig, ResolvedModel
 
 
 def test_credential_roundtrip():
-    provider = ProviderConfig.from_dict({"auth_type": "oauth", "credential": "siwc:abc"})
-    assert provider.credential == "siwc:abc"
-    assert ProviderConfig.from_dict(provider.to_dict()).credential == "siwc:abc"
+    provider = ProviderConfig.from_dict({"auth_type": "oauth", "credential": "chatgpt-oauth:abc"})
+    assert provider.credential == "chatgpt-oauth:abc"
+    assert ProviderConfig.from_dict(provider.to_dict()).credential == "chatgpt-oauth:abc"
 
-    model = ResolvedModel(name="m", credential="siwc:def")
-    assert ResolvedModel.from_dict(model.to_dict()).credential == "siwc:def"
+    model = ResolvedModel(name="m", credential="chatgpt-oauth:def")
+    assert ResolvedModel.from_dict(model.to_dict()).credential == "chatgpt-oauth:def"
 
 
 def _oauth_raw(**provider_overrides) -> dict:
     provider = {
         "protocol": "anthropic",
         "auth_type": "oauth",
-        "credential": "siwc:abc",
+        "credential": "chatgpt-oauth:abc",
         "models": {"m": {}},
     }
     provider.update(provider_overrides)
@@ -31,7 +31,7 @@ def test_oauth_provider_skips_api_key_check():
     model = config.resolve_model("gpt/m")
     assert model.auth_type == "oauth"
     assert model.api_key == ""
-    assert model.credential == "siwc:abc"
+    assert model.credential == "chatgpt-oauth:abc"
 
 
 def test_oauth_provider_endpoint_normalized():

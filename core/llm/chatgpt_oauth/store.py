@@ -14,19 +14,19 @@ from pathlib import Path
 
 from core.config import DATA_DIR
 from core.fs_utils import atomic_write_json, atomic_write_text, load_json_or_backup
-from core.llm.siwc import const
-from core.llm.siwc.credentials import Credentials
+from core.llm.chatgpt_oauth import const
+from core.llm.chatgpt_oauth.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
 # 模块级根目录（测试可 monkeypatch 到 tmp）
-SIWC_ROOT: Path | None = None
+CHATGPT_OAUTH_ROOT: Path | None = None
 
 _ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def root() -> Path:
-    return SIWC_ROOT or (DATA_DIR / "tools" / "chatgpt")
+    return CHATGPT_OAUTH_ROOT or (DATA_DIR / "tools" / "chatgpt")
 
 
 def accounts_dir() -> Path:
@@ -63,6 +63,8 @@ def _strip(credential: str) -> str:
     value = (credential or "").strip()
     if value.startswith(const.CREDENTIAL_PREFIX):
         value = value[len(const.CREDENTIAL_PREFIX):]
+    elif value.startswith(const.LEGACY_CREDENTIAL_PREFIX):
+        value = value[len(const.LEGACY_CREDENTIAL_PREFIX):]
     return value
 
 
@@ -154,7 +156,7 @@ def list_accounts() -> list[dict]:
 
 
 def _now():
-    from core.llm.siwc.auth import utcnow
+    from core.llm.chatgpt_oauth.auth import utcnow
     return utcnow()
 
 

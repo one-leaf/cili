@@ -230,7 +230,7 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
     """
     # SIWC 流内失败：按 provider 错误码分类，未知码按服务端瞬态处理
     if isinstance(e, LLMStreamFailedError):
-        from core.llm.siwc.errors import lookup_error
+        from core.llm.chatgpt_oauth.errors import lookup_error
 
         entry = lookup_error(e.code)
         if entry is not None:
@@ -245,7 +245,7 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
         )
 
     # SIWC 管理器异常（登录失效 / 刷新瞬态）
-    siwc_kind = getattr(e, "siwc_kind", "")
+    siwc_kind = getattr(e, "oauth_kind", "") or getattr(e, "siwc_kind", "")
     if siwc_kind == "auth":
         return LLMErrorInfo(kind=KIND_AUTH, message=str(e))
     if siwc_kind == "transient":
@@ -299,7 +299,7 @@ def classify_llm_error(e: Exception, base_url: str = "") -> LLMErrorInfo:
         body_text = _safe_response_text(e.response)
         error_type, error_code = _extract_type_code(body_text)
         retry_after = _extract_retry_after(body_text, e.response.headers)
-        from core.llm.siwc.errors import lookup_error
+        from core.llm.chatgpt_oauth.errors import lookup_error
 
         siwc_entry = lookup_error(error_code or error_type)
         if siwc_entry is not None:

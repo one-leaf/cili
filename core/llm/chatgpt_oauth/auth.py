@@ -17,8 +17,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 
-from core.llm.siwc import const
-from core.llm.siwc.credentials import Credentials, utcnow  # noqa: F401 —— 兼容旧导入
+from core.llm.chatgpt_oauth import const
+from core.llm.chatgpt_oauth.credentials import Credentials, utcnow  # noqa: F401 —— 兼容旧导入
 
 logger = logging.getLogger(__name__)
 

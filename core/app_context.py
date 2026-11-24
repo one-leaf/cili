@@ -128,7 +128,7 @@ class AppContext:
             ("MCP provider", self._stop_mcp),
             ("cron 调度器", self._stop_cron),
             ("审批看门狗", self._stop_approval_watchdog),
-            ("SIWC 登录", self._stop_siwc),
+            ("ChatGPT OAuth 登录", self._stop_chatgpt_oauth),
         ):
             try:
                 stop()
@@ -190,8 +190,8 @@ class AppContext:
         stop_approval_watchdog()
 
     @staticmethod
-    def _stop_siwc() -> None:
-        from core.llm.siwc import shutdown_login, shutdown_tokens
+    def _stop_chatgpt_oauth() -> None:
+        from core.llm.chatgpt_oauth import shutdown_login, shutdown_tokens
         shutdown_login()
         shutdown_tokens()
 

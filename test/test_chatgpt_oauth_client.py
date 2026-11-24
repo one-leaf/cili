@@ -13,7 +13,7 @@ def _oauth_config(**overrides) -> ResolvedModel:
         name="gpt-test",
         protocol="openai-responses",
         auth_type="oauth",
-        credential="siwc:0123456789abcdef",
+        credential="chatgpt-oauth:0123456789abcdef",
         base_url="https://api.openai.com/v1",
     )
     values.update(overrides)
@@ -59,7 +59,7 @@ def test_stream_401_forces_refresh_and_retries(monkeypatch):
         calls["force"].append(force_refresh)
         return "tok-refresh" if force_refresh else "tok-initial"
 
-    monkeypatch.setattr("core.llm.siwc.get_access_token", fake_token)
+    monkeypatch.setattr("core.llm.chatgpt_oauth.get_access_token", fake_token)
 
     def fake_stream(url, headers, body, stop_check=None, timeout=None):
         calls["n"] += 1

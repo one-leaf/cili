@@ -23,6 +23,7 @@ from core.teen_mode import TeenLockedOut, TeenModeDenied, get_teen_mode
 from web.deps import _LOCALHOST_IPS, WEB_DIR, registry
 from web.routes_ask_user import router as ask_user_router
 from web.routes_chat import router as chat_router
+from web.routes_chatgpt_oauth import router as siwc_router
 from web.routes_config import router as config_router
 from web.routes_courseware import router as courseware_router
 from web.routes_cron import router as cron_router
@@ -32,7 +33,6 @@ from web.routes_memory import router as memory_router
 from web.routes_permissions import router as permissions_router
 from web.routes_qq import router as qq_router
 from web.routes_session_about import router as session_about_router
-from web.routes_siwc import router as siwc_router
 from web.routes_suggest import router as suggest_router
 from web.routes_teen import router as teen_router
 from web.routes_textbooks import router as textbooks_router
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     from web.deps import init_web_deps
     init_web_deps()
 
-    from web.routes_siwc import register_hooks as register_siwc_hooks
+    from web.routes_chatgpt_oauth import register_hooks as register_siwc_hooks
     register_siwc_hooks()
 
     app_context.startup()

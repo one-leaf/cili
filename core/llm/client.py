@@ -201,7 +201,7 @@ class LLMClient:
         return headers
 
     def _oauth_access_token(self) -> str:
-        from core.llm.siwc import get_access_token
+        from core.llm.chatgpt_oauth import get_access_token
 
         token = get_access_token(
             self._oauth_credential,
@@ -529,7 +529,7 @@ def create_llm_client(config: ResolvedModel) -> LLMClient:
     from core.llm.openai_responses import OpenAIResponsesAdapter
 
     if getattr(config, "auth_type", "") == "oauth":
-        from core.llm.siwc import assert_oauth_endpoint
+        from core.llm.chatgpt_oauth import assert_oauth_endpoint
         assert_oauth_endpoint(config)
 
     protocol = config.protocol.lower()

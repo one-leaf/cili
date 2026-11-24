@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from core.llm.siwc import auth, const
+from core.llm.chatgpt_oauth import auth, const
 
 
 def _b64(obj: dict) -> str:

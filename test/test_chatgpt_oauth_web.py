@@ -17,32 +17,32 @@ def _patch(monkeypatch, routes, state, save_result=True):
 
 
 def test_upsert_creates_provider(monkeypatch):
-    from core.llm.siwc import store as routes
+    from core.llm.chatgpt_oauth import store as routes
 
     state = {"providers": {}}
     saved = _patch(monkeypatch, routes, state)
-    config = {"backend": "chatgpt-siwc", "headers": {}, "models": {"m": {"name": "gpt-x"}}}
+    config = {"backend": "chatgpt-oauth", "headers": {}, "models": {"m": {"name": "gpt-x"}}}
 
-    assert routes.upsert_oauth_provider("gpt", "siwc:abc", config) == "written"
+    assert routes.upsert_oauth_provider("gpt", "chatgpt-oauth:abc", config) == "written"
     entry = state["providers"]["gpt"]
     assert entry["auth_type"] == "oauth"
     assert entry["protocol"] == "openai-responses"
     assert entry["base_url"] == "https://api.openai.com/v1"
     assert entry["api_path"] == ""
-    assert entry["credential"] == "siwc:abc"
+    assert entry["credential"] == "chatgpt-oauth:abc"
     assert entry["models"]["m"]["name"] == "gpt-x"
     assert "api_key" not in entry
     assert saved["n"] == 1
 
 
 def test_upsert_updates_existing_non_oauth(monkeypatch):
-    from core.llm.siwc import store as routes
+    from core.llm.chatgpt_oauth import store as routes
 
     state = {"providers": {"p": {"auth_type": "auto", "api_key": "sk-x", "models": {"old": {}}}}}
     _patch(monkeypatch, routes, state)
     config = {"models": {"new": {}}}
 
-    assert routes.upsert_oauth_provider("p", "siwc:def", config) == "written"
+    assert routes.upsert_oauth_provider("p", "chatgpt-oauth:def", config) == "written"
     entry = state["providers"]["p"]
     assert entry["auth_type"] == "oauth"
     assert "new" in entry["models"]
@@ -50,30 +50,30 @@ def test_upsert_updates_existing_non_oauth(monkeypatch):
 
 
 def test_upsert_without_config_creates_default_model(monkeypatch):
-    from core.llm.siwc import store as routes
+    from core.llm.chatgpt_oauth import store as routes
 
     state = {"providers": {}}
     _patch(monkeypatch, routes, state)
 
-    assert routes.upsert_oauth_provider("gpt", "siwc:x", None) == "written"
+    assert routes.upsert_oauth_provider("gpt", "chatgpt-oauth:x", None) == "written"
     assert state["providers"]["gpt"]["models"] == {"default": {}}
 
 
 def test_upsert_save_failure(monkeypatch):
-    from core.llm.siwc import store as routes
+    from core.llm.chatgpt_oauth import store as routes
 
     state = {"providers": {}}
     _patch(monkeypatch, routes, state, save_result=False)
 
-    assert routes.upsert_oauth_provider("gpt", "siwc:x", None) == "failed"
+    assert routes.upsert_oauth_provider("gpt", "chatgpt-oauth:x", None) == "failed"
 
 
 def test_complete_passes_provider_config_to_hook(monkeypatch):
     """换码成功后把登录请求里的 provider 表单快照传给写回回调。"""
     import time
 
-    import core.llm.siwc.login as login
-    from core.llm.siwc import auth
+    import core.llm.chatgpt_oauth.login as login
+    from core.llm.chatgpt_oauth import auth
 
     received = {}
 
@@ -94,7 +94,7 @@ def test_complete_passes_provider_config_to_hook(monkeypatch):
         auth_url=request.url,
         redirect_uri=request.redirect_uri,
         request=request,
-        provider_config={"backend": "chatgpt-siwc", "models": {"m": {}}},
+        provider_config={"backend": "chatgpt-oauth", "models": {"m": {}}},
         expires_at=time.time() + 60,
     )
     login._ATTEMPTS[attempt.attempt_id] = attempt
@@ -110,7 +110,7 @@ def test_complete_passes_provider_config_to_hook(monkeypatch):
             client_id="oaiapp_abc", sub="sub", access_token="a", refresh_token="r"
         ),
     )
-    monkeypatch.setattr(login.manager, "save_login_result", lambda creds: "siwc:abc")
+    monkeypatch.setattr(login.manager, "save_login_result", lambda creds: "chatgpt-oauth:abc")
 
     try:
         result = login._complete(
@@ -125,6 +125,6 @@ def test_complete_passes_provider_config_to_hook(monkeypatch):
     assert result["saved"] is True
     assert received == {
         "provider_key": "gpt",
-        "credential": "siwc:abc",
-        "config": {"backend": "chatgpt-siwc", "models": {"m": {}}},
+        "credential": "chatgpt-oauth:abc",
+        "config": {"backend": "chatgpt-oauth", "models": {"m": {}}},
     }

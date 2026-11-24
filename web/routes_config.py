@@ -271,7 +271,7 @@ def _attach_siwc_status(config: dict) -> None:
     providers = config.get("providers")
     if not isinstance(providers, dict):
         return
-    from core.llm.siwc import status as siwc_status
+    from core.llm.chatgpt_oauth import status as siwc_status
 
     for provider in providers.values():
         if not isinstance(provider, dict) or provider.get("auth_type") != "oauth":
@@ -738,8 +738,8 @@ def _session_headers_for(protocol: str, auth_type: str, api_key: str, headers: d
 
 async def _detect_siwc_models(request: DetectModelsRequest) -> dict:
     """SIWC：用 OAuth token 拉 /v1/models（401 刷新一次）。"""
+    from core.llm.chatgpt_oauth import get_access_token
     from core.llm.model_catalog import parse_models_payload
-    from core.llm.siwc import get_access_token
 
     credential = request.credential or ""
     if not credential:

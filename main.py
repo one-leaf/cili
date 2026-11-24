@@ -1203,6 +1203,7 @@ def _prepare_environment() -> None:
         )
         from core.migrations import run_pending
         from core.migrations.steps import (
+            migrate_chatgpt_oauth_naming,
             migrate_placeholder_meta,
             migrate_provider_interface_type,
         )
@@ -1211,6 +1212,8 @@ def _prepare_environment() -> None:
             [
                 ("provider_protocol_key",
                  lambda: migrate_provider_interface_type(GLOBAL_CONFIG_PATH)),
+                ("chatgpt_oauth_naming",
+                 lambda: migrate_chatgpt_oauth_naming(GLOBAL_CONFIG_PATH)),
                 ("session_placeholder_meta",
                  lambda: migrate_placeholder_meta(WORKSPACES_JSON, get_workspace_data_dir)),
             ],

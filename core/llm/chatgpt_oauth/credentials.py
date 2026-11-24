@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.llm.siwc import const
+from core.llm.chatgpt_oauth import const
 
 
 def utcnow() -> datetime:

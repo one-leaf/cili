@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.llm.siwc import const
+from core.llm.chatgpt_oauth import const
 
 
 def shape_request(body: dict) -> dict:

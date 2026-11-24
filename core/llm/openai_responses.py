@@ -76,13 +76,13 @@ class OpenAIResponsesAdapter(Adapter):
         return {"content-type": "application/json"}
 
     @property
-    def is_siwc(self) -> bool:
+    def is_chatgpt_oauth(self) -> bool:
         """OAuth（Sign in with ChatGPT）链路：走预览期请求整形。"""
         return getattr(self.config, "auth_type", "") == "oauth"
 
     @property
     def requires_streaming(self) -> bool:
-        return self.is_siwc
+        return self.is_chatgpt_oauth
 
     # ========== 请求序列化 ==========
 
@@ -348,8 +348,8 @@ class OpenAIResponsesAdapter(Adapter):
         if session_id and self.config.cache_control != "false":
             body["prompt_cache_key"] = session_id[:64]
 
-        if self.is_siwc:
-            from core.llm.siwc.profile import shape_request
+        if self.is_chatgpt_oauth:
+            from core.llm.chatgpt_oauth.profile import shape_request
             body = shape_request(body)
 
         return body

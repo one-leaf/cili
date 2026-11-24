@@ -30,7 +30,8 @@ HTTP_TIMEOUT_SECONDS = 30
 HTTP_CONNECT_TIMEOUT_SECONDS = 10
 MAX_RESPONSE_BYTES = 1024 * 1024
 
-CREDENTIAL_PREFIX = "siwc:"
+CREDENTIAL_PREFIX = "chatgpt-oauth:"
+LEGACY_CREDENTIAL_PREFIX = "siwc:"  # 旧配置兼容（读取时回退）
 
 FATAL_REFRESH_ERRORS = frozenset({
     "invalid_grant", "invalid_client", "invalid_refresh_token",

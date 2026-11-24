@@ -1,8 +1,8 @@
 """SIWC 请求整形测试。"""
 
+from core.llm.chatgpt_oauth import const
+from core.llm.chatgpt_oauth.profile import shape_request
 from core.llm.model_catalog import parse_models_payload
-from core.llm.siwc import const
-from core.llm.siwc.profile import shape_request
 
 
 def test_shape_request_removes_unsupported_fields():
@@ -90,7 +90,7 @@ def test_oauth_serialize_keeps_images():
         name="m",
         protocol="openai-responses",
         auth_type="oauth",
-        credential="siwc:0123456789abcdef",
+        credential="chatgpt-oauth:0123456789abcdef",
         base_url="https://api.openai.com/v1",
     )
     adapter = OpenAIResponsesAdapter(cfg)

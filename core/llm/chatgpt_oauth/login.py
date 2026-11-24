@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from core.llm.siwc import auth, const, manager, store
-from core.llm.siwc.auth import AuthorizationRequest
+from core.llm.chatgpt_oauth import auth, const, manager, store
+from core.llm.chatgpt_oauth.auth import AuthorizationRequest
 
 logger = logging.getLogger(__name__)
 

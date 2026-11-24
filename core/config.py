@@ -61,7 +61,7 @@ class ResolvedModel:
     api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
     auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none" | "oauth"
     backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
-    credential: str = ""  # OAuth 凭证标识（"siwc:<account_id>"）；非秘密
+    credential: str = ""  # OAuth 凭证标识（"chatgpt-oauth:<account_id>"）；非秘密
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符
     max_output_tokens: int = 32768  # 单次响应最大输出 token
     max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
@@ -156,7 +156,7 @@ class ProviderConfig:
     api_key: str = ""  # 支持 ${ENV_VAR} 整值插值
     auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none" | "oauth"
     backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
-    credential: str = ""  # OAuth 凭证标识（"siwc:<account_id>"）；非秘密
+    credential: str = ""  # OAuth 凭证标识（"chatgpt-oauth:<account_id>"）；非秘密
     base_url: str = "https://api.anthropic.com"
     api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
     headers: dict[str, str] = field(default_factory=dict)  # 值支持 {session_id} 占位符

@@ -6,17 +6,17 @@
 
 from __future__ import annotations
 
-from core.llm.siwc.login import (
+from core.llm.chatgpt_oauth.login import (
     cancel,
     complete_manual,
     poll,
     set_authorized_hook,
     start_login,
 )
-from core.llm.siwc.login import (
+from core.llm.chatgpt_oauth.login import (
     shutdown as shutdown_login,
 )
-from core.llm.siwc.manager import (
+from core.llm.chatgpt_oauth.manager import (
     SiwcAuthRequired,
     SiwcTransientError,
     get_access_token,
@@ -24,10 +24,10 @@ from core.llm.siwc.manager import (
     save_login_result,
     status,
 )
-from core.llm.siwc.manager import (
+from core.llm.chatgpt_oauth.manager import (
     shutdown as shutdown_tokens,
 )
-from core.llm.siwc.profile import shape_request
+from core.llm.chatgpt_oauth.profile import shape_request
 
 __all__ = [
     "SiwcAuthRequired",
@@ -50,7 +50,7 @@ __all__ = [
 
 def assert_oauth_endpoint(config) -> None:
     """OAuth provider 的端点与协议由代码锁定，防止 token 发往任意主机。"""
-    from core.llm.siwc import const
+    from core.llm.chatgpt_oauth import const
 
     if (config.protocol or "").lower() != "openai-responses":
         raise ValueError("OAuth provider 仅支持 OpenAI Responses 协议")

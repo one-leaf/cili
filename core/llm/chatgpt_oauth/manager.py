@@ -6,8 +6,8 @@ import logging
 import threading
 from datetime import timedelta
 
-from core.llm.siwc import auth, const, store
-from core.llm.siwc.credentials import Credentials
+from core.llm.chatgpt_oauth import auth, const, store
+from core.llm.chatgpt_oauth.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 class SiwcAuthRequired(RuntimeError):
     """需要用户重新登录（未登录 / 凭证失效）。"""
 
-    siwc_kind = "auth"
+    oauth_kind = "auth"
 
 
 class SiwcTransientError(RuntimeError):
     """瞬时失败（网络/5xx），凭证仍然有效。"""
 
-    siwc_kind = "transient"
+    oauth_kind = "transient"
 
 
 _LOCK = threading.Lock()

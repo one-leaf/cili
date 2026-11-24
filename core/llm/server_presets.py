@@ -84,8 +84,8 @@ PRESETS: dict[str, ServerPreset] = {
         api_paths={"openai-responses": "/responses"},
         hint="官方无套餐，按量计费；Responses 端点 /responses。",
     ),
-    "chatgpt-siwc": ServerPreset(
-        key="chatgpt-siwc",
+    "chatgpt-oauth": ServerPreset(
+        key="chatgpt-oauth",
         label="ChatGPT 套餐额度",
         group="plan",
         default_protocol="openai-responses",
