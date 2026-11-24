@@ -1064,9 +1064,9 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         } else if (event.type === 'session_start') {
             // 卡片挂在全局消息区：仅在仍查看本会话时创建。
             // 切走期间跑完/在跑的子代理，切回时由 history 渲染与 mountRunning 补齐。
-            if (isCurrentSession()) renderSessionStart(event.exec_id, event.task_summary);
+            if (isCurrentSession()) renderAgentRunStart(event.exec_id, event.task_summary);
         } else if (event.type === 'session_complete') {
-            if (isCurrentSession()) renderSessionComplete(event.exec_id, event.stats, event.status);
+            if (isCurrentSession()) renderAgentRunComplete(event.exec_id, event.stats, event.status);
         } else if (event.type === 'todo_update') {
             // 任务清单渲染在全局消息区顶部：旧会话的帧不得写进新会话
             if (isCurrentSession()) renderTodoList(event.todos);
@@ -1108,13 +1108,13 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
     return { handleEvent, flush };
 }
 
-// 子代理开始执行时立即渲染占位卡片（POST SSE 推送）
-function renderSessionStart(execId, taskSummary) {
+// 子代理（agent run）开始执行时立即渲染占位卡片（POST SSE 推送）
+function renderAgentRunStart(execId, taskSummary) {
     AgentCardStore.onStart({ exec_id: execId, task_summary: taskSummary, status: 'running' });
 }
 
-// 子代理完成时更新卡片状态（POST SSE 不带 stats 时保留已有快照）
-function renderSessionComplete(execId, stats, status) {
+// 子代理（agent run）完成时更新卡片状态（POST SSE 不带 stats 时保留已有快照）
+function renderAgentRunComplete(execId, stats, status) {
     // status 由后端终态透传；缺失时回落 completed（旧后端兼容）
     AgentCardStore.onComplete({ exec_id: execId, status: status || 'completed', stats });
 }
