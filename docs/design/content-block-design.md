@@ -1,350 +1,118 @@
-# 内容块类型系统与 LLM 底层架构设计文档
+# LLM 内容块与适配层设计
 
-## 概述
+> 按当前实现重写（2026-11-25）。代码：`core/llm/`。
 
-Cili Agent 的 LLM 底层采用 **Adapter 分层架构**，通过类型化的内容块（ContentBlock）和统一的消息格式（Message）实现 provider 无关的 LLM 交互。
+## 一、包结构
 
-## 架构总览
+| 文件 | 职责 |
+|---|---|
+| `types.py` | 内容块、Message、UsageData、StreamChunk、LLMResponse、块互转帮手 |
+| `adapter.py` | `Adapter` 抽象基类（序列化/解析/流翻译/缓存钩子/头构造/URL 拼接） |
+| `anthropic.py` | `AnthropicAdapter`（Messages API；Anthropic 事件流） |
+| `openai.py` | `OpenAIAdapter`（Chat Completions；兼容第三方网关） |
+| `openai_responses.py` | `OpenAIResponsesAdapter`（Responses API；input items/reasoning 回放） |
+| `transport.py` | `HttpTransport`（httpx、SSE 解析、重试、重试超时） |
+| `assembler.py` | `BlockAssembler`（把 StreamChunk 累积为 ContentBlock） |
+| `client.py` | `LLMClient` 与 `create_llm_client`（按协议选适配器） |
+| `errors.py` | 错误分类 `classify_llm_error` / `format_llm_error` |
+| `chatgpt_oauth/` | Sign in with ChatGPT：auth/credentials/errors/login/manager/profile/store |
+| `server_presets.py` | 供应商预设（base_url/api_path/鉴权头/会话头/模型清单端点） |
+| `deepseek_capabilities.py` | DeepSeek 服务端联网工具门控（含进程级降级集合） |
+| `model_catalog.py` | `/v1/models` 与 ChatGPT 目录解析（供应商无关） |
+| `discovery.py` | 模型列表拉取（anthropic 分页 / openai 单页） |
 
-```
-LLMClient (client.py)
-  ├── Adapter (adapter.py) — 抽象基类
-  │     ├── AnthropicAdapter (anthropic.py)
-  │     ├── OpenAIAdapter (openai.py)          — Chat Completions
-  │     └── OpenAIResponsesAdapter (openai_responses.py) — Responses
-  ├── HttpTransport (transport.py) — HTTP 请求、重试、SSE 解析
-  └── BlockAssembler (assembler.py) — 流式数据块累积
+## 二、内容块
 
-核心类型 (types.py)
-  ├── ContentBlock: TextBlock | ReasoningBlock | ToolCallBlock | ImageBlock | ToolResultBlock
-  ├── Message — Provider 无关的统一消息格式
-  ├── StreamChunk — 统一流式协议（8 种事件类型）
-  ├── UsageData — Token 用量（provider 无关）
-  └── LLMResponse — 非流式响应
-```
+`ContentBlock = TextBlock | ReasoningBlock | ImageBlock | ToolCallBlock | ToolResultBlock | ServerBlock`
 
-### Adapter Sandwich 模式
+| 块 | 关键字段 | 说明 |
+|---|---|---|
+| `TextBlock` | `text` | 正文 |
+| `ReasoningBlock` | `text`、`signature`、`redacted` | 思考/推理回放（Anthropic thinking / OpenAI reasoning） |
+| `ImageBlock` | `data`(base64)/`path`/`media_type` | 多模态图片；历史按图片策略降级为路径引用 |
+| `ToolCallBlock` | `id`、`name`、`input`、`parse_arguments()` | 工具调用 |
+| `ToolResultBlock` | `tool_use_id`、`content`、`is_error` | 工具结果（可含图片块） |
+| `ServerBlock` | `type` ∈ `SERVER_BLOCK_TYPES` | 服务端工具块（web_search 等），原样回放 |
 
-```
-发送：Message → Adapter.serialize() → wire format → HttpTransport → API
-接收：API → HttpTransport → Adapter.translate_stream() → StreamChunk → BlockAssembler → ContentBlock
-```
+块级互转：`block_to_dict / block_from_dict / blocks_to_dicts / blocks_from_dicts`
+（供会话持久化与投影）。
 
----
-
-## 核心类型 (core/llm/types.py)
-
-### ContentBlock 类型
-
-```python
-@dataclass TextBlock:
-    text: str = ""
-
-@dataclass ReasoningBlock:
-    text: str = ""
-    signature: str | None = None  # provider 私有回放元数据（Anthropic signature / Responses reasoning item JSON）
-    redacted_data: str | None = None  # redacted_thinking 的加密内容，原样回放
-
-@dataclass ToolCallBlock:
-    id: str = ""                  # tool_use_id / Responses call_id
-    name: str = ""
-    arguments: str = ""           # 原始 JSON 字符串，延迟解析
-    thought_signature: str = ""   # Google Gemini API 兼容字段
-    item_id: str = ""             # Responses 的 fc_... item id（与 reasoning 配对）
-
-    def parse_arguments(self) -> dict[str, Any]:
-        """工具执行时调用，解析 JSON → dict"""
-
-@dataclass ImageBlock:
-    data: str = ""                # base64
-    mime_type: str = ""
-
-@dataclass ToolResultBlock:
-    tool_use_id: str = ""
-    content: str | list[dict] = ""    # str 纯文本，list[dict] 多模态（text + image blocks）
-    is_error: bool = False
-    # 委派执行（agent 工具）扩展字段
-    exec_id: str = ""
-    iterations: int = 0
-    message_count: int = 0
-    duration_seconds: float = 0
-```
-
-### Message
-
-Provider 无关的统一消息格式。`content` 可以是字符串（纯文本用户消息）或 ContentBlock 列表（assistant 消息、工具结果等）。
+## 三、Message
 
 ```python
-@dataclass Message:
-    role: str                           # "user" | "assistant" | "tool"
-    content: str | list[ContentBlock]
-
-    # assistant 消息元数据
-    provider: str = ""
-    model: str = ""
-    usage: UsageData | None = None
-    stop_reason: str = ""
-
-    # 压缩/有效性标记
-    compacted: bool = False        # 工具结果已压缩
-    invalidated: bool = False      # 消息无效，发送时排除
+Message(role, content: str | list[ContentBlock])  # from_dict / to_dict
 ```
 
-### UsageData
+- 角色：system / user / assistant / tool（工具结果以 user 消息内的 `ToolResultBlock` 表达）。
+- 适配器负责把中立 Message 序列化为协议格式；供应商差异（如 OpenAI 的 `tool_calls`、
+  Responses 的 `input` items）全部封装在各自 Adapter 内。
 
-```python
-@dataclass UsageData:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-```
+## 四、流式协议
 
-### StreamChunk — 统一流式协议
+`StreamChunk`（统一流协议）：`block_start / text_delta / reasoning_delta / tool_call_delta /
+block_end / usage / finish`。
 
-```python
-@dataclass StreamChunk:
-    type: str  # chunk 类型
-    index: int = 0  # 块索引
-    data: dict[str, Any] = field(default_factory=dict)
-```
+- Adapter `translate_stream(events)` 把供应商 SSE 事件翻译为 StreamChunk。
+- `BlockAssembler` 累积为最终 `ContentBlock` 列表。
+- `HttpTransport` 负责 SSE 行解析与错误事件（`StreamErrorEvent`）。
 
-9 种事件类型，adapter 负责将 provider SSE 翻译为此格式：
-
-| type | data 字段 | 说明 |
-|------|-----------|------|
-| `block_start` | `block_type` | 新内容块开始 |
-| `text_delta` | `text` | 文本内容增量 |
-| `reasoning_delta` | `text` | 推理内容增量 |
-| `signature_delta` | `signature` | 思考块签名（赋值替换，非累积；Anthropic 多轮重放） |
-| `redacted` | `data` | Anthropic redacted_thinking 加密内容（原样回放） |
-| `tool_call_delta` | `id?`, `name?`, `arguments?`, `thought_signature?`, `item_id?` | 工具调用增量 |
-| `block_end` | — | 内容块结束 |
-| `usage` | `usage: UsageData` | Token 用量更新 |
-| `finish` | `stop_reason` | 流结束 |
-
-### LLMResponse
-
-```python
-@dataclass LLMResponse:
-    content: list[ContentBlock]
-    stop_reason: str = ""
-    usage: UsageData = UsageData()
-    headers: dict[str, str] = field(default_factory=dict)
-
-    def get_text(self) -> str
-    def get_tool_calls(self) -> list[ToolCallBlock]
-    def content_as_dicts(self) -> list[dict]  # 用于消息存储
-```
-
----
-
-## Adapter 层
-
-### Adapter 抽象基类
+## 五、Adapter 契约
 
 ```python
 class Adapter(ABC):
     @property
-    def api_path(self) -> str           # "/v1/messages" or "/v1/chat/completions"
-
-    def build_headers(self) -> dict     # API 认证头
-    def serialize(self, ...) -> dict    # Message → wire format
-    def translate_stream(self, events)  # SSE events → StreamChunks
-    def parse_response(self, data)      # wire format → (blocks, stop_reason, usage)
+    def cache_enabled(self) -> bool: ...        # 协议/网关是否启用 prompt cache
+    def apply_prompt_cache(self, body, system, messages, tools=None) -> None: ...
+    def build_headers(self, session_id: str = "") -> dict[str, str]: ...
+    def serialize(self, ...) -> dict: ...
+    def parse_response(self, data) -> tuple[list[ContentBlock], stop_reason, UsageData]: ...
+    def translate_stream(self, events) -> Iterable[StreamChunk]: ...
 ```
 
-### AnthropicAdapter
+- 缓存钩子由基类声明、子类按协议实现；不支持缓存的适配器保持默认 no-op。
+- `join_api_url(base_url, path)` 统一 base 与路径拼装（自带 `/v1` 去重）。
+- 静态头/会话头来自 `server_presets.get_preset(backend)`；OAuth provider 的端点与协议由代码锁定
+  （`chatgpt_oauth.assert_oauth_endpoint`）。
 
-- **API**: `/v1/messages`，`x-api-key` 认证
-- **工具调用**: 存储为 `tool_use`，Python 字段 `arguments: str` ↔ API `input: dict`
-- **推理内容**: `thinking` block with `signature`；发送前归一化：`reasoning=off` 剥离历史思考块；不校验签名的上游（DeepSeek 等）给带 `tool_use` 但缺思考块、或思考文本为空的轮次补非空占位文本（空文本同样被判为「未回传」，实测 400）
-- **扩展思考**: 按 `reasoning` 档位启用（流式与非流式请求均生效），`low`/`medium`/`high` → `budget_tokens` 1024/4096/10000；`off` 显式发送 `thinking: {type: "disabled"}`（部分网关对「不传」默认开思考，必须显式关）；`default` 不发送 thinking 参数。**模型配置的默认档位为 `medium`**
-- **Prompt cache**: 使用 Anthropic 协议即启用（由用户决定是否使用支持 `cache_control` 的中转站）：`system` 转为带 `cache_control: ephemeral` 的块列表；最后一条消息的最后一块（text/tool_use/tool_result/image）追加第二个断点。字符串内容的消息保持原样不打断点。可通过 `cache_control` 配置项控制：`"auto"`（默认，根据协议自动决定）、`"true"`（强制启用）、`"false"`（禁用）。
+## 六、LLMClient
 
-### OpenAIAdapter
+`create_llm_client(config: ResolvedModel) -> LLMClient` 按 `config.protocol` 选择适配器：
+`anthropic` / `openai`（含 `openai-compatible` 别名）/ `openai-responses`。
 
-- **API**: `/v1/chat/completions`，`Bearer` 认证
-- **工具调用**: 内部 `tool_call` ↔ API `function` calling（`arguments` 保持 str）
-- **消息转换**: system 消息前置，tool_result → role=tool 消息
-- **推理模型**: `reasoning` 除 `default` 外均发送 `reasoning_effort`（`off` → `"none"`，`minimal`/`low`/`medium`/`high` 直传）；`default` 不发送该参数。**模型配置的默认档位为 `medium`**
+公共 API：
 
-### OpenAIResponsesAdapter
+| 方法 | 说明 |
+|---|---|
+| `chat(messages, system=, tools=, max_tokens=, session_id=)` | 非流式，返回 `LLMResponse` |
+| `chat_stream(...)` | 流式，逐块产出 `StreamChunk` |
+| `chat_structured(messages, system, output_schema, max_tokens=)` | 结构化输出（解析/修复/截断重试） |
 
-- **API**: `/v1/responses`，`Bearer` 认证；`interface_type = "openai-responses"`
-- **消息转换**: system → 顶层 `instructions`；user/assistant → `input` items；`tool_result` → `function_call_output`（`call_id` 配对）；工具定义 → 扁平 `{type:"function", name, parameters, strict:false}`
-- **无服务端会话**: 始终 `store: false`，每回合重放完整历史；`prompt_cache_key` 取会话 ID（`cache_control="false"` 时关闭）
-- **推理模型**: `reasoning` → `reasoning: {effort, summary:"auto"}`（`off` → `"none"`，`default` 不发送）；同时 `include: ["reasoning.encrypted_content"]`，思考 item 的完整 JSON 存入 `ReasoningBlock.signature`，下一轮原样回放
-- **流式**: `response.output_item.*` / `response.output_text.delta` / `response.function_call_arguments.delta` → StreamChunks；终态以 `response.completed` 的 `response.output` 补发缺失 item 并覆盖思考签名
+`LLMResponse`：`content`、`stop_reason`、`usage`、`raw`。
 
----
+重试：`HttpTransport.with_retry`（429/5xx/连接错误；`retry-after` 与响应体提示；
+`CILI_LLM_TOTAL_RETRY_TIMEOUT` 控制总时长，默认 300s）。
 
-## 传输层 (core/llm/transport.py)
+## 七、错误分类
 
-HttpTransport 负责 HTTP 请求、SSE 解析和重试原语：
+`core/llm/errors.py`：
 
-- **重试**: Transport 层 `_MAX_RETRIES = 2`，非流式调用（chat/压缩/兜底）由 `with_retry` 重试；流式调用显式传 `max_retries=0`，由 `session_runner_runtime/executor.py::_call_llm_streaming()` 管理——流式请求最多重试 3 次（退避 5/10/20 秒），并支持 413 错误去掉图片后重试
-- **重试原语**: `should_retry()` 判定 429/5xx 可重试，`retry_delay()` 指数退避 + 抖动
-- **Retry-After**: 重试时尊重服务器返回的重试间隔
-- **SSE 解析**: 逐行解析 `data:` 行，yield JSON events
-- **中断支持**: `stop_check` 回调支持用户中断
+- `classify_llm_error(e) -> LLMErrorInfo(kind, message, should_retry, retry_after)`
+- `kind`：`timeout / connection / auth / quota / rate_limit / server / context_length /
+  bad_request / unknown`
+- 429 细分：配额类错误码不重试；ChatGPT 套餐额度码在 `chatgpt_oauth/errors.lookup_error`。
+- 用户可见文案统一中文；`format_llm_error` 生成最终提示。
 
----
+## 八、配置与模型解析
 
-## BlockAssembler (core/llm/assembler.py)
+模型配置两级（`core/config.py`）：`providers`（接入层 + 模型表）与 `agents`（角色 → 模型引用）。
+`resolve_model(ref) -> ResolvedModel` 合成运行时对象（protocol/base_url/auth_type/backend/headers/
+context/output 上限/image 与 reasoning 设置）。环境变量覆盖只作用于 master 接入层
+（`apply_env_overrides`）。
 
-累积 StreamChunks 为 ContentBlocks：
+## 九、ChatGPT OAuth（`chatgpt_oauth/`）
 
-```python
-assembler = BlockAssembler()
-for chunk in adapter.translate_stream(event_iterator):
-    assembler.push(chunk)
-# assembler.blocks → list[ContentBlock]
-# assembler.stop_reason → str
-# assembler.usage → UsageData
-```
-
-**关键**：`translate_stream()` 必须接收完整的事件迭代器（而非逐事件调用），以维护内部状态（tool_call_indices 等）跨事件持久化。
-
----
-
-## 数据流
-
-### 1. 流式请求
-
-```
-session_runner_runtime/executor.py::_call_llm_streaming()
-  → LLMClient.chat_stream(messages=[Message], ...)
-    → adapter.serialize(messages) → request body
-    → transport.stream(url, headers, body) → event iterator
-    → adapter.translate_stream(events) → StreamChunks
-    → assembler.push(chunk) → ContentBlocks
-  → LLMResponse(content=blocks, stop_reason, usage)
-```
-
-> `BaseSessionRunner._call_llm_streaming()` 为同名薄转发方法（委托给 `session_runner_runtime/executor.py`）。
-
-### 2. 工具调用处理
-
-```python
-# 1. 响应包含 ToolCallBlock（arguments 是原始 JSON 字符串）
-response = self._call_llm(streaming=True, ...)
-
-# 2. 存储 assistant 消息（转为 dict）
-self.add_message("assistant", response.content_as_dicts())
-# → {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
-
-# 3. 工具执行时解析 JSON
-for block in response.get_tool_calls():
-    input_data = block.parse_arguments()  # str → dict
-    result = self._execute_tool(block.name, input_data, block.id)
-```
-
-### 3. 消息存储格式
-
-消息存储为 dict 列表（JSON 可序列化）：
-
-```json
-{
-  "role": "assistant",
-  "content": [
-    {"type": "text", "text": "..."},
-    {"type": "tool_use", "id": "...", "name": "...", "input": {"key": "value"}}
-  ]
-}
-```
-
-发送 API 前，dict 消息通过 `Message.from_dict()` 转为 Message 对象，再由 adapter 转为 wire format。
-
----
-
-## 序列化格式对照
-
-### ToolCallBlock
-
-| 层面 | 格式 |
-|------|------|
-| 内部类型 | `ToolCallBlock(id, name, arguments: str)` |
-| 存储格式 | `{"type": "tool_use", "id", "name", "input": dict}` |
-| Anthropic API | `{"type": "tool_use", "id", "name", "input": dict}` |
-| OpenAI API | `{"type": "function", "function": {"name", "arguments": str}}` |
-
-### ToolResultBlock
-
-| 层面 | 格式 |
-|------|------|
-| 内部类型 | `ToolResultBlock(tool_use_id, content, is_error)` |
-| 存储格式 | `{"type": "tool_result", "tool_use_id", "content", "is_error"}` |
-| Anthropic API | 嵌在 user 消息中，`tool_use_id` |
-| OpenAI API | 独立 `role: "tool"` 消息，`tool_call_id` |
-
----
-
-## ToolResult (core/tools/base.py)
-
-工具执行结果，支持新接口（blocks）和兼容旧接口（output）：
-
-```python
-class ToolResult:
-    def __init__(self, output="", error=False, content=None,
-                 blocks=None, is_error=False, meta=None,
-                 completed=None, wait_for_user=False):
-        # 新接口：blocks 是 ContentBlock 列表
-        # completed: 占位符生命周期（None 正常 / False 占位等待 / True 已完成）
-        # 兼容接口：output → TextBlock；wait_for_user 为 completed=False 的废弃别名
-
-    @property
-    def output(self) -> str:    # 从 blocks 提取文本
-    @property
-    def error(self) -> bool:    # alias for is_error
-```
-
----
-
-## 配置
-
-模型配置架构（providers + agents 两级，详见 workspace/models-provider-design.md）：
-
-```json
-{
-  "providers": {
-    "bg": { "interface_type": "anthropic", "api_key": "...", "base_url": "...",
-            "models": { "main": { "name": "claude-sonnet-4-6", ... }, "cheap": { ... } } }
-  },
-  "agents": { "master": { "model": "bg/main" }, "worker": { "model": "bg/main" } }
-}
-```
-
-- `providers`: 凭据/接入层（api_key/base_url/协议/auth_type/backend/headers）+ models 表
-- `agents`: 角色 → 模型引用（"provider键/模型键"）；worker/lite 未配置时继承 master
-- `resolve_model()` 产出运行时 `ResolvedModel`（含接入层字段 auth_type/backend/headers）
-
-工厂函数：`create_llm_client(config) → LLMClient`
-
----
-
-## 相关文件
-
-| 文件 | 说明 |
-|------|------|
-| `core/llm/types.py` | ContentBlock, Message, StreamChunk, UsageData, LLMResponse |
-| `core/llm/adapter.py` | Adapter 抽象基类 |
-| `core/llm/anthropic.py` | AnthropicAdapter |
-| `core/llm/openai.py` | OpenAIAdapter（Chat Completions） |
-| `core/llm/openai_responses.py` | OpenAIResponsesAdapter（Responses） |
-| `core/llm/transport.py` | HttpTransport（HTTP、重试、SSE） |
-| `core/llm/assembler.py` | BlockAssembler |
-| `core/llm/client.py` | LLMClient（公共 API） |
-| `core/llm/__init__.py` | 导出、create_llm_client 工厂 |
-| `core/base_session_runner.py` | BaseSessionRunner（消息管理、工具执行、压缩） |
-| `core/session_runner.py` | 统一 SessionRunner（mode 分叉：master 交互 / worker、lite 自主） |
-| `core/role_config.py` | RoleConfig + load_role |
-| `core/tools/base.py` | Tool 基类、ToolResult |
-
-## 参考
-
-- Anthropic Messages API
-- OpenAI Chat Completions API
-- OpenAI Responses API
-- DeepSeek Harness ContentBlock / StreamChunk 设计
-- Pi-main 消息类型设计
+- 登录：`login.start/poll/complete/cancel`，授权回调由 `web/routes_chatgpt_oauth.register_hooks` 注册。
+- 凭证：`credentials.Credentials`（scrypt 无关，OAuth token 集）+ `store`（每账号一文件，
+  `data/cili/tools/chatgpt/accounts/{id}.json`）；凭证前缀 `chatgpt-oauth:`。
+- 请求整形：`profile.shape_request`（预览期字段与顺序）；`assert_oauth_endpoint` 锁定端点。
+- 错误：`errors.lookup_error` 映射套餐额度码；刷新失败分 fatal/transient。
