@@ -7,7 +7,7 @@
 - 出站文件 web 落地（drain_outbox_events：file 帧 + file_card 消息）
 - 技能按接口过滤（frontmatter interfaces）
 - 角色 JSON 的 interface_caps 块声明与静态区 Web 假设清除
-- 终端样例档案（interfaces/tui）
+- 终端样例档案（interfaces/cli）
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest
 
 # 注册副作用：三份接入端档案 + 终端样例
 import interfaces.qq.profile  # noqa: F401
-import interfaces.tui.profile  # noqa: F401
+import interfaces.cli.profile  # noqa: F401
 import interfaces.wechat.profile  # noqa: F401
 import web.profile  # noqa: F401
 from core.interface_profile import (
@@ -398,8 +398,8 @@ class TestSkillInterfaceFilter:
 
 
 class TestTuiSampleProfile:
-    def test_tui_profile_registered(self):
-        profile = get_profile("tui")
+    def test_cli_profile_registered(self):
+        profile = get_profile("cli")
         assert profile is not None
         assert "markdown" in profile.renders
         assert profile.image_protocol in ("none", "sixel", "kitty", "iterm2")

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from interfaces.tui.frames import SseFrameRouter
-from interfaces.tui.render import (
+from interfaces.cli.frames import SseFrameRouter
+from interfaces.cli.render import (
     build_option_labels,
     format_ask_user_card,
     resolve_answer,

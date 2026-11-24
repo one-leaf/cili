@@ -163,3 +163,41 @@ def migrate_chatgpt_oauth_naming(global_config_path: Path) -> bool:
     if changed:
         atomic_write_text(path, json.dumps(raw, ensure_ascii=False, indent=2))
     return changed
+
+
+def migrate_tui_channel(workspaces_json: Path, get_data_dir) -> int:
+    """旧会话 metadata 的通道/档案名 `tui` → `cli`（§4 契约）。"""
+    changed = 0
+    try:
+        entries = json.loads(Path(workspaces_json).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(entries, list):
+        return 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        sessions_dir = Path(get_data_dir(entry.get("uuid", ""))) / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        for meta_path in sessions_dir.glob("*/meta.json"):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            metadata = meta.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            touched = False
+            for key in ("channel", "interface"):
+                if metadata.get(key) == "tui":
+                    metadata[key] = "cli"
+                    touched = True
+            if touched:
+                atomic_write_text(
+                    meta_path, json.dumps(meta, ensure_ascii=False, indent=2)
+                )
+                changed += 1
+    return changed

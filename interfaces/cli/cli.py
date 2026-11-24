@@ -1,6 +1,6 @@
 """TUI 客户端命令行入口（cli.cmd 的实现体）。
 
-入口链：``cli.cmd`` → ``python -m interfaces.tui``（``__main__.py``）→ :func:`main`。
+入口链：``cli.cmd`` → ``python -m interfaces.cli``（``__main__.py``）→ :func:`main`。
 客户端与服务端入口**物理分离**：``main.py`` / ``start.cmd`` 只服务 Web 服务端，
 本包不 import 任何 ``core/*`` 模块（``profile.py`` 除外，且仅服务端 import）。
 
@@ -13,10 +13,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from interfaces.tui.app import TuiApp
-from interfaces.tui.client import CiliHttpClient
-from interfaces.tui.discovery import discover_config
-from interfaces.tui.render import Renderer
+from interfaces.cli.app import TuiApp
+from interfaces.cli.client import CiliHttpClient
+from interfaces.cli.discovery import discover_config
+from interfaces.cli.render import Renderer
 
 
 def build_parser() -> argparse.ArgumentParser:

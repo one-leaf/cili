@@ -17,10 +17,10 @@
 `turn_dispatch` / `outbox` / `default_sink` / `interface_profile` 全部复用。
 
 ```
-cli.cmd                    Windows 启动器（任意目录 → python -m interfaces.tui）
-interfaces/tui/            终端客户端（瘦：不 import 任何 core/* 模块）
+cli.cmd                    Windows 启动器（任意目录 → python -m interfaces.cli）
+interfaces/cli/            终端客户端（瘦：不 import 任何 core/* 模块）
   __init__.py              包声明 + 落地清单注释
-  __main__.py              python -m interfaces.tui → cli.main()
+  __main__.py              python -m interfaces.cli → cli.main()
   cli.py                   main()：argparse（-c/--session/--server/--no-color）
                            + 非 TTY 检测 + 装配
   discovery.py             服务端发现与鉴权解析链
@@ -32,7 +32,7 @@ interfaces/tui/            终端客户端（瘦：不 import 任何 core/* 模�
   profile.py               能力档案（服务端 import 注册，客户端自身不用）
 
 main.py                    服务端启动时落盘 data/cili/server.json（发现锚点）
-core/app_context.py        startup() 注册 tui 能力档案
+core/app_context.py        startup() 注册 cli 能力档案
 web/routes_chat.py         POST messages 的 interface 字段（唯一的路由层改动）
 ```
 
@@ -51,12 +51,12 @@ web/routes_chat.py         POST messages 的 interface 字段（唯一的路由�
 2. **`server.json` 落盘**（`main.py` 的 `_start_web_interface`）：服务端启动时写
    `{host, port, pid, started_at}`（`port` 为端口探测后的实际端口），退出（含 Ctrl+C）
    时删除——TUI 据此发现同机服务端，自定义 `--port` 自然覆盖
-3. **tui 档案注册**（core/app_context.py startup）：TUI 没有 start 函数可走
+3. **cli 档案注册**（core/app_context.py startup）：TUI 没有 start 函数可走
    （QQ/微信是启动接口时顺带注册的），在此用 import 副作用注册
-   `interfaces.tui.profile`——否则 `set_turn_interface("tui")` 的回合告警
+   `interfaces.cli.profile`——否则 `set_turn_interface("cli")` 的回合告警
    「未知接口」并按未声明处理（提示词缺 Response Surface 段）
 
-## 三、服务端发现与鉴权（interfaces/tui/discovery.py）
+## 三、服务端发现与鉴权（interfaces/cli/discovery.py）
 
 解析链（优先级从高到低）：
 
@@ -101,7 +101,7 @@ access_token 时服务端走 IP 白名单，客户端无需 token。连接失败
 
 ## 六、回合流与超时（client.py `chat_stream`）
 
-`POST .../messages`（body 含 `interface: "tui"`）→ SSE 流。**超时策略是本模块
+`POST .../messages`（body 含 `interface: "cli"`）→ SSE 流。**超时策略是本模块
 最重要的细节**：`httpx.Timeout(10.0, read=None)`——connect/write/pool 保持 10 秒
 （快速发现服务端未启动），但 **read 无限制**：工具执行（bash/python 可达数分钟）
 期间没有 SSE 帧产出，client 级读超时会把正常回合掐断（服务端继续跑完落盘，
@@ -157,7 +157,7 @@ HTTP 连接就断，剩余帧收不到）：
 - 3 秒窗口内二次：`frames.close()` 强制断开（服务端照常收尾落盘）
 - 空闲时：退出循环（Ctrl+D 等价）
 
-## 九、入口链（cli.cmd → python -m interfaces.tui → cli.main()）
+## 九、入口链（cli.cmd → python -m interfaces.cli → cli.main()）
 
 ```
 cli.cmd（~40 行批处理，自包含）
@@ -167,7 +167,7 @@ cli.cmd（~40 行批处理，自包含）
   │    2. PATH 里的 python（此时 set PYTHONPATH=%~dp0）
   ├─ winpty 包装：TERM_PROGRAM==mintty 且 winpty 可用（mintty 下 python 的
   │  stdin/stdout 非 console；Windows Terminal/cmd 直接跑）
-  └─ "%PYTHON%" -m interfaces.tui %*
+  └─ "%PYTHON%" -m interfaces.cli %*
      ⚠️ 绝不 cd——cwd 保持用户目录，这是「cwd 即 workspace」的前提
 ```
 
@@ -184,7 +184,7 @@ test/test_tui_render.py     渲染原语纯函数（工具摘要/ask_user 卡/�
                             覆盖 retry_clear/提交点/ask_user label 表/error 兜底）
 test/test_tui_client.py     httpx.MockTransport 注入（client.py 构造器可传 transport）：
                             cwd 归一化匹配/自动注册/重名后缀、SSE 解析（非法帧跳过）、
-                            interface="tui" 断言、并发 error 帧、连接失败提示、stop
+                            interface="cli" 断言、并发 error 帧、连接失败提示、stop
 test/test_web_api.py        TestSendMessageInterface：interface 字段 → set_turn_interface
                             调用序列 ["tui", None]；缺省/缺属性 → ["web", None]
 ```

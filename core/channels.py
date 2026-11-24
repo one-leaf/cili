@@ -11,9 +11,7 @@
 
 通道 id 与能力档案名解耦
 ------------------------
-终端通道的产品名是 ``cli``，但能力档案名暂时仍是 ``tui``（改名会牵动
-prompt/审批/文件交付等既有链路），由本表做映射；将来统一改名只改
-``profile`` 字段。
+终端通道的产品名与能力档案名统一为 ``cli``（§4 契约）。
 
 会话归属标记
 ------------
@@ -44,7 +42,7 @@ class Channel:
 
 CHANNELS: dict[str, Channel] = {
     "web": Channel("web", "网页", "网页会话", profile="web", kind="local"),
-    "cli": Channel("cli", "终端", "CLI 会话", profile="tui", kind="local"),
+    "cli": Channel("cli", "终端", "CLI 会话", profile="cli", kind="local"),
     "qq": Channel("qq", "QQ", "QQ 会话", profile="qq", kind="remote"),
     "wechat": Channel("wechat", "微信", "微信会话", profile="wechat", kind="remote"),
     # 邮件通道预留：实现时在 interfaces/email/profile.py 注册同名能力档案

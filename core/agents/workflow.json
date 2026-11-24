@@ -65,7 +65,7 @@
     "read",
     "grep",
     "glob",
-    "todo",
+    "todo_write",
     "clock"
   ],
   "skills": [],

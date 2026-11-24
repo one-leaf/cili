@@ -108,7 +108,7 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
         try:
             # 未声明接口（后台通知/cron 恢复）也按 Web 卡片兜底：没有入站上下文时
             # 无法走 IM 富媒体上传，落 file_card 至少不会丢失。
-            if (getattr(runner, "_turn_interface", None) in ("web", "tui", None)
+            if (getattr(runner, "_turn_interface", None) in ("web", "cli", None)
                     and not getattr(runner, "_turn_has_custom_sink", False)):
                 from core.outbox import drain_web_files
                 drain_web_files(runner, publish_global=True)

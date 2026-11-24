@@ -528,13 +528,13 @@ class SessionRunner(BaseSessionRunner):
 
         # 校验 deferred_tools 白名单：deferred_tools 按「工具 name」匹配（非注册键），
         # 未匹配到任何已加载工具的条目会静默失效，故显式告警。
-        # 注意：role JSON 的 tools 用注册键（如 "todo"），deferred_tools 用工具名（如 "todo_write"）。
+        # role JSON 的 tools 用注册键，deferred_tools 用工具 name；两者现已统一为 todo_write。
         matched_deferred = {t.name for t in self._deferred_tools}
         for name in self.role_cfg.deferred_tools:
             if name not in matched_deferred:
                 logger.warning(
                     f"[SessionRunner:{self.role}] deferred_tools 中的 {name!r} 未匹配到任何已加载工具"
-                    f"（按工具 name 匹配；注册键与工具名可能不同，如 'todo' vs 'todo_write'）"
+                    f"（按工具 name 匹配；注册键与工具名应一致）"
                 )
 
         # Wire tool_search: activation callback（deferred 列表由 _apply_tool_visibility 维护）

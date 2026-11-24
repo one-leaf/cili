@@ -1,7 +1,7 @@
 """Tests for core/tools/registry.py — 统一工具注册表（A45：间接覆盖补强）。
 
 验证：角色白名单工具名全部注册、master/worker/lite 集合关系、
-"todo" 注册键映射到 name="todo_write" 的工具（T26 有意差异）。
+注册键与工具 name 一致（todo_write）。
 """
 
 import pytest
@@ -32,9 +32,9 @@ class TestRegistryCompleteness:
     def test_no_duplicate_factories(self):
         """不同注册键不指向同一工具类（除有意别名外）。"""
         from core.tools.todo import TodoWriteTool
-        todo_tool = TOOL_REGISTRY["todo"](ToolBuildContext(role_cfg=load_role("master")))
+        todo_tool = TOOL_REGISTRY["todo_write"](ToolBuildContext(role_cfg=load_role("master")))
         assert isinstance(todo_tool, TodoWriteTool)
-        assert todo_tool.name == "todo_write"  # T26：注册键 "todo" 与工具名不同，属有意设计
+        assert todo_tool.name == "todo_write"
 
 
 class TestCreateTools:
@@ -59,7 +59,5 @@ class TestCreateTools:
         """工具 name 与注册键一致（T26 中的 todo 除外）。"""
         role_cfg = load_role("master")
         for name in role_cfg.tools:
-            if name == "todo":
-                continue  # 有意差异：注册键 "todo" → 工具名 "todo_write"
             tool = TOOL_REGISTRY[name](ToolBuildContext(role_cfg=role_cfg))
             assert tool.name == name, f"注册键 {name} 实例化出工具名 {tool.name}"

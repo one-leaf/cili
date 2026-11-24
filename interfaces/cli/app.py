@@ -10,10 +10,10 @@ from __future__ import annotations
 import os
 import time
 
-from interfaces.tui.client import CiliHttpClient, CiliServerError
-from interfaces.tui.commands import build_commands
-from interfaces.tui.frames import SseFrameRouter
-from interfaces.tui.render import Renderer, resolve_answer
+from interfaces.cli.client import CiliHttpClient, CiliServerError
+from interfaces.cli.commands import build_commands
+from interfaces.cli.frames import SseFrameRouter
+from interfaces.cli.render import Renderer, resolve_answer
 
 _STOP_FORCE_WINDOW = 3.0  # 秒：两次 Ctrl+C 视为强制断开
 

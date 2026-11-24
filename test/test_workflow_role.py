@@ -54,7 +54,7 @@ def test_workflow_role_is_business_agnostic():
     for forbidden in ("write", "edit", "bash", "pwsh", "python", "agent",
                       "ask_user", "workflow", "workflow_agent"):
         assert forbidden not in role.tools
-    for allowed in ("read", "grep", "glob", "todo", "clock"):
+    for allowed in ("read", "grep", "glob", "todo_write", "clock"):
         assert allowed in role.tools
     assert role.user_layers == []
 

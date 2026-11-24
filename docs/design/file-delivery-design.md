@@ -1,7 +1,7 @@
 # 文件交付设计：`send_user_file` 的多接口形态
 
 > 状态：**已实现**（2026-10-19）。前置：`docs/design/qq-interface-design.md` §七、
-> `docs/design/wechat-interface-design.md` §七、`docs/design/tui-interface-design.md` §五。
+> `docs/design/wechat-interface-design.md` §七、`docs/design/cli-client-design.md` §五。
 >
 > 工具名从 `send_file` 改为 `send_user_file`（明确收件人是用户），模块
 > `core/tools/send_user_file.py`。
@@ -79,7 +79,7 @@ Constraints: files must exist inside the workspace; at most N per turn.
 
 `InterfaceProfile` 新增字段 `max_files_per_turn: int | None`（None = 不限）。
 
-| | web | qq | wechat | tui |
+| | web | qq | wechat | cli |
 |---|---|---|---|---|
 | `can_send_file` | ✓ | ✓ | ✓ | ✗ |
 | `file_delivery` | `link` | `upload` | `upload` | `none` |
@@ -127,7 +127,7 @@ Constraints: files must exist inside the workspace; at most N per turn.
 - 与文本共享 token 预算；媒体项不进 defer 队列（保持现状）
 - 预算不足 → 显式告知（已实现），回执补记
 
-### tui（`none`）
+### cli（`none`）
 - 模型在正文给工作区相对路径；`send_user_file` 不可见
 
 ## 七、Response Surface 修订

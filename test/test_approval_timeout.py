@@ -370,7 +370,7 @@ class TestWatchdog:
     def test_auto_resume_policy(self):
         assert _can_auto_resume({"auto_resume": "web", "interface": "web"})
         assert not _can_auto_resume({"auto_resume": "web", "interface": "qq"})
-        assert _can_auto_resume({"auto_resume": "all", "interface": "tui"})
+        assert _can_auto_resume({"auto_resume": "all", "interface": "cli"})
         assert not _can_auto_resume({"auto_resume": "none", "interface": "web"})
 
 

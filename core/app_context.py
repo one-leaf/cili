@@ -68,10 +68,10 @@ class AppContext:
             logger.warning(f"[AppContext] 启动审批看门狗失败: {e}")
 
         # 终端接入端能力档案：TUI 是纯客户端（cli.cmd），不驻留服务端进程，
-        # 没有 start 函数可走——能力档案在此用 import 副作用注册，set_turn_interface("tui")
+        # 没有 start 函数可走——能力档案在此用 import 副作用注册，set_turn_interface("cli")
         # 的回合才能按 TUI 渲染 Response Surface（否则警告「未知接口」并按未声明处理）
         try:
-            import interfaces.tui.profile  # noqa: F401
+            import interfaces.cli.profile  # noqa: F401
         except Exception as e:
             logger.warning(f"[AppContext] 注册 TUI 能力档案失败: {e}")
 

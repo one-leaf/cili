@@ -126,9 +126,7 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "deepseek_read_url": _factory(DeepSeekReadUrlTool),
     "memory": _factory(MemoryTool),
     "python": _factory(PythonTool, needs_config=True, needs_permission=True),
-    # 注意：注册键 "todo" 与工具类 name="todo_write" 不同（T26）。这是有意的——
-    # 注册键简短稳定供角色白名单引用，工具名详细供 LLM 语义理解。勿"统一"改名。
-    "todo": _factory(TodoWriteTool),
+    "todo_write": _factory(TodoWriteTool),
     "latex": _factory(LatexTool, needs_permission=True),
     "message_bus": _factory(MessageBusTool),
     "cron": _factory(CronTool),

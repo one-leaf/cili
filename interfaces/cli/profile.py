@@ -12,7 +12,7 @@ import 本文件即完成注册（与 web/qq/wechat 同一机制）。字段按�
 from core.interface_profile import InterfaceProfile, register_profile
 
 PROFILE = InterfaceProfile(
-    name="tui",
+    name="cli",
     label="terminal (CLI/TUI client)",
     renders=("markdown", "tables"),
     not_rendered=("HTML", "inline SVG", "mermaid", "LaTeX", "inline images"),

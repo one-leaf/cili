@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from interfaces.tui.client import CiliHttpClient, CiliServerError, _iter_sse_frames
+from interfaces.cli.client import CiliHttpClient, CiliServerError, _iter_sse_frames
 
 
 def sse_body(frames: list[dict]) -> str:
@@ -85,7 +85,7 @@ class TestChatStream:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path.endswith("/messages")
             body = json.loads(request.content)
-            assert body["interface"] == "tui"  # 回合按 TUI 档案渲染（方案 §五）
+            assert body["interface"] == "cli"  # 回合按 TUI 档案渲染（方案 §五）
             assert request.headers["X-Access-Token"] == "tok"
             body_text = sse_body([
                 {"type": "text", "content": "你好"},

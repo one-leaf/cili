@@ -97,7 +97,7 @@ class SendMessageRequest(BaseModel):
     images: list[dict] | None = None  # [{ "data": "base64...", "media_type": "image/png" }]
     # 附件列表：[{path, selection:{startLine,endLine,text}|null, media_type}]（预览选区与 Ctrl+V 上传统一）
     attachments: list[dict] | None = None
-    # 驱动客户端类型（web/tui/...）：run_runner 按它 set_turn_interface，
+    # 驱动客户端类型（web/cli/...）：run_runner 按它 set_turn_interface，
     # 能力档案（Response Surface）与接口专属工具随回合切换。缺省视为 web。
     interface: str | None = None
     # 前端幂等键：同 client_id 重复提交返回原排队项（网络重试不重复排队）

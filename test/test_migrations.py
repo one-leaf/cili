@@ -130,3 +130,22 @@ def test_migrate_chatgpt_oauth_merges_models_when_target_exists(tmp_path):
     # 已有的新配置优先；旧模型并入而不是静默丢失
     assert target["credential"] == "chatgpt-oauth:b"
     assert set(target["models"]) == {"old", "new"}
+
+
+def test_migrate_tui_channel(tmp_path):
+    from core.migrations.steps import migrate_tui_channel
+
+    workspace = tmp_path / "ws"
+    session_dir = workspace / "sessions" / "abc12345"
+    session_dir.mkdir(parents=True)
+    (session_dir / "meta.json").write_text(json.dumps({
+        "session_id": "abc12345",
+        "metadata": {"channel": "tui", "channel_account": "", "channel_chat": ""},
+    }), encoding="utf-8")
+    workspaces_json = tmp_path / "workspaces.json"
+    workspaces_json.write_text(json.dumps([{"uuid": "w1"}]), encoding="utf-8")
+
+    assert migrate_tui_channel(workspaces_json, lambda uuid: workspace) == 1
+    meta = json.loads((session_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["metadata"]["channel"] == "cli"
+    assert migrate_tui_channel(workspaces_json, lambda uuid: workspace) == 0

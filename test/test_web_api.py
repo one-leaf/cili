@@ -639,7 +639,7 @@ class TestSendMessageInterface:
         monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
         monkeypatch.setattr("core.memory_service.memory_enabled", lambda *a: False)
 
-        request = SimpleNamespace(content="hi", images=None, interface="tui")
+        request = SimpleNamespace(content="hi", images=None, interface="cli")
 
         async def run():
             resp = await web_api.send_message("ws-if", "sess-if", request)
@@ -655,8 +655,8 @@ class TestSendMessageInterface:
 
         text = asyncio.run(run())
 
-        # 回合内置为 tui，finally 复位为 None
-        assert calls == ["tui", None]
+        # 回合内置为 cli，finally 复位为 None
+        assert calls == ["cli", None]
         assert '"done"' in text
 
     def test_interface_defaults_to_web(self, monkeypatch):

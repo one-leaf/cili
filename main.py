@@ -1206,6 +1206,7 @@ def _prepare_environment() -> None:
             migrate_chatgpt_oauth_naming,
             migrate_placeholder_meta,
             migrate_provider_interface_type,
+            migrate_tui_channel,
         )
 
         run_pending(
@@ -1216,6 +1217,8 @@ def _prepare_environment() -> None:
                  lambda: migrate_chatgpt_oauth_naming(GLOBAL_CONFIG_PATH)),
                 ("session_placeholder_meta",
                  lambda: migrate_placeholder_meta(WORKSPACES_JSON, get_workspace_data_dir)),
+                ("tui_channel_to_cli",
+                 lambda: migrate_tui_channel(WORKSPACES_JSON, get_workspace_data_dir)),
             ],
             DATA_DIR,
         )

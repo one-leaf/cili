@@ -26,11 +26,11 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 _PROCESS_STARTED_AT = time.time()
 
 # auto_resume 策略 → 有服务端推送通道、可自动恢复的接口集合。
-# 注意：`all` 表示「全部可推送接口」，目前只有 web/tui；IM（QQ/微信/邮件）
+# 注意：`all` 表示「全部可推送接口」，目前只有 web/cli；IM（QQ/微信/邮件）
 # 没有可靠的服务端推送恢复通道，不在此集合内。
 _PUSH_CAPABLE_INTERFACES = {
     "web": frozenset({"web"}),
-    "all": frozenset({"web", "tui"}),
+    "all": frozenset({"web", "cli"}),
 }
 
 
