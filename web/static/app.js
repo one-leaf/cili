@@ -2684,7 +2684,7 @@ async function loadSession(sessionId) {
     hideSuggestBar({ invalidate: true });  // 切换会话：收起推荐、作废在途请求
     if (window.ContextGauge) ContextGauge.close();  // 上下文面板随会话切换关闭
     const epoch = ++sessionLoadEpoch;
-    const sessionKey = `${currentWorkspace.uuid}:${sessionId}`;
+    const sessionKey = sessionKeyOf(currentWorkspace.uuid, sessionId);
     const sameSession = _renderedSessionKey === sessionKey;
     try {
         // 初始加载最近 50 条消息

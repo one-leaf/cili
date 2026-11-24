@@ -29,7 +29,7 @@ let _ctxBar = null;
 
 function _ctxSessionKey() {
     return currentWorkspace && currentSession
-        ? `${currentWorkspace.uuid}:${currentSession.session_id}`
+        ? sessionKeyOf(currentWorkspace.uuid, currentSession.session_id)
         : '';
 }
 

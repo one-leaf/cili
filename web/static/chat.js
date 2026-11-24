@@ -322,7 +322,7 @@ let _renderedChatSessionKey = null;
 
 function renderMessages(messages) {
     const sessionKey = currentSession
-        ? `${currentWorkspace ? currentWorkspace.uuid : ''}:${currentSession.session_id}`
+        ? sessionKeyOf(currentWorkspace ? currentWorkspace.uuid : '', currentSession.session_id)
         : null;
     const sameSession = sessionKey !== null && sessionKey === _renderedChatSessionKey;
     // 重建会清空 DOM，先把阅读位置与贴底状态记下来

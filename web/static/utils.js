@@ -30,6 +30,11 @@ function clearPosition() {
 }
 
 // ── 辅助函数：DOM 取值 / HTML转义 ──
+/** 会话键 `workspace:session`（与后端 session_key 同构）。 */
+function sessionKeyOf(workspaceUuid, sessionId) {
+    return `${workspaceUuid || ''}:${sessionId || ''}`;
+}
+
 function byId(id) {
     return document.getElementById(id);
 }
