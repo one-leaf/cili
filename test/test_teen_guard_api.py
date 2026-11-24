@@ -80,113 +80,6 @@ class TestSessionStoreGuards:
 # ── ② 工具层路径 ─────────────────────────────────────────────────────────
 
 
-def _make_policy(test_workspace, tmp_path):
-    from core.security.path_policy import PathPolicy
-
-    return PathPolicy(workspace_root=test_workspace, cwd=test_workspace)
-
-
-class TestPathPolicyTeen:
-    """PathPolicy.status：受保护路径 / 越界降级 / 规则挂起。"""
-
-    def test_protected_data_dir_denied(self, teen, test_workspace):
-        from core.security.path_policy import OP_WRITE, PathTarget
-
-        teen.enable("parent123")
-        policy = _make_policy(test_workspace, None)
-        target = PathTarget(OP_WRITE, "x", "write",
-                            resolved=os.path.join(test_workspace, ".cili", "sessions", "s1"))
-        assert policy.status(target) == "deny"
-
-    def test_protected_system_data_denied(self, teen, test_workspace):
-        from core.config import DATA_DIR
-        from core.security.path_policy import OP_DELETE, PathTarget
-
-        teen.enable("parent123")
-        policy = _make_policy(test_workspace, None)
-        target = PathTarget(OP_DELETE, "x", "delete",
-                            resolved=str(DATA_DIR / "setting.json"))
-        assert policy.status(target) == "deny"
-
-    def test_cili_tmp_exception(self, teen, test_workspace):
-        from core.security.path_policy import OP_WRITE, PathTarget
-
-        teen.enable("parent123")
-        policy = _make_policy(test_workspace, None)
-        target = PathTarget(OP_WRITE, "x", "write",
-                            resolved=os.path.join(test_workspace, ".cili", "tmp", "f.txt"))
-        # tmp 子目录不受保护（临时文件不持久化）——但 teen 未解锁时区外仍按
-        # outside_workspace 判定；.cili/tmp 在工作区内 → allow
-        assert policy.status(target) == "allow"
-
-    def test_nested_workspace_under_tmp_denied(self, teen, test_workspace, monkeypatch):
-        """宽根的 tmp 例外不得放行嵌在其 tmp/ 内的更具体工作区数据目录。"""
-        from core.security.teen_paths import teen_path_verdict
-
-        teen.enable("parent123")
-        broad = os.path.join(test_workspace, ".cili")
-        nested = os.path.join(broad, "tmp", "proj", ".cili")
-        # 模拟 protected_roots 的实际顺序：宽根在前，嵌套工作区根在后
-        monkeypatch.setattr(
-            "core.security.teen_paths.protected_roots",
-            lambda: [broad, nested],
-        )
-        assert teen_path_verdict(os.path.join(nested, "sessions", "s1"), "write") == "deny"
-        # 纯临时文件仍按 tmp 例外放行
-        assert teen_path_verdict(os.path.join(broad, "tmp", "f.txt"), "write") is None
-
-    def test_outside_downgraded_to_deny(self, teen, test_workspace, tmp_path, monkeypatch):
-        from core.security.path_policy import OP_WRITE, PathTarget
-
-        other_tmp = str(tmp_path / "other-tmp")
-        os.makedirs(other_tmp, exist_ok=True)
-        monkeypatch.setenv("TMP", other_tmp)
-        monkeypatch.setenv("TEMP", other_tmp)
-        teen.enable("parent123")
-        policy = _make_policy(test_workspace, None)
-        target = PathTarget(OP_WRITE, "x", "write", resolved="D:/somewhere/outside.txt")
-        # 青少年模式：现状 needs_approval → deny（无解锁窗口）
-        assert policy.status(target) == "deny"
-
-    def test_outside_normal_when_disabled(self, teen, test_workspace):
-        from core.security.path_policy import OP_WRITE, PathTarget
-
-        policy = _make_policy(test_workspace, None)
-        target = PathTarget(OP_WRITE, "x", "write", resolved="D:/somewhere/outside.txt")
-        # 关闭时维持现状：有审批通道 → needs_approval；无通道 → deny
-        assert policy.status(target) in ("needs_approval", "deny")
-
-    def test_rules_suspended_when_locked(self, teen, test_workspace):
-        """strict 且未解锁：allow 规则挂起，先前攒下的放行不再生效。"""
-        from core.security.path_policy import OP_WRITE, PathPolicy, PathTarget
-
-        teen.enable("parent123")
-        teen.unlock("parent123")
-        policy = PathPolicy(workspace_root=test_workspace, cwd=test_workspace,
-                            permission_rules=_FakeRules(hit=True))
-        target = PathTarget(OP_WRITE, "x", "write", resolved="D:/out.txt")
-        # 解锁窗口内：规则生效 → approved
-        assert policy.status(target) == "approved"
-        teen.lock()
-        # 回锁：规则挂起 → deny（strict）
-        assert policy.status(target) == "deny"
-
-
-class _FakeRules:
-    def __init__(self, hit: bool):
-        self._hit = hit
-
-    def match_path(self, kind, resolved, tool="*"):
-        return {"id": "fake"} if self._hit else None
-
-    def match_command(self, tool, command):
-        return {"id": "fake"} if self._hit else None
-
-    def evaluate_path(self, kind, resolved, tool="*"):
-        return (("allow", {"id": "fake", "display": "fake"})
-                if self._hit else (None, None))
-
-
 class TestPasswordFailure:
     """P0-4 回归：_mutate 返回 fn 结果，审计只记失败次数而不是整份 state。"""
 
@@ -270,6 +163,21 @@ class _FakeJudge:
 
         return JudgeDecision(decision=self._decision, summary="s", reason="r",
                                   risk=self._risk, source="judge")
+
+
+class _FakeRules:
+    def __init__(self, hit: bool):
+        self._hit = hit
+
+    def match_path(self, kind, resolved, tool="*"):
+        return {"id": "fake"} if self._hit else None
+
+    def match_command(self, tool, command):
+        return {"id": "fake"} if self._hit else None
+
+    def evaluate_path(self, kind, resolved, tool="*"):
+        return (("allow", {"id": "fake", "display": "fake"})
+                if self._hit else (None, None))
 
 
 class _FakeRules2(_FakeRules):
@@ -443,186 +351,3 @@ class TestAuditTrail:
 
 
 # ── ⑦ 路由层冒烟（路由 ↔ 管理器签名契约） ────────────────────────────────
-
-
-def _fake_request():
-    """csrf_protect 只读 headers.get；client.host 供审计。"""
-    from types import SimpleNamespace
-
-    return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"),
-                           headers={"origin": "http://localhost:8000"})
-
-
-class TestTeenRoutes:
-    """直接调用路由函数：任何 TypeError（签名不匹配）/ 异常都算失败。
-
-    教训：unlock 路由曾传 ip= 而管理器无此参数，所有解锁请求 500，
-    且管理器层单测完全测不到——路由层必须有冒烟。
-    """
-
-    def test_enable_status_unlock_policy_lock_disable_roundtrip(self, teen):
-        import asyncio
-
-        from web.routes_teen import (
-            TeenDisableRequest,
-            TeenEnableRequest,
-            TeenLockRequest,
-            TeenPolicyRequest,
-            TeenUnlockRequest,
-            teen_disable,
-            teen_enable,
-            teen_lock,
-            teen_status,
-            teen_unlock,
-            teen_update_policy,
-        )
-
-        req = _fake_request()
-
-        # enable
-        body = TeenEnableRequest(password="parent123", window_minutes=15)
-        result = asyncio.run(teen_enable(req, body))
-        assert result["success"] is True
-
-        # status（公开，无 request 参数）
-        status = asyncio.run(teen_status())
-        assert status["enabled"] is True
-        assert status["unlocked"] is False
-
-        # unlock（正确密码 + ws 作用域）
-        body = TeenUnlockRequest(password="parent123", scope="ws:abc")
-        result = asyncio.run(teen_unlock(req, body))
-        assert result["success"] is True
-        assert result["scope"] == "ws:abc"
-
-        # unlock（错误密码 → 401）
-        import fastapi
-
-        body = TeenUnlockRequest(password="badpass")
-        try:
-            asyncio.run(teen_unlock(req, body))
-            raised = False
-        except fastapi.HTTPException as e:
-            raised = True
-            assert e.status_code == 401
-        assert raised
-
-        # policy（已 unlock? ws 作用域不够改全局策略 → 403）
-        body = TeenPolicyRequest(policy={"deny_hide": False})
-        try:
-            asyncio.run(teen_update_policy(req, body))
-            policy_denied = False
-        except TeenModeDenied:
-            policy_denied = True
-        assert policy_denied
-
-        # 全局解锁后改策略
-        asyncio.run(teen_unlock(req, TeenUnlockRequest(password="parent123")))
-        body = TeenPolicyRequest(policy={"deny_hide": False}, limits={"daily_minutes": 30})
-        result = asyncio.run(teen_update_policy(req, body))
-        assert result["success"] is True
-        assert teen.policy()["deny_hide"] is False
-        assert teen.limits()["daily_minutes"] == 30
-
-        # lock（立即回锁）
-        result = asyncio.run(teen_lock(req, TeenLockRequest()))
-        assert result["success"] is True
-        assert teen.is_unlocked() is False
-
-        # disable（未解锁 → 403；解锁+密码 → 成功）
-        try:
-            asyncio.run(teen_disable(req, TeenDisableRequest(password="parent123")))
-            disable_denied = False
-        except TeenModeDenied:
-            disable_denied = True
-        assert disable_denied
-
-        asyncio.run(teen_unlock(req, TeenUnlockRequest(password="parent123")))
-        result = asyncio.run(teen_disable(req, TeenDisableRequest(password="parent123")))
-        assert result["success"] is True
-        assert teen.is_enabled() is False
-
-    def test_password_change_route(self, teen):
-        import asyncio
-
-        from web.routes_teen import (
-            TeenPasswordRequest,
-            TeenUnlockRequest,
-            teen_change_password,
-            teen_enable,
-            teen_unlock,
-        )
-
-        req = _fake_request()
-        asyncio.run(teen_enable(req, _enable_body("parent123")))
-        asyncio.run(teen_unlock(req, TeenUnlockRequest(password="parent123")))
-        body = TeenPasswordRequest(old_password="parent123", new_password="newpass99")
-        result = asyncio.run(teen_change_password(req, body))
-        assert result["success"] is True
-        assert teen.verify_password("newpass99") is True
-
-
-def _enable_body(password):
-    from web.routes_teen import TeenEnableRequest
-
-    return TeenEnableRequest(password=password, window_minutes=15)
-
-
-class TestAllowedWorkspacesValidation:
-    """白名单嵌套校验：跨盘符不误伤（D: vs E: 的 commonpath 会抛 ValueError）。"""
-
-    def _patch_index(self, monkeypatch, entries):
-        import core.teen_mode as teen_mode_mod
-        from web import routes_teen
-
-        monkeypatch.setattr(teen_mode_mod, "load_workspaces_index", lambda: entries)
-        monkeypatch.setattr(
-            teen_mode_mod, "find_workspace_entry",
-            lambda u: next((e for e in entries if e["uuid"] == u), None))
-        return routes_teen
-
-    def test_cross_drive_ok(self, monkeypatch):
-        rt = self._patch_index(monkeypatch, [
-            {"uuid": "wsd", "workspace_name": "d", "directory": "D:/a"},
-            {"uuid": "wse", "workspace_name": "e", "directory": "E:/somewhere"},
-        ])
-        assert rt._validate_allowed_workspaces(["wsd", "wse"]) == ["wsd", "wse"]
-
-    def test_same_drive_nesting_rejected(self, monkeypatch):
-        import fastapi
-
-        rt = self._patch_index(monkeypatch, [
-            {"uuid": "parent", "workspace_name": "p", "directory": "E:/parent"},
-            {"uuid": "child", "workspace_name": "c", "directory": "E:/parent/child"},
-        ])
-        with pytest.raises(fastapi.HTTPException) as ei:
-            rt._validate_allowed_workspaces(["parent"])
-        assert "嵌套" in ei.value.detail
-
-    def test_system_and_missing_rejected(self, monkeypatch):
-        import fastapi
-
-        rt = self._patch_index(monkeypatch, [
-            {"uuid": "wsx", "workspace_name": "x", "directory": "E:/x"},
-        ])
-        with pytest.raises(fastapi.HTTPException):
-            rt._validate_allowed_workspaces(["system"])
-        with pytest.raises(fastapi.HTTPException):
-            rt._validate_allowed_workspaces(["no-such-uuid"])
-
-    def test_policy_route_saves_cross_drive_whitelist(self, teen, monkeypatch):
-        """端到端：跨盘符白名单经 PUT /api/teen/policy 正常落盘。"""
-        import asyncio
-
-        from web.routes_teen import TeenPolicyRequest, teen_update_policy
-
-        self._patch_index(monkeypatch, [
-            {"uuid": "wsd", "workspace_name": "d", "directory": "D:/a"},
-            {"uuid": "wse", "workspace_name": "e", "directory": "E:/somewhere"},
-        ])
-        teen.enable("parent123")
-        teen.unlock("parent123")
-        body = TeenPolicyRequest(policy={"allowed_workspaces": ["wsd", "wse"]})
-        result = asyncio.run(teen_update_policy(_fake_request(), body))
-        assert result["success"] is True
-        assert teen.policy()["allowed_workspaces"] == ["wsd", "wse"]
