@@ -5,11 +5,11 @@ from __future__ import annotations
 import httpx
 
 
-async def fetch_model_ids(url: str, headers: dict[str, str], interface_type: str) -> list[str]:
+async def fetch_model_ids(url: str, headers: dict[str, str], protocol: str) -> list[str]:
     """返回网关声明的模型 ID 列表（anthropic 跟随分页）。"""
     model_ids: list[str] = []
     async with httpx.AsyncClient(timeout=15) as client:
-        if interface_type == "anthropic":
+        if protocol == "anthropic":
             params: dict[str, str] = {"limit": "100"}
             while True:
                 resp = await client.get(url, headers=headers, params=params)

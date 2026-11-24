@@ -51,13 +51,13 @@ class TestCommands:
         """测试工厂函数创建 AnthropicAdapter"""
         config = ResolvedModel(
             name="test-model",
-            interface_type="anthropic",
+            protocol="anthropic",
             api_key="sk-test",
             base_url="https://api.test.com",
         )
         client = create_llm_client(config)
         assert isinstance(client.adapter, AnthropicAdapter)
-        assert client.config.interface_type == "anthropic"
+        assert client.config.protocol == "anthropic"
         assert client.adapter.api_url == "https://api.test.com/v1/messages"
         client.close()
 
@@ -65,21 +65,21 @@ class TestCommands:
         """测试工厂函数创建 OpenAIAdapter"""
         config = ResolvedModel(
             name="gpt-4",
-            interface_type="openai",
+            protocol="openai",
             api_key="sk-test",
             base_url="https://api.openai.com",
         )
         client = create_llm_client(config)
         assert isinstance(client.adapter, OpenAIAdapter)
-        assert client.config.interface_type == "openai"
+        assert client.config.protocol == "openai"
         assert client.adapter.api_url == "https://api.openai.com/v1/chat/completions"
         client.close()
 
     def test_factory_unknown_raises_error(self):
-        """测试未知 interface_type 抛出错误"""
+        """测试未知 protocol 抛出错误"""
         config = ResolvedModel(
             name="unknown-model",
-            interface_type="unknown",
+            protocol="unknown",
             api_key="sk-test",
             base_url="https://api.test.com",
         )
@@ -87,7 +87,7 @@ class TestCommands:
             create_llm_client(config)
             assert False, "Should have raised ValueError"
         except ValueError as e:
-            assert "Unsupported interface_type" in str(e)
+            assert "Unsupported protocol" in str(e)
 
 
 class TestGitBashDetection:

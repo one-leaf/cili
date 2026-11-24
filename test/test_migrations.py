@@ -65,3 +65,23 @@ def test_migrate_placeholder_meta_rewrites_session(tmp_path):
 
     # 幂等：再次执行不再改写
     assert migrate_placeholder_meta(workspaces_json, lambda uuid: workspace) == 0
+
+
+def test_migrate_provider_interface_type(tmp_path):
+    from core.migrations.steps import migrate_provider_interface_type
+
+    path = tmp_path / "setting.json"
+    path.write_text(json.dumps({
+        "providers": {
+            "p1": {"interface_type": "openai", "models": {}},
+            "p2": {"protocol": "anthropic", "models": {}},
+        },
+    }), encoding="utf-8")
+
+    assert migrate_provider_interface_type(path) is True
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["providers"]["p1"]["protocol"] == "openai"
+    assert "interface_type" not in raw["providers"]["p1"]
+    assert raw["providers"]["p2"]["protocol"] == "anthropic"
+    # 幂等
+    assert migrate_provider_interface_type(path) is False

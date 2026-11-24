@@ -483,9 +483,9 @@ class TestProtocolDefaults:
     def test_provider_config_missing_base_url_is_protocol_aware(self):
         from core.config import ProviderConfig
 
-        assert ProviderConfig.from_dict({"interface_type": "openai"}).base_url == "https://api.openai.com/v1"
-        assert ProviderConfig.from_dict({"interface_type": "openai-responses"}).base_url == "https://api.openai.com/v1"
-        assert ProviderConfig.from_dict({"interface_type": "anthropic"}).base_url == "https://api.anthropic.com"
+        assert ProviderConfig.from_dict({"protocol": "openai"}).base_url == "https://api.openai.com/v1"
+        assert ProviderConfig.from_dict({"protocol": "openai-responses"}).base_url == "https://api.openai.com/v1"
+        assert ProviderConfig.from_dict({"protocol": "anthropic"}).base_url == "https://api.anthropic.com"
 
     def test_api_path_roundtrip(self):
         from core.config import ProviderConfig, ResolvedModel

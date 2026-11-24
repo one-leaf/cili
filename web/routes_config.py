@@ -45,7 +45,7 @@ class ModelSpecRequest(BaseModel):
 
 class ProviderRequest(BaseModel):
     """接入层配置（providers 表的值）。"""
-    interface_type: str | None = None
+    protocol: str | None = None
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
@@ -79,7 +79,7 @@ class EmailTestRequest(BaseModel):
 
 class TestConfigRequest(BaseModel):
     """连接测试：provider 接入层字段 + model 条目字段（测具体 provider+model 组合）。"""
-    interface_type: str | None = None
+    protocol: str | None = None
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
@@ -92,8 +92,8 @@ class TestConfigRequest(BaseModel):
 
 
 class DetectModelsRequest(BaseModel):
-    """模型列表自动检测：按 interface_type 调标准模型列表端点。"""
-    interface_type: str | None = None
+    """模型列表自动检测：按 protocol 调标准模型列表端点。"""
+    protocol: str | None = None
     api_key: str | None = None
     auth_type: str | None = None
     backend: str | None = None
@@ -379,7 +379,7 @@ async def update_config(request: UpdateConfigRequest):
                 raise HTTPException(status_code=400, detail=f"{name}: api_path 必须以 / 开头")
             if provider.get("auth_type") == "oauth":
                 # OAuth 端点/协议由代码锁定，防止 token 被发往用户改写的主机
-                provider["interface_type"] = "openai-responses"
+                provider["protocol"] = "openai-responses"
                 provider["base_url"] = "https://api.openai.com/v1"
                 provider["api_path"] = ""
             new_providers[name] = provider
@@ -651,9 +651,9 @@ def _resolve_api_key(request_api_key: str | None, provider: str | None) -> str:
 def _resolve_test_provider(request: TestConfigRequest) -> tuple[str, str, str, dict[str, str]]:
     """解析连接测试的接入层参数。"""
     api_key = _resolve_api_key(request.api_key, request.provider)
-    interface_type = request.interface_type or "anthropic"
+    protocol = request.protocol or "anthropic"
     base_url = (request.base_url or "").rstrip("/")
-    return interface_type, api_key, base_url, dict(request.headers or {})
+    return protocol, api_key, base_url, dict(request.headers or {})
 
 
 @router.post("/api/config/test")
@@ -667,25 +667,25 @@ async def test_config(request: TestConfigRequest | None = None):
     try:
         is_oauth = (request.auth_type or "") == "oauth"
         if is_oauth:
-            interface_type = "openai-responses"
+            protocol = "openai-responses"
             api_key = ""
             base_url = "https://api.openai.com/v1"
             extra_headers = {}
         else:
-            interface_type, api_key, base_url, extra_headers = _resolve_test_provider(request)
+            protocol, api_key, base_url, extra_headers = _resolve_test_provider(request)
             if not api_key:
                 return {
                     "success": False,
                     "message": "API Key 不能为空",
-                    "interface_type": interface_type,
+                    "protocol": protocol,
                 }
 
         from core.config import ResolvedModel
         model_cfg = ResolvedModel(
             name=request.model_name or "claude-sonnet-4-6",
-            interface_type=interface_type,
+            protocol=protocol,
             api_key=api_key,
-            base_url=base_url or default_base_url(interface_type),
+            base_url=base_url or default_base_url(protocol),
             api_path=request.api_path or "",
             auth_type=request.auth_type or "auto",
             backend=request.backend or "custom",
@@ -708,17 +708,17 @@ async def test_config(request: TestConfigRequest | None = None):
         return {
             "success": success,
             "message": message,
-            "interface_type": interface_type,
+            "protocol": protocol,
         }
     except Exception as e:
         return {
             "success": False,
             "message": str(e),
-            "interface_type": "unknown",
+            "protocol": "unknown",
         }
 
 
-def _session_headers_for(interface_type: str, auth_type: str, api_key: str, headers: dict[str, str]) -> dict[str, str]:
+def _session_headers_for(protocol: str, auth_type: str, api_key: str, headers: dict[str, str]) -> dict[str, str]:
     """构造模型列表检测的请求头（与正式请求同源：auth_type 分派 + 显式 headers）。"""
     out: dict[str, str] = {"content-type": "application/json"}
     if auth_type == "none":
@@ -727,7 +727,7 @@ def _session_headers_for(interface_type: str, auth_type: str, api_key: str, head
         out["Authorization"] = f"Bearer {api_key}"
     elif auth_type == "x-api-key":
         out["x-api-key"] = api_key
-    elif interface_type == "anthropic":
+    elif protocol == "anthropic":
         out["x-api-key"] = api_key
         out["anthropic-version"] = "2023-06-01"
     else:
@@ -778,25 +778,25 @@ async def detect_models(request: DetectModelsRequest | None = None):
         request = DetectModelsRequest()
     if (request.auth_type or "") == "oauth":
         return await _detect_siwc_models(request)
-    interface_type = (request.interface_type or "anthropic").lower()
+    protocol = (request.protocol or "anthropic").lower()
     api_key = _resolve_api_key(request.api_key, request.provider)
     base_url = (request.base_url or "").rstrip("/")
     if not base_url:
-        base_url = default_base_url(interface_type)
+        base_url = default_base_url(protocol)
 
     # 预设提供独立清单端点时优先（如 OpenCode Go 不在 base + /models）
     url = (request.models_url or "").strip()
     if not url:
-        url = f"{base_url}/v1/models" if interface_type == "anthropic" else f"{base_url}/models"
+        url = f"{base_url}/v1/models" if protocol == "anthropic" else f"{base_url}/models"
 
-    headers = _session_headers_for(interface_type, request.auth_type or "auto", api_key, request.headers or {})
+    headers = _session_headers_for(protocol, request.auth_type or "auto", api_key, request.headers or {})
     # 预设静态头（如 Kimi/StepFun 的 UA）：显式 headers 已写入，setdefault 不覆盖
     for name, value in preset_headers(request.backend).items():
         headers.setdefault(name, value)
     try:
         from core.llm.discovery import fetch_model_ids
 
-        model_ids = await fetch_model_ids(url, headers, interface_type)
+        model_ids = await fetch_model_ids(url, headers, protocol)
     except Exception as e:  # noqa: BLE001 — 网关不支持时前端提示改手动添加
         return {"success": False, "models": [], "error": str(e)[:300]}
 

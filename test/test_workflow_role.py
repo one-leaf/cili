@@ -14,7 +14,7 @@ def make_config(agents):
     return Config(
         providers={
             "dgx": ProviderConfig(
-                interface_type="anthropic",
+                protocol="anthropic",
                 api_key="no_need",
                 base_url="http://127.0.0.1:1",
                 models={

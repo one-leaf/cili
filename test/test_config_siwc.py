@@ -14,7 +14,7 @@ def test_credential_roundtrip():
 
 def _oauth_raw(**provider_overrides) -> dict:
     provider = {
-        "interface_type": "anthropic",
+        "protocol": "anthropic",
         "auth_type": "oauth",
         "credential": "siwc:abc",
         "models": {"m": {}},
@@ -36,10 +36,10 @@ def test_oauth_provider_skips_api_key_check():
 
 def test_oauth_provider_endpoint_normalized():
     config = Config.from_global_config(
-        _oauth_raw(interface_type="anthropic", base_url="http://evil.example.com", api_path="/v1/x")
+        _oauth_raw(protocol="anthropic", base_url="http://evil.example.com", api_path="/v1/x")
     )
     model = config.resolve_model("gpt/m")
-    assert model.interface_type == "openai-responses"
+    assert model.protocol == "openai-responses"
     assert model.base_url == "https://api.openai.com/v1"
     assert model.api_path == ""
 
@@ -59,7 +59,7 @@ def test_non_oauth_provider_still_requires_key(monkeypatch):
     # 清掉环境变量：否则 ANTHROPIC_API_KEY 会作为兜底 key 掩盖「缺 key」的断言
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     raw = {
-        "providers": {"p": {"interface_type": "openai", "models": {"m": {}}}},
+        "providers": {"p": {"protocol": "openai", "models": {"m": {}}}},
         "agents": {"master": {"model": "p/m"}},
     }
     try:

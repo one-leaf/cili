@@ -30,7 +30,7 @@ def _config(interface="anthropic", max_ctx=10000, extra_models=None):
     return Config(
         providers={
             "p": ProviderConfig(
-                interface_type=interface,
+                protocol=interface,
                 api_key="test",
                 base_url="http://localhost",
                 models=models,
@@ -139,7 +139,7 @@ class TestFallbackPath:
         assert data["running"] is False
         assert data["model"]["ref"] == "p/a"
         assert data["model"]["name"] == "Model A"
-        assert data["model"]["interface_type"] == "anthropic"
+        assert data["model"]["protocol"] == "anthropic"
         assert data["max_context_tokens"] == 10000
         assert data["compact_threshold_tokens"] == 8000
         assert data["context_tokens"] > 0

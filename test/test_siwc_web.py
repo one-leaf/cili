@@ -26,7 +26,7 @@ def test_upsert_creates_provider(monkeypatch):
     assert routes.upsert_oauth_provider("gpt", "siwc:abc", config) == "written"
     entry = state["providers"]["gpt"]
     assert entry["auth_type"] == "oauth"
-    assert entry["interface_type"] == "openai-responses"
+    assert entry["protocol"] == "openai-responses"
     assert entry["base_url"] == "https://api.openai.com/v1"
     assert entry["api_path"] == ""
     assert entry["credential"] == "siwc:abc"

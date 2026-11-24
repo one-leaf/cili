@@ -88,7 +88,7 @@ def test_oauth_serialize_keeps_images():
 
     cfg = ResolvedModel(
         name="m",
-        interface_type="openai-responses",
+        protocol="openai-responses",
         auth_type="oauth",
         credential="siwc:0123456789abcdef",
         base_url="https://api.openai.com/v1",

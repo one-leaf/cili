@@ -27,9 +27,9 @@ _PROTOCOL_DEFAULT_BASE_URLS = {
 }
 
 
-def default_base_url(interface_type: str) -> str:
+def default_base_url(protocol: str) -> str:
     """按协议返回缺省 Base URL（openai 系统一 /v1）。"""
-    return _PROTOCOL_DEFAULT_BASE_URLS.get((interface_type or "").lower(), "https://api.anthropic.com")
+    return _PROTOCOL_DEFAULT_BASE_URLS.get((protocol or "").lower(), "https://api.anthropic.com")
 
 
 def _normalize_api_path(value) -> str:
@@ -55,7 +55,7 @@ class ResolvedModel:
     auth_type/backend/headers 属接入层，随 provider 一起带入（adapter 构造请求头用）。
     """
     name: str
-    interface_type: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
+    protocol: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
     api_key: str = ""
     base_url: str = "https://api.anthropic.com"
     api_path: str = ""  # 协议路径覆盖；空 = 用协议默认（/v1/messages 等）
@@ -75,9 +75,11 @@ class ResolvedModel:
         """Parse ResolvedModel from a dict."""
         return cls(
             name=data.get("name", ""),
-            interface_type=data.get("interface_type", "anthropic"),
+            # 旧键 interface_type 回退：迁移步骤未跑（或旧备份被直接读）时仍能识别协议
+            protocol=data.get("protocol") or data.get("interface_type") or "anthropic",
             api_key=data.get("api_key", ""),
-            base_url=(data.get("base_url") or default_base_url(data.get("interface_type", "anthropic"))).rstrip("/"),
+            base_url=(data.get("base_url") or default_base_url(
+                data.get("protocol") or data.get("interface_type") or "anthropic")).rstrip("/"),
             api_path=_normalize_api_path(data.get("api_path")),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
@@ -95,7 +97,7 @@ class ResolvedModel:
         """Convert to a serializable dict."""
         return {
             "name": self.name,
-            "interface_type": self.interface_type,
+            "protocol": self.protocol,
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_path": self.api_path,
@@ -120,7 +122,7 @@ class ModelSpec:
     max_context_tokens: int = 200000  # 上下文工作预算（压缩阈值基数）
     model_type: str = "reasoning"  # "reasoning" | "chat"
     input: list[str] = field(default_factory=lambda: ["text", "image"])
-    reasoning: str = "medium"  # 取值域按 provider 的 interface_type 各自定义
+    reasoning: str = "medium"  # 取值域按 provider 的 protocol 各自定义
     cache_control: str = "auto"
 
     @classmethod
@@ -150,7 +152,7 @@ class ModelSpec:
 @dataclass
 class ProviderConfig:
     """接入层配置：管 api_key / base_url / 协议与多个模型条目。"""
-    interface_type: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
+    protocol: str = "anthropic"  # "anthropic" | "openai" | "openai-responses"
     api_key: str = ""  # 支持 ${ENV_VAR} 整值插值
     auth_type: str = "auto"  # "auto" | "bearer" | "x-api-key" | "none" | "oauth"
     backend: str = "custom"  # 接入服务商预设键（见 core/llm/server_presets.py）
@@ -169,12 +171,12 @@ class ProviderConfig:
         else:
             models = {"default": ModelSpec.from_dict({})}
         return cls(
-            interface_type=data.get("interface_type", "anthropic"),
+            protocol=data.get("protocol") or data.get("interface_type") or "anthropic",
             api_key=_expand_env_value(str(data.get("api_key", ""))),
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
             credential=str(data.get("credential", "") or ""),
-            base_url=(data.get("base_url") or default_base_url(data.get("interface_type", "anthropic"))).rstrip("/"),
+            base_url=(data.get("base_url") or default_base_url(data.get("protocol", "anthropic"))).rstrip("/"),
             api_path=_normalize_api_path(data.get("api_path")),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
             models=models,
@@ -182,7 +184,7 @@ class ProviderConfig:
 
     def to_dict(self) -> dict:
         return {
-            "interface_type": self.interface_type,
+            "protocol": self.protocol,
             "api_key": self.api_key,
             "auth_type": self.auth_type,
             "backend": self.backend,
@@ -416,7 +418,7 @@ class Config:
             )
         return ResolvedModel(
             name=spec.name or model_key,
-            interface_type=provider.interface_type,
+            protocol=provider.protocol,
             api_key=provider.api_key,
             base_url=provider.base_url,
             api_path=provider.api_path,
@@ -506,7 +508,7 @@ class Config:
         # OAuth provider：端点/协议由代码锁定，避免 token 被发往用户改写的主机。
         for p in providers.values():
             if p.auth_type == "oauth":
-                p.interface_type = "openai-responses"
+                p.protocol = "openai-responses"
                 p.base_url = "https://api.openai.com/v1"
                 p.api_path = ""
 

@@ -52,7 +52,7 @@ def assert_oauth_endpoint(config) -> None:
     """OAuth provider 的端点与协议由代码锁定，防止 token 发往任意主机。"""
     from core.llm.siwc import const
 
-    if (config.interface_type or "").lower() != "openai-responses":
+    if (config.protocol or "").lower() != "openai-responses":
         raise ValueError("OAuth provider 仅支持 OpenAI Responses 协议")
     if (config.base_url or "").rstrip("/") != const.API_BASE:
         raise ValueError(f"OAuth provider 的 Base URL 固定为 {const.API_BASE}")

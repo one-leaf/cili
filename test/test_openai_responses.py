@@ -27,7 +27,7 @@ from core.llm.types import (
 def make_config(**overrides) -> ResolvedModel:
     data = {
         "name": "gpt-5.1",
-        "interface_type": "openai-responses",
+        "protocol": "openai-responses",
         "api_key": "test-key",
         "base_url": "https://api.openai.com/v1",
     }
@@ -50,7 +50,7 @@ def test_factory_keeps_openai_alias_for_chat_completions():
     from core.llm.openai import OpenAIAdapter
 
     for value in ("openai", "openai-compatible"):
-        client = create_llm_client(make_config(interface_type=value))
+        client = create_llm_client(make_config(protocol=value))
         try:
             assert isinstance(client.adapter, OpenAIAdapter)
         finally:

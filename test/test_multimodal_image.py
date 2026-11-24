@@ -320,7 +320,7 @@ class TestAdapterImageSerialization:
         from core.config import ResolvedModel
         from core.llm.anthropic import AnthropicAdapter
 
-        config = ResolvedModel(name="claude-sonnet-4-6", api_key="test", interface_type="anthropic")
+        config = ResolvedModel(name="claude-sonnet-4-6", api_key="test", protocol="anthropic")
         adapter = AnthropicAdapter(config)
 
         msg = self._make_message_with_image()
@@ -343,7 +343,7 @@ class TestAdapterImageSerialization:
         from core.config import ResolvedModel
         from core.llm.openai import OpenAIAdapter
 
-        config = ResolvedModel(name="gpt-4o", api_key="test", interface_type="openai")
+        config = ResolvedModel(name="gpt-4o", api_key="test", protocol="openai")
         adapter = OpenAIAdapter(config)
 
         msg = self._make_message_with_image()

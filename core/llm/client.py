@@ -509,7 +509,7 @@ class LLMClient:
 def create_llm_client(config: ResolvedModel) -> LLMClient:
     """Factory function to create an LLMClient from ResolvedModel.
 
-    Auto-detects the provider based on interface_type:
+    Auto-detects the provider based on protocol:
     - "anthropic"       → AnthropicAdapter
     - "openai"          → OpenAIAdapter (Chat Completions；兼容第三方网关)
     - "openai-compatible" → OpenAIAdapter（别名）
@@ -522,7 +522,7 @@ def create_llm_client(config: ResolvedModel) -> LLMClient:
         Configured LLMClient
 
     Raises:
-        ValueError: If interface_type is not supported
+        ValueError: If protocol is not supported
     """
     from core.llm.anthropic import AnthropicAdapter
     from core.llm.openai import OpenAIAdapter
@@ -532,16 +532,16 @@ def create_llm_client(config: ResolvedModel) -> LLMClient:
         from core.llm.siwc import assert_oauth_endpoint
         assert_oauth_endpoint(config)
 
-    interface_type = config.interface_type.lower()
+    protocol = config.protocol.lower()
 
-    if interface_type == "anthropic":
+    if protocol == "anthropic":
         adapter = AnthropicAdapter(config)
-    elif interface_type in ("openai", "openai-compatible"):
+    elif protocol in ("openai", "openai-compatible"):
         adapter = OpenAIAdapter(config)
-    elif interface_type == "openai-responses":
+    elif protocol == "openai-responses":
         adapter = OpenAIResponsesAdapter(config)
     else:
-        raise ValueError(f"Unsupported interface_type: {interface_type}")
+        raise ValueError(f"Unsupported protocol: {protocol}")
 
     transport = HttpTransport()
     return LLMClient(adapter=adapter, transport=transport, config=config)

@@ -47,7 +47,7 @@ class TestResolveApiKey:
         from web.routes_config import TestConfigRequest, _resolve_test_provider
 
         _, api_key, _, _ = _resolve_test_provider(
-            TestConfigRequest(interface_type="openai", provider="ms"))
+            TestConfigRequest(protocol="openai", provider="ms"))
         assert api_key == "ms-key"
 
     def test_masked_key_falls_back_to_saved_plaintext(self, isolated_config):
@@ -101,7 +101,7 @@ class TestDetectModelsSharesResolution:
 
         # base_url 指向必然拒绝连接的本地端口：函数会走完解析后失败返回，不触网
         out = asyncio.run(rc.detect_models(rc.DetectModelsRequest(
-            interface_type="openai", base_url="http://127.0.0.1:1", provider="ms")))
+            protocol="openai", base_url="http://127.0.0.1:1", provider="ms")))
 
         assert seen["args"] == (None, "ms")
         assert out["success"] is False

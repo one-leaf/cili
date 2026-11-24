@@ -190,7 +190,7 @@ def _auto_init_global_config() -> None:
         for role, model in config.role_models.items():
             logger.info(
                 f"[Config] {role}={config.role_refs()[role]} → {model.name} "
-                f"@ {model.base_url} ({model.interface_type})"
+                f"@ {model.base_url} ({model.protocol})"
             )
     except RuntimeError as e:
         logger.warning(f"Config not available: {e}")

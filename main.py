@@ -105,7 +105,7 @@ _PIP_MIRRORS = {
 # Default model config values (shared across example, migration, and initial creation)
 _DEFAULT_MODEL = {
     "name": "claude-sonnet-4-6",
-    "interface_type": "anthropic",
+    "protocol": "anthropic",
     "base_url": "https://api.anthropic.com",
     "max_output_tokens": 32768,
     "max_context_tokens": 200000,
@@ -178,7 +178,7 @@ def _create_example_config() -> None:
         "providers": {
             "_comment": "接入层：一个凭据（api_key/base_url/协议）管理多个模型；api_key 支持 ${ENV_VAR} 引用环境变量",
             "bg": {
-                "interface_type": "anthropic",  # anthropic | openai（Chat Completions）| openai-responses
+                "protocol": "anthropic",  # anthropic | openai（Chat Completions）| openai-responses
                 "api_key": "sk-xxx",
                 "auth_type": "auto",  # auto | bearer | x-api-key | none（认证头补充方式）
                 "backend": "litellm",  # custom | codex | claude-code | opencode | openrouter | litellm（会话头自动填充）
@@ -1195,12 +1195,22 @@ def _prepare_environment() -> None:
 
     # 合并升级迁移（schema_version.json 幂等）：破坏性契约变更在 core/migrations/steps 登记
     try:
-        from core.config import DATA_DIR, WORKSPACES_JSON, get_workspace_data_dir
+        from core.config import (
+            DATA_DIR,
+            GLOBAL_CONFIG_PATH,
+            WORKSPACES_JSON,
+            get_workspace_data_dir,
+        )
         from core.migrations import run_pending
-        from core.migrations.steps import migrate_placeholder_meta
+        from core.migrations.steps import (
+            migrate_placeholder_meta,
+            migrate_provider_interface_type,
+        )
 
         run_pending(
             [
+                ("provider_protocol_key",
+                 lambda: migrate_provider_interface_type(GLOBAL_CONFIG_PATH)),
                 ("session_placeholder_meta",
                  lambda: migrate_placeholder_meta(WORKSPACES_JSON, get_workspace_data_dir)),
             ],

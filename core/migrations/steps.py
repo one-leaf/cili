@@ -76,3 +76,33 @@ def _rewrite_record(record: dict) -> bool:
         block["_meta"] = meta
         touched = True
     return touched
+
+
+def migrate_provider_interface_type(global_config_path: Path) -> bool:
+    """setting.json providers 的 `interface_type` 键 → `protocol`（§4 契约统一）。"""
+    path = Path(global_config_path)
+    if not path.is_file():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        # 读不出不等于不适用：抛出以便 run_pending 不记入版本文件，下次启动重试
+        raise RuntimeError(f"无法读取 {path}: {e}") from e
+    if not isinstance(raw, dict):
+        return False
+    providers = raw.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    changed = False
+    for entry in providers.values():
+        if not isinstance(entry, dict):
+            continue
+        if "interface_type" in entry:
+            entry.setdefault("protocol", entry.pop("interface_type"))
+            changed = True
+    if changed:
+        atomic_write_text(
+            Path(global_config_path),
+            json.dumps(raw, ensure_ascii=False, indent=2),
+        )
+    return changed

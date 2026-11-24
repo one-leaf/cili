@@ -29,12 +29,12 @@ DGX_API_KEY = "no_need_for_local"
 DGX_MODEL = "dgx"
 
 
-def make_dgx_config(interface_type: str = "anthropic") -> Config:
+def make_dgx_config(protocol: str = "anthropic") -> Config:
     """构建 DGX 端点配置，支持 anthropic / openai 两种协议。"""
     return Config(
         providers={
             "dgx": ProviderConfig(
-                interface_type=interface_type,
+                protocol=protocol,
                 api_key=DGX_API_KEY,
                 base_url=DGX_BASE_URL,
                 models={"dgx": ModelSpec(name=DGX_MODEL, max_output_tokens=4096, max_context_tokens=256000)},

@@ -161,7 +161,7 @@ function _renderPopover(data) {
     const overThreshold = maxTokens > 0 && tokens >= Number(data.compact_threshold_tokens || 0);
 
     const modelLabel = `${escapeHtml(model.name || '—')}`
-        + (model.interface_type ? `（${escapeHtml(model.interface_type)}）` : '')
+        + (model.protocol ? `（${escapeHtml(model.protocol)}）` : '')
         + (data.estimated ? '<span class="ctx-tag">存盘估算</span>' : '');
 
     // 按模型分桶：最多 5 条

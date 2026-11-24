@@ -35,7 +35,7 @@ _DEFAULT_USER_AGENT = "claude-code/0.1.0"
 
 
 def normalize_protocol(protocol: str | None) -> str:
-    """把 interface_type 归一为 SUPPORTED_PROTOCOLS 之一（未知值按 anthropic）。"""
+    """把 protocol 归一为 SUPPORTED_PROTOCOLS 之一（未知值按 anthropic）。"""
     value = (protocol or "").lower()
     value = _PROTOCOL_ALIASES.get(value, value)
     return value if value in SUPPORTED_PROTOCOLS else "anthropic"

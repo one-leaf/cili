@@ -36,7 +36,7 @@ def tools_visible(model) -> bool:
     """当前模型/协议下是否可见并允许调用 DeepSeek 服务端联网工具。"""
     if model is None:
         return False
-    if getattr(model, "interface_type", "") != "anthropic":
+    if getattr(model, "protocol", "") != "anthropic":
         return False
     if not is_deepseek_model(model):
         return False

@@ -14,7 +14,7 @@ def _config() -> Config:
     return Config(
         providers={
             "p": ProviderConfig(
-                interface_type="anthropic",
+                protocol="anthropic",
                 api_key="test",
                 base_url="http://localhost",
                 models={

@@ -39,7 +39,7 @@ class TestRoleConfigDefaults:
 def _make_real_config(model_max_tokens: int) -> Config:
     return Config(
         providers={"test": ProviderConfig(
-            interface_type="anthropic",
+            protocol="anthropic",
             api_key="test-key",
             models={"test": ModelSpec(name="test-model", max_output_tokens=model_max_tokens, max_context_tokens=256000)},
         )},

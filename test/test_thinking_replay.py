@@ -22,7 +22,7 @@ def _anthropic_adapter(reasoning: str = "default") -> AnthropicAdapter:
         name="claude-sonnet-4-6",
         api_key="k",
         base_url="https://api.anthropic.com",
-        interface_type="anthropic",
+        protocol="anthropic",
         reasoning=reasoning,
     )
     return AnthropicAdapter(config)
@@ -33,7 +33,7 @@ def _openai_adapter() -> OpenAIAdapter:
         name="claude-sonnet-4-6",
         api_key="k",
         base_url="https://gateway.example.com",
-        interface_type="openai",
+        protocol="openai",
     )
     return OpenAIAdapter(config)
 
@@ -96,7 +96,7 @@ class TestAnthropicThinkingReplay:
             name="deepseek-v4-pro",
             api_key="k",
             base_url="https://api.deepseek.com/anthropic",
-            interface_type="anthropic",
+            protocol="anthropic",
             reasoning=reasoning,
             cache_control="false",
         )
@@ -125,7 +125,7 @@ class TestAnthropicThinkingReplay:
             name="ac/dgx",
             api_key="k",
             base_url="http://gateway.example.com/llm",
-            interface_type="anthropic",
+            protocol="anthropic",
             cache_control="false",
         )
         adapter = AnthropicAdapter(config)

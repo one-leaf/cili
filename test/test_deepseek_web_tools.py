@@ -22,13 +22,13 @@ from core.tools.deepseek_web import DeepSeekReadUrlTool, DeepSeekWebSearchTool
 
 def _model(
     name: str = "va/deepseek-v4.1-flash",
-    interface_type: str = "anthropic",
+    protocol: str = "anthropic",
     backend: str = "litellm",
     base_url: str = "http://localhost:4000",
 ) -> ResolvedModel:
     return ResolvedModel(
         name=name,
-        interface_type=interface_type,
+        protocol=protocol,
         api_key="test-key",
         base_url=base_url,
         backend=backend,
@@ -119,7 +119,7 @@ class TestCapabilities:
         assert not is_deepseek_model(_model(name="va/glm-5.3-flash"))
 
     def test_tools_visible_requires_anthropic(self):
-        assert not tools_visible(_model(interface_type="openai"))
+        assert not tools_visible(_model(protocol="openai"))
         assert tools_visible(_model())
 
     def test_mark_unsupported_disables_model(self):

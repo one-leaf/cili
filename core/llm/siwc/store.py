@@ -207,7 +207,7 @@ def upsert_oauth_provider(
         entry["models"] = {"default": {}}
 
     entry["auth_type"] = "oauth"
-    entry["interface_type"] = "openai-responses"
+    entry["protocol"] = "openai-responses"
     entry["base_url"] = "https://api.openai.com/v1"
     entry["api_path"] = ""
     entry["credential"] = credential

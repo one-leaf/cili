@@ -11,7 +11,7 @@ from core.fs_utils import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-_LEGACY_MODEL_SPEC_EXCLUDE = {"name", "interface_type", "api_key", "base_url", "temperature", "multimodal", "reasoning_effort", "max_tokens", "max_context_tokens"}
+_LEGACY_MODEL_SPEC_EXCLUDE = {"name", "protocol", "interface_type", "api_key", "base_url", "temperature", "multimodal", "reasoning_effort", "max_tokens", "max_context_tokens"}
 
 
 def _convert_legacy_model_spec(obj: dict) -> dict:
@@ -66,9 +66,10 @@ def convert_legacy_config(global_config: dict) -> dict | None:
         if not isinstance(obj, dict) or not obj.get("name"):
             continue
         cred = (
-            obj.get("interface_type", "anthropic"),
+            obj.get("protocol") or obj.get("interface_type") or "anthropic",
             obj.get("api_key", ""),
-            (obj.get("base_url") or default_base_url(obj.get("interface_type", "anthropic"))).rstrip("/"),
+            (obj.get("base_url") or default_base_url(
+                obj.get("protocol") or obj.get("interface_type") or "anthropic")).rstrip("/"),
         )
         provider_key = next(
             (key for key, raw in providers_raw.items() if raw["_cred"] == cred), None
@@ -77,7 +78,7 @@ def convert_legacy_config(global_config: dict) -> dict | None:
             provider_key = "default" if not providers_raw else f"default_{len(providers_raw) + 1}"
             providers_raw[provider_key] = {
                 "_cred": cred,
-                "interface_type": cred[0],
+                "protocol": cred[0],
                 "api_key": cred[1],
                 "base_url": cred[2],
                 "backend": "litellm",

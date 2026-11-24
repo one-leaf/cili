@@ -271,20 +271,20 @@ class TestTransportSSEError:
 
 class TestFactory:
     def test_create_anthropic_client(self):
-        config = ResolvedModel(name="test", api_key="key", interface_type="anthropic")
+        config = ResolvedModel(name="test", api_key="key", protocol="anthropic")
         client = create_llm_client(config)
         assert isinstance(client.adapter, AnthropicAdapter)
         client.close()
 
     def test_create_openai_client(self):
-        config = ResolvedModel(name="gpt-4o", api_key="key", interface_type="openai")
+        config = ResolvedModel(name="gpt-4o", api_key="key", protocol="openai")
         client = create_llm_client(config)
         assert isinstance(client.adapter, OpenAIAdapter)
         client.close()
 
     def test_unknown_type_raises_error(self):
-        config = ResolvedModel(name="test", api_key="key", interface_type="unknown")
-        with pytest.raises(ValueError, match="Unsupported interface_type"):
+        config = ResolvedModel(name="test", api_key="key", protocol="unknown")
+        with pytest.raises(ValueError, match="Unsupported protocol"):
             create_llm_client(config)
 
 
@@ -298,7 +298,7 @@ class TestAnthropicAdapter:
             api_key="test-key-123",
             base_url="https://api.anthropic.com",
             max_output_tokens=4096,
-            interface_type="anthropic",
+            protocol="anthropic",
         )
         return AnthropicAdapter(config)
 
@@ -310,7 +310,7 @@ class TestAnthropicAdapter:
             name="claude-sonnet-4-6",
             api_key="key",
             base_url="https://api.anthropic.com",
-            interface_type="anthropic",
+            protocol="anthropic",
             reasoning=reasoning,
         )
         return AnthropicAdapter(config).serialize(
@@ -341,7 +341,7 @@ class TestAnthropicAdapter:
             name="chat-model",
             api_key="key",
             base_url="https://api.anthropic.com",
-            interface_type="anthropic",
+            protocol="anthropic",
             reasoning="medium",
             model_type="chat",
         )
@@ -511,7 +511,7 @@ class TestOpenAIAdapter:
             api_key="sk-test-key",
             base_url="https://api.openai.com",
             max_output_tokens=4096,
-            interface_type="openai",
+            protocol="openai",
         )
         return OpenAIAdapter(config)
 
@@ -523,7 +523,7 @@ class TestOpenAIAdapter:
             name="gpt-4o",
             api_key="sk-test-key",
             base_url="https://api.openai.com",
-            interface_type="openai",
+            protocol="openai",
             reasoning=reasoning,
             model_type=model_type,
         )
@@ -848,7 +848,7 @@ class TestOpenAIAdapter:
             name="gpt-4o",
             api_key="key",
             base_url="https://api.openai.com/",
-            interface_type="openai",
+            protocol="openai",
         )
         adapter = OpenAIAdapter(config)
         assert adapter.base_url == "https://api.openai.com"
@@ -862,7 +862,7 @@ class TestOpenAIAdapter:
                 name="deepseek-ai/DeepSeek-V4.1-Flash",
                 api_key="key",
                 base_url=base,
-                interface_type="openai",
+                protocol="openai",
             )
             adapter = OpenAIAdapter(config)
             assert adapter.api_url == "https://api-inference.modelscope.cn/v1/chat/completions"
@@ -1127,7 +1127,7 @@ class TestChatStreamIncomplete:
 
     def test_empty_stream_raises(self):
         config = ResolvedModel(
-            name="gpt-4o", api_key="key", interface_type="openai",
+            name="gpt-4o", api_key="key", protocol="openai",
             base_url="https://api.openai.com",
         )
         adapter = OpenAIAdapter(config)
@@ -1148,12 +1148,12 @@ class TestAdapterBaseUrl:
     """base_url 校验。"""
 
     def test_empty_base_url_raises(self):
-        config = ResolvedModel(name="m", api_key="k", base_url="", interface_type="anthropic")
+        config = ResolvedModel(name="m", api_key="k", base_url="", protocol="anthropic")
         with pytest.raises(ValueError, match="不能为空"):
             AnthropicAdapter(config)
 
     def test_invalid_base_url_raises(self):
-        config = ResolvedModel(name="m", api_key="k", base_url="not a url", interface_type="anthropic")
+        config = ResolvedModel(name="m", api_key="k", base_url="not a url", protocol="anthropic")
         with pytest.raises(ValueError, match="无效的 base_url"):
             AnthropicAdapter(config)
 
@@ -1179,7 +1179,7 @@ class TestAdapterBaseUrl:
         """provider.api_path 覆盖协议默认路径。"""
         cfg = ResolvedModel(
             name="m", api_key="k", base_url="https://api.deepseek.com",
-            interface_type="openai-responses", api_path="/responses",
+            protocol="openai-responses", api_path="/responses",
         )
         assert create_llm_client(cfg).adapter.api_url == "https://api.deepseek.com/responses"
 
@@ -1187,7 +1187,7 @@ class TestAdapterBaseUrl:
         """Kimi 预设的 UA 头自动携带，显式 headers 同名覆盖。"""
         cfg = ResolvedModel(
             name="m", api_key="k", base_url="https://api.kimi.com/coding",
-            interface_type="anthropic", auth_type="bearer", backend="kimi-coding",
+            protocol="anthropic", auth_type="bearer", backend="kimi-coding",
         )
         headers = AnthropicAdapter(cfg).build_request_headers(session_id="s")
         assert headers["User-Agent"] == "claude-code/0.1.0"
@@ -1202,7 +1202,7 @@ class TestChatTimeoutParam:
 
     def test_chat_passes_timeout_to_post(self):
         config = ResolvedModel(
-            name="gpt-4o", api_key="key", interface_type="openai",
+            name="gpt-4o", api_key="key", protocol="openai",
             base_url="https://api.openai.com",
         )
         adapter = OpenAIAdapter(config)
@@ -1234,7 +1234,7 @@ class TestChatStructuredRetry:
     @staticmethod
     def _client(calls, arguments_first, arguments_second):
         config = ResolvedModel(
-            name="gpt-4o", api_key="key", interface_type="openai",
+            name="gpt-4o", api_key="key", protocol="openai",
             base_url="https://api.openai.com",
         )
         adapter = OpenAIAdapter(config)
@@ -1299,7 +1299,7 @@ class TestChatStructuredTruncationRepair:
     @staticmethod
     def _client(calls, arguments):
         config = ResolvedModel(
-            name="gpt-4o", api_key="key", interface_type="openai",
+            name="gpt-4o", api_key="key", protocol="openai",
             base_url="https://api.openai.com",
         )
         adapter = OpenAIAdapter(config)
@@ -1377,7 +1377,7 @@ class TestChatStructuredTextFallback:
     @staticmethod
     def _client(calls, *responses):
         config = ResolvedModel(
-            name="gpt-4o", api_key="key", interface_type="openai",
+            name="gpt-4o", api_key="key", protocol="openai",
             base_url="https://api.openai.com",
         )
         adapter = OpenAIAdapter(config)

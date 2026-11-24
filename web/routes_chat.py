@@ -165,7 +165,7 @@ def _model_payload(config, sm: SessionStore | None) -> dict:
     return {"current_ref": current_ref, "current_name": current_name, "available": available}
 
 
-def _cache_hit_ratio(usage: dict, interface_type: str) -> float:
+def _cache_hit_ratio(usage: dict, protocol: str) -> float:
     """缓存比 = 缓存读取 / 全部输入 token。
 
     - Anthropic 协议：input_tokens 不含缓存，分母 = input + cache_read + cache_creation；
@@ -178,7 +178,7 @@ def _cache_hit_ratio(usage: dict, interface_type: str) -> float:
     """
     read = int(usage.get("cache_read_tokens", 0) or 0)
     inp = int(usage.get("input_tokens", 0) or 0)
-    if interface_type in ("openai", "openai-compatible", "openai-responses"):
+    if protocol in ("openai", "openai-compatible", "openai-responses"):
         total = inp
     else:
         total = inp + read + int(usage.get("cache_creation_tokens", 0) or 0)
@@ -1051,8 +1051,8 @@ async def get_session_context(
         estimated = True
 
     max_tokens = int(getattr(model, "max_context_tokens", 0) or 0)
-    interface_type = getattr(model, "interface_type", "") or ""
-    usage["cache_hit_ratio"] = _cache_hit_ratio(usage, interface_type)
+    protocol = getattr(model, "protocol", "") or ""
+    usage["cache_hit_ratio"] = _cache_hit_ratio(usage, protocol)
     metadata = getattr(sm, "metadata", {}) if sm is not None else {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -1062,7 +1062,7 @@ async def get_session_context(
         "model": {
             "ref": model_ref,
             "name": getattr(model, "name", "") or "",
-            "interface_type": interface_type,
+            "protocol": protocol,
             "max_context_tokens": max_tokens,
         },
         "context_tokens": context_tokens,

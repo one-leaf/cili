@@ -37,7 +37,7 @@ def config():
     """构建测试配置"""
     return Config(
         providers={"test": ProviderConfig(
-            interface_type="anthropic",
+            protocol="anthropic",
             api_key="test-key",
             base_url="http://localhost:9999",
             models={"test": ModelSpec(name="test-model", max_output_tokens=4096, max_context_tokens=256000)},

@@ -1215,7 +1215,7 @@ async function testProviderModel(btn) {
 
     const apiPathInput = card.querySelector('.p-api-path');
     const payload = {
-        interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
+        protocol: card.querySelector('.p-interface-type').value || 'anthropic',
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
         backend: card.querySelector('.p-server').value || 'custom',
         base_url: card.querySelector('.p-base-url').value.trim(),
@@ -1243,7 +1243,7 @@ async function testProviderModel(btn) {
         });
         const data = await response.json();
         if (data.success) {
-            setResult('✓ 连接成功 (' + payload.interface_type + ')', 'ok');
+            setResult('✓ 连接成功 (' + payload.protocol + ')', 'ok');
         } else {
             setResult('✗ 连接失败: ' + data.message, 'err');
         }
@@ -1262,7 +1262,7 @@ async function detectProviderModels(btn) {
 
     const detectPreset = getServerPreset(card.querySelector('.p-server').value);
     const payload = {
-        interface_type: card.querySelector('.p-interface-type').value || 'anthropic',
+        protocol: card.querySelector('.p-interface-type').value || 'anthropic',
         auth_type: card.querySelector('.p-auth-type').value || 'auto',
         backend: card.querySelector('.p-server').value || 'custom',
         base_url: card.querySelector('.p-base-url').value.trim(),
@@ -1516,7 +1516,7 @@ function renderModelRow(key, m, iface) {
 function renderProviderCard(key, p) {
     p = p || {};
     // 兼容手写旧别名：openai-compatible 等价于 openai（Chat Completions）
-    const iface = p.interface_type === 'openai-compatible' ? 'openai' : (p.interface_type || 'anthropic');
+    const iface = p.protocol === 'openai-compatible' ? 'openai' : (p.protocol || 'anthropic');
     // 未知 / 已移除的 backend（codex / claude-code / opencode）一律按自定义显示
     const serverKey = getServerPreset(p.backend) ? p.backend : 'custom';
     const preset = getServerPreset(serverKey);
@@ -1978,7 +1978,7 @@ function collectProviders() {
         const authType = card.querySelector('.p-auth-type').value;
         const isOAuth = authType === 'oauth' || card.dataset.authType === 'oauth';
         const provider = {
-            interface_type: card.querySelector('.p-interface-type').value,
+            protocol: card.querySelector('.p-interface-type').value,
             auth_type: isOAuth ? 'oauth' : authType,
             backend: card.querySelector('.p-server').value,
             base_url: card.querySelector('.p-base-url').value.trim(),
@@ -1988,7 +1988,7 @@ function collectProviders() {
         };
         if (isOAuth) {
             provider.credential = card.dataset.credential || '';
-            provider.interface_type = 'openai-responses';
+            provider.protocol = 'openai-responses';
             provider.base_url = 'https://api.openai.com/v1';
             provider.api_path = '';
         } else {
@@ -2110,7 +2110,7 @@ function collectProviders() {
         syncAuthPanel(e.target.closest('.provider-card'));
     });
 
-    // interface_type 变化 → 重渲染思考下拉 + 跟随预设换地址/路径
+    // protocol 变化 → 重渲染思考下拉 + 跟随预设换地址/路径
     list.addEventListener('change', function (e) {
         if (!e.target.classList.contains('p-interface-type')) return;
         const card = e.target.closest('.provider-card');

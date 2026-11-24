@@ -11,7 +11,7 @@ from core.llm.errors import LLMStreamFailedError, classify_llm_error
 def _oauth_config(**overrides) -> ResolvedModel:
     values = dict(
         name="gpt-test",
-        interface_type="openai-responses",
+        protocol="openai-responses",
         auth_type="oauth",
         credential="siwc:0123456789abcdef",
         base_url="https://api.openai.com/v1",
@@ -32,7 +32,7 @@ def test_requires_streaming_only_for_oauth():
 
 def test_create_client_locks_oauth_endpoint():
     with pytest.raises(ValueError):
-        create_llm_client(_oauth_config(interface_type="anthropic"))
+        create_llm_client(_oauth_config(protocol="anthropic"))
     with pytest.raises(ValueError):
         create_llm_client(_oauth_config(base_url="https://evil.example.com"))
 

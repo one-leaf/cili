@@ -97,7 +97,7 @@ class TestConfigTestEndpointDoesNotBlockLoop:
         try:
             # 字段需与 TestConfigRequest 对齐：路由会读 api_path/backend/credential
             req = SimpleNamespace(model_name="m", api_key="k", base_url="",
-                                  interface_type=None, auth_type=None, headers=None,
+                                  protocol=None, auth_type=None, headers=None,
                                   api_path=None, backend=None, credential=None,
                                   provider=None)
             out = asyncio.run(routes_config.test_config(req))
