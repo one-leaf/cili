@@ -33,8 +33,14 @@ def root_session_dir(workspace_uuid: str, session: Any) -> Path | None:
     """
     if session is None:
         return None
-    if hasattr(session, "agent_logs"):
-        return Path(session.session_dir)
+    from core.session import SessionIdentity
+
+    if not isinstance(session, SessionIdentity):
+        # master 的 SessionStore：session_dir 已是根目录。
+        # 允许鸭子类型的会话对象：没有 session_dir 时走下方 master_sid 推导。
+        session_dir = getattr(session, "session_dir", None)
+        if session_dir is not None:
+            return Path(session_dir)
     master_sid = (
         getattr(session, "master_session_id", "")
         or getattr(session, "session_id", "")

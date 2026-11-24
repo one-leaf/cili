@@ -741,6 +741,22 @@ class ExecLogStore:
         return False
 
 
+class SessionIdentity:
+    """最小会话身份：autonomous（worker/lite）下工具可见的全部会话信息。
+
+    刻意只暴露标识与目录，不含 save()/update_usage() 等会话写操作——
+    工具层不得直接改会话状态（用量由各自 runner 记账、读取时聚合）。
+    """
+
+    def __init__(self, session_id: str, session_dir: Path | None = None,
+                 master_session_id: str = ""):
+        self.session_id = session_id
+        self.session_dir = session_dir
+        # master 的 session id：LLM 后端会话头按它聚合同一会话的全部请求（含子
+        # 代理），创建子 runner 时逐级透传。缺省回落到自身标识。
+        self.master_session_id = master_session_id or session_id
+
+
 class SessionStore:
     """独立管理会话数据，与 LLMClient 解耦。
 

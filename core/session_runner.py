@@ -48,6 +48,7 @@ from core.security.permission_policy import PermissionResolver
 from core.security.permission_rules import PermissionRules
 from core.security.permission_state import PermissionStore, append_permission_audit
 from core.session import (
+    SessionIdentity,  # noqa: F401 —— 对外重导出
     SessionStore,
     build_exec_log_data,
     default_branch_name,
@@ -131,22 +132,6 @@ def _copy_referenced_tool_outputs(parent_dir: Path, fork_dir: Path,
             shutil.copy2(src, dst)
             copied += 1
     return copied
-
-
-class SessionIdentity:
-    """最小会话身份：autonomous（worker/lite）下工具可见的全部会话信息。
-
-    刻意只暴露标识与目录，不含 save()/update_usage() 等会话写操作——
-    工具层不得直接改会话状态（用量由各自 runner 记账、读取时聚合）。
-    """
-
-    def __init__(self, session_id: str, session_dir: Path | None = None,
-                 master_session_id: str = ""):
-        self.session_id = session_id
-        self.session_dir = session_dir
-        # master 的 session id：LLM 后端会话头按它聚合同一会话的全部请求（含子
-        # 代理），创建子 runner 时逐级透传。缺省回落到自身标识。
-        self.master_session_id = master_session_id or session_id
 
 
 class SessionRunner(BaseSessionRunner):
