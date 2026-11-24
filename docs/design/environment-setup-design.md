@@ -1,287 +1,93 @@
-# 系统环境初始化设计文档
+# 环境与启动设计
 
-## 概述
+> 按当前实现重写（2026-11-25）。代码：`main.py`、`start.ps1`、`start.cmd`、`core/port_guard.py`、
+> `core/restart.py`、`core/updater.py`、`core/migrations/`。
 
-Cili Agent 自动管理 Python 运行环境，强制使用 `data/deps/python/` 目录下的 embeddable Python 3.11.9，不依赖系统环境中的 Python。Git Bash 优先使用 `data/deps/git/` 目录，deps 缺失时回退到系统 Git Bash，仅两者皆无才 FATAL 退出。
+## 一、启动入口
 
-## 目录结构
+| 入口 | 说明 |
+|---|---|
+| `start.cmd` | Windows 双击入口，转调 `start.ps1` |
+| `start.ps1` | 便携模式：检测/下载 Git Bash 与 Python 3.11 到 `data/deps/`，再启动 `main.py` |
+| `python main.py` | 直接启动（需 Python 在 PATH） |
+| `cli.cmd` | 终端客户端（`python -m clients.cli`），非服务端 |
+
+`main()` 只做三阶段编排：
 
 ```
-data/
-├── cili/                # 系统数据
-│   ├── setting.json     # 全局配置
-│   ├── workspaces.json  # 工作区索引（含 system 条目）
-│   ├── cron.d/          # Cron 定时任务数据
-│   └── tools/           # 工具状态数据（loop 等）
-├── .cili/               # System workspace 数据目录（directory=data/）
-│   ├── sessions/
-│   ├── memory/
-│   ├── tmp/
-│   └── approvals.json
-└── deps/
-    ├── python/          # Python 运行环境（embeddable 模式）
-    │   ├── python.exe   # Python 解释器
-    │   ├── Scripts/     # pip 和其他工具
-    │   ├── python311._pth  # 路径配置
-    │   └── Lib/         # 标准库和第三方包
-    ├── git/             # Git Bash（自动下载）
-    │   └── bin/bash.exe
-    ├── tectonic/        # Tectonic LaTeX 编译器（自动下载）
-    │   └── tectonic.exe
-    ├── fonts/           # HarmonyOS Sans SC 中文字体（matplotlib 使用，自动下载）
-    └── browser/         # Chrome profile 数据
-
-注：每个工作区的数据统一放在其 {workspace_directory}/.cili/ 下（approvals/sessions/memory/tmp），
-不再有全局 data/projects/ 与 data/tmp/。
+main()
+  _isolate_user_site()          # 移除 user site-packages（只在 main 调用）
+  args = parse_args()
+  --apply-upgrade-only ? _run_upgrade_apply_mode() : 继续
+  _prepare_environment()        # 阶段一
+  _ensure_runtime()             # 阶段二
+  _start_services(args)         # 阶段三
 ```
 
-## 初始化流程
+## 二、阶段一：环境与数据迁移（`_prepare_environment`）
 
-### 1. 启动脚本 (`start.ps1`)
+1. Windows 下把 stdout/stderr 切到 UTF-8（`errors=replace`）。
+2. `_setup_logging()`：`data/cili/logs/`（cili.log 全量 / error.log 仅 ERROR / access.log 访问），
+   各 10MB 轮转保留 5 份。
+3. `_migrate_projects_to_cili()`：旧 `data/projects/` → 各工作区 `.cili/`（须在目录创建前）。
+4. `_setup_directories()` + `_migrate_legacy_cili_paths()` + `_init_settings()`：
+   目录、system 工作区、`setting.json` 初始化（缺失时从示例生成）。
+5. 旧数据迁移（全部幂等）：会话格式 `migrate_sessions_dir`；`tools/cron.d` 目录；
+   接入端多账号（qq/wechat 段、state、微信凭证、QQ ws 会话文件）。
+6. **合并升级迁移**（`core/migrations.run_pending`）：按 `data/cili/schema_version.json`
+   顺序执行未完成步骤；首次执行前备份 `setting.json`/`workspaces.json` 到
+   `data/cili/backup/migrations/{ts}/`。步骤失败上抛（配置类）或跳过告警（会话类，
+   如不可解码文件）。
 
-**职责**：确保有可用的 Python、Git Bash、LaTeX 编译器和 HarmonyOS Sans SC 中文字体（均从 deps 目录或系统），然后启动 main.py
+## 三、阶段二：运行时依赖（`_ensure_runtime`）
 
-**流程**：
-```
-1. 检查 data/deps/git/bin/bash.exe 是否存在
-2. 如果不存在，下载 PortableGit
-3. 检查 data/deps/python/python.exe 是否存在
-4. 如果不存在，下载 embeddable Python 3.11.9
-5. 检查系统是否已有 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
-6. 如果不存在，下载 Tectonic v0.17.0 到 data/deps/tectonic/
-7. 检查 data/deps/fonts/ 中的 HarmonyOS Sans SC 字体，不存在则下载
-8. 设置 GIT_BASH_PATH 环境变量
-9. 将 Tectonic 添加到 PATH（如果在 deps 目录），设置 HARMONY_FONT_DIR（如果有字体）
-10. 使用 deps Python 运行 main.py
-```
+1. Git Bash：`data/deps/git/` 优先，其次 PATH/常见安装路径；缺失且无法下载时退出。
+2. deps Python：`data/deps/python/`（embeddable 3.11 + pip）；健康检查与必要修复。
+3. 依赖安装：读取 `requirements.txt`，按镜像顺序安装；新装后按需 `os.execv` 重启
+   （带次数上限，防重启环）。
+4. 字体/浏览器探测：matplotlib 字体初始化失败降级为告警；浏览器路径缺失不阻塞。
 
-**关键函数**：
-- `Test-Python`: 检查 deps 目录中的 Python
-- `Install-Python`: 下载和配置 embeddable Python
-- `Test-GitBash`: 检查 deps 目录中的 Git Bash
-- `Install-GitBash`: 下载 Git for Windows（PortableGit 7z 自解压包）
-- `Test-Tectonic`: 检查系统中的 LaTeX 编译器（PATH、deps 目录、环境变量、常见安装路径）
-- `Install-Tectonic`: 下载 Tectonic（多镜像源：GitHub → ghproxy → ghfast → gh-proxy）
-- `Test-HarmonyFont` / `Install-HarmonyFont`: 检查/下载 HarmonyOS Sans SC 中文字体
+## 四、阶段三：服务（`_start_services`）
 
-### 2. 主程序 (`main.py`)
+1. `_prepare_web_binding(args)`：端口探测与绑定地址。
+   - `core.port_guard.resolve_web_port`：cili 自身占用 → 停止旧实例复用；外部程序占用 → 顺延。
+2. `_start_core_services()`：`core.app_context.startup()`（浏览器服务、AgentMailbox、
+   cron 调度器、工作流、通道服务等单例；幂等）。
+3. `_start_web_interface(args)`：uvicorn 启动 `web.web_api:app`（lifespan 再做
+   `init_web_deps + app_context.startup + profile/oauth hooks`）。
 
-**职责**：初始化运行环境，安装依赖包，启动服务
+## 五、重启与升级协议
 
-**流程**：
-```
-1. 创建目录结构和配置文件（_setup_directories）
-   - 创建 data/cili/、data/deps/ 等目录
-   - 创建 System workspace（data/.cili/，注册 "system" 条目到 data/cili/workspaces.json）
-   - 生成示例配置文件 setting.example.json
-2. 初始化配置（_init_settings）
-   - 若 setting.json 不存在，尝试从 ~/.claude/settings.json（或 ~/.claude.json）迁移 API Key
-   - 否则创建默认配置
-3. 迁移旧数据（_migrate_projects_to_cili）
-   - 若 data/projects/ 存在：将各工作区 sessions/memory/approvals 迁移到 {directory}/.cili/，
-     删除 user-profile.md，建 .cili/tmp/，写 workspaces.json，最后重命名 data/projects/ → data/projects.bak/
-   - 逐工作区迁移旧会话格式（migrate_sessions_dir）
-4. 检查 Git Bash（_init_git_bash：deps 优先，缺失时回退系统 Git Bash）
-5. 确保 deps Python 存在且健康（pip 可用）
-6. 安装依赖包（_install_packages）
-   - 若有新包安装，自动重启服务（os.execv）确保 import 生效
-7. 初始化 matplotlib 中文字体（_init_mplfonts）
-8. 自动检测浏览器（_auto_detect_browser）
-   - 若 browser_path 为空或路径不存在，自动检测 Edge → Chrome 并写回配置
-9. 启动 Cron 调度器
-10. 探测监听端口（core/port_guard.resolve_web_port，默认 1618）
-    - 端口空闲：直接使用
-    - 端口被 cili 自身占用（本地连接表 CIM 定位进程，netstat 兜底；再按 server.json 的
-      pid/port、进程命令行含 main.py 与 cili 路径、/openapi.json 指纹判定）：停止旧实例
-      （taskkill /F），等待端口释放后复用
-    - 端口被其它程序占用：从 --port + 1 向上找空闲端口（最多 50 个），仍无则用系统分配端口；
-      server.json / 浏览器 / 日志统一使用解析后的端口
-11. 启动 Web 服务（uvicorn）
-12. 延迟 2 秒后自动打开浏览器（webbrowser.open）
-```
+- 重启由启动脚本托管：Web 手动重启/升级后重启通过 `core.restart.request_restart`
+  写标记，主循环 `shutdown_and_restart_if_requested` 退出并以约定退出码（42）通知
+  `start.ps1` 重新拉起；空闲重启用 `schedule_idle_restart`（所有会话空闲时执行）。
+- 升级：`core/updater`（检查/下载/解压/合并文件树/回滚），文件树原语在
+  `core/upgrade_archive`；`--apply-upgrade-only` 只应用升级包后退出。
+- 升级后启动会自动执行 `core/migrations` 的未完成步骤。
 
-**关键函数**：
-- `_ensure_deps_python()`: 确保 deps Python 可用
-- `_install_deps_python()`: 下载 embeddable Python
-- `_install_packages()`: 安装依赖
-- `_init_mplfonts()`: 初始化 matplotlib 中文字体配置
-- `resolve_web_port()`（core/port_guard）: 启动端口探测与冲突处理（旧 cili 复用 / 外部占用顺延）
+## 六、便携模式（`start.ps1`）
 
-## Embeddable Python 模式
+检测顺序：`data/deps/` → 系统 PATH/常见安装路径 → 下载到 `data/deps/`。
 
-**特点**：
-- 下载 Python embeddable package（约 11MB）
-- 解压到 data/deps/python/
-- 配置 `python311._pth` 文件：
-  - 启用 `import site`
-  - 添加 `Lib\site-packages`
-  - 添加项目根目录（用于 import core 等）
-- 通过 get-pip.py 安装 pip（get-pip.py 从阿里云镜像下载）
+- Git Bash：便携 7z 自解压包；
+- Python 3.11：embeddable 包 + pip。
 
-**优势**：
-- 不依赖系统 Python 版本
-- 无需创建 venv
-- 完全便携部署
+使用 deps Python 时 `main.py` 自动以其作为运行时（无需额外 venv）。
 
-## Python 环境检测逻辑
+## 七、配置与数据位置
 
-```python
-def _ensure_deps_python() -> bool:
-    # 1. 检查 data/deps/python 是否已存在且可用
-    if os.path.exists(_DEPS_PYTHON_DIR):
-        if _check_deps_python_healthy():
-            return True
-        # 损坏的安装，删除重建
-        shutil.rmtree(_DEPS_PYTHON_DIR)
+| 路径 | 内容 |
+|---|---|
+| `data/cili/setting.json` | 全局配置（providers/agents/system/permissions/images/qq/wechat/email/mcp_servers） |
+| `data/cili/workspaces.json` | 工作区索引 |
+| `data/cili/logs/` | 日志 |
+| `data/cili/backup/migrations/` | 迁移前配置备份 |
+| `data/cili/teen_mode.json` | 青少年模式状态 |
+| `data/cili/tools/` | 工具状态（loop、email 游标、chatgpt 凭证等） |
+| `{workspace}/.cili/` | 工作区数据（sessions/memory/cron/workflows/approval_rules.json） |
 
-    # 2. 下载 embeddable Python
-    return _install_deps_python()
-```
+## 八、测试与环境隔离
 
-## 依赖包安装
-
-**安装方式**：
-```bash
-pip install --disable-pip-version-check <package>
-```
-
-**特点**：
-- 只安装缺失的包（已安装的自动跳过）
-- 多镜像源自动 failover：一个镜像失败自动切换下一个
-- 安装成功后将实际使用的镜像源写回 setting.json
-
-**依赖列表**：
-- httpx, playwright, playwright-stealth
-- fastapi, uvicorn[standard], python-multipart
-- requests, beautifulsoup4, lxml
-- numpy, pandas, scipy, matplotlib
-- pyyaml, toml, Pillow
-- openpyxl, python-docx, python-pptx, pdfplumber
-- pytest
-- mcp（MCP 服务器客户端）
-
-**镜像源**：
-- 未配置时按预设顺序 failover：huaweicloud → aliyun → tsinghua → douban
-- 可在 data/cili/setting.json（system.pip_mirror）中配置，配置的源优先使用
-- 配置为空字符串表示使用官方 PyPI（预设源作为后备）
-- 安装成功后，实际使用的镜像源会写回 setting.json
-
-## 环境变量
-
-**start.ps1 设置的变量**：
-- `GIT_BASH_PATH`: 始终设置为 data/deps/git/bin/bash.exe
-- `PATH`: 追加 Tectonic 目录（如果从 deps 安装）
-- `HARMONY_FONT_DIR`: HarmonyOS Sans SC 字体目录（如果字体存在于 deps 目录，供 matplotlib 使用）
-
-**main.py 设置的变量**：
-- `GIT_BASH_PATH`: _init_git_bash() 优先设置为 data/deps/git/bin/bash.exe；deps 缺失时回退系统 Git Bash，仅两者皆无才 FATAL 退出
-- `PYTHONNOUSERSITE`: 设置为 1，禁用用户级 site-packages，避免与系统 Python 混合
-
-**shell.py 注入子进程的变量**（每命令级，随 `_run_bash`/`_run_pwsh` 注入）：
-- `TEMP`、`TMP`、`TMPDIR`: 系统级临时目录（`tempfile.gettempdir()`，data/tmp 已废弃），确保子进程 tempfile 有统一可写目录
-- `CILI_TMP`: 工作区临时目录 `{workspace}/.cili/tmp/`（`_workspace_tmp(workspace_uuid)` 解析，失败回落系统 temp）——技能脚本经 `$CILI_TMP` 引用中间文件
-- `LANG=C.UTF-8`、`PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`
-
-**工作区临时目录**：
-- agent 的 temp 工具写入 `{workspace}/.cili/tmp/{session_id}/`（`core/tools/temp.py`）
-- 不再有全局 `data/tmp/` 目录
-
-## LaTeX / Tectonic 支持
-
-start.ps1 自动检测并安装 Tectonic（现代 LaTeX 编译器），供 `latex` 工具使用。
-
-**检测优先级**：
-1. 系统 PATH 中的 LaTeX 编译器（tectonic、pdflatex、xelatex、lualatex）
-2. `data/deps/tectonic/tectonic.exe`
-3. `TECTONIC_PATH` 环境变量
-4. 常见安装路径（MiKTeX、TeX Live）
-
-**安装**：
-- 版本：Tectonic v0.17.0
-- 下载位置：`data/deps/tectonic/tectonic.exe`
-- 多镜像源：GitHub → ghproxy.net → ghfast.top → gh-proxy.com
-- 安装失败不阻塞启动（降级为无 LaTeX 支持）
-
-**目录结构**：
-```
-data/deps/
-├── tectonic/
-│   └── tectonic.exe    # Tectonic LaTeX 编译器
-├── python/
-└── git/
-```
-
-## 常见问题
-
-### 1. deps Python 损坏
-
-**症状**：
-```
-[setup] Deps Python is broken, recreating: data/deps/python
-```
-
-**解决**：
-- 自动删除并重新下载
-- 无需手动干预
-
-### 2. Git Bash 未找到
-
-**症状**：
-```
-[setup] FATAL: Git Bash not found (deps or system)!
-```
-
-**解决**：
-- 确保使用 start.cmd 启动
-- start.ps1 会自动下载 Git Bash 到 data/deps/git/
-- 若系统已安装 Git Bash，`python main.py` 直接启动时 _init_git_bash() 也会回退使用
-
-### 3. 包安装失败
-
-**可能原因**：
-- 网络问题
-- 镜像源不可用
-- 缺少预编译 wheel
-
-**解决**：
-- 更换 pip_mirror（data/cili/setting.json）
-- 检查网络连接
-
-### 4. Embeddable Python 导入错误
-
-**症状**：
-```
-ModuleNotFoundError: No module named 'core'
-```
-
-**原因**：
-- _pth 文件配置错误
-- 缺少项目根目录路径
-
-**解决**：
-- 删除 data/deps/python 重新运行
-- 检查 _pth 文件是否包含项目根目录
-
-## 设计原则
-
-1. **自动化**：无需手动配置，启动即用
-2. **容错性**：多种降级策略，确保能启动
-3. **隔离性**：使用独立目录，不污染系统环境
-4. **便携性**：整个 data 目录可移动
-5. **可维护性**：清晰的日志和错误提示
-
-## 相关文件
-
-- `main.py`: 主程序，环境初始化逻辑
-- `start.ps1`: 启动脚本，Python/Git 检测和下载
-- `start.cmd`: Windows 批处理启动器
-- `core/tools/base.py`: 工具基类，Python 路径定义
-- `CLAUDE.md`: 项目说明，Python 环境描述
-
-## 未来改进
-
-1. **缓存优化**：检测已下载的 embeddable Python，避免重复下载
-2. **版本管理**：支持升级/降级 Python 版本
-3. **依赖检查**：启动前检查关键依赖是否安装
-4. **健康检查**：定期验证 Python 环境完整性
-5. **多版本支持**：同时维护多个 Python 版本
+- 测试不读取 `data/cili/`：conftest 迁移 `workspaces.json`/`workspace data`/`teen_mode`/
+  email 游标到临时目录；CI 注入 `ANTHROPIC_API_KEY` 占位值。
+- `main._isolate_user_site` 只在 `main()` 调用（测试 import main 不触发）。
