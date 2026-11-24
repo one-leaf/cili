@@ -216,7 +216,7 @@ const newSessionBtn = document.getElementById('new-session-btn');
 const sessionMenuBtn = document.getElementById('session-menu-btn');
 
 // 解析聊天消息里的工作区文件链接，返回相对路径；非文件或跨工作区返回 null。
-// 覆盖 renderMarkdown 产出的两种形态：
+// 覆盖 renderMarkdownWithLinks 产出的两种形态：
 //   /api/workspaces/{uuid}/files/{rel}
 //   /api/files/{rel}?workspace_uuid={uuid}
 function _workspaceFileLinkPath(a) {

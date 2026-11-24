@@ -1,6 +1,6 @@
 // ── agent-cards.js ── 子代理卡片模型与渲染
 // 依赖 app.js: chatMessages, currentWorkspace, currentSession
-// 依赖 utils.js: escapeHtml, renderMarkdown
+// 依赖 utils.js: escapeHtml, renderMarkdownWithLinks
 // 依赖 chat.js: normalizeContent
 // sse-client.js 只负责事件分派；卡片状态、展开状态、详情渲染全部在这里。
 

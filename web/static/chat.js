@@ -8,7 +8,7 @@ function _isPendingPlaceholder(meta) {
 // ── chat.js ── 聊天相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingAttachments,
 //   chatMessages, chatInput, composerBtn
-// 依赖 utils.js 函数: renderMarkdown, escapeHtml, showToast, savePosition
+// 依赖 utils.js 函数: renderMarkdownWithLinks, escapeHtml, showToast, savePosition
 // 依赖 app.js 函数: loadSession, loadSessions
 
 // 在飞回合的输出容器：sessionId → 该回合所有输出的专属容器。
