@@ -639,7 +639,7 @@ class TestSendMessageInterface:
         monkeypatch.setattr(web_api, "_get_or_create_runner", fake_get_agent)
         monkeypatch.setattr("core.memory_service.memory_enabled", lambda *a: False)
 
-        request = SimpleNamespace(content="hi", images=None, interface="cli")
+        request = SimpleNamespace(content="hi", images=None, profile="cli")
 
         async def run():
             resp = await web_api.send_message("ws-if", "sess-if", request)
@@ -1376,7 +1376,7 @@ class TestAnswerAskUserApprovalRoute:
             "timeout_seconds": 60,
             "deadline_ts": deadline_ts,
             "auto_resume": "web",
-            "interface": "web",
+            "profile": "web",
         }
         meta = {"tool_name": "ask_user", "completed": False, "kind": "approval"}
         if payload:

@@ -103,7 +103,7 @@ class CiliHttpClient:
         客户端却收不到结果）。connect 保持 10s 以便快速发现服务端未启动。
         """
         url = f"/api/workspaces/{workspace_uuid}/sessions/{session_id}/messages"
-        body = {"content": content, "interface": CLI_INTERFACE}
+        body = {"content": content, "profile": CLI_INTERFACE}
         stream_timeout = httpx.Timeout(10.0, read=None)
         try:
             with self._http.stream("POST", url, json=body, timeout=stream_timeout) as resp:

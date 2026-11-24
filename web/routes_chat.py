@@ -99,7 +99,7 @@ class SendMessageRequest(BaseModel):
     attachments: list[dict] | None = None
     # 驱动客户端类型（web/cli/...）：run_runner 按它 set_turn_interface，
     # 能力档案（Response Surface）与接口专属工具随回合切换。缺省视为 web。
-    interface: str | None = None
+    profile: str | None = None
     # 前端幂等键：同 client_id 重复提交返回原排队项（网络重试不重复排队）
     client_id: str | None = None
 
@@ -108,7 +108,7 @@ class QueueRequest(BaseModel):
     content: str = ""
     images: list[dict] | None = None
     attachments: list[dict] | None = None
-    interface: str | None = None
+    profile: str | None = None
     client_id: str | None = None
 
 
@@ -645,7 +645,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     # 若留到 run_runner（executor 线程）里取，异常会吞掉结束哨兵把流挂死。
     # getattr duck-typing：web 路由测试广泛用 SimpleNamespace 伪造 request，
     # 缺属性时按缺省处理（与下方 set_iface 的 duck-typing 同一约定）。
-    iface = getattr(request, "interface", None) or "web"
+    iface = getattr(request, "profile", None) or "web"
     client_id = getattr(request, "client_id", None)
 
     # 待答 ask_user：本次输入是「答案」，不排队（设计 §3.5：避免排队消息
@@ -1114,7 +1114,7 @@ async def enqueue_message(workspace_uuid: str, session_id: str, request: QueueRe
                 attachments=getattr(request, "attachments", None),
                 image_config=load_config().images,
             ),
-            interface=request.interface or "web",
+            interface=request.profile or "web",
             client_id=request.client_id,
             has_images=bool(request.images),
         ))
