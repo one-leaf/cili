@@ -3471,13 +3471,6 @@ html:not([data-theme="dark"]) .message.thinking {
 
 /* ─── Project Instructions Editor ───────────────────────── */
 
-/* 工作区设置固定大小，与系统设置一致 */
-#workspace-settings-modal .modal-content {
-    width: 80vw;
-    max-width: 90vw;
-    height: 80vh;
-}
-
 /* 工作区设置 modal-body 用 flex 布局，让 tab-content 扩展 */
 #workspace-settings-modal .modal-body {
     display: flex;
