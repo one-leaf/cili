@@ -186,7 +186,7 @@ test/test_tui_client.py     httpx.MockTransport 注入（client.py 构造器可�
                             cwd 归一化匹配/自动注册/重名后缀、SSE 解析（非法帧跳过）、
                             interface="cli" 断言、并发 error 帧、连接失败提示、stop
 test/test_web_api.py        TestSendMessageInterface：interface 字段 → set_turn_interface
-                            调用序列 ["tui", None]；缺省/缺属性 → ["web", None]
+                            调用序列 ["cli", None]；缺省/缺属性 → ["web", None]
 ```
 
 渲染与 client 均为纯函数/可注入，无需真实终端；mintty/winpty 分支手动验证
