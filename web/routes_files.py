@@ -29,8 +29,8 @@ from core.tools.office2pdf import (
     workspace_cache_dir,
 )
 from core.workflows.guards import workflow_definition_violation
+from web.access_control import require_localhost
 from web.deps import (
-    _LOCALHOST_IPS,
     _get_workspace_info,
     csrf_protect,
     validate_workspace_uuid,
@@ -173,12 +173,7 @@ def browse_directory(request: Request, path: str = ""):
     # IP（通常为本机回环），所有经代理的请求都会被视为 localhost。
     # 勿把 /api/fs/browse 暴露到反代公网侧；远程使用需在反代层单独封禁该路径
     # （见 docs/design/web-api-design.md「八、安全考虑」）。
-    client_ip = request.client.host if request.client else ""
-    if client_ip not in _LOCALHOST_IPS:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: browse_directory is localhost-only",
-        )
+    require_localhost(request, "Access denied: browse_directory is localhost-only")
 
     # 青少年模式：浏览范围限制到允许的工作区目录（§3.13）；
     # 空路径不给盘符列表，直接落到第一个允许工作区
@@ -821,9 +816,7 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
     csrf_protect(request_raw)  # W6: CSRF 防护
     _workspace_info_or_404(request.workspace_uuid)
 
-    client_ip = request_raw.client.host if request_raw and request_raw.client else ""
-    if client_ip not in _LOCALHOST_IPS:
-        raise HTTPException(status_code=403, detail="Access denied: open_in_explorer is localhost-only")
+    client_ip = require_localhost(request_raw, "Access denied: open_in_explorer is localhost-only")
 
     tm = get_teen_mode()
     if tm.is_enabled() and not tm.is_unlocked():

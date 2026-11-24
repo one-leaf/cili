@@ -30,6 +30,7 @@ from core.default_sink import bind_default_sink
 from core.session_registry import registry
 from core.session_runner import SessionRunner
 from core.teen_mode import get_teen_mode
+from web.access_control import LOCALHOST_IPS
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ _SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 # Localhost IP addresses for access control
 # Only trust client IP, NOT Host header (which can be spoofed)
-_LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
+_LOCALHOST_IPS = LOCALHOST_IPS  # 兼容旧导入
 
 
 def validate_session_id(session_id: str) -> None:
