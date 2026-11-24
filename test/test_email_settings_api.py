@@ -13,6 +13,16 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_email_data_dir(tmp_path, monkeypatch):
+    """隔离邮件游标/拦截统计：状态端点会读 data/cili/tools/email/accounts/*.json。"""
+    import interfaces.email.cursor as cursor_mod
+    import interfaces.email.state as state_mod
+
+    monkeypatch.setattr(cursor_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(state_mod, "DATA_DIR", tmp_path)
+
+
 @pytest.fixture
 def isolated_config(tmp_path, monkeypatch):
     """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
