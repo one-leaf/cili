@@ -33,7 +33,7 @@ from core.tools.base import ToolResult
 
 
 @pytest.fixture
-def config():
+def offline_config():
     """构建测试配置"""
     return Config(
         providers={"test": ProviderConfig(
@@ -48,9 +48,9 @@ def config():
 
 
 @pytest.fixture
-def runner(config, test_workspace):
+def runner(offline_config, test_workspace):
     """创建 Master Agent 实例"""
-    agent_instance = SessionRunner(config, role="master", cwd=test_workspace, workspace_uuid="test")
+    agent_instance = SessionRunner(offline_config, role="master", cwd=test_workspace, workspace_uuid="test")
     yield agent_instance
     # 清理（Agent 数据写入 {workspace}/.cili/，即 test_workspace 目录）
     ws_dir = Path(test_workspace) / ".cili"
