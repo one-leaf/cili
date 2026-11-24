@@ -708,7 +708,7 @@ GET /api/workspace/files/{path}?workspace_uuid={uuid}
 #### 浏览目录
 
 ```
-GET /api/browse?path=/path/to/dir
+GET /api/fs/browse?path=/path/to/dir
 ```
 
 **响应**：
@@ -1205,7 +1205,7 @@ async def check_access_control(request: Request, call_next):
 
 **Cookie 令牌下发（P1-32）**：`?token=` 首次鉴权成功时，中间件在响应上追加 Set-Cookie（`cili_access_token`，HttpOnly / SameSite=Lax / 7 天 / https 下加 Secure）。前端拿到 URL 令牌后立即写入 localStorage，并用 `history.replaceState` 从地址栏移除 `?token=`。此后 fetch/EventSource 走请求头或查询参数，静态资源与页面刷新走 cookie——令牌不再长期滞留在 URL、浏览器历史与 Referer 中。
 
-**W8：/api/browse 限本机**：`GET /api/browse` 目录浏览端点仅允许 localhost 访问（非本机 IP 直接 403），防止 LAN/网络攻击者枚举服务器任意磁盘目录结构。**反代部署注意（P1-25）**：守卫信任 `request.client.host`，经反向代理转发时该值是代理 IP（通常为本机回环），所有经代理的请求都会被视为 localhost——`/api/browse` 会对公网侧完全放开。远程部署务必在反代层单独封禁 `/api/browse`。
+**W8：/api/fs/browse 限本机**：`GET /api/fs/browse` 目录浏览端点仅允许 localhost 访问（非本机 IP 直接 403），防止 LAN/网络攻击者枚举服务器任意磁盘目录结构。**反代部署注意（P1-25）**：守卫信任 `request.client.host`，经反向代理转发时该值是代理 IP（通常为本机回环），所有经代理的请求都会被视为 localhost——`/api/fs/browse` 会对公网侧完全放开。远程部署务必在反代层单独封禁 `/api/fs/browse`。
 
 **W6：/api/files 写操作 CSRF 校验**：`POST /api/files`、`PUT /api/files`、`DELETE /api/files`、`POST /api/files/upload` 等写端点调用 `_csrf_protect()`——multipart/form-data 与简单 POST 不触发 CORS 预检，恶意网页可向 localhost 端点自动提交；该校验依赖浏览器来源头（Origin/Referer），非本机来源拒绝，curl 等无头客户端放行。令牌鉴权由 `check_access_control` 中间件统一负责，CSRF 校验只防跨站请求。
 
@@ -1310,7 +1310,7 @@ def _mask_api_key(config: dict) -> dict:
 | `web/routes_ask_user.py` | ask_user 答案提交（`/answer-ask-user`） |
 | `web/routes_workspace.py` | 工作区/会话/执行日志/项目指令（`/api/workspaces*`、`/git/*`、`/instructions*`） |
 | `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
-| `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/browse`） |
+| `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/fs/browse`） |
 | `web/routes_memory.py` | 记忆管理（`/api/workspaces/{uuid}/memory*`） |
 | `web/routes_courseware.py` | 课件答题记录（`POST /api/courseware/quiz-result`） |
 | `web/deps.py` | 共享依赖：registry 引用 + 会话认领封装 + workspace 解析 + 默认 sink 绑定 |

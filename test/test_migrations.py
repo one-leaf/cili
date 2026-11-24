@@ -181,3 +181,38 @@ def test_migrate_chatgpt_oauth_handles_null_models(tmp_path):
     assert migrate_chatgpt_oauth_naming(path) is True
     target = json.loads(path.read_text(encoding="utf-8"))["providers"]["chatgpt-oauth"]
     assert target["models"] == {"old": {}}
+
+
+def test_migrate_legacy_file_urls(tmp_path):
+    from core.migrations.steps import migrate_legacy_file_urls
+
+    workspace = tmp_path / "ws"
+    session_dir = workspace / "sessions" / "abc12345"
+    session_dir.mkdir(parents=True)
+    jsonl = session_dir / "messages.jsonl"
+    jsonl.write_text(json.dumps({
+        "role": "assistant",
+        "content": "见 [图](/api/workspace/files/uploads/a.png) 与 /api/workspace/img/b.png",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    workspaces_json = tmp_path / "workspaces.json"
+    workspaces_json.write_text(json.dumps([{"uuid": "w1"}]), encoding="utf-8")
+
+    assert migrate_legacy_file_urls(workspaces_json, lambda uuid: workspace) == 1
+    text = jsonl.read_text(encoding="utf-8")
+    assert "/api/workspaces/w1/files/uploads/a.png" in text
+    assert "/api/workspaces/w1/files/img/b.png" in text
+    assert migrate_legacy_file_urls(workspaces_json, lambda uuid: workspace) == 0
+
+
+def test_migrate_legacy_file_urls_skips_undecodable(tmp_path):
+    from core.migrations.steps import migrate_legacy_file_urls
+
+    workspace = tmp_path / "ws"
+    session_dir = workspace / "sessions" / "abc12345"
+    session_dir.mkdir(parents=True)
+    (session_dir / "messages.jsonl").write_bytes(b"\xff\xfe/api/workspace/x\n")
+    workspaces_json = tmp_path / "workspaces.json"
+    workspaces_json.write_text(json.dumps([{"uuid": "w1"}]), encoding="utf-8")
+
+    # 不可解码文件被跳过（告警），不抛异常
+    assert migrate_legacy_file_urls(workspaces_json, lambda uuid: workspace) == 0

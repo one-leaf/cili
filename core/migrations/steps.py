@@ -230,3 +230,48 @@ def migrate_tui_channel(workspaces_json: Path, get_data_dir) -> int:
                 )
                 changed += 1
     return changed
+
+
+_LEGACY_FILE_URL_PREFIXES = ("/api/workspace/files/", "/api/workspace/")
+
+
+def migrate_legacy_file_urls(workspaces_json: Path, get_data_dir) -> int:
+    """旧消息里的 `/api/workspace*/...` 文件 URL → 规范路由（§4）。
+
+    旧 URL 不带 workspace uuid；迁移时按所在工作区补全为
+    ``/api/workspaces/{uuid}/files/...``，扫描 messages.jsonl。
+    """
+    changed = 0
+    try:
+        entries = json.loads(Path(workspaces_json).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(entries, list):
+        return 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        uuid = str(entry.get("uuid") or "")
+        if not uuid:
+            continue
+        sessions_dir = Path(get_data_dir(uuid)) / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        for jsonl in sessions_dir.glob("*/messages.jsonl"):
+            try:
+                text = jsonl.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # 旧数据可能是 ANSI 写盘：跳过单文件并告警，不阻塞启动迁移
+                logger.warning("[migration] 跳过不可解码的会话文件: %s", jsonl)
+                continue
+            if not any(p in text for p in _LEGACY_FILE_URL_PREFIXES):
+                continue
+            new_text = text
+            for prefix in _LEGACY_FILE_URL_PREFIXES:
+                new_text = new_text.replace(
+                    prefix, f"/api/workspaces/{uuid}/files/"
+                )
+            if new_text != text:
+                atomic_write_text(jsonl, new_text)
+                changed += 1
+    return changed

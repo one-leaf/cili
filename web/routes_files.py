@@ -1,7 +1,7 @@
 """Workspace Files / Directory Browser / File Manager 路由域。
 
-注意：/api/workspace/files/{path}（具体）必须在 /api/workspace/{path}（catch-all）
-之前注册，否则后者会吞掉 files 前缀路径。本文件内顺序即注册顺序。
+规范文件路由为 ``/api/workspaces/{uuid}/files/{path}``；目录浏览是
+``/api/fs/browse``（仅本机）。
 """
 
 from __future__ import annotations
@@ -132,29 +132,6 @@ class OpenInExplorerRequest(BaseModel):
 
 # ----- Workspace Files -----
 
-def _find_workspace_for_file(file_path: str) -> tuple[str, Path] | None:
-    """Scan all workspaces (from workspaces.json) and find which one contains the given relative file path.
-
-    Returns (workspace_uuid, full_file_path) or None if not found in any workspace.
-    """
-    for entry in load_workspaces_index():
-        uuid = entry.get("uuid", "")
-        workspace_dir = entry.get("directory", "")
-        if not workspace_dir:
-            continue
-        # 青少年模式：跨工作区扫描跳过受限工作区（读侧锁）
-        if get_teen_mode().workspace_access(uuid) == "locked":
-            continue
-        workspace_path = Path(workspace_dir).resolve()
-        file_full_path = (workspace_path / file_path).resolve()
-        # Security: ensure file is within the workspace directory
-        if not file_full_path.is_relative_to(workspace_path):
-            continue
-        if file_full_path.exists() and file_full_path.is_file():
-            return (uuid, file_full_path)
-    return None
-
-
 def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
     """Serve a file from a workspace directory with path-traversal protection."""
     workspace_path = Path(workspace_dir).resolve()
@@ -164,35 +141,6 @@ def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
     if not file_full_path.exists() or not file_full_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
     return FileResponse(str(file_full_path))
-
-
-@router.get("/api/workspace/files/{file_path:path}")
-async def get_workspace_file_short(file_path: str, workspace_uuid: str = ""):
-    """Serve a file from a workspace (no UUID in URL path).
-
-    If workspace_uuid query parameter is provided, look in that workspace only.
-    Otherwise, scan all workspaces to find the file.
-    """
-    if workspace_uuid:
-        info = _workspace_info_or_404(workspace_uuid)
-        workspace_dir = info.get("directory", "")
-        if not workspace_dir:
-            raise HTTPException(status_code=404, detail="Workspace directory not configured")
-        return _serve_workspace_file(workspace_dir, file_path)
-
-    # No UUID: scan all workspaces
-    result = _find_workspace_for_file(file_path)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"File not found in any workspace: {file_path}")
-
-    _, file_full_path = result
-    return FileResponse(str(file_full_path))
-
-
-@router.get("/api/workspace/{file_path:path}")
-async def get_workspace_file_compat(file_path: str, workspace_uuid: str = ""):
-    """Compatibility route: /api/workspace/{file} also works."""
-    return await get_workspace_file_short(file_path, workspace_uuid)
 
 
 @router.get("/api/workspaces/{workspace_uuid}/files/{file_path:path}")
@@ -209,7 +157,7 @@ async def get_workspace_file(workspace_uuid: str, file_path: str):
 
 # ----- Directory Browser -----
 
-@router.get("/api/browse")
+@router.get("/api/fs/browse")
 def browse_directory(request: Request, path: str = ""):
     """Browse directories on the server filesystem.
 
@@ -223,7 +171,7 @@ def browse_directory(request: Request, path: str = ""):
     # 避免 LAN/网络攻击者枚举服务器任意磁盘目录结构。
     # 注意（P1-25）：反代部署下此守卫会失效——request.client.host 是代理
     # IP（通常为本机回环），所有经代理的请求都会被视为 localhost。
-    # 勿把 /api/browse 暴露到反代公网侧；远程使用需在反代层单独封禁该路径
+    # 勿把 /api/fs/browse 暴露到反代公网侧；远程使用需在反代层单独封禁该路径
     # （见 docs/design/web-api-design.md「八、安全考虑」）。
     client_ip = request.client.host if request.client else ""
     if client_ip not in _LOCALHOST_IPS:
@@ -867,7 +815,7 @@ def open_in_explorer(request: OpenInExplorerRequest, request_raw: Request = None
     """Open a workspace path in the OS file explorer (localhost only).
 
     浏览器无法直接拉起系统资源管理器，由本机服务端进程执行 explorer.exe：
-    目录直接打开；文件用 /select 定位。仅限本机调用（与 /api/browse 同）；
+    目录直接打开；文件用 /select 定位。仅限本机调用（与 /api/fs/browse 同）；
     青少年模式开启且未全局解锁时拒绝——资源管理器可越出工作区浏览整盘。
     """
     csrf_protect(request_raw)  # W6: CSRF 防护

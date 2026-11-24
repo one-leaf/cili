@@ -58,7 +58,7 @@ async function loadDirectory(path) {
     pathEl.textContent = path || '选择位置';
 
     try {
-        const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+        const response = await fetch(`/api/fs/browse?path=${encodeURIComponent(path)}`);
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
@@ -175,7 +175,7 @@ async function loadFileBrowser(path) {
     pathEl.textContent = path || '选择位置';
 
     try {
-        const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+        const response = await fetch(`/api/fs/browse?path=${encodeURIComponent(path)}`);
         if (!response.ok) {
             const err = await response.json().catch(() => ({}));
             throw new Error(err.detail || `HTTP ${response.status}`);
