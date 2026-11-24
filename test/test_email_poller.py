@@ -6,9 +6,9 @@ import email
 from interfaces.email import state as state_mod
 from interfaces.email.client import MailItem, PollResult
 from interfaces.email.config import EmailConfig
+from interfaces.email.cursor import CursorData, load_cursor, save_cursor
 from interfaces.email.poller import Poller
 from interfaces.email.runtime import EmailRuntime
-from interfaces.email.state import CursorData, load_cursor, save_cursor
 
 ACCOUNT = "agent@example.com"
 
@@ -33,6 +33,8 @@ class FakeHandler:
 
 def _runtime(tmp_path, monkeypatch, client) -> EmailRuntime:
     monkeypatch.setattr(state_mod, "DATA_DIR", tmp_path)
+    import interfaces.email.cursor as cursor_mod
+    monkeypatch.setattr(cursor_mod, "DATA_DIR", tmp_path)
     cfg = EmailConfig(
         id=ACCOUNT, email_address=ACCOUNT, allowed_senders=["me@example.com"],
     )

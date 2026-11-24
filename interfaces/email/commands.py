@@ -10,11 +10,11 @@ from interfaces.common.commands import Command, CommandContext, parse
 from interfaces.common.commands import build_commands as _build_commands
 from interfaces.common.commands import dispatch as _dispatch
 from interfaces.common.commands import unique_commands as _unique_commands
+from interfaces.email.cursor import ignored_summary
 from interfaces.email.runtime import EmailRuntime
 from interfaces.email.state import (
     EmailAccountState,
     bind_workspace,
-    ignored_summary,
     save_account_state,
 )
 

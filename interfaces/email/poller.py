@@ -18,6 +18,7 @@ import time
 from functools import partial
 
 from interfaces.email.client import EmailAuthError, EmailClientError, PollResult
+from interfaces.email.cursor import CursorData, load_cursor, save_cursor
 from interfaces.email.filter import (
     REASON_LABELS,
     RateLimiter,
@@ -26,7 +27,6 @@ from interfaces.email.filter import (
     sender_address,
 )
 from interfaces.email.runtime import EmailRuntime
-from interfaces.email.state import CursorData, load_cursor, save_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,6 @@ class Poller:
 
     @staticmethod
     def _record_ignored(cursor: CursorData, reason: str, sender: str) -> None:
-        from interfaces.email.state import add_ignored_event
+        from interfaces.email.cursor import add_ignored_event
 
         add_ignored_event(cursor, reason, sender)

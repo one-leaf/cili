@@ -10,13 +10,11 @@ from core.fs_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
-_PLACEHOLDER_TOOLS = {"ask_user"}
-
-
 def migrate_placeholder_meta(workspaces_json: Path, get_data_dir) -> int:
     """会话占位标记 ``completed`` → ``ask_user_completed``（旧会话一次性重写）。
 
-    只改 messages.jsonl 中 tool_result 块的 _meta；幂等（已迁移的键存在即跳过）。
+    block 级 _meta 实际存在 index.json 的 commits[].blocks；messages.jsonl
+    只存内容历史。两处都扫一遍兼容更老的格式。幂等（新键存在即跳过）。
     """
     changed = 0
     try:
@@ -28,53 +26,83 @@ def migrate_placeholder_meta(workspaces_json: Path, get_data_dir) -> int:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        uuid = entry.get("uuid", "")
-        sessions_dir = Path(get_data_dir(uuid)) / "sessions"
+        sessions_dir = Path(get_data_dir(entry.get("uuid", ""))) / "sessions"
         if not sessions_dir.is_dir():
             continue
         for session_dir in sessions_dir.iterdir():
-            jsonl = session_dir / "messages.jsonl"
-            if not jsonl.is_file():
+            if not session_dir.is_dir():
                 continue
-            try:
-                lines = jsonl.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            out: list[str] = []
-            touched = False
-            for line in lines:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    out.append(line)
-                    continue
-                if _rewrite_record(record):
-                    touched = True
-                    out.append(json.dumps(record, ensure_ascii=False))
-                else:
-                    out.append(line)
-            if touched:
-                atomic_write_text(jsonl, "\n".join(out) + "\n")
+            if _rewrite_index_json(session_dir / "index.json"):
+                changed += 1
+            if _rewrite_messages_jsonl(session_dir / "messages.jsonl"):
                 changed += 1
     return changed
 
 
-def _rewrite_record(record: dict) -> bool:
-    content = record.get("content")
-    if not isinstance(content, list):
+def _rewrite_block_meta(meta: dict) -> bool:
+    if not isinstance(meta, dict) or "completed" not in meta:
+        return False
+    if "ask_user_completed" in meta:
+        return False
+    meta["ask_user_completed"] = bool(meta["completed"])
+    return True
+
+
+def _rewrite_index_json(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    commits = data.get("commits") if isinstance(data, dict) else None
+    if not isinstance(commits, list):
         return False
     touched = False
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
+    for commit in commits:
+        if not isinstance(commit, dict):
             continue
-        meta = block.get("_meta")
-        if not isinstance(meta, dict) or "completed" not in meta:
+        blocks = commit.get("blocks")
+        if not isinstance(blocks, dict):
             continue
-        if "ask_user_completed" in meta:
+        for meta in blocks.values():
+            if _rewrite_block_meta(meta):
+                touched = True
+    if touched:
+        atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
+    return touched
+
+
+def _rewrite_messages_jsonl(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    out: list[str] = []
+    touched = False
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            out.append(line)
             continue
-        meta["ask_user_completed"] = bool(meta["completed"])
-        block["_meta"] = meta
-        touched = True
+        content = record.get("content") if isinstance(record, dict) else None
+        if not isinstance(content, list):
+            out.append(line)
+            continue
+        record_touched = False
+        for block in content:
+            if isinstance(block, dict) and _rewrite_block_meta(block.get("_meta")):
+                record_touched = True
+        if record_touched:
+            touched = True
+            out.append(json.dumps(record, ensure_ascii=False))
+        else:
+            out.append(line)
+    if touched:
+        atomic_write_text(path, "\n".join(out) + "\n")
     return touched
 
 

@@ -15,7 +15,7 @@ from fastapi import APIRouter
 
 from interfaces.email.config import load_email_accounts
 from interfaces.email.service import email_status_snapshot
-from interfaces.email.state import ignored_summary
+from interfaces.email.cursor import ignored_summary
 
 router = APIRouter()
 

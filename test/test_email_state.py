@@ -5,7 +5,7 @@ import time
 import pytest
 
 from interfaces.email import state as state_mod
-from interfaces.email.state import (
+from interfaces.email.cursor import (
     CursorData,
     add_ignored_event,
     cursor_path,
@@ -19,6 +19,8 @@ from interfaces.email.state import (
 def email_data_dir(tmp_path, monkeypatch):
     """隔离 DATA_DIR：游标不落真实 data/cili。"""
     monkeypatch.setattr(state_mod, "DATA_DIR", tmp_path)
+    import interfaces.email.cursor as cursor_mod
+    monkeypatch.setattr(cursor_mod, "DATA_DIR", tmp_path)
     return tmp_path
 
 

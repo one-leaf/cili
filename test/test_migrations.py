@@ -53,15 +53,31 @@ def test_migrate_placeholder_meta_rewrites_session(tmp_path):
         "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
         encoding="utf-8",
     )
+    # block 级 _meta 的真实落点：index.json commits[].blocks
+    index = session_dir / "index.json"
+    index.write_text(json.dumps({
+        "schema_version": 2, "next_seq": 3,
+        "commits": [
+            {"seq": 1, "msg_meta": {}, "blocks": {}},
+            {"seq": 2, "msg_meta": {}, "blocks": {
+                "t1": {"completed": False, "tool_name": "ask_user"},
+            }},
+        ],
+    }), encoding="utf-8")
     workspaces_json = tmp_path / "workspaces.json"
     workspaces_json.write_text(json.dumps([{"uuid": "w1"}]), encoding="utf-8")
 
     changed = migrate_placeholder_meta(workspaces_json, lambda uuid: workspace)
-    assert changed == 1
+    assert changed == 2  # messages.jsonl + index.json 各重写一次
     lines = [json.loads(x) for x in jsonl.read_text(encoding="utf-8").splitlines()]
     meta = lines[1]["content"][0]["_meta"]
     assert meta["ask_user_completed"] is False
     assert meta["completed"] is False  # 旧键保留，双读兼容
+
+    index_data = json.loads(index.read_text(encoding="utf-8"))
+    block_meta = index_data["commits"][1]["blocks"]["t1"]
+    assert block_meta["ask_user_completed"] is False
+    assert block_meta["completed"] is False
 
     # 幂等：再次执行不再改写
     assert migrate_placeholder_meta(workspaces_json, lambda uuid: workspace) == 0
