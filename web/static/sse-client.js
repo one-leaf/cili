@@ -412,7 +412,7 @@ async function triggerResumeForBackgroundAgent() {
     const sessionId = currentSession.session_id;
 
     try {
-        const resp = await fetch(`/api/workspaces/${wsUuid}/sessions/${sessionId}/resume`, {
+        const resp = await fetch(`/api/workspaces/${wsUuid}/sessions/${sessionId}/notifications/resume`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({}),

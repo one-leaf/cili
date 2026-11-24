@@ -71,7 +71,7 @@ from web.sse import (
 
 router = APIRouter()
 
-# 后台恢复任务的强引用集合（asyncio 只持弱引用，见 resume_runner）
+# 后台恢复任务的强引用集合（asyncio 只持弱引用，见 resume_notifications）
 _resume_tasks: set[asyncio.Task] = set()
 
 
@@ -825,12 +825,12 @@ async def stop_runner(workspace_uuid: str, session_id: str,
             "stopped": {"turn": False, "background": 0}}
 
 
-@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/resume")
-async def resume_runner(workspace_uuid: str, session_id: str):
-    """Resume runner processing if there are pending notifications.
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/notifications/resume")
+async def resume_notifications(workspace_uuid: str, session_id: str):
+    """恢复后台通知：排空 message_bus 的待处理通知并继续 runner 循环。
 
-    Called by frontend when a background sub-agent completes and master is idle.
-    Drains notifications from message_bus and continues the runner loop.
+    前端在后台子代理完成且 master 空闲时调用；与 ``queue/resume``（用户队列
+    解暂停）是两件事。
     """
     key = session_key(workspace_uuid, session_id)
 
