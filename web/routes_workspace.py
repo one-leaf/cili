@@ -34,7 +34,6 @@ from core.session import (
     MESSAGES_FILE,
     META_FILE,
     SessionStore,
-    delete_session_dir,
     load_history_messages,
     load_history_meta,
     preview_from_messages,
@@ -46,7 +45,6 @@ from core.session import (
 from core.teen_mode import deny_message, get_teen_mode
 from core.textbooks import textbook_tasks
 from core.time_utils import now_str
-from core.turn_queue import turn_queue
 from web.deps import (
     _SAFE_ID_RE,
     _get_workspace_info,
@@ -750,20 +748,12 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
 
 
 def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> None:
-    """停止并摘除会话的 GoalRunner/队列/runner，再删目录（唯一删除顺序）。"""
-    from core.agent_mailbox import get_agent_mailbox
-    from core.goal import release_goal_manager
+    """停止并摘除会话编排/队列/runner，再删目录（实现见 core.session_purge）。"""
+    from core.session_purge import purge_session
 
-    key = session_key(workspace_uuid, session_id)
-    session_dir = sessions_dir / session_id
-    stop_goal_runner(key)
-    with _sessions_lock:
-        turn_queue.remove_session(key)
-        registry.remove(key)
-    # 邮箱按 session_id 分键：不清会让消息与 agent 名字在进程内永久累积
-    get_agent_mailbox().unregister_session(session_id)
-    delete_session_dir(sessions_dir, session_id)
-    release_goal_manager(session_dir)
+    purge_session(
+        workspace_uuid, session_id, sessions_dir, stop_goal=stop_goal_runner,
+    )
 
 
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}",
