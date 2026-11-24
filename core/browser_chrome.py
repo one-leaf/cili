@@ -91,50 +91,25 @@ def is_port_listening(port: int) -> bool:
         return False
 
 def find_pid_by_port(port: int) -> int | None:
-    """找到监听指定端口（LISTENING）的进程 PID。"""
-    try:
-        if sys.platform == "win32":
-            result = subprocess.run(
-                ["netstat", "-ano", "-p", "tcp"],
-                capture_output=True, text=True, timeout=10,
-            )
-            needle = f":{port}"
-            for line in result.stdout.splitlines():
-                if needle in line and "LISTENING" in line:
-                    parts = line.split()
-                    if parts and parts[-1].isdigit():
-                        return int(parts[-1])
-        else:
-            result = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}", "-s", "tcp:LISTEN"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for pid in result.stdout.splitlines():
-                if pid.isdigit():
-                    return int(pid)
-    except Exception as e:
-        logger.debug(f"[BrowserService] _find_pid_by_port({port}) failed: {e}")
-    return None
+    """找到监听指定端口（LISTENING）的进程 PID（与 port_guard 同一探测口径）。"""
+    from core.process_utils import find_listener_pids
+
+    pids = find_listener_pids(port)
+    return pids[0] if pids else None
 
 
 def pid_uses_profile(pid: int, profile_dir: str) -> bool:
     """判断指定 PID 的进程命令行是否使用本项目 Chrome profile。"""
     try:
-        profile_abs = os.path.abspath(profile_dir)
+        from core.process_utils import get_process_command_line
+
+        cmdline = get_process_command_line(pid)
+        if not cmdline:
+            return False
         if sys.platform == "win32":
-            profile_normalized = profile_abs.replace("/", "\\").lower()
-            result = subprocess.run(
-                ["powershell", "-Command",
-                 f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
-                capture_output=True, text=True, timeout=10,
-            )
-            return profile_normalized in result.stdout.lower()
-        else:
-            result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True, text=True, timeout=5,
-            )
-            return profile_abs in result.stdout
+            profile = os.path.abspath(profile_dir).replace("/", "\\").lower()
+            return profile in cmdline.lower()
+        return os.path.abspath(profile_dir) in cmdline
     except Exception:
         return False
 

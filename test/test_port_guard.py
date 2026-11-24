@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import core.port_guard as pg
+import core.process_utils as pu
 
 
 class _OpenAPIHandler(BaseHTTPRequestHandler):
@@ -70,7 +71,7 @@ class TestPortFree:
 
 class TestFindListenerPids:
     def test_cim_single_listener_row(self, monkeypatch):
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
         payload = json.dumps({
             "LocalAddress": "127.0.0.1",
             "LocalPort": 18787,
@@ -80,13 +81,13 @@ class TestFindListenerPids:
             "OwningProcess": 544,
         })
         monkeypatch.setattr(
-            pg.subprocess, "run",
+            pu.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout=payload, returncode=0),
         )
-        assert pg._cim_listener_pids(18787) == [544]
+        assert pu._cim_listener_pids(18787) == [544]
 
     def test_cim_filters_established_rows(self, monkeypatch):
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
         payload = json.dumps([
             {
                 "LocalPort": 18788, "RemoteAddress": "127.0.0.1",
@@ -102,36 +103,36 @@ class TestFindListenerPids:
             },
         ])
         monkeypatch.setattr(
-            pg.subprocess, "run",
+            pu.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout=payload, returncode=0),
         )
-        assert pg._cim_listener_pids(18788) == [15924]
+        assert pu._cim_listener_pids(18788) == [15924]
 
     def test_cim_empty_output(self, monkeypatch):
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
         monkeypatch.setattr(
-            pg.subprocess, "run",
+            pu.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout="", returncode=1),
         )
-        assert pg._cim_listener_pids(8000) == []
+        assert pu._cim_listener_pids(8000) == []
 
     def test_cim_invalid_json(self, monkeypatch):
         """JSON 解析失败 → None（回退 netstat），与 docstring 约定一致。"""
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
         monkeypatch.setattr(
-            pg.subprocess, "run",
+            pu.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout="{not json", returncode=0),
         )
-        assert pg._cim_listener_pids(8000) is None
+        assert pu._cim_listener_pids(8000) is None
 
     def test_cim_query_failure_returns_none(self, monkeypatch):
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
 
         def _boom(*args, **kwargs):
             raise OSError("powershell missing")
 
-        monkeypatch.setattr(pg.subprocess, "run", _boom)
-        assert pg._cim_listener_pids(8000) is None
+        monkeypatch.setattr(pu.subprocess, "run", _boom)
+        assert pu._cim_listener_pids(8000) is None
 
     def test_netstat_fallback_parses_exact_port(self, monkeypatch):
         fake = (
@@ -141,33 +142,33 @@ class TestFindListenerPids:
             "  TCP    127.0.0.1:8001         127.0.0.1:0            ESTABLISHED     7777\n"
             "  UDP    0.0.0.0:8000           *:*                                    1234\n"
         )
-        monkeypatch.setattr(pg.sys, "platform", "win32")
+        monkeypatch.setattr(pu.sys, "platform", "win32")
         monkeypatch.setattr(
-            pg.subprocess, "run",
+            pu.subprocess, "run",
             lambda *args, **kwargs: SimpleNamespace(stdout=fake),
         )
-        assert pg._netstat_listener_pids(8000) == [4321]
-        assert pg._netstat_listener_pids(18000) == [9999]
-        assert pg._netstat_listener_pids(8001) == []
-        assert pg._netstat_listener_pids(800) == []
+        assert pu._netstat_listener_pids(8000) == [4321]
+        assert pu._netstat_listener_pids(18000) == [9999]
+        assert pu._netstat_listener_pids(8001) == []
+        assert pu._netstat_listener_pids(800) == []
 
     def test_cim_preferred_over_netstat(self, monkeypatch):
-        monkeypatch.setattr(pg, "_cim_listener_pids", lambda port: [42])
-        monkeypatch.setattr(pg, "_netstat_listener_pids", lambda port: [99])
-        assert pg.find_listener_pids(8000) == [42]
+        monkeypatch.setattr(pu, "_cim_listener_pids", lambda port: [42])
+        monkeypatch.setattr(pu, "_netstat_listener_pids", lambda port: [99])
+        assert pu.find_listener_pids(8000) == [42]
 
     def test_cim_empty_result_does_not_use_netstat(self, monkeypatch):
         def _netstat(port):
             raise AssertionError("netstat fallback should not run")
 
-        monkeypatch.setattr(pg, "_cim_listener_pids", lambda port: [])
-        monkeypatch.setattr(pg, "_netstat_listener_pids", _netstat)
-        assert pg.find_listener_pids(8000) == []
+        monkeypatch.setattr(pu, "_cim_listener_pids", lambda port: [])
+        monkeypatch.setattr(pu, "_netstat_listener_pids", _netstat)
+        assert pu.find_listener_pids(8000) == []
 
     def test_cim_query_failure_falls_back_to_netstat(self, monkeypatch):
-        monkeypatch.setattr(pg, "_cim_listener_pids", lambda port: None)
-        monkeypatch.setattr(pg, "_netstat_listener_pids", lambda port: [77])
-        assert pg.find_listener_pids(8000) == [77]
+        monkeypatch.setattr(pu, "_cim_listener_pids", lambda port: None)
+        monkeypatch.setattr(pu, "_netstat_listener_pids", lambda port: [77])
+        assert pu.find_listener_pids(8000) == [77]
 
 
 class TestCiliCommandLine:
