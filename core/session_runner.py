@@ -1395,6 +1395,7 @@ class SessionRunner(BaseSessionRunner):
             result["content"] = "该操作需要用户（主代理会话）批准，子代理无法执行，请换用非拦截方式或告知主代理。"
             result["_meta"].pop(META_KEY, None)
             result["_meta"].pop("completed", None)
+            result["_meta"].pop("ask_user_completed", None)
 
     def _wrapup_timeout_summary(self) -> str:
         """额度耗尽时兜底生成一次执行总结。

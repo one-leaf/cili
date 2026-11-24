@@ -592,11 +592,11 @@ class TurnExecutor:
         if image_refs:
             result_dict["_meta"]["image_refs"] = image_refs
 
-        # Add completed=False to block-level _meta for placeholder tools (ask_user, session)
+        # 占位工具（ask_user/审批）待答标记：专用键，不再与工具完成态混用
         if result.completed is False:
             if "_meta" not in result_dict:
                 result_dict["_meta"] = {}
-            result_dict["_meta"]["completed"] = False
+            result_dict["_meta"]["ask_user_completed"] = False
 
         # Add _meta if it has content
         if meta:

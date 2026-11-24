@@ -556,6 +556,7 @@ class Loop:
                 continue
             permission = meta.pop(META_KEY)
             meta.pop("completed", None)
+            meta.pop("ask_user_completed", None)
             if not first:
                 result["is_error"] = True
                 result["content"] = "该操作需要权限判定，本批仅处理一条，请稍后重试其余操作。"
@@ -657,6 +658,7 @@ class Loop:
                     if META_KEY in nmeta:
                         nmeta.pop(META_KEY, None)
                         nmeta.pop("completed", None)
+                        nmeta.pop("ask_user_completed", None)
                         new_result["is_error"] = True
                         new_result["content"] = "判定放行后重执行仍被拦截，已终止自动重试。"
                     results[idx] = new_result
@@ -702,7 +704,11 @@ class Loop:
         )
 
         for result in results:
-            placeholder = result.get("_meta", {}).get("completed") is False
+            rmeta = result.get("_meta") or {}
+            placeholder = (
+                rmeta.get("ask_user_completed") is False
+                or ("ask_user_completed" not in rmeta and rmeta.get("completed") is False)
+            )
             if placeholder:
                 # 模型自发的 ask_user/session 占位：正常等待，不叠加审批卡
                 state["wait_for_external"] = True

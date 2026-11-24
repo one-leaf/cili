@@ -78,11 +78,18 @@ def _iter_tool_result_blocks(
                 yield msg, block
 
 
+def _is_pending_placeholder(meta: dict) -> bool:
+    """占位符是否待用户应答（新键优先，旧会话回退 completed==False）。"""
+    if "ask_user_completed" in meta:
+        return meta.get("ask_user_completed") is False
+    return meta.get("completed") is False
+
+
 def _find_pending_block(session, max_messages: int | None = None) -> dict | None:
     """最后一个未完成的占位 tool_result 块（ask_user 或审批卡）。"""
     for _msg, block in _iter_tool_result_blocks(session, max_messages=max_messages):
         meta = block.get("_meta") or {}
-        if meta.get("completed") is False:
+        if _is_pending_placeholder(meta):
             return block
     return None
 
@@ -324,7 +331,8 @@ def settle_placeholder(
     block["content"] = text
     meta = block.setdefault("_meta", {})
     meta.update({
-        "completed": True,
+        "ask_user_completed": True,
+        "completed": True,  # 兼容镜像：旧前端与历史断言仍读 completed
         "outcome": outcome,
         "settled_at": now_str(),
         **_write_answer_file(session, tool_use_id, text),
@@ -464,7 +472,7 @@ def apply_answer(
         return "not_found"
 
     meta = block.get("_meta") or {}
-    if meta.get("completed") is True:
+    if not _is_pending_placeholder(meta):
         # 已结算（用户先答、看门狗先结算、或重复提交）：不再改写历史
         logger.info(f"[ask-user] 占位符已结算，忽略重复提交: tool_use_id={tool_use_id}")
         return "expired" if meta.get("outcome") == "expired" else "not_found"
@@ -572,7 +580,7 @@ def settle_expired_approvals(
     settled: list[str] = []
     for _msg, block in _iter_tool_result_blocks(session):
         meta = block.get("_meta") or {}
-        if meta.get("completed") is not False:
+        if not _is_pending_placeholder(meta):
             continue
         permission = meta.get(APPROVAL_META_KEY)
         if meta.get("kind") != "approval" and not permission:

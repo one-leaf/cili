@@ -1,3 +1,10 @@
+/** 占位符是否待用户应答（新键优先，旧会话回退 completed===false）。 */
+function _isPendingPlaceholder(meta) {
+    if (!meta) return false;
+    if (meta.ask_user_completed !== undefined) return meta.ask_user_completed === false;
+    return meta.completed === false;
+}
+
 // ── chat.js ── 聊天相关逻辑
 // 依赖 app.js 全局变量: currentWorkspace, currentSession, isSending, pendingAttachments,
 //   chatMessages, chatInput, composerBtn
@@ -439,7 +446,7 @@ function renderMessages(messages) {
                     return;
                 }
                 // ask_user 等待中：跳过渲染
-                if (block._meta && block._meta.completed === false) return;
+                if (block._meta && _isPendingPlaceholder(block._meta)) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
@@ -563,7 +570,7 @@ function renderMessages(messages) {
                 }
             } else if (block.kind === 'tool_result') {
                 // Skip placeholder tool_result for ask_user
-                if (block._meta && block._meta.completed === false) return;
+                if (block._meta && _isPendingPlaceholder(block._meta)) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at);
                 div.classList.add('tool');
@@ -700,7 +707,7 @@ function prependMessages(messages) {
                     AgentCardStore.mountFromHistory(saMsg, fragment);
                     return;
                 }
-                if (block._meta && block._meta.completed === false) return;
+                if (block._meta && _isPendingPlaceholder(block._meta)) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
                 div.classList.add('tool');
@@ -754,7 +761,7 @@ function prependMessages(messages) {
                 contentDiv.appendChild(pre);
                 fragment.appendChild(div);
             } else if (block.kind === 'tool_result') {
-                if (block._meta && block._meta.completed === false) return;
+                if (block._meta && _isPendingPlaceholder(block._meta)) return;
                 const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
                 const div = addMessage('assistant', '', msgId, msg._meta?.created_at, null);
                 div.classList.add('tool');

@@ -2,9 +2,9 @@
 
 测试流程：
 1. AskUserTool.execute() 返回 completed=False 的 ToolResult
-2. _execute_tool() 生成带 _meta.completed=False 标记的 dict
-3. Agent loop 检测到 _meta.completed=False 后退出（content 为占位符文本）
-4. 用户提交答案 → 后端设置 _meta.completed=True，注入 tool_result content，标记 _meta.answered=True
+2. _execute_tool() 生成带 _meta.ask_user_completed=False 标记的 dict
+3. Agent loop 检测到 _meta.ask_user_completed=False 后退出（content 为占位符文本）
+4. 用户提交答案 → 后端设置 _meta.ask_user_completed=True（并镜像 completed=True），注入 tool_result content
 5. resume_loop() 继续 agent loop
 """
 
@@ -106,7 +106,7 @@ class TestExecuteToolMetadata:
     """_execute_tool() 生成的 dict 结构测试"""
 
     def test_execute_tool_returns_not_completed_flag(self, runner):
-        """_execute_tool() 返回的 dict 包含 _meta.completed=False（新格式）"""
+        """_execute_tool() 返回的 dict 包含 _meta.ask_user_completed=False（占位语义）"""
         assert get_tool_by_name(runner.tools, "ask_user") is not None
         questions = make_test_questions()
         tool_use_id = "test_toolu_001"
@@ -118,8 +118,8 @@ class TestExecuteToolMetadata:
         assert result_dict["tool_use_id"] == tool_use_id
         # 新格式：tool_name 在 _meta 中
         assert result_dict["_meta"]["tool_name"] == "ask_user"
-        # 新格式：completed 在 _meta 中，False 表示等待用户
-        assert result_dict["_meta"]["completed"] is False
+        # 占位语义键：ask_user_completed=False 表示等待用户
+        assert result_dict["_meta"]["ask_user_completed"] is False
         # 不再在 _meta 中重复存储 questions（已在 tool_use input 中）
 
     def test_execute_tool_no_external_file(self, runner):
@@ -188,7 +188,7 @@ class TestAgentLoopWaitForExternal:
         ]
         assert len(user_result_msgs) >= 1, "应有 tool_result 消息"
 
-        # tool_result 应有 _meta.completed=False
+        # tool_result 应有 _meta.ask_user_completed=False
         tool_result_block = None
         for m in user_result_msgs:
             for b in m["content"]:
@@ -196,7 +196,7 @@ class TestAgentLoopWaitForExternal:
                     tool_result_block = b
                     break
         assert tool_result_block is not None, "应找到 ask_user 的 tool_result"
-        assert tool_result_block["_meta"]["completed"] is False
+        assert tool_result_block["_meta"]["ask_user_completed"] is False
 
         # 关键验证：tool_call 块没有 _meta.answered 标记（用户还没回答）
         for b in last_assistant["content"]:
@@ -239,9 +239,9 @@ class TestAgentLoopWaitForExternal:
         # content 应该是占位符文本
         assert tool_result_block.get("content") == "Waiting for user input...", \
             "ask_user 的 tool_result 应包含占位符文本"
-        # _meta.completed 应为 False（等待中）
-        assert tool_result_block.get("_meta", {}).get("completed") is False, \
-            "等待用户回答时 _meta.completed 应为 False"
+        # _meta.ask_user_completed 应为 False（等待中）
+        assert tool_result_block.get("_meta", {}).get("ask_user_completed") is False, \
+            "等待用户回答时 _meta.ask_user_completed 应为 False"
 
 
 # ── 测试 4: 模拟 answer-ask-user 端点逻辑 ──
