@@ -176,17 +176,17 @@ class TestRoutes:
     def test_onboard_status_requires_session_id(self):
         from fastapi import HTTPException
 
-        from web.routes_qq import qq_onboard_status
+        from web.routes_qq import qq_login_status
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(qq_onboard_status("a1", session_id=""))
+            asyncio.run(qq_login_status("a1", session_id=""))
         assert ei.value.status_code == 400
 
     def test_onboard_cancel_requires_session_id(self):
         from fastapi import HTTPException
 
-        from web.routes_qq import qq_onboard_cancel
+        from web.routes_qq import qq_login_cancel
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(qq_onboard_cancel("a1", session_id=""))
+            asyncio.run(qq_login_cancel("a1", session_id=""))
         assert ei.value.status_code == 400
 
     def test_status_reports_bound_and_app_id(self, isolated_config, monkeypatch):
@@ -208,12 +208,12 @@ class TestRoutes:
             assert "secret" not in a            # 凭据永不出配置文件
 
     def test_disconnect_clears_credentials(self, isolated_config):
-        from web.routes_qq import qq_disconnect
+        from web.routes_qq import qq_logout
 
         _write(isolated_config, {"qq": {"accounts": [
             {"id": "a1", "app_id": "123", "secret": "s3cr3t", "enabled": True},
         ]}})
-        data = asyncio.run(qq_disconnect("a1"))
+        data = asyncio.run(qq_logout("a1"))
         assert data["success"] is True
         acc = _read(isolated_config)["qq"]["accounts"][0]
         assert acc["app_id"] == ""
@@ -221,9 +221,9 @@ class TestRoutes:
         assert acc["enabled"] is True           # 启用开关不动
 
     def test_disconnect_unknown_account_is_noop(self, isolated_config):
-        from web.routes_qq import qq_disconnect
+        from web.routes_qq import qq_logout
 
-        data = asyncio.run(qq_disconnect("ghost"))
+        data = asyncio.run(qq_logout("ghost"))
         assert data["success"] is True
         assert data["message"] == "该账号尚未绑定"
         assert not isolated_config.exists()     # 没写配置

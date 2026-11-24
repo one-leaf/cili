@@ -484,7 +484,7 @@ function closeQqOnboardModal(cancel = true) {
     document.getElementById('qq-onboard-modal').style.display = 'none';
     if (cancel && sid && accountId) {
         // 尽早丢弃服务端的扫码会话（服务端另有 TTL 兜底）
-        fetch(`/api/qq/accounts/${encodeURIComponent(accountId)}/onboard/cancel?session_id=${encodeURIComponent(sid)}`,
+        fetch(`/api/qq/accounts/${encodeURIComponent(accountId)}/login/cancel?session_id=${encodeURIComponent(sid)}`,
               { method: 'POST' }).catch(() => {});
     }
 }
@@ -504,7 +504,7 @@ async function qqStartOnboard(card) {
     document.getElementById('qq-onboard-msg').textContent = '正在获取二维码…';
     try {
         const resp = await fetch(
-            `/api/qq/accounts/${encodeURIComponent(accountId)}/onboard/start`,
+            `/api/qq/accounts/${encodeURIComponent(accountId)}/login/start`,
             { method: 'POST' });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || '取二维码失败');
@@ -521,7 +521,7 @@ async function pollQqOnboard() {
     if (!qqOnboardSessionId || !qqOnboardAccountId) return;
     try {
         const resp = await fetch(
-            `/api/qq/accounts/${encodeURIComponent(qqOnboardAccountId)}/onboard/status` +
+            `/api/qq/accounts/${encodeURIComponent(qqOnboardAccountId)}/login/status` +
             `?session_id=${encodeURIComponent(qqOnboardSessionId)}`);
         const data = await resp.json();
         if (data.status === 'pending') return;

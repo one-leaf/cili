@@ -75,9 +75,9 @@ async def qq_status() -> dict[str, Any]:
     return {"accounts": accounts}
 
 
-@router.post("/api/qq/accounts/{account_id}/disconnect",
+@router.post("/api/qq/accounts/{account_id}/logout",
              dependencies=[Depends(teen_guard("config_update"))])
-async def qq_disconnect(account_id: str) -> dict[str, Any]:
+async def qq_logout(account_id: str) -> dict[str, Any]:
     """断开连接：停掉该账号的宿主，并清除已绑定的凭据（重新扫码可再连）。
 
     与微信「断开连接」（登出清凭证）同语义。启用开关不动——是否还留这个账号
@@ -108,9 +108,9 @@ async def qq_disconnect(account_id: str) -> dict[str, Any]:
 # ─── 扫码绑定机器人（凭据自动落库，形态对齐微信扫码登录） ─────────────
 
 
-@router.post("/api/qq/accounts/{account_id}/onboard/start",
+@router.post("/api/qq/accounts/{account_id}/login/start",
              dependencies=[Depends(teen_guard("config_update"))])
-async def qq_onboard_start(account_id: str) -> dict[str, Any]:
+async def qq_login_start(account_id: str) -> dict[str, Any]:
     """建绑定任务、生成二维码。AppSecret 经服务端加密回传后只落配置文件。"""
     try:
         from interfaces.qq.login import get_login_store
@@ -120,8 +120,8 @@ async def qq_onboard_start(account_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
 
-@router.get("/api/qq/accounts/{account_id}/onboard/status")
-async def qq_onboard_status(
+@router.get("/api/qq/accounts/{account_id}/login/status")
+async def qq_login_status(
     account_id: str,
     session_id: str = Query(""),
 ) -> dict[str, Any]:
@@ -144,8 +144,8 @@ async def qq_onboard_status(
     return result
 
 
-@router.post("/api/qq/accounts/{account_id}/onboard/cancel")
-async def qq_onboard_cancel(
+@router.post("/api/qq/accounts/{account_id}/login/cancel")
+async def qq_login_cancel(
     account_id: str,
     session_id: str = Query(""),
 ) -> dict[str, Any]:
