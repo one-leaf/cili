@@ -147,7 +147,7 @@ def sse_run_response(
             并以 None 作结束哨兵）。
         event_queue: run_fn 写入 SSE 帧字符串的队列。
         cancel_on_disconnect: 客户端断开时是否请求停止后台执行。默认 False（长任务继续跑，
-            需用户显式 /stop）；answer-ask-user 等无后续输入来源的场景传 True。
+            需用户显式 /stop）；ask-user/answers 等无后续输入来源的场景传 True。
             注意：run_in_executor 的工作线程不可取消，``task.cancel()`` 只能取消
             future 本身，真正停止执行要靠 ``on_disconnect``。
         on_disconnect: 客户端断开时调用的停止回调（如 ``runner.stop``）。

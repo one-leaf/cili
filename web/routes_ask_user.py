@@ -37,7 +37,7 @@ class AnswerAskUserRequest(BaseModel):
     answers: list[dict] | None = None  # 提问卡结构化答案
 
 
-@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/answer-ask-user")
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/ask-user/answers")
 async def answer_ask_user(workspace_uuid: str, session_id: str, request: AnswerAskUserRequest):
     """用户提交 ask_user 工具的答案，后端补 tool_result 并继续 runner 循环"""
     get_teen_mode().guard_workspace(workspace_uuid, source="web")

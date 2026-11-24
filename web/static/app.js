@@ -1357,7 +1357,7 @@ function handleNewWorkspace() {
 
 async function loadWizardOptions() {
     try {
-        const response = await fetch('/api/workspace-wizard/options');
+        const response = await fetch('/api/wizard/options');
         if (!response.ok) throw new Error((await response.json()).detail || '加载向导选项失败');
         wizardState.options = await response.json();
         renderWizardOptions();
@@ -1816,7 +1816,7 @@ async function previewWizard() {
     next.disabled = true;
     setWizardStatus('生成预览...');
     try {
-        const response = await fetch('/api/workspace-wizard/preview', {
+        const response = await fetch('/api/wizard/preview', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(wizardRequest()),
@@ -1845,7 +1845,7 @@ async function createWizard() {
             memory_enabled: document.getElementById('wizard-memory-enabled').checked,
             download_textbooks: document.getElementById('wizard-download-textbooks')?.checked || false,
         };
-        const response = await fetch('/api/workspace-wizard/create', {
+        const response = await fetch('/api/wizard/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -3516,7 +3516,7 @@ const textbookState = {
     initialized: false,
     loading: false,
     workspaceUuid: null,
-    options: null,        // /api/workspace-wizard/options：学段/年级/科目/教材版本
+    options: null,        // /api/wizard/options：学段/年级/科目/教材版本
     books: [],            // 匹配到的教材
     taskId: null,
     taskRunning: false,   // 任务是否仍在 queued/running（与 taskId 分离，便于失败后重试）
@@ -3601,7 +3601,7 @@ async function initTextbookPanel() {
 async function refreshTextbookPanel() {
     textbookSetStatus('加载教材目录...');
     try {
-        const response = await fetch('/api/workspace-wizard/options');
+        const response = await fetch('/api/wizard/options');
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '加载失败');
         textbookState.options = data;

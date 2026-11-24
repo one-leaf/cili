@@ -892,7 +892,7 @@ function renderTodoList(todos) {
     scrollChatIfNearBottom();
 }
 
-// ── 单回合流式渲染器（sendMessage 与 answer-ask-user 共用） ──
+// ── 单回合流式渲染器（sendMessage 与 ask-user/answers 共用） ──
 // 两个入口的 SSE 事件分派曾各写一份并已漂移；统一在这里维护。
 function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, scrollIfViewing,
                                    onUserMessage = null, onQueued = null }) {
@@ -1283,9 +1283,9 @@ function renderAskUserQuestions(container, input, toolUseId) {
         updateComposerButtons();
 
         try {
-            // 调用 answer-ask-user API
+            // 调用 ask-user/answers API
             const response = await fetch(
-                `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/answer-ask-user`,
+                `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/ask-user/answers`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1395,7 +1395,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
     if (typeof updateComposerButtons === 'function') updateComposerButtons();
 }
 
-// ── 审批卡（与提问卡分开渲染，共享 answer-ask-user 管道） ──
+// ── 审批卡（与提问卡分开渲染，共享 ask-user/answers 管道） ──
 
 function isApprovalInput(input) {
     const q = input && input.questions && input.questions[0];
@@ -1503,7 +1503,7 @@ async function submitApprovalDecision(toolUseId, decision, card) {
 
     try {
         const response = await fetch(
-            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/answer-ask-user`,
+            `/api/workspaces/${currentWorkspace.uuid}/sessions/${sessionId}/ask-user/answers`,
             {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},

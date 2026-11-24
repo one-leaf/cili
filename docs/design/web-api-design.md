@@ -449,7 +449,7 @@ Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent�
 #### 提交 AskUser 答案
 
 ```
-POST /api/workspaces/{uuid}/sessions/{id}/answer-ask-user
+POST /api/workspaces/{uuid}/sessions/{id}/ask-user/answers
 Content-Type: application/json
 
 {
@@ -981,7 +981,7 @@ except asyncio.CancelledError:
 
 用户需要显式点击"停止"按钮（调用 `/stop` 端点）才能中断 runner。
 
-> **例外（answer-ask-user）**：`POST /api/workspaces/{uuid}/sessions/{id}/answer-ask-user` 的 SSE 生成器在客户端断开（`asyncio.CancelledError`）时调用 `task.cancel()` 终止恢复中的 Agent 循环——该端点用于继续同一会话的问答流程，客户端断开后没有新的输入来源，继续后台运行没有意义。
+> **例外（ask-user/answers）**：`POST /api/workspaces/{uuid}/sessions/{id}/ask-user/answers` 的 SSE 生成器在客户端断开（`asyncio.CancelledError`）时调用 `task.cancel()` 终止恢复中的 Agent 循环——该端点用于继续同一会话的问答流程，客户端断开后没有新的输入来源，继续后台运行没有意义。
 
 ---
 
@@ -1146,6 +1146,19 @@ lifespan exit
 
 ---
 
+## 端点命名规则
+
+（§4 契约，2026-11 统一）
+
+1. **资源用复数、按归属嵌套**：`/api/workspaces/{uuid}/files/{path}`、
+   `/api/workspaces/{uuid}/sessions/{id}`。
+2. **动作是单段 snake_case 子路径**：`/queue/pause`、`/ask-user/answers`、
+   `/notifications/resume`；不再使用 `answer-ask-user` 这类连字符复合名。
+3. **向导类多词资源**：`/api/wizard/*`（旧 `/api/workspace-wizard/*` 已删）。
+4. **本机运维端点**：`/api/fs/browse`（仅 localhost）。
+5. **旧 URL 不保留别名**：历史消息中的文件 URL 由迁移
+   `legacy_file_urls` 重写为规范路由（§5）。
+
 ## 八、安全考虑
 
 ### 8.1 IP 访问控制
@@ -1307,7 +1320,7 @@ def _mask_api_key(config: dict) -> dict:
 |------|------|
 | `web/web_api.py` | FastAPI 装配入口（lifespan、中间件、`/`、`/s/{ws}/{session}`、`/api/health`） |
 | `web/routes_chat.py` | 聊天/SSE 流/Runner 控制（`/messages`、`/stop`、`/resume`、`/revert`、`/status`、`/stream/{tool_use_id}`、`/api/events`） |
-| `web/routes_ask_user.py` | ask_user 答案提交（`/answer-ask-user`） |
+| `web/routes_ask_user.py` | ask_user 答案提交（`/ask-user/answers`） |
 | `web/routes_workspace.py` | 工作区/会话/执行日志/项目指令（`/api/workspaces*`、`/git/*`、`/instructions*`） |
 | `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
 | `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/fs/browse`） |

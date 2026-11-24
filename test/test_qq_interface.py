@@ -372,7 +372,7 @@ class TestPrepareTurn:
         assert "选 B" in (prepared.answer or "")
 
     def test_execute_turn_skips_hooks_when_disabled(self, runner, monkeypatch):
-        """after_turn_hooks=False 时不跑收尾钩子（Web answer-ask-user 的历史行为）。"""
+        """after_turn_hooks=False 时不跑收尾钩子（Web ask-user/answers 的历史行为）。"""
         from core import turn_dispatch
 
         called = []

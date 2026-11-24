@@ -108,7 +108,7 @@ def _textbook_editions() -> dict[str, dict[str, list[dict[str, Any]]]]:
     return result
 
 
-@router.get("/api/workspace-wizard/options")
+@router.get("/api/wizard/options")
 async def workspace_wizard_options():
     """返回向导选项：学段/年级/学科与教材版本均来自官方平台目录。"""
 
@@ -142,7 +142,7 @@ async def workspace_wizard_options():
     }
 
 
-@router.post("/api/workspace-wizard/preview")
+@router.post("/api/wizard/preview")
 async def workspace_wizard_preview(request: WorkspaceWizardRequest):
     """预检向导要创建的工作区；不写文件。"""
     try:
@@ -220,7 +220,7 @@ def _launch_textbook_task(catalog: OfficialCatalog,
     }
 
 
-@router.post("/api/workspace-wizard/create",
+@router.post("/api/wizard/create",
              dependencies=[Depends(teen_guard("config_update"))])
 async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateRequest):
     """创建一个或多个工作区；学习项目可自动启动教材下载。"""

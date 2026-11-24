@@ -1356,7 +1356,7 @@ class TestSuggestRoute:
 # ─── 审批卡路由（decision / answers / 过期 / 终止） ──────────────────────
 
 class TestAnswerAskUserApprovalRoute:
-    """``/answer-ask-user`` 的结构化决策分支。
+    """``/ask-user/answers`` 的结构化决策分支。
 
     覆盖审批卡四态（approve/remember/deny/abort）、过期结算、卡片类型错配拦截
     与旧客户端 ``answer`` 文本兼容；断言「终止不恢复循环」「过期不恢复循环」。

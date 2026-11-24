@@ -244,10 +244,10 @@ class TestAgentLoopWaitForExternal:
             "等待用户回答时 _meta.ask_user_completed 应为 False"
 
 
-# ── 测试 4: 模拟 answer-ask-user 端点逻辑 ──
+# ── 测试 4: 模拟 ask-user/answers 端点逻辑 ──
 
 class TestAnswerAskUserEndpointLogic:
-    """模拟 web_api.py 中 answer-ask-user 端点的核心逻辑"""
+    """模拟 web_api.py 中 ask-user/answers 端点的核心逻辑"""
 
     def _setup_ask_user_state(self, runner):
         """设置 agent 到 ask_user 等待状态，返回 tool_use_id"""
@@ -275,7 +275,7 @@ class TestAnswerAskUserEndpointLogic:
         tool_use_id = self._setup_ask_user_state(runner)
         user_answer = "红色"
 
-        # === 模拟 answer-ask-user 端点逻辑 ===
+        # === 模拟 ask-user/answers 端点逻辑 ===
         # Phase A: 找到并替换占位符 tool_result
         found_placeholder = False
         for msg in reversed(runner.messages):
