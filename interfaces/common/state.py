@@ -19,10 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from core.channels import (
-    SESSION_MODES,
-)
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.session_modes import SESSION_MODES
 
 logger = logging.getLogger(__name__)
 

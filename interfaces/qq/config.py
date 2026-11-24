@@ -19,7 +19,7 @@ import logging
 import secrets
 from dataclasses import dataclass, fields
 
-from core.channels import normalize_session_mode
+from core.session_modes import normalize_session_mode
 from core.config import load_global_config, save_global_config
 from interfaces.common.coerce import INVALID as _INVALID
 from interfaces.common.coerce import coerce_value as _coerce

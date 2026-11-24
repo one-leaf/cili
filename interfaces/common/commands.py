@@ -10,13 +10,17 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import core.session_control as session_control
-from core.channels import SESSION_MODE_DEDICATED, SESSION_MODE_LATEST, SESSION_MODES
 from core.config import (
     find_workspace_entry,
     get_workspace_sessions_dir,
     load_workspaces_index,
 )
 from core.session import SessionStore
+from core.session_modes import (
+    SESSION_MODE_DEDICATED,
+    SESSION_MODE_LATEST,
+    SESSION_MODES,
+)
 from core.session_registry import registry, session_key
 
 MAX_LIST_ITEMS = 20   # 列表最多展示多少条，避免刷屏

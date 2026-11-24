@@ -9,14 +9,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from core.channels import (
+from core.channels import get_channel, marker_metadata, session_marker
+from core.session_modes import (
     DEFAULT_SESSION_MODE,
     SESSION_MODE_DEDICATED,
     SESSION_MODES,
-    get_channel,
-    marker_metadata,
     normalize_session_mode,
-    session_marker,
 )
 from interfaces.common.state import AccountState, ChatState
 

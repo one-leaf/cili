@@ -54,12 +54,6 @@ CHANNELS: dict[str, Channel] = {
 # cron 会话由调度器创建——都不接受客户端指定。
 API_CREATE_CHANNEL_IDS = frozenset({"web", "cli"})
 
-# 会话模式
-SESSION_MODE_LATEST = "latest"
-SESSION_MODE_DEDICATED = "dedicated"
-SESSION_MODES = (SESSION_MODE_LATEST, SESSION_MODE_DEDICATED)
-DEFAULT_SESSION_MODE = SESSION_MODE_DEDICATED
-
 # 标记键名（meta.json → metadata）
 MARKER_CHANNEL = "channel"
 MARKER_ACCOUNT = "channel_account"
@@ -91,9 +85,3 @@ def session_marker(metadata: dict | None) -> tuple[str, str, str]:
         str(metadata.get(MARKER_ACCOUNT) or ""),
         str(metadata.get(MARKER_CHAT) or ""),
     )
-
-
-def normalize_session_mode(value: str | None, default: str = DEFAULT_SESSION_MODE) -> str:
-    """模式字符串归一化：非法值回落默认。"""
-    val = (value or "").strip().lower()
-    return val if val in SESSION_MODES else default
