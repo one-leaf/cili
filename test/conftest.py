@@ -209,6 +209,21 @@ def isolated_teen(tmp_path):
 
 
 @pytest.fixture
+def agent_tool(test_workspace):
+    from unittest.mock import MagicMock
+
+    from core.tools.agent import AgentTool
+
+    tool = AgentTool(cwd=test_workspace, workspace_uuid="test-workspace")
+    tool.session = MagicMock()
+    tool.session.session_id = "root"
+    tool.session.master_session_id = ""
+    tool.session.session_dir = test_workspace
+    tool.session.agent_logs._generate_exec_id.return_value = "exec_123"
+    return tool
+
+
+@pytest.fixture
 def teen(isolated_teen):
     """兼容旧名字：与 autouse 的 isolated_teen 同一实例。"""
     return isolated_teen
