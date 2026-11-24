@@ -3,7 +3,7 @@
 // 依赖 app.js: currentWorkspace, currentSession, chatMessages, loadSession,
 //   setQueueState, handleDeliveredBatch, addMessage, foregroundStreamSessionId,
 //   isSending, isStopping, updateComposerButtons
-// 依赖 utils.js: renderMarkdown
+// 依赖 utils.js: renderMarkdownWithLinks
 // 依赖 chat.js: toolStreamTimers, activeTurnContainers
 
 // ── 全局状态 ──
