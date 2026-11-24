@@ -1193,6 +1193,22 @@ def _prepare_environment() -> None:
     except Exception as e:
         print(f"[migration] Warning: interface multi-account migration failed: {e}")
 
+    # 合并升级迁移（schema_version.json 幂等）：破坏性契约变更在 core/migrations/steps 登记
+    try:
+        from core.config import DATA_DIR, WORKSPACES_JSON, get_workspace_data_dir
+        from core.migrations import run_pending
+        from core.migrations.steps import migrate_placeholder_meta
+
+        run_pending(
+            [
+                ("session_placeholder_meta",
+                 lambda: migrate_placeholder_meta(WORKSPACES_JSON, get_workspace_data_dir)),
+            ],
+            DATA_DIR,
+        )
+    except Exception as e:
+        print(f"[migration] Warning: schema migrations failed: {e}")
+
     # 安全校验（_check_web_auth）是 Web 专属，移至 _start_web_interface。
 
 

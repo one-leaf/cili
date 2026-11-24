@@ -1,0 +1,67 @@
+"""core/migrations 测试：版本文件幂等、步骤失败中止、占位标记重写。"""
+
+from __future__ import annotations
+
+import json
+
+from core.migrations import load_completed, run_pending
+from core.migrations.steps import migrate_placeholder_meta
+
+
+def test_run_pending_records_and_is_idempotent(tmp_path):
+    calls: list[str] = []
+    steps = [
+        ("a", lambda: calls.append("a")),
+        ("b", lambda: calls.append("b")),
+    ]
+    assert run_pending(steps, tmp_path) == ["a", "b"]
+    assert calls == ["a", "b"]
+    # 第二次：全部已记录，不重复执行
+    assert run_pending(steps, tmp_path) == []
+    assert calls == ["a", "b"]
+    assert load_completed(tmp_path) == ["a", "b"]
+
+
+def test_run_pending_stops_on_failure(tmp_path):
+    def boom():
+        raise RuntimeError("fail")
+
+    steps = [("ok", lambda: None), ("bad", boom), ("never", lambda: None)]
+    try:
+        run_pending(steps, tmp_path)
+    except RuntimeError:
+        pass
+    else:  # pragma: no cover - 必须抛
+        raise AssertionError("step 失败应上抛")
+    # 失败步骤及其后续都不记入版本文件
+    assert load_completed(tmp_path) == ["ok"]
+
+
+def test_migrate_placeholder_meta_rewrites_session(tmp_path):
+    workspace = tmp_path / "ws"
+    session_dir = workspace / "sessions" / "abc12345"
+    session_dir.mkdir(parents=True)
+    records = [
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "t1", "content": "Waiting...",
+            "_meta": {"completed": False, "tool_name": "ask_user"},
+        }]},
+    ]
+    jsonl = session_dir / "messages.jsonl"
+    jsonl.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+        encoding="utf-8",
+    )
+    workspaces_json = tmp_path / "workspaces.json"
+    workspaces_json.write_text(json.dumps([{"uuid": "w1"}]), encoding="utf-8")
+
+    changed = migrate_placeholder_meta(workspaces_json, lambda uuid: workspace)
+    assert changed == 1
+    lines = [json.loads(x) for x in jsonl.read_text(encoding="utf-8").splitlines()]
+    meta = lines[1]["content"][0]["_meta"]
+    assert meta["ask_user_completed"] is False
+    assert meta["completed"] is False  # 旧键保留，双读兼容
+
+    # 幂等：再次执行不再改写
+    assert migrate_placeholder_meta(workspaces_json, lambda uuid: workspace) == 0
