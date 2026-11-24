@@ -217,6 +217,38 @@ def cleanup_memory_git(memory_dir: str | Path) -> int:
 
 # ── MemoryStore ──────────────────────────────────────
 
+def cleanup_all_memory_git() -> int:
+    """扫描所有工作区 memory 目录并清理残留 .git（历史版本产物）。
+
+    共享工作区场景下 memory 不再用 git 做版本控制；残留目录浪费空间且可能
+    引发并发锁冲突。返回删除的目录总数。
+    """
+    from core.config import (
+        SYSTEM_DATA_DIR,
+        SYSTEM_WORKSPACE_UUID,
+        get_workspace_data_dir,
+        load_workspaces_index,
+    )
+
+    removed = 0
+    system_memory = SYSTEM_DATA_DIR / "memory"
+    if system_memory.is_dir():
+        removed += cleanup_memory_git(system_memory)
+    try:
+        entries = load_workspaces_index()
+    except Exception:  # noqa: BLE001 —— 索引读不出时只清系统工作区
+        entries = []
+    for entry in entries:
+        uuid = entry.get("uuid", "")
+        if uuid == SYSTEM_WORKSPACE_UUID:
+            continue
+        try:
+            mem_dir = get_workspace_data_dir(uuid) / "memory"
+            if mem_dir.is_dir():
+                removed += cleanup_memory_git(mem_dir)
+        except Exception:  # noqa: BLE001
+            continue
+    return removed
 class MemoryStore:
     """条目存储 + MEMORY.md 索引 + 老化/归档。公共方法线程安全，变更原子写。"""
 

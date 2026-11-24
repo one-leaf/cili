@@ -44,8 +44,7 @@ import zipfile
 from pathlib import Path
 
 from core import restart
-from core.config import PROJECT_ROOT, SYSTEM_WORKSPACE_UUID
-from core.memory_store import cleanup_memory_git
+from core.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -455,43 +454,10 @@ def _restore_tree(backup: str, dst: str, exclude_dirs: set[str]) -> str | None:
 
 
 def _cleanup_memory_git_dirs() -> int:
-    """清理所有工作区 memory 目录下的残留 .git 目录（历史版本曾为每个工作区建立独立 git 仓库）。
+    """清理残留 memory/.git（实现见 core.memory_store.cleanup_all_memory_git）。"""
+    from core.memory_store import cleanup_all_memory_git
 
-    共享工作区场景下 memory 不再使用 git 做版本控制，残留的 .git 目录浪费空间，
-    且可能在多用户并发写入时引发锁冲突。本函数扫描所有已知工作区的 memory 目录，
-    删除其中的 .git 和 .git.bak.* 目录。
-
-    Returns:
-        int: 删除的目录总数
-    """
-    removed = 0
-    try:
-        from core.config import (
-            SYSTEM_DATA_DIR,
-            get_workspace_data_dir,
-            load_workspaces_index,
-        )
-
-        # 系统工作区
-        system_memory = SYSTEM_DATA_DIR / "memory"
-        if system_memory.is_dir():
-            removed += cleanup_memory_git(system_memory)
-
-        # 所有注册用户工作区
-        for entry in load_workspaces_index():
-            uuid = entry.get("uuid", "")
-            if uuid == SYSTEM_WORKSPACE_UUID:
-                continue
-            try:
-                mem_dir = get_workspace_data_dir(uuid) / "memory"
-                if mem_dir.is_dir():
-                    removed += cleanup_memory_git(mem_dir)
-            except Exception:
-                pass
-    except Exception as e:
-        logger.warning("[updater] 清理 memory git 目录失败: %s", e)
-    return removed
-
+    return cleanup_all_memory_git()
 
 def apply_zip(zip_path: str) -> dict:
     """将升级包 zip 解压覆盖到项目目录（不含下载）。
