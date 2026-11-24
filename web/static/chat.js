@@ -491,7 +491,7 @@ function renderMessages(messages) {
                 contentDiv.appendChild(thinkTitle);
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'think-content';
-                thinkDiv.innerHTML = renderMarkdown(block.text);
+                thinkDiv.innerHTML = renderMarkdownWithLinks(block.text);
                 contentDiv.appendChild(thinkDiv);
             } else if (block.kind === 'tool_call') {
                 if (_isHiddenLegacyPlaceholder(block)) return;
@@ -744,7 +744,7 @@ function prependMessages(messages) {
                 contentDiv.appendChild(thinkTitle);
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'think-content';
-                thinkDiv.innerHTML = renderMarkdown(block.text);
+                thinkDiv.innerHTML = renderMarkdownWithLinks(block.text);
                 contentDiv.appendChild(thinkDiv);
                 fragment.appendChild(div);
             } else if (block.kind === 'tool_call') {
@@ -918,7 +918,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
             assistantRenderQueued = false;
             if (!assistantDiv) return;
             assistantDiv.dataset.rawContent = assistantContent;
-            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdownWithLinks(assistantContent);
             scrollIfViewing();
         });
     }
@@ -929,7 +929,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         requestAnimationFrame(() => {
             thinkRenderQueued = false;
             if (!thinkDiv) return;
-            thinkDiv.innerHTML = renderMarkdown(thinkContent);
+            thinkDiv.innerHTML = renderMarkdownWithLinks(thinkContent);
             scrollIfViewing();
         });
     }
@@ -938,7 +938,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         if (thinkDiv) {
             // 收尾前先同步补画一次：rAF 节流可能还没执行，而正文/工具事件与
             // 最后一批思考增量常在同一次 SSE 读取里到达，直接清空会丢掉这截尾巴。
-            thinkDiv.innerHTML = renderMarkdown(thinkContent);
+            thinkDiv.innerHTML = renderMarkdownWithLinks(thinkContent);
             const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
             if (thinkTitle) thinkTitle.textContent = '💭 思考完成';
             thinkDiv = null;
@@ -951,7 +951,7 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
         // 否则 assistantDiv 置 null 后，排队中的 rAF 会因引用为空而放弃渲染。
         if (assistantDiv) {
             assistantDiv.dataset.rawContent = assistantContent;
-            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdownWithLinks(assistantContent);
         }
         assistantDiv = null;
         assistantContent = '';
@@ -1093,10 +1093,10 @@ function createTurnStreamRenderer({ sessionId, turnContainer, addTurnMessage, sc
     function flush() {
         if (assistantDiv) {
             assistantDiv.dataset.rawContent = assistantContent;
-            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+            assistantDiv.querySelector('.message-content').innerHTML = renderMarkdownWithLinks(assistantContent);
         }
         if (thinkDiv) {
-            thinkDiv.innerHTML = renderMarkdown(thinkContent);
+            thinkDiv.innerHTML = renderMarkdownWithLinks(thinkContent);
             const thinkTitle = thinkDiv.parentElement.querySelector('.think-title');
             if (thinkTitle) thinkTitle.textContent = '💭 思考完成';
         }
@@ -1439,7 +1439,7 @@ function renderApprovalCard(container, input, toolUseId) {
 
     const body = document.createElement('div');
     body.className = 'approval-body';
-    body.innerHTML = renderMarkdown(q.question || '');
+    body.innerHTML = renderMarkdownWithLinks(q.question || '');
     card.appendChild(body);
 
     const countdown = document.createElement('div');
@@ -1949,7 +1949,7 @@ async function sendMessage() {
             if (optimisticUserDiv && event.content) {
                 const contentDiv = optimisticUserDiv.querySelector('.message-content');
                 if (contentDiv) {
-                    contentDiv.innerHTML = renderMarkdown(event.content);
+                    contentDiv.innerHTML = renderMarkdownWithLinks(event.content);
                     if (attachmentsToSend) {
                         _renderUserAttachmentChips(contentDiv, attachmentsToSend);
                     }
@@ -2210,7 +2210,7 @@ function addMessage(role, content, msgId, createdAt, container = chatMessages) {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     if (content) {
-        contentDiv.innerHTML = renderMarkdown(content);
+        contentDiv.innerHTML = renderMarkdownWithLinks(content);
 
         // 检查是否包含图片，如果包含则添加特殊样式
         if (contentDiv.querySelector('img')) {

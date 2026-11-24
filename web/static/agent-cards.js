@@ -195,14 +195,14 @@ const AgentCardStore = (() => {
         if (block.kind === 'text') {
             const div = document.createElement('div');
             div.className = `sa-msg ${block.role === 'user' ? 'user' : 'assistant'}`;
-            div.innerHTML = renderMarkdown(block.text || '');
+            div.innerHTML = renderMarkdownWithLinks(block.text || '');
             block.el = div;
             return div;
         }
         if (block.kind === 'thinking') {
             const div = document.createElement('div');
             div.className = 'sa-msg thinking';
-            div.innerHTML = `<div class="think-content">${renderMarkdown(block.text || '')}</div>`;
+            div.innerHTML = `<div class="think-content">${renderMarkdownWithLinks(block.text || '')}</div>`;
             block.el = div;
             return div;
         }
@@ -335,9 +335,9 @@ const AgentCardStore = (() => {
             if (model.expanded && model.openBlock.el) {
                 if (kind === 'thinking') {
                     const tc = model.openBlock.el.querySelector('.think-content');
-                    if (tc) tc.innerHTML = renderMarkdown(model.openBlock.text);
+                    if (tc) tc.innerHTML = renderMarkdownWithLinks(model.openBlock.text);
                 } else {
-                    model.openBlock.el.innerHTML = renderMarkdown(model.openBlock.text);
+                    model.openBlock.el.innerHTML = renderMarkdownWithLinks(model.openBlock.text);
                 }
                 // 展开中的文字块逐段增高：内部滚动区和聊天区各自跟随
                 _scrollDetailIfFollowing(model);

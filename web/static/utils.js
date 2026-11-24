@@ -90,7 +90,7 @@ function _convertNonImageMedia(text) {
 }
 
 // 自动为链接注入 workspace_uuid，保护数学公式不被 marked 破坏
-function renderMarkdown(text) {
+function renderMarkdownWithLinks(text) {
     if (!text) return '';
 
     // 将非图片媒体的 ![alt](url) 降级为普通链接，避免 marked 渲染为 <img>

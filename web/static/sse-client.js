@@ -296,7 +296,7 @@ function _handleMasterResumeText(content) {
         _masterResumeOpenBlock.text += content;
         if (_masterResumeOpenBlock.el) {
             const contentEl = _masterResumeOpenBlock.el.querySelector('.message-content');
-            if (contentEl) contentEl.innerHTML = renderMarkdown(_masterResumeOpenBlock.text);
+            if (contentEl) contentEl.innerHTML = renderMarkdownWithLinks(_masterResumeOpenBlock.text);
         }
     } else {
         _finalizeMasterResumeBlock();
@@ -311,7 +311,7 @@ function _handleMasterResumeThinking(content) {
         _masterResumeOpenBlock.text += content;
         if (_masterResumeOpenBlock.el) {
             const tc = _masterResumeOpenBlock.el.querySelector('.think-content');
-            if (tc) tc.innerHTML = renderMarkdown(_masterResumeOpenBlock.text);
+            if (tc) tc.innerHTML = renderMarkdownWithLinks(_masterResumeOpenBlock.text);
         }
     } else {
         _finalizeMasterResumeBlock();
@@ -325,7 +325,7 @@ function _handleMasterResumeThinking(content) {
         contentDiv.appendChild(thinkTitle);
         const thinkDiv = document.createElement('div');
         thinkDiv.className = 'think-content';
-        thinkDiv.innerHTML = renderMarkdown(content);
+        thinkDiv.innerHTML = renderMarkdownWithLinks(content);
         contentDiv.appendChild(thinkDiv);
         _masterResumeOpenBlock.el = div;
     }

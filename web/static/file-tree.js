@@ -1398,7 +1398,7 @@ const FileTree = (() => {
                 : data.content;
             try {
                 body.innerHTML = typeof renderMarkdown === 'function'
-                    ? renderMarkdown(source)
+                    ? renderMarkdownWithLinks(source)
                     : (typeof escapeHtml === 'function' ? escapeHtml(data.content) : '');
             } catch (e) {
                 body.textContent = data.content;
