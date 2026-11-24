@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import re
-import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -65,27 +64,6 @@ from web.goal_runner import stop_goal_runner
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# AGENTS.md 生成任务表：exec_id → {status, thread, result, workspace_dir}。
-# 条目持有线程与 runner 结果，不设上限会随每次生成累积，故保留最近 N 条已结束任务。
-_generate_tasks: dict[str, dict] = {}
-_generate_tasks_lock = threading.Lock()
-_GENERATE_TASKS_MAX = 20
-
-
-def _evict_finished_generate_tasks_locked() -> None:
-    """淘汰最旧的已结束生成任务。调用方须持 _generate_tasks_lock。"""
-    finished = [
-        tid for tid, t in _generate_tasks.items()
-        if t["result"].get("status") != "running"
-    ]
-    excess = len(finished) - _GENERATE_TASKS_MAX
-    # excess 可能为负（finished 未超上限）；负数切片会反向多删（审查第三轮
-    # 修正：len=19 时会删 18 条），必须加正数守卫
-    if excess > 0:
-        for tid in finished[:excess]:
-            _generate_tasks.pop(tid, None)
-
 
 # ---------- Models ----------
 
@@ -1063,61 +1041,11 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(requ
     if not workspace_dir:
         raise HTTPException(status_code=400, detail="Workspace directory not set")
 
-    # 构造任务描述
-    task = (
-        "Scan the project in the current working directory and generate an AGENTS.md file.\n\n"
-        "First, use skill(action='read', skill_id='generate-sessions-md') to get the detailed instructions.\n"
-        "Then follow the skill instructions to scan the project and generate AGENTS.md.\n\n"
-        "Write the generated AGENTS.md to the workspace root directory using the write tool."
-    )
+    from core.instruction_generation import start_generation
 
     try:
-        import secrets
-
-        from core.config import load_config
-        from core.session_runner import SessionRunner
-
-        config = load_config()
-        exec_id = f"gen-{secrets.token_hex(4)}"
-
-        # 创建 worker 子代理
-        runner = SessionRunner(
-            config=config,
-            role="worker",
-            task=task,
-            workspace_uuid=workspace_uuid,
-            cwd=workspace_dir,
-            exec_id=exec_id,
-        )
-
-        # 在后台线程运行
-        import threading
-        result_holder = {"status": "running", "summary": ""}
-
-        def run_agent():
-            try:
-                result = runner.run()
-                result_holder["status"] = result.get("status", "completed")
-                result_holder["summary"] = result.get("summary", "")
-            except Exception as e:
-                result_holder["status"] = "error"
-                result_holder["summary"] = str(e)
-
-        thread = threading.Thread(target=run_agent, daemon=True)
-        thread.start()
-
-        # 存储任务状态（用全局字典，读写均在锁内）
-        with _generate_tasks_lock:
-            _generate_tasks[exec_id] = {
-                "status": "running",
-                "thread": thread,
-                "result": result_holder,
-                "workspace_dir": workspace_dir,
-            }
-            _evict_finished_generate_tasks_locked()
-
+        exec_id = start_generation(workspace_uuid, workspace_dir)
         return {"task_id": exec_id, "status": "running"}
-
     except Exception as e:
         logger.error(f"Failed to start generate runner: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start: {e}")
@@ -1126,17 +1054,12 @@ async def generate_instructions(workspace_uuid: str, ws_dir: Path = Depends(requ
 @router.get("/api/workspaces/{workspace_uuid}/instructions/generate/{task_id}")
 async def get_generate_status(workspace_uuid: str, task_id: str, ws_dir: Path = Depends(require_workspace_data_dir)):
     """查询 AGENTS.md 生成任务状态。"""
-    with _generate_tasks_lock:
-        task = _generate_tasks.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    from core.instruction_generation import generation_status
 
-    result = task["result"]
-    return {
-        "task_id": task_id,
-        "status": result.get("status", "running"),
-        "summary": result.get("summary", ""),
-    }
+    status = generation_status(task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return status
 
 
 @router.get("/api/workspaces/{workspace_uuid}/instructions/templates")
