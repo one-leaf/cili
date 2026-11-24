@@ -245,16 +245,11 @@ class AgentRunStore:
         return runs
 
 
-class AgentRunManager:
-    """Small façade used by AgentTool/SessionRunner.
+class AgentRunManager(AgentRunStore):
+    """AgentTool/SessionRunner 使用的高层入口（记录创建/轮次归档/投递状态）。
 
-    The manager owns record creation/epoch archiving/delivery updates; runner
-    execution itself remains in SessionRunner so the existing LLM loop is
-    unchanged.
+    目录读写继承 AgentRunStore；runner 执行本身仍在 SessionRunner。
     """
-
-    def __init__(self, session_dir: Path | str):
-        self.store = AgentRunStore(session_dir)
 
     def create(
         self,
@@ -284,21 +279,21 @@ class AgentRunManager:
             started_at=now_str(),
             context_ref=context_ref or {"kind": "task"},
         )
-        self.store.create(record)
+        AgentRunStore.create(self, record)
         return record
 
     def start(self, exec_id: str, *, epoch: int = 1) -> None:
-        self.store.update(exec_id, status="running", started_at=now_str())
-        run = self.store.get(exec_id)
+        self.update(exec_id, status="running", started_at=now_str())
+        run = self.get(exec_id)
         if run is not None:
             run.epochs = [e for e in run.epochs if e.epoch != epoch] + [
                 AgentEpoch(epoch=epoch, status="running", started_at=now_str())
             ]
             run.epochs.sort(key=lambda e: e.epoch)
-            atomic_write_json(self.store.run_path(exec_id), run.to_dict())
+            atomic_write_json(self.run_path(exec_id), run.to_dict())
 
     def archive_epoch(self, exec_id: str, **kwargs: Any) -> AgentEpoch:
-        return self.store.archive_epoch(exec_id, **kwargs)
+        return AgentRunStore.archive_epoch(self, exec_id, **kwargs)
 
     def complete(
         self,
@@ -310,7 +305,7 @@ class AgentRunManager:
         summary: str,
         delivery_state: str = "pending",
     ) -> None:
-        self.store.update(
+        self.update(
             exec_id,
             status=status,
             exit_reason=exit_reason,
@@ -321,7 +316,7 @@ class AgentRunManager:
         )
 
     def delivered(self, exec_id: str) -> None:
-        self.store.update(exec_id, delivery_state="delivered")
+        self.update(exec_id, delivery_state="delivered")
 
     def dropped(self, exec_id: str) -> None:
-        self.store.update(exec_id, delivery_state="dropped")
+        self.update(exec_id, delivery_state="dropped")

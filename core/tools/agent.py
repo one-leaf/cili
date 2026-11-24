@@ -582,12 +582,12 @@ class AgentTool(AgentBackgroundMixin, Tool):
             # 使 exec 日志里的 usage 始终是整个 AgentRun 的累计值
             cum_usage: dict = dict(usage_base or {})
             while epoch <= max_epochs and doc:
-                run_mgr.store.update(
+                run_mgr.update(
                     exec_id, relation="continuation", source_exec_id=exec_id,
                     context_ref={"kind": "handoff"},
                 )
                 run_mgr.start(exec_id, epoch=epoch)
-                current_run = run_mgr.store.get(exec_id)
+                current_run = run_mgr.get(exec_id)
                 stats_base = current_run.stats if current_run else AgentStats()
                 self._publish("agent_epoch_started", exec_id=exec_id, epoch=epoch,
                               max_epochs=max_epochs, stats=stats_base.to_dict())

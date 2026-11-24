@@ -71,9 +71,9 @@ def test_agent_run_manager_delivery(tmp_path):
         "exec_y", status="completed", exit_reason="completed",
         truncated=False, summary="ok",
     )
-    assert mgr.store.get("exec_y").delivery_state == "pending"
+    assert mgr.get("exec_y").delivery_state == "pending"
     mgr.delivered("exec_y")
-    assert mgr.store.get("exec_y").delivery_state == "delivered"
+    assert mgr.get("exec_y").delivery_state == "delivered"
 
 
 def test_worker_budget_exhaustion_builds_continuation(tmp_path):
