@@ -299,9 +299,9 @@ async function openSettings() {
     if (saveBtn) saveBtn.disabled = true;
 
     // Reset to models tab
-    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelector('.settings-tab[data-tab="models"]').classList.add('active');
+    document.querySelectorAll('#settings-modal .settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#settings-modal .tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('#settings-modal .settings-tab[data-tab="models"]').classList.add('active');
     document.getElementById('tab-models').classList.add('active');
 
     try {
@@ -367,7 +367,7 @@ async function openSettings() {
 
 // 保存全局设置
 async function saveSettings() {
-    const activeTab = document.querySelector('.settings-tab.active');
+    const activeTab = document.querySelector('#settings-modal .settings-tab.active');
     if (activeTab && activeTab.dataset.tab === 'permissions') {
         return savePermissions();
     }

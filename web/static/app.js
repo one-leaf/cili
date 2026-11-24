@@ -1032,11 +1032,11 @@ function setupEventListeners() {
         document.getElementById('help-modal').style.display = 'flex';
     });
 
-    // Settings tabs
-    document.querySelectorAll('.settings-tab').forEach(tab => {
+    // 全局设置页签（限定 #settings-modal；工作区弹窗的同名类由自身 wiring 处理）
+    document.querySelectorAll('#settings-modal .settings-tab').forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelectorAll('#settings-modal .settings-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('#settings-modal .tab-content').forEach(c => c.classList.remove('active'));
             tab.classList.add('active');
             document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
         });
