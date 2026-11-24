@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from interfaces.qq.config import load_qq_accounts
-from web.deps import restart_interface, teen_guard
+from web.deps import interface_restart, interface_running, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -31,25 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 def _interface_running(account_id: str) -> bool:
-    try:
-        from interfaces.qq import qq_interface_running
-
-        return bool(qq_interface_running(account_id))
-    except Exception:  # noqa: BLE001 — 未加载就是「没在跑」
-        return False
+    return interface_running("interfaces.qq", "qq_interface_running", account_id)
 
 
 async def _restart_interface(account_id: str) -> None:
-    """凭据落库后重启该账号的宿主（旧客户端可能还攥着旧凭据）。
-
-    未启用 / 凭据不齐时 start 内部静默跳过——「扫码成功」本身就能把一个
-    enabled 但此前没绑定的账号带起来。
-    """
-    try:
-        from interfaces.qq import start_qq_interface, stop_qq_interface
-    except Exception:  # noqa: BLE001
-        return
-    await restart_interface(account_id, stop_qq_interface, start_qq_interface)
+    """凭据落库后重启该账号的宿主（旧客户端可能还攥着旧凭据）。"""
+    await interface_restart(
+        "interfaces.qq", "stop_qq_interface", "start_qq_interface", account_id
+    )
 
 
 # ─── 状态与断开连接 ───────────────────────────────────────────────────

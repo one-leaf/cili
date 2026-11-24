@@ -265,6 +265,50 @@ async def restart_interface(
     await asyncio.to_thread(start, account_id)
 
 
+def interface_running(module: str, func: str, account_id: str) -> bool:
+    """防御式查询接入端账号是否在跑（模块未加载 = 没在跑）。"""
+    try:
+        import importlib
+
+        mod = importlib.import_module(module)
+        return bool(getattr(mod, func)(account_id))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def interface_stop(
+    module: str, stop_func: str, running_func: str, account_id: str
+) -> bool:
+    """停掉指定账号的宿主；返回是否真的停了一个在跑的实例。"""
+    try:
+        import importlib
+
+        mod = importlib.import_module(module)
+        stop = getattr(mod, stop_func)
+        running = getattr(mod, running_func)
+    except Exception:  # noqa: BLE001
+        return False
+    if not running(account_id):
+        return False
+    # 启停会等宿主线程就绪/退出（数秒），阻塞操作 → 丢线程池
+    await asyncio.to_thread(stop, account_id)
+    return True
+
+
+async def interface_restart(module: str, stop_func: str, start_func: str,
+                            account_id: str) -> None:
+    """防御式重启账号宿主（模块未加载时静默跳过）。"""
+    try:
+        import importlib
+
+        mod = importlib.import_module(module)
+        stop = getattr(mod, stop_func)
+        start = getattr(mod, start_func)
+    except Exception:  # noqa: BLE001
+        return
+    await restart_interface(account_id, stop, start)
+
+
 async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> SessionRunner:
     """Get or create a runner for a given workspace and session.
 

@@ -12,7 +12,6 @@ setting.json（见 ``interfaces/wechat/account.py``），所以这里与 ``/api/
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -22,7 +21,7 @@ from interfaces.wechat.account import clear_account, load_account
 from interfaces.wechat.config import load_wechat_accounts
 from interfaces.wechat.login import WechatLoginStore
 from interfaces.wechat.protocol import WechatApiError
-from web.deps import restart_interface, teen_guard
+from web.deps import interface_restart, interface_running, interface_stop, teen_guard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -47,38 +46,21 @@ def get_login_store() -> WechatLoginStore:
 
 
 def _interface_running(account_id: str) -> bool:
-    try:
-        from interfaces.wechat import wechat_interface_running
-
-        return bool(wechat_interface_running(account_id))
-    except Exception:  # noqa: BLE001 — 未加载就是「没在跑」
-        return False
+    return interface_running("interfaces.wechat", "wechat_interface_running", account_id)
 
 
 async def _stop_interface(account_id: str) -> bool:
     """停掉指定账号的宿主。返回是否真的停了一个在跑的实例。"""
-    try:
-        from interfaces.wechat import stop_wechat_interface, wechat_interface_running
-    except Exception:  # noqa: BLE001
-        return False
-    if not wechat_interface_running(account_id):
-        return False
-    # 启停会等宿主线程就绪/退出（数秒），阻塞操作 → 丢线程池
-    await asyncio.to_thread(stop_wechat_interface, account_id)
-    return True
+    return await interface_stop(
+        "interfaces.wechat", "stop_wechat_interface", "wechat_interface_running", account_id
+    )
 
 
 async def _restart_interface(account_id: str) -> None:
-    """登录态变了 → 重启该账号的轮询（旧 client 还攥着旧 token）。
-
-    没在跑也会尝试拉起：start 内部会检查 enabled 与凭证，不满足就静默跳过
-    ——所以「登录成功」本身就能把一个 enabled 但此前没登录的账号带起来。
-    """
-    try:
-        from interfaces.wechat import start_wechat_interface, stop_wechat_interface
-    except Exception:  # noqa: BLE001
-        return
-    await restart_interface(account_id, stop_wechat_interface, start_wechat_interface)
+    """登录态变了 → 重启该账号的轮询（旧 client 还攥着旧 token）。"""
+    await interface_restart(
+        "interfaces.wechat", "stop_wechat_interface", "start_wechat_interface", account_id
+    )
 
 
 # ─── 扫码登录（按账号） ───────────────────────────────────────────────
