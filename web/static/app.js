@@ -89,9 +89,9 @@ function shortStepName(name) {
 function workflowSessionExamples(metadata) {
     const results = metadata.run_results;
     const panel = metadata.workflow_panel;
-    const pane = window.WorkflowPane && WorkflowPane._state;
-    const workflow = pane && pane.currentWorkflow;
-    const state = (pane && pane.currentState) || {};
+    const pane = window.WorkflowPane;
+    const workflow = pane && pane.getCurrentWorkflow();
+    const state = (pane && pane.getCurrentState()) || {};
     const boundId = (results && results.workflow_id) || (panel && panel.workflow_id) || '';
     const sameWorkflow = workflow && (!boundId || workflow.id === boundId);
     const steps = sameWorkflow && Array.isArray(workflow.steps) ? workflow.steps : [];

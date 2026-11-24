@@ -1329,11 +1329,12 @@
         refresh: () => loadWorkflows(),
         getSidebarEntries,
         getCurrentWorkflowId: () => state.currentWorkflowId,
+        getCurrentWorkflow: () => state.currentWorkflow,
+        getCurrentState: () => state.currentState,
         setHidden,
         importFile: importWorkflowFile,
         exportWorkflow,
         removeWorkflow: deleteWorkflow,
         onTurnComplete,
-        _state: state,
     };
 })();
