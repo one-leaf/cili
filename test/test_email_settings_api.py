@@ -23,14 +23,6 @@ def isolated_email_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "DATA_DIR", tmp_path)
 
 
-@pytest.fixture
-def isolated_config(tmp_path, monkeypatch):
-    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
-    import core.config as config_mod
-    cfg_path = tmp_path / "setting.json"
-    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
-    return cfg_path
-
 
 @pytest.fixture(autouse=True)
 def no_interface_restart(monkeypatch):

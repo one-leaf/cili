@@ -13,36 +13,9 @@ import pytest
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_dir)
 
-from core.config import (
-    AgentConfig,
-    Config,
-    ModelSpec,
-    ProviderConfig,
-    SystemConfig,
-)
 from core.session_runner import SessionRunner
 from core.tools import create_tools
-
-# ── DGX 本地 LLM 端点（同时支持 Anthropic 和 OpenAI 协议）──
-DGX_BASE_URL = "http://192.168.3.3:8080"
-DGX_API_KEY = "no_need_for_local"
-DGX_MODEL = "dgx"
-
-
-def make_dgx_config(protocol: str = "anthropic") -> Config:
-    """构建 DGX 端点配置，支持 anthropic / openai 两种协议。"""
-    return Config(
-        providers={
-            "dgx": ProviderConfig(
-                protocol=protocol,
-                api_key=DGX_API_KEY,
-                base_url=DGX_BASE_URL,
-                models={"dgx": ModelSpec(name=DGX_MODEL, max_output_tokens=4096, max_context_tokens=256000)},
-            )
-        },
-        agents={"master": AgentConfig(model="dgx/dgx")},
-        system=SystemConfig(),
-    )
+from test.support import DGX_BASE_URL, make_dgx_config  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -216,12 +189,12 @@ def cron_env(monkeypatch, tmp_path):
     config_mod.remove_workspace_entry(ws_uuid)
 
 
-@pytest.fixture
-def teen(tmp_path):
+@pytest.fixture(autouse=True)
+def isolated_teen(tmp_path):
     """临时 TeenModeManager：状态/审计/用量重定向到临时目录，替换全局单例。
 
-    青少年模式默认读真实 data/cili/teen_mode.json，测试必须隔离；用后
-    set_teen_mode(None) 恢复懒加载单例，避免污染其他测试。
+    青少年模式默认读真实 data/cili/teen_mode.json，测试必须隔离（autouse：
+    任何用例都不会误碰真实状态）；用后 set_teen_mode(None) 恢复懒加载单例。
     """
     from core.teen_mode import TeenModeManager, set_teen_mode
 
@@ -233,3 +206,19 @@ def teen(tmp_path):
     set_teen_mode(manager)
     yield manager
     set_teen_mode(None)
+
+
+@pytest.fixture
+def teen(isolated_teen):
+    """兼容旧名字：与 autouse 的 isolated_teen 同一实例。"""
+    return isolated_teen
+
+
+@pytest.fixture
+def isolated_config(tmp_path, monkeypatch):
+    """把全局配置指向临时文件，返回路径（避免读写真实 data/cili/setting.json）。"""
+    import core.config as config_mod
+
+    cfg_path = tmp_path / "setting.json"
+    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
+    return cfg_path

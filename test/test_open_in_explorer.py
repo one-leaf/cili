@@ -10,11 +10,6 @@ import core.config as config_mod
 WS = "wsexplorer"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_teen(teen):
-    """所有用例隔离青少年模式单例（默认关闭）。"""
-    yield
-
 
 def _prepare(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")

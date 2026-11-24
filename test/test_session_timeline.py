@@ -8,7 +8,7 @@ from unittest.mock import patch
 from core.base_session_runner import BaseSessionRunner
 from core.session import SessionStore, load_history_messages, read_jsonl, read_view
 from core.session_timeline import build_timeline
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 
 def _make_session(tmp_path: Path):

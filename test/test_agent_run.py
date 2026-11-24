@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from core.agent_run import AgentRunManager, AgentRunRecord, AgentRunStore
 from core.agent_stats import AgentStats
 from core.session_runner import SessionRunner
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 
 def _worker(tmp_path, *, epoch=1, max_epochs=3, role="worker", depth=1):

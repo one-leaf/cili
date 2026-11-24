@@ -266,7 +266,7 @@ class TestRegisterHosted:
 class TestFullCompactInstruction:
     def test_next_steps_used_in_summary(self, tmp_path):
         from core.base_session_runner import BaseSessionRunner
-        from test.conftest import make_dgx_config
+        from test.support import make_dgx_config
 
         runner = BaseSessionRunner(
             config=make_dgx_config("anthropic"), session_dir=tmp_path
@@ -298,7 +298,7 @@ class TestMasterInitialSession:
     def test_initial_session_attached(self, tmp_path):
         from core.session import SessionStore
         from core.session_runner import SessionRunner
-        from test.conftest import make_dgx_config
+        from test.support import make_dgx_config
 
         store = SessionStore.create_new_session(tmp_path, "Branch")
         config = make_dgx_config("anthropic")

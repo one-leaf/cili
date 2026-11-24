@@ -25,7 +25,7 @@ from core.llm.types import (
 from core.tools.base import Tool, ToolResult
 
 # ── DGX 本地 LLM 端点 ──
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 辅助工具

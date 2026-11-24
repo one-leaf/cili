@@ -29,11 +29,6 @@ class _Base:
         )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_teen(teen):
-    """所有用例隔离青少年模式单例（默认关闭），避免读取本机真实状态。"""
-    yield
-
 
 class TestPreviewEndpoint(_Base):
     def test_utf8_text(self, tmp_path, monkeypatch):

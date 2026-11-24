@@ -16,15 +16,6 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture
-def isolated_config(tmp_path, monkeypatch):
-    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
-    import core.config as config_mod
-    cfg_path = tmp_path / "setting.json"
-    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
-    return cfg_path
-
-
 def _read(cfg_path: Path) -> dict:
     return json.loads(cfg_path.read_text(encoding="utf-8"))
 

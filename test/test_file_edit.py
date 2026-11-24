@@ -54,11 +54,6 @@ class _Base:
         )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_teen(teen):
-    """隔离青少年模式单例（默认关闭），避免读取本机真实状态。"""
-    yield
-
 
 class TestPreviewMtimeNs(_Base):
     def test_preview_has_mtime_ns_as_string(self, tmp_path, monkeypatch):

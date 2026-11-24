@@ -10,10 +10,6 @@ import core.config as config_mod
 WS = "wsoffice"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_teen(teen):
-    yield
-
 
 class _Base:
     def _prepare(self, tmp_path, monkeypatch):

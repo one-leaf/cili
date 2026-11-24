@@ -19,15 +19,6 @@ from qqbot_agent_sdk.onboard import BindStatus, _BindPollResult
 
 
 @pytest.fixture
-def isolated_config(tmp_path, monkeypatch):
-    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
-    import core.config as config_mod
-    cfg_path = tmp_path / "setting.json"
-    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
-    return cfg_path
-
-
-@pytest.fixture
 def fresh_store():
     """全新 store 实例（不与其它用例共享内存会话）。"""
     from interfaces.qq.login import QQLoginStore

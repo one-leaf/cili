@@ -16,7 +16,7 @@ from core.output_sink import OutputSink
 from core.session import SessionStore
 
 # 从 conftest 导入 DGX 配置工具
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ import json
 
 from core.base_session_runner import BaseSessionRunner
 from core.session_runner_runtime.conversation import ConversationStore
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 
 class _FakeSM:

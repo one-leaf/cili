@@ -13,19 +13,8 @@ import asyncio
 import json
 from pathlib import Path
 
-import pytest
-
 # 注册副作用：QQ 能力段（interface_caps）断言依赖档案已注册
 import interfaces.qq.profile  # noqa: F401
-
-
-@pytest.fixture
-def isolated_config(tmp_path, monkeypatch):
-    """把全局配置指向临时文件，避免读写真实 data/cili/setting.json。"""
-    import core.config as config_mod
-    cfg_path = tmp_path / "setting.json"
-    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", cfg_path)
-    return cfg_path
 
 
 def _read(cfg_path: Path) -> dict:

@@ -1450,7 +1450,7 @@ class TestChatStructuredTextFallback:
 
 # ========== DGX 集成测试（真实 LLM 调用） ==========
 
-from test.conftest import make_dgx_config
+from test.support import make_dgx_config
 
 
 @pytest.mark.integration
