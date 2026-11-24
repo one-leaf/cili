@@ -29,11 +29,11 @@ set "PYTHONPATH=%CILI_ROOT%"
 if /i "%TERM_PROGRAM%"=="mintty" (
     where winpty >nul 2>&1
     if not errorlevel 1 (
-        winpty "%PYTHON%" -m interfaces.cli %*
+        winpty "%PYTHON%" -m clients.cli %*
         exit /b %errorlevel%
     )
 )
 
 :: Never cd - the current directory IS the workspace.
-"%PYTHON%" -m interfaces.cli %*
+"%PYTHON%" -m clients.cli %*
 exit /b %errorlevel%

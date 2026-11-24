@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from interfaces.cli.client import CiliHttpClient, CiliServerError, _iter_sse_frames
+from clients.cli.client import CiliHttpClient, CiliServerError, _iter_sse_frames
 
 
 def sse_body(frames: list[dict]) -> str:

@@ -7,7 +7,7 @@
 - 出站文件 web 落地（drain_outbox_events：file 帧 + file_card 消息）
 - 技能按接口过滤（frontmatter interfaces）
 - 角色 JSON 的 interface_caps 块声明与静态区 Web 假设清除
-- 终端样例档案（interfaces/cli）
+- 终端样例档案（clients/cli）
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import interfaces.cli.profile  # noqa: F401
+import clients.cli.profile  # noqa: F401
 
 # 注册副作用：三份接入端档案 + 终端样例
 import interfaces.qq.profile  # noqa: F401

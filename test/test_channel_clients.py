@@ -76,7 +76,7 @@ class _FakeRenderer:
 
 class TestTuiSelection:
     def _app(self, sessions, mode):
-        from interfaces.cli.app import TuiApp
+        from clients.cli.app import TuiApp
 
         client = _FakeTuiClient(sessions)
         app = TuiApp(client, _FakeRenderer(), mode=mode)

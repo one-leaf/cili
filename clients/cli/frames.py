@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from interfaces.cli.render import Renderer
+from clients.cli.render import Renderer
 
 
 class SseFrameRouter:
@@ -81,7 +81,7 @@ class SseFrameRouter:
 
 
 def _labels_of(tool_input: Any) -> list[str]:
-    from interfaces.cli.render import build_option_labels
+    from clients.cli.render import build_option_labels
 
     if not isinstance(tool_input, dict):
         return []
