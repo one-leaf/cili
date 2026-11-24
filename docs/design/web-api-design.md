@@ -1,1343 +1,254 @@
-# Web API 设计文档
-
-本文档描述 Cili Agent 的 Web 接口层，包括 REST API、SSE 流式通信和前端架构。
-
----
-
-## 一、功能概述
-
-Web 层提供基于 FastAPI 的 HTTP API 和 SSE 流式通信，前端使用原生 JavaScript（无框架）实现交互界面。
-
-**核心特性**：
-- **多工作区管理**：支持多个独立工作区，每个工作区有自己的会话和配置。工作区元数据集中存储在 `data/cili/workspaces.json` 索引（uuid/workspace_name/directory/created_at/updated_at/memory_enabled/system），各工作区数据位于其 `{directory}/.cili/`（sessions/memory/tmp/approvals.json），不再有全局 `data/projects/`
-- **SSE 流式响应**：实时推送 Agent 执行过程（文本、工具调用、思考过程）
-- **LRU 淘汰**：内存中最多保留 20 个 Master SessionRunner，自动清理最久未访问的
-- **特殊命令**：/help、/goal 在服务端处理，不经过 LLM
-- **统一数据访问**：消息收发等核心写入通过 SessionStore；会话目录采用 3 文件布局——`messages.jsonl`（完整消息历史，UI 直接读取）、`index.json`（模型提交视图 `{schema_version, next_seq, commits[]}`，不再存消息正文）、`meta.json`（会话属性 name/created_at/updated_at/hidden/usage）。重命名/隐藏/批量等轻量操作通过 `read_meta()` + `atomic_write_json()` 直接读写 `meta.json`；消息追加/压缩/撤销等经 SessionStore 原子落盘
-
----
-
-## 二、架构设计
-
-### 2.1 组件关系
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Web UI (Frontend)                       │
-│         web/static/index.html + app.js / chat.js 等         │
-└────────────────────┬────────────────────────────────────────┘
-                     │ SSE / REST API
-┌────────────────────▼────────────────────────────────────────┐
-│                  FastAPI Backend                             │
-│  web/web_api.py（装配入口：app / 中间件 / 静态文件 / 路由挂载）│
-│  web/routes_*.py（各资源域路由）· web/deps.py（共享状态/helper）│
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  registry    │  │ SSE Bridge   │  │ SessionStore     │  │
-│  │ (LRU cache)  │  │ (Queue)      │  │ (Data layer)     │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
-│         │                 │                                  │
-│  ┌──────▼─────────────────▼───────────────────────────────┐ │
-│  │                  Master SessionRunner                  │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │ │
-│  │  │SessionStore  │  │  LLM Client  │  │   Tools      │  │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘  │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2.2 SessionRegistry（runner 池，LRU 缓存）
-
-runner 池已下沉至 core（接口无关），使 Web / QQ 等接入端共享同一份池与会话运行权：
-
-```python
-# core/session_registry.py
-registry = SessionRegistry()      # 模块级单例
-#   .get(key) / .keys() / .items() / len(registry) / key in registry
-#   .get_or_create(ws_uuid, session_id, workspace_dir, on_create=...)   # 懒创建
-#   .evict_idle()                 # 超过 max_runners(20) 时淘汰最久未访问的非运行中 runner
-#   .claim(key) / .release(key) / .is_idle(key)   # 运行权认领（防双循环）
-#   .remove(key) / .remove_workspace(uuid) / .shutdown_all()
-#   .attach(key, interface, attachment_id) / .detach(attachment_id)     # 多接口附着
-```
-
-`web/deps.py` 只做薄封装：`registry` 直接引用；`_get_or_create_runner()` 校验 workspace 后
-调 `registry.get_or_create(..., on_create=_bind_default_sink)`（`on_create` 回调绑定 Web 专属的
-`default_sink`：工具实时输出 + 后台恢复 → 全局事件总线）。
-
-> 注：池中存的是 master **runner 实例**（不是会话数据）；会话数据由 `SessionStore`（`core/session.py`）持有。
-> key 统一由 `core.session_registry.session_key(ws_uuid, session_id)` 构造。
-
----
-
-## 三、API 端点
-
-### 3.0 响应与错误约定
-
-- **新端点**：失败用 HTTP 状态码（4xx/5xx）+ `detail` 文案；成功用 `{"success": true, ...}`。
-- **既有端点**：部分老接口用 HTTP 200 + `{"success": false, "error"|"message": ...}`（如升级、配置测试），前端按 `detail || error || message` 兜底读取，保持不变；新增端点不再采用这种形态。
-- SSE 流内的失败不走 HTTP 状态码，统一发 `{"type": "error", "content": ...}` 帧。
-
-### 3.1 健康检查
-
-```
-GET /api/health
-```
-
-**响应**：
-```json
-{
-  "status": "ok",
-  "active_agents": 5,
-  "timestamp": "2026-08-25T10:30:00"
-}
-```
-
-### 3.2 工作区管理
-
-#### 列出工作区
-
-```
-GET /api/workspaces
-```
-
-**响应**：
-```json
-{
-  "workspaces": [
-    {
-      "uuid": "a1b2c3d4",
-      "name": "default",
-      "directory": "/path/to/workspace",
-      "created_at": "2026-08-25 10:00:00",
-      "system": false   // 是否 System workspace（不可删除/修改）
-    }
-  ]
-}
-```
-
-工作区列表直接读取 `data/cili/workspaces.json` 索引（`load_workspaces_index()`），不再扫描 `data/projects/` 目录。`memory_enabled` 等额外元数据保留在索引条目中，会话数据目录为 `{directory}/.cili/`（`get_workspace_data_dir()` 解析）。
-
-#### 创建工作区
-
-```
-POST /api/workspaces
-Content-Type: application/json
-
-{
-  "name": "my-project",
-  "directory": "/path/to/project"  // 可选
-}
-```
-
-**响应**：
-```json
-{
-  "uuid": "e5f6g7h8",
-  "name": "my-project",
-  "directory": "/path/to/project"
-}
-```
-
-#### 更新工作区
-
-```
-PUT /api/workspaces/{uuid}
-Content-Type: application/json
-
-{
-  "name": "new-name",      // 可选
-  "directory": "/new/path" // 可选
-}
-```
-
-#### 删除工作区
-
-```
-DELETE /api/workspaces/{uuid}
-```
-
-#### 重置工作区
-
-```
-POST /api/workspaces/{uuid}/reset
-```
-
-删除工作区数据（sessions、config），但保留用户文件。
-
-### 3.3 会话管理
-
-#### 列出会话
-
-```
-GET /api/workspaces/{uuid}/sessions
-```
-
-**响应**：
-```json
-{
-  "sessions": [
-    {
-      "session_id": "a1b2c3d4",
-      "name": "Python 讨论",
-      "created_at": "2026-08-25 10:00:00",
-      "updated_at": "2026-08-25 10:30:00",
-      "message_count": 25,
-      "agent_count": 2,
-      "preview": "帮我写一个异步爬虫...",
-      "hidden": false   // 会话是否被隐藏
-    }
-  ]
-}
-```
-
-会话按最后更新时间倒序排列（最新的在前，按 `index.json` 文件的 mtime 排序）。
-
-#### 获取会话详情
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}
-```
-
-**响应**：完整的会话数据（包括所有消息）。工具结果内容保存在外部文件中，此接口按需读取并注入到消息里（含 `ask_user` 已回答的 `_meta.answered` 标记）。
-
-#### 创建会话
-
-```
-POST /api/workspaces/{uuid}/sessions
-Content-Type: application/json
-
-{
-  "name": "New Session"
-}
-```
-
-#### 删除会话
-
-```
-DELETE /api/workspaces/{uuid}/sessions/{id}
-```
-
-#### 重命名会话
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/rename
-Content-Type: application/json
-
-{
-  "name": "新名称"
-}
-```
-
-#### 隐藏/取消隐藏会话
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/hidden
-Content-Type: application/json
-
-{
-  "hidden": true   // true=隐藏，false=取消隐藏
-}
-```
-
-将 `metadata.hidden` 写入会话 meta.json（`read_meta()` + `atomic_write_json()` 原子写入）。隐藏的会话在列表中默认不显示，取消隐藏可恢复。
-
-#### 分支会话（fork）
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/fork
-Content-Type: application/json
-
-{
-  "next_steps": "可选；留空只创建分支，不自动执行",
-  "label": "可选；分支名"
-}
-```
-
-会话空闲时认领 → `runner.set_turn_interface("web")` → `asyncio.to_thread(runner.fork_session, ...)` → 返回 `{session_id, name, status, mode, token_estimate}`。404 会话不存在、409 会话运行中、500 摘要/分支创建失败。前端「分支会话」菜单成功后刷新列表并切换到新会话。下一阶段任务为空时只复制会话，不生成 handoff、不自动执行；非空任务超过 100k token 时 mode=handoff 并显式提示。
-
-#### 批量会话操作
-
-```
-POST /api/workspaces/{uuid}/sessions/batch
-Content-Type: application/json
-
-{
-  "session_ids": ["a1b2c3d4", "e5f6g7h8"],
-  "action": "hide"   // "hide" | "unhide" | "delete"
-}
-```
-
-**响应**：
-```json
-{
-  "success": true,
-  "results": [
-    {"session_id": "a1b2c3d4", "success": true},
-    {"session_id": "e5f6g7h8", "success": false, "error": "Not found"}
-  ]
-}
-```
-
-支持一次性批量隐藏、取消隐藏或删除多个会话。
-
-#### 会话查看页（页面路由）
-
-```
-GET /s/{workspace}/{session}              # 完整会话模式
-GET /s/{workspace}/{session}/{msg_ids}    # 指定消息模式（msg_ids 为逗号分隔的消息 ID）
-```
-
-均为页面路由，返回 `web/static/session.html` 独立只读查看页（`msg_ids` 用于定位并高亮指定消息）。
-
-### 3.4 消息发送（SSE 流式）
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/messages
-Content-Type: application/json
-
-{
-  "content": "帮我写一个 hello world",
-  "images": [{"data": "base64...", "media_type": "image/png"}]  // 可选，多模态图片
-}
-```
-
-**响应**：SSE 流（`text/event-stream`）
-
-```
-data: {"type": "thinking", "content": "用户想要 hello world..."}
-
-data: {"type": "text", "content": "好的，"}
-
-data: {"type": "text", "content": "我来帮你"}
-
-data: {"type": "tool_use", "tool": "write", "input": {"file_path": "hello.py", "content": "..."}, "tool_use_id": "toolu_01AbC..."}
-
-data: {"type": "tool_result", "tool": "write", "content": "File written successfully", "is_error": false, "tool_use_id": "toolu_01AbC..."}
-
-data: {"type": "text", "content": "已创建 hello.py"}
-
-data: {"type": "done"}
-```
-
-**SSE 事件类型**：
-
-| 类型 | 说明 | 字段 |
-|------|------|------|
-| `thinking` | 思考过程 | `content` |
-| `text` | 文本输出 | `content` |
-| `tool_use` | 工具调用 | `tool`, `input`, `tool_use_id` |
-| `tool_result` | 工具结果 | `tool`, `content`, `is_error`, `tool_use_id` |
-| `session_start` | 子代理会话启动 | `exec_id`, `task_summary` |
-| `session_complete` | 子代理会话执行完成 | `exec_id`, `status`（终态） |
-| `todo_update` | todo_write 工具后的待办列表更新 | `todos` |
-| `retry_clear` | 413 重试清除 | （无） |
-| `error` | 错误 | `content` |
-| `done` | 完成 | （无） |
-
-**事件说明**：
-- `tool_use_id`：工具调用的唯一 ID，前端可用于关联 tool_use 和 tool_result 事件。
-- `retry_clear`：当 LLM 返回 413（请求体过大）触发自动重试时发送，前端需清除已流式输出的文本，防止用户看到重复内容。
-- `session_complete`：子代理会话执行完成时发送，`status` 为终态（`completed/failed/error/timeout/stopped`）。前端只在收到终态时把卡片标为结束。
-- 子代理进度事件（全局流 `session_progress`）：`status` 恒为 `running`，阶段信息在 `phase`（`running/check/handoff/finalizing`）——阶段不得写进 `status`，否则卡片会把「检查中」误显示为「已结束」。
-- `todo_update`：agent 使用 `todo_write` 工具成功后发送，携带完整待办列表（`session.metadata.todos`），前端实时更新任务清单。
-
-### 3.5 Runner 控制
-
-#### 检查运行状态
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}/status
-```
-
-**响应**：
-```json
-{
-  "running": true,
-  "busy": true,
-  "background": {
-    "agents": 1,
-    "shells": 1,
-    "active": 2,
-    "items": [
-      {"task_id": "agent-3", "exec_id": "exec_ab12", "kind": "agent", "label": "翻译目录"},
-      {"task_id": "bg-4", "exec_id": null, "kind": "shell", "label": "npm run dev"}
-    ]
-  },
-  "queue_length": 0,
-  "queue_items": [],
-  "queue_paused": false,
-  "queue_reason": ""
-}
-```
-
-`running` 只表示 master 回合；`busy = running || background.active > 0`。后台任务按
-`workspace_uuid + 根会话 id` 聚合，嵌套子代理及其后台 shell 归到根会话。
-
-#### 上下文占用报告
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}/context
-```
-
-返回 `context_tokens / max_context_tokens / ratio / compact_threshold_tokens / body_size / usage / session`，
-口径与自动压缩一致（消息体投影 token，不含 system prompt 与工具定义）。有 runner 时复用
-真实请求投影；无 runner 时从存盘消息估算并置 `estimated: true`——只读，不创建 runner、
-不触发压缩、不落盘。`usage` 为**会话总量**：主会话自身用量 + 所有子执行记录的用量
-（读取时聚合，含 per-model 分桶），不是主会话单独的计数器。
-
-#### 停止 Agent
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/stop
-```
-
-**请求体（可选）**：
-```json
-{"scope": "turn"}
-```
-
-- `turn`（默认）：只停 master 回合，后台 agent/shell 保留；红方块调用它。
-- `background`：停本会话全部后台执行（agent + shell + tool_job + cron），不要求 master runner 已加载；黄方块/徽标调用它。
-- `session`：内部全停（删除会话/重置），前端不调用。
-
-**响应**：
-```json
-{
-  "success": true,
-  "message": "已发送停止信号",
-  "stopped": {"turn": true, "background": 0}
-}
-```
-
-`scope=turn` 时 Agent 不存在或未运行返回 `{"success": false, "message": "..."}`；
-`scope=background` 在 master 空闲时仍可成功停止后台任务。被停的后台任务
-`suppress_auto_resume=True`，完成后不发布 `background_runner_resume`、不自动唤醒 master。
-
-#### 撤销消息
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/revert
-Content-Type: application/json
-
-{
-  "msg_id": "消息 ID"   // 删除该消息及其后面的所有消息
-}
-```
-
-**响应**：
-```json
-{
-  "success": true,
-  "deleted_count": 5
-}
-```
-
-Agent 正在运行时返回 400，拒绝撤销。优先操作内存中的 agent（`revert_to_message()` 原地截断），否则直接从磁盘加载 SessionStore 处理——物理截断 `messages.jsonl`，并原子重写 `index.json`（commits 视图）与 `meta.json`。
-
-#### AskUser 交互流程
-
-`ask_user` 工具采用 **退出 Agent 循环 + 前端渲染 + 专用端点提交答案** 模式：
-
-1. Agent 调用 `ask_user` → 工具返回 `completed=False` 的 ToolResult
-2. Agent 循环检测到 `completed=False`，保存消息后退出
-3. 前端通过 SSE 的 `tool_use` 事件（`tool: "ask_user"`）渲染交互式问题卡片
-4. `tool_result` 事件对占位工具（`ask_user`、`agent`）跳过（不渲染结果气泡）
-5. 用户选择答案后，通过专用端点提交（见下）
-6. 后端替换占位符 tool_result 内容并继续 Agent 循环（`resume_after_ask_user()`）
-
-#### 提交 AskUser 答案
-
-```
-POST /api/workspaces/{uuid}/sessions/{id}/ask-user/answers
-Content-Type: application/json
-
-{
-  "tool_use_id": "toolu_01AbC...",   // ask_user 工具调用的 ID（从 tool_use 事件获取）
-  "answer": "用户选择的答案"
-}
-```
-
-**处理流程**：
-1. 校验 Agent 存在且未在运行（运行中返回 SSE `error` 事件）
-2. 根据 `tool_use_id` 查找占位符 tool_result 并替换内容为答案（`_meta.completed=true`，同步更新外部文件）
-3. 在对应的 tool_use/tool_call 块上标记 `_meta.answered=true`，保存 session
-4. 调用 `agent.resume_after_ask_user()` 继续 Agent 循环（含后台 Agent 结果的等待与回写）
-
-**响应**：SSE 流（与 POST /messages 相同的流式事件，继续输出后续 thinking/text/tool_use 等）。
-
-### 3.6 Agent 执行日志
-
-#### 列出执行记录
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}/executions
-```
-
-**响应**：
-```json
-{
-  "executions": [
-    {
-      "exec_id": "exec_20260825_103000_ab12",
-      "task": "优化爬虫性能...",
-      "summary": "已完成优化",
-      "metadata": {
-        "started_at": "2026-08-25 10:30:00",
-        "ended_at": "2026-08-25 10:32:00",
-        "status": "completed",
-        "iterations": 5
-      }
-    }
-  ]
-}
-```
-
-#### 获取完整执行日志
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}/executions/{exec_id}
-```
-
-**响应**：完整的执行日志（包括所有消息）。
-
-#### 删除执行日志
-
-```
-DELETE /api/workspaces/{uuid}/sessions/{id}/executions/{exec_id}
-```
-
-### 3.7 工具输出流式读取
-
-#### 读取工具输出新增内容
-
-```
-GET /api/workspaces/{uuid}/sessions/{id}/stream/{tool_use_id}?offset=0
-```
-
-前端轮询此接口实时显示工具输出（特别是 bash 等长时间运行的工具）。
-
-**参数**：
-- `tool_use_id`：工具调用 ID（仅允许字母、数字、下划线、短横线）
-- `offset`：从第几个字节开始读取（前端记录上次位置）
-
-**响应**：
-```json
-{
-  "content": "新的输出内容...",
-  "offset": 1024,
-  "exists": true
-}
-```
-
-文件命名格式为 `{tool_use_id}.txt` 或 `{tool_use_id}_{tool_name}.txt`，接口通过 glob 匹配查找。同时在 session 目录和 `exec_*` 子目录中搜索（Agent 的输出在 exec_* 目录）。
-
-### 3.8 全局配置
-
-#### 获取配置
-
-```
-GET /api/config
-```
-
-**响应**：
-```json
-{
-  "config": {
-    "providers": {
-      "bg": {
-        "interface_type": "anthropic",
-        "api_key_masked": "sk-a...xyz",
-        "auth_type": "auto",
-        "backend": "litellm",
-        "base_url": "https://api.anthropic.com",
-        "headers": {},
-        "models": { "main": { "name": "claude-sonnet-4-6", "max_output_tokens": 8192, "max_context_tokens": 128000, "model_type": "reasoning", "input": ["text", "image"], "reasoning": "medium", "cache_control": "auto" } }
-      }
-    },
-    "agents": { "master": { "model": "bg/main" }, "worker": { "model": "bg/main" } },
-    "system": {
-      "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
-    }
-  },
-  "config_path": "/path/to/setting.json"
-}
-```
-
-API Key 自动脱敏显示（`sk-a...xyz` 格式）；模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）。
-
-#### 更新配置
-
-```
-PUT /api/config
-Content-Type: application/json
-
-{
-  "providers": {
-    "bg": {
-      "interface_type": "anthropic",
-      "api_key": "sk-ant-...",
-      "base_url": "https://api.anthropic.com",
-      "models": { "main": { "name": "claude-sonnet-4-6" } }
-    }
-  },
-  "agents": {
-    "master": { "model": "bg/main" },
-    "worker": { "model": "bg/main" }
-  },
-  "system": {
-    "pip_mirror": "https://repo.huaweicloud.com/repository/pypi/simple/"
-  }
-}
-```
-
-更新成功后，自动通知所有缓存的 Agent 调用 `reload_config()` 重新加载配置（使新的 API Key / Model 立即生效）。
-
-#### 权限配置与规则
-
-权限配置独立于 `system`，位于 `setting.json` 顶层 `permissions`。
-
-| 方法 | 路径 | 作用 |
-|------|------|------|
-| GET | `/api/permissions` | 读取配置、内置规则、只读分组、作用域列表 |
-| PUT | `/api/permissions` | 保存顶层 permissions（只更新该键） |
-| GET | `/api/permissions/rules?scope=global\|<uuid>&decision=all\|allow\|deny\|ask` | 列出规则 |
-| POST | `/api/permissions/rules?scope=...` | 新增规则（decision/kind/match） |
-| PATCH | `/api/permissions/rules/{id}?scope=...` | 启停/修改 |
-| DELETE | `/api/permissions/rules/{id}?scope=...` | 删除 |
-| POST | `/api/permissions/rules/revoke-ai?scope=...` | 回收 AI 自动落盘规则 |
-
-规则文件：全局 `data/cili/approval_rules.json`，工作区 `<workspace>/.cili/approval_rules.json`。写入后刷新缓存 runner，下一动作生效。
-
-#### 测试连接
-
-```
-POST /api/config/test
-Content-Type: application/json
-
-{
-  "interface_type": "anthropic",
-  "auth_type": "auto",
-  "api_key": "sk-ant-...",
-  "base_url": "https://api.anthropic.com",
-  "model_name": "claude-sonnet-4-6",
-  "provider": "bg"       // 可选：provider 名。api_key 留空/掩码时按它取该 provider 已保存的 Key
-}
-```
-
-字段均可选：缺省时用已保存的主模型配置测试；`api_key` 留空或为掩码时，按 `provider`
-取该 provider 已保存的 Key（未指定 provider 才回退主模型 Key）。测试在**专用线程池**
-执行，不阻塞事件循环。
-
-**响应**：
-```json
-{
-  "success": true,
-  "message": "Connection successful",
-  "interface_type": "anthropic"
-}
-```
-
-### 3.9 系统升级
-
-升级采用两段式：本组端点只负责检查版本和下载升级包 zip 到脚本目录（项目根 `cili-update.zip`）；解压覆盖统一在下一次服务启动时由 `core/updater.py::apply_pending_upgrade()` 完成（包内版本高于本地才覆盖，应用后删除升级包）。
-
-#### 检查更新
-
-```
-GET /api/update/check
-```
-
-**响应**：
-```json
-{
-  "has_update": true,
-  "local_version": "v20261017",
-  "remote_version": "v20261018",
-  "error": null
-}
-```
-
-`remote_version` 为 `null` 时表示版本检查失败（网络异常），`error` 给出原因。
-
-#### 升级状态
-
-```
-GET /api/update/status
-```
-
-**响应**：
-```json
-{
-  "local_version": "v20261017",
-  "downloading": false,
-  "last_result": null,
-  "zip_present": true,
-  "zip_version": "v20261018"
-}
-```
-
-`last_result` 为最近一次后台下载的结果（`{success, message/error}`；**自动下载与手动下载共用同一份**，由 `core.updater` 记录），`zip_present`/`zip_version` 反映脚本目录升级包的就绪状态。
-
-#### 下载升级包
-
-```
-POST /api/update/download
-```
-
-后台线程执行下载（各镜像依次回退），结果写入 `last_result` 供状态接口轮询；已有下载进行中时返回 `{success: false, error: "已有下载任务进行中"}`。
-
-### 3.10 文件服务
-
-#### 获取工作区文件
-
-```
-GET /api/workspaces/{uuid}/files/{path}
-```
-
-（`/api/workspace/*` 两代兼容路由已删除；旧消息里的 URL 由迁移 `legacy_file_urls` 重写为规范路由。）
-
-用于在 Web UI 中显示图片等文件。
-
-#### 浏览目录
-
-```
-GET /api/fs/browse?path=/path/to/dir
-```
-
-**响应**：
-```json
-{
-  "path": "/path/to/dir",
-  "directories": [
-    {"name": "subdir1", "path": "/path/to/dir/subdir1"},
-    {"name": "subdir2", "path": "/path/to/dir/subdir2"}
-  ],
-  "parent": "/path/to"
-}
-```
-
-#### 列出工作区文件
-
-```
-GET /api/files?workspace_uuid={uuid}&path=relative/path
-```
-
-**响应**：
-```json
-{
-  "path": "relative/path",
-  "items": [
-    {"name": "subdir", "path": "relative/path/subdir", "is_file": false, "size": null, "modified": 1759000000.0},
-    {"name": "file.py", "path": "relative/path/file.py", "is_file": true, "size": 1024, "modified": 1759000000.0}
-  ],
-  "parent": "relative"
-}
-```
-
-#### 文件管理端点（统一 `/api/files` 路径）
-
-```
-GET    /api/files/{path}?workspace_uuid={uuid}    # 读取文件内容（文本或二进制）
-POST   /api/files                                 # 创建文件或文件夹
-PUT    /api/files                                 # 重命名/移动（new_path）或保存内容（content）
-DELETE /api/files                                 # 批量删除
-POST   /api/files/upload                          # 上传文件（multipart form）
-```
-
-- **POST /api/files** 请求体：`{workspace_uuid, path(父目录), name, type("file"|"folder"), content(初始内容)}`
-- **PUT /api/files** 请求体：`{workspace_uuid, path, new_path(可选，重命名/移动), content(可选，保存内容), expected_mtime_ns(可选，乐观锁), expected_size(可选，乐观锁)}`
-  - 保存内容（`content`）时为**乐观锁**：`expected_mtime_ns` 为纳秒字符串、`expected_size` 为整数；与磁盘当前值不符返回 **409**，`detail` 含 `current_mtime_ns`（字符串）与 `current_size`。不提供 expected 字段则直接覆盖（兼容旧调用）。
-  - 不可就地编辑时返回 **422**：目标 >512KB（预览必截断）、二进制（含 NUL）、非 UTF-8、保存内容超 20MB。
-  - 成功响应：`{action: "save", path, mtime_ns(字符串), size}`。
-- **DELETE /api/files** 请求体：`{workspace_uuid, paths: ["相对路径", ...]}`，响应 `{"deleted": [...], "errors": [...]}`
-- **POST /api/files/upload** 表单字段：`workspace_uuid`、`path`、`files`（多文件），单个文件最大 100MB，响应 `{"uploaded": [...], "errors": [...]}`
-
-所有端点均校验路径必须位于工作区内，防止路径穿越。
-
-#### 文件预览（只读）
-
-```
-GET /api/file-preview?workspace_uuid={uuid}&path=relative/path
-```
-
-返回工作区文本文件内容供右侧预览面板使用；二进制不解码，超 512KB 截断（`truncated=true`）。响应字段：
-`{path, name, size, mtime, mtime_ns, kind("text"|"binary"), encoding, truncated, content}`。
-其中 `mtime_ns` 为**字符串**（纳秒时间戳超出 JavaScript `Number` 的安全整数范围，避免精度丢失）。
-只读 GET，不挂 CSRF；挂 `_teen_ws_guard` 与路径穿越校验。
-
-### 3.11 记忆管理（Memory API）
-
-记忆以工作区为单位存储，API 前缀 `/api/workspaces/{uuid}/memory`。
-
-#### 记忆总览
-
-```
-GET /api/workspaces/{uuid}/memory?memory_type=&status=&q=
-```
-
-返回统计、条目列表（可按 memory_type/status/关键词过滤）、待整合数与 git 提交记录。
-
-**响应**：
-```json
-{
-  "enabled": true,
-  "stats": {"total": 5, "archived": 1, "stale": 0, "by_type": {"fact": 3, "preference": 1, "skill": 0, "reference": 1}, "index_lines": 6, "index_bytes": 1024},
-  "entries": [{"name": "20260825-fact-xxx.md", "type": "fact", "status": "active", "title": "...", "tags": ["..."], "usage_count": 2, "updated_at": "..."}],
-  "pending": 0,
-  "commits": [{"hash": "abc123", "message": "add memory entry: ...", "ts": "..."}]
-}
-```
-
-#### 查看 / 编辑条目
-
-```
-GET /api/workspaces/{uuid}/memory/entries/{name}   # 查看条目全文（只读，不递增 usage_count）
-PUT /api/workspaces/{uuid}/memory/entries/{name}   # 编辑 title/description/tags/content 并 git 提交
-```
-
-#### 归档 / 恢复 / 删除条目
-
-```
-POST /api/workspaces/{uuid}/memory/entries/{name}/archive   # 归档（移出索引，不再参与检索）
-POST /api/workspaces/{uuid}/memory/entries/{name}/restore   # 从归档恢复
-POST /api/workspaces/{uuid}/memory/entries/{name}/delete    # 永久删除（不可恢复）
-```
-
-各操作成功后执行 git 提交，响应 `{"ok": true, "committed": bool, "note": "..."}`。
-
-#### 手动整合
-
-```
-POST /api/workspaces/{uuid}/memory/consolidate
-```
-
-手动触发记忆整合（journal → 条目），每批 limit=20，最多 4 批。
-
-#### 记忆开关
-
-```
-PUT /api/workspaces/{uuid}/memory/settings
-Content-Type: application/json
-
-{
-  "memory_enabled": true
-}
-```
-
-开/关工作区记忆功能（提取钩子 + cron 整合都受此开关控制），响应 `{"ok": true, "memory_enabled": ...}`。`memory_enabled` 持久化到 `data/cili/workspaces.json` 中对应工作区条目（不再存 setting.json）。
-
-> 上述写端点（PUT/POST）均调用 `_csrf_protect()` 做 CSRF 校验（W6）。
-
-### 3.12 MCP 服务器管理
-
-#### 获取服务器列表
-
-```
-GET /api/mcp/servers
-```
-
-返回 MCP 服务器配置 + 实时连接状态（headers 掩码显示）与工具列表。
-
-**响应**：
-```json
-{
-  "servers": {
-    "server-name": {
-      "name": "server-name",
-      "url": "http://...",
-      "headers_masked": {},
-      "tool_timeout": 60,
-      "enabled_tools": ["*"],
-      "status": "connected",
-      "tool_count": 5,
-      "tools": [{"name": "...", "description": "..."}]
-    }
-  }
-}
-```
-
-#### 强制重连
-
-```
-POST /api/mcp/reload
-```
-
-强制重连所有 MCP 服务器，并刷新缓存的 master Agent（deferred 工具重建），响应 `{"success": true, "servers": {...}}`。
-
-#### 测试单个服务器
-
-```
-POST /api/mcp/test
-Content-Type: application/json
-
-{
-  "name": "server-name",   // 可选：按已保存配置测试
-  "config": {...}          // 可选：优先用请求体配置测试（含真实 headers）
-}
-```
-
-测试单个 MCP 服务器连接并枚举工具（不保存配置，测完即断开），响应 `{"status": "connected" | "failed", "tools": [...], "error": ...}`。
-
----
-
-### 3.13 课件答题记录（Courseware）
-
-```text
-POST /api/courseware/quiz-result
-Content-Type: text/plain;charset=UTF-8
-```
-
-课件 HTML 在 `sandbox="allow-scripts"` 的 iframe 中运行（opaque origin），因此该接口：
-
-- 接受 `text/plain` 的 JSON 字符串，避免预检；
-- 响应带 `Access-Control-Allow-Origin: *`；
-- 只追加记录，不提供读取接口；校验工作区与 `courseware_path` 均在工作区内；
-- 载荷上限 32KB，字段截断后写入。
-
-落盘：
-
-- 全部问答 → `<workspace>/.cili/courseware/quiz-results.jsonl`；
-- 错题每题一条 → 学习项目根 `错题本.md`（其他工作区在课件目录），使用 `cw-q` 标记维护；
-- 成绩汇总 → 输出根目录 `成绩记录.html`（学习项目为 `学习资料/成绩记录.html`）。
-
-实现：`web/routes_courseware.py` + `core/courseware_records.py`。
-
----
-
-## 四、特殊命令
-
-以下命令在服务端直接处理，不经过 LLM：
-
-### 4.1 /help
-
-显示帮助信息：
-
-```
-/help
-```
-
-**响应**：
-```
-**特殊命令：**
-
-- `/help` - 显示本帮助信息
-- `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
-
-**工具使用：**
-直接描述你要完成的任务即可，AI 会自动选择合适的工具。
-```
-
-> `/status` 命令已移除（2026-11-13）：会话状态改由输入区上下文占用面板展示
-> （`GET /api/workspaces/{uuid}/sessions/{id}/context`，见 §3.5）。
-
----
-
-## 五、SSE 流式机制
-
-### 5.1 同步到异步桥接
-
-Master SessionRunner 的回调是同步的，但 FastAPI 的 SSE 是异步的。统一由
-`web/sse.py` 的两个函数完成桥接（send_message 与 answer_ask_user 共用，不再各自手写）：
-
-```python
-# web/sse.py
-def make_sse_callbacks(event_queue, runner) -> OutputSink:
-    """runner 的同步回调 → 队列中的 SSE 帧字符串。"""
-    ...
-
-def sse_run_response(run_fn, event_queue, *, cancel_on_disconnect=False,
-                     poll_timeout=0.5) -> StreamingResponse:
-    """在后台线程执行 run_fn（写入 event_queue，以 None 作结束哨兵），
-    主协程从队列读取并 yield 为 SSE 流。"""
-```
-
-调用方只需构造 `event_queue` + `make_sse_callbacks`，定义 `run_fn`，然后
-`return sse_run_response(run_fn, event_queue)`。
-
-`run_fn` 与 SSE 队列轮询在**专用线程池**（`core/stream_executor.py`）执行——原先与
-请求期短任务（如会话列表读取）共用默认 executor，长任务占满 worker 会让短任务永久
-排队（主页卡死的根因之一）。
-
-### 5.2 客户端断开处理
-
-`sse_run_response` 默认在客户端断开时让 runner 继续在后台运行
-（`cancel_on_disconnect=False`）——浏览器刷新或网络抖动不中断长任务：
-
-```python
-except asyncio.CancelledError:
-    if cancel_on_disconnect:
-        task.cancel()
-    else:
-        logger.info("Client disconnected, runner continues running in background")
-    return
-```
-
-用户需要显式点击"停止"按钮（调用 `/stop` 端点）才能中断 runner。
-
-> **例外（ask-user/answers）**：`POST /api/workspaces/{uuid}/sessions/{id}/ask-user/answers` 的 SSE 生成器在客户端断开（`asyncio.CancelledError`）时调用 `task.cancel()` 终止恢复中的 Agent 循环——该端点用于继续同一会话的问答流程，客户端断开后没有新的输入来源，继续后台运行没有意义。
-
----
-
-## 六、前端架构
-
-### 6.1 技术栈
-
-- **原生 JavaScript**（无框架），按职责拆分为 app.js / chat.js / settings.js / file-manager.js / memory.js / utils.js
-- **marked.js**：Markdown 渲染（本地 `static/libs/marked.min.js`）
-- **DOMPurify**：HTML 净化防 XSS（本地 `static/libs/purify.min.js`）
-- **MathJax**：数学公式渲染（本地 `static/libs/mathjax/`）
-
-### 6.2 主要功能
-
-#### 工作区管理
-
-- 侧边栏显示工作区列表
-- 创建、编辑、删除工作区
-- 切换工作区
-
-#### 会话管理
-
-- 会话列表（按更新时间倒序）
-- 创建、重命名、删除会话
-- 批量隐藏/取消隐藏/删除会话
-- 输入区上下文占用面板（上下文占比、模型/会话/用量，替代原侧栏「会话信息」弹窗）
-- 分享会话/指定消息（打开独立只读查看页 `session.html`，即 `/s/{workspace}/{session}` 完整会话路由，或 `/s/{workspace}/{session}/{msg_ids}` 指定消息路由）
-
-#### 聊天界面
-
-- 消息气泡（用户/助手）
-- 思考块（可折叠："思考中..." / "思考完成"）
-- 工具调用卡片（显示工具名、输入、输出）
-- Agent 卡片（状态占位符，展开懒加载详情）
-- 代码块（CSS 样式渲染）
-- 图片显示（聊天上传/输出的图片以 base64 data URI 直接渲染；Markdown 中的相对路径图片和文件链接转换为 `/api/workspaces/{uuid}/files/` URL 加载）
-- 撤销消息（revert 到指定消息，删除其后所有消息）
-
-#### 文件管理
-
-- 浏览、预览工作区文件（`file-manager.js` 弹窗）
-- 创建、重命名/移动、删除、上传文件与文件夹（对应 `/api/files` 系列端点）
-
-#### 设置弹窗
-
-- Master SessionRunner 模型配置
-- LLM 模型配置（可选）
-- 测试连接按钮
-- 系统配置（pip 镜像、浏览器路径等）
-
-### 6.3 SSE 事件处理
-
-```javascript
-// chat.js（简化示意）
-async function sendMessage(content) {
-    const response = await fetch(`/api/workspaces/${uuid}/sessions/${id}/messages`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({content})
-    });
-    
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    
-    while (true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-        
-        const text = decoder.decode(value);
-        const lines = text.split('\n');
-        
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const event = JSON.parse(line.slice(6));
-                handleEvent(event);
-            }
-        }
-    }
-}
-
-function handleEvent(event) {
-    switch (event.type) {
-        case 'thinking':
-            appendThinkingBlock(event.content);
-            break;
-        case 'text':
-            appendText(event.content);
-            break;
-        case 'tool_use':
-            appendToolCall(event.tool, event.input);
-            break;
-        case 'tool_result':
-            appendToolResult(event.tool, event.content, event.is_error);
-            break;
-        case 'session_start':
-            appendAgentCard(event.exec_id, event.task_summary);
-            break;
-        case 'retry_clear':
-            // 413 重试：清除已流式输出的文本，防止重复内容
-            clearAssistantOutput();
-            break;
-        case 'done':
-            finishMessage();
-            break;
-    }
-}
-```
-
-除 POST 的请求级流（chat.js）外，`sse-client.js` 维持一条**全局事件流**
-（`GET /api/events`，worker 逐 token 消息与工具增量）。标签页切到后台时会**主动
-断开**该流并标记断线（`visibilitychange`），回前台重连——浏览器对同源并发连接
-上限是 6，多标签页若各自长驻一条会占满槽位，导致该源上任何请求（含页面加载与
-设置面板的 fetch）无限排队。
-
----
-
-## 七、生命周期管理
-
-### 7.1 启动流程
-
-```
-main.py
-│
-├─ _init_settings()          # 初始化全局配置
-│   └─ 初始化配置（如需要）
-│
-├─ app_context.startup()     # 启动接口无关服务（幂等）
-│   ├─ get_service()         # 创建 BrowserService 实例（Playwright 延迟启动）
-│   ├─ start_agent_mailbox() # 初始化 AgentMailbox
-│   ├─ 后台线程连接 MCP 服务器
-│   └─ start_scheduler()     # 启动 Cron 调度器
-│
-└─ uvicorn.run(app)          # 启动 FastAPI
-
-web_api.py（模块导入时）
-│
-├─ 创建目录结构               # WORKSPACE_DIR, CHROME_DIR（数据目录由 get_workspace_data_dir() 按需创建）
-│
-├─ _ensure_default_workspace()  # 创建默认工作区（写 data/cili/workspaces.json 索引 + {directory}/.cili/sessions/）
-│
-├─ _auto_init_global_config()   # 验证全局配置（模块级执行）
-│
-└─ lifespan 进入
-    └─ app_context.startup()  # 幂等：main.py 已启动时为空操作
-```
-
-> 单例生命周期统一由 `core/app_context.py` 的 `AppContext` 持有（`startup()`/`shutdown()`），
-> 解决原先「cron 在 main.py 启动、却在 web_api 关闭」的跨文件归属问题；各接入端进程都调它。
-
-### 7.2 关闭流程
-
-```
-lifespan exit
-│
-└─ app_context.shutdown()
-    ├─ stop_agent_mailbox()     # 停止 AgentMailbox
-    ├─ stop_browser_service()   # 停止浏览器服务（Playwright + Chrome）
-    ├─ stop_mcp_provider()      # 停止 MCP provider（断开所有服务器连接）
-    ├─ stop_scheduler()         # 停止 Cron 调度器
-    └─ registry.shutdown_all()  # 遍历 runner 池：runner.stop() + runner.cleanup()
-```
-
----
-
-## 端点命名规则
-
-（§4 契约，2026-11 统一）
-
-1. **资源用复数、按归属嵌套**：`/api/workspaces/{uuid}/files/{path}`、
-   `/api/workspaces/{uuid}/sessions/{id}`。
-2. **动作是单段 snake_case 子路径**：`/queue/pause`、`/ask-user/answers`、
-   `/mailbox/resume`；不再使用 `answer-ask-user` 这类连字符复合名。
-3. **向导类多词资源**：`/api/wizard/*`（旧 `/api/workspace-wizard/*` 已删）。
-4. **本机运维端点**：`/api/fs/browse`（仅 localhost）。
-5. **旧 URL 不保留别名**：历史消息中的文件 URL 由迁移
-   `legacy_file_urls` 重写为规范路由（§5）。
-
-## 八、安全考虑
-
-### 8.1 IP 访问控制
-
-中间件基于客户端 IP 进行访问控制（仅信任 `request.client.host`，不检查可伪造的 Host 头）：
-
-```python
-_LOCALHOST_IPS = {"127.0.0.1", "::1", "localhost"}
-
-def _ip_matches(client_ip: str, allowed: list[str]) -> bool:
-    """精确 IP 或 CIDR 前缀匹配（W18）。非 IP 字符串退化为精确匹配。"""
-    try:
-        addr = ipaddress.ip_address(client_ip)
-    except ValueError:
-        return client_ip in allowed
-    for entry in allowed:
-        if not entry:
-            continue
-        if "/" in entry:
-            try:
-                if addr in ipaddress.ip_network(entry, strict=False):
-                    return True
-            except ValueError:
-                continue
-        elif entry == client_ip:
-            return True
-    return False
-
-
-@app.middleware("http")
-async def check_access_control(request: Request, call_next):
-    config = load_config()
-    client_ip = request.client.host if request.client else ""
-
-    # access_token 已配置：鉴权优先于 IP 白名单，任何来源都必须带有效令牌
-    access_token = config.system.access_token or ""
-    if access_token:
-        provided = request.headers.get("X-Access-Token") or request.query_params.get("token") or ""
-        if provided and hmac.compare_digest(provided, access_token):
-            return await call_next(request)
-        return JSONResponse(status_code=403, content={"detail": "Access denied: invalid or missing token"})
-
-    # 始终允许 localhost
-    if client_ip in _LOCALHOST_IPS:
-        return await call_next(request)
-
-    # 检查白名单（system.allowed_ips 配置，支持 CIDR 前缀）
-    allowed_ips = config.system.allowed_ips or []
-    if _ip_matches(client_ip, allowed_ips):
-        return await call_next(request)
-
-    # 拒绝访问
-    return JSONResponse(status_code=403, content={"detail": "Access denied: IP not allowed"})
-```
-
-**鉴权优先级**：配置了 `system.access_token` 时，**令牌鉴权优先于 IP 白名单**——所有请求（含 localhost）都必须携带有效令牌（`X-Access-Token` 请求头、`?token=` 查询参数或 cookie，优先级从高到低），否则返回 403；未配置令牌时退化为纯 IP 白名单模式。白名单通过 `_ip_matches()` 匹配，支持精确 IP 与 CIDR 前缀（如 `"192.168.1.0/24"`）。
-
-**Cookie 令牌下发（P1-32）**：`?token=` 首次鉴权成功时，中间件在响应上追加 Set-Cookie（`cili_access_token`，HttpOnly / SameSite=Lax / 7 天 / https 下加 Secure）。前端拿到 URL 令牌后立即写入 localStorage，并用 `history.replaceState` 从地址栏移除 `?token=`。此后 fetch/EventSource 走请求头或查询参数，静态资源与页面刷新走 cookie——令牌不再长期滞留在 URL、浏览器历史与 Referer 中。
-
-**W8：/api/fs/browse 限本机**：`GET /api/fs/browse` 目录浏览端点仅允许 localhost 访问（非本机 IP 直接 403），防止 LAN/网络攻击者枚举服务器任意磁盘目录结构。**反代部署注意（P1-25）**：守卫信任 `request.client.host`，经反向代理转发时该值是代理 IP（通常为本机回环），所有经代理的请求都会被视为 localhost——`/api/fs/browse` 会对公网侧完全放开。远程部署务必在反代层单独封禁 `/api/fs/browse`。
-
-**W6：/api/files 写操作 CSRF 校验**：`POST /api/files`、`PUT /api/files`、`DELETE /api/files`、`POST /api/files/upload` 等写端点调用 `_csrf_protect()`——multipart/form-data 与简单 POST 不触发 CORS 预检，恶意网页可向 localhost 端点自动提交；该校验依赖浏览器来源头（Origin/Referer），非本机来源拒绝，curl 等无头客户端放行。令牌鉴权由 `check_access_control` 中间件统一负责，CSRF 校验只防跨站请求。
-
-> **补充**：配置未加载成功时（如尚未配置 API Key），仅允许 localhost 访问（返回 403 "Server not configured yet"），以便用户打开 UI 完成初始配置。
-
-### 8.2 CORS 限制
-
-默认只允许 localhost 访问：
-
-```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    ...
-)
-```
-
-### 8.3 路径遍历防护
-
-文件服务端点检查路径是否在允许的工作区内：
-
-```python
-def _serve_workspace_file(workspace_dir: str, file_path: str) -> FileResponse:
-    workspace_path = Path(workspace_dir).resolve()
-    file_full_path = (workspace_path / file_path).resolve()
-    
-    # 安全检查：确保文件在工作区内
-    if not file_full_path.is_relative_to(workspace_path):
-        raise HTTPException(status_code=403, detail="Access denied: path traversal not allowed")
-    
-    return FileResponse(str(file_full_path))
-```
-
-### 8.4 API Key 脱敏
-
-配置 API 返回时自动脱敏 API Key（各 provider 的 `api_key` 附加 `api_key_masked` 字段，以及 `system.mineru_api_key`）：
-
-```python
-def _mask_api_key(config: dict) -> dict:
-    result = config.copy()
-    # providers 每项的 api_key 掩码（api_key_masked 附加以便前端回显）
-    if "providers" in result and isinstance(result["providers"], dict):
-        masked_providers = {}
-        for name, provider in result["providers"].items():
-            if isinstance(provider, dict):
-                p = provider.copy()
-                api_key = p.get("api_key", "")
-                if api_key:
-                    p["api_key_masked"] = _mask_secret(api_key)
-                p.pop("api_key", None)
-                masked_providers[name] = p
-            else:
-                masked_providers[name] = provider
-        result["providers"] = masked_providers
-    # 系统配置中的 MinerU API Key 同样脱敏
-    if "system" in result and isinstance(result["system"], dict):
-        sys_copy = result["system"].copy()
-        mineru_key = sys_copy.get("mineru_api_key", "")
-        if mineru_key:
-            sys_copy["mineru_api_key_masked"] = mineru_key[:4] + "..." + mineru_key[-4:] if len(mineru_key) > 8 else "***"
-        sys_copy.pop("mineru_api_key", None)
-        result["system"] = sys_copy
-    return result
-```
-
----
-
-## 九、设计决策
-
-### 9.1 为什么用 SSE 而不是 WebSocket？
-
-- **简单**：SSE 是单向流，适合 Agent 输出场景
-- **HTTP 兼容**：不需要额外的协议升级
-- **重连**：浏览器自动处理重连
-
-### 9.2 为什么 Agents Dict 用 LRU 淘汰？
-
-- **内存控制**：每个 Master SessionRunner 占用内存（工具、浏览器实例）
-- **性能**：避免创建过多 Agent 实例
-- **简单**：基于时间戳的 LRU 算法简单可靠
-
-### 9.3 为什么特殊命令不经过 LLM？
-
-- **速度**：/help、/goal 立即响应
-- **成本**：不消耗 API token
-- **可靠性**：即使 LLM 不可用也能工作
-
-### 9.4 为什么客户端断开时 Agent 继续运行？
-
-- **长任务**：避免浏览器刷新或网络波动中断长时间任务
-- **显式控制**：用户需要显式点击"停止"才能中断
-- **数据完整性**：确保任务完成或显式取消
-
----
-
-## 十、相关文件
+# Web API 设计
+
+> 按当前实现重写（2026-11-25）。以 `web/` 下代码为准；本文只描述**已经存在**的端点与行为。
+
+## 一、装配与生命周期
+
+`web/web_api.py` 是唯一装配入口：
+
+| 顺序 | 动作 |
+|---|---|
+| 1 | `FastAPI(lifespan=lifespan)` |
+| 2 | lifespan：`import web.profile`（注册 Web 能力档案）→ `init_web_deps()` → `app_context.startup()` → `register_siwc_hooks()` |
+| 3 | CORS 中间件（仅 localhost/127.0.0.1 任意端口，`allow_credentials=True`） |
+| 4 | 访问控制中间件（**最后注册因此最外层**，见下节） |
+| 5 | `TeenModeDenied → 403`、`TeenLockedOut → 429` 异常处理器 |
+| 6 | 静态文件（`NoCacheStaticFiles`，`Cache-Control: no-store`）+ 20 个 `routes_*.py` 挂载 |
+
+lifespan 退出：教材任务 `shutdown_all()` → `app_context.shutdown()`。
+
+共享依赖集中在 `web/deps.py`：workspace 解析（`require_workspace_data_dir` / `require_workspace_root`）、
+会话认领封装、CSRF、青少年守卫 `teen_guard(action, hard=)`、接入端启停 helper、默认 sink 绑定。
+公共校验：`validate_session_id / validate_workspace_uuid / validate_exec_id / csrf_protect`。
+
+## 二、认证与访问控制
+
+`web/access_control.py`：
+
+- **令牌优先**：`setting.json` 的 `system.access_token` 非空时，所有请求（含 localhost）必须携带
+  `X-Access-Token` 头、`?token=` 查询参数或 HttpOnly cookie `cili_access_token`。
+  首次 `?token=` 鉴权成功即下发 cookie（7 天），前端从 URL 移除令牌。
+- **未配置令牌**：localhost 直接放行；其余按 `system.allowed_ips`（精确 IP 或 CIDR）判断。
+- 配置尚未就绪（如无 API key）：只放行 localhost。
+- 只信任 `request.client.host`（真实 TCP IP），不校验可伪造的 Host 头。
+- **反代部署**：代理 IP 会被视为 localhost，`/api/fs/browse`、`/api/open-in-explorer` 这类
+  本机端点在反代层必须单独封禁。
+
+CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）。
+
+## 三、通用约定
+
+- 资源复数、按归属嵌套：`/api/workspaces/{uuid}/…`；动作是单段 snake_case 子路径
+  （`queue/resume`、`mailbox/resume`、`ask-user/answers`）。
+- 请求体字段：`profile`（驱动客户端，web/cli/…；缺省 web）、`protocol`（模型协议）。
+- 占位语义：ask_user/审批卡的 block `_meta` 用 `ask_user_completed`（旧会话回退 `completed`）。
+- 错误：400 参数/CSRF、403 权限/青少年拒绝、404 不存在、413 负载过大、429 青少年锁定、
+  500 服务端异常。青少年拒绝统一转 403/429。
+- 静态资源不缓存；`/api/events` 与两个 SSE 端点为 `text/event-stream`。
+
+## 四、端点总表
+
+### 4.1 工作区（`routes_workspace.py`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/workspaces` | 列表（含默认/系统标记） |
+| POST | `/api/workspaces` | 新建（名称/目录校验） |
+| PUT | `/api/workspaces/{uuid}` | 改名/改目录 |
+| DELETE | `/api/workspaces/{uuid}` | 从索引注销（保留数据目录与文件；青少年 `workspace_unregister` hard） |
+| GET/PUT | `/api/workspaces/{uuid}/git/settings` | Git 开关与远端 |
+| GET | `/api/workspaces/{uuid}/git/status` | 状态/提交历史 |
+| POST | `/api/workspaces/{uuid}/git/pull`、`/git/push` | 拉取/推送 |
+| GET | `/api/workspaces/{uuid}/instructions` | 读取 AGENTS.md/CLAUDE.md |
+| PUT | `/api/workspaces/{uuid}/instructions` | 保存（文件名守卫 + 路径越界校验） |
+| POST | `/api/workspaces/{uuid}/instructions/generate` | 后台 worker 扫描生成（返回 task_id） |
+| GET | `/api/workspaces/{uuid}/instructions/generate/{task_id}` | 生成任务状态 |
+| GET | `/api/workspaces/{uuid}/instructions/templates`、`/templates/{name}` | 模板清单/内容 |
+
+### 4.2 会话（`routes_workspace.py` + `routes_chat.py`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/workspaces/{uuid}/sessions` | 列表（metadata 摊平、按更新时间倒序） |
+| POST | `/api/workspaces/{uuid}/sessions` | 新建（`channel` 默认 web；cli 显式传 cli） |
+| GET | `/api/workspaces/{uuid}/sessions/{sid}` | 详情 |
+| DELETE | `/api/workspaces/{uuid}/sessions/{sid}` | 删除（`core.session_purge` 唯一顺序；青少年 hard） |
+| POST | `…/sessions/{sid}/rename`、`/hidden` | 重命名/隐藏 |
+| POST | `/api/workspaces/{uuid}/sessions/batch` | 批量隐藏/删除 |
+| GET | `…/sessions/{sid}/export`；POST `/api/workspaces/{uuid}/sessions/import` | 导出/导入 |
+| GET | `…/sessions/{sid}/executions`、`/executions/{exec_id}` | 子代理执行日志 |
+| GET/POST | `…/sessions/{sid}/model` | 会话级模型覆盖（空串清除） |
+| POST | `…/sessions/{sid}/messages` | **发送消息，SSE 流**（`content/images/attachments/profile/client_id`） |
+| POST | `…/sessions/{sid}/stop` | 停止（`scope=turn|background|session`） |
+| POST | `…/sessions/{sid}/mailbox/resume` | 排空后台通知并恢复循环（与 queue/resume 不同） |
+| POST | `…/sessions/{sid}/fork` | 克隆上下文到兄弟会话（`next_steps/label`） |
+| POST | `…/sessions/{sid}/revert` | 撤销到 `msg_id`（清空队列） |
+| GET | `…/sessions/{sid}/status` | 运行状态 + 队列摘要 |
+| GET | `…/sessions/{sid}/context` | 上下文占用报告（只读） |
+| POST | `…/sessions/{sid}/ask-user/answers` | 提问卡/审批卡答案（`tool_use_id` + `answer/decision/answers`），SSE |
+| POST | `…/sessions/{sid}/suggest` | 推荐输入（`refresh/exclude/input`） |
+| GET | `…/sessions/{sid}/timeline` | 会话时间线 |
+| GET | `…/sessions/{sid}/stream/{tool_use_id}` | 工具输出增量轮询（`offset` 字节） |
+| POST | `…/sessions/{sid}/queue` | 入队（运行中发送走队列） |
+| GET | `…/sessions/{sid}/queue` | 队列快照 |
+| DELETE | `…/sessions/{sid}/queue/{item_id}` | 删除排队项 |
+| POST | `…/sessions/{sid}/queue/clear`、`/queue/resume` | 清空/解暂停并启动 |
+
+### 4.3 全局事件流
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/events?workspace_uuid&session_id&types&token` | SSE 全局流；`types` 逗号分隔的事件类型不受 session 过滤 |
+
+帧类型（实际发出）：
+
+- 正文/思考：`text`、`thinking`、`retry_clear`（413 去图重试清屏）
+- 工具：`tool_call`、`tool_output`（流式增量）、`tool_result`
+- 回合：`user_message`（投递回显）、`turn_complete`、`queue_update`、`todo_update`
+- 子代理：`session_start`、`session_progress`、`session_complete`、`run_started`、`run_finished`、
+  `background_runner_resume`
+- 工作区级：`workflow_changed`、`session_changed`、`session_fork_created`、`files_changed`
+- 交付：`file`（Web 下载卡片事件）
+
+### 4.4 文件（`routes_files.py`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/workspaces/{uuid}/files/{path}` | 规范文件路由（图片/附件/下载） |
+| GET | `/api/fs/browse` | 目录浏览（**仅本机**；青少年限制在允许工作区内） |
+| GET | `/api/files?workspace_uuid&path` | 目录内容（FileTree） |
+| GET | `/api/files/search?workspace_uuid&q` | 名称/内容搜索 |
+| GET/POST/PUT/DELETE | `/api/files…` | 读/建/改/删（`workspace_uuid` 必填） |
+| GET | `/api/file-preview?…` | 文本预览（mtime_ns 以字符串传输） |
+| GET | `/api/office-preview/status`、`/pdf` | Office→PDF 预览 |
+| POST | `/api/files/upload` | 上传到 `uploads/` |
+| POST | `/api/open-in-explorer` | 本机打开资源管理器（仅本机） |
+
+`/api/workspace/*` 两代旧兼容路由已删除；历史消息中的旧 URL 由启动迁移 `legacy_file_urls` 改写。
+
+### 4.5 配置 / MCP / ChatGPT OAuth
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET/PUT | `/api/config` | 读取（api_key 掩码）/更新（providers/agents/system/mcp_servers/qq/wechat/email 全量） |
+| POST | `/api/config/test` | 测试 provider+模型组合（OAuth 走预览期整形） |
+| POST | `/api/config/detect-models` | 拉取模型 ID 列表（anthropic 分页 / openai 单页） |
+| POST | `/api/config/test-email` | 邮箱连接测试 |
+| GET | `/api/mcp/servers` | MCP 工具清单 |
+| POST | `/api/mcp/reload`、`/api/mcp/test` | 重连 / 单服务测试 |
+| POST | `/api/config/chatgpt-oauth/login` | 开始登录（`provider/credential/provider_config`） |
+| GET | `/api/config/chatgpt-oauth/login/{attempt_id}` | 轮询状态 |
+| POST | `/api/config/chatgpt-oauth/login/{attempt_id}/complete`、`/cancel` | 手动完成/取消 |
+| POST | `/api/config/chatgpt-oauth/logout` | 登出并清 provider 凭据 |
+| GET | `/api/config/chatgpt-oauth/status` | 登录态 |
+
+### 4.6 接入端
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/qq/status` | QQ 账号列表（无凭据） |
+| POST | `/api/qq/accounts/{id}/login/start`、`/login/cancel`、`/logout` | 扫码登录/取消/登出 |
+| GET | `/api/qq/accounts/{id}/login/status` | 扫码状态 |
+| GET | `/api/wechat/status` | 微信账号列表 |
+| POST | `/api/wechat/accounts/{id}/login/start`、`/login/cancel`、`/logout` | 扫码登录/取消/登出 |
+| GET | `/api/wechat/accounts/{id}/login/status` | 扫码状态（含验证码流程） |
+| GET | `/api/email/status` | 邮件账号运行态与 24h 拦截统计 |
+
+### 4.7 记忆 / 权限 / 青少年
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/workspaces/{uuid}/memory` | 记忆概览（开关、条目、待整合） |
+| GET/PUT | `…/memory/entries/{name}` | 读取/编辑条目 |
+| POST | `…/memory/entries/{name}/archive|restore|delete` | 归档/恢复/删除 |
+| POST | `…/memory/consolidate` | 手动整合 |
+| PUT | `…/memory/settings` | 工作区记忆开关 |
+| GET | `/api/permissions` | 默认策略与判定配置 |
+| PUT | `/api/permissions` | 更新策略 |
+| GET | `/api/permissions/rules` | 规则列表 |
+| POST | `/api/permissions/rules`、`PATCH/DELETE /rules/{id}`、`POST /rules/revoke-ai` | 规则增改删/AI 规则撤销 |
+| GET | `/api/teen/status` | 公开状态（前端灰显/倒计时） |
+| POST | `/api/teen/enable`、`/unlock`、`/lock`、`/disable` | 开关与解锁 |
+| PUT | `/api/teen/policy` | 策略（白名单目录不得嵌套） |
+| POST | `/api/teen/password` | 修改家长密码 |
+| GET | `/api/teen/audit`、`/report` | 审计与使用报告 |
+
+### 4.8 工作流 / 定时 / 教材 / 课件 / 升级
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET/POST | `/api/workspaces/{uuid}/workflows` | 列表/新建 |
+| GET/PUT/DELETE | `…/workflows/{wid}` | 读取/保存/删除 |
+| POST | `…/workflows/{wid}/hidden` | 隐藏 |
+| POST | `…/workflows/{wid}/run`、`/stop` | 运行/停止 |
+| GET | `…/workflows/{wid}/state` | 运行状态 |
+| POST | `…/workflows/panel-sessions`、`GET …/by-session/{sid}` | 面板会话创建/查找 |
+| POST | `…/workflows/{wid}/results-session`、`/send-results` | 结果会话/发送结果 |
+| GET | `…/workflows/{wid}/runs`、`/runs/{run_id}`、`/runs/{run_id}/events` | 运行记录与事件 |
+| GET/POST | `/api/workspaces/{uuid}/cron/jobs` | 任务列表/新建 |
+| PUT/DELETE | `…/cron/jobs/{id}` | 更新/删除 |
+| POST | `…/cron/jobs/{id}/run|enable|disable` | 立即运行/启停 |
+| GET | `…/cron/jobs/{id}/history` | 执行历史 |
+| GET | `/api/textbooks/options?stage&subject&edition&grade&semester&edition_grade` | 可选教材 |
+| POST | `/api/textbooks/download` | 创建下载任务 |
+| GET/POST | `/api/textbooks/download/{task_id}`、`/retry`、`/cancel` | 状态/重试/取消 |
+| POST | `/api/courseware/quiz-result` | 课件答题回传（CORS 白名单 + 体积上限） |
+| GET | `/api/update/check|status`；POST `/api/update/download|restart` | 升级检查/下载/重启 |
+
+### 4.9 工作区向导
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/wizard/options` | 分类/学段/学科/版本/位置 |
+| POST | `/api/wizard/preview` | 预览目录与 AGENTS.md 渲染 |
+| POST | `/api/wizard/create` | 创建工作区（可触发教材下载） |
+
+## 五、SSE 细节
+
+### 5.1 请求级流（POST /messages、POST /ask-user/answers）
+
+`web/sse.py`：runner 同步回调 → 队列 → `StreamingResponse`。
+
+- 正文/思考/工具事件同时扇出到 `runner.default_sink`（全局流）；前端用 `isSending` 去重。
+- `retry_clear` 帧：413 去图重试时要求前端清空已流式文本。
+- 回合末先推 outbox 的 `file` 帧（`web.delivery`），再推结束哨兵。
+- 客户端断开：`/ask-user/answers` 取消恢复循环；`/messages` 默认不中断后台执行，
+  仅终止 SSE 生成器。
+
+### 5.2 全局流（GET /api/events）
+
+- 按 `workspace_uuid`/`session_id` 过滤；`types` 中列出的类型不受 session 过滤。
+- 回合落盘后必发 `turn_complete`（页面刷新后界面唯一感知回合结束的途径）。
+- 无请求级 sink 的回合（后台恢复/看门狗）由 `default_sink` 补齐 Web 文件交付。
+
+## 六、前端结构（`web/static/`）
 
 | 文件 | 职责 |
-|------|------|
-| `web/web_api.py` | FastAPI 装配入口（lifespan、中间件、`/`、`/s/{ws}/{session}`、`/api/health`） |
-| `web/routes_chat.py` | 聊天/SSE 流/Runner 控制（`/messages`、`/stop`、`/resume`、`/revert`、`/status`、`/stream/{tool_use_id}`、`/api/events`） |
-| `web/routes_ask_user.py` | ask_user 答案提交（`/ask-user/answers`） |
-| `web/routes_workspace.py` | 工作区/会话/执行日志/项目指令（`/api/workspaces*`、`/git/*`、`/instructions*`） |
-| `web/routes_config.py` | 全局配置与 MCP（`/api/config*`、`/api/mcp/*`） |
-| `web/routes_files.py` | 文件浏览/读写/上传（`/api/files*`、`/api/fs/browse`） |
-| `web/routes_memory.py` | 记忆管理（`/api/workspaces/{uuid}/memory*`） |
-| `web/routes_courseware.py` | 课件答题记录（`POST /api/courseware/quiz-result`） |
-| `web/deps.py` | 共享依赖：registry 引用 + 会话认领封装 + workspace 解析 + 默认 sink 绑定 |
-| `web/sse.py` | SSE 适配层：`make_sse_callbacks`（回调→SSE 帧）、`sse_stream`、`sse_run_response`（同步执行→SSE 流执行壳） |
-| `web/static/index.html` | 主页面 |
-| `web/static/app.js` | 前端状态与工作区/会话管理 |
-| `web/static/chat.js` | 聊天界面与 SSE 事件处理、Markdown 渲染 |
-| `web/static/settings.js` | 设置弹窗（模型/系统配置） |
-| `web/static/file-manager.js` | 工作区文件管理器 |
-| `web/static/memory.js` | 记忆面板（总览/检索/归档/整合 UI，index.html L626 加载） |
-| `web/static/utils.js` | 通用工具函数 |
-| `web/static/session.html` | 独立会话查看页（`/s/{ws}/{session}` 路由） |
-| `web/static/style.css` | 样式 |
-| `core/session_runner.py` | 统一 SessionRunner（master 角色，被 web_api 调用） |
-| `core/session.py` | SessionStore（数据层） |
-| `core/config.py` | 工作区索引（`load_workspaces_index`/`save_workspaces_index`/`find_workspace_entry`/`get_workspace_data_dir`） |
+|---|---|
+| `index.html` / `session.html` | 主界面 / 只读会话分享页 |
+| `app.js` | 装配、工作区切换、主题、事件绑定 |
+| `sidebar.js` | 会话/工作流侧栏、多选与批量操作 |
+| `chat.js` | 消息渲染与发送 |
+| `chat-empty-state.js` | 空状态示例与欢迎区 |
+| `chat-scroll.js` | 聊天贴底状态 |
+| `interaction-cards.js` | 提问卡/审批卡 |
+| `queue-control.js` | 排队条、停止/状态 |
+| `composer.js` | 输入区按钮、推荐输入、模型下拉、附件上传 |
+| `settings.js` + `provider-settings.js` / `channel-settings.js` / `teen-mode.js` / `permission-settings.js` / `about-settings.js` | 全局设置各页签 |
+| `workspace-settings.js` / `workspace-wizard.js` / `textbook-settings.js` | 工作区设置/向导/教材页签 |
+| `file-tree.js` / `file-browser.js` / `file-api.js` | 文件树、目录浏览弹窗、REST 封装 |
+| `workflow-pane.js` / `memory.js` / `cron-settings.js` / `session-about.js` / `context-gauge.js` | 工作流面板/记忆/定时/时间线/上下文仪表 |
+| `agent-cards.js` / `sse-client.js` | 子代理卡片 / SSE 客户端 |
+| `utils.js` / `markdown-core.js` / `voice-input.js` / `tts.js` | 工具函数/Markdown 核心/语音 |
 
----
+脚本顺序：`utils → chat-scroll → voice/tts → file-tree → settings… → app → 各面板 → context-gauge → chat → interaction-cards → queue-control → agent-cards → sse-client`。
+所有事件绑定在 `DOMContentLoaded` 后执行。
 
-**文档版本**: v1.7  
-**创建时间**: 2026-08-25  
-**更新时间**: 2026-10-09（同步代码：SSE 适配抽至 `web/sse.py` + `sse_run_response` 执行壳、ask_user/todo 领域逻辑下沉 core；此前已同步 runner 池下沉、`core/app_context.py`、`OutputSink`、端点拆分）  
-**状态**: 已实现
+## 七、契约与迁移
+
+- 请求字段 `profile`（原 `interface`）；配置键 `protocol`（原 `interface_type`）。
+- 工具注册键与工具名统一（`todo_write`）；`send_user_file` 的接口门控由 `Tool.interface_scoped` 声明。
+- ChatGPT OAuth 命名族：包 `core/llm/chatgpt_oauth`、路由 `/api/config/chatgpt-oauth/*`、
+  provider 键 `chatgpt-oauth`、凭证前缀 `chatgpt-oauth:`。
+- 启动迁移（`core/migrations`）：`provider_protocol_key`、`chatgpt_oauth_naming`、
+  `session_placeholder_meta`、`tui_channel_to_cli`、`legacy_file_urls`；配置在 `data/cili/backup/migrations/` 备份。
