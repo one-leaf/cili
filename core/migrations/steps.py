@@ -158,7 +158,8 @@ def migrate_chatgpt_oauth_naming(global_config_path: Path) -> bool:
                 target = providers["chatgpt-oauth"]
                 if isinstance(target, dict) and isinstance(old, dict):
                     old_models = old.get("models") or {}
-                    target.setdefault("models", {})
+                    if not isinstance(target.get("models"), dict):
+                        target["models"] = {}
                     for k, v in old_models.items():
                         target["models"].setdefault(k, v)
                     providers.pop("chatgpt-siwc")

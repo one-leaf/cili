@@ -25,9 +25,7 @@ from core.agent_stats import AgentStats
 from core.approval_cards import ABORT_LABEL, APPROVE_LABEL, REJECT_LABEL, REMEMBER_LABEL
 from core.base_session_runner import BaseSessionRunner
 from core.config import (
-    DATA_DIR,
     Config,
-    get_workspace_data_dir,
     get_workspace_sessions_dir,
 )
 from core.fs_utils import atomic_write_json
@@ -43,10 +41,8 @@ from core.prompt_builder import (
     build_system_prompt,
 )
 from core.role_config import load_role
-from core.security.permission_judge import PermissionJudge
-from core.security.permission_policy import PermissionResolver
-from core.security.permission_rules import PermissionRules
-from core.security.permission_state import PermissionStore, append_permission_audit
+from core.security.permission_state import append_permission_audit
+from core.security.runtime import build_permission_stack, build_permission_store_rules
 from core.session import (
     SessionIdentity,  # noqa: F401 —— 对外重导出
     SessionStore,
@@ -273,27 +269,15 @@ class SessionRunner(BaseSessionRunner):
         if self._mode == "interactive":
             # 权限三件套：会话级存储 + 统一规则引擎（全局层 + 工作区层）+ 裁决器。
             # 根/子代理共享 store 与 rules 实例（子代理经 agent_tool 透传）。
-            from pathlib import Path
-
-
-            permission_cfg = get_permission_config(config)
-            global_path = (
-                Path(permission_cfg.global_rules_path)
-                if permission_cfg.global_rules_path
-                else DATA_DIR / "approval_rules.json"
+            _store_rules = build_permission_store_rules(
+                config,
+                workspace_uuid=self.workspace_uuid,
+                cwd=self._cwd_init,
+                permission_store=permission_store,
+                permission_rules=permission_rules,
             )
-            self.permission_store = (
-                permission_store if permission_store is not None else PermissionStore()
-            )
-            if permission_rules is not None:
-                self.permission_rules = permission_rules
-            else:
-                self.permission_rules = PermissionRules(
-                    get_workspace_data_dir(self.workspace_uuid) / "approval_rules.json",
-                    global_path=global_path,
-                    workspace_root=self._cwd_init,
-                    hot_reload=permission_cfg.rules_hot_reload,
-                )
+            self.permission_store = _store_rules.store
+            self.permission_rules = _store_rules.rules
             # IMPORTANT: Share messages list with session (not copy!)
             self.messages = self.session.messages
             self._usage = self.session.get_usage()
@@ -315,16 +299,18 @@ class SessionRunner(BaseSessionRunner):
 
         # 统一裁决器与 lite 判定器：interactive 与 autonomous 都具备判定能力；
         # 有无「询问用户」通道由 role_cfg.approval 决定（master=True，worker/lite=False）。
-        self.permission_policy = PermissionResolver(
-            get_permission_config(config), self.permission_rules, self.permission_store,
-            workspace_root=self._cwd_init, cwd=self._cwd_init,
-        )
-        self.permission_judge = PermissionJudge(
-            config, self.permission_rules, self.permission_store,
-            role=self.role, has_user_channel=bool(self.role_cfg.approval),
-            workspace_root=self._cwd_init, cwd=self._cwd_init,
+        _stack = build_permission_stack(
+            config,
+            workspace_uuid=self.workspace_uuid,
+            cwd=self._cwd_init,
+            role=self.role,
+            has_user_channel=bool(self.role_cfg.approval),
             session_dir=init_session_dir,
+            permission_store=self.permission_store,
+            permission_rules=self.permission_rules,
         )
+        self.permission_policy = _stack.resolver
+        self.permission_judge = _stack.judge
 
         self._streaming = self.role_cfg.streaming
         self._rebuild_tools()
@@ -744,16 +730,18 @@ class SessionRunner(BaseSessionRunner):
             self.model = new_model
             self.model_ref = new_ref
             self.config = new_config
-            self.permission_policy = PermissionResolver(
-                get_permission_config(new_config), self.permission_rules, self.permission_store,
-                workspace_root=self._cwd_init, cwd=self._cwd_init,
-            )
-            self.permission_judge = PermissionJudge(
-                new_config, self.permission_rules, self.permission_store,
-                role=self.role, has_user_channel=bool(self.role_cfg.approval),
-                workspace_root=self._cwd_init, cwd=self._cwd_init,
+            _stack = build_permission_stack(
+                new_config,
+                workspace_uuid=self.workspace_uuid,
+                cwd=self._cwd_init,
+                role=self.role,
+                has_user_channel=bool(self.role_cfg.approval),
                 session_dir=getattr(self, "session_dir", None),
+                permission_store=self.permission_store,
+                permission_rules=self.permission_rules,
             )
+            self.permission_policy = _stack.resolver
+            self.permission_judge = _stack.judge
             old_client.close()
             self._rebuild_tools()
         except Exception as e:

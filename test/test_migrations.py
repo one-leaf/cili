@@ -165,3 +165,19 @@ def test_migrate_tui_channel(tmp_path):
     meta = json.loads((session_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["metadata"]["channel"] == "cli"
     assert migrate_tui_channel(workspaces_json, lambda uuid: workspace) == 0
+
+
+def test_migrate_chatgpt_oauth_handles_null_models(tmp_path):
+    from core.migrations.steps import migrate_chatgpt_oauth_naming
+
+    path = tmp_path / "setting.json"
+    path.write_text(json.dumps({
+        "providers": {
+            "chatgpt-siwc": {"models": {"old": {}}},
+            "chatgpt-oauth": {"models": None},
+        },
+    }), encoding="utf-8")
+
+    assert migrate_chatgpt_oauth_naming(path) is True
+    target = json.loads(path.read_text(encoding="utf-8"))["providers"]["chatgpt-oauth"]
+    assert target["models"] == {"old": {}}
