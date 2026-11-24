@@ -1,5 +1,5 @@
 // ── 聊天空状态：新会话/工作流示例与欢迎区 HTML ──
-// 依赖 app.js 的会话状态与 sidebarFilter；供 chat.js / workflow_pane.js 调用。
+// 依赖 app.js 的会话状态与 sidebarFilter；供 chat.js / workflow-pane.js 调用。
 
 // 新会话空状态的示例输入（app.js 与 chat.js 共用；点击写入输入框）
 const NEW_SESSION_EXAMPLES = [

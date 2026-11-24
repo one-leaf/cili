@@ -1,4 +1,4 @@
-/* workflow_pane.js — 侧栏工作流条目（与会话合并渲染）+ 中间栏工作流面板 + 聊天双标签 */
+/* workflow-pane.js — 侧栏工作流条目（与会话合并渲染）+ 中间栏工作流面板 + 聊天双标签 */
 (function () {
     'use strict';
 
