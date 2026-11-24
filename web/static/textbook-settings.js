@@ -1,5 +1,5 @@
 // ── 教材下载面板（工作区设置 → 教材下载页签）──
-// 依赖 app.js: currentWorkspace, showToast；依赖 file-manager/window 全局的 fetch 封装。
+// 依赖 app.js: currentWorkspace, showToast；依赖 file-browser 的目录浏览器与全局 fetch 封装。
 
 // ─── 教材下载 ───────────────────────────────────────────────────────────────
 
