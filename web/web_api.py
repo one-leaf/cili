@@ -54,8 +54,8 @@ async def lifespan(app: FastAPI):
     from web.deps import init_web_deps
     init_web_deps()
 
-    from web.routes_chatgpt_oauth import register_hooks as register_siwc_hooks
-    register_siwc_hooks()
+    from web.routes_chatgpt_oauth import register_hooks
+    register_hooks()
 
     app_context.startup()
     yield

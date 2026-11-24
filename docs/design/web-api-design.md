@@ -9,7 +9,7 @@
 | 顺序 | 动作 |
 |---|---|
 | 1 | `FastAPI(lifespan=lifespan)` |
-| 2 | lifespan：`import web.profile`（注册 Web 能力档案）→ `init_web_deps()` → `app_context.startup()` → `register_siwc_hooks()` |
+| 2 | lifespan：`import web.profile`（注册 Web 能力档案）→ `init_web_deps()` → `app_context.startup()` → `register_hooks()` |
 | 3 | CORS 中间件（仅 localhost/127.0.0.1 任意端口，`allow_credentials=True`） |
 | 4 | 访问控制中间件（**最后注册因此最外层**，见下节） |
 | 5 | `TeenModeDenied → 403`、`TeenLockedOut → 429` 异常处理器 |
