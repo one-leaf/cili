@@ -37,7 +37,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from interfaces.common.qr import qr_png_data_url  # noqa: F401 —— 共享渲染器，测试仍从这里导入
+from interfaces.common.qr import qr_png_data_url
+from interfaces.common.qr_login import POLL_INTERVAL_MS, SESSION_TTL_S  # noqa: F401 —— 测试从这里导入
 from interfaces.wechat.account import (
     WechatAccount,
     list_account_ids,
@@ -51,8 +52,6 @@ from interfaces.wechat.protocol import WechatApiError
 logger = logging.getLogger(__name__)
 
 MAX_QR_REFRESH_COUNT = 3        # 二维码刷新上限（与官方插件一致）
-SESSION_TTL_S = 600.0           # 扫码会话有效期
-POLL_INTERVAL_MS = 2000         # 建议前端轮询间隔
 
 
 @dataclass

@@ -27,11 +27,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from interfaces.common.qr import qr_png_data_url
+from interfaces.common.qr_login import POLL_INTERVAL_MS, SESSION_TTL_S
 
 logger = logging.getLogger(__name__)
 
-SESSION_TTL_S = 600.0           # 扫码会话有效期
-POLL_INTERVAL_MS = 2000         # 建议前端轮询间隔
 
 
 @dataclass
