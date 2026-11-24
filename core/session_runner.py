@@ -863,7 +863,7 @@ class SessionRunner(BaseSessionRunner):
             max_iterations=self.max_iterations,
             stats=self.stats(iterations),
         )
-        result = self.loop._autonomous_result("handoff", request.summary, iterations)
+        result = self.loop.autonomous_result("handoff", request.summary, iterations)
         result.update(
             epoch=self.epoch,
             max_epochs=self.max_epochs,

@@ -276,7 +276,7 @@ class Loop:
             if runner._stopped or (autonomous and runner.stop_check and runner.stop_check()):
                 if autonomous:
                     runner._finalize("stopped", "Stopped by user", n)
-                    return self._autonomous_result("stopped", "Stopped by user", n)
+                    return self.autonomous_result("stopped", "Stopped by user", n)
                 logger.info(f"[SessionRunner:{runner.role}] 已停止")
                 runner._sync_to_session()
                 runner.session.save()
@@ -327,10 +327,10 @@ class Loop:
                         f"task='{task_brief}'): {summary}"
                     )
                     runner._finalize("error", summary, n - 1)
-                    return self._autonomous_result("error", summary, n - 1)
+                    return self.autonomous_result("error", summary, n - 1)
                 if runner._stopped:
                     runner._finalize("stopped", "Stopped by user", n - 1)
-                    return self._autonomous_result("stopped", "Stopped by user", n - 1)
+                    return self.autonomous_result("stopped", "Stopped by user", n - 1)
             else:
                 system_prompt = runner._build_system_prompt()
                 response = runner._call_llm(
@@ -375,19 +375,19 @@ class Loop:
                         summary = response.get_text() or "预算耗尽，模型未输出总结"
                         runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                         runner._finalize("completed", summary, n)
-                        return self._autonomous_result("completed", summary, n, budget_wrapup=True)
+                        return self.autonomous_result("completed", summary, n, budget_wrapup=True)
                     if outcome.action == "deliver":
                         summary = response.get_text()
                         runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                         runner._finalize("completed", summary, n)
-                        return self._autonomous_result("completed", summary, n)
+                        return self.autonomous_result("completed", summary, n)
                     # check_complete：检查阶段文本收尾 → 任务真正完成
                     pm.mark_check_complete()
                     summary = response.get_text()
                     runner.add_message("assistant", response.content_as_dicts(), meta={"model": response.model})
                     runner._save_progress(n, phase="finalizing", force=True)
                     runner._finalize("completed", summary, n)
-                    return self._autonomous_result(
+                    return self.autonomous_result(
                         "completed", summary, n, check_iterations=pm.check_iters
                     )
 
@@ -414,7 +414,7 @@ class Loop:
                     f"[SessionRunner:{runner.role}] 检查阶段超出迭代上限 "
                     f"(iter={n - 1}, max={pm.max_check_iterations})"
                 )
-                return self._autonomous_result(
+                return self.autonomous_result(
                     "completed", summary, n, check_iterations=pm.check_iters
                 )
 
@@ -431,7 +431,7 @@ class Loop:
                     cap = policy.max_consecutive_failures
                     summary = f"Exceeded max consecutive failures ({cap})"
                     runner._finalize("failed", summary, n)
-                    return self._autonomous_result("failed", summary, n)
+                    return self.autonomous_result("failed", summary, n)
             else:
                 if self._interactive_tool_batch(tool_calls, state):
                     # 等待外部输入（ask_user/session 占位或审批卡）
@@ -475,7 +475,7 @@ class Loop:
             except Exception as e:
                 logger.warning(f"[SessionRunner:{runner.role}] 兜底总结失败: {e}")
         runner._finalize(status, summary, max_iterations)
-        result = self._autonomous_result(status, summary, max_iterations)
+        result = self.autonomous_result(status, summary, max_iterations)
         if wrapped_up:
             result["wrapped_up"] = True
         return result
@@ -843,7 +843,7 @@ class Loop:
             # （曾因参数名写错而整条路径失效）
             logger.warning(f"[Loop] 后台通知注入失败: {e}")
 
-    def _autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
+    def autonomous_result(self, status: str, summary: str, iterations: int, **extra: Any) -> dict[str, Any]:
         """组装 autonomous 结果 dict（stats 与 usage 都取当前快照）。"""
         result = {
             "status": status,
