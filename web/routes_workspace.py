@@ -29,7 +29,7 @@ from core.config import (
     validate_workspace_name,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
-from core.prompt_sections import PROJECT_INSTRUCTION_FILES
+from core.project_instructions import PROJECT_INSTRUCTION_FILES
 from core.session import (
     MESSAGES_FILE,
     META_FILE,
@@ -949,7 +949,7 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
 
 # ----- Project Instructions (AGENTS.md / CLAUDE.md) -----
 
-# 模板目录（项目指令文件清单见 core.prompt_sections.PROJECT_INSTRUCTION_FILES）
+# 模板目录（项目指令文件清单见 core.project_instructions.PROJECT_INSTRUCTION_FILES）
 _TEMPLATES_DIR = PROJECT_ROOT / "core" / "templates" / "prompts"
 
 

@@ -223,7 +223,7 @@ def build_system_prompt(runner) -> list[str]:
 
 def _gen_project_instructions(runner) -> dict | None:
     """项目指令层：从磁盘重读项目指令文件。"""
-    from core.prompt_sections import build_instructions_message
+    from core.project_instructions import build_instructions_message
     return build_instructions_message(runner.cwd)
 
 

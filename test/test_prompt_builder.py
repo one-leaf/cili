@@ -61,19 +61,19 @@ class TestPrompts:
 
     def test_find_instructions_none(self, tmp_path):
         """无指令文件时返回 None。"""
-        from core.prompt_sections import find_project_instructions
+        from core.project_instructions import find_project_instructions
         assert find_project_instructions(str(tmp_path)) is None
 
     def test_find_instructions_priority(self, tmp_path):
         """agent.md 优先于 CLAUDE.md。"""
-        from core.prompt_sections import find_project_instructions
+        from core.project_instructions import find_project_instructions
         (tmp_path / "CLAUDE.md").write_text("claude content", encoding="utf-8")
         (tmp_path / "agent.md").write_text("agent content", encoding="utf-8")
         assert find_project_instructions(str(tmp_path)) == "agent content"
 
     def test_build_instructions_message_wraps(self, tmp_path):
         """指令文件被 <system-reminder> 包装为 user 消息。"""
-        from core.prompt_sections import build_instructions_message
+        from core.project_instructions import build_instructions_message
         (tmp_path / "CLAUDE.md").write_text("do the thing", encoding="utf-8")
         msg = build_instructions_message(str(tmp_path))
         assert msg is not None
@@ -83,7 +83,7 @@ class TestPrompts:
 
     def test_build_instructions_message_none(self, tmp_path):
         """无指令文件时返回 None。"""
-        from core.prompt_sections import build_instructions_message
+        from core.project_instructions import build_instructions_message
         assert build_instructions_message(str(tmp_path)) is None
 
     # -- build_system_prompt (块拼装) --
