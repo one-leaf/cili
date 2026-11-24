@@ -90,7 +90,7 @@ class TestCountTokens:
         assert runner._count_messages_tokens(messages) == count_messages_tokens(messages)
 
 
-class TestFindSplitByUserMessages:
+class TestMasterFindSplitByUserMessages:
     """_find_split_by_user_messages() — backward walk 保证不拆散 tool pair。"""
 
     def _msg(self, role, content):
