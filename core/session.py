@@ -764,9 +764,11 @@ class SessionStore:
     - 消息管理（add, get, clear）
     - 持久化（load, save, delete）
     - 有效消息过滤（get_valid_messages）
-    - 压缩逻辑
-    - 使用量追踪
-    （Agent 执行日志由 ExecLogStore 承担，见 self.agent_logs）
+    - 视图/提交（index.json commits）
+
+    压缩在 ``core.compression`` + ``session_runner_runtime``；运行时用量由
+    ``ConversationStore.update_usage`` 记账。``update_usage`` 仅保留给测试与
+    历史数据（生产路径不调用）。Agent 执行日志由 ExecLogStore 承担（self.agent_logs）。
 
     Session 格式使用 Anthropic 格式，内部字段统一放入 _meta: {}。
     """
@@ -1349,7 +1351,7 @@ class SessionStore:
     def update_usage(self, input_tokens: int = 0, output_tokens: int = 0,
                      api_calls: int = 0, cache_read_tokens: int = 0,
                      cache_creation_tokens: int = 0, model: str = "") -> None:
-        """更新使用量统计（仅计数器；速度由 ConversationStore 按调用计速并随 sync 持久化）。
+        """更新使用量统计（测试/历史数据用；生产路径由 ConversationStore 记账）。
 
         ``model`` 非空时同步记入 per-model 分桶（usage.models[model_name]），master/worker/lite
         的 token 用量分开归属；``total`` 保留旧的平铺字段供上下文面板与用量统计读取。
