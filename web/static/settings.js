@@ -2428,9 +2428,7 @@ function updateTeenBadge() {
 }
 
 function teenEscape(text) {
-    const div = document.createElement('div');
-    div.textContent = String(text == null ? '' : text);
-    return div.innerHTML;
+    return escapeHtml(String(text == null ? '' : text));
 }
 
 function teenEnableWizardHtml() {
