@@ -164,7 +164,7 @@ function handleBusEvent(e) {
         }
         return;
     }
-    if (e.type === 'session_created' || e.type === 'session_fork_created') {
+    if (e.type === 'session_fork_created') {
         scheduleLoadSessions();
         return;
     }
