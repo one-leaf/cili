@@ -121,11 +121,11 @@ class ContinuationRequest:
 class AgentRunStore:
     """Persist AgentRun metadata under ``{root_session}/exec_{id}/run.json``."""
 
-    def __init__(self, root_dir: Path | str):
-        self.root_dir = Path(root_dir)
+    def __init__(self, session_dir: Path | str):
+        self.session_dir = Path(session_dir)
 
     def run_dir(self, exec_id: str) -> Path:
-        return self.root_dir / exec_id
+        return self.session_dir / exec_id
 
     def run_path(self, exec_id: str) -> Path:
         return self.run_dir(exec_id) / RUN_FILE
@@ -234,9 +234,9 @@ class AgentRunStore:
 
     def list(self) -> list[AgentRunRecord]:
         runs: list[AgentRunRecord] = []
-        if not self.root_dir.exists():
+        if not self.session_dir.exists():
             return runs
-        for d in sorted(self.root_dir.glob("exec_*")):
+        for d in sorted(self.session_dir.glob("exec_*")):
             if not d.is_dir():
                 continue
             record = self.get(d.name)
@@ -253,8 +253,8 @@ class AgentRunManager:
     unchanged.
     """
 
-    def __init__(self, root_dir: Path | str):
-        self.store = AgentRunStore(root_dir)
+    def __init__(self, session_dir: Path | str):
+        self.store = AgentRunStore(session_dir)
 
     def create(
         self,
