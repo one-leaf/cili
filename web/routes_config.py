@@ -135,6 +135,29 @@ def _valid_email_address(value: str) -> bool:
     return bool(sep and local and domain and "." in domain)
 
 
+
+
+def _incoming_accounts(section: dict | None, existing: dict | None) -> tuple[list, dict[str, dict]]:
+    """请求里的账号列表与旧配置的 id→条目索引（三端合并共用）。"""
+    incoming = dict(section or {})
+    accounts_in = incoming.get("accounts")
+    if not isinstance(accounts_in, list):
+        accounts_in = []
+    old_accounts = (existing or {}).get("accounts")
+    if not isinstance(old_accounts, list):
+        old_accounts = []
+    old_by_id = {
+        str(a.get("id") or ""): a for a in old_accounts if isinstance(a, dict)
+    }
+    return accounts_in, old_by_id
+
+
+def _enabled_map(accounts: list) -> dict[str, bool]:
+    """账号 id → enabled（启停差分用）。"""
+    return {
+        str(a.get("id") or ""): bool(a.get("enabled"))
+        for a in accounts if isinstance(a, dict)
+    }
 def _mask_mcp_server(cfg: dict) -> dict:
     """掩码单个 MCP server 配置中的 headers 值（保留 key 名）。"""
     c = dict(cfg)
@@ -393,15 +416,8 @@ async def update_config(request: UpdateConfigRequest):
     qq_enable_before: dict[str, bool] = {}
     qq_enable_after: dict[str, bool] = {}
     if request.qq is not None:
-        incoming = dict(request.qq)
-        accounts_in = incoming.get("accounts")
-        if not isinstance(accounts_in, list):
-            accounts_in = []
         existing_qq = config.get("qq") if isinstance(config.get("qq"), dict) else {}
-        old_accounts = existing_qq.get("accounts") if isinstance(existing_qq.get("accounts"), list) else []
-        old_by_id = {
-            str(a.get("id") or ""): a for a in old_accounts if isinstance(a, dict)
-        }
+        accounts_in, old_by_id = _incoming_accounts(request.qq, existing_qq)
         new_accounts: list[dict] = []
         for item in accounts_in:
             if not isinstance(item, dict):
@@ -427,24 +443,15 @@ async def update_config(request: UpdateConfigRequest):
                     (old_by_id.get(acct_id) or {}).get("msg_format") or "markdown")
             new_accounts.append(cfg_obj.to_dict())
         config["qq"] = {"accounts": new_accounts}
-        qq_enable_before = {
-            str(a.get("id") or ""): bool(a.get("enabled"))
-            for a in old_accounts if isinstance(a, dict)
-        }
-        qq_enable_after = {
-            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
-        }
+        qq_enable_before = _enabled_map(list(old_by_id.values()))
+        qq_enable_after = _enabled_map(new_accounts)
 
     # Update 微信接入端配置（账号列表，全量替换；凭证走扫码、不在配置里）
     wechat_enable_before: dict[str, bool] = {}
     wechat_enable_after: dict[str, bool] = {}
     if request.wechat is not None:
-        incoming = dict(request.wechat)
-        accounts_in = incoming.get("accounts")
-        if not isinstance(accounts_in, list):
-            accounts_in = []
         existing_wechat = config.get("wechat") if isinstance(config.get("wechat"), dict) else {}
-        old_accounts = existing_wechat.get("accounts") if isinstance(existing_wechat.get("accounts"), list) else []
+        accounts_in, old_by_id = _incoming_accounts(request.wechat, existing_wechat)
         new_accounts: list[dict] = []
         for item in accounts_in:
             if not isinstance(item, dict):
@@ -457,28 +464,15 @@ async def update_config(request: UpdateConfigRequest):
             _validate_account_id(cfg_obj.id)
             new_accounts.append(cfg_obj.to_dict())
         config["wechat"] = {"accounts": new_accounts}
-        wechat_enable_before = {
-            str(a.get("id") or ""): bool(a.get("enabled"))
-            for a in old_accounts if isinstance(a, dict)
-        }
-        wechat_enable_after = {
-            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
-        }
+        wechat_enable_before = _enabled_map(list(old_by_id.values()))
+        wechat_enable_after = _enabled_map(new_accounts)
 
     # Update 邮件接入端配置（账号列表，全量替换；password 留空/掩码 = 保留原值）
     email_enable_before: dict[str, bool] = {}
     email_enable_after: dict[str, bool] = {}
     if request.email is not None:
-        incoming = dict(request.email)
-        accounts_in = incoming.get("accounts")
-        if not isinstance(accounts_in, list):
-            accounts_in = []
         existing_email = config.get("email") if isinstance(config.get("email"), dict) else {}
-        old_accounts = existing_email.get("accounts") \
-            if isinstance(existing_email.get("accounts"), list) else []
-        old_by_id = {
-            str(a.get("id") or ""): a for a in old_accounts if isinstance(a, dict)
-        }
+        accounts_in, old_by_id = _incoming_accounts(request.email, existing_email)
         new_accounts: list[dict] = []
         seen_ids: set[str] = set()
         for item in accounts_in:
@@ -507,13 +501,8 @@ async def update_config(request: UpdateConfigRequest):
                     )
             new_accounts.append(cfg_obj.to_dict())
         config["email"] = {"accounts": new_accounts}
-        email_enable_before = {
-            str(a.get("id") or ""): bool(a.get("enabled"))
-            for a in old_accounts if isinstance(a, dict)
-        }
-        email_enable_after = {
-            str(a.get("id") or ""): bool(a.get("enabled")) for a in new_accounts
-        }
+        email_enable_before = _enabled_map(list(old_by_id.values()))
+        email_enable_after = _enabled_map(new_accounts)
 
     if not save_global_config(config):
         raise HTTPException(status_code=500, detail="Failed to save config")
