@@ -233,7 +233,11 @@ def cleanup_all_memory_git() -> int:
     removed = 0
     system_memory = SYSTEM_DATA_DIR / "memory"
     if system_memory.is_dir():
-        removed += cleanup_memory_git(system_memory)
+        # 单目录失败（权限/占用）只告警：清理是尽力而为，不能中断升级收尾
+        try:
+            removed += cleanup_memory_git(system_memory)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[memory] 清理系统 memory/.git 失败: %s", e)
     try:
         entries = load_workspaces_index()
     except Exception:  # noqa: BLE001 —— 索引读不出时只清系统工作区
@@ -246,7 +250,8 @@ def cleanup_all_memory_git() -> int:
             mem_dir = get_workspace_data_dir(uuid) / "memory"
             if mem_dir.is_dir():
                 removed += cleanup_memory_git(mem_dir)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[memory] 清理工作区 memory/.git 失败 (%s): %s", uuid, e)
             continue
     return removed
 class MemoryStore:

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -43,10 +45,37 @@ def _save_completed(data_dir: Path, steps: list[str]) -> None:
     atomic_write_json(_version_path(data_dir), {"steps": steps})
 
 
+_BACKUP_FILES = ("setting.json", "workspaces.json")
+
+
+def _backup_config_files(data_dir: Path) -> Path | None:
+    """迁移前把小型配置文件复制到备份目录（按时间戳，不覆盖旧备份）。"""
+    existing = [n for n in _BACKUP_FILES if (data_dir / n).is_file()]
+    if not existing:
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = data_dir / "backup" / "migrations" / stamp
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        for name in existing:
+            shutil.copy2(data_dir / name, target / name)
+    except OSError as e:
+        logger.warning("[migration] 备份配置失败: %s", e)
+        return None
+    logger.info("[migration] 配置备份: %s", target)
+    return target
+
+
 def run_pending(steps: list[tuple[str, Step]], data_dir: Path) -> list[str]:
-    """按顺序执行未完成的步骤；返回本次执行的步骤 id。"""
+    """按顺序执行未完成的步骤；返回本次执行的步骤 id。
+
+    首次执行任一步骤前，把 setting.json / workspaces.json 复制到
+    ``data/cili/backup/migrations/{时间戳}/``（失败只告警，不阻断）。
+    """
     done = load_completed(data_dir)
     executed: list[str] = []
+    if not all(step_id in done for step_id, _ in steps):
+        _backup_config_files(Path(data_dir))
     for step_id, step in steps:
         if step_id in done:
             continue

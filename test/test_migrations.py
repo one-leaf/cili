@@ -216,3 +216,20 @@ def test_migrate_legacy_file_urls_skips_undecodable(tmp_path):
 
     # 不可解码文件被跳过（告警），不抛异常
     assert migrate_legacy_file_urls(workspaces_json, lambda uuid: workspace) == 0
+
+
+def test_run_pending_backs_up_config_files(tmp_path):
+    from core.migrations import run_pending
+
+    (tmp_path / "setting.json").write_text('{"providers": {}}', encoding="utf-8")
+    (tmp_path / "workspaces.json").write_text("[]", encoding="utf-8")
+
+    run_pending([("s1", lambda: None)], tmp_path)
+
+    backups = list((tmp_path / "backup" / "migrations").iterdir())
+    assert len(backups) == 1
+    assert (backups[0] / "setting.json").read_text(encoding="utf-8") == '{"providers": {}}'
+    assert (backups[0] / "workspaces.json").exists()
+    # 已完成后再跑不产生新备份
+    assert run_pending([("s1", lambda: None)], tmp_path) == []
+    assert len(list((tmp_path / "backup" / "migrations").iterdir())) == 1
