@@ -119,7 +119,9 @@ def _on_authorized(
     return status
 
 
-set_authorized_hook(_on_authorized)
+def register_hooks() -> None:
+    """装配点显式注册换码成功回调（不再依赖 import 副作用）。"""
+    set_authorized_hook(_on_authorized)
 
 
 @router.post("/api/config/siwc/login", dependencies=_GUARDS)

@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
-import web.profile  # noqa: F401  —— import 副作用：注册 web 能力档案（Response Surface 用）
 from core.config import (
     GLOBAL_CONFIG_PATH,
     PROJECT_ROOT,
@@ -32,11 +31,6 @@ from core.session_registry import registry
 from core.session_runner import SessionRunner
 from core.teen_mode import get_teen_mode
 
-# Configure logging（root handler 由本模块首个配置，web_api 不再重复 basicConfig）
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 # master runner 池下沉至 core（接口无关），Web/QQ 等接入端共享同一份

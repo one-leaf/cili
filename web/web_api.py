@@ -50,8 +50,12 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理 - 启动/优雅关闭各全局单例（统一由 AppContext 持有）。"""
     # Web 接入端初始化（默认工作区 + 全局配置自检）。原先在 import web.deps 时
     # 隐式执行，改为在生命周期入口显式调用（幂等）。
+    import web.profile  # noqa: F401 —— 显式注册 Web 能力档案
     from web.deps import init_web_deps
     init_web_deps()
+
+    from web.routes_siwc import register_hooks as register_siwc_hooks
+    register_siwc_hooks()
 
     app_context.startup()
     yield
