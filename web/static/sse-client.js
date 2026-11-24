@@ -1,10 +1,10 @@
 // ── sse-client.js ── 全局 SSE 事件流客户端（master 工具流 + 子代理事件路由）
 // 子代理卡片的全部状态与渲染由 agent-cards.js 的 AgentCardStore 负责。
 // 依赖 app.js: currentWorkspace, currentSession, chatMessages, loadSession,
-//   setQueueState, _handleDeliveredBatch, addMessage, foregroundStreamSessionId,
+//   setQueueState, handleDeliveredBatch, addMessage, foregroundStreamSessionId,
 //   isSending, isStopping, updateComposerButtons
 // 依赖 utils.js: renderMarkdown
-// 依赖 chat.js: _toolStreamTimers, _activeTurnContainers
+// 依赖 chat.js: toolStreamTimers, activeTurnContainers
 
 // ── 全局状态 ──
 let _eventSource = null;          // 当前 EventSource
@@ -158,7 +158,7 @@ function handleBusEvent(e) {
         return;
     }
     if (e.type === 'user_message') {
-        const fresh = _handleDeliveredBatch(e);
+        const fresh = handleDeliveredBatch(e);
         if (foregroundStreamSessionId !== currentSession.session_id && fresh && e.content) {
             addMessage('user', e.content);
         }
@@ -233,7 +233,7 @@ function handleBusEvent(e) {
 // ── master 工具流 ──
 
 function handleMasterToolOutput(e) {
-    const entry = _toolStreamTimers[e.tool_use_id];
+    const entry = toolStreamTimers[e.tool_use_id];
     if (!entry) return;
 
     if (entry.delayTimer) {
@@ -252,7 +252,7 @@ function handleMasterToolOutput(e) {
 
 // 创建 master 工具输出气泡（chat.js startToolStreaming 的延迟定时器也调用，幂等）
 function ensureMasterToolBubble(toolUseId, toolName) {
-    const entry = _toolStreamTimers[toolUseId];
+    const entry = toolStreamTimers[toolUseId];
     if (!entry || entry.div) return;
     if (!currentSession || entry.sessionId !== currentSession.session_id) return;
 
@@ -274,7 +274,7 @@ function ensureMasterToolBubble(toolUseId, toolName) {
     contentDiv.appendChild(pre);
 
     div.appendChild(contentDiv);
-    const container = _activeTurnContainers.get(entry.sessionId) || chatMessages;
+    const container = activeTurnContainers.get(entry.sessionId) || chatMessages;
     container.appendChild(div);
 
     entry.div = div;
@@ -386,8 +386,8 @@ function _finalizeMasterResumeBlock() {
 // 重连时按已应用 offset 补拉 master 工具流（事件流丢失兜底）
 async function syncMasterToolStreams() {
     if (!currentWorkspace || !currentSession) return;
-    for (const id of Object.keys(_toolStreamTimers)) {
-        const entry = _toolStreamTimers[id];
+    for (const id of Object.keys(toolStreamTimers)) {
+        const entry = toolStreamTimers[id];
         if (!entry || !entry.div) continue;
         try {
             const url = `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/stream/${id}?offset=${entry.offset || 0}`;

@@ -438,8 +438,8 @@ const AgentCardStore = (() => {
 
     function _liveContainer() {
         try {
-            if (typeof _activeTurnContainers !== 'undefined' && currentSession) {
-                const container = _activeTurnContainers.get(currentSession.session_id);
+            if (typeof activeTurnContainers !== 'undefined' && currentSession) {
+                const container = activeTurnContainers.get(currentSession.session_id);
                 if (container) return container;
             }
         } catch (e) { /* 回退到 chatMessages */ }

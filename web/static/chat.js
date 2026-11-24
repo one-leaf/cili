@@ -16,14 +16,14 @@ function _isPendingPlaceholder(meta) {
 // 切走会话时 renderMessages 会清空消息区，容器随之脱离文档但**内容不丢**；
 // 切回时 renderMessages 把它重新挂回末尾 —— 于是切走之前与切走期间的输出
 // 都在，不必缓存事件再重放。
-const _activeTurnContainers = new Map();
+const activeTurnContainers = new Map();
 
 // 把当前会话在飞回合的输出容器挂到消息区末尾（幂等：已是末尾则原样）。
 // 由 renderMessages 在重建消息区之后调用 —— 这就是「切回会话即看到本回合
 // 完整输出」的实现点。
 function _reattachTurnContainer() {
     if (!currentSession) return;
-    const container = _activeTurnContainers.get(currentSession.session_id);
+    const container = activeTurnContainers.get(currentSession.session_id);
     if (container) {
         chatMessages.appendChild(container);
     }
@@ -36,7 +36,7 @@ function _reattachTurnContainer() {
 // 延迟5秒显示：快速执行的工具不会产生气泡闪烁
 // （有实时输出事件时 sse-client 会跳过延迟立即建气泡）
 
-const _toolStreamTimers = {};  // { tool_use_id: { delayTimer, pre, offset, div } }
+const toolStreamTimers = {};  // { tool_use_id: { delayTimer, pre, offset, div } }
 const _pendingAgentSpawnCalls = new Set();
 
 // 旧版工作流占位 tool_use（id = task-{8位hex}，用于生成 worker 卡）不渲染成
@@ -52,16 +52,16 @@ const TOOL_STREAMING_DELAY = 5000; // 5秒后才显示实时输出
 
 function startToolStreaming(toolUseId, toolName, sessionId) {
     if (!currentWorkspace || !currentSession) return;
-    if (_toolStreamTimers[toolUseId]) return;
+    if (toolStreamTimers[toolUseId]) return;
 
     // 先记录 entry；5 秒后若无 tool_output 事件，由延迟定时器创建气泡。
     // 记下所属会话：气泡只在仍查看该会话时创建，否则会塞进别的会话界面。
-    _toolStreamTimers[toolUseId] = {
+    toolStreamTimers[toolUseId] = {
         delayTimer: null, pre: null, offset: 0, div: null,
         sessionId: sessionId || currentSession.session_id,
     };
-    _toolStreamTimers[toolUseId].delayTimer = setTimeout(() => {
-        const entry = _toolStreamTimers[toolUseId];
+    toolStreamTimers[toolUseId].delayTimer = setTimeout(() => {
+        const entry = toolStreamTimers[toolUseId];
         if (!entry) return;
         entry.delayTimer = null;
         ensureMasterToolBubble(toolUseId, toolName);
@@ -69,7 +69,7 @@ function startToolStreaming(toolUseId, toolName, sessionId) {
 }
 
 function stopToolStreaming(toolUseId) {
-    const entry = _toolStreamTimers[toolUseId];
+    const entry = toolStreamTimers[toolUseId];
     if (entry) {
         // 清除延迟定时器（如果5秒内完成，气泡还没创建）
         if (entry.delayTimer) clearTimeout(entry.delayTimer);
@@ -77,13 +77,13 @@ function stopToolStreaming(toolUseId) {
         if (entry.div && entry.div.parentNode) {
             entry.div.remove();
         }
-        delete _toolStreamTimers[toolUseId];
+        delete toolStreamTimers[toolUseId];
     }
 }
 
 // 清理所有流式定时器（会话切换时调用）
 function clearAllToolStreaming() {
-    for (const id of Object.keys(_toolStreamTimers)) {
+    for (const id of Object.keys(toolStreamTimers)) {
         stopToolStreaming(id);
     }
     _pendingAgentSpawnCalls.clear();
@@ -1314,7 +1314,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
             const turnContainer = document.createElement('div');
             turnContainer.className = 'turn-stream';
             chatMessages.appendChild(turnContainer);
-            _activeTurnContainers.set(sessionId, turnContainer);
+            activeTurnContainers.set(sessionId, turnContainer);
             const addTurnMessage = (role, content) =>
                 addMessage(role, content, undefined, undefined, turnContainer);
             const scrollIfViewing = () => {
@@ -1355,7 +1355,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
 
             // 回合已结束并落盘：先 flush 节流中的渲染，再注销容器
             renderer.flush();
-            _activeTurnContainers.delete(sessionId);
+            activeTurnContainers.delete(sessionId);
 
             // Refresh session to get persisted state（仅当仍停留在该会话时，
             // 避免切走后把用户拉回旧会话）
@@ -1372,7 +1372,7 @@ function renderAskUserQuestions(container, input, toolUseId) {
             }
         } finally {
             // 异常路径下也要注销容器，避免它一直挂在消息区
-            _activeTurnContainers.delete(sessionId);
+            activeTurnContainers.delete(sessionId);
             // 只清理属于本会话的标志：期间可能已切走（此时 isSending 由切会话
             // 时的 loadSession 按新会话 /status 重置）或已在别的会话发起新请求
             if (currentSession && currentSession.session_id === sessionId) {
@@ -1522,7 +1522,7 @@ async function submitApprovalDecision(toolUseId, decision, card) {
         const turnContainer = document.createElement('div');
         turnContainer.className = 'turn-stream';
         chatMessages.appendChild(turnContainer);
-        _activeTurnContainers.set(sessionId, turnContainer);
+        activeTurnContainers.set(sessionId, turnContainer);
         const addTurnMessage = (role, content) =>
             addMessage(role, content, undefined, undefined, turnContainer);
         const scrollIfViewing = () => {
@@ -1557,7 +1557,7 @@ async function submitApprovalDecision(toolUseId, decision, card) {
             }
         }
         renderer.flush();
-        _activeTurnContainers.delete(sessionId);
+        activeTurnContainers.delete(sessionId);
         if (currentSession && currentSession.session_id === sessionId) {
             await loadSession(sessionId);
         }
@@ -1570,7 +1570,7 @@ async function submitApprovalDecision(toolUseId, decision, card) {
             addMessage('assistant', '提交审批失败: ' + error.message);
         }
     } finally {
-        _activeTurnContainers.delete(sessionId);
+        activeTurnContainers.delete(sessionId);
         if (currentSession && currentSession.session_id === sessionId) {
             isSending = false;
             isStopping = false;
@@ -1655,7 +1655,7 @@ function upsertQueuedItem(item) {
     renderQueueBar();
 }
 
-function _handleDeliveredBatch(event) {
+function handleDeliveredBatch(event) {
     // 同一批可能同时到达请求级帧与全局事件：按 item_ids 幂等
     const ids = event.item_ids || [];
     const fresh = ids.filter(id => !_deliveredQueueIds.has(id));
@@ -1933,7 +1933,7 @@ async function sendMessage() {
 
     // 用户消息挂好后再挂助手容器（DOM 顺序 = 显示顺序）
     chatMessages.appendChild(turnContainer);
-    _activeTurnContainers.set(sessionId, turnContainer);
+    activeTurnContainers.set(sessionId, turnContainer);
 
     // 主动发送是显式动作：无论此前是否在翻历史，都回底并恢复贴底
     scrollChatIfNearBottom(true);
@@ -1945,7 +1945,7 @@ async function sendMessage() {
     const renderer = createTurnStreamRenderer({
         sessionId, turnContainer, addTurnMessage, scrollIfViewing,
         onUserMessage: (event) => {
-            _handleDeliveredBatch(event);
+            handleDeliveredBatch(event);
             if (optimisticUserDiv && event.content) {
                 const contentDiv = optimisticUserDiv.querySelector('.message-content');
                 if (contentDiv) {
@@ -2019,7 +2019,7 @@ async function sendMessage() {
         // 回合已结束并落盘：先 flush 节流中的渲染，再注销容器。
         renderer.flush();
         // 注销容器：否则重拉会把「已落盘的完整回合」和容器里那份流式渲染各显示一遍。
-        _activeTurnContainers.delete(sessionId);
+        activeTurnContainers.delete(sessionId);
 
         // Refresh session to get persisted state（仅当仍停留在该会话时，避免切走后被拉回）
         if (currentSession && currentSession.session_id === sessionId) {
@@ -2033,7 +2033,7 @@ async function sendMessage() {
         }
     } finally {
         // 异常路径下也要注销容器，避免它一直挂在消息区
-        _activeTurnContainers.delete(sessionId);
+        activeTurnContainers.delete(sessionId);
         clearTimeout(window._stopPendingTimer);
         // 前台流已结束：无论是否还停留在该会话，本页都不再持有请求级流
         if (foregroundStreamSessionId === sessionId) {
