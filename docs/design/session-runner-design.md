@@ -1,638 +1,123 @@
-# SessionRunner 架构设计文档
+# Session Runner 设计
 
-本文档描述 Cili 的核心 SessionRunner 架构设计，包括 BaseSessionRunner 基础设施、统一 SessionRunner 类（`core/session_runner.py`）以及角色 JSON 配置驱动的行为分叉。
+> 按当前实现重写（2026-11-25）。
 
-> **LLM API 接口细节**请参考 [LLM API 参考文档](llm-api-reference.md)
->
-> **会话管理**请参考 [会话管理设计文档](session-management-design.md)
->
-> **工具系统**请参考 [工具系统设计文档](tool-system-design.md)
-
----
-
-## 目录
-
-- [一、整体架构](#一整体架构)
-- [二、BaseSessionRunner 设计](#二basesessionrunner-设计)
-- [三、统一 SessionRunner 与角色配置](#三统一-sessionrunner-与角色配置)
-- [四、interactive 模式（master）](#四interactive-模式master)
-- [五、autonomous 模式（worker/lite）](#五autonomous-模式workerlite)
-- [六、委派会话消息结构](#六委派会话消息结构)
-- [七、Thinking 处理](#七thinking-处理)
-- [八、关键设计决策](#八关键设计决策)
-
----
-
-## 一、整体架构
+## 一、分层
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        用户界面 (Web UI)                         │
-│                    web/web_api.py + static/                      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ SSE / REST API
-┌──────────────────────────────▼──────────────────────────────────┐
-│                         BaseSessionRunner                               │
-│                     core/base_session_runner.py                          │
-│                                                                  │
-│   统一基础设施:                                                   │
-│   - self.messages (消息管理)                                     │
-│   - 工具执行 (外部文件存储)                                       │
-│   - 3 层自动压缩                                                 │
-│   - LLM 调用 (流式/非流式)                                       │
-│   - usage 追踪                                                   │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │ 继承
-┌──────────────────────────▼───────────────────────────────────────┐
-│                       SessionRunner（统一类）                     │
-│                      core/session_runner.py                               │
-│   run() 按 role_cfg.mode 分叉：                                   │
-│   - interactive → _run_interactive（master，Web 聊天入口）         │
-│   - autonomous → _run_autonomous（worker/lite，自主执行）         │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │ load_role() 加载
-┌──────────────────────────▼───────────────────────────────────────┐
-│                      角色 JSON 配置                               │
-│              core/agents/master.json / worker.json / lite.json   │
-│   字段：mode / tools 白名单 / skills / 行为开关 / max_iterations / │
-│         system_prompt.blocks / user_layers                       │
-│   prompt 拼装：core/prompt_builder.py（块生成器 + user 层注入）     │
-│   模型：config.{role}_model or config.model                       │
-└──────────────────────────────────────────────────────────────────┘
+core/base_session_runner.py      BaseSessionRunner：状态与兼容转发层（消息、用量、sink）
+core/session_runner.py           SessionRunner：唯一子类，按 role 分叉（interactive / autonomous）
+core/session_runner_runtime/
+  conversation.py                ConversationStore：消息状态、提交视图、用量记账
+  executor.py                    TurnExecutor：一轮执行（压缩→LLM→工具→落盘/事件）
+  loop.py                        Loop / LoopPolicy / PhaseMachine：回合循环与预算/阶段
+  tool_batch.py                  工具批执行（并发安全工具并行）
+core/session_registry.py         SessionRegistry：runner 池、运行权认领、Attachment
+core/output_sink.py              OutputSink：9 个回调的统一输出接收端
+core/turn_dispatch.py            prepare_turn / execute_turn：接入端共享的回合驱动
+core/turn_hooks.py               回合后钩子（记忆提取、git 自动提交）
+core/turn_queue.py               用户回合排队
+core/session_control.py          快照/停止回合/停止后台
+core/session_purge.py            会话删除唯一顺序
+core/compression.py              消息压缩工具（microcompact/token 计数）
 ```
 
-核心变化：**不再有 RootAgent / SessionRunner 两个子类**。二者合并为一个统一 `SessionRunner` 类，行为差异完全由角色 JSON（`mode` 字段）驱动：
-
-- `mode="interactive"`（master）→ 原 RootAgent 行为：Web 聊天入口、会话持久化、流式回调、ask_user/审批、可恢复循环
-- `mode="autonomous"`（worker/lite）→ 原子代理行为：pinned 任务消息 → 自主执行循环 → 可选检查阶段 → 兜底总结，`run()` 返回结构化 dict
-
----
-
-## 二、BaseSessionRunner 设计
-
-### 2.1 职责
-
-BaseSessionRunner 是统一 SessionRunner 类的基类，提供所有角色共用的执行基础设施：
-- 消息管理（`self.messages` 列表）
-- 工具执行（外部文件存储）
-- 3 层自动压缩
-- LLM 调用（流式/非流式）
-- usage 追踪
-
-子类（统一 `SessionRunner`）通过角色配置定制：工具白名单、系统提示拼装、行为开关。
-
-### 2.2 核心方法
-
-```python
-class BaseSessionRunner:
-    def __init__(
-        self,
-        config: Config,
-        workspace_uuid: str = "",
-        cwd: str = "",
-        session_dir: Path | None = None,  # 持久化路径
-        stop_check: Callable[[], bool] | None = None,
-        max_iterations: int = 50,  # 由 SessionRunner 传入角色配置的 max_iterations
-    ):
-        self.messages: list[dict] = []       # 消息列表（权威源）
-        self.session_dir = session_dir       # 保存路径
-        self.max_iterations = max_iterations
-
-    # 消息管理
-    def add_message(role, content, meta=None)     # 添加消息（meta 如 {"pinned": True}）
-    def save_messages(metadata)              # 保存到 session_dir/index.json
-    def load_messages() -> bool              # 从文件加载
-    def get_valid_messages(strip_meta=True) -> list[dict]  # 过滤无效消息
-
-    # 工具执行
-    def _execute_tool(name, input, tool_use_id) -> dict
-    def _resolve_tool_results(messages) -> list[dict]
-    def _pad_dangling_tool_results()          # 为悬挂 tool_use 补占位 tool_result
-
-    # 压缩
-    def _check_and_compress()                # 3 层压缩
-
-    # LLM 调用
-    def _call_llm(streaming, system_prompt) -> LLMResponse
-    # 失败语义：内部重试耗尽后抛 RuntimeError（format_llm_error 文本），
-    # 由调用方捕获处理；用户停止返回 stop_reason="stopped"，不算错误
-
-    # 生命周期
-    def stop()                               # 设置 _stopped = True（可随时中断）
-    def is_running() -> bool
-    def close()                              # 关闭工具与 LLM 客户端
-```
-
-### 2.3 消息压缩
-
-BaseSessionRunner 在每次 LLM 调用前自动执行三层压缩，详见 [`docs/design/compression-design.md`](./compression-design.md)。`pinned` 标记的消息（任务、检查提示等核心锚点）在完整压缩中永不标记失效。
-
-### 2.4 执行循环
-
-```
-用户输入 → 添加消息 → 自动压缩检查 → 调用 LLM → 解析工具调用
-    ↑                                              ↓
-    └──── 工具结果 ← 执行工具 ← 有工具调用？←──────┘
-                                                    ↓ (无工具调用)
-                                              返回最终响应
-```
-
----
-
-## 三、统一 SessionRunner 与角色配置
-
-### 3.1 职责与 mode 分叉
-
-统一 `SessionRunner` 类（`core/session_runner.py`）继承 BaseSessionRunner，构造时加载角色配置，`run_mode`（默认取 `role_cfg.mode`）决定运行分叉：
-
-- `interactive`（master）→ `run(user_input, sink=...)` 返回 `None`，Web 聊天入口，保留 `resume_after_ask_user` / `switch_session` / `reload_config` / `compact` 等接口
-- `autonomous`（worker/lite）→ `run()` 返回 dict（`status` / `summary` / `stats` / `usage` 等），pinned 任务消息 → 循环 → 可选 check 阶段 → 兜底总结
-
-> **role 与 run_mode 解耦**：`role` 决定画像（工具白名单/提示/预算），`run_mode` 决定循环行为
-> （interactive/autonomous）。默认 `run_mode=None` 时取角色 JSON 的 `mode`；接口层可显式覆盖
-> （例如 QQ 接口想要 interactive 行为但非 master 画像）。
->
-> **master_session_id（LLM 会话头）**：master 为自身会话 id；sub agent 由创建方（session
-> 工具）透传同一 id，嵌套委派逐级透传根 id。该值进入所有 LLM 请求的 backend 会话头
-> （如 litellm 的 `x-litellm-session-id`），供网关聚合同一会话的全部请求（含子代理）。
-> `switch_session` 切换会话时同步更新。
-
-```python
-class SessionRunner(BaseSessionRunner):
-    def __init__(
-        self,
-        config: Config,
-        role: str = "master",       # 角色名（master/worker/lite）
-        cwd: str | None = None,
-        workspace_uuid: str = "",
-        task: str = "",             # autonomous 模式的任务描述
-        plan: list[str] | None = None,  # autonomous 模式的可选执行计划
-        session_dir: Path | None = None,  # autonomous 模式的消息持久化目录
-        stop_check: Callable[[], bool] | None = None,
-        exec_id: str = "",          # autonomous 模式的执行 ID（作为 session 标识）
-        approval_store=None,        # autonomous 模式共享的会话级审批存储
-        max_consecutive_failures: int | None = None,  # None 时取角色配置
-        run_mode: str | None = None,  # 运行模式覆盖；None 时取角色 JSON 的 mode
-        master_session_id: str = "",  # master 的 session id（LLM 会话头用；sub agent 由创建方透传）
-        initial_session: SessionStore | None = None,  # interactive 直接使用的会话（fork 分支）
-    ):
-        self.role = role
-        self.role_cfg = load_role(role, config)
-        self.model = config.model_for_role(role)   # 未知角色回退 master 并告警
-        self._mode = run_mode or self.role_cfg.mode
-
-        if self._mode == "interactive":
-            self._init_interactive(workspace_uuid, initial_session=initial_session)
-        else:
-            self._init_autonomous(task, plan, exec_id, session_dir, stop_check,
-                                  master_session_id)
-
-        super().__init__(
-            config=config, workspace_uuid=workspace_uuid, cwd=self._cwd_init,
-            session_dir=init_session_dir, stop_check=stop_check,
-            max_iterations=self.role_cfg.max_iterations,
-        )
-        # ...
-        self._streaming = self.role_cfg.streaming
-        self._rebuild_tools()
-        self._system_prompt = self._build_system_prompt()  # autonomous 用缓存
-```
-
-`run()` 按 mode 分派：
-
-```python
-def run(self, *args, **kwargs):
-    """统一入口：按 run_mode 分派。
-
-    interactive → run(user_input, sink=OutputSink(...))（Web 聊天入口）
-    autonomous → run() → dict（pinned 任务 → 循环 → 检查 → 兜底总结）
-    """
-    if self._mode == "interactive":
-        return self._run_interactive(*args, **kwargs)
-    return self.loop.run_autonomous()
-```
-
-### 3.1.1 输出接收端（OutputSink）
-
-runner 不关心输出发往何处。所有回调收敛为一个 `OutputSink`（`core/output_sink.py`）：
-
-- `runner.default_sink`：随 runner 存活（Web 设为「工具实时输出 + 后台恢复 → 全局事件总线」）
-- `run(sink=...)` / `resume_after_ask_user(sink=...)`：本次运行的活动 sink；未传时回退 `default_sink`，
-  传入时用 `layer_sink()` 以 default_sink 为底、仅覆盖显式设置的字段（保留 `on_tool_output` 等）
-
-各接入端（Web SSE / QQ / ...）各自构造一个 OutputSink；`web/deps.py::_make_sse_callbacks()` 即 SSE 版。
-
-### 3.2 角色 JSON 配置
-
-角色定义位于 `core/agents/{role}.json`（系统级、随代码库提交），由 `core/role_config.py` 的 `load_role(role, config)` 加载为 `RoleConfig`。任何 JSON 缺失的字段使用 `_DEFAULTS` 兜底。
-
-`RoleConfig` 字段：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | str | 角色名（master/worker/lite） |
-| `label` | str | 显示名 |
-| `mode` | str | `interactive` 或 `autonomous`（仅这两值合法） |
-| `tools` | list[str] | 工具白名单，`create_tools(role_cfg, ...)` 按此实例化 |
-| `deferred_tools` | list[str] | 延迟加载工具白名单：schema 默认不发给 LLM，经 tool_search 激活后才暴露（如 browser、todo、latex 等） |
-| `skills` | list[str] | 可见技能，`[]` 或 `["*"]`（全部可见） |
-| `streaming` | bool | 是否流式输出（所有角色默认均流式） |
-| `ask_user` | bool | 是否允许 ask_user 工具 |
-| `approval` | bool | 是否启用高风险命令审批 |
-| `session_persistence` | bool | 是否会话持久化 |
-| `check_phase` | bool | autonomous 是否启用检查阶段 |
-| `budget_notice` | bool | autonomous 是否注入迭代额度预警 |
-| `progress_persistence` | bool | autonomous 是否实时保存进度 |
-| `mcp` | bool | 是否注入已配置的 MCP 服务器工具（master/worker 为 true） |
-| `max_iterations` | int \| None | None → 取 `config.system.max_iterations`（默认 200） |
-| `max_consecutive_failures` | int | 连续失败次数上限（默认 5） |
-| `max_tokens` | int \| None | 角色级输出上限；None → 继承角色模型的 `max_tokens`；设置后取 `min(角色值, 模型上限)` |
-| `system_prompt` | dict | `{"blocks": [...]}` 系统提示块声明 |
-| `user_layers` | list[dict] | 需注入的 user 消息层声明 |
-
-### 3.3 三个角色概览
-
-| | master | worker | lite |
-|---|--------|--------|------|
-| **mode** | `interactive` | `autonomous` | `autonomous` |
-| **工具白名单** | 28 个（20 常驻 + 8 deferred 延迟加载；含 read_image、clock、session_search、tool_search、office2pdf、send_user_file） | 25 个（18 常驻 + 7 deferred；read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/agent/office2pdf/tool_search，延迟 browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
-| **skills** | `["*"]` | `["*"]` | `[]` |
-| **streaming** | ✓ | ✓ | ✓ |
-| **ask_user** | ✓ | ✗ | ✗ |
-| **approval** | ✓ | ✗ | ✗ |
-| **session_persistence** | ✓ | ✗ | ✗ |
-| **check_phase** | ✗ | ✓ | ✗ |
-| **budget_notice** | ✗ | ✓ | ✗ |
-| **progress_persistence** | ✗ | ✓ | ✓ |
-| **max_iterations** | null → system（200） | null → system（200） | 200 |
-| **max_tokens** | 32768 | 32768 | 8192 |
-| **system_prompt.blocks** | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + skills + text(security) + dynamic_boundary + context | text(role) + tools + text(security) + dynamic_boundary + context |
-| **user_layers** | claude_md | task + runtime | task |
-
-### 3.4 模型选择
-
-- 角色 JSON **不含 model 字段**。`SessionRunner` 构造时取 `config.model_for_role(role)`。
-- `Config` 模型配置为 providers + agents 两级（详见 workspace/models-provider-design.md）：角色字段是模型引用字符串，worker/lite 未配置时继承 master；`resolve_model()` 合成运行时 ResolvedModel。
-- `reload_config()` 从磁盘重载配置、重建 LLM 客户端与工具集（先创建新客户端，成功后再关闭旧客户端，避免失败后 `self.client` 指向已关闭的实例）。
-
-### 3.5 配置化 prompt（core/prompt_builder.py）
-
-系统提示词不再由硬编码模板常量拼接，而是按角色 JSON 的 `system_prompt.blocks` 顺序拼装：
-
-- `SYSTEM_BLOCK_GENERATORS`：块类型 → 生成器
-  - `text`：返回固定文案（`block.content`，字符串或字符串数组按行拼装）
-  - `tools`：从实际加载的工具实例生成工具列表段
-  - `skills`：从角色可见技能生成技能列表段
-  - `context`：动态环境上下文（日期/workspace/内存等），session 内缓存
-- `dynamic_boundary`：静态区/动态区分界标记，`adapter` 层据此设置 `cache_control`
-- `build_system_prompt(runner)`：按 blocks 顺序拼接「启用且非空」的块。`SessionRunner._build_system_prompt()` 委托给它。
-
-注入型 user 层（`USER_LAYER_GENERATORS`）：
-
-- `claude_md`：每次从磁盘重读项目指令（agent.md/CLAUDE.md），**不持久化**到消息历史
-- `task` / `runtime`：由 `SessionRunner` 按 `role_cfg` 布尔开关运行时写入历史（pinned 任务消息、预算/检查/超时提示），不在生成器表内
-
-> 注：`context`（动态环境上下文）已迁移为 system prompt 的 `context` 块（动态区，session 内缓存），不再作为 user 层注入。
-
-`SessionRunner._get_messages_with_header()` 在 BaseSessionRunner 版基础上：遍历 `role_cfg.user_layers`，把启用且存在的生成器产出追加为注入消息，再调用 `assemble_context(messages, inject)`：
-
-- 注入消息恒排在最前；若历史第一条也是 user（如 pinned 任务消息），二者合并为一条
-- 合并后**连续 user 消息自动合成一条**，保证角色交替（满足 OpenAI/Bedrock 约束）
-- 返回新列表，不修改入参；合并保留第一条的 `_meta`（id/pinned 等）
-
----
-
-## 四、interactive 模式（master）
-
-### 4.1 职责
-
-`mode="interactive"` 即 master 角色（原 RootAgent 行为），用于 Web 聊天交互：
-- 流式输出（`streaming=True`，可通过 `run(streaming=...)` 关闭）
-- Session 会话持久化
-- 最多 `max_iterations` 次迭代（取自角色配置，master 为 `config.system.max_iterations`）
-- 回调支持（on_text, on_thinking, on_tool_call, on_tool_result, on_session_start, on_session_complete）
-
-### 4.2 初始化与接口
-
-```python
-def _init_interactive(self, workspace_uuid: str) -> None:
-    # 工作区 sessions 目录
-    self.sessions_dir = get_workspace_data_dir(workspace_uuid) / "sessions"
-    self.sessions_dir.mkdir(parents=True, exist_ok=True)
-    # 会话管理器：加载已有会话或创建默认会话
-    self.session = Session("", self.sessions_dir)
-    ...
-    # 共享消息列表（同一引用，非拷贝）
-    self.messages = self.session.messages
-    self._usage = self.session.get_usage()
-    # 会话级高风险命令审批存储（内存，不持久化），根/子代理共享
-    self.approval_store = ApprovalStore()
-
-# 其他接口
-def reload_config()          # 重载配置并重建 LLM 客户端/工具集
-def resume_after_ask_user(sink=None)  # ask_user 工具返回后恢复循环
-def resume_from_notification(sink=None)  # 后台通知待处理时恢复循环（不追加用户消息）
-def attach_session(store)    # 附着到 SessionStore（切换/新建会话共用）
-def switch_session(sid)      # 切换会话（加载已存在的）
-def reset()                  # 清空对话历史
-def get_usage()              # 返回 usage 统计（与会话同步）
-def compact()                # 手动压缩（_perform_full_compact(3)）
-def cleanup()                # 清理资源并保存会话
-```
-
-### 4.3 核心循环
-
-```python
-def _run_interactive(
-    self,
-    user_input: str | list[dict],
-    sink: OutputSink | None = None,
-    streaming: bool = True,
-) -> None:
-    """执行一轮 agent 循环"""
-    self._stopped = False
-    self._running = True
-    self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
-    self._streaming = streaming
-    self.sink = layer_sink(self.default_sink, sink)  # 未覆盖的字段继承 default_sink
-
-    try:
-        # 添加用户消息（项目指令不在此注入，而在 _get_messages_with_header()
-        # 中每次 LLM 调用时从磁盘重读并动态注入，不持久化到消息历史）
-        self.add_message("user", user_input)
-        # 进入 agent 循环
-        self.loop.run_interactive()
-    finally:
-        self._running = False
-        # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
-        if getattr(self, "session", None) is not None:
-            self._sync_to_session()
-            self.session.save()
-```
-
-循环编排在 `core/session_runner_runtime/loop.py`：`_run_interactive()` 调用
-`self.loop.run_interactive()` → `Loop._run_loop(autonomous=False)`。交互与自主共用
-同一 while 骨架，仅两处分叉：无工具调用时的出口（交互 → 回合结束；自主 → 交付/转检查）
-与工具批 handler（交互 → 审批/占位；自主 → 降级审批/熔断/进度落盘）。
-
-```python
-class Loop:
-    def run_interactive(self) -> None:
-        """交互回合循环主体（run()/resume_* 薄入口调用）。"""
-        # 入口排空：用户发新消息前后台子代理已完成的通知，注入 messages
-        self._drain_session_notifications()
-        runner._sync_to_session()
-        runner.session.save()
-        self._run_loop(autonomous=False)
-```
-
-- 迭代计数用 `runner._turn_iterations`（resume 路径累计不重置），达 `max_iterations` 时提示用户继续
-- 每轮 `_call_llm()`（`Runner.run_round` 内部先压缩）→ 添加 assistant 消息 → 有工具调用则批执行并落盘，无工具调用则回合结束
-- `ask_user`/`agent` 占位（`_meta.completed=False`）或合成审批卡时，批处理完退出等待外部输入
-
-### 4.4 权限（permission）
-
-master 与 autonomous 子代理共享 `PermissionRules` / `PermissionStore` / `PermissionPolicy`：
-
-- 工具执行返回 `_meta[META_KEY]` 占位时，占位携带 `verdict`（`allow/ai/ask/deny`）；
-- `Loop._resolve_permission_results` 分派：`deny` → 黑名单拒绝 + 审计；`ask` → 有通道合成确认卡、无通道拒绝；`ai` → lite 判定；
-- `ai` 判定 `allow` 可按 `judge.persist_allow` 落盘 `decision=allow` 规则并原地重执行；`ask/deny` 不落盘；
-- `_handle_permission_required(approval)` 合成 `ask_user` 卡片，随后暂停循环等待回答（消息配对顺序不变：`[assistant tool_use...] → [tool_result...] → [assistant ask_user tool_use] → [user ask_user 占位]`）；
-- worker/lite 无询问通道：`_downgrade_permission_result()` 把占位降级为普通错误，不挂起；
-- 根/子代理共享同一 `PermissionStore` / `PermissionRules`，主代理批准或规则对子代理生效。
-
----
-
-## 五、autonomous 模式（worker/lite）
-
-### 5.1 职责
-
-`mode="autonomous"` 即 worker/lite 角色（原子代理行为），用于 agent 工具委派：
-- `run()` 返回结构化 dict：`{"status", "summary", "stats", "usage", ...}`
-- 隔离执行环境，避免污染主会话上下文
-- 支持并行处理多个独立任务（后台线程）
-
-### 5.2 执行流程：目标→计划→执行→检查
-
-```python
-def _run_autonomous(self) -> dict[str, Any]:
-    """Execute autonomous loop with check phase, return structured result.
-
-    Flow: 目标→计划→执行→检查
-    """
-    # 构建 pinned 任务消息（任务 + 计划，免疫压缩）
-    self.add_message("user", self._build_task_message(), meta={"pinned": True})
-
-    # 主循环 → 无工具调用时：
-    #   - 未进入检查阶段 → 注入 _CHECK_PROMPT（pinned）进入检查阶段
-    #   - 已在检查阶段   → 任务真正完成，返回 {"status": "completed", ...}
-    for i in range(self.max_iterations):
-        ...
-```
-
-各阶段要点：
-
-1. **目标+计划**：`_build_task_message()` 作为第一条 user 消息注入，带 `_meta.pinned=True` 标记，压缩时始终保留。内容含 Objective、可选的 Execution Plan、迭代额度说明，以及下放的「主代理会话已批准命令」（`build_approved_commands_section`）。
-2. **执行**：主循环，LLM 自主调用工具完成任务。全部角色流式输出（`streaming=True`），可通过 `stop()` 随时中断（`_stopped`）。
-3. **检查**（仅 worker，`check_phase=True`）：主阶段结束后注入 `_CHECK_PROMPT`（pinned），要求 LLM 重新阅读任务目标与执行计划、用工具取证逐项核对执行结果、发现遗漏立即修复，最终总结须列出已验证/未验证项及修复内容；总结前回顾任务，将非显然的可复用知识用 `memory` 工具主动沉淀。检查阶段迭代上限由 `role_cfg.check_iterations` 控制：默认 `max(main_iterations, 10)` 次额外迭代；worker 设为 `null`（不设上限），仅由总迭代额度兜底，可在角色 JSON 调整。
-4. **兜底总结**：迭代额度耗尽（timeout）时，`_wrapup_timeout_summary()` 直接调用 `client.chat`（**不传 tools**）生成一次执行总结，杜绝兜底调用再次触发工具循环。
-
-### 5.3 返回状态
-
-`run()` 返回 dict，`status` 取值为：
-
-| status | 含义 |
-|--------|------|
-| `completed` | 正常完成（含检查阶段确认完成） |
-| `stopped` | 用户/父代理主动停止 |
-| `error` | LLM 调用失败（内部重试耗尽） |
-| `failed` | 连续失败次数达到 `max_consecutive_failures` |
-| `timeout` | 迭代额度耗尽（`wrapped_up=True` 表示兜底总结成功） |
-| `handoff` | 迭代额度耗尽但产出续任交接文档（内部信号；AgentRun 由下一 epoch 接管） |
-
-返回字段：`status` / `summary`（或 `message`）/ `stats`（嵌套 iterations/message_count/tool_call_count）/ `usage`，检查完成时含 `check_iterations`，预算兜底下含 `budget_wrapup=True`。
-
-> `run()` 返回值里的 `handoff` 是内部续任信号；落盘与事件对外只用下节的 `status`/`phase` 词表。
-
-### 5.3.1 执行状态与阶段（status / phase）
-
-执行日志（`{exec_dir}/index.json` 的 `metadata`）与 `session_progress` 事件使用两个正交字段：
-
-- **status**：生命周期，只有 `running` 与终态集合 `completed / failed / error / timeout / stopped`。
-  `TERMINAL_STATUSES`（`core/session_runner.py`）为唯一权威定义。
-- **phase**：当前阶段，仅在 `status=running` 时有意义：
-  `initializing / running / check / handoff / finalizing / done`。
-
-规则：
-
-1. **阶段不得写进 status**——历史上检查阶段以 `status="check"` 广播，前端按「非 running = 已结束」渲染，导致检查期间卡片误显示「任务已结束」。
-2. 进入检查阶段、检查通过收尾时，`_save_progress(..., force=True)` 立即广播阶段切换，不等下一批工具调用。
-3. `handoff`（迭代耗尽待续任）落盘为 `status=running, phase=handoff, exit_reason=handoff`；终态落盘 `phase=done`。
-4. 前端只在收到终态时把子代理卡片标为「任务已结束」；`running` + `phase=check/handoff` 分别显示「任务检查中 / 任务续跑中」。
-
-### 5.4 行为开关
-
-- **budget_notice**（worker）：`_inject_budget_notice(i)` 在迭代进行到 `max_iterations * 0.8`（额度预警）与 `* 0.95`（额度即将耗尽）时各注入一次 user 预警消息。用 **list content** 注入（而非 string），避免 `_find_split_by_user_messages` 的 string 计数被推过阈值、导致 full compact 挤掉 pinned 任务消息。预算兜底（final 已触发）时跳过检查阶段，直接交付总结。
-- **progress_persistence**（worker/lite）：`_save_progress()` 每轮实时写 `{exec_dir}/index.json`，保证文件始终有 `exec_id` 和 `task`（`Session.load_agent_log()` 可直接读取，前端可实时查看进度）。
-- **无 ask_user/审批**：worker/lite 无 ask_user 工具，`_downgrade_approval_result()` 把「需用户批准」的结果降级为普通错误（提示换用非拦截命令），不挂起不询问。主代理批准过的命令通过共享 `ApprovalStore` 直接下放执行。
-
-### 5.5 worker 与 lite 的差异
-
-| 维度 | worker | lite |
-|------|--------|------|
-| 工具集 | 25 个（18 常驻：read/read_image/write/edit/bash/pwsh/grep/glob/web_search/memory/python/clock/read_tool_result/session_search/skill/agent/office2pdf/tool_search；7 延迟：browser/todo/latex/message_bus/temp/loop/pdf2markdown） | 7 个（read/write/edit/bash/python/message_bus/clock） |
-| 检查阶段 | ✓（`check_phase=True`） | ✗ |
-| 预算预警 | ✓（`budget_notice=True`） | ✗ |
-| 迭代上限 | null → system（默认 200） | 200 |
-| 适用场景 | 复杂/耗时任务 | 简单文件读写改造 |
-
----
-
-## 六、委派会话消息结构
-
-主会话通过 tool_use + tool_result 消息对存储 `agent` 调用，子代理自己的完整执行日志存储在独立目录。
-
-`agent` 工具（`core/tools/agent_tool.py`）委派逻辑：
-
-- 生成 `exec_id`（`exec_{8位hex}`，`ExecLogStore._generate_exec_id()`，`core/session.py`）
-- 创建 `{主会话 session_dir}/{exec_id}/` 目录
-- 构造统一 SessionRunner：`SessionRunner(config, role=subagent_type, task, plan, workspace_uuid, cwd, stop_check, session_dir=exec_dir, exec_id=exec_id, approval_store=共享)`，`subagent_type` 为 `worker`（默认）或 `lite`
-- **同步模式**（默认）：后台线程运行 `session_runner.run()` 并阻塞等待结果，主循环无需外部恢复；`run_in_background=True` 则立即返回 `agent_id`，用统一 `action` 枚举管理（`action="status"` 查状态、`action="stop"` 终止、`action="list"` 列出）
-- 子代理用量**不在工具层转发**：每个 runner 把自己的累计用量写进各自 exec 日志的 `metadata.usage`，会话总量在读取时聚合（见 §6.2）；完成后由 `SessionRunner._finalize` 单写执行日志，并触发 `on_session_start`/`on_session_complete` 回调（推送 SSE 事件）
-
-#### 两级停止（2026-11-15）
-
-- **红方块 = `stop_turn`**：只停 master 回合及其前台子树（同步子代理），后台 agent/shell 保留；
-- **黄方块/徽标 = `stop_background`**：停本会话全部后台执行（agent + shell + tool_job + cron），不要求 master 正在运行；
-- 停后台时任务只置 `stop_requested` / `suppress_auto_resume`，由 `runner.run()` 自然收尾并写 `stopped` 终态；不从 `BackgroundTaskManager` 立即移除，避免丢失卡片终态与 epoch 归档；
-- 被停任务完成后仍向 mailbox 写 `stopped` 通知，但不发布 `background_runner_resume`、不调用 `on_background_complete`，避免自动复活；
-- 后台任务按 `workspace_uuid + master_session_id` 归属；嵌套子代理及其后台 shell 归到根会话。
-
-### 6.2 用量记账（各自记账 + 读取时聚合）
-
-- **单一写入者**：每个 runner 只记录自己的 LLM 用量（`ConversationStore._usage`），进度/收尾时整体写入 `{exec_dir}/index.json` 的 `metadata.usage`。
-- **epoch 续任**：续任 runner 以 `usage_base` 播种上一 epoch 的累计值，因此每个 exec 日志里的 `usage` 始终是该 AgentRun 的累计值；续任链把上一 epoch 的 `result.usage` 作为下一 epoch 的 `usage_base`。
-- **会话总量在读取时聚合**：`core.session.usage_total_for_session_dir(session_dir, base)` = 主会话自身用量 + 所有 `exec_*/index.json` 的 usage（含 per-model 分桶）；`SessionStore.get_usage_total()` 供 `/context`、「关于会话」时间线等读取端使用。
-- **工具层不接触会话用量**：`agent`/后台委派的上下文中不存在 `session.update_usage` / `on_usage` 回调；worker/lite 的会话对象退化为最小身份（`SessionIdentity`：`session_id` / `session_dir` / `master_session_id`），从类型上就不存在误调会话写方法的可能。
-- **好处**：同步/后台/续任/多层委派同一语义；进程重启不丢账（用量已持久化在执行记录里）；每层执行详情看到的用量都是真实值。
+`BaseSessionRunner` 的压缩/循环/工具执行实现均在 runtime；基类保留状态与转发，
+以保证测试与子类兼容。
+
+## 二、角色分叉
+
+`SessionRunner.__init__(config, role=, cwd=, workspace_uuid=, session=…, exec_id=…)`：
+
+| role | mode | 会话 | 特点 |
+|---|---|---|---|
+| master | interactive | SessionStore（持久，可切换/分叉） | 用户通道（ask_user/审批卡），工具最全 |
+| worker | autonomous | SessionIdentity（仅标识与目录） | 无用户通道，可续轮（continuation） |
+| lite | autonomous | SessionIdentity | 工具最少，用于判定器/轻任务 |
+
+- 角色定义在 `core/agents/{master,worker,lite}.json`（`core/role_config.py` 加载）。
+- 模型解析：`config.model_for_role(role)`；会话级覆盖存 `metadata.model_ref`。
+- 工具实例化：`kind` 由 `registry.create_tools(ToolBuildContext)` 按白名单创建；
+  `_eligible_tools()` 再做接口门控与服务端工具门控。
+
+## 三、一轮执行（TurnExecutor）
+
+`run_round(streaming, system_prompt)`：
+
+1. `_check_and_compress()`：三层压缩（`core/compression` + full compact 摘要）。
+2. `build_projected_messages()`：按图片历史策略投影（`images.history_mode`：full / current_turn；
+   current_turn 下历史图片降级为路径引用，并受请求体预算约束）。
+3. 调用 LLM（`core/llm` client，流式/非流式；413 去图重试、重试清屏哨兵）。
+4. 工具调用：`tool_batch` 分批（`concurrency_safe` 并行，其余串行）；`execute_tool`
+   负责占位、流式输出文件、结果外置、截断与 `_meta`（含 `ask_user_completed` 占位语义）。
+5. 落盘：`ConversationStore.sync_to_session()` 写 index.json commits；事件经 `OutputSink`。
+
+`Loop`（`loop.py`）：
+
+- `run_interactive()`：直到无工具调用、预算触顶或外部等待（ask_user/审批卡）。
+- `run_autonomous()`：迭代上限、check 阶段、预算收尾、失败计数；返回结果 dict。
+- 预算文案、阶段机、失败阈值由 `LoopPolicy` 提供。
+
+## 四、回合驱动（接入端共享）
+
+`core/turn_dispatch`：
+
+- `prepare_turn(runner, content=…, images=…, attachments=…, interface=…)`：
+  解析附件/图片、检测待答占位（resume 模式）、claim 运行权。
+- `execute_turn(prepared, sink, after_turn_hooks=True)`：执行并落盘；异常转 `error_notice` 消息；
+  成功后触发 `turn_hooks`（记忆提取 + git 自动提交）。
+- 接入端职责：提供 sink（Web SSE / QQ 单流 / 微信 defer / 邮件回信）与出站交付。
+
+## 五、会话池与并发
+
+`SessionRegistry`（`core/session_registry.py`）：
+
+- `get_or_create / register_hosted`：按 `workspace:session` 键创建或复用 runner；
+  超出上限时 `evict_idle`。
+- `claim(key) / release(key)`：运行权认领（防双循环改写消息）。
+- `attach/detach`：`Attachment` 记录会话附着（接口无关）。
+- `remove/remove_workspace/shutdown_all`：删除与停机；删除统一走 `core.session_purge`。
+
+回合排队（`core/turn_queue.py`）：运行中发送的消息入队，可在运行边界合并插入；
+`queue_update` 事件同步前端。
+
+## 六、输出与事件
+
+`OutputSink`（9 回调）：`on_text / on_thinking / on_tool_call / on_tool_output / on_tool_result /
+on_session_start / on_session_progress / on_session_complete / on_turn_complete`。
+
+- 请求级 sink：Web SSE（`web/sse`）、QQ 单流（`interfaces/qq/sink`）、微信、邮件。
+- 全局 sink：`core/default_sink`（事件总线；后台回合、文件交付、`turn_complete`）。
+- `layer_sink(base, override)`：按已设置字段覆盖；接入端手动扇出到 base。
+
+## 七、会话持久化
+
+`SessionStore`（`core/session.py`）目录：
 
 ```
-主会话 index.json:
-  messages: [
-    {role: "user", content: "处理这个大文件"},
-    {role: "assistant", content: [{type: "tool_use", id: "toolu_001", name: "agent", input: {task: "处理文件...", subagent_type: "worker"}}]},
-    {role: "user", content: [{type: "tool_result", tool_use_id: "toolu_001",
-     _meta: {exec_id: "exec_abc123", completed: true, stats: {iterations: 15, message_count: 42, tool_call_count: 8}}}]},
-    {role: "assistant", content: "处理完成！"}
-  ]
-
-子代理 {session_dir}/exec_{id}/index.json:
-  {
-    "exec_id": "exec_abc123",
-    "session_id": "exec_abc123",
-    "task": "处理文件...",
-    "messages": [...完整执行历史...],
-    "summary": "处理完成，共处理 42 个文件",
-    "metadata": {
-      "parent_session_id": "",
-      "session_id": "exec_abc123",
-      "started_at": "2026-08-25 10:00:00",
-      "ended_at": "2026-08-25 10:05:00",
-      "duration_seconds": 300,
-      "status": "completed",
-      "phase": "done",
-      "exit_reason": "completed",
-      "stats": {"iterations": 15, "message_count": 42, "tool_call_count": 8},
-      "max_iterations": 200,
-      "summary": "处理完成，共处理 42 个文件"
-    }
-  }
+{workspace_dir}/.cili/sessions/{short_id}/
+  messages.jsonl   完整内容历史（追加式）
+  index.json       模型视图 commits（seq 引用 + 块级 _meta + 摘要提交）
+  meta.json        session_id/name/metadata（通道三元组/模型覆盖等）
+  {tool_use_id}.txt / exec_{id}/  工具输出与子代理日志
 ```
 
-`metadata` 还可能在执行期间包含 `current_tool` 与 `phase`（`_save_progress` 写入），供前端显示当前正在执行的工具与阶段。
+- 双读路径：UI 读 jsonl 完整历史，模型读 commits 视图。
+- 压缩/失效只改 commits；revert/clear 是唯一显式截断 jsonl 的例外。
+- 内部 `_meta` 字段（`INTERNAL_META_FIELDS`）不进入模型上下文。
+- `SessionIdentity`：autonomous 会话的最小身份（session_id/session_dir/master_session_id）。
 
-### 6.1 master fork 与 worker continuation
+## 八、fork 与恢复
 
-- **master fork**：`SessionRunner.fork_session()` 复制父会话已完成回合的 snapshot（或超 100k token 时回退交接文档），创建新 `SessionStore` + master runner，注册进 `SessionRegistry`；可带 `next_steps` 自动首轮，否则保持 idle。事件 `session_fork_created`，UI「分支会话」。
-- **worker continuation**：worker 到达迭代上限时返回 `status=handoff` + `continuation` 请求；父级保留同一 `exec_id` 和角色，归档当前 epoch，在后台启动下一 epoch（`core/agent_run.py`）。worker 不持有 `handoff`/`fork` 工具，也不向自己返回普通结果。
-- **卡片**：continuation 沿用同一 `exec_id`，不新增 sibling 卡片；父级完成后通过 `agent_run_settled`/邮箱通知投递。
-- **上下文**：fork 只取已完成回合；continuation 使用结构化交接文档作为 pinned 任务；两者都不共享可变 messages 引用。
+- `SessionRunner.fork_session(...)`：克隆快照（或超限时生成 handoff 文档）到兄弟会话，
+  登记注册表、绑定默认 sink、注册邮箱；`run_sync` 供工作流同步执行。
+- `resume_after_ask_user()` / `resume_from_notification()`：答案提交与后台通知恢复。
+- 审批卡超时由 `core/approval_watchdog` 结算；Web/CLI 可自动恢复循环
+  （`auto_resume` 只覆盖有推送通道的接口）。
 
----
+## 九、测试约定
 
-## 七、Thinking 处理
-
-### 7.1 设计原则
-
-Cili 对 LLM 返回的 thinking 内容**不做过滤**，直接作为回复的一部分：
-
-- **流式模式**：thinking 内容通过 `on_thinking` 回调实时推送到前端
-- **消息存储**：thinking blocks 保留在消息历史中，Anthropic API 要求后续请求包含之前的 thinking blocks
-- **启用条件**：`reasoning` 档位为 `low`/`medium`/`high` 时启用 extended thinking（流式/非流式均生效；`budget_tokens` 映射：low→1024, medium→4096, high→10000；`default`/`off` 不发送 thinking 参数；模型配置的默认档位为 `medium`）
-
-### 7.2 LLM 配置
-
-**Anthropic API**（`budget_tokens` 由 `reasoning` 档位映射，`default`/`off` 时不启用 thinking）：
-```json
-{
-  "thinking": {
-    "type": "enabled",
-    "budget_tokens": 4096  // low=1024, medium=4096, high=10000
-  }
-}
-```
-
-**OpenAI API**（`reasoning` 非 `default` 时直传 `reasoning_effort`，`off` → `"none"`；`default` 不传该参数，使用 API 默认值）：
-```json
-{
-  "reasoning_effort": "medium"
-}
-```
-
-> **注意**：流式与非流式均支持 Anthropic 的 extended thinking；流式模式下 thinking 增量通过 SSE `thinking_delta` 事件翻译为 `reasoning_delta`，经 `on_thinking` 回调实时推送。
-
----
-
-## 八、关键设计决策
-
-### 8.1 为什么用「统一 SessionRunner + 角色 JSON」取代三层类？
-
-- 原 RootAgent/SessionRunner 共享 90% 的执行基础设施（BaseSessionRunner），差异仅在于模式开关；硬编码成两个类导致重复与分支蔓延
-- 行为差异收敛到一份 JSON：工具白名单、行为开关、prompt、迭代上限一目了然，新增角色只需加一个 JSON 文件
-- `mode` 分叉（interactive/autonomous）是唯一的关键分支点，其余行为全部由开关控制
-
-### 8.2 为什么任务信息放在首条 user 消息（pinned）？
-
-- 任务/计划作为第一条 user 消息注入，带 `_meta.pinned=True` 标记
-- pinned 消息不会被上下文压缩影响
-- 即使对话历史被压缩，任务信息仍然可见，子代理始终清楚自己的任务目标
-- 系统提示按角色 JSON blocks 拼装，与任务内容解耦
-
-### 8.3 为什么模型按角色配置？
-
-- `config.model_for_role(role)`：worker/lite 可在 `setting.json` 的 `agents` 表单独引用模型，未配置继承 master
-- 引用是 `"provider键/模型键"` 字符串，凭据与模型清单集中在 providers，角色只持引用，避免重复配置
-- 支持并行执行多个不同模型的子代理
-
-### 8.4 为什么 SessionRunner 持有消息而不是 Session？
-
-- SessionRunner 自己管理消息生命周期，保存时机由 SessionRunner 控制
-- BaseSessionRunner 层仅依赖 `session_dir` 持久化；interactive 模式中 Session 只负责会话元数据与磁盘保存（messages 共享同一引用）
-- autonomous 模式可以传入 `session_dir` 直接持久化（`exec_{id}/index.json`），无需 Session
-
-### 8.5 为什么注入型 user 层不持久化 + 防连续合并？
-
-- `claude_md`/`context` 层每次从磁盘/环境动态生成，不污染 `self.messages`，会话文件保持干净
-- 注入层与历史中的 pinned 任务消息都是 user 角色，`assemble_context()` 自动合并连续 user 消息，保证角色交替（满足 OpenAI/Bedrock 约束）
-
-### 8.6 为什么 worker/lite 无 ask_user/审批？
-
-- 子代理自主执行，不应在运行中停下来向用户提问
-- 需要批准的命令被降级为普通错误（提示换用非拦截命令或告知主代理）
-- 主代理会话批准过的命令通过共享 `ApprovalStore` 下放，子代理可直接执行，无需重复审批
-
----
-
-*文档版本: v3.0*
-*最后更新: 2026-09-13（worker 精简为执行型工具；master 增加 tool_search，8 个低频工具延迟加载；三角色新增角色级 max_tokens）*
-*最后更新: 2026-11-02（移除 handoff，改为 master fork + worker 同 exec_id 续任；master 28 / worker 25 / lite 7；输入时全压缩；`session` 工具硬切换为 `agent`、统一 spawn/status/stop/list；此前 2026-10-09 同步 worker/lite 工具数、会话回调更名、循环编排迁移）*
+- 单元：`test_base_runner_unit.py`；集成（DGX）：`test_base_runner_integration.py`。
+- 角色：`test_master_runner / test_worker_runner / test_lite_runner`。
+- 回合驱动：`test_ask_user`、`test_approval_runner_e2e`、`test_channel_session`。
+- 伪造 runner：只实现被测表面（如 `session`/`default_sink`/`is_running`），不要依赖 MagicMock 伪属性。
