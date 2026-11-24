@@ -16,7 +16,7 @@ from core.config import (
     sessions_dir_for_data_dir,
 )
 from core.event_bus import get_event_bus
-from core.outbox import OutboxFile, build_web_file_card
+from core.outbox import OutboxFile
 from core.session import SessionStore
 from core.workflows import service, store
 from core.workflows.model import WorkflowValidationError
@@ -26,6 +26,7 @@ from core.workflows.sessions import (
     ensure_results_session,
     find_workflow_by_panel_session,
 )
+from web.delivery import build_web_file_card
 from web.deps import require_workspace_data_dir, validate_session_id
 
 router = APIRouter()

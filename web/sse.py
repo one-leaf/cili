@@ -39,7 +39,7 @@ def drain_outbox_events(runner, event_queue: queue.Queue[str | None]) -> None:
     ``/api/workspaces/{uuid}/files/...`` 下载地址。
     """
     try:
-        from core.outbox import build_web_file_card, drain_web_files
+        from web.delivery import build_web_file_card, drain_web_files
         files = drain_web_files(runner, publish_global=False)
     except Exception:  # noqa: BLE001 —— 取件失败绝不能影响回合收尾（哨兵在调用方）
         logger.exception("[sse] drain outbox 失败")

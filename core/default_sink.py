@@ -110,7 +110,7 @@ def bind_default_sink(runner: "SessionRunner", workspace_uuid: str, session_id: 
             # 无法走 IM 富媒体上传，落 file_card 至少不会丢失。
             if (getattr(runner, "_turn_interface", None) in ("web", "cli", None)
                     and not getattr(runner, "_turn_has_custom_sink", False)):
-                from core.outbox import drain_web_files
+                from web.delivery import drain_web_files  # Web 卡片渲染属接入端
                 drain_web_files(runner, publish_global=True)
         except Exception:  # noqa: BLE001 —— 交付失败不影响回合收尾
             logger.exception("[default-sink] 出站文件交付失败")
