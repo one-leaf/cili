@@ -71,7 +71,7 @@ from web.sse import (
 
 router = APIRouter()
 
-# 后台恢复任务的强引用集合（asyncio 只持弱引用，见 resume_notifications）
+# 后台恢复任务的强引用集合（asyncio 只持弱引用，见 resume_mailbox）
 _resume_tasks: set[asyncio.Task] = set()
 
 
@@ -825,8 +825,8 @@ async def stop_runner(workspace_uuid: str, session_id: str,
             "stopped": {"turn": False, "background": 0}}
 
 
-@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/notifications/resume")
-async def resume_notifications(workspace_uuid: str, session_id: str):
+@router.post("/api/workspaces/{workspace_uuid}/sessions/{session_id}/mailbox/resume")
+async def resume_mailbox(workspace_uuid: str, session_id: str):
     """恢复后台通知：排空 message_bus 的待处理通知并继续 runner 循环。
 
     前端在后台子代理完成且 master 空闲时调用；与 ``queue/resume``（用户队列

@@ -234,10 +234,10 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
     return {"success": True, "workspace": config}
 
 
-@router.post("/api/workspaces/{workspace_uuid}/reset",
-             dependencies=[Depends(teen_guard("workspace_reset", hard=True))])
-async def reset_workspace(workspace_uuid: str):
-    """删除工作区配置（从索引移除），保留 .cili 数据目录和工作区文件。"""
+@router.delete("/api/workspaces/{workspace_uuid}",
+               dependencies=[Depends(teen_guard("workspace_unregister", hard=True))])
+async def unregister_workspace(workspace_uuid: str):
+    """从索引注销工作区（保留 .cili 数据目录与工作区文件）。"""
     validate_workspace_uuid(workspace_uuid)
     if workspace_uuid == "system":
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")

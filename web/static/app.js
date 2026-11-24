@@ -2926,9 +2926,7 @@ async function deleteWorkspaceConfig() {
     statusEl.textContent = '删除中...';
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/reset`, {
-            method: 'POST'
-        });
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}`, { method: 'DELETE' });
 
         if (!response.ok) {
             let detail = `服务器错误 (${response.status})`;

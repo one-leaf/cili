@@ -78,7 +78,7 @@ _DENY_MESSAGES: dict[str, str] = {
     "message_revert": "青少年模式已开启：消息撤销已被禁用。",
     "exec_log_delete": "青少年模式已开启：执行日志删除已被禁用。",
     "workspace_delete": "青少年模式已开启：工作区删除已被禁用。",
-    "workspace_reset": "青少年模式已开启：工作区重置已被禁用。",
+    "workspace_unregister": "青少年模式已开启：工作区注销已被禁用。如需操作，请家长先关闭青少年模式。",
     "session_hide": "青少年模式已开启：会话隐藏已被禁用。",
     "session_share": "青少年模式已开启：会话分享链接不可用。",
     "memory_delete": "青少年模式已开启：记忆删除/归档需要家长授权。",
