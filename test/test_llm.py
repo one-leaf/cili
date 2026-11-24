@@ -954,7 +954,7 @@ class TestRetryDefaults:
             raise _make_http_error(503)
 
         # 上限 0.001s：首次失败后 base delay(~1s) 已超限
-        with pytest.raises(RuntimeError, match="Total retry time exceeded"):
+        with pytest.raises(RuntimeError, match="重试超时"):
             transport.with_retry(op, total_timeout=0.001, max_retries=3)
         assert calls["n"] == 1, "超限后不应再重试"
 

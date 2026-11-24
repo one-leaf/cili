@@ -53,7 +53,7 @@ def _parse_sse_payload(payload: str, event_type: str | None) -> dict[str, Any]:
         except (json.JSONDecodeError, AttributeError):
             pass
         logger.warning(f"[LLM] SSE error event: {detail}")
-        raise StreamErrorEvent(f"SSE stream错误: {detail}")
+        raise StreamErrorEvent(f"SSE 流错误: {detail}")
 
     try:
         return json.loads(payload)
@@ -179,7 +179,7 @@ class HttpTransport:
             for line in resp.iter_lines():
                 # Check for interruption
                 if stop_check and stop_check():
-                    raise InterruptedError("Stream interrupted by user")
+                    raise InterruptedError("流已被用户中断")
 
                 line = line.strip()
                 if not line:
@@ -272,7 +272,7 @@ class HttpTransport:
         interval = 0.5
         while elapsed < duration:
             if stop_check and stop_check():
-                raise InterruptedError("Stopped by user during retry wait")
+                raise InterruptedError("重试等待期间用户已停止")
             sleep_time = min(interval, duration - elapsed)
             time.sleep(sleep_time)
             elapsed += sleep_time
@@ -308,7 +308,7 @@ class HttpTransport:
         for attempt in range(max_retries + 1):
             # Check stop before each attempt
             if stop_check and stop_check():
-                raise InterruptedError("Stopped by user during retry")
+                raise InterruptedError("重试期间用户已停止")
 
             try:
                 return operation()
@@ -330,8 +330,8 @@ class HttpTransport:
 
                 if total_timeout and time.time() - start_time + delay > total_timeout:
                     raise RuntimeError(
-                        f"Total retry time exceeded {total_timeout}s after {retry_count} retries. "
-                        f"Last error: HTTP {status}"
+                        f"重试超时：{total_timeout}s 内重试 {retry_count} 次仍失败。"
+                        f"最后错误: HTTP {status}"
                     ) from e
 
                 logger.warning(f"[LLM] {info.kind} 错误 (HTTP {status})，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
@@ -347,8 +347,8 @@ class HttpTransport:
 
                 if total_timeout and time.time() - start_time + delay > total_timeout:
                     raise RuntimeError(
-                        f"Total retry time exceeded {total_timeout}s after {retry_count} retries. "
-                        f"Last error: {e}"
+                        f"重试超时：{total_timeout}s 内重试 {retry_count} 次仍失败。"
+                        f"最后错误: {e}"
                     ) from e
 
                 logger.warning(f"[LLM] {self.format_network_error(e)}，{delay:.0f}s 后重试 ({attempt + 1}/{max_retries})")
