@@ -65,7 +65,7 @@ def _meta(tmp_path, sid, uuid="ws-test") -> dict:
 
 
 def _resolve(account, chat_id, cfg, *, channel="qq", account_id="acc1", title="QQ 会话"):
-    from interfaces.common.state import resolve_turn_session
+    from interfaces.common.session_routing import resolve_turn_session
 
     return resolve_turn_session(
         account, chat_id, cfg,
@@ -209,7 +209,7 @@ class TestResolve:
         assert session_marker(_meta(tmp_path, web_sid)["metadata"]) == ("", "", "")
 
     def test_peek_does_not_create(self, ws, tmp_path):
-        from interfaces.common.state import peek_turn_session
+        from interfaces.common.session_routing import peek_turn_session
         from interfaces.qq.state import QQAccountState
 
         state = QQAccountState()

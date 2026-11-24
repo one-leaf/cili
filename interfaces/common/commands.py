@@ -57,7 +57,7 @@ def _session_locked(ctx: CommandContext) -> bool:
 
 def _peek(ctx: CommandContext) -> str:
     """按当前模式预览本回合会用哪条会话（不建会话）。"""
-    from interfaces.common.state import peek_turn_session
+    from interfaces.common.session_routing import peek_turn_session
 
     return peek_turn_session(
         ctx.chat, ctx.runtime.cfg,
@@ -219,7 +219,7 @@ def _cmd_mode(ctx: CommandContext, save_state) -> str:
     locked = _session_locked(ctx)
 
     if not ctx.args:
-        from interfaces.common.state import effective_session_mode
+        from interfaces.common.session_routing import effective_session_mode
 
         mode = effective_session_mode(ctx.chat, cfg)
         if locked:
@@ -264,7 +264,7 @@ def _cmd_new(ctx: CommandContext, session_title: str, save_state) -> str:
         return "尚未设置工作区，先执行 `/w`。"
     if _session_locked(ctx):
         return LOCKED_SESSION_REPLY
-    from interfaces.common.state import create_marked_session
+    from interfaces.common.session_routing import create_marked_session
 
     name = ctx.args or session_title
     sid = create_marked_session(
@@ -284,7 +284,7 @@ def _cmd_status(
     owner_lines: Callable[[CommandContext], list[str]] | None = None,
     footer_lines: Callable[[CommandContext], list[str]] | None = None,
 ) -> str:
-    from interfaces.common.state import effective_session_mode
+    from interfaces.common.session_routing import effective_session_mode
 
     mode = effective_session_mode(ctx.chat, ctx.runtime.cfg)
     lines = [

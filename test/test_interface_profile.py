@@ -20,9 +20,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import interfaces.cli.profile  # noqa: F401
+
 # 注册副作用：三份接入端档案 + 终端样例
 import interfaces.qq.profile  # noqa: F401
-import interfaces.cli.profile  # noqa: F401
 import interfaces.wechat.profile  # noqa: F401
 import web.profile  # noqa: F401
 from core.interface_profile import (

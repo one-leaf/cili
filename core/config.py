@@ -176,7 +176,8 @@ class ProviderConfig:
             auth_type=data.get("auth_type", "auto"),
             backend=data.get("backend", "custom"),
             credential=str(data.get("credential", "") or ""),
-            base_url=(data.get("base_url") or default_base_url(data.get("protocol", "anthropic"))).rstrip("/"),
+            base_url=(data.get("base_url") or default_base_url(
+                data.get("protocol") or data.get("interface_type") or "anthropic")).rstrip("/"),
             api_path=_normalize_api_path(data.get("api_path")),
             headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
             models=models,
