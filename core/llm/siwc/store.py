@@ -156,3 +156,76 @@ def list_accounts() -> list[dict]:
 def _now():
     from core.llm.siwc.auth import utcnow
     return utcnow()
+
+
+# ── provider 关联（登录成功后写回 setting.json）──────────────────────
+
+def provider_entry(provider_key: str) -> dict:
+    from core.config import load_global_config, migrate_legacy_config
+
+    raw = migrate_legacy_config(load_global_config())
+    entry = (raw.get("providers") or {}).get(provider_key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def provider_credential(provider_key: str) -> str:
+    return str(provider_entry(provider_key).get("credential") or "")
+
+
+def upsert_oauth_provider(
+    provider_key: str, credential: str, provider_config: dict | None = None
+) -> str:
+    """登录成功后直接创建/更新 provider（含 credential），返回写回状态。
+
+    前端把当前卡片配置随登录请求带上；provider 尚未保存时也能一次落盘，
+    避免“登录成功后卡片消失、还要再点一次保存”。
+    """
+    from core.config import load_global_config, migrate_legacy_config
+
+    raw = migrate_legacy_config(load_global_config())
+    providers = raw.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+        raw["providers"] = providers
+
+    entry = providers.get(provider_key)
+    if not isinstance(entry, dict):
+        entry = {}
+        providers[provider_key] = entry
+
+    if isinstance(provider_config, dict):
+        backend = provider_config.get("backend")
+        if isinstance(backend, str) and backend:
+            entry["backend"] = backend
+        headers = provider_config.get("headers")
+        if isinstance(headers, dict):
+            entry["headers"] = {str(k): str(v) for k, v in headers.items()}
+        models = provider_config.get("models")
+        if isinstance(models, dict) and models:
+            entry["models"] = models
+    if not entry.get("models"):
+        entry["models"] = {"default": {}}
+
+    entry["auth_type"] = "oauth"
+    entry["interface_type"] = "openai-responses"
+    entry["base_url"] = "https://api.openai.com/v1"
+    entry["api_path"] = ""
+    entry["credential"] = credential
+    entry.pop("api_key", None)
+
+    from core.config import save_global_config
+
+    return "written" if save_global_config(raw) else "failed"
+
+
+def clear_provider_credential(provider_key: str) -> None:
+    from core.config import load_global_config, migrate_legacy_config
+
+    raw = migrate_legacy_config(load_global_config())
+    entry = (raw.get("providers") or {}).get(provider_key)
+    if not isinstance(entry, dict):
+        return
+    from core.config import save_global_config
+
+    entry["credential"] = ""
+    save_global_config(raw)

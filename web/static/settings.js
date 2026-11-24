@@ -571,7 +571,7 @@ async function qqDisconnect(card) {
     const accountId = card.dataset.accountId || '';
     try {
         const resp = await fetch(
-            `/api/qq/accounts/${encodeURIComponent(accountId)}/disconnect`, { method: 'POST' });
+            `/api/qq/accounts/${encodeURIComponent(accountId)}/logout`, { method: 'POST' });
         const data = await resp.json();
         showToast(data.message || '已断开连接');
         await refreshQQStatus();

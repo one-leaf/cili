@@ -2,26 +2,28 @@
 
 
 def _patch(monkeypatch, routes, state, save_result=True):
+    import core.config as config_mod
+
     saved = {"n": 0}
-    monkeypatch.setattr(routes, "load_global_config", lambda: state)
-    monkeypatch.setattr(routes, "migrate_legacy_config", lambda raw: raw)
+    monkeypatch.setattr(config_mod, "load_global_config", lambda: state)
+    monkeypatch.setattr(config_mod, "migrate_legacy_config", lambda raw: raw)
 
     def fake_save(config):
         saved["n"] += 1
         return save_result
 
-    monkeypatch.setattr(routes, "save_global_config", fake_save)
+    monkeypatch.setattr(config_mod, "save_global_config", fake_save)
     return saved
 
 
 def test_upsert_creates_provider(monkeypatch):
-    import web.routes_siwc as routes
+    from core.llm.siwc import store as routes
 
     state = {"providers": {}}
     saved = _patch(monkeypatch, routes, state)
     config = {"backend": "chatgpt-siwc", "headers": {}, "models": {"m": {"name": "gpt-x"}}}
 
-    assert routes._upsert_oauth_provider("gpt", "siwc:abc", config) == "written"
+    assert routes.upsert_oauth_provider("gpt", "siwc:abc", config) == "written"
     entry = state["providers"]["gpt"]
     assert entry["auth_type"] == "oauth"
     assert entry["interface_type"] == "openai-responses"
@@ -34,13 +36,13 @@ def test_upsert_creates_provider(monkeypatch):
 
 
 def test_upsert_updates_existing_non_oauth(monkeypatch):
-    import web.routes_siwc as routes
+    from core.llm.siwc import store as routes
 
     state = {"providers": {"p": {"auth_type": "auto", "api_key": "sk-x", "models": {"old": {}}}}}
     _patch(monkeypatch, routes, state)
     config = {"models": {"new": {}}}
 
-    assert routes._upsert_oauth_provider("p", "siwc:def", config) == "written"
+    assert routes.upsert_oauth_provider("p", "siwc:def", config) == "written"
     entry = state["providers"]["p"]
     assert entry["auth_type"] == "oauth"
     assert "new" in entry["models"]
@@ -48,22 +50,22 @@ def test_upsert_updates_existing_non_oauth(monkeypatch):
 
 
 def test_upsert_without_config_creates_default_model(monkeypatch):
-    import web.routes_siwc as routes
+    from core.llm.siwc import store as routes
 
     state = {"providers": {}}
     _patch(monkeypatch, routes, state)
 
-    assert routes._upsert_oauth_provider("gpt", "siwc:x", None) == "written"
+    assert routes.upsert_oauth_provider("gpt", "siwc:x", None) == "written"
     assert state["providers"]["gpt"]["models"] == {"default": {}}
 
 
 def test_upsert_save_failure(monkeypatch):
-    import web.routes_siwc as routes
+    from core.llm.siwc import store as routes
 
     state = {"providers": {}}
     _patch(monkeypatch, routes, state, save_result=False)
 
-    assert routes._upsert_oauth_provider("gpt", "siwc:x", None) == "failed"
+    assert routes.upsert_oauth_provider("gpt", "siwc:x", None) == "failed"
 
 
 def test_complete_passes_provider_config_to_hook(monkeypatch):
