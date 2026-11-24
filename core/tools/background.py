@@ -464,9 +464,9 @@ class BackgroundMixin:
 
         lines = ["Background tasks:"]
         for t in tasks:
-            task_type = t.get("kind", "shell")
+            kind_label = t.get("kind", "shell")
             status = t["status"]
             if status == "completed" and t.get("exit_code") is not None:
                 status += f" (exit {t['exit_code']})"
-            lines.append(f"  {t['task_id']}: [{task_type}][{status}] {t['command']}")
+            lines.append(f"  {t['task_id']}: [{kind_label}][{status}] {t['command']}")
         return ToolResult("\n".join(lines))

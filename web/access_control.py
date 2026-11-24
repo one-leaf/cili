@@ -15,10 +15,6 @@ def client_ip_of(request: Request | None) -> str:
     return request.client.host if request is not None and request.client else ""
 
 
-def is_localhost(request: Request | None) -> bool:
-    return client_ip_of(request) in LOCALHOST_IPS
-
-
 def require_localhost(request: Request | None, detail: str) -> str:
     """非本机访问抛 403；返回客户端 IP 供审计。"""
     ip = client_ip_of(request)

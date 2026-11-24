@@ -112,7 +112,7 @@ function buildQQCard(acc) {
             <label>连接</label>
             <div class="control">
                 <div class="inline">
-                    <button type="button" class="acc-onboard-btn btn-secondary">扫码连接</button>
+                    <button type="button" class="acc-login-btn btn-secondary">扫码连接</button>
                     <button type="button" class="acc-disconnect-btn btn-soft">断开连接</button>
                     <span class="hint">凭据由扫码写入，不显示在表单里</span>
                 </div>
@@ -120,7 +120,7 @@ function buildQQCard(acc) {
         </div>
         ${workspaceFieldsHtml(acc)}`;
     bindAccountCommon(card, '删除该账号？保存后其配置与会话绑定将被移除。');
-    card.querySelector('.acc-onboard-btn').addEventListener('click', () => qqStartOnboard(card));
+    card.querySelector('.acc-login-btn').addEventListener('click', () => qqStartLogin(card));
     card.querySelector('.acc-disconnect-btn').addEventListener('click', () => qqDisconnect(card));
     return card;
 }
@@ -147,31 +147,31 @@ function collectQQAccounts() {
 
 // ─── QQ 扫码连接（凭据由服务端落库，前端只展示状态） ──────────────────
 
-let qqOnboardTimer = null;
-let qqOnboardSessionId = '';
-let qqOnboardAccountId = '';
-let qqOnboardCard = null;
+let qqLoginTimer = null;
+let qqLoginSessionId = '';
+let qqLoginAccountId = '';
+let qqLoginCard = null;
 
-function stopQqOnboardPolling() {
-    if (qqOnboardTimer) {
-        clearInterval(qqOnboardTimer);
-        qqOnboardTimer = null;
+function stopQqLoginPolling() {
+    if (qqLoginTimer) {
+        clearInterval(qqLoginTimer);
+        qqLoginTimer = null;
     }
 }
 
-function hideQqOnboardQr() {
-    document.getElementById('qq-onboard-qr-wrap').style.display = 'none';
-    document.getElementById('qq-onboard-qr-img').style.display = 'none';
-    document.getElementById('qq-onboard-qr-fallback').style.display = 'none';
-    document.getElementById('qq-onboard-msg').textContent = '';
+function hideQqLoginQr() {
+    document.getElementById('qq-login-qr-wrap').style.display = 'none';
+    document.getElementById('qq-login-qr-img').style.display = 'none';
+    document.getElementById('qq-login-qr-fallback').style.display = 'none';
+    document.getElementById('qq-login-msg').textContent = '';
 }
 
-function renderQqOnboardQr(data) {
-    document.getElementById('qq-onboard-qr-wrap').style.display = '';
-    document.getElementById('qq-onboard-msg').textContent = data.message || '';
+function renderQqLoginQr(data) {
+    document.getElementById('qq-login-qr-wrap').style.display = '';
+    document.getElementById('qq-login-msg').textContent = data.message || '';
 
-    const img = document.getElementById('qq-onboard-qr-img');
-    const fallback = document.getElementById('qq-onboard-qr-fallback');
+    const img = document.getElementById('qq-login-qr-img');
+    const fallback = document.getElementById('qq-login-qr-fallback');
     if (data.qr_png_data_url) {
         img.src = data.qr_png_data_url;
         img.style.display = '';
@@ -184,15 +184,15 @@ function renderQqOnboardQr(data) {
     }
 }
 
-function closeQqOnboardModal(cancel = true) {
-    stopQqOnboardPolling();
-    const sid = qqOnboardSessionId;
-    const accountId = qqOnboardAccountId;
-    qqOnboardSessionId = '';
-    qqOnboardAccountId = '';
-    qqOnboardCard = null;
-    hideQqOnboardQr();
-    document.getElementById('qq-onboard-modal').style.display = 'none';
+function closeQqLoginModal(cancel = true) {
+    stopQqLoginPolling();
+    const sid = qqLoginSessionId;
+    const accountId = qqLoginAccountId;
+    qqLoginSessionId = '';
+    qqLoginAccountId = '';
+    qqLoginCard = null;
+    hideQqLoginQr();
+    document.getElementById('qq-login-modal').style.display = 'none';
     if (cancel && sid && accountId) {
         // 尽早丢弃服务端的扫码会话（服务端另有 TTL 兜底）
         fetch(`/api/qq/accounts/${encodeURIComponent(accountId)}/login/cancel?session_id=${encodeURIComponent(sid)}`,
@@ -200,54 +200,54 @@ function closeQqOnboardModal(cancel = true) {
     }
 }
 
-async function qqStartOnboard(card) {
+async function qqStartLogin(card) {
     const accountId = card.dataset.accountId || '';
     if (!accountId) {
         showToast('该账号缺少 ID，请先保存后重试');
         return;
     }
-    stopQqOnboardPolling();
-    qqOnboardSessionId = '';
-    qqOnboardAccountId = accountId;
-    qqOnboardCard = card;
-    hideQqOnboardQr();
-    document.getElementById('qq-onboard-modal').style.display = 'flex';
-    document.getElementById('qq-onboard-msg').textContent = '正在获取二维码…';
+    stopQqLoginPolling();
+    qqLoginSessionId = '';
+    qqLoginAccountId = accountId;
+    qqLoginCard = card;
+    hideQqLoginQr();
+    document.getElementById('qq-login-modal').style.display = 'flex';
+    document.getElementById('qq-login-msg').textContent = '正在获取二维码…';
     try {
         const resp = await fetch(
             `/api/qq/accounts/${encodeURIComponent(accountId)}/login/start`,
             { method: 'POST' });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || '取二维码失败');
-        qqOnboardSessionId = data.session_id;
-        renderQqOnboardQr(data);
-        qqOnboardTimer = setInterval(pollQqOnboard, data.interval_ms || 2000);
+        qqLoginSessionId = data.session_id;
+        renderQqLoginQr(data);
+        qqLoginTimer = setInterval(pollQqLogin, data.interval_ms || 2000);
     } catch (e) {
         // 弹框保持打开，失败原因留在上面，用户看完手动关闭
-        document.getElementById('qq-onboard-msg').textContent = '✗ ' + e.message;
+        document.getElementById('qq-login-msg').textContent = '✗ ' + e.message;
     }
 }
 
-async function pollQqOnboard() {
-    if (!qqOnboardSessionId || !qqOnboardAccountId) return;
+async function pollQqLogin() {
+    if (!qqLoginSessionId || !qqLoginAccountId) return;
     try {
         const resp = await fetch(
-            `/api/qq/accounts/${encodeURIComponent(qqOnboardAccountId)}/login/status` +
-            `?session_id=${encodeURIComponent(qqOnboardSessionId)}`);
+            `/api/qq/accounts/${encodeURIComponent(qqLoginAccountId)}/login/status` +
+            `?session_id=${encodeURIComponent(qqLoginSessionId)}`);
         const data = await resp.json();
         if (data.status === 'pending') return;
-        stopQqOnboardPolling();
-        qqOnboardSessionId = '';
-        const card = qqOnboardCard;
-        qqOnboardCard = null;
+        stopQqLoginPolling();
+        qqLoginSessionId = '';
+        const card = qqLoginCard;
+        qqLoginCard = null;
         if (data.status === 'succeeded') {
-            closeQqOnboardModal(false);
+            closeQqLoginModal(false);
             enableAccountCard(card);
             await refreshQQStatus();
             showToast(data.message || '机器人已连接');
         } else {
             // 失败/过期：弹框留着展示原因，用户手动关闭
-            document.getElementById('qq-onboard-msg').textContent =
+            document.getElementById('qq-login-msg').textContent =
                 '✗ ' + (data.message || '绑定失败');
         }
     } catch (e) {
@@ -699,15 +699,15 @@ async function wechatLogout(card) {
             loginModal.querySelector('.modal-backdrop')
                 .addEventListener('click', () => closeWechatLoginModal(true));
         }
-        // QQ 扫码绑定弹框：同上
-        const onboardModal = document.getElementById('qq-onboard-modal');
-        if (onboardModal) {
-            document.getElementById('qq-onboard-modal-close')
-                .addEventListener('click', () => closeQqOnboardModal(true));
-            document.getElementById('qq-onboard-cancel-btn')
-                .addEventListener('click', () => closeQqOnboardModal(true));
-            onboardModal.querySelector('.modal-backdrop')
-                .addEventListener('click', () => closeQqOnboardModal(true));
+        // QQ 扫码登录弹框：同上
+        const qqLoginModal = document.getElementById('qq-login-modal');
+        if (qqLoginModal) {
+            document.getElementById('qq-login-modal-close')
+                .addEventListener('click', () => closeQqLoginModal(true));
+            document.getElementById('qq-login-cancel-btn')
+                .addEventListener('click', () => closeQqLoginModal(true));
+            qqLoginModal.querySelector('.modal-backdrop')
+                .addEventListener('click', () => closeQqLoginModal(true));
         }
     });
 })();

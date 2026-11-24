@@ -44,7 +44,7 @@ from core.role_config import load_role
 from core.security.permission_state import append_permission_audit
 from core.security.runtime import build_permission_stack, build_permission_store_rules
 from core.session import (
-    SessionIdentity,  # noqa: F401 —— 对外重导出
+    SessionIdentity,
     SessionStore,
     build_exec_log_data,
     default_branch_name,

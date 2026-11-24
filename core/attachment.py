@@ -14,7 +14,7 @@ Cili 的会话层是接口无关的（``core/session_registry.py`` 持有 runner
 
 设计文档草案里的 ``ask_user(attachment, questions) -> str`` /
 ``request_approval(...) -> str`` 被刻意放弃：各实现都**无法在回调里同步返回
-答案**——Web 的答案经 ``POST /answer-ask-user`` 异步回来，QQ 的答案是下一条
+答案**——Web 的答案经 ``POST .../ask-user/answers`` 异步回来，QQ 的答案是下一条
 消息。把它们做成「返回答案」的方法是在说谎。交互提示的渲染本来就在各自 sink
 内部（Web 在 ``on_tool_call`` 推 ``tool_use`` 帧、前端画卡片；QQ 在
 ``on_tool_call`` 里发编号文本），不需要独立的 prompt 方法。

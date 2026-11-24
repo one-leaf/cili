@@ -156,14 +156,15 @@ def list_accounts() -> list[dict]:
 
 
 def _now():
-    from core.llm.chatgpt_oauth.auth import utcnow
+    from core.llm.chatgpt_oauth.credentials import utcnow
     return utcnow()
 
 
 # ── provider 关联（登录成功后写回 setting.json）──────────────────────
 
 def provider_entry(provider_key: str) -> dict:
-    from core.config import load_global_config, migrate_legacy_config
+    from core.config import load_global_config
+    from core.config_migrations import migrate_legacy_config
 
     raw = migrate_legacy_config(load_global_config())
     entry = (raw.get("providers") or {}).get(provider_key)
@@ -182,7 +183,8 @@ def upsert_oauth_provider(
     前端把当前卡片配置随登录请求带上；provider 尚未保存时也能一次落盘，
     避免“登录成功后卡片消失、还要再点一次保存”。
     """
-    from core.config import load_global_config, migrate_legacy_config
+    from core.config import load_global_config
+    from core.config_migrations import migrate_legacy_config
 
     raw = migrate_legacy_config(load_global_config())
     providers = raw.get("providers")
@@ -221,7 +223,8 @@ def upsert_oauth_provider(
 
 
 def clear_provider_credential(provider_key: str) -> None:
-    from core.config import load_global_config, migrate_legacy_config
+    from core.config import load_global_config
+    from core.config_migrations import migrate_legacy_config
 
     raw = migrate_legacy_config(load_global_config())
     entry = (raw.get("providers") or {}).get(provider_key)

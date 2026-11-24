@@ -695,13 +695,7 @@ POST /api/update/download
 GET /api/workspaces/{uuid}/files/{path}
 ```
 
-或（不指定 UUID，自动扫描所有工作区）：
-
-```
-GET /api/workspace/files/{path}?workspace_uuid={uuid}
-```
-
-> 兼容路由：`GET /api/workspace/{path}` 也可访问同一文件服务。
+（`/api/workspace/*` 两代兼容路由已删除；旧消息里的 URL 由迁移 `legacy_file_urls` 重写为规范路由。）
 
 用于在 Web UI 中显示图片等文件。
 
@@ -1153,7 +1147,7 @@ lifespan exit
 1. **资源用复数、按归属嵌套**：`/api/workspaces/{uuid}/files/{path}`、
    `/api/workspaces/{uuid}/sessions/{id}`。
 2. **动作是单段 snake_case 子路径**：`/queue/pause`、`/ask-user/answers`、
-   `/notifications/resume`；不再使用 `answer-ask-user` 这类连字符复合名。
+   `/mailbox/resume`；不再使用 `answer-ask-user` 这类连字符复合名。
 3. **向导类多词资源**：`/api/wizard/*`（旧 `/api/workspace-wizard/*` 已删）。
 4. **本机运维端点**：`/api/fs/browse`（仅 localhost）。
 5. **旧 URL 不保留别名**：历史消息中的文件 URL 由迁移

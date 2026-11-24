@@ -234,7 +234,7 @@ class TestConfig:
 
         用纯转换函数 convert_legacy_config（无写盘副作用，不碰真实配置文件）。
         """
-        from core.config import convert_legacy_config
+        from core.config_migrations import convert_legacy_config
 
         cfg = {
             "model": {"name": "m1", "api_key": "k1", "base_url": "http://a"},
@@ -254,7 +254,7 @@ class TestConfig:
 
     def test_convert_non_legacy_returns_none(self):
         """新格式（无 model 对象）→ None（调用方原样返回）"""
-        from core.config import convert_legacy_config
+        from core.config_migrations import convert_legacy_config
 
         assert convert_legacy_config({"providers": {}, "agents": {}}) is None
 

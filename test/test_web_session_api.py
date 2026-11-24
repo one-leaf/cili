@@ -115,7 +115,7 @@ class TestGlobalEvents:
     """GET /api/events 全局 SSE 事件流测试（直接调端点函数，迭代 body_iterator）。
 
     不用 TestClient：TestClient + asyncio.to_thread 组合会死锁挂起，且
-    TestClient 的 client IP "testclient" 不在 _LOCALHOST_IPS 会 403。
+    TestClient 的 client IP "testclient" 不在 LOCALHOST_IPS 会 403。
     """
 
     def test_event_delivery_and_session_filter(self):

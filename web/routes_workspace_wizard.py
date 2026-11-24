@@ -257,7 +257,7 @@ async def workspace_wizard_create(request: Request, body: WorkspaceWizardCreateR
         except TextbookDownloadError as e:
             warnings.append(f"教材下载任务创建失败: {e}")
         except Exception as e:  # noqa: BLE001 —— 教材下载失败不回滚工作区
-            logger.exception("[workspace-wizard] 启动教材下载失败")
+            logger.exception("[wizard] 启动教材下载失败")
             warnings.append(f"教材下载任务创建失败: {e}")
 
     return {**result, "textbook_tasks": textbook_tasks_response, "warnings": warnings}

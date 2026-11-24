@@ -8,7 +8,7 @@ class TestLocalhostIPs:
     """Access control localhost IP set."""
 
     def test_contains_standard_ips(self):
-        from web.deps import _LOCALHOST_IPS
+        from web.access_control import LOCALHOST_IPS as _LOCALHOST_IPS
         assert "127.0.0.1" in _LOCALHOST_IPS
         assert "::1" in _LOCALHOST_IPS
 

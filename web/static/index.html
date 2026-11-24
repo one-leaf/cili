@@ -1003,25 +1003,25 @@
     </div>
 
     <!-- QQ 扫码绑定弹框（从设置弹框里点「扫码连接」弹出，z-index 在其上） -->
-    <div id="qq-onboard-modal" class="modal" style="display:none; z-index: 1100;">
-        <div class="modal-backdrop" data-modal="qq-onboard-modal"></div>
+    <div id="qq-login-modal" class="modal" style="display:none; z-index: 1100;">
+        <div class="modal-backdrop" data-modal="qq-login-modal"></div>
         <div class="modal-content" style="width: 360px;">
             <div class="modal-header">
                 <h2>扫码连接 QQ 机器人</h2>
-                <button class="modal-close" data-modal="qq-onboard-modal"
-                        id="qq-onboard-modal-close">&times;</button>
+                <button class="modal-close" data-modal="qq-login-modal"
+                        id="qq-login-modal-close">&times;</button>
             </div>
             <div class="modal-body" style="text-align: center; padding: 24px;">
-                <div id="qq-onboard-qr-wrap">
-                    <img id="qq-onboard-qr-img" alt="QQ 机器人绑定二维码"
+                <div id="qq-login-qr-wrap">
+                    <img id="qq-login-qr-img" alt="QQ 机器人绑定二维码"
                          style="width: 240px; height: 240px; display: none;">
-                    <div id="qq-onboard-qr-fallback" class="form-hint"
+                    <div id="qq-login-qr-fallback" class="form-hint"
                          style="display: none; word-break: break-all; max-width: 280px; margin: 0 auto;">
                     </div>
                 </div>
-                <div id="qq-onboard-msg" style="margin: 12px 0 4px;"></div>
+                <div id="qq-login-msg" style="margin: 12px 0 4px;"></div>
                 <div style="margin-top: 16px;">
-                    <button id="qq-onboard-cancel-btn" class="btn btn-small" type="button">取消</button>
+                    <button id="qq-login-cancel-btn" class="btn btn-small" type="button">取消</button>
                 </div>
             </div>
         </div>

@@ -158,7 +158,7 @@ def execute_turn(
     ``on_error(msg)`` 在异常且已落盘错误消息后调用，供接入端展示。
 
     ``after_turn_hooks=False`` 跳过记忆提取/git 自动提交。Web 的
-    ``/answer-ask-user`` 端点历史上不做这两件事，抽取时按原样保留（避免重构
+    ``ask-user/answers`` 端点历史上不做这两件事，抽取时按原样保留（避免重构
     顺手改变行为）；QQ 侧走 ``dispatch_turn`` 默认开启。
     """
     runner = prepared.runner

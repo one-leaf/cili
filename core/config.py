@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.config_migrations import convert_legacy_config, migrate_legacy_config  # noqa: F401 —— 对外重导出
+from core.config_migrations import migrate_legacy_config
 from core.fs_utils import atomic_write_json
 from core.permission_settings import PermissionConfig
 from core.time_utils import now_str

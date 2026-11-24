@@ -18,7 +18,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 import httpx
 
 from core.llm.chatgpt_oauth import const
-from core.llm.chatgpt_oauth.credentials import Credentials, utcnow  # noqa: F401 —— 兼容旧导入
+from core.llm.chatgpt_oauth.credentials import Credentials, utcnow  # noqa: F401 —— auth 内部与 login 使用
 
 logger = logging.getLogger(__name__)
 

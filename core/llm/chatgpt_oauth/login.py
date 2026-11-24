@@ -49,7 +49,7 @@ class LoginAttempt:
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
-    server_version = "cili-siwc"
+    server_version = "cili-chatgpt-oauth"
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 —— 静默，避免回调 URL 进日志
         return
@@ -138,7 +138,7 @@ def start_login(
     if server is not None:
         server.attempt_id = attempt.attempt_id
         server.expected_host = urlparse(redirect_uri).netloc
-        threading.Thread(target=server.serve_forever, daemon=True, name="cili-siwc-callback").start()
+        threading.Thread(target=server.serve_forever, daemon=True, name="cili-chatgpt-oauth-callback").start()
 
     with _LOCK:
         _ATTEMPTS[attempt.attempt_id] = attempt
