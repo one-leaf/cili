@@ -3,6 +3,8 @@
 - 下载（download_upgrade_zip，由启动后台线程与 Web UI 升级按钮触发；
   scripts/upgrade.ps1 手动下载也落到同一位置）：检查 GitHub 远端版本，
   有更新则把代码包 zip 下载到脚本目录（项目根，cili-update.zip），不动本地代码。
+  后台线程按「启动后半小时首次检查、之后每 24 小时一次」静默定时检查，
+  用户不需要手动触发。
 - 应用（apply_pending_upgrade，两条路径都收敛到它）：
   a) start.ps1 启动循环：每次拉起服务前先跑 ``main.py --apply-upgrade-only``
      在独立短进程中应用升级包（应用后即退出），服务进程从磁盘全新代码启动，
@@ -27,7 +29,7 @@ CILI_LAUNCH_RESTART=1 抑制浏览器自动打开）。直接 python main.py 启
 
 用法:
     from core.updater import start_auto_upgrade
-    start_auto_upgrade()      # 后台线程：延迟后检查版本，有更新则下载升级包
+    start_auto_upgrade()      # 后台线程：启动后半小时首次检查，之后每天检查一次
     apply_pending_upgrade()   # 启动早期调用：应用脚本目录下已下载的升级包
 """
 
@@ -38,7 +40,6 @@ import logging
 import os
 import tempfile
 import threading
-import time
 import zipfile
 from pathlib import Path
 
@@ -537,16 +538,25 @@ def apply_pending_upgrade() -> dict | None:
     return result
 
 
-def _auto_upgrade_worker(delay: float) -> None:
+# 自动升级节奏：启动后等待半小时再首次检查（避开启动高峰），之后每 24 小时检查一次
+AUTO_UPGRADE_STARTUP_DELAY = 30 * 60
+AUTO_UPGRADE_INTERVAL = 24 * 60 * 60
+
+# 后台线程句柄与停止信号（停止信号供测试/关停使用，正常运行随进程退出）
+_auto_upgrade_thread: threading.Thread | None = None
+_auto_upgrade_stop = threading.Event()
+_auto_upgrade_lock = threading.Lock()
+
+
+def _run_auto_upgrade_check() -> None:
+    """单次静默检查：有更新则下载升级包，下载完成后安排空闲重启应用。
+
+    所有异常在此兜住——定时循环不能因一次网络故障或磁盘问题而停止。
+    """
     try:
-        time.sleep(delay)
-        # 每次启动都清理一次残留的 memory git 目录（与版本无关，共享工作区准备）
-        cleaned = _cleanup_memory_git_dirs()
-        if cleaned:
-            logger.info(f"[updater] 已清理 {cleaned} 个残留 memory git 目录")
         has_update, local, remote = check_update()
         if remote is None:
-            logger.warning("[updater] 版本检查失败（网络异常），跳过自动升级")
+            logger.warning("[updater] 版本检查失败（网络异常），跳过本次自动升级")
             return
         if not has_update:
             logger.info(f"[updater] 已是最新版本（{local}）")
@@ -560,17 +570,44 @@ def _auto_upgrade_worker(delay: float) -> None:
                 logger.info("[updater] 已安排：等待会话空闲后自动重启应用升级包")
         else:
             logger.warning(f"[updater] 下载升级包失败: {result.get('error')}")
-    except Exception as e:
-        logger.error(f"[updater] 自动升级异常: {e}")
+    except Exception as e:  # noqa: BLE001 —— 单次检查失败不终止定时循环
+        logger.error(f"[updater] 自动升级检查异常: {e}")
 
 
-def start_auto_upgrade(delay: float = 5.0) -> threading.Thread:
-    """后台线程启动自动升级：延迟 delay 秒后检查版本，有新版本则下载升级包到脚本目录。
+def _auto_upgrade_worker(startup_delay: float, interval: float) -> None:
+    """后台定时升级：启动延迟后首次检查，之后按 interval 秒循环检查。"""
+    # 每次启动都清理一次残留的 memory git 目录（与版本无关，共享工作区准备）
+    try:
+        cleaned = _cleanup_memory_git_dirs()
+        if cleaned:
+            logger.info(f"[updater] 已清理 {cleaned} 个残留 memory git 目录")
+    except Exception as e:  # noqa: BLE001 —— 清理失败不影响升级检查
+        logger.warning(f"[updater] 清理 memory git 目录失败: {e}")
 
-    只下载不应用——解压覆盖统一在下一次启动时由 apply_pending_upgrade 完成。
+    if _auto_upgrade_stop.wait(startup_delay):
+        return
+    while True:
+        _run_auto_upgrade_check()
+        if _auto_upgrade_stop.wait(interval):
+            return
+
+
+def start_auto_upgrade(startup_delay: float = AUTO_UPGRADE_STARTUP_DELAY,
+                       interval: float = AUTO_UPGRADE_INTERVAL) -> threading.Thread:
+    """后台线程启动定时自动升级：启动后延迟 startup_delay 秒首次检查，之后每 interval 秒检查。
+
+    只下载不应用——解压覆盖统一在下一次启动时由 apply_pending_upgrade 完成，
+    下载后的版本切换由空闲重启（core.restart）在不影响运行中会话时完成。
+    重复调用不会启动第二个线程，返回已在运行的线程。
     """
-    thread = threading.Thread(
-        target=_auto_upgrade_worker, args=(delay,), daemon=True, name="AutoUpgrade"
-    )
-    thread.start()
-    return thread
+    global _auto_upgrade_thread
+    with _auto_upgrade_lock:
+        if _auto_upgrade_thread is not None and _auto_upgrade_thread.is_alive():
+            return _auto_upgrade_thread
+        _auto_upgrade_stop.clear()
+        _auto_upgrade_thread = threading.Thread(
+            target=_auto_upgrade_worker, args=(startup_delay, interval),
+            daemon=True, name="AutoUpgrade",
+        )
+        _auto_upgrade_thread.start()
+        return _auto_upgrade_thread

@@ -1817,11 +1817,12 @@ def _start_core_services() -> None:
     except Exception as e:
         logger.warning(f"Teen mode startup check failed (ignored): {e}")
 
-    # 启动自动升级检查（后台线程，延迟数秒等服务器就绪后再检查 GitHub 版本）
+    # 启动定时自动升级（后台线程：启动后半小时首次检查，之后每天检查一次）
     from core.updater import start_auto_upgrade
     if _auto_update_enabled():
         start_auto_upgrade()
-        logger.info("自动升级检查已启动（可在 setting.json 设 system.auto_update=false 关闭）")
+        logger.info("自动升级已启动（启动后 30 分钟首次检查，之后每天一次；"
+                    "可在 setting.json 设 system.auto_update=false 关闭）")
     else:
         logger.info("自动升级已关闭（system.auto_update=false）")
 

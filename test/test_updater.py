@@ -842,3 +842,95 @@ class TestScheduleIdleRestart:
         assert restart_mod.schedule_idle_restart(
             "第三次", poll_interval=0.05, max_wait=0.3, confirm_delay=0.01) is True
         _wait_idle_restart_done()
+
+
+class TestAutoUpgradeSchedule:
+    """后台定时升级：启动延迟后首次检查，之后按间隔循环"""
+
+    def test_default_cadence(self):
+        """默认节奏：启动后 30 分钟首次检查，之后每 24 小时一次"""
+        assert updater.AUTO_UPGRADE_STARTUP_DELAY == 30 * 60
+        assert updater.AUTO_UPGRADE_INTERVAL == 24 * 60 * 60
+
+    def test_single_check_downloads_and_schedules_restart(self, monkeypatch):
+        """单次检查发现新版本：下载升级包并安排空闲重启"""
+        monkeypatch.setattr(updater, "check_update", lambda: (True, "v1", "v2"))
+        downloaded = []
+        monkeypatch.setattr(
+            updater, "download_upgrade_zip",
+            lambda remote=None: downloaded.append(remote) or {"success": True, "message": "ok"})
+        scheduled = []
+        monkeypatch.setattr(
+            restart_mod, "schedule_idle_restart",
+            lambda reason, **kw: scheduled.append(reason) or True)
+
+        updater._run_auto_upgrade_check()
+        assert downloaded == ["v2"]
+        assert len(scheduled) == 1
+
+    def test_single_check_no_update_or_network_error_does_not_download(self, monkeypatch):
+        """已是最新或版本检查失败时不下载"""
+        downloaded = []
+        monkeypatch.setattr(
+            updater, "download_upgrade_zip",
+            lambda remote=None: downloaded.append(remote) or {"success": True})
+
+        monkeypatch.setattr(updater, "check_update", lambda: (False, "v1", "v1"))
+        updater._run_auto_upgrade_check()
+        monkeypatch.setattr(updater, "check_update", lambda: (False, "v1", None))
+        updater._run_auto_upgrade_check()
+        assert downloaded == []
+
+    def test_single_check_exception_is_contained(self, monkeypatch):
+        """单次检查抛异常被兜住，不向外传播（定时循环继续）"""
+        def _boom():
+            raise RuntimeError("网络断开")
+        monkeypatch.setattr(updater, "check_update", _boom)
+        updater._run_auto_upgrade_check()  # 不抛出即通过
+
+    def test_worker_waits_then_repeats(self, monkeypatch):
+        """启动延迟内不检查；延迟到达后按间隔重复检查；停止信号可结束循环"""
+        import threading
+
+        stop = threading.Event()
+        monkeypatch.setattr(updater, "_auto_upgrade_stop", stop)
+        monkeypatch.setattr(updater, "_cleanup_memory_git_dirs", lambda: 0)
+        calls = []
+        monkeypatch.setattr(
+            updater, "_run_auto_upgrade_check", lambda: calls.append(time.monotonic()))
+
+        started = time.monotonic()
+        thread = threading.Thread(
+            target=updater._auto_upgrade_worker, args=(0.15, 0.05), daemon=True)
+        thread.start()
+        try:
+            time.sleep(0.05)
+            assert calls == []
+            deadline = time.time() + 3
+            while len(calls) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            assert len(calls) >= 3
+            assert calls[0] - started >= 0.14
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    def test_start_is_idempotent(self, monkeypatch):
+        """重复调用 start_auto_upgrade 不启动第二个线程"""
+        import threading
+
+        stop = threading.Event()
+        monkeypatch.setattr(updater, "_auto_upgrade_stop", stop)
+        monkeypatch.setattr(updater, "_auto_upgrade_thread", None)
+        monkeypatch.setattr(updater, "_cleanup_memory_git_dirs", lambda: 0)
+
+        first = updater.start_auto_upgrade(startup_delay=60, interval=60)
+        try:
+            second = updater.start_auto_upgrade(startup_delay=60, interval=60)
+            assert first is second
+            assert first.daemon is True
+            assert first.name == "AutoUpgrade"
+        finally:
+            stop.set()
+            first.join(timeout=2)
