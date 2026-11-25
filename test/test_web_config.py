@@ -279,3 +279,94 @@ class TestSuggestRoute:
 
 
 # ─── 审批卡路由（decision / answers / 过期 / 终止） ──────────────────────
+
+
+class TestWorkspaceMcpRoutes:
+    """工作区 MCP 配置路由：保存 / 掩码 / 密钥继承。"""
+
+    def _register(self, tmp_path):
+        import secrets
+
+        import core.config as config_mod
+
+        ws_uuid = f"mcp-{secrets.token_hex(4)}"
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        config_mod.upsert_workspace_entry({
+            "uuid": ws_uuid,
+            "workspace_name": ws_uuid,
+            "directory": str(ws_dir),
+        })
+        return ws_uuid
+
+    def test_put_then_get_masks_and_preserves_headers(self, tmp_path, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
+
+        import web.routes_config as routes
+        from core.mcp_store import load_mcp_servers
+
+        ws_uuid = self._register(tmp_path)
+        reloads = []
+
+        class FakeProvider:
+            def reload(self, workspace, servers, force=False):
+                reloads.append((workspace, servers))
+
+            def status(self, workspace):
+                return {}
+
+            def server_tools(self, workspace, name):
+                return []
+
+            def ensure_connected_async(self, workspace, servers):
+                reloads.append(("warm", workspace))
+
+        monkeypatch.setattr(routes, "get_provider", lambda: FakeProvider())
+        monkeypatch.setattr(routes, "reload_all_runners", lambda: None)
+        monkeypatch.setattr(
+            routes, "require_workspace_data_dir", lambda workspace: tmp_path / "ws" / ".cili"
+        )
+
+        request = SimpleNamespace(headers={})
+        body = routes.McpServersUpdateRequest(workspace=ws_uuid, servers={
+            "kfb": {"url": "http://kfb/mcp", "headers": {"X-API-Key": "secret-key-123"}},
+        })
+        asyncio.run(routes.update_mcp_servers(request, body))
+        assert reloads[0][0] == ws_uuid
+        assert load_mcp_servers(ws_uuid)["kfb"].headers == {"X-API-Key": "secret-key-123"}
+
+        data = asyncio.run(routes.get_mcp_servers(workspace=ws_uuid))
+        assert data["servers"]["kfb"]["headers_masked"]["X-API-Key"] == "secr...-123"
+        assert "headers" not in data["servers"]["kfb"]
+
+        # 前端不回传密钥：_preserve_headers 继承已保存的 headers
+        body2 = routes.McpServersUpdateRequest(workspace=ws_uuid, servers={
+            "kfb": {"url": "http://kfb/mcp", "tool_timeout": 10, "_preserve_headers": True},
+        })
+        asyncio.run(routes.update_mcp_servers(request, body2))
+        saved = load_mcp_servers(ws_uuid)["kfb"]
+        assert saved.headers == {"X-API-Key": "secret-key-123"}
+        assert saved.tool_timeout == 10
+
+    def test_put_rejects_bad_server_name(self, tmp_path, monkeypatch):
+        import asyncio
+        from types import SimpleNamespace
+
+        import pytest
+        from fastapi import HTTPException
+
+        import web.routes_config as routes
+
+        ws_uuid = self._register(tmp_path)
+        monkeypatch.setattr(routes, "get_provider", lambda: None)
+        monkeypatch.setattr(routes, "reload_all_runners", lambda: None)
+        monkeypatch.setattr(
+            routes, "require_workspace_data_dir", lambda workspace: tmp_path / "ws" / ".cili"
+        )
+        body = routes.McpServersUpdateRequest(workspace=ws_uuid, servers={
+            "../escape": {"url": "http://x/mcp"},
+        })
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(routes.update_mcp_servers(SimpleNamespace(headers={}), body))
+        assert exc.value.status_code == 400

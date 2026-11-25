@@ -98,7 +98,7 @@ main()
 
 | 路径 | 内容 |
 |---|---|
-| `data/cili/setting.json` | 全局配置（providers/agents/system/permissions/images/qq/wechat/email/mcp_servers） |
+| `data/cili/setting.json` | 全局配置（providers/agents/system/permissions/images/qq/wechat/email） |
 | `data/cili/workspaces.json` | 工作区索引 |
 | `data/cili/logs/` | 日志 |
 | `data/cili/backup/migrations/` | 迁移前配置备份 |

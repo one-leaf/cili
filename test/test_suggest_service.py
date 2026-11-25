@@ -420,7 +420,7 @@ class TestMcpSorting:
                             description="a"),
         ]
         provider = MCPProvider()
-        wrappers = provider._build_wrappers("srv", MCPConfig(enabled_tools=["*"]), defs)
+        wrappers = provider._build_wrappers("ws", "srv", MCPConfig(enabled_tools=["*"]), defs)
         names = [w.name for w in wrappers]
         assert names == sorted(names)
 

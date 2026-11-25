@@ -127,9 +127,10 @@ def test_sanitize_tool_name():
 # ── provider 连接 + wrapper 执行 ─────────────────────────────────────────
 
 def test_provider_connect_and_wrappers(provider, echo_server_url):
-    provider.ensure_connected({"echo": make_echo_config(echo_server_url)})
-    assert provider.status()["echo"]["status"] == "connected"
-    wrappers = provider.get_wrappers()
+    provider.ensure_connected("ws-a", {"echo": make_echo_config(echo_server_url)})
+    assert provider.status("ws-a")["echo"]["status"] == "connected"
+    assert provider.status("ws-b") == {}  # 工作区隔离：别的工区看不到
+    wrappers = provider.get_wrappers("ws-a")
     assert len(wrappers) == 1
     w = wrappers[0]
     assert w.name == "mcp_echo_echo"
@@ -138,8 +139,8 @@ def test_provider_connect_and_wrappers(provider, echo_server_url):
 
 
 def test_wrapper_execute(provider, echo_server_url):
-    provider.ensure_connected({"echo": make_echo_config(echo_server_url)})
-    w = provider.get_wrappers()[0]
+    provider.ensure_connected("ws-a", {"echo": make_echo_config(echo_server_url)})
+    w = provider.get_wrappers("ws-a")[0]
     result = w.execute(text="hi")
     assert not result.is_error
     assert "echo:hi" in result.output
@@ -150,17 +151,17 @@ def test_wrapper_execute(provider, echo_server_url):
 
 def test_execute_disconnected(provider):
     # 未连接的 server → 直接报错而非崩溃
-    result = provider.run_in_loop(provider.execute_tool("nope", "echo", {"text": "x"}, 5))
+    result = provider.run_in_loop(provider.execute_tool("ws-a", "nope", "echo", {"text": "x"}, 5))
     assert result.is_error
 
 
 def test_ensure_connected_noop(provider, echo_server_url):
     """配置签名无变化时 ensure_connected 不重连（避免每次 rebuild 都重连）。"""
     cfg = make_echo_config(echo_server_url)
-    provider.ensure_connected({"echo": cfg})
-    first = provider.get_wrappers()
-    provider.ensure_connected({"echo": cfg})
-    assert provider.get_wrappers() is first or provider.get_wrappers() == first
+    provider.ensure_connected("ws-a", {"echo": cfg})
+    first = provider.get_wrappers("ws-a")
+    provider.ensure_connected("ws-a", {"echo": cfg})
+    assert provider.get_wrappers("ws-a") is first or provider.get_wrappers("ws-a") == first
 
 
 def test_open_session_requires_url(provider):
@@ -173,14 +174,21 @@ def test_open_session_requires_url(provider):
 
 # ── agent 注入（deferred） ───────────────────────────────────────────────
 
-def test_agent_injection_deferred(tmp_path, echo_server_url):
+def test_agent_injection_deferred(tmp_path, echo_server_url, monkeypatch):
     try:
         cfg = make_dgx_config()
-        cfg.mcp_servers = {"echo": make_echo_config(echo_server_url)}
+        echo_cfg = make_echo_config(echo_server_url)
+        # MCP 配置按工作区读取；这里绕过文件存储，直接给 runner 工作区一份配置
+        import core.mcp_store as mcp_store
+        monkeypatch.setattr(
+            mcp_store, "load_mcp_servers",
+            lambda workspace_uuid: {"echo": echo_cfg} if workspace_uuid == current_uuid else {},
+        )
 
         from core.session_runner import SessionRunner
 
         ws_uuid = secrets.token_hex(4)
+        current_uuid = ws_uuid
         runner = SessionRunner(cfg, role="master", cwd=str(tmp_path), workspace_uuid=ws_uuid)
         try:
             # MCP 工具默认进 deferred，不污染 LLM 上下文

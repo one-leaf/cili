@@ -26,8 +26,8 @@ async function openWorkspaceSettings() {
     const systemBadge = document.getElementById('ws-system-badge');
     if (systemBadge) systemBadge.hidden = !isSystem;
 
-    // System 工作区不适用项目提示词 / 版本管理 / 教材下载
-    const systemHiddenTabs = ['ws-migration', 'ws-instructions', 'ws-git', 'ws-textbooks'];
+    // System 工作区不适用项目提示词 / 版本管理 / 教材下载 / MCP
+    const systemHiddenTabs = ['ws-migration', 'ws-instructions', 'ws-git', 'ws-textbooks', 'ws-mcp'];
     document.querySelectorAll('#workspace-settings-modal .settings-tab').forEach(tabBtn => {
         if (systemHiddenTabs.includes(tabBtn.dataset.tab)) {
             tabBtn.style.display = isSystem ? 'none' : '';
@@ -187,6 +187,13 @@ function switchWorkspaceSettingsTab(tabName) {
         deleteBtn.style.display = 'none';
         if (window.CronSettings) {
             window.CronSettings.init(currentWorkspace?.uuid || '');
+        }
+    } else if (tabName === 'ws-mcp') {
+        // MCP 服务器 tab：增删即时保存，隐藏底部保存/删除
+        footerSaveBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
+        if (window.McpSettings) {
+            window.McpSettings.init(currentWorkspace?.uuid || '');
         }
     } else {
         // 基本设置 tab：显示 footer 按钮

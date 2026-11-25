@@ -5475,28 +5475,28 @@ details.p-headers-panel .p-headers {
 }
 
 /* ── MCP 服务器卡 ── */
-#settings-modal .mcp-server-card { margin-bottom: 12px; }
-#settings-modal .mcp-target {
+.ms-scope .mcp-server-card { margin-bottom: 12px; }
+.ms-scope .mcp-target {
     font-family: ui-monospace, Consolas, monospace;
     font-size: var(--ms-fs-label); color: var(--text-color);
     word-break: break-all;
 }
-#settings-modal .mcp-auth { font-size: var(--ms-fs-label); color: var(--ms-muted); margin-top: 3px; }
-#settings-modal .mcp-tools-list {
+.ms-scope .mcp-auth { font-size: var(--ms-fs-label); color: var(--ms-muted); margin-top: 3px; }
+.ms-scope .mcp-tools-list {
     margin-top: 10px; border-top: 1px dashed var(--ms-border); padding-top: 8px;
 }
-#settings-modal .mcp-tool-item { margin-bottom: 8px; }
-#settings-modal .mcp-tool-name {
+.ms-scope .mcp-tool-item { margin-bottom: 8px; }
+.ms-scope .mcp-tool-name {
     font-family: ui-monospace, Consolas, monospace;
     font-size: var(--ms-fs-label); color: var(--primary-color);
 }
-#settings-modal .mcp-tool-desc {
+.ms-scope .mcp-tool-desc {
     font-size: var(--ms-fs-label); color: var(--ms-muted);
     margin-top: 2px; white-space: pre-wrap; word-break: break-word;
 }
-#settings-modal .mcp-test-result { font-size: var(--ms-fs-label); color: var(--ms-muted); }
-#settings-modal .mcp-test-result.ok { color: var(--ms-ok-fg); }
-#settings-modal .mcp-test-result.err { color: var(--ms-danger); }
+.ms-scope .mcp-test-result { font-size: var(--ms-fs-label); color: var(--ms-muted); }
+.ms-scope .mcp-test-result.ok { color: var(--ms-ok-fg); }
+.ms-scope .mcp-test-result.err { color: var(--ms-danger); }
 
 /* ── 青少年模式（沿用既有 DOM，统一外观） ── */
 #settings-modal #tab-teen .teen-section {

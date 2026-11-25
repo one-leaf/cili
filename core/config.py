@@ -422,7 +422,6 @@ class Config:
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
     images: ImageConfig = field(default_factory=ImageConfig)
     workspaces: WorkspacesConfig = field(default_factory=WorkspacesConfig)
-    mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)
 
     # ── 引用解析 ──
 
@@ -554,13 +553,6 @@ class Config:
         # ── Workspaces（顶层 workspaces 字段） ──
         config.workspaces = WorkspacesConfig.from_dict(global_config.get("workspaces") or {})
 
-        # ── MCP servers ──
-        config.mcp_servers = {
-            name: MCPConfig.from_dict(cfg)
-            for name, cfg in (global_config.get("mcp_servers") or {}).items()
-            if isinstance(cfg, dict)
-        }
-
         return config
 
     def apply_env_overrides(self, model_override: str | None = None) -> "Config":
@@ -609,10 +601,6 @@ class Config:
             "images": self.images.to_dict(),
             "workspaces": self.workspaces.to_dict(),
         }
-        if self.mcp_servers:
-            result["mcp_servers"] = {
-                name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
-            }
         return result
 
 

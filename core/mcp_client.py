@@ -219,10 +219,13 @@ def _render_tool_result(result: Any) -> str:
 
 
 class MCPProvider:
-    """全局单例：管理后台 asyncio loop + 每 server 的 ClientSession 生命周期。
+    """全局单例：管理后台 asyncio loop + 每个（工作区, server）的 ClientSession。
 
     后台线程跑一个常驻 asyncio event loop（与 BrowserService 的 worker 线程
     范式一致）。同步线程通过 run_in_loop 提交协程并阻塞等待。
+
+    MCP 配置按工作区隔离：内部所有连接表的键是 ``(workspace_uuid, server_name)``，
+    ``get_wrappers(workspace_uuid)`` 只返回该工作区的工具。
     """
 
     def __init__(self, connect_timeout: int = 60):
@@ -231,15 +234,16 @@ class MCPProvider:
         self._connect_timeout = connect_timeout
         self._connect_thread_lock = threading.Lock()
 
-        self._configured_sig: dict[str, dict] | None = None  # 当前已连接的配置签名
-        self._server_sigs: dict[str, dict] = {}  # server_name -> 已应用配置签名
-        self._connections: dict[str, Any] = {}  # server_name -> ClientSession
-        self._stacks: dict[str, AsyncExitStack] = {}
-        self._wrappers: dict[str, list[MCPToolWrapper]] = {}
-        self._status: dict[str, str] = {}
-        self._stop_events: dict[str, asyncio.Event] = {}
-        self._conn_events: dict[str, asyncio.Event] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._workspace_sigs: dict[str, dict[str, dict]] = {}  # ws -> 已连接配置签名
+        self._warming: set[str] = set()  # 后台预热中的工作区
+        self._server_sigs: dict[tuple[str, str], dict] = {}  # key -> 已应用配置签名
+        self._connections: dict[tuple[str, str], Any] = {}  # key -> ClientSession
+        self._stacks: dict[tuple[str, str], AsyncExitStack] = {}
+        self._wrappers: dict[tuple[str, str], list[MCPToolWrapper]] = {}
+        self._status: dict[tuple[str, str], str] = {}
+        self._stop_events: dict[tuple[str, str], asyncio.Event] = {}
+        self._conn_events: dict[tuple[str, str], asyncio.Event] = {}
+        self._tasks: dict[tuple[str, str], asyncio.Task] = {}
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
 
@@ -292,7 +296,8 @@ class MCPProvider:
         self._stacks.clear()
         self._wrappers.clear()
         self._server_sigs.clear()
-        self._configured_sig = None
+        self._workspace_sigs.clear()
+        self._warming.clear()
         self._status.clear()
 
     def run_in_loop(self, coro, timeout: float = 60) -> Any:
@@ -308,8 +313,8 @@ class MCPProvider:
 
     # ── 连接 ──────────────────────────────────────────────────────────────
 
-    def ensure_connected(self, servers: dict[str, MCPConfig]) -> None:
-        """确保按给定配置连接；配置签名无变化则 no-op（避免 agent 每次 rebuild 重连）。
+    def ensure_connected(self, workspace_uuid: str, servers: dict[str, MCPConfig]) -> None:
+        """确保工作区的服务器按给定配置连接；签名无变化则 no-op。
 
         进程级串行化：并发调用（启动线程 / 首个会话重建）只允许一个连接流程，
         避免互相覆盖 _conn_events/_tasks 导致重复连接或等待超时。
@@ -323,101 +328,144 @@ class MCPProvider:
                     logger.warning(f"[MCP] provider 启动失败，本次跳过 MCP: {exc}")
                     return
             sig = {name: cfg.to_dict() for name, cfg in servers.items()}
-            if self._configured_sig == sig:
+            if self._workspace_sigs.get(workspace_uuid, {}) == sig:
                 return
             try:
-                self.run_in_loop(self._connect_all(servers), timeout=self._connect_timeout + 5)
+                self.run_in_loop(
+                    self._connect_all(workspace_uuid, servers),
+                    timeout=self._connect_timeout + 5,
+                )
             except Exception as exc:
-                logger.warning(f"[MCP] 连接失败: {exc}")
+                logger.warning(f"[MCP] 连接失败（工作区 {workspace_uuid}）: {exc}")
                 return
             # 全部连接成功才记签名；失败/超时的 server 留待下次 ensure_connected 重试
-            if all(self._status.get(name) == "connected" for name in servers):
-                self._configured_sig = sig
+            if all(self._status.get((workspace_uuid, name)) == "connected" for name in servers):
+                self._workspace_sigs[workspace_uuid] = sig
             else:
                 logger.warning("[MCP] 部分服务器未连接，保留旧签名以便下次重试")
 
-    async def _connect_all(self, servers: dict[str, MCPConfig]) -> None:
-        # 关闭已不在配置里的 server
-        for name in list(self._connections):
-            if name not in servers:
-                await self._close_server(name)
+    def ensure_connected_async(self, workspace_uuid: str, servers: dict[str, MCPConfig]) -> None:
+        """后台线程预热连接（供状态查询/设置页使用，不阻塞 HTTP 请求）。"""
+        sig = {name: cfg.to_dict() for name, cfg in servers.items()}
+        # 非阻塞拿锁：已有连接流程在跑时不排队（避免阻塞调用方的事件循环）
+        if not self._connect_thread_lock.acquire(blocking=False):
+            return
+        try:
+            if self._workspace_sigs.get(workspace_uuid, {}) == sig:
+                return
+            if workspace_uuid in self._warming:
+                return
+            self._warming.add(workspace_uuid)
+            # 立即回写「连接中」，设置页状态不必等后台握手完成
+            for name in servers:
+                key = (workspace_uuid, name)
+                if key not in self._connections:
+                    self._status[key] = "connecting"
+        finally:
+            self._connect_thread_lock.release()
+
+        def _run() -> None:
+            try:
+                self.ensure_connected(workspace_uuid, servers)
+            finally:
+                for name in servers:
+                    key = (workspace_uuid, name)
+                    if self._status.get(key) == "connecting" and key not in self._connections:
+                        self._status[key] = "failed"
+                with self._connect_thread_lock:
+                    self._warming.discard(workspace_uuid)
+
+        threading.Thread(
+            target=_run, name=f"mcp-warm-{workspace_uuid or 'default'}", daemon=True
+        ).start()
+
+    async def _connect_all(self, workspace_uuid: str, servers: dict[str, MCPConfig]) -> None:
+        # 关闭该工作区中已不在配置里的 server
+        for key in list(self._connections):
+            if key[0] == workspace_uuid and key[1] not in servers:
+                await self._close_server(key)
 
         for name, cfg in servers.items():
+            key = (workspace_uuid, name)
             cfg_sig = cfg.to_dict()
-            if name in self._connections and self._server_sigs.get(name) != cfg_sig:
-                await self._close_server(name)
-            if name in self._connections:
+            if key in self._connections and self._server_sigs.get(key) != cfg_sig:
+                await self._close_server(key)
+            if key in self._connections:
                 continue
             # 上一次连接超时后可能仍有残留任务：先取消，避免它覆盖新任务的簿记
-            old_task = self._tasks.get(name)
+            old_task = self._tasks.get(key)
             if old_task is not None and not old_task.done():
                 old_task.cancel()
                 await asyncio.gather(old_task, return_exceptions=True)
-            self._status[name] = "connecting"
-            self._stop_events[name] = asyncio.Event()
-            self._conn_events[name] = asyncio.Event()
-            self._tasks[name] = asyncio.create_task(self._connect_and_hold(name, cfg))
+            self._status[key] = "connecting"
+            self._stop_events[key] = asyncio.Event()
+            self._conn_events[key] = asyncio.Event()
+            self._tasks[key] = asyncio.create_task(self._connect_and_hold(key, cfg))
 
         # 有界等待连接完成（成功或失败）
-        pending = [name for name in servers if name not in self._connections]
+        pending = [
+            (workspace_uuid, name) for name in servers
+            if (workspace_uuid, name) not in self._connections
+        ]
         if pending:
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(*[self._conn_events[name].wait() for name in pending]),
+                    asyncio.gather(*[self._conn_events[key].wait() for key in pending]),
                     timeout=self._connect_timeout,
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"[MCP] 等待连接超时: {pending}")
+                logger.warning(f"[MCP] 等待连接超时: {[key[1] for key in pending]}")
 
-    async def _connect_and_hold(self, name: str, cfg: MCPConfig) -> None:
+    async def _connect_and_hold(self, key: tuple[str, str], cfg: MCPConfig) -> None:
         """连接一个 server，注册 session/wrappers，然后保持连接直到关闭信号。"""
+        workspace_uuid, name = key
         stack = AsyncExitStack()
         try:
             session = await self._open_session(name, cfg, stack)
             tools = await session.list_tools()
-            wrappers = self._build_wrappers(name, cfg, tools.tools)
-            self._connections[name] = session
-            self._stacks[name] = stack
-            self._wrappers[name] = wrappers
-            self._server_sigs[name] = cfg.to_dict()
-            self._status[name] = "connected"
-            logger.info(f"[MCP] 服务器 {name} 已连接，{len(wrappers)} 个工具")
+            wrappers = self._build_wrappers(workspace_uuid, name, cfg, tools.tools)
+            self._connections[key] = session
+            self._stacks[key] = stack
+            self._wrappers[key] = wrappers
+            self._server_sigs[key] = cfg.to_dict()
+            self._status[key] = "connected"
+            logger.info(f"[MCP] 服务器 {name}（工作区 {workspace_uuid}）已连接，{len(wrappers)} 个工具")
         except asyncio.CancelledError:
             await stack.aclose()
-            self._tasks.pop(name, None)
+            self._tasks.pop(key, None)
             raise
         except Exception as exc:
             await stack.aclose()
-            self._status[name] = "failed"
-            self._conn_events[name].set()
-            self._tasks.pop(name, None)
-            logger.warning(f"[MCP] 服务器 {name} 连接失败: {exc}")
+            self._status[key] = "failed"
+            self._conn_events[key].set()
+            self._tasks.pop(key, None)
+            logger.warning(f"[MCP] 服务器 {name}（工作区 {workspace_uuid}）连接失败: {exc}")
             return
-        self._conn_events[name].set()
+        self._conn_events[key].set()
         try:
-            await self._stop_events[name].wait()
+            await self._stop_events[key].wait()
         finally:
             await stack.aclose()
-            self._connections.pop(name, None)
-            self._wrappers.pop(name, None)
-            self._server_sigs.pop(name, None)
-            self._status[name] = "offline"
-            self._tasks.pop(name, None)
-            logger.info(f"[MCP] 服务器 {name} 已断开")
+            self._connections.pop(key, None)
+            self._wrappers.pop(key, None)
+            self._server_sigs.pop(key, None)
+            self._status[key] = "offline"
+            self._tasks.pop(key, None)
+            logger.info(f"[MCP] 服务器 {name}（工作区 {workspace_uuid}）已断开")
 
-    async def _close_server(self, name: str) -> None:
-        event = self._stop_events.pop(name, None)
+    async def _close_server(self, key: tuple[str, str]) -> None:
+        event = self._stop_events.pop(key, None)
         if event is not None:
             event.set()
-        task = self._tasks.pop(name, None)
+        task = self._tasks.pop(key, None)
         if task is not None and not task.done():
             await asyncio.gather(task, return_exceptions=True)
-        self._conn_events.pop(name, None)
-        self._connections.pop(name, None)
-        self._stacks.pop(name, None)
-        self._wrappers.pop(name, None)
-        self._server_sigs.pop(name, None)
-        self._status.pop(name, None)
+        self._conn_events.pop(key, None)
+        self._connections.pop(key, None)
+        self._stacks.pop(key, None)
+        self._wrappers.pop(key, None)
+        self._server_sigs.pop(key, None)
+        self._status.pop(key, None)
 
     async def _open_session(self, name: str, cfg: MCPConfig, stack: AsyncExitStack) -> Any:
         """建立 streamableHttp 传输 + ClientSession 并 initialize，返回 session。"""
@@ -438,7 +486,8 @@ class MCPProvider:
         await session.initialize()
         return session
 
-    def _build_wrappers(self, name: str, cfg: MCPConfig, tool_defs: list[Any]) -> list[MCPToolWrapper]:
+    def _build_wrappers(self, workspace_uuid: str, name: str, cfg: MCPConfig,
+                        tool_defs: list[Any]) -> list[MCPToolWrapper]:
         from core.tools.mcp import MCPToolWrapper
 
         enabled = set(cfg.enabled_tools or ["*"])
@@ -458,6 +507,7 @@ class MCPProvider:
             parameters = _normalize_schema(input_schema)
             wrappers.append(MCPToolWrapper(
                 provider=self,
+                workspace_uuid=workspace_uuid,
                 server_name=name,
                 tool_name=raw_name,
                 description=getattr(tool_def, "description", None) or raw_name,
@@ -472,10 +522,12 @@ class MCPProvider:
     # ── 工具执行 ──────────────────────────────────────────────────────────
 
     async def execute_tool(
-        self, server_name: str, tool_name: str, kwargs: dict, timeout: int
+        self, workspace_uuid: str, server_name: str, tool_name: str,
+        kwargs: dict, timeout: int,
     ) -> ToolResult:
         """在 loop 内执行一次 MCP 工具调用（含超时与临时错误单次重试）。"""
-        session = self._connections.get(server_name)
+        key = (workspace_uuid, server_name)
+        session = self._connections.get(key)
         if session is None:
             return ToolResult(f"Error: MCP server '{server_name}' 未连接", error=True)
 
@@ -490,7 +542,7 @@ class MCPProvider:
                 logger.warning(f"[MCP] tool 调用遇临时错误 ({type(exc).__name__})，重试一次")
                 await asyncio.sleep(1)
                 # 等待期间可能已重连并替换 session：重试前重新取用（审查 P2）
-                session = self._connections.get(server_name)
+                session = self._connections.get(key)
                 if session is None:
                     return ToolResult(f"Error: MCP server '{server_name}' 已断开", error=True)
                 try:
@@ -509,28 +561,30 @@ class MCPProvider:
 
     # ── 查询 / reload ─────────────────────────────────────────────────────
 
-    def get_wrappers(self) -> list[MCPToolWrapper]:
-        """返回当前所有已连接 server 的 wrapper（同步，读共享列表）。
+    def get_wrappers(self, workspace_uuid: str) -> list[MCPToolWrapper]:
+        """返回指定工作区已连接 server 的 wrapper（同步，读共享列表）。
 
         按 name 排序：``_wrappers`` 的插入序 = 各 server 连接完成时序（``_connect_all``
         并发建连），跨重启不稳定，排序保证 tools 前缀字节一致（设计文档 §3.2）。
         """
         result: list[MCPToolWrapper] = []
-        for wrappers in list(self._wrappers.values()):
-            result.extend(wrappers)
+        for key, wrappers in list(self._wrappers.items()):
+            if key[0] == workspace_uuid:
+                result.extend(wrappers)
         result.sort(key=lambda w: w.name)
         return result
 
-    def status(self) -> dict[str, dict]:
+    def status(self, workspace_uuid: str) -> dict[str, dict]:
         return {
-            name: {
-                "status": self._status.get(name, "offline"),
-                "tool_count": len(self._wrappers.get(name, [])),
+            key[1]: {
+                "status": self._status.get(key, "offline"),
+                "tool_count": len(self._wrappers.get(key, [])),
             }
-            for name in sorted(self._status)
+            for key in sorted(self._status)
+            if key[0] == workspace_uuid
         }
 
-    def server_tools(self, name: str) -> list[dict]:
+    def server_tools(self, workspace_uuid: str, name: str) -> list[dict]:
         """返回某 server 已枚举的工具清单（名称 + 描述 + 参数 schema，规范 input_schema 键）。"""
         return [
             {
@@ -538,7 +592,7 @@ class MCPProvider:
                 "description": w.description,
                 "input_schema": w.parameters,
             }
-            for w in self._wrappers.get(name, [])
+            for w in self._wrappers.get((workspace_uuid, name), [])
         ]
 
     def test_connect(self, cfg: MCPConfig, timeout: int = 60) -> dict:
@@ -581,19 +635,24 @@ class MCPProvider:
         finally:
             await stack.aclose()
 
-    def reload(self, servers: dict[str, MCPConfig], force: bool = False) -> None:
-        """按新配置重连。force=True 时断开全部现有连接后重新连接。"""
+    def reload(self, workspace_uuid: str, servers: dict[str, MCPConfig],
+               force: bool = False) -> None:
+        """按新配置重连该工作区。force=True 时先断开其全部现有连接。"""
         if force:
-            self._configured_sig = None
+            self._workspace_sigs.pop(workspace_uuid, None)
             try:
-                self.run_in_loop(self._disconnect_all(), timeout=self._connect_timeout + 5)
+                if self._loop is not None and self._loop.is_running():
+                    self.run_in_loop(
+                        self._disconnect_workspace(workspace_uuid),
+                        timeout=self._connect_timeout + 5,
+                    )
             except Exception as exc:
-                logger.warning(f"[MCP] 断开现有连接失败: {exc}")
-        self.ensure_connected(servers)
+                logger.warning(f"[MCP] 断开现有连接失败（工作区 {workspace_uuid}）: {exc}")
+        self.ensure_connected(workspace_uuid, servers)
 
-    async def _disconnect_all(self) -> None:
-        for name in list(self._connections):
-            await self._close_server(name)
+    async def _disconnect_workspace(self, workspace_uuid: str) -> None:
+        for key in [k for k in self._connections if k[0] == workspace_uuid]:
+            await self._close_server(key)
 
 
 # ── 模块级单例（仿 BrowserService.get_service 双重检查锁）─────────────────

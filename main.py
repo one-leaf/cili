@@ -1559,6 +1559,7 @@ def _prepare_environment() -> None:
         from core.migrations.steps import (
             migrate_chatgpt_oauth_naming,
             migrate_legacy_file_urls,
+            migrate_mcp_servers_to_workspace,
             migrate_placeholder_meta,
             migrate_provider_interface_type,
             migrate_tui_channel,
@@ -1579,6 +1580,9 @@ def _prepare_environment() -> None:
                  lambda: migrate_tui_channel(WORKSPACES_JSON, get_workspace_data_dir)),
                 ("legacy_file_urls",
                  lambda: migrate_legacy_file_urls(WORKSPACES_JSON, get_workspace_data_dir)),
+                ("mcp_servers_workspace",
+                 lambda: migrate_mcp_servers_to_workspace(
+                     GLOBAL_CONFIG_PATH, WORKSPACES_JSON, get_workspace_data_dir)),
             ],
             DATA_DIR,
         )

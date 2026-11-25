@@ -130,12 +130,12 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET/PUT | `/api/config` | 读取（api_key 掩码）/更新（providers/agents/system/mcp_servers/qq/wechat/email 全量） |
+| GET/PUT | `/api/config` | 读取（api_key 掩码）/更新（providers/agents/system/qq/wechat/email 全量） |
 | POST | `/api/config/test` | 测试 provider+模型组合（OAuth 走预览期整形） |
 | POST | `/api/config/detect-models` | 拉取模型 ID 列表（anthropic 分页 / openai 单页） |
 | POST | `/api/config/test-email` | 邮箱连接测试 |
-| GET | `/api/mcp/servers` | MCP 工具清单 |
-| POST | `/api/mcp/reload`、`/api/mcp/test` | 重连 / 单服务测试 |
+| GET/PUT | `/api/mcp/servers?workspace=` | 工作区 MCP 配置与工具清单 / 全量保存 |
+| POST | `/api/mcp/reload?workspace=`、`/api/mcp/test` | 重连工作区服务器 / 单服务测试 |
 | POST | `/api/config/chatgpt-oauth/login` | 开始登录（`provider/credential/provider_config`） |
 | GET | `/api/config/chatgpt-oauth/login/{attempt_id}` | 轮询状态 |
 | POST | `/api/config/chatgpt-oauth/login/{attempt_id}/complete`、`/cancel` | 手动完成/取消 |

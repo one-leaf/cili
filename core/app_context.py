@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +41,6 @@ class AppContext:
             start_agent_mailbox()
         except Exception as e:
             logger.warning(f"[AppContext] 启动 AgentMailbox 失败: {e}")
-
-        # MCP provider：后台连接已配置的服务器（不阻塞启动）
-        threading.Thread(target=self._connect_mcp_servers, daemon=True).start()
 
         # 教材数据包后台同步（cili-data Release；失败只告警，不影响启动）
         try:
@@ -98,17 +94,6 @@ class AppContext:
                 logger.info("[AppContext] 邮件接入端已启动")
         except Exception as e:
             logger.warning(f"[AppContext] 启动邮件接入端失败: {e}")
-
-    @staticmethod
-    def _connect_mcp_servers() -> None:
-        try:
-            from core.config import load_config
-            cfg = load_config()
-            if cfg.mcp_servers:
-                from core.mcp_client import get_provider
-                get_provider().ensure_connected(cfg.mcp_servers)
-        except Exception as e:
-            logger.warning(f"[AppContext] 连接 MCP 服务器失败: {e}")
 
     # ---------- 关闭 ----------
 

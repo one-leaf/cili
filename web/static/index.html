@@ -360,7 +360,6 @@
                 <button class="settings-tab" data-tab="agents">Agents</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
                 <button class="settings-tab" data-tab="permissions">权限</button>
-                <button class="settings-tab" data-tab="mcp">MCP 服务器</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
                 <button class="settings-tab" data-tab="email">邮件接入端</button>
@@ -763,61 +762,6 @@
                     </div>
                 </div>
 
-                <!-- MCP Servers Tab -->
-                <div class="tab-content" id="tab-mcp">
-                    <div class="settings-pane">
-                        <div class="pane-desc"><strong>MCP 服务器</strong> — 连接外部 MCP 服务器，把其工具注入 agent（默认 deferred，聊天中用 tool_search 激活）。</div>
-                        <div class="settings-actions" style="margin: 0 0 12px">
-                            <button id="mcp-reload-btn" class="btn-secondary" type="button">重新连接</button>
-                            <span id="mcp-status" class="hint" style="font-size: var(--ms-fs-label); color: var(--ms-muted);"></span>
-                        </div>
-                        <div id="mcp-server-list"></div>
-
-                        <div class="settings-card">
-                            <div class="settings-card-head"><span class="title">添加服务器</span></div>
-                            <div class="setting-row">
-                                <label for="mcp-name">名称</label>
-                                <div class="control">
-                                    <input type="text" id="mcp-name" placeholder="filesystem">
-                                    <div class="hint">唯一标识，将作为工具名前缀 mcp_{名称}_*</div>
-                                </div>
-                            </div>
-                            <div class="setting-row">
-                                <label for="mcp-url">端点 URL</label>
-                                <div class="control">
-                                    <input type="text" id="mcp-url" placeholder="http://localhost:3000/mcp">
-                                    <div class="hint">streamableHttp 端点（MCP 仅支持此传输）</div>
-                                </div>
-                            </div>
-                            <div class="setting-row">
-                                <label for="mcp-headers">请求头</label>
-                                <div class="control">
-                                    <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx, X-API-Key=yyy">
-                                    <div class="hint">逗号分隔 KEY=VALUE，用于 API Key / Bearer Token 认证</div>
-                                </div>
-                            </div>
-                            <div class="settings-grid">
-                                <div class="setting-row">
-                                    <label for="mcp-tool-timeout">工具超时</label>
-                                    <div class="control"><input type="number" id="mcp-tool-timeout" min="1" max="600" value="30"></div>
-                                </div>
-                                <div class="setting-row">
-                                    <label for="mcp-enabled-tools">工具白名单</label>
-                                    <div class="control">
-                                        <input type="text" id="mcp-enabled-tools" placeholder="*（全部）" value="*" style="width:180px">
-                                        <div class="hint">逗号分隔；* = 全部</div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="settings-actions">
-                                <button id="mcp-test-new-btn" class="btn-secondary" type="button">测试连接</button>
-                                <button id="mcp-add-btn" class="btn-primary" type="button">添加服务器</button>
-                                <span id="mcp-test-new-result" class="hint"></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- QQ 接入端 Tab -->
                 <div class="tab-content" id="tab-qq">
                     <div class="settings-pane">
@@ -1044,6 +988,7 @@
                 <button class="settings-tab" data-tab="ws-git" onclick="switchWorkspaceSettingsTab('ws-git')">版本管理</button>
                 <button class="settings-tab" data-tab="ws-textbooks" onclick="switchWorkspaceSettingsTab('ws-textbooks')">教材下载</button>
                 <button class="settings-tab" data-tab="ws-cron" onclick="switchWorkspaceSettingsTab('ws-cron')">定时任务</button>
+                <button class="settings-tab" data-tab="ws-mcp" onclick="switchWorkspaceSettingsTab('ws-mcp')">MCP 服务器</button>
             </div>
             <div class="modal-body">
                 <!-- 基本设置 Tab -->
@@ -1369,6 +1314,61 @@
                         </div>
                     </div>
                 </div>
+                <!-- MCP Servers Tab（工作区） -->
+                <div class="tab-content" id="tab-ws-mcp">
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>MCP 服务器</strong> — 配置属于当前工作区（<code>.cili/mcp/</code>），连接外部 MCP 服务器并把其工具注入本工作区的 agent（默认 deferred，聊天中用 tool_search 激活）。增删即时保存。</div>
+                        <div class="settings-actions" style="margin: 0 0 12px">
+                            <button id="mcp-reload-btn" class="btn-secondary" type="button">重新连接</button>
+                            <span id="mcp-status" class="hint" style="font-size: var(--ms-fs-label); color: var(--ms-muted);"></span>
+                        </div>
+                        <div id="mcp-server-list"></div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">添加服务器</span></div>
+                            <div class="setting-row">
+                                <label for="mcp-name">名称</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-name" placeholder="filesystem">
+                                    <div class="hint">唯一标识，将作为工具名前缀 mcp_{名称}_*</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="mcp-url">端点 URL</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-url" placeholder="http://localhost:3000/mcp">
+                                    <div class="hint">streamableHttp 端点（MCP 仅支持此传输）</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="mcp-headers">请求头</label>
+                                <div class="control">
+                                    <input type="text" id="mcp-headers" placeholder="Authorization=Bearer xxx, X-API-Key=yyy">
+                                    <div class="hint">逗号分隔 KEY=VALUE，用于 API Key / Bearer Token 认证</div>
+                                </div>
+                            </div>
+                            <div class="settings-grid">
+                                <div class="setting-row">
+                                    <label for="mcp-tool-timeout">工具超时</label>
+                                    <div class="control"><input type="number" id="mcp-tool-timeout" min="1" max="600" value="30"></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="mcp-enabled-tools">工具白名单</label>
+                                    <div class="control">
+                                        <input type="text" id="mcp-enabled-tools" placeholder="*（全部）" value="*" style="width:180px">
+                                        <div class="hint">逗号分隔；* = 全部</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-actions">
+                                <button id="mcp-test-new-btn" class="btn-secondary" type="button">测试连接</button>
+                                <button id="mcp-add-btn" class="btn-primary" type="button">添加服务器</button>
+                                <span id="mcp-test-new-result" class="hint"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
             <div class="modal-footer">
                 <button id="workspace-delete-btn" class="btn btn-danger" style="margin-right:auto;">删除配置</button>
@@ -1552,6 +1552,7 @@
     <script src="/static/composer.js"></script>
     <script src="/static/textbook-settings.js"></script>
     <script src="/static/workspace-wizard.js"></script>
+    <script src="/static/mcp-settings.js"></script>
     <script src="/static/workspace-settings.js"></script>
     <script src="/static/sidebar.js"></script>
     <script src="/static/context-gauge.js"></script>

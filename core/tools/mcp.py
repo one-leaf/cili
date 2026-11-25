@@ -22,13 +22,14 @@ if TYPE_CHECKING:
 class MCPToolWrapper(Tool):
     """把单个 MCP 工具包装为 Cili 的同步 Tool。
 
-    关键设计：wrapper 只持 provider 引用、不持 session。每次 execute 经
-    provider 取当前 session，因此 server 重连后 wrapper 自动使用新连接。
+    关键设计：wrapper 只持 provider 引用 + 所属工作区、不持 session。每次
+    execute 经 provider 取当前 session，因此 server 重连后 wrapper 自动使用新连接。
     """
 
     def __init__(
         self,
         provider: "MCPProvider",
+        workspace_uuid: str,
         server_name: str,
         tool_name: str,
         description: str,
@@ -41,6 +42,7 @@ class MCPToolWrapper(Tool):
         # provider 现取）。**kwargs 仅用于容忍统一构造协议注入的额外参数。
         super().__init__(cwd=cwd)
         self._provider = provider
+        self._workspace_uuid = workspace_uuid
         self._server_name = server_name
         self._tool_name = tool_name  # 原始 MCP 工具名（call_tool 用）
         self._tool_timeout = tool_timeout
@@ -52,7 +54,8 @@ class MCPToolWrapper(Tool):
         try:
             result = self._provider.run_in_loop(
                 self._provider.execute_tool(
-                    self._server_name, self._tool_name, kwargs, self._tool_timeout
+                    self._workspace_uuid, self._server_name, self._tool_name,
+                    kwargs, self._tool_timeout,
                 ),
                 timeout=self._tool_timeout + 10,
             )

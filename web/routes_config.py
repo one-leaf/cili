@@ -8,7 +8,7 @@ import re
 import secrets
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from core.config import (
@@ -22,9 +22,15 @@ from core.config import (
 )
 from core.llm.server_presets import preset_headers, preset_payloads
 from core.mcp_client import get_provider
+from core.mcp_store import load_mcp_servers, save_mcp_servers, validate_server_name
 from core.stream_executor import get_stream_executor
 from core.teen_mode import deny_message, get_teen_mode
-from web.deps import reload_all_runners, teen_guard
+from web.deps import (
+    csrf_protect,
+    reload_all_runners,
+    require_workspace_data_dir,
+    teen_guard,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -61,7 +67,6 @@ class UpdateConfigRequest(BaseModel):
     providers: dict[str, ProviderRequest] | None = None  # 接入层 + 模型表（前端发全量）
     agents: dict[str, dict] | None = None                # 角色引用 {role: {model: "provider/模型键"}}
     system: dict | None = None                           # System parameters (pip_mirror, etc.)
-    mcp_servers: dict | None = None                      # MCP 服务器配置 {name: {...}}
     qq: dict | None = None                               # QQ 接入端配置
     wechat: dict | None = None                           # 微信接入端配置（凭证走扫码，不在这里）
     email: dict | None = None                            # 邮件接入端配置（含 password，掩码回传保留）
@@ -70,6 +75,13 @@ class UpdateConfigRequest(BaseModel):
 class McpTestRequest(BaseModel):
     name: str = ""
     config: dict | None = None
+    workspace: str = ""
+
+
+class McpServersUpdateRequest(BaseModel):
+    """工作区 MCP 配置全量保存（每台服务器一个文件）。"""
+    workspace: str
+    servers: dict[str, dict] = {}
 
 
 class EmailTestRequest(BaseModel):
@@ -216,11 +228,6 @@ def _mask_api_key(config: dict) -> dict:
             sys_copy["mineru_api_key_masked"] = _mask_secret(mineru_key)
         sys_copy.pop("mineru_api_key", None)
         result["system"] = sys_copy
-    # Mask MCP headers (可能含 Authorization/Bearer 密钥)
-    if "mcp_servers" in result and isinstance(result["mcp_servers"], dict):
-        result["mcp_servers"] = {
-            name: _mask_mcp_server(cfg) for name, cfg in result["mcp_servers"].items()
-        }
     # Mask QQ secret（按账号）
     if "qq" in result and isinstance(result["qq"], dict):
         qq_copy = result["qq"].copy()
@@ -355,8 +362,7 @@ async def update_config(request: UpdateConfigRequest):
     tm = get_teen_mode()
     if tm.is_enabled() and not tm.is_unlocked():
         if any(v is not None for v in (request.providers, request.agents,
-                                       request.mcp_servers, request.qq, request.wechat,
-                                       request.email)):
+                                       request.qq, request.wechat, request.email)):
             tm.audit("deny", action="config_update", source="web")
             tm.record_denied("config_update")
             raise HTTPException(status_code=403, detail=deny_message("config_update"))
@@ -394,23 +400,6 @@ async def update_config(request: UpdateConfigRequest):
         existing_system = config.get("system", {})
         existing_system.update(request.system)
         config["system"] = existing_system
-
-    # Update MCP servers config
-    if request.mcp_servers is not None:
-        if request.mcp_servers:
-            # _preserve_headers 标记：继承已保存 config 的原 headers（前端不覆盖密钥）
-            current_mcp = config.get("mcp_servers", {})
-            if not isinstance(current_mcp, dict):
-                current_mcp = {}
-            new_servers = {}
-            for name, server in request.mcp_servers.items():
-                server = dict(server)
-                if server.pop("_preserve_headers", False) and name in current_mcp:
-                    server["headers"] = current_mcp[name].get("headers", {})
-                new_servers[name] = server
-            config["mcp_servers"] = new_servers
-        else:
-            config.pop("mcp_servers", None)
 
     # Update QQ 接入端配置（账号列表，全量替换；secret 留空/掩码 = 保留原值）
     qq_enable_before: dict[str, bool] = {}
@@ -522,14 +511,6 @@ async def update_config(request: UpdateConfigRequest):
             _apply_account_enabled_changes, "email", email_enable_before, email_enable_after
         )
 
-    # 重连 MCP 服务器（签名变化才真正重连）
-    try:
-        new_cfg = await asyncio.to_thread(load_config)
-        provider = get_provider()
-        await asyncio.to_thread(provider.reload, new_cfg.mcp_servers)
-    except Exception as e:
-        logger.warning(f"[Config] 重连 MCP 服务器失败: {e}")
-
     # 通知所有缓存的 master runner 重新加载配置（新的 API key / model 等）。
     await asyncio.to_thread(reload_all_runners)
 
@@ -565,13 +546,19 @@ async def test_email(request: EmailTestRequest | None = None):
 
 
 @router.get("/api/mcp/servers")
-async def get_mcp_servers():
-    """Get MCP servers config + 实时连接状态（headers 掩码显示）。"""
-    cfg = load_config()
+async def get_mcp_servers(workspace: str = ""):
+    """工作区 MCP 配置 + 连接状态（headers 掩码显示）。
+
+    状态查询触发后台预热连接（不阻塞请求），已连接则直接返回实时状态。
+    """
+    require_workspace_data_dir(workspace)
+    servers_cfg = await asyncio.to_thread(load_mcp_servers, workspace)
     provider = get_provider()
-    status = provider.status()
+    if servers_cfg:
+        provider.ensure_connected_async(workspace, servers_cfg)
+    status = provider.status(workspace)
     servers = {}
-    for name, mcfg in cfg.mcp_servers.items():
+    for name, mcfg in servers_cfg.items():
         st = status.get(name, {})
         servers[name] = {
             "name": name,
@@ -581,27 +568,58 @@ async def get_mcp_servers():
             "enabled_tools": mcfg.enabled_tools,
             "status": st.get("status", "offline"),
             "tool_count": st.get("tool_count", 0),
-            "tools": provider.server_tools(name),
+            "tools": provider.server_tools(workspace, name),
         }
-    return {"servers": servers}
+    return {"workspace": workspace, "servers": servers}
+
+
+@router.put("/api/mcp/servers",
+            dependencies=[Depends(teen_guard("config_update"))])
+async def update_mcp_servers(request: Request, body: McpServersUpdateRequest):
+    """全量保存工作区 MCP 配置并重连；随后重建缓存的 runner。"""
+    csrf_protect(request)
+    require_workspace_data_dir(body.workspace)
+
+    current = await asyncio.to_thread(load_mcp_servers, body.workspace)
+    new_servers: dict[str, MCPConfig] = {}
+    for name, raw in (body.servers or {}).items():
+        error = validate_server_name(name)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail=f"{name}: 配置必须是 JSON 对象")
+        data = dict(raw)
+        # _preserve_headers：前端不回传密钥，继承已保存的 headers
+        if data.pop("_preserve_headers", False) and name in current:
+            data["headers"] = current[name].headers
+        new_servers[name] = MCPConfig.from_dict(data)
+
+    await asyncio.to_thread(save_mcp_servers, body.workspace, new_servers)
+
+    provider = get_provider()
+    await asyncio.to_thread(provider.reload, body.workspace, new_servers)
+    await asyncio.to_thread(reload_all_runners)
+    return {"success": True, "servers": provider.status(body.workspace)}
 
 
 @router.post("/api/mcp/reload",
              dependencies=[Depends(teen_guard("config_update"))])
-async def reload_mcp():
-    """强制重连所有 MCP 服务器，并刷新缓存的 master runner（deferred 工具重建）。"""
-    cfg = await asyncio.to_thread(load_config)
+async def reload_mcp(workspace: str = ""):
+    """强制重连工作区的 MCP 服务器，并刷新缓存的 master runner。"""
+    require_workspace_data_dir(workspace)
+    servers = await asyncio.to_thread(load_mcp_servers, workspace)
     provider = get_provider()
-    await asyncio.to_thread(provider.reload, cfg.mcp_servers, force=True)
+    await asyncio.to_thread(provider.reload, workspace, servers, force=True)
     await asyncio.to_thread(reload_all_runners)
-    return {"success": True, "servers": provider.status()}
+    return {"success": True, "servers": provider.status(workspace)}
 
 
 @router.post("/api/mcp/test")
 async def test_mcp_server(request: McpTestRequest | None = None):
     """测试单个 MCP 服务器连接并枚举工具（不保存配置，测完即断开）。
 
-    优先用请求体 config（表单新增场景，含真实 headers）；否则按 name 用已保存配置。
+    优先用请求体 config（表单新增场景，含真实 headers）；否则按 name 从
+    指定工作区读取已保存配置。
     """
     if request is None:
         request = McpTestRequest()
@@ -612,7 +630,9 @@ async def test_mcp_server(request: McpTestRequest | None = None):
         except Exception as e:
             return {"status": "failed", "error": f"配置解析失败: {e}"}
     elif request.name:
-        mcfg = load_config().mcp_servers.get(request.name)
+        if not request.workspace:
+            return {"status": "failed", "error": "未指定工作区"}
+        mcfg = load_mcp_servers(request.workspace).get(request.name)
         if mcfg is None:
             return {"status": "failed", "error": "未找到已保存的服务器配置（请先在表单中测试）"}
     else:

@@ -331,3 +331,64 @@ def migrate_legacy_file_urls(workspaces_json: Path, get_data_dir) -> int:
                 atomic_write_text(jsonl, new_text)
                 changed += 1
     return changed
+
+
+def migrate_mcp_servers_to_workspace(global_config_path: Path,
+                                     workspaces_json: Path,
+                                     get_data_dir) -> bool:
+    """setting.json 顶层 ``mcp_servers`` → Default 工作区 ``.cili/mcp/{name}.json``。
+
+    每台服务器一个文件（文件名即服务器名）；目标文件已存在时保留工作区
+    版本、不覆盖。全部写成功后才从 setting.json 移除该键（失败则抛出让
+    run_pending 下次启动重试，全局配置不丢）。幂等。
+    """
+    config_path = Path(global_config_path)
+    if not config_path.is_file():
+        return False
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"无法读取 {config_path}: {e}") from e
+    if not isinstance(raw, dict):
+        return False
+    servers = raw.get("mcp_servers")
+    if not isinstance(servers, dict) or not servers:
+        return False
+
+    from core.mcp_store import MCP_DIRNAME, validate_server_name
+
+    # 目标：Default 工作区（索引缺失时按约定兜底到默认父目录）
+    default_uuid = ""
+    try:
+        entries = json.loads(Path(workspaces_json).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        entries = []
+    if isinstance(entries, list):
+        for entry in entries:
+            if (
+                isinstance(entry, dict)
+                and entry.get("workspace_name") in ("Default", "default")
+                and entry.get("uuid")
+            ):
+                default_uuid = str(entry["uuid"])
+                break
+
+    target_dir = Path(get_data_dir(default_uuid)) / MCP_DIRNAME
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for name, cfg in servers.items():
+        error = validate_server_name(str(name))
+        if error:
+            raise RuntimeError(f"无法迁移 MCP 服务器 {name!r}: {error}")
+        if not isinstance(cfg, dict):
+            raise RuntimeError(f"MCP 服务器 {name!r} 配置不是 JSON 对象")
+        dest = target_dir / f"{name}.json"
+        if dest.exists():
+            logger.warning("[migration] 工作区已存在 MCP 服务器 %s，保留工作区版本", name)
+            continue
+        atomic_write_json(dest, cfg)
+
+    raw.pop("mcp_servers", None)
+    atomic_write_text(config_path, json.dumps(raw, ensure_ascii=False, indent=2))
+    logger.info("[migration] 已把 %d 个 MCP 服务器迁移到 Default 工作区 .cili/mcp/", len(servers))
+    return True
