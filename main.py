@@ -1466,15 +1466,26 @@ def _auto_detect_browser() -> None:
         print("[setup] No browser (Edge/Chrome) found on system")
 
 
+def _configure_stdio_utf8() -> None:
+    """Windows 下把 stdout/stderr 切到 UTF-8（中文控制台/管道输出防乱码）。
+
+    `--apply-upgrade-only` 在 ``_prepare_environment`` 之前返回，必须自己切一次：
+    否则子进程按 locale（中文 Windows 为 GBK）输出，start.ps1 按 UTF-8 解码后
+    中文全部变成空白/乱码。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 def _prepare_environment() -> None:
     """阶段一：编码、日志、目录、配置、会话迁移、安全校验。"""
     # Ensure UTF-8 encoding on Windows
-    if sys.platform == "win32":
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    _configure_stdio_utf8()
 
     # 配置日志系统
     _setup_logging()
@@ -1748,6 +1759,9 @@ def _run_upgrade_apply_mode() -> None:
     代码混跑。依赖缺失（首次启动尚未装包）时导入失败退出非零码，由启动
     循环容忍并继续拉起服务（服务进程内的兜底应用在依赖就绪后生效）。
     """
+    # 先切 UTF-8 再配置日志：logging 的 StreamHandler 绑定当前 sys.stderr，
+    # 启动脚本按 UTF-8 捕获，编码不一致会让中文日志在控制台变成乱码
+    _configure_stdio_utf8()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

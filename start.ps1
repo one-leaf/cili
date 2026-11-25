@@ -573,8 +573,23 @@ for ($i = 0; ; $i++) {
     if (Test-Path $upgradeZip) {
         $oldEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
+        # Chinese log lines were garbled: the apply subprocess emits UTF-8, but the
+        # console default may be GBK, so PowerShell would decode it as GBK. Force both
+        # sides to UTF-8 for the duration of the captured call, then restore.
+        $oldOutEnc = [Console]::OutputEncoding
+        $oldPythonIO = $env:PYTHONIOENCODING
+        try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+        $env:PYTHONIOENCODING = "utf-8"
         $applyOut = & $pythonPath $mainScript --apply-upgrade-only 2>&1
         $applyCode = $LASTEXITCODE
+        if ($null -eq $oldPythonIO) {
+            Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONIOENCODING = $oldPythonIO
+        }
+        if ($oldOutEnc) {
+            try { [Console]::OutputEncoding = $oldOutEnc } catch { }
+        }
         $ErrorActionPreference = $oldEAP
         if ($applyCode -ne 0) {
             Write-Status "Upgrade apply skipped (exit $applyCode), continuing startup" "DarkGray"

@@ -218,6 +218,39 @@ class TestHandleBrokenEnvironment:
         assert excinfo.value.code == 1
 
 
+class TestConfigureStdioUtf8:
+    """apply 子进程的 stdio 编码（控制台中文日志防乱码）。"""
+
+    def test_reconfigures_streams_on_windows(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            main_mod.sys, "stdout",
+            SimpleNamespace(reconfigure=lambda **kw: calls.append(("out", kw))),
+        )
+        monkeypatch.setattr(
+            main_mod.sys, "stderr",
+            SimpleNamespace(reconfigure=lambda **kw: calls.append(("err", kw))),
+        )
+
+        main_mod._configure_stdio_utf8()
+        assert calls == [
+            ("out", {"encoding": "utf-8", "errors": "replace"}),
+            ("err", {"encoding": "utf-8", "errors": "replace"}),
+        ]
+
+    def test_noop_on_non_windows(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(main_mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            main_mod.sys, "stdout",
+            SimpleNamespace(reconfigure=lambda **kw: calls.append(kw)),
+        )
+
+        main_mod._configure_stdio_utf8()
+        assert calls == []
+
+
 class TestSwitchToDepsPython:
     """系统解释器缺依赖时的运行时切换。"""
 

@@ -80,6 +80,9 @@ main()
   `data/deps/python` 并重装后重启（每次启动最多一次）。
 - 升级：`core/updater`（检查/下载/解压/合并文件树/回滚），文件树原语在
   `core/upgrade_archive`；`--apply-upgrade-only` 只应用升级包后退出。
+- 升级输出编码：`--apply-upgrade-only` 在 `_prepare_environment` 之前返回，自己
+  把 stdout/stderr 切到 UTF-8；`start.ps1` 捕获时同样按 UTF-8 解码
+  （`PYTHONIOENCODING` + `[Console]::OutputEncoding`），避免中文日志乱码。
 - 升级后启动会自动执行 `core/migrations` 的未完成步骤。
 
 ## 六、便携模式（`start.ps1`）
