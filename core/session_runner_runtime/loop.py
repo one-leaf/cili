@@ -31,6 +31,7 @@ from core.tools.permission import (
     judge_unavailable_text,
     no_channel_text,
 )
+from core.untrusted import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END
 
 logger = logging.getLogger(__name__)
 
@@ -832,9 +833,11 @@ class Loop:
                     notifications = [m.get("content", "") for m in unread if m.get("content")]
                     if notifications:
                         combined = "\n".join(notifications)
+                        # 跨会话/跨代理消息可能转述网页等外部内容：与 receive 工具一致，
+                        # 整段包一次不可信边界（合并后包一次，不逐条包）。
                         runner.add_message(
                             "user",
-                            combined,
+                            UNTRUSTED_DATA_BEGIN + combined + UNTRUSTED_DATA_END,
                             meta={"background_notification": True},
                         )
                         mbus.mark_read(session_id)

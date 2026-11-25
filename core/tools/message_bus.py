@@ -127,12 +127,10 @@ class MessageBusTool(Tool):
             messages = bus.receive(current_session_id, mark_read=True)
             if not messages:
                 return ToolResult("No pending messages")
-            lines = [f"Received {len(messages)} message(s):"]
-            for msg in messages:
-                sender = msg["sender_session_id"] or "unknown"
-                content = msg["content"]
-                mtype = msg.get("message_type", "text")
-                lines.append(f"  [{mtype}] From {sender}: {content}")
+            lines = [
+                f"{msg['sender_session_id'] or 'unknown'}: {msg['content']}"
+                for msg in messages
+            ]
             return ToolResult(
                 UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END
             )
