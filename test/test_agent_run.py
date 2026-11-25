@@ -267,7 +267,7 @@ def test_fork_copies_external_tool_outputs(tmp_path):
         json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     runner.add_message("user", "看图")
     runner.add_message("assistant", [
-        {"type": "tool_use", "id": "call_img1", "name": "read_image", "input": {}},
+        {"type": "tool_use", "id": "call_img1", "name": "read", "input": {}},
     ])
     runner.add_message("user", [{
         "type": "tool_result", "tool_use_id": "call_img1",

@@ -226,7 +226,7 @@ class TurnExecutor:
         notice = (
             f"[image budget] {result.removed_images} earlier image(s) were removed "
             f"from this request to stay within provider limits{detail}. "
-            'Use read_image("<path>") to view one again.'
+            'Use read("<path>") to view one again.'
         )
         for msg in reversed(messages):
             if msg.get("role") != "user":
@@ -460,7 +460,7 @@ class TurnExecutor:
         )
         dedupe_enabled = bool(getattr(image_cfg, "dedupe_inline_images", True))
 
-        # 工具图归一化（单一收口点）：read_image/PDF 渲染等返回的 ImageBlock
+        # 工具图归一化（单一收口点）：read/PDF 渲染等返回的 ImageBlock
         # 可能带着原始分辨率与体积。必须在这里就地改写，否则写进 .json 的
         # 原图会在下一轮请求里原样发给服务端（多图/大图直接 400）。
         normalized_images: dict[int, tuple[bytes, str, int | None, int | None]] = {}
@@ -533,7 +533,7 @@ class TurnExecutor:
                     if path:
                         text = (
                             f'[image omitted from this tool result: {path}; '
-                            f'use read_image("{path}") to view]'
+                            f'use read("{path}") to view]'
                         )
                     else:
                         text = "[image omitted from this tool result]"
@@ -1428,6 +1428,15 @@ class TurnExecutor:
         """Estimate JSON request body size in bytes (delegates to module helper)."""
         return estimate_request_body_size(messages)
 
+    @staticmethod
+    def _image_omitted_text(block: dict) -> str:
+        """非多模态模型的图片降级文本；能取到路径时带上，便于模型/用户定位文件。"""
+        meta = block.get("_meta")
+        path = str(meta.get("path") or "") if isinstance(meta, dict) else ""
+        if path:
+            return f"[image not sent: model has no image input; file: {path}]"
+        return "[image not sent: model has no image input]"
+
     def _strip_images_from_messages(self, messages: list[dict]) -> list[dict]:
         """Strip images from messages for non-multimodal models."""
         result = []
@@ -1447,7 +1456,7 @@ class TurnExecutor:
                     changed = True
                     new_content.append({
                         "type": "text",
-                        "text": "[image - model does not support image input]",
+                        "text": self._image_omitted_text(block),
                     })
                     continue
                 if block.get("type") != "tool_result":
@@ -1463,7 +1472,7 @@ class TurnExecutor:
                         changed = True
                         new_sub.append({
                             "type": "text",
-                            "text": "[image - model does not support image input]",
+                            "text": self._image_omitted_text(sub),
                         })
                     else:
                         new_sub.append(sub)
@@ -1511,10 +1520,11 @@ class TurnExecutor:
             )
         if not force_reference:
             messages = self._apply_image_budget(messages, latch=True)
+        if "image" not in (self.runner.model.input or []):
+            # 先降级再剥 meta：降级文本要读 _meta.path
+            messages = self._strip_images_from_messages(messages)
         if resolve_results:
             messages = self._strip_meta_from_messages(messages)
-        if "image" not in (self.runner.model.input or []):
-            messages = self._strip_images_from_messages(messages)
         return self._convert_to_message_objects(messages)
 
     def _call_llm(self, streaming: bool = False, system_prompt: str | list[str] = "") -> LLMResponse:

@@ -1,6 +1,7 @@
-"""图片读取共享实现：归一化、SVG 光栅化、multimodal ToolResult。
+"""图片读取共享实现：归一化、multimodal ToolResult。
 
-read 工具与 read_image 工具共用；工具类定义在 ``core/tools/read_image.py``。
+read 工具的图片分支与 PDF 页面回退共用本模块。
+SVG 不在此处理：接口层不收 image/svg+xml，SVG 一律按文本读取源码。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # 仅类型标注：tools.base 会反向导入本模块，避免运行期循环
     from core.tools.base import ToolResult
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -82,44 +83,13 @@ def image_bytes_to_result(file_path: str, raw: bytes, media_type: str) -> ToolRe
         }]
     )
 
-def read_svg(file_path: str) -> ToolResult:
-    """SVG → PNG 光栅化后按位图处理。
-
-    接口层不收 image/svg+xml（Anthropic/OpenAI 只认 jpeg/png/gif/webp），
-    所以必须先用 PyMuPDF 渲染成位图，再走与普通图片同一条编码路径。
-    """
-    try:
-        import pymupdf
-    except ImportError:
-        return _result(
-            "Error: reading SVG requires PyMuPDF (pip install pymupdf).",
-            error=True,
-        )
-    try:
-        with open(file_path, "rb") as f:
-            data = f.read()
-        doc = pymupdf.open(stream=data, filetype="svg")
-        try:
-            png_bytes = doc[0].get_pixmap().tobytes("png")
-        finally:
-            doc.close()
-    except Exception as e:
-        return _result(
-            f"Error: failed to render SVG '{file_path}': {e}",
-            error=True,
-        )
-    return image_bytes_to_result(file_path, png_bytes, "image/png")
-
 def read_image_file(file_path: str) -> ToolResult:
     """Return an image as multimodal content for vision models.
 
-    read 工具与 read_image 工具共用此实现：SVG 先用 PyMuPDF 光栅化成位图；
-    位图交给 ``normalize_image_bytes`` 统一归一化（EXIF、≤4096px、
-    base64 ≤5MB，未超限不重编码）。
+    read 工具的图片分支与 PDF 页面回退共用此实现：位图交给 ``normalize_image_bytes``
+    统一归一化（EXIF、≤4096px、base64 ≤5MB，未超限不重编码）。
     """
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".svg":
-        return read_svg(file_path)
     media_type = MEDIA_TYPES.get(ext, "image/png")
     try:
         with open(file_path, "rb") as f:

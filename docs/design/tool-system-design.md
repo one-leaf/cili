@@ -31,7 +31,7 @@ core/tools/
 
 当前注册键（36 个）：
 
-`read` `read_image` `write` `edit` `bash` `pwsh` `grep` `glob` `browser` `web_search`
+`read` `write` `edit` `bash` `pwsh` `grep` `glob` `browser` `web_search`
 `deepseek_web_search` `deepseek_read_url` `memory` `python` `todo_write` `latex`
 `message_bus` `cron` `clock` `read_tool_result` `session_search` `temp` `loop`
 `pdf2markdown` `office2pdf` `skill` `agent` `ask_user` `workflow` `tool_search`
@@ -97,7 +97,7 @@ core/tools/
 
 | 类别 | 工具 | 要点 |
 |---|---|---|
-| 文件读 | read、read_image、read_tool_result | 文本/图片/SVG；图片归一化在 `core.image_read` |
+| 文件读 | read、read_tool_result | 文本/图片/PDF；SVG 按文本读源码；图片归一化在 `core.image_read` |
 | 文件写 | write、edit | 内容上限、截断拒绝；工作流定义守卫 |
 | 搜索 | grep、glob、session_search、tool_search | 忽略目录列表；tool_search 激活 deferred |
 | 命令 | bash、pwsh | Git Bash / PowerShell；共享 `ShellToolBase`；后台任务/超时/权限证据 |

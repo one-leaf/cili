@@ -105,7 +105,7 @@ def _align_image_extension(path: Path, mime: str) -> Path:
     """把图片文件的扩展名改成与真实类型一致。
 
     下载时只能用占位扩展名（服务端不给格式）。扩展名错了不只是难看：按扩展名判类型的
-    工具（如 ``read_image``）会把错误的 ``media_type`` 报给模型接口，那边会直接报错。
+    工具（如 ``read``）会把错误的 ``media_type`` 报给模型接口，那边会直接报错。
     """
     want = _IMAGE_MIME_EXTS.get(mime)
     if not want or path.suffix.lower() == want:

@@ -3,8 +3,10 @@
 原先内联在 ``interfaces/qq/inbound.py``；微信接入端要用同一套语义，故提到 core。
 
 规则（与 Web 的图片上传路径一致）：
-- 图片 → multimodal block；模型不支持多模态时退化为给路径（cili 有 ``read_image``
+- 位图 → multimodal block；模型不支持多模态时退化为给路径（cili 有 ``read``
   工具，模型可以自己去读）
+- SVG → 不内联为图片（接口层不收 image/svg+xml），按附件路径交给模型用 ``read``
+  读源码
 - 其余文件 / 语音转写 → 把路径与转写文本拼进正文
 
 返回值可能是 ``str``（纯文本）或 ``list[dict]``（含图片块）——两者都是
@@ -24,6 +26,13 @@ from core.image_pipeline import (
 from core.media_fetch import InboundMedia
 
 logger = logging.getLogger(__name__)
+
+
+def _is_svg(item: InboundMedia) -> bool:
+    """SVG 不内联：按文本源码读取，避免把 image/svg+xml 发给只认位图的接口。"""
+    name = (item.rel_path or item.filename or item.path or "").lower()
+    mime = (item.content_type or "").split(";", 1)[0].strip().lower()
+    return name.endswith(".svg") or mime == "image/svg+xml"
 
 
 def build_user_input(
@@ -51,7 +60,7 @@ def build_user_input(
 
     model_input = list(getattr(getattr(runner, "model", None), "input", []) or [])
     for item in media_items:
-        if item.kind == "image" and "image" in model_input:
+        if item.kind == "image" and "image" in model_input and not _is_svg(item):
             data, mime, normalized = read_image_base64(
                 item,
                 max_dimension=max_dimension,

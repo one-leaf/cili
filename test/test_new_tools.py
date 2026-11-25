@@ -1,4 +1,4 @@
-"""新增工具测试：read_image / clock / session_search。"""
+"""新增工具测试：read 图片分支 / clock / session_search。"""
 
 import json
 import os
@@ -64,26 +64,18 @@ class TestClock:
 
 class TestReadImage:
     def test_missing_file(self, tools):
-        r = _tool(tools, "read_image").execute(file_path="nope.png")
+        r = _tool(tools, "read").execute(file_path="nope.png")
         assert r.error
         assert "file not found" in r.output
 
-    def test_unsupported_extension(self, tools, test_workspace):
-        p = os.path.join(test_workspace, "a.txt")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write("hi")
-        r = _tool(tools, "read_image").execute(file_path="a.txt")
-        assert r.error
-        assert "not a supported image type" in r.output
-
     def test_png_returns_multimodal(self, tools, test_workspace):
-        """read_image 返回 base64 图片内容块。"""
+        """read 的图片分支返回 base64 图片内容块。"""
         pytest.importorskip("PIL")
         from PIL import Image
 
         p = os.path.join(test_workspace, "img.png")
         Image.new("RGB", (16, 16), (255, 0, 0)).save(p)
-        r = _tool(tools, "read_image").execute(file_path="img.png")
+        r = _tool(tools, "read").execute(file_path="img.png")
         assert not r.error
         from core.llm.types import ImageBlock
 
@@ -92,69 +84,81 @@ class TestReadImage:
         assert img[0].mime_type == "image/png"
         assert img[0].data
 
-    def test_shared_with_read(self, tools, test_workspace):
-        """read_image 与 read 对同一图片返回一致的 multimodal 结果。"""
-        pytest.importorskip("PIL")
-        from PIL import Image
-
-        p = os.path.join(test_workspace, "shared.png")
-        Image.new("RGB", (8, 8), (0, 0, 255)).save(p)
-        ri = _tool(tools, "read_image").execute(file_path="shared.png")
-        rd = _tool(tools, "read").execute(file_path="shared.png")
-        assert not ri.error and not rd.error
+    def test_svg_reads_as_text_source(self, tools, test_workspace):
+        """SVG 按文本读取源码，不做光栅化（接口层不收 image/svg+xml）。"""
+        p = os.path.join(test_workspace, "chart.svg")
+        source = ('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+                  '<rect width="40" height="20" fill="red"/></svg>')
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(source)
+        r = _tool(tools, "read").execute(file_path="chart.svg")
+        assert not r.error, r.output
+        assert "<svg" in r.output and "fill=\"red\"" in r.output
         from core.llm.types import ImageBlock
 
-        ri_img = [b for b in ri.blocks if isinstance(b, ImageBlock)]
-        rd_img = [b for b in rd.blocks if isinstance(b, ImageBlock)]
-        assert len(ri_img) == 1 and len(rd_img) == 1
-        assert ri_img[0].data == rd_img[0].data
+        assert not [b for b in r.blocks if isinstance(b, ImageBlock)]
 
-    def test_svg_returns_multimodal(self, tools, test_workspace):
-        """SVG 光栅化后同样返回 image/png 内容块（接口层不收 image/svg+xml）。"""
-        pytest.importorskip("pymupdf")
-        p = os.path.join(test_workspace, "chart.svg")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
-                    '<rect width="40" height="20" fill="red"/></svg>')
-        r = _tool(tools, "read_image").execute(file_path="chart.svg")
+    def test_read_image_tool_removed(self):
+        """图片查看已并入 read，不再单独注册 read_image。"""
+        from core.tools.registry import TOOL_REGISTRY
+
+        assert "read_image" not in TOOL_REGISTRY
+
+
+class TestReadPdf:
+    @pytest.fixture
+    def pdf_factory(self, test_workspace):
+        pymupdf = pytest.importorskip("pymupdf")
+
+        def make(name: str, kinds: list[str]) -> str:
+            path = os.path.join(test_workspace, name)
+            doc = pymupdf.open()
+            for kind in kinds:
+                page = doc.new_page()
+                if kind == "text":
+                    page.insert_text((72, 72), "Hello PDF text layer", fontsize=14)
+                else:
+                    page.draw_rect(
+                        pymupdf.Rect(50, 50, 250, 250),
+                        color=(0, 0, 1), fill=(1, 0, 0),
+                    )
+            doc.save(path)
+            doc.close()
+            return path
+
+        return make
+
+    def test_text_pdf_returns_text(self, tools, pdf_factory):
+        pytest.importorskip("pdfplumber")
+        pdf_factory("text.pdf", ["text"])
+        r = _tool(tools, "read").execute(file_path="text.pdf")
+        assert not r.error, r.output
+        assert "Hello PDF text layer" in r.output
+        from core.llm.types import ImageBlock
+
+        assert not [b for b in r.blocks if isinstance(b, ImageBlock)]
+
+    def test_scanned_pdf_renders_pages(self, tools, pdf_factory):
+        pytest.importorskip("pdfplumber")
+        pdf_factory("scanned.pdf", ["blank", "blank"])
+        r = _tool(tools, "read").execute(file_path="scanned.pdf", pages="1-2")
         assert not r.error, r.output
         from core.llm.types import ImageBlock
 
-        img = [b for b in r.blocks if isinstance(b, ImageBlock)]
-        assert len(img) == 1
-        assert img[0].mime_type == "image/png"
-        assert img[0].data
+        imgs = [b for b in r.blocks if isinstance(b, ImageBlock)]
+        assert len(imgs) == 2
+        assert "no extractable text layer" in r.output
 
-    def test_svg_shared_with_read(self, tools, test_workspace):
-        """read 与 read_image 对同一 SVG 返回一致的 multimodal 结果。"""
-        pytest.importorskip("pymupdf")
-        p = os.path.join(test_workspace, "shared.svg")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">'
-                    '<circle cx="4" cy="4" r="3" fill="blue"/></svg>')
-        ri = _tool(tools, "read_image").execute(file_path="shared.svg")
-        rd = _tool(tools, "read").execute(file_path="shared.svg")
-        assert not ri.error and not rd.error
+    def test_scanned_pdf_caps_rendered_pages(self, tools, pdf_factory):
+        pytest.importorskip("pdfplumber")
+        pdf_factory("many.pdf", ["blank"] * 6)
+        r = _tool(tools, "read").execute(file_path="many.pdf", pages="1-6")
+        assert not r.error, r.output
         from core.llm.types import ImageBlock
 
-        ri_img = [b for b in ri.blocks if isinstance(b, ImageBlock)]
-        rd_img = [b for b in rd.blocks if isinstance(b, ImageBlock)]
-        assert len(ri_img) == 1 and len(rd_img) == 1
-        assert ri_img[0].data == rd_img[0].data
-
-    def test_broken_svg_reports_error(self, tools, test_workspace):
-        """扩展名是 .svg 但内容不是 SVG：给出可读错误而非抛异常。
-
-        注意 PyMuPDF 对**未闭合标签**是宽容的（渲染成空白页、不报错），
-        所以这里用「非 SVG 内容」触发 FileDataError。
-        """
-        pytest.importorskip("pymupdf")
-        p = os.path.join(test_workspace, "notreally.svg")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write("this is plain text, not svg")
-        r = _tool(tools, "read_image").execute(file_path="notreally.svg")
-        assert r.error
-        assert "failed to render SVG" in r.output
+        imgs = [b for b in r.blocks if isinstance(b, ImageBlock)]
+        assert len(imgs) == 4
+        assert "first 4 of 6" in r.output
 
 
 class TestSessionSearch:

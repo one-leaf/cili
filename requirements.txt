@@ -17,7 +17,7 @@ python-dateutil
 pyyaml
 toml
 Pillow
-# pymupdf：SVG 光栅化（read/read_image 读 .svg 时渲染成 PNG；接口层不收 image/svg+xml）
+# pymupdf：PDF 解析/渲染能力（skills 的 fitz 用法依赖它；SVG 不在此列，按文本读源码）
 # 自带 MuPDF、纯 pip wheel 无原生依赖（cairosvg 在 Windows 需另装 Cairo 原生库，故不用）
 pymupdf
 openpyxl

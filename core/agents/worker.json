@@ -205,7 +205,6 @@
   ],
   "tools": [
     "read",
-    "read_image",
     "write",
     "edit",
     "bash",

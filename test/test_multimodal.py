@@ -56,3 +56,14 @@ def test_model_without_image_capability_falls_back_to_path(tmp_path):
     result = build_user_input("", [_image(tmp_path)], _runner(supports_image=False))
     assert isinstance(result, str)
     assert "[附件] a.png" in result
+
+
+def test_svg_inbound_falls_back_to_path(tmp_path):
+    """SVG 不内联为图片，交给模型用 read 读源码。"""
+    path = tmp_path / "chart.svg"
+    path.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>', encoding="utf-8")
+    item = InboundMedia(kind="image", path=str(path), rel_path="chart.svg",
+                        filename="chart.svg", content_type="image/svg+xml")
+    result = build_user_input("", [item], _runner())
+    assert isinstance(result, str)
+    assert "[附件] chart.svg" in result

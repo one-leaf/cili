@@ -32,9 +32,13 @@ class TestFormatAttachment:
         })
         assert "(selection truncated)" in block["text"]
 
-    def test_image_hints_read_image(self):
+    def test_image_hints_read(self):
         block = format_attachment({"path": "uploads/a.png", "media_type": "image/png"})
-        assert 'read_image("uploads/a.png")' in block["text"]
+        assert 'read("uploads/a.png")' in block["text"]
+
+    def test_svg_is_not_treated_as_image(self):
+        block = format_attachment({"path": "uploads/chart.svg", "media_type": "image/svg+xml"})
+        assert "read_image" not in block["text"]
 
     def test_block_meta_persists_via_commit(self):
         from core.session import _commit_for_message, _merge_block_meta

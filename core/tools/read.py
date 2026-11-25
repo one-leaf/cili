@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import os
 
-from core.image_read import IMAGE_EXTENSIONS, read_image_file
+from core.image_read import IMAGE_EXTENSIONS, image_bytes_to_result, read_image_file
 from core.tool_limits import READ_MAX_CHARS_PER_LINE, READ_MAX_OUTPUT_TOKENS
 from core.tools.base import Tool, ToolResult
 
@@ -14,10 +14,12 @@ class ReadTool(Tool):
     name = "read"
     concurrency_safe = True
     description = (
-        "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP, BMP, SVG), and PDFs. "
+        "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP, BMP), and PDFs. "
         "Use offset/limit for pagination on large text files. "
         "Use pages (e.g. '3' or '1-5') for PDF page ranges (max 20 pages, default: page 1). "
-        "Images are returned as base64-encoded data for the model to view."
+        "Images are returned as base64-encoded data for the model to view. "
+        "SVG files are returned as text (their source markup), not as rendered images. "
+        "PDF pages without an extractable text layer are rendered as images."
     )
     parameters = {
         "type": "object",
@@ -50,6 +52,9 @@ class ReadTool(Tool):
 
     MAX_PAGES_PER_READ = 20   # PDF 单次读取页数上限
     PDF_READ_TIMEOUT = 60  # PDF 解析/取文本超时（秒），防损坏/超大 PDF 挂起；可用 CILI_PDF_READ_TIMEOUT 覆盖
+    PDF_TEXT_FALLBACK_MIN_CHARS = 20   # 请求页文本总量低于此值视为无文本层，回退为页面渲染
+    PDF_IMAGE_PAGES_PER_READ = 4   # 回退渲染时单次最多渲染的页数（图片比文本贵）
+    PDF_RENDER_DPI = 150   # 页面渲染分辨率；再由图片归一化压到 4096px/2MiB 内
 
     def execute(
         self,
@@ -70,6 +75,8 @@ class ReadTool(Tool):
 
         # Handle images - return as multimodal content for vision models
         if ext in IMAGE_EXTENSIONS:
+            if not os.path.isfile(file_path):
+                return ToolResult(f"Error: file not found: {file_path}", error=True)
             return read_image_file(file_path)
 
         # Handle text files - direct I/O
@@ -149,7 +156,7 @@ class ReadTool(Tool):
 
         # 防御损坏/超大 PDF 导致 extract_text 无限挂起（A44 PDF timeout）：
         # 解析放进工作线程并限时，超时放弃该线程直接报错返回
-        def _extract() -> str:
+        def _extract() -> str | ToolResult:
             with pdfplumber.open(file_path) as pdf:
                 total_pages = len(pdf.pages)
                 for p in page_list:
@@ -157,12 +164,18 @@ class ReadTool(Tool):
                         raise ValueError(
                             f"Page {p} out of range (PDF has {total_pages} pages)."
                         )
-                parts = [f"PDF: {file_path} ({total_pages} pages, showing pages: {', '.join(map(str, page_list))})\n\n"]
-                for page_num in page_list:
-                    page = pdf.pages[page_num - 1]  # 0-indexed
-                    text = page.extract_text() or "(no text extracted)"
-                    parts.append(f"--- Page {page_num} ---\n{text}\n\n")
-                return "".join(parts)
+                texts = [
+                    (page_num, pdf.pages[page_num - 1].extract_text() or "")
+                    for page_num in page_list
+                ]
+
+            # 扫描版 PDF：没有文本层时改为渲染页面；渲染失败则退回文本提示
+            if sum(len(text.strip()) for _, text in texts) < self.PDF_TEXT_FALLBACK_MIN_CHARS:
+                rendered = self._render_pdf_pages(file_path, page_list, total_pages)
+                if rendered is not None:
+                    return rendered
+
+            return self._format_pdf_text(file_path, total_pages, texts)
 
         try:
             from concurrent.futures import ThreadPoolExecutor
@@ -173,16 +186,17 @@ class ReadTool(Tool):
             pool = ThreadPoolExecutor(max_workers=1)
             try:
                 future = pool.submit(_extract)
-                output = future.result(timeout=timeout)
+                result = future.result(timeout=timeout)
             finally:
                 # wait=False：超时后不阻塞等待可能卡死的线程，让其随进程自然回收
                 pool.shutdown(wait=False)
 
+            if isinstance(result, ToolResult):
+                return result
+
             # Token budget truncation
             max_tokens = int(os.environ.get("CILI_FILE_READ_MAX_OUTPUT_TOKENS", str(self.MAX_OUTPUT_TOKENS)))
-            output = self.truncate_middle(output, max_tokens)
-
-            return ToolResult(output)
+            return ToolResult(self.truncate_middle(result, max_tokens))
         except ValueError as e:
             return ToolResult(f"Error: {e}", error=True)
         except TimeoutError:
@@ -194,6 +208,66 @@ class ReadTool(Tool):
             )
         except Exception as e:
             return ToolResult(f"Error reading PDF: {e}", error=True)
+
+    def _format_pdf_text(
+        self, file_path: str, total_pages: int, texts: list[tuple[int, str]]
+    ) -> str:
+        """把逐页文本拼成工具输出；无文本页附上按页渲染的提示。"""
+        parts = [
+            f"PDF: {file_path} ({total_pages} pages, "
+            f"showing pages: {', '.join(str(n) for n, _ in texts)})\n\n"
+        ]
+        blank_pages: list[int] = []
+        for page_num, text in texts:
+            if text.strip():
+                parts.append(f"--- Page {page_num} ---\n{text}\n\n")
+            else:
+                blank_pages.append(page_num)
+                parts.append(f"--- Page {page_num} ---\n(no text extracted)\n\n")
+        if blank_pages:
+            pages_arg = ", ".join(str(n) for n in blank_pages[:self.PDF_IMAGE_PAGES_PER_READ])
+            parts.append(
+                f"Page(s) {pages_arg} have no extractable text layer. "
+                f'Re-read with pages="{blank_pages[0]}" to render them as image(s).'
+            )
+        return "".join(parts)
+
+    def _render_pdf_pages(
+        self, file_path: str, page_list: list[int], total_pages: int
+    ) -> ToolResult | None:
+        """扫描版 PDF 回退：用 PyMuPDF 渲染页面为图片。失败返回 None。"""
+        try:
+            import pymupdf
+            from core.llm.types import TextBlock
+        except ImportError:
+            return None
+
+        render_pages = page_list[:self.PDF_IMAGE_PAGES_PER_READ]
+        try:
+            doc = pymupdf.open(file_path)
+            try:
+                blocks: list = [TextBlock(text=(
+                    f"PDF: {file_path} ({total_pages} pages; no extractable text layer)\n"
+                    f"Rendered pages: {', '.join(str(n) for n in render_pages)}"
+                    + (
+                        f" (first {len(render_pages)} of {len(page_list)} requested pages)"
+                        if len(page_list) > len(render_pages) else ""
+                    )
+                    + "\n\n"
+                ))]
+                for page_num in render_pages:
+                    png = doc[page_num - 1].get_pixmap(dpi=self.PDF_RENDER_DPI).tobytes("png")
+                    rendered = image_bytes_to_result(
+                        f"{file_path} (page {page_num})", png, "image/png"
+                    )
+                    if rendered.is_error:
+                        return None
+                    blocks.extend(rendered.blocks)
+                return ToolResult(blocks=blocks)
+            finally:
+                doc.close()
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_pages(pages: str | None) -> list[int]:

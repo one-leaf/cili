@@ -70,7 +70,7 @@ def _merged_image_meta(
             meta = {**meta, **refs[image_index]}
         # 内嵌图片的回合归属挂在父 tool_result 上（image_refs 条目里没有）。
         # 不继承会让当前回合刚读的图片被 _should_reference 判成历史图、
-        # 投影成引用文本 —— 模型看不到 read_image 返回的图。
+        # 投影成引用文本 —— 模型看不到 read 返回的图。
         if not meta.get("turn_id") and parent_meta.get("turn_id"):
             meta["turn_id"] = parent_meta["turn_id"]
     return meta
@@ -100,7 +100,7 @@ def image_ref_text(block_or_meta: dict[str, Any], parent_meta: dict[str, Any] | 
     if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
         dims = f"; {width}x{height}"
     mt = f"; {media_type}" if media_type else ""
-    return f'[image ref: {path}{mt}{dims}; use read_image("{path}") to view again]'
+    return f'[image ref: {path}{mt}{dims}; use read("{path}") to view again]'
 
 
 def _text_ref_block(block: dict[str, Any], parent_meta: dict[str, Any] | None = None,
@@ -316,7 +316,7 @@ def _image_removed_block(block: dict[str, Any], meta: dict[str, Any]) -> dict[st
     if path:
         text = (
             f'[image removed to save context: {path}; '
-            f'use read_image("{path}") to view again]'
+            f'use read("{path}") to view again]'
         )
     else:
         text = "[image removed to save context]"

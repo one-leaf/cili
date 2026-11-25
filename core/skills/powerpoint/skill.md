@@ -31,7 +31,7 @@ pdftoppm           → render PDF pages to images for visual self-check
 | Split/merge/deep XML | `zipfile` unpack → edit `ppt/slides/slideN.xml` → repack |
 | Legacy `.ppt` | convert to `.pptx` via PowerPoint COM first (see below) |
 | To PDF | `office2pdf` tool (Office/WPS COM under the hood) |
-| Visual self-check | render images + `read_image` + fresh-eyes subagent review |
+| Visual self-check | render images + `read` + fresh-eyes subagent review |
 
 ## Reading
 
@@ -85,7 +85,7 @@ prs.save('out.pptx')
 ## Visual Check Loop (required before delivery)
 
 1. **Render**: call `office2pdf` to export the PDF, then `pdftoppm -jpeg -r 150 out.pdf slide` to render images.
-2. **Self-check**: use `read_image` on each one, checking overlapping elements, overflow/truncated text, spacing <0.3", insufficient margins, inconsistent alignment, low contrast, residual placeholders.
+2. **Self-check**: use `read` on each one, checking overlapping elements, overflow/truncated text, spacing <0.3", insufficient margins, inconsistent alignment, low contrast, residual placeholders.
 3. **Subagent review**: before delivery, delegate a worker via `agent` for a fresh-eyes visual check (give it image paths and expected content); a subagent without prior assumptions spots problems more easily.
 4. **Fix → re-verify**: after fixing, re-render the affected slides and check again — one fix often causes another issue. Not done until at least one fix-verify round completes.
 

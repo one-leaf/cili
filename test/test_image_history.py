@@ -84,10 +84,16 @@ def test_non_vision_strip_handles_top_level_and_tool_result():
         {
             "type": "tool_result",
             "tool_use_id": "t1",
-            "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"}}],
+            "content": [{
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"},
+                "_meta": {"path": "attachments/t1-0.png"},
+            }],
         },
     ]}]
     handler = _make_handler(messages)
     stripped = handler._strip_images_from_messages(messages)
     assert stripped[0]["content"][0]["type"] == "text"
+    assert "uploads/current.png" in stripped[0]["content"][0]["text"]
     assert stripped[0]["content"][1]["content"][0]["type"] == "text"
+    assert "attachments/t1-0.png" in stripped[0]["content"][1]["content"][0]["text"]

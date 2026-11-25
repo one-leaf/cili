@@ -54,4 +54,4 @@ python(action="execute_file",
 
 - `.cili/tmp/courseware/<slug>/report.json`
 - `.cili/tmp/courseware/<slug>/page-*.png`
-- 用 `read_image` 抽查截图；有问题改 plan 后重渲染，最多 3 轮。
+- 用 `read` 抽查截图；有问题改 plan 后重渲染，最多 3 轮。

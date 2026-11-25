@@ -47,7 +47,7 @@ Base directory for this skill: `$SKILL_DIR`
           args="--plan <plan> --html <out.html> --out .cili/tmp/courseware/<slug>")
    ```
    读 `report.json`；有 blocker 就修 plan 重新渲染，最多 3 轮；
-   用 `read_image` 抽查 `.cili/tmp/courseware/<slug>/page-*.png`。
+   用 `read` 抽查 `.cili/tmp/courseware/<slug>/page-*.png`。
 5. 交付：`send_user_file(paths=["<out.html>"], note="…")`；回复路径与预览方式。
 
 ## 错题复习流程（P1）

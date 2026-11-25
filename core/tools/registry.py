@@ -32,7 +32,6 @@ from core.tools.pdf2markdown import PDF2MarkdownTool
 from core.tools.pwsh import PwshTool
 from core.tools.python import PythonTool
 from core.tools.read import ReadTool
-from core.tools.read_image import ReadImageTool
 from core.tools.read_tool_result import ReadToolResultTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
@@ -95,7 +94,7 @@ TOOL_CLASSES: tuple[type[Tool], ...] = (
     AgentTool, AskUserTool, BashTool, BrowserTool, ClockTool, CronTool,
     DeepSeekReadUrlTool, DeepSeekWebSearchTool, EditTool, GlobTool, GrepTool,
     LatexTool, LoopTool, MemoryTool, MessageBusTool, Office2PDFTool,
-    PDF2MarkdownTool, PwshTool, PythonTool, ReadTool, ReadImageTool,
+    PDF2MarkdownTool, PwshTool, PythonTool, ReadTool,
     ReadToolResultTool, SendUserFileTool, SessionSearchTool, SkillTool, TempTool,
     TextbookFindTool, TextbookOriginalTool, TextbookOutlineTool, TextbookReadTool,
     TextbookSearchTool, TodoWriteTool, ToolSearchTool, WebSearchTool, WorkflowTool,
@@ -112,7 +111,6 @@ def capability_tool_names(attr: str) -> frozenset[str]:
 
 TOOL_REGISTRY: dict[str, Factory] = {
     "read": _factory(ReadTool, needs_permission=True),
-    "read_image": _factory(ReadImageTool, needs_permission=True),
     "write": _factory(WriteTool, needs_permission=True),
     "edit": _factory(EditTool, needs_permission=True),
     "bash": _factory(BashTool, needs_permission=True),

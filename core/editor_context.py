@@ -14,7 +14,7 @@ import secrets
 from pathlib import Path
 
 MAX_SELECTION_CHARS = 4000
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"}
 
 
 def _is_image_path(path: str) -> bool:
@@ -26,7 +26,7 @@ def format_attachment(att: dict | None) -> dict | None:
 
     att: ``{"path", "selection": {"startLine","endLine","text"} | None, "media_type"}``
     - 有选区：输出 [Editor context]（行范围 + 选中文本）
-    - 无选区：输出 [Attachment] 路径提示；图片附 read_image 提示
+    - 无选区：输出 [Attachment] 路径提示；图片附 read 提示
     """
     if not isinstance(att, dict):
         return None
@@ -34,7 +34,12 @@ def format_attachment(att: dict | None) -> dict | None:
     if not path:
         return None
     media_type = str(att.get("media_type") or "")
-    is_image = media_type.startswith("image/") or _is_image_path(path)
+    # SVG 按文本读源码，不作为可视图附件（接口层也不收 image/svg+xml）
+    mime_base = media_type.split(";", 1)[0].strip().lower()
+    is_image = (
+        (mime_base.startswith("image/") and mime_base != "image/svg+xml")
+        or _is_image_path(path)
+    )
 
     selection = att.get("selection")
     if isinstance(selection, dict):
@@ -72,7 +77,7 @@ def format_attachment(att: dict | None) -> dict | None:
     label = media_type or ("image" if is_image else "file")
     lines = [f"[Attachment] `{path}` ({label})"]
     if is_image:
-        lines.append(f'Use read_image("{path}") to view this image.')
+        lines.append(f'Use read("{path}") to view this image.')
     return {
         "type": "text",
         "id": f"att_{secrets.token_hex(4)}",
