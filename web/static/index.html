@@ -69,21 +69,23 @@
 
             <div class="sidebar-section sessions-section">
                 <div class="section-header">
-                    <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开会话与工作流" aria-expanded="true">
+                    <button class="section-toggle" id="sessions-toggle-btn" title="折叠/展开列表" aria-expanded="true">
                         <svg class="section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                        <span class="section-title">会话与工作流</span>
+                    </button>
+                    <button class="section-view-trigger" id="sidebar-view-trigger" title="切换视图（Alt+1/2/3）" aria-haspopup="menu" aria-expanded="false">
+                        <span class="section-title" id="sidebar-view-label">会话</span>
+                        <svg class="section-view-caret" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                         <span class="section-count" id="sessions-count" hidden>0</span>
                     </button>
                     <div class="section-actions">
-                        <button id="new-session-btn" class="btn btn-small">新建</button>
+                        <button id="new-session-btn" class="btn btn-small" title="新建会话">
+                            <span class="new-session-label">新建</span>
+                            <svg class="new-session-plus" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
                         <button id="session-menu-btn" class="btn-icon-flat" title="列表菜单">
                             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
                         </button>
                     </div>
-                </div>
-                <div class="sidebar-filter-row" id="sidebar-filter-row" role="tablist" aria-label="类型筛选">
-                    <button class="sidebar-filter-btn active" data-filter="session" role="tab" aria-selected="true">会话</button>
-                    <button class="sidebar-filter-btn" data-filter="workflow" role="tab" aria-selected="false">工作流</button>
                 </div>
                 <input id="session-import-input" type="file" accept="application/json,.json" hidden>
                 <div id="sessions-list" class="sessions-list">

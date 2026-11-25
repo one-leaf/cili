@@ -330,7 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSidebarResize();
     initSidebarState();
     initSessionsSection();
-    initSidebarFilter();
+    initSidebarViewMenu();
     if (window.ContextGauge) ContextGauge.init();
 });
 

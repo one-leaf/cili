@@ -92,43 +92,162 @@ function initSessionsSection() {
     applySessionsCollapsed(collapsed);
 }
 
-// 侧栏列表类型切换（会话 / 工作流）；新建与导入跟随当前类型
+// 侧栏视图切换（会话 / 工作流 / …）：视图名即分区标题，点击弹出菜单
 const SIDEBAR_FILTER_KEY = 'cili_sidebar_filter';
 
-function initSidebarFilter() {
-    const buttons = Array.from(document.querySelectorAll('.sidebar-filter-btn'));
-    if (!buttons.length) return;
+const SIDEBAR_VIEWS = [
+    {
+        id: 'session',
+        label: '会话',
+        icon: '<svg class="view-menu-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    },
+    {
+        id: 'workflow',
+        label: '工作流',
+        icon: '<svg class="view-menu-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>',
+    },
+    // 小程序上线后在此追加一行，列表/菜单逻辑无需改动
+    // { id: 'miniapp', label: '小程序', icon: '...' },
+];
+
+const CHECK_ICON = '<svg class="view-menu-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+let sidebarViewMenu = null;
+
+function currentSidebarView() {
+    return SIDEBAR_VIEWS.find(view => view.id === sidebarFilter) || SIDEBAR_VIEWS[0];
+}
+
+function renderSidebarViewTrigger() {
+    const view = currentSidebarView();
+    const label = document.getElementById('sidebar-view-label');
+    if (label) label.textContent = view.label;
+    if (newSessionBtn) {
+        const newLabel = '新建' + view.label;
+        newSessionBtn.title = newLabel;
+        newSessionBtn.setAttribute('aria-label', newLabel);
+    }
+}
+
+function sidebarViewCount(viewId) {
+    const matchesHidden = item => !!item.hidden === showHiddenSessions;
+    if (viewId === 'session') return sessions.filter(matchesHidden).length;
+    if (viewId === 'workflow' && window.WorkflowPane
+            && typeof WorkflowPane.getSidebarEntries === 'function') {
+        return WorkflowPane.getSidebarEntries().filter(matchesHidden).length;
+    }
+    return 0;
+}
+
+async function setSidebarView(viewId) {
+    if (viewId === sidebarFilter || !SIDEBAR_VIEWS.some(view => view.id === viewId)) return;
+    sidebarFilter = viewId;
+    // 切换后不可见条目的选中状态要丢掉，避免批量操作误伤
+    selectedSessions.clear();
+    selectedWorkflows.clear();
+    try { localStorage.setItem(SIDEBAR_FILTER_KEY, viewId); } catch (e) { /* ignore */ }
+    renderSidebarViewTrigger();
+    updateFooterToolbar();
+    renderSidebarList();
+    // 当前显示的是空状态欢迎块时，示例先跟随模式切换
+    if (chatMessages.querySelector('.welcome-message')) {
+        chatMessages.innerHTML = newSessionWelcomeHtml();
+    }
+    await syncChatToMode();
+}
+
+function closeSidebarViewMenu(restoreFocus = false) {
+    if (!sidebarViewMenu) return;
+    sidebarViewMenu.remove();
+    sidebarViewMenu = null;
+    const trigger = document.getElementById('sidebar-view-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) trigger.focus();
+    }
+}
+
+function openSidebarViewMenu() {
+    const trigger = document.getElementById('sidebar-view-trigger');
+    if (!trigger || sidebarViewMenu) return;
+    const menu = document.createElement('div');
+    menu.className = 'sidebar-view-menu';
+    menu.setAttribute('role', 'menu');
+    SIDEBAR_VIEWS.forEach(view => {
+        const active = view.id === sidebarFilter;
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'sidebar-view-menu-item' + (active ? ' active' : '');
+        item.setAttribute('role', 'menuitemradio');
+        item.setAttribute('aria-checked', String(active));
+        item.innerHTML = `${view.icon}<span>${view.label}</span>`
+            + `<span class="view-menu-count">${sidebarViewCount(view.id)}</span>`
+            + (active ? CHECK_ICON : '');
+        item.addEventListener('click', () => {
+            closeSidebarViewMenu();
+            setSidebarView(view.id);
+        });
+        menu.appendChild(item);
+    });
+    menu.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        const items = Array.from(menu.querySelectorAll('.sidebar-view-menu-item'));
+        const current = items.indexOf(document.activeElement);
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        items[(current + step + items.length) % items.length].focus();
+    });
+    openAnchoredMenu(menu, trigger);
+    sidebarViewMenu = menu;
+    trigger.setAttribute('aria-expanded', 'true');
+    const activeItem = menu.querySelector('.sidebar-view-menu-item.active');
+    if (activeItem) activeItem.focus();
+}
+
+function initSidebarViewMenu() {
+    const trigger = document.getElementById('sidebar-view-trigger');
+    if (!trigger) return;
     try {
         const saved = localStorage.getItem(SIDEBAR_FILTER_KEY);
         if (saved === 'session' || saved === 'workflow') sidebarFilter = saved;
     } catch (e) { /* ignore */ }
-    const applyActive = () => {
-        buttons.forEach(btn => {
-            const active = btn.dataset.filter === sidebarFilter;
-            btn.classList.toggle('active', active);
-            btn.setAttribute('aria-selected', String(active));
-        });
-        if (newSessionBtn) {
-            newSessionBtn.title = sidebarFilter === 'workflow' ? '新建工作流' : '新建会话';
+    renderSidebarViewTrigger();
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (sidebarViewMenu) closeSidebarViewMenu();
+        else openSidebarViewMenu();
+    });
+    trigger.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowDown' || sidebarViewMenu) return;
+        e.preventDefault();
+        openSidebarViewMenu();
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!sidebarViewMenu) return;
+        if (sidebarViewMenu.contains(e.target) || trigger.contains(e.target)) return;
+        closeSidebarViewMenu();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (sidebarViewMenu && e.key === 'Escape') {
+            e.preventDefault();
+            closeSidebarViewMenu(true);
+            return;
         }
-    };
-    buttons.forEach(btn => btn.addEventListener('click', async () => {
-        if (!btn.dataset.filter || btn.dataset.filter === sidebarFilter) return;
-        sidebarFilter = btn.dataset.filter;
-        // 切换后不可见条目的选中状态要丢掉，避免批量操作误伤
-        selectedSessions.clear();
-        selectedWorkflows.clear();
-        try { localStorage.setItem(SIDEBAR_FILTER_KEY, sidebarFilter); } catch (e) { /* ignore */ }
-        applyActive();
-        updateFooterToolbar();
-        renderSidebarList();
-        // 当前显示的是空状态欢迎块时，示例先跟随模式切换
-        if (chatMessages.querySelector('.welcome-message')) {
-            chatMessages.innerHTML = newSessionWelcomeHtml();
-        }
-        await syncChatToMode();
-    }));
-    applyActive();
+        // 视图快捷键 Alt+1/2/3（浏览器保留 Ctrl+1~8 切标签页，网页拦不住）
+        if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        const view = SIDEBAR_VIEWS[Number(e.key) - 1];
+        if (!view) return;
+        e.preventDefault();
+        closeSidebarViewMenu();
+        setSidebarView(view.id);
+    });
+
+    // 滚动或窗口尺寸变化时关闭菜单，避免浮层错位
+    window.addEventListener('scroll', () => closeSidebarViewMenu(), { capture: true, passive: true });
+    window.addEventListener('resize', () => closeSidebarViewMenu());
 
     const importInput = document.getElementById('session-import-input');
     if (importInput) {
