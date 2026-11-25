@@ -7,7 +7,7 @@ import threading
 from datetime import timedelta
 
 from core.llm.chatgpt_oauth import auth, const, store
-from core.llm.chatgpt_oauth.credentials import Credentials
+from core.llm.chatgpt_oauth.credentials import Credentials, _iso
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ def status(credential: str) -> dict:
         "connected": bool(creds.access_token) and not creds.reauth_required,
         "email": creds.email,
         "plan_type": creds.plan_type,
-        "expires_at": auth._iso(creds.expires_at),
+        "expires_at": _iso(creds.expires_at),
         "scopes": list(creds.scopes),
         "reauth_required": creds.reauth_required,
     }
