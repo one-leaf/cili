@@ -1,6 +1,6 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # Cili Agent startup script
-# Auto-detect and download Git Bash, Python, and LaTeX compiler
+# Auto-detect and download Git Bash, Python, PowerShell 7, and LaTeX compiler
 
 param(
     [int]$Port = 1618,
@@ -15,6 +15,7 @@ $DataDir = Join-Path $ProjectRoot "data"
 $DepsDir = Join-Path $DataDir "deps"
 $GitDir = Join-Path $DepsDir "git"
 $PythonDir = Join-Path $DepsDir "python"
+$PwshDir = Join-Path $DepsDir "pwsh"
 $TectonicDir = Join-Path $DepsDir "tectonic"
 $FontsDir = Join-Path $DepsDir "fonts"
 
@@ -22,6 +23,7 @@ $FontsDir = Join-Path $DepsDir "fonts"
 $PythonVersion = "3.11.9"
 $GitVersion = "2.55.0"
 $GitBuild = "5"
+$PwshVersion = "7.7.0"
 $TectonicVersion = "0.17.0"
 $HarmonyFontZip = "HarmonyOS-Sans.zip"
 $HarmonyFontDir = "HarmonyOS Sans"
@@ -30,6 +32,12 @@ $PythonUrl = "https://mirrors.huaweicloud.com/python/$PythonVersion/python-$Pyth
 $GitUrl = @(
     "https://mirrors.huaweicloud.com/git-for-windows/v$GitVersion.windows.$GitBuild/PortableGit-$GitVersion.$GitBuild-64-bit.7z.exe",
     "https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/LatestRelease/PortableGit-$GitVersion.$GitBuild-64-bit.7z.exe"
+)
+$PwshUrl = @(
+    "https://github.com/PowerShell/PowerShell/releases/download/v$PwshVersion/PowerShell-$PwshVersion-win-x64.zip",
+    "https://gh-proxy.com/https://github.com/PowerShell/PowerShell/releases/download/v$PwshVersion/PowerShell-$PwshVersion-win-x64.zip",
+    "https://ghfast.top/https://github.com/PowerShell/PowerShell/releases/download/v$PwshVersion/PowerShell-$PwshVersion-win-x64.zip",
+    "https://ghproxy.net/https://github.com/PowerShell/PowerShell/releases/download/v$PwshVersion/PowerShell-$PwshVersion-win-x64.zip"
 )
 $TectonicUrl = @(
     "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@$TectonicVersion/tectonic-$TectonicVersion-x86_64-pc-windows-msvc.zip",
@@ -66,17 +74,17 @@ function Test-Python {
 }
 
 function Configure-PythonPth {
-    # 重写 python*._pth 为规范内容。项目根用相对路径（相对 exe 目录），
-    # 整个项目复制/移动后不会因 _pth 里写死的旧绝对路径而失效。
+    # Rewrite python*._pth with canonical content. The project root is stored
+    # relative to the exe directory, so moving the project does not break on stale absolute paths.
     $pthFile = Get-ChildItem -Path $PythonDir -Filter "python*._pth" | Select-Object -First 1
     if (-not $pthFile) {
         Write-Status "Warning: no python*._pth found in $PythonDir" "Yellow"
         return
     }
-    # 标准库存档名（python311.zip 等）从实际文件推导，兼容 Python 版本升级
+    # Derive the stdlib archive name (python311.zip, etc.) from the actual file, so Python upgrades work.
     $zipFile = Get-ChildItem -Path $PythonDir -Filter "python*.zip" | Select-Object -First 1
     $zipName = if ($zipFile) { $zipFile.Name } else { "python311.zip" }
-    # 项目根相对 data/deps/python 的路径（通常为 ..\..\..），PS 5.1 无 GetRelativePath，手动计算
+    # Project root relative to data/deps/python (usually ..\..\..); PS 5.1 lacks GetRelativePath, so compute manually.
     $relProjectRoot = ""
     if ($PythonDir.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
         $pyRelative = $PythonDir.Substring($ProjectRoot.Length).TrimStart('\', '/')
@@ -97,17 +105,75 @@ function Configure-PythonPth {
 }
 
 function Test-PythonOk {
-    # 完整性校验：embeddable 的标准库打包在 pythonXXX.zip 里，
-    # zip 缺失/损坏时 import encodings 会在启动阶段直接 fatal。
+    # Integrity check: the embeddable stdlib lives in pythonXXX.zip;
+    # a missing or corrupt zip makes "import encodings" fail fatally at startup.
     param([string]$PythonExe)
     if (-not (Test-Path $PythonExe)) { return $false }
-    # 原生 stderr 在 EAP=Stop 下会被当作终止性错误，这里临时切到 Continue
+    # Native stderr is a terminating error under EAP=Stop; switch to Continue temporarily.
     $oldEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     & $PythonExe -c "import encodings" 2>$null
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $oldEAP
     return $ok
+}
+
+function Test-Pwsh {
+    # Only check deps directory; the VERSION marker lets a pinned upgrade reinstall.
+    $exe = Join-Path $PwshDir "pwsh.exe"
+    $versionFile = Join-Path $PwshDir "VERSION"
+    if ((Test-Path $exe) -and (Test-Path $versionFile)) {
+        if (((Get-Content -Path $versionFile -Raw).Trim()) -eq $PwshVersion) {
+            Write-Status "PowerShell $PwshVersion found in deps: $exe"
+            return $exe
+        }
+    }
+    return $null
+}
+
+function Test-PwshOk {
+    # Integrity check: a broken or partial extraction fails to start pwsh at all.
+    param([string]$PwshExe)
+    if (-not (Test-Path $PwshExe)) { return $false }
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $PwshExe -NoLogo -NoProfile -NonInteractive -Command "exit 0" 2>$null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $oldEAP
+    return $ok
+}
+
+function Install-Pwsh {
+    Write-Status "Installing PowerShell $PwshVersion to deps..." "Yellow"
+
+    # Remove a previous partial/old extraction, then recreate the directory.
+    if (Test-Path $PwshDir) {
+        Write-Status "Removing old PowerShell directory..."
+        Remove-Item -Path $PwshDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Path $PwshDir -Force | Out-Null
+
+    $archivePath = Join-Path $DepsDir "pwsh.zip"
+    Download-File -Url $PwshUrl -OutputPath $archivePath
+
+    Write-Status "Extracting PowerShell..."
+    Expand-Archive -Path $archivePath -DestinationPath $PwshDir -Force
+    Remove-Item -Path $archivePath -Force -ErrorAction SilentlyContinue
+
+    $exe = Join-Path $PwshDir "pwsh.exe"
+    if (-not (Test-Path $exe)) {
+        throw "PowerShell installation failed: $exe not found"
+    }
+
+    # Pin the version so bumping $PwshVersion reinstalls on the next start.
+    Set-Content -Path (Join-Path $PwshDir "VERSION") -Value $PwshVersion -Encoding ASCII
+
+    if (-not (Test-PwshOk $exe)) {
+        throw "PowerShell installation failed: pwsh.exe cannot start"
+    }
+
+    Write-Status "PowerShell $PwshVersion installed successfully." "Green"
+    return $exe
 }
 
 function Test-Tectonic {
@@ -268,7 +334,7 @@ function Install-Python {
         Start-BitsTransfer -Source $getPipUrl -Destination $getPipPath -DisplayName "Downloading get-pip.py" -ErrorAction Stop
 
         if (Test-Path $getPipPath) {
-            # 使用华为云源安装 pip
+            # Install pip from the Huawei Cloud mirror
             $pipResult = & $pythonExe $getPipPath -i "https://repo.huaweicloud.com/repository/pypi/simple/" --no-warn-script-location 2>&1
             if ($LASTEXITCODE -eq 0) {
                 Write-Status "pip installed successfully." "Green"
@@ -314,7 +380,7 @@ function Install-Tectonic {
 }
 
 function Test-HarmonyFont {
-    # 检查 SC 简体字体是否已解压
+    # Check whether the Simplified Chinese (SC) font is already extracted
     $scDir = Join-Path $FontsDir "$HarmonyFontDir\$HarmonyFontSubDir"
     $fontFile = Join-Path $scDir "HarmonyOS_Sans_SC_Regular.ttf"
     if (Test-Path $fontFile) {
@@ -336,7 +402,7 @@ function Install-HarmonyFont {
         throw "HarmonyOS Sans font download failed: $zipPath not found"
     }
 
-    # 解压到 fonts 目录
+    # Extract into the fonts directory
     Write-Status "Extracting HarmonyOS Sans..."
     Expand-Archive -Path $zipPath -DestinationPath $FontsDir -Force
     Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
@@ -350,9 +416,9 @@ function Install-HarmonyFont {
     return $scDir
 }
 
-# ══════════════════════════════════════════════════════════════
-# 主流程
-# ═══════════════════════════════════════════════════════════════
+# ==============================================================
+# Main flow
+# ==============================================================
 
 Write-Host ""
 Write-Host "  =====================================" -ForegroundColor Cyan
@@ -360,22 +426,22 @@ Write-Host "     Cili Agent - Starting...         " -ForegroundColor Cyan
 Write-Host "  =====================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 确保 data 目录存在
+# Ensure the data directory exists
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
-# 1. 检查/安装 Git Bash
+# 1. Check/install Git Bash
 $gitBashPath = Test-GitBash
 if (-not $gitBashPath) {
     Write-Status "Git Bash not found, downloading..." "Yellow"
     $gitBashPath = Install-GitBash
 }
 
-# 2. 检查/安装 Python
+# 2. Check/install Python
 $pythonPath = Test-Python
 if ($pythonPath) {
-    # 每次启动都刷新 _pth：修复项目复制/移动后残留的旧绝对路径
+    # Refresh _pth on every start: fixes stale absolute paths left by moving the project
     Configure-PythonPth
-    # 完整性校验：stdlib 不可导入说明 pythonXXX.zip 缺失/损坏，触发重装
+    # Integrity check: an unimportable stdlib means pythonXXX.zip is missing/corrupt; reinstall
     if (-not (Test-PythonOk $pythonPath)) {
         Write-Status "Python runtime is broken (stdlib unavailable), reinstalling..." "Yellow"
         $pythonPath = $null
@@ -386,7 +452,24 @@ if (-not $pythonPath) {
     $pythonPath = Install-Python
 }
 
-# 3. 检查/安装 Tectonic (或其他 LaTeX 编译器)
+# 3. Check/install portable PowerShell 7
+$pwshPath = Test-Pwsh
+if ($pwshPath -and -not (Test-PwshOk $pwshPath)) {
+    Write-Status "Portable PowerShell is broken, reinstalling..." "Yellow"
+    $pwshPath = $null
+}
+if (-not $pwshPath) {
+    Write-Status "PowerShell 7 not found, downloading..." "Yellow"
+    try {
+        $pwshPath = Install-Pwsh
+    } catch {
+        Write-Status "Warning: PowerShell 7 installation failed: $_" "Yellow"
+        Write-Status "Continuing with system PowerShell..." "Yellow"
+        $pwshPath = $null
+    }
+}
+
+# 4. Check/install Tectonic (or another LaTeX compiler)
 $tectonicPath = Test-Tectonic
 if (-not $tectonicPath) {
     Write-Status "No LaTeX compiler found, installing Tectonic..." "Yellow"
@@ -398,14 +481,14 @@ if (-not $tectonicPath) {
         $tectonicPath = $null
     }
 } else {
-    # 检查是否是 tectonic 本身
+    # Check whether the compiler is Tectonic itself
     $toolName = [System.IO.Path]::GetFileNameWithoutExtension($tectonicPath)
     if ($toolName -ne "tectonic") {
         Write-Status "Using existing LaTeX compiler: $toolName" "Gray"
     }
 }
 
-# 4. 检查/安装 HarmonyOS Sans 字体
+# 5. Check/install HarmonyOS Sans fonts
 $harmonyFontDir = Test-HarmonyFont
 if (-not $harmonyFontDir) {
     Write-Status "HarmonyOS Sans SC not found, downloading..." "Yellow"
@@ -418,25 +501,36 @@ if (-not $harmonyFontDir) {
     }
 }
 
-# 5. 设置环境变量
+# 6. Set environment variables
 $env:GIT_BASH_PATH = $gitBashPath
 
-# 将 Tectonic 添加到 PATH（如果安装在 deps 目录）
+# Prefer the portable PowerShell 7 for the pwsh tool and child processes.
+if ($pwshPath) {
+    $env:PWSH_PATH = $pwshPath
+    $env:PATH = "$PwshDir;$env:PATH"
+}
+
+# Add Tectonic to PATH (when installed under deps)
 if ($tectonicPath -and $tectonicPath.StartsWith($DepsDir)) {
     $tectonicBin = Split-Path $tectonicPath -Parent
     $env:PATH = "$tectonicBin;$env:PATH"
     Write-Status "Added LaTeX to PATH: $tectonicBin"
 }
 
-# 将字体目录设置为环境变量，供 matplotlib 使用
+# Expose the font directory to matplotlib
 if ($harmonyFontDir) {
     $env:HARMONY_FONT_DIR = $harmonyFontDir
 }
 
-# 6. 启动 Cili
+# 7. Start Cili
 Write-Status "Starting Cili Agent..."
 Write-Status "  Python: $pythonPath"
 Write-Status "  Git Bash: $gitBashPath"
+if ($pwshPath) {
+    Write-Status "  PowerShell: $pwshPath"
+} else {
+    Write-Status "  PowerShell: system default (portable 7 unavailable)"
+}
 if ($tectonicPath) {
     $toolName = [System.IO.Path]::GetFileNameWithoutExtension($tectonicPath)
     Write-Status "  LaTeX ($toolName): $tectonicPath"
@@ -458,20 +552,20 @@ if ($HostName -ne "127.0.0.1") {
     $scriptArgs += $HostName
 }
 
-# 启动 main.py（升级重启循环）
-# 协议：服务请求重启（升级包下载完成）时以退出码 42 退出；循环先在有升级包时
-# 用独立进程应用（main.py --apply-upgrade-only），再重新拉起服务，保证新代码
-# 完整加载。直接 python main.py 启动无此循环，升级包需手动重启应用。
+# Start main.py (upgrade/restart loop)
+# Protocol: a service restart request (upgrade package downloaded) exits
+# with code 42; the loop applies the package in a separate process
+# (main.py --apply-upgrade-only) and restarts; direct "python main.py" has no such loop.
 $mainScript = Join-Path $ProjectRoot "main.py"
-$upgradeZip = Join-Path $ProjectRoot "cili-update.zip"  # 与 core/updater.py 的 UPGRADE_ZIP_NAME 一致
+$upgradeZip = Join-Path $ProjectRoot "cili-update.zip"  # Must match UPGRADE_ZIP_NAME in core/updater.py
 $env:CILI_LAUNCHER = "ps1"
 $restartCount = 0
 $maxRestarts = 5
 for ($i = 0; ; $i++) {
-    # 应用待升级包（独立短进程，无业务模块 import，避免服务进程新旧代码混跑）。
-    # 只在包存在时运行；首次启动依赖可能尚未装齐（依赖由 main.py 安装），失败容忍并继续。
-    # 注意：$ErrorActionPreference=Stop 下原生命令写 stderr 会抛终止错误（即使
-    # 2>$null 也照抛），而 apply 过程必然有日志输出，故必须临时切到 Continue 并合并捕获。
+    # Apply a pending upgrade package in a separate short-lived process with no business imports,
+    # so the service never runs mixed old/new code. Run only when the package exists; on first
+    # start dependencies may not be installed yet (main.py installs them), so tolerate failures.
+    # Under EAP=Stop, native stderr raises a terminating error (even with 2>$null); use Continue.
     if (Test-Path $upgradeZip) {
         $oldEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -484,7 +578,7 @@ for ($i = 0; ; $i++) {
             $applyOut | ForEach-Object { Write-Host $_ }
         }
     }
-    # 重启迭代不再自动打开浏览器（--no-browser 为主，CILI_LAUNCH_RESTART 兜底）
+    # Restart iterations do not open a new browser (--no-browser, with CILI_LAUNCH_RESTART as fallback)
     $iterArgs = $scriptArgs
     if ($i -gt 0) {
         $env:CILI_LAUNCH_RESTART = "1"
@@ -498,7 +592,7 @@ for ($i = 0; ; $i++) {
         exit 1
     }
     if ($LASTEXITCODE -ne 42) { break }
-    # 只把「短时间内连续重启」计入上限：运行已久的服务偶发升级重启不累计
+    # Only count closely spaced restarts toward the limit; an occasional upgrade of a long-running service does not accumulate
     if (((Get-Date) - $startedAt).TotalSeconds -gt 300) { $restartCount = 0 }
     $restartCount++
     if ($restartCount -ge $maxRestarts) {

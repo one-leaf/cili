@@ -190,6 +190,90 @@ class TestLineEndings:
         assert data.replace(b"\r\n", b"").find(b"\n") == -1
 
 
+class TestPowerShellScriptEncoding:
+    """PowerShell 脚本统一写 UTF-8 BOM。
+
+    Windows PowerShell 5.1 读取无 BOM 的 UTF-8 脚本时按系统 ANSI 代码页
+    （简中为 GBK）解码，中文内容会触发莫名其妙的语法错误。
+    """
+
+    def test_write_ps1_adds_utf8_bom(self, tools, test_workspace):
+        from pathlib import Path
+        from core.tools import get_tool_by_name
+
+        write_tool = get_tool_by_name(tools, "write")
+        result = write_tool.execute(file_path="script.ps1", content="Write-Output '中文'\n")
+        assert not result.error
+
+        raw = (Path(test_workspace) / "script.ps1").read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        assert not raw[3:].startswith(b"\xef\xbb\xbf")
+        assert raw.decode("utf-8-sig") == "Write-Output '中文'\n"
+
+    def test_write_ps1_strips_leading_bom(self, tools, test_workspace):
+        from pathlib import Path
+        from core.tools import get_tool_by_name
+
+        write_tool = get_tool_by_name(tools, "write")
+        result = write_tool.execute(
+            file_path="script_bom.ps1", content="﻿Write-Output '中文'\n"
+        )
+        assert not result.error
+
+        raw = (Path(test_workspace) / "script_bom.ps1").read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        assert not raw[3:].startswith(b"\xef\xbb\xbf")
+        assert raw.decode("utf-8-sig") == "Write-Output '中文'\n"
+
+    def test_write_txt_keeps_no_bom(self, tools, test_workspace):
+        from pathlib import Path
+        from core.tools import get_tool_by_name
+
+        write_tool = get_tool_by_name(tools, "write")
+        result = write_tool.execute(file_path="note.txt", content="中文\n")
+        assert not result.error
+
+        raw = (Path(test_workspace) / "note.txt").read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        assert raw.decode("utf-8") == "中文\n"
+
+    def test_edit_ps1_adds_bom(self, tools, test_workspace):
+        from pathlib import Path
+        from core.tools import get_tool_by_name
+
+        path = Path(test_workspace) / "edit_script.ps1"
+        path.write_bytes("Write-Output '中文'\n".encode("utf-8"))
+
+        edit_tool = get_tool_by_name(tools, "edit")
+        result = edit_tool.execute(
+            file_path="edit_script.ps1", old_text="中文", new_text="中文编辑"
+        )
+        assert not result.error
+
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        assert not raw[3:].startswith(b"\xef\xbb\xbf")
+        assert raw.decode("utf-8-sig") == "Write-Output '中文编辑'\n"
+
+    def test_edit_ps1_keeps_single_bom(self, tools, test_workspace):
+        from pathlib import Path
+        from core.tools import get_tool_by_name
+
+        path = Path(test_workspace) / "edit_script_bom.ps1"
+        path.write_bytes(b"\xef\xbb\xbf" + "Write-Output '中文'\n".encode("utf-8"))
+
+        edit_tool = get_tool_by_name(tools, "edit")
+        result = edit_tool.execute(
+            file_path="edit_script_bom.ps1", old_text="中文", new_text="中文编辑"
+        )
+        assert not result.error
+
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        assert not raw[3:].startswith(b"\xef\xbb\xbf")
+        assert raw.decode("utf-8-sig") == "Write-Output '中文编辑'\n"
+
+
 class TestReadPages:
     """read 工具 PDF 页区间解析：超大区间在展开前拦截，防 OOM。"""
 

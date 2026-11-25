@@ -69,6 +69,9 @@ class PwshTool(ShellToolBase):
         return (
             "Execute a PowerShell command and return its output. "
             "Each call runs in a fresh pwsh process — no state (cwd, variables, functions) persists between calls.\n"
+            "PowerShell scripts: prefer the write/edit tools for .ps1/.psm1/.psd1 files (they add a UTF-8 BOM), "
+            "so scripts also work under Windows PowerShell 5.1, which reads UTF-8 without a BOM as ANSI "
+            "and breaks non-ASCII text.\n"
             "Paths use native Windows format (e.g., C:\\Users); environment variables use $env:NAME.\n"
             "Do NOT use pwsh to invoke bash, cmd, or WSL — use the dedicated tools instead (cross-tool calls "
             "are flagged by static analysis and usually rejected by the safety judge).\n"

@@ -91,12 +91,19 @@ def _find_git_bash() -> str:
 def _find_pwsh() -> str:
     """Find PowerShell executable path.
 
-    Priority: env var > PS7 install path > PATH(pwsh) > PS 5.1 path > fallback.
-    Mirrors deepseek-harness resolve.ts: probe well-known locations before PATH.
+    Priority: env var > portable deps > PS7 install path > PATH(pwsh) > PS 5.1 > fallback.
+    The portable build (data/deps/pwsh) is deployed by start.ps1 or main.py and
+    is the default runtime for the pwsh tool; probing well-known locations
+    before PATH avoids picking up a stale shim.
     """
     env_path = os.environ.get("PWSH_PATH")
     if env_path and os.path.isfile(env_path):
         return env_path
+
+    # Portable PowerShell 7 deployed by start.ps1 or main.py
+    deps_pwsh = os.path.join(_PROJECT_ROOT, "data", "deps", "pwsh", "pwsh.exe")
+    if os.path.isfile(deps_pwsh):
+        return deps_pwsh
 
     # Probe well-known PowerShell 7 install location (before PATH search)
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")

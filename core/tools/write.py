@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from core.fs_utils import atomic_write_text
+from core.fs_utils import UTF8_BOM_CHAR, atomic_write_text, is_powershell_script
 from core.security.path_target import OP_WRITE, PathTarget
 from core.text_sanitize import clean_surrogates
 from core.tool_limits import WRITE_RESULT_MAX_CHARS
@@ -19,7 +19,9 @@ class WriteTool(Tool):
         "Automatically creates parent directories if they don't exist. "
         "Keep each call's content moderate in size (roughly under 8000 characters). "
         "For longer content, write the first part, then append the rest with the "
-        "edit tool — a single oversized call risks being cut off mid-generation."
+        "edit tool — a single oversized call risks being cut off mid-generation. "
+        "PowerShell script files (.ps1/.psm1/.psd1) are written as UTF-8 with BOM "
+        "so Windows PowerShell 5.1 parses non-ASCII content correctly."
     )
     parameters = {
         "type": "object",
@@ -53,10 +55,17 @@ class WriteTool(Tool):
         # Remove surrogate characters that are invalid in UTF-8
         clean_content = clean_surrogates(content)
 
+        # Windows PowerShell 5.1 只有看到 UTF-8 BOM 才按 UTF-8 解析脚本。
+        # 去掉内容自带的前导 BOM，避免 utf-8-sig 再写一次造成双 BOM。
+        encoding = "utf-8"
+        if is_powershell_script(file_path):
+            encoding = "utf-8-sig"
+            clean_content = clean_content.lstrip(UTF8_BOM_CHAR)
+
         try:
             # Atomic write（newline="" 禁用换行翻译，内容按原样写入，
             # \n 保持 LF，否则 Windows 文本模式会把 \n 写成 \r\n，破坏 .sh 等脚本）
-            atomic_write_text(file_path, clean_content)
+            atomic_write_text(file_path, clean_content, encoding=encoding)
             lines = clean_content.count("\n") + (1 if clean_content and not clean_content.endswith("\n") else 0)
             size = os.path.getsize(file_path)
             result_text = f"Successfully wrote {file_path} ({lines} lines, {size} bytes)"

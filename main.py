@@ -70,6 +70,16 @@ _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 _CILI_DIR = os.path.join(_PROJECT_ROOT, "data", "cili")
 _DEPS_DIR = os.path.join(_PROJECT_ROOT, "data", "deps")
 _DEPS_GIT_BASH = os.path.join(_DEPS_DIR, "git", "bin", "bash.exe")
+_DEPS_PWSH_DIR = os.path.join(_DEPS_DIR, "pwsh")
+_DEPS_PWSH = os.path.join(_DEPS_PWSH_DIR, "pwsh.exe")
+_PWSH_VERSION = "7.7.0"
+_PWSH_ZIP = f"PowerShell-{_PWSH_VERSION}-win-x64.zip"
+_PWSH_URLS = [
+    f"https://github.com/PowerShell/PowerShell/releases/download/v{_PWSH_VERSION}/{_PWSH_ZIP}",
+    f"https://gh-proxy.com/https://github.com/PowerShell/PowerShell/releases/download/v{_PWSH_VERSION}/{_PWSH_ZIP}",
+    f"https://ghfast.top/https://github.com/PowerShell/PowerShell/releases/download/v{_PWSH_VERSION}/{_PWSH_ZIP}",
+    f"https://ghproxy.net/https://github.com/PowerShell/PowerShell/releases/download/v{_PWSH_VERSION}/{_PWSH_ZIP}",
+]
 
 # Runtime Python directory (always use data/deps/python, embeddable mode)
 _DEPS_PYTHON_DIR = os.path.join(_DEPS_DIR, "python")
@@ -1041,6 +1051,112 @@ def _init_git_bash() -> bool:
     return False
 
 
+def _init_pwsh() -> None:
+    """优先使用 start.ps1 部署的便携版 PowerShell 7。
+
+    _find_pwsh() 自身也会检查 deps 目录；这里提前设置环境变量，让子进程
+    与启动日志都明确当前运行时。便携版缺失时不阻断启动，回退系统 PowerShell。
+    """
+    if os.path.isfile(_DEPS_PWSH):
+        os.environ["PWSH_PATH"] = _DEPS_PWSH
+        print(f"[setup] PowerShell 7 from deps: {_DEPS_PWSH}")
+        return
+    print("[setup] Warning: portable PowerShell 7 not found; "
+          "the pwsh tool will fall back to system PowerShell.")
+
+
+def _ensure_pwsh() -> bool:
+    """确保便携版 PowerShell 7 存在（软依赖，失败不阻断启动）。"""
+    version_file = os.path.join(_DEPS_PWSH_DIR, "VERSION")
+    if os.path.isfile(_DEPS_PWSH):
+        try:
+            with open(version_file, "r", encoding="ascii") as f:
+                installed = f.read().strip()
+        except OSError:
+            installed = ""
+        if installed == _PWSH_VERSION:
+            print(f"[setup] Using existing portable PowerShell {_PWSH_VERSION}: {_DEPS_PWSH_DIR}")
+            return True
+        print(f"[setup] Portable PowerShell is outdated/broken, reinstalling: {_DEPS_PWSH_DIR}")
+        shutil.rmtree(_DEPS_PWSH_DIR, ignore_errors=True)
+    elif os.path.isdir(_DEPS_PWSH_DIR):
+        shutil.rmtree(_DEPS_PWSH_DIR, ignore_errors=True)
+
+    return _install_pwsh()
+
+
+def _install_pwsh() -> bool:
+    """下载并解压 Portable PowerShell 7 到 data/deps/pwsh（GitHub 优先，镜像回退）。"""
+    print(f"[setup] Downloading portable PowerShell {_PWSH_VERSION}...")
+    os.makedirs(_DEPS_PWSH_DIR, exist_ok=True)
+    zip_path = os.path.join(_DEPS_DIR, "pwsh.zip")
+
+    downloaded = False
+    for url in _PWSH_URLS:
+        try:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+            result = subprocess.run(
+                ["certutil", "-urlcache", "-split", "-f", url, zip_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if (result.returncode == 0 and os.path.exists(zip_path)
+                    and os.path.getsize(zip_path) > 1024 * 1024):
+                downloaded = True
+                break
+            print(f"[setup] Download failed: {url}")
+        except Exception as e:
+            print(f"[setup] Download error: {e}")
+        if os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+
+    if not downloaded:
+        print("[setup] Warning: portable PowerShell 7 download failed; using system PowerShell.")
+        shutil.rmtree(_DEPS_PWSH_DIR, ignore_errors=True)
+        return False
+
+    print("[setup] Extracting PowerShell...")
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(_DEPS_PWSH_DIR)
+    except Exception as e:
+        print(f"[setup] Error: PowerShell extraction failed: {e}")
+        shutil.rmtree(_DEPS_PWSH_DIR, ignore_errors=True)
+        return False
+    finally:
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+
+    with open(os.path.join(_DEPS_PWSH_DIR, "VERSION"), "w", encoding="ascii") as f:
+        f.write(_PWSH_VERSION)
+
+    if not os.path.isfile(_DEPS_PWSH):
+        print("[setup] Error: PowerShell installation failed: pwsh.exe not found")
+        return False
+
+    try:
+        check = subprocess.run(
+            [_DEPS_PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[setup] Warning: portable PowerShell check failed: {e}")
+        return False
+    if check.returncode != 0:
+        print(f"[setup] Warning: portable PowerShell failed to start: {check.stderr.strip()[:200]}")
+        return False
+
+    print(f"[setup] Portable PowerShell {_PWSH_VERSION} installed.")
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Cili Agent - Python coding agent",
@@ -1285,6 +1401,10 @@ def _ensure_runtime() -> None:
     if not _init_git_bash():
         print("[setup] Error: Git Bash not found", file=sys.stderr)
         sys.exit(1)
+
+    # Ensure and expose the portable PowerShell 7 (soft dependency)
+    _ensure_pwsh()
+    _init_pwsh()
 
     # Ensure deps Python exists and is healthy
     if not _ensure_deps_python():

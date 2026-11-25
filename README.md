@@ -55,7 +55,7 @@ Cili 是一个**自托管的 Agent Harness**，提供完整的智能体运行时
 ### 前置条件
 
 - **Windows 10/11**（目前仅支持 Windows）
-- 无需手动安装 Python 或 Git Bash — 启动脚本自动处理
+- 无需手动安装 Python、Git Bash 或 PowerShell 7 — 启动脚本自动处理
 
 ### 启动
 

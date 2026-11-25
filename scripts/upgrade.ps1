@@ -1,4 +1,4 @@
-﻿﻿# Cili Agent 升级工具（只下载升级包，重启服务时自动应用）
+# Cili Agent upgrade tool (downloads the package; applied automatically on restart)
 
 param(
     [string]$ProjectRoot = ""
@@ -7,7 +7,7 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Cili Agent 升级工具" -ForegroundColor Cyan
+Write-Host "  Cili Agent Upgrade Tool" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -19,14 +19,14 @@ if (-not $ProjectRoot) {
     $ProjectRoot = (Resolve-Path $ProjectRoot).Path
 }
 Set-Location $ProjectRoot
-Write-Host "[INFO] 工作目录: $(Get-Location)" -ForegroundColor Gray
+Write-Host "[INFO] Working directory: $(Get-Location)" -ForegroundColor Gray
 Write-Host ""
 
 # ==================== Download upgrade zip ====================
-# 升级包落到脚本目录（项目根），与 core/updater.py 的 get_upgrade_zip_path() 一致；
-# 解压覆盖不在本脚本执行——下次启动时由 core/updater.py apply_pending_upgrade() 统一应用。
+# The package is stored in the project root, matching get_upgrade_zip_path()
+# in core/updater.py. Extraction is not done here; the next startup applies it.
 
-Write-Host "[DOWNLOAD] 正在下载最新升级包..." -ForegroundColor Cyan
+Write-Host "[DOWNLOAD] Downloading the latest upgrade package..." -ForegroundColor Cyan
 
 $destZip = Join-Path $ProjectRoot "cili-update.zip"
 
@@ -66,11 +66,11 @@ foreach ($url in $urls) {
 }
 
 if (-not $downloaded) {
-    Write-Host "[ERROR] 下载失败" -ForegroundColor Red
+    Write-Host "[ERROR] Download failed" -ForegroundColor Red
     Write-Host ""
-    Write-Host "请检查网络连接或使用 VPN" -ForegroundColor Yellow
+    Write-Host "Check your network connection or use a VPN" -ForegroundColor Yellow
     Write-Host ""
-    Read-Host "按回车键退出"
+    Read-Host "Press Enter to exit"
     exit 1
 }
 
@@ -78,12 +78,12 @@ if (-not $downloaded) {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  [OK] 升级包已下载！" -ForegroundColor Green
+Write-Host "  [OK] Upgrade package downloaded!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "提示：" -ForegroundColor Cyan
-Write-Host "  - 升级包位置: $destZip"
-Write-Host "  - 重新启动服务（start.cmd / python main.py）后自动比对版本并解压覆盖"
-Write-Host "  - 版本一致也会重新覆盖（用于修复文件损坏）；仅升级包版本低于当前版本时（防降级），启动时会自动删除该升级包"
+Write-Host "Notes:" -ForegroundColor Cyan
+Write-Host "  - Package location: $destZip"
+Write-Host "  - Restart the service (start.cmd / python main.py); the version is compared and the package is applied"
+Write-Host "  - Same-version packages are also applied to repair files; a package older than the current version is deleted at startup to prevent downgrades"
 Write-Host ""
-Read-Host "按回车键退出"
+Read-Host "Press Enter to exit"

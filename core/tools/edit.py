@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.fs_utils import atomic_write_text
+from core.fs_utils import UTF8_BOM_CHAR, atomic_write_text, is_powershell_script
 from core.security.path_target import OP_WRITE, PathTarget
 from core.text_sanitize import clean_surrogates
 from core.tool_limits import EDIT_RESULT_MAX_CHARS
@@ -20,7 +20,9 @@ class EditTool(Tool):
         "Each edit specifies old_text (to find) and new_text (to replace with). "
         "By default, old_text must be unique in the file. "
         "Use replace_all to replace every occurrence, occurrence to target the Nth match, "
-        "or line_hint to disambiguate when old_text appears multiple times."
+        "or line_hint to disambiguate when old_text appears multiple times. "
+        "PowerShell script files (.ps1/.psm1/.psd1) are kept as UTF-8 with BOM "
+        "so Windows PowerShell 5.1 parses non-ASCII content correctly."
     )
     parameters = {
         "type": "object",
@@ -92,13 +94,15 @@ class EditTool(Tool):
             with open(file_path, "rb") as f:
                 raw = f.read()
 
-            # 编码探测：UTF-8 优先，非 UTF-8（常见 GBK/GB18030 中文源码）按
-            # gb18030 兜底。写回时沿用同一编码 —— 此前用 errors="replace" 之外的
-            # 严格 utf-8 读会让 GBK 文件直接报错，而改用 replace 又会在写回时
-            # 静默损坏内容。
+            # 编码探测：PowerShell 脚本用 utf-8-sig（BOM 可有可无），写回统一
+            # 加 BOM 以兼容 Windows PowerShell 5.1；其余文件 UTF-8 优先，
+            # 非 UTF-8（常见 GBK/GB18030 中文源码）按 gb18030 兜底并原样写回。
+            # 此前用严格 utf-8 读会让 GBK 文件直接报错，而改用 replace 又会在
+            # 写回时静默损坏内容。
+            is_ps = is_powershell_script(file_path)
             try:
-                content = raw.decode("utf-8")
-                encoding = "utf-8"
+                content = raw.decode("utf-8-sig" if is_ps else "utf-8")
+                encoding = "utf-8-sig" if is_ps else "utf-8"
             except UnicodeDecodeError:
                 try:
                     content = raw.decode("gb18030")
@@ -108,6 +112,8 @@ class EditTool(Tool):
                         f"Error: 文件既不是 UTF-8 也不是 GB18030 编码，无法安全编辑: {e}",
                         error=True,
                     )
+            if is_ps:
+                content = content.lstrip(UTF8_BOM_CHAR)
 
             # 记录原文件行尾风格：写回时保持不变，避免 LF 文件被改成 CRLF
             had_crlf = b"\r\n" in raw

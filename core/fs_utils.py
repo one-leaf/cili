@@ -75,6 +75,20 @@ def normalize_bash_path(path: str) -> str:
     return path
 
 
+_PS_SCRIPT_EXTENSIONS = (".ps1", ".psm1", ".psd1")
+UTF8_BOM_CHAR = chr(0xFEFF)
+
+
+def is_powershell_script(path: Path | str) -> bool:
+    """是否 Windows PowerShell 脚本文件（.ps1 / .psm1 / .psd1）。
+
+    Windows PowerShell 5.1 读取无 BOM 的 UTF-8 脚本时按系统 ANSI 代码页
+    （简中为 GBK）解码，中文内容会被误读并引发语法错误；写这些文件时
+    统一加 UTF-8 BOM。
+    """
+    return Path(path).suffix.lower() in _PS_SCRIPT_EXTENSIONS
+
+
 def _atomic_temp_path(path: Path) -> Path:
     """生成目标文件唯一的临时路径（随机后缀，避免并发写互踩，SEC-23）。"""
     return path.with_name(f"{path.name}.tmp.{secrets.token_hex(3)}")
