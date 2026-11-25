@@ -125,6 +125,8 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
         "",
         "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
         "",
+        "**Path convention**: pass workspace-relative paths to every tool (e.g. `src/app.py`) rather than absolute paths. Do not use `../` or any relative path that escapes the workspace boundary. If a file outside the workspace is genuinely required, pass its absolute path (subject to the permission policy) or ask the user first.",
+        "",
         "## Operating System",
         "",
         f"`{platform.system()} {platform.release()}`",
@@ -170,7 +172,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
         "",
         f"Workspace temp directory: `{tmp_dir}` (inside the workspace).",
         "",
-        "Use this directory for all intermediate files, temp outputs, downloads, and program state files.",
+        "Use this directory for all intermediate files, temp outputs, downloads, and program state files. Do not scatter temp files in the working directory or write them to the system temp directory.",
         "Writes/deletes inside the workspace are allowed by default; outside actions follow the workspace permission settings (allow / AI judgment / user confirmation / deny). Reads outside follow the read policy.",
     ])
     if "temp" in available:
@@ -179,7 +181,11 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
             "`{workspace}/.cili/tmp/{session_id}/`.",
         ])
     if "python" in available:
-        parts.append("In Python, `tempfile` module is auto-configured to the system temp.")
+        parts.append(
+            "In Python, `tempfile` and the `TEMP`/`TMP`/`TMPDIR` environment variables "
+            "are redirected to the workspace temp directory, so `tempfile.gettempdir()` "
+            "resolves inside the workspace."
+        )
     parts.extend([
         "",
         "## Memory",
