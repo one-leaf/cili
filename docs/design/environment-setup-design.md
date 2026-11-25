@@ -44,8 +44,23 @@ main()
 1. Git Bash：`data/deps/git/` 优先，其次 PATH/常见安装路径；缺失且无法下载时退出。
 2. deps Python：`data/deps/python/`（embeddable 3.11 + pip）；健康检查与必要修复。
 3. 依赖安装：读取 `requirements.txt`，按镜像顺序安装；新装后按需 `os.execv` 重启
-   （带次数上限，防重启环）。
-4. 字体/浏览器探测：matplotlib 字体初始化失败降级为告警；浏览器路径缺失不阻塞。
+   （带次数上限，防重启环）。名字齐全后再做两道自检：`pip check` 查依赖元数据
+   不一致；导入探测在 deps Python 子进程里真实 import，查 dist-info 完好但模块文件
+   损坏/被删的包。常规启动只探 fastapi/uvicorn/httpx/pydantic，异常修复时全量探测；
+   失败项按镜像 `--force-reinstall --no-deps --no-cache-dir` 重装。
+4. 解释器切换：直接 `python main.py` 且当前解释器缺关键依赖时，切到 deps Python
+   运行服务（依赖实际安装的位置），避免启动到一半才抛 ModuleNotFoundError。
+5. 启动异常修复：`main()` 捕获环境类启动异常（ImportError / ModuleNotFoundError /
+   DLL 加载失败），设置 `CILI_ENV_REPAIR_COUNT` / `CILI_ENV_FORCE_REPAIR` 后
+   `os.execv` 重启一次（干净进程）：新进程做全量导入探测并强制重装；非环境异常
+   原样抛出。
+6. 环境损坏交接：启动关键包（fastapi/uvicorn/httpx/pydantic）强制重装后仍不可
+   导入时，打印「Python 环境损坏」与坏包清单。`start.ps1` 托管时以退出码 43
+   （`core.restart.ENV_REBUILD_EXIT_CODE`）交回启动器：删除 `data/deps/python`、
+   重装 Python 后重启（最多一次；删除发生在进程退出后，无文件锁问题）。直接
+   `python main.py` 时打印「删除目录后重启」的指引并退出。等价于手工删除
+   deps Python，但自动化且保留明确诊断。
+7. 字体/浏览器探测：matplotlib 字体初始化失败降级为告警；浏览器路径缺失不阻塞。
 
 ## 四、阶段三：服务（`_start_services`）
 
@@ -61,6 +76,8 @@ main()
 - 重启由启动脚本托管：Web 手动重启/升级后重启通过 `core.restart.request_restart`
   写标记，主循环 `shutdown_and_restart_if_requested` 退出并以约定退出码（42）通知
   `start.ps1` 重新拉起；空闲重启用 `schedule_idle_restart`（所有会话空闲时执行）。
+- 环境重建：服务以退出码 43（`ENV_REBUILD_EXIT_CODE`）退出时，`start.ps1` 删除
+  `data/deps/python` 并重装后重启（每次启动最多一次）。
 - 升级：`core/updater`（检查/下载/解压/合并文件树/回滚），文件树原语在
   `core/upgrade_archive`；`--apply-upgrade-only` 只应用升级包后退出。
 - 升级后启动会自动执行 `core/migrations` 的未完成步骤。

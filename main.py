@@ -103,6 +103,19 @@ _LOG_BACKUP_COUNT = 5
 _MAX_SETUP_RESTARTS = 3
 _SETUP_RESTART_ENV = "CILI_SETUP_RESTART_COUNT"
 
+# 启动异常后的环境修复次数上限：修复后仍因同类异常退出时不再重试，
+# 保留原始 traceback 供排查。计数同样通过环境变量跨 os.execv 传递。
+_MAX_ENV_REPAIRS = 1
+_ENV_REPAIR_ENV = "CILI_ENV_REPAIR_COUNT"
+# 由 _recover_environment 传给重启后的新进程：本次启动做深度自检（全量导入
+# 探测）并强制重装损坏包。读取后即清除，避免后续重启反复全量探测。
+_ENV_FORCE_REPAIR_ENV = "CILI_ENV_FORCE_REPAIR"
+
+# 启动关键路径必须可导入的发行版：这些包损坏会让 main.py 启动到一半
+# （import web.web_api / uvicorn）才抛 ModuleNotFoundError。每个启动都查，
+# 故只取服务自身上必需的少量包；全量依赖探测只在异常修复时做（较慢）。
+_STARTUP_CRITICAL_DISTS = ("fastapi", "uvicorn", "httpx", "pydantic")
+
 # Preset pip mirror sources: {name: url}
 _PIP_MIRRORS = {
     "pypi": "",  # Official PyPI (default, no -i flag)
@@ -826,8 +839,117 @@ def _find_broken_packages(pip_exe: str) -> list[str]:
     return broken
 
 
+_IMPORT_PROBE_MARKER = "CILI_IMPORT_PROBE "
+# 在 deps Python 子进程里真实 import 各发行版的顶层模块。顶层模块名通过
+# importlib.metadata 的顶层模块→发行版映射取得；映射不到时退回规范化发行名。
+_IMPORT_PROBE_SCRIPT = """
+import importlib
+import importlib.metadata as md
+import json
+
+required = __REQUIRED__
+
+
+def _norm(name):
+    return name.lower().replace("-", "_").replace(".", "_")
+
+
+module_owners = {}
+by_dist = {}
+try:
+    for module, dists in md.packages_distributions().items():
+        for dist in dists:
+            module_owners.setdefault(module, []).append(dist)
+            by_dist.setdefault(_norm(dist), []).append(module)
+except Exception:
+    module_owners = {}
+    by_dist = {}
+
+failures = []
+for dist in required:
+    modules = sorted(set(by_dist.get(_norm(dist), []))) or [dist.replace("-", "_")]
+    for module in modules:
+        try:
+            importlib.import_module(module)
+        except ModuleNotFoundError as exc:
+            missing = exc.name or ""
+            failures.append({
+                "dist": dist,
+                "module": module,
+                "error": f"{type(exc).__name__}: {exc}",
+                "missing_dist": (module_owners.get(missing) or [""])[0],
+            })
+        except Exception as exc:
+            failures.append({
+                "dist": dist,
+                "module": module,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+print(__MARKER__ + json.dumps(failures))
+"""
+
+
+def _requirement_dist_names(required: list[str]) -> list[str]:
+    """requirements 行 → 发行版名（去掉 extras、版本约束与环境标记）。"""
+    names = []
+    for spec in required:
+        name = re.split(r"[\[=<>!~;\s]", spec, maxsplit=1)[0].strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _find_broken_imports(dist_names: list[str]) -> list[dict]:
+    """导入探测：找出 dist-info 完好、但模块文件损坏/丢失的包。
+
+    ``_check_installed_packages`` 只看发行名，``_find_broken_packages`` 只看
+    元数据。包目录被删或二进制扩展损坏时两者都认为正常，直到 import 时才抛
+    ``ModuleNotFoundError`` / ``ImportError``——服务启动到一半直接异常退出。
+    这里在 deps Python 子进程里真实 import，把这类「装了但导入不了」查出来。
+
+    返回失败项列表（dist/module/error，ModuleNotFoundError 另带 missing_dist）；
+    探测进程自身失败时返回空列表，不阻断启动。
+    """
+    names = [n for n in dist_names if n]
+    if not names:
+        return []
+    script = (
+        _IMPORT_PROBE_SCRIPT
+        .replace("__REQUIRED__", json.dumps(names))
+        .replace("__MARKER__", json.dumps(_IMPORT_PROBE_MARKER))
+    )
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
+    # matplotlib 导入会写配置目录；固定到 deps 下，别碰用户目录
+    env.setdefault("MPLCONFIGDIR", os.path.join(_DEPS_PYTHON_DIR, "matplotlib"))
+    try:
+        result = subprocess.run(
+            [_get_deps_python(), "-c", script],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
+    except Exception as e:
+        print(f"[setup] Import probe failed (skipped): {e}")
+        return []
+    if result.returncode != 0:
+        stderr_lines = (result.stderr or "").strip().splitlines()
+        detail = stderr_lines[-1] if stderr_lines else f"exit {result.returncode}"
+        print(f"[setup] Import probe crashed (skipped): {detail[:200]}")
+        return []
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(_IMPORT_PROBE_MARKER):
+            try:
+                data = json.loads(line[len(_IMPORT_PROBE_MARKER):])
+            except json.JSONDecodeError as e:
+                print(f"[setup] Import probe result unreadable (skipped): {e}")
+                return []
+            return [item for item in data if isinstance(item, dict)]
+    print("[setup] Import probe returned no result (skipped)")
+    return []
+
+
 def _pip_install_one(
-    pip_exe: str, pkg: str, pip_mirrors: list[str], start_idx: int
+    pip_exe: str, pkg: str, pip_mirrors: list[str], start_idx: int,
+    extra_args: tuple[str, ...] = (),
 ) -> tuple[bool, int]:
     """装一个包，按 mirror 顺序失败转移。返回 (是否成功, 最终用的 mirror 下标)。"""
     idx = start_idx
@@ -838,6 +960,7 @@ def _pip_install_one(
         cmd = [pip_exe, "install", "--disable-pip-version-check"]
         if mirror:
             cmd += ["-i", mirror]
+        cmd += list(extra_args)
         cmd.append(pkg)
         try:
             # Pass environment with PYTHONNOUSERSITE to isolate from system Python
@@ -856,8 +979,28 @@ def _pip_install_one(
     return False, idx
 
 
-def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]:
+class _EnvironmentBrokenError(RuntimeError):
+    """managed Python 环境损坏到自动修复无效。
+
+    携带仍无法导入的包清单；由 ``main()`` 决定交给启动器重建还是提示人工处理。
+    """
+
+    def __init__(self, failures: list[dict]):
+        super().__init__("managed Python environment is broken")
+        self.failures = failures
+
+
+def _install_packages(
+    pip_mirrors: list[str] | None = None, deep: bool = False
+) -> tuple[bool, bool]:
     """Install only missing dependencies in the venv, with mirror failover.
+
+    Args:
+        deep: 启动异常后的修复模式。为 True 时对所有 requirements 发行版做
+            导入探测（较慢，约数秒），否则只探测启动关键路径上的少量包。
+
+    Raises:
+        _EnvironmentBrokenError: 启动关键包逐包强制重装后仍无法导入。
 
     Returns:
         (success, installed_new): whether installation succeeded, and whether new packages were installed
@@ -894,25 +1037,89 @@ def _install_packages(pip_mirrors: list[str] | None = None) -> tuple[bool, bool]
             missing.append(pkg)
 
     if not missing:
-        # 名字齐全 ≠ 装得好：查一遍依赖一致性，把「装了但缺传递依赖」的包重装修好
+        # 名字齐全 ≠ 装得好，两道检查：
+        # 1) pip check：依赖元数据不一致（缺传递依赖 / 版本冲突）
+        # 2) 导入探测：元数据完好但模块文件损坏/被删（pip check 看不出来）
+        current_mirror_idx = 0
+        repaired = False
+
         broken = _find_broken_packages(pip_exe)
-        if not broken:
-            print("[setup] All packages OK.")
+        if broken:
+            print(f"[setup] Detected {len(broken)} package(s) with broken dependencies: {', '.join(broken)}")
+            print("[setup] Repairing (reinstall with dependencies)...")
+            for name in broken:
+                ok, current_mirror_idx = _pip_install_one(
+                    pip_exe, name, pip_mirrors, current_mirror_idx
+                )
+                if not ok:
+                    print(f"[setup] Error: all mirrors failed for {name}")
+                    return False, False
+            repaired = True
+
+        probe_dists = _requirement_dist_names(required) if deep else list(_STARTUP_CRITICAL_DISTS)
+        broken_imports = _find_broken_imports(probe_dists)
+        remaining_imports: list[dict] = []
+        if broken_imports:
+            # 重装失败项自身；ModuleNotFoundError 还要修提供该缺失模块的发行版
+            # （如 pydantic 导入时发现 pydantic_core 的扩展损坏）
+            names: list[str] = []
+            for item in broken_imports:
+                for candidate in (item.get("dist"), item.get("missing_dist")):
+                    if candidate and candidate not in names:
+                        names.append(str(candidate))
+            detail = "; ".join(
+                f"{item.get('module')} ({item.get('dist')}: {item.get('error')})"
+                for item in broken_imports
+            )
+            print(f"[setup] Detected {len(names)} package(s) with broken imports: {', '.join(names)}")
+            print(f"[setup] Details: {detail}")
+            print("[setup] Repairing (force reinstall)...")
+            for name in names:
+                ok, current_mirror_idx = _pip_install_one(
+                    pip_exe, name, pip_mirrors, current_mirror_idx,
+                    # --no-cache-dir：pip 缓存里的 wheel 本身损坏时，普通重装只会
+                    # 原样再解压一份坏文件
+                    extra_args=("--force-reinstall", "--no-deps", "--no-cache-dir"),
+                )
+                if not ok:
+                    print(f"[setup] Error: all mirrors failed for {name}")
+                    return False, False
+            repaired = True
+            remaining_imports = _find_broken_imports(probe_dists)
+
+        if remaining_imports:
+            # 逐包重装仍导入失败：启动关键包坏掉意味着服务无法启动，报环境损坏
+            # 交由启动器重建；仅可选包失败则告警继续（可能是该环境下的正常限制）。
+            critical = {d.lower().replace("-", "_") for d in _STARTUP_CRITICAL_DISTS}
+            failing = {
+                str(item.get("dist") or "").lower().replace("-", "_")
+                for item in remaining_imports
+            }
+            detail = "; ".join(
+                f"{item.get('module')} ({item.get('dist')}: {item.get('error')})"
+                for item in remaining_imports
+            )
+            if failing & critical:
+                if not _running_in_deps:
+                    # 服务实际跑在当前解释器上（缺关键包时已在 _ensure_runtime
+                    # 切到 deps Python）：managed 工具环境损坏只影响 python
+                    # 工具，不应阻断服务启动
+                    print(f"[setup] Warning: managed Python env is broken; "
+                          f"the python tool may fail: {detail}")
+                    return True, False
+                # 运行在 deps Python 上：环境无法自愈，交启动器重建
+                raise _EnvironmentBrokenError(remaining_imports)
+            # 仅可选包仍失败：告警但不阻断启动，也不重启（避免修复循环）
+            print(f"[setup] Warning: imports still failing after reinstall: {detail}")
             return True, False
 
-        print(f"[setup] Detected {len(broken)} package(s) with broken dependencies: {', '.join(broken)}")
-        print("[setup] Repairing (reinstall with dependencies)...")
-        current_mirror_idx = 0
-        for name in broken:
-            ok, current_mirror_idx = _pip_install_one(
-                pip_exe, name, pip_mirrors, current_mirror_idx
-            )
-            if not ok:
-                print(f"[setup] Error: all mirrors failed for {name}")
-                return False, False
-        _save_pip_mirror(pip_mirrors[min(current_mirror_idx, len(pip_mirrors) - 1)])
-        print("[setup] Broken dependencies repaired.")
-        return True, True  # 装过东西 → 让调用方重启进程，确保干净解释器
+        if not missing:
+            if not repaired:
+                print("[setup] All packages OK.")
+                return True, False
+            _save_pip_mirror(pip_mirrors[min(current_mirror_idx, len(pip_mirrors) - 1)])
+            print("[setup] Broken packages repaired.")
+            return True, True  # 装过东西 → 让调用方重启进程，确保干净解释器
 
     print(f"[setup] Missing {len(missing)} package(s): {', '.join(missing)}")
     print("[setup] Installing...")
@@ -1395,6 +1602,105 @@ def _maybe_restart_after_install() -> None:
     os.execv(restart_exe, [restart_exe] + sys.argv)
 
 
+def _switch_to_deps_python_if_needed() -> None:
+    """当前解释器缺启动关键依赖时，切换到 deps Python 运行服务。
+
+    直接 `python main.py` 用系统解释器启动时，依赖可能只装在 data/deps/python
+    （``_install_packages`` 固定装到那里）。不提前切换的话，启动会走到
+    ``import web.web_api`` / ``uvicorn`` 才抛 ModuleNotFoundError 异常退出。
+    """
+    if _running_in_deps or not os.path.exists(_deps_python_exe):
+        return
+    try:
+        import fastapi  # noqa: F401
+        import httpx  # noqa: F401
+        import uvicorn  # noqa: F401
+    except Exception:
+        pass
+    else:
+        return
+    print(
+        f"[setup] Current interpreter lacks required packages; "
+        f"switching to deps Python: {_deps_python_exe}"
+    )
+    os.execv(_deps_python_exe, [_deps_python_exe] + sys.argv)
+
+
+def _is_environment_error(exc: BaseException) -> bool:
+    """判断启动异常是否由 Python 环境损坏引起（值得自动修复重试）。"""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ImportError):
+            return True
+        text = str(current).lower()
+        if "dll load failed" in text or "no module named" in text:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _recover_environment(exc: BaseException) -> None:
+    """启动中途因环境问题异常：带守卫地重启一次，由新进程完成修复。
+
+    不在当前进程里修复——此时可能已 import 过损坏的包，删除/覆盖被加载的
+    二进制扩展会失败（Windows 文件锁）。新进程还没有第三方 import，启动期
+    自检会重装损坏包；仍修不好则交启动器重建 deps Python。
+    """
+    print(
+        f"[setup] Startup failed with an environment error: "
+        f"{type(exc).__name__}: {exc}",
+        file=sys.stderr,
+    )
+    attempt = int(os.environ.get(_ENV_REPAIR_ENV, "0"))
+    if attempt >= _MAX_ENV_REPAIRS:
+        print(
+            "[setup] Error: environment repair was already attempted; "
+            f"check {_DEPS_PYTHON_DIR} manually.",
+            file=sys.stderr,
+        )
+        return
+    os.environ[_ENV_REPAIR_ENV] = str(attempt + 1)
+    os.environ[_ENV_FORCE_REPAIR_ENV] = "1"
+    # 当前解释器不是 deps Python 时切过去（依赖实际安装的位置）
+    exe = _deps_python_exe if os.path.exists(_deps_python_exe) else sys.executable
+    print(f"[setup] Restarting to repair the Python environment: {exe}")
+    os.execv(exe, [exe] + sys.argv)
+
+
+def _handle_broken_environment(exc: _EnvironmentBrokenError) -> None:
+    """managed Python 环境自动修复无效：交启动器重建，或给出人工修复指引。
+
+    删除/重装交给启动器（进程退出后执行，没有文件锁问题），等价于用户手工
+    删除 data/deps/python 后重启。直接 `python main.py` 时只打印指引。
+    """
+    print(
+        "[setup] Error: the managed Python environment is broken and "
+        "could not be repaired automatically.",
+        file=sys.stderr,
+    )
+    for item in exc.failures:
+        print(
+            f"[setup]   cannot import {item.get('module')} "
+            f"({item.get('dist')}): {item.get('error')}",
+            file=sys.stderr,
+        )
+    from core.restart import ENV_REBUILD_EXIT_CODE, is_launcher_managed
+    if is_launcher_managed():
+        print(
+            f"[setup] Handing off to the launcher to rebuild {_DEPS_PYTHON_DIR}...",
+            file=sys.stderr,
+        )
+        sys.exit(ENV_REBUILD_EXIT_CODE)
+    print(
+        f"[setup] Delete {_DEPS_PYTHON_DIR} and restart; "
+        "start.cmd/start.ps1 reinstalls it automatically.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _ensure_runtime() -> None:
     """阶段二：Git Bash、deps Python、依赖安装（可能需要重启）、字体与浏览器检测。"""
     # Check Git Bash in deps
@@ -1411,9 +1717,14 @@ def _ensure_runtime() -> None:
         print("[setup] Error: deps Python setup failed", file=sys.stderr)
         sys.exit(1)
 
+    # 系统解释器直接启动且缺依赖时，先切到 deps Python，避免服务启动到一半崩溃
+    _switch_to_deps_python_if_needed()
+
     # Ensure all required packages are installed
+    # 启动异常恢复：新进程读一次深修复标记就清掉，避免后续重启反复全量探测
+    force_repair = os.environ.pop(_ENV_FORCE_REPAIR_ENV, "") == "1"
     pip_mirrors = _get_pip_mirrors_ordered()
-    pkg_success, pkg_installed = _install_packages(pip_mirrors)
+    pkg_success, pkg_installed = _install_packages(pip_mirrors, deep=force_repair)
     if not pkg_success:
         print("[setup] Error: failed to install required packages", file=sys.stderr)
         sys.exit(1)
@@ -1684,9 +1995,19 @@ def main() -> None:
     if args.apply_upgrade_only:
         _run_upgrade_apply_mode()
         return
-    _prepare_environment()
-    _ensure_runtime()
-    _start_services(args)
+    try:
+        _prepare_environment()
+        _ensure_runtime()
+        _start_services(args)
+    except _EnvironmentBrokenError as exc:
+        # 自检确认关键包不可导入、逐包重装无效：交启动器重建或提示人工处理
+        _handle_broken_environment(exc)
+    except Exception as exc:
+        # 启动中途因环境损坏异常（如 ModuleNotFoundError / DLL 加载失败）：
+        # 重启一次由新进程做深度自检与修复；非环境异常原样抛出
+        if _is_environment_error(exc):
+            _recover_environment(exc)
+        raise
 
 
 if __name__ == "__main__":

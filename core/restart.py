@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 LAUNCHER_ENV = "CILI_LAUNCHER"
 LAUNCH_RESTART_ENV = "CILI_LAUNCH_RESTART"
 RESTART_EXIT_CODE = 42
+# 环境重建退出码：managed Python 环境损坏且自动修复无效时以此退出；
+# start.ps1 删除 data/deps/python 重装后重启（与 42 的升级重启区分）。
+ENV_REBUILD_EXIT_CODE = 43
 
 # 本次启动应用升级包是否失败（失败时不安排自动重启，避免重启循环）
 _apply_failed_this_boot = False

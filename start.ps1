@@ -556,11 +556,15 @@ if ($HostName -ne "127.0.0.1") {
 # Protocol: a service restart request (upgrade package downloaded) exits
 # with code 42; the loop applies the package in a separate process
 # (main.py --apply-upgrade-only) and restarts; direct "python main.py" has no such loop.
+# Exit code 43 means the managed Python environment is broken beyond auto-repair:
+# delete data/deps/python and reinstall it once, then restart.
 $mainScript = Join-Path $ProjectRoot "main.py"
 $upgradeZip = Join-Path $ProjectRoot "cili-update.zip"  # Must match UPGRADE_ZIP_NAME in core/updater.py
 $env:CILI_LAUNCHER = "ps1"
 $restartCount = 0
 $maxRestarts = 5
+$envRebuildCount = 0
+$maxEnvRebuilds = 1
 for ($i = 0; ; $i++) {
     # Apply a pending upgrade package in a separate short-lived process with no business imports,
     # so the service never runs mixed old/new code. Run only when the package exists; on first
@@ -590,6 +594,27 @@ for ($i = 0; ; $i++) {
     } catch {
         Write-Status "Error: Failed to start Cili Agent" "Red"
         exit 1
+    }
+    # Broken managed Python environment (main.py could not repair it): the process has
+    # exited, so delete data/deps/python without file-lock issues and reinstall it.
+    if ($LASTEXITCODE -eq 43) {
+        $envRebuildCount++
+        if ($envRebuildCount -gt $maxEnvRebuilds) {
+            Write-Status "Python environment is still broken after rebuild, stopping" "Red"
+            exit 1
+        }
+        Write-Status "Python environment is broken; reinstalling $PythonDir ..." "Yellow"
+        try {
+            Remove-Item -Path $PythonDir -Recurse -Force -ErrorAction Stop
+            $pythonPath = Install-Python
+        } catch {
+            Write-Status "Error: Python environment rebuild failed: $_" "Red"
+            exit 1
+        }
+        # The rebuilt environment is a fresh launch: let the next iteration open the browser
+        $i = -1
+        Remove-Item Env:CILI_LAUNCH_RESTART -ErrorAction SilentlyContinue
+        continue
     }
     if ($LASTEXITCODE -ne 42) { break }
     # Only count closely spaced restarts toward the limit; an occasional upgrade of a long-running service does not accumulate
