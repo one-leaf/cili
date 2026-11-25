@@ -92,7 +92,7 @@ python main.py --port 8080 --host 0.0.0.0
 
 ### 启动时自动升级（默认开启）
 
-服务启动后，后台线程自动检查 GitHub 最新版本（版本号取自 `web/static/version.json`），发现新版本即自动下载代码包并覆盖本地代码，保留 `data/`、`workspace/`、`.git` 目录。下载优先 GitHub 直连，失败自动回退国内镜像。如需关闭，在 `setting.json` 中设置 `system.auto_update=false`。
+服务启动后，后台线程自动检查 GitHub 最新版本（版本号取自 `web/static/version.json`），发现新版本即自动下载代码包并覆盖本地代码，保留 `data/`、`workspaces/`（及旧 `workspace/`）、`.git` 目录。下载优先 GitHub 直连，失败自动回退国内镜像。如需关闭，在 `setting.json` 中设置 `system.auto_update=false`。
 
 ### 命令行升级
 
@@ -106,7 +106,7 @@ scripts\upgrade.cmd
 
 升级脚本会自动：
 - 从 GitHub 或镜像下载最新代码 ZIP（默认 GitHub 直连，自动回退 ghfast.top / ghproxy.net / gh-proxy.com 国内镜像）
-- 解压并覆盖本地文件（保留 `data/`、`workspace/` 目录）
+- 解压并覆盖本地文件（保留 `data/`、`workspaces/`、旧 `workspace/` 目录）
 - 新增/更新的文件会用 `[+]` / `[~]` 标记
 - 升级完成后重启服务即可
 
@@ -165,6 +165,7 @@ BrowserService (模块级单例)
 - 消息三级压缩：Microcompact → Full Compact → 紧急 Body Size
 - Worker/Lite 执行日志实时保存，前端懒加载
 - 支持多工作区隔离（sessions、cwd、配置）
+- 工作区目录可整体或单独迁移到其他盘（工作区设置 → 数据迁移）：同卷秒级、跨卷复制校验，中断可恢复；迁移前自动备份 `setting.json` / `workspaces.json`
 
 ### 长期记忆
 
@@ -300,7 +301,7 @@ cili/
 │       └── style.css           # 样式
 ├── docs/                       # 设计文档 + 设置说明 + 使用指南
 ├── test/                       # 测试（52 文件）
-└── workspace/                  # 默认工作目录
+└── workspaces/                 # 工作区集合（default/ 为默认工作区；旧 workspace/ 启动时自动迁入）
 ```
 
 ## 测试

@@ -125,14 +125,15 @@ def _move_into(child: Path, dest: Path, ts: str, merged_ok: list[str]) -> Path |
     return target
 
 
-def migrate_default_workspace() -> str | None:
+def migrate_default_workspace(*, backup: bool = True) -> str | None:
     """执行旧布局迁移，返回迁移后的 Default 工作区 uuid；未触发迁移返回 None。
 
     见模块 docstring 的触发条件与移动规则。任何移动失败都会尽力回滚并保持
-    索引指向旧根，保证旧路径仍可启动。
+    索引指向旧根，保证旧路径仍可启动。``backup=True`` 时在搬移前备份
+    setting.json / workspaces.json（批量布局迁移已统一备份时传 False）。
     """
     with _process_lock:
-        ws_root = Path(config_mod.PROJECT_ROOT) / "workspace"
+        ws_root = Path(config_mod.workspaces_root())
         default_dir = ws_root / "default"
         lock_path = Path(config_mod.DATA_DIR) / "workspace_migration.lock"
 
@@ -146,6 +147,14 @@ def migrate_default_workspace() -> str | None:
             legacy = _find_entry_by_directory(entries, ws_root)
             if not legacy:
                 return None
+            if backup:
+                try:
+                    from core.workspace_relocation import backup_migration_config
+
+                    backup_migration_config("workspace-default")
+                except Exception as e:  # noqa: BLE001 —— 备份失败时不搬数据
+                    logger.error(f"[migration] 迁移前备份失败，中止: {e}")
+                    return None
             return _do_migrate(ws_root, default_dir, entries, legacy)
         finally:
             try:

@@ -21,6 +21,7 @@ from typing import Any
 
 from core.config import DATA_DIR, PROJECT_ROOT
 from core.fs_utils import atomic_write_json
+from core.paths import resolve_storage_path, to_storage_path
 
 _DEFAULT_TIMEOUT = 120
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
@@ -51,9 +52,22 @@ def _kind_for_ext(ext: str) -> str | None:
     return None
 
 
+def _source_key(source: str | Path) -> str:
+    """源路径的持久化键：项目内相对、项目外绝对（cili 整体搬动后缓存仍可命中）。"""
+    try:
+        path = resolve_storage_path(str(source))
+    except ValueError:
+        path = Path(str(source))
+    real = os.path.realpath(str(path))
+    try:
+        return to_storage_path(real)
+    except ValueError:
+        return real
+
+
 def _cache_key(source: str) -> tuple[str, os.stat_result]:
     stat = os.stat(source)
-    raw = f"{os.path.realpath(source)}\0{stat.st_mtime_ns}\0{stat.st_size}".encode("utf-8", "replace")
+    raw = f"{_source_key(source)}\0{stat.st_mtime_ns}\0{stat.st_size}".encode("utf-8", "replace")
     return hashlib.md5(raw).hexdigest(), stat
 
 
@@ -98,7 +112,7 @@ def _read_meta(meta_path: Path, pdf_path: Path, stat: os.stat_result) -> dict[st
     return meta
 
 
-def _remove_superseded(cache_dir: Path, source_real: str, keep_key: str) -> int:
+def _remove_superseded(cache_dir: Path, source_key: str, keep_key: str) -> int:
     """删除同一源文件的过期缓存版本（源文件变化后旧 key 的 pdf/meta）。"""
     removed = 0
     for meta_path in cache_dir.glob("*.json"):
@@ -108,7 +122,8 @@ def _remove_superseded(cache_dir: Path, source_real: str, keep_key: str) -> int:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if meta.get("source") == source_real:
+        stored = str(meta.get("source") or "")
+        if stored and _source_key(stored) == source_key:
             meta_path.unlink(missing_ok=True)
             meta_path.with_suffix(".pdf").unlink(missing_ok=True)
             removed += 1
@@ -264,6 +279,7 @@ def ensure_pdf(
     if not os.path.isfile(source):
         raise FileNotFoundError(source)
 
+    source_key = _source_key(source)
     key, stat = _cache_key(source)
     cache_dir = cache_dir if cache_dir is not None else _get_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -281,14 +297,14 @@ def ensure_pdf(
             engine = _run_worker(source, str(tmp), kind, tmp.with_suffix(".officepid"), timeout)
             os.replace(tmp, pdf_path)
             atomic_write_json(meta_path, {
-                "source": os.path.realpath(source),
+                "source": source_key,
                 "mtime_ns": stat.st_mtime_ns,
                 "size": stat.st_size,
                 "engine": engine,
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             })
             # 源文件变化会换 key：清掉同源旧版本，避免缓存目录膨胀
-            _remove_superseded(cache_dir, os.path.realpath(source), key)
+            _remove_superseded(cache_dir, source_key, key)
         finally:
             tmp.unlink(missing_ok=True)
             tmp.with_suffix(".officepid").unlink(missing_ok=True)

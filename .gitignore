@@ -46,6 +46,7 @@ CLAUDE.md
 
 # Cili Agent 运行时数据
 workspace/
+workspaces/
 data/*
 
 # 升级包（下载到项目根，启动时应用；.downloading 为下载中断残留）

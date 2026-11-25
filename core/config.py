@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.config_migrations import migrate_legacy_config
 from core.fs_utils import atomic_write_json
+from core.paths import resolve_storage_path
 from core.permission_settings import PermissionConfig
 from core.time_utils import now_str
 
@@ -384,6 +385,31 @@ class ImageConfig:
 
 
 @dataclass
+class WorkspacesConfig:
+    """工作区存储配置（setting.json -> workspaces）。
+
+    ``root`` 是默认父目录，由布局迁移写入；项目内路径存相对值，项目外存绝对值。
+    单个工作区的实际位置仍以 ``workspaces.json -> directory`` 为准。
+    """
+    root: str = ""  # 空 = 由 workspaces_root() 按旧布局/默认值解析
+    layout_migrated_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WorkspacesConfig":
+        data = data if isinstance(data, dict) else {}
+        return cls(
+            root=str(data.get("root") or ""),
+            layout_migrated_at=str(data.get("layout_migrated_at") or ""),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "root": self.root,
+            "layout_migrated_at": self.layout_migrated_at,
+        }
+
+
+@dataclass
 class Config:
     """Global configuration.
 
@@ -395,6 +421,7 @@ class Config:
     system: SystemConfig = field(default_factory=SystemConfig)
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
     images: ImageConfig = field(default_factory=ImageConfig)
+    workspaces: WorkspacesConfig = field(default_factory=WorkspacesConfig)
     mcp_servers: dict[str, MCPConfig] = field(default_factory=dict)
 
     # ── 引用解析 ──
@@ -524,6 +551,9 @@ class Config:
         # ── Images（顶层 images 字段） ──
         config.images = ImageConfig.from_dict(global_config.get("images") or {})
 
+        # ── Workspaces（顶层 workspaces 字段） ──
+        config.workspaces = WorkspacesConfig.from_dict(global_config.get("workspaces") or {})
+
         # ── MCP servers ──
         config.mcp_servers = {
             name: MCPConfig.from_dict(cfg)
@@ -577,6 +607,7 @@ class Config:
             "system": self.system.to_dict(),
             "permissions": self.permissions.to_dict(),
             "images": self.images.to_dict(),
+            "workspaces": self.workspaces.to_dict(),
         }
         if self.mcp_servers:
             result["mcp_servers"] = {
@@ -602,6 +633,63 @@ WORKSPACES_JSON = DATA_DIR / "workspaces.json"
 # System workspace data dir (directory = data/, data dir = data/.cili/)
 SYSTEM_DATA_DIR = DATA_ROOT / ".cili"
 
+# 工作区默认父目录缓存（签名 = setting.json 文件 + 项目根 + env 覆盖）
+_WORKSPACES_ROOT_CACHE: tuple[tuple, Path] | None = None
+
+
+def reset_workspaces_root_cache() -> None:
+    """清空默认父目录缓存（保存配置、布局迁移、测试隔离时调用）。"""
+    global _WORKSPACES_ROOT_CACHE
+    _WORKSPACES_ROOT_CACHE = None
+
+
+def _workspaces_root_sig() -> tuple:
+    env = os.environ.get("CILI_WORKSPACES_ROOT", "").strip()
+    try:
+        st = GLOBAL_CONFIG_PATH.stat()
+        file_sig = (str(GLOBAL_CONFIG_PATH), st.st_mtime_ns, st.st_size)
+    except OSError:
+        file_sig = (str(GLOBAL_CONFIG_PATH), None, None)
+    return (file_sig, str(PROJECT_ROOT), env)
+
+
+def _default_workspaces_root() -> Path:
+    """无配置时的默认父目录：旧安装先用旧布局，全新安装用 workspaces/。"""
+    legacy = PROJECT_ROOT / "workspace"
+    return legacy if legacy.exists() else PROJECT_ROOT / "workspaces"
+
+
+def workspaces_root() -> Path:
+    """工作区默认父目录：env 覆盖 > setting.json > 旧布局 > 新默认。
+
+    - env ``CILI_WORKSPACES_ROOT``：测试隔离/特殊部署用；
+    - ``setting.json -> workspaces.root``：项目内为相对路径，项目外为绝对路径；
+    - 旧安装尚未迁移时回退 ``PROJECT_ROOT/workspace``；
+    - 全新安装使用 ``PROJECT_ROOT/workspaces``。
+    """
+    global _WORKSPACES_ROOT_CACHE
+    sig = _workspaces_root_sig()
+    cached = _WORKSPACES_ROOT_CACHE
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
+    env = sig[2]
+    if env:
+        root = Path(env).expanduser()
+    else:
+        cfg = load_global_config().get("workspaces") or {}
+        value = str(cfg.get("root") or "").strip()
+        if value:
+            try:
+                root = resolve_storage_path(value, root=PROJECT_ROOT)
+            except ValueError as e:
+                logger.warning(f"[config] workspaces.root 非法，回退默认: {e}")
+                root = _default_workspaces_root()
+        else:
+            root = _default_workspaces_root()
+    _WORKSPACES_ROOT_CACHE = (sig, root)
+    return root
+
 
 def validate_workspace_name(name: str) -> str | None:
     """校验工作区显示名（实现见 core.workspaces）。"""
@@ -614,35 +702,35 @@ def load_workspaces_index() -> list[dict]:
     """读取 data/cili/workspaces.json（实现与缓存见 core.workspaces）。"""
     from core.workspaces import load_index
 
-    return load_index(WORKSPACES_JSON)
+    return load_index(WORKSPACES_JSON, root=PROJECT_ROOT)
 
 
 def save_workspaces_index(workspaces: list[dict]) -> bool:
     """写入索引（实现在 core.workspaces）。"""
     from core.workspaces import save_index
 
-    return save_index(WORKSPACES_JSON, workspaces)
+    return save_index(WORKSPACES_JSON, workspaces, root=PROJECT_ROOT)
 
 
 def find_workspace_entry(workspace_uuid: str) -> dict | None:
     """按 uuid 查找工作区条目。"""
     from core.workspaces import find_entry
 
-    return find_entry(WORKSPACES_JSON, workspace_uuid)
+    return find_entry(WORKSPACES_JSON, workspace_uuid, root=PROJECT_ROOT)
 
 
 def upsert_workspace_entry(entry: dict) -> bool:
     """新增或更新工作区条目（按 uuid）。"""
     from core.workspaces import upsert_entry
 
-    return upsert_entry(WORKSPACES_JSON, entry)
+    return upsert_entry(WORKSPACES_JSON, entry, root=PROJECT_ROOT)
 
 
 def remove_workspace_entry(workspace_uuid: str) -> bool:
     """删除工作区条目（幂等）。"""
     from core.workspaces import remove_entry
 
-    return remove_entry(WORKSPACES_JSON, workspace_uuid)
+    return remove_entry(WORKSPACES_JSON, workspace_uuid, root=PROJECT_ROOT)
 
 
 def get_default_workspace_uuid() -> str:
@@ -656,28 +744,28 @@ def get_default_workspace_uuid() -> str:
 def get_workspace_data_dir(workspace_uuid: str) -> Path:
     """Get the .cili data directory for a workspace: {directory}/.cili/.
 
-    - 空 uuid：PROJECT_ROOT/workspace/default/.cili/
+    - 空 uuid：<默认父目录>/default/.cili/
     - system：data/.cili/（directory = data/，找不到条目时兜底）
     - 其他：从 workspaces.json 读 directory，返回 {directory}/.cili/
     """
     if not workspace_uuid:
-        return PROJECT_ROOT / "workspace" / "default" / ".cili"
+        return workspaces_root() / "default" / ".cili"
     entry = find_workspace_entry(workspace_uuid)
     if entry and entry.get("directory"):
         return Path(entry["directory"]) / ".cili"
     if workspace_uuid == SYSTEM_WORKSPACE_UUID:
         return SYSTEM_DATA_DIR
     # 未知 uuid 兜底到「Default 工作区」：优先取索引里 Default 的目录，没有才退回
-    # 硬编码路径。必须查索引而不是直接用 PROJECT_ROOT/workspace——session_search、
-    # memory 等工具是 from core.config import 本函数的直接导入方，测试环境靠重定向
-    # 后的索引把它们兜到 .test，硬编码会让隔离失效（测试数据写进真实工作区）。
+    # 默认父目录。必须查索引而不是直接用硬编码路径——session_search、memory 等
+    # 工具是 from core.config import 本函数的直接导入方，测试环境靠重定向后的
+    # 索引/环境变量把它们兜到 .test，硬编码会让隔离失效（测试数据写进真实工作区）。
     for entry in load_workspaces_index():
         if entry.get("workspace_name") in ("Default", "default") and entry.get("directory"):
             return Path(entry["directory"]) / ".cili"
     logger.warning(
         f"[config] 未知 workspace_uuid={workspace_uuid!r}，回退到默认工作区数据目录"
     )
-    return PROJECT_ROOT / "workspace" / "default" / ".cili"
+    return workspaces_root() / "default" / ".cili"
 
 
 def get_system_workspace_data_dir() -> Path:
@@ -777,6 +865,7 @@ def save_global_config(config: dict) -> bool:
     """Save global model configuration to data/cili/setting.json."""
     try:
         atomic_write_json(GLOBAL_CONFIG_PATH, config)
+        reset_workspaces_root_cache()
         return True
     except OSError as e:
         logger.warning(f"Failed to save {GLOBAL_CONFIG_PATH}: {e}")
@@ -862,14 +951,16 @@ def ensure_default_workspace() -> str | None:
                 return uuid
 
         workspace_uuid = secrets.token_hex(4)
-        ws_data_dir = get_workspace_data_dir(workspace_uuid)
+        default_dir = workspaces_root() / "default"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        ws_data_dir = default_dir / ".cili"
         ws_data_dir.mkdir(parents=True, exist_ok=True)
         (ws_data_dir / "sessions").mkdir(exist_ok=True)
 
         now = now_str()
         save_workspace_meta(workspace_uuid, {
             "workspace_name": "Default",
-            "directory": str(PROJECT_ROOT / "workspace" / "default"),
+            "directory": str(default_dir),
             "created_at": now,
             "updated_at": now,
             # 新建默认开启版本管理与记忆

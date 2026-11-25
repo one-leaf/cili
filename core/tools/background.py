@@ -135,6 +135,19 @@ class BackgroundTaskManager:
         return tasks
 
     @classmethod
+    def workspace_tasks(cls, workspace_uuid: str, *,
+                        active_only: bool = True) -> list[BackgroundTask]:
+        """按工作区过滤后台任务（工作区数据迁移的空闲判定用）。"""
+        with cls._lock:
+            tasks = [
+                task for task in cls._tasks.values()
+                if task.workspace_uuid == workspace_uuid
+            ]
+        if active_only:
+            tasks = [task for task in tasks if cls.is_active(task)]
+        return tasks
+
+    @classmethod
     def session_snapshot(cls, workspace_uuid: str, session_id: str) -> dict[str, Any]:
         """会话后台任务快照：计数 + 活跃项。"""
         tasks = cls.session_tasks(workspace_uuid, session_id, active_only=True)

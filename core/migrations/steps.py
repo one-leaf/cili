@@ -6,9 +6,65 @@ import json
 import logging
 from pathlib import Path
 
-from core.fs_utils import atomic_write_text
+from core.fs_utils import atomic_write_json, atomic_write_text
+from core.paths import to_storage_path
 
 logger = logging.getLogger(__name__)
+
+
+def migrate_workspace_paths_relative(workspaces_json: Path,
+                                     global_config_path: Path) -> bool:
+    """把项目内的绝对工作区路径改写为相对路径（幂等）。
+
+    - ``workspaces.json`` 每个 ``directory``：位于项目根内 → 相对；否则保持绝对；
+    - ``setting.json -> workspaces.root``：同样处理。
+
+    任一文件读不出（非“不存在”）抛 ``RuntimeError``，由 run_pending 下次重试。
+    返回 True 表示至少一个文件存在并已处理（无论是否有改动）。
+    """
+    found = False
+
+    workspaces_path = Path(workspaces_json)
+    if workspaces_path.is_file():
+        found = True
+        try:
+            entries = json.loads(workspaces_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"无法读取 {workspaces_path}: {e}") from e
+        if isinstance(entries, list):
+            changed = False
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                directory = entry.get("directory")
+                if not isinstance(directory, str) or not directory:
+                    continue
+                encoded = to_storage_path(directory)
+                if encoded != directory:
+                    entry["directory"] = encoded
+                    changed = True
+            if changed:
+                atomic_write_json(workspaces_path, entries)
+
+    config_path = Path(global_config_path)
+    if config_path.is_file():
+        found = True
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"无法读取 {config_path}: {e}") from e
+        if isinstance(config, dict):
+            section = config.get("workspaces")
+            if isinstance(section, dict):
+                root = section.get("root")
+                if isinstance(root, str) and root:
+                    encoded = to_storage_path(root)
+                    if encoded != root:
+                        section["root"] = encoded
+                        atomic_write_json(config_path, config)
+
+    return found
+
 
 def migrate_placeholder_meta(workspaces_json: Path, get_data_dir) -> int:
     """会话占位标记 ``completed`` → ``ask_user_completed``（旧会话一次性重写）。

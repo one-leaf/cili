@@ -1039,6 +1039,7 @@
             </div>
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="ws-basic" onclick="switchWorkspaceSettingsTab('ws-basic')">基本设置</button>
+                <button class="settings-tab" data-tab="ws-migration" onclick="switchWorkspaceSettingsTab('ws-migration')">数据迁移</button>
                 <button class="settings-tab" data-tab="ws-instructions" onclick="switchWorkspaceSettingsTab('ws-instructions')">项目提示词</button>
                 <button class="settings-tab" data-tab="ws-git" onclick="switchWorkspaceSettingsTab('ws-git')">版本管理</button>
                 <button class="settings-tab" data-tab="ws-textbooks" onclick="switchWorkspaceSettingsTab('ws-textbooks')">教材下载</button>
@@ -1064,11 +1065,8 @@
                             <div class="setting-row">
                                 <label for="ws-setting-directory">工作目录</label>
                                 <div class="control">
-                                    <div class="inline">
-                                        <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project">
-                                        <button type="button" id="ws-browse-dir-btn" class="btn-secondary">浏览…</button>
-                                    </div>
-                                    <div class="hint">Agent 在此目录下执行操作</div>
+                                    <input type="text" id="ws-setting-directory" placeholder="例如: /path/to/project" readonly>
+                                    <div class="hint">Agent 在此目录下执行操作；移动目录请使用「数据迁移」页签</div>
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -1080,6 +1078,48 @@
                         </div>
                     </div>
                 </div>
+                <!-- 数据迁移 Tab -->
+                <div class="tab-content" id="tab-ws-migration">
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>数据迁移</strong> — 把当前工作区目录搬到其他盘或目录。迁移期间该工作区会短暂冻结，其他工作区不受影响。</div>
+                        <div class="settings-card">
+                            <div class="setting-row">
+                                <label>当前位置</label>
+                                <div class="control">
+                                    <span id="ws-migration-current" class="settings-status"></span>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="ws-migration-target">迁移到</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <input type="text" id="ws-migration-target" placeholder="例如: D:\cili-workspaces\我的项目">
+                                        <button type="button" id="ws-migration-browse-btn" class="btn-secondary">浏览…</button>
+                                    </div>
+                                    <div class="hint">完整目标路径，可同时修改目录名；目标必须不存在。</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>预检</label>
+                                <div class="control">
+                                    <div id="ws-migration-preflight" class="settings-status"></div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>操作</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <button type="button" id="ws-migration-preflight-btn" class="btn-secondary">预检</button>
+                                        <button type="button" id="ws-migration-start-btn" class="btn-primary">开始迁移</button>
+                                        <button type="button" id="ws-migration-cancel-btn" class="btn-secondary" style="display:none;">取消</button>
+                                    </div>
+                                    <div id="ws-migration-status" class="settings-status"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 项目提示词 Tab -->
                 <div class="tab-content" id="tab-ws-instructions">
                     <div class="settings-pane instructions-pane">

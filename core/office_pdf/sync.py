@@ -12,9 +12,11 @@ from core.office_pdf.cache import (
     _cache_key,
     _prune_cache,
     _read_meta,
+    _source_key,
     ensure_pdf,
     workspace_cache_dir,
 )
+from core.paths import resolve_storage_path
 
 _SKIP_DIR_NAMES = {".cili", ".git", "node_modules", "__pycache__", ".svn", ".idea", ".vscode"}
 
@@ -51,7 +53,7 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
 
     cache_dir = workspace_cache_dir(workspace_uuid)
     docs = sorted(_iter_office_docs(root))
-    valid_sources = {os.path.realpath(str(d)) for d in docs}
+    valid_sources = {_source_key(d) for d in docs}
 
     # 过期清理：meta 指向的源已不存在，或 meta 损坏
     removed = 0
@@ -60,7 +62,14 @@ def sync_workspace_pdf_cache(workspace_uuid: str, *, limit: int = 100,
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             source = str(meta.get("source", ""))
             # 源在遍历范围内，或源仍是工作区外/跳过目录中的有效文件 → 保留
-            source_ok = source in valid_sources or (bool(source) and os.path.exists(source))
+            if not source:
+                source_ok = False
+            else:
+                try:
+                    source_exists = os.path.exists(resolve_storage_path(source))
+                except ValueError:
+                    source_exists = False
+                source_ok = _source_key(source) in valid_sources or source_exists
         except Exception:
             source_ok = False
         if not source_ok:

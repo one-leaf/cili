@@ -78,7 +78,30 @@ VERSION_URLS = [
 ]
 
 # 升级时排除的顶层目录（用户数据与版本控制目录不覆盖）
-_EXCLUDE_DIRS = {"data", "workspace", ".git"}
+_EXCLUDE_DIRS = {"data", "workspace", "workspaces", ".git"}
+
+
+def _current_exclude_dirs() -> set[str]:
+    """当前升级排除名单：静态名单 + 配置的工作区根（仅当它是项目根的直接子目录）。"""
+    dirs = set(_EXCLUDE_DIRS)
+    try:
+        from core.config import PROJECT_ROOT, load_workspaces_index, workspaces_root
+
+        project = Path(PROJECT_ROOT).resolve()
+        root = Path(workspaces_root())
+        if root.parent.resolve() == project:
+            dirs.add(root.name)
+        # 单个工作区也可能落在项目根下的自定义顶层目录
+        for entry in load_workspaces_index():
+            directory = str(entry.get("directory") or "")
+            if not directory:
+                continue
+            path = Path(directory)
+            if path.parent.resolve() == project:
+                dirs.add(path.name)
+    except Exception:  # noqa: BLE001 —— 排除名单计算失败不应阻断升级
+        pass
+    return dirs
 
 # GitHub 仓库归档解压出的根目录前缀（{repo}-{branch}，one-leaf/cili@main → cili-main）
 _ARCHIVE_ROOT_PREFIX = "cili-main"
@@ -394,18 +417,19 @@ def apply_zip(zip_path: str) -> dict:
                 return {"success": False, "error": "解压失败或解压目录未找到"}
 
             # 覆盖前备份当前代码（data/workspace/.git 不受升级影响，无需备份）
+            exclude_dirs = _current_exclude_dirs()
             try:
                 os.makedirs(backup_dir, exist_ok=True)
-                _copy_tree(str(PROJECT_ROOT), backup_dir, _EXCLUDE_DIRS)
+                _copy_tree(str(PROJECT_ROOT), backup_dir, exclude_dirs)
             except Exception as e:
                 return {"success": False, "error": f"备份当前代码失败：{str(e)}"}
 
             try:
-                _copy_tree(extracted_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS, changes)
-                _prune_stale_files(str(PROJECT_ROOT), extracted_dir, _EXCLUDE_DIRS,
+                _copy_tree(extracted_dir, str(PROJECT_ROOT), exclude_dirs, changes)
+                _prune_stale_files(str(PROJECT_ROOT), extracted_dir, exclude_dirs,
                                    changes["deleted"])
             except Exception as e:
-                rollback_error = _restore_tree(backup_dir, str(PROJECT_ROOT), _EXCLUDE_DIRS)
+                rollback_error = _restore_tree(backup_dir, str(PROJECT_ROOT), exclude_dirs)
                 if rollback_error:
                     return {"success": False, "error": f"更新文件失败：{e}；回滚也失败：{rollback_error}"}
                 return {"success": False, "error": f"更新文件失败，已回滚到升级前版本：{str(e)}"}

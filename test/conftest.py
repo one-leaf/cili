@@ -43,6 +43,14 @@ def _isolate_workspaces_index(_test_workspace_dir):
     import core.config as config_mod
     original = config_mod.WORKSPACES_JSON
     test_dir = str(_test_workspace_dir)
+    original_root_env = os.environ.get("CILI_WORKSPACES_ROOT")
+    os.environ["CILI_WORKSPACES_ROOT"] = test_dir
+    config_mod.reset_workspaces_root_cache()
+
+    import core.workspace_wizard as wizard_mod
+    original_parent = wizard_mod.WORKSPACE_PARENT
+    wizard_mod.WORKSPACE_PARENT = Path(test_dir)
+
     tmp_index = Path(test_dir) / ".test_workspaces.json"
     if os.path.exists(tmp_index):
         os.unlink(tmp_index)
@@ -74,7 +82,10 @@ def _isolate_workspaces_index(_test_workspace_dir):
 
     def _safe_get_workspace_data_dir(workspace_uuid: str) -> Path:
         result = _original_get_workspace_data_dir(workspace_uuid)
-        real_default = config_mod.PROJECT_ROOT / "workspace" / "default" / ".cili"
+        # 已登记的工作区按索引解析，不再做兜底改写（测试自己可能临时改索引）
+        if config_mod.find_workspace_entry(workspace_uuid):
+            return result
+        real_default = config_mod.workspaces_root() / "default" / ".cili"
         if result == real_default:
             return Path(test_dir) / ".cili"
         return result
@@ -82,7 +93,13 @@ def _isolate_workspaces_index(_test_workspace_dir):
     config_mod.get_workspace_data_dir = _safe_get_workspace_data_dir
     yield
     config_mod.get_workspace_data_dir = _original_get_workspace_data_dir
+    wizard_mod.WORKSPACE_PARENT = original_parent
     config_mod.WORKSPACES_JSON = original
+    if original_root_env is None:
+        os.environ.pop("CILI_WORKSPACES_ROOT", None)
+    else:
+        os.environ["CILI_WORKSPACES_ROOT"] = original_root_env
+    config_mod.reset_workspaces_root_cache()
     if os.path.exists(tmp_index):
         os.unlink(tmp_index)
 

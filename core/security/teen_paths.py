@@ -17,7 +17,7 @@ import logging
 import os
 from pathlib import Path
 
-from core.config import DATA_DIR, PROJECT_ROOT, SYSTEM_DATA_DIR, load_workspaces_index
+from core.config import DATA_DIR, SYSTEM_DATA_DIR, load_workspaces_index, workspaces_root
 from core.fs_utils import is_path_within, path_key
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def _norm(path: str | Path) -> str:
 def protected_roots() -> list[str]:
     """当前受保护根目录清单（含全部工作区的 .cili 数据目录）。"""
     roots = [_norm(DATA_DIR), _norm(SYSTEM_DATA_DIR),
-             _norm(PROJECT_ROOT / "workspace" / "default" / ".cili")]
+             _norm(workspaces_root() / "default" / ".cili")]
     seen = set(roots)
     try:
         entries = load_workspaces_index()

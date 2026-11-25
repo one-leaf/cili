@@ -233,7 +233,10 @@ def test_invalid_slug_source_rejected(tmp_path):
         )
 
 
-def test_rejects_directory_containing_workspace_parent(tmp_path):
+def test_rejects_directory_containing_workspace_parent(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.workspace_wizard.WORKSPACE_PARENT", PROJECT_ROOT / "workspace"
+    )
     with pytest.raises(WorkspaceWizardError, match="工作区父目录"):
         validate_workspace_directory(PROJECT_ROOT.parent)
 

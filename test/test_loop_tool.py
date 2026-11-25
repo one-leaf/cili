@@ -1,6 +1,7 @@
 """Tests for loop tool (core/tools/shared/loop.py)."""
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -233,3 +234,61 @@ class TestLoopStateLock:
         lock_a = _get_state_lock("task-a")
         lock_b = _get_state_lock("task-b")
         assert lock_a is not lock_b
+
+
+class TestLoopStatePortability:
+    """loop 状态键相对工作区：整个工作区/cili 目录搬家后仍能匹配。"""
+
+    def test_state_key_relative_to_workspace(self, tmp_path):
+        import core.tools.loop as loop_module
+
+        root = tmp_path / "ws"
+        (root / "data").mkdir(parents=True)
+        (root / "data" / "list.txt").write_text("a", encoding="utf-8")
+
+        key1 = loop_module._state_key(str(root / "data" / "list.txt"), root)
+
+        moved = tmp_path / "moved"
+        shutil.copytree(root, moved)
+        key2 = loop_module._state_key(str(moved / "data" / "list.txt"), moved)
+
+        assert key1 == key2 == "ws:data/list.txt"
+
+    def test_save_and_load_use_portable_key(self, tmp_path, monkeypatch):
+        import core.tools.loop as loop_module
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setattr(loop_module, "_get_loop_state_dir", lambda ws="": state_dir)
+
+        root = tmp_path / "ws"
+        root.mkdir()
+        source = root / "list.txt"
+        source.write_text("a", encoding="utf-8")
+        task_id = str(source.resolve())
+
+        loop_module._save_state(task_id, {"a": "pending"}, "test", root)
+
+        files = list(state_dir.glob("*.json"))
+        assert len(files) == 1
+        state = json.loads(files[0].read_text(encoding="utf-8"))
+        assert state["_source_file"] == "ws:list.txt"
+        assert loop_module._load_state(task_id, "test", root)["a"] == "pending"
+
+    def test_loads_legacy_absolute_key(self, tmp_path, monkeypatch):
+        import core.tools.loop as loop_module
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        monkeypatch.setattr(loop_module, "_get_loop_state_dir", lambda ws="": state_dir)
+
+        root = tmp_path / "ws"
+        root.mkdir()
+        source = root / "list.txt"
+        source.write_text("a", encoding="utf-8")
+        task_id = str(source.resolve())
+
+        legacy = state_dir / f"{loop_module._state_filename(task_id)}.json"
+        legacy.write_text(json.dumps({"a": "done"}), encoding="utf-8")
+
+        assert loop_module._load_state(task_id, "test", root)["a"] == "done"

@@ -42,7 +42,26 @@ def any_running() -> bool:
     return False
 
 
+def any_running_for_workspace(workspace_uuid: str) -> bool:
+    """指定工作区是否有运行中的 cron runner（工作区数据迁移的空闲判定用）。"""
+    with _runner_lock:
+        runner = _runners.get(workspace_uuid)
+    if runner is None:
+        return False
+    try:
+        return runner.is_running()
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _get_runner(workspace_uuid: str) -> SessionRunner | None:
+    try:
+        from core.workspace_relocation import is_workspace_migrating
+
+        if is_workspace_migrating(workspace_uuid):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     with _runner_lock:
         if workspace_uuid in _poisoned:
             return None

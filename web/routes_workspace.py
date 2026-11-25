@@ -27,6 +27,7 @@ from core.config import (
     save_workspace_meta,
     sessions_dir_for_data_dir,
     validate_workspace_name,
+    workspaces_root,
 )
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.project_instructions import PROJECT_INSTRUCTION_FILES
@@ -43,14 +44,23 @@ from core.session import (
     session_key,
 )
 from core.teen_mode import deny_message, get_teen_mode
-from core.textbooks import textbook_tasks
 from core.time_utils import now_str
+from core.workspace_relocation import (
+    MigrationError,
+    cancel_workspace_migration,
+    get_migration_status,
+    start_workspace_migration,
+)
+from core.workspace_relocation import (
+    preflight_workspace_migration as preflight_workspace_relocation,
+)
 from web.deps import (
     _SAFE_ID_RE,
     _get_workspace_info,
     _list_all_workspaces,
     _new_short_id,
     _sessions_lock,
+    csrf_protect,
     registry,
     require_workspace_data_dir,
     teen_guard,
@@ -79,6 +89,10 @@ class CreateWorkspaceRequest(BaseModel):
 class UpdateWorkspaceRequest(BaseModel):
     name: str | None = None
     directory: str | None = None
+
+
+class WorkspaceMigrationRequest(BaseModel):
+    target_path: str
 
 
 class RenameSessionRequest(BaseModel):
@@ -129,7 +143,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
 
     Args:
         name: Display name for the workspace
-        directory: Working directory path (optional, defaults to workspace/ inside data)
+        directory: Working directory path (optional, defaults to the configured workspaces root)
     """
     # Validate name
     err = validate_workspace_name(request.name)
@@ -143,7 +157,7 @@ async def create_workspace(request: CreateWorkspaceRequest):
     if request.directory:
         workspace_dir = os.path.abspath(request.directory)
     else:
-        workspace_dir = str(PROJECT_ROOT / "workspace" / request.name)
+        workspace_dir = str(workspaces_root() / request.name)
 
     # Create working directory
     os.makedirs(workspace_dir, exist_ok=True)
@@ -218,13 +232,15 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
             raise HTTPException(status_code=400, detail=err)
         config["workspace_name"] = request.name
 
-    # Update directory if provided
-    if request.directory is not None:
-        new_dir = os.path.abspath(request.directory)
-        if new_dir != config.get("directory"):
-            # 目录变化后，旧任务不应继续写旧位置
-            await textbook_tasks.cancel_for_workspace(workspace_uuid)
-        config["directory"] = new_dir
+    # 目录变更必须走「数据迁移」：直接改索引会把数据留在旧目录
+    if request.directory is not None and request.directory.strip():
+        new_dir = os.path.normcase(os.path.abspath(request.directory))
+        current_dir = os.path.normcase(os.path.abspath(str(config.get("directory") or "")))
+        if new_dir != current_dir:
+            raise HTTPException(
+                status_code=400,
+                detail="移动工作区目录请使用「数据迁移」功能",
+            )
 
     config["updated_at"] = now_str()
 
@@ -232,6 +248,57 @@ async def update_workspace(workspace_uuid: str, request: UpdateWorkspaceRequest)
         raise HTTPException(status_code=500, detail="Failed to save config")
 
     return {"success": True, "workspace": config}
+
+
+# ----- Workspace data migration -----
+
+@router.post("/api/workspaces/{workspace_uuid}/migration/preflight",
+             dependencies=[Depends(teen_guard("config_update")), Depends(csrf_protect)])
+async def workspace_migration_preflight(workspace_uuid: str,
+                                        request: WorkspaceMigrationRequest):
+    """只读预检：目标合法性、体积、文件数、同/跨卷与可用空间。"""
+    validate_workspace_uuid(workspace_uuid)
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
+    try:
+        return await asyncio.to_thread(
+            preflight_workspace_relocation, workspace_uuid, request.target_path
+        )
+    except MigrationError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/api/workspaces/{workspace_uuid}/migration",
+             dependencies=[Depends(teen_guard("config_update")), Depends(csrf_protect)])
+async def workspace_migration_start(workspace_uuid: str,
+                                    request: WorkspaceMigrationRequest):
+    """启动后台迁移；立即返回迁移 ID 与预检结果。"""
+    validate_workspace_uuid(workspace_uuid)
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
+    try:
+        return await asyncio.to_thread(
+            start_workspace_migration, workspace_uuid, request.target_path
+        )
+    except MigrationError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.get("/api/workspaces/{workspace_uuid}/migration")
+async def workspace_migration_status(workspace_uuid: str):
+    """当前/最近一次迁移状态。"""
+    validate_workspace_uuid(workspace_uuid)
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
+    return get_migration_status(workspace_uuid)
+
+
+@router.delete("/api/workspaces/{workspace_uuid}/migration",
+               dependencies=[Depends(teen_guard("config_update")), Depends(csrf_protect)])
+async def workspace_migration_cancel(workspace_uuid: str):
+    """取消迁移（仅复制/校验阶段）。"""
+    validate_workspace_uuid(workspace_uuid)
+    get_teen_mode().guard_workspace(workspace_uuid, source="web")
+    if not cancel_workspace_migration(workspace_uuid):
+        raise HTTPException(status_code=409, detail="当前阶段不可取消")
+    return {"success": True}
 
 
 @router.delete("/api/workspaces/{workspace_uuid}",

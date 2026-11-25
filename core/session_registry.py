@@ -98,6 +98,10 @@ class SessionRegistry:
         TUI / cron 共用此池，逐个入口挂守卫必有遗漏，这里是最后防线）。
         """
         get_teen_mode().guard_workspace(workspace_uuid, source="registry")
+        from core.workspace_relocation import is_workspace_migrating
+
+        if is_workspace_migrating(workspace_uuid):
+            raise RuntimeError("工作区数据迁移中，请稍后重试")
         key = session_key(workspace_uuid, session_id)
 
         # 快路径：已存在就直接返回，不碰重量级构造
@@ -140,6 +144,10 @@ class SessionRegistry:
     ) -> str:
         """Register an externally created runner (e.g. a fork or hosted branch)."""
         get_teen_mode().guard_workspace(workspace_uuid, source="registry")
+        from core.workspace_relocation import is_workspace_migrating
+
+        if is_workspace_migrating(workspace_uuid):
+            raise RuntimeError("工作区数据迁移中，请稍后重试")
         key = session_key(workspace_uuid, session_id)
         with self._data_lock:
             self.evict_idle()

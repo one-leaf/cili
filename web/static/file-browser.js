@@ -5,18 +5,6 @@
 // ── 文件管理器状态 ──
 let directoryBrowserCallback = null;  // 目录浏览器回调
 
-async function browseDirectory(event) {
-    // 找到触发事件的输入框
-    const targetInput = event.target.parentElement.querySelector('input[type="text"]');
-    if (!targetInput) return;
-
-    // 打开目录浏览器弹窗
-    const currentPath = targetInput.value || '';
-    openDirectoryBrowser(currentPath, (selectedPath) => {
-        targetInput.value = selectedPath;
-    });
-}
-
 async function openDirectoryBrowser(initialPath, callback) {
     directoryBrowserCallback = callback;
 

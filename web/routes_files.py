@@ -47,6 +47,10 @@ def _teen_ws_guard(workspace_uuid: str) -> None:
 def _workspace_info_or_404(workspace_uuid: str) -> dict:
     """校验 UUID、取工作区信息并过青少年守卫；不存在时 404。"""
     validate_workspace_uuid(workspace_uuid)  # W9: 防路径穿越
+    from core.workspace_relocation import is_workspace_migrating
+
+    if is_workspace_migrating(workspace_uuid):
+        raise HTTPException(status_code=409, detail="工作区正在数据迁移，请稍后重试")
     info = _get_workspace_info(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")

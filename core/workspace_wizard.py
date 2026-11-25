@@ -21,11 +21,12 @@ from core.config import (
     remove_workspace_entry,
     save_workspace_meta,
     validate_workspace_name,
+    workspaces_root,
 )
 from core.fs_utils import atomic_write_text, path_key
 from core.time_utils import now_str
 
-WORKSPACE_PARENT = PROJECT_ROOT / "workspace"
+WORKSPACE_PARENT = workspaces_root()
 DATA_ROOT = PROJECT_ROOT / "data"
 SUBJECT_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "subjects"
 CODE_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates" / "code"

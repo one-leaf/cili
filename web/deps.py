@@ -57,10 +57,6 @@ def reload_all_runners() -> None:
 # Base directories
 WEB_DIR = Path(__file__).parent.resolve()
 
-# Working directory for default workspace
-WORKSPACE_DIR = PROJECT_ROOT / "workspace"
-WORKSPACE_DIR.mkdir(exist_ok=True)
-
 # Chrome profile directory（仅建目录副作用，browser 服务自行管理进程）
 CHROME_DIR = PROJECT_ROOT / "data" / "deps" / "browser"
 CHROME_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,6 +142,10 @@ def require_workspace_data_dir(workspace_uuid: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid workspace_uuid format")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    from core.workspace_relocation import is_workspace_migrating
+
+    if is_workspace_migrating(workspace_uuid):
+        raise HTTPException(status_code=409, detail="工作区正在数据迁移，请稍后重试")
     get_teen_mode().guard_workspace(workspace_uuid, source="web")
     ws_dir = get_workspace_data_dir(workspace_uuid)
     ws_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +313,11 @@ async def _get_or_create_runner(workspace_uuid: str, session_id: str) -> Session
 
     池与生命周期由 core.session_registry 统一管理（接口无关）。
     """
+    from core.workspace_relocation import is_workspace_migrating
+
+    if is_workspace_migrating(workspace_uuid):
+        raise HTTPException(status_code=409, detail="工作区正在数据迁移，请稍后重试")
+
     info = _get_workspace_info(workspace_uuid)
     if not info:
         raise HTTPException(status_code=404, detail="Workspace not found")

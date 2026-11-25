@@ -450,7 +450,6 @@ function setupEventListeners() {
     // Workspace settings
     document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
     document.getElementById('workspace-delete-btn').addEventListener('click', deleteWorkspaceConfig);
-    document.getElementById('ws-browse-dir-btn').addEventListener('click', browseDirectory);
 
     // 项目提示词相关按钮
     document.getElementById('instructions-generate-btn').addEventListener('click', generateInstructions);

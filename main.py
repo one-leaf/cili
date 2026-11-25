@@ -1157,6 +1157,26 @@ def _prepare_environment() -> None:
     _setup_logging()
     logger.info("日志系统已初始化")
 
+    # 修复上次中断的工作区数据迁移（只做一致性收尾，不重新复制）
+    try:
+        from core.workspace_relocation import recover_pending_migration
+
+        recover_pending_migration()
+    except Exception as e:  # noqa: BLE001
+        print(f"[migration] Warning: workspace migration recovery failed: {e}")
+
+    # 旧布局 workspace/ → workspaces/（逐项迁移；幂等）
+    try:
+        from core.workspace_relocation import migrate_layout_to_workspaces
+
+        layout = migrate_layout_to_workspaces()
+        if layout.get("moved"):
+            print(f"[migration] Moved workspace entries: {', '.join(layout['moved'])}")
+        if layout.get("leftovers"):
+            print(f"[migration] workspace/ leftovers: {', '.join(layout['leftovers'])}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[migration] Warning: workspace layout migration failed: {e}")
+
     # 迁移旧 data/projects/ 到各工作区 .cili/（如需要），须在创建目录前执行
     _migrate_projects_to_cili()
 
@@ -1208,10 +1228,13 @@ def _prepare_environment() -> None:
             migrate_placeholder_meta,
             migrate_provider_interface_type,
             migrate_tui_channel,
+            migrate_workspace_paths_relative,
         )
 
         run_pending(
             [
+                ("workspace_paths_relative",
+                 lambda: migrate_workspace_paths_relative(WORKSPACES_JSON, GLOBAL_CONFIG_PATH)),
                 ("provider_protocol_key",
                  lambda: migrate_provider_interface_type(GLOBAL_CONFIG_PATH)),
                 ("chatgpt_oauth_naming",

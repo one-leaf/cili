@@ -258,6 +258,13 @@ class TurnQueue:
         with self._lock:
             return any(q.items for q in self._queues.values())
 
+    def pending_for_workspace(self, workspace_uuid: str) -> bool:
+        """某工作区是否有待投递的排队回合（工作区数据迁移的空闲判定用）。"""
+        prefix = f"{workspace_uuid}:"
+        with self._lock:
+            return any(key.startswith(prefix) and q.items
+                       for key, q in self._queues.items())
+
     def is_paused(self, key: str) -> bool:
         with self._lock:
             q = self._queues.get(key)

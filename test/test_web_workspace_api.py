@@ -19,6 +19,116 @@ class TestRequireWorkspace:
         assert exc_info.value.status_code == 404
 
 
+class TestWorkspaceMigrationApi:
+    """工作区数据迁移端点：错误映射与状态透传。"""
+
+    def test_preflight_returns_plan(self, monkeypatch):
+        import asyncio
+
+        import web.routes_workspace as routes
+
+        monkeypatch.setattr(
+            routes, "preflight_workspace_relocation",
+            lambda uuid, target: {"uuid": uuid, "dst": target, "blockers": []},
+        )
+        result = asyncio.run(routes.workspace_migration_preflight(
+            "ws1", routes.WorkspaceMigrationRequest(target_path="D:/ws")
+        ))
+        assert result["dst"] == "D:/ws"
+
+    def test_preflight_maps_error_status(self, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import core.workspace_relocation as relocation
+        import web.routes_workspace as routes
+
+        def _raise(uuid, target):
+            raise relocation.MigrationError("目标已存在", status_code=409)
+
+        monkeypatch.setattr(routes, "preflight_workspace_relocation", _raise)
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(routes.workspace_migration_preflight(
+                "ws1", routes.WorkspaceMigrationRequest(target_path="D:/ws")
+            ))
+        assert exc_info.value.status_code == 409
+
+    def test_cancel_rejects_when_not_cancellable(self, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import web.routes_workspace as routes
+
+        monkeypatch.setattr(routes, "cancel_workspace_migration", lambda uuid: False)
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(routes.workspace_migration_cancel("ws1"))
+        assert exc_info.value.status_code == 409
+
+    def test_update_workspace_rejects_directory_change(self, tmp_path, monkeypatch):
+        """目录只能通过数据迁移修改；直接 PUT 返回 400。"""
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import core.config as config_mod
+        import web.routes_workspace as routes
+
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        config_mod.upsert_workspace_entry({
+            "uuid": "ws1", "workspace_name": "WS", "directory": str(ws_dir),
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(routes.update_workspace(
+                "ws1",
+                routes.UpdateWorkspaceRequest(directory=str(tmp_path / "other")),
+            ))
+        assert exc_info.value.status_code == 400
+        assert "数据迁移" in str(exc_info.value.detail)
+
+    def test_update_workspace_empty_directory_is_noop(self, tmp_path, monkeypatch):
+        """空 directory 视为未提供，允许只改名称。"""
+        import asyncio
+
+        import core.config as config_mod
+        import web.routes_workspace as routes
+
+        monkeypatch.setattr(config_mod, "WORKSPACES_JSON", tmp_path / "workspaces.json")
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        config_mod.upsert_workspace_entry({
+            "uuid": "ws1", "workspace_name": "WS", "directory": str(ws_dir),
+        })
+
+        result = asyncio.run(routes.update_workspace(
+            "ws1", routes.UpdateWorkspaceRequest(name="New", directory=""),
+        ))
+        assert result["success"] is True
+        assert result["workspace"]["workspace_name"] == "New"
+        assert result["workspace"]["directory"] == str(ws_dir)
+
+    def test_require_workspace_blocks_migrating(self, monkeypatch):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import core.workspace_relocation as relocation
+        from web.deps import require_workspace_data_dir
+
+        monkeypatch.setattr(relocation, "is_workspace_migrating", lambda uuid: True)
+        # deps 在函数内导入该符号，需让 system 条目存在以越过 404
+        monkeypatch.setattr(
+            "web.deps.find_workspace_entry", lambda uuid: {"uuid": uuid, "directory": "x"}
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(require_workspace_data_dir("ws1"))
+        assert exc_info.value.status_code == 409
+
+
 class TestValidateWorkspaceUuid:
     """validate_workspace_uuid() 路径穿越校验。"""
 

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from core.config import PROJECT_ROOT, get_workspace_data_dir
+from core.config import get_workspace_data_dir, workspaces_root
 from core.textbooks import (
     OfficialCatalog,
     TextbookDownloadError,
@@ -61,7 +61,7 @@ def _wizard_error(e: WorkspaceWizardError) -> HTTPException:
 
 def _locations() -> list[dict[str, str]]:
     roots = {
-        "cili": str(PROJECT_ROOT / "workspace"),
+        "cili": str(workspaces_root()),
         "home": str(Path.home() / "cili"),
         "documents": str(documents_root()),
         "custom": "",

@@ -16,11 +16,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
 from core.config import get_workspace_tools_dir
 from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.paths import to_storage_path
 from core.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,32 @@ def _get_loop_state_dir(workspace_uuid: str = "") -> Path:
     return get_workspace_tools_dir(workspace_uuid) / "loop"
 
 
-def _state_filename(task_id: str) -> str:
-    """Derive a safe state filename from task_id (absolute path)."""
-    return hashlib.md5(task_id.encode()).hexdigest()[:12]
+def _state_filename(state_key: str) -> str:
+    """Derive a safe state filename from the portable state key."""
+    return hashlib.md5(state_key.encode()).hexdigest()[:12]
+
+
+def _state_key(task_id: str, workspace_root: str | Path | None = None) -> str:
+    """状态键：优先相对工作区根，其次相对项目根，最后绝对路径。
+
+    状态文件本身就在工作区 .cili/tools/loop/ 下；用相对键后，整个工作区
+    （乃至整个 cili 目录）搬家后仍能匹配到原任务。
+    """
+    if workspace_root:
+        try:
+            root = os.path.abspath(str(workspace_root))
+            target = os.path.abspath(task_id)
+            root_key = os.path.normcase(root)
+            target_key = os.path.normcase(target)
+            if target_key == root_key or target_key.startswith(root_key + os.sep):
+                rel = os.path.relpath(target, root)
+                return "ws:" + Path(rel).as_posix()
+        except (OSError, ValueError):
+            pass
+    try:
+        return "root:" + to_storage_path(task_id)
+    except ValueError:
+        return "abs:" + task_id
 
 
 # 同一任务的加载-修改-保存串行化：多 agent 同时操作同一 source_file 时
@@ -54,20 +79,30 @@ def _get_state_lock(task_id: str) -> threading.Lock:
         return _state_locks[task_id]
 
 
-def _load_state(task_id: str, workspace_uuid: str = "") -> dict:
-    """Load loop state from file."""
-    h = _state_filename(task_id)
+def _load_state(task_id: str, workspace_uuid: str = "",
+                workspace_root: str | Path | None = None) -> dict:
+    """Load loop state from file（兼容旧版绝对路径键）。"""
     state_dir = _get_loop_state_dir(workspace_uuid)
-    state_path = state_dir / f"{h}.json"
-    return load_json_or_backup(state_path, {})
+    candidates = [_state_key(task_id, workspace_root), task_id]
+    seen: set[str] = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        state_path = state_dir / f"{_state_filename(key)}.json"
+        if state_path.exists():
+            return load_json_or_backup(state_path, {})
+    return {}
 
 
-def _save_state(task_id: str, state: dict, workspace_uuid: str = "") -> None:
-    """Save loop state to file. Includes _source_file for traceability."""
+def _save_state(task_id: str, state: dict, workspace_uuid: str = "",
+                workspace_root: str | Path | None = None) -> None:
+    """Save loop state to file. Includes portable source key for traceability."""
     try:
-        # Embed source_file path in state for traceability
-        state[f"{_META_PREFIX}source_file"] = task_id
-        h = _state_filename(task_id)
+        key = _state_key(task_id, workspace_root)
+        state[f"{_META_PREFIX}source_file"] = key
+        state[f"{_META_PREFIX}source_file_abs"] = task_id
+        h = _state_filename(key)
         state_dir = _get_loop_state_dir(workspace_uuid)
         state_dir.mkdir(parents=True, exist_ok=True)
         state_path = state_dir / f"{h}.json"
@@ -187,7 +222,7 @@ class LoopTool(Tool):
         """Get next pending item. Auto-loads items from source_file."""
         ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id, ws)
+            state = _load_state(task_id, ws, self.cwd)
 
             # Auto-sync items from file on first call or when file is newer
             if file_path.exists():
@@ -205,7 +240,7 @@ class LoopTool(Tool):
                         added += 1
 
                 if added > 0:
-                    _save_state(task_id, state, ws)
+                    _save_state(task_id, state, ws, self.cwd)
             elif not state:
                 return ToolResult(f"Error: file not found: {file_path}", error=True)
 
@@ -232,13 +267,13 @@ class LoopTool(Tool):
 
         ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id, ws)
+            state = _load_state(task_id, ws, self.cwd)
 
             if item not in state:
                 return ToolResult(f"Error: item '{item}' not found in state", error=True)
 
             state[item] = "done"
-            _save_state(task_id, state, ws)
+            _save_state(task_id, state, ws, self.cwd)
 
             counts = _count(state)
             return ToolResult(json.dumps(counts, ensure_ascii=False))
@@ -250,7 +285,7 @@ class LoopTool(Tool):
 
         ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id, ws)
+            state = _load_state(task_id, ws, self.cwd)
 
             if item not in state:
                 return ToolResult(f"Error: item '{item}' not found in state", error=True)
@@ -258,14 +293,14 @@ class LoopTool(Tool):
             # Store as "failed:{reason}"
             reason = error or "unknown"
             state[item] = f"failed:{reason}"
-            _save_state(task_id, state, ws)
+            _save_state(task_id, state, ws, self.cwd)
 
             counts = _count(state)
             return ToolResult(json.dumps(counts, ensure_ascii=False))
 
     def _status(self, task_id: str) -> ToolResult:
         """Get progress statistics."""
-        state = _load_state(task_id, self.workspace_uuid)
+        state = _load_state(task_id, self.workspace_uuid, self.cwd)
         counts = _count(state)
         return ToolResult(json.dumps(counts, ensure_ascii=False))
 
@@ -276,10 +311,10 @@ class LoopTool(Tool):
         """
         ws = self.workspace_uuid
         with _get_state_lock(task_id):
-            state = _load_state(task_id, ws)
+            state = _load_state(task_id, ws, self.cwd)
             cleared = len(_iter_items(state))
             state = {k: v for k, v in state.items() if k.startswith(_META_PREFIX)}
-            _save_state(task_id, state, ws)
+            _save_state(task_id, state, ws, self.cwd)
             return ToolResult(
                 f"已重置 {cleared} 项进度（任务元数据保留）"
             )

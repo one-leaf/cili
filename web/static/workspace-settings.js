@@ -15,6 +15,7 @@ async function openWorkspaceSettings() {
 
     nameInput.value = currentWorkspace.name || '';
     dirInput.value = currentWorkspace.directory || '';
+    dirInput.readOnly = true;
 
     // System workspace: read-only, no delete
     const isSystem = currentWorkspace.system || currentWorkspace.uuid === 'system';
@@ -26,7 +27,7 @@ async function openWorkspaceSettings() {
     if (systemBadge) systemBadge.hidden = !isSystem;
 
     // System 工作区不适用项目提示词 / 版本管理 / 教材下载
-    const systemHiddenTabs = ['ws-instructions', 'ws-git', 'ws-textbooks'];
+    const systemHiddenTabs = ['ws-migration', 'ws-instructions', 'ws-git', 'ws-textbooks'];
     document.querySelectorAll('#workspace-settings-modal .settings-tab').forEach(tabBtn => {
         if (systemHiddenTabs.includes(tabBtn.dataset.tab)) {
             tabBtn.style.display = isSystem ? 'none' : '';
@@ -42,6 +43,7 @@ async function openWorkspaceSettings() {
     loadInstructions();
     loadTemplateList();
     loadGitSettings();
+    initWorkspaceMigration();
 }
 
 
@@ -53,13 +55,12 @@ async function saveWorkspaceSettings() {
     statusEl.className = 'settings-status';
 
     const name = document.getElementById('ws-setting-name').value.trim();
-    const directory = document.getElementById('ws-setting-directory').value.trim();
 
     try {
         const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, directory })
+            body: JSON.stringify({ name })
         });
 
         if (!response.ok) {
@@ -70,9 +71,8 @@ async function saveWorkspaceSettings() {
         statusEl.textContent = '✓ 保存成功';
         statusEl.className = 'settings-status success';
 
-        // Update current workspace info
+        // Update current workspace info（目录只能通过数据迁移修改）
         currentWorkspace.name = name;
-        currentWorkspace.directory = directory;
 
         // Refresh workspace path display
         updateWorkspacePath();
@@ -157,7 +157,12 @@ function switchWorkspaceSettingsTab(tabName) {
     const footerSaveBtn = document.getElementById('workspace-settings-save-btn');
     const deleteBtn = document.getElementById('workspace-delete-btn');
 
-    if (tabName === 'ws-instructions') {
+    if (tabName === 'ws-migration') {
+        // 数据迁移 tab：面板内按钮，隐藏底部保存/删除
+        footerSaveBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
+        initWorkspaceMigration();
+    } else if (tabName === 'ws-instructions') {
         // 项目提示词 tab：显示保存提示词按钮（靠右），隐藏删除按钮
         footerSaveBtn.textContent = '保存提示词';
         footerSaveBtn.style.display = '';
@@ -605,3 +610,246 @@ document.getElementById('git-enabled-toggle')?.addEventListener('change', toggle
 document.getElementById('git-refresh-btn')?.addEventListener('click', loadGitSettings);
 document.getElementById('git-pull-btn')?.addEventListener('click', gitPull);
 document.getElementById('git-push-btn')?.addEventListener('click', gitPush);
+
+// ─── 工作区数据迁移 ─────────────────────────────────────────────
+
+let workspaceMigrationPollTimer = null;
+
+function stopWorkspaceMigrationPolling() {
+    if (workspaceMigrationPollTimer) {
+        clearTimeout(workspaceMigrationPollTimer);
+        workspaceMigrationPollTimer = null;
+    }
+}
+
+function formatMigrationBytes(value) {
+    const num = Number(value) || 0;
+    if (num <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let current = num;
+    let index = 0;
+    while (current >= 1024 && index < units.length - 1) {
+        current /= 1024;
+        index += 1;
+    }
+    return `${current.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function migrationPhaseText(phase) {
+    const labels = {
+        preparing: '准备中',
+        copying: '复制中',
+        verifying: '校验中',
+        switching: '切换中',
+        switched: '更新索引',
+        cleaning: '清理源目录'
+    };
+    return labels[phase] || '迁移中';
+}
+
+async function initWorkspaceMigration() {
+    if (!currentWorkspace) return;
+    stopWorkspaceMigrationPolling();
+
+    const uuid = currentWorkspace.uuid;
+    document.getElementById('ws-migration-current').textContent = currentWorkspace.directory || '';
+
+    const targetInput = document.getElementById('ws-migration-target');
+    if (targetInput.dataset.uuid !== uuid) {
+        targetInput.value = '';
+        targetInput.dataset.uuid = uuid;
+    }
+    targetInput.disabled = false;
+
+    const preflightEl = document.getElementById('ws-migration-preflight');
+    preflightEl.textContent = '';
+    preflightEl.className = 'settings-status';
+
+    const statusEl = document.getElementById('ws-migration-status');
+    statusEl.textContent = '';
+    statusEl.className = 'settings-status';
+
+    document.getElementById('ws-migration-start-btn').disabled = false;
+    document.getElementById('ws-migration-cancel-btn').style.display = 'none';
+
+    await loadWorkspaceMigrationStatus();
+}
+
+async function loadWorkspaceMigrationStatus() {
+    stopWorkspaceMigrationPolling();
+    if (!currentWorkspace) return;
+
+    const uuid = currentWorkspace.uuid;
+    let data;
+    try {
+        const response = await fetch(`/api/workspaces/${uuid}/migration`);
+        data = await response.json();
+    } catch {
+        return;
+    }
+    if (!currentWorkspace || currentWorkspace.uuid !== uuid) return;
+    if (!data || !data.status) return;
+
+    const statusEl = document.getElementById('ws-migration-status');
+    const startBtn = document.getElementById('ws-migration-start-btn');
+    const cancelBtn = document.getElementById('ws-migration-cancel-btn');
+    const targetInput = document.getElementById('ws-migration-target');
+
+    if (data.active) {
+        targetInput.disabled = true;
+        startBtn.disabled = true;
+        cancelBtn.style.display = ['preparing', 'copying', 'verifying'].includes(data.phase) ? '' : 'none';
+        const done = data.files_done || 0;
+        const total = data.files_total || 0;
+        const pct = total ? Math.floor(done * 100 / total) : 0;
+        statusEl.textContent = `${migrationPhaseText(data.phase)} ${done}/${total} 个文件（${pct}%）`;
+        statusEl.className = 'settings-status info';
+        workspaceMigrationPollTimer = setTimeout(loadWorkspaceMigrationStatus, 1000);
+        return;
+    }
+
+    targetInput.disabled = false;
+    startBtn.disabled = false;
+    cancelBtn.style.display = 'none';
+
+    if (data.status === 'done') {
+        statusEl.textContent = '✓ 迁移完成';
+        statusEl.className = 'settings-status success';
+        await refreshAfterWorkspaceMigration(data);
+    } else if (data.status === 'cancelled') {
+        statusEl.textContent = '已取消（源目录未移动）';
+        statusEl.className = 'settings-status info';
+    } else {
+        statusEl.textContent = '✗ 迁移失败：' + (data.error || '未知错误');
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function refreshAfterWorkspaceMigration(data) {
+    if (!currentWorkspace || !data.dst) return;
+    if (currentWorkspace.directory === data.dst) return;
+
+    currentWorkspace.directory = data.dst;
+    document.getElementById('ws-migration-current').textContent = data.dst;
+    updateWorkspacePath();
+
+    await loadWorkspaces();
+    if (workspaceSelect) workspaceSelect.value = currentWorkspace.uuid;
+    if (window.FileTree) FileTree.setWorkspace(currentWorkspace);
+}
+
+async function preflightWorkspaceMigration() {
+    if (!currentWorkspace) return;
+    const targetInput = document.getElementById('ws-migration-target');
+    const targetPath = targetInput.value.trim();
+    const preflightEl = document.getElementById('ws-migration-preflight');
+    const startBtn = document.getElementById('ws-migration-start-btn');
+
+    if (!targetPath) {
+        preflightEl.textContent = '请填写完整目标路径';
+        preflightEl.className = 'settings-status error';
+        startBtn.disabled = true;
+        return;
+    }
+
+    preflightEl.textContent = '预检中...';
+    preflightEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/migration/preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_path: targetPath })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '预检失败');
+
+        if (data.blockers && data.blockers.length) {
+            preflightEl.textContent = '无法迁移：' + data.blockers.join('；');
+            preflightEl.className = 'settings-status error';
+            startBtn.disabled = true;
+            return;
+        }
+
+        const space = data.same_volume
+            ? '同盘移动（不额外占用空间）'
+            : `跨盘复制，需要约 ${formatMigrationBytes(data.required_bytes)}`;
+        const warnings = (data.warnings || []).length
+            ? `；注意：${data.warnings.join('；')}`
+            : '';
+        preflightEl.textContent =
+            `源 ${formatMigrationBytes(data.total_bytes)} / ${data.file_count} 个文件；` +
+            `${space}；目标盘可用 ${formatMigrationBytes(data.dest_free_bytes)}${warnings}`;
+        preflightEl.className = 'settings-status success';
+        startBtn.disabled = false;
+    } catch (error) {
+        preflightEl.textContent = '✗ ' + error.message;
+        preflightEl.className = 'settings-status error';
+        startBtn.disabled = true;
+    }
+}
+
+async function startWorkspaceMigration() {
+    if (!currentWorkspace) return;
+    const targetPath = document.getElementById('ws-migration-target').value.trim();
+    if (!targetPath) return;
+
+    const confirmed = confirm(
+        `确定把工作区「${currentWorkspace.name || currentWorkspace.uuid}」迁移到：\n\n` +
+        `${targetPath}\n\n` +
+        `迁移期间该工作区会短暂冻结，其他工作区不受影响。`
+    );
+    if (!confirmed) return;
+
+    const statusEl = document.getElementById('ws-migration-status');
+    statusEl.textContent = '正在启动迁移...';
+    statusEl.className = 'settings-status info';
+
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/migration`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_path: targetPath })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '启动失败');
+        await loadWorkspaceMigrationStatus();
+    } catch (error) {
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+async function cancelWorkspaceMigration() {
+    if (!currentWorkspace) return;
+    const statusEl = document.getElementById('ws-migration-status');
+    try {
+        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/migration`, {
+            method: 'DELETE'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || '取消失败');
+        statusEl.textContent = '正在取消...';
+        statusEl.className = 'settings-status info';
+    } catch (error) {
+        statusEl.textContent = '✗ ' + error.message;
+        statusEl.className = 'settings-status error';
+    }
+}
+
+document.getElementById('ws-migration-preflight-btn')?.addEventListener('click', preflightWorkspaceMigration);
+document.getElementById('ws-migration-start-btn')?.addEventListener('click', startWorkspaceMigration);
+document.getElementById('ws-migration-cancel-btn')?.addEventListener('click', cancelWorkspaceMigration);
+document.getElementById('ws-migration-target')?.addEventListener('input', () => {
+    document.getElementById('ws-migration-start-btn').disabled = true;
+});
+document.getElementById('ws-migration-browse-btn')?.addEventListener('click', () => {
+    const input = document.getElementById('ws-migration-target');
+    openDirectoryBrowser(input.value.trim(), (selectedPath) => {
+        input.value = selectedPath;
+        preflightWorkspaceMigration();
+    });
+});
+document.querySelectorAll('[data-modal="workspace-settings-modal"]').forEach(el => {
+    el.addEventListener('click', stopWorkspaceMigrationPolling);
+});

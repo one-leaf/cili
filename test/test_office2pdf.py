@@ -221,6 +221,14 @@ class TestOffice2PDFConversion:
         key2, stat2 = cache_mod._cache_key(str(src))
         assert key1 != key2
 
+    def test_source_key_relative_to_project(self, tmp_path, monkeypatch):
+        import core.config as config_mod
+
+        monkeypatch.setattr(config_mod, "PROJECT_ROOT", tmp_path)
+        assert cache_mod._source_key(tmp_path / "ws" / "a.docx") == "ws/a.docx"
+        outside = tmp_path.parent / "other.docx"
+        assert cache_mod._source_key(outside) == str(outside)
+
 
 class TestComConversion:
     def _pres(self):

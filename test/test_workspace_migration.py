@@ -26,6 +26,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "PROJECT_ROOT", root)
     monkeypatch.setattr(config_mod, "DATA_DIR", data_dir)
     monkeypatch.setattr(config_mod, "WORKSPACES_JSON", data_dir / "workspaces.json")
+    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_PATH", data_dir / "setting.json")
+    (data_dir / "setting.json").write_text("{}", encoding="utf-8")
+    # 让 workspaces_root() 跟随本用例的 PROJECT_ROOT（全局 conftest 的 env 覆盖优先）
+    monkeypatch.delenv("CILI_WORKSPACES_ROOT", raising=False)
+    config_mod.reset_workspaces_root_cache()
     return root, ws
 
 
