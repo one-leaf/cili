@@ -56,6 +56,10 @@ _FALLBACK_EXEC_LOCK = threading.Lock()
 # 压缩常量
 KEEP_USER_MESSAGES = 3
 FULL_COMPACT_TOKEN_RATIO = 0.80
+# 回合中途的上下文压力（相对 max_context_tokens 工作预算）：
+# ≥100% 注入收尾提示，≥150% 强制全压缩
+CONTEXT_WARN_RATIO = 1.00
+CONTEXT_FORCE_COMPACT_RATIO = 1.50
 # 完整压缩后保留最近约 25% 上下文的原始消息，其余摘要化
 COMPACT_KEEP_TOKEN_RATIO = 0.25
 COMPACT_KEEP_MIN_TOKENS = 4000
@@ -791,12 +795,129 @@ class TurnExecutor:
         budget = int(max_tokens * COMPACT_KEEP_TOKEN_RATIO)
         return max(COMPACT_KEEP_MIN_TOKENS, min(budget, COMPACT_KEEP_MAX_TOKENS))
 
+    def _context_ratio(self, messages: list[dict]) -> tuple[int, int, float]:
+        """当前上下文估算 token / 模型工作预算，返回 (tokens, max_tokens, ratio)。"""
+        max_tokens = int(getattr(self.runner.model, "max_context_tokens", 0) or 0)
+        if max_tokens <= 0:
+            return 0, 0, 0.0
+        tokens = self.runner._count_messages_tokens(messages)
+        return tokens, max_tokens, tokens / max_tokens
+
+    def _last_user_input_message(self) -> tuple[int, str]:
+        """最近一次真实用户输入（all_messages 下标 + 文本）；无则 (-1, "")。
+
+        跳过工具结果、摘要、循环警告、后台通知等合成消息——它们是本轮中途产物，
+        不是「本轮初始用户输入」。
+        """
+        from core.handoff import user_input_text
+
+        skip_meta = {
+            "summary", "loop_warning", "context_warning",
+            "background_notification", "budget", "error_notice",
+        }
+        for idx in range(len(self.runner.messages) - 1, -1, -1):
+            msg = self.runner.messages[idx]
+            if not self.runner.context.is_message_in_context(msg):
+                continue
+            if msg.get("role") != "user":
+                continue
+            meta = msg.get("_meta") or {}
+            if any(meta.get(key) for key in skip_meta):
+                continue
+            content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            ):
+                continue
+            text = user_input_text(content)
+            if text.strip():
+                return idx, text
+        return -1, ""
+
+    def _last_user_input_text(self) -> str:
+        return self._last_user_input_message()[1]
+
+    def _enforce_context_pressure(self, messages: list[dict]) -> bool:
+        """回合中途的上下文压力处理；返回消息是否被修改（需要重新投影）。
+
+        - ≥100%：注入一条 user 收尾提示（每回合一次），让模型尽快结束；
+        - ≥150%：只压缩当前轮之前的上下文（以当前轮初始用户输入为切分点），
+          当前轮中途消息全部保留，压缩后继续执行，不重跑。
+
+        常规 80% 压缩仍由 maybe_full_compact_for_user_input 在用户新输入前执行。
+        """
+        tokens, max_tokens, ratio = self._context_ratio(messages)
+        if max_tokens <= 0 or ratio < CONTEXT_WARN_RATIO:
+            self.runner._context_warning_issued = False
+            return False
+
+        logger.info(f"[上下文] 压力检查: {tokens:,} / {max_tokens:,} ({ratio:.0%})")
+
+        if ratio >= CONTEXT_FORCE_COMPACT_RATIO:
+            turn_idx, user_text = self._last_user_input_message()
+            turn_valid_idx = (
+                sum(
+                    1 for msg in self.runner.messages[:turn_idx]
+                    if self.runner.context.is_message_in_context(msg)
+                )
+                if turn_idx >= 0 else 0
+            )
+            if turn_valid_idx <= 0:
+                logger.warning("[上下文] 当前轮之前没有可压缩消息，跳过强制压缩")
+            else:
+                logger.warning(
+                    f"[上下文] 超过强制压缩阈值 ({ratio:.0%} ≥ "
+                    f"{CONTEXT_FORCE_COMPACT_RATIO:.0%})，压缩当前轮之前的上下文"
+                )
+                # 只总结当前轮之前的 {turn_valid_idx} 条消息；本轮初始输入及其后的
+                # 中途消息全部保留，压缩后继续执行，不重跑。
+                instruction = self._SUMMARY_INSTRUCTION_TEMPLATE.format(
+                    split_idx=turn_valid_idx
+                )
+                if user_text:
+                    instruction += (
+                        "\n\n## 当前任务（保留，不要总结）\n"
+                        f"{user_text}\n"
+                    )
+                try:
+                    before, after = self._perform_full_compact(
+                        KEEP_USER_MESSAGES,
+                        reason=f"上下文超过 {int(CONTEXT_FORCE_COMPACT_RATIO * 100)}% 强制压缩",
+                        split_idx=turn_valid_idx,
+                        insert_before=turn_idx,
+                        instruction=instruction,
+                    )
+                except Exception as e:  # noqa: BLE001 —— 压缩失败不阻断本轮
+                    logger.warning(f"[上下文] 强制压缩失败: {e}")
+                else:
+                    if after < before:
+                        self.runner.cache_state.reset_after_compact()
+                        self.runner.cache_state.on_compression(2)
+                        return True
+                    logger.warning("[上下文] 强制压缩未生效（消息不足或摘要失败）")
+            # 压缩未生效 → 至少注入收尾提示
+
+        if getattr(self.runner, "_context_warning_issued", False):
+            return False
+        self.runner._context_warning_issued = True
+        self.runner.add_message(
+            "user",
+            f"当前上下文已超过模型工作预算（{ratio:.0%}，{tokens:,} / "
+            f"{max_tokens:,} tokens）。请尽快收尾：完成当前操作，"
+            "不要再开启新任务，尽快给出最终答复。",
+            meta={"context_warning": True},
+        )
+        logger.warning(
+            f"[上下文] 注入收尾提示 ({ratio:.0%} ≥ {CONTEXT_WARN_RATIO:.0%})"
+        )
+        return True
+
     def _check_and_compress(self) -> None:
         """3-layer compression before LLM call.
 
         Layer 1: Microcompact (mark orphan tool_results and old error pairs)
-        Layer 2: 推迟到下一轮用户输入前（maybe_full_compact_for_user_input），
-                 不在工具循环中途执行
+        Layer 2: 常规压缩推迟到下一轮用户输入前（maybe_full_compact_for_user_input）；
+                 回合中途只做压力保护（100% 收尾提示 / 150% 压缩当前轮之前的上下文）
         Layer 3: Emergency body size (replace old images with placeholders)
         """
         from core.compression import (
@@ -819,9 +940,11 @@ class TurnExecutor:
                 {"layer": 1, "invalidated": invalidated},
             )
 
-        # Layer 2 不再在回合中途执行：推迟到下一轮用户输入前
-        # （maybe_full_compact_for_user_input）。中途只保留 L1/L3。
+        # Layer 2 常规压缩推迟到下一轮用户输入前（maybe_full_compact_for_user_input）；
+        # 回合中途只做压力保护：≥100% 收尾提示，≥150% 强制全压缩。
         messages = self.build_projected_messages()
+        if self._enforce_context_pressure(messages):
+            messages = self.build_projected_messages()
 
         # Layer 3: Emergency body size (only images)
         body_size = self._estimate_request_body_size(messages)
@@ -867,6 +990,7 @@ class TurnExecutor:
         split_idx: int | None = None,
         insert_before: int | None = None,
         keep_tokens: int | None = None,
+        instruction: str | None = None,
     ) -> tuple[int, int]:
         """Full auto compact: summarize old messages, keep recent user messages.
 
@@ -910,11 +1034,12 @@ class TurnExecutor:
             return total_tokens, total_tokens
 
         # Cache-aware 摘要：复用主对话 prefix 共享缓存
-        instruction = (
-            build_handoff_document(next_steps, reason)
-            if next_steps
-            else None
-        )
+        if instruction is None:
+            instruction = (
+                build_handoff_document(next_steps, reason)
+                if next_steps
+                else None
+            )
         summary = self.runner._summarize_messages(
             split_idx=split_idx, instruction=instruction
         )

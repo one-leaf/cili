@@ -221,6 +221,7 @@ class BaseSessionRunner:
         user_input, meta = merge_queued_turns(items)
         # 排队批次是新的用户输入：开启新回合，旧回合图片转引用。
         self.current_turn_id = generate_short_id()
+        self._context_warning_issued = False
         self._demoted_image_paths.clear()
         self._retired_image_carriers.clear()
         self._turn_image_index.clear()

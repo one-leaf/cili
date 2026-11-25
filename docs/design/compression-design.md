@@ -9,6 +9,7 @@
 |---|---|---|---|
 | Microcompact | 每轮执行前 | 标记孤立工具结果/旧错误结果失效、大结果外置 | `compression.microcompact_mark_orphans_and_errors` |
 | Full compact | 上下文达到 `max_context_tokens * 0.80` | 保留最近对话 + 摘要化更早内容（写 summary commit） | `TurnExecutor._perform_full_compact` |
+| Context pressure | 回合中途 ≥100% / ≥150% | ≥100% 注入收尾提示（每回合一次）；≥150% 只压缩当前轮之前的上下文，本轮中途消息保留 | `TurnExecutor._enforce_context_pressure` |
 | Emergency | 请求体仍超限/413 | 逐级降级（历史图片降级、工具结果清空） | `executor` 的图片预算与 `_apply_model_content_rules` |
 
 ## 二、常量
@@ -16,6 +17,8 @@
 ```
 KEEP_USER_MESSAGES = 3                 # full compact 保留的最近用户消息数
 FULL_COMPACT_TOKEN_RATIO = 0.80        # 触发 full compact 的窗口占比
+CONTEXT_WARN_RATIO = 1.00              # 回合中途注入收尾提示的阈值
+CONTEXT_FORCE_COMPACT_RATIO = 1.50     # 回合中途强制 full compact 的阈值
 COMPACT_KEEP_TOKEN_RATIO = 0.25        # 压缩后保留的 token 比例（按窗口计算）
 COMPACT_KEEP_MIN_TOKENS = 4000
 COMPACT_KEEP_MAX_TOKENS = 32000
@@ -59,3 +62,18 @@ COMPACT_KEEP_MAX_TOKENS = 32000
 - 窗口：`ResolvedModel.max_context_tokens`。
 - 图片历史：`images.history_mode`（full / current_turn）与图片预算（`images.max_*`）。
 - 请求体估算为 system prompt 与工具定义预留保守开销（`estimate_request_body_size`）。
+
+## 八、回合中途上下文压力
+
+常规 full compact（80%）只在下一轮用户输入前触发（`maybe_full_compact_for_user_input`），
+工具循环中途只做 L1/L3。为防止长工具链把上下文推过工作预算，`_check_and_compress`
+每轮额外做一次压力检查（口径：投影后消息 token / `max_context_tokens`，与上下文胶囊一致）：
+
+- **≥100%**：向对话注入一条 user 收尾提示（`_meta.context_warning`，每回合一次），
+  要求模型完成当前操作、不要开启新任务、尽快给出最终答复。低于阈值后标志重置。
+- **≥150%**：以当前轮初始用户输入为切分点，**只压缩它之前的上下文**；本轮初始输入
+  及其后的中途消息（assistant/tool_result）全部保留，摘要插在当前轮之前，压缩后
+  继续执行、不重跑。压缩未生效（当前轮之前无可压缩消息/摘要失败）时回退为 100%
+  收尾提示。
+
+百分比只统计消息体，不含 system prompt 与工具定义。

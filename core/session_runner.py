@@ -200,6 +200,8 @@ class SessionRunner(BaseSessionRunner):
         # 无专属 sink 的后台/自动恢复回合，出站文件由 default_sink 兜底交付。
         self._turn_has_custom_sink = False
         self._turn_iterations = 0  # 单个用户轮次内的累计迭代（跨 ask_user/session resume 不重置）
+        # 上下文 100% 收尾提示是否已在当前回合注入（低于阈值时由压力检查重置）
+        self._context_warning_issued = False
         # 恢复循环互斥：后台完成回调可能来自多个线程，防止同一 runner 双循环
         self._resume_lock = threading.Lock()
         # 工具调用累计计数（每批工具调用数累加）
@@ -756,6 +758,7 @@ class SessionRunner(BaseSessionRunner):
         if self._mode == "interactive":
             return self._run_interactive(*args, **kwargs)
         self.current_turn_id = generate_short_id()
+        self._context_warning_issued = False
         self._demoted_image_paths.clear()
         self._retired_image_carriers.clear()
         self._turn_image_index.clear()
@@ -784,6 +787,7 @@ class SessionRunner(BaseSessionRunner):
         self._stopped = False
         self._running = True
         self._turn_iterations = 0  # 新用户轮次清零，resume 路径保留累计
+        self._context_warning_issued = False
         # 新用户回合：上一回合图片转引用，当前回合图片重新嵌入。
         self.current_turn_id = generate_short_id()
         self._demoted_image_paths.clear()

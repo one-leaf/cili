@@ -129,6 +129,8 @@ def preview_from_messages(messages: list[dict]) -> str:
             continue  # 后台子 Runner 完成通知：非用户输入，继续往前找
         if meta.get("loop_warning"):
             continue  # 循环重复检测警告（交互/自主共用）：合成消息，不算输入
+        if meta.get("context_warning"):
+            continue  # 上下文超限收尾提示：合成消息，不算输入
         text = message_text(msg.get("content"), first=True, strip=False)
         if text:
             return text[:200]

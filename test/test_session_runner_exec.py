@@ -128,3 +128,108 @@ class TestForwardsPassthrough:
         runner.runner._resolve_tool_results(m2)
         assert m1 == m2
         assert m1[0]["content"][0]["content"] == "data"
+
+
+class TestContextPressure:
+    """回合中途压力：100% 收尾提示 / 150% 强制全压缩。"""
+
+    def test_warn_at_100_percent_once(self, runner, monkeypatch):
+        monkeypatch.setattr(runner.model, "max_context_tokens", 1000)
+        # 英文约 4 字符/token → 4800 字符 ≈ 1200 tokens（120%）
+        runner.add_message("user", "x" * 4800)
+
+        with patch.object(runner.runner, "_perform_full_compact") as compact:
+            runner._check_and_compress()
+            runner._check_and_compress()
+
+        compact.assert_not_called()
+        warnings = [
+            m for m in runner.messages
+            if (m.get("_meta") or {}).get("context_warning")
+        ]
+        assert len(warnings) == 1
+        assert "尽快收尾" in warnings[0]["content"]
+        assert "120%" in warnings[0]["content"]
+
+    def test_force_compact_at_150_percent(self, runner, monkeypatch):
+        monkeypatch.setattr(runner.model, "max_context_tokens", 1000)
+        runner.add_message("user", "旧任务")
+        runner.add_message("assistant", "旧答复")
+        last_input = "x" * 7000  # ≈ 1750 tokens（175%）
+        runner.add_message("user", last_input)
+
+        with patch.object(
+            runner.runner, "_perform_full_compact", return_value=(100, 50)
+        ) as compact:
+            runner._check_and_compress()
+
+        compact.assert_called_once()
+        kwargs = compact.call_args.kwargs
+        # 以当前轮初始输入为切分点：只压缩它之前的 2 条消息
+        assert kwargs["split_idx"] == 2
+        assert kwargs["insert_before"] == 2
+        assert "前 2 条消息" in kwargs["instruction"]
+        assert last_input in kwargs["instruction"]
+        assert "150%" in kwargs["reason"]
+        # 150% 分支直接压缩，不再追加 100% 收尾提示
+        assert not any(
+            (m.get("_meta") or {}).get("context_warning")
+            for m in runner.messages
+        )
+
+    def test_force_compact_keeps_current_round(self, runner, monkeypatch):
+        """150% 只压缩当前轮之前；本轮初始输入与中途工具结果保留，不重跑。"""
+        monkeypatch.setattr(runner.model, "max_context_tokens", 1000)
+        runner.add_message("user", "旧任务")
+        runner.add_message("assistant", "旧答复")
+        current = "x" * 4000  # 本轮初始用户输入
+        runner.add_message("user", current)
+        runner.add_message("assistant", [{
+            "type": "tool_use", "id": "t1", "name": "bash", "input": {},
+        }])
+        runner.add_message("user", [{
+            "type": "tool_result", "tool_use_id": "t1", "content": "y" * 4000,
+        }])
+
+        with patch.object(
+            runner.runner, "_perform_full_compact", return_value=(100, 50)
+        ) as compact:
+            runner._check_and_compress()
+
+        kwargs = compact.call_args.kwargs
+        assert kwargs["split_idx"] == 2
+        assert kwargs["insert_before"] == 2
+        assert current in kwargs["instruction"]
+        # 当前轮中途工具结果仍在有效上下文里，没有被压力处理剔除
+        assert any(
+            isinstance(m.get("content"), list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+            for m in runner.get_valid_messages()
+        )
+
+    def test_last_user_input_skips_tool_results_and_synthetic(self, runner):
+        runner.add_message("user", "真实输入")
+        runner.add_message("user", [{
+            "type": "tool_result", "tool_use_id": "t1", "content": "工具结果",
+        }])
+        runner.add_message("user", "循环警告", meta={"loop_warning": True})
+        assert runner.runner._last_user_input_text() == "真实输入"
+
+    def test_force_compact_failure_falls_back_to_warning(self, runner, monkeypatch):
+        """150% 压缩未生效（消息不足/摘要失败）时，至少注入 100% 收尾提示。"""
+        monkeypatch.setattr(runner.model, "max_context_tokens", 1000)
+        runner.add_message("user", "旧任务")
+        runner.add_message("assistant", "旧答复")
+        runner.add_message("user", "x" * 7000)
+
+        with patch.object(
+            runner.runner, "_perform_full_compact", return_value=(100, 100)
+        ) as compact:
+            runner._check_and_compress()
+
+        compact.assert_called_once()
+        warnings = [
+            m for m in runner.messages
+            if (m.get("_meta") or {}).get("context_warning")
+        ]
+        assert len(warnings) == 1
