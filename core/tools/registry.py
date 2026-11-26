@@ -25,6 +25,7 @@ from core.tools.glob import GlobTool
 from core.tools.grep import GrepTool
 from core.tools.latex import LatexTool
 from core.tools.loop import LoopTool
+from core.tools.mail import MailTool, usable_accounts
 from core.tools.memory import MemoryTool
 from core.tools.message_bus import MessageBusTool
 from core.tools.office2pdf import Office2PDFTool
@@ -93,7 +94,7 @@ def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = 
 TOOL_CLASSES: tuple[type[Tool], ...] = (
     AgentTool, AskUserTool, BashTool, BrowserTool, ClockTool, CronTool,
     DeepSeekReadUrlTool, DeepSeekWebSearchTool, EditTool, GlobTool, GrepTool,
-    LatexTool, LoopTool, MemoryTool, MessageBusTool, Office2PDFTool,
+    LatexTool, LoopTool, MailTool, MemoryTool, MessageBusTool, Office2PDFTool,
     PDF2MarkdownTool, PwshTool, PythonTool, ReadTool,
     ReadToolResultTool, SendUserFileTool, SessionSearchTool, SkillTool, TempTool,
     TextbookFindTool, TextbookOriginalTool, TextbookOutlineTool, TextbookReadTool,
@@ -133,6 +134,8 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
     "loop": _factory(LoopTool),
+    # 收发邮件：无可用账号时在 create_tools 里整体裁掉（见下方门控）
+    "mail": _factory(MailTool, needs_permission=True),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_permission=True),
     "office2pdf": _factory(Office2PDFTool, needs_permission=True),
     "skill": _make_skill,
@@ -191,6 +194,10 @@ def create_tools(
             logger.warning(f"[registry] 角色 {role_cfg.name!r} 白名单中的工具 {name!r} 未注册，已跳过")
             continue
         if name == "workflow" and not _workflow_tool_allowed(session):
+            continue
+        # 没有任何可用邮箱账号时工具整体不出现（有账号但都绑定其他工作区仍显示，
+        # 调用时再返回「当前工作区无可用账号」，让模型能向用户解释原因）
+        if name == "mail" and not usable_accounts():
             continue
         try:
             tools.append(factory(ctx))

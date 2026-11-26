@@ -334,7 +334,7 @@ function renderApprovalCard(container, input, toolUseId) {
         {decision: 'remember', label: intent.always || '一直允许（此类操作）', desc: '写入工作区规则，重启后仍生效', cls: 'btn-secondary'},
         {decision: 'deny', label: intent.reject || '拒绝', desc: '仅拦截本次，Agent 可换方案', cls: 'btn-secondary'},
         {decision: 'abort', label: intent.abort || '终止任务', desc: '结束当前任务，不再自动继续', cls: 'btn-danger'},
-    ];
+    ].filter(opt => opt.decision !== 'remember' || intent.remember !== false);
     options.forEach(opt => {
         const btn = document.createElement('button');
         btn.className = `btn ${opt.cls} approval-btn`;

@@ -376,6 +376,9 @@ function buildEmailCard(acc) {
         ? `当前: ${acc.password_masked}（留空保持不变）`
         : '授权码 / 应用专用密码';
     const senders = Array.isArray(acc.allowed_senders) ? acc.allowed_senders.join('\n') : '';
+    const recipients = Array.isArray(acc.allowed_recipients)
+        ? acc.allowed_recipients.join('\n')
+        : (typeof acc.allowed_recipients === 'string' ? acc.allowed_recipients : '*@*');
     const smtpSel = acc.smtp_security === 'starttls' ? ' selected' : '';
     card.innerHTML = `
         ${accountHeaderHtml(acc, configured, configured ? '已配置' : '未配置')}
@@ -426,7 +429,14 @@ function buildEmailCard(acc) {
             <label>白名单</label>
             <div class="control">
                 <textarea class="acc-senders" rows="2" placeholder="每行一个发件邮箱，如：me@example.com">${escapeHtml(senders)}</textarea>
-                <div class="hint">只有这些地址的来信会触发回复；其余静默丢弃、不回信。<strong>留空 = 该账号不处理任何来信</strong></div>
+                <div class="hint">只有这些地址的来信会触发回复；其余静默丢弃、不回信。<strong>留空 = 该账号不处理任何来信</strong>。这些地址发信时同样免审批。</div>
+            </div>
+        </div>
+        <div class="setting-row">
+            <label>发信放行名单</label>
+            <div class="control">
+                <textarea class="acc-recipients" rows="2" placeholder="*@*">${escapeHtml(recipients)}</textarea>
+                <div class="hint">AI 发信时命中这些地址/通配符就直接发送，否则弹审批卡。支持 <code>*@*</code>（全部）、<code>*@example.com</code>（整个域名）、<code>zhang*@example.com</code>（前缀）。<strong>留空 = 外域收件人都要审批</strong></div>
             </div>
         </div>
         <div class="acc-email-status hint"></div>
@@ -446,6 +456,8 @@ function collectEmailCard(card) {
     const email = card.querySelector('.acc-email').value.trim().toLowerCase();
     const senders = card.querySelector('.acc-senders').value
         .split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
+    const recipients = card.querySelector('.acc-recipients').value
+        .split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
     return {
         id: email,
         label: card.querySelector('.acc-label').value.trim(),
@@ -460,6 +472,7 @@ function collectEmailCard(card) {
         username: card.querySelector('.acc-username').value.trim(),
         password: card.querySelector('.acc-password').value,
         allowed_senders: senders,
+        allowed_recipients: recipients,
         default_workspace_uuid: card.querySelector('.acc-workspace').value,
         workspace_locked: card.querySelector('.acc-locked').checked && !card.querySelector('.acc-locked').disabled,
         session_mode: card.querySelector('.acc-session-mode').value,

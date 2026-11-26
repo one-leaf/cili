@@ -1,5 +1,6 @@
 """邮件账号配置：白名单解析、类型兜底、读写往返。"""
 
+from core.mail import accounts as accounts_mod
 from interfaces.email import config as config_mod
 from interfaces.email.config import (
     EmailConfig,
@@ -59,8 +60,8 @@ class TestLoadSave:
     def test_roundtrip(self, monkeypatch):
         store = {"system": {"x": 1}}
 
-        monkeypatch.setattr(config_mod, "load_global_config", lambda: dict(store))
-        monkeypatch.setattr(config_mod, "save_global_config",
+        monkeypatch.setattr(accounts_mod, "load_global_config", lambda: dict(store))
+        monkeypatch.setattr(accounts_mod, "save_global_config",
                             lambda data: store.update(data) or True)
 
         cfg = EmailConfig(
@@ -80,11 +81,44 @@ class TestLoadSave:
 
     def test_empty_section(self, monkeypatch):
         store = {}
-        monkeypatch.setattr(config_mod, "load_global_config", lambda: dict(store))
+        monkeypatch.setattr(accounts_mod, "load_global_config", lambda: dict(store))
         assert load_email_accounts() == []
 
     def test_id_defaults_to_address(self, monkeypatch):
         store = {"email": {"accounts": [{"email_address": "a@x.com"}]}}
-        monkeypatch.setattr(config_mod, "load_global_config", lambda: dict(store))
+        monkeypatch.setattr(accounts_mod, "load_global_config", lambda: dict(store))
         accounts = load_email_accounts()
         assert accounts[0].id == "a@x.com"
+
+
+class TestAllowedRecipients:
+    def test_default_is_allow_all(self):
+        assert EmailConfig.from_dict({}).allowed_recipients == ["*@*"]
+
+    def test_explicit_empty_stays_empty(self):
+        assert EmailConfig.from_dict({"allowed_recipients": []}).allowed_recipients == []
+
+    def test_string_parsed_and_deduped(self):
+        cfg = EmailConfig.from_dict(
+            {"allowed_recipients": "A@X.com, *@example.com, a@x.com"}
+        )
+        assert cfg.allowed_recipients == ["a@x.com", "*@example.com"]
+
+    def test_wildcards(self):
+        from interfaces.email.config import address_allowed
+
+        assert address_allowed("a@b.com", ["*@*"])
+        assert address_allowed("a@example.com", ["*@example.com"])
+        assert address_allowed("zhang@example.com", ["zhang*@example.com"])
+        assert not address_allowed("li@example.com", ["zhang*@example.com"])
+
+    def test_roundtrip_persists(self, monkeypatch):
+        store = {}
+        monkeypatch.setattr(accounts_mod, "load_global_config", lambda: dict(store))
+        monkeypatch.setattr(accounts_mod, "save_global_config",
+                            lambda data: store.update(data) or True)
+
+        assert save_email_accounts([
+            EmailConfig(id="a@x.com", email_address="a@x.com"),
+        ])
+        assert store["email"]["accounts"][0]["allowed_recipients"] == ["*@*"]

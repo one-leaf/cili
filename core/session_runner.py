@@ -1133,6 +1133,8 @@ class SessionRunner(BaseSessionRunner):
                         "kind": "approval",
                         "approve": APPROVE_LABEL,
                         "always": REMEMBER_LABEL,
+                        # opaque 动作无法生成持久规则：前端据此隐藏「一直允许」
+                        "remember": permission.get("dynamic_kind") != "opaque",
                         "reject": REJECT_LABEL,
                         "abort": ABORT_LABEL,
                         # 展示元数据（前端倒计时用）；模型可见但无副作用
