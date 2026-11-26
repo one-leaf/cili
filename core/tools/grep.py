@@ -153,6 +153,10 @@ class GrepTool(Tool):
             pattern = _sanitize_regex(pattern)
 
         # Resolve to absolute path
+        if path:
+            escape = self._relative_escape_guard(path)
+            if escape is not None:
+                return escape
         path = self._resolve_path(path) if path else self.cwd
         gate = self._read_gate([path])
         if gate is not None:

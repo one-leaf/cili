@@ -20,6 +20,7 @@ import os
 import re
 import tempfile
 
+from core.fs_utils import is_path_within
 from core.security.command_lexer import _lex, _split_segments, _Tok
 from core.security.path_target import OP_DELETE, OP_WRITE, PathTarget
 
@@ -76,6 +77,75 @@ _PWSH_ALIASES = {
 
 _CD_CMDS = {"cd", "pushd", "set-location", "sl", "push-location"}
 _CD_RESTORE = {"popd", "pop-location"}
+
+# 只读命令中“裸 ..”可视为路径操作数的命令（grep 的 .. 可能是正则，不在此列）。
+_READ_PATH_HEADS = frozenset({
+    "cat", "head", "tail", "less", "more", "ls", "dir", "find", "file",
+    "stat", "wc", "du", "df", "tree", "diff", "comm", "readlink", "realpath",
+    "cd", "pushd", "set-location", "sl",
+    "get-content", "get-childitem", "get-item", "select-string", "test-path",
+    "resolve-path",
+})
+# 这些命令只把参数当字面文本，不当作路径。
+_LITERAL_HEADS = frozenset({
+    "echo", "printf", "date", "pwd", "whoami", "hostname", "uname",
+    "true", "false", "seq", "write-output", "write-host",
+})
+
+
+def _has_parent_component(text: str) -> bool:
+    return ".." in text.replace("\\", "/").split("/")
+
+
+def find_relative_escapes(command: str, mode: str, cwd: str,
+                          initial_dir: str) -> list[str]:
+    """只读命令中会跳出工作区的相对路径（用于执行前硬拒绝）。
+
+    只扫描只读命令；写/删由 PathPolicy 的越界目标审批处理。``cd`` 会更新
+    解析基准；``popd`` 等无法静态跟踪时停止扫描，避免误报。
+    """
+    root = os.path.realpath(cwd)
+    cur = os.path.abspath(initial_dir)
+    known = True
+    escapes: list[str] = []
+    for seg in _split_segments(command, mode):
+        tokens = _lex(seg, mode)
+        if not tokens or tokens[0].kind != "word":
+            continue
+        cmd = tokens[0].text.lower()
+        if cmd in _CD_CMDS:
+            target = _cd_target(tokens[1:])
+            if target is None:
+                continue
+            if target.dynamic:
+                known = False
+                continue
+            if known and not os.path.isabs(target.text) and _has_parent_component(target.text):
+                resolved = normalize_shell_path(target.text, cur, mode)
+                if not is_path_within(resolved, root):
+                    escapes.append(target.text)
+            cur = normalize_shell_path(target.text, cur, mode)
+            continue
+        if cmd in _CD_RESTORE:
+            known = False
+            continue
+        if not known or cmd in _LITERAL_HEADS:
+            continue
+        for tok in tokens[1:]:
+            if tok.kind != "word" or tok.dynamic:
+                continue
+            text = tok.text.strip()
+            if not text or os.path.isabs(text) or not _has_parent_component(text):
+                continue
+            has_sep = "/" in text or "\\" in text
+            if text == ".." and cmd not in _READ_PATH_HEADS:
+                continue
+            if not has_sep and text != "..":
+                continue
+            resolved = normalize_shell_path(text, cur, mode)
+            if not is_path_within(resolved, root):
+                escapes.append(text)
+    return escapes
 
 _DEV_NULLISH = ("/dev/null", "/dev/tty", "/dev/stdout", "/dev/stderr", "nul", "con", "com1", "lpt1")
 _GIT_BASH_DRIVE = re.compile(r"^/([a-zA-Z])/(.*)$")

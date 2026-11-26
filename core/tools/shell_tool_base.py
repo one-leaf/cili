@@ -12,7 +12,8 @@ import re
 from typing import Any
 
 from core.security.path_target import OP_WRITE, PathTarget
-from core.security.shell_targets import collect_shell_targets
+from core.security.permission_rules import is_readonly_command
+from core.security.shell_targets import collect_shell_targets, find_relative_escapes
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
@@ -20,6 +21,7 @@ from core.tools.permission import (
     no_channel_text,
     permission_decision_id,
     permission_placeholder_text,
+    relative_escape_text,
 )
 from core.tools.shell import _strip_shell_strings
 
@@ -187,6 +189,12 @@ class ShellToolBase(Tool):
                 return ToolResult(f"Error: working_dir does not exist: {resolved}", error=True)
             initial_dir = resolved
             working_targets = [PathTarget(OP_WRITE, working_dir, "working_dir", resolved=resolved)]
+
+        if is_readonly_command(self.name, command):
+            escapes = find_relative_escapes(
+                command, self.shell_kind, cwd=self.cwd, initial_dir=initial_dir)
+            if escapes:
+                return ToolResult(relative_escape_text(escapes), error=True)
 
         targets = collect_shell_targets(
             command, self.shell_kind, cwd=self.cwd, initial_dir=initial_dir,

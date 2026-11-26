@@ -31,6 +31,7 @@ __all__ = [
     "no_channel_text",
     "permission_decision_id",
     "permission_placeholder_text",
+    "relative_escape_text",
     "user_reject_hint",
 ]
 
@@ -48,6 +49,17 @@ def canonicalize_command(command: str) -> str:
 
 def permission_decision_id(command: str) -> str:
     return hashlib.sha256(canonicalize_command(command).encode("utf-8")).hexdigest()[:16]
+
+
+def relative_escape_text(paths: list[str]) -> str:
+    """相对路径跳出工作区时的拒绝文案（给 LLM 看）。"""
+    shown = "、".join(f"`{p}`" for p in paths[:3])
+    more = " 等" if len(paths) > 3 else ""
+    return (
+        f"Error: 相对路径 {shown}{more} 跳出了工作区边界。\n"
+        "工作区内请使用相对路径；如果确实需要访问工作区外文件，请改用绝对路径"
+        "（会按权限策略审批），临时产物请放到 `.cili/tmp/`。"
+    )
 
 
 def _risk_label(risk: str) -> str:

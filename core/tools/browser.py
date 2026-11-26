@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 from urllib.parse import quote
 
-from core.config import PROJECT_ROOT
 from core.security.path_target import OP_WRITE, PathTarget
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
@@ -204,7 +203,7 @@ Use web_search for simple lookups; use browser when search results are insuffici
             },
             "save_path": {
                 "type": "string",
-                "description": "File path to save the download to (default: suggested filename in workspace). "
+                "description": "File path to save the download to (default: suggested filename under workspace .cili/tmp/downloads/). "
                                "Relative paths resolve against the working directory.",
             },
             "path": {
@@ -422,28 +421,39 @@ Use web_search for simple lookups; use browser when search results are insuffici
 
         elif action == "download":
             ref = kwargs.get("ref")
-            dl_url = kwargs.get("url")
+            dl_url = url or kwargs.get("url")
             save_path = kwargs.get("save_path")
             if not ref and not dl_url:
                 return ToolResult("Error: download requires 'ref' (trigger) or 'url'", error=True)
-            if save_path and not os.path.isabs(save_path):
-                save_path = os.path.join(self.cwd, save_path)
-            # P1-23：download 落盘路径接入审批门。未提供 save_path 时服务层默认
-            # 写项目根（工作区外），按越界目标一并送审批
+            if save_path:
+                escape = self._relative_escape_guard(save_path)
+                if escape is not None:
+                    return escape
+                if not os.path.isabs(save_path):
+                    save_path = os.path.join(self.cwd, save_path)
+            # P1-23：download 落盘路径接入审批门。未提供 save_path 时默认写入
+            # 工作区临时目录，避免落到项目根触发越界审批。
             if save_path:
                 target = PathTarget(
                     OP_WRITE, save_path, "browser.download",
                     resolved=self._path_policy().resolve(save_path),
                 )
             else:
-                default_dir = str(PROJECT_ROOT)
+                default_dir = os.path.join(self.cwd, ".cili", "tmp", "downloads")
                 target = PathTarget(
-                    OP_WRITE, default_dir, "browser.download(默认项目根)",
+                    OP_WRITE, default_dir, "browser.download(默认临时目录)",
                     resolved=self._path_policy().resolve(default_dir),
                 )
             gate = self._path_gate([target])
             if gate:
                 return gate
+            if not save_path:
+                try:
+                    os.makedirs(default_dir, exist_ok=True)
+                except OSError as e:
+                    return ToolResult(f"Error: cannot create download directory: {e}", error=True)
+                return service.download(ref=ref, url=dl_url, save_path=None,
+                                        save_dir=default_dir, tab_index=tab_index)
             return service.download(ref=ref, url=dl_url, save_path=save_path, tab_index=tab_index)
 
         elif action == "dialogs":
@@ -465,6 +475,10 @@ Use web_search for simple lookups; use browser when search results are insuffici
             return service.set_cookie(cookie, tab_index=tab_index)
 
         elif action == "screenshot":
+            if screenshot_path:
+                escape = self._relative_escape_guard(screenshot_path)
+                if escape is not None:
+                    return escape
             path = screenshot_path or os.path.join(self.cwd, "screenshot.png")
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)
@@ -488,6 +502,10 @@ Use web_search for simple lookups; use browser when search results are insuffici
             return service.screenshot(path, tab_index=tab_index, image_url=image_url)
 
         elif action == "save_pdf":
+            if pdf_path:
+                escape = self._relative_escape_guard(pdf_path)
+                if escape is not None:
+                    return escape
             path = pdf_path or os.path.join(self.cwd, "page.pdf")
             if not os.path.isabs(path):
                 path = os.path.join(self.cwd, path)

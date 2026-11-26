@@ -63,6 +63,9 @@ class ReadTool(Tool):
         limit: int | None = None,
         pages: str | None = None,
     ) -> ToolResult:
+        escape = self._relative_escape_guard(file_path)
+        if escape is not None:
+            return escape
         file_path = self._resolve_path(file_path)
         gate = self._read_gate([file_path])
         if gate is not None:

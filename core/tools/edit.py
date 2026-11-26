@@ -64,6 +64,9 @@ class EditTool(Tool):
         occurrence: int | None = None,
         line_hint: int | None = None,
     ) -> ToolResult:
+        escape = self._relative_escape_guard(file_path)
+        if escape is not None:
+            return escape
         policy = self._path_policy()
         resolved = policy.resolve(file_path)
         gate = self._path_gate([PathTarget(OP_WRITE, file_path, "edit", resolved=resolved)])

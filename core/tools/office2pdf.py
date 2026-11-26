@@ -120,6 +120,9 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
         if not file_path:
             return ToolResult("Error: file_path is required", error=True)
 
+        escape = self._relative_escape_guard(file_path)
+        if escape is not None:
+            return escape
         abs_path = self._resolve_path(file_path)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
@@ -137,6 +140,9 @@ Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PD
 
         output_arg = str(kwargs.get("output_path") or "").strip()
         if output_arg:
+            escape = self._relative_escape_guard(output_arg)
+            if escape is not None:
+                return escape
             output_path = self._resolve_path(output_arg)
         else:
             output_path = os.path.join(self.cwd, f"{Path(abs_path).stem}.pdf")

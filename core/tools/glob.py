@@ -66,6 +66,10 @@ class GlobTool(Tool):
             return ToolResult("Error: either 'pattern' or 'file_type' must be provided.", error=True)
 
         # Resolve to absolute path
+        if path:
+            escape = self._relative_escape_guard(path)
+            if escape is not None:
+                return escape
         search_dir = Path(self._resolve_path(path)) if path else Path(self.cwd)
         if not search_dir.is_dir():
             return ToolResult(f"Error: path is not a directory: {search_dir}", error=True)

@@ -1647,13 +1647,14 @@ class BrowserService:
     # ==================== 下载（download） ====================
 
     def download(self, ref: str | None = None, url: str | None = None, save_path: str | None = None,
-                 tab_index: int | None = None) -> ToolResult:
+                 save_dir: str | None = None, tab_index: int | None = None) -> ToolResult:
         """下载文件：点击 ref 触发，或直接导航到下载 URL。
 
         Args:
             ref: 触发下载的元素 ref（点击后等待下载）
             url: 直接导航到的下载 URL（与 ref 二选一）
             save_path: 保存路径（绝对路径，由工具层解析）；缺省用 suggested_filename
+            save_dir: 未给 save_path 时的保存目录（工具层默认工作区 .cili/tmp/downloads）
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
         """
         def _do_download(page):
@@ -1671,6 +1672,9 @@ class BrowserService:
             suggested = download.suggested_filename
             if save_path:
                 abs_path = save_path if os.path.isabs(save_path) else os.path.join(self._project_root, save_path)
+            elif save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+                abs_path = os.path.join(save_dir, suggested)
             else:
                 abs_path = os.path.join(self._project_root, suggested)
             download.save_as(abs_path)

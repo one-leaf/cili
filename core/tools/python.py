@@ -253,6 +253,9 @@ class PythonTool(Tool):
 
     def _execute_file(self, script_file: str, args: str | None = None, run_in_background: bool = False) -> ToolResult:
         """Execute a Python script file."""
+        escape = self._relative_escape_guard(script_file)
+        if escape is not None:
+            return escape
         python_exe = _resolve_python_exe()
         path = self._resolve_path(script_file)
         if not os.path.isfile(path):

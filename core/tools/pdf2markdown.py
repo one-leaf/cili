@@ -332,6 +332,9 @@ class PDF2MarkdownTool(Tool):
             return ToolResult("Error: file_path is required", error=True)
 
         # Resolve file path
+        escape = self._relative_escape_guard(file_path)
+        if escape is not None:
+            return escape
         abs_path = self._resolve_path(file_path)
         if not os.path.isfile(abs_path):
             return ToolResult(f"Error: file not found: {abs_path}", error=True)
@@ -354,6 +357,9 @@ class PDF2MarkdownTool(Tool):
             stem = Path(abs_path).stem
             output_path = os.path.join(self.cwd, f"{stem}.md")
         else:
+            escape = self._relative_escape_guard(output_path)
+            if escape is not None:
+                return escape
             output_path = self._resolve_path(output_path)
 
         # 路径权限门：输出 .md 写入工作区外需审批/拒绝

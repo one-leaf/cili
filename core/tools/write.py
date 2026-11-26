@@ -41,6 +41,9 @@ class WriteTool(Tool):
     MAX_RESULT_SIZE_CHARS = WRITE_RESULT_MAX_CHARS  # 工具结果上限
 
     def execute(self, file_path: str, content: str) -> ToolResult:
+        escape = self._relative_escape_guard(file_path)
+        if escape is not None:
+            return escape
         policy = self._path_policy()
         resolved = policy.resolve(file_path)
         gate = self._path_gate([PathTarget(OP_WRITE, file_path, "write", resolved=resolved)])

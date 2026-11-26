@@ -16,7 +16,7 @@ from core.compression import (
 from core.compression import (
     truncate_result as _truncate_result,
 )
-from core.fs_utils import normalize_bash_path
+from core.fs_utils import is_path_within, normalize_bash_path
 from core.security.path_policy import PathPolicy
 from core.security.path_target import OP_DELETE, OP_READ, PathTarget
 from core.tool_limits import (
@@ -26,7 +26,7 @@ from core.tool_limits import (
 )
 from core.tool_output import save_tool_output
 from core.tools.background import BackgroundMixin
-from core.tools.permission import META_KEY, permission_placeholder_text
+from core.tools.permission import META_KEY, permission_placeholder_text, relative_escape_text
 from core.tools.result import ToolResult
 from core.tools.shell import ShellMixin
 
@@ -155,6 +155,21 @@ class Tool(ShellMixin, BackgroundMixin):
         if not os.path.isabs(path):
             path = os.path.join(self.cwd, path)
         return os.path.realpath(path)
+
+    def _relative_escape_guard(self, path: str) -> ToolResult | None:
+        """相对路径不得用 ``..`` 跳出工作区；越界请改用绝对路径走权限审批。"""
+        if not isinstance(path, str) or not path.strip():
+            return None
+        raw = normalize_bash_path(path)
+        if os.path.isabs(raw):
+            return None
+        if ".." not in raw.replace("\\", "/").split("/"):
+            return None
+        root = os.path.realpath(self.cwd)
+        resolved = os.path.realpath(os.path.join(root, raw))
+        if is_path_within(resolved, root):
+            return None
+        return ToolResult(relative_escape_text([path]), error=True)
 
     def _workflow_definition_guard(self, resolved: str) -> ToolResult | None:
         """禁止直接用 write/edit 改工作流定义（实现在 core.workflows.guards）。"""

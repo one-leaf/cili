@@ -184,6 +184,13 @@ class LatexTool(Tool):
     ) -> ToolResult:
         """Compile a LaTeX file to PDF."""
         # Resolve input file path
+        escape = self._relative_escape_guard(tex_file)
+        if escape is not None:
+            return escape
+        if output:
+            escape = self._relative_escape_guard(output)
+            if escape is not None:
+                return escape
         tex_path = self._resolve_path(tex_file)
         if not os.path.exists(tex_path):
             return ToolResult(f"Error: File not found: {tex_path}", error=True)
