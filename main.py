@@ -534,6 +534,55 @@ def _ensure_deps_python() -> bool:
     return _install_deps_python()
 
 
+def _download_file(url: str, dest: str, timeout: int = 300) -> bool:
+    """下载文件到 dest，成功返回 True。
+
+    优先用 stdlib urllib 直下：不依赖第三方包，也不像 certutil 那样容易被
+    安全软件当作 LOLBIN 行为拦截。urllib 走 Python 自己的证书链与代理环境变量；
+    失败（如企业代理换发证书）时回退 certutil（WinHTTP，走系统证书与代理）。
+    """
+    import urllib.request
+
+    partial = dest + ".part"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            with open(partial, "wb") as f:
+                shutil.copyfileobj(resp, f, 1024 * 256)
+        if os.path.getsize(partial) > 0:
+            os.replace(partial, dest)
+            return True
+        print(f"[setup] Download failed (empty file): {url}")
+    except Exception as e:
+        print(f"[setup] Download error (urllib): {url}: {e}")
+    finally:
+        if os.path.exists(partial):
+            try:
+                os.remove(partial)
+            except OSError:
+                pass
+
+    try:
+        result = subprocess.run(
+            ["certutil", "-urlcache", "-split", "-f", url, dest],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if (result.returncode == 0 and os.path.exists(dest)
+                and os.path.getsize(dest) > 0):
+            return True
+        print(f"[setup] Download failed (certutil): {url}: {result.stderr.strip()[:200]}")
+    except Exception as e:
+        print(f"[setup] Download error (certutil): {url}: {e}")
+
+    if os.path.exists(dest):
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+    return False
+
+
 def _install_deps_python() -> bool:
     """Download and configure embeddable Python to data/deps/python."""
     # Embeddable Python has python.exe at root
@@ -552,14 +601,8 @@ def _install_deps_python() -> bool:
     zip_path = os.path.join(_DEPS_DIR, "python-embed.zip")
 
     try:
-        result = subprocess.run(
-            ["certutil", "-urlcache", "-split", "-f", url, zip_path],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0 or not os.path.exists(zip_path):
-            print(f"[setup] Error: download failed: {result.stderr.strip()[:200]}")
+        if not _download_file(url, zip_path, timeout=300):
+            print("[setup] Error: download failed")
             return False
     except Exception as e:
         print(f"[setup] Error: download failed: {e}")
@@ -619,14 +662,8 @@ def _install_deps_python() -> bool:
     get_pip_path = os.path.join(_DEPS_PYTHON_DIR, "get-pip.py")
     try:
         # 使用阿里云镜像下载 get-pip.py
-        result = subprocess.run(
-            ["certutil", "-urlcache", "-split", "-f",
-             "https://mirrors.aliyun.com/pypi/get-pip.py", get_pip_path],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0 or not os.path.exists(get_pip_path):
+        if not _download_file("https://mirrors.aliyun.com/pypi/get-pip.py",
+                              get_pip_path, timeout=120):
             print("[setup] Error: pip download failed")
             return False
 
@@ -1303,17 +1340,10 @@ def _install_pwsh() -> bool:
         try:
             if os.path.exists(zip_path):
                 os.remove(zip_path)
-            result = subprocess.run(
-                ["certutil", "-urlcache", "-split", "-f", url, zip_path],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if (result.returncode == 0 and os.path.exists(zip_path)
+            if (_download_file(url, zip_path, timeout=300)
                     and os.path.getsize(zip_path) > 1024 * 1024):
                 downloaded = True
                 break
-            print(f"[setup] Download failed: {url}")
         except Exception as e:
             print(f"[setup] Download error: {e}")
         if os.path.exists(zip_path):
