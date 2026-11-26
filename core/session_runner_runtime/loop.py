@@ -23,6 +23,7 @@ from core.permission_settings import PermissionConfig, get_permission_config
 from core.security.permission_judge import JudgeDecision
 from core.security.permission_rules import build_granted_rule, implied_path_rules
 from core.security.permission_state import append_permission_audit
+from core.session import recent_user_texts
 from core.session_runner_runtime.tool_batch import execute_tool_calls
 from core.tools.permission import (
     META_KEY,
@@ -102,6 +103,17 @@ LOOP_REPEAT_STRONG_WARNING = (
     "2. 采用完全不同的工具或方法（例如：用 browser 替代 web_search）\n"
     "3. 如果判断无法继续，直接输出总结报告，不要再次重复\n"
 )
+
+
+def should_persist_judge_decision(decision, cfg, teen_unlocked: bool) -> bool:
+    """判定器放行后是否允许自动落盘规则：只接受低风险 + 显式建议。"""
+    return bool(
+        cfg.judge.persist_allow
+        and decision.risk == "low"
+        and decision.source == "judge"
+        and decision.suggested_rule
+        and not teen_unlocked
+    )
 
 
 class LoopPolicy:
@@ -605,6 +617,9 @@ class Loop:
                 continue
 
             # verdict == "ai"（或旧占位未带 verdict）
+            if judge is not None and cfg.judge.intent_context:
+                permission["user_intent"] = recent_user_texts(
+                    getattr(runner, "messages", []))
             if judge is None:
                 decision = JudgeDecision(decision="deny", summary="", reason="判定器缺失",
                                               source="failure", error="no judge")
@@ -631,20 +646,30 @@ class Loop:
                         f"青少年模式：高风险动作需家长逐次授权（risk={decision.risk}）",
                         decision.alternative)
                     continue
-                persistable = (rules is not None and cfg.judge.persist_allow
-                               and decision.risk != "high" and decision.source == "judge"
-                               and not teen_unlocked)
+                persistable = (
+                    rules is not None
+                    and should_persist_judge_decision(decision, cfg, teen_unlocked)
+                )
                 if persistable:
                     built = build_granted_rule(
                         kind=permission.get("kind", "command"), tool=permission.get("tool", "*"),
                         action=str(permission.get("command") or ""), decision="allow",
                         suggested=decision.suggested_rule, granted_by="judge",
-                        summary=decision.summary, decision_id=permission.get("decision_id", ""))
+                        summary=decision.summary, decision_id=permission.get("decision_id", ""),
+                        strict=True)
                     if built.rule:
                         rules.add_rule(built.rule, "workspace")
-                        for extra in implied_path_rules(permission.get("targets") or [], "judge",
-                                                        permission.get("decision_id", "")):
+                        for extra in implied_path_rules(
+                                permission.get("targets") or [], "judge",
+                                permission.get("decision_id", ""), strict=True):
                             rules.add_rule(extra, "workspace")
+                        append_permission_audit(getattr(runner, "session_dir", None),
+                                                "rule_persisted", {
+                            "decision_id": permission.get("decision_id", ""),
+                            "rule_id": built.rule.get("id", ""),
+                            "match": built.rule.get("match", {}),
+                            "risk": decision.risk,
+                        })
                     elif built.reason:
                         logger.info(f"[permission] 判定放行未落盘：{built.reason}")
                 if store:

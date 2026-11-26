@@ -93,6 +93,25 @@ async def get_permissions():
     }
 
 
+@router.get("/api/permissions/judge-stats")
+async def judge_stats():
+    """当前活跃 runner 的判定器计数（进程内，不落盘）。"""
+    from web.deps import registry
+    with registry.lock:
+        runners = list(registry.items())
+    totals: dict[str, float] = {}
+    sessions = 0
+    for _, runner in runners:
+        stats = getattr(getattr(runner, "permission_judge", None), "stats", None)
+        if not stats:
+            continue
+        sessions += 1
+        for key, value in stats.items():
+            if isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+    return {"sessions": sessions, "totals": totals}
+
+
 @router.put("/api/permissions",
             dependencies=[Depends(teen_guard("config_update"))])
 async def update_permissions(request: Request, body: PermissionUpdateRequest):

@@ -2,6 +2,7 @@
 """权限 API 测试：顶层 permissions 配置 + 全局规则 CRUD。"""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -154,3 +155,35 @@ def test_permission_config_robust_values():
     assert cfg.judge.timeout_seconds == 60
     assert cfg.judge.persist_allow is False
     assert cfg.global_rules_path == ""
+
+
+class TestJudgeConfigApi:
+    def test_on_error_allow_is_coerced(self, tmp_path, monkeypatch):
+        state = _fake_global_config(tmp_path, monkeypatch)
+        body = rp.PermissionUpdateRequest(permissions={
+            "judge": {"on_error": "allow"},
+        })
+        result = asyncio.run(rp.update_permissions(_request(), body))
+        assert result["permissions"]["judge"]["on_error"] == "ask"
+        assert state["permissions"]["judge"]["on_error"] == "ask"
+
+    def test_judge_stats_aggregates_active_runners(self, monkeypatch):
+        class _Registry:
+            lock = threading.RLock()
+
+            @staticmethod
+            def items():
+                return [
+                    ("a", SimpleNamespace(permission_judge=SimpleNamespace(
+                        stats={"allowed": 2, "denied": 1, "judge_calls": 3}))),
+                    ("b", SimpleNamespace(permission_judge=SimpleNamespace(
+                        stats={"allowed": 1, "asked_user": 2, "judge_calls": 3}))),
+                    ("c", SimpleNamespace()),
+                ]
+
+        monkeypatch.setattr("web.deps.registry", _Registry())
+        data = asyncio.run(rp.judge_stats())
+        assert data["sessions"] == 2
+        assert data["totals"]["allowed"] == 3
+        assert data["totals"]["denied"] == 1
+        assert data["totals"]["asked_user"] == 2

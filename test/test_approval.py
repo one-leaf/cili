@@ -9,6 +9,9 @@
 """
 
 import json
+import os
+
+import pytest
 
 from core.permission_settings import PermissionConfig
 from core.security.permission_policy import PermissionResolver
@@ -365,3 +368,136 @@ class TestAuditFileName:
         from core.tools.permission import append_permission_audit
         append_permission_audit(tmp_path, "asked", {"decision_id": "d1"})
         assert (tmp_path / "approval_audit.jsonl").exists()
+
+
+class TestStrictRuleGeneration:
+    """判定器自动落盘（strict=True）的规则质量门槛。"""
+
+    def test_accepts_clear_prefix(self):
+        rule = build_granted_rule(
+            kind="command", tool="bash", action="git status",
+            suggested={"type": "prefix", "value": "git status"},
+            granted_by="judge", strict=True)
+        assert rule.rule is not None
+
+    def test_rejects_short_or_control_prefix(self):
+        for value in ("for d", "while x", "if x"):
+            rule = build_granted_rule(
+                kind="command", tool="bash", action=f"{value} ...",
+                suggested={"type": "prefix", "value": value},
+                granted_by="judge", strict=True)
+            assert rule.rule is None, value
+
+    def test_rejects_unbalanced_quote(self):
+        rule = build_granted_rule(
+            kind="command", tool="bash", action='echo "Bash x"',
+            suggested={"type": "prefix", "value": 'echo "Bash'},
+            granted_by="judge", strict=True)
+        assert rule.rule is None
+
+    def test_rejects_banned_head(self):
+        rule = build_granted_rule(
+            kind="command", tool="bash", action="python x.py",
+            suggested={"type": "prefix", "value": "python x.py"},
+            granted_by="judge", strict=True)
+        assert rule.rule is None
+
+    def test_argv_glob_requires_two_concrete_tokens(self):
+        loose = build_granted_rule(
+            kind="command", tool="bash", action="git x",
+            suggested={"type": "argv_glob", "value": ["git", "*"]},
+            granted_by="judge", strict=True)
+        strict = build_granted_rule(
+            kind="command", tool="bash", action="git commit -m x",
+            suggested={"type": "argv_glob", "value": ["git", "commit", "-m", "*"]},
+            granted_by="judge", strict=True)
+        assert loose.rule is None
+        assert strict.rule is not None
+
+    def test_strict_requires_explicit_suggestion(self):
+        rule = build_granted_rule(
+            kind="command", tool="bash", action="git status",
+            granted_by="judge", strict=True)
+        assert rule.rule is None
+        assert rule.reason
+
+    def test_rejects_home_prefix(self):
+        import os
+        home = os.path.expanduser("~")
+        rule = build_granted_rule(
+            kind="path:write", tool="*", action=home,
+            suggested={"type": "prefix", "value": home},
+            granted_by="judge", strict=True)
+        assert rule.rule is None
+
+
+class TestStrictRuleActionMatch:
+    """strict 建议规则必须与当前动作/路径/URL 匹配。"""
+
+    def test_command_suggestion_must_match_action(self):
+        rule = build_granted_rule(
+            kind="command", tool="bash", action="ls",
+            suggested={"type": "prefix", "value": "git push"},
+            granted_by="judge", strict=True)
+        assert rule.rule is None
+        assert "不匹配" in rule.reason
+
+    def test_path_suggestion_must_cover_action(self, tmp_path):
+        action = str(tmp_path / "out" / "x.txt")
+        parent = str(tmp_path / "out")
+        ok = build_granted_rule(
+            kind="path:write", tool="*", action=action,
+            suggested={"type": "prefix", "value": parent},
+            granted_by="judge", strict=True)
+        bad = build_granted_rule(
+            kind="path:write", tool="*", action=action,
+            suggested={"type": "prefix", "value": str(tmp_path / "other")},
+            granted_by="judge", strict=True)
+        assert ok.rule is not None
+        assert bad.rule is None
+
+    def test_url_suggestion_must_match_action(self):
+        ok = build_granted_rule(
+            kind="browser:navigate", tool="browser",
+            action="https://example.com/page",
+            suggested={"type": "prefix", "value": "https://example.com"},
+            granted_by="judge", strict=True)
+        bad = build_granted_rule(
+            kind="browser:navigate", tool="browser",
+            action="https://example.com/page",
+            suggested={"type": "prefix", "value": "https://other.com"},
+            granted_by="judge", strict=True)
+        assert ok.rule is not None
+        assert bad.rule is None
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive roots")
+    def test_rejects_any_drive_root(self):
+        for value in ("C:\\", "D:\\", os.path.expanduser("~").upper()):
+            rule = build_granted_rule(
+                kind="path:write", tool="*", action=value,
+                suggested={"type": "prefix", "value": value},
+                granted_by="judge", strict=True)
+            assert rule.rule is None, value
+
+    def test_url_prefix_requires_meaningful_host(self):
+        for value in ("http", "https", "https://", "com", "*", "/"):
+            rule = build_granted_rule(
+                kind="browser:navigate", tool="browser",
+                action="https://example.com/page",
+                suggested={"type": "prefix", "value": value},
+                granted_by="judge", strict=True)
+            assert rule.rule is None, value
+        ok = build_granted_rule(
+            kind="browser:navigate", tool="browser",
+            action="https://example.com/page",
+            suggested={"type": "prefix", "value": "https://example.com"},
+            granted_by="judge", strict=True)
+        assert ok.rule is not None
+
+    def test_argv_glob_rejects_control_and_misplaced_star(self):
+        for value in (["for", "x", "*"], ["git", "*", "commit"], ["git", "|", "x", "*"]):
+            rule = build_granted_rule(
+                kind="command", tool="bash", action="git commit -m x",
+                suggested={"type": "argv_glob", "value": value},
+                granted_by="judge", strict=True)
+            assert rule.rule is None, value

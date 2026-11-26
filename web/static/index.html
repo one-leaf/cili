@@ -712,13 +712,20 @@
                                         <select id="permission-judge-on-error">
                                             <option value="ask">询问</option>
                                             <option value="deny">拒绝</option>
-                                            <option value="allow">允许</option>
                                         </select>
                                     </div>
                                 </div>
                                 <div class="setting-row">
                                     <label for="permission-judge-persist">AI 放行自动落盘</label>
                                     <div class="control"><div class="inline"><input type="checkbox" id="permission-judge-persist"></div></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-intent">判定器读取最近用户消息</label>
+                                    <div class="control"><div class="inline"><input type="checkbox" id="permission-judge-intent"></div></div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="permission-judge-model">判定模型</label>
+                                    <div class="control"><input type="text" id="permission-judge-model" placeholder="留空使用 lite 角色"></div>
                                 </div>
                                 <div class="setting-row">
                                     <label for="permission-judge-cache">判定缓存</label>

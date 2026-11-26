@@ -54,6 +54,15 @@ DESTRUCTIVE_HEADS = frozenset({
     "shutdown", "reboot", "stop-computer", "restart-computer", "stop-process",
 })
 
+# 判定器自动落盘的规则质量门槛（strict=True 时生效）。
+_CONTROL_HEADS = frozenset({
+    "for", "while", "until", "if", "case", "function", "time", "watch",
+})
+_SHELL_META = frozenset("|;&<>`$")
+_MIN_PREFIX_TOKENS = 2
+_MIN_PREFIX_LAST_TOKEN = 3
+_MIN_PREFIX_TOTAL = 6
+
 # 内置 deny 规则（代码维护，设置页只读展示）。
 _BUILTIN_DENY_SPECS: tuple[tuple[str, str, str], ...] = (
     ("exact", "rm -rf /", "禁止递归删除系统盘根目录"),
@@ -176,6 +185,100 @@ def _norm_head(value: str | list[str]) -> str:
     if isinstance(value, list):
         return _head_token(" ".join(str(v) for v in value[:1]))
     return _head_token(str(value))
+
+
+def _valid_command_match(match: dict, *, strict: bool) -> bool:
+    """命令规则的最小信息量校验；strict=True 用于判定器自动落盘。"""
+    mtype = match.get("type")
+    value = match.get("value")
+    if mtype == "exact":
+        return isinstance(value, str) and bool(canonical_text(value))
+    if mtype == "prefix":
+        if not isinstance(value, str):
+            return False
+        text = canonical_text(value)
+        if not text:
+            return False
+        head = _norm_head(text)
+        if head in BANNED_PREFIX_HEADS:
+            return False
+        if not strict:
+            return True
+        tokens = text.split()
+        if len(tokens) < _MIN_PREFIX_TOKENS or len(text) < _MIN_PREFIX_TOTAL:
+            return False
+        if len(tokens[-1]) < _MIN_PREFIX_LAST_TOKEN:
+            return False
+        if head in _CONTROL_HEADS:
+            return False
+        if any(ch in _SHELL_META for ch in text):
+            return False
+        if text.count('"') % 2 or text.count("'") % 2:
+            return False
+        return True
+    if mtype == "argv_glob":
+        if (not isinstance(value, list) or len(value) < 2
+                or any(not isinstance(v, str) or not v for v in value)):
+            return False
+        head = _norm_head(value)
+        if head in BANNED_PREFIX_HEADS:
+            return False
+        if not strict:
+            return True
+        if head in _CONTROL_HEADS:
+            return False
+        if any(v == "*" for v in value[:-1]):
+            return False
+        if any(ch in _SHELL_META for token in value for ch in token):
+            return False
+        concrete = [v for v in value if v != "*"]
+        return len(concrete) >= 2
+    return False
+
+
+_URL_BARE = frozenset({"http", "https", "ftp", "file", "ws", "wss"})
+
+
+def _valid_url_prefix(value: str) -> bool:
+    """URL 自动落盘前缀的最小信息量校验。"""
+    text = (value or "").strip()
+    if len(text) < 6:
+        return False
+    lowered = text.lower()
+    if lowered in _URL_BARE or lowered.endswith("://"):
+        return False
+    parsed = urlsplit(text if "://" in text else f"//{text}")
+    host = parsed.netloc or parsed.path
+    return bool(host) and host not in ("*", "/")
+
+
+def _is_root_or_home(value: str) -> bool:
+    """路径规则是否覆盖盘根/文件系统根或用户主目录（大小写不敏感）。"""
+    norm = os.path.normcase(os.path.normpath(value))
+    _, tail = os.path.splitdrive(norm)
+    if tail.strip("\\/") == "":
+        return True
+    home = os.path.normcase(os.path.normpath(os.path.expanduser("~")))
+    return norm == home
+
+
+def _command_match_covers_action(match: dict, action: str) -> bool:
+    """建议规则必须能匹配当前动作，避免给无关命令预授权。"""
+    canon = canonical_text(action)
+    if not canon:
+        return False
+    mtype = match.get("type")
+    value = match.get("value")
+    if mtype == "exact":
+        return canonical_text(str(value or "")) == canon
+    if mtype == "prefix":
+        prefix = canonical_text(str(value or ""))
+        if canon == prefix or canon.startswith(prefix + " "):
+            return True
+        return prefix.endswith(("/", "\\")) and canon.startswith(prefix)
+    if mtype == "argv_glob":
+        return _glob_match(value, canon.split())
+    return False
 
 
 def _split_command(command: str, mode: str) -> list[str]:
@@ -399,11 +502,13 @@ def build_granted_rule(
     granted_by: str = "user",
     summary: str = "",
     decision_id: str = "",
+    strict: bool = False,
 ) -> RuleBuildResult:
     """把一次放行/拒绝固化为规则。
 
     path 类规则必须是绝对路径；动态路径没有可持久化前缀时返回原因，
     不再从 raw 变量名或 f-string 源码推导伪规则。
+    ``strict=True`` 用于判定器自动落盘：要求建议明确、粒度可解释。
     """
     if kind not in _KINDS or decision not in _DECISIONS:
         return RuleBuildResult(None, "不支持的规则类型或决策")
@@ -416,13 +521,14 @@ def build_granted_rule(
         stype = (suggested or {}).get("type")
         svalue = (suggested or {}).get("value")
         if stype in _MATCH_TYPES and svalue:
-            match = {"type": stype, "value": svalue}
-            if stype == "argv_glob":
-                if isinstance(svalue, list) and svalue and all(isinstance(v, str) for v in svalue):
-                    match = {"type": "argv_glob", "value": [str(v) for v in svalue]}
-                else:
-                    match = {}
+            candidate = {"type": stype, "value": svalue}
+            if stype == "argv_glob" and isinstance(svalue, list):
+                candidate = {"type": "argv_glob", "value": [str(v) for v in svalue]}
+            if _valid_command_match(candidate, strict=strict):
+                match = candidate
         if not match:
+            if strict:
+                return RuleBuildResult(None, "判定建议缺少可安全落盘的规则")
             tokens = action.split()
             if len(tokens) >= 2 and not tokens[1].startswith("-"):
                 match = {"type": "prefix", "value": canonical_text(" ".join(tokens[:2]))}
@@ -435,6 +541,8 @@ def build_granted_rule(
                 return RuleBuildResult(None, "入口前缀命中黑名单")
             if head in DESTRUCTIVE_HEADS or head.startswith("mkfs"):
                 match = {"type": "exact", "value": canonical_text(action)}
+        if strict and not _command_match_covers_action(match, action):
+            return RuleBuildResult(None, "判定建议与当前动作不匹配")
 
     elif kind in ("path:read", "path:write", "path:delete"):
         stype = (suggested or {}).get("type")
@@ -443,8 +551,15 @@ def build_granted_rule(
             value = os.path.normpath(svalue.strip())
             if not os.path.isabs(value):
                 return RuleBuildResult(None, "路径规则前缀不是绝对路径")
+            if strict and _is_root_or_home(value):
+                return RuleBuildResult(None, "路径规则粒度过宽")
+            if strict and os.path.isabs(action.strip()):
+                if not _path_prefix_covers(value, os.path.normpath(action.strip())):
+                    return RuleBuildResult(None, "判定建议与当前路径不匹配")
             match = {"type": stype, "value": value}
         else:
+            if strict:
+                return RuleBuildResult(None, "判定建议缺少可安全落盘的路径规则")
             target = action.strip()
             if not os.path.isabs(target):
                 return RuleBuildResult(None, "动态路径缺少可持久化前缀")
@@ -455,8 +570,15 @@ def build_granted_rule(
         stype = (suggested or {}).get("type")
         svalue = (suggested or {}).get("value")
         if stype in ("prefix", "exact") and isinstance(svalue, str) and svalue.strip():
-            match = {"type": stype, "value": svalue.strip()}
+            value = svalue.strip()
+            if strict and not _valid_url_prefix(value):
+                return RuleBuildResult(None, "URL 规则粒度过宽")
+            if strict and action.strip() and not action.strip().startswith(value):
+                return RuleBuildResult(None, "判定建议与当前 URL 不匹配")
+            match = {"type": stype, "value": value}
         else:
+            if strict:
+                return RuleBuildResult(None, "判定建议缺少可安全落盘的 URL 规则")
             try:
                 parts = urlsplit(action)
                 host = parts.netloc or parts.path.split("/")[0]
@@ -491,7 +613,8 @@ def build_granted_rule(
     return RuleBuildResult(rule)
 
 
-def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str) -> list[dict]:
+def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str,
+                       *, strict: bool = False) -> list[dict]:
     """命令放行时对其越界写/删目标派生的 allow 路径规则。"""
     rules: list[dict] = []
     for t in targets or []:
@@ -505,6 +628,7 @@ def implied_path_rules(targets: list[dict], granted_by: str, decision_id: str) -
             kind=kind, tool="*", action=os.path.dirname(resolved) or resolved,
             decision="allow", suggested={"type": "prefix", "value": os.path.dirname(resolved) or resolved},
             granted_by=granted_by, summary=f"命令放行隐含（{decision_id}）", decision_id=decision_id,
+            strict=strict,
         )
         if rule.rule:
             rules.append(rule.rule)

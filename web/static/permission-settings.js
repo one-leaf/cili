@@ -51,8 +51,10 @@ function fillPermissionForm(cfg) {
     setPermissionField('permission-readonly-bypass', cfg.readonly_bypass !== false, 'checked');
     setPermissionField('permission-judge-enabled', judge.enabled !== false, 'checked');
     setPermissionField('permission-judge-timeout', judge.timeout_seconds || 60);
-    setPermissionField('permission-judge-on-error', judge.on_error || 'ask');
+    setPermissionField('permission-judge-on-error', judge.on_error === 'deny' ? 'deny' : 'ask');
     setPermissionField('permission-judge-persist', judge.persist_allow !== false, 'checked');
+    setPermissionField('permission-judge-intent', judge.intent_context !== false, 'checked');
+    setPermissionField('permission-judge-model', judge.model || '');
     setPermissionField('permission-judge-cache', judge.cache || 'session');
     setPermissionField('permission-judge-failures', judge.max_consecutive_failures || 3);
     setPermissionField('permission-approval-timeout',
@@ -107,6 +109,8 @@ function collectPermissionConfig() {
             timeout_seconds: parseInt(document.getElementById('permission-judge-timeout').value, 10) || 60,
             on_error: document.getElementById('permission-judge-on-error').value,
             persist_allow: document.getElementById('permission-judge-persist').checked,
+            intent_context: document.getElementById('permission-judge-intent').checked,
+            model: (document.getElementById('permission-judge-model').value || '').trim(),
             cache: document.getElementById('permission-judge-cache').value,
             max_consecutive_failures: parseInt(document.getElementById('permission-judge-failures').value, 10) || 3,
         },

@@ -76,16 +76,18 @@ class JudgeConfig:
 
     enabled: bool = True
     timeout_seconds: int = 60
-    on_error: str = "ask"  # ask | deny | allow
+    on_error: str = "ask"  # ask | deny
     persist_allow: bool = True
     cache: str = "session"  # session | none
     max_consecutive_failures: int = 3
+    intent_context: bool = True   # 是否把最近用户消息文本交给判定器
+    model: str = ""               # 判定模型引用；空 = 使用 lite 角色
 
     @classmethod
     def from_dict(cls, data: dict) -> "JudgeConfig":
         data = data if isinstance(data, dict) else {}
         on_error = str(data.get("on_error", "ask"))
-        if on_error not in ("ask", "deny", "allow"):
+        if on_error not in ("ask", "deny"):
             on_error = "ask"
         cache = str(data.get("cache", "session"))
         if cache not in ("session", "none"):
@@ -97,6 +99,8 @@ class JudgeConfig:
             persist_allow=_as_bool(data.get("persist_allow"), True),
             cache=cache,
             max_consecutive_failures=max(1, _as_int(data.get("max_consecutive_failures"), 3)),
+            intent_context=_as_bool(data.get("intent_context"), True),
+            model=str(data.get("model") or ""),
         )
 
     def to_dict(self) -> dict:
@@ -107,6 +111,8 @@ class JudgeConfig:
             "persist_allow": self.persist_allow,
             "cache": self.cache,
             "max_consecutive_failures": self.max_consecutive_failures,
+            "intent_context": self.intent_context,
+            "model": self.model,
         }
 
 

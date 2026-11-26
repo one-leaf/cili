@@ -137,6 +137,62 @@ def preview_from_messages(messages: list[dict]) -> str:
     return ""
 
 
+_USER_SYNTHETIC_META = (
+    "summary", "error_notice", "background_notification",
+    "loop_warning", "context_warning", "budget",
+    "fork", "handoff", "pinned",
+)
+
+
+def _is_real_user_input(msg: dict) -> bool:
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return False
+    if not is_message_in_context(msg):
+        return False
+    meta = msg.get("_meta") or {}
+    return not any(meta.get(key) for key in _USER_SYNTHETIC_META)
+
+
+def _clip_user_text(text: str, limit: int) -> str:
+    """超长用户消息保留首尾，避免丢掉末尾的操作指令。"""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    marker = "\n…\n"
+    if limit <= len(marker) + 2:
+        return text[:limit]
+    head = (limit - len(marker)) * 2 // 3
+    tail = limit - len(marker) - head
+    return text[:head] + marker + text[-tail:]
+
+
+def recent_user_texts(messages: list[dict], *, limit: int = 3,
+                      max_chars: int = 2000) -> list[str]:
+    """最近 N 条真实用户输入文本；跳过合成消息与纯工具结果。
+
+    供权限判定器判断“用户是否授权”。只取文本块，不取图片/附件/工具结果；
+    每条最多 600 字符，总计不超过 max_chars。
+    """
+    items: list[str] = []
+    total = 0
+    for msg in reversed(messages or []):
+        if len(items) >= limit or total >= max_chars:
+            break
+        if not _is_real_user_input(msg):
+            continue
+        text = message_text(msg.get("content"), first=True)
+        if not text:
+            continue
+        room = max_chars - total
+        text = _clip_user_text(text, min(600, room))
+        if not text:
+            break
+        items.append(text)
+        total += len(text)
+    return list(reversed(items))
+
+
 logger = logging.getLogger(__name__)
 
 # 新式会话文件布局
