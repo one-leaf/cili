@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import threading
@@ -31,7 +33,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from core.fs_utils import atomic_write_json, load_json_or_backup
+from core.fs_utils import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 CONFIG_NAME = "sensitive_words.json"
 
@@ -188,6 +192,18 @@ def _build_rules(config: dict) -> SensitiveRules:
     return SensitiveRules(enabled=True, pattern=re.compile("|".join(alternatives)), mapping=mapping)
 
 
+def _read_json(path: Path) -> tuple[Any, bool]:
+    """读取规则文件；失败时不改名、不丢文件（规则是用户秘密清单，不能静默清掉）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), True
+    except FileNotFoundError:
+        return {}, True
+    except (OSError, ValueError) as e:
+        logger.warning("[sensitive] 读取规则失败，本次按未配置处理: %s (%s)", path, e)
+        return {}, False
+
+
 def load_rules(sensitive_dir: str | Path) -> SensitiveRules:
     """读取并缓存工作区规则；文件不存在视为未启用。"""
     path = config_path(sensitive_dir)
@@ -205,7 +221,10 @@ def load_rules(sensitive_dir: str | Path) -> SensitiveRules:
         if sig is None:
             rules = _EMPTY
         else:
-            data = load_json_or_backup(path, {}) or {}
+            data, ok = _read_json(path)
+            if not ok:
+                # 读取失败不落缓存：下次请求重试，避免一次瞬时错误让过滤静默停用
+                return cached[1] if cached is not None else _EMPTY
             rules = _build_rules(data)
         _cache[key] = (sig, rules)
         return rules
@@ -216,7 +235,8 @@ def read_config(sensitive_dir: str | Path) -> dict:
     path = config_path(sensitive_dir)
     if not path.exists():
         return _normalize_config({})
-    return _normalize_config(load_json_or_backup(path, {}) or {})
+    data, _ok = _read_json(path)
+    return _normalize_config(data if isinstance(data, dict) else {})
 
 
 def write_config(sensitive_dir: str | Path, data: Any) -> dict:
@@ -249,7 +269,7 @@ def _redact_content_list(items: list, rules: SensitiveRules) -> tuple[list, bool
 
 def _redact_message(msg: Any, rules: SensitiveRules) -> Any:
     # 延迟导入：core.llm 包导入 client，client 又导入本模块，顶层导入会成环
-    from core.llm.types import ReasoningBlock, TextBlock, ToolResultBlock
+    from core.llm.types import TextBlock, ToolResultBlock
 
     content = getattr(msg, "content", None)
     if isinstance(content, str):
@@ -264,12 +284,6 @@ def _redact_message(msg: Any, rules: SensitiveRules) -> Any:
         if isinstance(block, TextBlock):
             new_text = rules.replace_text(block.text)
             new_block = block if new_text == block.text else TextBlock(text=new_text)
-        elif isinstance(block, ReasoningBlock):
-            if block.redacted_data is not None:
-                new_block = block
-            else:
-                new_text = rules.replace_text(block.text)
-                new_block = block if new_text == block.text else dc_replace(block, text=new_text)
         elif isinstance(block, ToolResultBlock):
             if isinstance(block.content, str):
                 new_text = rules.replace_text(block.content)
@@ -280,8 +294,10 @@ def _redact_message(msg: Any, rules: SensitiveRules) -> Any:
             else:
                 new_block = block
         else:
-            # ToolCallBlock / ImageBlock / ServerBlock 原样保留：
-            # 模型输出与二进制内容不在此处替换（替换模型生成的参数会破坏 JSON）
+            # ToolCallBlock / ReasoningBlock / ImageBlock / ServerBlock 原样保留：
+            # - 模型输出（tool_use 参数 / thinking）会被回放，改文本会破坏 JSON 或
+            #   thinking 签名（官方 Anthropic 端点按签名绑定原文，改后整轮 400）
+            # - 二进制内容无法做词面替换
             new_block = block
         out.append(new_block)
         changed = changed or new_block is not block

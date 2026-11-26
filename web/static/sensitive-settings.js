@@ -9,6 +9,20 @@ const SENSITIVE_FIXED_INPUTS = {
     bank_card: 'sensitive-fixed-bank',
 };
 
+// 规则是否已成功加载：GET 未完成/失败时禁止保存，避免空表单覆盖已有规则
+let sensitiveLoaded = false;
+
+// 主开关关闭时，固定规则与过滤文本一并禁用，避免「勾了但没生效」的误解
+function applySensitiveEnabledState() {
+    const enabledEl = document.getElementById('sensitive-enabled');
+    const enabled = enabledEl ? enabledEl.checked : false;
+    const ids = Object.values(SENSITIVE_FIXED_INPUTS).concat(['sensitive-rules-editor']);
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !enabled;
+    });
+}
+
 function parseSensitiveRules(text) {
     const rules = [];
     (text || '').split('\n').forEach(line => {
@@ -36,6 +50,8 @@ async function loadSensitiveWords() {
     const statusEl = document.getElementById('sensitive-rules-status');
     const enabledEl = document.getElementById('sensitive-enabled');
     if (!statusEl || !enabledEl) return;
+    sensitiveLoaded = false;
+    enabledEl.onchange = applySensitiveEnabledState;
     statusEl.textContent = '';
     statusEl.className = 'settings-status';
     try {
@@ -49,9 +65,12 @@ async function loadSensitiveWords() {
             if (el) el.checked = fixed[kind] === true;
         });
         renderSensitiveRules(data.rules);
+        sensitiveLoaded = true;
+        applySensitiveEnabledState();
     } catch (e) {
         statusEl.textContent = '✗ 加载失败: ' + e.message;
         statusEl.className = 'settings-status error';
+        applySensitiveEnabledState();
     }
 }
 
@@ -66,6 +85,11 @@ async function saveSensitiveWords() {
         fixed[kind] = el ? el.checked : true;
     });
     if (!statusEl) return;
+    if (!sensitiveLoaded) {
+        statusEl.textContent = '✗ 规则尚未加载完成，请稍后重试';
+        statusEl.className = 'settings-status error';
+        return;
+    }
     statusEl.textContent = '保存中...';
     statusEl.className = 'settings-status info';
     try {

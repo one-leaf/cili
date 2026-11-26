@@ -447,8 +447,8 @@ function setupEventListeners() {
     // Global settings 按钮由 loadFooter() 注入（内联 onclick）
     document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
 
-    // Workspace settings
-    document.getElementById('workspace-settings-save-btn').addEventListener('click', saveWorkspaceSettings);
+    // Workspace settings：footer 保存按钮按当前页签由 switchWorkspaceSettingsTab 绑 onclick，
+    // 不能再 addEventListener（否则切到其它页签时旧处理器仍会执行）
     document.getElementById('workspace-delete-btn').addEventListener('click', deleteWorkspaceConfig);
 
     // 项目提示词相关按钮

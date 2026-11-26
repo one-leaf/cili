@@ -132,12 +132,13 @@ def test_redact_messages_blocks_and_no_mutation(tmp_path):
 
     out = messages[0].content
     assert out[0].text == "某项目的预算"
-    assert out[1].text == "某项目很敏感"
+    # thinking 与 tool_use 参数是模型输出，改文本会破坏签名/JSON，原样保留
+    assert out[1] is thinking
+    assert out[1].text == "朱雀计划很敏感"
     assert out[1].signature == "sig"
     assert out[2].content == "文件里写着某项目"
     assert out[3].content[0]["text"] == "某项目清单"
     assert out[3].content[1]["type"] == "image"
-    # 模型生成的 tool_use 参数与图片不做替换
     assert out[4] is tool_call
     assert out[5] is image
     assert system == "系统：某项目"
@@ -166,6 +167,22 @@ def test_no_rules_returns_same_objects(tmp_path):
     out, system = redact_messages(messages, "朱雀计划", tmp_path)
     assert out is messages
     assert system == "朱雀计划"
+
+
+def test_corrupt_file_kept_and_recovers(tmp_path):
+    """损坏文件不能被静默改名删掉；修好后规则立即恢复。"""
+    path = tmp_path / "sensitive_words.json"
+    path.write_text("{bad json", encoding="utf-8")
+
+    assert load_rules(tmp_path).active is False
+    assert path.exists()
+
+    write_config(tmp_path, {
+        "enabled": True,
+        "fixed": {"phone": True, "id_card": True, "bank_card": True},
+        "rules": [{"word": "机密", "replacement": "内容"}],
+    })
+    assert load_rules(tmp_path).replace_text("机密") == "内容"
 
 
 # ─── LLMClient 接线：serialize 前替换 ────────────────────────────
