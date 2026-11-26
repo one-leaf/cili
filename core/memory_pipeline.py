@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import threading
+from functools import partial
 from typing import Callable
 
 from core.config import (
@@ -309,7 +310,7 @@ def run_extraction(
 
         raw_records: list[dict] = []
         degraded = False
-        extractor_fn = extractor or default_extractor
+        extractor_fn = extractor or partial(default_extractor, workspace_uuid=workspace_uuid)
         try:
             result = extractor_fn(prompt, EXTRACTION_SYSTEM_PROMPT, EXTRACTION_SCHEMA)
             raw_records = (result or {}).get("memories") or []
@@ -678,7 +679,7 @@ def run_consolidation(
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     store = MemoryStore(memory_dir)
     journal = Journal(memory_dir)
-    consolidator_fn = consolidator or default_consolidator
+    consolidator_fn = consolidator or partial(default_consolidator, workspace_uuid=workspace_uuid)
 
     batch_results: list[dict] = []
     for _ in range(max(max_batches, 1)):
@@ -759,10 +760,11 @@ _DEFAULT_EXTRACT_MAX_TOKENS = 8000
 _DEFAULT_CONSOLIDATE_MAX_TOKENS = 16000
 
 
-def _lite_client():
+def _lite_client(workspace_uuid: str = ""):
     config = load_config()
     model = config.model_for_role("lite")
-    return create_llm_client(model)
+    sensitive_dir = get_workspace_data_dir(workspace_uuid) if workspace_uuid else None
+    return create_llm_client(model, sensitive_dir=sensitive_dir)
 
 
 def _output_limit(client, requested: int) -> int:
@@ -771,8 +773,9 @@ def _output_limit(client, requested: int) -> int:
 
 
 def default_extractor(messages: list[Message], system: str, schema: dict,
-                      max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS) -> dict:
-    client = _lite_client()
+                      max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS,
+                      workspace_uuid: str = "") -> dict:
+    client = _lite_client(workspace_uuid)
     try:
         return client.chat_structured(messages, system=system, output_schema=schema,
                                       max_tokens=_output_limit(client, max_tokens))
@@ -781,8 +784,9 @@ def default_extractor(messages: list[Message], system: str, schema: dict,
 
 
 def default_consolidator(messages: list[Message], system: str, schema: dict,
-                         max_tokens: int = _DEFAULT_CONSOLIDATE_MAX_TOKENS) -> dict:
-    client = _lite_client()
+                         max_tokens: int = _DEFAULT_CONSOLIDATE_MAX_TOKENS,
+                         workspace_uuid: str = "") -> dict:
+    client = _lite_client(workspace_uuid)
     try:
         return client.chat_structured(messages, system=system, output_schema=schema,
                                       max_tokens=_output_limit(client, max_tokens))

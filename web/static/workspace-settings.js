@@ -26,8 +26,8 @@ async function openWorkspaceSettings() {
     const systemBadge = document.getElementById('ws-system-badge');
     if (systemBadge) systemBadge.hidden = !isSystem;
 
-    // System 工作区不适用项目提示词 / 版本管理 / 教材下载 / MCP
-    const systemHiddenTabs = ['ws-migration', 'ws-instructions', 'ws-git', 'ws-textbooks', 'ws-mcp'];
+    // System 工作区不适用项目提示词 / 版本管理 / 教材下载 / MCP / 敏感词
+    const systemHiddenTabs = ['ws-migration', 'ws-instructions', 'ws-git', 'ws-textbooks', 'ws-mcp', 'ws-sensitive'];
     document.querySelectorAll('#workspace-settings-modal .settings-tab').forEach(tabBtn => {
         if (systemHiddenTabs.includes(tabBtn.dataset.tab)) {
             tabBtn.style.display = isSystem ? 'none' : '';
@@ -195,6 +195,14 @@ function switchWorkspaceSettingsTab(tabName) {
         if (window.McpSettings) {
             window.McpSettings.init(currentWorkspace?.uuid || '');
         }
+    } else if (tabName === 'ws-sensitive') {
+        // 敏感词 tab：显示保存规则按钮（靠右），隐藏删除按钮
+        footerSaveBtn.textContent = '保存规则';
+        footerSaveBtn.style.display = '';
+        footerSaveBtn.style.marginLeft = 'auto';
+        footerSaveBtn.onclick = saveSensitiveWords;
+        deleteBtn.style.display = 'none';
+        loadSensitiveWords();
     } else {
         // 基本设置 tab：显示 footer 按钮
         footerSaveBtn.textContent = '保存';

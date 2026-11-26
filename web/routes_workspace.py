@@ -1004,6 +1004,30 @@ async def get_execution(workspace_uuid: str, session_id: str, exec_id: str, ws_d
     return payload
 
 
+# ----- Sensitive words (上行请求敏感词替换) -----
+
+class SensitiveWordsRequest(BaseModel):
+    enabled: bool = False
+    fixed: dict = {}
+    rules: list[dict] = []
+
+
+@router.get("/api/workspaces/{workspace_uuid}/sensitive-words")
+async def get_sensitive_words(ws_dir: Path = Depends(require_workspace_data_dir)):
+    """读取当前工作区的敏感词替换规则（配置文件 .cili/sensitive_words.json）。"""
+    from core.sensitive_words import read_config
+    return read_config(ws_dir)
+
+
+@router.put("/api/workspaces/{workspace_uuid}/sensitive-words",
+            dependencies=[Depends(teen_guard("config_update"))])
+async def save_sensitive_words(request: SensitiveWordsRequest,
+                               ws_dir: Path = Depends(require_workspace_data_dir)):
+    """保存规则；只影响发给模型的副本，会话与文件保留原文。"""
+    from core.sensitive_words import write_config
+    return write_config(ws_dir, request.model_dump())
+
+
 # ----- Project Instructions (AGENTS.md / CLAUDE.md) -----
 
 # 模板目录（项目指令文件清单见 core.project_instructions.PROJECT_INSTRUCTION_FILES）

@@ -26,6 +26,7 @@ from core.approval_cards import ABORT_LABEL, APPROVE_LABEL, REJECT_LABEL, REMEMB
 from core.base_session_runner import BaseSessionRunner
 from core.config import (
     Config,
+    get_workspace_data_dir,
     get_workspace_sessions_dir,
 )
 from core.fs_utils import atomic_write_json
@@ -415,7 +416,8 @@ class SessionRunner(BaseSessionRunner):
 
     def _build_client(self, model):
         """按模型配置创建客户端，并应用角色级 max_tokens 上限。"""
-        client = create_llm_client(model)
+        # 工作区敏感词规则：上行请求（对话/压缩/总结/子代理）统一在此挂上
+        client = create_llm_client(model, sensitive_dir=get_workspace_data_dir(self.workspace_uuid))
         role_max_tokens = self.role_cfg.max_tokens
         if role_max_tokens and isinstance(model.max_output_tokens, int):
             client.max_tokens = min(role_max_tokens, model.max_output_tokens)

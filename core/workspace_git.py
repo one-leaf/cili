@@ -18,6 +18,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from core.config import (
     PROJECT_ROOT,
     find_workspace_entry,
+    get_workspace_data_dir,
     get_workspace_meta,
     load_config,
 )
@@ -193,11 +194,12 @@ def init_workspace_git(workspace_uuid: str) -> tuple[bool, str]:
         return False, f"初始化失败: {e}"
 
 
-def _generate_commit_summary(diff_stat: str) -> str:
+def _generate_commit_summary(diff_stat: str, workspace_uuid: str = "") -> str:
     """使用 LLM 生成提交摘要。
 
     Args:
         diff_stat: git diff --stat 输出
+        workspace_uuid: 用于加载工作区敏感词规则（上行替换）
 
     Returns:
         提交摘要字符串，失败时返回默认摘要
@@ -210,7 +212,8 @@ def _generate_commit_summary(diff_stat: str) -> str:
         config = load_config()
         # model_for_role 自带回退（未知角色回退 master）；lite_model 属性随两级配置重构移除
         model = config.model_for_role("lite")
-        client = create_llm_client(model)
+        sensitive_dir = get_workspace_data_dir(workspace_uuid) if workspace_uuid else None
+        client = create_llm_client(model, sensitive_dir=sensitive_dir)
 
         prompt = f"""根据以下文件变更统计，生成一行简洁的中文提交摘要（不超过 50 字）：
 
@@ -280,7 +283,7 @@ def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote
             return True, "无变更"
 
         # 生成提交摘要
-        summary = _generate_commit_summary(diff_stat)
+        summary = _generate_commit_summary(diff_stat, workspace_uuid)
         if session_id:
             summary = f"{summary} (session: {session_id[:8]})"
 

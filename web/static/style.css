@@ -5584,6 +5584,22 @@ details.p-headers-panel .p-headers {
 #workspace-settings-modal .settings-status.info { color: var(--primary-color); }
 
 #workspace-settings-modal .setting-row .control { flex: 1 1 auto; max-width: 720px; }
+#workspace-settings-modal .setting-row .sensitive-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: var(--ms-fs-body);
+    color: var(--text-color);
+}
+#workspace-settings-modal .setting-row .sensitive-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+}
+/* 首行是勾选项 / 文本域的行：左侧标签按内容首行基线对齐（默认 8px 是给 34px 输入框的） */
+#workspace-settings-modal .sensitive-fixed-row > label { padding-top: 0; }
+#workspace-settings-modal .sensitive-rules-row > label { padding-top: 0; }
 .ms-scope .btn-danger {
     height: 34px; padding: 0 16px;
     border: none; border-radius: 8px;

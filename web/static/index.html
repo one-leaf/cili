@@ -996,6 +996,7 @@
                 <button class="settings-tab" data-tab="ws-textbooks" onclick="switchWorkspaceSettingsTab('ws-textbooks')">教材下载</button>
                 <button class="settings-tab" data-tab="ws-cron" onclick="switchWorkspaceSettingsTab('ws-cron')">定时任务</button>
                 <button class="settings-tab" data-tab="ws-mcp" onclick="switchWorkspaceSettingsTab('ws-mcp')">MCP 服务器</button>
+                <button class="settings-tab" data-tab="ws-sensitive" onclick="switchWorkspaceSettingsTab('ws-sensitive')">敏感词</button>
             </div>
             <div class="modal-body">
                 <!-- 基本设置 Tab -->
@@ -1376,6 +1377,42 @@
                     </div>
                 </div>
 
+                <!-- 敏感词 Tab（工作区） -->
+                <div class="tab-content" id="tab-ws-sensitive">
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>敏感词替换</strong> — 发给大模型的请求会把关键词替换成另一个词（配置在 <code>.cili/sensitive_words.json</code>）；本地会话、文件与导出保留原文。图片内容不过滤。</div>
+                        <div class="settings-card">
+                            <div class="settings-card-head">
+                                <span class="title">文本过滤</span>
+                                <span class="sub">每行一条：原词 = 替换词</span>
+                            </div>
+                            <div class="setting-row sensitive-fixed-row">
+                                <label>固定规则</label>
+                                <div class="control">
+                                    <label class="sensitive-check">
+                                        <input type="checkbox" id="sensitive-fixed-phone">电话号码（例：13812345678）→ [手机号]
+                                    </label>
+                                    <label class="sensitive-check">
+                                        <input type="checkbox" id="sensitive-fixed-id">身份证号（例：11010519491231002X）→ [身份证号]
+                                    </label>
+                                    <label class="sensitive-check">
+                                        <input type="checkbox" id="sensitive-fixed-bank">银行卡号（例：6222021234567894）→ [银行卡号]
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row sensitive-rules-row">
+                                <label class="sensitive-check">
+                                    <input type="checkbox" id="sensitive-enabled">启用文本过滤
+                                </label>
+                                <div class="control">
+                                    <textarea id="sensitive-rules-editor" placeholder="朱雀计划 = 某项目&#10;内部预算 = [已隐藏]"></textarea>
+                                </div>
+                            </div>
+                            <div id="sensitive-rules-status" class="settings-status"></div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
             <div class="modal-footer">
                 <button id="workspace-delete-btn" class="btn btn-danger" style="margin-right:auto;">删除配置</button>
@@ -1560,6 +1597,7 @@
     <script src="/static/textbook-settings.js"></script>
     <script src="/static/workspace-wizard.js"></script>
     <script src="/static/mcp-settings.js"></script>
+    <script src="/static/sensitive-settings.js"></script>
     <script src="/static/workspace-settings.js"></script>
     <script src="/static/sidebar.js"></script>
     <script src="/static/context-gauge.js"></script>

@@ -168,6 +168,7 @@ class LLMClient:
         adapter: Adapter,
         transport: HttpTransport,
         config: ResolvedModel,
+        sensitive_dir: str | os.PathLike | None = None,
     ):
         """Initialize client.
 
@@ -175,10 +176,12 @@ class LLMClient:
             adapter: Provider adapter (AnthropicAdapter or OpenAIAdapter)
             transport: HTTP transport layer
             config: Model configuration
+            sensitive_dir: 工作区 ``.cili`` 目录；给了则上行请求过敏感词替换
         """
         self.adapter = adapter
         self.transport = transport
         self.config = config
+        self.sensitive_dir = sensitive_dir
         self.model_name = config.name
         self.max_tokens = config.max_output_tokens
 
@@ -192,6 +195,14 @@ class LLMClient:
 
         # Expose base_url for error formatting (backward compat)
         self.base_url = config.base_url
+
+    def _sensitive_view(self, messages: list[Message], system: str | list[str]):
+        """上行副本过敏感词替换；无配置时原样返回（不复制、不遍历）。"""
+        if not self.sensitive_dir:
+            return messages, system
+        from core.sensitive_words import redact_messages
+
+        return redact_messages(messages, system, self.sensitive_dir)
 
     def _request_headers(self, session_id: str) -> dict[str, str]:
         """构造请求头；OAuth 链路在此注入 Bearer token（执行线程内解析）。"""
@@ -248,6 +259,7 @@ class LLMClient:
             )
 
         max_tokens = max_tokens or self.max_tokens
+        messages, system = self._sensitive_view(messages, system)
         body = self.adapter.serialize(
             messages=messages,
             system=system,
@@ -334,6 +346,7 @@ class LLMClient:
             RuntimeError: 流结束后未收到 finish chunk 且无任何内容（视为失败，供上层重试）
         """
         max_tokens = max_tokens or self.max_tokens
+        messages, system = self._sensitive_view(messages, system)
         body = self.adapter.serialize(
             messages=messages,
             system=system,
@@ -506,7 +519,10 @@ class LLMClient:
         self.transport.close()
 
 
-def create_llm_client(config: ResolvedModel) -> LLMClient:
+def create_llm_client(
+    config: ResolvedModel,
+    sensitive_dir: str | os.PathLike | None = None,
+) -> LLMClient:
     """Factory function to create an LLMClient from ResolvedModel.
 
     Auto-detects the provider based on protocol:
@@ -517,6 +533,7 @@ def create_llm_client(config: ResolvedModel) -> LLMClient:
 
     Args:
         config: Model configuration
+        sensitive_dir: 工作区 ``.cili`` 目录；给了则上行请求过敏感词替换
 
     Returns:
         Configured LLMClient
@@ -544,4 +561,4 @@ def create_llm_client(config: ResolvedModel) -> LLMClient:
         raise ValueError(f"Unsupported protocol: {protocol}")
 
     transport = HttpTransport()
-    return LLMClient(adapter=adapter, transport=transport, config=config)
+    return LLMClient(adapter=adapter, transport=transport, config=config, sensitive_dir=sensitive_dir)

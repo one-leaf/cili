@@ -350,8 +350,9 @@ class PermissionJudge:
             attempts = [replace(base_model, reasoning="off"),
                         replace(base_model, reasoning="low")]
             last_error: Exception | None = None
+            sensitive_dir = os.path.join(self.workspace_root, ".cili") if self.workspace_root else None
             for model_cfg in attempts:
-                client = create_llm_client(model_cfg)
+                client = create_llm_client(model_cfg, sensitive_dir=sensitive_dir)
                 try:
                     max_tokens = _JUDGE_MAX_TOKENS
                     cap = getattr(model_cfg, "max_output_tokens", None)
