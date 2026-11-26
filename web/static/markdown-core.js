@@ -57,3 +57,29 @@ function renderMarkdownCore(text) {
     }
     return html;
 }
+
+// ── 收件箱专用严格渲染 ──
+// 收件箱正文来自模型/工作流，不可信；不允许图片、iframe、音视频、Mermaid/PDF
+// 后处理，也不注入当前工作区的相对链接（由调用方按条目工作区重写）。
+function renderMarkdownStrict(text) {
+    if (!text) return '';
+
+    let html = marked.parse(text);
+
+    if (typeof DOMPurify !== 'undefined') {
+        html = DOMPurify.sanitize(html, {
+            FORBID_TAGS: ['img', 'iframe', 'video', 'audio', 'source'],
+            FORBID_ATTR: ['srcset'],
+        });
+    } else {
+        // DOMPurify 加载失败时 fail-closed：转义所有标签
+        html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // 外部链接新窗口打开，避免收件箱页面被导航走
+    html = html.replace(
+        /<a\s+([^>]*href="https?:[^"]*"[^>]*)>/gi,
+        '<a $1 target="_blank" rel="noopener noreferrer">'
+    );
+    return html;
+}

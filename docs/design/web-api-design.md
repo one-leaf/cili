@@ -107,7 +107,7 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 - 回合：`user_message`（投递回显）、`turn_complete`、`queue_update`、`todo_update`
 - 子代理：`session_start`、`session_progress`、`session_complete`、`run_started`、`run_finished`、
   `background_runner_resume`
-- 工作区级：`workflow_changed`、`session_changed`、`session_fork_created`、`files_changed`
+- 工作区级：`workflow_changed`、`session_changed`、`session_fork_created`、`files_changed`、`inbox_changed`（纯信号，前端收到后重拉 `/api/inbox/count`）
 - 交付：`file`（Web 下载卡片事件）
 
 ### 4.4 文件（`routes_files.py`）
@@ -203,6 +203,20 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 | POST | `/api/wizard/preview` | 预览目录与 AGENTS.md 渲染 |
 | POST | `/api/wizard/create` | 创建工作区（可触发教材下载） |
 
+### 4.10 收件箱（`routes_inbox.py`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/inbox?status&workspace_uuid&limit&offset` | 列表；列表项只带 `excerpt`，`status` 默认 `active` |
+| GET | `/api/inbox/count` | 未读数/总数（青少年模式按工作区白名单过滤） |
+| GET | `/api/inbox/{item_id}` | 详情（完整 `body`，不改变已读状态） |
+| POST | `/api/inbox/{item_id}/read`、`/unread` | 标记已读/未读 |
+| POST | `/api/inbox/read-all` | 全部标为已读（body 可选 `workspace_uuid`；只作用于可见条目） |
+| DELETE | `/api/inbox/{item_id}` | 软删除；`?permanent=true` 彻底删除（仅限回收站条目） |
+| POST | `/api/inbox/{item_id}/restore` | 从回收站恢复 |
+
+写端点带 `csrf_protect`；`/count` 必须声明在 `/{item_id}` 之前。
+
 ## 五、SSE 细节
 
 ### 5.1 请求级流（POST /messages、POST /ask-user/answers）
@@ -238,10 +252,10 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 | `workspace-settings.js` / `workspace-wizard.js` / `textbook-settings.js` | 工作区设置/向导/教材页签 |
 | `file-tree.js` / `file-browser.js` / `file-api.js` | 文件树、目录浏览弹窗、REST 封装 |
 | `workflow-pane.js` / `memory.js` / `cron-settings.js` / `session-about.js` / `context-gauge.js` | 工作流面板/记忆/定时/时间线/上下文仪表 |
-| `agent-cards.js` / `sse-client.js` | 子代理卡片 / SSE 客户端 |
+| `agent-cards.js` / `inbox.js` / `sse-client.js` | 子代理卡片 / 收件箱面板 / SSE 客户端 |
 | `utils.js` / `markdown-core.js` / `voice-input.js` / `tts.js` | 工具函数/Markdown 核心/语音 |
 
-脚本顺序：`utils → chat-scroll → voice/tts → file-tree → settings… → app → 各面板 → context-gauge → chat → interaction-cards → queue-control → agent-cards → sse-client`。
+脚本顺序：`utils → chat-scroll → voice/tts → file-tree → settings… → app → 各面板 → context-gauge → chat → interaction-cards → queue-control → agent-cards → inbox → sse-client`。
 所有事件绑定在 `DOMContentLoaded` 后执行。
 
 ## 七、契约与迁移

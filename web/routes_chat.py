@@ -487,7 +487,13 @@ async def stream_global_events(workspace_uuid: str = "", session_id: str = "",
                     event = await asyncio.get_running_loop().run_in_executor(
                         get_stream_executor(), event_queue.get, True, 15
                     )
-                    if teen_filter is not None and event.get("workspace_uuid") not in teen_filter:
+                    # 收件箱变更是不含内容的全局信号，需放行给前端触发重拉；
+                    # 数据本身由 /api/inbox 按工作区白名单过滤。
+                    if (
+                        teen_filter is not None
+                        and event.get("type") != "inbox_changed"
+                        and event.get("workspace_uuid") not in teen_filter
+                    ):
                         continue
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except queue.Empty:

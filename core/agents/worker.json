@@ -230,6 +230,7 @@
     "skill",
     "agent",
     "office2pdf",
+    "send_notification",
     "tool_search",
     "textbook_find",
     "textbook_outline",

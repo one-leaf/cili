@@ -61,6 +61,22 @@ class TestEventBus:
         assert q.get(timeout=1)["content"] == "mine"
         assert q.empty()
 
+    def test_broadcast_bypasses_workspace_filter(self):
+        """broadcast 事件跨工作区到达，但仍受 session 过滤与 allow_types 约束"""
+        bus = EventBus()
+        q_ws1 = queue.Queue()
+        bus.subscribe(q_ws1, "ws1", "s1", allow_types={"inbox_changed"})
+        q_ws2 = queue.Queue()
+        bus.subscribe(q_ws2, "ws2", "s2", allow_types={"inbox_changed"})
+
+        bus.publish({"type": "inbox_changed", "broadcast": True, "action": "created"})
+        assert q_ws1.get(timeout=1)["action"] == "created"
+        assert q_ws2.get(timeout=1)["action"] == "created"
+
+        # broadcast 不绕过 session 过滤：未列入 allow_types 的普通事件仍被丢弃
+        bus.publish({"type": "text", "broadcast": True, "session_id": "other"})
+        assert q_ws1.empty()
+
     def test_publish_no_subscriber(self):
         """无订阅者时 publish 无副作用"""
         bus = EventBus()

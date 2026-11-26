@@ -42,12 +42,15 @@ class EventBus:
         ws = event.get("workspace_uuid")
         sid = event.get("session_id")
         etype = event.get("type")
+        broadcast = bool(event.get("broadcast"))
         with self._lock:
             items = list(self._subscribers.items())
         if not items:
             return
         for q, (sub_ws, sub_sid, sub_types) in items:
-            if sub_ws is not None and sub_ws != ws:
+            # broadcast：全局事件（如收件箱变更）跳过 workspace 过滤；
+            # session 过滤与 allow_types 仍照常生效。
+            if not broadcast and sub_ws is not None and sub_ws != ws:
                 continue
             if sub_sid is not None and sub_sid != sid and etype not in sub_types:
                 continue

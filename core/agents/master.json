@@ -299,6 +299,7 @@
     "tool_search",
     "office2pdf",
     "send_user_file",
+    "send_notification",
     "textbook_find",
     "textbook_outline",
     "textbook_read",

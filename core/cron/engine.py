@@ -9,9 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.config import SYSTEM_WORKSPACE_UUID, get_all_workspace_uuids
+from core.config import (
+    SYSTEM_WORKSPACE_UUID,
+    get_all_workspace_uuids,
+    get_workspace_meta,
+)
 from core.cron import delivery, executor, schedule, store
 from core.cron.model import Job, JobState, RunResult, now_str
+from core.inbox import MAX_SYSTEM_BODY_CHARS, get_inbox_store
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,7 @@ class CronEngine:
         self._wake.set()
 
     def _load_all(self, *, recover_running: bool = False) -> None:
+        interrupted: list[tuple[Job, JobState, str, str]] = []
         with self._lock:
             loaded: dict[tuple[str, str], LoadedJob] = {}
             for workspace_uuid in get_all_workspace_uuids():
@@ -89,7 +95,9 @@ class CronEngine:
                     try:
                         state = store.load_state(workspace_uuid, job.id)
                         changed = self._recover_and_init(
-                            workspace_uuid, job, state, recover_running=recover_running
+                            workspace_uuid, job, state,
+                            recover_running=recover_running,
+                            interrupted=interrupted,
                         )
                         if changed:
                             store.save_state(workspace_uuid, job.id, state)
@@ -107,8 +115,30 @@ class CronEngine:
                         )
             self._jobs = loaded
 
+        # 中断通知放到锁外（文件 I/O + 事件发布不占调度锁）。
+        for job, state, workspace_uuid, slot in interrupted:
+            self._notify_inbox(
+                job,
+                state,
+                RunResult(
+                    job_id=job.id,
+                    slot=slot,
+                    status="interrupted",
+                    error="进程重启，运行被中断",
+                ),
+                _Dispatch(job=job, state=state, slot=slot),
+                workspace_uuid,
+                {"status": "interrupted"},
+            )
+
     def _recover_and_init(
-        self, workspace_uuid: str, job: Job, state: JobState, *, recover_running: bool = False
+        self,
+        workspace_uuid: str,
+        job: Job,
+        state: JobState,
+        *,
+        recover_running: bool = False,
+        interrupted: list[tuple[Job, JobState, str, str]] | None = None,
     ) -> bool:
         changed = False
         if state.remaining is None:
@@ -130,6 +160,8 @@ class CronEngine:
             state.running = None
             state.last_status = "interrupted"
             logger.warning("[cron] %s/%s: recovered interrupted slot %s", workspace_uuid, job.id, slot)
+            if interrupted is not None:
+                interrupted.append((job, state, workspace_uuid, slot))
             changed = True
         if state.next_run:
             try:
@@ -345,6 +377,8 @@ class CronEngine:
         job = dispatch.job
         workspace_uuid = job.workspace_uuid or SYSTEM_WORKSPACE_UUID
         key = (workspace_uuid, job.id)
+        delivery_receipt: dict[str, Any] = {}
+        state: JobState | None = None
         with self._lock:
             loaded = self._jobs.get(key)
             if loaded is None:
@@ -393,6 +427,71 @@ class CronEngine:
                 store.delete_job(workspace_uuid, job.id)
                 self._jobs.pop(key, None)
                 logger.info("[cron] one-time task %s deleted after run", job.id)
+
+        # 收件箱写入放到引擎锁之外：文件 I/O 与事件发布不阻塞调度线程。
+        if state is not None:
+            self._notify_inbox(job, state, result, dispatch, workspace_uuid, delivery_receipt)
+
+    def _notify_inbox(
+        self,
+        job: Job,
+        state: JobState,
+        result: RunResult,
+        dispatch: _Dispatch,
+        workspace_uuid: str,
+        delivery_receipt: dict[str, Any],
+    ) -> None:
+        """把一次 cron 运行写进全局收件箱（best-effort，失败只记日志）。"""
+        if job.managed or result.status == "skipped":
+            return
+
+        titles = {
+            "ok": ("success", "执行完成"),
+            "error": ("error", "执行失败"),
+            "timeout": ("error", "执行超时"),
+            "interrupted": ("warning", "执行中断"),
+        }
+        level, suffix = titles.get(result.status, ("info", "执行结束"))
+
+        body = str(result.final_text or "").strip()
+        if not body:
+            body = str(result.error or "")
+            if not body and result.status == "timeout":
+                body = "执行超时"
+
+        origin = job.origin if isinstance(job.origin, dict) else {}
+        session_id = str(delivery_receipt.get("session_id") or "")
+        if not session_id:
+            session_id = str(origin.get("session_id") or "")
+
+        try:
+            workspace_name = str(
+                get_workspace_meta(workspace_uuid).get("workspace_name") or ""
+            )
+        except Exception:  # noqa: BLE001
+            workspace_name = ""
+
+        slot = dispatch.slot or state.last_run
+        try:
+            get_inbox_store().add(
+                f"定时任务「{job.name}」{suffix}",
+                body,
+                level=level,
+                source_type="cron",
+                workspace_uuid=workspace_uuid,
+                workspace_name=workspace_name,
+                session_id=session_id,
+                dedupe_key=f"cron:{workspace_uuid}:{job.id}:{slot}",
+                payload={
+                    "job_id": job.id,
+                    "slot": slot,
+                    "status": result.status,
+                    "delivery": delivery_receipt.get("status", ""),
+                },
+                max_body_chars=MAX_SYSTEM_BODY_CHARS,
+            )
+        except Exception:  # noqa: BLE001 —— 通知失败不影响任务终态
+            logger.warning("[cron] 写收件箱失败: %s", job.id, exc_info=True)
 
     # ─── public API ─────────────────────────────────────────────
 

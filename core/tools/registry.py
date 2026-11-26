@@ -34,6 +34,7 @@ from core.tools.pwsh import PwshTool
 from core.tools.python import PythonTool
 from core.tools.read import ReadTool
 from core.tools.read_tool_result import ReadToolResultTool
+from core.tools.send_notification import SendNotificationTool
 from core.tools.send_user_file import SendUserFileTool
 from core.tools.session_search import SessionSearchTool
 from core.tools.skill import SkillTool
@@ -96,7 +97,8 @@ TOOL_CLASSES: tuple[type[Tool], ...] = (
     DeepSeekReadUrlTool, DeepSeekWebSearchTool, EditTool, GlobTool, GrepTool,
     LatexTool, LoopTool, MailTool, MemoryTool, MessageBusTool, Office2PDFTool,
     PDF2MarkdownTool, PwshTool, PythonTool, ReadTool,
-    ReadToolResultTool, SendUserFileTool, SessionSearchTool, SkillTool, TempTool,
+    ReadToolResultTool, SendNotificationTool, SendUserFileTool, SessionSearchTool,
+    SkillTool, TempTool,
     TextbookFindTool, TextbookOriginalTool, TextbookOutlineTool, TextbookReadTool,
     TextbookSearchTool, TodoWriteTool, ToolSearchTool, WebSearchTool, WorkflowTool,
     WriteTool,
@@ -150,6 +152,8 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "textbook_original": _factory(TextbookOriginalTool),
     # 接口专属（按回合门控，仅声明它的接入端回合可见）：把工作区内文件发给用户
     "send_user_file": _factory(SendUserFileTool),
+    # 全局收件箱通知（master / worker / workflow 可用）
+    "send_notification": _factory(SendNotificationTool),
 }
 
 
@@ -200,7 +204,9 @@ def create_tools(
         if name == "mail" and not usable_accounts():
             continue
         try:
-            tools.append(factory(ctx))
+            tool = factory(ctx)
+            tool.agent_role = role_cfg.name
+            tools.append(tool)
         except Exception:
             # 用 exception 保留堆栈：工具构造失败（如子类 __init__ 未透传 **kwargs）
             # 会让该工具静默缺席，只有堆栈能定位根因。

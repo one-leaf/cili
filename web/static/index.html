@@ -48,22 +48,28 @@
         <!-- Left Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="sidebar-title-group">
-                    <div class="title-path-wrap">
-                        <h1>工作区</h1>
-                    </div>
-                    <button id="sidebar-toggle-btn" class="btn btn-small" title="收起边栏">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-                    </button>
-                </div>
-                <div id="workspace-path" class="workspace-path">工作区路径</div>
-                <div class="workspace-controls">
-                    <select id="workspace-select">
+                <div class="sidebar-workspace-row workspace-controls">
+                    <select id="workspace-select" title="工作区">
                         <option value="">选择工作区...</option>
                     </select>
-                    <button id="workspace-settings-btn" class="btn btn-small" title="工作区设置" disabled>&#9881;</button>
-                    <button id="new-workspace-btn" class="btn btn-small" title="新建工作区">+</button>
-                    <button id="memory-btn" class="btn btn-small" title="记忆管理">&#128221;</button>
+                    <button id="inbox-btn" class="btn-icon-flat sidebar-inbox-btn" title="收件箱" aria-label="收件箱">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3 7 12 13 21 7"/></svg>
+                        <span id="inbox-unread-badge" class="inbox-badge" hidden>0</span>
+                    </button>
+                    <div class="workspace-menu-wrap">
+                        <button id="workspace-menu-btn" class="btn-icon-flat" title="工作区菜单" aria-haspopup="menu" aria-expanded="false">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+                        </button>
+                        <div id="workspace-menu" class="workspace-menu" role="menu" hidden>
+                            <div id="workspace-menu-path" class="workspace-menu-path" title="点击复制工作区路径">工作区路径</div>
+                            <button id="workspace-settings-btn" class="workspace-menu-item" role="menuitem" disabled>&#9881; 工作区设置</button>
+                            <button id="new-workspace-btn" class="workspace-menu-item" role="menuitem">+ 新建工作区</button>
+                            <button id="memory-btn" class="workspace-menu-item" role="menuitem">&#128221; 记忆管理</button>
+                        </div>
+                    </div>
+                    <button id="sidebar-toggle-btn" class="btn-icon-flat" title="收起边栏">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
                 </div>
             </div>
 
@@ -133,6 +139,7 @@
         <!-- Sidebar open button (visible when collapsed) -->
         <button id="sidebar-open-btn" class="sidebar-open-btn" title="打开边栏" style="display:none;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span id="inbox-open-badge" class="inbox-badge" hidden>0</span>
         </button>
 
         <!-- Preview Pane（中间栏：预览居中、对话靠右） -->
@@ -346,6 +353,34 @@
     </div>
 
     <!-- Settings Modal -->
+    <div id="inbox-modal" class="modal" style="display:none;">
+        <div class="modal-backdrop" data-modal="inbox-modal"></div>
+        <div class="modal-content inbox-modal">
+            <div class="modal-header">
+                <h2>收件箱</h2>
+                <div class="modal-header-right">
+                    <button class="modal-close" data-modal="inbox-modal">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body inbox-body">
+                <div class="inbox-toolbar">
+                    <div class="inbox-filters">
+                        <button class="inbox-filter active" data-status="active">全部</button>
+                        <button class="inbox-filter" data-status="unread">未读 <span id="inbox-unread-count-filter"></span></button>
+                        <button class="inbox-filter" data-status="deleted">已删除</button>
+                    </div>
+                    <button id="inbox-readall-btn" class="btn btn-small">全部标为已读</button>
+                </div>
+                <div class="inbox-panes">
+                    <div class="inbox-list" id="inbox-list"></div>
+                    <div class="inbox-detail" id="inbox-detail">
+                        <div class="inbox-empty">选择一条通知</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="settings-modal" class="modal" style="display:none;">
         <div class="modal-backdrop" data-modal="settings-modal"></div>
         <div class="modal-content ms-scope">
@@ -1605,6 +1640,7 @@
     <script src="/static/interaction-cards.js"></script>
     <script src="/static/queue-control.js"></script>
     <script src="/static/agent-cards.js"></script>
+    <script src="/static/inbox.js"></script>
     <script src="/static/sse-client.js"></script>
 </body>
 </html>

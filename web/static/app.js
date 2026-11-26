@@ -345,6 +345,27 @@ function setupEventListeners() {
     workspaceSelect.addEventListener('change', handleWorkspaceChange);
     workspaceSettingsBtn.addEventListener('click', openWorkspaceSettings);
     newWorkspaceBtn.addEventListener('click', handleNewWorkspace);
+
+    const workspaceMenuBtn = document.getElementById('workspace-menu-btn');
+    if (workspaceMenuBtn) {
+        workspaceMenuBtn.addEventListener('click', toggleWorkspaceMenu);
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.workspace-menu-wrap')) closeWorkspaceMenu();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeWorkspaceMenu();
+        });
+    }
+    const workspaceMenu = document.getElementById('workspace-menu');
+    if (workspaceMenu) {
+        workspaceMenu.addEventListener('click', (e) => {
+            if (e.target.closest('.workspace-menu-item')) closeWorkspaceMenu();
+        });
+    }
+    const workspaceMenuPath = document.getElementById('workspace-menu-path');
+    if (workspaceMenuPath) {
+        workspaceMenuPath.addEventListener('click', copyWorkspacePath);
+    }
     newSessionBtn.addEventListener('click', handleNewButton);
     sessionMenuBtn.addEventListener('click', toggleSessionPanelMenu);
     document.getElementById('sidebar-toggle-btn').addEventListener('click', toggleSidebar);
@@ -573,29 +594,47 @@ async function loadWorkspaces() {
     }
 }
 
-// Format workspace path for display (truncate middle if too long)
-function formatWorkspacePath(path) {
-    if (!path) return '';
-    const maxLength = 30;
-    if (path.length <= maxLength) return path;
+// Update workspace path display (hover title + workspace menu path row)
+function updateWorkspacePath() {
+    const path = currentWorkspace && currentWorkspace.directory
+        ? String(currentWorkspace.directory) : '';
+    workspaceSelect.title = path ? `工作区：${path}` : '工作区';
 
-    // Keep head and tail, truncate middle
-    const headLength = Math.floor(maxLength / 2);
-    const tailLength = maxLength - headLength - 3; // 3 for "..."
-    const head = path.substring(0, headLength);
-    const tail = path.substring(path.length - tailLength);
-    return `${head}...${tail}`;
+    const pathEl = document.getElementById('workspace-menu-path');
+    if (!pathEl) return;
+    pathEl.textContent = path || '未选择工作区';
+    pathEl.title = path ? `点击复制：${path}` : '未选择工作区';
+    pathEl.dataset.path = path;
+    pathEl.classList.toggle('disabled', !path);
 }
 
-// Update workspace path display
-function updateWorkspacePath() {
-    const pathEl = document.getElementById('workspace-path');
-    if (!pathEl) return;
+// ── 工作区菜单（设置 / 新建 / 记忆）──
+function closeWorkspaceMenu() {
+    const menu = document.getElementById('workspace-menu');
+    const btn = document.getElementById('workspace-menu-btn');
+    if (!menu) return;
+    menu.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
 
-    if (!currentWorkspace || !currentWorkspace.directory) {
-        pathEl.textContent = '工作区路径';  // 显示占位文字
-    } else {
-        pathEl.textContent = formatWorkspacePath(currentWorkspace.directory);
+function toggleWorkspaceMenu() {
+    const menu = document.getElementById('workspace-menu');
+    const btn = document.getElementById('workspace-menu-btn');
+    if (!menu) return;
+    const open = menu.hidden;
+    menu.hidden = !open;
+    if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+async function copyWorkspacePath() {
+    const pathEl = document.getElementById('workspace-menu-path');
+    const path = pathEl && pathEl.dataset.path;
+    if (!path) return;
+    try {
+        await navigator.clipboard.writeText(path);
+        showToast('工作区路径已复制');
+    } catch (e) {
+        showToast('复制失败，请手动选择路径');
     }
 }
 

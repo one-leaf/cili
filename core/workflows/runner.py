@@ -23,10 +23,12 @@ from core.config import (
     get_workspace_cwd as workspace_cwd,
 )
 from core.config import (
+    get_workspace_meta,
     get_workspace_sessions_dir as workspace_sessions_dir,
 )
 from core.config import load_config
 from core.event_bus import get_event_bus
+from core.inbox import MAX_SYSTEM_BODY_CHARS, get_inbox_store
 from core.output_sink import OutputSink
 from core.session import SessionStore
 from core.session_registry import registry, session_key
@@ -71,6 +73,7 @@ class WorkflowRunner:
         self._expected_index = -1
         self._executing = False
         self._final_summary_text = ""
+        self._inbox_notified = False
 
     @property
     def key(self) -> str:
@@ -216,6 +219,7 @@ class WorkflowRunner:
             self._finalize_run_json(reason=str(exc))
         finally:
             self._save_state()
+            self._notify_inbox_terminal()
             self._cleanup()
             _unregister_runner(self.key, self)
             self._publish_workflow_changed("run_finished")
@@ -941,6 +945,72 @@ class WorkflowRunner:
         if state.status == "stopped":
             return "工作流运行已停止"
         return f"工作流运行结束：{state.status}"
+
+    def _notify_inbox_terminal(self) -> None:
+        """把一次工作流运行的终态写进全局收件箱（best-effort）。
+
+        统一在 ``_run`` 的 finally 调用，覆盖正常完成、``_loop`` 提前失败与
+        ``_run`` 异常；``_inbox_notified`` 防止重复写入。
+        """
+        if self._inbox_notified:
+            return
+        status = self.state.status
+        titles = {
+            "completed": ("success", "运行完成"),
+            "failed": ("error", "运行失败"),
+            "stopped": ("warning", "已停止"),
+            "interrupted": ("warning", "已中断"),
+        }
+        if status not in titles:
+            return
+        self._inbox_notified = True
+        level, suffix = titles[status]
+
+        run_id = self._run_id or self.state.run_id
+        if not run_id:
+            run_id = now_str().replace(" ", "_").replace(":", "")
+        self._run_id = run_id
+
+        body = str(self._final_summary_text or self._summary_text() or "").strip()
+        results_dir = ""
+        try:
+            results_dir = self._results_run_dir().relative_to(
+                Path(workspace_cwd(self.workspace_uuid))
+            ).as_posix()
+            body = f"{body}\n\n结果目录：`{results_dir}`".strip()
+        except Exception:  # noqa: BLE001 —— 路径展示失败不影响通知
+            logger.debug("[workflow] 计算结果目录失败", exc_info=True)
+
+        try:
+            workspace_name = str(
+                get_workspace_meta(self.workspace_uuid).get("workspace_name") or ""
+            )
+        except Exception:  # noqa: BLE001
+            workspace_name = ""
+
+        session_id = str(
+            self.state.origin_session_id or self.state.results_session_id or ""
+        )
+        try:
+            get_inbox_store().add(
+                f"工作流「{self.workflow.name}」{suffix}",
+                body,
+                level=level,
+                source_type="workflow",
+                workspace_uuid=self.workspace_uuid,
+                workspace_name=workspace_name,
+                session_id=session_id,
+                dedupe_key=f"workflow:{self.workspace_uuid}:{self.workflow.id}:{run_id}",
+                payload={
+                    "workflow_id": self.workflow.id,
+                    "run_id": run_id,
+                    "status": status,
+                    "results_dir": results_dir,
+                },
+                max_body_chars=MAX_SYSTEM_BODY_CHARS,
+            )
+        except Exception:  # noqa: BLE001 —— 通知失败不影响工作流终态
+            logger.warning("[workflow] 写收件箱失败: %s", self.workflow.id, exc_info=True)
 
     def _notify_maintenance(self, text: str) -> None:
         sid = self.state.origin_session_id or self.state.panel_session_id

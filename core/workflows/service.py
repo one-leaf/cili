@@ -138,6 +138,37 @@ def _mark_interrupted(workspace_uuid: str, workflow_id: str, state: WorkflowStat
             logger.warning("[workflow] 标记中断失败: %s", exc)
     _publish_changed(workspace_uuid, workflow_id, "interrupted")
 
+    # 进程重启导致的中断也要进收件箱（与 runner 正常终态通知同一模型）。
+    try:
+        from core.config import get_workspace_meta
+        from core.inbox import MAX_SYSTEM_BODY_CHARS, get_inbox_store
+
+        workflow = store.load_workflow(workspace_uuid, workflow_id)
+        name = workflow.name if workflow else workflow_id
+        workspace_name = str(
+            get_workspace_meta(workspace_uuid).get("workspace_name") or ""
+        )
+        run_id = state.run_id or state.finished_at or "unknown"
+        get_inbox_store().add(
+            f"工作流「{name}」已中断",
+            "进程重启，运行被中断。",
+            level="warning",
+            source_type="workflow",
+            workspace_uuid=workspace_uuid,
+            workspace_name=workspace_name,
+            session_id=str(state.origin_session_id or state.results_session_id or ""),
+            dedupe_key=f"workflow:{workspace_uuid}:{workflow_id}:{run_id}",
+            payload={
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "status": "interrupted",
+                "results_dir": "",
+            },
+            max_body_chars=MAX_SYSTEM_BODY_CHARS,
+        )
+    except Exception:  # noqa: BLE001 —— 通知失败不影响中断标记
+        logger.warning("[workflow] 写中断收件箱失败: %s", workflow_id, exc_info=True)
+
 
 def create_workflow(workspace_uuid: str, payload: dict[str, Any]) -> Workflow:
     with store.store_lock():

@@ -29,6 +29,7 @@ from web.routes_courseware import router as courseware_router
 from web.routes_cron import router as cron_router
 from web.routes_email import router as email_router
 from web.routes_files import router as files_router
+from web.routes_inbox import router as inbox_router
 from web.routes_memory import router as memory_router
 from web.routes_permissions import router as permissions_router
 from web.routes_qq import router as qq_router
@@ -188,6 +189,7 @@ app.include_router(update_router)
 app.include_router(teen_router)
 app.include_router(textbooks_router)
 app.include_router(cron_router)
+app.include_router(inbox_router)
 app.include_router(files_router)
 app.include_router(courseware_router)
 app.include_router(memory_router)

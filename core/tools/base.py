@@ -71,6 +71,8 @@ class Tool(ShellMixin, BackgroundMixin):
     mutates_workspace: bool = False
     # 接口专属工具：只在声明该接口的回合可见（见 INTERFACE_TOOLS）
     interface_scoped: frozenset[str] = frozenset()
+    # 当前角色名（registry.create_tools 实例化后写入，供通知等工具记录来源）
+    agent_role: str = ""
 
     # Directories to skip during file search operations
     IGNORE_DIRS: set[str] = {

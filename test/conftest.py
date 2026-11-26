@@ -177,6 +177,22 @@ def runner(config, test_workspace):
         shutil.rmtree(test_data_dir, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def isolated_inbox(tmp_path, monkeypatch):
+    """所有测试默认使用临时收件箱，避免 cron/workflow 用例写真实 data/cili。"""
+    from core import inbox as inbox_mod
+
+    store = inbox_mod.InboxStore(tmp_path / "inbox.json")
+    monkeypatch.setattr(inbox_mod, "_store", store)
+    yield store
+
+
+@pytest.fixture
+def inbox_store(isolated_inbox):
+    """显式引用隔离后的收件箱（保持测试可读性）。"""
+    return isolated_inbox
+
+
 @pytest.fixture
 def cron_env(monkeypatch, tmp_path):
     """隔离的 cron 环境：独立 workspace + System 数据目录。"""

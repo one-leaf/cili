@@ -24,7 +24,7 @@ function connectEventSource() {
         workspace_uuid: currentWorkspace.uuid,
         session_id: currentSession.session_id,
         // 跨会话的工作区级变更不受 session 过滤：服务端据此放行
-        types: 'workflow_changed,session_changed,files_changed',
+        types: 'workflow_changed,session_changed,files_changed,inbox_changed',
     });
     const token = getAccessToken();
     if (token) params.set('token', token);
@@ -135,6 +135,10 @@ function handleBusEvent(e) {
 
     // 工作区级变更：与当前会话无关（后台子代理/工作流/其他接入端），
     // 必须在会话过滤之前处理，否则永远收不到。
+    if (e.type === 'inbox_changed') {
+        if (window.Inbox) Inbox.onBusEvent(e);
+        return;
+    }
     if (e.type === 'workflow_changed') {
         scheduleWorkflowRefresh();
         // 面板会话可能被重命名/新建，侧栏会话列表一并刷新
