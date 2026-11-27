@@ -174,6 +174,7 @@ def sync_managed_workspaces(entries: list[dict]) -> list[dict]:
         uuid = str(item.get("uuid") or "")
         if not uuid or not find_workspace_entry(uuid):
             continue
+        ensure_git_exclude(uuid)
         branch = str(item.get("branch") or "main")
         ok, msg = sync_remote_wins(uuid, branch)
         meta = get_workspace_meta(uuid) or {}

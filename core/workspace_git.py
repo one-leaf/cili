@@ -138,7 +138,7 @@ def _sanitize_gitignore(workspace_dir: Path) -> None:
         add=(".cili/tmp/", ".cili/sensitive_words.json"),
     )
 
-def ensure_git_exclude(workspace_uuid: str, entries: tuple[str, ...] = (".cili/",)) -> bool:
+def ensure_git_exclude(workspace_uuid: str, entries: tuple[str, ...] = ()) -> bool:
     """把本地排除项写进 .git/info/exclude（不进入提交历史）。"""
     workspace_dir = _get_workspace_dir(workspace_uuid)
     if not workspace_dir or not (workspace_dir / ".git").is_dir():
@@ -146,8 +146,14 @@ def ensure_git_exclude(workspace_uuid: str, entries: tuple[str, ...] = (".cili/"
     path = workspace_dir / ".git" / "info" / "exclude"
     try:
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        # 共享工作区要求 .cili（会话/记忆）也同步：清掉历史遗留的 .cili 忽略项
+        kept = [
+            line for line in lines
+            if not line.strip().startswith((".cili/", "!.cili/"))
+        ]
+        changed = len(kept) != len(lines)
+        lines = kept
         known = {line.strip() for line in lines}
-        changed = False
         for entry in entries:
             if entry not in known:
                 lines.append(entry)
