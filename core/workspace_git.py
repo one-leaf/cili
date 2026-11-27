@@ -501,19 +501,42 @@ def _git_net_cmd(workspace_dir: str | Path, args: list[str],
     用相对路径 `.git/xxx` 传 --file：_git_cmd 已把 cwd 设为工作区目录，
     这样即使工作区路径含空格也不会破坏 helper 参数解析。
     """
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "Never",
+    }
+    # 始终清空全局 helper 链：组织工作区绝不弹系统凭据框。
+    helper_args = ["-c", "credential.helper="]
     if _credentials_path(workspace_dir).is_file():
         helper = f"store --file=.git/{_CREDENTIALS_FILENAME}"
-        # 先用空值 `credential.helper=` 清空 helper 链，再挂本工作区的 store：
         # 只写 `-c credential.helper=store --file=...` 是「追加」，用户全局配置的
         # helper（store/manager）会先命中，取到的是全局凭据而非工作区 token。
-        return _git_cmd(
-            workspace_dir,
-            ["-c", "credential.helper=", "-c", f"credential.helper={helper}", *args],
-            timeout=timeout,
-            env=env,
-        )
-    return _git_cmd(workspace_dir, args, timeout=timeout, env=env)
+        helper_args += ["-c", f"credential.helper={helper}"]
+    return _git_cmd(
+        workspace_dir, [*helper_args, *args], timeout=timeout, env=env
+    )
+
+
+def _pin_credential_helper(workspace_dir: str | Path) -> None:
+    """把仓库本地 credential.helper 固定到工作区凭证文件。
+
+    这样即使调用方忘了挂 -c credential.helper=，git 也不会落到系统
+    Git Credential Manager 去弹窗；仓库内的所有 git 命令都用工作区令牌。
+    """
+    if not _credentials_path(workspace_dir).is_file():
+        return
+    _git_cmd(
+        workspace_dir, ["config", "--local", "credential.helper", ""], timeout=10
+    )
+    _git_cmd(
+        workspace_dir,
+        [
+            "config", "--local", "--add", "credential.helper",
+            f"store --file=.git/{_CREDENTIALS_FILENAME}",
+        ],
+        timeout=10,
+    )
 
 
 def _mask_token(token: str) -> str:
@@ -559,6 +582,7 @@ def set_git_remote(workspace_uuid: str, remote_url: str, username: str = "", tok
                 return False, f"Git 初始化失败: {msg}"
 
         _write_credentials_file(workspace_dir, remote_url, username, token)
+        _pin_credential_helper(workspace_dir)
         clean_url = _clean_remote_url(remote_url)
 
         # 检查是否已有 origin
@@ -809,6 +833,7 @@ def _sync_remote_to_git(workspace_uuid: str) -> None:
     # 因此 meta 里 token 为空时不要删除已有凭证文件。
     if token or not ws_config.get("org_managed"):
         _write_credentials_file(workspace_dir, remote_url, username, token)
+    _pin_credential_helper(workspace_dir)
     clean_url = _clean_remote_url(remote_url)
 
     # 检查当前 remote origin 是否一致
