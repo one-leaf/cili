@@ -49,6 +49,13 @@ class AppContext:
         except Exception as e:
             logger.warning(f"[AppContext] 启动教材数据同步失败: {e}")
 
+        # 组织托管：已保存会话时后台静默恢复/同步（延迟启动，不阻塞启动）
+        try:
+            from core.org import get_org_service
+            get_org_service().startup()
+        except Exception as e:
+            logger.warning(f"[AppContext] 启动组织同步失败: {e}")
+
         # Cron 调度器
         try:
             from core.cron import start_scheduler
@@ -113,6 +120,7 @@ class AppContext:
             ("MCP provider", self._stop_mcp),
             ("cron 调度器", self._stop_cron),
             ("审批看门狗", self._stop_approval_watchdog),
+            ("组织同步", self._stop_org),
             ("ChatGPT OAuth 登录", self._stop_chatgpt_oauth),
         ):
             try:
@@ -173,6 +181,11 @@ class AppContext:
     def _stop_approval_watchdog() -> None:
         from core.approval_watchdog import stop_approval_watchdog
         stop_approval_watchdog()
+
+    @staticmethod
+    def _stop_org() -> None:
+        from core.org import get_org_service
+        get_org_service().shutdown()
 
     @staticmethod
     def _stop_chatgpt_oauth() -> None:

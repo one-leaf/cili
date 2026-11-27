@@ -31,6 +31,7 @@ from web.routes_email import router as email_router
 from web.routes_files import router as files_router
 from web.routes_inbox import router as inbox_router
 from web.routes_memory import router as memory_router
+from web.routes_org import router as org_router
 from web.routes_permissions import router as permissions_router
 from web.routes_qq import router as qq_router
 from web.routes_session_about import router as session_about_router
@@ -185,6 +186,7 @@ app.include_router(workflows_router)
 app.include_router(config_router)
 app.include_router(siwc_router)
 app.include_router(permissions_router)
+app.include_router(org_router)
 app.include_router(update_router)
 app.include_router(teen_router)
 app.include_router(textbooks_router)

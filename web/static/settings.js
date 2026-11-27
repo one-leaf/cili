@@ -98,6 +98,9 @@ async function saveSettings() {
     if (activeTab && activeTab.dataset.tab === 'permissions') {
         return savePermissions();
     }
+    if (activeTab && activeTab.dataset.tab === 'org') {
+        return;  // 组织页有自己的同步/退出动作，避免用旧表单覆盖组织 provider
+    }
     const statusEl = document.getElementById('settings-status');
     if (settingsLoading) {
         statusEl.textContent = '设置仍在加载，请稍候再保存';

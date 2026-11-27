@@ -394,6 +394,7 @@
                 <button class="settings-tab active" data-tab="models">模型列表</button>
                 <button class="settings-tab" data-tab="agents">Agents</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
+                <button class="settings-tab" data-tab="org">组织</button>
                 <button class="settings-tab" data-tab="permissions">权限</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
@@ -550,6 +551,89 @@
                                     </select>
                                     <div class="hint">消息卡片「朗读」按钮的语速；仅本浏览器生效</div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Organization Tab -->
+                <div class="tab-content" id="tab-org">
+                    <div class="settings-pane">
+                        <div class="pane-desc"><strong>组织托管</strong> — 加入公司组织后，使用组织下发的模型配置；设备令牌只保存在本机，启动时静默恢复并自动同步。</div>
+
+                        <div id="org-loading" class="settings-note">加载中...</div>
+
+                        <div id="org-join" class="settings-card" hidden>
+                            <div class="settings-card-head"><span class="title">加入组织</span></div>
+                            <div class="setting-row">
+                                <label for="org-server-url">服务器地址</label>
+                                <div class="control">
+                                    <input type="text" id="org-server-url" placeholder="https://cili.company.com">
+                                    <div class="hint">必须使用 HTTPS；本机调试允许 http://localhost。</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>组织</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <button id="org-discover-btn" class="btn btn-small" type="button">连接</button>
+                                        <select id="org-select" style="min-width:240px"></select>
+                                    </div>
+                                    <div class="hint">连接后选择要加入的组织；只有一个组织时自动选中。</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="org-phone">手机号</label>
+                                <div class="control">
+                                    <input type="text" id="org-phone" placeholder="13800000000" autocomplete="tel">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="org-code">验证码</label>
+                                <div class="control">
+                                    <div class="inline">
+                                        <input type="text" id="org-code" placeholder="6 位验证码" autocomplete="one-time-code">
+                                        <button id="org-send-code-btn" class="btn btn-small" type="button">获取验证码</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="org-device-name">设备名</label>
+                                <div class="control">
+                                    <input type="text" id="org-device-name" placeholder="我的电脑">
+                                    <div class="hint">用于管理端识别设备，可留空。</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label>绑定角色</label>
+                                <div class="control">
+                                    <div class="inline org-role-row">
+                                        <label><input type="checkbox" id="org-role-master" checked> Master</label>
+                                        <label><input type="checkbox" id="org-role-worker" checked> Worker</label>
+                                        <label><input type="checkbox" id="org-role-lite" checked> Lite</label>
+                                        <label><input type="checkbox" id="org-role-workflow" checked> Workflow</label>
+                                    </div>
+                                    <div class="hint">勾选哪些角色使用组织模型；至少保留一个。</div>
+                                </div>
+                            </div>
+                            <div class="settings-actions">
+                                <button id="org-login-btn" class="btn btn-primary" type="button">加入</button>
+                                <span id="org-join-status" class="settings-status"></span>
+                            </div>
+                        </div>
+
+                        <div id="org-joined" class="settings-card" hidden>
+                            <div class="settings-card-head">
+                                <span class="title" id="org-joined-title">已加入组织</span>
+                                <span class="sub" id="org-joined-sub"></span>
+                            </div>
+                            <div id="org-joined-info"></div>
+                            <div id="org-invalid-note" class="settings-status error" hidden>登录已失效，请重新验证手机号。</div>
+                            <div class="settings-actions">
+                                <button id="org-sync-btn" class="btn btn-small" type="button">立即同步</button>
+                                <button id="org-relogin-btn" class="btn btn-small" type="button">重新登录</button>
+                                <button id="org-logout-btn" class="btn btn-small" type="button">退出组织</button>
+                                <span id="org-action-status" class="settings-status"></span>
                             </div>
                         </div>
                     </div>
@@ -1615,6 +1699,7 @@
     <script src="/static/tts.js"></script>
     <script src="/static/file-tree.js"></script>
     <script src="/static/settings.js"></script>
+    <script src="/static/org-settings.js"></script>
     <script src="/static/teen-mode.js"></script>
     <script src="/static/provider-settings.js"></script>
     <script src="/static/about-settings.js"></script>

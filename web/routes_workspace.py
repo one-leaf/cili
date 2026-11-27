@@ -310,6 +310,11 @@ async def unregister_workspace(workspace_uuid: str):
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    if (get_workspace_meta(workspace_uuid) or {}).get("org_managed"):
+        raise HTTPException(
+            status_code=403,
+            detail="组织托管工作区不能在本地注销，请先在设置中退出组织",
+        )
     with _sessions_lock:
         _cleanup_runners_for_workspace(workspace_uuid)
     remove_workspace_entry(workspace_uuid)
@@ -327,6 +332,11 @@ async def update_git_settings(workspace_uuid: str, request: GitSettingsRequest):
         raise HTTPException(status_code=403, detail="System workspace cannot be modified")
     if not find_workspace_entry(workspace_uuid):
         raise HTTPException(status_code=404, detail="Workspace not found")
+    if (get_workspace_meta(workspace_uuid) or {}).get("org_managed"):
+        raise HTTPException(
+            status_code=403,
+            detail="组织托管工作区的 Git 设置由组织统一管理",
+        )
 
     config = get_workspace_meta(workspace_uuid)
     config["git_enabled"] = request.git_enabled

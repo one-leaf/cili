@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,9 @@ from core.permission_settings import PermissionConfig
 from core.time_utils import now_str
 
 logger = logging.getLogger(__name__)
+
+# 配置保存后重载 runner 的进程内串行锁（组织同步与 Web 保存共用）。
+CONFIG_RELOAD_LOCK = threading.RLock()
 
 
 # 协议缺省地址（与 core/llm/server_presets.py 的预设表保持同一口径）

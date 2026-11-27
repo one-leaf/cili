@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -137,6 +138,30 @@ def _sanitize_gitignore(workspace_dir: Path) -> None:
         add=(".cili/tmp/", ".cili/sensitive_words.json"),
     )
 
+def ensure_git_exclude(workspace_uuid: str, entries: tuple[str, ...] = (".cili/",)) -> bool:
+    """把本地排除项写进 .git/info/exclude（不进入提交历史）。"""
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir or not (workspace_dir / ".git").is_dir():
+        return False
+    path = workspace_dir / ".git" / "info" / "exclude"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        known = {line.strip() for line in lines}
+        changed = False
+        for entry in entries:
+            if entry not in known:
+                lines.append(entry)
+                known.add(entry)
+                changed = True
+        if changed or not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        logger.warning("[workspace-git] 写入 .git/info/exclude 失败", exc_info=True)
+        return False
+
+
 def is_git_initialized(workspace_uuid: str) -> bool:
     """检查工作区是否已初始化 Git 仓库。"""
     workspace_dir = _get_workspace_dir(workspace_uuid)
@@ -250,7 +275,23 @@ def _generate_commit_summary(diff_stat: str, workspace_uuid: str = "") -> str:
                 pass
 
 
+_GIT_LOCKS: dict[str, threading.RLock] = {}
+_GIT_LOCKS_GUARD = threading.Lock()
+
+
+def _workspace_lock(workspace_uuid: str) -> threading.RLock:
+    with _GIT_LOCKS_GUARD:
+        return _GIT_LOCKS.setdefault(workspace_uuid, threading.RLock())
+
+
 def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote: bool = False) -> tuple[bool, str]:
+    with _workspace_lock(workspace_uuid):
+        return _auto_commit_workspace_locked(
+            workspace_uuid, session_id, sync_remote
+        )
+
+
+def _auto_commit_workspace_locked(workspace_uuid: str, session_id: str = "", sync_remote: bool = False) -> tuple[bool, str]:
     """自动提交工作区变更。
 
     检查是否有文件变更，如有则使用 LLM 生成摘要并提交。
@@ -304,7 +345,15 @@ def auto_commit_workspace(workspace_uuid: str, session_id: str = "", sync_remote
             from core.config import get_workspace_meta
             ws_config = get_workspace_meta(workspace_uuid) or {}
             if ws_config.get("git_remote_url"):
-                sync_ok, sync_msg = _sync_with_remote(workspace_uuid, workspace_dir)
+                if str(ws_config.get("git_sync_mode") or "") == "remote_wins":
+                    sync_ok, sync_msg = sync_remote_wins(
+                        workspace_uuid,
+                        str(ws_config.get("git_branch") or "main"),
+                    )
+                else:
+                    sync_ok, sync_msg = _sync_with_remote(
+                        workspace_uuid, workspace_dir
+                    )
                 if sync_ok:
                     return True, f"{summary}; {sync_msg}"
                 else:
@@ -422,6 +471,10 @@ def _write_credentials_file(workspace_dir: str | Path, remote_url: str,
 
     parsed = urlparse(remote_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return
     netloc = parsed.hostname
     if parsed.port:
@@ -448,21 +501,19 @@ def _git_net_cmd(workspace_dir: str | Path, args: list[str],
     用相对路径 `.git/xxx` 传 --file：_git_cmd 已把 cwd 设为工作区目录，
     这样即使工作区路径含空格也不会破坏 helper 参数解析。
     """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     if _credentials_path(workspace_dir).is_file():
         helper = f"store --file=.git/{_CREDENTIALS_FILENAME}"
         # 先用空值 `credential.helper=` 清空 helper 链，再挂本工作区的 store：
         # 只写 `-c credential.helper=store --file=...` 是「追加」，用户全局配置的
         # helper（store/manager）会先命中，取到的是全局凭据而非工作区 token。
-        # GIT_TERMINAL_PROMPT=0：凭证缺失/失效时直接失败，避免后台服务里
-        # 转为交互式提示而挂住。
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         return _git_cmd(
             workspace_dir,
             ["-c", "credential.helper=", "-c", f"credential.helper={helper}", *args],
             timeout=timeout,
             env=env,
         )
-    return _git_cmd(workspace_dir, args, timeout=timeout)
+    return _git_cmd(workspace_dir, args, timeout=timeout, env=env)
 
 
 def _mask_token(token: str) -> str:
@@ -588,6 +639,126 @@ def git_pull(workspace_uuid: str) -> tuple[bool, str]:
         return False, f"pull 失败: {e}"
 
 
+def sync_remote_wins(workspace_uuid: str, branch: str = "main") -> tuple[bool, str]:
+    """远程权威同步：本地快照 → fetch → 快进/推送/远程优先合并。"""
+    workspace_dir = _get_workspace_dir(workspace_uuid)
+    if not workspace_dir:
+        return False, "工作区目录不存在"
+    with _workspace_lock(workspace_uuid):
+        try:
+            _sync_remote_to_git(workspace_uuid)
+
+            added = _git_cmd(workspace_dir, ["add", "-A"])
+            if added.returncode != 0:
+                return False, f"本地快照 add 失败: {added.stderr.strip()}"
+            diff = _git_cmd(workspace_dir, ["diff", "--cached", "--quiet"])
+            if diff.returncode == 1:
+                committed = _git_cmd(
+                    workspace_dir,
+                    ["commit", "-q", "-m", "组织同步前本地快照"],
+                )
+                if committed.returncode != 0:
+                    return False, f"本地快照 commit 失败: {committed.stderr.strip()}"
+            elif diff.returncode != 0:
+                return False, f"检查本地变更失败: {diff.stderr.strip()}"
+
+            fetched = _git_net_cmd(
+                workspace_dir, ["fetch", "origin", branch], timeout=120
+            )
+            if fetched.returncode != 0:
+                message = fetched.stderr.strip() or fetched.stdout.strip()
+                if "couldn't find remote ref" in message.lower():
+                    return _push_remote(workspace_dir, branch, set_upstream=True)
+                return False, f"fetch 失败: {message}"
+
+            local = _git_cmd(workspace_dir, ["rev-parse", "HEAD"])
+            remote = _git_cmd(workspace_dir, ["rev-parse", "FETCH_HEAD"])
+            if local.returncode != 0 or remote.returncode != 0:
+                return False, "无法读取本地/远程提交"
+            if local.stdout.strip() == remote.stdout.strip():
+                return True, "已是最新"
+
+            local_behind = _git_cmd(
+                workspace_dir, ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"]
+            ).returncode == 0
+            if local_behind:
+                return _reset_to_remote(workspace_dir, "已对齐远程")
+
+            local_ahead = _git_cmd(
+                workspace_dir, ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"]
+            ).returncode == 0
+            if local_ahead:
+                return _push_remote(workspace_dir, branch)
+
+            merged = _git_cmd(
+                workspace_dir,
+                ["merge", "--no-edit", "--allow-unrelated-histories",
+                 "-X", "theirs", "FETCH_HEAD"],
+            )
+            if merged.returncode != 0:
+                _git_cmd(workspace_dir, ["merge", "--abort"])
+                reset_ok, reset_msg = _reset_to_remote(
+                    workspace_dir, "合并失败，已回退远程"
+                )
+                message = merged.stderr.strip() or merged.stdout.strip()
+                if not reset_ok:
+                    return False, f"合并失败且回退失败: {reset_msg}"
+                return False, f"合并失败，{reset_msg}: {message[:300]}"
+            return _push_remote(workspace_dir, branch)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[workspace-git] remote_wins 同步失败: {e}")
+            return False, f"同步失败: {e}"
+
+
+def _push_remote(
+    workspace_dir: Path, branch: str, *, set_upstream: bool = False
+) -> tuple[bool, str]:
+    refspec = f"HEAD:refs/heads/{branch}"
+    last_error = ""
+    for _attempt in range(3):
+        args = ["push"]
+        if set_upstream:
+            args.append("-u")
+        args.extend(["origin", refspec])
+        pushed = _git_net_cmd(workspace_dir, args, timeout=120)
+        if pushed.returncode == 0:
+            return True, "推送成功"
+        last_error = pushed.stderr.strip() or pushed.stdout.strip()
+        fetched = _git_net_cmd(
+            workspace_dir, ["fetch", "origin", branch], timeout=120
+        )
+        if fetched.returncode != 0:
+            break
+        merged = _git_cmd(
+            workspace_dir,
+            ["merge", "--no-edit", "--allow-unrelated-histories",
+             "-X", "theirs", "FETCH_HEAD"],
+        )
+        if merged.returncode != 0:
+            _git_cmd(workspace_dir, ["merge", "--abort"])
+            reset_ok, reset_msg = _reset_to_remote(
+                workspace_dir, "推送冲突，已回退远程"
+            )
+            if not reset_ok:
+                return False, f"push 失败且回退失败: {reset_msg}"
+            return False, f"push 失败，{reset_msg}: {last_error[:500]}"
+    if not set_upstream:
+        reset_ok, reset_msg = _reset_to_remote(
+            workspace_dir, "push 多次失败，已回退远程"
+        )
+        if reset_ok:
+            return False, f"push 失败，{reset_msg}: {last_error[:500]}"
+    return False, f"push 失败: {last_error[:500]}"
+
+
+def _reset_to_remote(workspace_dir: Path, message: str) -> tuple[bool, str]:
+    reset = _git_cmd(workspace_dir, ["reset", "--hard", "FETCH_HEAD"])
+    if reset.returncode != 0:
+        return False, f"reset 失败: {reset.stderr.strip()}"
+    _git_cmd(workspace_dir, ["clean", "-fd"])
+    return True, message
+
+
 def git_push(workspace_uuid: str) -> tuple[bool, str]:
     """推送到远程仓库。
 
@@ -634,8 +805,10 @@ def _sync_remote_to_git(workspace_uuid: str) -> None:
     username = ws_config.get("git_username", "")
     token = ws_config.get("git_token", "")
 
-    # 凭证写 .git/cili-credentials；origin 只存不含凭证的 URL
-    _write_credentials_file(workspace_dir, remote_url, username, token)
+    # 组织工作区只把令牌放在 .git/cili-credentials，不落 workspaces.json；
+    # 因此 meta 里 token 为空时不要删除已有凭证文件。
+    if token or not ws_config.get("org_managed"):
+        _write_credentials_file(workspace_dir, remote_url, username, token)
     clean_url = _clean_remote_url(remote_url)
 
     # 检查当前 remote origin 是否一致

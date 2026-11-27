@@ -493,6 +493,8 @@ function setupEventListeners() {
             document.querySelectorAll('#settings-modal .tab-content').forEach(c => c.classList.remove('active'));
             tab.classList.add('active');
             document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+            const saveBtn = document.getElementById('settings-save-btn');
+            if (saveBtn) saveBtn.disabled = tab.dataset.tab === 'org';
         });
     });
 

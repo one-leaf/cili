@@ -9,7 +9,6 @@ import asyncio
 import logging
 import re
 import secrets
-import threading
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -22,6 +21,7 @@ from core.config import (
     ensure_default_workspace,
     find_workspace_entry,
     get_workspace_data_dir,
+    CONFIG_RELOAD_LOCK,
     get_workspace_meta,
     load_config,
     load_workspaces_index,
@@ -36,16 +36,13 @@ logger = logging.getLogger(__name__)
 # master runner 池下沉至 core（接口无关），Web/QQ 等接入端共享同一份
 _sessions_lock = registry.lock  # 多步操作（workspace 删除/重置、配置重载）持锁
 
-_reload_lock = threading.Lock()
-
-
 def reload_all_runners() -> None:
     """逐个重载缓存 runner 的配置（同步；调用方放线程池）。
 
     单个 runner 失败不阻塞其余；``reload_config`` 会重建工具/发起网络探测，
     属阻塞操作，只在锁内取快照。
     """
-    with _reload_lock:
+    with CONFIG_RELOAD_LOCK:
         with _sessions_lock:
             cached = list(registry.items())
         for key, runner in cached:
@@ -98,6 +95,20 @@ def csrf_protect(request: Request) -> None:
     referer = request.headers.get("referer") or ""
     if not origin and not referer:
         return  # 非浏览器客户端（curl 等），放行
+    allowed = {"localhost", "127.0.0.1", "::1"}
+    try:
+        request_host = urlparse(f"//{request.headers.get('host', '')}").hostname or ""
+    except ValueError:
+        request_host = ""
+    # 只额外信任 IP 直连的 Host，避免 DNS rebinding 用域名伪装同源。
+    if request_host:
+        import ipaddress
+
+        try:
+            ipaddress.ip_address(request_host)
+            allowed.add(request_host)
+        except ValueError:
+            pass
     for value in (origin, referer):
         if not value:
             continue
@@ -105,7 +116,7 @@ def csrf_protect(request: Request) -> None:
             host = urlparse(value).hostname or ""
         except ValueError:
             host = ""
-        if host not in ("localhost", "127.0.0.1"):
+        if host not in allowed:
             raise HTTPException(status_code=403, detail="Cross-site request blocked (CSRF)")
 
 
