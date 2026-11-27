@@ -111,6 +111,17 @@ def test_apply_and_restore_roles(org_env):
     assert "model" not in restored["agents"].get("lite", {})
 
 
+def test_apply_without_binding_only_adds_provider(org_env):
+    """组织模型只加入 provider，不改写角色模型。"""
+    state = apply_config(_payload(), bind_roles=[])
+    assert state["provider_key"] == "org-acme"
+    assert state["roles_applied"] == {}
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["providers"]["org-acme"]["api_key"] == "employee-key"
+    assert saved["agents"]["master"]["model"] == "personal/main"
+    assert saved["agents"]["worker"]["model"] == "personal/main"
+
+
 def test_sync_does_not_override_user_changed_role(org_env):
     state = apply_config(_payload(), bind_roles=["master", "worker"])
     config = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -319,7 +330,7 @@ def test_non_auth_403_keeps_configuration(org_env):
     assert "org-acme" in saved["providers"]
 
 
-def test_invalid_then_relogin_rebinds_roles(org_env):
+def test_invalid_then_relogin_keeps_personal_models(org_env):
     FakeClient.config_payload = _payload()
     FakeClient.not_modified = False
     FakeClient.auth_fail = False
@@ -329,7 +340,6 @@ def test_invalid_then_relogin_rebinds_roles(org_env):
         org_id="acme",
         phone="13800000000",
         code="123456",
-        bind_roles=["master"],
     )
     FakeClient.auth_fail = True
     invalid = service.sync(force=True)
@@ -342,11 +352,11 @@ def test_invalid_then_relogin_rebinds_roles(org_env):
         org_id="acme",
         phone="13800000000",
         code="123456",
-        bind_roles=["master"],
     )
-    assert status["roles"]["master"] == "org-acme/main"
+    # 组织模型只进 provider，不覆盖个人模型
+    assert status["roles"] == {}
     saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
-    assert saved["agents"]["master"]["model"] == "org-acme/main"
+    assert saved["agents"]["master"]["model"] == "personal/main"
 
 
 def test_startup_background_sync(org_env, monkeypatch):
@@ -385,13 +395,14 @@ def test_service_login_sync_and_invalid(org_env):
     assert status["joined"] is True
     assert status["session_invalid"] is False
     assert status["provider_key"] == "org-acme"
-    assert status["roles"]["master"] == "org-acme/main"
+    assert status["roles"] == {}
     assert status["user"]["phone_masked"] == "138****0000"
     assert "phone" not in status["user"]
     assert "dev_fake" not in json.dumps(status)
 
     saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
     assert saved["providers"]["org-acme"]["api_key"] == "employee-key"
+    assert saved["agents"]["master"]["model"] == "personal/main"
 
     FakeClient.not_modified = True
     assert service.sync()["joined"] is True

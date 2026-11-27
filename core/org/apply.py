@@ -60,7 +60,7 @@ def apply_config(
     bind_roles: list[str] | None = None,
     existing_state: dict | None = None,
 ) -> dict:
-    """写入 provider 与角色绑定，返回新的 state 片段。"""
+    """写入 provider；角色绑定仅在显式传 bind_roles 时执行（服务端默认不绑定）。"""
     model = payload.get("model") if isinstance(payload, dict) else None
     if not isinstance(model, dict):
         raise OrgApplyError("组织服务端未下发 model")
@@ -79,9 +79,7 @@ def apply_config(
         ]
     else:
         selected = [r for r in bind_roles if r in role_map]
-    if not selected:
-        raise OrgApplyError("组织 model 没有可绑定的角色")
-
+    # 不再强制绑定角色：selected 为空时只同步 provider，用户可在模型列表自选。
     config = migrate_legacy_config(load_global_config())
     agents = config.setdefault("agents", {})
     providers = config.setdefault("providers", {})

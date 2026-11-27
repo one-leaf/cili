@@ -394,12 +394,12 @@
                 <button class="settings-tab active" data-tab="models">模型列表</button>
                 <button class="settings-tab" data-tab="agents">Agents</button>
                 <button class="settings-tab" data-tab="system">系统参数</button>
-                <button class="settings-tab" data-tab="org">组织</button>
                 <button class="settings-tab" data-tab="permissions">权限</button>
                 <button class="settings-tab" data-tab="qq">QQ 接入端</button>
                 <button class="settings-tab" data-tab="wechat">微信接入端</button>
                 <button class="settings-tab" data-tab="email">邮件接入端</button>
                 <button class="settings-tab" data-tab="teen">青少年模式</button>
+                <button class="settings-tab" data-tab="org">组织</button>
                 <button class="settings-tab" data-tab="about">关于</button>
             </div>
             <div class="modal-body">
@@ -559,7 +559,7 @@
                 <!-- Organization Tab -->
                 <div class="tab-content" id="tab-org">
                     <div class="settings-pane">
-                        <div class="pane-desc"><strong>组织托管</strong> — 加入公司组织后，使用组织下发的模型配置；设备令牌只保存在本机，启动时静默恢复并自动同步。</div>
+                        <div class="pane-desc"><strong>组织托管</strong> — 加入公司组织后，同步组织信息与共享工作区；组织模型会加入模型列表，可自行选择，不会强制绑定角色。设备令牌只保存在本机，启动时静默恢复并自动同步。</div>
 
                         <div id="org-loading" class="settings-note">加载中...</div>
 
@@ -602,18 +602,6 @@
                                 <div class="control">
                                     <input type="text" id="org-device-name" placeholder="我的电脑">
                                     <div class="hint">用于管理端识别设备，可留空。</div>
-                                </div>
-                            </div>
-                            <div class="setting-row">
-                                <label>绑定角色</label>
-                                <div class="control">
-                                    <div class="inline org-role-row">
-                                        <label><input type="checkbox" id="org-role-master" checked> Master</label>
-                                        <label><input type="checkbox" id="org-role-worker" checked> Worker</label>
-                                        <label><input type="checkbox" id="org-role-lite" checked> Lite</label>
-                                        <label><input type="checkbox" id="org-role-workflow" checked> Workflow</label>
-                                    </div>
-                                    <div class="hint">勾选哪些角色使用组织模型；至少保留一个。</div>
                                 </div>
                             </div>
                             <div class="settings-actions">

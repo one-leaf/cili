@@ -183,7 +183,6 @@ class OrgService:
         phone: str,
         code: str,
         device_name: str = "cili",
-        bind_roles: list[str] | None = None,
     ) -> dict:
         with self._sync_lock:
             return self._login_locked(
@@ -192,7 +191,6 @@ class OrgService:
                 phone=phone,
                 code=code,
                 device_name=device_name,
-                bind_roles=bind_roles,
             )
 
     def _login_locked(
@@ -203,7 +201,6 @@ class OrgService:
         phone: str,
         code: str,
         device_name: str = "cili",
-        bind_roles: list[str] | None = None,
     ) -> dict:
         url = normalize_server_url(server_url)
         client = self._client_factory(url)
@@ -258,8 +255,8 @@ class OrgService:
             }
         )
         state = dict(old_state)
-        if bind_roles is not None:
-            state["bind_roles"] = list(bind_roles)
+        # 角色绑定功能已取消：组织模型只加入 provider，不再改写 agents。
+        state.pop("bind_roles", None)
         # 重新登录必须强制拉一次完整配置，避免沿用失效前的 ETag 得到 304。
         state["config_version"] = ""
         state["session_invalid"] = False
@@ -302,9 +299,7 @@ class OrgService:
                 self._record_error(state, str(exc))
                 return self.status()
 
-            bind_roles = state.get("bind_roles")
-            if not isinstance(bind_roles, list):
-                bind_roles = None
+            state.pop("bind_roles", None)
             etag = str(state.get("config_version") or "")
             provider_key = str(state.get("provider_key") or "")
             if etag and provider_key:
@@ -355,7 +350,7 @@ class OrgService:
                 return self.status()
             try:
                 state = apply_config(
-                    payload, bind_roles=bind_roles, existing_state=state
+                    payload, bind_roles=[], existing_state=state
                 )
             except Exception as exc:
                 self._record_error(state, f"应用组织配置失败: {exc}")

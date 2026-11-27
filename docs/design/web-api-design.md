@@ -224,7 +224,7 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 | GET | `/api/org/status` | 已加入状态、组织/用户（手机号掩码）、模型 provider/角色、最近同步/错误；不返回设备令牌 |
 | POST | `/api/org/discover` | `{server_url}`；代理组织服务端 `/api/v1/public/orgs` |
 | POST | `/api/org/sms/send` | `{server_url, org_id, phone}`；发送验证码 |
-| POST | `/api/org/login` | `{server_url, org_id, phone, code, device_name, bind_roles}`；保存设备令牌并应用模型配置 |
+| POST | `/api/org/login` | `{server_url, org_id, phone, code, device_name}`；保存设备令牌，同步组织 provider 与共享工作区（不绑定角色） |
 | POST | `/api/org/sync` | 手动同步组织配置 |
 | POST | `/api/org/logout` | 吊销设备令牌、删除组织 provider、恢复角色快照 |
 

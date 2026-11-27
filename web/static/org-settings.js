@@ -65,12 +65,8 @@
         rows.push(['用户', `${fmt((info.user || {}).name)}（${fmt((info.user || {}).phone_masked)}）`]);
         rows.push(['群组', ((info.user || {}).groups || []).map(esc).join('、') || '—']);
         rows.push(['服务器', fmt(info.server_url)]);
-        rows.push(['模型', model.label ? `${esc(model.label)}（${esc(model.protocol)}）` : '未同步']);
+        rows.push(['模型', model.label ? `${esc(model.label)}（${esc(model.protocol)}，可在模型列表选择）` : '未同步']);
         rows.push(['模型键', (model.keys || []).map(esc).join(', ') || '—']);
-        const roles = info.roles || {};
-        rows.push(['角色绑定', Object.keys(roles).length
-            ? Object.entries(roles).map(([role, ref]) => `${esc(role)} → ${esc(ref)}`).join('<br>')
-            : '—']);
         rows.push(['配置版本', fmt(info.config_version)]);
         rows.push(['最近同步', fmt(info.last_sync)]);
         const workspaces = info.workspaces || [];
@@ -184,27 +180,16 @@
         }
     }
 
-    function selectedRoles() {
-        return ['master', 'worker', 'lite', 'workflow'].filter(
-            role => $(`org-role-${role}`) && $(`org-role-${role}`).checked
-        );
-    }
-
     async function login() {
         const serverUrl = $('org-server-url').value.trim();
         const orgId = $('org-select').value;
         const phone = $('org-phone').value.trim();
         const code = $('org-code').value.trim();
-        const bindRoles = selectedRoles();
         if (!serverUrl || !orgId || !phone || !code) {
             setStatus('请填写完整的服务器、组织、手机号和验证码', true);
             return;
         }
-        if (!bindRoles.length) {
-            setStatus('至少选择一个要绑定的角色', true);
-            return;
-        }
-        setStatus('登录并应用配置...');
+        setStatus('登录并同步组织配置...');
         try {
             state.status = await api('/api/org/login', {
                 method: 'POST',
@@ -214,7 +199,6 @@
                     phone,
                     code,
                     device_name: $('org-device-name').value.trim() || 'cili',
-                    bind_roles: bindRoles,
                 },
             });
             render();
@@ -225,8 +209,8 @@
                     true
                 );
             } else {
-                setStatus('已加入组织并应用配置');
-                showToast('组织配置已应用');
+                setStatus('已加入组织');
+                showToast('组织配置已同步');
             }
         } catch (error) {
             setStatus('加入失败：' + error.message, true);

@@ -74,7 +74,6 @@ def test_sms_login_sync_logout(fake):
                 org_id="acme",
                 phone="13800000000",
                 code="123456",
-                bind_roles=["master"],
             )
         )
     )

@@ -31,7 +31,6 @@ class OrgLoginRequest(BaseModel):
     phone: str = Field(min_length=1, max_length=32)
     code: str = Field(min_length=1, max_length=16)
     device_name: str = Field(default="cili", max_length=120)
-    bind_roles: list[str] | None = None
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -102,7 +101,6 @@ async def org_login(payload: OrgLoginRequest):
             phone=payload.phone,
             code=payload.code,
             device_name=payload.device_name,
-            bind_roles=payload.bind_roles,
         )
         return status
     except Exception as exc:  # noqa: BLE001
