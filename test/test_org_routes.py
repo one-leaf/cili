@@ -8,7 +8,12 @@ import pytest
 from fastapi import HTTPException
 
 import web.routes_org as routes
-from core.org.client import OrgNetworkError, OrgRateLimited
+from core.org.client import (
+    OrgAuthError,
+    OrgNetworkError,
+    OrgProtocolError,
+    OrgRateLimited,
+)
 
 
 class FakeService:
@@ -134,3 +139,39 @@ def test_error_mapping(monkeypatch):
         ))
     assert exc.value.status_code == 429
     assert exc.value.detail["retry_after"] == 9
+
+
+def test_business_error_detail_is_passed_through(monkeypatch):
+    class MissingPhoneService(FakeService):
+        def send_sms(self, server_url, org_id, phone):
+            raise OrgProtocolError(
+                404, "phone_not_registered", "找不到用户，请输入正确的手机号"
+            )
+
+    monkeypatch.setattr(routes, "get_org_service", lambda: MissingPhoneService())
+    with pytest.raises(HTTPException) as exc:
+        _run(routes.org_send_sms(
+            routes.SmsSendRequest(
+                server_url="https://org.example",
+                org_id="acme",
+                phone="13800000000",
+            )
+        ))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "找不到用户，请输入正确的手机号"
+
+    class DisabledService(FakeService):
+        def send_sms(self, server_url, org_id, phone):
+            raise OrgAuthError(403, "person_disabled", "该用户已被停用，请联系管理员")
+
+    monkeypatch.setattr(routes, "get_org_service", lambda: DisabledService())
+    with pytest.raises(HTTPException) as exc:
+        _run(routes.org_send_sms(
+            routes.SmsSendRequest(
+                server_url="https://org.example",
+                org_id="acme",
+                phone="13800000000",
+            )
+        ))
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "该用户已被停用，请联系管理员"

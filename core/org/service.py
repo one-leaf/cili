@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
 from urllib.parse import urlparse
@@ -36,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 SYNC_INTERVAL_SECONDS = 6 * 3600
 STARTUP_DELAY_SECONDS = 10
+
+
+def _default_device_name() -> str:
+    """后台生成设备名（管理端识别用）：优先主机名，失败回退 cili。"""
+    try:
+        host = socket.gethostname().strip()
+    except OSError:
+        host = ""
+    return (host or "cili")[:120]
 
 
 def normalize_server_url(value: str) -> str:
@@ -182,7 +192,7 @@ class OrgService:
         org_id: str,
         phone: str,
         code: str,
-        device_name: str = "cili",
+        device_name: str = "",
     ) -> dict:
         with self._sync_lock:
             return self._login_locked(
@@ -200,7 +210,7 @@ class OrgService:
         org_id: str,
         phone: str,
         code: str,
-        device_name: str = "cili",
+        device_name: str = "",
     ) -> dict:
         url = normalize_server_url(server_url)
         client = self._client_factory(url)
@@ -209,7 +219,7 @@ class OrgService:
                 org_id=org_id,
                 phone=phone,
                 code=code,
-                device_name=device_name or "cili",
+                device_name=device_name or _default_device_name(),
             )
         finally:
             client.close()
@@ -300,7 +310,8 @@ class OrgService:
                 return self.status()
 
             state.pop("bind_roles", None)
-            etag = str(state.get("config_version") or "")
+            # force（手动「立即同步」/登录后）跳过 ETag，强制全量拉取并重新应用模型。
+            etag = "" if force else str(state.get("config_version") or "")
             provider_key = str(state.get("provider_key") or "")
             if etag and provider_key:
                 from core.config import load_global_config

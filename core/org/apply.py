@@ -34,9 +34,10 @@ def _is_org_ref(value: str) -> bool:
 
 
 def provider_key_for(org_id: str, model: dict | None = None) -> str:
+    # 以服务端下发的 provider_key 为准（cili 不再改写命名）
     configured = str((model or {}).get("provider_key") or "").strip()
-    if re.match(r"^org-[A-Za-z0-9_-]{1,60}$", configured):
-        return configured
+    if configured:
+        return configured.replace("/", "-")
     return safe_provider_key(ORG_PROVIDER_PREFIX + str(org_id or "default"))
 
 

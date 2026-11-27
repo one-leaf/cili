@@ -7264,12 +7264,19 @@ details.p-headers-panel .p-headers {
 }
 
 /* ── 组织托管设置页 ── */
-.org-info-row > label {
+.ms-scope .setting-row.org-info-row > label {
     width: 110px;
     flex: 0 0 110px;
+    padding-top: 0;
+    font-family: inherit;
+    font-size: var(--ms-fs-body);
+    font-weight: 400;
+    line-height: 1.6;
 }
 
-.org-info-row .control {
+.ms-scope .setting-row.org-info-row .control {
+    font-family: inherit;
+    font-size: var(--ms-fs-body);
     line-height: 1.6;
     overflow-wrap: anywhere;
 }

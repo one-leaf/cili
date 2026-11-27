@@ -19,10 +19,11 @@ class OrgNetworkError(OrgError):
 
 
 class OrgAuthError(OrgError):
-    def __init__(self, status: int, code: str = ""):
+    def __init__(self, status: int, code: str = "", message: str = ""):
         self.status = status
         self.code = code
-        super().__init__(code or f"认证失败（HTTP {status}）")
+        self.message = message
+        super().__init__(message or code or f"认证失败（HTTP {status}）")
 
 
 class OrgRateLimited(OrgError):
@@ -92,15 +93,22 @@ class OrgClient:
             code = ""
             message = ""
             if isinstance(data, dict):
-                raw = data.get("error") or data.get("detail")
-                if isinstance(raw, dict):
-                    code = str(raw.get("error") or raw.get("code") or "")
-                    message = str(raw.get("message") or "")
-                else:
-                    code = str(raw or "")
-                    message = code
+                raw_error = data.get("error")
+                detail = data.get("detail")
+                if isinstance(raw_error, dict):
+                    code = str(raw_error.get("error") or raw_error.get("code") or "")
+                    message = str(raw_error.get("message") or "")
+                elif isinstance(raw_error, str) and raw_error:
+                    code = raw_error
+                    message = detail if isinstance(detail, str) and detail else raw_error
+                elif isinstance(detail, dict):
+                    code = str(detail.get("error") or detail.get("code") or "")
+                    message = str(detail.get("message") or "")
+                elif isinstance(detail, str) and detail:
+                    code = detail
+                    message = detail
             if response.status_code in (401, 403):
-                raise OrgAuthError(response.status_code, code)
+                raise OrgAuthError(response.status_code, code, message)
             if response.status_code == 429:
                 retry_after = 60
                 if isinstance(data, dict):

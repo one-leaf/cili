@@ -11,7 +11,13 @@ import pytest
 import core.config as config_mod
 from core.org import store
 from core.org.apply import apply_config, restore_config
-from core.org.client import OrgAuthError, OrgClient, OrgNetworkError, OrgRateLimited
+from core.org.client import (
+    OrgAuthError,
+    OrgClient,
+    OrgNetworkError,
+    OrgProtocolError,
+    OrgRateLimited,
+)
 from core.org.service import OrgService, mask_phone, normalize_server_url
 
 
@@ -122,6 +128,25 @@ def test_apply_without_binding_only_adds_provider(org_env):
     assert saved["agents"]["worker"]["model"] == "personal/main"
 
 
+def test_apply_payload_without_model_roles(org_env):
+    """服务端已删除 model.roles：只同步 provider，不报错、不改写角色。"""
+    payload = _payload()
+    payload["model"].pop("roles", None)
+
+    state = apply_config(payload, bind_roles=[], existing_state={})
+    assert state["provider_key"] == "org-acme"
+    assert state["roles_applied"] == {}
+    assert "roles_skipped" not in state
+
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["providers"]["org-acme"]["models"]["main"]["name"] == "main-model"
+    assert saved["agents"]["master"]["model"] == "personal/main"
+
+    # 旧调用方不传 bind_roles 时也不能因没有 roles 报错。
+    state2 = apply_config(payload, existing_state={})
+    assert state2["roles_applied"] == {}
+
+
 def test_sync_does_not_override_user_changed_role(org_env):
     state = apply_config(_payload(), bind_roles=["master", "worker"])
     config = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -154,14 +179,14 @@ def test_removed_role_is_restored(org_env):
     assert "master" not in state2["roles_before"]
 
 
-def test_server_cannot_override_personal_provider_key(org_env):
+def test_server_provider_key_is_authoritative(org_env):
+    # 命名以服务端下发为准：即使与管理端 provider_key 同名，也直接采用
     state = apply_config(
         _payload(provider_key="personal"), bind_roles=["master"]
     )
     saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
-    assert state["provider_key"] == "org-acme"
-    assert saved["providers"]["personal"]["api_key"] == "personal-key"
-    assert "org-acme" in saved["providers"]
+    assert state["provider_key"] == "personal"
+    assert saved["providers"]["personal"]["api_key"] == "employee-key"
 
 
 def test_apply_reports_unknown_model_key_instead_of_aborting(org_env):
@@ -220,6 +245,44 @@ def test_client_error_mapping():
     with pytest.raises(OrgRateLimited) as exc:
         org.send_sms("acme", "13800000000")
     assert exc.value.retry_after == 12
+    client.close()
+
+
+def test_client_flat_error_keeps_detail_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "error": "phone_not_registered",
+                "detail": "找不到用户，请输入正确的手机号",
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    org = OrgClient("https://org.example", client=client)
+    with pytest.raises(OrgProtocolError) as exc:
+        org.send_sms("acme", "13800000000")
+    assert exc.value.code == "phone_not_registered"
+    assert str(exc.value) == "找不到用户，请输入正确的手机号"
+    client.close()
+
+
+def test_client_auth_error_keeps_detail_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "error": "person_disabled",
+                "detail": "该用户已被停用，请联系管理员",
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    org = OrgClient("https://org.example", client=client)
+    with pytest.raises(OrgAuthError) as exc:
+        org.send_sms("acme", "13800000000")
+    assert exc.value.code == "person_disabled"
+    assert str(exc.value) == "该用户已被停用，请联系管理员"
     client.close()
 
 
@@ -416,3 +479,114 @@ def test_service_login_sync_and_invalid(org_env):
     logged_out = service.logout()
     assert logged_out["joined"] is False
     assert store.load_session() == {}
+
+
+def test_service_login_without_model_roles(org_env):
+    """端到端：服务端不下发 roles 时，登录同步应成功且不绑定角色。"""
+    payload = _payload()
+    payload["model"].pop("roles", None)
+    FakeClient.config_payload = payload
+    FakeClient.not_modified = False
+    FakeClient.auth_fail = False
+    service = OrgService(client_factory=FakeClient)
+
+    status = service.login(
+        server_url="https://org.example",
+        org_id="acme",
+        phone="13800000000",
+        code="123456",
+    )
+    assert status["joined"] is True
+    assert status["last_error"] == ""
+    assert status["roles"] == {}
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["providers"]["org-acme"]["api_key"] == "employee-key"
+    assert saved["agents"]["master"]["model"] == "personal/main"
+
+
+def test_force_sync_reapplies_model_despite_etag(org_env):
+    """「立即同步」(force) 跳过 ETag，强制重新应用模型。"""
+    FakeClient.config_payload = _payload()
+    FakeClient.not_modified = False
+    FakeClient.auth_fail = False
+    service = OrgService(client_factory=FakeClient)
+    service.login(
+        server_url="https://org.example",
+        org_id="acme",
+        phone="13800000000",
+        code="123456",
+    )
+
+    etags = []
+    rotated = _payload(api_key="rotated-key")
+
+    class RecordingClient(FakeClient):
+        def fetch_config(self, token, etag=""):
+            etags.append(etag)
+            if etag:
+                return True, {}  # 模拟服务端 304
+            return False, rotated
+
+    service._client_factory = RecordingClient
+
+    # 普通同步带 ETag：304 时只同步工作区，不改模型。
+    service.sync()
+    assert etags[-1] == "v1"
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["providers"]["org-acme"]["api_key"] == "employee-key"
+
+    # 立即同步强制全量：重新写 provider。
+    status = service.sync(force=True)
+    assert status["joined"] is True
+    assert etags[-1] == ""
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["providers"]["org-acme"]["api_key"] == "rotated-key"
+
+
+def test_logout_removes_org_provider(org_env):
+    """退出组织：providers 里的组织 provider（连同模型）必须删除，角色恢复。"""
+    FakeClient.config_payload = _payload()
+    FakeClient.not_modified = False
+    FakeClient.auth_fail = False
+    service = OrgService(client_factory=FakeClient)
+    service.login(
+        server_url="https://org.example",
+        org_id="acme",
+        phone="13800000000",
+        code="123456",
+    )
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert "org-acme" in saved["providers"]
+
+    status = service.logout()
+    assert status["joined"] is False
+    saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert "org-acme" not in saved["providers"]
+    assert saved["agents"]["master"]["model"] == "personal/main"
+
+
+def test_login_without_device_name_uses_hostname(org_env, monkeypatch):
+    """界面不再填写设备名：留空时后台用主机名生成。"""
+    captured = {}
+
+    class CaptureClient(FakeClient):
+        def verify(self, **kwargs):
+            captured.update(kwargs)
+            return super().verify(**kwargs)
+
+    import core.org.service as service_mod
+
+    monkeypatch.setattr(service_mod, "_default_device_name", lambda: "test-host")
+    FakeClient.config_payload = _payload()
+    FakeClient.not_modified = False
+    FakeClient.auth_fail = False
+    service = OrgService(client_factory=CaptureClient)
+
+    status = service.login(
+        server_url="https://org.example",
+        org_id="acme",
+        phone="13800000000",
+        code="123456",
+    )
+    assert status["joined"] is True
+    assert captured["device_name"] == "test-host"

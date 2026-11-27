@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_key(value: str) -> str:
+    """目录/工作区 slug：以服务端下发值为准，仅去掉文件系统不安全字符。"""
     raw = str(value or "").strip()
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip(".-")[:64]
+    cleaned = re.sub(r'[\/:*?"<>|\s]+', "-", raw).strip(".-")[:64]
     return cleaned or "workspace"
 
 
@@ -42,12 +43,13 @@ def _find_managed(org_id: str, key: str) -> dict | None:
     return None
 
 
-def _directory_for(entry: dict | None, org_id: str, key: str) -> Path:
+def _directory_for(entry: dict | None, slug: str) -> Path:
     if entry and entry.get("directory"):
         return Path(entry["directory"])
-    base = workspaces_root() / f"org-{_safe_key(key)}"
+    name = _safe_key(slug)
+    base = workspaces_root() / name
     if base.exists():
-        base = workspaces_root() / f"org-{_safe_key(key)}-{secrets.token_hex(3)}"
+        base = workspaces_root() / f"{name}-{secrets.token_hex(3)}"
     return base
 
 
@@ -66,6 +68,8 @@ def apply_workspaces(
         key = str(raw.get("key") or "").strip()
         if not key:
             continue
+        # 工作区目录/slug 以服务端下发的 slug 为准（缺省回退 key）
+        slug = str(raw.get("slug") or key).strip()
         name = str(raw.get("name") or key)
         git = raw.get("git") if isinstance(raw.get("git"), dict) else {}
         remote = str(git.get("remote_url") or "")
@@ -90,14 +94,14 @@ def apply_workspaces(
 
         entry = _find_managed(org_id, key) or {}
         uuid = str(entry.get("uuid") or secrets.token_hex(4))
-        directory = _directory_for(entry or None, org_id, key)
+        directory = _directory_for(entry or None, slug)
         now = now_str()
         config = dict(entry or {})
         config.update(
             {
                 "workspace_name": name,
                 "directory": str(directory),
-                "slug": f"org-{_safe_key(key)}",
+                "slug": _safe_key(slug),
                 "location": "cili",
                 "category": "org",
                 "created_at": config.get("created_at") or now,

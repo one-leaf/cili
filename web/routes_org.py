@@ -30,7 +30,7 @@ class OrgLoginRequest(BaseModel):
     org_id: str = Field(min_length=1, max_length=64)
     phone: str = Field(min_length=1, max_length=32)
     code: str = Field(min_length=1, max_length=16)
-    device_name: str = Field(default="cili", max_length=120)
+    device_name: str = Field(default="", max_length=120)  # 留空由服务端按主机名生成
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -43,7 +43,7 @@ def _http_error(exc: Exception) -> HTTPException:
     )
 
     if isinstance(exc, OrgAuthError):
-        return HTTPException(status_code=401, detail="login_invalid")
+        return HTTPException(status_code=401, detail=str(exc) or "login_invalid")
     if isinstance(exc, OrgRateLimited):
         return HTTPException(
             status_code=429,
@@ -52,7 +52,10 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, OrgNetworkError):
         return HTTPException(status_code=502, detail="org_server_unreachable")
     if isinstance(exc, OrgProtocolError):
-        return HTTPException(status_code=400, detail=exc.code or "org_protocol_error")
+        return HTTPException(
+            status_code=400,
+            detail=str(exc) or exc.code or "org_protocol_error",
+        )
     if isinstance(exc, OrgError):
         return HTTPException(status_code=500, detail=str(exc) or "org_error")
     if isinstance(exc, ValueError):

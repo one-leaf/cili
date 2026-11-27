@@ -49,6 +49,25 @@
         }
     }
 
+    // 组织操作会改写 setting.json 的 providers/agents；设置弹窗里的模型列表
+    // 是打开时渲染的，不重新拉取会残留已删除的组织 provider（或看不到新加的）。
+    async function refreshModelConfig() {
+        try {
+            const response = await fetch('/api/config', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            const data = await response.json();
+            const cfg = data.config || {};
+            if (typeof renderProviders === 'function') {
+                renderProviders(cfg.providers || {});
+            }
+            if (typeof restoreAgentSelection === 'function') {
+                restoreAgentSelection(cfg.agents || {});
+            }
+        } catch (error) {
+            console.warn('[org] 刷新模型列表失败', error);
+        }
+    }
+
     function setStatus(text, isError) {
         const joinedVisible = $('org-joined') && !$('org-joined').hidden;
         const el = joinedVisible ? $('org-action-status') : $('org-join-status');
@@ -198,11 +217,11 @@
                     org_id: orgId,
                     phone,
                     code,
-                    device_name: $('org-device-name').value.trim() || 'cili',
                 },
             });
             render();
             await refreshWorkspaceIndex();
+            await refreshModelConfig();
             if (state.status.session_invalid || state.status.last_error) {
                 setStatus(
                     '已登录，但配置同步失败：' + (state.status.last_error || '请稍后重试'),
@@ -223,6 +242,7 @@
             state.status = await api('/api/org/sync', { method: 'POST' });
             render();
             await refreshWorkspaceIndex();
+            await refreshModelConfig();
             setStatus(state.status.last_error ? '同步失败：' + state.status.last_error : '同步完成');
             if (!state.status.last_error) showToast('组织配置已同步');
         } catch (error) {
@@ -237,6 +257,7 @@
             state.status = await api('/api/org/logout', { method: 'POST' });
             render();
             await refreshWorkspaceIndex();
+            await refreshModelConfig();
             setStatus('已退出组织');
             showToast('已退出组织');
         } catch (error) {
