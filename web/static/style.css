@@ -2317,14 +2317,6 @@ html:not([data-theme="dark"]) .message.thinking {
     color: var(--text-light);
 }
 
-.ctx-footnote {
-    margin-top: 10px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border-color);
-    color: var(--text-light);
-    font-size: 11px;
-    line-height: 1.4;
-}
 
 /* 推荐输入：输入框上方气泡条。宽度按内容自适应、不撑满，溢出横向滚动 */
 .suggest-bar {

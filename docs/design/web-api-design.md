@@ -84,7 +84,7 @@ CSRF：写操作端点使用 `csrf_protect`（校验 Origin/Referer 为本站）
 | POST | `…/sessions/{sid}/fork` | 克隆上下文到兄弟会话（`next_steps/label`） |
 | POST | `…/sessions/{sid}/revert` | 撤销到 `msg_id`（清空队列） |
 | GET | `…/sessions/{sid}/status` | 运行状态 + 队列摘要 |
-| GET | `…/sessions/{sid}/context` | 上下文占用报告（只读） |
+| GET | `…/sessions/{sid}/context` | 上下文占用报告（消息体 + 系统提示词/工具估算；只读） |
 | POST | `…/sessions/{sid}/ask-user/answers` | 提问卡/审批卡答案（`tool_use_id` + `answer/decision/answers`），SSE |
 | POST | `…/sessions/{sid}/suggest` | 推荐输入（`refresh/exclude/input`） |
 | GET | `…/sessions/{sid}/timeline` | 会话时间线 |
