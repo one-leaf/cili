@@ -27,56 +27,21 @@ from core.tools.permission import (
 
 class BrowserTool(Tool):
     name = "browser"
+    search_keywords = ("浏览器", "网页", "网页操作", "chrome", "browser")
+    prompt_guidelines = (
+        "Use only when search results are insufficient or a real browser is needed (JS, login, anti-bot).",
+    )
     description = """Connect to a real Chrome browser for sites that block bots or need JS rendering.
 
-Automatically connects to Chrome with remote debugging (restarts Chrome with the workspace
-profile if not running with debugging).
-
-Available actions:
-- navigate: open a URL and get page content (opens a new tab, returns tab_index).
-  Non-public (localhost/private IP) URLs require user approval first.
-- snapshot / find: get the accessibility tree with refs (r1, r2, ...) for element interaction
-- click / fill / type / press: interact with elements by their ref from snapshot
-  (click supports button='right'/'middle' for right/middle click)
-- hover / drag: hover an element, or drag one ref onto another
-- upload: upload a local file (path) to a file input (ref)
-- fill_form: batch-fill multiple fields: fields=[{ref, value}, ...]
-- scroll: scroll down/up/top/bottom, or to_element (by ref)
-- extract: extract text/attributes from elements matching a CSS selector
-- extract_table: convert the page's Nth <table> to a markdown table
-- download: download a file by clicking a ref or navigating to a URL (save_path)
-- dialogs: read JS dialogs (alert/confirm/prompt) that were auto-dismissed
-- get_frames: list iframes; pass frame=<index> to any ref/scroll action to target one
-- get_cookies / clear_cookies / set_cookie: manage browser cookies
-- go_back / go_forward / reload: browser navigation
-- console / requests: inspect console messages and network requests
-  (requests supports details/body to expand headers and response bodies)
-- screenshot: capture the page
-- save_pdf: save the page as a PDF
-- execute: run JavaScript on the page
-- get_text / get_links: extract page text or links
-- wait_for: wait for a CSS selector (for JS-rendered content)
-- switch_tab / list_tabs / close_tab: manage tabs by tab_index
-- reset: force-recover the browser when operations keep timing out or a native
-  dialog (print preview, certificate/permission prompt) blocks the page
-  (kills Chrome and invalidates the connection; the next action restarts it)
-
-Element interaction flow:
-1. Run 'snapshot' to get the accessibility tree (each interactive element has a ref like r3).
-2. Interact with elements by ref: click(ref="r3"), fill(ref="r2", text="..."),
-   type(ref="r2", text="..."), press(ref="r3", key="Enter").
-3. Re-run 'snapshot' after the page changes (refs are only valid for the snapshot that produced them).
-
-Frames:
-- Run 'get_frames' to list frames; frame 0 is the main frame.
-- Pass frame=<index> to snapshot/find/click/fill/type/press/hover/drag/upload/extract/scroll
-  to operate inside an iframe (refs are per frame).
-
-Tab management:
-- Each 'navigate' opens a new tab; pass its tab_index to operate on it (defaults to the active tab).
-- Inactive tabs auto-close after 10 minutes; call close_tab when done exploring.
-
-Use web_search for simple lookups; use browser when search results are insufficient or the site needs a real browser.
+Actions:
+- navigate (new tab, returns tab_index; localhost/private IP needs approval), snapshot/find (accessibility tree + refs), click/fill/type/press/hover/drag/upload/fill_form/scroll/extract/extract_table, download, dialogs, get_frames, cookies (get/clear/set), go_back/go_forward/reload, console/requests, screenshot, save_pdf, execute JS, get_text/get_links, wait_for, switch_tab/list_tabs/close_tab, reset.
+- click supports button='right'/'middle'; fill_form takes fields=[{ref, value}]; requests supports details/body; reset kills Chrome and restarts on the next action.
+- execute takes an expression; wrap statements containing a top-level `return` in an IIFE: `(() => { ... })()`.
+- get_cookies defaults to the current site, masks sensitive values, and refuses cross-site URLs.
+Element flow: snapshot → act by ref → re-snapshot after page changes (refs are per snapshot).
+Frames: get_frames → pass frame=<index> to actions inside an iframe.
+Tabs: navigate opens a tab; inactive tabs auto-close after 10 minutes; close_tab when done.
+Use web_search for simple lookups; use browser when results are insufficient or the site needs a real browser.
 """
     parameters = {
         "type": "object",
@@ -94,7 +59,8 @@ Use web_search for simple lookups; use browser when search results are insuffici
             },
             "url": {
                 "type": "string",
-                "description": "URL to navigate to (required for 'navigate' action).",
+                "description": "URL to navigate to (required for 'navigate'). For get_cookies: optional "
+                               "same-site URL; defaults to the current page.",
             },
             "ref": {
                 "type": "string",
@@ -545,8 +511,7 @@ Use web_search for simple lookups; use browser when search results are insuffici
             return service.list_tabs()
 
         elif action == "close_tab":
-            if tab_index is None:
-                return ToolResult("Error: 'tab_index' is required for close_tab action", error=True)
+            # 未传 tab_index 时关闭当前活跃 tab（navigate 已返回索引，但模型可能忘传）
             return service.close_tab(tab_index)
 
         elif action == "reset":

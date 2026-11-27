@@ -34,6 +34,7 @@ class LatexTool(Tool):
     mutates_workspace = True
 
     name = "latex"
+    search_keywords = ("排版", "公式", "论文", "latex", "tex", "pdf")
     description = (
         "**Compile LaTeX files to PDF.**\n\n"
         "This tool compiles .tex files into PDF documents using LaTeX.\n\n"

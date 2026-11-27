@@ -280,9 +280,11 @@ class PermissionResolver:
                 f"工作区外{('读取' if op == 'read' else ('删除' if op == 'delete' else '写入'))}",
             )
 
-        # 4. 动态路径：即使前缀在安全区也首次询问，防止运行时后缀逃逸。
+        # 4. 动态路径：前缀在安全区内直接放行；含 ../ 的表达式仍询问，防明显逃逸。
         effective = mode if mode in ("ask", "deny", "ai") else "ask"
         if static_prefix:
+            if self.is_inside(static_prefix) and ".." not in (raw or ""):
+                return PermissionVerdict("allow", "动态路径前缀在安全区")
             return self._mode_or_judge(effective, "动态路径，前缀已确认，等待批准")
         return self._mode_or_judge(effective, "动态路径，无法静态解析")
 

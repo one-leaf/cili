@@ -21,31 +21,24 @@ logger = logging.getLogger(__name__)
 class AgentTool(AgentBackgroundMixin, Tool):
     placeholder_output = True
     name = "agent"
+    prompt_guidelines = (
+        "Delegate context-heavy or long-running work; do not delegate simple reads/edits or work that depends on this conversation.",
+        "The sub-agent sees only the task — include every file path, constraint, and expected output format.",
+    )
     description = (
         "**Delegate a self-contained task to an autonomous sub-agent (Worker/Lite).**\n"
-        "The sub-agent runs a complete loop with its own tools and returns a structured result.\n\n"
-        "## Actions:\n"
-        "- \"spawn\" (default): delegate a task. Params: task (required), plan, subagent_type, run_in_background, label\n"
-        "- \"status\": check a background sub-agent's status/output. Params: agent_id (e.g. \"agent-1\")\n"
-        "- \"stop\": terminate a background sub-agent. Params: agent_id\n"
-        "- \"list\": list all background tasks. No extra params needed.\n\n"
-        "## Use when:\n"
-        "- Multi-step work needing many tool calls (translate a file, analyze code, batch processing)\n"
-        "- Long-running work that should not block the conversation (action=\"spawn\", run_in_background=true)\n\n"
-        "## Do NOT use for:\n"
-        "- Simple reads/edits/commands/search — use read/edit/bash/web_search directly\n\n"
-        "## Task must be self-contained (action=\"spawn\"):\n"
-        "The sub-agent does NOT see your conversation or project instructions. Put all context, file paths, "
-        "constraints, and expected output format directly in `task`. Never say 'as before' or reference prior turns.\n\n"
-        "## Examples:\n"
-        "- Spawn in background: {\"action\": \"spawn\", \"task\": \"...\", \"run_in_background\": true}\n"
-        "- Check status: {\"action\": \"status\", \"agent_id\": \"agent-1\"}\n"
-        "- Stop: {\"action\": \"stop\", \"agent_id\": \"agent-1\"}\n"
-        "- List all: {\"action\": \"list\"}\n\n"
-        "## Returns (action=\"spawn\"):\n"
-        "{\"status\": \"completed|error|timeout|failed\", \"summary\": \"...\", \"iterations\": N}\n"
-        "Timeout: 1 hour. Delegation limits: master (depth 0) may delegate to worker/lite; "
-        "a sub-agent (depth 1) may delegate only to 'lite'; agents two levels deep cannot delegate."
+        "The sub-agent runs its own tool loop and returns a structured result.\n\n"
+        "## Actions\n"
+        "- \"spawn\" (default): delegate. Params: task (required), plan, subagent_type, run_in_background, label\n"
+        "- \"status\": check a background task. Params: agent_id\n"
+        "- \"stop\": terminate a background task. Params: agent_id\n"
+        "- \"list\": list background tasks.\n\n"
+        "## Rules\n"
+        "- Use for multi-step work with many tool calls, or long-running work that should not block the conversation.\n"
+        "- Do NOT use for simple reads/edits/commands/search.\n"
+        "- The sub-agent does NOT see this conversation or project instructions: put all context, file paths, constraints, and expected output format in `task`.\n"
+        "- Delegation: master may delegate to worker/lite; depth-1 may delegate only to `lite`; depth-2+ cannot delegate. Spawn timeout: 1 hour.\n"
+        "- Returns: {\"status\": \"completed|error|timeout|failed\", \"summary\": \"...\", \"iterations\": N}"
     )
 
     def __init__(self, *args, config=None,

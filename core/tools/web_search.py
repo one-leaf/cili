@@ -48,6 +48,9 @@ SEARCH_CONFIGS = {
 
 class WebSearchTool(Tool):
     name = "web_search"
+    prompt_guidelines = (
+        "Use this when server-side search is unavailable or its results are insufficient.",
+    )
     description = (
         "Search the web using Bing or Google. Returns search result snippets "
         "(titles, URLs, and brief descriptions) — NOT full page content. "

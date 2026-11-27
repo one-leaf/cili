@@ -6,16 +6,21 @@ Sorted by modification time (newest first), supports pagination with offset/limi
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from core.tool_limits import GLOB_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
+from core.tools.git_visible import add_ignored_dir_files, git_visible_paths, pattern_dirs
 
 
 class GlobTool(Tool):
     name = "glob"
     concurrency_safe = True
+    prompt_guidelines = (
+        "To search an ignored dir (e.g. .cili/tmp), name it explicitly in the pattern or path.",
+    )
     description = (
         "- Fast file pattern matching tool that works with any codebase size\n"
         "- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\"\n"
@@ -40,7 +45,7 @@ class GlobTool(Tool):
             },
             "head_limit": {
                 "type": "integer",
-                "description": "Limit output to first N results, equivalent to \"| head -N\". Defaults to 100 when unspecified. Pass 0 for unlimited.",
+                "description": "Limit output to first N results, equivalent to \"| head -N\". Defaults to 1000 when unspecified. Pass 0 for unlimited.",
             },
             "offset": {
                 "type": "integer",
@@ -51,7 +56,7 @@ class GlobTool(Tool):
     }
 
     MAX_RESULT_SIZE_CHARS = GLOB_RESULT_MAX_CHARS
-    DEFAULT_LIMIT = 100
+    DEFAULT_LIMIT = 1000
 
     def execute(
         self,
@@ -94,6 +99,14 @@ class GlobTool(Tool):
         matched_files: list[Path] = []
         search_root = search_dir.resolve()
 
+        # 显式写进 pattern 的目录（如 .cili/tmp/*.txt）不受默认忽略列表限制
+        explicit_dirs = pattern_dirs(pattern) if pattern and not file_type else set()
+
+        # git 工作区：按 .gitignore 过滤；用户显式点名的忽略目录仍保留
+        git_visible = git_visible_paths(str(search_dir))
+        if git_visible is not None:
+            add_ignored_dir_files(git_visible, search_dir, explicit_dirs)
+
         for gp in glob_patterns:
             try:
                 for p in search_dir.rglob(gp):
@@ -104,10 +117,12 @@ class GlobTool(Tool):
                     if not resolved_path.is_relative_to(search_root):
                         continue
                     resolved = str(resolved_path)
+                    if git_visible is not None and os.path.normcase(resolved) not in git_visible:
+                        continue
                     if resolved in seen:
                         continue
                     # Check ignore dirs
-                    if self._should_ignore(p, search_dir):
+                    if self._should_ignore(p, search_dir, explicit_dirs):
                         continue
                     seen.add(resolved)
                     matched_files.append(p)
@@ -168,12 +183,20 @@ class GlobTool(Tool):
 
         return ToolResult(output)
 
-    def _should_ignore(self, file_path: Path, search_dir: Path) -> bool:
-        """Check if file is inside an ignored directory."""
+    def _should_ignore(self, file_path: Path, search_dir: Path,
+                       explicit_dirs: set[str] | None = None) -> bool:
+        """Check if file is inside an ignored directory.
+
+        ``explicit_dirs`` 是用户显式写进 pattern 的目录名（如 ``.cili/tmp``）；
+        显式点名时不按默认忽略列表过滤。
+        """
+        explicit_dirs = explicit_dirs or set()
         try:
             rel = file_path.relative_to(search_dir)
             parts = rel.parts
             for part in parts[:-1]:  # Check directory parts only (not the file itself)
+                if part in explicit_dirs:
+                    continue
                 if part in self.IGNORE_DIRS or part.endswith(self.IGNORE_DIR_SUFFIXES):
                     return True
         except ValueError:

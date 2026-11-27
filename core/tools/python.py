@@ -84,6 +84,10 @@ class PythonTool(Tool):
     streams_output = True
     mutates_workspace = True
     name = "python"
+    prompt_guidelines = (
+        "Prefer the `python` tool for Python code and scripts: it adds AST static analysis and path-target checks.",
+        "Save generated images to a workspace-relative path; never call plt.show()/Image.show()/cv2.imshow().",
+    )
 
     def __init__(self, cwd: str = ".", workspace_uuid: str = "", session=None, config=None,
                  permission_store=None, permission_rules=None, permission_policy=None):
@@ -99,25 +103,11 @@ class PythonTool(Tool):
         """Build tool description with background task support."""
         return (
             "**Execute Python code or manage packages** in the managed venv.\n"
-            "## Actions:\n"
-            "- execute / execute_file: run code (code='...') or a script file (script_file='path/script.py')\n"
-            "- install / uninstall / upgrade / check: pip package management (packages='pkg1 pkg2')\n"
-            "- info: show environment info and installed packages\n\n"
-            "## Pre-installed:\n"
-            "requests, httpx, beautifulsoup4, lxml, numpy, pandas, pyyaml, toml, Pillow, pytest\n\n"
-            "## Matplotlib CJK:\n"
-            "CJK fonts are pre-configured — do NOT set plt.rcParams['font.sans-serif'] or font.family. "
-            "Use CJK text directly (e.g., plt.title('中文标题')); for sub/superscripts and math use "
-            "mathtext `$...$` (`$x_1$`, `$P^{-1}$`), not Unicode ₁₂³ (renders as boxes).\n\n"
-            "## Rules:\n"
-            "- Avoid eval()/exec() and shell escapes (os.system, subprocess) — static analysis flags them "
-            "and the safety judge usually rejects them.\n"
-            "- Do not invoke bash/pwsh from Python code.\n"
-            "- This is the ONLY way to run Python — never use bash or pwsh to call python.\n"
-            "- There is NO 'timeout' parameter here (unlike bash): execution timeout is fixed. "
-            "For long-running scripts use action=\"execute\", run_in_background=true → task_id. "
-            "You will receive an automatic notification when it completes — no polling needed. "
-            "Use action=\"read\"/\"kill\"/\"write_stdin\"/\"list\" to manage background tasks."
+            "Actions: execute / execute_file (code or script_file); install / uninstall / upgrade / check (packages); info.\n"
+            "Pre-installed: requests, httpx, beautifulsoup4, lxml, numpy, pandas, pyyaml, toml, Pillow, pytest.\n"
+            "Matplotlib: CJK fonts are preconfigured — use Chinese text directly; use mathtext `$...$` for sub/superscripts, not Unicode ₁₂³.\n"
+            "Rules: avoid eval/exec and shell escapes (os.system, subprocess) — static analysis flags them; do not invoke bash/pwsh from Python code. "
+            "Prefer this tool over bash/pwsh (it adds AST and path-target checks). No timeout parameter: for long jobs use run_in_background=true → task_id, then read/kill/write_stdin/list."
         )
 
     @property

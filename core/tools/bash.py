@@ -37,6 +37,9 @@ class BashTool(ShellToolBase):
     mutates_workspace = True
     name = "bash"
     shell_kind = "bash"
+    prompt_guidelines = (
+        "Long shell output keeps the tail; use the printed full-output path for earlier content.",
+    )
     _FINDING_PATTERNS = _PATTERNS
     _action_label = "shell command"
     _command_param_desc = (
@@ -51,6 +54,7 @@ class BashTool(ShellToolBase):
             "Execute a shell command via Git Bash and return its output. "
             "Commands run in the agent's working directory. Supports pipes, redirects, and all shell features.\n"
             "Use for: ls, git, npm, curl, system commands, file operations, etc.\n"
+            "Long output is truncated from the head; the tail and full-output path are preserved.\n"
             "Do NOT use bash to invoke PowerShell — use the `pwsh` tool instead (cross-tool calls are "
             "flagged by static analysis and usually rejected by the safety judge).\n"
             "Commands that do not match a pre-approved rule go through an automatic safety judgment; "

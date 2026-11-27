@@ -183,7 +183,8 @@ class TestToolSearchExecute:
         ts = get_tool_by_name(runner.tools, "tool_search")
 
         result = ts.execute(query="xyznonexistent")
-        assert "No deferred tools matched" in result.output
+        assert "No tools matched" in result.output
+        assert "该工具可能已激活" in result.output
 
     def test_search_empty_query(self):
         """空 query 返回错误。"""
@@ -226,7 +227,43 @@ class TestToolSearchExecute:
         ts = get_tool_by_name(runner.tools, "tool_search")
 
         result = ts.execute(query="cron browser")
-        assert "No deferred tools matched" in result.output
+        assert "No tools matched" in result.output
+
+    def test_search_by_chinese_alias(self):
+        """中文别名命中：定时任务→cron、浏览器→browser、临时文件→temp。"""
+        for query, expected in (("定时任务", "cron"), ("浏览器", "browser"), ("临时文件", "temp")):
+            runner = _make_master_runner()
+            ts = get_tool_by_name(runner.tools, "tool_search")
+            result = ts.execute(query=query)
+            assert not result.error, query
+            assert expected in result.output, query
+
+    def test_search_chinese_phrase_chunks(self):
+        """中文长词按 2 字切块：新增提单 → 新增 + 提单。"""
+        from core.tools.base import Tool
+
+        class FakeTool(Tool):
+            name = "mcp_kfb_create_require_input"
+            description = "创建新增需求单/提单，写入一条新记录"
+            parameters = {"type": "object", "properties": {}}
+
+        ts = ToolSearchTool()
+        ts.deferred_tools = [FakeTool()]
+        result = ts.execute(query="新增提单")
+        assert not result.error
+        assert "mcp_kfb_create_require_input" in result.output
+
+    def test_search_includes_already_active_tool(self):
+        """已激活工具也可被搜索到，并标记 Already active。"""
+        runner = _make_master_runner()
+        ts = get_tool_by_name(runner.tools, "tool_search")
+        ts.execute(query="temp")
+        assert "temp" not in runner._deferred_names
+
+        result = ts.execute(query="临时文件")
+        assert not result.error
+        assert "temp" in result.output
+        assert "Already active" in result.output
 
 
 class TestExecuteToolOverride:

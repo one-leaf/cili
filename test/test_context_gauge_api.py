@@ -73,6 +73,9 @@ class _FakeRunner:
         self.model_ref = "p/a"
         self._messages = messages
         self._running = running
+        self.tool_schemas = [{
+            "name": "x", "description": "tool x", "input_schema": {},
+        }]
         self.usage = {
             "input_tokens": 10,
             "output_tokens": 5,
@@ -83,6 +86,9 @@ class _FakeRunner:
 
     def build_projected_messages(self):
         return self._messages
+
+    def _build_system_prompt(self):
+        return ["system prompt"]
 
     def _count_messages_tokens(self, messages):
         return 1234
@@ -152,6 +158,39 @@ class TestFallbackPath:
         assert data["session"]["created_at"] == "2026-11-12 10:00:00"
         # Anthropic 语义：300 / (100 + 300 + 50)
         assert data["usage"]["cache_hit_ratio"] == round(300 / 450, 4)
+        # 没有 runner 也没有快照时，明细不可用
+        assert data["overhead_estimated"] is False
+        assert data["total_context_tokens"] is None
+
+    def test_context_overhead_snapshot_used_without_runner(self, monkeypatch):
+        """重启后使用上一回合落盘的 overhead 快照。"""
+        cfg = _config()
+        sm = _FakeSM(
+            self._messages(),
+            metadata={
+                "created_at": "",
+                "updated_at": "",
+                "context_overhead": {
+                    "system_prompt_tokens": 100,
+                    "tool_schema_tokens": 50,
+                    "overhead_tokens": 150,
+                },
+            },
+        )
+        _patch(monkeypatch, cfg, sm=sm, runner=None)
+
+        data = _call()
+
+        assert data["system_prompt_tokens"] == 100
+        assert data["tool_schema_tokens"] == 50
+        assert data["overhead_tokens"] == 150
+        assert data["overhead_estimated"] is True
+        assert data["total_context_tokens"] == data["context_tokens"] + 150
+        assert data["total_ratio"] == round(data["total_context_tokens"] / 10000, 4)
+        assert data["ratio"] == data["total_ratio"]
+        assert data["remaining_tokens"] == max(
+            0, 10000 - data["total_context_tokens"]
+        )
 
     def test_model_override_changes_window(self, monkeypatch):
         cfg = _config(extra_models={"b": ModelSpec(name="Model B", max_context_tokens=200000)})
@@ -213,8 +252,16 @@ class TestRunnerPath:
         assert data["estimated"] is False
         assert data["running"] is True
         assert data["context_tokens"] == 1234
-        assert data["ratio"] == round(1234 / 10000, 4)
+        assert data["ratio"] == data["total_ratio"]
+        assert data["ratio"] == round(data["total_context_tokens"] / 10000, 4)
         assert data["max_context_tokens"] == 10000
+        assert data["system_prompt_tokens"] > 0
+        assert data["tool_schema_tokens"] > 0
+        assert data["overhead_estimated"] is True
+        assert data["total_context_tokens"] == (
+            1234 + data["system_prompt_tokens"] + data["tool_schema_tokens"]
+        )
+        assert data["total_ratio"] == round(data["total_context_tokens"] / 10000, 4)
         assert data["usage"]["api_calls"] == 1
         assert data["session"]["message_count"] == 1
         assert data["session"]["user_turn_count"] == 1

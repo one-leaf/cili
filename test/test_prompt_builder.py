@@ -24,20 +24,20 @@ class TestPrompts:
     # -- build_environment_context (context 层) --
 
     def test_environment_context_basic(self):
-        """context 层包含 workspace/cwd 与当前日期。"""
+        """context 层包含 workspace/cwd；日期不再注入，改为提示调用 clock。"""
         from core.prompt_sections import build_environment_context
         ctx = build_environment_context("test-uuid-123", "/test/workspace")
         assert "test-uuid-123" in ctx
         assert "/test/workspace" in ctx
-        assert datetime.now().strftime("%Y-%m-%d") in ctx
+        assert "clock" in ctx
+        assert f"**{datetime.now().strftime('%Y-%m-%d')}**" not in ctx
 
-    def test_environment_context_contains_memory_dir(self):
-        """context 层包含 memory/knowledge/skills 说明。"""
+    def test_environment_context_contains_memory_section(self):
+        """context 层包含 memory 段与 clock 提示。"""
         from core.prompt_sections import build_environment_context
         ctx = build_environment_context("test-uuid", "/cwd")
         assert "memory" in ctx.lower()
-        assert "knowledge" in ctx.lower()
-        assert "skills" in ctx.lower()
+        assert "clock" in ctx
         assert "test-uuid" in ctx
 
     def test_environment_context_shell_table(self):
@@ -136,6 +136,32 @@ class TestPrompts:
         assert "## Tools" in prompt
         assert "- **read** — read a file" in prompt
         assert "- **bash** — run commands" in prompt
+
+    def test_system_prompt_rules_block_from_tools(self):
+        """rules 块汇总 active 工具的 guidelines，去重保序。"""
+        from types import SimpleNamespace
+
+        from core.prompt_builder import build_system_prompt
+        tool1 = SimpleNamespace(name="read", description="read", prompt_guidelines=("rule A", "rule B"))
+        tool2 = SimpleNamespace(name="bash", description="bash", prompt_guidelines=("rule B", "rule C"))
+        runner = self._make_fake_runner([{"id": "rules", "type": "rules"}], tools=[tool1, tool2])
+        prompt = "\n\n".join(build_system_prompt(runner))
+        assert prompt.count("- rule B") == 1
+        assert "- rule A" in prompt
+        assert "- rule C" in prompt
+
+    def test_memory_index_budget(self, tmp_path):
+        """MEMORY.md 超过预算时按完整行截断并提示 memory find。"""
+        from core.prompt_sections import _build_memory_sections
+        mem = tmp_path / "memory"
+        (mem / "entries").mkdir(parents=True)
+        (mem / "MEMORY.md").write_text(
+            "# Memory Index\n" + "\n".join(f"- entry {i} " + "x" * 200 for i in range(80)),
+            encoding="utf-8",
+        )
+        text = "\n".join(_build_memory_sections(str(mem)))
+        assert "Index truncated" in text
+        assert len(text) < 10_000
 
     def test_system_prompt_skills_block(self):
         """skills 块列出角色可见技能（master 可见 grilling）。"""

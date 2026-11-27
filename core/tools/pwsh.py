@@ -53,6 +53,9 @@ class PwshTool(ShellToolBase):
     mutates_workspace = True
     name = "pwsh"
     shell_kind = "pwsh"
+    prompt_guidelines = (
+        "Long shell output keeps the tail; use the printed full-output path for earlier content.",
+    )
     _FINDING_PATTERNS = _PATTERNS
     _action_label = "PowerShell command"
     _command_param_desc = (
@@ -69,6 +72,7 @@ class PwshTool(ShellToolBase):
         return (
             "Execute a PowerShell command and return its output. "
             "Each call runs in a fresh pwsh process — no state (cwd, variables, functions) persists between calls.\n"
+            "Long output is truncated from the head; the tail and full-output path are preserved.\n"
             "PowerShell scripts: prefer the write/edit tools for .ps1/.psm1/.psd1 files (they add a UTF-8 BOM), "
             "so scripts also work under Windows PowerShell 5.1, which reads UTF-8 without a BOM as ANSI "
             "and breaks non-ASCII text.\n"

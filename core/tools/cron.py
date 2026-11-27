@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class CronTool(Tool):
     name = "cron"
+    search_keywords = ("定时任务", "定时", "计划任务", "cron", "schedule")
     description = (
         "**action is REQUIRED** — always include it.\n"
         "Manage scheduled tasks: create / list / update / delete / run / enable / disable / history.\n"

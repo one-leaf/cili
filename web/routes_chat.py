@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 import core.session_control as session_control
 from core.approval_cards import find_pending_ask_user
-from core.compression import count_messages_tokens
+from core.compression import count_messages_tokens, count_prompt_overhead
 from core.config import (
     get_workspace_sessions_dir,
     load_config,
@@ -60,8 +60,7 @@ from web.goal_runner import (
     stop_goal_runner,
 )
 
-# 复用 UI 拉取会话时的外置工具输出注入逻辑（同一份路径校验与读取）
-from web.routes_workspace import _resolve_tool_results_for_session
+from core.tool_output import resolve_tool_results_for_context
 from web.sse import (
     drain_outbox_events,
     make_sse_callbacks,
@@ -136,6 +135,18 @@ def _get_session(workspace_uuid: str, session_id: str) -> SessionStore | None:
     if not sessions_dir.exists():
         return None
     return SessionStore.load_session(session_id, sessions_dir)
+
+
+def _runner_prompt_overhead(runner) -> dict | None:
+    """估算当前 runner 的系统提示词 + 工具 schema 开销；测试替身缺方法时返回 None。"""
+    try:
+        build = getattr(runner, "_build_system_prompt", None)
+        if not callable(build):
+            return None
+        system_text = "\n".join(build())
+        return count_prompt_overhead(system_text, getattr(runner, "tool_schemas", None))
+    except Exception:
+        return None
 
 
 def _model_payload(config, sm: SessionStore | None) -> dict:
@@ -1005,6 +1016,7 @@ async def get_session_context(
     config = load_config()
     key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
+    prompt_overhead = None
 
     if runner is not None:
         # 与主循环真实的请求投影同口径（历史图片按引用、工具结果已解析）
@@ -1026,6 +1038,7 @@ async def get_session_context(
         running_checker = getattr(runner, "is_running", None)
         running = bool(running_checker()) if callable(running_checker) else False
         estimated = False
+        prompt_overhead = _runner_prompt_overhead(runner)
     else:
         sm = await asyncio.to_thread(_get_session, workspace_uuid, session_id)
         if sm is None:
@@ -1038,7 +1051,7 @@ async def get_session_context(
             if ConversationStore.is_message_in_context(m)
         ]
         await asyncio.to_thread(
-            _resolve_tool_results_for_session, messages, sm.session_dir
+            resolve_tool_results_for_context, messages, sm.session_dir
         )
         history_mode = getattr(
             getattr(config, "images", None), "history_mode", "current_turn"
@@ -1063,6 +1076,33 @@ async def get_session_context(
     if not isinstance(metadata, dict):
         metadata = {}
 
+    # 无 runner 或测试替身缺方法时，用上一次回合落盘的快照
+    if prompt_overhead is None:
+        raw_overhead = metadata.get("context_overhead")
+        if isinstance(raw_overhead, dict):
+            system_tokens = int(raw_overhead.get("system_prompt_tokens") or 0)
+            tool_tokens = int(raw_overhead.get("tool_schema_tokens") or 0)
+            prompt_overhead = {
+                "system_prompt_tokens": system_tokens,
+                "tool_schema_tokens": tool_tokens,
+                "overhead_tokens": int(raw_overhead.get("overhead_tokens") or (
+                    system_tokens + tool_tokens
+                )),
+            }
+
+    total_context_tokens = None
+    total_ratio = None
+    if prompt_overhead is not None:
+        total_context_tokens = context_tokens + int(prompt_overhead["overhead_tokens"])
+        if max_tokens > 0:
+            total_ratio = round(total_context_tokens / max_tokens, 4)
+
+    # 压缩与 UI 使用同一口径：有 overhead 时 ratio 按完整请求算
+    effective_tokens = (
+        total_context_tokens if total_context_tokens is not None else context_tokens
+    )
+    ratio = round(effective_tokens / max_tokens, 4) if max_tokens > 0 else 0.0
+
     return {
         "session_id": session_id,
         "model": {
@@ -1073,10 +1113,22 @@ async def get_session_context(
         },
         "context_tokens": context_tokens,
         "max_context_tokens": max_tokens,
-        "ratio": round(context_tokens / max_tokens, 4) if max_tokens > 0 else 0.0,
+        "ratio": ratio,
+        "system_prompt_tokens": (
+            prompt_overhead["system_prompt_tokens"] if prompt_overhead is not None else None
+        ),
+        "tool_schema_tokens": (
+            prompt_overhead["tool_schema_tokens"] if prompt_overhead is not None else None
+        ),
+        "overhead_tokens": (
+            prompt_overhead["overhead_tokens"] if prompt_overhead is not None else None
+        ),
+        "total_context_tokens": total_context_tokens,
+        "total_ratio": total_ratio,
+        "overhead_estimated": prompt_overhead is not None,
         "compact_threshold_tokens": int(max_tokens * FULL_COMPACT_TOKEN_RATIO),
         "compact_threshold_ratio": FULL_COMPACT_TOKEN_RATIO,
-        "remaining_tokens": max(0, max_tokens - context_tokens),
+        "remaining_tokens": max(0, max_tokens - effective_tokens),
         "body_size": estimate_request_body_size(messages),
         "estimated": estimated,
         "running": running,

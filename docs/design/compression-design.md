@@ -8,7 +8,7 @@
 | 层 | 触发 | 行为 | 实现 |
 |---|---|---|---|
 | Microcompact | 每轮执行前 | 标记孤立工具结果/旧错误结果失效、大结果外置 | `compression.microcompact_mark_orphans_and_errors` |
-| Full compact | 上下文达到 `max_context_tokens * 0.80` | 保留最近对话 + 摘要化更早内容（写 summary commit） | `TurnExecutor._perform_full_compact` |
+| Full compact | 完整请求达到 `max_context_tokens * 0.80`（消息体 + 系统提示词 + 工具定义） | 保留最近对话 + 摘要化更早内容（写 summary commit） | `TurnExecutor._perform_full_compact` |
 | Context pressure | 回合中途 ≥100% / ≥150% | ≥100% 注入收尾提示（每回合一次）；≥150% 只压缩当前轮之前的上下文，本轮中途消息保留 | `TurnExecutor._enforce_context_pressure` |
 | Emergency | 请求体仍超限/413 | 逐级降级（历史图片降级、工具结果清空） | `executor` 的图片预算与 `_apply_model_content_rules` |
 
@@ -54,6 +54,8 @@ COMPACT_KEEP_MAX_TOKENS = 32000
 - `approx_token_count`：中文约 2.5 字符/token，其他约 4 字符/token。
 - `count_tokens_approx` / `count_messages_tokens`：按内容块累加（图片按基准 750 token +
   base64 体积折算）。
+- `count_prompt_overhead`：系统提示词 + 工具 schema 的估算 token；压缩阈值与
+  `/context` 都把它计入完整请求口径。
 - 工具输出截断：`truncate_middle`（token 预算）/ `truncate_result`（字符上限，
   上限集中在 `core/tool_limits`）。
 
@@ -76,4 +78,5 @@ COMPACT_KEEP_MAX_TOKENS = 32000
   继续执行、不重跑。压缩未生效（当前轮之前无可压缩消息/摘要失败）时回退为 100%
   收尾提示。
 
-百分比只统计消息体，不含 system prompt 与工具定义。
+百分比统计完整请求：消息体 + 系统提示词 + 工具定义（`count_prompt_overhead`）；
+`/context` 的主 ratio 与压缩阈值使用同一口径。

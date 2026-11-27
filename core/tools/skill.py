@@ -48,19 +48,12 @@ class SkillTool(Tool):
         super().__init__(**kwargs)
         self._role = role
         self.description = (
-            f"Access built-in skills for the {role} role.\n\n"
-            "**IMPORTANT: Always check available skills FIRST when user requests match these patterns:**\n"
-            "- Learning/studying: 我想学习、学习、深入了解、怎么学\n"
-            "- Research/fact-check: 帮我查查、查一下、研究、调查、了解、事实核查、验证\n"
-            "- Code review: 审查、review、检查代码、代码质量\n"
-            "- File processing: 大文件、翻译文件、批量处理\n"
-            "- Task delegation: 复杂任务、多步骤、委派给子代理\n\n"
+            f"Access built-in skills for the {role} role. Match the task against the Available Skills section before starting.\n\n"
             "## Actions:\n"
             "- **list**: Show all available skills with descriptions (use this FIRST to find matching skill)\n"
             "- **read**: Read full skill content by skill_id (after finding matching skill from list)\n\n"
-            "**Workflow:** User request → skill(action='list') to find matching skill → skill(action='read', skill_id='...') to get instructions → Follow skill instructions. "
-            "Large skills split procedures into `references/*.md` sub-files, with a phase map in the skill body naming which sub-file each phase needs. "
-            "Read one with skill(action='read', skill_id='...', file='references/<name>.md') exactly at the phase that needs it — never preload all sub-files."
+            "**Workflow:** skill(action='list') → match → skill(action='read', skill_id='...') → follow instructions. "
+            "Large skills split procedures into `references/*.md` sub-files; read one at the phase that needs it, never preload all sub-files."
         )
 
     def execute(self, action: str = "list", skill_id: str | None = None,

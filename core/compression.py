@@ -63,6 +63,24 @@ def truncate_result(text: str, max_chars: int) -> str:
     return truncated + f"\n\n... (truncated from {len(text):,} to {max_chars:,} chars)"
 
 
+def truncate_tail(text: str, max_chars: int) -> str:
+    """按字符数截断工具输出（保留尾部，开头加提示）。
+
+    命令输出/测试日志的关键信息通常在末尾（错误、退出原因），shell 工具
+    使用该函数替代 head 截断。
+    """
+    if len(text) <= max_chars:
+        return text
+    kept = text[-max_chars:]
+    first_newline = kept.find("\n")
+    if first_newline >= 0:
+        kept = kept[first_newline + 1:]
+    return (
+        f"... (truncated from {len(text):,} to {len(kept):,} chars; showing tail)\n\n"
+        f"{kept}"
+    )
+
+
 def _image_block_tokens(block: dict) -> int:
     """图片块的 token 估算：base64 数据按字节/token 折算，并保底 _IMAGE_BASE_TOKENS。"""
     src = block.get("source", {})
@@ -226,6 +244,20 @@ def count_tokens_approx(text: str) -> int:
     wide_chars = sum(1 for c in text if _is_wide_char(c))
     other_chars = len(text) - wide_chars
     return int(wide_chars / _CHINESE_CHARS_PER_TOKEN + other_chars / _OTHER_CHARS_PER_TOKEN)
+
+
+def count_prompt_overhead(system_prompt: str, tool_schemas: list[dict] | None) -> dict[str, int]:
+    """估算系统提示词 + 工具定义的 token 开销（与消息体分开统计）。"""
+    system_tokens = count_tokens_approx(system_prompt or "")
+    tool_tokens = (
+        count_tokens_approx(json.dumps(tool_schemas, ensure_ascii=False))
+        if tool_schemas else 0
+    )
+    return {
+        "system_prompt_tokens": system_tokens,
+        "tool_schema_tokens": tool_tokens,
+        "overhead_tokens": system_tokens + tool_tokens,
+    }
 
 
 def count_messages_tokens(messages: list[dict]) -> int:

@@ -583,10 +583,15 @@ class SessionRunner(BaseSessionRunner):
             (t.to_schema() for t in self._active_tools),
             key=lambda s: s.get("name", ""),
         )
-        # tool_search 的可见 deferred 列表随接口变化
+        # tool_search 可搜索当前可见的全部工具；deferred 列表用于区分“激活/已激活”
         ts = get_tool_by_name(self.tools, "tool_search")
         if ts:
             ts.deferred_tools = self._deferred_tools
+            ts.searchable_tools = eligible
+        # 环境段缓存了工具可用性（temp 等）；工具集变化后失效，避免描述过期
+        cache = getattr(self, "_prompt_section_cache", None)
+        if cache is not None:
+            cache.pop("env_context", None)
 
     def set_turn_interface(self, interface: str | None) -> None:
         """设置本次 run/resume 的驱动接口（接口层在 run() 前调用）。
@@ -704,6 +709,28 @@ class SessionRunner(BaseSessionRunner):
         """
         self.context.sync_to_session()
 
+    def _snapshot_context_overhead(self) -> None:
+        """记录系统提示词 + 工具 schema 的估算开销，供重启后 /context 读取。"""
+        if getattr(self, "session", None) is None:
+            return
+        try:
+            from core.compression import count_prompt_overhead
+
+            system_text = "\n".join(self._build_system_prompt())
+            info = count_prompt_overhead(
+                system_text, getattr(self, "tool_schemas", None)
+            )
+            self.session.metadata["context_overhead"] = {
+                **info,
+                "model_ref": self.model_ref or "",
+                "updated_at": now_str(),
+            }
+        except Exception:
+            logger.debug(
+                f"[SessionRunner:{self.role}] 记录 context_overhead 失败",
+                exc_info=True,
+            )
+
     def reload_config(self) -> None:
         """Reload config from disk and recreate LLM client."""
         from core.config import load_config
@@ -816,6 +843,7 @@ class SessionRunner(BaseSessionRunner):
             self._running = False
             # 异常兜底 checkpoint：脏数据落盘（正常路径已存过，此处短路）
             if getattr(self, "session", None) is not None:
+                self._snapshot_context_overhead()
                 self._sync_to_session()
                 self.session.save()
             # 落盘之后再通知，接入端重拉时才能拿到完整状态
@@ -894,6 +922,13 @@ class SessionRunner(BaseSessionRunner):
         name = default_branch_name(self.session.name, label, existing)
         store = SessionStore.create_new_session(self.sessions_dir, name)
         store.image_history_mode = self._image_history_mode()
+        # todo 按 session_id 存文件；fork 出新 session 时同步复制，分支后待办不丢
+        try:
+            from core.todo_store import copy_todos
+            if copy_todos(self.current_session_id, store.session_id, self.workspace_uuid):
+                logger.info("[fork] 已复制 todo 状态")
+        except Exception as e:  # noqa: BLE001 —— 复制失败不阻断 fork
+            logger.warning(f"[fork] 复制 todo 失败: {e}")
         # fork 继承父会话的模型覆盖（输入框切换的会话级模型随上下文一起带走）。
         # 只复制真实覆盖，不复制解析后的自当前模型：否则无覆盖的会话 fork 后
         # 会被钉死在当时的默认模型，之后全局改默认模型也跟随不到

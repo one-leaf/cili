@@ -228,6 +228,7 @@ class PDF2MarkdownTool(Tool):
     mutates_workspace = True
 
     name = "pdf2markdown"
+    search_keywords = ("文档转换", "格式转换", "ocr", "pdf", "markdown", "转换")
     description = (
         "Convert PDF, image, or office files to Markdown using MinerU OCR API. "
         "Supports PDF, PNG, JPG, DOCX, PPTX, XLSX, HTML. "

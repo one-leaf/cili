@@ -48,6 +48,18 @@ def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
     return _load_todos_file(todo_file) or []
 
 
+def copy_todos(src_session_id: str, dst_session_id: str,
+               workspace_uuid: str = "") -> bool:
+    """把源会话 todo 复制给 fork 出的新会话；源不存在时返回 False。"""
+    src = get_todo_file_path(src_session_id, workspace_uuid)
+    if not src.is_file():
+        return False
+    dst = get_todo_file_path(dst_session_id, workspace_uuid)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return True
+
+
 def write_todos(session_id: str, todos: list[dict], workspace_uuid: str = "") -> None:
     """写入会话 todo 文件。"""
     todo_dir = _get_todo_dir(workspace_uuid)

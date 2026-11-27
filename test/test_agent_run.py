@@ -125,6 +125,30 @@ def test_fork_session_snapshot(tmp_path):
     assert len((loaded.session_dir / "messages.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_fork_session_copies_todos(tmp_path, monkeypatch):
+    """fork 出的新会话继承源会话 todo（分支安全）。"""
+    import core.todo_store as todo_mod
+    from core.session import SessionStore
+
+    monkeypatch.setattr(todo_mod, "_get_todo_dir", lambda ws="": tmp_path / "todo")
+    config = make_dgx_config("anthropic")
+    store = SessionStore.create_new_session(tmp_path, "source")
+    with patch("core.session_runner.create_llm_client", return_value=MagicMock()), \
+         patch("core.session_runner.create_tools", return_value=[]):
+        runner = SessionRunner(
+            config, role="master", cwd=str(tmp_path),
+            workspace_uuid="test-workspace", initial_session=store,
+        )
+    runner.add_message("user", "hello")
+    todos = [{"content": "继续改工具", "status": "pending"}]
+    todo_mod.write_todos(runner.current_session_id, todos, "test-workspace")
+
+    result = runner.fork_session(label="branch")
+
+    assert result["status"] == "idle"
+    assert todo_mod.read_todos(result["session_id"], "test-workspace") == todos
+
+
 def test_fork_empty_next_steps_is_plain_copy_even_over_token_cap(tmp_path):
     """空下一阶段任务只复制会话，不生成 handoff 文档、不自动执行。"""
     from core.session import SessionStore

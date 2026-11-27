@@ -128,6 +128,7 @@ def _count(state: dict) -> dict:
 
 class LoopTool(Tool):
     name = "loop"
+    search_keywords = ("循环", "迭代", "进度", "loop", "iteration")
     description = (
         "**Progress tracking for iterative tasks across scheduling cycles.**\n"
         "Tracks items through cycles; each item is pending / done / failed:{reason}.\n"

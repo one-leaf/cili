@@ -795,12 +795,30 @@ class TurnExecutor:
         budget = int(max_tokens * COMPACT_KEEP_TOKEN_RATIO)
         return max(COMPACT_KEEP_MIN_TOKENS, min(budget, COMPACT_KEEP_MAX_TOKENS))
 
+    def _prompt_overhead_tokens(self) -> int:
+        """系统提示词 + 工具定义的估算 token；缺构建能力时返回 0。"""
+        try:
+            from core.compression import count_prompt_overhead
+
+            build = getattr(self.runner, "_build_system_prompt", None)
+            if not callable(build):
+                return 0
+            system_text = "\n".join(build())
+            return count_prompt_overhead(
+                system_text, getattr(self.runner, "tool_schemas", None)
+            )["overhead_tokens"]
+        except Exception:
+            return 0
+
     def _context_ratio(self, messages: list[dict]) -> tuple[int, int, float]:
-        """当前上下文估算 token / 模型工作预算，返回 (tokens, max_tokens, ratio)。"""
+        """完整请求估算 token / 模型工作预算，返回 (tokens, max_tokens, ratio)。"""
         max_tokens = int(getattr(self.runner.model, "max_context_tokens", 0) or 0)
         if max_tokens <= 0:
             return 0, 0, 0.0
-        tokens = self.runner._count_messages_tokens(messages)
+        tokens = (
+            self.runner._count_messages_tokens(messages)
+            + self._prompt_overhead_tokens()
+        )
         return tokens, max_tokens, tokens / max_tokens
 
     def _last_user_input_message(self) -> tuple[int, str]:
@@ -1291,7 +1309,10 @@ class TurnExecutor:
             )
 
         messages = self.build_projected_messages(force_reference=True)
-        total = self.runner._count_messages_tokens(messages)
+        total = (
+            self.runner._count_messages_tokens(messages)
+            + self._prompt_overhead_tokens()
+        )
         projected = total + approx_token_count(user_text)
         threshold = int(
             self.runner.model.max_context_tokens * FULL_COMPACT_TOKEN_RATIO

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 from core.tool_limits import BASH_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
+from core.tools.git_visible import (
+    add_ignored_dir_files,
+    git_visible_paths,
+    is_git_ignored,
+    pattern_dirs,
+)
 from core.tools.shell import shell_escape
 
 # 嵌套量词检测（ReDoS 风险模式）
@@ -217,6 +224,82 @@ class GrepTool(Tool):
                 max_results, timeout,
             )
 
+    def _find_matching_files_git(
+        self,
+        pattern: str,
+        path: str,
+        glob: str | None,
+        file_type: str | None,
+        case_insensitive: bool,
+        fixed_strings: bool,
+        timeout: int,
+    ) -> list[str] | None:
+        """git 工作区：按 .gitignore 取候选文件后 grep -l。
+
+        None = 不是 git 目录/路径本身被忽略，调用方回退旧版 grep -r。
+        """
+        path_obj = Path(path)
+        if not path_obj.is_dir() or is_git_ignored(str(path_obj)):
+            return None
+        visible = git_visible_paths(str(path_obj))
+        if visible is None:
+            return None
+        explicit_dirs = pattern_dirs(glob) if glob else set()
+        add_ignored_dir_files(visible, path_obj, explicit_dirs)
+
+        if file_type:
+            patterns = TYPE_EXTENSIONS.get(file_type.lower())
+            if not patterns:
+                return []
+        elif glob:
+            patterns = self._expand_glob(glob)
+        else:
+            patterns = ["*"]
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for gp in patterns:
+            try:
+                for p in path_obj.rglob(gp):
+                    if not p.is_file():
+                        continue
+                    resolved = os.path.normcase(str(p.resolve()))
+                    if resolved not in visible or resolved in seen:
+                        continue
+                    rel_parts = p.relative_to(path_obj).parts[:-1]
+                    if any(
+                        (part in self.IGNORE_DIRS or part.endswith(self.IGNORE_DIR_SUFFIXES))
+                        and part not in explicit_dirs
+                        for part in rel_parts
+                    ):
+                        continue
+                    seen.add(resolved)
+                    candidates.append(str(p))
+            except Exception:
+                continue
+
+        if not candidates:
+            return []
+
+        matched: list[str] = []
+        for chunk in self._chunked(candidates, self._GREP_BATCH_SIZE):
+            cmd_parts = ["grep", "-l"]
+            cmd_parts.append("-F" if fixed_strings else "-E")
+            if case_insensitive:
+                cmd_parts.append("-i")
+            cmd_parts.extend(["-e", pattern])
+            cmd_parts.extend(chunk)
+            cmd = " ".join(shell_escape(p) for p in cmd_parts) + " || true"
+            result = self._run_bash(
+                cmd, timeout=timeout, max_chars=self.MAX_LIST_OUTPUT_CHARS
+            )
+            if result.error:
+                raise ValueError(f"grep failed: {result.output.strip()[:300]}")
+            for line in (result.output or "").strip().split("\n"):
+                if line and not line.startswith("grep:"):
+                    matched.append(line)
+        return matched
+
     def _find_matching_files(
         self,
         pattern: str,
@@ -228,6 +311,18 @@ class GrepTool(Tool):
         timeout: int,
     ) -> list[str]:
         """Find all files matching the pattern using grep -l."""
+        git_files = self._find_matching_files_git(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            file_type=file_type,
+            case_insensitive=case_insensitive,
+            fixed_strings=fixed_strings,
+            timeout=timeout,
+        )
+        if git_files is not None:
+            return git_files
+
         cmd_parts = ["grep", "-r", "-l"]
 
         if fixed_strings:

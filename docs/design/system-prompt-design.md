@@ -18,15 +18,19 @@ Anthropic 侧 `cache_control scope=global`），之后为**动态区**（会话�
 | block | 生成器 | 内容 |
 |---|---|---|
 | `text` | `_gen_text` | 角色基础提示词（role JSON `system_prompt.text`） |
-| `tools` | `_gen_tools` | 工具列表段（按当前可见工具生成） |
-| `skills` | `_gen_skills` | 可用技能清单（按角色与接口过滤，预算 8000 字符） |
-| `context` | `_gen_context` | 环境上下文：工作区/目录/时间/平台等 |
+| `tools` | `_gen_tools` | 工具索引段（name + 一句话摘要，按当前可见工具生成） |
+| `rules` | `_gen_rules` | 汇总 active 工具自带的 `prompt_guidelines`（去重保序） |
+| `skills` | `_gen_skills` | 可用技能清单（按角色与接口过滤，单条描述 ≤200 字符，整段预算 4000 字符） |
+| `context` | `_gen_context` | 环境上下文：工作区/目录/平台/记忆等（不含当前时间；时间由 `clock` 工具获取） |
 | `interface_hint` | `_gen_interface_hint` | 接口专属散文（仅当前驱动接口命中时注入） |
 | `interface_caps` | `_gen_interface_caps` | 接口能力段（渲染面/交付形态/约束） |
 | `teen_mode` | `_gen_teen_mode` | 青少年模式约束块（模式开启且策略允许时；全角色） |
 
 - `teen_mode` 不依赖 role JSON，始终参与拼装；关闭时返回空字符串自动跳过。
 - 工具描述本身不随青少年模式变化（避免污染缓存与提示词测试）。
+- `tools` 只做索引：优先 `Tool.prompt_snippet`，否则取 description 首句并截断到 120 字符；完整说明仍随 tool schema 发送，不在 system prompt 重复。
+- `rules` 只汇总 active 工具的 `Tool.prompt_guidelines`；被 deferred、接口或模型能力门控过滤掉的工具不会带出规则。
+- 记忆索引注入预算 8K 字符，按完整行截断（见 `memory-system-design.md`）。
 
 ## 三、User 层
 
@@ -49,6 +53,7 @@ user 层在 `_get_messages_with_header` 中动态注入，**不写入 messages**
 
 ## 五、缓存配合
 
-- 静态区放在 `DYNAMIC_BOUNDARY` 之前；动态区（环境/时间/接口）之后，避免每次变化打断前缀缓存。
+- 静态区放在 `DYNAMIC_BOUNDARY` 之前；动态区（环境/接口）之后，避免每次变化打断前缀缓存。
+- 环境段在 session 内缓存；工具集变化（deferred 激活、模型切换、接口切换）时清 `env_context`，避免工具可用性描述过期。当前时间不注入，模型需要时调用 `clock`。
 - 工具定义顺序稳定（按角色白名单顺序实例化），保证 tools 缓存断点稳定。
 - 详见 `prompt-cache-design.md`。

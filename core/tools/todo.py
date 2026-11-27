@@ -38,6 +38,7 @@ class TodoWriteTool(Tool):
     """
 
     name = "todo_write"
+    search_keywords = ("待办", "任务清单", "任务列表", "todo", "checklist")
     description = (
         "Use this tool to create and manage a structured task list for your current "
         "coding session. This helps track progress, organize complex tasks, and "

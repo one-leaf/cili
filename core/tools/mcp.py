@@ -47,7 +47,11 @@ class MCPToolWrapper(Tool):
         self._tool_name = tool_name  # 原始 MCP 工具名（call_tool 用）
         self._tool_timeout = tool_timeout
         self.name = _sanitize_mcp_tool_name(f"mcp_{server_name}_{tool_name}")
-        self.description = description or tool_name
+        base_description = description or tool_name
+        self.description = (
+            f"{base_description}\n\nLarge results are saved to a file; "
+            "if the result is truncated, read the full text with `read_tool_result`."
+        )
         self.parameters = parameters or {"type": "object", "properties": {}}
 
     def execute(self, **kwargs: Any) -> ToolResult:

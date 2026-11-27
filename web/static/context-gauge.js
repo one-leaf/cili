@@ -111,7 +111,9 @@ function _renderGauge(data) {
     const ratio = Number(data.ratio) || 0;
     const pct = Math.round(ratio * 100);
     const maxTokens = Number(data.max_context_tokens) || 0;
-    const tokens = Number(data.context_tokens) || 0;
+    const messageTokens = Number(data.context_tokens) || 0;
+    const tokens = data.total_context_tokens != null
+        ? Number(data.total_context_tokens) : messageTokens;
 
     _ctxBtn.hidden = false;
     if (ratio >= CONTEXT_LEVEL_DANGER) {
@@ -149,7 +151,9 @@ function _renderPopover(data) {
 
     const ratio = Number(data.ratio) || 0;
     const pct = Math.round(ratio * 100);
-    const tokens = Number(data.context_tokens) || 0;
+    const messageTokens = Number(data.context_tokens) || 0;
+    const tokens = data.total_context_tokens != null
+        ? Number(data.total_context_tokens) : messageTokens;
     const maxTokens = Number(data.max_context_tokens) || 0;
     const usage = data.usage || {};
     const sess = data.session || {};
@@ -195,6 +199,16 @@ function _renderPopover(data) {
             ${_row('预算', `${_fmtInt(maxTokens)} tokens`)}
             ${_row('请求体大小', _fmtBytes(data.body_size))}
         </div>
+        <div class="ctx-section-title">上下文构成</div>
+        <div class="ctx-section">
+            ${_row('消息体', `${_fmtInt(messageTokens)} tokens`)}
+            ${_row('系统提示词', data.system_prompt_tokens == null
+                ? '—（需下一次回合后统计）' : `≈ ${_fmtInt(data.system_prompt_tokens)} tokens`)}
+            ${_row('工具定义', data.tool_schema_tokens == null
+                ? '—（需下一次回合后统计）' : `≈ ${_fmtInt(data.tool_schema_tokens)} tokens`)}
+            ${_row('合计', data.total_context_tokens == null
+                ? '—' : `${_fmtInt(data.total_context_tokens)} tokens`)}
+        </div>
         <div class="ctx-section-title">会话</div>
         <div class="ctx-section">
             ${_row('会话 ID', escapeHtml(data.session_id || ''),
@@ -213,8 +227,7 @@ function _renderPopover(data) {
             ${_row('速度', `预填充 ${_fmtSpeed(usage.prefill_speed)} · 生成 ${_fmtSpeed(usage.generation_speed)}`)}
             ${shown}${more}
         </div>
-        <div class="ctx-footnote">占比为消息体估算（含工具输出与图片折算），不含系统提示词与工具定义；与自动压缩阈值同口径。</div>
-    `;
+        `;
 }
 
 // ── 面板开关 ──────────────────────────────────────────────────────────

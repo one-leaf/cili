@@ -188,6 +188,9 @@ class DeepSeekWebSearchTool(_ServerToolBase):
     """DeepSeek 服务端联网搜索（客户端包装）。"""
 
     name = "deepseek_web_search"
+    prompt_guidelines = (
+        "For web search, prefer this tool when available: it runs server-side and is faster than browser-based search.",
+    )
     server_type = "deepseek_web_search"
     system_prompt = (
         "You are an assistant performing a web search tool use. "
@@ -257,6 +260,9 @@ class DeepSeekReadUrlTool(_ServerToolBase):
     """DeepSeek 服务端网页读取（客户端包装）。"""
 
     name = "deepseek_read_url"
+    prompt_guidelines = (
+        "For reading a specific URL, prefer this tool when available.",
+    )
     server_type = "deepseek_read_url"
     system_prompt = (
         "You are an assistant that reads web pages. When asked to read a URL, "

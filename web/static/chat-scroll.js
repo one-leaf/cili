@@ -8,6 +8,11 @@
 // force=true 强制回底。
 let _chatPinnedToBottom = true;
 let _chatPinBound = false;
+// 程序化滚动的目标位置：scroll 事件异步到达时，用它区分「自己滚的」
+// 和「用户滚的」，避免一批气泡瞬间插入后把贴底状态误判成未贴底。
+let _chatAutoScrollTarget = null;
+let _chatAutoScrollAt = 0;
+let _chatResizeObserver = null;
 
 // 取消息区最后一个可视「块」：直接子元素，回合流容器下钻一层
 function _lastChatBlock(el) {
@@ -34,14 +39,42 @@ function _chatLastBlockVisible(el) {
     return rect.bottom > box.top && rect.top < box.bottom;
 }
 
+function _consumeAutoScroll(el) {
+    if (_chatAutoScrollTarget === null) return false;
+    // 超过 300ms 还没到目标，视为用户接管（例如拖滚动条），不再拦截。
+    if (Date.now() - _chatAutoScrollAt > 300) {
+        _chatAutoScrollTarget = null;
+        return false;
+    }
+    // scroll 事件在设置 scrollTop 之后异步到达；期间可能又插入了新气泡，
+    // 所以不能只看「是否已经到目标」，只要目标还在就视为程序化滚动。
+    if (el.scrollTop + 1 >= _chatAutoScrollTarget) {
+        _chatAutoScrollTarget = null;
+    }
+    return true;
+}
+
 function _bindChatPinTracking() {
     if (_chatPinBound) return;
     const el = document.getElementById('chat-messages');
     if (!el) return;
     _chatPinBound = true;
     el.addEventListener('scroll', () => {
+        if (_consumeAutoScroll(el)) return;
         _chatPinnedToBottom = _chatLastBlockVisible(el);
     }, { passive: true });
+    // 用户主动滚动时取消程序化标记，让下面的 scroll 事件按真实位置判定
+    const clearAuto = () => { _chatAutoScrollTarget = null; };
+    el.addEventListener('wheel', clearAuto, { passive: true });
+    el.addEventListener('touchmove', clearAuto, { passive: true });
+    // 快速批量插入/图片撑高/字体回流都会改 scrollHeight；贴底时跟随，
+    // 不依赖每个调用点都记得 scheduleScrollToBottom。
+    if (typeof ResizeObserver === 'function') {
+        _chatResizeObserver = new ResizeObserver(() => {
+            if (_chatPinnedToBottom) scrollChatIfNearBottom();
+        });
+        _chatResizeObserver.observe(el);
+    }
 }
 
 function isChatPinnedToBottom() {
@@ -51,6 +84,7 @@ function isChatPinnedToBottom() {
 
 function setChatPinnedToBottom(pinned) {
     _chatPinnedToBottom = !!pinned;
+    if (!_chatPinnedToBottom) _chatAutoScrollTarget = null;
 }
 
 function scrollChatIfNearBottom(force = false) {
@@ -59,5 +93,8 @@ function scrollChatIfNearBottom(force = false) {
     _bindChatPinTracking();
     if (force) _chatPinnedToBottom = true;
     if (!_chatPinnedToBottom) return;
-    el.scrollTop = el.scrollHeight;
+    const target = el.scrollHeight;
+    _chatAutoScrollTarget = target;
+    _chatAutoScrollAt = Date.now();
+    el.scrollTop = target;
 }

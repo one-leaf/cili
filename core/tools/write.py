@@ -14,6 +14,9 @@ from core.tools.base import Tool, ToolResult
 class WriteTool(Tool):
     mutates_workspace = True
     name = "write"
+    prompt_guidelines = (
+        "Use write only for new files or complete rewrites; prefer edit for existing files.",
+    )
     description = (
         "Create a new file or overwrite an existing file with the given content. "
         "Automatically creates parent directories if they don't exist. "

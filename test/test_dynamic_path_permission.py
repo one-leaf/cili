@@ -146,6 +146,36 @@ def test_prefixed_question_keeps_remember_option():
     assert REMEMBER_LABEL in q
 
 
+def test_prefixed_inside_workspace_allowed(tmp_path):
+    """动态前缀在安全区内时不再弹人工审批。"""
+    target = collect_python_targets(
+        'open(f".cili/tmp/pricing/{name}.txt", "w")', str(tmp_path)
+    )[0]
+    policy = PathPolicy(
+        workspace_root=str(tmp_path), cwd=str(tmp_path),
+        permission_store=PermissionStore(),
+    )
+    verdict = policy.permission_policy.path_verdict(
+        "path:write", None, static_prefix=target.static_prefix,
+        tool="python", raw=target.raw,
+    )
+    assert verdict.action == "allow"
+
+
+def test_prefixed_traversal_still_asks(tmp_path):
+    """含 ../ 的动态表达式仍走审批，避免明显逃逸。"""
+    policy = PathPolicy(
+        workspace_root=str(tmp_path), cwd=str(tmp_path),
+        permission_store=PermissionStore(),
+    )
+    verdict = policy.permission_policy.path_verdict(
+        "path:write", None,
+        static_prefix=os.path.realpath(tmp_path / ".cili/tmp"),
+        tool="python", raw="f'.cili/tmp/../{name}'",
+    )
+    assert verdict.action != "allow"
+
+
 def test_prefixed_path_verdict_hits_rule(tmp_path):
     target = collect_python_targets(
         'open(f".cili/tmp/pricing/{name}.txt", "w")', str(tmp_path)

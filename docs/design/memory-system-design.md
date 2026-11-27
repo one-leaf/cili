@@ -12,7 +12,7 @@
 
 ```
 {workspace_dir}/.cili/memory/
-  MEMORY.md                 索引（常驻注入；按行数 200 / 25KB 双截断）
+  MEMORY.md                 索引（文件维护上限 200 行 / 25KB；注入另按 8K 字符预算截断）
   entries/{type}/{name}.md  条目（YAML frontmatter + 正文）
   archive/{type}/{name}.md  归档条目
   journal.jsonl             摄入日志（append-only）
@@ -46,8 +46,8 @@
 
 ## 五、读路径
 
-- system prompt 注入 `MEMORY.md`（索引）+ 偏好条目前 N 条（见 `prompt_sections._build_memory_sections`）。
-- 工具检索：`memory(action="find", query=...)` 关键词匹配条目（`MemoryStore.find`）。
+- system prompt 注入：偏好条目前 N 条 + `MEMORY.md` 索引（按 8K 字符预算、完整行截断，截断处提示用 `memory find`；索引前附类型计数）+ `summary.md` 摘要。实现见 `prompt_sections._build_memory_sections`。
+- 工具检索：`memory(action="find", query=...)` 关键词匹配条目（`MemoryStore.find`）；索引未覆盖的旧条目靠它检索。
 - 会话搜索工具 `session_search` 不读记忆，属会话历史。
 
 ## 六、密钥与安全
@@ -60,4 +60,5 @@
 
 - 开关：工作区 `memory_enabled`（记忆管理页或 `PUT …/memory/settings`）。
 - 模型：提取/整合使用角色 `lite` 模型（`config.model_for_role("lite")`）。
-- 索引注入上限：`INDEX_MAX_LINES` / `INDEX_MAX_BYTES`。
+- 索引文件上限：`INDEX_MAX_LINES` / `INDEX_MAX_BYTES`（MemoryStore 维护 MEMORY.md 本身）。
+- 索引注入预算：`prompt_sections._MEMORY_INDEX_MAX_CHARS`（默认 8K 字符，按完整行截断）。

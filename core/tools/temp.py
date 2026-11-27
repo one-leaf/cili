@@ -17,6 +17,7 @@ class TempTool(Tool):
     """临时文件和目录管理工具。"""
 
     name = "temp"
+    search_keywords = ("临时文件", "临时目录", "临时", "scratch", "temp")
     description = """Manage temporary files and directories for the current session.
 
 Temporary files are stored in {workspace}/.cili/tmp/{session_id}/ directory (workspace-local temp).

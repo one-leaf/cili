@@ -60,6 +60,13 @@ class Tool(ShellMixin, BackgroundMixin):
     description: str = ""
     parameters: dict[str, Any] = {}  # JSON Schema
 
+    # 系统提示词里的工具索引：一句话摘要 + 工具自带规则（默认从 description 首句回退）。
+    # 完整说明仍在 description / input_schema 里随工具定义发送，这里只做索引，避免重复。
+    prompt_snippet: str = ""
+    prompt_guidelines: tuple[str, ...] = ()
+    # 工具搜索别名（中英文），用于 tool_search 的关键词匹配
+    search_keywords: tuple[str, ...] = ()
+
     # 并发安全标志：纯读、无副作用、非流式的工具标记为 True，允许同一批内并行执行。
     # 未标记（默认 False）的工具在批内始终单线程执行（各自成单批）。
     concurrency_safe: bool = False

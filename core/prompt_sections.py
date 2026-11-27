@@ -14,26 +14,42 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 # 技能清单段预算：单条描述截断至 _SKILL_DESC_MAX_CHARS；
 # 整段超过 _SKILLS_SECTION_BUDGET_CHARS 时降级为仅名称+id 清单。
-_SKILL_DESC_MAX_CHARS = 1024
-_SKILLS_SECTION_BUDGET_CHARS = 8000
+_SKILL_DESC_MAX_CHARS = 200
+_SKILLS_SECTION_BUDGET_CHARS = 4000
+
+# 工具索引摘要上限：完整说明仍在 description / schema 里，这里只做导航
+_TOOL_SNIPPET_MAX_CHARS = 120
 
 
 # ─── 动态段落构建 ────────────────────────────────────────────────────
 
+def _tool_snippet(tool) -> str:
+    """工具索引的一句话摘要：优先 prompt_snippet，否则取 description 首句并截断。"""
+    snippet = (getattr(tool, "prompt_snippet", "") or "").strip()
+    if not snippet:
+        snippet = (tool.description or "").strip().split("\n", 1)[0].strip()
+        for sep in (". ", "。", "！", "？"):
+            idx = snippet.find(sep)
+            if 20 <= idx <= _TOOL_SNIPPET_MAX_CHARS:
+                snippet = snippet[: idx + len(sep)].strip()
+                break
+    if len(snippet) > _TOOL_SNIPPET_MAX_CHARS:
+        snippet = snippet[:_TOOL_SNIPPET_MAX_CHARS].rstrip() + "…"
+    return snippet or tool.name
+
+
 def _build_tools_section(tools: list) -> str:
-    """从工具实例生成工具列表段落。"""
+    """从工具实例生成工具列表段落（name + 一句话摘要）。"""
     if not tools:
         return ""
     lines = ["## Tools", "", "You have access to the following tools:"]
     for tool in tools:
-        desc = tool.description.split("\n")[0].strip()
-        lines.append(f"- **{tool.name}** — {desc}")
+        lines.append(f"- **{tool.name}** — {_tool_snippet(tool)}")
     return "\n".join(lines)
 
 
@@ -50,8 +66,7 @@ def _build_deferred_tools_section(deferred_tools: list) -> str:
         "",
     ]
     for tool in deferred_tools:
-        desc = tool.description.split("\n")[0].strip()
-        lines.append(f"- **{tool.name}** — {desc}")
+        lines.append(f"- **{tool.name}** — {_tool_snippet(tool)}")
     return "\n".join(lines)
 
 
@@ -75,6 +90,7 @@ def _build_skills_section(role: str, interface: str | None = None) -> str:
         "## Available Skills", "",
         "Built-in skills provide detailed instructions for common workflows.",
         "Use `skill(action='list')` to see all, `skill(action='read', skill_id='...')` to read full content.",
+        "If a skill description matches the task, read it before implementing.",
     ]
 
     def _entry(s: dict, with_desc: bool) -> str:
@@ -106,11 +122,10 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
                               tools: list[str] | None = None) -> str:
     """构建动态环境变量，作为独立 user 消息段注入。
 
-    每次请求都不同（datetime 变化等），作为单独段发送不影响 system prompt 的缓存。
+    环境事实在会话内缓存；当前时间不注入 prompt，需要时由模型调用 clock。
     包含：Workspace、OS、Shell、Python、Temporary Files、Memory、Current Time。
     """
     import platform
-    current_date = datetime.now().strftime("%Y-%m-%d")
     available = set(tools) if tools is not None else {"bash", "pwsh", "python"}
     from core.config import get_workspace_data_dir
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
@@ -199,14 +214,12 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
     # 记忆注入（v3 三层：preference 常驻 + MEMORY.md 索引 + summary.md 摘要）
     parts.extend(_build_memory_sections(memory_dir, workspace_uuid))
 
-    # 当前时间（放在最后）
+    # 当前时间不注入（环境段按会话缓存，日期会过期）；需要时由模型调用 clock
     parts.extend([
         "",
         "## Current Time",
         "",
-        f"**{current_date}**",
-        "",
-        "Use this time when interpreting relative or time-sensitive requests such as \"today\", \"latest\", \"current\", \"this year\", or version/documentation freshness. When the user asks for the latest information, verify it with available web tools rather than relying on model knowledge.",
+        "For the current date/time, call the `clock` tool (action='now').",
     ])
 
     return "\n".join(parts)
@@ -217,6 +230,7 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
 # 记忆注入限额：控制 system prompt 体积，避免无限膨胀
 _MEMORY_PREFERENCE_CAP = 10  # 最多注入 10 条 preference
 _MEMORY_SUMMARY_MAX_CHARS = 2 * 1024  # summary.md 最多截取 2048 个字符（中文时约 6KB）
+_MEMORY_INDEX_MAX_CHARS = 8 * 1024  # MEMORY.md 索引注入预算（按完整行截断）
 
 
 def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[str]:
@@ -243,7 +257,28 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
                 index_text = f.read().strip()
             if index_text:
                 lines.append("### Memory Index (descriptions of all entries)")
+                try:
+                    by_type = store.stat().get("by_type", {})
+                    counts = " / ".join(
+                        f"{t} {by_type.get(t, 0)}"
+                        for t in ("fact", "preference", "skill", "reference")
+                    )
+                    lines.append(f"Entries: {counts}")
+                except Exception:
+                    pass
+                truncated = len(index_text) > _MEMORY_INDEX_MAX_CHARS
+                if truncated:
+                    cut = index_text[:_MEMORY_INDEX_MAX_CHARS]
+                    newline = cut.rfind("\n")
+                    if newline > 0:
+                        cut = cut[:newline]
+                    index_text = cut.rstrip()
                 lines.append(index_text)
+                if truncated:
+                    lines.append(
+                        f"(Index truncated at {_MEMORY_INDEX_MAX_CHARS} chars — "
+                        'use memory(action="find", query="...") for older entries.)'
+                    )
                 lines.append("")
 
         summary_path = os.path.join(memory_dir, "summary.md")

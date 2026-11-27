@@ -215,6 +215,119 @@ class TestClosePageInternal:
         mock_page.close.assert_called_once()
 
 
+class TestGetCookiesScope:
+    """get_cookies 只读当前站点，敏感值掩码。"""
+
+    def _service(self, page):
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        service._execute_operation = lambda name, func, tab_index=None: func(page)
+        return service
+
+    def test_filters_current_site_and_masks_sensitive(self):
+        page = MagicMock()
+        page.url = "https://example.com/page"
+        page.context.cookies.return_value = [
+            {"name": "session", "value": "secret", "domain": "example.com",
+             "path": "/", "secure": True, "httpOnly": True, "sameSite": "Lax"},
+            {"name": "MSPAuth", "value": "mssecret", "domain": "example.com",
+             "path": "/", "secure": True, "httpOnly": False, "sameSite": "Lax"},
+            {"name": "theme", "value": "dark", "domain": "example.com",
+             "path": "/", "secure": False, "httpOnly": False, "sameSite": "Lax"},
+        ]
+        service = self._service(page)
+
+        result = service.get_cookies()
+
+        assert not result.error
+        assert "Cookies for example.com (3)" in result.output
+        assert "session = ***" in result.output
+        assert "MSPAuth = ***" in result.output
+        assert "theme = dark" in result.output
+        assert "secret" not in result.output
+        page.context.cookies.assert_called_once_with(urls=["https://example.com/page"])
+
+    def test_refuses_cross_site_url(self):
+        page = MagicMock()
+        page.url = "https://example.com/page"
+        service = self._service(page)
+
+        result = service.get_cookies(url="https://evil.example.org/cookies")
+
+        assert result.error
+        assert "refusing" in result.output
+        page.context.cookies.assert_not_called()
+
+    def test_allows_parent_domain(self):
+        page = MagicMock()
+        page.url = "https://www.example.com/page"
+        page.context.cookies.return_value = []
+        service = self._service(page)
+
+        result = service.get_cookies(url="https://example.com/")
+
+        assert not result.error
+        page.context.cookies.assert_called_once_with(urls=["https://example.com/"])
+
+    def test_no_current_site_returns_error(self):
+        page = MagicMock()
+        page.url = "about:blank"
+        service = self._service(page)
+
+        result = service.get_cookies()
+
+        assert result.error
+        assert "navigate" in result.output
+
+
+class TestExecuteScriptErrors:
+    """execute_script 对顶层 return 给出可操作提示。"""
+
+    def test_illegal_return_hint(self):
+        from core.browser_service import BrowserService
+        page = MagicMock()
+        page.evaluate.side_effect = Exception("SyntaxError: Illegal return statement")
+        service = BrowserService()
+        service._execute_operation = lambda name, func, tab_index=None: func(page)
+
+        result = service.execute_script("return JSON.stringify({a: 1})")
+
+        assert result.error
+        assert "IIFE" in result.output
+
+
+class TestCloseTabDefault:
+    """close_tab() 不传 tab_index 时关闭当前活跃 tab。"""
+
+    def test_defaults_to_active_tab(self):
+        from unittest.mock import MagicMock
+
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "https://example.com"
+        service._page_pool = {1: (page, 1234567890.0)}
+        service._active_tab_index = 1
+        service._run_in_worker = lambda func: func()
+
+        result = service.close_tab()
+
+        assert not result.error
+        assert "Closed tab 1" in result.output
+        assert 1 not in service._page_pool
+
+    def test_no_active_tab_returns_error(self):
+        from core.browser_service import BrowserService
+        service = BrowserService()
+        service._run_in_worker = lambda func: func()
+
+        result = service.close_tab()
+
+        assert result.error
+        assert "No active tab" in result.output
+
+
 class TestValidateNavigateUrl:
     """check_navigate_url() scheme/SSRF 过滤（A30/SEC-17）。"""
 

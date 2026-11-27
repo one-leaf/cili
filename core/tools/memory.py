@@ -21,7 +21,13 @@ from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, Tool
 
 class MemoryTool(Tool):
     name = "memory"
+    prompt_guidelines = (
+        "Search memory first (find → read) when the task may depend on prior facts.",
+        "Store only durable facts, preferences, techniques, or references; memory older than 30 days may be stale — verify before relying on it.",
+        "When the user asks you to remember something, call memory(action='store') instead of only acknowledging.",
+    )
     description = (
+        "**When the user asks you to remember something, call action='store' — do not only acknowledge.**\n"
         "Long-term memory tool for storing, searching and managing the workspace's "
         "cross-session memory. Four memory types: fact (project facts/decisions), "
         "preference (user preferences/communication style), skill (reusable techniques), "

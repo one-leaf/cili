@@ -74,6 +74,12 @@ def _target_label(kind: str) -> str:
     return "操作"
 
 
+def _mono(text: str) -> str:
+    """含反斜杠的动态文本用代码段包住，避免 Markdown 把 ``\\.`` 渲染成 ``.``。"""
+    text = str(text)
+    return f"`{text}`" if "\\" in text else text
+
+
 def build_permission_question(permission: dict[str, Any]) -> str:
     """构造权限确认卡文案（含含义/风险/理由/动态路径说明）。"""
     kind = permission.get("kind", "command")
@@ -92,22 +98,22 @@ def build_permission_question(permission: dict[str, Any]) -> str:
     if kind == "browser:navigate":
         head = f"检测到非公网地址导航，需要您批准后才能执行：\n\n地址：`{display}`\n"
     elif kind == "path:read":
-        head = f"检测到工作区外文件读取，需要您批准后才能执行：\n\n操作：{_path_verb('读取')}\n"
+        head = f"检测到工作区外文件读取，需要您批准后才能执行：\n\n操作：{_mono(_path_verb('读取'))}\n"
     elif kind == "path:delete":
-        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_path_verb('删除')}\n"
+        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_mono(_path_verb('删除'))}\n"
     elif kind.startswith("path:"):
-        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_path_verb('写入')}\n"
+        head = f"检测到工作区外文件操作，需要您批准后才能执行：\n\n操作：{_mono(_path_verb('写入'))}\n"
     else:
         head = f"检测到需要确认的操作，需要您批准后才能执行：\n\n操作：`{display}`\n"
 
     if source:
-        head += f"位置：{source}\n"
+        head += f"位置：{_mono(source)}\n"
     if summary:
-        head += f"含义：{summary}\n"
+        head += f"含义：{_mono(summary)}\n"
     if risk:
         head += f"风险：{_risk_label(risk)}\n"
     if reason:
-        head += f"判定理由：{reason}\n"
+        head += f"判定理由：{_mono(reason)}\n"
     head += f"判定编号：{permission['decision_id']}\n"
 
     target_label = _target_label(kind)
@@ -118,7 +124,7 @@ def build_permission_question(permission: dict[str, Any]) -> str:
             f"「{REJECT_LABEL}」仅拦截本次执行。"
         )
 
-    persist_desc = f"（{display}）" if display else ""
+    persist_desc = f"（{_mono(display)}）" if display else ""
     return (
         f"{head}\n"
         f"「{APPROVE_LABEL}」仅本次会话放行；「{REMEMBER_LABEL}」会写入此工作区{persist_desc}，"

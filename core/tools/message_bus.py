@@ -8,6 +8,7 @@ from core.tools.base import UNTRUSTED_DATA_BEGIN, UNTRUSTED_DATA_END, Tool, Tool
 
 class MessageBusTool(Tool):
     name = "message_bus"
+    search_keywords = ("消息总线", "跨会话", "跨代理", "消息", "mailbox", "message")
     description = (
         "**Cross-session and cross-agent message passing.**\n"
         "Send and receive messages between different chat sessions or agents by name.\n\n"

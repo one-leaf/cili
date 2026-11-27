@@ -7,6 +7,8 @@ resolve/strip 经 agent 与经 runner 产物一致、_execute_tool 经转发正�
 
 from unittest.mock import patch
 
+import pytest
+
 from core.base_session_runner import BaseSessionRunner
 from core.session_runner_runtime.executor import TurnExecutor
 from core.tools.base import ToolResult
@@ -132,6 +134,26 @@ class TestForwardsPassthrough:
 
 class TestContextPressure:
     """回合中途压力：100% 收尾提示 / 150% 强制全压缩。"""
+
+    @pytest.fixture(autouse=True)
+    def _no_prompt_overhead(self, monkeypatch):
+        """这些用例只验证消息体阈值；系统/工具开销单独测。"""
+        monkeypatch.setattr(
+            TurnExecutor, "_prompt_overhead_tokens", lambda self: 0
+        )
+
+    def test_prompt_overhead_counts_toward_ratio(self, runner, monkeypatch):
+        """压缩口径包含系统提示词 + 工具定义。"""
+        monkeypatch.setattr(runner.model, "max_context_tokens", 1000)
+        monkeypatch.setattr(runner.runner, "_prompt_overhead_tokens", lambda: 900)
+        runner.add_message("user", "x" * 400)  # ≈ 100 tokens
+
+        tokens, max_tokens, ratio = runner.runner._context_ratio(
+            runner.get_valid_messages()
+        )
+
+        assert tokens >= 1000
+        assert ratio >= 1.0
 
     def test_warn_at_100_percent_once(self, runner, monkeypatch):
         monkeypatch.setattr(runner.model, "max_context_tokens", 1000)

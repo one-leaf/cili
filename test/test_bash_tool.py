@@ -51,6 +51,30 @@ class TestBashTool:
         assert test_workspace.replace("\\", "/") in result.output or \
                Path(test_workspace).name in result.output
 
+    def test_long_output_keeps_tail(self, tools):
+        """长输出保留尾部（错误/退出信息通常在末尾）。"""
+        from core.tools import get_tool_by_name
+
+        bash_tool = get_tool_by_name(tools, "bash")
+        result = bash_tool.execute(command="seq 1 30000")
+        assert not result.error
+        assert "showing tail" in result.output
+        assert "30000" in result.output
+
+    def test_long_output_reports_full_path(self, tools, tmp_path):
+        """长输出截断时给出完整输出文件路径。"""
+        from core.tools import get_tool_by_name
+
+        bash_tool = get_tool_by_name(tools, "bash")
+        output_file = tmp_path / "full.txt"
+        bash_tool.output_file = str(output_file)
+        result = bash_tool.execute(command="seq 1 30000")
+        bash_tool.output_file = None
+        assert not result.error
+        assert "full output:" in result.output
+        assert output_file.exists()
+        assert "30000" in output_file.read_text(encoding="utf-8")
+
 
 class TestBashOutputStreaming:
     """stdout 读取改为分块后，输出内容与实时性必须与逐字符读取一致。

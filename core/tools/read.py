@@ -13,9 +13,12 @@ from core.tools.base import Tool, ToolResult
 class ReadTool(Tool):
     name = "read"
     concurrency_safe = True
+    prompt_guidelines = (
+        "Use read to inspect files; do not use cat/sed via bash.",
+    )
     description = (
         "Read file contents. Supports text files, images (PNG, JPG, GIF, WebP, BMP), and PDFs. "
-        "Use offset/limit for pagination on large text files. "
+        "Use offset/limit for pagination on large text files; continue with offset until the file is fully read. "
         "Use pages (e.g. '3' or '1-5') for PDF page ranges (max 20 pages, default: page 1). "
         "Images are returned as base64-encoded data for the model to view. "
         "SVG files are returned as text (their source markup), not as rendered images. "

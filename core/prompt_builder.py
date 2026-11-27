@@ -133,9 +133,32 @@ def _gen_context(block: dict, runner) -> str:
     return cache[key]
 
 
+def _gen_rules(block: dict, runner) -> str:
+    """rules 块：汇总 active 工具自带的 prompt_guidelines（去重、保序）。
+
+    规则跟着工具实现走：工具不在本回合工具集里（deferred / 接口/模型门控），
+    它的规则也不会出现；deferred 工具激活后，下一次构建自动加入。
+    """
+    active = getattr(runner, "_active_tools", None)
+    if active is None:
+        active = getattr(runner, "tools", [])
+    seen: set[str] = set()
+    rules: list[str] = []
+    for tool in active:
+        for rule in getattr(tool, "prompt_guidelines", ()) or ():
+            text = str(rule).strip()
+            if text and text not in seen:
+                seen.add(text)
+                rules.append(text)
+    if not rules:
+        return ""
+    return "## Tool Rules\n\n" + "\n".join(f"- {r}" for r in rules)
+
+
 SYSTEM_BLOCK_GENERATORS: dict[str, Callable[[dict, Any], str]] = {
     "text": _gen_text,
     "tools": _gen_tools,
+    "rules": _gen_rules,
     "skills": _gen_skills,
     "context": _gen_context,
     "interface_hint": _gen_interface_hint,

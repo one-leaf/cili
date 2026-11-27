@@ -45,21 +45,15 @@ class Office2PDFTool(Tool):
     mutates_workspace = True
 
     name = "office2pdf"
-    description = """Convert a Word, Excel, or PowerPoint document to PDF using the locally installed Microsoft Office or WPS COM engine.
+    description = """Convert Word/Excel/PowerPoint documents to PDF with the locally installed Microsoft Office or WPS COM engine.
 
-Supported inputs: .doc, .docx, .docm, .rtf, .xls, .xlsx, .xlsm, .xlsb, .ppt, .pptx, .pptm, .ppsx, .ppsm, .potx.
+Supported: .doc/.docx/.docm/.rtf, .xls/.xlsx/.xlsm/.xlsb, .ppt/.pptx/.pptm/.ppsx/.ppsm/.potx.
+The source opens read-only (macros and external links disabled); conversion runs in an isolated worker with a timeout. Results are cached by path + mtime + size.
+Default output is <filename>.pdf in the current directory; use output_path/overwrite to change that.
 
-The source is opened read-only with macros and external link updates disabled. Conversion runs in an isolated worker process with a timeout; results are cached by source path + mtime + size, so repeated conversions of an unchanged file reuse the PDF.
-
-By default the PDF is written to <filename>.pdf in the current directory; pass output_path to choose another path. Pass overwrite=false to refuse replacing an existing PDF.
-
-action="sync" batch-syncs workspace Office documents into the per-workspace preview cache ({workspace}/.cili/cache/pdf/): converts new or changed files, and removes cached PDFs whose source no longer exists. Used by the office-pdf-sync cron task; sync writes only inside .cili/cache/pdf and never touches user files.
-
-action="diagnose" reports which Office/WPS COM ProgIDs are registered (64-bit and 32-bit registry views) and which alternative ProgIDs were discovered; use it when conversion fails with "invalid class string" / CO_E_CLASSSTRING or "class not registered".
-
-The tool tries Microsoft Office ProgIDs first, then WPS variants (KWPS/WPS, KET/ET, KWPP/WPP), then scans the registry for any other registered Office/WPS ProgID. On failure the error includes the registry state so the cause (missing or broken Office/WPS COM registration) is visible without guesswork.
-
-Use this tool instead of writing ad-hoc Word/Excel/PowerPoint COM scripts for PDF export.
+action="sync" batch-syncs workspace documents into {workspace}/.cili/cache/pdf/ and removes stale cached PDFs (used by the office-pdf-sync cron; never touches user files).
+action="diagnose" reports registered Office/WPS COM ProgIDs; use it for "invalid class string" / "class not registered" failures.
+Use this instead of ad-hoc COM scripts.
 """
     parameters = {
         "type": "object",

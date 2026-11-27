@@ -18,6 +18,10 @@ class AskUserTool(Tool):
     placeholder_output = True
 
     name = "ask_user"
+    prompt_guidelines = (
+        "Resolve ambiguity yourself before asking; use `ask_user` only when the answer cannot be derived.",
+        "Bundle all blocking questions into one call; never use `ask_user` for permission requests.",
+    )
     description = (
         "Ask the user one or more multiple-choice questions to gather information, "
         "clarify ambiguity, understand preferences, or make decisions. "

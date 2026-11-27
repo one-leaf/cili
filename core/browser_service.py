@@ -17,6 +17,7 @@ import threading
 import time
 from collections import deque
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from playwright.sync_api import Page
@@ -101,6 +102,27 @@ try:
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
+
+
+def _cookie_sensitive(name: str, http_only: bool) -> bool:
+    """登录态/会话类 cookie：默认隐藏值，避免把可复用凭证交给模型。"""
+    lname = (name or "").strip().lower()
+    if lname in {"_u", "muid", "mspauth", ".msa.auth", "msa"}:
+        return True
+    if http_only:
+        return True
+    return bool(re.search(
+        r"(auth|token|session|sess|jwt|csrf|xsrf|sso|login|passwd|password|secret|api[_-]?key|"
+        r"^__secure-|^__host-|connect\.sid|jsessionid)",
+        lname,
+    ))
+
+
+def _cookie_host(url: str) -> str:
+    try:
+        return (urlparse(url or "").hostname or "").lower()
+    except Exception:
+        return ""
 
 
 class BrowserService:
@@ -1249,7 +1271,16 @@ class BrowserService:
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
         """
         def _do_execute(page):
-            exec_result = page.evaluate(script)
+            try:
+                exec_result = page.evaluate(script)
+            except Exception as exc:
+                if "Illegal return statement" in str(exc):
+                    return ToolResult(
+                        "Error: top-level `return` is not allowed in browser.execute. "
+                        "请用表达式，或用 IIFE 包裹：(() => { ... })()",
+                        error=True,
+                    )
+                raise
             result_str = json.dumps(exec_result, ensure_ascii=False, indent=2)
             if len(result_str) > _TRUNCATE_OUTPUT_CHARS:
                 result_str = result_str[:_TRUNCATE_OUTPUT_CHARS] + "\n... (truncated)"
@@ -1728,19 +1759,52 @@ class BrowserService:
     # ==================== cookies（get/clear/set） ====================
 
     def get_cookies(self, url: str | None = None, tab_index: int | None = None) -> ToolResult:
-        """返回当前浏览器 context 的 cookies（可选按 url 过滤）。"""
+        """返回当前站点 cookies；默认只读当前页同站，敏感值掩码。
+
+        ``url`` 只允许当前 host 或其父域；跨站请求直接拒绝，避免把整个
+        Chrome profile 的登录态交给调用方。
+        """
         def _do_get_cookies(page):
+            page_url = page.url or ""
+            page_host = _cookie_host(page_url)
+            target_url = url or page_url
+            target_host = _cookie_host(target_url)
+            if not target_host:
+                return ToolResult(
+                    "Error: no current page/site; navigate to a site first.", error=True)
+            if url:
+                allowed = bool(page_host) and (
+                    target_host == page_host
+                    or (target_host.count(".") >= 1 and page_host.endswith("." + target_host))
+                )
+                if not allowed:
+                    return ToolResult(
+                        f"Error: refusing to read cookies for {target_host}; "
+                        "only the current site (or its parent domain) is allowed. "
+                        "Navigate to that site first.",
+                        error=True,
+                    )
             ctx = page.context
-            cookies = ctx.cookies(url=url) if url else ctx.cookies()
+            cookies = ctx.cookies(urls=[target_url])
             if not cookies:
-                return ToolResult("No cookies found")
-            lines = [
-                f"  {c['name']} = {c['value']} "
-                f"(domain={c.get('domain')}, path={c.get('path')}, "
-                f"secure={c.get('secure')}, httpOnly={c.get('httpOnly')}, sameSite={c.get('sameSite')})"
-                for c in cookies
-            ]
-            return ToolResult(f"Cookies ({len(cookies)}):\n" + "\n".join(lines))
+                return ToolResult(f"No cookies found for {target_host}")
+            lines = []
+            masked = 0
+            for c in cookies:
+                name = c.get("name", "")
+                value = c.get("value", "")
+                if _cookie_sensitive(name, bool(c.get("httpOnly"))):
+                    value = "***"
+                    masked += 1
+                lines.append(
+                    f"  {name} = {value} "
+                    f"(domain={c.get('domain')}, path={c.get('path')}, "
+                    f"secure={c.get('secure')}, httpOnly={c.get('httpOnly')}, sameSite={c.get('sameSite')})"
+                )
+            head = f"Cookies for {target_host} ({len(cookies)}):"
+            if masked:
+                head += f"\nSensitive values masked: {masked}"
+            return ToolResult(head + "\n" + "\n".join(lines))
 
         return self._execute_operation("get_cookies", _do_get_cookies, tab_index=tab_index)
 
@@ -1913,23 +1977,26 @@ class BrowserService:
         except Exception as e:
             return ToolResult(f"Browser list_tabs failed with worker error: {e}", error=True)
 
-    def close_tab(self, tab_index: int) -> ToolResult:
-        """关闭指定 tab。
+    def close_tab(self, tab_index: int | None = None) -> ToolResult:
+        """关闭指定 tab；未指定时关闭当前活跃 tab。
 
         Args:
-            tab_index: 要关闭的 tab 编号
+            tab_index: 要关闭的 tab 编号；None = 当前活跃 tab
 
         Returns:
             ToolResult 包含关闭结果
         """
         def _do_close():
-            entry = self._page_pool.get(tab_index)
+            idx = tab_index if tab_index is not None else self._active_tab_index
+            if idx is None:
+                return ToolResult("No active tab to close", error=True)
+            entry = self._page_pool.get(idx)
             if not entry:
-                return ToolResult(f"Tab {tab_index} not found", error=True)
+                return ToolResult(f"Tab {idx} not found", error=True)
             page, _ = entry
             url = page.url if not page.is_closed() else "(already closed)"
-            self._close_page_internal(tab_index, page)
-            return ToolResult(f"Closed tab {tab_index}\nURL: {url}")
+            self._close_page_internal(idx, page)
+            return ToolResult(f"Closed tab {idx}\nURL: {url}")
 
         try:
             return self._run_in_worker(_do_close)

@@ -68,6 +68,59 @@ def save_tool_output(result: Any, output_file: str | None) -> str | None:
         return None  # 写入失败不影响工具执行
 
 
+def resolve_tool_results_for_context(messages: list[dict], session_dir) -> None:
+    """为上下文估算解析外置工具结果（不改 UI 渲染路径）。
+
+    与 runner 的 ``_resolve_tool_results`` 同口径：
+    - ``.json`` 多模态文件解析成 blocks（图片随后由图片投影替换为引用）
+    - ``.txt`` 截断结果按 8K 中间截断，完整结果按通用 50K 字符上限
+    """
+    from pathlib import Path
+
+    from core.compression import truncate_middle, truncate_result
+    from core.llm.types import block_from_dict
+    from core.tool_limits import TOOL_RESULT_MAX_CHARS
+
+    session_dir = Path(session_dir)
+    session_root = session_dir.resolve()
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            meta = block.get("_meta") or {}
+            output_path = str(meta.get("output_path") or "")
+            if not output_path or block.get("content"):
+                continue
+            file_path = (session_dir / output_path).resolve()
+            if not file_path.is_relative_to(session_root) or not file_path.exists():
+                continue
+            try:
+                if file_path.suffix.lower() == ".json":
+                    data = json.loads(file_path.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict) or data.get("type") != "multimodal":
+                        block["content"] = "[工具输出格式错误]"
+                        continue
+                    blocks = []
+                    for block_data in data.get("blocks", []):
+                        try:
+                            parsed = block_from_dict(block_data)
+                            blocks.append(parsed.to_dict() if hasattr(parsed, "to_dict") else parsed)
+                        except Exception:
+                            continue
+                    block["content"] = blocks
+                else:
+                    text = file_path.read_text(encoding="utf-8", errors="replace")
+                    if meta.get("truncated"):
+                        block["content"] = truncate_middle(text, 8000)
+                    else:
+                        block["content"] = truncate_result(text, TOOL_RESULT_MAX_CHARS)
+            except Exception:
+                continue
+
+
 def read_tool_output_chunk(session_dir, tool_use_id: str, offset: int,
                            max_chunk: int = 256 * 1024) -> dict:
     """读取工具输出文件的新增内容（前端轮询实时显示）。

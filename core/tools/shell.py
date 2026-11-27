@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 
+from core.compression import truncate_tail
 from core.config import PROJECT_ROOT
 from core.temp_dirs import temp_root
 from core.tool_limits import BASH_MAX_OUTPUT_TOKENS, BASH_RESULT_MAX_CHARS
@@ -29,6 +30,15 @@ _TMP_DIR = temp_root()
 
 # stdout 读取块大小（字节）。read1 只要有数据就返回，故块大小不影响实时性
 _READ_CHUNK_BYTES = 8192
+
+# Windows PowerShell 5.1 把重定向的原生 stderr 当作 error record，$? 可能为 false；
+# 最后一个原生命令实际 exit 0 时不应把整条命令标成失败。
+_PS51_EXIT_SUFFIX = (
+    '\n;\nif ($?) { exit 0 }\n'
+    'if (($LASTEXITCODE -eq 0) -and '
+    '("$($Error[0].FullyQualifiedErrorId)" -like "NativeCommandError*")) { exit 0 }\n'
+    'exit 1'
+)
 
 
 def _to_bash_path(path: str) -> str:
@@ -393,7 +403,13 @@ class ShellMixin:
                     f'$env:PYTHONIOENCODING = "utf-8"; '
                     f'$env:PYTHONUTF8 = "1"; '
                 )
-                full_command = f"{encoding_preamble}{env_setup}{command}"
+                suffix = (
+                    _PS51_EXIT_SUFFIX
+                    if os.path.basename(_PWSH_PATH).lower() == "powershell.exe"
+                    and not command.endswith("`")
+                    else ""
+                )
+                full_command = f"{encoding_preamble}{env_setup}{command}{suffix}"
                 argv = [_PWSH_PATH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", full_command]
             else:
                 # Git Bash: export 前缀（POSIX 路径，: 分隔；PYTHONUNBUFFERED 仅 bash 侧设置）
@@ -572,20 +588,29 @@ class ShellMixin:
 
             output = "".join(output_parts).strip() or "(no output)"
 
-            # Truncate by character count (primary limit for context window)
+            # 命令输出的关键信息通常在末尾（错误、退出原因），保留尾部而非开头
+            truncated = False
             if len(output) > max_chars:
-                output = self.truncate_result(output, max_chars)
+                output = truncate_tail(output, max_chars)
+                truncated = True
             else:
-                # Also truncate by line count if under char limit
                 lines = output.split('\n')
                 if len(lines) > self._BASH_MAX_OUTPUT_LINES:
                     truncated_count = len(lines) - self._BASH_MAX_OUTPUT_LINES
-                    output = '\n'.join(lines[:self._BASH_MAX_OUTPUT_LINES])
-                    output += f"\n\n... ({truncated_count} lines truncated, {len(lines)} total)"
+                    output = (
+                        f"... ({truncated_count} earlier lines truncated, {len(lines)} total)\n\n"
+                        + '\n'.join(lines[-self._BASH_MAX_OUTPUT_LINES:])
+                    )
+                    truncated = True
 
             # Token budget check: 确保输出不超 token 预算（Bash 默认 10K tokens）
             bash_token_budget = int(os.environ.get("BASH_MAX_OUTPUT_TOKENS", str(BASH_MAX_OUTPUT_TOKENS)))
+            before_budget = output
             output = self.truncate_middle(output, bash_token_budget)
+            if output != before_budget:
+                truncated = True
+            if truncated and self.output_file:
+                output += f"\n\n... (full output: {self.output_file})"
 
             if timed_out:
                 # 明确标注超时：此前只有 [exit code: None] 的部分输出，

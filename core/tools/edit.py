@@ -12,6 +12,10 @@ from core.tools.base import Tool, ToolResult
 class EditTool(Tool):
     mutates_workspace = True
     name = "edit"
+    prompt_guidelines = (
+        "Batch all changes to one file in a single call.",
+        "Keep old_text short, unique, and non-overlapping; merge nearby changes.",
+    )
 
     # 结果文本上限（与 WriteTool.MAX_RESULT_SIZE_CHARS 一致）
     MAX_RESULT_SIZE_CHARS = EDIT_RESULT_MAX_CHARS
