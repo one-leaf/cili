@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import threading
@@ -85,6 +86,8 @@ class MinerUClient:
 
     def __init__(self, progress: Callable[[str], None]):
         self._progress = progress
+        # 最近一次 Precision 解析实际产出的页数（结果 ZIP 无 content_list.json 时为 None，0 表示一页都没解析出）
+        self.last_page_count: int | None = None
 
     def _upload_file(self, url: str, file_path: str, *, max_retries: int = 3) -> None:
         """上传文件（连接类错误最多重试 3 次）。"""
@@ -438,6 +441,7 @@ class MinerUClient:
 
         # Extract full.md from ZIP
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            self.last_page_count = self._page_count_from_content_list(zf)
             # Look for full.md in the archive
             md_files = [n for n in zf.namelist() if n.endswith(".md")]
             full_md = next((n for n in md_files if "full.md" in n), None)
@@ -449,6 +453,25 @@ class MinerUClient:
                 return zf.read(md_files[0]).decode("utf-8")
             else:
                 raise Exception(f"ZIP 中无 .md 文件，文件列表: {zf.namelist()}")
+
+    @staticmethod
+    def _page_count_from_content_list(zf: zipfile.ZipFile) -> int | None:
+        """按结果 ZIP 的 content_list.json 统计实际解析页数；无该文件时返回 None。"""
+        for name in zf.namelist():
+            if name.endswith("content_list.json"):
+                try:
+                    items = json.loads(zf.read(name).decode("utf-8"))
+                except Exception:
+                    return None
+                pages: set[int] = set()
+                for it in items if isinstance(items, list) else []:
+                    idx = it.get("page_idx") if isinstance(it, dict) else None
+                    if isinstance(idx, int):
+                        pages.add(idx)
+                    elif isinstance(idx, str) and idx.isdigit():
+                        pages.add(int(idx))
+                return len(pages)
+        return None
 
     def _download_markdown(self, url: str) -> str:
         """下载 markdown 内容（直连失败时回退系统代理；不关闭证书校验）。"""

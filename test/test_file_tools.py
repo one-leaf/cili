@@ -72,6 +72,15 @@ class TestFileTools:
         assert "Line 1" in result.output
         assert "Line 2" in result.output
 
+    def test_read_tool_directory_reports_not_a_file(self, tmp_path):
+        """读目录报 not a file，而不是 Windows 的 Permission denied"""
+        from core.tools.read import ReadTool
+
+        (tmp_path / "adir").mkdir()
+        result = ReadTool(cwd=str(tmp_path)).execute(file_path="adir")
+        assert result.error
+        assert "not a file" in result.output
+
     def test_read_tool_with_offset(self, tools, test_workspace):
         """测试 read 工具 - 带偏移量读取"""
         from core.tools import get_tool_by_name
@@ -403,3 +412,76 @@ class TestTruncatedToolArgs:
         assert "缺少必填参数" not in result["content"]
         assert "截断" in result["content"]
         assert not os.path.exists(os.path.join(test_workspace, "half.md"))
+
+
+class TestGlobIgnoredDirs:
+    """glob 在被 .gitignore 忽略的目录里应能看到文件"""
+
+    @staticmethod
+    def _make_repo(root):
+        import shutil
+        import subprocess
+
+        import pytest
+
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True,
+                       capture_output=True)
+        (root / ".gitignore").write_text("ignored_dir/\n", encoding="utf-8")
+        probe = root / "ignored_dir" / "sub"
+        probe.mkdir(parents=True)
+        (probe / "a.md").write_text("x", encoding="utf-8")
+        return probe
+
+    def test_glob_path_inside_ignored_dir(self, tmp_path):
+        """path 直接指向被忽略目录"""
+        from core.tools.glob import GlobTool
+
+        self._make_repo(tmp_path)
+        result = GlobTool(cwd=str(tmp_path)).execute(
+            pattern="*.md", path="ignored_dir/sub")
+        assert not result.error
+        assert "a.md" in result.output
+
+    def test_glob_pattern_names_ignored_dir(self, tmp_path):
+        """pattern 里显式点名被忽略目录"""
+        from core.tools.glob import GlobTool
+
+        self._make_repo(tmp_path)
+        result = GlobTool(cwd=str(tmp_path)).execute(
+            pattern="ignored_dir/sub/*.md")
+        assert "a.md" in result.output
+
+    def test_glob_non_ignored_dir_still_filtered(self, tmp_path):
+        """.gitignore 内其它被忽略路径仍应被过滤"""
+        from core.tools.glob import GlobTool
+
+        self._make_repo(tmp_path)
+        (tmp_path / ".gitignore").write_text(
+            "ignored_dir/\nother/\n", encoding="utf-8")
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "b.md").write_text("x", encoding="utf-8")
+        result = GlobTool(cwd=str(tmp_path)).execute(pattern="**/*.md")
+        assert "b.md" not in result.output
+
+    def test_glob_pagination_reports_offset(self, tmp_path):
+        """head_limit + offset 同时生效时，回执应报真实区间"""
+        from core.tools.glob import GlobTool
+
+        for i in range(5):
+            (tmp_path / f"f{i}.md").write_text("x", encoding="utf-8")
+        out = GlobTool(cwd=str(tmp_path)).execute(
+            pattern="*.md", head_limit=2, offset=3).output
+        assert "4–5 of 5" in out
+        assert "showing first" not in out
+
+    def test_glob_pattern_paths_use_forward_slashes(self, tmp_path):
+        """pattern 入口返回 / 分隔路径，便于直接拼 bash 命令"""
+        from core.tools.glob import GlobTool
+
+        self._make_repo(tmp_path)
+        out = GlobTool(cwd=str(tmp_path)).execute(
+            pattern="ignored_dir/sub/*.md").output
+        assert "ignored_dir/sub/a.md" in out

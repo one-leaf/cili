@@ -12,7 +12,12 @@ from pathlib import Path
 from core.tool_limits import GLOB_RESULT_MAX_CHARS
 from core.tools.base import Tool, ToolResult
 from core.tools.file_types import TYPE_EXTENSIONS
-from core.tools.git_visible import add_ignored_dir_files, git_visible_paths, pattern_dirs
+from core.tools.git_visible import (
+    add_ignored_dir_files,
+    git_visible_paths,
+    literal_dir_prefix,
+    pattern_dirs,
+)
 
 
 class GlobTool(Tool):
@@ -101,11 +106,12 @@ class GlobTool(Tool):
 
         # 显式写进 pattern 的目录（如 .cili/tmp/*.txt）不受默认忽略列表限制
         explicit_dirs = pattern_dirs(pattern) if pattern and not file_type else set()
+        explicit_prefix = literal_dir_prefix(pattern) if pattern and not file_type else None
 
         # git 工作区：按 .gitignore 过滤；用户显式点名的忽略目录仍保留
         git_visible = git_visible_paths(str(search_dir))
-        if git_visible is not None:
-            add_ignored_dir_files(git_visible, search_dir, explicit_dirs)
+        if git_visible is not None and explicit_prefix:
+            add_ignored_dir_files(git_visible, search_dir, [explicit_prefix])
 
         for gp in glob_patterns:
             try:
@@ -169,17 +175,19 @@ class GlobTool(Tool):
                 rel = f.relative_to(search_dir)
             except ValueError:
                 rel = f
-            lines.append(str(rel))
+            lines.append(rel.as_posix())
 
         output = "\n".join(lines)
 
         # 条数不限时仍限总量，避免一次 glob 撑爆上下文
         if len(output) > self.MAX_RESULT_SIZE_CHARS:
             output = output[:self.MAX_RESULT_SIZE_CHARS] + "\n\n... (output truncated)"
+        elif offset > 0:
+            suffix = "; this window is truncated by head_limit" if truncated else ""
+            output += (f"\n\n(Showing results {offset + 1}–{offset + len(lines)} "
+                       f"of {total_count}{suffix}.)")
         elif truncated:
             output += f"\n\n(Results are truncated: showing first {len(matched_files)} of {total_count} results. Consider using a more specific path or pattern.)"
-        elif offset > 0:
-            output += f"\n\n(Showing results {offset + 1}–{offset + len(lines)} of {total_count}.)"
 
         return ToolResult(output)
 

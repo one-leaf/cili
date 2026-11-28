@@ -594,3 +594,71 @@ class TestProgressStreaming:
         assert len(chunks) >= 2
         # 最后一个 offset 应与文件真实字节数一致（含 Windows CRLF 补偿）
         assert chunks[-1][1] == out_file.stat().st_size
+
+
+class TestPageCompleteness:
+    """解析页数少于输入页数时，回执必须显式告警"""
+
+    def test_warns_when_pages_missing(self, tmp_path):
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        out = tool._build_result(
+            "# x", str(tmp_path / "x.md"), "Precision",
+            source_pages=3, parsed_pages=2).output
+        assert "警告" in out
+        assert "3 页" in out and "2 页" in out
+
+    def test_warns_zero_pages(self, tmp_path):
+        """0 页不是“未知”，必须告警"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        out = tool._build_result(
+            "# x", str(tmp_path / "x.md"), "Precision",
+            source_pages=3, parsed_pages=0).output
+        assert "警告" in out
+
+    def test_no_warning_when_complete_or_unknown(self, tmp_path):
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        for parsed in (3, None):
+            out = tool._build_result(
+                "# x", str(tmp_path / "x.md"), "Precision",
+                source_pages=3, parsed_pages=parsed).output
+            assert "警告" not in out
+
+    def test_page_count_from_content_list(self, tmp_path):
+        import json
+
+        p = tmp_path / "result.zip"
+        with zipfile.ZipFile(p, "w") as zf:
+            zf.writestr("full.md", "# x")
+            zf.writestr("content_list.json", json.dumps(
+                [{"page_idx": 0}, {"page_idx": 2}, {"page_idx": 2}]))
+        with zipfile.ZipFile(p) as zf:
+            assert MinerUClient._page_count_from_content_list(zf) == 2
+
+    def test_page_count_missing_content_list(self, tmp_path):
+        p = tmp_path / "result.zip"
+        with zipfile.ZipFile(p, "w") as zf:
+            zf.writestr("full.md", "# x")
+        with zipfile.ZipFile(p) as zf:
+            assert MinerUClient._page_count_from_content_list(zf) is None
+
+    def test_page_count_empty_content_list_is_zero(self, tmp_path):
+        import json
+
+        p = tmp_path / "result.zip"
+        with zipfile.ZipFile(p, "w") as zf:
+            zf.writestr("full.md", "")
+            zf.writestr("content_list.json", json.dumps([]))
+        with zipfile.ZipFile(p) as zf:
+            assert MinerUClient._page_count_from_content_list(zf) == 0
+
+    def test_execute_empty_result_is_error(self, tmp_path, monkeypatch):
+        """云端返回空内容：报错且不写产物文件"""
+        tool = PDF2MarkdownTool(cwd=str(tmp_path))
+        src = tmp_path / "doc.docx"
+        src.write_bytes(b"x")
+        monkeypatch.setattr(tool, "convert_file",
+                            lambda *a, **kw: "  \n")
+        result = tool.execute(file_path=str(src))
+        assert result.error
+        assert "解析结果为空" in result.output
+        assert not (tmp_path / "doc.md").exists()

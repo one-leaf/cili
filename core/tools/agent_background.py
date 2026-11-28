@@ -83,7 +83,7 @@ class AgentBackgroundMixin:
                 if remaining <= 0:
                     return ToolResult(
                         f"Error: 等待后台 Runner 并发槽位超时（{len(_active_background_runners)}/{limit} 仍在运行）。"
-                        "请稍后重试，或用 action=\"kill\" 终止占用任务。",
+                        "请稍后重试，或用 action=\"list\" 查看任务后 action=\"stop\", agent_id=... 终止占用任务。",
                         error=True,
                     )
                 _background_runners_cond.wait(timeout=min(1.0, remaining))
@@ -278,8 +278,8 @@ class AgentBackgroundMixin:
             f"Task ID: {task_id}\n"
             f"Task: {task_summary}\n\n"
             f"You will receive an automatic notification when it completes — do NOT poll with "
-            f"action=\"read\" or sleep to wait. Continue your other work in the meantime.\n"
-            f"Use action=\"kill\", task_id=\"{task_id}\" only if you need to terminate it early.",
+            f"action=\"status\" or sleep to wait. Continue your other work in the meantime.\n"
+            f"Use action=\"stop\", agent_id=\"{task_id}\" only if you need to terminate it early.",
             # 工具调用本身已完成；completed=False 是 ask_user/审批占位协议，
             # 后台任务仍在运行不能用它，否则主循环会误判为等待外部输入。
             meta={"exec_id": exec_id, "completed": True, "task_id": task_id,

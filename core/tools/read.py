@@ -73,6 +73,9 @@ class ReadTool(Tool):
         gate = self._read_gate([file_path])
         if gate is not None:
             return gate
+        # Windows 上读目录抛 PermissionError，会落进下面的泛化分支报成权限问题
+        if os.path.isdir(file_path):
+            return ToolResult(f"Error: not a file: {file_path}", error=True)
         ext = os.path.splitext(file_path)[1].lower()
 
         # Handle PDFs

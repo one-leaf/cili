@@ -13,7 +13,7 @@ from core.tools.git_visible import (
     add_ignored_dir_files,
     git_visible_paths,
     is_git_ignored,
-    pattern_dirs,
+    literal_dir_prefix,
 )
 from core.tools.shell import shell_escape
 
@@ -92,7 +92,7 @@ class GrepTool(Tool):
             },
             "glob": {
                 "type": "string",
-                "description": "Glob pattern to filter files (e.g. '*.py', '*.ts'). Superseded by 'file_type' if both set.",
+                "description": "File-name pattern to filter files, matched against the basename (e.g. '*.py'); use 'path' to choose directories. Superseded by 'file_type' if both set.",
             },
             "file_type": {
                 "type": "string",
@@ -244,8 +244,10 @@ class GrepTool(Tool):
         visible = git_visible_paths(str(path_obj))
         if visible is None:
             return None
-        explicit_dirs = pattern_dirs(glob) if glob else set()
-        add_ignored_dir_files(visible, path_obj, explicit_dirs)
+        explicit_prefix = literal_dir_prefix(glob) if glob else None
+        if explicit_prefix:
+            add_ignored_dir_files(visible, path_obj, [explicit_prefix])
+        explicit_dirs = set(Path(explicit_prefix).parts) if explicit_prefix else set()
 
         if file_type:
             patterns = TYPE_EXTENSIONS.get(file_type.lower())
@@ -296,7 +298,7 @@ class GrepTool(Tool):
             if result.error:
                 raise ValueError(f"grep failed: {result.output.strip()[:300]}")
             for line in (result.output or "").strip().split("\n"):
-                if line and not line.startswith("grep:"):
+                if line and line != "(no output)" and not line.startswith("grep:"):
                     matched.append(line)
         return matched
 

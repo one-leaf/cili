@@ -378,9 +378,12 @@ class PDF2MarkdownTool(Tool):
 
         # 商业 API 优先：配置了 mineru_api_key 时走 Precision（vlm，超限自动分片），
         # 不做免费 Agent 兜底；未配置 key 时只能走免费 Agent API
+        source_pages = _pdf_page_count(abs_path) if file_ext == ".pdf" else 0
+        parsed_pages_out: list[int | None] = []
         try:
             markdown = self.convert_file(
-                abs_path, model_version=model_version, timeout=timeout)
+                abs_path, model_version=model_version, timeout=timeout,
+                pages_out=parsed_pages_out)
         except _AuthError as e:
             return ToolResult(
                 f"Precision API 认证失败: {e}\n"
@@ -412,17 +415,37 @@ class PDF2MarkdownTool(Tool):
                 error=True,
             )
 
-        self._save_markdown(markdown, output_path)
         api_mode = "Precision" if api_key else "Agent"
-        return self._build_result(markdown, output_path, api_mode=api_mode)
+        # 任一分片页数未知就不做比对，避免把“统计不到”误报成“缺页”
+        parsed_pages = (
+            sum(p for p in parsed_pages_out if p)
+            if parsed_pages_out and None not in parsed_pages_out else None
+        )
+        # 空结果是失败，不是“成功但内容为空”：不写文件，避免下游把空 md 当产物
+        if not markdown.strip():
+            return ToolResult(
+                f"[{api_mode} API] 解析结果为空，未写出文件。\n"
+                f"文件: {Path(abs_path).name}\n"
+                f"输入页数: {source_pages or '未知'} | 云端解析页数: "
+                f"{parsed_pages if parsed_pages is not None else '未知'}\n"
+                f"可能原因：扫描件无文字层、文件损坏或云端任务异常；请重试，"
+                f"或先确认源文件能否正常打开。",
+                error=True,
+            )
+        self._save_markdown(markdown, output_path)
+        return self._build_result(markdown, output_path, api_mode=api_mode,
+                                  source_pages=source_pages,
+                                  parsed_pages=parsed_pages)
 
     def convert_file(self, file_path: str, *, model_version: str = "",
-                     timeout: int = _DEFAULT_TIMEOUT_S) -> str:
+                     timeout: int = _DEFAULT_TIMEOUT_S,
+                     pages_out: list[int | None] | None = None) -> str:
         """把文件转换为 markdown 文本（可复用入口：不做路径/输出门禁）。
 
         - 配置了 mineru_api_key → Precision API（默认 vlm）；PDF 超限自动分片后合并
         - 未配置 key → 免费 Agent API；PDF 超限（10MB/20页）同样自动分片后合并
         失败时抛出 _AuthError / _QuotaExceededError / _AgentLimitError 或普通异常。
+        ``pages_out`` 传入列表时，按片追加云端实际产出页数（未知为 None）。
         """
         abs_path = str(file_path)
         if not os.path.isfile(abs_path):
@@ -440,7 +463,7 @@ class PDF2MarkdownTool(Tool):
                        f"（{size_mb:.1f} MB，{mode} 模式，model={model_version}）")
         if api_key:
             md = self._precision_parse_with_split(
-                abs_path, api_key, timeout, model_version)
+                abs_path, api_key, timeout, model_version, pages_out=pages_out)
         else:
             if ext not in _AGENT_SUPPORTED_EXT:
                 raise _AgentLimitError(f"免费 Agent API 不支持 {ext} 类型")
@@ -448,20 +471,24 @@ class PDF2MarkdownTool(Tool):
                 raise _AgentLimitError(
                     f"非 PDF 文件超出免费 Agent API 限制（≤{_AGENT_MAX_SIZE_MB}MB）")
             # PDF 超限（大小/页数）自动分片，逐片解析后合并
-            md = self._agent_parse_with_split(abs_path, timeout)
+            md = self._agent_parse_with_split(abs_path, timeout, pages_out=pages_out)
         self._progress(f"转换完成：{len(md):,} 字符")
         return md
 
-    def _agent_parse_with_split(self, file_path: str, timeout: int) -> str:
+    def _agent_parse_with_split(self, file_path: str, timeout: int,
+                                pages_out: list[int | None] | None = None) -> str:
         """免费 Agent API：超限（10MB/20页）自动分片后合并"""
         return self._parse_with_split(
             file_path,
             lambda p: self._client._agent_parse(p, timeout),
             max_size_mb=_AGENT_MAX_SIZE_MB,
             max_pages=_AGENT_MAX_PAGES,
+            pages_out=pages_out,
         )
 
-    def _build_result(self, markdown: str, output_path: str, api_mode: str) -> ToolResult:
+    def _build_result(self, markdown: str, output_path: str, api_mode: str, *,
+                      source_pages: int = 0,
+                      parsed_pages: int | None = None) -> ToolResult:
         """Build successful result with metadata."""
         char_count = len(markdown)
         line_count = markdown.count('\n') + 1
@@ -477,6 +504,9 @@ class PDF2MarkdownTool(Tool):
             f"行数: {line_count:,}\n\n"
             f"--- Markdown 预览 ---\n{UNTRUSTED_DATA_BEGIN}{preview}{UNTRUSTED_DATA_END}"
         )
+        if source_pages and parsed_pages is not None and parsed_pages < source_pages:
+            output += (f"\n\n警告：输入 {source_pages} 页，云端只解析出 {parsed_pages} 页，"
+                       f"结果可能缺页；请抽查末页内容。")
         meta = {"output_path": output_path, "api_mode": api_mode}
         return ToolResult(output, meta=meta)
 
@@ -487,7 +517,8 @@ class PDF2MarkdownTool(Tool):
             f.write(content)
 
     def _parse_with_split(self, file_path: str, parse_fn: Callable[[str], str], *,
-                          max_size_mb: int, max_pages: int) -> str:
+                          max_size_mb: int, max_pages: int,
+                          pages_out: list[int | None] | None = None) -> str:
         """按限额解析：超限 PDF 先分片（pypdf），逐片解析后按页序合并"""
         ext = Path(file_path).suffix.lower()
         size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -498,7 +529,11 @@ class PDF2MarkdownTool(Tool):
         safe_bytes = int(max_size_mb * 1e6 * 0.9)
         size = os.path.getsize(file_path)
         if ext != ".pdf" or (size <= safe_bytes and pages <= max_pages):
-            return parse_fn(file_path)
+            self._client.last_page_count = None
+            md = parse_fn(file_path)
+            if pages_out is not None:
+                pages_out.append(self._client.last_page_count)
+            return md
 
         parts, tmp = _split_pdf_for_api(
             file_path,
@@ -513,20 +548,25 @@ class PDF2MarkdownTool(Tool):
             for i, part in enumerate(parts, 1):
                 self._progress(f"[分片 {i}/{len(parts)}] 开始解析 {part.name}"
                                f"（{part.stat().st_size / (1024 * 1024):.1f} MB）")
+                self._client.last_page_count = None
                 mds.append(parse_fn(str(part)))
+                if pages_out is not None:
+                    pages_out.append(self._client.last_page_count)
                 self._progress(f"[分片 {i}/{len(parts)}] 完成")
             return "\n\n".join(m for m in mds if m.strip())
         finally:
             tmp.cleanup()
 
     def _precision_parse_with_split(self, file_path: str, api_key: str,
-                                    timeout: int, model_version: str) -> str:
+                                    timeout: int, model_version: str,
+                                    pages_out: list[int | None] | None = None) -> str:
         """Precision API：超限（200MB/200页）自动分片后合并"""
         return self._parse_with_split(
             file_path,
             lambda p: self._client._precision_parse(p, api_key, timeout, model_version),
             max_size_mb=_PRECISION_MAX_SIZE_MB,
             max_pages=_PRECISION_MAX_PAGES,
+            pages_out=pages_out,
         )
 
 
