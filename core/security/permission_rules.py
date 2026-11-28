@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import os
 import re
@@ -684,8 +685,8 @@ class PermissionRules:
         workspace_root: str = "",
         hot_reload: bool = True,
     ) -> None:
-        self._workspace_path = Path(workspace_path) if workspace_path else None
-        self._global_path = Path(global_path) if global_path else None
+        self._workspace_path = self._resolve_path(workspace_path)
+        self._global_path = self._resolve_path(global_path)
         self._workspace_root = workspace_root
         self._hot = hot_reload
         self._lock = threading.RLock()
@@ -699,6 +700,17 @@ class PermissionRules:
 
     # ── 加载 ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_path(path: str | Path | None) -> Path | None:
+        """单文件路径 → 同级的 config/{stem}/ 目录（存在时）。"""
+        if not path:
+            return None
+        p = Path(path)
+        if p.is_dir():
+            return p
+        candidate = p.parent / "config" / p.stem
+        return candidate if candidate.is_dir() else p
+
     def _paths(self) -> dict[str, Path | None]:
         return {"workspace": self._workspace_path, "global": self._global_path}
 
@@ -707,6 +719,11 @@ class PermissionRules:
         if path is None:
             return None
         try:
+            if path.is_dir():
+                return tuple(
+                    (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+                    for f in sorted(path.glob("*.json"))
+                )
             st = path.stat()
             return (st.st_mtime_ns, st.st_size)
         except OSError:
@@ -735,6 +752,8 @@ class PermissionRules:
     def _load_one(self, path: Path | None, scope: str) -> tuple[list[dict], list[dict]]:
         if path is None:
             return [], []
+        if path.is_dir():
+            return self._load_dir(path, scope)
         data = load_json_or_backup(path, {})
         if not isinstance(data, dict):
             data = {}
@@ -749,6 +768,38 @@ class PermissionRules:
             c for c in (data.get("constraints") or [])
             if isinstance(c, dict) and c.get("id") and c.get("text")
         ]
+        return rules, constraints
+
+    def _load_dir(self, path: Path, scope: str) -> tuple[list[dict], list[dict]]:
+        """一规则一文件：{id}.json + _constraints.json。"""
+        rules: list[dict] = []
+        for file in sorted(path.glob("*.json")):
+            if file.name == "_constraints.json":
+                continue
+            try:
+                data = json.loads(file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            raw = data.get("rule") if isinstance(data, dict) and isinstance(data.get("rule"), dict) else data
+            if not isinstance(raw, dict):
+                continue
+            raw.setdefault("id", file.stem)
+            rule = self._validate_rule(raw, scope)
+            if rule is None:
+                logger.warning(f"[permission-rules] 跳过非法规则（{scope}）：{file}")
+                continue
+            rules.append(rule)
+        constraints: list[dict] = []
+        cpath = path / "_constraints.json"
+        if cpath.is_file():
+            try:
+                cdata = json.loads(cpath.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cdata = {}
+            constraints = [
+                c for c in (cdata.get("constraints") or [])
+                if isinstance(c, dict) and c.get("id") and c.get("text")
+            ]
         return rules, constraints
 
     def _validate_rule(self, raw: dict, scope: str) -> dict | None:
@@ -881,6 +932,22 @@ class PermissionRules:
                 self.save(scope)
             return removed
 
+    @staticmethod
+    def _file_name(rule: dict) -> str:
+        raw = str(rule.get("id") or new_rule_id())
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._") or new_rule_id()
+        return f"{safe}.json"
+
+    def _write_rule_file(self, scope: str, rule: dict) -> None:
+        path = self._path_for(scope)
+        if path is None or not path.is_dir():
+            self.save(scope)
+            return
+        with _path_lock(path):
+            path.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path / self._file_name(rule), {"version": RULES_VERSION, "rule": rule})
+            self._sigs[scope] = self._sig(path)
+
     def save(self, scope: str) -> None:
         path = self._path_for(scope)
         if path is None:
@@ -888,10 +955,26 @@ class PermissionRules:
         with _path_lock(path):
             rules = self._workspace_rules if scope == "workspace" else self._global_rules
             constraints = self._workspace_constraints if scope == "workspace" else self._global_constraints
-            data = {"version": RULES_VERSION, "rules": rules, "constraints": constraints}
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(path, data)
+                if path.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+                    ids = {self._file_name(r) for r in rules}
+                    for rule in rules:
+                        atomic_write_json(
+                            path / self._file_name(rule),
+                            {"version": RULES_VERSION, "rule": rule},
+                        )
+                    atomic_write_json(
+                        path / "_constraints.json",
+                        {"version": RULES_VERSION, "constraints": constraints},
+                    )
+                    for file in path.glob("*.json"):
+                        if file.name != "_constraints.json" and file.name not in ids:
+                            file.unlink(missing_ok=True)
+                else:
+                    data = {"version": RULES_VERSION, "rules": rules, "constraints": constraints}
+                    atomic_write_json(path, data)
                 self._sigs[scope] = self._sig(path)
             except OSError as e:
                 logger.warning(f"[permission-rules] 写盘失败（{scope}）：{e}")
@@ -918,7 +1001,7 @@ class PermissionRules:
         if now - self._last_hit_flush >= 5.0:
             self._last_hit_flush = now
             scope = rule.get("scope", "workspace")
-            self.save(scope)
+            self._write_rule_file(scope, rule)
 
     @staticmethod
     def _match_segment(rule: dict, segment: str, tokens: list[str]) -> bool:

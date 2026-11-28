@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,9 @@ from core.fs_utils import atomic_write_json
 logger = logging.getLogger(__name__)
 
 CONFIG_NAME = "sensitive_words.json"
+DIR_NAME = "sensitive_words"
+SETTINGS_NAME = "settings.json"
+RULES_DIR = "rules"
 
 # 规则条数上限：防止正则 alternation 过长拖慢每次请求
 MAX_RULES = 500
@@ -138,7 +142,51 @@ _cache_lock = threading.Lock()
 
 
 def config_path(sensitive_dir: str | Path) -> Path:
-    return Path(sensitive_dir) / CONFIG_NAME
+    """返回配置位置：优先已存在的目录，否则旧单文件。"""
+    base = Path(sensitive_dir)
+    for candidate in (base / DIR_NAME, base / "config" / DIR_NAME):
+        if candidate.is_dir():
+            return candidate
+    return base / CONFIG_NAME
+
+
+def _read_dir_config(path: Path) -> dict:
+    settings, _ = _read_json(path / SETTINGS_NAME)
+    if not isinstance(settings, dict):
+        settings = {}
+    rules: list[dict] = []
+    rules_dir = path / RULES_DIR
+    if rules_dir.is_dir():
+        for file in sorted(rules_dir.glob("*.json")):
+            item, _ = _read_json(file)
+            if isinstance(item, dict) and item.get("word"):
+                rules.append(item)
+    return {
+        "enabled": settings.get("enabled", False),
+        "fixed": settings.get("fixed", {}),
+        "rules": rules,
+    }
+
+
+def _read_config_at(path: Path) -> tuple[dict, bool]:
+    if path.is_dir():
+        return _read_dir_config(path), True
+    data, ok = _read_json(path)
+    return (data if isinstance(data, dict) else {}), ok
+
+
+def _config_sig(path: Path) -> tuple | None:
+    try:
+        if path.is_dir():
+            items = []
+            for file in sorted(path.rglob("*.json")):
+                st = file.stat()
+                items.append((str(file.relative_to(path)), st.st_mtime_ns, st.st_size))
+            return tuple(items)
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
 
 
 def _normalize_config(data: Any) -> dict:
@@ -205,14 +253,10 @@ def _read_json(path: Path) -> tuple[Any, bool]:
 
 
 def load_rules(sensitive_dir: str | Path) -> SensitiveRules:
-    """读取并缓存工作区规则；文件不存在视为未启用。"""
+    """读取并缓存工作区规则；文件/目录不存在视为未启用。"""
     path = config_path(sensitive_dir)
     key = os.path.normcase(str(path))
-    try:
-        st = path.stat()
-        sig: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        sig = None
+    sig = _config_sig(path)
 
     with _cache_lock:
         cached = _cache.get(key)
@@ -221,7 +265,7 @@ def load_rules(sensitive_dir: str | Path) -> SensitiveRules:
         if sig is None:
             rules = _EMPTY
         else:
-            data, ok = _read_json(path)
+            data, ok = _read_config_at(path)
             if not ok:
                 # 读取失败不落缓存：下次请求重试，避免一次瞬时错误让过滤静默停用
                 return cached[1] if cached is not None else _EMPTY
@@ -235,16 +279,32 @@ def read_config(sensitive_dir: str | Path) -> dict:
     path = config_path(sensitive_dir)
     if not path.exists():
         return _normalize_config({})
-    data, _ok = _read_json(path)
-    return _normalize_config(data if isinstance(data, dict) else {})
+    data, _ok = _read_config_at(path)
+    return _normalize_config(data)
 
 
 def write_config(sensitive_dir: str | Path, data: Any) -> dict:
-    """写入归一化配置并失效缓存。"""
+    """写入归一化配置并失效缓存；已迁移目录时写 settings + 一词一文件。"""
     path = config_path(sensitive_dir)
     normalized = _normalize_config(data)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, normalized)
+    if path.is_dir():
+        rules_dir = path / RULES_DIR
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            path / SETTINGS_NAME,
+            {"enabled": normalized["enabled"], "fixed": normalized["fixed"]},
+        )
+        names = set()
+        for rule in normalized["rules"]:
+            name = hashlib.sha1(rule["word"].encode("utf-8")).hexdigest()[:16] + ".json"
+            names.add(name)
+            atomic_write_json(rules_dir / name, rule)
+        for file in rules_dir.glob("*.json"):
+            if file.name not in names:
+                file.unlink(missing_ok=True)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, normalized)
     with _cache_lock:
         _cache.pop(os.path.normcase(str(path)), None)
     return normalized
