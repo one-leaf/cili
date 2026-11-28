@@ -60,9 +60,10 @@ Thumbs.db
 
 # 草履虫临时数据
 .cili/tmp/
+.cili/runtime/
 
 # 敏感词规则：本地脱敏配置，不随工作区推送
-.cili/sensitive_words.json
+.cili/cache/
 
 # Node.js
 node_modules/
@@ -131,11 +132,11 @@ def _get_workspace_dir(workspace_uuid: str) -> Path | None:
 
 
 def _sanitize_gitignore(workspace_dir: Path) -> None:
-    """确保 .cili 纳入追踪、.cili/tmp 与敏感词规则被忽略。"""
+    """确保 .cili 纳入追踪，仅 .cili/tmp、.cili/cache、.cili/runtime 保留本机。"""
     ensure_gitignore_entries(
         workspace_dir,
         remove=(".cili", ".cili/"),
-        add=(".cili/tmp/", ".cili/sensitive_words.json"),
+        add=(".cili/tmp/", ".cili/cache/", ".cili/runtime/"),
     )
 
 def ensure_git_exclude(workspace_uuid: str, entries: tuple[str, ...] = ()) -> bool:
@@ -215,7 +216,7 @@ def init_workspace_git(workspace_uuid: str) -> tuple[bool, str]:
             workspace_dir,
             base_text=_GITIGNORE_CONTENT,
             remove=(".cili", ".cili/"),
-            add=(".cili/tmp/", ".cili/sensitive_words.json"),
+            add=(".cili/tmp/", ".cili/cache/", ".cili/runtime/"),
         )
 
         # 初始提交（添加 .gitignore）
