@@ -110,6 +110,11 @@ def validate_name(name: str) -> None:
         raise ValueError(
             f"name must not contain dots (use hyphens): {name!r}"
         )
+    if re.search(r"\s", name) or "_" in name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+        raise ValueError(
+            "name must be a lowercase kebab-case slug (letters/digits separated by single hyphens), "
+            f"got {name!r}"
+        )
     if _UUID_RE.match(name) or _SKILL_UUID_RE.match(name):
         raise ValueError(
             f"name must be a meaningful kebab-case slug (e.g., 'python-async'), not a UUID: {name!r}"

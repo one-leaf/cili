@@ -60,6 +60,14 @@ class TestMemoryToolStore:
         assert result.error
         assert "Unknown memory type" in result.output
 
+    def test_store_rejects_space_and_underscore_name(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        for bad in ("zz mt space", "zz_mt_underscore"):
+            result = t.execute(action="store", memory_type="fact", name=bad,
+                               title="X", content="Y")
+            assert result.error
+            assert "kebab-case" in result.output
+
     def test_store_reject_uuid_name(self, tools, test_workspace):
         result = _memory_tool(tools).execute(
             action="store", memory_type="fact", name="550e8400-e29b-41d4-a716-446655440000",

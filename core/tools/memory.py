@@ -305,6 +305,7 @@ class MemoryTool(Tool):
             f"- entries: {stats['total']} active/stale ({by_type})",
             f"- older than 30d: {stats['stale']} | status=stale: {stats.get('status_stale', 0)} | archived: {stats['archived']}",
             f"- index: {stats['index_lines']} lines / {stats['index_bytes']} bytes",
+            f"- index path: {self.store.index_path}",
             f"- journal: {pending} pending, cursor at {self.journal.cursor()}",
         ]
         return ToolResult("\n".join(lines))

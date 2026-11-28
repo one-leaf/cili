@@ -328,3 +328,13 @@ class TestCleanupMemoryGit:
         mem = tmp_path / "memory"
         mem.mkdir()
         assert cleanup_memory_git(mem) == 0
+
+
+def test_index_path_prefers_cache(tmp_path):
+    memory = tmp_path / ".cili" / "memory"
+    cache = tmp_path / ".cili" / "cache" / "memory"
+    memory.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (cache / "MEMORY.md").write_text("cache index", encoding="utf-8")
+    store = MemoryStore(memory)
+    assert store.index_path == cache / "MEMORY.md"
