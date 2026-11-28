@@ -81,6 +81,8 @@ def patch_runner(monkeypatch):
     monkeypatch.setattr(runner_mod, "SessionRunner", FakeRunner)
     monkeypatch.setattr(runner_mod, "registry", FakeRegistry())
     monkeypatch.setattr(runner_mod, "classify_pending", lambda *a, **k: None)
+    # 配置由 FakeRunner 忽略；不打桩会读真实 setting.json（CI 无此文件）
+    monkeypatch.setattr(runner_mod, "load_config", lambda *a, **k: object())
     monkeypatch.setattr("core.default_sink.bind_default_sink", lambda *a, **k: None)
 
 

@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.config import get_workspace_tools_dir
-from core.workspace_layout import todo_dir as _runtime_todo_dir
 from core.fs_utils import atomic_write_text
 from core.time_utils import now_str
+from core.workspace_layout import todo_dir as _runtime_todo_dir
 
 if TYPE_CHECKING:
     from core.session import SessionStore
@@ -111,12 +111,10 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
 
     # 优先独立文件
     session_id = getattr(session, 'session_id', None)
-    has_file = False
     if session_id:
         for todo_file in _paths(session_id, workspace_uuid):
             if not todo_file.exists():
                 continue
-            has_file = True
             todos = _load_todos_file(todo_file)
             if todos is not None:
                 return todos

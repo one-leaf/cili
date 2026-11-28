@@ -61,10 +61,9 @@ jobs:
         run: |
           python -m pytest test/ -v --tb=short
         env:
-          # Use system Python for CI (not embedded deps)
-          CILI_CI_MODE: "1"
           # config 构造要求存在 API key；CI 无真实密钥，注入占位值
-          # （真正调用 LLM 的集成测试已按 integration 标记在服务器不可达时自动跳过）
+          # （真正调用 LLM 的集成测试已按 integration 标记在服务器不可达时自动跳过；
+          #   断言配置文件 key 解析的用例自行 delenv，不受此变量影响）
           ANTHROPIC_API_KEY: "ci-dummy-key-not-real"
 
   lint:
@@ -81,7 +80,8 @@ jobs:
           python-version: "3.11"
 
       - name: Install linters
-        run: pip install ruff
+        # 锁定版本：ruff 规则会随版本漂移，不锁定会让 main 在无关提交上变红
+        run: pip install ruff==0.17.0
 
       - name: Lint with ruff
         run: ruff check core/ web/ interfaces/ main.py

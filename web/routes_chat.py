@@ -30,7 +30,12 @@ from core.image_pipeline import (
     project_images_for_request,
     save_image_payload,
 )
-from core.session import SessionStore, read_meta, session_key, usage_total_for_session_dir
+from core.session import (
+    SessionStore,
+    read_meta,
+    session_key,
+    usage_total_for_session_dir,
+)
 from core.session_owner import is_mine, owner_label
 from core.session_runner_runtime.conversation import ConversationStore
 from core.session_runner_runtime.executor import (
@@ -39,6 +44,7 @@ from core.session_runner_runtime.executor import (
 )
 from core.stream_executor import get_stream_executor
 from core.teen_mode import TeenModeDenied, get_teen_mode
+from core.tool_output import resolve_tool_results_for_context
 from core.turn_dispatch import PreparedTurn, execute_turn, prepare_turn
 from core.turn_queue import QueuedTurn, QueueError, merge_queued_turns, turn_queue
 from web.deps import (
@@ -53,7 +59,6 @@ from web.deps import (
     validate_session_id,
     validate_workspace_uuid,
 )
-from core.tool_output import resolve_tool_results_for_context
 from web.sse import (
     drain_outbox_events,
     make_sse_callbacks,

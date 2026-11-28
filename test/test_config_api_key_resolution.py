@@ -8,6 +8,15 @@
 import asyncio
 import json
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_env_overrides(monkeypatch):
+    """隔离 CI 注入的 ANTHROPIC_* 环境变量，否则它们会覆盖配置文件里的 key。"""
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+
 
 def _write(cfg_path, data) -> None:
     cfg_path.write_text(json.dumps(data), encoding="utf-8")

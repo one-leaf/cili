@@ -305,15 +305,26 @@ class TestEnhancedActions:
     def test_get_cookies(self):
         service = self._service()
         page = MagicMock()
+        page.url = "https://ex.com/"
         page.context.cookies.return_value = [
+            {"name": "theme", "value": "dark", "domain": ".ex.com", "path": "/",
+             "secure": True, "httpOnly": False, "sameSite": "Lax"},
             {"name": "sid", "value": "abc", "domain": ".ex.com", "path": "/",
-             "secure": True, "httpOnly": True, "sameSite": "Lax"}
+             "secure": True, "httpOnly": True, "sameSite": "Lax"},
         ]
         result = self._run(service, "get_cookies", page)
-        assert "sid = abc" in result.output
-        page.context.cookies.assert_called_once_with()
-        self._run(service, "get_cookies", page, url="https://ex.com/")
-        page.context.cookies.assert_called_with(url="https://ex.com/")
+        assert "theme = dark" in result.output
+        assert "sid = ***" in result.output          # httpOnly 会话值必须掩码
+        assert "Sensitive values masked: 1" in result.output
+        page.context.cookies.assert_called_once_with(urls=["https://ex.com/"])
+
+    def test_get_cookies_rejects_cross_site(self):
+        service = self._service()
+        page = MagicMock()
+        page.url = "https://ex.com/"
+        result = self._run(service, "get_cookies", page, url="https://other.com/")
+        assert result.error
+        assert "refusing" in result.output
 
     def test_clear_cookies(self):
         service = self._service()

@@ -51,6 +51,7 @@ class TestRunnerSetModel:
         cfg = _config()
         runner = SessionRunner.__new__(SessionRunner)  # 跳过重量级构造
         runner.config = cfg
+        runner.workspace_uuid = ""
         runner.role = "master"
         runner.role_cfg = SimpleNamespace(max_tokens=0)
         runner.model = cfg.resolve_model("p/a")

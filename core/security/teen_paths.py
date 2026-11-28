@@ -17,7 +17,12 @@ import logging
 import os
 from pathlib import Path
 
-from core.config import DATA_DIR, SYSTEM_DATA_DIR, load_workspaces_index, workspaces_root
+from core.config import (
+    DATA_DIR,
+    SYSTEM_DATA_DIR,
+    load_workspaces_index,
+    workspaces_root,
+)
 from core.fs_utils import is_path_within, path_key
 
 logger = logging.getLogger(__name__)

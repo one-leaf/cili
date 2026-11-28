@@ -24,9 +24,11 @@ from core.config import (
 )
 from core.config import (
     get_workspace_meta,
+    load_config,
+)
+from core.config import (
     get_workspace_sessions_dir as workspace_sessions_dir,
 )
-from core.config import load_config
 from core.event_bus import get_event_bus
 from core.inbox import MAX_SYSTEM_BODY_CHARS, get_inbox_store
 from core.output_sink import OutputSink

@@ -247,6 +247,7 @@ class ReadTool(Tool):
         """扫描版 PDF 回退：用 PyMuPDF 渲染页面为图片。失败返回 None。"""
         try:
             import pymupdf
+
             from core.llm.types import TextBlock
         except ImportError:
             return None

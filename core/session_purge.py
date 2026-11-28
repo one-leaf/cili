@@ -6,6 +6,7 @@ Web 与其他接入端共用。
 from __future__ import annotations
 
 from pathlib import Path
+
 from core.agent_mailbox import get_agent_mailbox
 from core.session import delete_session_dir, session_key
 from core.session_registry import registry
@@ -19,7 +20,6 @@ def purge_session(
 ) -> None:
     """停止并摘除会话的编排/队列/runner，再删目录。"""
     key = session_key(workspace_uuid, session_id)
-    session_dir = Path(sessions_dir) / session_id
     with registry.lock:
         turn_queue.remove_session(key)
         registry.remove(key)

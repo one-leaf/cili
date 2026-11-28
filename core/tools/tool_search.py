@@ -13,7 +13,6 @@ from typing import Any
 
 from core.tools.base import Tool, ToolResult
 
-
 _CJK_ONLY_RE = re.compile(r"^[一-鿿]+$")
 
 

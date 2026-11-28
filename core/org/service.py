@@ -9,12 +9,6 @@ import time
 from urllib.parse import urlparse
 
 from core.org.apply import apply_config, restore_config
-from core.org.workspaces import (
-    apply_workspaces,
-    disconnect_workspaces,
-    prune_managed_workspaces,
-    sync_managed_workspaces,
-)
 from core.org.client import (
     OrgAuthError,
     OrgClient,
@@ -25,12 +19,17 @@ from core.org.client import (
 )
 from core.org.store import (
     clear_all,
-    clear_session,
     clear_state,
     load_session,
     load_state,
     save_session,
     save_state,
+)
+from core.org.workspaces import (
+    apply_workspaces,
+    disconnect_workspaces,
+    prune_managed_workspaces,
+    sync_managed_workspaces,
 )
 
 logger = logging.getLogger(__name__)

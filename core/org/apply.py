@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
 from core.config import CONFIG_RELOAD_LOCK, load_global_config, save_global_config
 from core.config_migrations import migrate_legacy_config

@@ -26,7 +26,11 @@ from core.tool_limits import (
 )
 from core.tool_output import save_tool_output
 from core.tools.background import BackgroundMixin
-from core.tools.permission import META_KEY, permission_placeholder_text, relative_escape_text
+from core.tools.permission import (
+    META_KEY,
+    permission_placeholder_text,
+    relative_escape_text,
+)
 from core.tools.result import ToolResult
 from core.tools.shell import ShellMixin
 

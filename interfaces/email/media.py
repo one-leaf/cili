@@ -17,8 +17,12 @@ from pathlib import Path
 
 from core.mail.content import (  # noqa: F401 — extract_text/truncate_body 由本模块 re-export
     extract_text,
-    safe_filename as _safe_filename,
     truncate_body,
+)
+from core.mail.content import (
+    safe_filename as _safe_filename,
+)
+from core.mail.content import (
     unique_path as _unique_path,
 )
 from core.media_fetch import InboundMedia

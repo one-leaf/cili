@@ -295,6 +295,7 @@ class TestRetryDefaults:
         from core.llm.client import _TOTAL_RETRY_TIMEOUT_S, LLMClient
 
         client = LLMClient.__new__(LLMClient)
+        client.sensitive_dir = None
         client.max_tokens = 1024
         client.model_name = "test-model"
         client.adapter = MagicMock()

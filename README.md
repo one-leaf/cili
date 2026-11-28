@@ -6,10 +6,10 @@
 
 <img src="web/static/cili-paramecium.png" width="220" alt="草履虫">
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![Playwright](https://img.shields.io/badge/Playwright-Browser_Automation-00c4ff.svg)](https://playwright.dev/)
-[![Tests](https://img.shields.io/badge/Tests-50+_Files-yellow.svg)](test/)
+[![Tests](https://img.shields.io/badge/Tests-190+_Files-yellow.svg)](test/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 </div>
@@ -114,15 +114,15 @@ scripts\upgrade.cmd
 
 ### Agent 架构
 
-**单一 Agent 类 + JSON 角色配置**：Master/Worker/Lite 是同一个 `Agent` 类的三个角色，行为差异全部由 `core/agents/{role}.json` 驱动（工具白名单、行为开关、system prompt 块、user 层）。全角色流式输出，可随时中断。
+**统一 SessionRunner + JSON 角色配置**：Master/Worker/Lite 是同一个 `SessionRunner` 的三个角色（`BaseSessionRunner` 是组合根），行为差异全部由 `core/agents/{role}.json` 驱动（工具白名单、行为开关、system prompt 块、user 层）。全角色流式输出，可随时中断。
 
 ```
-Agent (统一类，mode 分叉)
-  ├── master   (interactive) 26 工具：读写/图片、Shell/PowerShell、Python、浏览器、搜索、记忆、
-  │             定时任务、Todo、LaTeX、PDF转换、技能、委派 agent、ask_user、会话/工具搜索等
-  ├── worker   (autonomous) 16 工具：master 去掉浏览器/定时/Todo/LaTeX/委派/ask_user 等，
-  │             保留搜索、记忆、技能、会话搜索，适合批量后台任务
-  └── lite     (autonomous) 6 工具：read/write/edit/bash/python/clock，最小执行（无检查/预算）
+SessionRunner (统一类，role 分叉)
+  ├── master   (interactive) 全量工具：读写/图片、Shell/PowerShell、Python、浏览器、搜索、记忆、
+  │             定时任务、Todo、LaTeX、PDF 转换、技能、委派 agent、ask_user、工作流、发文件等
+  ├── worker   (autonomous) master 去掉 ask_user/cron/send_user_file/workflow；
+  │             保留浏览器、LaTeX、Todo、委派 agent，适合批量后台任务
+  └── lite     (autonomous) 仅 read/write/edit/bash/python/clock/message_bus，最小自主执行
 ```
 
 **统一工具/skill 注册表**：`core/tools/` 所有工具平铺，`registry.py` 按角色 JSON 的白名单实例化；`core/skills/` 每个技能一个目录（`skill.md`），frontmatter `roles` 声明适用角色。
@@ -141,7 +141,7 @@ Message → Adapter.serialize() → HTTP (httpx) → API → Adapter.parse() →
 
 - **统一流式协议**：8 种 StreamChunk 类型，所有 Provider 通过 Adapter 翻译
 - **自动重试**：429/5xx 指数退避 + 抖动，支持 `Retry-After` 头
-- **LiteLLM 代理自动检测**：通过 `/openapi.json` 端点识别，自动附加 `litellm_session_id`
+- **供应商预设**：`core/llm/server_presets.py` 内置 anthropic/openai/deepseek/glm/kimi/litellm 等网关的 base_url 与鉴权头
 - **延迟解析**：`ToolCallBlock.arguments` 保留原始 JSON，执行时才解析
 
 ### 浏览器自动化
@@ -188,39 +188,15 @@ cron(action="create", schedule={"type": "interval", "minutes": 60}, task="检查
 # Cron 表达式
 cron(action="create", schedule={"type": "cron", "expr": "0 9 * * *"}, task="每日晨报")
 
-# 限制执行次数（配合 loop 工具实现自循环任务）
+# 限制执行次数
 cron(action="create", schedule={"type": "interval", "minutes": 5}, task="导入文件", max_executions=100)
 ```
 
-- 系统级任务（`core/cron.d/`）+ 用户级任务（对话创建）
+- 内置种子任务（`core/cron_seeds/`）+ 用户级任务（对话或面板创建，数据在 `{workspace}/.cili/cron/`）
 - 状态持久化，重启后自动恢复调度
 - 同一 workspace 串行执行，避免并发冲突
 - **remaining 计数器**：每次执行自动递减，到 0 时任务自动 disable（硬保证）
 - **max_executions 参数**：创建任务时可设置最大执行次数（1-9999，默认 9999）
-
-#### 自循环任务（Loop 工具）
-
-配合 loop 工具可实现跨调度周期的渐进式任务，所有项处理完毕后自动停止：
-
-```python
-# 示例：渐进式导入大量文件到记忆系统
-# 1. 扫描文件列表，写入文件（每行一个路径）
-#    find E:/documents -name "*.md" > file_list.txt
-
-# 2. 创建定时任务（每 5 分钟执行一次）
-cron(action="create", schedule={"type": "interval", "minutes": 5}, 
-     task="将 file_list.txt 中的文件逐个导入记忆系统", max_executions=9999)
-
-# 3. Agent 每次执行时：
-#    - loop(action="sync", source_file="file_list.txt")  # 从文件同步项列表
-#    - loop(action="next", source_file="file_list.txt")  # 获取下一个待处理文件
-#    - 读取并处理文件
-#    - loop(action="done", source_file="file_list.txt", item=当前文件)  # 标记完成
-```
-
-- **文件驱动**：`source_file` 参数指定项列表文件（每行一个），同时作为任务标识符
-- **崩溃恢复**：当前项仍为 pending，下次执行自动重试
-- **动态新增**：更新 file_list.txt 后，sync 会自动发现新增项
 
 ### 技能系统
 
@@ -232,12 +208,15 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 | task-delegation | master/worker | 任务拆分与委派 |
 | research | master | 深度研究（委托 Worker，只采信一手来源） |
 | learning | master | 结构化学习助手 |
+| courseware | master/worker | 课件生成（单文件 HTML：幻灯片/讲稿/测验/错题，按章节或错题类型） |
+| textbook | master/worker | 中小学教材知识库（1300+ 本，按章节懒加载） |
 | news | master | 热点新闻聚合（热搜/早报/金价汇率/科技资讯） |
 | grilling | master | 推敲（多轮追问、压力测试方案） |
 | translate-large-document | master | 大文档翻译（分块 + Worker 委派） |
 | generate-agents-md | master/worker | 扫描项目代码结构，生成 AGENTS.md 项目指令文件 |
 | mermaid-diagram | master/worker/lite | Mermaid 图表生成（流程图、架构图、时序图、脑图、ER图等） |
 | tikz-diagram | master/worker/lite | TikZ 科学绘图（LaTeX/PGFplots 出版级图表） |
+| iso-figure | master/worker | 等轴测立体结构图（Three.js 单页离线 HTML，可导出 PNG/PDF） |
 | context-bounded-processing | worker | 上下文受限处理 |
 | file-processing | master/worker/lite | 文件处理与文档解析 |
 | word | master/worker/lite | Word 文档处理（docx/doc 读取、创建、编辑、转换） |
@@ -250,58 +229,50 @@ cron(action="create", schedule={"type": "interval", "minutes": 5},
 
 ```
 cili/
-├── start.cmd / start.ps1       # 启动入口（自动环境检测）
+├── start.cmd / start.ps1       # 启动入口（自动环境检测；便携模式把依赖下载到 data/deps）
 ├── main.py                     # Python 入口（uvicorn web server）
+├── cli.cmd                     # 终端客户端入口（进程外客户端，cwd 即 workspace）
+├── requirements.txt            # 运行时依赖（main.py 启动时安装）
+├── .ruff.toml                  # lint 配置
+├── .github/workflows/ci.yml    # GitHub Actions：Windows 3.11/3.12 全量测试 + ruff
 ├── scripts/
 │   ├── upgrade.cmd             # Windows 批处理升级脚本
 │   └── upgrade.ps1             # PowerShell 升级脚本
-├── core/
-│   ├── base_agent.py           # Agent 基类（消息管理、压缩、LLM 调用）
-│   ├── agent.py                # 统一 Agent 类（mode 分叉 master/worker/lite）
-│   ├── agent_config.py         # AgentRoleConfig + load_agent_role（读 core/agents/*.json）
-│   ├── agents/                 # 角色 JSON 定义（master.json / worker.json / lite.json）
-│   ├── prompt_builder.py       # system prompt 块拼装 + user 层注入 + 防连续合并
-│   ├── config.py               # 配置加载（环境变量 > 文件 > 默认值）
-│   ├── session.py              # 会话管理（持久化、过滤、缓存）
-│   ├── compression.py          # 消息压缩（Microcompact / Full Compact / Emergency）
-│   ├── prompts.py              # prompt 生成函数
-│   ├── browser_service.py      # 浏览器服务（Playwright 单例）
-│   ├── cron.py                 # Cron 调度器
-│   ├── cron.d/                 # 系统级 Cron 任务配置（如每 2 小时记忆整合）
-│   ├── memory_pipeline.py      # 记忆提取/整合流水线（journal → 条目）
-│   ├── memory_store.py         # 记忆存储（Journal / MemoryStore / 四类条目）
-│   ├── message_bus.py          # 跨会话消息总线
-│   ├── updater.py              # 启动时自动升级（GitHub 检查 + 覆盖）
-│   ├── templates/prompts/      # 项目提示词模板（信息学奥赛、语文、英语等）
-│   ├── llm/                    # LLM 底层架构
-│   │   ├── types.py            # ContentBlock / Message / StreamChunk
-│   │   ├── adapter.py          # Adapter 抽象基类
-│   │   ├── anthropic.py        # Anthropic Adapter
-│   │   ├── openai.py           # OpenAI Adapter
-│   │   ├── transport.py        # HTTP 传输（SSE / 重试）
-│   │   ├── assembler.py        # 流式数据块累积
-│   │   └── client.py           # 统一 API（chat / chat_stream / chat_structured）
-│   ├── tools/                  # 工具层（统一注册表，按角色 JSON 白名单加载）
-│   │   ├── registry.py         # TOOL_REGISTRY + create_tools(role_config, ...)
-│   │   └── *.py                # 全部工具平铺（read/write/edit/bash/.../agent/ask_user）
-│   └── skills/                 # 技能层（每技能一个目录，skill.md + roles frontmatter）
-├── interfaces/                 # 接入端（与 Web 共享同一会话与 runner）
-│   ├── qq/                     # QQ 接入端（官方机器人 SDK，WebSocket + 单条流式消息）
-│   └── wechat/                 # 微信接入端（iLink 个人微信，HTTP 长轮询 + 进度节拍）
-├── web/
-│   ├── web_api.py              # FastAPI 服务（REST + SSE 流式 + 记忆管理 API）
-│   └── static/                 # 前端静态文件
-│       ├── index.html          # 单页应用
-│       ├── session.html        # 会话页面
-│       ├── app.js / chat.js    # 前端逻辑
-│       ├── memory.js           # 记忆管理页面
-│       ├── settings.js         # 设置相关逻辑
-│       ├── file-manager.js     # 文件管理
-│       ├── utils.js            # 工具函数
-│       └── style.css           # 样式
-├── docs/                       # 设计文档 + 设置说明 + 使用指南
-├── test/                       # 测试（52 文件）
-└── workspaces/                 # 工作区集合（default/ 为默认工作区；旧 workspace/ 启动时自动迁入）
+├── core/                       # 领域与运行时（接口无关）
+│   ├── app_context.py          # 全局单例的 startup/shutdown（组装根）
+│   ├── session_runner.py       # 统一 SessionRunner（master/worker/lite 角色分叉）
+│   ├── base_session_runner.py  # runner 组合根与转发层（循环/压缩在 session_runner_runtime/）
+│   ├── session_registry.py     # runner 池 + 运行权认领
+│   ├── output_sink.py          # 接口无关的输出接收端
+│   ├── role_config.py + agents/# 角色 JSON：工具白名单/行为开关/system prompt 块
+│   ├── prompt_builder.py       # system prompt 块拼装 + user 层注入
+│   ├── config.py               # 配置加载（providers + agents 两级模型配置）
+│   ├── session.py              # 会话存储（JSON 持久化、过滤、usage 追踪）
+│   ├── compression.py          # 三层消息压缩（Microcompact / Full Compact / Emergency）
+│   ├── llm/                    # LLM Adapter 分层（Anthropic / OpenAI / Responses、传输/重试）
+│   ├── tools/                  # 工具层（统一注册表，按角色白名单实例化）
+│   ├── skills/                 # 内置技能（skill.md + roles frontmatter）
+│   ├── security/               # 权限规则、路径策略、审批判定
+│   ├── memory_*.py             # 长期记忆（存储 / 摄入日志 / 提取整合）
+│   ├── cron/ + cron_seeds/     # 定时任务子系统 + 全局种子任务
+│   ├── workflows/              # 工作流子系统
+│   ├── mail/ + org/ + textbooks/ + office_pdf/   # 邮件原语 / 组织托管 / 教材 / Office→PDF
+│   └── templates/              # 提示词、学科教练、教材数据包索引
+├── interfaces/                 # 服务端接入端（与 Web 共享会话与 runner）
+│   ├── common/                 # 共享层：账号状态/指令骨架/媒体校验/回合准入
+│   ├── email/                  # 邮件接入端（IMAP + SMTP，多账号，白名单默认拒绝）
+│   ├── qq/                     # QQ 接入端（官方机器人，单条流式消息，多账号）
+│   └── wechat/                 # 微信接入端（iLink 个人微信，长轮询，多账号）
+├── clients/
+│   └── cli/                    # 终端客户端（进程外，HTTP + SSE，cwd 即 workspace）
+├── web/                        # Web 接口层
+│   ├── web_api.py              # FastAPI 装配入口（lifespan/中间件/静态文件/路由）
+│   ├── routes_*.py             # 各资源域路由
+│   ├── deps.py / sse.py / profile.py   # 共享依赖 / SSE 适配 / 接入端能力档案
+│   └── static/                 # 前端（index/session、app/chat、file-tree、各类设置页等）
+├── docs/                       # 设计文档
+├── test/                       # pytest 测试（190+ 文件）
+└── workspaces/                 # 工作区集合（default/ 为默认；旧 workspace/ 启动时自动迁入）
 ```
 
 ## 测试
@@ -313,11 +284,11 @@ python -m pytest test/ -v
 # 运行单个测试文件
 python -m pytest test/test_bash_tool.py -v
 
-# 运行带覆盖率的测试
+# 运行带覆盖率的测试（需先 pip install pytest-cov）
 python -m pytest test/ --cov=core --cov-report=term-missing
 ```
 
-测试覆盖：BaseAgent、Agent（master/worker/lite 三角色）、LLM Adapter、Transport、统一工具/技能系统、Session、Compression、Config、BrowserService、Cron、MessageBus、Web API、QQ 接入端、微信接入端等核心模块。
+测试覆盖：SessionRunner（master/worker/lite 三角色）、LLM Adapter/Transport、统一工具/技能系统、Session/压缩、Config、BrowserService、Cron、Workflow、Web API、QQ/微信/邮件接入端等核心模块。
 
 ## 设计文档
 

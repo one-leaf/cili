@@ -20,8 +20,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, fields
 
-from core.session_modes import normalize_session_mode
 from core.config import load_global_config, save_global_config
+from core.session_modes import normalize_session_mode
 from interfaces.common.coerce import INVALID as _INVALID
 from interfaces.common.coerce import coerce_value as _coerce
 

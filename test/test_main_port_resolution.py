@@ -134,6 +134,12 @@ class TestStartWebInterfacePortResolution:
             lambda: {"system": {"access_token": "tok"}},
         )
         monkeypatch.setattr(main_mod, "_PROJECT_ROOT", str(tmp_path))
+        # 日志路径是 import 时算好的常量：一并指到 tmp，避免依赖仓库里的 data/cili/logs
+        (tmp_path / "logs").mkdir()
+        monkeypatch.setattr(main_mod, "_LOG_DIR", str(tmp_path / "logs"))
+        monkeypatch.setattr(main_mod, "_LOG_FILE", str(tmp_path / "logs" / "cili.log"))
+        monkeypatch.setattr(main_mod, "_ERROR_LOG_FILE", str(tmp_path / "logs" / "error.log"))
+        monkeypatch.setattr(main_mod, "_ACCESS_LOG_FILE", str(tmp_path / "logs" / "access.log"))
         monkeypatch.setattr(web.deps, "init_web_deps", lambda: None)
         monkeypatch.setattr(
             main_mod.threading,

@@ -13,7 +13,6 @@ JSON 的 text block（core/agents/{role}.json）；本模块仅保留动态生�
 from __future__ import annotations
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 

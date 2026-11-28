@@ -16,12 +16,12 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, Request
 
 from core.config import (
+    CONFIG_RELOAD_LOCK,
     GLOBAL_CONFIG_PATH,
     PROJECT_ROOT,
     ensure_default_workspace,
     find_workspace_entry,
     get_workspace_data_dir,
-    CONFIG_RELOAD_LOCK,
     get_workspace_meta,
     load_config,
     load_workspaces_index,

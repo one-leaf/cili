@@ -32,7 +32,12 @@ from core.mail.client import (
     imap_date,
 )
 from core.mail.content import extract_text, safe_filename, truncate_body, unique_path
-from core.mail.outbound import ReplyContext, build_message, build_reply, clean_header_value
+from core.mail.outbound import (
+    ReplyContext,
+    build_message,
+    build_reply,
+    clean_header_value,
+)
 from core.tools.base import Tool, ToolResult
 from core.tools.permission import (
     META_KEY,
