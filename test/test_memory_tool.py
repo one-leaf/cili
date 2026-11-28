@@ -50,6 +50,14 @@ class TestMemoryToolStore:
         assert not result.error
         assert "Updated fact 'same'" in result.output
 
+    def test_store_rejects_status(self, tools, test_workspace):
+        result = _memory_tool(tools).execute(
+            action="store", memory_type="fact", name="status-probe",
+            title="X", content="Y", status="archived",
+        )
+        assert result.error
+        assert "status is not supported for store" in result.output
+
     def test_store_missing_type(self, tools, test_workspace):
         result = _memory_tool(tools).execute(action="store", title="X", content="Y")
         assert result.error

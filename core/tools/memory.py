@@ -70,7 +70,7 @@ class MemoryTool(Tool):
             },
             "query": {
                 "type": "string",
-                "description": "Keyword for find (case-insensitive match on name/title/description/tags/refs). Required for find."
+                "description": "Keyword for find (case-insensitive substring match on name/title/description/tags/refs and body). Required for find."
             },
             "status": {
                 "type": "string",
@@ -156,6 +156,11 @@ class MemoryTool(Tool):
         if not type_:
             return ToolResult(
                 "Error: memory_type is required for store (fact | preference | skill | reference)",
+                error=True,
+            )
+        if kwargs.get("status") is not None:
+            return ToolResult(
+                "Error: status is not supported for store; use update to change status",
                 error=True,
             )
         result = self.store.store(
