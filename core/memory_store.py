@@ -321,8 +321,8 @@ class MemoryStore:
                 return path, fm, body
         return None
 
-    def _iter_entries(self, type_: str | None = None) -> list[dict]:
-        """遍历 entries/ 下所有条目 frontmatter（附 _path/_body）。不包含 archive/。"""
+    def _iter_entries(self, type_: str | None = None, *, include_body: bool = False) -> list[dict]:
+        """遍历 entries/ 下所有条目 frontmatter；需要正文时带 _body。不包含 archive/。"""
         results: list[dict] = []
         types = [type_] if type_ else list(MEMORY_TYPES)
         for t in types:
@@ -334,11 +334,13 @@ class MemoryStore:
             for f in tdir.iterdir():
                 if not f.name.endswith(".md") or f.name.endswith(".tmp"):
                     continue
-                fm, _ = self._load_file(f)
+                fm, body = self._load_file(f)
                 if not fm:
                     continue
                 fm.setdefault("type", t)
                 fm["_path"] = str(f)
+                if include_body:
+                    fm["_body"] = body
                 results.append(fm)
         return results
 
@@ -459,7 +461,7 @@ class MemoryStore:
 
     def find(self, query: str, type_: str | None = None, status: str | None = None,
              limit: int = 20) -> list[dict]:
-        """描述驱动召回：只匹配 frontmatter（name/title/description/tags/refs），不读正文。
+        """描述/正文召回：frontmatter 与正文都匹配；正文命中同样返回。
 
         返回按 usage_count 倒序（active/stale，不含 archived）。不递增 usage（真实使用以 read 为准）。
         """
@@ -467,7 +469,7 @@ class MemoryStore:
         if not query:
             raise ValueError("query is required for find")
         with self._lock:
-            entries = self._iter_entries(type_)
+            entries = self._iter_entries(type_, include_body=True)
         matched = []
         for fm in entries:
             s = fm.get("status", STATUS_ACTIVE)
@@ -480,6 +482,7 @@ class MemoryStore:
                 str(fm.get("description", "")),
                 " ".join(str(t) for t in (fm.get("tags") or [])),
                 " ".join(str(r) for r in (fm.get("refs") or [])),
+                str(fm.get("_body", "")),
             ]).lower()
             if query in hay:
                 matched.append(fm)
@@ -630,6 +633,7 @@ class MemoryStore:
         for fm in entries:
             by_type[fm.get("type", "fact")] += 1
         stale = sum(1 for fm in entries if self.is_stale(fm))
+        status_stale = sum(1 for fm in entries if fm.get("status") == "stale")
         index_lines = index_bytes = 0
         if self.index_path.is_file():
             index_text = self.index_path.read_text(encoding="utf-8")
@@ -639,6 +643,7 @@ class MemoryStore:
             "total": len(entries),
             "archived": len(archived),
             "stale": stale,
+            "status_stale": status_stale,
             "by_type": by_type,
             "index_lines": index_lines,
             "index_bytes": index_bytes,
@@ -659,7 +664,7 @@ class MemoryStore:
         """自动归档：updated >90 天 且 usage_count=0 → 移 archive/（cron 每日调用）。"""
         archived: list[str] = []
         with self._lock:
-            for fm in self._iter_entries():
+            for fm in self._iter_entries(include_body=True):
                 if fm.get("status") == STATUS_ARCHIVED:
                     continue
                 age_days = (datetime.now() - parse_ts(fm.get("updated"))).days

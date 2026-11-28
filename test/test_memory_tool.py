@@ -85,6 +85,13 @@ class TestMemoryToolStore:
 
 
 class TestMemoryToolFind:
+    def test_find_matches_body_text(self, tools, test_workspace):
+        t = _memory_tool(tools)
+        t.execute(action="store", memory_type="fact", name="body-probe",
+                  title="Body Probe", content="only-in-body ZEBRAQUOKKA7788")
+        result = t.execute(action="find", query="ZEBRAQUOKKA7788")
+        assert not result.error
+        assert "body-probe" in result.output
     """find：frontmatter 关键词召回（name/title/description/tags/refs）。"""
 
     def test_find_by_title_keyword(self, tools, test_workspace):

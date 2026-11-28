@@ -303,7 +303,7 @@ class MemoryTool(Tool):
         lines = [
             "Memory statistics:",
             f"- entries: {stats['total']} active/stale ({by_type})",
-            f"- stale (>30d): {stats['stale']} | archived: {stats['archived']}",
+            f"- older than 30d: {stats['stale']} | status=stale: {stats.get('status_stale', 0)} | archived: {stats['archived']}",
             f"- index: {stats['index_lines']} lines / {stats['index_bytes']} bytes",
             f"- journal: {pending} pending, cursor at {self.journal.cursor()}",
         ]
