@@ -52,4 +52,24 @@ def test_migrate_data_dir_moves_runtime_and_config(tmp_path, monkeypatch):
     assert (data / "sessions" / "s1" / "goal.json").exists() is False
     assert (data / "sessions" / "s1" / "index.json.legacy").exists() is False
     assert (data / "runtime" / ".layout-migrated").is_file()
+    assert (data / "config" / "layout.json").is_file()
     assert lm.migrate_data_dir(data) is False
+
+
+def test_shared_layout_guard(tmp_path, monkeypatch):
+    data = tmp_path / "ws" / ".cili"
+    _write(data / "sessions" / "s1" / "meta.json", "{}")
+    _write(data / "sessions" / "s1" / "call_1.txt", "output")
+    _write(data / "sessions" / "s1" / "exec_a" / "index.json", "{}")
+    _write(data / "memory" / "journal.jsonl", "{}\n")
+    _write(data / "workflows" / "wf1" / "state.json", "{}")
+    monkeypatch.setattr(lm, "_backup", lambda p: tmp_path / "backup")
+
+    lm.migrate_data_dir(data)
+
+    assert not (data / "sessions" / "s1" / "call_1.txt").exists()
+    assert not (data / "memory" / "journal.jsonl").exists()
+    assert not (data / "workflows" / "wf1" / "state.json").exists()
+    # exec 执行索引仍允许留在共享会话目录
+    assert (data / "sessions" / "s1" / "exec_a" / "index.json").is_file()
+    assert (data / "runtime" / "workflows" / "wf1" / "state.json").is_file()

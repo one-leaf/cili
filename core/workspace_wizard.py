@@ -779,6 +779,8 @@ def create_workspaces(
 
             data_dir = directory / ".cili"
             (data_dir / "sessions").mkdir(parents=True, exist_ok=True)
+            from core.layout_migration import write_layout_marker
+            write_layout_marker(data_dir)
 
             git_message = ""
             if git_enabled:

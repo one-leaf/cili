@@ -50,6 +50,24 @@ def _write_marker(data_dir: Path) -> None:
     })
 
 
+def write_layout_marker(data_dir: str | Path) -> None:
+    """供新建工作区直接写 marker，避免再走迁移。"""
+    _write_marker(Path(data_dir))
+
+
+def _write_shared_marker(data_dir: Path) -> None:
+    try:
+        from core.node_identity import get_node_id
+        migrated_by = get_node_id()
+    except Exception:
+        migrated_by = ""
+    atomic_write_json(data_dir / "config" / "layout.json", {
+        "version": LAYOUT_VERSION,
+        "migrated_at": _now(),
+        "migrated_by_node": migrated_by,
+    })
+
+
 def _backup(data_dir: Path) -> Path:
     from core.config import DATA_DIR
 
@@ -276,6 +294,7 @@ def migrate_data_dir(data_dir: str | Path) -> bool:
     _migrate_sessions(data_dir)
     _migrate_downloads(data_dir)
     _write_marker(data_dir)
+    _write_shared_marker(data_dir)
     return True
 
 

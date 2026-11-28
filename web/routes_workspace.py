@@ -178,6 +178,8 @@ async def create_workspace(request: CreateWorkspaceRequest):
     # Create .cili data directory (workspace-local, mirrors directory in index)
     ws_data_dir = get_workspace_data_dir(workspace_uuid)
     ws_data_dir.mkdir(parents=True, exist_ok=True)
+    from core.layout_migration import write_layout_marker
+    write_layout_marker(ws_data_dir)
 
     # Create sessions directory
     sessions_dir = sessions_dir_for_data_dir(ws_data_dir)
