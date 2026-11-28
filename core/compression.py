@@ -215,7 +215,91 @@ def microcompact_mark_orphans_and_errors(
                 msg_result["_meta"]["valid"] = False
                 invalidated_count += 1
 
+    invalidated_count += _enforce_tool_pairing(messages)
     return invalidated_count
+
+
+def _invalidate(msg: dict) -> bool:
+    if msg.get("_meta", {}).get("valid") is False:
+        return False
+    msg.setdefault("_meta", {})["valid"] = False
+    return True
+
+
+def _enforce_tool_pairing(messages: list[dict]) -> int:
+    """保证 tool_use / tool_result 成对：孤立结果、缺失结果的 tool_use 整批失效。
+
+    Anthropic 要求每个 tool_result 都能在前一条 assistant 消息找到 tool_use；
+    多工具批量调用被部分失效时，必须整批剔除，否则请求会 400。
+    """
+    fixed = 0
+    for _ in range(3):
+        changed = 0
+        valid_assistant: dict[int, set[str]] = {}
+        valid_ids: set[str] = set()
+        for i, msg in enumerate(messages):
+            if msg.get("_meta", {}).get("valid") is False:
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            ids = {
+                block.get("id")
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("id")
+            }
+            if ids:
+                valid_assistant[i] = ids
+                valid_ids |= ids
+
+        valid_results: dict[int, set[str]] = {}
+        for i, msg in enumerate(messages):
+            if msg.get("_meta", {}).get("valid") is False:
+                continue
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            ids = {
+                block.get("tool_use_id")
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id")
+            }
+            if not ids:
+                continue
+            if ids - valid_ids:
+                if _invalidate(msg):
+                    changed += 1
+                continue
+            valid_results[i] = ids
+
+        if changed:
+            fixed += changed
+            continue
+
+        covered: set[str] = set()
+        for ids in valid_results.values():
+            covered |= ids
+        for idx, ids in valid_assistant.items():
+            if ids <= covered:
+                continue
+            if _invalidate(messages[idx]):
+                changed += 1
+            for result_idx, result_ids in valid_results.items():
+                if result_ids & ids:
+                    if _invalidate(messages[result_idx]):
+                        changed += 1
+        fixed += changed
+        if not changed:
+            break
+    return fixed
 
 
 def _is_wide_char(c: str) -> bool:

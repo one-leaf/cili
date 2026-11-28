@@ -209,4 +209,62 @@ class TestMicrocompactErrors:
     def test_empty_messages(self):
         assert microcompact_mark_orphans_and_errors([]) == 0
 
+class TestToolPairingConsistency:
+    """多工具批量调用的成对性：不能留下孤立 tool_result / 悬空 tool_use。"""
+
+    @staticmethod
+    def _use(ids: list[str]) -> dict:
+        return {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": tid, "name": "bash", "input": {}}
+                for tid in ids
+            ],
+        }
+
+    @staticmethod
+    def _result(tid: str, is_error: bool = False) -> dict:
+        return {
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": tid,
+                "content": "err" if is_error else "ok", "is_error": is_error,
+            }],
+        }
+
+    def test_partial_multi_tool_batch_invalidated_together(self):
+        # 第一对是双工具批量：只有 t0a 是错误结果；再加 10 对单工具错误，
+        # 总错误对 11 > 10，触发最早的一对失效。
+        messages = [
+            self._use(["t0a", "t0b"]),
+            self._result("t0a", is_error=True),
+            self._result("t0b"),
+        ]
+        for i in range(10):
+            messages.append(self._use([f"call_{i}"]))
+            messages.append(self._result(f"call_{i}", is_error=True))
+
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 3
+        assert messages[0]["_meta"]["valid"] is False   # 整条 assistant 失效
+        assert messages[1]["_meta"]["valid"] is False   # 错误结果
+        assert messages[2]["_meta"]["valid"] is False   # 同批兄弟结果也必须失效
+
+    def test_dangling_tool_use_invalidated(self):
+        messages = [
+            self._use(["t1"]),
+            {**self._result("t1"), "_meta": {"valid": False}},
+        ]
+        count = microcompact_mark_orphans_and_errors(messages)
+        assert count == 1
+        assert messages[0]["_meta"]["valid"] is False
+
+    def test_complete_multi_tool_batch_untouched(self):
+        messages = [
+            self._use(["a", "b"]),
+            self._result("a"),
+            self._result("b"),
+        ]
+        assert microcompact_mark_orphans_and_errors(messages) == 0
+        assert all(not m.get("_meta", {}).get("valid") for m in messages)
 
